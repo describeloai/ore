@@ -102,6 +102,7 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS6003",
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
+    "OOS7009", "OOS7011",
 ];
 
 fn implementada(codigo: &str) -> bool {

@@ -67,7 +67,108 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     for f in pkg.docs.iter().filter(|d| d.kind == Kind::Function) {
         funcion(pkg, f, &lat, &mut out);
     }
+
+    // 4 · Y el efecto sobre la identidad.
+    for r in pkg.docs.iter().filter(|d| d.kind == Kind::Resolution) {
+        resolucion(pkg, r, &lat, &mut out);
+    }
     out
+}
+
+// ── Resolution · OOS7009 · OOS7011 ──────────────────────────────────────────
+
+/// ¿Tiene este documento algún endoso **incondicional**?
+///
+/// Compartido entre `Function` y `Resolution` a propósito: un régimen con dos
+/// formas de decir «que lo mire una persona» acaba con dos semánticas.
+fn endosada(d: &Loaded) -> bool {
+    d.section("endorsements")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .any(|e| {
+            e.get("when").is_none()
+                && e.get("endorser")
+                    .and_then(|(_, v)| v.as_str())
+                    .is_some_and(|n| ENDOSANTES.contains(&n))
+        })
+}
+
+fn resolucion(
+    pkg: &Package,
+    r: &Loaded,
+    lat: &BTreeMap<String, Lattice>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let qn = r.qname().unwrap_or_default();
+    let estrategias = r.section("strategies").map(|n| n.items()).unwrap_or(&[]);
+
+    let mut probabilistica = false;
+    for e in estrategias {
+        if e.get("type").and_then(|(_, v)| v.as_str()) != Some("probabilistic") {
+            continue;
+        }
+        probabilistica = true;
+        let id = e
+            .get("id")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("<sin id>");
+
+        // ── OOS7009 · un emparejador probabilístico es un conducto ──────────
+        if e.get("conduit").is_none() {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos7009,
+                    &r.path,
+                    format!("la estrategia `{id}` de `{qn}` no declara conducto"),
+                )
+                .at(e.pos())
+                .help(
+                    "comparar nombres y direcciones a escala no es una operación de                      rendimiento: es hacer fluir esos valores hacia un emparejador que tiene                      que sostenerlos para compararlos. Eso es un conducto en el sentido                      literal de `04-flow`, y un conducto sin autorización declarada no se                      autoriza solo. Declara `conduit: materialization.<nombre>` y autorízalo                      a la etiqueta de cada propiedad que ponderas",
+                ),
+            );
+        }
+    }
+
+    if !probabilistica || endosada(r) {
+        return;
+    }
+
+    // ── OOS7011 · una coincidencia probable no produce un hecho ─────────────
+    let Some(entidad) = r
+        .section("entity")
+        .and_then(|n| n.as_str())
+        .and_then(|q| pkg.entity(q))
+    else {
+        return;
+    };
+    let Some((_, meta)) = entidad.root.get("metadata") else {
+        return;
+    };
+    for (ret, nivel) in integridad_de(meta, lat) {
+        let l = &lat[&ret];
+        // El techo es «no el máximo», y no un nivel con nombre: obligar a cada
+        // retículo a declarar cuál de sus niveles significa «inferido» sería
+        // vocabulario nuevo para decir algo que la posición ya dice.
+        if l.levels.last() != Some(&nivel) || l.levels.len() < 2 {
+            continue;
+        }
+        out.push(
+            Diagnostic::new(
+                Code::Oos7011,
+                &entidad.path,
+                format!(
+                    "`{}` declara `{ret} = {nivel}` y `{qn}` la resuelve por conjetura",
+                    entidad.qname().unwrap_or_default()
+                ),
+            )
+            .at(meta.pos())
+            .help(format!(
+                "una estrategia probabilística infiere: por bien calibrada que esté produce                  una conclusión, no una observación, y `{nivel}` es la cima de `{ret}`. Sea lo                  que sea esa cima, una conjetura no es eso — el umbral no cambia la naturaleza                  del método. Baja la etiqueta a `{}`, o declara un endoso incondicional:                  alguien mira los dos registros y se hace responsable de la fusión",
+                l.levels[l.levels.len() - 2]
+            )),
+        );
+    }
 }
 
 // ── OOS7007 ─────────────────────────────────────────────────────────────────

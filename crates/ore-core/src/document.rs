@@ -63,6 +63,8 @@ pub enum Kind {
     ConduitPolicy,
     /// v1alpha2. La superficie de efecto.
     Function,
+    /// v1alpha2. El efecto sobre la identidad.
+    Resolution,
 }
 
 impl Kind {
@@ -74,6 +76,7 @@ impl Kind {
         Kind::Lattice,
         Kind::ConduitPolicy,
         Kind::Function,
+        Kind::Resolution,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -85,6 +88,7 @@ impl Kind {
             Kind::Lattice => "Lattice",
             Kind::ConduitPolicy => "ConduitPolicy",
             Kind::Function => "Function",
+            Kind::Resolution => "Resolution",
         }
     }
 
@@ -94,7 +98,7 @@ impl Kind {
     /// un documento del futuro, y el error tiene que decir eso.
     pub const fn since(self) -> ApiVersion {
         match self {
-            Kind::Function => ApiVersion::V1Alpha2,
+            Kind::Function | Kind::Resolution => ApiVersion::V1Alpha2,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -129,9 +133,13 @@ impl Kind {
             // sí misma sin que exista atestación, y una afirmación sobre uno
             // mismo no es una garantía. Al no existir el campo, el error es
             // estructural — `OOS1005` — en vez de necesitar un código propio.
-            Kind::Binding | Kind::Lattice | Kind::ConduitPolicy | Kind::Function => {
-                &["name", "namespace", "description"]
-            }
+            // `Resolution` tampoco admite `labels`, y por lo mismo: la
+            // integridad que puede producir se deriva de sus estrategias.
+            Kind::Binding
+            | Kind::Lattice
+            | Kind::ConduitPolicy
+            | Kind::Function
+            | Kind::Resolution => &["name", "namespace", "description"],
         }
     }
 
@@ -186,6 +194,7 @@ impl Kind {
                 "authorization",
                 "idempotency",
             ],
+            Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
         }
     }
 
