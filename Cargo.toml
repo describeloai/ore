@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version    = "0.0.0"
+edition    = "2024"
+license    = "Apache-2.0"
+repository = "https://github.com/describeloai/ore"
+authors    = ["ORE contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+
+# Sin `default-features`: los colores de clap arrastran `anstream` -> `windows-sys`,
+# y con ello FFI de plataforma. Un compilador de especificacion es puro por
+# invariante III y no tiene ningun motivo para enlazar contra el sistema
+# operativo. Menos dependencias nativas tambien significa compilacion cruzada
+# trivial, que es lo que un binario que se distribuye por brew, cargo, curl,
+# npm y docker necesita.
+clap = { version = "4", default-features = false, features = [
+    "std", "derive", "help", "usage", "error-context",
+] }
+
+# Deliberadamente AUSENTE: el parser de YAML.
+#
+# No es una dependencia cualquiera. La forma canónica exige que dos entradas
+# equivalentes produzcan bytes idénticos (OOS · 90-canonical-form), y eso
+# depende de cómo el parser resuelva tipos implícitos, anclas y alias.
+# `serde_yaml` está archivado; hay varios sucesores y la elección merece su
+# propia evaluación contra los casos de `conformance/canonical/`.
+#
+# El runner de conformidad no lo necesita: `case.yaml` son cuatro claves planas.

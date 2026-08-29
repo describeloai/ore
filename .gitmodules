@@ -1,0 +1,3 @@
+[submodule "vendor/oos"]
+	path = vendor/oos
+	url = https://github.com/describeloai/oos.git

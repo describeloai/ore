@@ -1,0 +1,16 @@
+[package]
+name        = "ore-cli"
+description = "La CLI de ORE."
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[[bin]]
+name = "ore"
+path = "src/main.rs"
+
+[dependencies]
+ore-core = { path = "../ore-core" }
+anyhow.workspace = true
+clap.workspace   = true

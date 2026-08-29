@@ -1,0 +1,9 @@
+[package]
+name        = "ore-core"
+description = "Núcleo L0 de ORE: análisis, forma canónica, análisis de flujo y digest."
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]

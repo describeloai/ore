@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+.env
+.env.local
+.DS_Store
+Thumbs.db
