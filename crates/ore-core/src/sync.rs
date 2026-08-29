@@ -150,7 +150,8 @@ fn lock(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 "`ontology.lock` es un artefacto generado, y este quedó atrás. Sin la \
                  entrada, la clasificación y las políticas que ese paquete aporta no entran \
                  en la compilación — y el digest del bundle describiría un artefacto que \
-                 nadie ha construido. Regenéralo con `ore install`",
+                 nadie ha construido. El resolutor que escribe el lock todavía no existe: \
+                 hoy la entrada se añade a mano",
             ),
         );
     }
