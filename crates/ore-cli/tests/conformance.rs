@@ -100,6 +100,8 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
     "OOS5019", "OOS5020", "OOS5021", "OOS5022", // OOS6xxx · forma canónica
     "OOS6003",
+    // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
+    "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
 ];
 
 fn implementada(codigo: &str) -> bool {

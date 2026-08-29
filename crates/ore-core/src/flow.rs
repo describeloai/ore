@@ -23,11 +23,38 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // ── Retículos ───────────────────────────────────────────────────────────────
 
+/// El eje de un retículo. Decide qué se compara y con qué combinador.
+///
+/// Confidencialidad pregunta *cuánto daño si esto se filtra*; integridad,
+/// *cuánto daño si esto es falso*. Son ortogonales: un dato puede ser público y
+/// crítico a la vez —el estado de un pedido no es secreto y escribirlo mal
+/// cuesta dinero— y por eso hacen falta los dos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Axis {
+    /// Gobierna lecturas. Combina por `join` = máximo.
+    #[default]
+    Confidentiality,
+    /// Gobierna escrituras. Combina por `meet` = mínimo.
+    Integrity,
+}
+
+impl Axis {
+    /// El combinador que el eje implica. **No se declara** — es derivable, y un
+    /// campo derivable no es declarable (P2).
+    pub const fn combinador(self) -> &'static str {
+        match self {
+            Axis::Confidentiality => "max",
+            Axis::Integrity => "min",
+        }
+    }
+}
+
 /// Un retículo: etiquetas y su orden parcial. El orden **es** la secuencia.
 #[derive(Debug, Clone)]
 pub struct Lattice {
     pub qname: String,
     pub levels: Vec<String>,
+    pub axis: Axis,
 }
 
 impl Lattice {
@@ -60,6 +87,7 @@ fn maturity() -> Lattice {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+        axis: Axis::Confidentiality,
     }
 }
 
@@ -78,7 +106,20 @@ pub fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
                     .collect()
             })
             .unwrap_or_default();
-        out.insert(q.clone(), Lattice { qname: q, levels });
+        // Sin `axis`, confidencialidad: es lo que hace que todo retículo de
+        // v1alpha1 siga significando lo mismo sin tocar un fichero.
+        let axis = match d.section("axis").and_then(|n| n.as_str()) {
+            Some("integrity") => Axis::Integrity,
+            _ => Axis::Confidentiality,
+        };
+        out.insert(
+            q.clone(),
+            Lattice {
+                qname: q,
+                levels,
+                axis,
+            },
+        );
     }
     out
 }
@@ -157,6 +198,12 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 fn etiquetas_conocidas(pkg: &Package, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagnostic>) {
     let mut revisar = |d: &Loaded, n: &Node| {
         for (ret, nivel, pos) in read_labels(n) {
+            // Una etiqueta de un retículo de integridad no es asunto de esta
+            // fase: la comprueba `effect` con `OOS7003`. Emitir `OOS4003` aquí
+            // sería contestar en el eje equivocado.
+            if lat.get(&ret).is_some_and(|l| l.axis == Axis::Integrity) {
+                continue;
+            }
             let malo = match lat.get(&ret) {
                 None => Some(format!(
                     "no hay ningún retículo `{ret}` declarado ni importado"

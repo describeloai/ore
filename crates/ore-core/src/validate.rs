@@ -51,35 +51,51 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
                 .help(format!("añade `apiVersion: {}`", document::API_VERSION)),
         ];
     };
-    match v.as_str() {
-        Some(document::API_VERSION) => {}
-        Some(other) => {
-            return vec![
-                Diagnostic::new(
-                    Code::Oos1002,
-                    file,
-                    format!("`apiVersion: {other}` no está soportada"),
-                )
-                .at(k.pos())
+    let Some(version) = v.as_str().and_then(document::ApiVersion::parse) else {
+        let (msg, pos) = match v.as_str() {
+            Some(other) => (format!("`apiVersion: {other}` no está soportada"), k.pos()),
+            None => ("`apiVersion` debe ser una cadena".to_string(), v.pos()),
+        };
+        return vec![
+            Diagnostic::new(Code::Oos1002, file, msg)
+                .at(pos)
                 .help(format!(
-                    "esta implementación entiende {}. Hay un esquema por apiVersion: \
-                 sin resolver la versión no hay contra qué validar",
-                    document::API_VERSION
+                    "esta implementación entiende {}. Hay un esquema por apiVersion: sin                      resolver la versión no hay contra qué validar",
+                    document::ApiVersion::ALL
+                        .iter()
+                        .map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" y ")
                 )),
-            ];
-        }
-        None => {
-            return vec![
-                Diagnostic::new(Code::Oos1002, file, "`apiVersion` debe ser una cadena")
-                    .at(v.pos()),
-            ];
-        }
-    }
+        ];
+    };
 
     // ── OOS1003 · kind ──────────────────────────────────────────────────────
     let Some((kk, kv)) = root.get("kind") else {
         return vec![Diagnostic::new(Code::Oos1003, file, "falta `kind`").at(root.pos())];
     };
+    // Un `kind` que existe en otra versión no es desconocido: es del futuro, y
+    // el error tiene que distinguirlo de una errata.
+    if let Some(k) = kv.as_str().and_then(Kind::parse)
+        && k.since() > version
+    {
+        return vec![
+            Diagnostic::new(
+                Code::Oos1003,
+                file,
+                format!(
+                    "`kind: {}` no existe en {}",
+                    k.as_str(),
+                    version.as_str()
+                ),
+            )
+            .at(kk.pos())
+            .help(format!(
+                "es un documento de {}. Cambia el `apiVersion` del documento si es lo que                  querías declarar",
+                k.since().as_str()
+            )),
+        ];
+    }
     let Some(kind) = kv.as_str().and_then(Kind::parse) else {
         let nombre = kv.as_str().unwrap_or("<no es una cadena>");
         return vec![
@@ -231,7 +247,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !tipos.is_empty() {
         return tipos;
     }
-    crate::flow::check(&pkg)
+    let flujo = crate::flow::check(&pkg);
+    if !flujo.is_empty() {
+        return flujo;
+    }
+    // Efectos al final: la regla de integridad razona sobre etiquetas que la
+    // fase de flujo acaba de dar por buenas, y sobre un grafo que ya resuelve.
+    crate::effect::check(&pkg)
 }
 
 /// Lee un directorio y construye el paquete, con lo que falló al hacerlo.

@@ -34,6 +34,7 @@ pub mod diag;
 pub mod diff;
 pub mod digest;
 pub mod document;
+pub mod effect;
 pub mod flow;
 pub mod json;
 pub mod link;

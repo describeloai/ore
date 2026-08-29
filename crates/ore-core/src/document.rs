@@ -24,6 +24,34 @@ pub type ShapeFailure = (String, Option<String>);
 
 pub const API_VERSION: &str = "oos.dev/v1alpha1";
 
+/// Las versiones de la especificación que esta implementación entiende.
+///
+/// Deja de ser una constante en el momento en que hay dos, y el cambio no es
+/// cosmético: **el documento elige su conjunto de reglas**. Un `kind` que no
+/// existía en v1alpha1 no es un error de escritura, es un documento de otra
+/// versión, y decirlo así es la diferencia entre «no reconozco esto» y «esto
+/// existe, en otra versión».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ApiVersion {
+    V1Alpha1,
+    V1Alpha2,
+}
+
+impl ApiVersion {
+    pub const ALL: &'static [ApiVersion] = &[ApiVersion::V1Alpha1, ApiVersion::V1Alpha2];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ApiVersion::V1Alpha1 => "oos.dev/v1alpha1",
+            ApiVersion::V1Alpha2 => "oos.dev/v1alpha2",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.as_str() == s)
+    }
+}
+
 /// Los cinco documentos de v1alpha1, más el manifiesto raíz.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -33,6 +61,8 @@ pub enum Kind {
     Binding,
     Lattice,
     ConduitPolicy,
+    /// v1alpha2. La superficie de efecto.
+    Function,
 }
 
 impl Kind {
@@ -43,6 +73,7 @@ impl Kind {
         Kind::Binding,
         Kind::Lattice,
         Kind::ConduitPolicy,
+        Kind::Function,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -53,6 +84,18 @@ impl Kind {
             Kind::Binding => "Binding",
             Kind::Lattice => "Lattice",
             Kind::ConduitPolicy => "ConduitPolicy",
+            Kind::Function => "Function",
+        }
+    }
+
+    /// La versión en la que este documento aparece.
+    ///
+    /// Un `Function` en un paquete de v1alpha1 no es un `kind` desconocido: es
+    /// un documento del futuro, y el error tiene que decir eso.
+    pub const fn since(self) -> ApiVersion {
+        match self {
+            Kind::Function => ApiVersion::V1Alpha2,
+            _ => ApiVersion::V1Alpha1,
         }
     }
 
@@ -80,7 +123,13 @@ impl Kind {
                 "description",
             ],
             Kind::Entity => &["name", "namespace", "labels", "description", "aiContext"],
-            Kind::Binding | Kind::Lattice | Kind::ConduitPolicy => {
+            // `Function` no admite `labels`, y la ausencia es normativa: su
+            // integridad SE COMPUTA de sus endosos (`02-function` §6). Admitir
+            // una etiqueta dejaría que una función escribiera `attested` sobre
+            // sí misma sin que exista atestación, y una afirmación sobre uno
+            // mismo no es una garantía. Al no existir el campo, el error es
+            // estructural — `OOS1005` — en vez de necesitar un código propio.
+            Kind::Binding | Kind::Lattice | Kind::ConduitPolicy | Kind::Function => {
                 &["name", "namespace", "description"]
             }
         }
@@ -119,8 +168,24 @@ impl Kind {
                 "capabilities",
                 "materialization",
             ],
-            Kind::Lattice => &["levels", "levelDescriptions", "join"],
+            // `axis` es lo único que v1alpha2 añade al retículo, y de él sale
+            // el combinador. `join` queda obsoleto: derivable, luego no
+            // declarable (P2), y si aparece debe coincidir — `OOS7007`.
+            Kind::Lattice => &["levels", "levelDescriptions", "join", "axis"],
             Kind::ConduitPolicy => &["conduits"],
+            Kind::Function => &[
+                "runtime",
+                "entrypoint",
+                "source",
+                "limits",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+            ],
         }
     }
 
@@ -213,10 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn los_seis_kinds_se_resuelven() {
+    fn los_kinds_se_resuelven() {
         for k in Kind::ALL {
             assert_eq!(Kind::parse(k.as_str()), Some(*k));
         }
         assert_eq!(Kind::parse("Ontology"), None);
+    }
+
+    #[test]
+    fn function_es_de_v1alpha2_y_no_admite_etiquetas() {
+        assert_eq!(Kind::Function.since(), ApiVersion::V1Alpha2);
+        assert_eq!(Kind::Entity.since(), ApiVersion::V1Alpha1);
+        // La ausencia que impide que una función se atestigüe a sí misma.
+        assert!(!Kind::Function.metadata_keys().contains(&"labels"));
+        assert!(Kind::Entity.metadata_keys().contains(&"labels"));
     }
 }
