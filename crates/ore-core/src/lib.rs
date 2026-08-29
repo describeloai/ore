@@ -31,10 +31,12 @@ pub mod cedar;
 pub mod code;
 pub mod diag;
 pub mod diff;
+pub mod digest;
 pub mod document;
 pub mod flow;
 pub mod json;
 pub mod link;
+pub mod normalize;
 pub mod parse;
 pub mod types;
 pub mod validate;
@@ -43,11 +45,6 @@ pub use code::{Code, Family};
 pub use diag::{Diagnostic, Pos};
 pub use validate::{validate_document, validate_package};
 
-// ── Pendiente. Fase 0 ───────────────────────────────────────────────────────
-//
-// pub mod normalize;  N1–N8 de 90-canonical-form
-// pub mod digest;     JCS (RFC 8785) · doc · paquete · bundle
-//
 // ── Fase 2 ──────────────────────────────────────────────────────────────────
 //
 // pub mod emit;       ODCS · Cedar

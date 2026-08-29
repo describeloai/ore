@@ -31,6 +31,63 @@ impl Json {
         Json::Str(v.into())
     }
 
+    /// **La forma canónica**: RFC 8785 (JCS).
+    ///
+    /// Sin espacios, claves ordenadas por sus unidades de código UTF-16, y
+    /// escapes mínimos. De estos bytes sale el digest, así que aquí es donde
+    /// vive **G1**: dos implementaciones conformes producen los mismos bytes o
+    /// la identidad determinista no existe.
+    ///
+    /// Los números: RFC 8785 manda el algoritmo de ECMAScript, que es laborioso
+    /// para los dobles. Aquí no hace falta — `OOS6003` prohíbe los decimales sin
+    /// comillas, así que **todo número de la forma canónica es un entero** y
+    /// todo decimal es una cadena. La regla de §4.1 no era higiene: se paga
+    /// sola aquí.
+    pub fn jcs(&self) -> String {
+        let mut out = String::new();
+        self.write_jcs(&mut out);
+        out
+    }
+
+    fn write_jcs(&self, out: &mut String) {
+        match self {
+            Json::Str(s) => escribir_cadena(out, s),
+            Json::Int(n) => {
+                let _ = write!(out, "{n}");
+            }
+            Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Json::Arr(items) => {
+                out.push('[');
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    v.write_jcs(out);
+                }
+                out.push(']');
+            }
+            Json::Obj(m) => {
+                // `BTreeMap` ordena por bytes UTF-8; RFC 8785 exige unidades de
+                // código UTF-16. Coinciden en todo el BMP y difieren por encima
+                // de U+FFFF. Nuestras claves son identificadores ASCII, pero
+                // depender de eso sería depender de que nadie escriba un emoji
+                // en una clave de extensión.
+                let mut claves: Vec<&String> = m.keys().collect();
+                claves.sort_by_key(|k| k.encode_utf16().collect::<Vec<u16>>());
+                out.push('{');
+                for (i, k) in claves.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    escribir_cadena(out, k);
+                    out.push(':');
+                    m[*k].write_jcs(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+
     /// JSON indentado, para que lo lea una persona en una revisión.
     pub fn pretty(&self) -> String {
         let mut out = String::new();
@@ -100,6 +157,35 @@ mod tests {
     fn ordena_las_claves() {
         let j = Json::obj([("zeta", Json::Int(1)), ("alfa", Json::Int(2))]);
         assert!(j.pretty().find("alfa").unwrap() < j.pretty().find("zeta").unwrap());
+    }
+
+    #[test]
+    fn jcs_ordena_por_utf16_y_no_deja_espacios() {
+        let j = Json::obj([
+            ("b", Json::Int(1)),
+            ("a", Json::Arr(vec![Json::Int(2), Json::Bool(true)])),
+        ]);
+        assert_eq!(j.jcs(), r#"{"a":[2,true],"b":1}"#);
+    }
+
+    /// El orden es por unidades UTF-16, no por puntos de código (RFC 8785
+    /// §3.2.3). U+1F600 va DESPUÉS de U+FB33 en UTF-8 y ANTES en UTF-16, porque
+    /// su primer sustituto es 0xD83D.
+    #[test]
+    fn jcs_ordena_los_sustitutos_como_manda_el_estandar() {
+        let j = Json::Obj(
+            [
+                ("\u{1f600}".to_string(), Json::Int(1)),
+                ("\u{fb33}".to_string(), Json::Int(2)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let s = j.jcs();
+        assert!(
+            s.find('\u{1f600}') < s.find('\u{fb33}'),
+            "orden UTF-16 incumplido: {s}"
+        );
     }
 
     #[test]

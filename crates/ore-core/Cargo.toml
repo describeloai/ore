@@ -8,3 +8,5 @@ repository.workspace = true
 
 [dependencies]
 saphyr-parser.workspace = true
+sha2.workspace           = true
+unicode-normalization.workspace = true

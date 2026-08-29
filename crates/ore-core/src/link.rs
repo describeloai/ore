@@ -78,6 +78,13 @@ impl Package {
         self.of(Kind::Entity)
             .find(|d| d.qname().as_deref() == Some(qname))
     }
+
+    /// Resuelve una referencia **tal como la escribió el autor**: la forma
+    /// corta es legal dentro del mismo espacio de nombres (N1).
+    pub fn resolve_entity(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        let ns = desde.meta("namespace").and_then(|n| n.as_str());
+        self.entity(&crate::normalize::qualify(referencia, ns))
+    }
 }
 
 /// Nombres de las propiedades declaradas por una entidad.
@@ -483,7 +490,7 @@ fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 let rn = rk.as_str().unwrap_or("");
                 if let Some((_, t)) = rv.get("target") {
                     let target = t.as_str().unwrap_or("");
-                    if pkg.entity(target).is_none() {
+                    if pkg.resolve_entity(target, e).is_none() {
                         out.push(referencia_rota(
                             &e.path,
                             t,
@@ -525,7 +532,7 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
             continue;
         };
         let target = t.as_str().unwrap_or("");
-        let Some(e) = pkg.entity(target) else {
+        let Some(e) = pkg.resolve_entity(target, b) else {
             out.push(referencia_rota(&b.path, t, target, "targetEntity"));
             continue;
         };

@@ -94,8 +94,7 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS4014", // OOS5xxx · compatibilidad
     "OOS5001", "OOS5002", "OOS5003", "OOS5006", "OOS5007", "OOS5008", "OOS5009", "OOS5010",
     "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
-    "OOS5019", "OOS5020", "OOS5021", "OOS5022",
-    // OOS6xxx · forma canónica
+    "OOS5019", "OOS5020", "OOS5021", "OOS5022", // OOS6xxx · forma canónica
     "OOS6003",
 ];
 
@@ -223,10 +222,13 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
     if caso.grupo == "diff" {
         return ejecutar_diff(caso, &correr_args);
     }
+    if matches!(caso.grupo.as_str(), "canonical" | "digest") {
+        return ejecutar_compile(caso, &correr_args);
+    }
 
-    // `validate` cubre `valid/` e `invalid/`; `diff` cubre `diff/`. Los grupos
-    // que quedan afirman operaciones —forma canónica, digest, emisión— que aún
-    // no existen, y enrutarlos aquí produciría ruido en vez de un marcador
+    // `validate` cubre `valid/` e `invalid/`; `diff` cubre `diff/`; `compile`
+    // cubre `canonical/` y `digest/`. Queda `emit/`, que afirma una operación
+    // que aún no existe: enrutarla aquí produciría ruido en vez de un marcador
     // honesto.
     if !matches!(caso.grupo.as_str(), "valid" | "invalid") {
         return Err("no implementado".into());
@@ -333,6 +335,166 @@ fn ejecutar_diff(caso: &Case, correr: Invocar<'_>) -> Result<(), String> {
         return Err(format!("salto `{bump}`, se esperaba `{bump_esperado}`"));
     }
     Ok(())
+}
+
+/// Un campo de la salida de `ore compile`.
+///
+/// La comparación es entre **dos salidas del mismo binario**, nunca contra un
+/// valor escrito a mano. Es lo que `conformance/README.md` §4.1 exige de estos
+/// grupos: nadie audita 400 bytes de JSON canónico ni calcula un SHA-256 a
+/// mano, así que lo que se afirma son **relaciones** —convergen, no convergen,
+/// mismo digest, distinto digest— y todas son verificables leyendo las entradas.
+fn campo_compile(salida: &str, clave: &str) -> Option<String> {
+    campo_json(salida, clave)
+}
+
+fn ejecutar_compile(caso: &Case, correr: Invocar<'_>) -> Result<(), String> {
+    let compilar = |dir: &str| -> Result<String, String> {
+        let (ok, texto) = correr("compile", &[dir])?;
+        if texto.contains("no implementado") {
+            return Err("no implementado".into());
+        }
+        if !ok {
+            return Err(format!(
+                "`{dir}` no compila: {}",
+                texto.lines().next().unwrap_or("")
+            ));
+        }
+        Ok(texto)
+    };
+
+    match &caso.expects {
+        // `canonical/` afirma sobre la forma canónica; `digest/` sobre el
+        // digest del bundle, que es el que incorpora el lock (§5.3).
+        Expects::Converge | Expects::Diverge => {
+            let (a, b) = (compilar("a")?, compilar("b")?);
+            let (ca, cb) = (seccion_canonica(&a), seccion_canonica(&b));
+            let convergen = ca == cb;
+            match (&caso.expects, convergen) {
+                (Expects::Converge, false) => Err("no convergen y debían".into()),
+                (Expects::Diverge, true) => Err("convergen y NO debían".into()),
+                _ => Ok(()),
+            }
+        }
+        Expects::SameDigest | Expects::DifferentDigest => {
+            let (a, b) = (compilar("a")?, compilar("b")?);
+            let (da, db) = (
+                campo_compile(&a, "bundle").unwrap_or_default(),
+                campo_compile(&b, "bundle").unwrap_or_default(),
+            );
+            if da.is_empty() {
+                return Err("sin digest de bundle en la salida".into());
+            }
+            match (&caso.expects, da == db) {
+                (Expects::SameDigest, false) => Err(format!("digests distintos: {da} / {db}")),
+                (Expects::DifferentDigest, true) => Err("mismo digest y NO debía".into()),
+                _ => Ok(()),
+            }
+        }
+        // Pureza: sin reloj, sin aleatoriedad, sin red. Tres ejecuciones.
+        Expects::Stable => {
+            let uno = compilar("input")?;
+            for _ in 0..2 {
+                if compilar("input")? != uno {
+                    return Err("dos compilaciones del mismo paquete difieren".into());
+                }
+            }
+            Ok(())
+        }
+        // N8: lo que el compilador calcula no se serializa en el paquete fuente.
+        Expects::Canonical => {
+            let salida = compilar("input")?;
+            let canonica = seccion_canonica(&salida);
+            let esperado = std::fs::read_to_string(caso.dir.join("expected.absent.json"))
+                .map_err(|_| "falta expected.absent.json".to_string())?;
+            for (puntero, prohibida) in claves_prohibidas(&esperado) {
+                let ambito = objeto_en(&canonica, &puntero);
+                if ambito.contains(&format!("\"{prohibida}\"")) {
+                    return Err(format!("`{puntero}` contiene `{prohibida}`"));
+                }
+            }
+            Ok(())
+        }
+        otro => Err(format!("`{otro:?}` no encaja en compile")),
+    }
+}
+
+/// El bloque `"canonical"` de la salida, sin los digests: comparar los digests
+/// sería comparar dos veces lo mismo, y ante una divergencia no diría **qué**
+/// divergió.
+fn seccion_canonica(salida: &str) -> String {
+    let Some(i) = salida.find("\"canonical\"") else {
+        return String::new();
+    };
+    let resto = &salida[i..];
+    let fin = resto
+        .find(
+            "
+  \"digest\"",
+        )
+        .unwrap_or(resto.len());
+    resto[..fin].to_string()
+}
+
+/// Los pares `(puntero, clave)` de `expected.absent.json`.
+///
+/// El puntero importa: `labels` en `baseSalary` es una etiqueta **declarada** y
+/// tiene que estar. En `totalCompensation`, que es derivada, la etiqueta la
+/// computa el compilador y no debe aparecer. La misma clave, prohibida en un
+/// sitio y obligatoria en otro — comprobarla en todo el documento confundiría
+/// las dos cosas.
+fn claves_prohibidas(esperado: &str) -> Vec<(String, String)> {
+    esperado
+        .split("{ \"at\"")
+        .skip(1)
+        .filter_map(|t| {
+            let at = entrecomillado(t)?;
+            let resto = &t[t.find("\"key\"")?..];
+            Some((at, entrecomillado(&resto["\"key\"".len()..])?))
+        })
+        .collect()
+}
+
+fn entrecomillado(t: &str) -> Option<String> {
+    let t = t
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
+    Some(t[..t.find('"')?].to_string())
+}
+
+/// El texto del objeto que hay en un puntero JSON, delimitado por llaves
+/// equilibradas. Suficiente para una afirmación de ausencia, y evita meter un
+/// analizador de JSON en el arnés.
+fn objeto_en(texto: &str, puntero: &str) -> String {
+    let mut ambito = texto;
+    for seg in puntero.split('/').filter(|s| !s.is_empty()) {
+        let Some(i) = ambito.find(&format!("\"{seg}\"")) else {
+            return String::new();
+        };
+        let resto = &ambito[i..];
+        let Some(abre) = resto.find('{') else {
+            return String::new();
+        };
+        let mut nivel = 0usize;
+        let mut fin = resto.len();
+        for (j, c) in resto[abre..].char_indices() {
+            match c {
+                '{' => nivel += 1,
+                '}' => {
+                    nivel -= 1;
+                    if nivel == 0 {
+                        fin = abre + j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        ambito = &resto[abre..fin];
+    }
+    ambito.to_string()
 }
 
 #[test]

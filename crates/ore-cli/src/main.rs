@@ -95,12 +95,14 @@ fn main() -> std::process::ExitCode {
     match &cli.command {
         Command::Validate { path } => return validar(path),
         Command::Diff { before, after } => return diferir(before, after),
+        Command::Compile { path } => return compilar(path),
         _ => {}
     }
 
     let (nombre, fase) = match cli.command {
-        Command::Validate { .. } | Command::Diff { .. } => unreachable!(),
-        Command::Compile { .. } => ("compile", "0"),
+        Command::Validate { .. } | Command::Diff { .. } | Command::Compile { .. } => {
+            unreachable!()
+        }
         Command::Init => ("init", "1"),
         Command::Source => ("source", "1"),
         Command::Discover => ("discover", "1"),
@@ -202,4 +204,70 @@ fn diferir(antes: &std::path::Path, despues: &std::path::Path) -> std::process::
     } else {
         std::process::ExitCode::FAILURE
     }
+}
+
+/// Carga un paquete y lo rechaza si no valida. Compilar algo que no valida
+/// produciría un digest de un artefacto que no existe.
+fn cargar_valido(
+    path: &std::path::Path,
+) -> Result<ore_core::link::Package, std::process::ExitCode> {
+    if !path.is_dir() {
+        eprintln!("error: `{}` no es un directorio de paquete", path.display());
+        return Err(std::process::ExitCode::from(66)); // EX_NOINPUT
+    }
+    let diags = ore_core::validate_package(path);
+    if let Some(d) = diags.first() {
+        eprintln!("{}", d.render(path));
+        return Err(std::process::ExitCode::from(65)); // EX_DATAERR
+    }
+    Ok(ore_core::validate::cargar_paquete(path).0)
+}
+
+/// `ore compile` — la forma canónica y los digests.
+///
+/// Puro por invariante III: sin red, sin credenciales, sin reloj, sin
+/// aleatoriedad. Ejecutarlo dos veces sobre el mismo árbol de ficheros produce
+/// byte a byte la misma salida, y eso es lo que `digest/deterministic-across-runs`
+/// certifica.
+fn compilar(path: &std::path::Path) -> std::process::ExitCode {
+    let pkg = match cargar_valido(path) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+
+    let canonica = ore_core::normalize::package(&pkg);
+    let salida = ore_core::json::Json::obj([
+        (
+            "canonical",
+            ore_core::json::Json::Obj(canonica.into_iter().collect()),
+        ),
+        (
+            "digest",
+            ore_core::json::Json::obj([
+                (
+                    "package",
+                    ore_core::json::Json::s(ore_core::digest::package(&pkg)),
+                ),
+                (
+                    "bundle",
+                    ore_core::json::Json::s(ore_core::digest::bundle(&pkg)),
+                ),
+                (
+                    "documents",
+                    ore_core::json::Json::Obj(
+                        ore_core::digest::documents(&pkg)
+                            .into_iter()
+                            .map(|(k, v)| (k, ore_core::json::Json::s(v)))
+                            .collect(),
+                    ),
+                ),
+            ]),
+        ),
+        (
+            "oosVersion",
+            ore_core::json::Json::s(ore_core::digest::OOS_VERSION),
+        ),
+    ]);
+    println!("{}", salida.pretty());
+    std::process::ExitCode::SUCCESS
 }

@@ -32,3 +32,18 @@ clap = { version = "4", default-features = false, features = [
 # Evaluado contra cinco criterios de la especificacion, cuatro candidatos.
 # Registro: docs/decisions/0001-parser-de-yaml.md
 saphyr-parser = "0.0.12"
+
+# SHA-256. El digest es EL artefacto normativo del proyecto, no un detalle de
+# implementacion: `sha256:<64 hex>` viaja en cada bundle, se firma y lo verifica
+# un tercero. Reimplementar a mano una primitiva criptografica para ahorrar seis
+# crates puras seria exactamente la clase de decision que este proyecto critica
+# en otros. `sha2` es la implementacion estandar del ecosistema, esta auditada y
+# no arrastra FFI: la razon que descarto a los validadores de JSON Schema y a
+# los colores de clap no aplica aqui.
+sha2 = "0.10"
+
+# NFC (N5). Normalizacion Unicode es tablas, no algoritmo: "compañia" escrita
+# con n-tilde precompuesta y con n + combinante son el MISMO texto, y si no
+# convergen el digest deja de ser una identidad y pasa a ser un accidente de
+# como escribio el autor. Implementarlo a mano seria portar el UCD.
+unicode-normalization = "0.1"
