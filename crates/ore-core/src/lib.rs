@@ -28,6 +28,7 @@
 
 pub mod canonical;
 pub mod cedar;
+pub mod cedar_schema;
 pub mod code;
 pub mod diag;
 pub mod diff;
@@ -37,6 +38,7 @@ pub mod flow;
 pub mod json;
 pub mod link;
 pub mod normalize;
+pub mod odcs;
 pub mod parse;
 pub mod types;
 pub mod validate;

@@ -38,10 +38,25 @@ impl Lattice {
 
 /// `oos.maturity` es estándar de la especificación y está siempre activo, lo
 /// declare el paquete o no.
+///
+/// El orden es ASCENDENTE POR RESTRICTIVIDAD, igual que todo retículo, y por
+/// eso `STABLE` es el fondo: es lo que puede servirse a cualquier consumidor.
+/// Tres partes normativas lo fijan en esa dirección y no en la contraria:
+///
+/// - `ore promote` es un **desclasificador** y BAJA `DRAFT` a `REVIEWED` a
+///   `STABLE` (`04-flow.md` §3, §5). Desclasificar es bajar; luego
+///   `STABLE ⊑ REVIEWED ⊑ DRAFT`.
+/// - La suite —normativa— razona en `diff/downgrade-maturity` que `DRAFT` es
+///   **invisible para los consumidores de producción**. Un `contextSurface`
+///   que admite `STABLE` y rechaza `DRAFT` solo es expresable con este orden.
+/// - Las autorizaciones de ejemplo de `04-flow.md` §4 solo son coherentes así:
+///   `cache: STABLE` admite únicamente lo estable, y `log: DEPRECATED` —el
+///   techo— lo admite todo. Con el orden inverso, `cache` aceptaría un
+///   borrador y `contextSurface` rechazaría lo estable.
 fn maturity() -> Lattice {
     Lattice {
         qname: "oos.maturity".into(),
-        levels: ["DRAFT", "REVIEWED", "STABLE", "DEPRECATED"]
+        levels: ["STABLE", "REVIEWED", "DRAFT", "DEPRECATED"]
             .iter()
             .map(|s| s.to_string())
             .collect(),

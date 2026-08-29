@@ -573,10 +573,16 @@ fn etiquetas_de(
         let a = format!("{reticulo}:{nivel_despues}");
 
         // OOS5008 · la madurez tiene su propio código porque su lectura es
-        // distinta: DEPRECATED está *arriba* del retículo, así que deprecar no
-        // es rebajar. Rebajar es retirar una promesa ya hecha.
+        // distinta. En el retículo, `STABLE` es el FONDO —lo que puede servirse
+        // a cualquiera— y `DEPRECATED` el techo, así que volver a `DRAFT` o a
+        // `REVIEWED` es SUBIR: restringir algo que ya se había prometido. Eso
+        // es lo que rompe.
+        //
+        // Deprecar también sube, y no es lo mismo: es una salida ordenada que
+        // anuncia el fin de la promesa en vez de retirarla sin aviso, así que
+        // se excluye explícitamente.
         if reticulo == "oos.maturity" {
-            if nivel_antes == "STABLE" && j < i {
+            if nivel_antes == "STABLE" && nivel_despues != "DEPRECATED" && j > i {
                 out.push(
                     Change::new(Code::Oos5008, Axis::Consumer)
                         .sujeto(sujeto)

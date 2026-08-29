@@ -316,8 +316,18 @@ fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in entradas.flatten() {
         let p = e.path();
         if p.is_dir() {
-            // `.ore/` es caché derivada y no forma parte del paquete.
-            if p.file_name().is_some_and(|n| n == ".ore") {
+            // Un directorio oculto no forma parte del paquete. La regla es
+            // general y no una lista: `.ore/` es caché derivada, `.github/` y
+            // `.gitlab/` son maquinaria del repositorio, `.git/` y `.vscode/`
+            // no son de nadie. Ninguno contiene documentos de la ontología, y
+            // enumerarlos uno a uno solo aplaza el siguiente.
+            //
+            // Sin esto, un repositorio no puede guardar su propio CI junto a
+            // la ontología que valida: `ore validate` entraría en
+            // `.github/workflows/*.yml` y exigiría `apiVersion` a un workflow.
+            if p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            {
                 continue;
             }
             recolectar(&p, out);

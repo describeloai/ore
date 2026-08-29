@@ -96,13 +96,15 @@ fn main() -> std::process::ExitCode {
         Command::Validate { path } => return validar(path),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
+        Command::Export { path, format } => return exportar(path, format),
         _ => {}
     }
 
     let (nombre, fase) = match cli.command {
-        Command::Validate { .. } | Command::Diff { .. } | Command::Compile { .. } => {
-            unreachable!()
-        }
+        Command::Validate { .. }
+        | Command::Diff { .. }
+        | Command::Compile { .. }
+        | Command::Export { .. } => unreachable!(),
         Command::Init => ("init", "1"),
         Command::Source => ("source", "1"),
         Command::Discover => ("discover", "1"),
@@ -112,7 +114,6 @@ fn main() -> std::process::ExitCode {
         Command::Test { .. } => ("test", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
         Command::Promote { .. } => ("promote", "posterior"),
-        Command::Export { .. } => ("export", "posterior"),
         Command::DriftDetect => ("drift-detect", "posterior"),
         Command::Serve { .. } => ("serve", "posterior"),
     };
@@ -268,6 +269,94 @@ fn compilar(path: &std::path::Path) -> std::process::ExitCode {
             ore_core::json::Json::s(ore_core::digest::OOS_VERSION),
         ),
     ]);
+    println!("{}", salida.pretty());
+    std::process::ExitCode::SUCCESS
+}
+
+/// `ore export` — traducción a un formato externo.
+///
+/// El argumento puede ser un **directorio de paquete OOS** o un **fichero de
+/// otro formato**, y `--format` dice a qué se traduce. Que ambas direcciones
+/// vivan en el mismo comando no es economía de subcomandos: es la afirmación de
+/// que la traducción es reversible, y ahí es donde un perfil deja de ser una
+/// limitación y pasa a ser interoperabilidad.
+///
+/// La ida y vuelta se compone desde fuera —`export a odcs`, luego `export ese
+/// odcs a oos`— y se compara. ORE no se examina a sí mismo.
+fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
+    use ore_core::json::Json;
+
+    // Un fichero suelto no es un paquete OOS: es un documento de otro formato
+    // que entra. Se lee sin validarlo — §4.3 prohíbe interpretar lo ajeno.
+    if path.is_file() {
+        let texto = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: no se pudo leer `{}`: {e}", path.display());
+                return std::process::ExitCode::from(66);
+            }
+        };
+        let arbol = match ore_core::parse::parse(&texto) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("error: `{}` no analiza: {}", path.display(), e.message);
+                return std::process::ExitCode::from(65);
+            }
+        };
+        let entrada = ore_core::normalize::foreign(&arbol);
+        let salida = match formato {
+            // Sin traducir: el documento tal cual, en forma canónica. Es la
+            // referencia contra la que se mide la fidelidad de la ida y vuelta.
+            "json" => entrada,
+            "oos" => Json::Obj(ore_core::odcs::import(&entrada).into_iter().collect()),
+            "odcs" => ore_core::odcs::reemit(&entrada),
+            otro => {
+                eprintln!("error: `--format {otro}` no se puede producir desde un fichero suelto");
+                return std::process::ExitCode::from(64); // EX_USAGE
+            }
+        };
+        println!("{}", salida.pretty());
+        return std::process::ExitCode::SUCCESS;
+    }
+
+    let pkg = match cargar_valido(path) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+
+    let salida = match formato {
+        "odcs" => ore_core::odcs::emit(&pkg),
+        "cedar" => ore_core::cedar_schema::emit(&pkg),
+        "oos" => Json::Obj(ore_core::normalize::package(&pkg).into_iter().collect()),
+        // Ossie no es anfitrión de `Entity`: un `Dataset` exige `source` y cada
+        // `Field` exige `expression`, y ninguno de los dos está en la entidad —
+        // están en el binding. Emitir sin él obligaría a INVENTAR los valores
+        // obligatorios, y produciría un documento que valida contra el esquema
+        // de Ossie y miente sobre dónde vive el dato.
+        "ossie" => {
+            let huerfanas: Vec<String> = ore_core::normalize::sin_binding(&pkg);
+            if !huerfanas.is_empty() {
+                eprintln!(
+                    "error: no se puede emitir a Ossie: {} sin binding",
+                    huerfanas.join(", ")
+                );
+                eprintln!();
+                eprintln!("  Un `Dataset` de Ossie exige `source`; cada `Field`, `expression`.");
+                eprintln!("  Ninguno de los dos está en la entidad: están en el binding.");
+                eprintln!("  Emitir de todos modos exigiría inventarlos, y el documento");
+                eprintln!("  resultante validaría contra Ossie y mentiría sobre dónde vive");
+                eprintln!("  el dato. Por eso `Entity` es gramática propia y no perfil.");
+                return std::process::ExitCode::from(65); // EX_DATAERR
+            }
+            eprintln!("ore export --format ossie: emisión no implementada todavía (fase 2)");
+            return std::process::ExitCode::from(70);
+        }
+        otro => {
+            eprintln!("error: formato `{otro}` desconocido");
+            eprintln!("  formatos: odcs, cedar, ossie, oos, json");
+            return std::process::ExitCode::from(64);
+        }
+    };
     println!("{}", salida.pretty());
     std::process::ExitCode::SUCCESS
 }

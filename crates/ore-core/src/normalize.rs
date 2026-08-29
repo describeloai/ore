@@ -185,6 +185,36 @@ pub fn document(d: &Loaded) -> Json {
     j
 }
 
+/// La forma canónica de un documento **ajeno**: sin N1 ni N2.
+///
+/// Un contrato ODCS no tiene espacio de nombres OOS que expandir ni defaults de
+/// OOS que materializar, y aplicárselos sería interpretarlo — que es justo lo
+/// que `01-package` §4.3 prohíbe. Lo que sí se aplica es lo que no depende del
+/// perfil: nulos fuera, NFC, comentarios y formato descartados.
+pub fn foreign(root: &Node) -> Json {
+    let ctx = Ctx { namespace: None };
+    valor(root, "", &ctx).unwrap_or(Json::Obj(BTreeMap::new()))
+}
+
+/// Entidades del paquete que ningún binding enlaza.
+pub fn sin_binding(pkg: &Package) -> Vec<String> {
+    let enlazadas: std::collections::BTreeSet<String> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == crate::document::Kind::Binding)
+        .filter_map(|b| {
+            let t = b.section("targetEntity")?.as_str()?;
+            Some(qualify(t, b.meta("namespace").and_then(|n| n.as_str())))
+        })
+        .collect();
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == crate::document::Kind::Entity)
+        .filter_map(|e| e.qname())
+        .filter(|qn| !enlazadas.contains(qn))
+        .collect()
+}
+
 /// ¿Es este documento el lock? Es un artefacto generado, no fuente: entra en el
 /// digest del **bundle**, no en el del paquete (§5.3).
 pub fn es_lock(d: &Loaded) -> bool {

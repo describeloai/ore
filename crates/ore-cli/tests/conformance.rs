@@ -225,11 +225,13 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
     if matches!(caso.grupo.as_str(), "canonical" | "digest") {
         return ejecutar_compile(caso, &correr_args);
     }
+    if caso.grupo == "emit" {
+        return ejecutar_emit(caso);
+    }
 
-    // `validate` cubre `valid/` e `invalid/`; `diff` cubre `diff/`; `compile`
-    // cubre `canonical/` y `digest/`. Queda `emit/`, que afirma una operación
-    // que aún no existe: enrutarla aquí produciría ruido en vez de un marcador
-    // honesto.
+    // Cada grupo por su operación: `validate` para `valid/` e `invalid/`,
+    // `diff` para `diff/`, `compile` para `canonical/` y `digest/`, `export`
+    // para `emit/`.
     if !matches!(caso.grupo.as_str(), "valid" | "invalid") {
         return Err("no implementado".into());
     }
@@ -495,6 +497,189 @@ fn objeto_en(texto: &str, puntero: &str) -> String {
         ambito = &resto[abre..fin];
     }
     ambito.to_string()
+}
+
+// ── emit/ ───────────────────────────────────────────────────────────────────
+
+/// Invoca `ore export` sobre una ruta absoluta.
+fn exportar(destino: &Path, formato: &str) -> Result<(bool, String), String> {
+    let salida = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("export")
+        .arg(destino)
+        .arg("--format")
+        .arg(formato)
+        .output()
+        .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
+    Ok((
+        salida.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&salida.stdout),
+            String::from_utf8_lossy(&salida.stderr)
+        ),
+    ))
+}
+
+/// Un contrato de otro formato dentro de `input/`, si lo hay. Distingue las dos
+/// direcciones de la ida y vuelta sin necesidad de declararlas en `case.yaml`:
+/// un fichero suelto es una entrada ajena; un directorio, un paquete OOS.
+fn contrato_ajeno(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir.join("input"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains(".odcs."))
+}
+
+fn ejecutar_emit(caso: &Case) -> Result<(), String> {
+    let entrada = caso.dir.join("input");
+
+    match &caso.expects {
+        // La emisión DEBE fallar. Que falle no basta: tiene que fallar por lo
+        // que el caso dice, y por eso se comprueba el motivo y no solo el
+        // código de salida.
+        Expects::EmitFails => {
+            let (ok, texto) = exportar(&entrada, "ossie")?;
+            if ok {
+                return Err("emitió, y debía fallar".into());
+            }
+            if !texto.contains("binding") {
+                return Err(format!(
+                    "falló por otra cosa: {}",
+                    texto.lines().next().unwrap_or("")
+                ));
+            }
+            Ok(())
+        }
+
+        Expects::Roundtrip => match contrato_ajeno(&caso.dir) {
+            // ODCS → OOS → ODCS. Se compara contra la forma canónica del
+            // fichero original SIN interpretar: si el perfil perdiera o
+            // renombrara algo, aparecería aquí.
+            Some(contrato) => {
+                let (ok, ida) = exportar(&contrato, "odcs")?;
+                if !ok {
+                    return Err(format!("no emite: {}", ida.lines().next().unwrap_or("")));
+                }
+                let (_, crudo) = exportar(&contrato, "json")?;
+                if ida.trim() == crudo.trim() {
+                    Ok(())
+                } else {
+                    Err("la ida y vuelta por ODCS pierde o añade algo".into())
+                }
+            }
+            // OOS → ODCS → OOS. El intermedio va a un fichero temporal: la
+            // composición es del arnés, no del binario. ORE no se examina.
+            None => {
+                let (ok, odcs) = exportar(&entrada, "odcs")?;
+                if !ok {
+                    return Err(format!("no emite: {}", odcs.lines().next().unwrap_or("")));
+                }
+                let tmp = std::env::temp_dir().join(format!("ore-rt-{}.odcs.json", caso.nombre));
+                std::fs::write(&tmp, odcs.as_bytes()).map_err(|e| e.to_string())?;
+                let (_, vuelta) = exportar(&tmp, "oos")?;
+                let (_, original) = exportar(&entrada, "oos")?;
+                let _ = std::fs::remove_file(&tmp);
+                if vuelta.trim() == original.trim() {
+                    Ok(())
+                } else {
+                    Err("la ida y vuelta por ODCS no es la identidad".into())
+                }
+            }
+        },
+
+        // Propiedades estructurales, no texto: dos implementaciones pueden
+        // formatear el esquema distinto y ser ambas correctas.
+        Expects::Structure => {
+            let (ok, esquema) = exportar(&entrada, "cedar")?;
+            if !ok {
+                return Err(format!(
+                    "no emite: {}",
+                    esquema.lines().next().unwrap_or("")
+                ));
+            }
+            let esperado = std::fs::read_to_string(caso.dir.join("expected.structure.json"))
+                .map_err(|_| "falta expected.structure.json".to_string())?;
+            comprobar_estructura(&esquema, &esperado)
+        }
+
+        otro => Err(format!("`{otro:?}` no encaja en emit")),
+    }
+}
+
+/// Las afirmaciones de `expected.structure.json`, comprobadas contra el esquema.
+fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
+    let (debe, no_debe) = esperado
+        .split_once("\"mustNotContain\"")
+        .unwrap_or((esperado, ""));
+
+    for item in debe.split('{').skip(1) {
+        let bloque = &item[..item.find('}').unwrap_or(item.len())];
+        // `{ "entity": "X", "in": [...] }` — el tipo existe y, si se declaran
+        // padres, los tiene.
+        if let Some(tipo) = campo_json(bloque, "entity") {
+            let ambito = objeto_en(esquema, &format!("/entityTypes/{tipo}"));
+            if ambito.is_empty() {
+                return Err(format!("falta el tipo `{tipo}`"));
+            }
+            for padre in lista_json(bloque, "in") {
+                // `EntityType` no es un tipo: dice «algún tipo de entidad».
+                let presente = if padre == "EntityType" {
+                    ambito.matches('"').count() > 4
+                } else {
+                    ambito.contains(&format!("\"{padre}\""))
+                };
+                if !presente {
+                    return Err(format!("`{tipo}` no es miembro de `{padre}`"));
+                }
+            }
+        }
+        for m in lista_json(bloque, "members") {
+            if !esquema.contains(&format!("\"{m}\"")) {
+                return Err(format!("falta la etiqueta `{m}`"));
+            }
+        }
+        for a in lista_json(bloque, "actions") {
+            if objeto_en(esquema, &format!("/actions/{a}")).is_empty() {
+                return Err(format!("falta la acción `{a}`"));
+            }
+        }
+    }
+
+    for item in no_debe.split('{').skip(1) {
+        let bloque = &item[..item.find('}').unwrap_or(item.len())];
+        if let Some(tipo) = campo_json(bloque, "entity")
+            && esquema.contains(&format!("\"{tipo}\""))
+        {
+            return Err(format!(
+                "`{tipo}` no está declarado y aparece en el esquema"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Los elementos de un array de cadenas, por su clave.
+fn lista_json(texto: &str, clave: &str) -> Vec<String> {
+    let marca = format!("\"{clave}\"");
+    let Some(i) = texto.find(&marca) else {
+        return Vec::new();
+    };
+    let resto = &texto[i + marca.len()..];
+    let Some(abre) = resto.find('[') else {
+        return Vec::new();
+    };
+    let cierra = resto.find(']').unwrap_or(resto.len());
+    if cierra < abre {
+        return Vec::new();
+    }
+    resto[abre + 1..cierra]
+        .split(',')
+        .filter_map(|t| {
+            let t = t.trim().strip_prefix('"')?;
+            Some(t[..t.find('"')?].to_string())
+        })
+        .collect()
 }
 
 #[test]
