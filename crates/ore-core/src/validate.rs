@@ -236,10 +236,19 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !diags.is_empty() {
         return diags;
     }
-    crate::link::link(&crate::link::Package {
+    let pkg = crate::link::Package {
         root: root.to_path_buf(),
         docs: cargados,
-    })
+    };
+
+    // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
+    // que no resuelve. Es la misma disciplina de fases que impide enlazar un
+    // paquete que no analiza.
+    let refs = crate::link::link(&pkg);
+    if !refs.is_empty() {
+        return refs;
+    }
+    crate::types::check(&pkg)
 }
 
 /// Reanaliza un documento ya validado para la fase de enlazado. `ontology.lock`

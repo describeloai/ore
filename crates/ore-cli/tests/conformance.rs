@@ -76,8 +76,9 @@ impl Expects {
 /// destaque.
 const IMPLEMENTADAS: &[&str] = &[
     "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005", "OOS2002", "OOS2003", "OOS2004",
-    "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009", "OOS2010", "OOS2011",
-    "OOS2012",
+    "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009", "OOS2010", "OOS2011", "OOS2012",
+    "OOS3001", "OOS3002", "OOS3003", "OOS3004",
+    "OOS3005",
     // OOS2013 exige regenerar el esquema Cedar y compararlo: es fase 2.
 ];
 

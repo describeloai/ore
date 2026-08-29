@@ -26,7 +26,7 @@ pub struct Loaded {
 impl Loaded {
     /// Las secciones de `OntologyConfig` cuelgan de la raíz; las de los demás,
     /// de `spec`.
-    fn section(&self, key: &str) -> Option<&Node> {
+    pub fn section(&self, key: &str) -> Option<&Node> {
         if self.kind.sections_at_root() {
             self.root.get(key).map(|(_, v)| v)
         } else {
@@ -37,7 +37,7 @@ impl Loaded {
         }
     }
 
-    fn meta(&self, key: &str) -> Option<&Node> {
+    pub fn meta(&self, key: &str) -> Option<&Node> {
         self.root
             .get("metadata")
             .and_then(|(_, m)| m.get(key))
@@ -46,7 +46,7 @@ impl Loaded {
 
     /// `<namespace>.<name>`, o solo `<name>` si el documento no lleva espacio de
     /// nombres.
-    fn qname(&self) -> Option<String> {
+    pub fn qname(&self) -> Option<String> {
         let name = self.meta("name")?.as_str()?;
         Some(match self.meta("namespace").and_then(|n| n.as_str()) {
             Some(ns) => format!("{ns}.{name}"),
@@ -66,7 +66,12 @@ impl Package {
         self.docs.iter().filter(move |d| d.kind == kind)
     }
 
-    fn entity(&self, qname: &str) -> Option<&Loaded> {
+    /// Todas las entidades del paquete.
+    pub fn entities(&self) -> impl Iterator<Item = &Loaded> {
+        self.of(Kind::Entity)
+    }
+
+    pub fn entity(&self, qname: &str) -> Option<&Loaded> {
         self.of(Kind::Entity)
             .find(|d| d.qname().as_deref() == Some(qname))
     }
@@ -438,6 +443,34 @@ fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 let Some(p) = r.as_str() else { continue };
                 if !props.contains(p) {
                     out.push(referencia_rota(&e.path, r, &format!("{qn}.{p}"), campo));
+                }
+            }
+        }
+
+        // `derivedFrom` referencia propiedades por nombre cualificado. Resolverlas
+        // aquí es prerrequisito de OOS3004: no se comprueba la unidad de algo que
+        // no existe.
+        if let Some(ps) = e.section("properties") {
+            for (_, pv) in ps.entries() {
+                let Some((_, from)) = pv.get("derivedFrom") else {
+                    continue;
+                };
+                for r in from.items() {
+                    let Some(q) = r.as_str() else { continue };
+                    let Some((ent, prop)) = q.rsplit_once('.') else {
+                        out.push(referencia_rota(&e.path, r, q, "derivedFrom"));
+                        continue;
+                    };
+                    let existe = if ent == qn {
+                        props.contains(prop)
+                    } else {
+                        pkg.entity(ent)
+                            .map(|o| properties(o).contains(prop))
+                            .unwrap_or(false)
+                    };
+                    if !existe {
+                        out.push(referencia_rota(&e.path, r, q, "derivedFrom"));
+                    }
                 }
             }
         }
