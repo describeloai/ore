@@ -153,6 +153,9 @@ codes! {
     Oos7006 = "OOS7006", Effect, "efecto sobre una propiedad derivedFrom";
     Oos7007 = "OOS7007", Effect, "join declarado incoherente con el axis del retículo";
     Oos7008 = "OOS7008", Effect, "efectos de una función sobre más de una fuente física";
+    Oos7009 = "OOS7009", Effect, "estrategia probabilística sin conducto declarado";
+    Oos7010 = "OOS7010", Effect, "confidence declarada en una estrategia determinista";
+    Oos7011 = "OOS7011", Effect, "integridad por encima del techo de la estrategia";
 }
 
 #[cfg(test)]
@@ -175,7 +178,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            8
+            11
         );
     }
 
