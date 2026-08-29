@@ -138,6 +138,12 @@ fn buscar(dir: &Path, encontrados: &mut Vec<PathBuf>) {
     for e in entradas.flatten() {
         let p = e.path();
         if p.is_dir() {
+            // El borrador de v1alpha2 tiene su propio arbol y su propio
+            // marcador. Mezclarlos no daria un numero falso: daria un numero
+            // que ya no se sabe que mide.
+            if p.file_name().is_some_and(|n| n == "v1alpha2") {
+                continue;
+            }
             buscar(&p, encontrados);
         } else if p.file_name().is_some_and(|n| n == "case.yaml") {
             encontrados.push(p);
@@ -242,6 +248,13 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
 
     match &caso.expects {
         Expects::Error(esperado) => {
+            // Antes de mirar nada: un caso que espera un codigo de una familia
+            // sin implementar esta pendiente, y da igual con que fallara. Sin
+            // esto, un caso de v1alpha2 contaria como regresion por fallar con
+            // OOS1002 — que es lo correcto hoy y no dice nada del caso.
+            if !implementada(esperado) {
+                return Err("no implementado".into());
+            }
             let (ok, texto) = correr("validate", "input")?;
             if texto.contains("no implementado") {
                 return Err("no implementado".into());
@@ -261,7 +274,10 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
         }
         Expects::Accept => {
             let (ok, texto) = correr("validate", "input")?;
-            if texto.contains("no implementado") {
+            // Una apiVersion que esta implementacion no entiende todavia. Se
+            // limpia sola: el dia que ORE la soporte, el caso se mide de
+            // verdad sin tocar el arnes.
+            if texto.contains("no implementado") || texto.contains("oos.dev/v1alpha2") {
                 return Err("no implementado".into());
             }
             if ok {
@@ -748,6 +764,54 @@ fn suite_de_conformidad() {
         }
         assert!(regresiones.is_empty(), "{} regresiones", regresiones.len());
     }
+}
+
+/// El marcador del borrador de v1alpha2, contado aparte.
+///
+/// Arranca en 0 y ese es el punto de partida, igual que `73` arrancó en 0. Lo
+/// que este test protege mientras tanto es que **no haya regresiones**: un caso
+/// del borrador que falle por algo que no sea «sin implementar» es un fallo real
+/// aunque la especificación no sea normativa todavía.
+#[test]
+fn borrador_de_v1alpha2() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/oos/conformance/v1alpha2")
+        .canonicalize()
+        .expect("submódulo sin inicializar");
+
+    let casos = descubrir(&raiz);
+    assert!(!casos.is_empty(), "el borrador está vacío");
+
+    let mut verdes = 0usize;
+    let mut regresiones: Vec<(String, String, String)> = Vec::new();
+    for c in &casos {
+        match ejecutar(c) {
+            Ok(()) => verdes += 1,
+            Err(m) if m == "no implementado" => {}
+            Err(m) => regresiones.push((c.grupo.clone(), c.nombre.clone(), m)),
+        }
+    }
+
+    let total = casos.len();
+    let barra = "█".repeat(verdes * 20 / total) + &"░".repeat(20 - verdes * 20 / total);
+    println!();
+    println!("  ┌─────────────────────────────────────────────┐");
+    println!("  │  BORRADOR · OOS v1alpha2 · efectos          │");
+    println!("  └─────────────────────────────────────────────┘");
+    println!();
+    println!("    OOS7xxx     {barra}  {verdes:>2} / {total:<2}");
+    println!();
+    println!("    No normativo. `spec/v1alpha1/` sigue mandando.");
+    println!();
+
+    if !regresiones.is_empty() {
+        println!("    \x1b[31mRegresiones:\x1b[0m");
+        for (g, n, m) in &regresiones {
+            println!("      {g}/{n}: {m}");
+        }
+        println!();
+    }
+    assert!(regresiones.is_empty(), "{} regresiones", regresiones.len());
 }
 
 /// La suite del submódulo debe contener exactamente lo que la especificación
