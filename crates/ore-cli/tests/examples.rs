@@ -1,6 +1,19 @@
 //! Las ontologías de referencia de `vendor/oos/examples/` validan sin un solo
 //! diagnóstico.
 //!
+//! # La regla
+//!
+//! **Todo lo que entra en `examples/` valida.** No hay excepciones, listas de
+//! exclusión ni ejemplos «casi». Un directorio nuevo bajo `examples/` entra en
+//! esta comprobación por existir, y si no valida, este test se pone rojo.
+//!
+//! El corolario importa tanto como la regla: una ontología escrita contra un
+//! lenguaje que la especificación **no** define —construcciones aplazadas,
+//! vocabulario anterior a que los perfiles se fijaran— no se arregla ni se
+//! exceptúa. **No va en `examples/`.** Su sitio es `docs/vision/`, que es no
+//! normativo y que este test no recorre, y allí dice de sí misma que no valida.
+//! `docs/vision/acme-global` es exactamente ese caso.
+//!
 //! # Por qué existe este test
 //!
 //! Un ejemplo es documentación ejecutable, y la documentación que nadie ejecuta
