@@ -92,12 +92,14 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    if let Command::Validate { path } = &cli.command {
-        return validar(path);
+    match &cli.command {
+        Command::Validate { path } => return validar(path),
+        Command::Diff { before, after } => return diferir(before, after),
+        _ => {}
     }
 
     let (nombre, fase) = match cli.command {
-        Command::Validate { .. } => unreachable!(),
+        Command::Validate { .. } | Command::Diff { .. } => unreachable!(),
         Command::Compile { .. } => ("compile", "0"),
         Command::Init => ("init", "1"),
         Command::Source => ("source", "1"),
@@ -106,7 +108,6 @@ fn main() -> std::process::ExitCode {
         Command::Dev { .. } => ("dev", "3"),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
-        Command::Diff { .. } => ("diff", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
         Command::Promote { .. } => ("promote", "posterior"),
         Command::Export { .. } => ("export", "posterior"),
@@ -158,4 +159,47 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
     let n = diags.len();
     eprintln!("{n} error{}", if n == 1 { "" } else { "es" });
     std::process::ExitCode::FAILURE
+}
+
+/// `ore diff` — la familia `OOS5xxx`.
+///
+/// Igual de hermético que `validate`: compara dos árboles de ficheros. Que el
+/// carácter rompedor de un cambio **se compute** en lugar de afirmarse es
+/// exactamente lo que hace que la versión sea una comprobación y no una
+/// promesa.
+///
+/// El código de salida distingue las dos cosas que a un CI le importan por
+/// separado: `0` compatible, `1` hay cambios rompedores.
+fn diferir(antes: &std::path::Path, despues: &std::path::Path) -> std::process::ExitCode {
+    for p in [antes, despues] {
+        if !p.is_dir() {
+            eprintln!("error: `{}` no es un directorio de paquete", p.display());
+            return std::process::ExitCode::from(66); // EX_NOINPUT
+        }
+    }
+
+    // Un paquete que no valida no se puede comparar: la diferencia entre dos
+    // formas mal construidas no significa nada.
+    for p in [antes, despues] {
+        let (_, diags) = ore_core::validate::cargar_paquete(p);
+        if let Some(d) = diags.first() {
+            eprintln!("{}", d.render(p));
+            eprintln!(
+                "error: `{}` no analiza; no hay nada que comparar",
+                p.display()
+            );
+            return std::process::ExitCode::from(65); // EX_DATAERR
+        }
+    }
+
+    let (a, _) = ore_core::validate::cargar_paquete(antes);
+    let (b, _) = ore_core::validate::cargar_paquete(despues);
+    let informe = ore_core::diff::diff(&a, &b);
+    println!("{}", informe.json().pretty());
+
+    if informe.changes.is_empty() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    }
 }

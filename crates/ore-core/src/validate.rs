@@ -194,6 +194,34 @@ fn check_keys(
 /// correr — resolver referencias sobre un árbol que no se pudo construir
 /// produciría cascadas de errores derivados en lugar de la causa.
 pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
+    let (pkg, diags) = cargar_paquete(root);
+    if !diags.is_empty() {
+        return diags;
+    }
+
+    // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
+    // que no resuelve. Es la misma disciplina de fases que impide enlazar un
+    // paquete que no analiza.
+    let refs = crate::link::link(&pkg);
+    if !refs.is_empty() {
+        return refs;
+    }
+    // Tipos antes que flujo: la propagación transporta etiquetas por el mismo
+    // grafo de derivación que los tipos acaban de validar.
+    let tipos = crate::types::check(&pkg);
+    if !tipos.is_empty() {
+        return tipos;
+    }
+    crate::flow::check(&pkg)
+}
+
+/// Lee un directorio y construye el paquete, con lo que falló al hacerlo.
+///
+/// Se separa de `validate_package` porque `ore diff` necesita **dos** paquetes
+/// y no le interesan sus diagnósticos individuales: compara sus formas. Que
+/// cargar y validar sean lo mismo era una coincidencia mientras solo existía
+/// una operación.
+pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
     let mut ficheros = Vec::new();
     recolectar(root, &mut ficheros);
     ficheros.sort();
@@ -241,29 +269,12 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
         diags.extend(d);
     }
 
-    if !diags.is_empty() {
-        return diags;
-    }
     let pkg = crate::link::Package {
         root: root.to_path_buf(),
         docs: cargados,
         cedar,
     };
-
-    // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
-    // que no resuelve. Es la misma disciplina de fases que impide enlazar un
-    // paquete que no analiza.
-    let refs = crate::link::link(&pkg);
-    if !refs.is_empty() {
-        return refs;
-    }
-    // Tipos antes que flujo: la propagación transporta etiquetas por el mismo
-    // grafo de derivación que los tipos acaban de validar.
-    let tipos = crate::types::check(&pkg);
-    if !tipos.is_empty() {
-        return tipos;
-    }
-    crate::flow::check(&pkg)
+    (pkg, diags)
 }
 
 /// Reanaliza un documento ya validado para la fase de enlazado. `ontology.lock`

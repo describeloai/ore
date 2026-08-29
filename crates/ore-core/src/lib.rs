@@ -26,10 +26,13 @@
 //! Es lo que hace verdad la frase que vende el producto: *el paso que decide
 //! qué significan las cosas es el único que no puede filtrar nada.*
 
+pub mod cedar;
 pub mod code;
 pub mod diag;
+pub mod diff;
 pub mod document;
 pub mod flow;
+pub mod json;
 pub mod link;
 pub mod parse;
 pub mod types;
@@ -47,10 +50,4 @@ pub use validate::{validate_document, validate_package};
 //
 // ── Fase 2 ──────────────────────────────────────────────────────────────────
 //
-// pub mod lattice;    retículos y orden parcial
-// pub mod cedar;      proyección a esquema Cedar
-//
-// ── Fase posterior ──────────────────────────────────────────────────────────
-//
-// pub mod diff;       taxonomía de cambio rompedor → OOS5xxx
-// pub mod emit;       ODCS · Ossie · Cedar
+// pub mod emit;       ODCS · Cedar

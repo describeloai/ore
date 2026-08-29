@@ -1,0 +1,299 @@
+//! Lectura estructural de políticas Cedar.
+//!
+//! # Qué es y qué no es
+//!
+//! **No es un intérprete de Cedar, y no debe serlo.** Cedar tiene su propio
+//! motor, su propia semántica de autorización y su propia implementación de
+//! referencia; reimplementarla sería exactamente el error que OOS evita al no
+//! definir un lenguaje de políticas propio.
+//!
+//! Lo que hace falta aquí es más pequeño y muy distinto: comparar **dos
+//! versiones del mismo conjunto de políticas** para decir si la segunda concede
+//! más que la primera. Eso no exige evaluar nada — exige leer la forma: qué
+//! políticas hay, con qué efecto, con qué condiciones y con qué obligaciones.
+//!
+//! La distinción marca el límite: si algún día `ore` necesitara *decidir* una
+//! autorización, la respuesta sería enlazar `cedar-policy`, no ampliar este
+//! fichero.
+//!
+//! Registro: `docs/decisions/0003-lectura-estructural-de-cedar.md`
+
+use std::collections::BTreeSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    Permit,
+    Forbid,
+}
+
+#[derive(Debug, Clone)]
+pub struct Policy {
+    /// De `@id("…")`. Es la identidad de la política a través de versiones: sin
+    /// ella, mover una política de línea parecería borrarla y crear otra.
+    pub id: String,
+    pub effect: Effect,
+    /// De `@obligation("…")`, en orden de aparición.
+    pub obligations: Vec<String>,
+    /// Las conjunciones de `when { … }`, normalizadas en espacios. Quitar una
+    /// es ampliar el acceso.
+    pub conditions: Vec<String>,
+    /// Finalidades admitidas, leídas de `context.purpose`.
+    pub purposes: BTreeSet<String>,
+}
+
+impl Policy {
+    /// El umbral de `aggregate:minGroupSize=N`, si lo declara.
+    pub fn min_group_size(&self) -> Option<u32> {
+        self.obligations.iter().find_map(|o| {
+            o.strip_prefix("aggregate:")?
+                .split_once('=')
+                .filter(|(k, _)| k.trim() == "minGroupSize")
+                .and_then(|(_, v)| v.trim().parse().ok())
+        })
+    }
+
+    /// Desclasificadores declarados: el nombre, sin sus parámetros.
+    pub fn declassifiers(&self) -> BTreeSet<String> {
+        self.obligations
+            .iter()
+            .map(|o| o.split(':').next().unwrap_or(o).trim().to_string())
+            .collect()
+    }
+}
+
+/// Trocea el fichero en enunciados terminados en `;` a nivel superior.
+///
+/// A nivel superior de verdad: un `;` dentro de `{ … }`, `( … )`, de una cadena
+/// o de un comentario no termina nada.
+fn statements(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut actual = String::new();
+    let mut profundidad = 0usize;
+    let mut en_cadena = false;
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if en_cadena {
+            actual.push(c);
+            match c {
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        actual.push(n);
+                    }
+                }
+                '"' => en_cadena = false,
+                _ => {}
+            }
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'/') {
+            for n in chars.by_ref() {
+                if n == '\n' {
+                    break;
+                }
+            }
+            actual.push('\n');
+            continue;
+        }
+        match c {
+            '"' => en_cadena = true,
+            '{' | '(' | '[' => profundidad += 1,
+            '}' | ')' | ']' => profundidad = profundidad.saturating_sub(1),
+            ';' if profundidad == 0 => {
+                out.push(std::mem::take(&mut actual));
+                continue;
+            }
+            _ => {}
+        }
+        actual.push(c);
+    }
+    if !actual.trim().is_empty() {
+        out.push(actual);
+    }
+    out
+}
+
+/// El argumento de `@nombre("…")`, todas las apariciones.
+fn annotations(s: &str, nombre: &str) -> Vec<String> {
+    let marca = format!("@{nombre}(\"");
+    let mut out = Vec::new();
+    let mut resto = s;
+    while let Some(i) = resto.find(&marca) {
+        let tras = &resto[i + marca.len()..];
+        match tras.find('"') {
+            Some(j) => {
+                out.push(tras[..j].to_string());
+                resto = &tras[j..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Divide por `&&` a nivel superior y normaliza espacios.
+fn conjunciones(cuerpo: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut actual = String::new();
+    let mut profundidad = 0usize;
+    let mut en_cadena = false;
+    let cs: Vec<char> = cuerpo.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        if en_cadena {
+            actual.push(c);
+            if c == '"' {
+                en_cadena = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => en_cadena = true,
+            '{' | '(' | '[' => profundidad += 1,
+            '}' | ')' | ']' => profundidad = profundidad.saturating_sub(1),
+            '&' if profundidad == 0 && cs.get(i + 1) == Some(&'&') => {
+                out.push(normalizar(&actual));
+                actual.clear();
+                i += 2;
+                continue;
+            }
+            _ => {}
+        }
+        actual.push(c);
+        i += 1;
+    }
+    if !actual.trim().is_empty() {
+        out.push(normalizar(&actual));
+    }
+    out
+}
+
+fn normalizar(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Las finalidades que admite una condición sobre `context.purpose`.
+///
+/// `== "x"` y `in ["a", "b"]` se leen igual: lo que importa es el conjunto
+/// resultante, no la forma sintáctica de escribirlo.
+fn purposes(conds: &[String]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for c in conds {
+        if !c.contains("context.purpose") {
+            continue;
+        }
+        let mut resto = c.as_str();
+        while let Some(i) = resto.find('"') {
+            let tras = &resto[i + 1..];
+            match tras.find('"') {
+                Some(j) => {
+                    out.insert(tras[..j].to_string());
+                    resto = &tras[j + 1..];
+                }
+                None => break,
+            }
+        }
+    }
+    out
+}
+
+pub fn read(text: &str) -> Vec<Policy> {
+    statements(text)
+        .iter()
+        .filter_map(|s| {
+            // El efecto es la primera palabra del enunciado tras las
+            // anotaciones. Sin efecto no hay política: es otra cosa.
+            let sin_anotaciones: String = s
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('@'))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let t = sin_anotaciones.trim_start();
+            let effect = if t.starts_with("permit") {
+                Effect::Permit
+            } else if t.starts_with("forbid") {
+                Effect::Forbid
+            } else {
+                return None;
+            };
+
+            let conditions = match (s.find("when"), s.rfind('}')) {
+                (Some(i), Some(j)) if j > i => {
+                    let cuerpo = &s[i + 4..j];
+                    conjunciones(cuerpo.trim_start().trim_start_matches('{'))
+                }
+                _ => Vec::new(),
+            };
+
+            Some(Policy {
+                id: annotations(s, "id").first().cloned().unwrap_or_default(),
+                effect,
+                obligations: annotations(s, "obligation"),
+                purposes: purposes(&conditions),
+                conditions,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const P: &str = r#"
+// Un comentario con un ; dentro no termina nada.
+@id("manager-reads-own-chain")
+@obligation("mask:LAST4")
+permit (
+    principal in Role::"people_manager",
+    action == Action::"read",
+    resource in Label::"gdpr.sensitivity:critical"
+) when {
+    context.purpose == "compensation_review" &&
+    resource.owner in principal.directReports
+};
+
+@id("forbid-agent")
+forbid ( principal in Role::"ai_agent", action, resource );
+"#;
+
+    #[test]
+    fn lee_identidad_efecto_y_condiciones() {
+        let ps = read(P);
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].id, "manager-reads-own-chain");
+        assert_eq!(ps[0].effect, Effect::Permit);
+        assert_eq!(ps[0].obligations, ["mask:LAST4"]);
+        assert_eq!(ps[0].conditions.len(), 2);
+        assert_eq!(
+            ps[0].conditions[1],
+            "resource.owner in principal.directReports"
+        );
+        assert_eq!(ps[1].effect, Effect::Forbid);
+        assert!(ps[1].conditions.is_empty());
+    }
+
+    #[test]
+    fn lee_las_finalidades_en_ambas_formas() {
+        let una = read(
+            r#"@id("a") permit (principal, action, resource) when { context.purpose == "x" };"#,
+        );
+        assert_eq!(una[0].purposes, ["x".to_string()].into());
+
+        let varias = read(
+            r#"@id("a") permit (principal, action, resource) when { context.purpose in ["x", "y"] };"#,
+        );
+        assert_eq!(varias[0].purposes.len(), 2);
+    }
+
+    #[test]
+    fn lee_el_umbral_de_aggregate() {
+        let ps = read(
+            r#"@id("a") @obligation("aggregate:minGroupSize=8") permit (principal, action, resource);"#,
+        );
+        assert_eq!(ps[0].min_group_size(), Some(8));
+        assert!(ps[0].declassifiers().contains("aggregate"));
+    }
+}

@@ -30,6 +30,10 @@ enum Expects {
     Accept,
     /// Debe rechazarse con este código exacto. Fallar antes con otro **no** vale.
     Error(String),
+    /// Un caso de `diff/`: la clasificación por eje debe coincidir con
+    /// `expected.diff.json`. Puede afirmar varios códigos a la vez, porque un
+    /// mismo cambio se evalúa contra los cuatro ejes por separado.
+    Diff(Vec<String>),
     /// Dos entradas deben producir la misma forma canónica.
     Converge,
     /// Dos entradas **no** deben converger. Vale tanto como lo anterior.
@@ -64,6 +68,9 @@ impl Expects {
             "emit-fails" => Self::EmitFails,
             "structure" => Self::Structure,
             // Un caso de diff puede esperar varios códigos: "OOS5006, OOS5018".
+            otro if otro.starts_with("OOS") && otro.contains(',') => {
+                Self::Diff(otro.split(',').map(|c| c.trim().to_string()).collect())
+            }
             otro if otro.starts_with("OOS") => Self::Error(otro.to_string()),
             otro => panic!("`expects: {otro}` desconocido en {dir}"),
         }
@@ -75,11 +82,19 @@ impl Expects {
 /// lo que permite que el marcador solo suba y que una regresión de verdad
 /// destaque.
 const IMPLEMENTADAS: &[&str] = &[
-    "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005", "OOS2002", "OOS2003", "OOS2004",
-    "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009", "OOS2010", "OOS2011", "OOS2012",
-    "OOS3001", "OOS3002", "OOS3003", "OOS3004",
-    "OOS3005",
-    // OOS2013 exige regenerar el esquema Cedar y compararlo: es fase 2.
+    // OOS1xxx · sintaxis y esquema
+    "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005",
+    // OOS2xxx · referencias e integridad. Falta OOS2013: exige regenerar el
+    // esquema Cedar y compararlo, y eso es fase 2.
+    "OOS2002", "OOS2003", "OOS2004", "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009",
+    "OOS2010", "OOS2011", "OOS2012", // OOS3xxx · sistema de tipos
+    "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
+    // OOS4xxx · gobernanza y flujo
+    "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",
+    "OOS4014", // OOS5xxx · compatibilidad
+    "OOS5001", "OOS5002", "OOS5003", "OOS5006", "OOS5007", "OOS5008", "OOS5009", "OOS5010",
+    "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
+    "OOS5019", "OOS5020", "OOS5021", "OOS5022",
 ];
 
 fn implementada(codigo: &str) -> bool {
@@ -166,6 +181,20 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
 fn ejecutar(caso: &Case) -> Result<(), String> {
     let ore = env!("CARGO_BIN_EXE_ore");
 
+    let correr_args = |sub: &str, args: &[&str]| -> Result<(bool, String), String> {
+        let salida = Command::new(ore)
+            .arg(sub)
+            .args(args.iter().map(|d| caso.dir.join(d)))
+            .output()
+            .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
+        let texto = format!(
+            "{}{}",
+            String::from_utf8_lossy(&salida.stdout),
+            String::from_utf8_lossy(&salida.stderr)
+        );
+        Ok((salida.status.success(), texto))
+    };
+
     let correr = |sub: &str, dir: &str| -> Result<(bool, String), String> {
         let salida = Command::new(ore)
             .arg(sub)
@@ -189,9 +218,14 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
         Some(texto[i..j].to_string())
     }
 
-    // `validate` solo cubre `valid/` e `invalid/`. Los demás grupos afirman
-    // operaciones —diff, forma canónica, digest, emisión— que aún no existen,
-    // y enrutarlos aquí produciría ruido en vez de un marcador honesto.
+    if caso.grupo == "diff" {
+        return ejecutar_diff(caso, &correr_args);
+    }
+
+    // `validate` cubre `valid/` e `invalid/`; `diff` cubre `diff/`. Los grupos
+    // que quedan afirman operaciones —forma canónica, digest, emisión— que aún
+    // no existen, y enrutarlos aquí produciría ruido en vez de un marcador
+    // honesto.
     if !matches!(caso.grupo.as_str(), "valid" | "invalid") {
         return Err("no implementado".into());
     }
@@ -238,6 +272,65 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
             }
         }
     }
+}
+
+/// Los pares `(código, eje)` de un `changes: [...]`, y el salto exigido.
+///
+/// Lo normativo de un caso de `diff/` es la **clasificación**: qué código, en
+/// qué eje. `subject`, `from` y `to` son informativos —el README de la suite lo
+/// dice— así que compararlos convertiría una diferencia de redacción en un
+/// fallo de conformidad.
+fn clasificacion(texto: &str) -> (Vec<String>, String) {
+    let mut pares = Vec::new();
+    // Cada objeto de `changes` es un `{ … }` sin anidar dentro del array.
+    for trozo in texto.split('{').skip(1) {
+        let trozo = &trozo[..trozo.find('}').unwrap_or(trozo.len())];
+        if let (Some(c), Some(e)) = (campo_json(trozo, "code"), campo_json(trozo, "axis")) {
+            pares.push(format!("{c}/{e}"));
+        }
+    }
+    pares.sort();
+    (pares, campo_json(texto, "requiredBump").unwrap_or_default())
+}
+
+fn campo_json(texto: &str, clave: &str) -> Option<String> {
+    let marca = format!("\"{clave}\"");
+    let i = texto.find(&marca)? + marca.len();
+    let resto = texto[i..].trim_start().strip_prefix(':')?.trim_start();
+    let resto = resto.strip_prefix('"')?;
+    Some(resto[..resto.find('"')?].to_string())
+}
+
+/// Invocar el binario y quedarse con si salió bien y qué escribió.
+type Invocar<'a> = &'a dyn Fn(&str, &[&str]) -> Result<(bool, String), String>;
+
+fn ejecutar_diff(caso: &Case, correr: Invocar<'_>) -> Result<(), String> {
+    let esperado = std::fs::read_to_string(caso.dir.join("expected.diff.json"))
+        .map_err(|_| "falta expected.diff.json".to_string())?;
+    let (codigos_esperados, bump_esperado) = clasificacion(&esperado);
+
+    if codigos_esperados
+        .iter()
+        .any(|p| !implementada(p.split('/').next().unwrap_or("")))
+    {
+        return Err("no implementado".into());
+    }
+
+    let (_, salida) = correr("diff", &["before", "after"])?;
+    if salida.contains("no implementado") {
+        return Err("no implementado".into());
+    }
+    let (codigos, bump) = clasificacion(&salida);
+
+    if codigos != codigos_esperados {
+        return Err(format!(
+            "clasificación {codigos:?}, se esperaba {codigos_esperados:?}"
+        ));
+    }
+    if bump != bump_esperado {
+        return Err(format!("salto `{bump}`, se esperaba `{bump_esperado}`"));
+    }
+    Ok(())
 }
 
 #[test]

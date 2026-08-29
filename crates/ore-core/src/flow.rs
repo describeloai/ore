@@ -48,7 +48,7 @@ fn maturity() -> Lattice {
     }
 }
 
-fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
+pub fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
     let mut out = BTreeMap::new();
     let m = maturity();
     out.insert(m.qname.clone(), m);
