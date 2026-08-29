@@ -27,12 +27,17 @@
 //! qué significan las cosas es el único que no puede filtrar nada.*
 
 pub mod code;
+pub mod diag;
+pub mod document;
+pub mod parse;
+pub mod validate;
 
 pub use code::{Code, Family};
+pub use diag::{Diagnostic, Pos};
+pub use validate::{validate_document, validate_package};
 
 // ── Pendiente. Fase 0 ───────────────────────────────────────────────────────
 //
-// pub mod parse;      análisis de los siete documentos
 // pub mod normalize;  N1–N8 de 90-canonical-form
 // pub mod canonical;  serialización JCS (RFC 8785)
 // pub mod digest;     doc · paquete · bundle

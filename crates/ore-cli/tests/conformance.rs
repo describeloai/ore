@@ -70,6 +70,16 @@ impl Expects {
     }
 }
 
+/// Familias de código ya implementadas. Un caso que espera un código de una
+/// familia ausente de esta lista está *pendiente*, no *roto*: distinguirlo es
+/// lo que permite que el marcador solo suba y que una regresión de verdad
+/// destaque.
+const IMPLEMENTADAS: &[&str] = &["OOS1"];
+
+fn implementada(codigo: &str) -> bool {
+    IMPLEMENTADAS.iter().any(|f| codigo.starts_with(f))
+}
+
 struct Case {
     dir: PathBuf,
     grupo: String,
@@ -146,37 +156,82 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
     casos
 }
 
-/// Ejecuta un caso invocando el binario. Devuelve `Ok(())` si pasa.
-///
-/// Hoy ningún comando está implementado, así que todos devuelven el mismo
-/// fallo. La estructura ya es la definitiva: cuando `ore validate` exista,
-/// estos brazos empiezan a comparar de verdad.
+/// Ejecuta un caso invocando el binario. `Ok(())` si pasa.
 fn ejecutar(caso: &Case) -> Result<(), String> {
     let ore = env!("CARGO_BIN_EXE_ore");
 
-    let entrada = match caso.expects {
-        Expects::Converge | Expects::Diverge | Expects::SameDigest | Expects::DifferentDigest => {
-            caso.dir.join("a")
-        }
-        Expects::Error(_) if caso.grupo == "diff" => caso.dir.join("before"),
-        Expects::Accept if caso.grupo == "diff" => caso.dir.join("before"),
-        _ => caso.dir.join("input"),
+    let correr = |sub: &str, dir: &str| -> Result<(bool, String), String> {
+        let salida = Command::new(ore)
+            .arg(sub)
+            .arg(caso.dir.join(dir))
+            .output()
+            .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
+        let texto = format!(
+            "{}{}",
+            String::from_utf8_lossy(&salida.stdout),
+            String::from_utf8_lossy(&salida.stderr)
+        );
+        Ok((salida.status.success(), texto))
     };
 
-    let salida = Command::new(ore)
-        .arg("validate")
-        .arg(&entrada)
-        .output()
-        .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
+    /// El PRIMER código emitido. La suite exige que no se falle antes con uno
+    /// distinto del esperado (`conformance/README.md` §8), así que comparar el
+    /// primero es exactamente la regla de precedencia.
+    fn primer_codigo(texto: &str) -> Option<String> {
+        let i = texto.find("error[")? + 6;
+        let j = texto[i..].find(']')? + i;
+        Some(texto[i..j].to_string())
+    }
 
-    let stderr = String::from_utf8_lossy(&salida.stderr);
-    if stderr.contains("no implementado") {
+    // `validate` solo cubre `valid/` e `invalid/`. Los demás grupos afirman
+    // operaciones —diff, forma canónica, digest, emisión— que aún no existen,
+    // y enrutarlos aquí produciría ruido en vez de un marcador honesto.
+    if !matches!(caso.grupo.as_str(), "valid" | "invalid") {
         return Err("no implementado".into());
     }
-    Err(format!(
-        "comportamiento inesperado: {}",
-        stderr.lines().next().unwrap_or("")
-    ))
+
+    match &caso.expects {
+        Expects::Error(esperado) => {
+            let (ok, texto) = correr("validate", "input")?;
+            if texto.contains("no implementado") {
+                return Err("no implementado".into());
+            }
+            if ok {
+                return Err(if implementada(esperado) {
+                    format!("aceptado, pero debía fallar con {esperado}")
+                } else {
+                    "no implementado".into()
+                });
+            }
+            match primer_codigo(&texto) {
+                Some(c) if &c == esperado => Ok(()),
+                Some(c) => Err(format!("falló con {c}, se esperaba {esperado}")),
+                None => Err("falló sin emitir código".into()),
+            }
+        }
+        Expects::Accept => {
+            let (ok, texto) = correr("validate", "input")?;
+            if texto.contains("no implementado") {
+                return Err("no implementado".into());
+            }
+            if ok {
+                Ok(())
+            } else {
+                Err(format!(
+                    "rechazado con {}",
+                    primer_codigo(&texto).unwrap_or_default()
+                ))
+            }
+        }
+        _ => {
+            let (_, texto) = correr("validate", "input")?;
+            if texto.contains("no implementado") {
+                Err("no implementado".into())
+            } else {
+                Err("operación no implementada en el runner".into())
+            }
+        }
+    }
 }
 
 #[test]
@@ -228,14 +283,18 @@ fn suite_de_conformidad() {
         println!("    {pendientes} casos esperando implementación.");
         println!("    Fase 0 · `ore validate` + `ore compile` sobre los siete esquemas.");
         println!();
-        let inesperados: Vec<_> = fallos
+        let regresiones: Vec<_> = fallos
             .iter()
-            .filter(|(_, _, m)| m != "no implementado")
+            .filter(|(_, _, m)| !m.starts_with("no implementado") && !m.starts_with("operación no"))
             .collect();
-        assert!(
-            inesperados.is_empty(),
-            "fallos que no son «no implementado»: {inesperados:#?}"
-        );
+        if !regresiones.is_empty() {
+            println!("    [31mRegresiones — fallan por algo que NO es «sin implementar»:[0m");
+            for (g, n, m) in &regresiones {
+                println!("      {g}/{n}: {m}");
+            }
+            println!();
+        }
+        assert!(regresiones.is_empty(), "{} regresiones", regresiones.len());
     }
 }
 

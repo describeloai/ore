@@ -92,8 +92,12 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
+    if let Command::Validate { path } = &cli.command {
+        return validar(path);
+    }
+
     let (nombre, fase) = match cli.command {
-        Command::Validate { .. } => ("validate", "0"),
+        Command::Validate { .. } => unreachable!(),
         Command::Compile { .. } => ("compile", "0"),
         Command::Init => ("init", "1"),
         Command::Source => ("source", "1"),
@@ -116,4 +120,42 @@ fn main() -> std::process::ExitCode {
     eprintln!("  Estado actual:  cargo test -p ore-cli -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
+}
+
+/// `ore validate` — nivel L0. Hermético: no abre un socket ni lee una credencial.
+fn validar(path: &std::path::Path) -> std::process::ExitCode {
+    if !path.exists() {
+        eprintln!("error: no existe `{}`", path.display());
+        return std::process::ExitCode::from(66); // EX_NOINPUT
+    }
+
+    let diags = if path.is_dir() {
+        ore_core::validate_package(path)
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(t) => ore_core::validate_document(path, &t),
+            Err(e) => {
+                eprintln!("error: no se pudo leer `{}`: {e}", path.display());
+                return std::process::ExitCode::from(66);
+            }
+        }
+    };
+
+    if diags.is_empty() {
+        println!("ok · sin errores");
+        return std::process::ExitCode::SUCCESS;
+    }
+
+    let raiz = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    for d in &diags {
+        eprintln!("{}", d.render(raiz));
+        eprintln!();
+    }
+    let n = diags.len();
+    eprintln!("{n} error{}", if n == 1 { "" } else { "es" });
+    std::process::ExitCode::FAILURE
 }
