@@ -66,6 +66,12 @@ pub enum Family {
     Compatibility,
     /// Forma canónica.
     Canonical,
+    /// Efectos e integridad — el dual de `Flow`. **Borrador de v1alpha2.**
+    ///
+    /// `Flow` gobierna lo que se puede saber; esta familia, lo que se puede
+    /// causar. La simetría de los códigos es deliberada: `7001` frente a
+    /// `4001`, `7005` frente a `4011`, `7006` frente a `4008`.
+    Effect,
 }
 
 codes! {
@@ -132,16 +138,44 @@ codes! {
 
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
+
+    // ── OOS7xxx · efectos e integridad ──────────────────────────────────────
+    //
+    // Borrador de v1alpha2 (`spec/v1alpha2/01-efectos.md` §5). Registrados aquí
+    // antes de tener implementación porque el registro es lo que impide que dos
+    // familias se pisen un número, y porque la simetría con OOS4xxx solo se ve
+    // mirándolas juntas.
+    Oos7001 = "OOS7001", Effect, "violación de la regla de integridad por propagación";
+    Oos7002 = "OOS7002", Effect, "la función no alcanza la integridad que exige su destino";
+    Oos7003 = "OOS7003", Effect, "etiqueta de integridad fuera de todo retículo de eje integrity";
+    Oos7004 = "OOS7004", Effect, "endosante fuera del vocabulario cerrado";
+    Oos7005 = "OOS7005", Effect, "destino de un efecto sin integridad declarada";
+    Oos7006 = "OOS7006", Effect, "efecto sobre una propiedad derivedFrom";
+    Oos7007 = "OOS7007", Effect, "join declarado incoherente con el axis del retículo";
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// La cobertura declarada en `99-errors.md` §10: 52 códigos activos.
+    /// La cobertura declarada en `99-errors.md` §10 —52 códigos de v1alpha1—
+    /// más los siete del borrador de efectos de v1alpha2.
     #[test]
-    fn el_registro_tiene_52_codigos_activos() {
-        assert_eq!(Code::ALL.len(), 52);
+    fn el_registro_separa_v1alpha1_de_los_efectos() {
+        assert_eq!(
+            Code::ALL
+                .iter()
+                .filter(|c| c.family() != Family::Effect)
+                .count(),
+            52
+        );
+        assert_eq!(
+            Code::ALL
+                .iter()
+                .filter(|c| c.family() == Family::Effect)
+                .count(),
+            7
+        );
     }
 
     #[test]
