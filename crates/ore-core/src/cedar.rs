@@ -199,25 +199,57 @@ fn purposes(conds: &[String]) -> BTreeSet<String> {
     out
 }
 
+/// El efecto de un enunciado: la primera palabra tras sus anotaciones.
+///
+/// **Se salta las anotaciones contando paréntesis, no líneas.** Cedar no obliga
+/// a poner `@id(…)` en su propia línea, y una implementación que lo diera por
+/// hecho no leería mal la política: la haría **desaparecer**. Y desaparecer es
+/// el peor resultado posible aquí — un `forbid` que se reformatea en una línea
+/// se leería como un `forbid` eliminado (`OOS5014` espurio), y un `permit` al
+/// que se le relaja una condición no se leería en absoluto.
+///
+/// Ninguna de las dos cosas la detecta la suite de conformidad, porque sus
+/// políticas están todas escritas en varias líneas. La atrapó un test unitario.
+fn efecto(s: &str) -> Option<Effect> {
+    let mut resto = s.trim_start();
+    while let Some(tras_arroba) = resto.strip_prefix('@') {
+        let abre = tras_arroba.find('(')?;
+        let mut nivel = 0usize;
+        let mut en_cadena = false;
+        let mut fin = None;
+        let mut chars = tras_arroba[abre..].char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' if en_cadena => {
+                    chars.next();
+                }
+                '"' => en_cadena = !en_cadena,
+                '(' if !en_cadena => nivel += 1,
+                ')' if !en_cadena => {
+                    nivel -= 1;
+                    if nivel == 0 {
+                        fin = Some(abre + i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        resto = tras_arroba[fin?..].trim_start();
+    }
+    // Sin efecto no hay política: es otra cosa.
+    match resto {
+        _ if resto.starts_with("permit") => Some(Effect::Permit),
+        _ if resto.starts_with("forbid") => Some(Effect::Forbid),
+        _ => None,
+    }
+}
+
 pub fn read(text: &str) -> Vec<Policy> {
     statements(text)
         .iter()
         .filter_map(|s| {
-            // El efecto es la primera palabra del enunciado tras las
-            // anotaciones. Sin efecto no hay política: es otra cosa.
-            let sin_anotaciones: String = s
-                .lines()
-                .filter(|l| !l.trim_start().starts_with('@'))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let t = sin_anotaciones.trim_start();
-            let effect = if t.starts_with("permit") {
-                Effect::Permit
-            } else if t.starts_with("forbid") {
-                Effect::Forbid
-            } else {
-                return None;
-            };
+            let effect = efecto(s)?;
 
             let conditions = match (s.find("when"), s.rfind('}')) {
                 (Some(i), Some(j)) if j > i => {
@@ -286,6 +318,28 @@ forbid ( principal in Role::"ai_agent", action, resource );
             r#"@id("a") permit (principal, action, resource) when { context.purpose in ["x", "y"] };"#,
         );
         assert_eq!(varias[0].purposes.len(), 2);
+    }
+
+    /// Regresion: `@id(...)` en la misma linea que `permit`.
+    ///
+    /// La version anterior filtraba por lineas que empiezan por `@`, asi que
+    /// una politica escrita en una sola linea desaparecia entera. Para `diff`
+    /// eso no es leer mal: es leer que la politica no existe.
+    #[test]
+    fn una_politica_en_una_sola_linea_no_desaparece() {
+        let ps = read(r#"@id("a") @obligation("mask") forbid (principal, action, resource);"#);
+        assert_eq!(ps.len(), 1, "la politica desaparecio");
+        assert_eq!(ps[0].effect, Effect::Forbid);
+        assert_eq!(ps[0].id, "a");
+        assert_eq!(ps[0].obligations, ["mask"]);
+    }
+
+    /// Un enunciado que no es una politica sigue sin serlo, y una anotacion que
+    /// contenga la palabra `permit` no lo convierte en una.
+    #[test]
+    fn lo_que_no_es_politica_se_ignora() {
+        assert!(read(r#"entity Label;"#).is_empty());
+        assert!(read(r#"@doc("permit nothing") entity Role;"#).is_empty());
     }
 
     #[test]
