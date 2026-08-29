@@ -22,12 +22,13 @@ clap = { version = "4", default-features = false, features = [
     "std", "derive", "help", "usage", "error-context",
 ] }
 
-# Deliberadamente AUSENTE: el parser de YAML.
+# El parser de YAML, a nivel de EVENTOS y no de arbol.
 #
-# No es una dependencia cualquiera. La forma canónica exige que dos entradas
-# equivalentes produzcan bytes idénticos (OOS · 90-canonical-form), y eso
-# depende de cómo el parser resuelva tipos implícitos, anclas y alias.
-# `serde_yaml` está archivado; hay varios sucesores y la elección merece su
-# propia evaluación contra los casos de `conformance/canonical/`.
+# No queremos un deserializador: queremos un front-end de compilador. El trabajo
+# de serde es tirar la sintaxis, y nosotros necesitamos la sintaxis — el estilo
+# del escalar decide si OOS6003 se dispara, y la posicion decide si el error
+# sirve para algo.
 #
-# El runner de conformidad no lo necesita: `case.yaml` son cuatro claves planas.
+# Evaluado contra cinco criterios de la especificacion, cuatro candidatos.
+# Registro: docs/decisions/0001-parser-de-yaml.md
+saphyr-parser = "0.0.12"
