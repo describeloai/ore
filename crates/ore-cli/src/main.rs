@@ -68,7 +68,10 @@ enum Command {
     },
     /// Eleva el estado de madurez de una entidad.
     Promote { entity: String },
-    /// Emite a ODCS, Apache Ossie, OWL/RDF o esquema Cedar.
+    /// Emite a ODCS o a esquema Cedar (`cedar` en JSON, `cedarschema` nativo).
+    ///
+    /// `oos` y `json` dan la forma canónica, con y sin interpretar. Apache Ossie
+    /// está declarado y no implementado: falla explicando por qué exige binding.
     Export {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -120,8 +123,8 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  ORE arranca con 73 casos de conformidad en rojo, y ese es el plan.");
-    eprintln!("  Estado actual:  cargo test -p ore-cli -- --nocapture");
+    eprintln!("  Hoy existen: validate, compile, diff y export.");
+    eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
 }

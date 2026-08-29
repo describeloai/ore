@@ -198,6 +198,11 @@ debe ser adoptable sin ORE para que ORE valga algo.**
 
 ## Instalación
 
+> **Ninguno de estos canales existe todavía.** No hay tap, ni crate publicada, ni
+> imagen, ni instalador. Hoy ORE se construye desde el repositorio con
+> `cargo build`. Lo que sigue es la forma que tendrá la distribución, no una
+> instrucción que funcione.
+
 ```bash
 brew install oos-dev/tap/ore
 cargo install ore-cli
@@ -213,16 +218,34 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 
 ## Estado
 
-**Nada de lo anterior existe todavía.** Este repositorio arranca hoy.
+**La fase 0 está cerrada.** Los 73 casos de la suite de conformidad de OOS están
+en verde, y con ellos existen cuatro comandos: `validate`, `compile`, `diff` y
+`export`. Los otros diez que anuncia `ore --help` **no están implementados** y lo
+dicen al ejecutarse.
 
-| Fase | Qué | Criterio de éxito |
-|:---:|---|---|
-| **0** | esquemas, `ore validate`, `ore compile`, el runner de conformidad | compila el ejemplo de referencia y emite un digest estable |
-| **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas |
-| **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado |
-| **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** |
+| Fase | Qué | Criterio de éxito | |
+|:---:|---|---|:---:|
+| **0** | esquemas, `ore validate`, `ore compile`, el runner de conformidad | compila el ejemplo de referencia y emite un digest estable | ✅ |
+| **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | — |
+| **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado | ◐ |
+| **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** | — |
 
-Objetivo de la fase 0, medible desde el primer commit: **73 casos de conformidad rojos → verdes.**
+La fase 2 va a medias y conviene decir por dónde: **el criterio de éxito ya se
+cumple** —retículos, conductos, propagación y la regla de flujo son las nueve
+comprobaciones `OOS4xxx`, y `ore validate` falla con la cadena causal ante un
+dato clasificado que alcanza un conducto no autorizado. Lo que falta es Cedar
+**embebido**: hoy ORE *lee* las políticas para comparar versiones y *proyecta* el
+esquema, pero no evalúa una autorización. Eso exige enlazar `cedar-policy`, y es
+una decisión distinta de las que ya están tomadas
+([ADR 0003](docs/decisions/0003-lectura-estructural-de-cedar.md)).
+
+```
+canonical  9/9    diff  20/20   digest  6/6
+emit       5/5    invalid 32/32  valid    1/1
+                                 TOTAL  73/73
+```
+
+El marcador se reproduce con `cargo test -p ore-cli --test conformance -- --nocapture`.
 
 ### Frontera abierta
 

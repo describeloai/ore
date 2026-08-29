@@ -16,8 +16,13 @@
 //! # Qué mide
 //!
 //! Los 73 casos del submódulo `vendor/oos`, agrupados por la operación que
-//! afirman. Hoy están todos en rojo, y ese es el punto de partida: el objetivo
-//! de la fase 0 es un número que solo puede subir.
+//! afirman. Arrancaron todos en rojo y hoy están todos en verde; lo que este
+//! runner protege a partir de aquí es que ninguno vuelva.
+//!
+//! `IMPLEMENTADAS` deja de ser una lista que crece y pasa a ser un cierre: un
+//! caso que espera un código ausente de ella cuenta como *pendiente* en vez de
+//! *roto*. Con la suite entera en verde ya no hay pendientes, y esa distinción
+//! solo sirve ya para el día que `vendor/oos` traiga un caso nuevo.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
