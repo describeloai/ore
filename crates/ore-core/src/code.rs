@@ -152,6 +152,7 @@ codes! {
     Oos7005 = "OOS7005", Effect, "destino de un efecto sin integridad declarada";
     Oos7006 = "OOS7006", Effect, "efecto sobre una propiedad derivedFrom";
     Oos7007 = "OOS7007", Effect, "join declarado incoherente con el axis del retículo";
+    Oos7008 = "OOS7008", Effect, "efectos de una función sobre más de una fuente física";
 }
 
 #[cfg(test)]
@@ -174,7 +175,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            7
+            8
         );
     }
 
