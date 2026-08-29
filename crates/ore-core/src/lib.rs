@@ -26,6 +26,7 @@
 //! Es lo que hace verdad la frase que vende el producto: *el paso que decide
 //! qué significan las cosas es el único que no puede filtrar nada.*
 
+pub mod canonical;
 pub mod cedar;
 pub mod code;
 pub mod diag;
@@ -45,8 +46,7 @@ pub use validate::{validate_document, validate_package};
 // ── Pendiente. Fase 0 ───────────────────────────────────────────────────────
 //
 // pub mod normalize;  N1–N8 de 90-canonical-form
-// pub mod canonical;  serialización JCS (RFC 8785)
-// pub mod digest;     doc · paquete · bundle
+// pub mod digest;     JCS (RFC 8785) · doc · paquete · bundle
 //
 // ── Fase 2 ──────────────────────────────────────────────────────────────────
 //

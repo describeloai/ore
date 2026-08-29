@@ -127,6 +127,17 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
         return diags;
     }
 
+    // ── OOS6003 · forma canónica ────────────────────────────────────────────
+    //
+    // Antes que `OOS1004`: el esquema JSON acepta un número donde el perfil
+    // admite un número, y no tiene forma de saber que ese número no sobrevive
+    // a la serialización canónica. Es la regla de precedencia de `99-errors`
+    // §2.1 — el código específico gana — aplicada a la familia de bytes.
+    diags.extend(crate::canonical::check(file, &root, kind));
+    if !diags.is_empty() {
+        return diags;
+    }
+
     // ── OOS1004 · forma ─────────────────────────────────────────────────────
     for regla in document::shape_rules()
         .into_iter()
