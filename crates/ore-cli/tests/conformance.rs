@@ -74,10 +74,15 @@ impl Expects {
 /// familia ausente de esta lista está *pendiente*, no *roto*: distinguirlo es
 /// lo que permite que el marcador solo suba y que una regresión de verdad
 /// destaque.
-const IMPLEMENTADAS: &[&str] = &["OOS1"];
+const IMPLEMENTADAS: &[&str] = &[
+    "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005", "OOS2002", "OOS2003", "OOS2004",
+    "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009", "OOS2010", "OOS2011",
+    "OOS2012",
+    // OOS2013 exige regenerar el esquema Cedar y compararlo: es fase 2.
+];
 
 fn implementada(codigo: &str) -> bool {
-    IMPLEMENTADAS.iter().any(|f| codigo.starts_with(f))
+    IMPLEMENTADAS.contains(&codigo)
 }
 
 struct Case {

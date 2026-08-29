@@ -187,24 +187,80 @@ fn check_keys(
     }
 }
 
-/// Valida un paquete entero: todos los `.yaml` bajo la raíz, salvo la caché.
+/// Valida un paquete entero.
+///
+/// Dos fases, y el orden es normativo: **no se puede enlazar un paquete que no
+/// analiza**. Si la fase de documento encuentra algo, la de enlazado no llega a
+/// correr — resolver referencias sobre un árbol que no se pudo construir
+/// produciría cascadas de errores derivados en lugar de la causa.
 pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     let mut ficheros = Vec::new();
     recolectar(root, &mut ficheros);
     ficheros.sort();
 
     let mut diags = Vec::new();
+    let mut cargados = Vec::new();
+
     for f in ficheros {
-        match std::fs::read_to_string(&f) {
-            Ok(text) => diags.extend(validate_document(&f, &text)),
-            Err(e) => diags.push(Diagnostic::new(
-                Code::Oos1001,
-                &f,
-                format!("no se pudo leer: {e}"),
-            )),
+        let text = match std::fs::read_to_string(&f) {
+            Ok(t) => t,
+            Err(e) => {
+                diags.push(Diagnostic::new(
+                    Code::Oos1001,
+                    &f,
+                    format!("no se pudo leer: {e}"),
+                ));
+                continue;
+            }
+        };
+        // `ontology.lock` no es un documento de la ontología: es un artefacto
+        // generado, versionado por su propio formato y sin `apiVersion` ni
+        // `kind` a propósito. No pasa por la fase de documento, pero sí entra en
+        // la de enlazado — el grafo de dependencias vive ahí.
+        if f.file_name().is_some_and(|n| n == "ontology.lock") {
+            if let Some(l) = cargar(&f, &text) {
+                cargados.push(l);
+            }
+            continue;
         }
+
+        let d = validate_document(&f, &text);
+        if d.is_empty()
+            && let Some(l) = cargar(&f, &text)
+        {
+            cargados.push(l);
+        }
+        diags.extend(d);
     }
-    diags
+
+    if !diags.is_empty() {
+        return diags;
+    }
+    crate::link::link(&crate::link::Package {
+        root: root.to_path_buf(),
+        docs: cargados,
+    })
+}
+
+/// Reanaliza un documento ya validado para la fase de enlazado. `ontology.lock`
+/// no lleva `kind` —es un artefacto generado, no un documento de la ontología—
+/// y entra como `OntologyConfig` para que el grafo de dependencias sea legible.
+fn cargar(path: &Path, text: &str) -> Option<crate::link::Loaded> {
+    let root = parse::parse(text).ok()?;
+    let kind = match root
+        .get("kind")
+        .and_then(|(_, v)| v.as_str())
+        .and_then(Kind::parse)
+    {
+        Some(k) => k,
+        None if path.file_name().is_some_and(|n| n == "ontology.lock") => Kind::OntologyConfig,
+        None => return None,
+    };
+    Some(crate::link::Loaded {
+        path: path.to_path_buf(),
+        kind,
+        root,
+    })
 }
 
 fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -219,7 +275,9 @@ fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             recolectar(&p, out);
-        } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml") {
+        } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
+            || p.file_name().is_some_and(|n| n == "ontology.lock")
+        {
             out.push(p);
         }
     }

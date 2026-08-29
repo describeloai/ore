@@ -29,6 +29,7 @@
 pub mod code;
 pub mod diag;
 pub mod document;
+pub mod link;
 pub mod parse;
 pub mod validate;
 
@@ -41,7 +42,6 @@ pub use validate::{validate_document, validate_package};
 // pub mod normalize;  N1–N8 de 90-canonical-form
 // pub mod canonical;  serialización JCS (RFC 8785)
 // pub mod digest;     doc · paquete · bundle
-// pub mod link;       integridad referencial   → OOS2xxx
 // pub mod types;      sistema de tipos         → OOS3xxx
 //
 // ── Fase 2 ──────────────────────────────────────────────────────────────────
