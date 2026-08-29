@@ -200,8 +200,16 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
 
     let mut diags = Vec::new();
     let mut cargados = Vec::new();
+    let mut cedar = Vec::new();
 
     for f in ficheros {
+        if f.extension().is_some_and(|x| x == "cedar") {
+            if let Ok(t) = std::fs::read_to_string(&f) {
+                cedar.push((f.clone(), t));
+            }
+            continue;
+        }
+
         let text = match std::fs::read_to_string(&f) {
             Ok(t) => t,
             Err(e) => {
@@ -239,6 +247,7 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     let pkg = crate::link::Package {
         root: root.to_path_buf(),
         docs: cargados,
+        cedar,
     };
 
     // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
@@ -248,7 +257,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !refs.is_empty() {
         return refs;
     }
-    crate::types::check(&pkg)
+    // Tipos antes que flujo: la propagación transporta etiquetas por el mismo
+    // grafo de derivación que los tipos acaban de validar.
+    let tipos = crate::types::check(&pkg);
+    if !tipos.is_empty() {
+        return tipos;
+    }
+    crate::flow::check(&pkg)
 }
 
 /// Reanaliza un documento ya validado para la fase de enlazado. `ontology.lock`
@@ -285,6 +300,7 @@ fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
             }
             recolectar(&p, out);
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
+            || p.extension().is_some_and(|x| x == "cedar")
             || p.file_name().is_some_and(|n| n == "ontology.lock")
         {
             out.push(p);

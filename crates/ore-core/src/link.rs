@@ -59,6 +59,9 @@ impl Loaded {
 pub struct Package {
     pub root: PathBuf,
     pub docs: Vec<Loaded>,
+    /// Las políticas Cedar, como texto. No son YAML y no pueden ser un `Node`;
+    /// OOS no define un lenguaje de autorización — las políticas **son** Cedar.
+    pub cedar: Vec<(PathBuf, String)>,
 }
 
 impl Package {

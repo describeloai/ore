@@ -29,6 +29,7 @@
 pub mod code;
 pub mod diag;
 pub mod document;
+pub mod flow;
 pub mod link;
 pub mod parse;
 pub mod types;
@@ -47,7 +48,6 @@ pub use validate::{validate_document, validate_package};
 // ── Fase 2 ──────────────────────────────────────────────────────────────────
 //
 // pub mod lattice;    retículos y orden parcial
-// pub mod flow;       propagación y regla de flujo → OOS4xxx
 // pub mod cedar;      proyección a esquema Cedar
 //
 // ── Fase posterior ──────────────────────────────────────────────────────────
