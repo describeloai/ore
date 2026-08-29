@@ -217,6 +217,14 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !refs.is_empty() {
         return refs;
     }
+    // Los artefactos generados, tras el enlazado: un ciclo de dependencias es
+    // una razón mejor para fallar que un lock desincronizado, y de hecho la
+    // explica. Antes que tipos porque un esquema Cedar obsoleto invalida la
+    // gobernanza entera, no una propiedad.
+    let generados = crate::sync::check(&pkg);
+    if !generados.is_empty() {
+        return generados;
+    }
     // Tipos antes que flujo: la propagación transporta etiquetas por el mismo
     // grafo de derivación que los tipos acaban de validar.
     let tipos = crate::types::check(&pkg);
@@ -240,8 +248,18 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let mut cargados = Vec::new();
     let mut cedar = Vec::new();
+    let mut generated = Vec::new();
 
     for f in ficheros {
+        // El esquema Cedar es un artefacto generado: no se valida, se compara
+        // contra lo que el paquete implica.
+        if f.extension().is_some_and(|x| x == "cedarschema") {
+            if let Ok(t) = std::fs::read_to_string(&f) {
+                generated.push((f.clone(), t));
+            }
+            continue;
+        }
+
         if f.extension().is_some_and(|x| x == "cedar") {
             if let Ok(t) = std::fs::read_to_string(&f) {
                 cedar.push((f.clone(), t));
@@ -284,6 +302,7 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
         root: root.to_path_buf(),
         docs: cargados,
         cedar,
+        generated,
     };
     (pkg, diags)
 }
@@ -332,7 +351,8 @@ fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
             }
             recolectar(&p, out);
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
-            || p.extension().is_some_and(|x| x == "cedar")
+            || p.extension()
+                .is_some_and(|x| x == "cedar" || x == "cedarschema")
             || p.file_name().is_some_and(|n| n == "ontology.lock")
         {
             out.push(p);

@@ -84,10 +84,9 @@ impl Expects {
 const IMPLEMENTADAS: &[&str] = &[
     // OOS1xxx · sintaxis y esquema
     "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005",
-    // OOS2xxx · referencias e integridad. Falta OOS2013: exige regenerar el
-    // esquema Cedar y compararlo, y eso es fase 2.
+    // OOS2xxx · referencias e integridad
     "OOS2002", "OOS2003", "OOS2004", "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009",
-    "OOS2010", "OOS2011", "OOS2012", // OOS3xxx · sistema de tipos
+    "OOS2010", "OOS2011", "OOS2012", "OOS2013", // OOS3xxx · sistema de tipos
     "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
     // OOS4xxx · gobernanza y flujo
     "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",

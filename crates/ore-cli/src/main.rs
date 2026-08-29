@@ -211,12 +211,16 @@ fn diferir(antes: &std::path::Path, despues: &std::path::Path) -> std::process::
 /// produciría un digest de un artefacto que no existe.
 fn cargar_valido(
     path: &std::path::Path,
+    ignorar_generados: bool,
 ) -> Result<ore_core::link::Package, std::process::ExitCode> {
     if !path.is_dir() {
         eprintln!("error: `{}` no es un directorio de paquete", path.display());
         return Err(std::process::ExitCode::from(66)); // EX_NOINPUT
     }
-    let diags = ore_core::validate_package(path);
+    let diags: Vec<_> = ore_core::validate_package(path)
+        .into_iter()
+        .filter(|d| !(ignorar_generados && d.code == ore_core::Code::Oos2013))
+        .collect();
     if let Some(d) = diags.first() {
         eprintln!("{}", d.render(path));
         return Err(std::process::ExitCode::from(65)); // EX_DATAERR
@@ -231,7 +235,7 @@ fn cargar_valido(
 /// byte a byte la misma salida, y eso es lo que `digest/deterministic-across-runs`
 /// certifica.
 fn compilar(path: &std::path::Path) -> std::process::ExitCode {
-    let pkg = match cargar_valido(path) {
+    let pkg = match cargar_valido(path, false) {
         Ok(p) => p,
         Err(c) => return c,
     };
@@ -319,7 +323,11 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
-    let pkg = match cargar_valido(path) {
+    // `cedarschema` regenera el artefacto, así que no puede exigir que el
+    // artefacto esté al día: sería pedirle a alguien que arregle un fichero
+    // usando un comando que ese mismo fichero bloquea.
+    let regenera = formato == "cedarschema";
+    let pkg = match cargar_valido(path, regenera) {
         Ok(p) => p,
         Err(c) => return c,
     };
@@ -327,6 +335,14 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
     let salida = match formato {
         "odcs" => ore_core::odcs::emit(&pkg),
         "cedar" => ore_core::cedar_schema::emit(&pkg),
+        // La sintaxis nativa es la que se compromete al repositorio y la que
+        // consume el tooling de Cedar; el JSON es la misma proyeccion en el
+        // formato de esquema de Cedar. Emitir las dos desde el mismo sitio es
+        // lo que impide que diverjan.
+        "cedarschema" => {
+            print!("{}", ore_core::cedar_schema::emit_text(&pkg));
+            return std::process::ExitCode::SUCCESS;
+        }
         "oos" => Json::Obj(ore_core::normalize::package(&pkg).into_iter().collect()),
         // Ossie no es anfitrión de `Entity`: un `Dataset` exige `source` y cada
         // `Field` exige `expression`, y ninguno de los dos está en la entidad —
@@ -353,7 +369,7 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
         }
         otro => {
             eprintln!("error: formato `{otro}` desconocido");
-            eprintln!("  formatos: odcs, cedar, ossie, oos, json");
+            eprintln!("  formatos: odcs, cedar, cedarschema, ossie, oos, json");
             return std::process::ExitCode::from(64);
         }
     };

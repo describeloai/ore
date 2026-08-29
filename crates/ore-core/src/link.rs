@@ -62,6 +62,10 @@ pub struct Package {
     /// Las políticas Cedar, como texto. No son YAML y no pueden ser un `Node`;
     /// OOS no define un lenguaje de autorización — las políticas **son** Cedar.
     pub cedar: Vec<(PathBuf, String)>,
+    /// Los artefactos **generados** que el repositorio compromete: hoy el
+    /// esquema Cedar. Se comprometen para que el tooling funcione sin compilar,
+    /// y por eso pueden quedar obsoletos — `OOS2013`.
+    pub generated: Vec<(PathBuf, String)>,
 }
 
 impl Package {

@@ -39,6 +39,27 @@ fn entidad(memberof: &[&str]) -> Json {
     )])
 }
 
+/// ¿Alguna relación de esta entidad apunta a la propia entidad?
+///
+/// Es lo que se proyecta como jerarquía, y de ahí sale el ReBAC estilo Zanzibar
+/// sin añadir un segundo sistema de autorización. Se comparte entre las dos
+/// emisiones —JSON y sintaxis nativa— porque proyectar distinto según el
+/// formato de salida sería exactamente la divergencia que este módulo evita.
+fn autorreferencia(e: &crate::link::Loaded, qn: &str) -> bool {
+    e.section("relations")
+        .map(|rs| {
+            rs.entries().iter().any(|(_, rv)| {
+                rv.get("target")
+                    .and_then(|(_, t)| t.as_str())
+                    .is_some_and(|t| {
+                        crate::normalize::qualify(t, e.meta("namespace").and_then(|n| n.as_str()))
+                            == qn
+                    })
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn miembro_de(tipos: &[String]) -> Json {
     Json::obj([(
         "memberOfTypes",
@@ -72,21 +93,7 @@ pub fn emit(pkg: &Package) -> Json {
 
         // Autorreferencia → jerarquía. Se mira el destino de cada relación: si
         // apunta a la propia entidad, esa entidad es miembro de sí misma.
-        let auto = e
-            .section("relations")
-            .map(|rs| {
-                rs.entries().iter().any(|(_, rv)| {
-                    rv.get("target")
-                        .and_then(|(_, t)| t.as_str())
-                        .is_some_and(|t| {
-                            crate::normalize::qualify(
-                                t,
-                                e.meta("namespace").and_then(|n| n.as_str()),
-                            ) == qn
-                        })
-                })
-            })
-            .unwrap_or(false);
+        let auto = autorreferencia(e, &qn);
 
         // Autorreferencia: la entidad es miembro de sí misma, y eso **es** la
         // jerarquía. `manager in Employee` sale de aquí y no de un sistema aparte.
@@ -139,4 +146,58 @@ pub fn emit(pkg: &Package) -> Json {
             ("x-oos-labels", Json::Arr(etiquetas)),
         ]),
     )])
+}
+
+/// El esquema en la **sintaxis nativa de Cedar**, que es la forma en que se
+/// compromete al repositorio y la que consume el tooling de Cedar.
+///
+/// Los niveles se emiten como tipo de entidad enumerado. No es cosmética: con
+/// la enumeración, una política que mencione una etiqueta inexistente es un
+/// **error de validación de Cedar**; sin ella, `Label::"gdpr.sensitivity:critical"`
+/// es una referencia perfectamente legal a una entidad que no existe, y la
+/// política deja de aplicarse sin decir nada.
+pub fn emit_text(pkg: &Package) -> String {
+    let lat = flow::lattices(pkg);
+    let mut out = String::new();
+    out.push_str("// GENERADO POR ORE - NO EDITAR\n");
+    out.push_str("// Proyeccion del paquete segun `00-overview.md` 4.1.\n\n");
+
+    let etiquetas: Vec<String> = lat
+        .values()
+        .flat_map(|l| {
+            l.levels
+                .iter()
+                .map(|n| format!("\"{}:{}\"", l.qname, n))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    out.push_str(&format!("entity Label enum [{}];\n", etiquetas.join(", ")));
+    out.push_str("entity Role;\n");
+
+    let mut nombres: Vec<String> = Vec::new();
+    for e in pkg.entities() {
+        let Some(qn) = e.qname() else { continue };
+        let corto = qn.rsplit('.').next().unwrap_or(&qn).to_string();
+        let auto = autorreferencia(e, &qn);
+        if auto {
+            out.push_str(&format!("entity {corto} in [{corto}];\n"));
+        } else {
+            out.push_str(&format!("entity {corto};\n"));
+        }
+        nombres.push(corto);
+    }
+
+    let mut padres = vec!["Label".to_string()];
+    padres.extend(nombres.iter().cloned());
+    out.push_str(&format!("entity Property in [{}];\n\n", padres.join(", ")));
+
+    let mut recursos = nombres.clone();
+    recursos.push("Property".to_string());
+    for a in ACCIONES {
+        out.push_str(&format!(
+            "action \"{a}\" appliesTo {{ principal: [Role], resource: [{}] }};\n",
+            recursos.join(", ")
+        ));
+    }
+    out
 }
