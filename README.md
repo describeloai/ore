@@ -251,7 +251,7 @@ emit       5/5    invalid 32/32  valid    1/1
 
 BORRADOR v1alpha2 · efectos y derivación  18/18
 BORRADOR v1alpha3 · gobierno              19/19
-BORRADOR v1alpha4 · significado           13/13
+BORRADOR v1alpha4 · significado           19/19
 ```
 
 Los cuatro se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
@@ -272,6 +272,17 @@ Lo que se implementó cabe casi entero en algo que ya existía: la herencia desd
 concepto es **una tercera fuente** en la propagación de `flow`, al lado de la
 entidad y del `datasource`, y `OOS4012` la gobierna sin que se le haya tocado una
 letra desde v1alpha1.
+
+Y con las tres decisiones de la especificación cerradas, el compilador las tiene
+las tres construidas. Dos costaron código —la exigencia **categórica** de un
+concepto, que entra como tercer origen en la cobertura, y la clausura por
+**subsunción** al resolver un objetivo `implements`— y la tercera no costó
+ninguno: que una `Function` no pueda apuntar a una interfaz es una prohibición
+que se cumple por no existir el campo.
+
+Ninguna de las tres añadió un código. La subsunción no añadió tampoco un campo:
+`I ⊑ J` se computa de la inclusión entre sus `requires`, y **lo derivable no se
+declara, luego no se puede escribir mal**.
 
 Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla de
 arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.

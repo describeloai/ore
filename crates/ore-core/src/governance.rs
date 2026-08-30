@@ -862,7 +862,7 @@ fn deberes(pkg: &Package, r: &Loaded, out: &mut Vec<Diagnostic>) {
 /// `derivation` no está, y no por olvido: **produce contenido, no lo gobierna**.
 /// Que la taxonomía de `00-scope` §2 aparezca aquí como vocabulario cerrado es
 /// lo que la convierte de descriptiva en normativa.
-const NATURALEZAS: &[&str] = &[
+pub(crate) const NATURALEZAS: &[&str] = &[
     "constraint",
     "authorization",
     "obligation",
@@ -969,6 +969,15 @@ fn cobertura(
     sel: &BTreeMap<String, BTreeSet<String>>,
     out: &mut Vec<Diagnostic>,
 ) {
+    // v1alpha4 · el **tercer origen** de exigencia, junto a los retículos.
+    //
+    // Un retículo exige por NIVEL —*todo lo que esté en `high` o por encima*—
+    // y un concepto exige por CATEGORÍA: por ser lo que es, independientemente
+    // de lo que pese. Es la forma que tiene la regulación de clasificar, y sin
+    // ella la exigencia depende de que alguien acertara a etiquetar — que es
+    // justo el hueco que v1alpha4 existe para cerrar.
+    let conceptos = crate::significado::conceptos(pkg);
+    let mapeos = crate::significado::mapeos(pkg);
     // Qué aporta cada `Ruleset`, una vez.
     let aportes: Vec<(&BTreeSet<String>, BTreeSet<&'static str>)> = reglas
         .iter()
@@ -999,6 +1008,24 @@ fn cobertura(
                 }
             }
         }
+        // Y lo que exige su concepto, si mapea a uno. Se compone con UNIÓN
+        // igual que entre retículos: asociativa, conmutativa e idempotente,
+        // luego el orden de los orígenes no puede cambiar el resultado. Y solo
+        // puede exigir MÁS — no hay forma de descargar una obligación desde
+        // aquí, que es lo que impide que importar vocabulario laxo afloje una
+        // exigencia local.
+        if let Some(q) = mapeos.get(prop)
+            && let Some(c) = conceptos.get(q)
+            && !c.requiere.is_empty()
+        {
+            porque.push(format!("el concepto `{q}`"));
+            for n in &c.requiere {
+                if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
+                    exigidas.insert(v);
+                }
+            }
+        }
+
         if exigidas.is_empty() {
             continue;
         }

@@ -244,6 +244,10 @@ struct Shape {
     gobernadas: BTreeMap<String, BTreeSet<&'static str>>,
     /// Retículo → nivel → clases exigidas desde ese nivel.
     exigencias: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    /// Lo que exige cada **concepto**, que es el tercer origen de exigencia y
+    /// se rompe igual que los otros dos: quitarle una naturaleza a un concepto
+    /// publicado desgobierna, sin tocarlos, a todos los paquetes que lo mapean.
+    exigencias_de_concepto: BTreeMap<String, Vec<String>>,
 }
 
 fn cadena(n: &Node, k: &str) -> Option<String> {
@@ -274,6 +278,11 @@ fn shape(pkg: &Package) -> Shape {
         exigencias: lat
             .iter()
             .map(|(q, l)| (q.clone(), l.requires_governance.clone()))
+            .filter(|(_, r)| !r.is_empty())
+            .collect(),
+        exigencias_de_concepto: crate::significado::conceptos(pkg)
+            .into_iter()
+            .map(|(q, c)| (q, c.requiere))
             .filter(|(_, r)| !r.is_empty())
             .collect(),
         gobernadas: crate::governance::cobertura_efectiva(pkg),
@@ -724,6 +733,26 @@ fn gobierno(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                     ),
             );
         }
+    }
+
+    // Y lo mismo desde el tercer origen. Mismo código porque es el mismo
+    // síntoma —la clasificación exige menos que antes— y este registro emite
+    // **un código por síntoma, no por causa**.
+    for (concepto, antes) in &a.exigencias_de_concepto {
+        let vacio = Vec::new();
+        let ahora = b.exigencias_de_concepto.get(concepto).unwrap_or(&vacio);
+        let perdidas: Vec<&String> = antes.iter().filter(|n| !ahora.contains(n)).collect();
+        if perdidas.is_empty() {
+            continue;
+        }
+        out.push(
+            Change::new(Code::Oos5024, Axis::Policy)
+                .with("concept", Json::s(concepto))
+                .with(
+                    "noLongerRequired",
+                    Json::Arr(perdidas.iter().map(|n| Json::s(n.as_str())).collect()),
+                ),
+        );
     }
 }
 

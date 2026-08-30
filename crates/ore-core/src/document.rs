@@ -266,6 +266,12 @@ impl Kind {
                 "description",
                 "enum",
                 "aiContext",
+                // v1alpha4 · la exigencia CATEGÓRICA. Un retículo exige por
+                // nivel; un concepto, por ser lo que es. Mismo nombre que en el
+                // retículo a propósito: es la misma noción sobre otro sujeto, y
+                // otro nombre habría sido el error de los dos nombres para un
+                // concepto.
+                "requiresGovernance",
                 "confidence",
             ],
             Kind::Interface => &["requires", "description"],
@@ -348,6 +354,19 @@ fn no_vacio(nombre: &'static str, ayuda: &'static str) -> impl Fn(&Node) -> Opti
 
 /// Reglas de forma comprobadas hoy. Crece con las fases; la suite de
 /// conformidad dice cuáles faltan.
+const AYUDA_NATURALEZA: &str = "el vocabulario es cerrado: `constraint`, `authorization`, \
+     `obligation` y `transformation`. `derivation` no está, y no por olvido — produce \
+     contenido, no lo gobierna. Y una naturaleza que no se reconoce no exige nada EN \
+     SILENCIO, que es el peor de los dos fallos posibles";
+
+fn naturaleza_desconocida(n: &crate::parse::Node) -> Option<String> {
+    n.items()
+        .iter()
+        .filter_map(|i| i.as_str())
+        .find(|s| !crate::governance::NATURALEZAS.contains(s))
+        .map(String::from)
+}
+
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
         ShapeRule {
@@ -415,6 +434,49 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     }
                 }
                 None
+            },
+        },
+        // El vocabulario de naturalezas **no lo validaba nadie**, y es un
+        // agujero que v1alpha3 ya tenía: `cobertura` filtra por la lista
+        // cerrada, así que un `autorization` mal escrito no exigía nada **en
+        // silencio**. Es `OOS8002` un piso más arriba, otra vez — una exigencia
+        // que no exige nada tiene el mismo aspecto que una que sí.
+        //
+        // Se arregla en los dos sitios a la vez, que es lo que obliga a añadir
+        // el segundo: si solo se validara el nuevo, el viejo quedaría peor por
+        // comparación.
+        ShapeRule {
+            kind: Kind::Lattice,
+            path: &["spec", "requiresGovernance"],
+            check: |n| {
+                for (nivel, v) in n.entries() {
+                    let nivel = nivel.as_str().unwrap_or("?");
+                    if let Some(mala) = naturaleza_desconocida(v) {
+                        return Some((
+                            format!("`{mala}` no es una naturaleza de regla, en `{nivel}`"),
+                            Some(AYUDA_NATURALEZA.into()),
+                        ));
+                    }
+                }
+                None
+            },
+        },
+        ShapeRule {
+            kind: Kind::Property,
+            path: &["spec", "requiresGovernance"],
+            check: |n| {
+                if n.items().is_empty() {
+                    return Some((
+                        "`requiresGovernance` vacío".into(),
+                        Some("omite el campo en lugar de exigir la nada".into()),
+                    ));
+                }
+                naturaleza_desconocida(n).map(|mala| {
+                    (
+                        format!("`{mala}` no es una naturaleza de regla"),
+                        Some(AYUDA_NATURALEZA.into()),
+                    )
+                })
             },
         },
         ShapeRule {

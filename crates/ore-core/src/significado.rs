@@ -45,6 +45,14 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Default)]
 pub struct Concepto {
     pub tipo: Option<String>,
+    /// Qué clase de regla exige de quien lo lleve, **categóricamente**.
+    ///
+    /// Un retículo exige por nivel; un concepto, por ser lo que es. La
+    /// regulación clasifica así —el artículo 9 del RGPD enumera categorías y
+    /// sus obligaciones se activan en cuanto el dato cae en una, con
+    /// independencia de lo sensible que sea en ese contexto—, y sin esto la
+    /// exigencia depende de que alguien acertara a etiquetar.
+    pub requiere: Vec<String>,
     /// Lo que el concepto declara del **dato**, no del documento. Sale de
     /// `spec.labels`; `metadata.labels` clasifica el documento y no se hereda.
     pub labels: BTreeMap<String, String>,
@@ -71,7 +79,23 @@ pub fn conceptos(pkg: &Package) -> BTreeMap<String, Concepto> {
                 }
             }
         }
-        out.insert(q, Concepto { tipo, labels });
+        let requiere = d
+            .section("requiresGovernance")
+            .map(|n| {
+                n.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(
+            q,
+            Concepto {
+                tipo,
+                labels,
+                requiere,
+            },
+        );
     }
     out
 }
@@ -148,24 +172,48 @@ pub fn por_forma(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
             continue;
         };
         for i in e.section("implements").map(|n| n.items()).unwrap_or(&[]) {
-            let Some(nombre) = i.as_str() else { continue };
-            let Some(requiere) = exige.get(nombre) else {
+            let Some(declarada) = i.as_str() else { continue };
+            let Some(suyo) = exige.get(declarada) else {
                 continue;
             };
-            let Some(acc) = out.get_mut(nombre) else {
-                continue;
-            };
-            for (k, v) in ps.entries() {
-                let (Some(n), Some(c)) = (k.as_str(), mapeo(v)) else {
+            // La entidad declara `I`; cuenta para toda forma `J` que `I`
+            // subsuma, y `J = I` es el caso trivial de la misma regla.
+            for (objetivo, pide) in exige.iter().filter(|(_, p)| subsume(suyo, p)) {
+                let Some(acc) = out.get_mut(objetivo) else {
                     continue;
                 };
-                if requiere.contains(&c) {
-                    acc.insert(format!("{qn}.{n}"));
+                for (k, v) in ps.entries() {
+                    let (Some(n), Some(c)) = (k.as_str(), mapeo(v)) else {
+                        continue;
+                    };
+                    if pide.contains(&c) {
+                        acc.insert(format!("{qn}.{n}"));
+                    }
                 }
             }
         }
     }
     out
+}
+
+/// `I ⊑ J` — la forma que exige `suyo` satisface también la que exige `otro`.
+///
+/// **Es una inclusión de conjuntos, y por eso no hay campo `extends`.** Si
+/// `J.requires ⊆ I.requires`, toda entidad que satisface `I` satisface `J`:
+/// no es una declaración, es un teorema sobre dos documentos, y declararlo
+/// sería un segundo sitio donde decirlo con la posibilidad de contradecirlo
+/// (**P2**).
+///
+/// No es una analogía tomada de los lenguajes de programación: es lo que hace
+/// la propia disciplina. En OWL, una clase con condiciones **necesarias y
+/// suficientes** es una *clase definida* y un razonador computa su lugar en la
+/// jerarquía; la asertada se reserva para las primitivas, cuya pertenencia no
+/// se puede calcular. Un `Interface` es una clase definida por construcción.
+///
+/// Y por eso esto no puede fallar y no aparece en ningún registro de errores:
+/// **lo derivable no se declara, luego no se puede escribir mal.**
+fn subsume(suyo: &[String], otro: &[String]) -> bool {
+    otro.iter().all(|c| suyo.contains(c))
 }
 
 // ── El chequeo completo ─────────────────────────────────────────────────────
