@@ -77,7 +77,36 @@ const CONJUNTOS: &[&str] = &[
     "preconditions",
     "sources",
     "weights",
+    // v1alpha4, y la tercera vez que pasa lo mismo: **esta lista no crece con
+    // la versión que introduce los campos**, así que cada plano nuevo llega con
+    // G1 rota y nadie lo ve hasta que alguien compara dos digests.
+    //
+    // `requires` es un conjunto porque una forma no depende del orden en que se
+    // enumeran sus conceptos, y la especificación lo dice con todas las letras;
+    // `implements` porque implementar dos formas no tiene primera ni segunda;
+    // `requiresGovernance` porque exigir dos naturalezas no las ordena.
+    //
+    // Contrástese con `enum`, que NO está aquí y no debe estarlo: retirar un
+    // valor o reordenarlos es un cambio observable, igual que en
+    // `Resolution.strategies`. La misma regla trata los dos casos distinto
+    // porque los dos casos son distintos.
+    "requires",
+    "implements",
+    "requiresGovernance",
 ];
+
+/// Mapas **cuyos valores** son conjuntos.
+///
+/// `CONJUNTOS` mira la clave bajo la que cuelga una secuencia, y eso no alcanza
+/// a `Lattice.requiresGovernance`: allí las listas cuelgan del **nombre de un
+/// nivel** —`high`, `critical`— que es un nombre arbitrario y no puede estar en
+/// ninguna lista fija.
+///
+/// El resultado era que el mismo campo se comportaba distinto en dos
+/// documentos: ordenado en un `Property`, sin ordenar en un `Lattice`. **Dos
+/// semánticas para un nombre**, que es exactamente lo que este proyecto
+/// persigue — y una G1 rota que llevaba desde v1alpha3 sin que nadie mirase.
+const MAPAS_DE_CONJUNTOS: &[&str] = &["requiresGovernance"];
 
 // Lo que NO entra, y conviene que se vea la ausencia:
 //
@@ -153,12 +182,23 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
         }
         Node::Mapping { entries, .. } => {
             let mut m: BTreeMap<String, Json> = BTreeMap::new();
+            // N4, para el caso que la clave inmediata no alcanza: aquí el que
+            // sabe que sus valores son conjuntos es el mapa, no ellos.
+            let valores_son_conjuntos = MAPAS_DE_CONJUNTOS.contains(&clave);
             for (k, v) in entries {
                 let Some(nombre) = k.as_str() else { continue };
                 // N7 · el comentario ya se descartó al analizar; aquí se
                 // descarta el resto del formato, que es todo lo que no es una
                 // clave o un valor.
-                if let Some(j) = valor(v, nombre, ctx) {
+                if let Some(mut j) = valor(v, nombre, ctx) {
+                    // Ordenar después equivale a ordenar durante: los elementos
+                    // ya están en forma canónica, que es la única ordenación que
+                    // no depende de cómo estén escritos.
+                    if valores_son_conjuntos
+                        && let Json::Arr(ref mut xs) = j
+                    {
+                        xs.sort_by_key(|x| x.jcs());
+                    }
                     m.insert(nfc(nombre), j);
                 }
             }
