@@ -251,7 +251,7 @@ emit       5/5    invalid 32/32  valid    1/1
 
 BORRADOR v1alpha2 · efectos y derivación  18/18
 BORRADOR v1alpha3 · gobierno              20/20
-BORRADOR v1alpha4 · significado           20/20
+BORRADOR v1alpha4 · significado           24/24
 ```
 
 Los cuatro se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
@@ -287,15 +287,19 @@ declara, luego no se puede escribir mal**.
 **Y estar en verde no es estar terminado.** Un `kind` atraviesa doce estaciones
 —despacho, forma, referencias, tipos, flujo, gobierno, significado, forma
 canónica, sellado, compatibilidad, emisión y dependencia— y `Property` e
-`Interface` pasan **ocho**: `Shape` no los tiene, así que rebajar la
-clasificación de un concepto se clasifica como *parche*; y `odcs.rs` no resuelve
-`is`, así que una propiedad mapeada se emite sin tipo y sin clasificación — **un
-contrato peor que el de una propiedad escrita a mano**.
+`Interface` pasan **nueve**: lo que queda es que `odcs.rs` no resuelve `is`, así
+que una propiedad mapeada se emite sin tipo y sin clasificación — **un contrato
+peor que el de una propiedad escrita a mano**.
 
-La octava cayó en la fase 1: `CONJUNTOS` gana los tres campos, y `normalize.rs`
-gana `MAPAS_DE_CONJUNTOS` porque la clave inmediata no alcanza a
+La fase 1 cerró la forma canónica: `CONJUNTOS` gana los tres campos, y
+`normalize.rs` gana `MAPAS_DE_CONJUNTOS` porque la clave inmediata no alcanza a
 `Lattice.requiresGovernance` —sus listas cuelgan del nombre de un nivel—, que
 llevaba **una versión entera** siendo sensible al orden sin que nadie mirase.
+
+La fase 2 cerró la compatibilidad: `Shape` gana `conceptos` —como `Prop`, porque
+un concepto declara lo mismo que una propiedad, así que sus cambios pasan por
+las mismas dos funciones— e `interfaces`. Cinco cambios, **un solo código
+nuevo**.
 
 Eso no es exclusivo de v1alpha4: `Shape` tampoco tiene `Function`, `Resolution`
 ni `Ruleset`. El criterio de «listo» nunca había estado escrito, y por eso cada

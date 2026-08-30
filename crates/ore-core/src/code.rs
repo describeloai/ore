@@ -174,6 +174,17 @@ codes! {
     // esta clase de gobierno. Un código por síntoma, no por causa.
     Oos5023 = "OOS5023", Compatibility, "una propiedad pierde una clase de gobierno que tenía";
     Oos5024 = "OOS5024", Compatibility, "la clasificación exige menos gobierno que antes";
+    // Lo introduce v1alpha4, y es **el único** que hace falta para meter
+    // conceptos y formas en el diff: todo lo demás ya tenía código, porque un
+    // concepto es una propiedad un piso más arriba y sus cambios son los
+    // mismos. Ampliar un `requires` no lo es — no hay nada en v1alpha1 que
+    // endurezca un contrato de forma—, y su efecto es rotundo: **la entidad
+    // que declaraba implementarla deja de compilar.**
+    //
+    // Reducirlo NO tiene código y no es un olvido: más formas la subsumen,
+    // luego una regla que apunte a ella alcanza más. Es la dirección segura, y
+    // la asimetría es el contenido.
+    Oos5025 = "OOS5025", Compatibility, "una forma exige más conceptos que antes";
 
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
@@ -250,7 +261,13 @@ mod tests {
         // Códigos que viven en una familia de v1alpha1 pero los introduce una
         // versión posterior. La familia dice de qué habla el código; no dice
         // cuándo llegó.
-        const POSTERIORES: &[Code] = &[Code::Oos2001, Code::Oos4015, Code::Oos5023, Code::Oos5024];
+        const POSTERIORES: &[Code] = &[
+            Code::Oos2001,
+            Code::Oos4015,
+            Code::Oos5023,
+            Code::Oos5024,
+            Code::Oos5025,
+        ];
         let cerrados = Code::ALL
             .iter()
             .filter(|c| {

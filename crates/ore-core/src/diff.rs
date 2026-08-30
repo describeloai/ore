@@ -248,6 +248,16 @@ struct Shape {
     /// se rompe igual que los otros dos: quitarle una naturaleza a un concepto
     /// publicado desgobierna, sin tocarlos, a todos los paquetes que lo mapean.
     exigencias_de_concepto: BTreeMap<String, Vec<String>>,
+    /// Los conceptos, **como propiedades**.
+    ///
+    /// No es una comodidad de implementación: es la tesis de `01-significado`
+    /// §3 escrita en un tipo. Un `Property` declara `type`, `labels` y `enum`
+    /// —exactamente lo que declara una propiedad— y por eso sus cambios son los
+    /// mismos cambios y se clasifican con los mismos códigos, sin inventar
+    /// ninguno.
+    conceptos: BTreeMap<String, Prop>,
+    /// Las formas: `interfaz` → los conceptos que exige.
+    interfaces: BTreeMap<String, Vec<String>>,
 }
 
 fn cadena(n: &Node, k: &str) -> Option<String> {
@@ -292,6 +302,27 @@ fn shape(pkg: &Package) -> Shape {
 
     for d in &pkg.docs {
         match d.kind {
+            crate::document::Kind::Property => {
+                if let Some(qn) = d.qname()
+                    && let Some(spec) = d.root.get("spec").map(|(_, v)| v)
+                {
+                    s.conceptos.insert(
+                        qn,
+                        Prop {
+                            ty: cadena(spec, "type").unwrap_or_default(),
+                            enum_values: spec.get("enum").map(|(_, n)| lista(n)),
+                            labels: etiquetas(spec),
+                            required: false,
+                        },
+                    );
+                }
+            }
+            crate::document::Kind::Interface => {
+                if let Some(qn) = d.qname() {
+                    s.interfaces
+                        .insert(qn, d.section("requires").map(lista).unwrap_or_default());
+                }
+            }
             crate::document::Kind::Package => {
                 if let Some(v) = d.meta("version").and_then(|n| n.as_str())
                     && let Some(v) = Version::parse(v)
@@ -410,6 +441,7 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
     let mut changes = Vec::new();
 
     entidades(&a, &b, &mut changes);
+    significado(&a, &b, &mut changes);
     conductos(&a, &b, &mut changes);
     materializacion(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
@@ -469,6 +501,56 @@ fn superficie(a: &Shape, b: &Shape) -> bool {
 
 fn nivel(lat: &BTreeMap<String, Lattice>, reticulo: &str, nombre: &str) -> Option<usize> {
     lat.get(reticulo)?.levels.iter().position(|l| l == nombre)
+}
+
+/// Conceptos y formas — la estación 10 para v1alpha4.
+///
+/// **Un código nuevo de cinco**, y esa proporción es el resultado: un concepto
+/// es una propiedad un piso más arriba, así que retirarlo, cambiarle el tipo,
+/// estrechar su `enum` o mover su clasificación son los cambios de siempre y
+/// pasan por las mismas dos funciones que una propiedad de una entidad.
+///
+/// Antes de esto, un concepto que cambiaba de tipo, **rebajaba su clasificación
+/// de `high` a `low`** y otro que desaparecía se clasificaban juntos como
+/// `patch`. Rebajar la clasificación es lo que `OOS4012` impide dentro de un
+/// paquete; entre dos versiones no lo veía nadie.
+fn significado(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
+    for (qn, antes) in &a.conceptos {
+        let Some(despues) = b.conceptos.get(qn) else {
+            // OOS5007 · lo que otros nombran ha dejado de existir. Mismo código
+            // que una entidad retirada, y por el mismo síntoma: todo `is` que
+            // lo nombre queda colgando, en paquetes que no se han tocado.
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            continue;
+        };
+        tipos(qn, antes, despues, out);
+        etiquetas_de(qn, &antes.labels, &despues.labels, &b.lattices, out);
+    }
+
+    for (qn, antes) in &a.interfaces {
+        let Some(despues) = b.interfaces.get(qn) else {
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            continue;
+        };
+        // OOS5025 · exigir más. Quien declaraba implementarla deja de
+        // satisfacerla, y eso no es un aviso: es que **no compila**.
+        //
+        // Exigir MENOS no aparece aquí, y la asimetría es deliberada: al
+        // encoger `requires`, más formas la subsumen —`J.requires ⊆ I.requires`
+        // se cumple para más `I`— luego una regla que apunte a ella alcanza
+        // más. Agrandar lo gobernado es la dirección segura.
+        let nuevos: Vec<&String> = despues.iter().filter(|c| !antes.contains(c)).collect();
+        if !nuevos.is_empty() {
+            out.push(
+                Change::new(Code::Oos5025, Axis::Consumer)
+                    .sujeto(qn)
+                    .with(
+                        "nowRequires",
+                        Json::Arr(nuevos.iter().map(|c| Json::s(c.as_str())).collect()),
+                    ),
+            );
+        }
+    }
 }
 
 fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {

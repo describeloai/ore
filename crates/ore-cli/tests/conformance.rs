@@ -102,7 +102,9 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
     "OOS5019", "OOS5020", "OOS5021", "OOS5022",
     // Los introduce v1alpha3: el eje POLICY sobre el plano de gobierno.
-    "OOS5023", "OOS5024", // OOS6xxx · forma canónica
+    "OOS5023", "OOS5024",
+    // Lo introduce v1alpha4: una forma que exige más conceptos que antes.
+    "OOS5025", // OOS6xxx · forma canónica
     "OOS6003",
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
