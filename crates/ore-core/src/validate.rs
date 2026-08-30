@@ -136,6 +136,23 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
         && let Some((_, spec)) = root.get("spec")
     {
         check_keys(file, spec, kind.spec_keys(), "spec.", &mut diags);
+        // Y dentro de cada propiedad. Sin esto, un `qualtiy:` mal escrito se
+        // acepta en silencio y la propiedad queda sin gobernar — un hueco que
+        // no produce ningún síntoma.
+        if kind == Kind::Entity
+            && let Some((_, props)) = spec.get("properties")
+        {
+            for (k, v) in props.entries() {
+                let Some(nombre) = k.as_str() else { continue };
+                check_keys(
+                    file,
+                    v,
+                    kind.property_keys(),
+                    &format!("spec.properties.{nombre}."),
+                    &mut diags,
+                );
+            }
+        }
     }
     if !diags.is_empty() {
         return diags;
@@ -244,6 +261,14 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     let tipos = crate::types::check(&pkg);
     if !tipos.is_empty() {
         return tipos;
+    }
+    // Los dos campos antes que flujo, y el orden importa: `OOS4015` dice que
+    // `derivedFrom` declara de menos, y la propagación de flujo usa justo eso.
+    // Propagar primero daría etiquetas más bajas de las debidas y el
+    // diagnóstico saldría en otro sitio, o en ninguno.
+    let campos = crate::campos::check(&pkg);
+    if !campos.is_empty() {
+        return campos;
     }
     let flujo = crate::flow::check(&pkg);
     if !flujo.is_empty() {

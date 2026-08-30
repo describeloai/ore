@@ -128,6 +128,10 @@ codes! {
     Oos4011 = "OOS4011", Flow, "conducto sin autorización declarada";
     Oos4012 = "OOS4012", Flow, "propiedad que rebaja la etiqueta heredada de su entidad";
     Oos4014 = "OOS4014", Flow, "examples no sintéticos en propiedad etiquetada";
+    // Lo introduce v1alpha2 al promover `expression` de prosa a CEL, y vive en
+    // esta familia porque lo que está en juego es la solidez de la propagación.
+    // No cuenta entre los 52 de v1alpha1 — como `OOS2001`.
+    Oos4015 = "OOS4015", Flow, "la expresión lee una propiedad que derivedFrom no declara";
 
     // ── OOS5xxx · compatibilidad ────────────────────────────────────────────
     Oos5001 = "OOS5001", Compatibility, "propiedad eliminada sin moved ni reserved";
@@ -207,10 +211,14 @@ mod tests {
     /// reservó v1alpha1 sin poder alcanzarlo y lo activa v1alpha3.
     #[test]
     fn el_registro_separa_v1alpha1_de_los_borradores() {
+        // Códigos que viven en una familia de v1alpha1 pero los introduce una
+        // versión posterior. La familia dice de qué habla el código; no dice
+        // cuándo llegó.
+        const POSTERIORES: &[Code] = &[Code::Oos2001, Code::Oos4015];
         let cerrados = Code::ALL
             .iter()
             .filter(|c| !matches!(c.family(), Family::Effect | Family::Governance))
-            .filter(|c| **c != Code::Oos2001)
+            .filter(|c| !POSTERIORES.contains(c))
             .count();
         assert_eq!(cerrados, 52, "v1alpha1");
         assert_eq!(

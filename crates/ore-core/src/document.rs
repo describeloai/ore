@@ -181,6 +181,10 @@ impl Kind {
                 "relations",
                 "moved",
                 "reserved",
+                // v1alpha2: aserciones sobre la entidad entera. Las de tipo
+                // `sql` NO caben aquí — están atadas a un dialecto y el
+                // dialecto solo se conoce en el binding (`04-campos` §3.1).
+                "quality",
             ],
             Kind::Binding => &[
                 "targetEntity",
@@ -190,6 +194,9 @@ impl Kind {
                 "properties",
                 "capabilities",
                 "materialization",
+                // v1alpha2: la otra mitad de la partición por plano. Aquí sí
+                // cabe `sql`, y aquí no cabe `library`.
+                "quality",
             ],
             // `axis` es lo único que v1alpha2 añade al retículo, y de él sale
             // el combinador. `join` queda obsoleto: derivable, luego no
@@ -222,6 +229,34 @@ impl Kind {
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
             Kind::Ruleset => &["owner", "targets", "assertions", "masks", "duties"],
         }
+    }
+
+    /// Claves admitidas dentro de una propiedad de `Entity`.
+    ///
+    /// Se comprueban por lo mismo que las de `spec`: con `additionalProperties:
+    /// true` una errata como `qualtiy:` se aceptaría en silencio y la propiedad
+    /// quedaría sin gobernar. Aquí eso no es una molestia — es un hueco de
+    /// gobierno que no produce ningún síntoma.
+    ///
+    /// `expression` no es nueva de v1alpha2: existe desde v1alpha1 como prosa
+    /// documental. Lo que v1alpha2 cambia es su ESTATUTO —pasa a ser CEL y a
+    /// comprobarse—, no su nombre. Un `expr` al lado habrían sido dos nombres
+    /// para un concepto.
+    pub const fn property_keys(self) -> &'static [&'static str] {
+        &[
+            "type",
+            "labels",
+            "description",
+            "required",
+            "unique",
+            "temporal",
+            "enum",
+            "derivedFrom",
+            "expression",
+            "examples",
+            "aiContext",
+            "quality",
+        ]
     }
 
     /// `OntologyConfig` no lleva `spec`: sus secciones cuelgan de la raíz.

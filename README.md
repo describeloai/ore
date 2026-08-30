@@ -249,8 +249,8 @@ canonical  9/9    diff  20/20   digest  6/6
 emit       5/5    invalid 32/32  valid    1/1
                                  TOTAL  73/73
 
-BORRADOR v1alpha2 · efectos   OOS7xxx  14/14
-BORRADOR v1alpha3 · gobierno  OOS8xxx   9/9
+BORRADOR v1alpha2 · efectos y campos  19/19
+BORRADOR v1alpha3 · gobierno           9/9
 ```
 
 Los tres se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,

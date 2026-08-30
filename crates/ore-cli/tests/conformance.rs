@@ -96,7 +96,8 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
     // OOS4xxx · gobernanza y flujo
     "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",
-    "OOS4014", // OOS5xxx · compatibilidad
+    "OOS4014", // Lo introduce v1alpha2 al promover `expression` de prosa a CEL.
+    "OOS4015", // OOS5xxx · compatibilidad
     "OOS5001", "OOS5002", "OOS5003", "OOS5006", "OOS5007", "OOS5008", "OOS5009", "OOS5010",
     "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
     "OOS5019", "OOS5020", "OOS5021", "OOS5022", // OOS6xxx · forma canónica
@@ -829,7 +830,11 @@ fn marcador(version: &str, familia: &str, titulo: &str) {
 
 #[test]
 fn borrador_de_v1alpha2() {
-    marcador("v1alpha2", "OOS7xxx", "BORRADOR · OOS v1alpha2 · efectos");
+    marcador(
+        "v1alpha2",
+        "efectos",
+        "BORRADOR · OOS v1alpha2 · efectos y campos",
+    );
 }
 
 /// El borrador de v1alpha3 arranca entero en pendiente: ningun `OOS8xxx` esta
@@ -838,7 +843,7 @@ fn borrador_de_v1alpha2() {
 /// implemente — que es exactamente lo que hizo el de v1alpha2.
 #[test]
 fn borrador_de_v1alpha3() {
-    marcador("v1alpha3", "OOS8xxx", "BORRADOR · OOS v1alpha3 · gobierno");
+    marcador("v1alpha3", "gobierno", "BORRADOR · OOS v1alpha3 · gobierno");
 }
 
 /// La suite del submódulo debe contener exactamente lo que la especificación
