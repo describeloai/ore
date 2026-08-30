@@ -809,9 +809,14 @@ fn marcador(version: &str, familia: &str, titulo: &str) {
     let total = casos.len();
     let barra = "█".repeat(verdes * 20 / total) + &"░".repeat(20 - verdes * 20 / total);
     println!();
-    println!("  ┌─────────────────────────────────────────────┐");
-    println!("  │{:<45}│", format!("  {titulo}"));
-    println!("  └─────────────────────────────────────────────┘");
+    // La caja se dimensiona al título en vez de fijarse a mano: un rótulo más
+    // largo que el ancho no se sale del marco, que es lo que pasó al renombrar
+    // este borrador.
+    let ancho = titulo.chars().count().max(41) + 4;
+    let borde: String = "─".repeat(ancho);
+    println!("  ┌{borde}┐");
+    println!("  │{:<ancho$}│", format!("  {titulo}"));
+    println!("  └{borde}┘");
     println!();
     println!("    {familia:<11} {barra}  {verdes:>2} / {total:<2}");
     println!();
