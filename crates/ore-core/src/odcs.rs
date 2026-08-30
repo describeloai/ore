@@ -257,7 +257,7 @@ fn emit_con_calidad(
     let schema: Vec<Json> = canonica
         .iter()
         .filter(|(id, _)| id.starts_with("Entity:"))
-        .filter_map(|(id, j)| entidad_a_schema(id, j, calidad))
+        .filter_map(|(id, j)| entidad_a_schema(id, j, calidad, &conceptos_de(canonica)))
         .collect();
     if !schema.is_empty() {
         out.insert("schema".into(), Json::Arr(schema));
@@ -325,7 +325,71 @@ fn binding_a_server(b: &Json) -> Option<Json> {
     Some(Json::Obj(s))
 }
 
-fn entidad_a_schema(id: &str, e: &Json, calidad: &BTreeMap<String, Vec<Json>>) -> Option<Json> {
+/// Los conceptos del propio bundle: `nombre cualificado -> su `spec``.
+///
+/// Sale de la forma canónica y **no del paquete**, y eso es lo que hace que
+/// **un bundle se baste a sí mismo para emitir**: quien recibe el artefacto
+/// firmado puede producir el contrato sin tener delante los ficheros fuente.
+fn conceptos_de(canonica: &BTreeMap<String, Json>) -> BTreeMap<String, BTreeMap<String, Json>> {
+    canonica
+        .iter()
+        .filter_map(|(id, j)| {
+            let qn = id.strip_prefix("Property:")?;
+            let spec = obj(j)?.get("spec").and_then(obj)?;
+            Some((qn.to_string(), spec.clone()))
+        })
+        .collect()
+}
+
+/// Una propiedad mapeada, **con lo que hereda ya resuelto**.
+///
+/// La forma canónica conserva lo escrito —`is: gdpr.personalEmail` y nada
+/// más—, que es lo correcto: la identidad de un documento es lo que dice, no lo
+/// que significa. **La emisión traduce**, y por eso la resolución vive aquí y
+/// no en `normalize`.
+///
+/// Sin esto, una propiedad con `is` salía a ODCS como `{"name": "email"}`: sin
+/// tipo y sin clasificación. El contrato que producía una propiedad mapeada era
+/// **peor que el de una escrita a mano**, que es lo contrario exacto de lo que
+/// `is` promete.
+///
+/// Lo declarado localmente gana sobre lo heredado, y solo puede ser una cosa:
+/// una etiqueta ELEVADA (`OOS4012`). El tipo no puede redeclararse.
+fn fundir(prop: &BTreeMap<String, Json>, conceptos: &BTreeMap<String, BTreeMap<String, Json>>) -> BTreeMap<String, Json> {
+    let Some(Json::Str(qn)) = prop.get("is") else {
+        return prop.clone();
+    };
+    let Some(concepto) = conceptos.get(qn) else {
+        return prop.clone();
+    };
+    let mut out = prop.clone();
+    for k in ["type", "enum", "description"] {
+        if let Some(v) = concepto.get(k) {
+            out.entry(k.to_string()).or_insert_with(|| v.clone());
+        }
+    }
+    // Las etiquetas se funden entrada a entrada: el concepto pone el suelo y lo
+    // declarado lo eleva. Sustituir el mapa entero perdería el suelo en cuanto
+    // alguien elevase un solo retículo.
+    if let Some(Json::Obj(del_concepto)) = concepto.get("labels") {
+        let mut ls = match out.get("labels") {
+            Some(Json::Obj(propias)) => propias.clone(),
+            _ => BTreeMap::new(),
+        };
+        for (ret, nivel) in del_concepto {
+            ls.entry(ret.clone()).or_insert_with(|| nivel.clone());
+        }
+        out.insert("labels".into(), Json::Obj(ls));
+    }
+    out
+}
+
+fn entidad_a_schema(
+    id: &str,
+    e: &Json,
+    calidad: &BTreeMap<String, Vec<Json>>,
+    conceptos: &BTreeMap<String, BTreeMap<String, Json>>,
+) -> Option<Json> {
     let spec = obj(e)?.get("spec").and_then(obj)?;
     let meta = obj(e)?.get("metadata").and_then(obj)?;
 
@@ -372,7 +436,8 @@ fn entidad_a_schema(id: &str, e: &Json, calidad: &BTreeMap<String, Vec<Json>>) -
             .map(|(nombre, def)| {
                 let mut p: BTreeMap<String, Json> = BTreeMap::new();
                 p.insert("name".into(), Json::s(nombre));
-                if let Some(d) = obj(def) {
+                let fundida = obj(def).map(|d| fundir(d, conceptos));
+                if let Some(d) = fundida.as_ref() {
                     // Lo que trajo el contrato y el perfil no consumió
                     // —`logicalType`, `physicalType`— vuelve primero, para que
                     // lo mapeado pueda sobrescribirlo.
@@ -387,7 +452,19 @@ fn entidad_a_schema(id: &str, e: &Json, calidad: &BTreeMap<String, Vec<Json>>) -
                         if let Some(t) = d.get("type") {
                             p.insert("x-oos-type".into(), t.clone());
                         }
-                        for k in ["labels", "derivedFrom", "examples", "required", "enum"] {
+                        // `is` viaja con lo demás, y no por documentar: es lo
+                        // que permite DESHACER la fusión al importar. Sin él la
+                        // vuelta ODCS → OOS traería el tipo heredado escrito a
+                        // mano, y el viaje de ida y vuelta dejaría de ser la
+                        // identidad.
+                        for k in [
+                            "labels",
+                            "derivedFrom",
+                            "examples",
+                            "required",
+                            "enum",
+                            "is",
+                        ] {
                             if let Some(v) = d.get(k) {
                                 p.insert(format!("x-oos-{k}"), v.clone());
                             }
@@ -639,9 +716,20 @@ fn schema_a_entidad(s: &Json) -> Option<(String, Json)> {
                     "examples",
                     "required",
                     "enum",
+                    "is",
                 ],
                 &mut def,
             );
+            // Deshacer la fusión. Lo que salió resuelto vuelve a ser una
+            // referencia, porque **el documento decía `is` y no decía un tipo**:
+            // reconstruirlo con el tipo escrito a mano sería importar una copia
+            // que el día que el concepto cambie mentirá.
+            if def.contains_key("is") {
+                def.remove("type");
+                def.remove("labels");
+                def.remove("enum");
+                def.remove("description");
+            }
             let sobra = sobrante(pm, PROP_PERFIL);
             if !sobra.is_empty() {
                 def.insert(PASSTHROUGH.into(), Json::Obj(sobra));
@@ -663,7 +751,21 @@ fn schema_a_entidad(s: &Json) -> Option<(String, Json)> {
     }
 
     let mut e: BTreeMap<String, Json> = BTreeMap::new();
-    e.insert("apiVersion".into(), Json::s(crate::document::API_VERSION));
+    // La versión que lo reconstruido NECESITA, no la más antigua.
+    //
+    // Sellar siempre `v1alpha1` funcionó mientras lo importado solo usaba
+    // vocabulario de v1alpha1. Con `is` deja de funcionar: la vuelta producía
+    // un documento que declara una versión **en la que ese campo no existe**, y
+    // eso no valida contra su propio esquema. Un importador que emite algo que
+    // el validador rechazaría es peor que uno que no importa.
+    e.insert(
+        "apiVersion".into(),
+        Json::s(if usa_v1alpha4(&spec) {
+            crate::document::ApiVersion::V1Alpha4.as_str()
+        } else {
+            crate::document::API_VERSION
+        }),
+    );
     e.insert("kind".into(), Json::s(Kind::Entity.as_str()));
     e.insert("metadata".into(), Json::Obj(meta));
     e.insert("spec".into(), Json::Obj(spec));
@@ -671,6 +773,21 @@ fn schema_a_entidad(s: &Json) -> Option<(String, Json)> {
     // importacion a la que le falta decidir el espacio de nombres.
     let qn = cadena(m, "x-oos-qualifiedName").or_else(|| cadena(m, "name"))?;
     Some((format!("Entity:{qn}"), Json::Obj(e)))
+}
+
+/// Si lo reconstruido usa vocabulario de v1alpha4.
+///
+/// Es una tabla campo → versión, y solo tiene dos entradas porque solo hay dos
+/// campos de v1alpha4 que puedan llegar por un contrato ajeno. Que haya que
+/// escribirla es el precio de que `Kind::since()` clasifique documentos y no
+/// campos; si crece, el sitio correcto es el esquema.
+fn usa_v1alpha4(spec: &BTreeMap<String, Json>) -> bool {
+    if spec.contains_key("implements") {
+        return true;
+    }
+    spec.get("properties")
+        .and_then(obj)
+        .is_some_and(|ps| ps.values().filter_map(obj).any(|d| d.contains_key("is")))
 }
 
 fn server_a_binding(s: &Json) -> Option<(String, Json)> {
