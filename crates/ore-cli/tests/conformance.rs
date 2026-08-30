@@ -833,7 +833,7 @@ fn borrador_de_v1alpha2() {
     marcador(
         "v1alpha2",
         "efectos",
-        "BORRADOR · OOS v1alpha2 · efectos y campos",
+        "BORRADOR · OOS v1alpha2 · efectos y derivación",
     );
 }
 
