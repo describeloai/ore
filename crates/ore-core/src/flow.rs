@@ -55,11 +55,15 @@ pub struct Lattice {
     pub qname: String,
     pub levels: Vec<String>,
     pub axis: Axis,
-    /// Desde qué nivel —ese y por encima— la cobertura es obligatoria
-    /// (`v1alpha3/01-gobierno` §6.1). Vive en el retículo y no en la regla
-    /// porque es lo que hace que **importar la clasificación importe su
-    /// exigencia**.
-    pub requires_governance: Option<String>,
+    /// Qué exige la clasificación, por nivel: `nivel → naturalezas`.
+    ///
+    /// Vive en el retículo y no en la regla porque es lo que hace que
+    /// **importar la clasificación importe su exigencia**. Y nombra **clases**
+    /// de regla, no solo un nivel: sin eso una comprobación de nulos
+    /// descargaría lo que un paquete de protección de datos pedía como
+    /// política, que es el error de categoría más frecuente
+    /// (`v1alpha3/01-gobierno` §6.1).
+    pub requires_governance: BTreeMap<String, Vec<String>>,
 }
 
 impl Lattice {
@@ -105,7 +109,7 @@ fn maturity() -> Lattice {
         // `oos.maturity` no exige gobierno: es el ciclo de vida de un
         // documento, no una clasificación de sensibilidad. Obligar a cubrir
         // todo lo que no sea STABLE convertiría un borrador en un error.
-        requires_governance: None,
+        requires_governance: BTreeMap::new(),
     }
 }
 
@@ -130,10 +134,23 @@ pub fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
             Some("integrity") => Axis::Integrity,
             _ => Axis::Confidentiality,
         };
-        let requires_governance = d
+        let requires_governance: BTreeMap<String, Vec<String>> = d
             .section("requiresGovernance")
-            .and_then(|n| n.as_str())
-            .map(String::from);
+            .map(|n| {
+                n.entries()
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        let nivel = k.as_str()?.to_string();
+                        let naturalezas = v
+                            .items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect();
+                        Some((nivel, naturalezas))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         out.insert(
             q.clone(),
             Lattice {

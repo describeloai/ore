@@ -25,13 +25,23 @@
 //! `{x : L(x) ⊒ n}`. Todo este módulo es esa lectura, y es decidible al
 //! compilar por la misma razón que lo es la regla de flujo.
 //!
-//! # Lo que esta fase todavía no hace
+//! # Cobertura y adecuación
 //!
-//! `OOS8001` demuestra que **existe** una regla, no que sea **la adecuada**:
-//! una política que permite todo cubre igual que una que no permite nada. Aquí
-//! se cierran los tres huecos baratos —lo ilegible, lo que no puede fallar, lo
-//! que no puede fallar al compilar— y no el caro. Se dice para que nadie lo
-//! deduzca de que los casos pasan.
+//! `OOS8001` demuestra que **existe** una regla **de la clase que la
+//! clasificación exige**. Eso cierra los huecos baratos —lo ilegible, lo que no
+//! puede fallar— y el frecuente: el **error de categoría**, cubrir con una
+//! comprobación de calidad lo que un paquete de protección de datos pedía como
+//! política.
+//!
+//! Lo que no cierra, y ningún análisis estático cerrará, es si la regla es **la
+//! adecuada**: una política que permite todo cubre igual que una que no permite
+//! nada, y la diferencia no está en el documento sino en lo que la organización
+//! quería. Se responde como todo lo indecidible aquí — **exigiendo que alguien
+//! responda**: un `owner`, y cuando hace falta más, un endoso.
+//!
+//! > El compilador decide la cobertura. El endoso registra la adecuación.
+//!
+//! Se dice para que nadie lo deduzca de que los casos pasan.
 
 use crate::code::Code;
 use crate::diag::{Diagnostic, Pos};
@@ -103,6 +113,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
         aserciones(r, &seleccionadas, &fuentes, &mut out);
         deberes(pkg, r, &mut out);
     }
+    mascara_con_sujeto(pkg, &lat, &props, &sel, &mut out);
     if !out.is_empty() {
         return out;
     }
@@ -343,6 +354,23 @@ fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, props: &Props, out: &mu
         let Some(nombre) = m.get("declassifier").and_then(|(_, v)| v.as_str()) else {
             continue;
         };
+        // Sin `id` una política no puede nombrarla, y nombrarla es lo que
+        // mantiene la definición en un solo sitio (`02-ruleset` §4.1).
+        if m.get("id").is_none() {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos1004,
+                    &r.path,
+                    format!("la máscara `{nombre}` no declara `id`"),
+                )
+                .at(m.pos())
+                .help(
+                    "el `id` es lo que permite que una política de Cedar la NOMBRE con \
+                     `@oosMask(\"<ruleset>#<id>\")` en vez de declarar otra: dos sitios donde \
+                     declarar una máscara serían dos semánticas",
+                ),
+            );
+        }
         if !MASCARAS.contains(&nombre) {
             out.push(
                 Diagnostic::new(
@@ -477,6 +505,109 @@ fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, props: &Props, out: &mu
     }
 }
 
+// ── La máscara con sujeto · OOS2001 · OOS8003 ───────────────────────────────
+
+/// `@oosMask("<ruleset cualificado>#<id>")` en una política de Cedar.
+///
+/// # Lo que NO se comprueba, que es la mitad importante
+///
+/// La cláusula `when` de la política no se evalúa ni se interpreta. Hacerlo
+/// sería reimplementar el evaluador de Cedar, que es exactamente lo que **P6**
+/// existe para impedir. Lo que se comprueba es estructural —la anotación
+/// resuelve, y el ámbito de la política se solapa con el objetivo de la regla—
+/// y basta para el fallo que importa: **una máscara que se nombra y no existe,
+/// o que se aplica donde su regla no gobierna.**
+///
+/// Que la política se dispare para el principal correcto lo decide Cedar, en
+/// ejecución, y es L3.
+fn mascara_con_sujeto(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    props: &Props,
+    sel: &BTreeMap<String, BTreeSet<String>>,
+    out: &mut Vec<Diagnostic>,
+) {
+    for (ruta, texto) in pkg.cedar.iter() {
+        for pol in crate::cedar::read(texto) {
+            for referencia in &pol.masks {
+                let Some((rs, id)) = referencia.split_once('#') else {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2001,
+                            ruta,
+                            format!(
+                                "`@oosMask(\"{referencia}\")` no tiene la forma `<ruleset>#<id>`"
+                            ),
+                        )
+                        .help(
+                            "la anotación NOMBRA una máscara declarada en un `Ruleset`; no la \
+                             declara. Es lo que mantiene la definición en un solo sitio, con \
+                             dueño y con el descenso verificado",
+                        ),
+                    );
+                    continue;
+                };
+                let regla = pkg
+                    .docs
+                    .iter()
+                    .find(|d| d.kind == Kind::Ruleset && d.qname().as_deref() == Some(rs));
+                let existe = regla.is_some_and(|r| {
+                    r.section("masks")
+                        .map(|n| n.items())
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|m| m.get("id").and_then(|(_, v)| v.as_str()) == Some(id))
+                });
+                if !existe {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2001,
+                            ruta,
+                            format!("`{referencia}` no resuelve a ninguna máscara declarada"),
+                        )
+                        .help(format!(
+                            "la política `{}` nombra una máscara que no existe. Una obligación \
+                             que nombra algo inexistente es exactamente lo que mató a XACML",
+                            pol.id
+                        )),
+                    );
+                    continue;
+                }
+                // El ámbito de la política y el objetivo de la regla tienen que
+                // solaparse: enmascarar con una regla que no gobierna esa
+                // propiedad es una máscara que no se aplica.
+                let vacias = sel.get(rs).is_none_or(|ps| {
+                    !ps.iter().any(|prop| {
+                        props.get(prop).is_some_and(|ets| {
+                            pol.labels.iter().any(|g| {
+                                g.split_once(':').is_some_and(|(ret, niv)| {
+                                    ets.get(ret).is_some_and(|n| {
+                                        lat.get(ret).and_then(|l| l.ge(n, niv)) == Some(true)
+                                    })
+                                })
+                            })
+                        })
+                    })
+                });
+                if vacias {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos8003,
+                            ruta,
+                            format!("`{referencia}` se aplica donde `{rs}` no gobierna nada"),
+                        )
+                        .help(
+                            "el ámbito de la política y el objetivo de la regla no se solapan: \
+                             la máscara se nombra sobre propiedades que esa regla no \
+                             selecciona, así que no se aplicaría a ninguna",
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ── Las aserciones · OOS8005 ────────────────────────────────────────────────
 
 /// Entidad cualificada → las fuentes físicas a las que se enlaza.
@@ -598,25 +729,31 @@ fn deberes(pkg: &Package, r: &Loaded, out: &mut Vec<Diagnostic>) {
 
 // ── La cobertura · OOS8001 ──────────────────────────────────────────────────
 
-/// ¿Cuenta este `Ruleset` para la cobertura de lo que selecciona?
+/// Las naturalezas que pueden descargar una exigencia.
+///
+/// `derivation` no está, y no por olvido: **produce contenido, no lo gobierna**.
+/// Que la taxonomía de `00-scope` §2 aparezca aquí como vocabulario cerrado es
+/// lo que la convierte de descriptiva en normativa.
+const NATURALEZAS: &[&str] = &[
+    "constraint",
+    "authorization",
+    "obligation",
+    "transformation",
+];
+
+/// Qué naturalezas aporta un `Ruleset` a lo que selecciona.
 ///
 /// > Solo cuenta lo que el compilador **puede leer** y lo que **puede fallar**.
 ///
-/// Una regla, tres consecuencias: un aviso no cuenta porque es, por definición,
-/// «lo vimos y no paramos nada»; `text` y `custom` no cuentan porque se
-/// transportan sin interpretar; y un deber no cuenta porque su incumplimiento
-/// es un hecho temporal, no algo que pueda fallar al compilar.
-///
-/// Una máscara sí: el compilador la lee, `OOS8003` la puede rechazar, y una
-/// propiedad enmascarada está gobernada.
-fn cuenta(r: &Loaded) -> bool {
-    let hay_mascara = !r
-        .section("masks")
-        .map(|n| n.items())
-        .unwrap_or(&[])
-        .is_empty();
-    let hay_asercion = r
-        .section("assertions")
+/// Un aviso no cuenta porque es, por definición, «lo vimos y no paramos nada»;
+/// `text` y `custom` no cuentan porque se transportan sin interpretar. Un deber
+/// **sí** aparece aquí, y eso cambió al tipar la cobertura: no descarga una
+/// exigencia genérica —no puede fallar al compilar— pero **sí** una que pida
+/// `obligation` explícitamente, porque entonces lo comprobable es que exista y
+/// nombre una `Function`.
+fn aporta(pkg: &Package, r: &Loaded) -> BTreeSet<&'static str> {
+    let mut out = BTreeSet::new();
+    if r.section("assertions")
         .map(|n| n.items())
         .unwrap_or(&[])
         .iter()
@@ -630,19 +767,56 @@ fn cuenta(r: &Loaded) -> bool {
                 .and_then(|(_, v)| v.as_str())
                 .unwrap_or("error");
             asercion_cuenta(tipo, severidad)
-        });
-    hay_mascara || hay_asercion
+        })
+    {
+        out.insert("constraint");
+    }
+    if !r
+        .section("masks")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .is_empty()
+    {
+        out.insert("transformation");
+    }
+    let ns = r.meta("namespace").and_then(|n| n.as_str());
+    if r.section("duties")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .any(|d| {
+            d.get("call")
+                .and_then(|(_, v)| v.as_str())
+                .map(|n| normalize::qualify(n, ns))
+                .is_some_and(|q| {
+                    pkg.docs
+                        .iter()
+                        .any(|f| f.kind == Kind::Function && f.qname().as_deref() == Some(&q))
+                })
+        })
+    {
+        out.insert("obligation");
+    }
+    out
 }
 
-/// El criterio, aislado para poder probarlo: **legible y capaz de fallar**.
-///
-/// `text` y `custom` se transportan sin interpretar, así que el compilador no
-/// sabe qué afirman. Y un aviso no puede fallar. Sin esta función, `OOS8001` se
-/// satisface con una aserción que no para nada y la cobertura pasa a medir que
-/// alguien escribió un fichero — que es el modo de fallo que aparece en cuanto
-/// alguien tiene prisa por poner verde una compilación.
+/// El criterio de una aserción, aislado para poder probarlo: **legible y capaz
+/// de fallar**.
 fn asercion_cuenta(tipo: &str, severidad: &str) -> bool {
     matches!(tipo, "library" | "sql") && severidad == "error"
+}
+
+/// Las etiquetas sobre las que alguna política de Cedar dice algo.
+///
+/// No se evalúa ninguna: se lee **a qué clasificación apunta**, que es lo que
+/// la proyección a esquema Cedar hizo expresable. Si la política es la
+/// adecuada no lo decide esto — lo registra un endoso (`01-gobierno` §6.2).
+fn etiquetas_gobernadas(pkg: &Package) -> BTreeSet<String> {
+    pkg.cedar
+        .iter()
+        .flat_map(|(_, texto)| crate::cedar::read(texto))
+        .flat_map(|p| p.labels)
+        .collect()
 }
 
 fn cobertura(
@@ -653,42 +827,82 @@ fn cobertura(
     sel: &BTreeMap<String, BTreeSet<String>>,
     out: &mut Vec<Diagnostic>,
 ) {
-    let cubren: Vec<&BTreeSet<String>> = reglas
+    // Qué aporta cada `Ruleset`, una vez.
+    let aportes: Vec<(&BTreeSet<String>, BTreeSet<&'static str>)> = reglas
         .iter()
-        .filter(|r| cuenta(r))
-        .filter_map(|r| sel.get(&r.qname().unwrap_or_default()))
+        .filter_map(|r| {
+            sel.get(&r.qname().unwrap_or_default())
+                .map(|s| (s, aporta(pkg, r)))
+        })
         .collect();
+    let gobernadas = etiquetas_gobernadas(pkg);
 
     for (prop, etiquetas) in props {
+        // Lo que exigen todas las clasificaciones que alcanza, en conjunción:
+        // si bastara satisfacer una, importar un paquete laxo sería la forma de
+        // escapar de uno estricto.
+        let mut exigidas: BTreeSet<&str> = BTreeSet::new();
+        let mut porque: Vec<String> = Vec::new();
         for (ret, nivel) in etiquetas {
             let Some(l) = lat.get(ret) else { continue };
-            let Some(piso) = l.requires_governance.as_deref() else {
-                continue;
-            };
-            if l.ge(nivel, piso) != Some(true) {
-                continue;
+            for (piso, naturalezas) in &l.requires_governance {
+                if l.ge(nivel, piso) != Some(true) {
+                    continue;
+                }
+                porque.push(format!("{ret}:{piso}"));
+                for n in naturalezas {
+                    if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
+                        exigidas.insert(v);
+                    }
+                }
             }
-            if cubren.iter().any(|s| s.contains(prop)) {
-                continue;
-            }
-            let (fichero, pos) = donde(pkg, prop);
-            let mut d = Diagnostic::new(
-                Code::Oos8001,
-                fichero,
-                format!("`{prop}` está clasificada `{ret}: {nivel}` y ninguna regla la cubre"),
-            )
-            .help(format!(
-                "`{ret}` declara `requiresGovernance: {piso}`, así que todo lo clasificado ahí \
-                 o por encima tiene que estar cubierto. Añade un `Ruleset` cuyo objetivo lo \
-                 alcance —un suelo más bajo también sirve, porque el gobierno es monótono—. Y \
-                 ojo con la salida barata: una aserción `severity: warning` NO cuenta, porque \
-                 un aviso no descarga la obligación de gobernar",
-            ));
-            if let Some(p) = pos {
-                d = d.at(p);
-            }
-            out.push(d);
         }
+        if exigidas.is_empty() {
+            continue;
+        }
+
+        let mut cubiertas: BTreeSet<&str> = aportes
+            .iter()
+            .filter(|(s, _)| s.contains(prop))
+            .flat_map(|(_, n)| n.iter().copied())
+            .collect();
+        // Autorización: alguna política menciona una etiqueta que esta
+        // propiedad alcanza.
+        if etiquetas.iter().any(|(ret, nivel)| {
+            let Some(l) = lat.get(ret) else { return false };
+            gobernadas.iter().any(|g| {
+                g.split_once(':')
+                    .is_some_and(|(r, n)| r == ret && l.ge(nivel, n) == Some(true))
+            })
+        }) {
+            cubiertas.insert("authorization");
+        }
+
+        let faltan: Vec<&str> = exigidas.difference(&cubiertas).copied().collect();
+        if faltan.is_empty() {
+            continue;
+        }
+        let (fichero, pos) = donde(pkg, prop);
+        let mut d = Diagnostic::new(
+            Code::Oos8001,
+            fichero,
+            format!(
+                "`{prop}` exige {} y no lo tiene",
+                faltan
+                    .iter()
+                    .map(|f| format!("`{f}`"))
+                    .collect::<Vec<_>>()
+                    .join(" y ")
+            ),
+        )
+        .help(format!(
+            "lo exige {}. Y la clase importa: una comprobación de calidad NO descarga lo que              una clasificación pide como política — el fallo no sería que falta una regla,              sería que sobra la equivocada. Ojo también con la salida barata: una aserción              `severity: warning` no cuenta, porque un aviso no descarga la obligación de              gobernar",
+            porque.join(", ")
+        ));
+        if let Some(p) = pos {
+            d = d.at(p);
+        }
+        out.push(d);
     }
 }
 
@@ -720,7 +934,7 @@ mod tests {
                 qname: qname.to_string(),
                 levels: niveles.iter().map(|s| s.to_string()).collect(),
                 axis: Axis::Confidentiality,
-                requires_governance: None,
+                requires_governance: BTreeMap::new(),
             },
         )
     }

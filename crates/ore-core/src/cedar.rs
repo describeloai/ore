@@ -39,6 +39,17 @@ pub struct Policy {
     pub conditions: Vec<String>,
     /// Finalidades admitidas, leídas de `context.purpose`.
     pub purposes: BTreeSet<String>,
+    /// De `@oosMask("<ruleset cualificado>#<id>")`. La anotación **nombra** una
+    /// máscara declarada en un `Ruleset`; no la declara. Es lo que mantiene la
+    /// definición en un solo sitio, con dueño y con descenso verificado.
+    pub masks: Vec<String>,
+    /// Las etiquetas que la política menciona — `Label::"gdpr.sensitivity:high"`
+    /// en el ámbito o en las condiciones.
+    ///
+    /// Es lo que permite responder *«¿hay una política sobre esta propiedad?»*
+    /// sin evaluar nada: la proyección a esquema Cedar convierte cada nivel en
+    /// un tipo de entidad, así que mencionarlo **es** apuntar a la clasificación.
+    pub labels: BTreeSet<String>,
 }
 
 impl Policy {
@@ -123,6 +134,28 @@ fn annotations(s: &str, nombre: &str) -> Vec<String> {
         match tras.find('"') {
             Some(j) => {
                 out.push(tras[..j].to_string());
+                resto = &tras[j..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Las etiquetas que un enunciado menciona, por su forma proyectada.
+///
+/// `Label::"gdpr.sensitivity:high"` es lo que la proyección a esquema Cedar
+/// emite para cada nivel de cada retículo, así que buscarlo literalmente no es
+/// un atajo: es leer el vocabulario que nosotros mismos generamos.
+fn etiquetas(s: &str) -> BTreeSet<String> {
+    let marca = "Label::\"";
+    let mut out = BTreeSet::new();
+    let mut resto = s;
+    while let Some(i) = resto.find(marca) {
+        let tras = &resto[i + marca.len()..];
+        match tras.find('"') {
+            Some(j) => {
+                out.insert(tras[..j].to_string());
                 resto = &tras[j..];
             }
             None => break,
@@ -263,6 +296,8 @@ pub fn read(text: &str) -> Vec<Policy> {
                 id: annotations(s, "id").first().cloned().unwrap_or_default(),
                 effect,
                 obligations: annotations(s, "obligation"),
+                masks: annotations(s, "oosMask"),
+                labels: etiquetas(s),
                 purposes: purposes(&conditions),
                 conditions,
             })
