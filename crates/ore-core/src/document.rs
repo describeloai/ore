@@ -35,15 +35,21 @@ pub const API_VERSION: &str = "oos.dev/v1alpha1";
 pub enum ApiVersion {
     V1Alpha1,
     V1Alpha2,
+    V1Alpha3,
 }
 
 impl ApiVersion {
-    pub const ALL: &'static [ApiVersion] = &[ApiVersion::V1Alpha1, ApiVersion::V1Alpha2];
+    pub const ALL: &'static [ApiVersion] = &[
+        ApiVersion::V1Alpha1,
+        ApiVersion::V1Alpha2,
+        ApiVersion::V1Alpha3,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             ApiVersion::V1Alpha1 => "oos.dev/v1alpha1",
             ApiVersion::V1Alpha2 => "oos.dev/v1alpha2",
+            ApiVersion::V1Alpha3 => "oos.dev/v1alpha3",
         }
     }
 
@@ -65,6 +71,8 @@ pub enum Kind {
     Function,
     /// v1alpha2. El efecto sobre la identidad.
     Resolution,
+    /// v1alpha3. La regla que apunta.
+    Ruleset,
 }
 
 impl Kind {
@@ -77,6 +85,7 @@ impl Kind {
         Kind::ConduitPolicy,
         Kind::Function,
         Kind::Resolution,
+        Kind::Ruleset,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -89,6 +98,7 @@ impl Kind {
             Kind::ConduitPolicy => "ConduitPolicy",
             Kind::Function => "Function",
             Kind::Resolution => "Resolution",
+            Kind::Ruleset => "Ruleset",
         }
     }
 
@@ -99,6 +109,7 @@ impl Kind {
     pub const fn since(self) -> ApiVersion {
         match self {
             Kind::Function | Kind::Resolution => ApiVersion::V1Alpha2,
+            Kind::Ruleset => ApiVersion::V1Alpha3,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -135,11 +146,15 @@ impl Kind {
             // estructural — `OOS1005` — en vez de necesitar un código propio.
             // `Resolution` tampoco admite `labels`, y por lo mismo: la
             // integridad que puede producir se deriva de sus estrategias.
+            // `Ruleset` tampoco, y por una razón distinta: **no porta datos**,
+            // luego no tiene clasificación. Un campo del que nada se computa
+            // acaba adquiriendo un significado que nadie escribió.
             Kind::Binding
             | Kind::Lattice
             | Kind::ConduitPolicy
             | Kind::Function
-            | Kind::Resolution => &["name", "namespace", "description"],
+            | Kind::Resolution
+            | Kind::Ruleset => &["name", "namespace", "description"],
         }
     }
 
@@ -179,7 +194,17 @@ impl Kind {
             // `axis` es lo único que v1alpha2 añade al retículo, y de él sale
             // el combinador. `join` queda obsoleto: derivable, luego no
             // declarable (P2), y si aparece debe coincidir — `OOS7007`.
-            Kind::Lattice => &["levels", "levelDescriptions", "join", "axis"],
+            // `requiresGovernance` es lo que v1alpha3 añade, y va aquí y no en
+            // el `Ruleset` a propósito: importar el paquete de clasificación
+            // importa **su exigencia**, y eso es lo que hace que «GDPR como
+            // dependencia» deje de ser una metáfora.
+            Kind::Lattice => &[
+                "levels",
+                "levelDescriptions",
+                "join",
+                "axis",
+                "requiresGovernance",
+            ],
             Kind::ConduitPolicy => &["conduits"],
             Kind::Function => &[
                 "runtime",
@@ -195,6 +220,7 @@ impl Kind {
                 "idempotency",
             ],
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
+            Kind::Ruleset => &["owner", "targets", "assertions", "masks", "duties"],
         }
     }
 
@@ -257,6 +283,52 @@ pub fn shape_rules() -> Vec<ShapeRule> {
             kind: Kind::Entity,
             path: &["spec", "uniqueKeys"],
             check: |n| no_vacio("uniqueKeys", "omite el campo en lugar de declararlo vacío")(n),
+        },
+        // Las claves obligatorias de un `Ruleset`, y la disyunción que el
+        // esquema expresa con `anyOf`. Van sobre `spec` entero y no sobre cada
+        // clave porque una regla sobre una clave ausente no llega a correr:
+        // una clave que falta no tiene nodo donde mirarla.
+        ShapeRule {
+            kind: Kind::Ruleset,
+            path: &["spec"],
+            check: |n| {
+                if n.get("owner").is_none() {
+                    return Some((
+                        "un `Ruleset` DEBE declarar `owner`".into(),
+                        Some(
+                            "y es independiente del dueño de los paquetes a los que apunta: ahí \
+                             está la razón de que esto sea un documento y no un bloque dentro de \
+                             `Entity`. En un entorno regulado, quien responde del cumplimiento \
+                             tiene que poder restringir la ontología sin poder editarla"
+                                .into(),
+                        ),
+                    ));
+                }
+                if n.get("targets").is_none() {
+                    return Some((
+                        "un `Ruleset` DEBE declarar `targets`".into(),
+                        Some(
+                            "una regla sin objetivo es una regla que enumera, y para eso ya está \
+                             `quality` de ODCS colgando de la propiedad"
+                                .into(),
+                        ),
+                    ));
+                }
+                if ["assertions", "masks", "duties"]
+                    .iter()
+                    .all(|k| n.get(k).is_none())
+                {
+                    return Some((
+                        "este `Ruleset` no declara ninguna regla".into(),
+                        Some(
+                            "necesita al menos `assertions`, `masks` o `duties`: un objetivo sin \
+                             nada que sostener selecciona propiedades y no las gobierna"
+                                .into(),
+                        ),
+                    ));
+                }
+                None
+            },
         },
         ShapeRule {
             kind: Kind::Lattice,

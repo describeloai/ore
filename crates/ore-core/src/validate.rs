@@ -60,12 +60,13 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
             Diagnostic::new(Code::Oos1002, file, msg)
                 .at(pos)
                 .help(format!(
-                    "esta implementación entiende {}. Hay un esquema por apiVersion: sin                      resolver la versión no hay contra qué validar",
+                    "esta implementación entiende {}. Hay un esquema por apiVersion: sin \
+                     resolver la versión no hay contra qué validar",
                     document::ApiVersion::ALL
                         .iter()
                         .map(|x| x.as_str())
                         .collect::<Vec<_>>()
-                        .join(" y ")
+                        .join(", ")
                 )),
         ];
     };
@@ -83,15 +84,12 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
             Diagnostic::new(
                 Code::Oos1003,
                 file,
-                format!(
-                    "`kind: {}` no existe en {}",
-                    k.as_str(),
-                    version.as_str()
-                ),
+                format!("`kind: {}` no existe en {}", k.as_str(), version.as_str()),
             )
             .at(kk.pos())
             .help(format!(
-                "es un documento de {}. Cambia el `apiVersion` del documento si es lo que                  querías declarar",
+                "es un documento de {}. Cambia el `apiVersion` del documento si es lo que \
+                 querías declarar",
                 k.since().as_str()
             )),
         ];
@@ -251,9 +249,19 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !flujo.is_empty() {
         return flujo;
     }
-    // Efectos al final: la regla de integridad razona sobre etiquetas que la
-    // fase de flujo acaba de dar por buenas, y sobre un grafo que ya resuelve.
-    crate::effect::check(&pkg)
+    // Efectos antes que gobierno: la regla de integridad razona sobre
+    // etiquetas que la fase de flujo acaba de dar por buenas, y sobre un grafo
+    // que ya resuelve.
+    let efectos = crate::effect::check(&pkg);
+    if !efectos.is_empty() {
+        return efectos;
+    }
+    // Y el gobierno al final, porque es el único que razona sobre el paquete
+    // ENTERO en vez de documento a documento: la cobertura es una diferencia de
+    // conjuntos, y calcularla sobre etiquetas que aún podrían estar mal daría
+    // una ausencia falsa — el peor diagnóstico posible, porque señala algo que
+    // nadie escribió.
+    crate::governance::check(&pkg)
 }
 
 /// Lee un directorio y construye el paquete, con lo que falló al hacerlo.

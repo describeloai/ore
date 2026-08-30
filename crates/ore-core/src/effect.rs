@@ -124,7 +124,12 @@ fn resolucion(
                 )
                 .at(e.pos())
                 .help(
-                    "comparar nombres y direcciones a escala no es una operación de                      rendimiento: es hacer fluir esos valores hacia un emparejador que tiene                      que sostenerlos para compararlos. Eso es un conducto en el sentido                      literal de `04-flow`, y un conducto sin autorización declarada no se                      autoriza solo. Declara `conduit: materialization.<nombre>` y autorízalo                      a la etiqueta de cada propiedad que ponderas",
+                    "comparar nombres y direcciones a escala no es una operación de rendimiento: \
+                     es hacer fluir esos valores hacia un emparejador que tiene que sostenerlos \
+                     para compararlos. Eso es un conducto en el sentido literal de `04-flow`, y \
+                     un conducto sin autorización declarada no se autoriza solo. Declara \
+                     `conduit: materialization.<nombre>` y autorízalo a la etiqueta de cada \
+                     propiedad que ponderas",
                 ),
             );
         }
@@ -164,7 +169,11 @@ fn resolucion(
             )
             .at(meta.pos())
             .help(format!(
-                "una estrategia probabilística infiere: por bien calibrada que esté produce                  una conclusión, no una observación, y `{nivel}` es la cima de `{ret}`. Sea lo                  que sea esa cima, una conjetura no es eso — el umbral no cambia la naturaleza                  del método. Baja la etiqueta a `{}`, o declara un endoso incondicional:                  alguien mira los dos registros y se hace responsable de la fusión",
+                "una estrategia probabilística infiere: por bien calibrada que esté produce una \
+                 conclusión, no una observación, y `{nivel}` es la cima de `{ret}`. Sea lo que \
+                 sea esa cima, una conjetura no es eso — el umbral no cambia la naturaleza del \
+                 método. Baja la etiqueta a `{}`, o declara un endoso incondicional: alguien \
+                 mira los dos registros y se hace responsable de la fusión",
                 l.levels[l.levels.len() - 2]
             )),
         );

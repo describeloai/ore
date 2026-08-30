@@ -239,13 +239,23 @@ esquema, pero no evalúa una autorización. Eso exige enlazar `cedar-policy`, y 
 una decisión distinta de las que ya están tomadas
 ([ADR 0003](docs/decisions/0003-lectura-estructural-de-cedar.md)).
 
+De la fase 3, la parte que faltaba **decir** ya está dicha: el enmascarado que ese
+criterio describe es un desclasificador de v1alpha1 aplicado por objetivo y sin
+sujeto, y `ore validate` ya comprueba que baje de verdad (`OOS8003`). Lo que falta
+es ejecutarlo, que es L2.
+
 ```
 canonical  9/9    diff  20/20   digest  6/6
 emit       5/5    invalid 32/32  valid    1/1
                                  TOTAL  73/73
+
+BORRADOR v1alpha2 · efectos   OOS7xxx  14/14
+BORRADOR v1alpha3 · gobierno  OOS8xxx   9/9
 ```
 
-El marcador se reproduce con `cargo test -p ore-cli --test conformance -- --nocapture`.
+Los tres se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
+y se cuentan **aparte** a propósito: un número que mezclara una especificación
+cerrada con dos en curso ya no se sabría qué mide.
 
 ### Frontera abierta
 

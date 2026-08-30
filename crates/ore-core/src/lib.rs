@@ -36,6 +36,7 @@ pub mod digest;
 pub mod document;
 pub mod effect;
 pub mod flow;
+pub mod governance;
 pub mod json;
 pub mod link;
 pub mod normalize;

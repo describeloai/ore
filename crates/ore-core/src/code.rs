@@ -66,6 +66,14 @@ pub enum Family {
     Compatibility,
     /// Forma canónica.
     Canonical,
+    /// Gobierno — reglas que apuntan por clasificación. **Borrador de v1alpha3.**
+    ///
+    /// `Flow` gobierna lo que se puede saber y `Effect` lo que se puede causar;
+    /// esta gobierna **qué debe sostenerse y quién responde**. Su código
+    /// central, `8001`, es el `4001` de este plano: el defecto **no está
+    /// escrito en ninguna parte** — es la ausencia de una línea que nadie
+    /// escribió, así que no hay diff donde mirarlo.
+    Governance,
     /// Efectos e integridad — el dual de `Flow`. **Borrador de v1alpha2.**
     ///
     /// `Flow` gobierna lo que se puede saber; esta familia, lo que se puede
@@ -83,6 +91,13 @@ codes! {
     Oos1005 = "OOS1005", Syntax, "clave desconocida sin prefijo de extensión x-";
 
     // ── OOS2xxx · referencias e integridad ──────────────────────────────────
+    //
+    // `OOS2001` lo RESERVÓ v1alpha1 sin poder alcanzarlo —toda referencia de
+    // aquella versión tenía código propio— dejando escrito que lo activarían
+    // los tipos de referencia nuevos de `Function`, `Resolution` y `Test`. El
+    // primero que llega es el `call` de un deber, en v1alpha3. Por eso no
+    // cuenta entre los 52 de v1alpha1 y su caso vive en el otro árbol.
+    Oos2001 = "OOS2001", Reference, "referencia a un nombre cualificado inexistente";
     Oos2002 = "OOS2002", Reference, "ciclo en el grafo de dependencias";
     Oos2003 = "OOS2003", Reference, "duplicado en un campo declarado como conjunto";
     Oos2004 = "OOS2004", Reference, "datasourceRef no declarado en el manifiesto raíz";
@@ -160,6 +175,22 @@ codes! {
     // clave desconocida, que ya tiene código.
     Oos7009 = "OOS7009", Effect, "estrategia probabilística sin conducto declarado";
     Oos7011 = "OOS7011", Effect, "integridad por encima del techo de la estrategia";
+
+    // ── OOS8xxx · gobierno ──────────────────────────────────────────────────
+    //
+    // Borrador de v1alpha3 (`spec/v1alpha3/02-ruleset.md` §8). **Cinco códigos
+    // y cuatro familias reutilizadas** —`OOS1004`, `OOS2001`, `OOS4003` y
+    // `OOS7001`—, y esa proporción es la señal de que la partición «¿hay
+    // sujeto?» estaba bien hecha: casi nada hizo falta inventarlo.
+    Oos8001 = "OOS8001", Governance, "propiedad que exige gobierno sin ninguna regla que la cubra";
+    Oos8002 = "OOS8002", Governance, "objetivo que no casa con ninguna propiedad";
+    Oos8003 = "OOS8003", Governance, "máscara que no baja demostrablemente la etiqueta del objetivo";
+    // OOS8004 · RETIRADO al escribir los casos, antes de implementarse. Existía
+    // para un deber que no resuelve a una `Function`; `OOS2001` lleva reservado
+    // desde v1alpha1 para exactamente eso. Activar una reserva es mejor que
+    // inflar una familia.
+    Oos8005 = "OOS8005", Governance, "aserción sql cuyo objetivo abarca más de una fuente física";
+    Oos8006 = "OOS8006", Governance, "objetivo sobre un retículo de eje integrity";
 }
 
 #[cfg(test)]
@@ -167,22 +198,36 @@ mod tests {
     use super::*;
 
     /// La cobertura declarada en `99-errors.md` §10 —52 códigos de v1alpha1—
-    /// más los siete del borrador de efectos de v1alpha2.
+    /// y los borradores, contados aparte para que ese 52 siga significando lo
+    /// mismo: *una implementación de referencia pasa la especificación
+    /// completa*. Un número que mezclara una versión cerrada con dos en curso
+    /// ya no se sabría qué mide.
+    ///
+    /// `OOS2001` queda fuera de los 52 aunque sea de familia `Reference`: lo
+    /// reservó v1alpha1 sin poder alcanzarlo y lo activa v1alpha3.
     #[test]
-    fn el_registro_separa_v1alpha1_de_los_efectos() {
-        assert_eq!(
-            Code::ALL
-                .iter()
-                .filter(|c| c.family() != Family::Effect)
-                .count(),
-            52
-        );
+    fn el_registro_separa_v1alpha1_de_los_borradores() {
+        let cerrados = Code::ALL
+            .iter()
+            .filter(|c| !matches!(c.family(), Family::Effect | Family::Governance))
+            .filter(|c| **c != Code::Oos2001)
+            .count();
+        assert_eq!(cerrados, 52, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            10
+            10,
+            "borrador de efectos"
+        );
+        assert_eq!(
+            Code::ALL
+                .iter()
+                .filter(|c| c.family() == Family::Governance)
+                .count(),
+            5,
+            "borrador de gobierno"
         );
     }
 

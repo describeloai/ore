@@ -55,11 +55,25 @@ pub struct Lattice {
     pub qname: String,
     pub levels: Vec<String>,
     pub axis: Axis,
+    /// Desde qué nivel —ese y por encima— la cobertura es obligatoria
+    /// (`v1alpha3/01-gobierno` §6.1). Vive en el retículo y no en la regla
+    /// porque es lo que hace que **importar la clasificación importe su
+    /// exigencia**.
+    pub requires_governance: Option<String>,
 }
 
 impl Lattice {
-    fn index(&self, level: &str) -> Option<usize> {
+    pub fn index(&self, level: &str) -> Option<usize> {
         self.levels.iter().position(|l| l == level)
+    }
+
+    /// ¿Está `nivel` en `piso` o por encima?
+    ///
+    /// `None` si alguno de los dos no pertenece al retículo — que no es lo
+    /// mismo que `false`, y confundirlos convertiría una etiqueta mal escrita
+    /// en una propiedad que parece no seleccionada.
+    pub fn ge(&self, nivel: &str, piso: &str) -> Option<bool> {
+        Some(self.index(nivel)? >= self.index(piso)?)
     }
 }
 
@@ -88,6 +102,10 @@ fn maturity() -> Lattice {
             .map(|s| s.to_string())
             .collect(),
         axis: Axis::Confidentiality,
+        // `oos.maturity` no exige gobierno: es el ciclo de vida de un
+        // documento, no una clasificación de sensibilidad. Obligar a cubrir
+        // todo lo que no sea STABLE convertiría un borrador en un error.
+        requires_governance: None,
     }
 }
 
@@ -112,12 +130,17 @@ pub fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
             Some("integrity") => Axis::Integrity,
             _ => Axis::Confidentiality,
         };
+        let requires_governance = d
+            .section("requiresGovernance")
+            .and_then(|n| n.as_str())
+            .map(String::from);
         out.insert(
             q.clone(),
             Lattice {
                 qname: q,
                 levels,
                 axis,
+                requires_governance,
             },
         );
     }
@@ -145,6 +168,34 @@ type Labels = BTreeMap<String, (String, Origin)>;
 
 /// Etiquetas efectivas de **una entidad**: propiedad → sus etiquetas.
 type EntityLabels = BTreeMap<String, Labels>;
+
+/// Etiquetas efectivas de todo el paquete: `entidad.propiedad` → retículo →
+/// nivel.
+///
+/// Se expone para [`governance`](crate::governance), que necesita exactamente
+/// esto y **no debe recalcularlo**: un objetivo que viera solo las etiquetas
+/// declaradas dejaría fuera las heredadas de la entidad y las computadas por
+/// propagación, que son las dos que nadie escribió y por tanto las que más
+/// falta hace gobernar.
+pub fn efectivas(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for e in pkg.entities() {
+        let qn = e.qname().unwrap_or_default();
+        for (prop, etiquetas) in propagar_solo(pkg, e, lat) {
+            out.insert(
+                format!("{qn}.{prop}"),
+                etiquetas
+                    .into_iter()
+                    .map(|(ret, (nivel, _))| (ret, nivel))
+                    .collect(),
+            );
+        }
+    }
+    out
+}
 
 fn read_labels(n: &Node) -> Vec<(String, String, crate::diag::Pos)> {
     n.get("labels")

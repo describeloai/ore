@@ -89,9 +89,10 @@ impl Expects {
 const IMPLEMENTADAS: &[&str] = &[
     // OOS1xxx · sintaxis y esquema
     "OOS1001", "OOS1002", "OOS1003", "OOS1004", "OOS1005",
-    // OOS2xxx · referencias e integridad
-    "OOS2002", "OOS2003", "OOS2004", "OOS2005", "OOS2006", "OOS2007", "OOS2008", "OOS2009",
-    "OOS2010", "OOS2011", "OOS2012", "OOS2013", // OOS3xxx · sistema de tipos
+    // OOS2xxx · referencias e integridad. `OOS2001` lo reservó v1alpha1 y lo
+    // activa v1alpha3: su caso vive en el otro árbol.
+    "OOS2001", "OOS2002", "OOS2003", "OOS2004", "OOS2005", "OOS2006", "OOS2007", "OOS2008",
+    "OOS2009", "OOS2010", "OOS2011", "OOS2012", "OOS2013", // OOS3xxx · sistema de tipos
     "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
     // OOS4xxx · gobernanza y flujo
     "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",
@@ -103,6 +104,8 @@ const IMPLEMENTADAS: &[&str] = &[
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
     "OOS7009", "OOS7011",
+    // OOS8xxx · gobierno. Borrador de v1alpha3, contado aparte.
+    "OOS8001", "OOS8002", "OOS8003", "OOS8005", "OOS8006",
 ];
 
 fn implementada(codigo: &str) -> bool {
