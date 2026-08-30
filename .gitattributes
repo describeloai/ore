@@ -1,0 +1,18 @@
+# Política de fin de línea, fijada en el proyecto y no en cada máquina.
+#
+# `vendor/oos` tiene la suya desde que un `git add -A` reescribió allí 1.200
+# líneas. Este árbol no tenía ninguna: estaba en LF por un `core.autocrlf =
+# false` guardado en una máquina —contra el `true` que Windows pone en el
+# gitconfig del sistema—, es decir, por una decisión que no vivía en ningún
+# commit. Y no estaba del todo: `crates/ore-cli/Cargo.toml` llevaba CRLF **en el
+# blob**, entre otros treinta y seis ficheros en LF, sin que nada lo señalara.
+# Un árbol coherente y uno accidentalmente coherente tienen el mismo aspecto.
+#
+# Aquí importa por la misma razón que allí: el digest de un paquete se computa
+# sobre su contenido, y **un fin de línea es contenido**.
+#
+# Este árbol no tiene vectores de prueba propios —los de conformidad viven en
+# `vendor/oos`, con su excepción `-text`—, así que la regla no admite
+# excepciones. Si algún día necesita una, se fija aquí: el guardián de
+# `crates/ore-cli/tests/arbol.rs` la lee de este fichero en vez de repetirla.
+* text=auto eol=lf
