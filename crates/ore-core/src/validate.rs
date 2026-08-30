@@ -281,6 +281,16 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !efectos.is_empty() {
         return efectos;
     }
+    // Significado despues de flujo y antes de gobierno, y las dos mitades del
+    // orden son normativas. Despues de flujo porque `OOS9003` compara contra la
+    // madurez EFECTIVA, que es lo que la propagacion acaba de computar. Antes de
+    // gobierno porque un objetivo `implements` selecciona por una forma, y
+    // acreditar cobertura sobre una forma que no se satisface seria acreditar lo
+    // que nadie cumple — el sentido inseguro del error.
+    let significado = crate::significado::check(&pkg);
+    if !significado.is_empty() {
+        return significado;
+    }
     // Y el gobierno al final, porque es el único que razona sobre el paquete
     // ENTERO en vez de documento a documento: la cobertura es una diferencia de
     // conjuntos, y calcularla sobre etiquetas que aún podrían estar mal daría

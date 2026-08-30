@@ -74,6 +74,14 @@ pub enum Family {
     /// escrito en ninguna parte** — es la ausencia de una línea que nadie
     /// escribió, así que no hay diff donde mirarlo.
     Governance,
+    /// Significado — qué es la misma cosa. **Borrador de v1alpha4.**
+    ///
+    /// La fila que faltaba debajo de todas las demás: `Flow` compara etiquetas
+    /// y `Governance` exige que estén cubiertas, y **ninguna comprueba que la
+    /// clasificación sea consistente**, porque hasta v1alpha4 no había forma de
+    /// decir que dos propiedades son la misma. Gobierna lo que alguien acertó a
+    /// etiquetar.
+    Meaning,
     /// Efectos e integridad — el dual de `Flow`. **Borrador de v1alpha2.**
     ///
     /// `Flow` gobierna lo que se puede saber; esta familia, lo que se puede
@@ -207,6 +215,22 @@ codes! {
     // inflar una familia.
     Oos8005 = "OOS8005", Governance, "aserción sql cuyo objetivo abarca más de una fuente física";
     Oos8006 = "OOS8006", Governance, "objetivo sobre un retículo de eje integrity";
+
+    // ── OOS9xxx · significado ───────────────────────────────────────────────
+    //
+    // Borrador de v1alpha4 (`spec/v1alpha4/01-significado.md` §7). El alcance
+    // anunció **cuatro** códigos nuevos y previó que el registro se moviera al
+    // escribir los esquemas; se movió, y en la dirección esperable: son **tres**.
+    //
+    // `OOS9002` —una propiedad con `is` que redeclara `type` o `labels`—
+    // RETIRADO al escribir el esquema, y no por descuido: la exclusión es
+    // expresable ENTERA con un `oneOf`, luego su incumplimiento ya tiene código
+    // y es `OOS1004`. Es exactamente el trato que §7 le daba una fila más
+    // arriba a `confidence` sin `is`, y no verlo habría sido inflar la familia
+    // por simetría con una tabla.
+    Oos9001 = "OOS9001", Meaning, "entidad que declara implementar una forma y no la satisface";
+    Oos9003 = "OOS9003", Meaning, "confidence en un documento cuya madurez efectiva no es DRAFT";
+    Oos9004 = "OOS9004", Meaning, "concepto declarado localmente al que nada referencia";
 }
 
 #[cfg(test)]
@@ -229,7 +253,12 @@ mod tests {
         const POSTERIORES: &[Code] = &[Code::Oos2001, Code::Oos4015, Code::Oos5023, Code::Oos5024];
         let cerrados = Code::ALL
             .iter()
-            .filter(|c| !matches!(c.family(), Family::Effect | Family::Governance))
+            .filter(|c| {
+                !matches!(
+                    c.family(),
+                    Family::Effect | Family::Governance | Family::Meaning
+                )
+            })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
         assert_eq!(cerrados, 52, "v1alpha1");

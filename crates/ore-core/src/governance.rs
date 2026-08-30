@@ -66,6 +66,7 @@ type Objetivo = BTreeMap<String, String>;
 type Props = BTreeMap<String, BTreeMap<String, String>>;
 
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
+    let formas = crate::significado::por_forma(pkg);
     let reglas: Vec<&Loaded> = pkg
         .docs
         .iter()
@@ -81,7 +82,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     //     `OOS8002`, que es el diagnóstico equivocado.
     let props = flow::efectivas(pkg, &lat);
     for r in &reglas {
-        objetivos_validos(r, &lat, &props, &mut out);
+        objetivos_validos(r, &lat, &props, &formas, &mut out);
     }
     if !out.is_empty() {
         return out;
@@ -91,7 +92,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut sel: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for r in &reglas {
         let mut union = BTreeSet::new();
-        for (dom, pos) in objetivos(r) {
+        for (dom, pos) in objetivos(r, &formas) {
             let casan = selecciona(&dom, &props, &lat);
             if casan.is_empty() {
                 out.push(vacio(r, &dom, pos));
@@ -109,7 +110,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     for r in &reglas {
         let q = r.qname().unwrap_or_default();
         let seleccionadas = sel.get(&q).cloned().unwrap_or_default();
-        mascaras(r, &lat, &props, &mut out);
+        mascaras(r, &lat, &props, &formas, &mut out);
         aserciones(r, &seleccionadas, &fuentes, &mut out);
         deberes(pkg, r, &mut out);
     }
@@ -179,6 +180,7 @@ pub fn cobertura_efectiva(pkg: &Package) -> BTreeMap<String, BTreeSet<&'static s
 /// única definición de «qué gobierna esta regla» vive en `selecciona`, y las
 /// dos rutas la comparten.
 pub fn selecciones(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
+    let formas = crate::significado::por_forma(pkg);
     let lat = flow::lattices(pkg);
     let props = flow::efectivas(pkg, &lat);
     pkg.docs
@@ -186,7 +188,7 @@ pub fn selecciones(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
         .filter(|d| d.kind == Kind::Ruleset)
         .map(|r| {
             let mut union = BTreeSet::new();
-            for (dom, _) in objetivos(r) {
+            for (dom, _) in objetivos(r, &formas) {
                 union.extend(selecciona(&dom, &props, &lat));
             }
             (r.qname().unwrap_or_default(), union)
@@ -196,9 +198,12 @@ pub fn selecciones(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
 
 // ── Los objetivos ───────────────────────────────────────────────────────────
 
+/// El índice de formas: `interfaz` → propiedades que la satisfacen.
+type Formas = BTreeMap<String, BTreeSet<String>>;
+
 /// Cómo un objetivo nombra su dominio.
 ///
-/// Dos formas y **un solo sitio donde escribirlas**. `atLeast` lo computa —el
+/// Tres criterios y **un solo sitio donde escribirlos**. `atLeast` lo computa —el
 /// retículo leído al revés—; `named` lo escribe. Que la segunda sea admisible
 /// es consecuencia de `OOS8001`: enumerar se pudre porque una propiedad nueva
 /// se escapa **en silencio**, y con la regla de cobertura eso rompe la
@@ -207,15 +212,31 @@ pub fn selecciones(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
 /// Prohibirla obligaba a que el caso enumerado viviera colgando de la
 /// propiedad, que es una segunda superficie de autoría **sin dueño propio**:
 /// movía el problema en vez de resolverlo.
+/// El tercero llegó con v1alpha4 y no es una tercera manera de decir lo
+/// mismo: `atLeast` nombra un conjunto por **clasificación**, `named` por
+/// **identidad**, `implements` por **forma**. Que existan los tres es lo que
+/// permite gobernar quince casi-duplicados de quince sistemas con una regla,
+/// sin renombrar ninguno — porque la forma se expresa en conceptos y no en
+/// nombres.
 enum Dominio {
     /// El dominio computado: retículo → nivel mínimo, en conjunción.
     Predicado(Objetivo),
     /// El dominio escrito: nombres cualificados de propiedad.
     Nombres(Vec<String>),
+    /// El dominio por forma, **ya resuelto**: se guardan las interfaces para
+    /// poder nombrarlas en un diagnóstico y las propiedades para seleccionar.
+    ///
+    /// Resolverlo aquí y no en cada consumidor es deliberado: si `selecciona`
+    /// y `suelo` lo resolvieran cada uno por su lado serían dos lecturas del
+    /// mismo objetivo, y la cobertura vería una de las dos.
+    Forma {
+        interfaces: Vec<String>,
+        propiedades: Vec<String>,
+    },
 }
 
 /// Lee `spec.targets`, con la posición de cada uno para poder señalarlo.
-fn objetivos(r: &Loaded) -> Vec<(Dominio, Pos)> {
+fn objetivos(r: &Loaded, formas: &Formas) -> Vec<(Dominio, Pos)> {
     r.section("targets")
         .map(|n| n.items())
         .unwrap_or(&[])
@@ -228,6 +249,26 @@ fn objetivos(r: &Loaded) -> Vec<(Dominio, Pos)> {
                     .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
                     .collect();
                 return Some((Dominio::Predicado(obj), mapa.pos()));
+            }
+            if let Some((_, lista)) = t.get("implements") {
+                let interfaces: Vec<String> = lista
+                    .items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect();
+                let propiedades = interfaces
+                    .iter()
+                    .filter_map(|i| formas.get(i))
+                    .flatten()
+                    .cloned()
+                    .collect();
+                return Some((
+                    Dominio::Forma {
+                        interfaces,
+                        propiedades,
+                    },
+                    lista.pos(),
+                ));
             }
             let (_, lista) = t.get("named")?;
             let nombres = lista
@@ -246,10 +287,29 @@ fn objetivos_validos(
     r: &Loaded,
     lat: &BTreeMap<String, Lattice>,
     props: &Props,
+    formas: &Formas,
     out: &mut Vec<Diagnostic>,
 ) {
-    for (dom, pos) in objetivos(r) {
+    for (dom, pos) in objetivos(r, formas) {
         match dom {
+            Dominio::Forma { ref interfaces, .. } => {
+                for i in interfaces {
+                    if formas.contains_key(i) {
+                        continue;
+                    }
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2001,
+                            &r.path,
+                            format!("`{i}` no es una interfaz del paquete"),
+                        )
+                        .at(pos)
+                        .help(
+                            "un objetivo por forma apunta a un documento `Interface`. Que no                              case con ninguna entidad es otro fallo distinto —`OOS8002`— y solo                              uno de los dos es una errata",
+                        ),
+                    );
+                }
+            }
             Dominio::Nombres(nombres) => {
                 for n in nombres {
                     if props.contains_key(&n) {
@@ -326,6 +386,14 @@ fn objetivos_validos(
 /// conjunción: la propiedad debe satisfacer **todas** las entradas.
 fn selecciona(dom: &Dominio, props: &Props, lat: &BTreeMap<String, Lattice>) -> BTreeSet<String> {
     match dom {
+        // Igual que `Nombres` una vez resuelto, y esa igualdad es el resultado:
+        // la forma no trae un mecanismo de selección propio, solo otro criterio
+        // para llegar al mismo conjunto de propiedades.
+        Dominio::Forma { propiedades, .. } => propiedades
+            .iter()
+            .filter(|n| props.contains_key(*n))
+            .cloned()
+            .collect(),
         Dominio::Nombres(ns) => ns
             .iter()
             .filter(|n| props.contains_key(*n))
@@ -349,6 +417,7 @@ fn selecciona(dom: &Dominio, props: &Props, lat: &BTreeMap<String, Lattice>) -> 
 /// `OOS8002` — un objetivo que no casa con nada.
 fn vacio(r: &Loaded, dom: &Dominio, pos: Pos) -> Diagnostic {
     let escrito = match dom {
+        Dominio::Forma { interfaces, .. } => interfaces.join(", "),
         Dominio::Nombres(ns) => ns.join(", "),
         Dominio::Predicado(o) => o
             .iter()
@@ -381,6 +450,12 @@ fn vacio(r: &Loaded, dom: &Dominio, pos: Pos) -> Diagnostic {
 fn suelo(dom: &Dominio, ret: &str, props: &Props, l: &Lattice) -> Option<usize> {
     match dom {
         Dominio::Predicado(o) => l.index(o.get(ret)?),
+        Dominio::Forma { propiedades, .. } => suelo(
+            &Dominio::Nombres(propiedades.clone()),
+            ret,
+            props,
+            l,
+        ),
         Dominio::Nombres(ns) => ns
             .iter()
             .map(|n| {
@@ -395,8 +470,14 @@ fn suelo(dom: &Dominio, ret: &str, props: &Props, l: &Lattice) -> Option<usize> 
     }
 }
 
-fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, props: &Props, out: &mut Vec<Diagnostic>) {
-    let objs = objetivos(r);
+fn mascaras(
+    r: &Loaded,
+    lat: &BTreeMap<String, Lattice>,
+    props: &Props,
+    formas: &Formas,
+    out: &mut Vec<Diagnostic>,
+) {
+    let objs = objetivos(r, formas);
     for m in r.section("masks").map(|n| n.items()).unwrap_or(&[]) {
         let Some(nombre) = m.get("declassifier").and_then(|(_, v)| v.as_str()) else {
             continue;

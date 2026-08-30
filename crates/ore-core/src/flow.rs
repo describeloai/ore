@@ -363,6 +363,8 @@ fn propagar(
         }
     }
 
+    let conceptos = crate::significado::conceptos(pkg);
+
     let mut efectivas: EntityLabels = BTreeMap::new();
     let Some(ps) = e.section("properties") else {
         return BTreeMap::new();
@@ -396,10 +398,41 @@ fn propagar(
         }
 
         let mut ls = heredadas.clone();
+
+        // v1alpha4 · el concepto es la TERCERA fuente de herencia, y entra aquí
+        // —dentro de la propagación que ya existía— en vez de en un módulo
+        // propio. No es comodidad: si viviera aparte habría dos sitios que
+        // computan la etiqueta de una propiedad, y la regla de cobertura vería
+        // uno de los dos. **Lo único nuevo es el nivel al que se aplica lo que
+        // ya estaba** — `OOS4012`, se puede elevar y no rebajar, sin cambiar
+        // una letra.
+        if let Some(c) = crate::significado::mapeo(v).and_then(|q| conceptos.get(&q)) {
+            for (r, n) in &c.labels {
+                let subir = match (ls.get(r), lat.get(r)) {
+                    (Some((actual, _)), Some(l)) => l.index(n) > l.index(actual),
+                    (None, _) => true,
+                    _ => false,
+                };
+                if subir {
+                    ls.insert(r.clone(), (n.clone(), Origin::Inherited));
+                }
+            }
+        }
+
         for (r, n, pos) in propias {
             // OOS4012 · elevar es legítimo; rebajar, no.
-            if let (Some((heredado, _)), Some(l)) = (heredadas.get(&r), lat.get(&r))
-                && l.index(&n) < l.index(heredado)
+            //
+            // Se compara contra `ls` y no contra `heredadas`, y el cambio lo
+            // forzó un caso: `ls` es todo lo heredado —la entidad, el
+            // `datasource` y, desde v1alpha4, el concepto— y `heredadas` es
+            // solo lo primero. Mientras el concepto no existía las dos eran lo
+            // mismo, y la distinción no se veía. Con `is`, comparar contra
+            // `heredadas` dejaba que una propiedad **rebajara la clasificación
+            // de su concepto en silencio**, que es exactamente lo que esta
+            // regla existe para impedir.
+            let heredado = ls.get(&r).map(|(nivel, _)| nivel.clone());
+            if let (Some(heredado), Some(l)) = (heredado, lat.get(&r))
+                && l.index(&n) < l.index(&heredado)
             {
                 out.push(
                     Diagnostic::new(

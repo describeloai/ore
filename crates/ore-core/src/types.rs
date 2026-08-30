@@ -11,6 +11,7 @@
 
 use crate::code::Code;
 use crate::diag::Diagnostic;
+use crate::document::Kind;
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
 use std::collections::BTreeMap;
@@ -111,6 +112,7 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
 
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    tipos_de_conceptos(pkg, &mut out);
     for e in pkg.entities() {
         tipos_declarados(e, &mut out);
         temporalidad(e, &mut out);
@@ -137,6 +139,26 @@ fn tipos_de(e: &Loaded) -> BTreeMap<String, (Node, Option<Type>)> {
 }
 
 // ── OOS3001 · OOS3002 ───────────────────────────────────────────────────────
+
+/// El tipo de un **concepto**, que es el que después hereda todo el que lo
+/// referencie. Sin esto, un `type` mal escrito en un `Property` se propagaría
+/// en silencio a las quince propiedades que lo mapean.
+fn tipos_de_conceptos(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
+        let Some(t) = d.section("type") else { continue };
+        let Some(s) = t.as_str() else { continue };
+        if parse_type(s).is_err() {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos3001,
+                    &d.path,
+                    format!("`{s}` no es un tipo de OOS"),
+                )
+                .at(t.pos()),
+            );
+        }
+    }
+}
 
 fn tipos_declarados(e: &Loaded, out: &mut Vec<Diagnostic>) {
     let Some(ps) = e.section("properties") else {

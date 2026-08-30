@@ -251,11 +251,32 @@ emit       5/5    invalid 32/32  valid    1/1
 
 BORRADOR v1alpha2 · efectos y derivación  18/18
 BORRADOR v1alpha3 · gobierno              19/19
+BORRADOR v1alpha4 · significado           12/12
 ```
 
-Los tres se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
+Los cuatro se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
 y se cuentan **aparte** a propósito: un número que mezclara una especificación
-cerrada con dos en curso ya no se sabría qué mide.
+cerrada con tres en curso ya no se sabría qué mide.
+
+### v1alpha4, y por qué llegó antes que su especificación
+
+`Property`, `Interface`, `is`, `implements` y la familia `OOS9xxx` están
+implementados con `02-property` y `03-interface` **todavía sin escribir**, y no es
+un adelanto: el alcance de esa versión pide enfrentar el vocabulario a algo que lo
+use *«antes de escribir los esquemas»*. El motor fue esa prueba, y encontró tres
+defectos que no se ven leyendo —uno de ellos con **cuatro versiones de
+antigüedad**, un `$def` que contradecía la regla de forma canónica del propio
+proyecto e iba sin detectar porque ningún documento lo referenciaba.
+
+Lo que se implementó cabe casi entero en algo que ya existía: la herencia desde un
+concepto es **una tercera fuente** en la propagación de `flow`, al lado de la
+entidad y del `datasource`, y `OOS4012` la gobierna sin que se le haya tocado una
+letra desde v1alpha1.
+
+Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla de
+arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.
+El compilador solo hace lo suyo — **decir que no**: un documento que no está en
+`DRAFT` no puede contener una sola conjetura (`OOS9003`).
 
 ### Frontera abierta
 

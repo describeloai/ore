@@ -43,6 +43,7 @@ pub mod link;
 pub mod normalize;
 pub mod odcs;
 pub mod parse;
+pub mod significado;
 pub mod sync;
 pub mod types;
 pub mod validate;

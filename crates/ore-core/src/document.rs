@@ -36,6 +36,7 @@ pub enum ApiVersion {
     V1Alpha1,
     V1Alpha2,
     V1Alpha3,
+    V1Alpha4,
 }
 
 impl ApiVersion {
@@ -43,6 +44,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha1,
         ApiVersion::V1Alpha2,
         ApiVersion::V1Alpha3,
+        ApiVersion::V1Alpha4,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -50,6 +52,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha1 => "oos.dev/v1alpha1",
             ApiVersion::V1Alpha2 => "oos.dev/v1alpha2",
             ApiVersion::V1Alpha3 => "oos.dev/v1alpha3",
+            ApiVersion::V1Alpha4 => "oos.dev/v1alpha4",
         }
     }
 
@@ -73,6 +76,10 @@ pub enum Kind {
     Resolution,
     /// v1alpha3. La regla que apunta.
     Ruleset,
+    /// v1alpha4. El concepto: qué ES un dato.
+    Property,
+    /// v1alpha4. La forma: un conjunto de entidades nombrado por lo que tienen.
+    Interface,
 }
 
 impl Kind {
@@ -86,6 +93,8 @@ impl Kind {
         Kind::Function,
         Kind::Resolution,
         Kind::Ruleset,
+        Kind::Property,
+        Kind::Interface,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -99,6 +108,8 @@ impl Kind {
             Kind::Function => "Function",
             Kind::Resolution => "Resolution",
             Kind::Ruleset => "Ruleset",
+            Kind::Property => "Property",
+            Kind::Interface => "Interface",
         }
     }
 
@@ -110,6 +121,7 @@ impl Kind {
         match self {
             Kind::Function | Kind::Resolution => ApiVersion::V1Alpha2,
             Kind::Ruleset => ApiVersion::V1Alpha3,
+            Kind::Property | Kind::Interface => ApiVersion::V1Alpha4,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -154,7 +166,25 @@ impl Kind {
             | Kind::ConduitPolicy
             | Kind::Function
             | Kind::Resolution
-            | Kind::Ruleset => &["name", "namespace", "description"],
+            | Kind::Ruleset
+            | Kind::Interface => &["name", "namespace", "description"],
+            // `Property` es el único documento con `labels` en LOS DOS SITIOS,
+            // y la primera versión de este `match` se lo negó por miedo a la
+            // duplicación. Era un error, y lo destapó `confidence`: un concepto
+            // acuñado por inferencia tiene que poder declararse `DRAFT`, y la
+            // madurez de un documento se declara donde se declara siempre.
+            //
+            // No son dos superficies para lo mismo porque **el sujeto es
+            // distinto**, y así hay que leerlas:
+            //
+            // - `metadata.labels` clasifica ESTE DOCUMENTO — su madurez.
+            // - `spec.labels` clasifica EL DATO que lleve este concepto, y es
+            //   lo que hereda una propiedad que declare `is`.
+            //
+            // Es la misma distinción que en `Entity`, que lleva `labels` en
+            // `metadata` y otras dentro de cada propiedad sin que nadie las
+            // confunda.
+            Kind::Property => &["name", "namespace", "labels", "description"],
         }
     }
 
@@ -181,6 +211,8 @@ impl Kind {
                 "relations",
                 "moved",
                 "reserved",
+                // v1alpha4. La forma que la entidad declara satisfacer.
+                "implements",
             ],
             Kind::Binding => &[
                 "targetEntity",
@@ -221,6 +253,22 @@ impl Kind {
             ],
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
             Kind::Ruleset => &["owner", "targets", "assertions", "masks", "duties"],
+            // La línea que decide qué cabe en un concepto: **declara lo que es
+            // cierto de él en todas partes**. `required`, `unique` y `temporal`
+            // no están porque dependen de la tabla, no del significado; `enum`
+            // y `aiContext` sí, porque un código de moneda es ISO 4217 en los
+            // quince sistemas y los sinónimos de un concepto son los mismos en
+            // todos. `derivedFrom` y `expression` tampoco: un correo personal
+            // significa lo mismo se calcule como se calcule.
+            Kind::Property => &[
+                "type",
+                "labels",
+                "description",
+                "enum",
+                "aiContext",
+                "confidence",
+            ],
+            Kind::Interface => &["requires", "description"],
         }
     }
 
@@ -253,6 +301,9 @@ impl Kind {
             "expression",
             "examples",
             "aiContext",
+            // v1alpha4. El nombre es mío, el significado es del concepto.
+            "is",
+            "confidence",
         ]
     }
 
@@ -308,6 +359,101 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     "una clave vacía no identifica nada; declara al menos una propiedad, \
                      o usa `nature: event` con `timeKey` si los registros no tienen \
                      identidad estable",
+                )(n)
+            },
+        },
+        // v1alpha4 · el guardarraíl, y va aquí y no en una familia nueva
+        // porque **el esquema lo expresa entero**: es un `oneOf` entre declarar
+        // localmente y referenciar un concepto. El borrador de v1alpha4 reservó
+        // `OOS9002` para esto y sobra — un incumplimiento de forma ya tiene
+        // código, y es este. Inflar una familia por simetría con una tabla es
+        // lo contrario de lo que P7 pide.
+        ShapeRule {
+            kind: Kind::Entity,
+            path: &["spec", "properties"],
+            check: |n| {
+                for (k, v) in n.entries() {
+                    let Some(nombre) = k.as_str() else { continue };
+                    let referencia = v.get("is").is_some();
+                    // El guardarraíl alcanza a `type` y **no** a `labels**, y
+                    // la asimetría no es un descuido: la primera versión
+                    // prohibió las dos y se contradecía con `OOS4012`, que
+                    // permite elevar la clasificación heredada. Elevarla exige
+                    // escribirla, luego prohibir `labels` dejaba la elevación
+                    // sin sintaxis.
+                    //
+                    // Los dos campos no son la misma clase de cosa:
+                    //
+                    // - `type` es una IGUALDAD. Redeclararlo solo puede coincidir
+                    //   o contradecir, y en el segundo caso no hay nada a lo que
+                    //   apelar para decidir quién gana. Se prohíbe.
+                    // - `labels` es un ORDEN. Redeclararlas tiene un significado
+                    //   definido —elevar— y un error definido —rebajar—, y la
+                    //   regla que los separa existe desde v1alpha1.
+                    //
+                    // Por eso `OOS4012` «sube un nivel sin cambiar una letra»:
+                    // porque aquí no hace falta ninguna.
+                    if referencia && v.get("type").is_some() {
+                        return Some((
+                            format!(
+                                "`{nombre}` declara `is` y también `type`: una propiedad declara                                  localmente o referencia un concepto, nunca las dos"
+                            ),
+                            Some(
+                                "el tipo lo pone el concepto, y no hay orden al que apelar si la                                  copia deja de coincidir. La clasificación es otra cosa: esa se                                  puede escribir para ELEVARLA —`OOS4012`— y nunca para rebajarla"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                    if !referencia && v.get("confidence").is_some() {
+                        return Some((
+                            format!("`{nombre}` declara `confidence` sin `is`"),
+                            Some(
+                                "`confidence` es la confianza de UNA INFERENCIA, y sin mapeo no                                  hay nada de lo que dudar. Una propiedad escrita a mano no es una                                  inferencia: es una decisión, y nadie declara cuánta confianza                                  tiene en algo que acaba de decidir"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                }
+                None
+            },
+        },
+        ShapeRule {
+            kind: Kind::Property,
+            path: &["spec"],
+            check: |n| {
+                n.get("type").is_none().then(|| {
+                    (
+                        "un `Property` DEBE declarar `type`".into(),
+                        Some(
+                            "es la mitad de lo que el concepto declara —la otra es `labels`— y es                              lo que hereda toda propiedad que lo referencie"
+                                .into(),
+                        ),
+                    )
+                })
+            },
+        },
+        ShapeRule {
+            kind: Kind::Interface,
+            path: &["spec"],
+            check: |n| {
+                n.get("requires").is_none().then(|| {
+                    (
+                        "un `Interface` DEBE declarar `requires`".into(),
+                        Some(
+                            "una forma sin exigencias la satisface cualquier cosa, y entonces no                              nombra ningún conjunto. Es `OOS8002` visto desde el otro lado"
+                                .into(),
+                        ),
+                    )
+                })
+            },
+        },
+        ShapeRule {
+            kind: Kind::Interface,
+            path: &["spec", "requires"],
+            check: |n| {
+                no_vacio(
+                    "requires",
+                    "omite el documento en lugar de declarar una forma que no exige nada",
                 )(n)
             },
         },

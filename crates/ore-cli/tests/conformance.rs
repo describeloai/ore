@@ -109,6 +109,8 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS7009", "OOS7011",
     // OOS8xxx · gobierno. Borrador de v1alpha3, contado aparte.
     "OOS8001", "OOS8002", "OOS8003", "OOS8005", "OOS8006",
+    // OOS9xxx · significado. Borrador de v1alpha4, contado aparte.
+    "OOS9001", "OOS9003", "OOS9004",
 ];
 
 fn implementada(codigo: &str) -> bool {
@@ -156,7 +158,7 @@ fn buscar(dir: &Path, encontrados: &mut Vec<PathBuf>) {
             // Mezclarlos no daria un numero falso: daria un numero que ya no
             // se sabe que mide.
             if p.file_name()
-                .is_some_and(|n| n == "v1alpha2" || n == "v1alpha3")
+                .is_some_and(|n| n == "v1alpha2" || n == "v1alpha3" || n == "v1alpha4")
             {
                 continue;
             }
@@ -911,6 +913,15 @@ fn borrador_de_v1alpha3() {
 /// Esto no es un analizador: es el escáner mínimo que atrapa esa clase de
 /// fallo —un carácter de control dentro de una cadena, o una comilla sin
 /// cerrar—, que es la que produce un fichero que no parsea en ninguna parte.
+#[test]
+fn borrador_de_v1alpha4() {
+    marcador(
+        "v1alpha4",
+        "significado",
+        "BORRADOR · OOS v1alpha4 · significado",
+    );
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
