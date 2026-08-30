@@ -486,6 +486,31 @@ fn propagar(
                 }
             }
         }
+
+        // v1alpha4 · el concepto **también entra en el join**, y no entrarlo
+        // era un agujero: esta pasada empieza de cero con `heredadas` y pisaba
+        // lo que la primera había heredado del concepto, así que **añadir
+        // `derivedFrom` a una propiedad mapeada le borraba la clasificación en
+        // silencio.** Compilaba sin una sola regla lo que sin `derivedFrom`
+        // rompía con `OOS8001`.
+        //
+        // Entra como un origen más y con la misma dirección —solo sube—, que
+        // es lo coherente con lo que el concepto es: **un suelo de
+        // clasificación, no un valor**. Si fijara un valor, importar
+        // vocabulario ajeno obligaría a aceptar su laxitud.
+        if let Some(c) = crate::significado::mapeo(v).and_then(|q| conceptos.get(&q)) {
+            for (ret, nivel) in &c.labels {
+                let subir = match (ls.get(ret), lat.get(ret)) {
+                    (Some((actual, _)), Some(l)) => l.index(nivel) > l.index(actual),
+                    (None, _) => true,
+                    _ => false,
+                };
+                if subir {
+                    ls.insert(ret.clone(), (nivel.clone(), Origin::Inherited));
+                }
+            }
+        }
+
         efectivas.insert(nombre.to_string(), ls);
     }
 

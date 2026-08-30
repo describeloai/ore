@@ -251,7 +251,7 @@ emit       5/5    invalid 32/32  valid    1/1
 
 BORRADOR v1alpha2 · efectos y derivación  18/18
 BORRADOR v1alpha3 · gobierno              19/19
-BORRADOR v1alpha4 · significado           12/12
+BORRADOR v1alpha4 · significado           13/13
 ```
 
 Los cuatro se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
