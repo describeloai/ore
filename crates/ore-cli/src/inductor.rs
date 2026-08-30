@@ -50,8 +50,18 @@ use std::path::Path;
 /// Una columna, ya traducida al sistema de tipos de OOS por el lector.
 struct Columna {
     nombre: String,
-    tipo: String,
+    /// `None` cuando el lector **no supo** traducir el tipo del origen. No es un
+    /// hueco a rellenar: es la conjetura que este modulo no toma.
+    tipo: Option<String>,
+    /// Lo que dijo el origen cuando `tipo` es `None`. Se **cita**, nunca se
+    /// interpreta: interpretarlo seria saber de BigQuery, y la costura existe
+    /// justo para no saberlo.
+    origen: Option<String>,
     obligatoria: bool,
+    /// Escrita en el origen por quien conoce el dato. Es un hecho, y de los
+    /// buenos: `pedidos.fecha` es un `String` cuya descripcion dice «Formato
+    /// DDMMAAAA, viene del AS/400». Perderla seria perder lo mejor del catalogo.
+    descripcion: Option<String>,
 }
 
 /// Una tabla del origen. `nombre` es **opaco**: sus reglas son del sistema de
@@ -63,6 +73,8 @@ struct Tabla {
     /// `(columnas locales, tabla destino)` — solo lo que el catálogo DECLARA.
     foraneas: Vec<(Vec<String>, String)>,
     filas: Option<u64>,
+    /// `table`, `view` o `materializedView`, tal y como lo dijo el origen.
+    clase: String,
 }
 
 /// Lo que el lector entrega.
@@ -94,13 +106,21 @@ impl Catalogo {
                 .unwrap_or(&[])
                 .iter()
                 .filter_map(|c| {
+                    let cadena = |k: &str| {
+                        c.get(k)
+                            .and_then(|(_, v)| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                    };
                     Some(Columna {
                         nombre: c.get("name")?.1.as_str()?.to_string(),
-                        tipo: c.get("type")?.1.as_str()?.to_string(),
+                        tipo: cadena("type"),
+                        origen: cadena("sourceType"),
                         obligatoria: c
                             .get("required")
                             .and_then(|(_, v)| v.as_str())
                             .is_some_and(|r| r == "true"),
+                        descripcion: cadena("description"),
                     })
                 })
                 .collect();
@@ -124,6 +144,11 @@ impl Catalogo {
                     .get("rows")
                     .and_then(|(_, v)| v.as_str())
                     .and_then(|s| s.parse().ok()),
+                clase: t
+                    .get("kind")
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("table")
+                    .to_string(),
             });
         }
         Ok(Catalogo { fuente, tablas })
@@ -198,6 +223,48 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
             });
         }
 
+        // Una columna cuyo tipo el lector no supo traducir no se emite: no hay
+        // tipo que poner, y `Opaque` afirmaria «no hay estructura dentro» de algo
+        // que el origen acaba de enumerar. Se nombra, con lo que dijo el origen.
+        for c in t.columnas.iter().filter(|c| c.tipo.is_none()) {
+            pendientes.push(Pendiente {
+                sujeto: format!("{}.{}", t.nombre, c.nombre),
+                que: "sin tipo de OOS".into(),
+                porque: format!(
+                    "el origen dice `{}`. Puede ser un objeto embebido o una entidad \
+                     aparte, y las dos lecturas son modelos distintos: elegir una es \
+                     modelar, no traducir",
+                    c.origen
+                        .as_deref()
+                        .unwrap_or("un tipo que no se sabe traducir")
+                ),
+            });
+        }
+        // Una vista es una PROYECCION de algo. Puede ser la entidad, o puede ser
+        // un informe sobre ella: emitirla sin mas duplicaria el concepto.
+        if t.clase != "table" {
+            pendientes.push(Pendiente {
+                sujeto: t.nombre.clone(),
+                que: format!("el origen la declara `{}`", t.clase),
+                porque: "una vista es una proyeccion, y una proyeccion puede ser la \
+                         entidad o puede ser un informe sobre ella. Emitirla como \
+                         entidad sin mas duplicaria el concepto"
+                    .into(),
+            });
+        }
+        // Y si NINGUNA columna se pudo tipar, no hay entidad que escribir: un
+        // `properties` vacio no valida, y llenarlo seria inventarlo.
+        if t.columnas.iter().all(|c| c.tipo.is_none()) {
+            pendientes.push(Pendiente {
+                sujeto: t.nombre.clone(),
+                que: "ninguna columna tiene tipo de OOS".into(),
+                porque: "no queda nada que emitir. `properties` exige al menos una, y \
+                         rellenarla seria inventar el modelo entero"
+                    .into(),
+            });
+            continue;
+        }
+
         ficheros.insert(
             format!("entities/{nombre}.yaml"),
             entidad_yaml(nombre, paquete, t),
@@ -265,8 +332,11 @@ fn candidatas_a_concepto(tablas: &[Tabla]) -> Vec<Pendiente> {
     let mut donde: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for t in tablas {
         for c in &t.columnas {
+            // Sin tipo no hay «mismo tipo» que comprobar, y agrupar por nombre a
+            // secas es justo el parecido que este modulo no toma por identidad.
+            let Some(tipo) = &c.tipo else { continue };
             donde
-                .entry((c.nombre.clone(), c.tipo.clone()))
+                .entry((c.nombre.clone(), tipo.clone()))
                 .or_default()
                 .push(t.nombre.clone());
         }
@@ -356,6 +426,24 @@ fn paquete_yaml(paquete: &str) -> String {
     )
 }
 
+/// Una cadena de YAML entre comillas dobles. La descripcion viene del origen y
+/// puede traer cualquier cosa dentro; escaparla mal romperia el documento.
+fn entrecomillar(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
     let mut s = String::new();
     let _ = write!(
@@ -380,17 +468,39 @@ fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
     }
     s.push_str("  properties:\n");
     for c in &t.columnas {
+        let Some(tipo) = &c.tipo else {
+            // No se omite en silencio: una columna que desaparece sin decirlo es
+            // peor que una que falta y lo dice.
+            let _ = writeln!(
+                s,
+                "    # {}: el origen dice `{}`, que no es un tipo de OOS.",
+                c.nombre,
+                c.origen.as_deref().unwrap_or("?")
+            );
+            continue;
+        };
         let obligatoria = if c.obligatoria {
             "  # NOT NULL en el origen"
         } else {
             ""
         };
-        let _ = writeln!(
-            s,
-            "    {}: {{ type: {} }}{obligatoria}",
-            identificador(&c.nombre),
-            c.tipo
-        );
+        match &c.descripcion {
+            None => {
+                let _ = writeln!(
+                    s,
+                    "    {}: {{ type: {tipo} }}{obligatoria}",
+                    identificador(&c.nombre)
+                );
+            }
+            Some(d) => {
+                let _ = writeln!(
+                    s,
+                    "    {}:{obligatoria}\n      type: {tipo}\n      description: {}",
+                    identificador(&c.nombre),
+                    entrecomillar(d)
+                );
+            }
+        }
     }
     if !t.foraneas.is_empty() {
         s.push_str("  relations:\n");

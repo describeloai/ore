@@ -7,6 +7,7 @@
 mod fuente;
 mod inductor;
 mod inicio;
+mod lector;
 mod mcp;
 
 use clap::{Parser, Subcommand};
@@ -106,13 +107,17 @@ enum Command {
     Source(AccionFuente),
     /// Introspecciona una fuente y propone entidades y bindings en DRAFT.
     ///
-    /// Son dos actos: leer un catálogo y proponer una ontología. Hoy existe el
-    /// segundo — `--from` toma un catálogo ya leído. El lector que lo produce
-    /// desde una fuente viva es la otra mitad.
+    /// Son dos actos: **leer** un catálogo y **proponer** una ontología, y se
+    /// piden por separado porque fallan por separado. `--source` lee de una
+    /// fuente declarada; `--from` toma un catálogo ya leído, venga de donde
+    /// venga. Lo que produce el primero es exactamente lo que acepta el segundo.
     Discover {
         /// Un catálogo en JSON: columnas, tipos y claves de un origen.
+        #[arg(long, conflicts_with = "source", required_unless_present = "source")]
+        from: Option<PathBuf>,
+        /// El nombre de una fuente declarada en `ontology.config.yaml`.
         #[arg(long)]
-        from: PathBuf,
+        source: Option<String>,
         /// Dónde se escribe el paquete inducido.
         #[arg(long)]
         out: PathBuf,
@@ -198,7 +203,12 @@ fn main() -> std::process::ExitCode {
         Command::Export { path, format } => return exportar(path, format),
         Command::Dev { path } => return desarrollo(path),
         Command::Init { name, path } => return inicio::init(path, name.as_deref()),
-        Command::Discover { from, out, name } => return descubrir(from, out, name.as_deref()),
+        Command::Discover {
+            from,
+            source,
+            out,
+            name,
+        } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -291,16 +301,32 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
 /// entra en `DRAFT` y probablemente no compile: una entidad sin clave falla con
 /// `OOS2010`, y está bien que falle — inventar la clave sería lo único peor.
 fn descubrir(
-    origen: &std::path::Path,
+    origen: Option<&std::path::Path>,
+    fuente: Option<&String>,
     destino: &std::path::Path,
     nombre: Option<&str>,
 ) -> std::process::ExitCode {
-    let texto = match std::fs::read_to_string(origen) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: no se pudo leer `{}`: {e}", origen.display());
-            return std::process::ExitCode::from(66); // EX_NOINPUT
-        }
+    // El catálogo se lee de un fichero o de una fuente viva, y a partir de aquí
+    // el resto del comando no distingue cuál: es el mismo texto.
+    let texto = match (origen, fuente) {
+        (Some(o), _) => match std::fs::read_to_string(o) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("error: no se pudo leer `{}`: {e}", o.display());
+                return std::process::ExitCode::from(66); // EX_NOINPUT
+            }
+        },
+        (None, Some(f)) => match lector::catalogo(std::path::Path::new("."), f) {
+            Ok(t) => t,
+            Err(fallo) => {
+                eprintln!("error: {}", fallo.mensaje);
+                for l in &fallo.ayuda {
+                    eprintln!("{l}");
+                }
+                return std::process::ExitCode::from(fallo.codigo);
+            }
+        },
+        (None, None) => unreachable!("clap exige --from o --source"),
     };
     let catalogo = match inductor::Catalogo::leer(&texto) {
         Ok(c) => c,
