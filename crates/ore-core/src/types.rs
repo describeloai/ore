@@ -421,3 +421,107 @@ mod tests {
         ));
     }
 }
+
+// ── Guardián ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod acuerdo {
+    use std::path::Path;
+
+    fn leer(rel: &str) -> String {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos")
+            .join(rel);
+        std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("no se pudo leer {}: {e}", p.display()))
+    }
+
+    /// Los nombres entre acentos graves de `02-entity.md` §3.1 — el texto
+    /// normativo, que es quien fija el conjunto.
+    fn de_la_prosa() -> Vec<String> {
+        let t = leer("spec/v1alpha1/02-entity.md");
+        let i = t.find("### 3.1").expect("02-entity.md ya no tiene §3.1");
+        let resto = &t[i..];
+        let fin = resto[6..].find("###").map(|j| j + 6).unwrap_or(resto.len());
+        let seccion = &resto[..fin];
+        let mut fuera = Vec::new();
+        let mut it = seccion.split('`');
+        it.next();
+        while let Some(dentro) = it.next() {
+            fuera.push(dentro.to_string());
+            if it.next().is_none() {
+                break;
+            }
+        }
+        fuera
+    }
+
+    /// El `enum` de `scalarType`, leído como texto: `ore-core` no lleva
+    /// analizador de JSON, y esta comprobación no es motivo para meter uno.
+    fn del_esquema() -> Vec<String> {
+        let t = leer("schemas/v1alpha1/type/basic.schema.json");
+        let i = t
+            .find("\"scalarType\"")
+            .expect("el esquema ya no declara scalarType");
+        let j = t[i..].find("\"enum\"").expect("scalarType sin enum") + i;
+        let a = t[j..].find('[').expect("enum sin abrir") + j;
+        let b = t[a..].find(']').expect("enum sin cerrar") + a;
+        t[a..b]
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Tres declaraciones del mismo conjunto tienen que decir lo mismo.
+    ///
+    /// No lo decían. Hasta que v1alpha5 necesitó una tabla de tipos exacta, el
+    /// esquema publicaba siete nombres en minúscula que no usaba ni un documento
+    /// del repositorio, mientras la prosa y este motor usaban diez capitalizados
+    /// — y las 375 propiedades escritas `String` validaban por la puerta de
+    /// escape de `qualifiedName`, como «tipo importado» llamado `String`.
+    ///
+    /// Un `$def` con 375 usuarios y ninguno que lo usara. Esto lo vuelve
+    /// imposible de repetir.
+    #[test]
+    fn el_vocabulario_de_escalares_es_uno_solo() {
+        let prosa = de_la_prosa();
+        let esquema = del_esquema();
+        let motor: Vec<String> = super::ESCALARES.iter().map(|s| s.to_string()).collect();
+
+        assert!(
+            prosa.len() >= 8,
+            "§3.1 de 02-entity.md solo dio {} nombres: {prosa:?}.              Si la sección cambió de forma, este guardián está leyendo otra cosa.",
+            prosa.len()
+        );
+        assert_eq!(
+            prosa, motor,
+            "la prosa normativa y el motor discrepan sobre los escalares"
+        );
+        assert_eq!(
+            prosa, esquema,
+            "la prosa normativa y `basic.schema.json` discrepan sobre los escalares"
+        );
+    }
+
+    /// Y la rama de tipo importado tiene que exigir un punto: sin él se traga
+    /// cualquier identificador y el `enum` de arriba se queda sin trabajo —
+    /// `Blob` pasaría como «tipo importado» en vez de fallar con OOS3001.
+    #[test]
+    fn la_rama_de_tipo_importado_exige_un_punto() {
+        let t = leer("schemas/v1alpha1/type/basic.schema.json");
+        let i = t
+            .find("\"scalarType\"")
+            .expect("el esquema ya no declara scalarType");
+        let seccion = &t[i..];
+        assert!(
+            seccion.contains("iso.CountryAlpha2"),
+            "la rama de tipo importado ya no está donde este guardián la busca"
+        );
+        assert!(
+            !seccion.contains("$defs/qualifiedName"),
+            "la rama de tipo importado volvió a `qualifiedName`, que acepta un              identificador suelto y deja sin efecto el conjunto cerrado de escalares"
+        );
+    }
+}

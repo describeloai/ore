@@ -29,13 +29,22 @@ use std::path::{Path, PathBuf};
 /// error de despacho produciría ruido, no información.
 pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
     // ── OOS1001 · análisis ──────────────────────────────────────────────────
-    let root = match parse::parse(text) {
-        Ok(n) => n,
+    //
+    // Un fichero es un FLUJO (`90-canonical-form` §5.3): se validan todos sus
+    // documentos, no el primero. Un fichero vacío no es un error — no dice nada,
+    // y no decir nada no es decir algo mal.
+    let roots = match parse::parse_stream(text) {
+        Ok(r) => r,
         Err(e) => {
             return vec![Diagnostic::new(Code::Oos1001, file, e.message).at(e.pos)];
         }
     };
+    roots.iter().flat_map(|r| validar_raiz(file, r)).collect()
+}
 
+/// Valida **un** documento ya analizado. Se detiene en el primer fallo:
+/// continuar tras un error de despacho produciría ruido, no información.
+fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     let Node::Mapping { .. } = root else {
         return vec![
             Diagnostic::new(Code::Oos1004, file, "el documento raíz debe ser un mapa")
@@ -127,7 +136,7 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
     if kind.sections_at_root() {
         raiz_ok.extend_from_slice(kind.spec_keys());
     }
-    check_keys(file, &root, &raiz_ok, "", &mut diags);
+    check_keys(file, root, &raiz_ok, "", &mut diags);
 
     if let Some((_, meta)) = root.get("metadata") {
         check_keys(file, meta, kind.metadata_keys(), "metadata.", &mut diags);
@@ -164,7 +173,7 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
     // admite un número, y no tiene forma de saber que ese número no sobrevive
     // a la serialización canónica. Es la regla de precedencia de `99-errors`
     // §2.1 — el código específico gana — aplicada a la familia de bytes.
-    diags.extend(crate::canonical::check(file, &root, kind));
+    diags.extend(crate::canonical::check(file, root, kind));
     if !diags.is_empty() {
         return diags;
     }
@@ -174,7 +183,7 @@ pub fn validate_document(file: &Path, text: &str) -> Vec<Diagnostic> {
         .into_iter()
         .filter(|r| r.kind == kind)
     {
-        let mut nodo = &root;
+        let mut nodo = root;
         let mut encontrado = true;
         for seg in regla.path {
             match nodo.get(seg) {
@@ -348,17 +357,13 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
         // `kind` a propósito. No pasa por la fase de documento, pero sí entra en
         // la de enlazado — el grafo de dependencias vive ahí.
         if f.file_name().is_some_and(|n| n == "ontology.lock") {
-            if let Some(l) = cargar(&f, &text) {
-                cargados.push(l);
-            }
+            cargados.extend(cargar(&f, &text));
             continue;
         }
 
         let d = validate_document(&f, &text);
-        if d.is_empty()
-            && let Some(l) = cargar(&f, &text)
-        {
-            cargados.push(l);
+        if d.is_empty() {
+            cargados.extend(cargar(&f, &text));
         }
         diags.extend(d);
     }
@@ -375,22 +380,30 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
 /// Reanaliza un documento ya validado para la fase de enlazado. `ontology.lock`
 /// no lleva `kind` —es un artefacto generado, no un documento de la ontología—
 /// y entra como `OntologyConfig` para que el grafo de dependencias sea legible.
-fn cargar(path: &Path, text: &str) -> Option<crate::link::Loaded> {
-    let root = parse::parse(text).ok()?;
-    let kind = match root
-        .get("kind")
-        .and_then(|(_, v)| v.as_str())
-        .and_then(Kind::parse)
-    {
-        Some(k) => k,
-        None if path.file_name().is_some_and(|n| n == "ontology.lock") => Kind::OntologyConfig,
-        None => return None,
+fn cargar(path: &Path, text: &str) -> Vec<crate::link::Loaded> {
+    let Ok(roots) = parse::parse_stream(text) else {
+        return Vec::new();
     };
-    Some(crate::link::Loaded {
-        path: path.to_path_buf(),
-        kind,
-        root,
-    })
+    let es_lock = path.file_name().is_some_and(|n| n == "ontology.lock");
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let kind = match root
+                .get("kind")
+                .and_then(|(_, v)| v.as_str())
+                .and_then(Kind::parse)
+            {
+                Some(k) => k,
+                None if es_lock => Kind::OntologyConfig,
+                None => return None,
+            };
+            Some(crate::link::Loaded {
+                path: path.to_path_buf(),
+                kind,
+                root,
+            })
+        })
+        .collect()
 }
 
 fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {

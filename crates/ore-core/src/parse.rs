@@ -117,7 +117,10 @@ enum Frame {
 
 struct Builder {
     stack: Vec<Frame>,
-    root: Option<Node>,
+    /// Un fichero es un FLUJO y un flujo tiene cero o más documentos
+    /// (`90-canonical-form` §5.3). Con la pila vacía, cada valor que llega es la
+    /// raíz de uno nuevo.
+    roots: Vec<Node>,
     error: Option<ParseError>,
     depth: usize,
 }
@@ -137,7 +140,7 @@ impl Builder {
             return;
         }
         match self.stack.last_mut() {
-            None => self.root = Some(node),
+            None => self.roots.push(node),
             Some(Frame::Seq { items, .. }) => items.push(node),
             Some(Frame::Map {
                 entries,
@@ -242,15 +245,20 @@ impl SpannedEventReceiver<'_> for Builder {
     }
 }
 
-/// Analiza un documento YAML. Devuelve el árbol raíz, o dónde y por qué falló.
-pub fn parse(text: &str) -> Result<Node, ParseError> {
+/// Analiza un FLUJO YAML y devuelve la raíz de cada documento.
+///
+/// `90-canonical-form` §5.3: un motor conforme DEBE leer todos los documentos de
+/// un fichero. Hasta que esa frase se escribió, aquí se pasaba `multi = false` y
+/// el analizador rompía el bucle tras el primero — un `Binding` puesto detrás de
+/// un `---` no existía, y nada lo decía.
+pub fn parse_stream(text: &str) -> Result<Vec<Node>, ParseError> {
     let mut b = Builder {
         stack: Vec::new(),
-        root: None,
+        roots: Vec::new(),
         error: None,
         depth: 0,
     };
-    if let Err(e) = Parser::new_from_str(text).load(&mut b, false) {
+    if let Err(e) = Parser::new_from_str(text).load(&mut b, true) {
         let m = e.marker();
         return Err(ParseError {
             message: e.info().to_string(),
@@ -263,7 +271,13 @@ pub fn parse(text: &str) -> Result<Node, ParseError> {
     if let Some(e) = b.error {
         return Err(e);
     }
-    b.root.ok_or(ParseError {
+    Ok(b.roots)
+}
+
+/// El primer documento del flujo. Para los sitios donde se espera uno solo: el
+/// manifiesto que `source add` edita, un contrato ajeno que se importa.
+pub fn parse(text: &str) -> Result<Node, ParseError> {
+    parse_stream(text)?.into_iter().next().ok_or(ParseError {
         message: "documento vacío".into(),
         pos: Pos { line: 1, col: 1 },
     })

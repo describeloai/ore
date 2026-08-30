@@ -15,7 +15,7 @@
 //!
 //! # Qué mide
 //!
-//! Los 74 casos del submódulo `vendor/oos`, agrupados por la operación que
+//! Los 75 casos del submódulo `vendor/oos`, agrupados por la operación que
 //! afirman. Arrancaron todos en rojo y hoy están todos en verde; lo que este
 //! runner protege a partir de aquí es que ninguno vuelva.
 //!
@@ -159,8 +159,13 @@ fn buscar(dir: &Path, encontrados: &mut Vec<PathBuf>) {
             // Cada borrador tiene su propio arbol y su propio marcador.
             // Mezclarlos no daria un numero falso: daria un numero que ya no
             // se sabe que mide.
+            // Se DERIVA del nombre en vez de enumerarse: una lista escrita a
+            // mano aqui envejece en silencio la primera vez que llega un
+            // borrador nuevo, y el marcador de v1alpha1 se lleva sus casos sin
+            // que nada avise. Paso con v1alpha5.
             if p.file_name()
-                .is_some_and(|n| n == "v1alpha2" || n == "v1alpha3" || n == "v1alpha4")
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("v1alpha") && n != "v1alpha1")
             {
                 continue;
             }
@@ -196,9 +201,17 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
             let raw = campo(&texto, "expects")
                 .unwrap_or_else(|| panic!("falta `expects:` en {}", dir.display()));
             let expects = Expects::parse(&raw, &nombre);
+            // El formato se LEE. Antes cualquier valor desconocido caia en
+            // `cedar` en silencio, asi que los casos de v1alpha5 exportaban un
+            // esquema Cedar y se comparaban contra aserciones de GraphQL — y
+            // pasaban, porque el comprobador ignoraba lo que no entendia. Verde
+            // por la razon equivocada es peor que rojo.
             let formato = match campo(&texto, "format").as_deref() {
                 Some("odcs") => "odcs",
-                _ => "cedar",
+                Some("ossie") => "ossie",
+                Some("graphql") => "graphql",
+                Some("cedar-schema") | None => "cedar",
+                Some(otro) => panic!("`format: {otro}` desconocido en {nombre}"),
             }
             .to_string();
             Case {
@@ -580,7 +593,15 @@ fn contrato_ajeno(dir: &Path) -> Option<PathBuf> {
         .find(|p| p.to_string_lossy().contains(".odcs."))
 }
 
+/// Formatos con emisor. Uno ausente de esta lista deja sus casos en
+/// *pendiente*, igual que `IMPLEMENTADAS` hace con los codigos: el marcador solo
+/// sube, y una regresion de verdad destaca.
+const EMISORES: &[&str] = &["odcs", "ossie", "cedar", "oos", "json"];
+
 fn ejecutar_emit(caso: &Case) -> Result<(), String> {
+    if !EMISORES.contains(&caso.formato.as_str()) {
+        return Err("no implementado".into());
+    }
     let entrada = caso.dir.join("input");
 
     match &caso.expects {
@@ -588,15 +609,18 @@ fn ejecutar_emit(caso: &Case) -> Result<(), String> {
         // que el caso dice, y por eso se comprueba el motivo y no solo el
         // código de salida.
         Expects::EmitFails => {
-            let (ok, texto) = exportar(&entrada, "ossie")?;
+            // El formato es el del caso, no `ossie` fijo: habia un solo caso
+            // `emit-fails` cuando se escribio esto, y la constante se quedo.
+            let (ok, texto) = exportar(&entrada, &caso.formato)?;
             if ok {
                 return Err("emitió, y debía fallar".into());
             }
-            if !texto.contains("binding") {
-                return Err(format!(
-                    "falló por otra cosa: {}",
-                    texto.lines().next().unwrap_or("")
-                ));
+            // Que falle, y no por no estar implementado. NO se afirma el texto
+            // del diagnostico: es la misma razon por la que `structure` afirma
+            // propiedades y no cadenas — dos implementaciones pueden redactar
+            // distinto y ser ambas correctas.
+            if texto.contains("no implementad") {
+                return Err("no implementado".into());
             }
             Ok(())
         }
@@ -657,6 +681,44 @@ fn ejecutar_emit(caso: &Case) -> Result<(), String> {
 }
 
 /// Las afirmaciones de `expected.structure.json`, comprobadas contra el esquema.
+/// Un bloque con una clave que este comprobador no entiende **no pasa**.
+///
+/// Ignorarla en silencio es lo que dejo cuatro casos de v1alpha5 en verde
+/// afirmando cosas que nadie miraba: sus aserciones usaban `type`, `field` y
+/// `scalar`, y aqui solo se leian `entity`, `members`, `actions` y `contains`.
+/// Un comprobador que exceptua de mas tiene el mismo aspecto que uno que
+/// funciona.
+fn claves_conocidas(bloque: &str) -> Result<(), String> {
+    // `description`, `mustContain` y `mustNotContain` son la envoltura del
+    // fichero: caen en el primer bloque al partir por `{`, y no son aserciones.
+    const CONOCIDAS: &[&str] = &[
+        "entity",
+        "in",
+        "members",
+        "actions",
+        "contains",
+        "reason",
+        "description",
+        "mustContain",
+        "mustNotContain",
+    ];
+    let mut resto = bloque;
+    while let Some(i) = resto.find('"') {
+        resto = &resto[i + 1..];
+        let Some(j) = resto.find('"') else { break };
+        let clave = &resto[..j];
+        let tras = resto[j + 1..].trim_start();
+        resto = &resto[j + 1..];
+        // Solo lo que va seguido de `:` es una clave; lo demas son valores.
+        if tras.starts_with(':') && !CONOCIDAS.contains(&clave) {
+            return Err(format!(
+                "el caso afirma `{clave}`, que este comprobador no sabe leer"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
     let (debe, no_debe) = esperado
         .split_once("\"mustNotContain\"")
@@ -664,6 +726,7 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
 
     for item in debe.split('{').skip(1) {
         let bloque = &item[..item.find('}').unwrap_or(item.len())];
+        claves_conocidas(bloque)?;
         // `{ "entity": "X", "in": [...] }` — el tipo existe y, si se declaran
         // padres, los tiene.
         if let Some(tipo) = campo_json(bloque, "entity") {
@@ -706,6 +769,7 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
 
     for item in no_debe.split('{').skip(1) {
         let bloque = &item[..item.find('}').unwrap_or(item.len())];
+        claves_conocidas(bloque)?;
         if let Some(tipo) = campo_json(bloque, "entity")
             && esquema.contains(&format!("\"{tipo}\""))
         {
@@ -924,6 +988,18 @@ fn borrador_de_v1alpha4() {
     );
 }
 
+/// El borrador de v1alpha5 arranca entero en pendiente: `--format graphql` no
+/// existe. Sus ocho casos certifican los cuatro peldanos de `01-emision-graphql`
+/// §6, y se limpian segun se implemente el emisor.
+#[test]
+fn borrador_de_v1alpha5() {
+    marcador(
+        "v1alpha5",
+        "emisión",
+        "BORRADOR · OOS v1alpha5 · emisión a GraphQL",
+    );
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -998,11 +1074,11 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 74, "número de casos inesperado");
+    assert_eq!(casos.len(), 75, "número de casos inesperado");
     assert_eq!(por_grupo.get("invalid"), Some(&32));
     assert_eq!(por_grupo.get("diff"), Some(&20));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
-    assert_eq!(por_grupo.get("digest"), Some(&7));
+    assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&5));
     assert_eq!(por_grupo.get("valid"), Some(&1));
 }
