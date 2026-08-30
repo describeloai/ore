@@ -519,6 +519,20 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
         }
     }
     escalares.remove(APROBACION);
+
+    // Un esquema que usa una directiva que no declara **no es un esquema
+    // válido**, y es exactamente la misma regla que ya obliga a declarar los
+    // escalares propios — escrita en §2.2 y aplicada solo a una de las dos cosas
+    // que cubre.
+    //
+    // Lo destapó la prueba de fuego de §9: `buildSchema` de graphql-js rechazaba
+    // los seis casos con «Unknown directive @key». La sintaxis era correcta; el
+    // esquema no. Un fichero puede tokenizar y no ser servible, que es
+    // justamente por lo que esa prueba mira las dos cosas por separado.
+    if tipos.values().any(|t| !t.claves.is_empty()) {
+        s.push_str("directive @key(fields: String!) repeatable on OBJECT\n\n");
+    }
+
     for e in &escalares {
         let _ = writeln!(s, "scalar {e}");
     }
