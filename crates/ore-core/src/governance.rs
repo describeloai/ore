@@ -65,25 +65,26 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
 
     // 1 · Que los objetivos apunten a algo que existe y del eje correcto.
-    //     Antes que nada: seleccionar sobre un retículo que no está o sobre el
-    //     eje equivocado no produce una selección mala — produce una vacía, y
-    //     el error saldría como `OOS8002`, que es el diagnóstico equivocado.
+    //     Antes que nada: seleccionar sobre un retículo que no está, sobre el
+    //     eje equivocado o sobre una propiedad que no existe no produce una
+    //     selección mala — produce una vacía, y el error saldría como
+    //     `OOS8002`, que es el diagnóstico equivocado.
+    let props = flow::efectivas(pkg, &lat);
     for r in &reglas {
-        objetivos_validos(r, &lat, &mut out);
+        objetivos_validos(r, &lat, &props, &mut out);
     }
     if !out.is_empty() {
         return out;
     }
 
     // 2 · La selección, de la que depende todo lo demás.
-    let props = flow::efectivas(pkg, &lat);
     let mut sel: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for r in &reglas {
         let mut union = BTreeSet::new();
-        for (obj, pos) in objetivos(r) {
-            let casan = selecciona(&obj, &props, &lat);
+        for (dom, pos) in objetivos(r) {
+            let casan = selecciona(&dom, &props, &lat);
             if casan.is_empty() {
-                out.push(vacio(r, &obj, pos));
+                out.push(vacio(r, &dom, pos));
             }
             union.extend(casan);
         }
@@ -98,7 +99,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     for r in &reglas {
         let q = r.qname().unwrap_or_default();
         let seleccionadas = sel.get(&q).cloned().unwrap_or_default();
-        mascaras(r, &lat, &mut out);
+        mascaras(r, &lat, &props, &mut out);
         aserciones(r, &seleccionadas, &fuentes, &mut out);
         deberes(pkg, r, &mut out);
     }
@@ -113,103 +114,166 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 
 // ── Los objetivos ───────────────────────────────────────────────────────────
 
+/// Cómo un objetivo nombra su dominio.
+///
+/// Dos formas y **un solo sitio donde escribirlas**. `atLeast` lo computa —el
+/// retículo leído al revés—; `named` lo escribe. Que la segunda sea admisible
+/// es consecuencia de `OOS8001`: enumerar se pudre porque una propiedad nueva
+/// se escapa **en silencio**, y con la regla de cobertura eso rompe la
+/// compilación. Era el silencio, no la enumeración, lo que hacía daño.
+///
+/// Prohibirla obligaba a que el caso enumerado viviera colgando de la
+/// propiedad, que es una segunda superficie de autoría **sin dueño propio**:
+/// movía el problema en vez de resolverlo.
+enum Dominio {
+    /// El dominio computado: retículo → nivel mínimo, en conjunción.
+    Predicado(Objetivo),
+    /// El dominio escrito: nombres cualificados de propiedad.
+    Nombres(Vec<String>),
+}
+
 /// Lee `spec.targets`, con la posición de cada uno para poder señalarlo.
-fn objetivos(r: &Loaded) -> Vec<(Objetivo, Pos)> {
+fn objetivos(r: &Loaded) -> Vec<(Dominio, Pos)> {
     r.section("targets")
         .map(|n| n.items())
         .unwrap_or(&[])
         .iter()
         .filter_map(|t| {
-            let (_, mapa) = t.get("atLeast")?;
-            let obj: Objetivo = mapa
-                .entries()
+            if let Some((_, mapa)) = t.get("atLeast") {
+                let obj: Objetivo = mapa
+                    .entries()
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                    .collect();
+                return Some((Dominio::Predicado(obj), mapa.pos()));
+            }
+            let (_, lista) = t.get("named")?;
+            let nombres = lista
+                .items()
                 .iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .filter_map(|i| i.as_str().map(String::from))
                 .collect();
-            Some((obj, mapa.pos()))
+            Some((Dominio::Nombres(nombres), lista.pos()))
         })
         .collect()
 }
 
-/// `OOS4003` · `OOS8006` — el retículo existe, el nivel existe, y el eje es el
-/// que gobierna.
-fn objetivos_validos(r: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagnostic>) {
-    for (obj, pos) in objetivos(r) {
-        for (ret, nivel) in &obj {
-            let Some(l) = lat.get(ret) else {
-                out.push(
-                    Diagnostic::new(
-                        Code::Oos4003,
-                        &r.path,
-                        format!("`{ret}` no es un retículo declarado"),
-                    )
-                    .at(pos)
-                    .help(
-                        "un objetivo se escribe sobre un retículo que ya existe: no hay \
-                         lenguaje de objetivos, hay el orden del retículo leído al revés",
-                    ),
-                );
-                continue;
-            };
-            if l.index(nivel).is_none() {
-                out.push(
-                    Diagnostic::new(
-                        Code::Oos4003,
-                        &r.path,
-                        format!("`{nivel}` no es un nivel de `{ret}`"),
-                    )
-                    .at(pos)
-                    .help(format!("los niveles son: {}", l.levels.join(", "))),
-                );
-                continue;
+/// `OOS4003` · `OOS8006` · `OOS2005` — que el objetivo apunte a algo que existe
+/// y, si es un predicado, del eje que gobierna.
+fn objetivos_validos(
+    r: &Loaded,
+    lat: &BTreeMap<String, Lattice>,
+    props: &Props,
+    out: &mut Vec<Diagnostic>,
+) {
+    for (dom, pos) in objetivos(r) {
+        match dom {
+            Dominio::Nombres(nombres) => {
+                for n in nombres {
+                    if props.contains_key(&n) {
+                        continue;
+                    }
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2005,
+                            &r.path,
+                            format!("`{n}` no es una propiedad de ninguna entidad del paquete"),
+                        )
+                        .at(pos),
+                    );
+                }
             }
-            if l.axis == Axis::Integrity {
-                out.push(
-                    Diagnostic::new(
-                        Code::Oos8006,
-                        &r.path,
-                        format!("`{ret}` es de eje `integrity` y un objetivo no puede apuntarlo"),
-                    )
-                    .at(pos)
-                    .help(
-                        "la monotonía del gobierno corre al revés en ese eje: en \
-                         confidencialidad se gobierna hacia arriba —más sensible, más \
-                         gobierno— y en integridad se gobernaría hacia abajo —menos fiable, \
-                         más gobierno—, así que `atLeast` selecciona justo lo contrario de lo \
-                         que hace falta. Y antes de añadir `atMost` hay una pregunta: el \
-                         remedio natural de la baja integridad es un endoso, que es asunto de \
-                         `Function` y no de un `Ruleset`",
-                    ),
-                );
+            Dominio::Predicado(obj) => {
+                for (ret, nivel) in &obj {
+                    let Some(l) = lat.get(ret) else {
+                        out.push(
+                            Diagnostic::new(
+                                Code::Oos4003,
+                                &r.path,
+                                format!("`{ret}` no es un retículo declarado"),
+                            )
+                            .at(pos)
+                            .help(
+                                "un objetivo por predicado se escribe sobre un retículo que ya \
+                                 existe: no hay lenguaje de objetivos, hay el orden del retículo \
+                                 leído al revés",
+                            ),
+                        );
+                        continue;
+                    };
+                    if l.index(nivel).is_none() {
+                        out.push(
+                            Diagnostic::new(
+                                Code::Oos4003,
+                                &r.path,
+                                format!("`{nivel}` no es un nivel de `{ret}`"),
+                            )
+                            .at(pos)
+                            .help(format!("los niveles son: {}", l.levels.join(", "))),
+                        );
+                        continue;
+                    }
+                    if l.axis == Axis::Integrity {
+                        out.push(
+                            Diagnostic::new(
+                                Code::Oos8006,
+                                &r.path,
+                                format!(
+                                    "`{ret}` es de eje `integrity` y un objetivo no puede apuntarlo"
+                                ),
+                            )
+                            .at(pos)
+                            .help(
+                                "la monotonía del gobierno corre al revés en ese eje: en \
+                                 confidencialidad se gobierna hacia arriba —más sensible, más \
+                                 gobierno— y en integridad se gobernaría hacia abajo —menos \
+                                 fiable, más gobierno—, así que `atLeast` selecciona justo lo \
+                                 contrario de lo que hace falta. Y antes de añadir `atMost` hay \
+                                 una pregunta: el remedio natural de la baja integridad es un \
+                                 endoso, que es asunto de `Function` y no de un `Ruleset`",
+                            ),
+                        );
+                    }
+                }
             }
         }
     }
 }
 
-/// Las propiedades que casan con un objetivo. Y dentro del mapa, con la
+/// Las propiedades que casan con un objetivo. Dentro de un predicado, con la
 /// conjunción: la propiedad debe satisfacer **todas** las entradas.
-fn selecciona(obj: &Objetivo, props: &Props, lat: &BTreeMap<String, Lattice>) -> BTreeSet<String> {
-    props
-        .iter()
-        .filter(|(_, etiquetas)| {
-            obj.iter().all(|(ret, piso)| {
-                etiquetas
-                    .get(ret)
-                    .and_then(|nivel| lat.get(ret)?.ge(nivel, piso))
-                    .unwrap_or(false)
+fn selecciona(dom: &Dominio, props: &Props, lat: &BTreeMap<String, Lattice>) -> BTreeSet<String> {
+    match dom {
+        Dominio::Nombres(ns) => ns
+            .iter()
+            .filter(|n| props.contains_key(*n))
+            .cloned()
+            .collect(),
+        Dominio::Predicado(obj) => props
+            .iter()
+            .filter(|(_, etiquetas)| {
+                obj.iter().all(|(ret, piso)| {
+                    etiquetas
+                        .get(ret)
+                        .and_then(|nivel| lat.get(ret)?.ge(nivel, piso))
+                        .unwrap_or(false)
+                })
             })
-        })
-        .map(|(q, _)| q.clone())
-        .collect()
+            .map(|(q, _)| q.clone())
+            .collect(),
+    }
 }
 
 /// `OOS8002` — un objetivo que no casa con nada.
-fn vacio(r: &Loaded, obj: &Objetivo, pos: Pos) -> Diagnostic {
-    let escrito = obj
-        .iter()
-        .map(|(k, v)| format!("{k}: {v}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+fn vacio(r: &Loaded, dom: &Dominio, pos: Pos) -> Diagnostic {
+    let escrito = match dom {
+        Dominio::Nombres(ns) => ns.join(", "),
+        Dominio::Predicado(o) => o
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
     Diagnostic::new(
         Code::Oos8002,
         &r.path,
@@ -226,7 +290,30 @@ fn vacio(r: &Loaded, obj: &Objetivo, pos: Pos) -> Diagnostic {
 
 // ── Las máscaras · OOS8003 ──────────────────────────────────────────────────
 
-fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagnostic>) {
+/// El suelo que un objetivo impone sobre un retículo, como índice.
+///
+/// Para un predicado es el nivel declarado. Para un conjunto de nombres es el
+/// **mínimo** de sus etiquetas — y solo si **todas** la tienen: si a una le
+/// falta, sobre ella la máscara no baja nada y el descenso deja de ser
+/// demostrable.
+fn suelo(dom: &Dominio, ret: &str, props: &Props, l: &Lattice) -> Option<usize> {
+    match dom {
+        Dominio::Predicado(o) => l.index(o.get(ret)?),
+        Dominio::Nombres(ns) => ns
+            .iter()
+            .map(|n| {
+                props
+                    .get(n)
+                    .and_then(|e| e.get(ret))
+                    .and_then(|v| l.index(v))
+            })
+            .collect::<Option<Vec<usize>>>()?
+            .into_iter()
+            .min(),
+    }
+}
+
+fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, props: &Props, out: &mut Vec<Diagnostic>) {
     let objs = objetivos(r);
     for m in r.section("masks").map(|n| n.items()).unwrap_or(&[]) {
         let Some(nombre) = m.get("declassifier").and_then(|(_, v)| v.as_str()) else {
@@ -320,8 +407,7 @@ fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagnosti
             // de gobierno es lo mismo que no bajar.
             let pisos: Vec<usize> = objs
                 .iter()
-                .filter_map(|(o, _)| o.get(ret))
-                .filter_map(|p| l.index(p))
+                .filter_map(|(o, _)| suelo(o, ret, props, l))
                 .collect();
             let Some(&piso) = pisos.iter().min() else {
                 out.push(
@@ -335,9 +421,10 @@ fn mascaras(r: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagnosti
                     )
                     .at(destino.pos())
                     .help(
-                        "el descenso se comprueba contra el suelo del objetivo. Sin suelo no \
-                         hay nada contra qué compararlo, y una máscara que no baja \
-                         demostrablemente no es una salvaguarda",
+                        "el descenso se comprueba contra el suelo del objetivo: el nivel \
+                         declarado si apunta por predicado, o el mínimo de las etiquetas si \
+                         apunta por nombre. Sin suelo no hay nada contra qué compararlo, y una \
+                         máscara que no baja demostrablemente no es una salvaguarda",
                     ),
                 );
                 continue;
@@ -643,7 +730,7 @@ mod tests {
             ("E.critica", &[("gdpr.sensitivity", "critical")]),
         ]);
         let obj = Objetivo::from([("gdpr.sensitivity".into(), "medium".into())]);
-        let sel = selecciona(&obj, &p, &lat);
+        let sel = selecciona(&Dominio::Predicado(obj), &p, &lat);
         assert!(sel.contains("E.alta") && sel.contains("E.critica"));
         assert!(!sel.contains("E.baja"));
     }
@@ -668,7 +755,7 @@ mod tests {
             ("gdpr.sensitivity".into(), "high".into()),
             ("acme.residency".into(), "eu_only".into()),
         ]);
-        let sel = selecciona(&obj, &p, &lat);
+        let sel = selecciona(&Dominio::Predicado(obj), &p, &lat);
         assert!(sel.contains("E.ambas"));
         assert!(!sel.contains("E.solo_una"));
     }
@@ -681,7 +768,28 @@ mod tests {
         let lat = BTreeMap::from([reticulo("gdpr.sensitivity", &["none", "high"])]);
         let p = props(&[("E.p", &[("gdpr.sensitivity", "inventado")])]);
         let obj = Objetivo::from([("gdpr.sensitivity".into(), "none".into())]);
-        assert!(selecciona(&obj, &p, &lat).is_empty());
+        assert!(selecciona(&Dominio::Predicado(obj), &p, &lat).is_empty());
+    }
+
+    /// El dominio escrito selecciona lo que nombra, y solo lo que existe.
+    /// Enumerar es seguro porque `OOS8001` impide el silencio, no porque la
+    /// enumeración haya dejado de ser enumeración.
+    #[test]
+    fn el_dominio_escrito_selecciona_lo_que_nombra() {
+        let lat = BTreeMap::from([reticulo("gdpr.sensitivity", &["none", "high"])]);
+        let p = props(&[
+            ("E.a", &[("gdpr.sensitivity", "high")]),
+            ("E.b", &[("gdpr.sensitivity", "high")]),
+        ]);
+        let dom = Dominio::Nombres(vec!["E.a".into(), "E.inexistente".into()]);
+        let sel = selecciona(&dom, &p, &lat);
+        assert!(sel.contains("E.a"));
+        assert!(!sel.contains("E.b"));
+        assert_eq!(
+            sel.len(),
+            1,
+            "lo que no existe no se selecciona: es OOS2005"
+        );
     }
 
     /// La regla que impide que la cobertura se vuelva decorativa. Un solo

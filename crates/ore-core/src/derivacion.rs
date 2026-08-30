@@ -1,12 +1,10 @@
-//! Los dos campos de v1alpha2 — `expression` promovida y `quality`.
+//! Propiedades derivadas — `expression` promovida de prosa a CEL.
 //!
 //! # Por qué esto es una fase y no una comprobación de esquema
 //!
-//! Casi todo lo que estos dos campos exigen **sí** es de esquema: que una
-//! aserción `library` traiga `metric`, que una entidad no admita `type: sql`.
-//! Eso lo resuelve el perfil y sale como `OOS1004`.
-//!
-//! Lo que no cabe en un esquema es la única regla que importa:
+//! Que una propiedad con `expression` declare `derivedFrom` **sí** es de
+//! esquema, y sale como `OOS1004`. Lo que no cabe en un esquema es la regla que
+//! justifica que exista esta fase:
 //!
 //! > Toda propiedad que la expresión lee **DEBE** estar declarada en
 //! > `derivedFrom` (`OOS4015`).
@@ -36,18 +34,8 @@
 
 use crate::code::Code;
 use crate::diag::Diagnostic;
-use crate::document::Kind;
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
-
-/// Los tipos de aserción que admite cada plano.
-///
-/// La partición no es de gusto: una regla `library` afirma algo sobre el
-/// **significado** y no tiene dialecto; una `sql` está atada a uno, y el
-/// dialecto solo se conoce donde se declara la fuente. `text` y `custom` se
-/// transportan sin interpretar y valen en los dos lados.
-const TIPOS_ENTITY: &[&str] = &["library", "text", "custom"];
-const TIPOS_BINDING: &[&str] = &["sql", "text", "custom"];
 
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -65,13 +53,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
         for (k, v) in e.section("properties").map(|n| n.entries()).unwrap_or(&[]) {
             let Some(nombre) = k.as_str() else { continue };
             expresion(pkg, e, &qn, nombre, v, &props, &mut out);
-            aserciones(e, v.get("quality").map(|(_, q)| q), TIPOS_ENTITY, &mut out);
         }
-        aserciones(e, e.section("quality"), TIPOS_ENTITY, &mut out);
-    }
-
-    for b in pkg.docs.iter().filter(|d| d.kind == Kind::Binding) {
-        aserciones(b, b.section("quality"), TIPOS_BINDING, &mut out);
     }
     out
 }
@@ -180,56 +162,6 @@ fn lee(expr: &str, props: &[&str]) -> Vec<String> {
         }
     }
     out
-}
-
-// ── `quality` · OOS1004 ─────────────────────────────────────────────────────
-
-fn aserciones(d: &Loaded, quality: Option<&Node>, tipos: &[&str], out: &mut Vec<Diagnostic>) {
-    let Some(q) = quality else { return };
-    for a in q.items() {
-        let id = a
-            .get("id")
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("<sin id>");
-        let tipo = a
-            .get("type")
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or(tipos[0]);
-
-        if !tipos.contains(&tipo) {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos1004,
-                    &d.path,
-                    format!("la aserción `{id}` es de tipo `{tipo}`, que este documento no admite"),
-                )
-                .at(a.pos())
-                .help(format!(
-                    "aquí se admiten: {}. La partición es por PLANO: una regla `library` \
-                     afirma algo sobre el significado y no tiene dialecto, así que vive en la \
-                     entidad; una `sql` está atada a un dialecto, y el dialecto solo se conoce \
-                     donde se declara la fuente",
-                    tipos.join(", ")
-                )),
-            );
-            continue;
-        }
-        let falta = match tipo {
-            "library" if a.get("metric").is_none() => Some("metric"),
-            "sql" if a.get("query").is_none() => Some("query"),
-            _ => None,
-        };
-        if let Some(campo) = falta {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos1004,
-                    &d.path,
-                    format!("la aserción `{id}` es `{tipo}` y no declara `{campo}`"),
-                )
-                .at(a.pos()),
-            );
-        }
-    }
 }
 
 #[cfg(test)]

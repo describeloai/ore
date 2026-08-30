@@ -181,10 +181,6 @@ impl Kind {
                 "relations",
                 "moved",
                 "reserved",
-                // v1alpha2: aserciones sobre la entidad entera. Las de tipo
-                // `sql` NO caben aquí — están atadas a un dialecto y el
-                // dialecto solo se conoce en el binding (`04-campos` §3.1).
-                "quality",
             ],
             Kind::Binding => &[
                 "targetEntity",
@@ -194,9 +190,6 @@ impl Kind {
                 "properties",
                 "capabilities",
                 "materialization",
-                // v1alpha2: la otra mitad de la partición por plano. Aquí sí
-                // cabe `sql`, y aquí no cabe `library`.
-                "quality",
             ],
             // `axis` es lo único que v1alpha2 añade al retículo, y de él sale
             // el combinador. `join` queda obsoleto: derivable, luego no
@@ -242,6 +235,11 @@ impl Kind {
     /// documental. Lo que v1alpha2 cambia es su ESTATUTO —pasa a ser CEL y a
     /// comprobarse—, no su nombre. Un `expr` al lado habrían sido dos nombres
     /// para un concepto.
+    ///
+    /// Y `quality` NO está: el cuerpo de una aserción es `quality` de ODCS y su
+    /// destino de emisión también, pero escribirla aquí sería una segunda
+    /// superficie de autoría **sin dueño propio**. Vive en un `Ruleset`, que
+    /// admite objetivos por nombre además de por predicado.
     pub const fn property_keys(self) -> &'static [&'static str] {
         &[
             "type",
@@ -255,7 +253,6 @@ impl Kind {
             "expression",
             "examples",
             "aiContext",
-            "quality",
         ]
     }
 

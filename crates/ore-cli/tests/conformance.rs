@@ -846,6 +846,75 @@ fn borrador_de_v1alpha3() {
     marcador("v1alpha3", "gobierno", "BORRADOR · OOS v1alpha3 · gobierno");
 }
 
+/// Los esquemas publicados tienen que ser JSON bien formado.
+///
+/// Parece obvio y no lo estaba: **nada lo comprobaba**. `ore-core` no lleva
+/// analizador de JSON —`json.rs` solo emite, y esa es una decisión— así que un
+/// esquema roto viajaba hasta el repositorio público sin que un solo test se
+/// pusiera en rojo. Ocurrió: una descripción con un salto de línea sin escapar
+/// se subió a `main` con la suite entera en verde.
+///
+/// Esto no es un analizador: es el escáner mínimo que atrapa esa clase de
+/// fallo —un carácter de control dentro de una cadena, o una comilla sin
+/// cerrar—, que es la que produce un fichero que no parsea en ninguna parte.
+#[test]
+fn los_esquemas_publicados_son_json_bien_formado() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/oos/schemas")
+        .canonicalize()
+        .expect("submódulo sin inicializar");
+
+    let mut ficheros = Vec::new();
+    fn recorrer(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(es) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in es.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                recorrer(&p, out);
+            } else if p.extension().is_some_and(|x| x == "json") {
+                out.push(p);
+            }
+        }
+    }
+    recorrer(&raiz, &mut ficheros);
+    assert!(!ficheros.is_empty(), "sin esquemas que comprobar");
+
+    let mut malos = Vec::new();
+    for f in &ficheros {
+        let t = std::fs::read_to_string(f).expect("esquema ilegible");
+        let (mut en_cadena, mut escapado, mut linea) = (false, false, 1usize);
+        for c in t.chars() {
+            if c == '\n' {
+                linea += 1;
+            }
+            match (en_cadena, escapado, c) {
+                (true, true, _) => escapado = false,
+                (true, false, '\\') => escapado = true,
+                (true, false, '"') => en_cadena = false,
+                (true, false, c) if (c as u32) < 0x20 => {
+                    malos.push(format!(
+                        "{}:{linea}: carácter de control en una cadena",
+                        f.display()
+                    ));
+                    break;
+                }
+                (false, _, '"') => en_cadena = true,
+                _ => {}
+            }
+        }
+        if en_cadena {
+            malos.push(format!("{}: cadena sin cerrar", f.display()));
+        }
+    }
+    assert!(
+        malos.is_empty(),
+        "esquemas mal formados:\n  {}",
+        malos.join("\n  ")
+    );
+}
+
 /// La suite del submódulo debe contener exactamente lo que la especificación
 /// declara. Si este test se rompe tras actualizar `vendor/oos`, la suite ha
 /// cambiado y hay que mirar por qué.

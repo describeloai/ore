@@ -262,13 +262,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !tipos.is_empty() {
         return tipos;
     }
-    // Los dos campos antes que flujo, y el orden importa: `OOS4015` dice que
+    // Las derivaciones antes que flujo, y el orden importa: `OOS4015` dice que
     // `derivedFrom` declara de menos, y la propagación de flujo usa justo eso.
     // Propagar primero daría etiquetas más bajas de las debidas y el
     // diagnóstico saldría en otro sitio, o en ninguno.
-    let campos = crate::campos::check(&pkg);
-    if !campos.is_empty() {
-        return campos;
+    let derivadas = crate::derivacion::check(&pkg);
+    if !derivadas.is_empty() {
+        return derivadas;
     }
     let flujo = crate::flow::check(&pkg);
     if !flujo.is_empty() {
