@@ -112,6 +112,30 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     out
 }
 
+/// La selección de cada `Ruleset`: nombre cualificado del documento → las
+/// propiedades que casan con alguno de sus objetivos.
+///
+/// Se expone para la emisión a ODCS, que necesita exactamente esto: una
+/// aserción se proyecta a la propiedad que gobierna. Y se expone en vez de
+/// recomputarse allí porque **dos selecciones serían dos semánticas** — la
+/// única definición de «qué gobierna esta regla» vive en `selecciona`, y las
+/// dos rutas la comparten.
+pub fn selecciones(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
+    let lat = flow::lattices(pkg);
+    let props = flow::efectivas(pkg, &lat);
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == Kind::Ruleset)
+        .map(|r| {
+            let mut union = BTreeSet::new();
+            for (dom, _) in objetivos(r) {
+                union.extend(selecciona(&dom, &props, &lat));
+            }
+            (r.qname().unwrap_or_default(), union)
+        })
+        .collect()
+}
+
 // ── Los objetivos ───────────────────────────────────────────────────────────
 
 /// Cómo un objetivo nombra su dominio.

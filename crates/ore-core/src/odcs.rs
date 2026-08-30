@@ -76,7 +76,59 @@ fn cadena(m: &BTreeMap<String, Json>, k: &str) -> Option<String> {
 
 /// Emite el paquete como contrato ODCS v3.1.0.
 pub fn emit(pkg: &Package) -> Json {
-    emit_canonical(&normalize::package(pkg))
+    let canonica = normalize::package(pkg);
+    let calidad = calidad(&canonica, &crate::governance::selecciones(pkg));
+    emit_con_calidad(&canonica, &calidad)
+}
+
+/// Las aserciones de cada `Ruleset`, repartidas a las propiedades que gobiernan.
+///
+/// # Por qué se emiten aquí y no se escriben aquí
+///
+/// `quality` de ODCS es **el cuerpo** de una aserción y **el destino** de su
+/// emisión, y no es su sitio de autoría: escribirla colgando de la propiedad
+/// sería una segunda superficie sin dueño propio (`v1alpha2/04-expression` §3).
+/// Es la misma posición que Ossie ocupa para la entidad — **objetivo de
+/// emisión, no anfitrión**— y la razón de que exista esta función.
+///
+/// Lo que sale es un contrato que Soda, Great Expectations o dbt saben leer, y
+/// que además dice **quién exige cada regla**: `x-oos-ruleset` lleva el nombre
+/// del documento que la impuso. Un contrato que enumera obligaciones sin decir
+/// de dónde vienen no es auditable.
+///
+/// El orden es determinista sin ordenar nada: la forma canónica llega en un
+/// `BTreeMap` —los `Ruleset:` en orden de nombre— y sus aserciones ya vienen
+/// ordenadas por N4, que las trata como conjunto.
+fn calidad(
+    canonica: &BTreeMap<String, Json>,
+    sel: &BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> BTreeMap<String, Vec<Json>> {
+    let mut out: BTreeMap<String, Vec<Json>> = BTreeMap::new();
+    for (id, doc) in canonica.iter() {
+        let Some(qname) = id.strip_prefix("Ruleset:") else {
+            continue;
+        };
+        let Some(props) = sel.get(qname) else {
+            continue;
+        };
+        let Some(Json::Arr(aserciones)) = obj(doc)
+            .and_then(|d| d.get("spec"))
+            .and_then(obj)
+            .map(|s| s.get("assertions"))
+            .flatten()
+        else {
+            continue;
+        };
+        for a in aserciones {
+            let Some(m) = obj(a) else { continue };
+            let mut j = m.clone();
+            j.insert("x-oos-ruleset".into(), Json::s(qname));
+            for p in props {
+                out.entry(p.clone()).or_default().push(Json::Obj(j.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// `ODCS → OOS → ODCS`. Pasa **por la representación OOS**, que es exactamente
@@ -86,10 +138,24 @@ pub fn reemit(contrato: &Json) -> Json {
     emit_canonical(&import(contrato))
 }
 
+/// Un contrato ODCS importado no trae `Ruleset`, así que no hay nada que
+/// proyectar: la ida y vuelta no puede inventar una obligación que nadie
+/// declaró.
+fn sin_calidad() -> BTreeMap<String, Vec<Json>> {
+    BTreeMap::new()
+}
+
 /// Emite desde la forma canónica de un paquete. Las dos entradas —un paquete
 /// leído del disco y uno importado de ODCS— llegan aquí indistinguibles, y esa
 /// es la razón de que la ida y vuelta pueda ser la identidad.
 pub fn emit_canonical(canonica: &BTreeMap<String, Json>) -> Json {
+    emit_con_calidad(canonica, &sin_calidad())
+}
+
+fn emit_con_calidad(
+    canonica: &BTreeMap<String, Json>,
+    calidad: &BTreeMap<String, Vec<Json>>,
+) -> Json {
     let mut out: BTreeMap<String, Json> = BTreeMap::new();
     out.insert("apiVersion".into(), Json::s(ODCS_VERSION));
     out.insert("kind".into(), Json::s("DataContract"));
@@ -191,7 +257,7 @@ pub fn emit_canonical(canonica: &BTreeMap<String, Json>) -> Json {
     let schema: Vec<Json> = canonica
         .iter()
         .filter(|(id, _)| id.starts_with("Entity:"))
-        .filter_map(|(id, j)| entidad_a_schema(id, j))
+        .filter_map(|(id, j)| entidad_a_schema(id, j, calidad))
         .collect();
     if !schema.is_empty() {
         out.insert("schema".into(), Json::Arr(schema));
@@ -259,7 +325,7 @@ fn binding_a_server(b: &Json) -> Option<Json> {
     Some(Json::Obj(s))
 }
 
-fn entidad_a_schema(id: &str, e: &Json) -> Option<Json> {
+fn entidad_a_schema(id: &str, e: &Json, calidad: &BTreeMap<String, Vec<Json>>) -> Option<Json> {
     let spec = obj(e)?.get("spec").and_then(obj)?;
     let meta = obj(e)?.get("metadata").and_then(obj)?;
 
@@ -288,6 +354,7 @@ fn entidad_a_schema(id: &str, e: &Json) -> Option<Json> {
         }
     }
 
+    let qn = id.trim_start_matches("Entity:").to_string();
     let clave: Vec<&str> = match spec.get("primaryKey") {
         Some(Json::Arr(xs)) => xs
             .iter()
@@ -329,6 +396,11 @@ fn entidad_a_schema(id: &str, e: &Json) -> Option<Json> {
                 }
                 if clave.contains(&nombre.as_str()) {
                     p.insert("primaryKey".into(), Json::Bool(true));
+                }
+                // Las aserciones que algún `Ruleset` impone sobre esta
+                // propiedad, en el sitio donde ODCS las espera.
+                if let Some(qs) = calidad.get(&format!("{qn}.{nombre}")) {
+                    p.insert("quality".into(), Json::Arr(qs.clone()));
                 }
                 Json::Obj(p)
             })

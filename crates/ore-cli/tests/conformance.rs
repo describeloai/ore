@@ -118,6 +118,11 @@ struct Case {
     grupo: String,
     nombre: String,
     expects: Expects,
+    /// A qué formato exporta un caso `structure`. Estaba escrito en los
+    /// `case.yaml` desde el principio y el runner lo ignoraba, exportando
+    /// siempre a Cedar: un campo que nadie lee es peor que uno que no existe,
+    /// porque promete algo.
+    formato: String,
 }
 
 /// Lector mínimo de `case.yaml`.
@@ -185,11 +190,17 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
             let raw = campo(&texto, "expects")
                 .unwrap_or_else(|| panic!("falta `expects:` en {}", dir.display()));
             let expects = Expects::parse(&raw, &nombre);
+            let formato = match campo(&texto, "format").as_deref() {
+                Some("odcs") => "odcs",
+                _ => "cedar",
+            }
+            .to_string();
             Case {
                 dir,
                 grupo,
                 nombre,
                 expects,
+                formato,
             }
         })
         .collect();
@@ -623,7 +634,7 @@ fn ejecutar_emit(caso: &Case) -> Result<(), String> {
         // Propiedades estructurales, no texto: dos implementaciones pueden
         // formatear el esquema distinto y ser ambas correctas.
         Expects::Structure => {
-            let (ok, esquema) = exportar(&entrada, "cedar")?;
+            let (ok, esquema) = exportar(&entrada, &caso.formato)?;
             if !ok {
                 return Err(format!(
                     "no emite: {}",
@@ -676,6 +687,15 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
                 return Err(format!("falta la acción `{a}`"));
             }
         }
+        // La forma genérica: una cadena que tiene que aparecer. Las tres de
+        // arriba son de Cedar; esta sirve para cualquier formato, y es lo que
+        // permite afirmar sobre un contrato ODCS sin escribir un comparador
+        // por emisor.
+        for c in lista_json(bloque, "contains") {
+            if !esquema.contains(&c) {
+                return Err(format!("falta `{c}` en la salida"));
+            }
+        }
     }
 
     for item in no_debe.split('{').skip(1) {
@@ -686,6 +706,11 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
             return Err(format!(
                 "`{tipo}` no está declarado y aparece en el esquema"
             ));
+        }
+        for c in lista_json(bloque, "contains") {
+            if esquema.contains(&c) {
+                return Err(format!("`{c}` aparece y no debería"));
+            }
         }
     }
     Ok(())
@@ -707,11 +732,33 @@ fn lista_json(texto: &str, clave: &str) -> Vec<String> {
     }
     resto[abre + 1..cierra]
         .split(',')
-        .filter_map(|t| {
-            let t = t.trim().strip_prefix('"')?;
-            Some(t[..t.find('"')?].to_string())
-        })
+        .filter_map(|t| leer_cadena(t.trim()))
         .collect()
+}
+
+/// Una cadena JSON, respetando las comillas escapadas.
+///
+/// Hacía falta al añadir `contains`: afirmar sobre un contrato ODCS pide
+/// escribir una comilla escapada dentro del JSON esperado, y la versión ingenua
+/// —cortar en la siguiente comilla— devolvía una barra suelta. El caso fallaba
+/// diciendo «falta `\`», que es un mensaje sobre el runner disfrazado de
+/// diagnóstico sobre la salida.
+///
+/// No parte por comas dentro de la cadena: ninguna de las que se afirman las
+/// lleva, y un analizador completo aquí sería el analizador de JSON que
+/// `ore-core` decidió no tener.
+fn leer_cadena(t: &str) -> Option<String> {
+    let cuerpo = t.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut cs = cuerpo.chars();
+    while let Some(c) = cs.next() {
+        match c {
+            '\\' => out.push(cs.next()?),
+            '"' => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 #[test]
