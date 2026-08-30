@@ -258,7 +258,53 @@ struct Shape {
     conceptos: BTreeMap<String, Prop>,
     /// Las formas: `interfaz` → los conceptos que exige.
     interfaces: BTreeMap<String, Vec<String>>,
+    /// v1alpha2 · la superficie de escritura gobernada.
+    funciones: BTreeMap<String, Funcion>,
+    /// v1alpha2 · `resolución` → `estrategia` → su umbral.
+    umbrales: BTreeMap<String, BTreeMap<String, String>>,
+    /// v1alpha3 · lo que un `Ruleset` **dice**, no solo lo que cubre.
+    ///
+    /// `gobernadas` ya veía su **efecto** —qué naturaleza cubre cada
+    /// propiedad—, y con eso una regla que desaparece salta. Lo que no se veía
+    /// es una regla que **sigue ahí y ha dejado de significar algo**: la
+    /// cobertura no cambia, así que `OOS8001` sigue satisfecho y `OOS5023` no
+    /// dice nada. Es el modo de fallo que `01-gobierno` §6.2 describe —*una
+    /// política que permite todo cubre igual que una que no permite nada*— y
+    /// entre dos versiones **sí** es computable: no hace falta saber si un
+    /// umbral es el correcto, solo que se ha aflojado.
+    reglas: BTreeMap<String, Regla>,
 }
+
+#[derive(Default)]
+struct Funcion {
+    input: Prop,
+    output: Prop,
+    preconditions: BTreeSet<String>,
+    endorsements: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct Regla {
+    /// `id` → sus cotas, por operador.
+    assertions: BTreeMap<String, BTreeMap<String, String>>,
+    /// `id` → `minGroupSize`, cuando lo declara.
+    masks: BTreeMap<String, Option<String>>,
+    duties: BTreeSet<String>,
+}
+
+/// Los operadores cuyo **aflojamiento tiene dirección definida**.
+///
+/// `mustBe` y `mustNotBe` no están, y su ausencia es la decisión difícil de
+/// esta comparación: son igualdades, no cotas. Pasar de `mustBe 0` a
+/// `mustBe 999` no es *más flojo*, es **otra cosa**, y llamarlo relajación
+/// sería inventar una dirección que el operador no tiene.
+const COTAS: &[(&str, bool)] = &[
+    // (operador, aflojar es AUMENTAR el valor)
+    ("mustBeLessThan", true),
+    ("mustBeLessOrEqualTo", true),
+    ("mustBeGreaterThan", false),
+    ("mustBeGreaterOrEqualTo", false),
+];
 
 fn cadena(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
@@ -302,6 +348,96 @@ fn shape(pkg: &Package) -> Shape {
 
     for d in &pkg.docs {
         match d.kind {
+            crate::document::Kind::Function => {
+                if let Some(qn) = d.qname() {
+                    let ids = |sec: &str, campos: &[&str]| -> BTreeSet<String> {
+                        d.section(sec)
+                            .map(|n| n.items())
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter_map(|i| {
+                                let partes: Vec<String> = campos
+                                    .iter()
+                                    .filter_map(|c| cadena(i, c))
+                                    .collect();
+                                (!partes.is_empty()).then(|| partes.join("/"))
+                            })
+                            .collect()
+                    };
+                    let tipo = |sec: &str| {
+                        d.section(sec)
+                            .map(|n| Prop {
+                                ty: n
+                                    .get("type")
+                                    .and_then(|(_, v)| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                ..Default::default()
+                            })
+                            .unwrap_or_default()
+                    };
+                    s.funciones.insert(
+                        qn,
+                        Funcion {
+                            input: tipo("input"),
+                            output: tipo("output"),
+                            preconditions: ids("preconditions", &["id"]),
+                            // El endoso se identifica por QUIÉN y QUÉ atesta:
+                            // cambiar el endosante de una atestación es perder
+                            // la que había y ganar otra.
+                            endorsements: ids("endorsements", &["endorser", "attestation"]),
+                        },
+                    );
+                }
+            }
+            crate::document::Kind::Resolution => {
+                if let Some(qn) = d.qname() {
+                    let mut us = BTreeMap::new();
+                    for (i, e) in d
+                        .section("strategies")
+                        .map(|n| n.items())
+                        .unwrap_or(&[])
+                        .iter()
+                        .enumerate()
+                    {
+                        // Por `id` cuando lo hay; si no, por posición — que en
+                        // una SECUENCIA es una identidad legítima.
+                        let id = cadena(e, "id").unwrap_or_else(|| i.to_string());
+                        if let Some(t) = cadena(e, "threshold") {
+                            us.insert(id, t);
+                        }
+                    }
+                    // Se registra aunque no haya umbrales: si no, una
+                    // `Resolution` determinista que DESAPARECE sería
+                    // indistinguible de una que nunca estuvo.
+                    s.umbrales.insert(qn, us);
+                }
+            }
+            crate::document::Kind::Ruleset => {
+                if let Some(qn) = d.qname() {
+                    let mut r = Regla::default();
+                    for a in d.section("assertions").map(|n| n.items()).unwrap_or(&[]) {
+                        let Some(id) = cadena(a, "id") else { continue };
+                        let cotas = COTAS
+                            .iter()
+                            .filter_map(|(op, _)| cadena(a, op).map(|v| (op.to_string(), v)))
+                            .collect();
+                        r.assertions.insert(id, cotas);
+                    }
+                    for m in d.section("masks").map(|n| n.items()).unwrap_or(&[]) {
+                        let Some(id) = cadena(m, "id") else { continue };
+                        r.masks.insert(id, cadena(m, "minGroupSize"));
+                    }
+                    r.duties = d
+                        .section("duties")
+                        .map(|n| n.items())
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter_map(|x| cadena(x, "call"))
+                        .collect();
+                    s.reglas.insert(qn, r);
+                }
+            }
             crate::document::Kind::Property => {
                 if let Some(qn) = d.qname()
                     && let Some(spec) = d.root.get("spec").map(|(_, v)| v)
@@ -442,6 +578,7 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
 
     entidades(&a, &b, &mut changes);
     significado(&a, &b, &mut changes);
+    efectos_y_reglas(&a, &b, &mut changes);
     conductos(&a, &b, &mut changes);
     materializacion(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
@@ -501,6 +638,175 @@ fn superficie(a: &Shape, b: &Shape) -> bool {
 
 fn nivel(lat: &BTreeMap<String, Lattice>, reticulo: &str, nombre: &str) -> Option<usize> {
     lat.get(reticulo)?.levels.iter().position(|l| l == nombre)
+}
+
+/// `Function`, `Resolution` y `Ruleset` — la estación 10 para v1alpha2 y
+/// v1alpha3, **sin un solo código nuevo**.
+///
+/// Que no haga falta ninguno es el resultado, no la restricción: cada cambio de
+/// estos tres documentos tiene el mismo **síntoma** que uno que ya estaba
+/// clasificado, y este registro emite un código por síntoma y no por causa.
+///
+/// - algo con nombre propio del que otros dependen deja de existir → `OOS5007`
+/// - un tipo cambia → `OOS5002` / `OOS5010`, por la misma función que una propiedad
+/// - un contrato existente pasa a exigir más → `OOS5025`
+/// - una etiqueta baja → `OOS5011`. La integridad de una función **se computa**
+///   de sus endosos (`02-function` §6): perder uno la baja
+/// - un parámetro de seguridad se afloja → `OOS5016`
+///
+/// El último es el que decide si esto valía la pena. `OOS5016` existía para
+/// *«`minGroupSize` de `aggregate` reducido»*, y el proyecto **ya había
+/// decidido** que aflojar un parámetro de seguridad es un cambio rompedor —
+/// pero solo lo implementó del lado de Cedar. El mismo aflojamiento en el
+/// umbral de una fusión probabilística o en la cota de una aserción era
+/// invisible. Mismo riesgo, dos tratamientos, según en qué documento estuviera
+/// escrito.
+fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
+    for (qn, antes) in &a.funciones {
+        let Some(despues) = b.funciones.get(qn) else {
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            continue;
+        };
+        tipos(&format!("{qn}.input"), &antes.input, &despues.input, out);
+        tipos(&format!("{qn}.output"), &antes.output, &despues.output, out);
+
+        // OOS5025 · exigir más. Una llamada que era legal deja de serlo, y el
+        // que la hace vive en otro paquete.
+        let nuevas: Vec<&String> = despues
+            .preconditions
+            .difference(&antes.preconditions)
+            .collect();
+        if !nuevas.is_empty() {
+            out.push(
+                Change::new(Code::Oos5025, Axis::Consumer).sujeto(qn).with(
+                    "nowRequires",
+                    Json::Arr(nuevas.iter().map(|p| Json::s(p.as_str())).collect()),
+                ),
+            );
+        }
+
+        // OOS5011 · la integridad de una función SE COMPUTA de sus endosos.
+        // Perder uno la baja, y es una etiqueta rebajada como cualquier otra.
+        let perdidos: Vec<&String> = antes
+            .endorsements
+            .difference(&despues.endorsements)
+            .collect();
+        if !perdidos.is_empty() {
+            out.push(
+                Change::new(Code::Oos5011, Axis::Policy).sujeto(qn).with(
+                    "lostEndorsements",
+                    Json::Arr(perdidos.iter().map(|e| Json::s(e.as_str())).collect()),
+                ),
+            );
+        }
+    }
+
+    // OOS5016 · el umbral de una fusión probabilística. Bajarlo no cambia un
+    // esquema: cambia **qué registros son la misma persona**. Se funden más, y
+    // aguas abajo un registro de cliente puede absorber los datos de otro.
+    for (qn, antes) in &a.umbrales {
+        let Some(despues) = b.umbrales.get(qn) else {
+            // La `Resolution` entera. Quien dependía de que dos registros se
+            // fundieran deja de tenerlo, y sin aviso.
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            continue;
+        };
+        for (id, u) in antes {
+            let Some(ahora) = despues.get(id) else { continue };
+            if menor(ahora, u) {
+                out.push(
+                    Change::new(Code::Oos5016, Axis::Policy)
+                        .sujeto(&format!("{qn}.{id}"))
+                        .de_a(u, ahora),
+                );
+            }
+        }
+    }
+
+    for (qn, antes) in &a.reglas {
+        // Retirar el `Ruleset` ENTERO no se reporta aquí, y no es un olvido: ya
+        // lo dice su **efecto** —`OOS5023`, una propiedad pierde una clase de
+        // gobierno que tenía—, y `diff/weaken-coverage` lo fija así desde
+        // v1alpha3. Añadirlo daría dos códigos para un cambio, en el mismo eje.
+        //
+        // Lo que faltaba es más fino y por eso no se veía: **una pieza que
+        // desaparece de dentro de una regla que se queda.** Si un hermano de la
+        // misma naturaleza sobrevive, la cobertura no cambia y `OOS5023` calla.
+        let Some(despues) = b.reglas.get(qn) else {
+            continue;
+        };
+        for id in antes.assertions.keys() {
+            if !despues.assertions.contains_key(id) {
+                out.push(
+                    Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{id}")),
+                );
+            }
+        }
+        for id in antes.masks.keys() {
+            if !despues.masks.contains_key(id) {
+                out.push(
+                    Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{id}")),
+                );
+            }
+        }
+        for d in antes.duties.difference(&despues.duties) {
+            out.push(Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{d}")));
+        }
+
+        // OOS5016 · una cota que se afloja. Solo los operadores con dirección
+        // definida: `mustBe` y `mustNotBe` son igualdades y cambiarlas no es
+        // relajar, es decir otra cosa.
+        for (id, cotas) in &antes.assertions {
+            let Some(ahora) = despues.assertions.get(id) else {
+                continue;
+            };
+            for (op, aflojar_es_subir) in COTAS {
+                let (Some(v0), Some(v1)) = (cotas.get(*op), ahora.get(*op)) else {
+                    continue;
+                };
+                let aflojado = if *aflojar_es_subir {
+                    menor(v0, v1)
+                } else {
+                    menor(v1, v0)
+                };
+                if aflojado {
+                    out.push(
+                        Change::new(Code::Oos5016, Axis::Policy)
+                            .sujeto(&format!("{qn}.{id}.{op}"))
+                            .de_a(v0, v1),
+                    );
+                }
+            }
+        }
+
+        // OOS5016 · literal: el `minGroupSize` de una máscara, que es para lo
+        // que este código se escribió.
+        for (id, antes_min) in &antes.masks {
+            let (Some(v0), Some(Some(v1))) = (antes_min.as_ref(), despues.masks.get(id)) else {
+                continue;
+            };
+            if menor(v1, v0) {
+                out.push(
+                    Change::new(Code::Oos5016, Axis::Policy)
+                        .sujeto(&format!("{qn}.{id}"))
+                        .de_a(v0, v1),
+                );
+            }
+        }
+    }
+}
+
+/// Comparación numérica de dos valores escritos como cadena.
+///
+/// Cadena y no número porque **es la forma canónica**: un decimal sin comillas
+/// no tiene representación estable (`OOS6003`). Se comparan como números
+/// cuando los dos lo son, y si alguno no lo es no se afirma nada — de los dos
+/// errores posibles, callar es el reversible.
+fn menor(x: &str, y: &str) -> bool {
+    match (x.parse::<f64>(), y.parse::<f64>()) {
+        (Ok(a), Ok(b)) => a < b,
+        _ => false,
+    }
 }
 
 /// Conceptos y formas — la estación 10 para v1alpha4.

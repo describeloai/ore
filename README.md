@@ -245,12 +245,12 @@ sujeto, y `ore validate` ya comprueba que baje de verdad (`OOS8003`). Lo que fal
 es ejecutarlo, que es L2.
 
 ```
-canonical  9/9    diff  20/20   digest  6/6
+canonical  9/9    diff  20/20   digest  7/7
 emit       5/5    invalid 32/32  valid    1/1
                                  TOTAL  74/74
 
-BORRADOR v1alpha2 · efectos y derivación  18/18
-BORRADOR v1alpha3 · gobierno              20/20
+BORRADOR v1alpha2 · efectos y derivación  22/22
+BORRADOR v1alpha3 · gobierno              22/22
 BORRADOR v1alpha4 · significado           28/28
 ```
 
@@ -314,10 +314,12 @@ permite **deshacer** la fusión al importar, y de paso el importador dejó de
 sellar siempre `v1alpha1`: la vuelta producía un documento que declara una
 versión donde `is` no existe.
 
-Eso no es exclusivo de v1alpha4: `Shape` tampoco tiene `Function`, `Resolution`
-ni `Ruleset`. El criterio de «listo» nunca había estado escrito, y por eso cada
-borrador terminó en una estación distinta. Ahora lo está, con las cuatro fases
-que faltan — [`00-scope`](vendor/oos/spec/v1alpha4/00-scope.md) §8.
+El criterio de «listo» nunca había estado escrito, y por eso cada borrador
+terminó en una estación distinta — [`00-scope`](vendor/oos/spec/v1alpha4/00-scope.md) §8.
+Al escribirlo y medirlo salió que `Shape` tampoco tenía `Function`, `Resolution`
+ni `Ruleset`, y que la forma canónica de **v1alpha1** estaba rota. Las cuatro
+filas están ahora en verde; las cinco cosas que la reutilización de códigos no
+pudo cubrir están escritas en §8.6.
 
 Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla de
 arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.
