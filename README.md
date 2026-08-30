@@ -218,7 +218,7 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 
 ## Estado
 
-**La fase 0 está cerrada.** Los 73 casos de la suite de conformidad de OOS están
+**La fase 0 está cerrada.** Los 74 casos de la suite de conformidad de OOS están
 en verde, y con ellos existen cuatro comandos: `validate`, `compile`, `diff` y
 `export`. Los **once** restantes que anuncia `ore --help` **no están implementados**
 y lo dicen al ejecutarse.
@@ -247,7 +247,7 @@ es ejecutarlo, que es L2.
 ```
 canonical  9/9    diff  20/20   digest  6/6
 emit       5/5    invalid 32/32  valid    1/1
-                                 TOTAL  73/73
+                                 TOTAL  74/74
 
 BORRADOR v1alpha2 · efectos y derivación  18/18
 BORRADOR v1alpha3 · gobierno              20/20

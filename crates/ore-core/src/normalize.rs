@@ -42,7 +42,11 @@ const CONJUNTOS: &[&str] = &[
     "requiredFilters",
     "datasources",
     "dependencies",
-    "reviewers",
+    // `reviewers` estuvo aquí desde v1alpha1 y **no es un campo de OOS**:
+    // `01-package` §5 lo rechaza con todas las letras —ODCS ya tiene
+    // `roles[].firstLevelApprovers`, y aplicarlo es de CODEOWNERS—. Salió de
+    // copiar un ejemplo de la prosa de `90-canonical-form` a código. Lo
+    // encontró el test de abajo en su primera ejecución.
     "roles",
     "tags",
     "authoritativeDefinitions",
@@ -93,7 +97,65 @@ const CONJUNTOS: &[&str] = &[
     "requires",
     "implements",
     "requiresGovernance",
+    // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
+    // completa, ni siquiera para la versión con la que se escribió**. Tres de
+    // estos se midieron dando dos digests para el mismo contenido —`reserved`,
+    // `uniqueKeys` y `support`— en la versión cerrada, la que
+    // se venía usando como prueba de que ese número significa algo.
+    //
+    // `derivedFrom` es el que más pesa: es lo que propaga las etiquetas, y el
+    // `join` es conmutativo. Que el orden en que se escriben dos orígenes
+    // cambiara el digest de la entidad era G1 rota en el corazón del régimen
+    // de flujo.
+    "derivedFrom",
+    "moved",
+    "reserved",
+    "uniqueKeys",
+    "support",
+    "members",
+    "exclude",
+    "synonyms",
+    "examples",
+    "values",
+    "match",
+    "customProperties",
+    "packages",
+    "nameList",
+    "conflicts",
+    "requestedRanges",
+    // El de `materialization`: **qué propiedades se copian**. No confundir con
+    // el `properties` de una entidad, que es un mapa y no llega aquí.
+    "properties",
 ];
+
+/// Lo que **no** es un conjunto, y por qué.
+///
+/// Existe para que no haya una tercera categoría —*«no lo he mirado»*—, que es
+/// la que ha producido las cuatro roturas de G1 de este proyecto. Un campo
+/// lista que no esté en ninguna de las dos listas **rompe un test**, así que la
+/// única forma de añadir uno es decidiendo qué es.
+///
+/// Es la misma ley que `OOS8002` y `OOS9004`, aplicada al compilador en vez de
+/// a un documento: **un campo sin clasificar tiene exactamente el mismo aspecto
+/// que uno clasificado bien.**
+const SECUENCIAS: &[&str] = &[
+    // El orden ES el significado.
+    "levels",           // ascendente por restrictividad: el retículo entero
+    "primaryKey",       // en una clave compuesta el orden es significativo
+    "enum",             // retirar un valor o reordenarlos es observable
+    "strategies",       // la primera que casa gana
+    "normalize",        // una tubería de transformaciones
+    "mustBeBetween",    // `[min, max]`
+    "mustNotBeBetween", // igual
+];
+
+/// Todo campo lista de los esquemas está en una de las dos listas.
+///
+/// Se expone para que el arnés lo compruebe contra los esquemas publicados en
+/// vez de contra la memoria de nadie.
+pub fn clasificacion_de_listas() -> (&'static [&'static str], &'static [&'static str]) {
+    (CONJUNTOS, SECUENCIAS)
+}
 
 /// Mapas **cuyos valores** son conjuntos.
 ///
@@ -121,6 +183,10 @@ const MAPAS_DE_CONJUNTOS: &[&str] = &["requiresGovernance"];
 /// N1 · Campos cuyo valor es una **referencia** a otro documento y por tanto se
 /// expande al nombre cualificado. Un nombre corto es azúcar del autor, no una
 /// identidad distinta.
+/// La clave con la que se recurre a una lista dentro de una lista: no está en
+/// `CONJUNTOS`, no está en `SECUENCIAS` y no es una referencia.
+const ANIDADA: &str = "";
+
 fn es_referencia(clave: &str) -> bool {
     matches!(clave, "targetEntity" | "target")
 }
@@ -205,7 +271,24 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
             Some(Json::Obj(m))
         }
         Node::Sequence { items, .. } => {
-            let mut xs: Vec<Json> = items.iter().filter_map(|i| valor(i, clave, ctx)).collect();
+            // Una lista dentro de una lista NO hereda la clasificación de la de
+            // fuera, y `uniqueKeys` es por lo que hace falta decirlo: es un
+            // **conjunto de claves**, y cada clave es una **secuencia**.
+            // Ordenar las de dentro convertiría la clave compuesta `[a, b]` en
+            // otra clave.
+            //
+            // Pasar una clave neutra es seguro porque la única cosa para la que
+            // `clave` sirve en un escalar es `es_referencia`, y ninguna de las
+            // dos referencias que existen —`target`, `targetEntity`— es una
+            // lista de listas.
+            let mut xs: Vec<Json> = items
+                .iter()
+                .map(|i| match i {
+                    Node::Sequence { .. } => (i, ANIDADA),
+                    _ => (i, clave),
+                })
+                .filter_map(|(i, k)| valor(i, k, ctx))
+                .collect();
             // N4 · ordenar por la forma canónica serializada, que es la única
             // ordenación que no depende de cómo esté escrito el elemento.
             if CONJUNTOS.contains(&clave) {
@@ -317,6 +400,110 @@ pub fn package(pkg: &Package) -> BTreeMap<String, Json> {
 
 #[cfg(test)]
 mod tests {
+    /// **Todo campo lista de los esquemas publicados está clasificado.**
+    ///
+    /// Este test existe porque el proyecto rompió `G1` cuatro veces por la
+    /// misma causa, y ninguna se descubrió leyendo: siempre comparando dos
+    /// digests a mano. `CONJUNTOS` no creció con v1alpha2, ni con v1alpha3, ni
+    /// con v1alpha4 — y al medirlo del todo resultó que **tampoco estaba
+    /// completa para v1alpha1**, la versión cerrada.
+    ///
+    /// > Una lista que hay que acordarse de actualizar es una lista de la que
+    /// > nadie se acuerda.
+    ///
+    /// Así que deja de haber que acordarse. Un campo lista nuevo en un esquema
+    /// **rompe este test** hasta que alguien diga si es un conjunto o una
+    /// secuencia. Es la misma ley que `OOS8002` y `OOS9004` aplicada al
+    /// compilador: *lo que no se decide, no compila*.
+    ///
+    /// Se lee de los esquemas **publicados** y no de una lista paralela: si la
+    /// fuente de verdad fuera otro fichero de este repositorio, volvería a
+    /// poder desincronizarse.
+    #[test]
+    fn todo_campo_lista_de_los_esquemas_esta_clasificado() {
+        use crate::parse::Node;
+        use std::collections::BTreeSet;
+        use std::path::{Path, PathBuf};
+
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/oos/schemas");
+        let mut ficheros = Vec::new();
+        fn recorrer(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(es) = std::fs::read_dir(dir) else { return };
+            for e in es.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    recorrer(&p, out);
+                } else if p.extension().is_some_and(|x| x == "json") {
+                    out.push(p);
+                }
+            }
+        }
+        recorrer(&raiz, &mut ficheros);
+        assert!(!ficheros.is_empty(), "submódulo sin inicializar");
+
+        // JSON es un subconjunto de YAML, así que el analizador del motor lo
+        // lee sin que haga falta un segundo. Es la misma vía por la que `ore
+        // export` acepta un contrato ODCS.
+        fn buscar(n: &Node, nombre: Option<&str>, out: &mut BTreeSet<String>) {
+            let Node::Mapping { entries, .. } = n else {
+                return;
+            };
+            let es_lista = n
+                .get("type")
+                .and_then(|(_, v)| v.as_str())
+                .is_some_and(|t| t == "array");
+            if es_lista && let Some(nombre) = nombre {
+                out.insert(nombre.to_string());
+            }
+            for (k, v) in entries {
+                let clave = k.as_str().unwrap_or_default();
+                if matches!(clave, "properties" | "$defs" | "definitions")
+                    && let Node::Mapping { entries: hijos, .. } = v
+                {
+                    for (hk, hv) in hijos {
+                        buscar(hv, hk.as_str(), out);
+                    }
+                } else {
+                    buscar(v, nombre, out);
+                }
+            }
+        }
+
+        let mut listas: BTreeSet<String> = BTreeSet::new();
+        for f in &ficheros {
+            let texto = std::fs::read_to_string(f).expect("esquema ilegible");
+            let arbol = crate::parse::parse(&texto).expect("esquema que no analiza");
+            buscar(&arbol, None, &mut listas);
+        }
+
+        let clasificados: BTreeSet<String> = CONJUNTOS
+            .iter()
+            .chain(SECUENCIAS.iter())
+            .map(|s| s.to_string())
+            .collect();
+        let huerfanos: Vec<&String> = listas.difference(&clasificados).collect();
+        assert!(
+            huerfanos.is_empty(),
+            "campos lista sin clasificar como conjunto o secuencia: {huerfanos:?}"
+        );
+
+        // Y al revés: nada clasificado que ya no exista. Una entrada muerta no
+        // rompe nada hoy y despista mañana.
+        let vivos: Vec<&str> = clasificados
+            .iter()
+            .filter(|c| !listas.contains(*c))
+            .map(|s| s.as_str())
+            .collect();
+        assert!(vivos.is_empty(), "clasificados y ya inexistentes: {vivos:?}");
+
+        // Y ninguno en las dos.
+        let ambos: Vec<&&str> = CONJUNTOS
+            .iter()
+            .filter(|c| SECUENCIAS.contains(c))
+            .collect();
+        assert!(ambos.is_empty(), "clasificados dos veces: {ambos:?}");
+    }
+
     use super::*;
     use crate::document::Kind;
 
