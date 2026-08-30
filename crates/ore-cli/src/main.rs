@@ -5,6 +5,7 @@
 //! catorce no abren un socket.
 
 mod fuente;
+mod mcp;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -143,7 +144,12 @@ enum Command {
     },
 
     // ── Runtime ─────────── producción · custodia credenciales vivas
-    /// Sirve la ontología en local contra fuentes de desarrollo.
+    /// Sirve el contrato por MCP sobre stdio. Nivel L1: no toca un dato.
+    ///
+    /// La frontera con `serve` no es el nivel, es qué custodian: `dev` es un
+    /// proceso hijo que muere con su cliente y no abre un puerto; `serve` es un
+    /// servicio que sobrevive a sus clientes y por eso les debe autenticación
+    /// (ADR 0005).
     Dev {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -163,6 +169,7 @@ fn main() -> std::process::ExitCode {
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
+        Command::Dev { path } => return desarrollo(path),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -190,11 +197,11 @@ fn main() -> std::process::ExitCode {
         | Command::Diff { .. }
         | Command::Compile { .. }
         | Command::Export { .. }
+        | Command::Dev { .. }
         | Command::Source(_) => unreachable!(),
         Command::Init => ("init", "1"),
         Command::Discover => ("discover", "1"),
         Command::Review => ("review", "1"),
-        Command::Dev { .. } => ("dev", "3"),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
@@ -205,7 +212,7 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  Hoy existen: source add, validate, compile, diff y export.");
+    eprintln!("  Hoy existen: source add, validate, compile, diff, export y dev.");
     eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
@@ -247,6 +254,25 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
     let n = diags.len();
     eprintln!("{n} error{}", if n == 1 { "" } else { "es" });
     std::process::ExitCode::FAILURE
+}
+
+/// `ore dev` — el servidor de contexto.
+///
+/// Compila el repositorio y sirve **el contrato** por MCP sobre stdio. No abre
+/// un puerto, no lee una credencial y no toca un dato: es L1, y la mitad que el
+/// criterio de la fase 3 daba por supuesta sin nombrarla.
+fn desarrollo(path: &std::path::Path) -> std::process::ExitCode {
+    let pkg = match cargar_valido(path, false) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    match mcp::servir(&pkg) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(motivo) => {
+            eprintln!("error: {motivo}");
+            std::process::ExitCode::from(70) // EX_SOFTWARE
+        }
+    }
 }
 
 /// `ore diff` — la familia `OOS5xxx`.
