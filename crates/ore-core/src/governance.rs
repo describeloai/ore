@@ -123,6 +123,53 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     out
 }
 
+/// Qué clases de gobierno cubren **de hecho** a cada propiedad.
+///
+/// Se expone para `diff`, y por la misma razón que `selecciones`: **dos
+/// definiciones de «esta propiedad está gobernada» serían dos semánticas.** La
+/// que decide `OOS8001` al compilar tiene que ser la misma que decide si una
+/// versión nueva retiró gobierno.
+///
+/// Y es lo que permite que el versionado tenga **un código por síntoma y no uno
+/// por causa**: quitar un `Ruleset`, estrechar un objetivo, borrar una aserción
+/// o cambiar una etiqueta son cambios distintos con un solo efecto observable —
+/// esta propiedad ha dejado de tener esta clase de gobierno.
+pub fn cobertura_efectiva(pkg: &Package) -> BTreeMap<String, BTreeSet<&'static str>> {
+    let lat = flow::lattices(pkg);
+    let props = flow::efectivas(pkg, &lat);
+    let sel = selecciones(pkg);
+    let gobernadas = etiquetas_gobernadas(pkg);
+    let aportes: Vec<(&BTreeSet<String>, BTreeSet<&'static str>)> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == Kind::Ruleset)
+        .filter_map(|r| {
+            sel.get(&r.qname().unwrap_or_default())
+                .map(|s| (s, aporta(pkg, r)))
+        })
+        .collect();
+
+    props
+        .iter()
+        .map(|(prop, etiquetas)| {
+            let mut n: BTreeSet<&'static str> = aportes
+                .iter()
+                .filter(|(s, _)| s.contains(prop))
+                .flat_map(|(_, x)| x.iter().copied())
+                .collect();
+            if etiquetas.iter().any(|(ret, nivel)| {
+                let Some(l) = lat.get(ret) else { return false };
+                let _ = l;
+                gobernadas.contains(&format!("{ret}:{nivel}"))
+            }) {
+                n.insert("authorization");
+            }
+            (prop.clone(), n)
+        })
+        .filter(|(_, n)| !n.is_empty())
+        .collect()
+}
+
 /// La selección de cada `Ruleset`: nombre cualificado del documento → las
 /// propiedades que casan con alguno de sus objetivos.
 ///
@@ -811,6 +858,20 @@ fn asercion_cuenta(tipo: &str, severidad: &str) -> bool {
 /// No se evalúa ninguna: se lee **a qué clasificación apunta**, que es lo que
 /// la proyección a esquema Cedar hizo expresable. Si la política es la
 /// adecuada no lo decide esto — lo registra un endoso (`01-gobierno` §6.2).
+///
+/// # Por qué la comparación es exacta y no por orden
+///
+/// La primera versión daba por cubierta una propiedad `critical` si existía una
+/// política sobre `high`, razonando que el gobierno es monótono. **Es falso, y
+/// lo destapó la ontología de referencia**: `cedar_schema` emite `Label` con
+/// `memberOfTypes: []`, así que en el esquema que nosotros mismos generamos
+/// **dos niveles no están relacionados**. Una política sobre `high` no alcanza
+/// a un recurso `critical`, y decir que sí era acreditar cobertura que Cedar no
+/// concede — el sentido inseguro.
+///
+/// Emitir la jerarquía haría monótonas las políticas y probablemente sea
+/// mejor, pero es un cambio en la proyección de v1alpha1. Mientras no exista,
+/// esto compara exacto: falla cerrado.
 fn etiquetas_gobernadas(pkg: &Package) -> BTreeSet<String> {
     pkg.cedar
         .iter()
@@ -870,10 +931,8 @@ fn cobertura(
         // propiedad alcanza.
         if etiquetas.iter().any(|(ret, nivel)| {
             let Some(l) = lat.get(ret) else { return false };
-            gobernadas.iter().any(|g| {
-                g.split_once(':')
-                    .is_some_and(|(r, n)| r == ret && l.ge(nivel, n) == Some(true))
-            })
+            let _ = l;
+            gobernadas.contains(&format!("{ret}:{nivel}"))
         }) {
             cubiertas.insert("authorization");
         }

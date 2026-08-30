@@ -154,6 +154,18 @@ codes! {
     Oos5020 = "OOS5020", Compatibility, "modo de materialización cambiado";
     Oos5021 = "OOS5021", Compatibility, "la versión declarada no corresponde a los cambios";
     Oos5022 = "OOS5022", Compatibility, "cambio rompedor sin el periodo de aviso del SLA";
+    // Los introduce v1alpha3. Viven en esta familia porque lo que rompen es la
+    // compatibilidad de la GOBERNANZA, que es lo que el eje POLICY mide, y no
+    // cuentan entre los 52 de v1alpha1 — como `OOS2001` y `OOS4015`.
+    //
+    // Son dos y no cinco a propósito. `OOS5023` compara **lo que cada propiedad
+    // tiene cubierto**, no la sintaxis de las reglas: quitar un `Ruleset`,
+    // estrechar un objetivo, borrar una aserción, rebajarla a `warning`, quitar
+    // una máscara o cambiar una etiqueta de forma que la selección encoja son
+    // seis cambios distintos y **un solo síntoma** — esta propiedad ha perdido
+    // esta clase de gobierno. Un código por síntoma, no por causa.
+    Oos5023 = "OOS5023", Compatibility, "una propiedad pierde una clase de gobierno que tenía";
+    Oos5024 = "OOS5024", Compatibility, "la clasificación exige menos gobierno que antes";
 
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
@@ -214,7 +226,7 @@ mod tests {
         // Códigos que viven en una familia de v1alpha1 pero los introduce una
         // versión posterior. La familia dice de qué habla el código; no dice
         // cuándo llegó.
-        const POSTERIORES: &[Code] = &[Code::Oos2001, Code::Oos4015];
+        const POSTERIORES: &[Code] = &[Code::Oos2001, Code::Oos4015, Code::Oos5023, Code::Oos5024];
         let cerrados = Code::ALL
             .iter()
             .filter(|c| !matches!(c.family(), Family::Effect | Family::Governance))

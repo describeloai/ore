@@ -250,7 +250,7 @@ emit       5/5    invalid 32/32  valid    1/1
                                  TOTAL  73/73
 
 BORRADOR v1alpha2 · efectos y derivación  17/17
-BORRADOR v1alpha3 · gobierno              15/15
+BORRADOR v1alpha3 · gobierno              17/17
 ```
 
 Los tres se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,

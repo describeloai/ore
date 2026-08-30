@@ -100,7 +100,9 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS4015", // OOS5xxx · compatibilidad
     "OOS5001", "OOS5002", "OOS5003", "OOS5006", "OOS5007", "OOS5008", "OOS5009", "OOS5010",
     "OOS5011", "OOS5012", "OOS5013", "OOS5014", "OOS5015", "OOS5016", "OOS5017", "OOS5018",
-    "OOS5019", "OOS5020", "OOS5021", "OOS5022", // OOS6xxx · forma canónica
+    "OOS5019", "OOS5020", "OOS5021", "OOS5022",
+    // Los introduce v1alpha3: el eje POLICY sobre el plano de gobierno.
+    "OOS5023", "OOS5024", // OOS6xxx · forma canónica
     "OOS6003",
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",

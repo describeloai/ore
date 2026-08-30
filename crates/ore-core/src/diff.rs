@@ -236,6 +236,14 @@ struct Shape {
     bindings: BTreeMap<String, Bind>,
     policies: BTreeMap<String, cedar::Policy>,
     lattices: BTreeMap<String, Lattice>,
+    /// Propiedad → clases de gobierno que la cubren **de hecho**.
+    ///
+    /// No son las reglas: es su efecto. Comparar sintaxis diría que un
+    /// `Ruleset` cambió; comparar esto dice **qué propiedad se quedó sin
+    /// gobierno**, que es la pregunta que el eje `POLICY` hace.
+    gobernadas: BTreeMap<String, BTreeSet<&'static str>>,
+    /// Retículo → nivel → clases exigidas desde ese nivel.
+    exigencias: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 fn cadena(n: &Node, k: &str) -> Option<String> {
@@ -261,8 +269,15 @@ fn lista(n: &Node) -> Vec<String> {
 }
 
 fn shape(pkg: &Package) -> Shape {
+    let lat = flow::lattices(pkg);
     let mut s = Shape {
-        lattices: flow::lattices(pkg),
+        exigencias: lat
+            .iter()
+            .map(|(q, l)| (q.clone(), l.requires_governance.clone()))
+            .filter(|(_, r)| !r.is_empty())
+            .collect(),
+        gobernadas: crate::governance::cobertura_efectiva(pkg),
+        lattices: lat,
         ..Default::default()
     };
 
@@ -389,6 +404,7 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
     conductos(&a, &b, &mut changes);
     materializacion(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
+    gobierno(&a, &b, &mut changes);
 
     // El salto exigido sale de los ejes, y se calcula ANTES de mirar la versión
     // declarada: si dependiera de ella, comprobarla sería circular.
@@ -648,6 +664,64 @@ fn materializacion(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                 Change::new(Code::Oos5019, Axis::Index)
                     .sujeto(entidad)
                     .de_a(&antes.source, &despues.source),
+            );
+        }
+    }
+}
+
+/// El eje `POLICY` sobre el plano de gobierno.
+///
+/// Dos códigos y **ninguno mira la sintaxis de una regla**: `OOS5023` compara
+/// el efecto —qué clase de gobierno tiene cada propiedad— y `OOS5024`, la
+/// exigencia. Seis cambios distintos producen el primero, y eso es deliberado:
+/// un código por síntoma, no por causa.
+///
+/// # Solo la dirección que debilita, y por qué
+///
+/// Endurecer el gobierno **no** se registra. No es una omisión: endurecerlo
+/// rompe la compilación de quien lo endurece, en su propia rama, de forma
+/// ruidosa. Lo que esta familia existe para cazar es lo **silencioso**, y
+/// quitar gobierno lo es — el paquete sigue compilando, y nadie se entera de
+/// que una columna con PII dejó de exigir una política.
+fn gobierno(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
+    // OOS5023 · lo que una propiedad tenía cubierto y ha dejado de tener.
+    for (prop, antes) in &a.gobernadas {
+        let vacio = BTreeSet::new();
+        let despues = b.gobernadas.get(prop).unwrap_or(&vacio);
+        let perdidas: Vec<&str> = antes.difference(despues).copied().collect();
+        if perdidas.is_empty() {
+            continue;
+        }
+        out.push(
+            Change::new(Code::Oos5023, Axis::Policy)
+                .with("property", Json::s(prop))
+                .with(
+                    "lost",
+                    Json::Arr(perdidas.iter().map(|n| Json::s(*n)).collect()),
+                ),
+        );
+    }
+
+    // OOS5024 · lo que la clasificación exigía y ha dejado de exigir. Es el
+    // cambio de una línea en un retículo importado que desgobierna un paquete
+    // entero sin tocarlo.
+    for (ret, antes) in &a.exigencias {
+        let vacio = BTreeMap::new();
+        let despues = b.exigencias.get(ret).unwrap_or(&vacio);
+        for (nivel, exigidas) in antes {
+            let ahora = despues.get(nivel).cloned().unwrap_or_default();
+            let perdidas: Vec<&String> = exigidas.iter().filter(|n| !ahora.contains(n)).collect();
+            if perdidas.is_empty() {
+                continue;
+            }
+            out.push(
+                Change::new(Code::Oos5024, Axis::Policy)
+                    .with("lattice", Json::s(ret))
+                    .with("level", Json::s(nivel))
+                    .with(
+                        "noLongerRequired",
+                        Json::Arr(perdidas.iter().map(|n| Json::s(n.as_str())).collect()),
+                    ),
             );
         }
     }
