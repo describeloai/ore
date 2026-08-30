@@ -15,7 +15,7 @@
 //!
 //! # Qué mide
 //!
-//! Los 75 casos del submódulo `vendor/oos`, agrupados por la operación que
+//! Los 76 casos del submódulo `vendor/oos`, agrupados por la operación que
 //! afirman. Arrancaron todos en rojo y hoy están todos en verde; lo que este
 //! runner protege a partir de aquí es que ninguno vuelva.
 //!
@@ -104,7 +104,10 @@ const IMPLEMENTADAS: &[&str] = &[
     // Los introduce v1alpha3: el eje POLICY sobre el plano de gobierno.
     "OOS5023", "OOS5024",
     // Lo introduce v1alpha4: una forma que exige más conceptos que antes.
-    "OOS5025", // OOS6xxx · forma canónica
+    "OOS5025",
+    // Lo introduce v1alpha5 al darle consumidor a `contextSurface`, y es de
+    // v1alpha1: el espejo de OOS5012 que la tabla de compatibilidad no tenía.
+    "OOS5026", // OOS6xxx · forma canónica
     "OOS6003",
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
@@ -1074,9 +1077,9 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 75, "número de casos inesperado");
+    assert_eq!(casos.len(), 76, "número de casos inesperado");
     assert_eq!(por_grupo.get("invalid"), Some(&32));
-    assert_eq!(por_grupo.get("diff"), Some(&20));
+    assert_eq!(por_grupo.get("diff"), Some(&21));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&5));

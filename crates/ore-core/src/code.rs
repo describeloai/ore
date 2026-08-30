@@ -186,6 +186,14 @@ codes! {
     // la asimetría es el contenido.
     Oos5025 = "OOS5025", Compatibility, "una forma exige más conceptos que antes";
 
+    // El espejo de `OOS5012`, y estuvo veinticinco códigos sin existir porque
+    // `91-versioning` §5.4 listaba «endurecer un conducto» entre los cambios
+    // COMPATIBLES — contradiciendo al §4 del mismo documento, que dice que
+    // restringir rompe al consumidor. No se notaba: mientras ningún conducto
+    // tuvo consumidor, endurecerlo solo restringía materialización, exportación
+    // y log. La emisión a GraphQL le dio uno a `contextSurface`.
+    Oos5026 = "OOS5026", Compatibility, "autorización de un conducto rebajada";
+
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
 
@@ -248,7 +256,7 @@ codes! {
 mod tests {
     use super::*;
 
-    /// La cobertura declarada en `99-errors.md` §10 —52 códigos de v1alpha1—
+    /// La cobertura declarada en `99-errors.md` §10 —53 códigos de v1alpha1—
     /// y los borradores, contados aparte para que ese 52 siga significando lo
     /// mismo: *una implementación de referencia pasa la especificación
     /// completa*. Un número que mezclara una versión cerrada con dos en curso
@@ -278,7 +286,7 @@ mod tests {
             })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
-        assert_eq!(cerrados, 52, "v1alpha1");
+        assert_eq!(cerrados, 53, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()

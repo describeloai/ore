@@ -1014,18 +1014,23 @@ fn conductos(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             ) else {
                 continue;
             };
-            // OOS5012 · elevar la autorización de un conducto deja pasar lo que
-            // antes no pasaba. Es la definición de conceder acceso en silencio.
-            if j > i {
-                out.push(
-                    Change::new(Code::Oos5012, Axis::Policy)
-                        .with("conduit", Json::s(nombre))
-                        .de_a(
-                            format!("{reticulo}:{nivel_antes}"),
-                            format!("{reticulo}:{nivel_despues}"),
-                        ),
-                );
-            }
+            // Las dos direcciones rompen, y por motivos opuestos
+            // (`91-versioning` §4). Elevar deja pasar lo que antes no pasaba:
+            // conceder acceso en silencio. Rebajar retira lo que sí pasaba, y
+            // eso se lo encuentra un consumidor.
+            let (code, axis) = match j.cmp(&i) {
+                std::cmp::Ordering::Greater => (Code::Oos5012, Axis::Policy),
+                std::cmp::Ordering::Less => (Code::Oos5026, Axis::Consumer),
+                std::cmp::Ordering::Equal => continue,
+            };
+            out.push(
+                Change::new(code, axis)
+                    .with("conduit", Json::s(nombre))
+                    .de_a(
+                        format!("{reticulo}:{nivel_antes}"),
+                        format!("{reticulo}:{nivel_despues}"),
+                    ),
+            );
         }
     }
 }
