@@ -54,6 +54,9 @@ struct Mutacion {
     retorno: String,
     /// El tipo de resultado que hay que declarar, si lo hay.
     resultado: Option<(String, Vec<(String, String)>)>,
+    /// Cuántas firmas distintas exige, si exige más de una. Va a la
+    /// documentación del campo: es donde un cliente la lee **sin ejecutarlo**.
+    quorum: Option<u32>,
 }
 
 /// El tipo que devuelve una mutación cuyo endoso exige una firma humana.
@@ -189,7 +192,8 @@ fn mutaciones(pkg: &Package, tipos: &BTreeMap<String, Tipo>) -> BTreeMap<String,
         // BASTA para escribir y una condición no es una garantía; el contrato
         // pregunta qué recibe QUIEN LLAMA, y una condición puede activarse.
         // Dos preguntas distintas sobre el mismo campo, dos respuestas.
-        let (retorno, resultado) = if exige_firma(f) {
+        let firma = firma_humana(f);
+        let (retorno, resultado) = if firma.is_some() {
             (format!("{APROBACION}!"), None)
         } else if salida.is_empty() {
             // `effects` es obligatorio, así que siempre hay un hecho que
@@ -207,6 +211,7 @@ fn mutaciones(pkg: &Package, tipos: &BTreeMap<String, Tipo>) -> BTreeMap<String,
                 argumentos,
                 retorno,
                 resultado,
+                quorum: firma.flatten(),
             },
         );
     }
@@ -231,13 +236,24 @@ fn escribe_solo_lo_servido(f: &Loaded, tipos: &BTreeMap<String, Tipo>) -> bool {
     })
 }
 
-/// ¿Algún endoso exige una firma humana? El `when:` no se mira: ver arriba.
-fn exige_firma(f: &Loaded) -> bool {
+/// El endoso de firma humana, si lo hay, con su quórum. El `when:` no se mira:
+/// ver arriba.
+///
+/// `Some(None)` es una firma; `Some(Some(n))`, `n` firmas distintas. Que el
+/// quórum viva dentro del `Option` y no al lado no es estilo: **sin firma no hay
+/// quórum**, y dos campos independientes admitirían escribir esa combinación.
+fn firma_humana(f: &Loaded) -> Option<Option<u32>> {
     f.section("endorsements")
         .map(|n| n.items())
         .unwrap_or(&[])
         .iter()
-        .any(|e| e.get("endorser").and_then(|(_, v)| v.as_str()) == Some("humanApproval"))
+        .find(|e| e.get("endorser").and_then(|(_, v)| v.as_str()) == Some("humanApproval"))
+        .map(|e| {
+            e.get("quorum")
+                .and_then(|(_, v)| v.as_str())
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|n| *n > 1)
+        })
 }
 
 /// `input` y `output` son mapas de `nombre -> { type, required }`.
@@ -571,11 +587,11 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
         .any(|m| m.retorno.starts_with(APROBACION))
     {
         s.push_str(
-            "\n\"La invocacion quedo propuesta y espera la firma que su endoso declara.\"\n",
+            "\n\"La invocacion quedo propuesta y espera las firmas que su endoso declara.\"\n",
         );
         let _ = write!(
             s,
-            "type {APROBACION} {{\n  request: ID!\n  endorsement: String!\n}}\n"
+            "type {APROBACION} {{\n  request: ID!\n  endorsement: String!\n  quorum: Int!\n}}\n"
         );
     }
 
@@ -587,6 +603,12 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
             .map(|(n, t)| format!("{n}: {t}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // La exigencia va a la documentacion del campo y no a una directiva:
+        // lo que se emite es DESCRIPTIVO, nunca directivo, y una directiva es
+        // una instruccion a la herramienta.
+        if let Some(n) = m.quorum {
+            let _ = writeln!(s, "  \"Requiere {n} firmas humanas distintas.\"");
+        }
         let _ = writeln!(s, "  {}({args}): {}", m.nombre, m.retorno);
     }
     s.push_str("}\n");

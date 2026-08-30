@@ -361,6 +361,43 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
             );
             continue;
         }
+        // ── `quorum` · cuantos juicios distintos ────────────────────────────
+        //
+        // No lleva codigo propio: es forma del documento, y la forma es
+        // `OOS1004`. Un endosante mal escrito si tiene el suyo —`OOS7004`—
+        // porque el vocabulario es una decision del regimen; que un entero sea
+        // un entero, no.
+        if let Some((k, v)) = e.get("quorum") {
+            if nombre == "attested" {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos1004,
+                        &f.path,
+                        "`quorum` sobre un endoso `attested`",
+                    )
+                    .at(k.pos())
+                    .help(
+                        "una atestacion es un artefacto firmado, y dos atestaciones son dos \
+                         rutas distintas: ya se distinguen sin contar. `quorum` existe porque \
+                         dos `humanApproval` sin atestacion colapsan en uno",
+                    ),
+                );
+            } else if v.as_str().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) < 2 {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos1004,
+                        &f.path,
+                        "`quorum` debe ser un entero de 2 en adelante",
+                    )
+                    .at(v.pos())
+                    .help(
+                        "ausente es 1, asi que escribir `quorum: 1` seria declarar lo \
+                         derivable (P2)",
+                    ),
+                );
+            }
+        }
+
         // ── OOS7002 · un endoso condicional no cierra una carencia ──────────
         if e.get("when").is_none() {
             incondicionales += 1;

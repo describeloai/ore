@@ -281,6 +281,10 @@ struct Funcion {
     output: Prop,
     preconditions: BTreeSet<String>,
     endorsements: BTreeSet<String>,
+    /// `endosante` → su quórum. Fuera del conjunto a propósito: el conjunto
+    /// dice QUÉ endosos hay y bajar un quórum no quita ninguno — es aflojar un
+    /// parámetro dentro de uno que se queda.
+    quorums: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -384,6 +388,18 @@ fn shape(pkg: &Package) -> Shape {
                             // cambiar el endosante de una atestación es perder
                             // la que había y ganar otra.
                             endorsements: ids("endorsements", &["endorser", "attestation"]),
+                            quorums: d
+                                .section("endorsements")
+                                .map(|n| n.items())
+                                .unwrap_or(&[])
+                                .iter()
+                                .filter_map(|e| {
+                                    Some((
+                                        e.get("endorser")?.1.as_str()?.to_string(),
+                                        e.get("quorum")?.1.as_str()?.to_string(),
+                                    ))
+                                })
+                                .collect(),
                         },
                     );
                 }
@@ -692,6 +708,29 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                 "lostEndorsements",
                 Json::Arr(perdidos.iter().map(|e| Json::s(e.as_str())).collect()),
             ));
+        }
+
+        // OOS5016 · bajar un quórum es aflojar un parámetro de seguridad, y el
+        // registro emite **un código por síntoma, no por causa**: es el mismo
+        // que baja `minGroupSize`, un umbral de fusión o la cota de una
+        // aserción. Que el endoso siga ahí es justo lo que lo hace invisible
+        // comparando conjuntos — dos firmas y una firma son el mismo endoso.
+        for (endosante, antes_q) in &antes.quorums {
+            let despues_q = despues.quorums.get(endosante).map(String::as_str);
+            let baja = match (antes_q.parse::<u32>(), despues_q.map(str::parse::<u32>)) {
+                // Quitarlo del todo es volver a una firma: la bajada mayor.
+                (Ok(a), None) => a > 1,
+                (Ok(a), Some(Ok(b))) => b < a,
+                _ => false,
+            };
+            if baja {
+                out.push(
+                    Change::new(Code::Oos5016, Axis::Policy)
+                        .sujeto(qn)
+                        .with("endorser", Json::s(endosante))
+                        .de_a(antes_q.clone(), despues_q.unwrap_or("1").to_string()),
+                );
+            }
         }
     }
 
