@@ -284,6 +284,20 @@ Ninguna de las tres añadió un código. La subsunción no añadió tampoco un c
 `I ⊑ J` se computa de la inclusión entre sus `requires`, y **lo derivable no se
 declara, luego no se puede escribir mal**.
 
+**Y estar en verde no es estar terminado.** Un `kind` atraviesa doce estaciones
+—despacho, forma, referencias, tipos, flujo, gobierno, significado, forma
+canónica, sellado, compatibilidad, emisión y dependencia— y `Property` e
+`Interface` pasan **siete**: no entran en `CONJUNTOS`, así que su digest depende
+del orden en que se escribieron; `Shape` no los tiene, así que rebajar la
+clasificación de un concepto se clasifica como *parche*; y `odcs.rs` no resuelve
+`is`, así que una propiedad mapeada se emite sin tipo y sin clasificación — **un
+contrato peor que el de una propiedad escrita a mano**.
+
+Eso no es exclusivo de v1alpha4: `Shape` tampoco tiene `Function`, `Resolution`
+ni `Ruleset`. El criterio de «listo» nunca había estado escrito, y por eso cada
+borrador terminó en una estación distinta. Ahora lo está, con las cuatro fases
+que faltan — [`00-scope`](vendor/oos/spec/v1alpha4/00-scope.md) §8.
+
 Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla de
 arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.
 El compilador solo hace lo suyo — **decir que no**: un documento que no está en
