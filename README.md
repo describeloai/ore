@@ -233,10 +233,16 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 
 ## Estado
 
-**La fase 0 está cerrada.** Los 74 casos de la suite de conformidad de OOS están
+**La fase 0 está cerrada.** Los 76 casos de la suite de conformidad de OOS están
 en verde, y con ellos existen cinco comandos: `validate`, `compile`, `diff`,
 `export` y `source add`. Los **diez** restantes que anuncia `ore --help` **no
 están implementados** y lo dicen al ejecutarse.
+
+Y hay una quinta columna que la tabla de abajo no tenía: **las superficies de
+emisión**, que no son una fase sino un eje propio. `export` habla cuatro
+formatos —ODCS, Cedar, OOS canónico y **GraphQL**— y el cuarto certifica los
+ocho casos de `v1alpha5`, incluidos los cuatro peldaños de *listo* que ese
+borrador define.
 
 | Fase | Qué | Criterio de éxito | |
 |:---:|---|---|:---:|
@@ -244,6 +250,12 @@ están implementados** y lo dicen al ejecutarse.
 | **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | ◐ |
 | **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado | ◐ |
 | **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** | — |
+| **E** | **emisión** · ODCS · Cedar · **GraphQL** | el esquema emitido lo acepta un motor ajeno, y el techo del conducto quita de él **exactamente** lo gobernado | ✅ |
+
+**La fila `E` no es una fase, y por eso no lleva número.** Las cuatro de arriba
+se ordenaron por riesgo retirado y describen capas del producto; la emisión las
+cruza todas: usa el compilador de la 0, el gobierno de la 2 y es lo que la 3 va
+a servir. Tenerla dentro de una fase habría obligado a elegir cuál miente.
 
 De la fase 1 existe **`source add`**, que es la parte que no tenía ninguna
 pregunta abierta: separa el secreto de la conexión, deriva lo derivable —`type`

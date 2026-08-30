@@ -429,6 +429,18 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
             return std::process::ExitCode::SUCCESS;
         }
         "oos" => Json::Obj(ore_core::normalize::package(&pkg).into_iter().collect()),
+        // La cuarta superficie. El SDL es texto, no JSON: sale por `stdout` sin
+        // pasar por `Json`, igual que `cedarschema`.
+        "graphql" => match ore_core::graphql::emit(&pkg) {
+            Ok(sdl) => {
+                print!("{sdl}");
+                return std::process::ExitCode::SUCCESS;
+            }
+            Err(motivo) => {
+                eprintln!("error: no se puede emitir a GraphQL: {motivo}");
+                return std::process::ExitCode::from(65); // EX_DATAERR
+            }
+        },
         // Ossie no es anfitrión de `Entity`: un `Dataset` exige `source` y cada
         // `Field` exige `expression`, y ninguno de los dos está en la entidad —
         // están en el binding. Emitir sin él obligaría a INVENTAR los valores
@@ -454,7 +466,7 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
         }
         otro => {
             eprintln!("error: formato `{otro}` desconocido");
-            eprintln!("  formatos: odcs, cedar, cedarschema, ossie, oos, json");
+            eprintln!("  formatos: odcs, cedar, cedarschema, graphql, ossie, oos, json");
             return std::process::ExitCode::from(64);
         }
     };

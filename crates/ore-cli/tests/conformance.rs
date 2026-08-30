@@ -132,6 +132,11 @@ struct Case {
     /// siempre a Cedar: un campo que nadie lee es peor que uno que no existe,
     /// porque promete algo.
     formato: String,
+    /// Si el caso DECLARÓ `format:`. Sin él, `formato` es un valor por defecto
+    /// y no una afirmación: un caso `same` sin formato compara digests de
+    /// paquete; uno que declara el formato compara **el artefacto emitido**,
+    /// que es lo que dice estar comparando.
+    formato_explicito: bool,
 }
 
 /// Lector mínimo de `case.yaml`.
@@ -209,7 +214,8 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
             // esquema Cedar y se comparaban contra aserciones de GraphQL — y
             // pasaban, porque el comprobador ignoraba lo que no entendia. Verde
             // por la razon equivocada es peor que rojo.
-            let formato = match campo(&texto, "format").as_deref() {
+            let declarado = campo(&texto, "format");
+            let formato = match declarado.as_deref() {
                 Some("odcs") => "odcs",
                 Some("ossie") => "ossie",
                 Some("graphql") => "graphql",
@@ -223,6 +229,7 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
                 nombre,
                 expects,
                 formato,
+                formato_explicito: declarado.is_some(),
             }
         })
         .collect();
@@ -443,6 +450,31 @@ fn ejecutar_compile(caso: &Case, correr: Invocar<'_>) -> Result<(), String> {
                 _ => Ok(()),
             }
         }
+        // Con `format:` declarado se comparan los ARTEFACTOS, no los digests.
+        // El digest de dos escrituras del mismo paquete ya coincide por la forma
+        // canónica, así que compararlo no afirmaría nada sobre la emisión —
+        // sería verde por la razón equivocada.
+        Expects::SameDigest | Expects::DifferentDigest if caso.formato_explicito => {
+            let emitir = |lado: &str| -> Result<String, String> {
+                if !EMISORES.contains(&caso.formato.as_str()) {
+                    return Err("no implementado".into());
+                }
+                let (ok, texto) = exportar(&caso.dir.join(lado), &caso.formato)?;
+                if !ok {
+                    return Err(format!("no emite: {}", texto.lines().next().unwrap_or("")));
+                }
+                Ok(texto)
+            };
+            let (a, b) = (emitir("a")?, emitir("b")?);
+            match (&caso.expects, a == b) {
+                (Expects::SameDigest, false) => {
+                    Err("dos escrituras del mismo paquete emiten artefactos distintos".into())
+                }
+                (Expects::DifferentDigest, true) => Err("mismo artefacto y NO debía".into()),
+                _ => Ok(()),
+            }
+        }
+
         Expects::SameDigest | Expects::DifferentDigest => {
             let (a, b) = (compilar("a")?, compilar("b")?);
             let (da, db) = (
@@ -599,7 +631,7 @@ fn contrato_ajeno(dir: &Path) -> Option<PathBuf> {
 /// Formatos con emisor. Uno ausente de esta lista deja sus casos en
 /// *pendiente*, igual que `IMPLEMENTADAS` hace con los codigos: el marcador solo
 /// sube, y una regresion de verdad destaca.
-const EMISORES: &[&str] = &["odcs", "ossie", "cedar", "oos", "json"];
+const EMISORES: &[&str] = &["odcs", "ossie", "cedar", "graphql", "oos", "json"];
 
 fn ejecutar_emit(caso: &Case) -> Result<(), String> {
     if !EMISORES.contains(&caso.formato.as_str()) {

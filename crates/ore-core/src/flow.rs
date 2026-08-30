@@ -181,7 +181,7 @@ pub enum Origin {
 }
 
 /// Etiquetas efectivas de **una propiedad**: retículo → (nivel, de dónde salió).
-type Labels = BTreeMap<String, (String, Origin)>;
+pub type Labels = BTreeMap<String, (String, Origin)>;
 
 /// Etiquetas efectivas de **una entidad**: propiedad → sus etiquetas.
 type EntityLabels = BTreeMap<String, Labels>;
@@ -529,7 +529,13 @@ fn propagar_solo(pkg: &Package, e: &Loaded, lat: &BTreeMap<String, Lattice>) -> 
 /// Autorización efectiva de cada conducto. Varias políticas se combinan
 /// tomando la **más restrictiva**: una local nunca afloja lo que una importada
 /// restringe.
-fn clearances(pkg: &Package, lat: &BTreeMap<String, Lattice>) -> BTreeMap<String, Labels> {
+///
+/// Se expone por la misma razón que [`efectivas`]: el emisor de GraphQL
+/// necesita **este** techo y no debe recalcularlo. Si lo recalculara, el
+/// contrato emitido y el chequeo de flujo podrían discrepar — y entonces
+/// `ore validate` diría que un dato no puede salir por `contextSurface`
+/// mientras el esquema lo declara.
+pub fn clearances(pkg: &Package, lat: &BTreeMap<String, Lattice>) -> BTreeMap<String, Labels> {
     let mut out: BTreeMap<String, Labels> = BTreeMap::new();
     for cp in pkg.docs.iter().filter(|d| d.kind == Kind::ConduitPolicy) {
         let Some(cs) = cp.section("conduits") else {
