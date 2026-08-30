@@ -5,6 +5,7 @@
 //! catorce no abren un socket.
 
 mod fuente;
+mod inicio;
 mod mcp;
 
 use clap::{Parser, Subcommand};
@@ -87,7 +88,18 @@ enum AccionFuente {
 enum Command {
     // ── Scaffolder ──────── autoría · toca metadatos de producción y, si se pide, un LLM
     /// Crea el esqueleto de un repositorio ontológico.
-    Init,
+    ///
+    /// No escribe un retículo ni un `ConduitPolicy`: son decisiones de gobierno
+    /// y este comando no las tiene. Omitir el conducto además YA significa algo
+    /// —autorización ⊥, denegación por defecto—, así que escribirlo no lo haría
+    /// más cierto.
+    Init {
+        /// Nombre del repositorio. Por defecto, el del directorio.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Registra una fuente física, separando la credencial de la conexión.
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
@@ -170,6 +182,7 @@ fn main() -> std::process::ExitCode {
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
         Command::Dev { path } => return desarrollo(path),
+        Command::Init { name, path } => return inicio::init(path, name.as_deref()),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -198,8 +211,8 @@ fn main() -> std::process::ExitCode {
         | Command::Compile { .. }
         | Command::Export { .. }
         | Command::Dev { .. }
+        | Command::Init { .. }
         | Command::Source(_) => unreachable!(),
-        Command::Init => ("init", "1"),
         Command::Discover => ("discover", "1"),
         Command::Review => ("review", "1"),
         Command::Lint { .. } => ("lint", "posterior"),
@@ -212,7 +225,7 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  Hoy existen: source add, validate, compile, diff, export y dev.");
+    eprintln!("  Hoy existen: init, source add, validate, compile, diff, export y dev.");
     eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
