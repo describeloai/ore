@@ -62,7 +62,7 @@ seguridad.
 | **Compilador** | CI | `lint` `validate` `test` `diff` `plan` `compile` `promote` `export` | **nada. Sin red, sin credenciales, sin reloj** |
 | **Runtime** | producción | `dev` `serve` + Helm | credenciales vivas de todas las fuentes |
 
-**Nueve de catorce comandos no abren un socket.** De ahí sale un argumento que no es
+**Ocho de quince comandos no abren un socket** — la fila del compilador entera. De ahí sale un argumento que no es
 marketing:
 
 > El paso que decide **qué significan las cosas** es el único que no puede filtrar nada.
@@ -220,8 +220,8 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 
 **La fase 0 está cerrada.** Los 73 casos de la suite de conformidad de OOS están
 en verde, y con ellos existen cuatro comandos: `validate`, `compile`, `diff` y
-`export`. Los otros diez que anuncia `ore --help` **no están implementados** y lo
-dicen al ejecutarse.
+`export`. Los **once** restantes que anuncia `ore --help` **no están implementados**
+y lo dicen al ejecutarse.
 
 | Fase | Qué | Criterio de éxito | |
 |:---:|---|---|:---:|

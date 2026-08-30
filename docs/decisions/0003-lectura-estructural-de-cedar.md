@@ -37,7 +37,12 @@ estructura.
 
 ## Decisión
 
-`ore-core::cedar` lee **identidad, efecto, obligaciones y conjunciones de `when`**. No
+`ore-core::cedar` lee **identidad, efecto, obligaciones, conjunciones de `when`, las
+máscaras de `@oosMask` y las etiquetas que la política menciona** —`Label::"…"`—. Las dos
+últimas las añadió v1alpha3: la primera para resolver la máscara con sujeto, y la segunda
+para responder *«¿hay una política sobre esta propiedad?»* sin evaluar nada. Leer
+`Label::"…"` no es un atajo — es el vocabulario que nuestra propia proyección a esquema
+Cedar genera. No
 evalúa, no resuelve jerarquías de entidades, no valida contra un esquema.
 
 Y el límite queda escrito: **si algún día `ore` necesitara decidir una autorización, la
