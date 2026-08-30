@@ -5,6 +5,7 @@
 //! catorce no abren un socket.
 
 mod fuente;
+mod inductor;
 mod inicio;
 mod mcp;
 
@@ -104,7 +105,21 @@ enum Command {
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
     /// Introspecciona una fuente y propone entidades y bindings en DRAFT.
-    Discover,
+    ///
+    /// Son dos actos: leer un catálogo y proponer una ontología. Hoy existe el
+    /// segundo — `--from` toma un catálogo ya leído. El lector que lo produce
+    /// desde una fuente viva es la otra mitad.
+    Discover {
+        /// Un catálogo en JSON: columnas, tipos y claves de un origen.
+        #[arg(long)]
+        from: PathBuf,
+        /// Dónde se escribe el paquete inducido.
+        #[arg(long)]
+        out: PathBuf,
+        /// Nombre y espacio de nombres del paquete. Por defecto, el del directorio.
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Cola interactiva de decisiones para lo que el descubrimiento no supo clasificar.
     Review,
     /// Compara la declaración con el esquema físico real y abre un pull request.
@@ -183,6 +198,7 @@ fn main() -> std::process::ExitCode {
         Command::Export { path, format } => return exportar(path, format),
         Command::Dev { path } => return desarrollo(path),
         Command::Init { name, path } => return inicio::init(path, name.as_deref()),
+        Command::Discover { from, out, name } => return descubrir(from, out, name.as_deref()),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -212,8 +228,8 @@ fn main() -> std::process::ExitCode {
         | Command::Export { .. }
         | Command::Dev { .. }
         | Command::Init { .. }
+        | Command::Discover { .. }
         | Command::Source(_) => unreachable!(),
-        Command::Discover => ("discover", "1"),
         Command::Review => ("review", "1"),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
@@ -225,7 +241,7 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  Hoy existen: init, source add, validate, compile, diff, export y dev.");
+    eprintln!("  Hoy existen: init, source add, discover, validate, compile, diff, export y dev.");
     eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
@@ -267,6 +283,59 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
     let n = diags.len();
     eprintln!("{n} error{}", if n == 1 { "" } else { "es" });
     std::process::ExitCode::FAILURE
+}
+
+/// `ore discover` — el inductor.
+///
+/// Escribe lo que es un hecho y **reporta lo que es una conjetura**. Lo inducido
+/// entra en `DRAFT` y probablemente no compile: una entidad sin clave falla con
+/// `OOS2010`, y está bien que falle — inventar la clave sería lo único peor.
+fn descubrir(
+    origen: &std::path::Path,
+    destino: &std::path::Path,
+    nombre: Option<&str>,
+) -> std::process::ExitCode {
+    let texto = match std::fs::read_to_string(origen) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: no se pudo leer `{}`: {e}", origen.display());
+            return std::process::ExitCode::from(66); // EX_NOINPUT
+        }
+    };
+    let catalogo = match inductor::Catalogo::leer(&texto) {
+        Ok(c) => c,
+        Err(m) => {
+            eprintln!("error: {m}");
+            return std::process::ExitCode::from(65); // EX_DATAERR
+        }
+    };
+
+    let paquete = nombre.map(String::from).unwrap_or_else(|| {
+        destino
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_else(|| "inducido".into())
+    });
+
+    let ind = inductor::inducir(&catalogo, &paquete);
+    for (rel, contenido) in &ind.ficheros {
+        let ruta = destino.join(rel);
+        if let Some(d) = ruta.parent()
+            && let Err(e) = std::fs::create_dir_all(d)
+        {
+            eprintln!("error: no se pudo crear `{}`: {e}", d.display());
+            return std::process::ExitCode::from(73); // EX_CANTCREAT
+        }
+        if let Err(e) = std::fs::write(&ruta, contenido) {
+            eprintln!("error: no se pudo escribir `{}`: {e}", ruta.display());
+            return std::process::ExitCode::from(73);
+        }
+    }
+    let informe_json = destino.join("discover.pending.json");
+    let _ = std::fs::write(&informe_json, inductor::informe_json(&ind).pretty());
+
+    print!("{}", inductor::informe(&ind, destino));
+    std::process::ExitCode::SUCCESS
 }
 
 /// `ore dev` — el servidor de contexto.
