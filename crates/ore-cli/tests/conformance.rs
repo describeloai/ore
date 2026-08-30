@@ -141,10 +141,12 @@ fn buscar(dir: &Path, encontrados: &mut Vec<PathBuf>) {
     for e in entradas.flatten() {
         let p = e.path();
         if p.is_dir() {
-            // El borrador de v1alpha2 tiene su propio arbol y su propio
-            // marcador. Mezclarlos no daria un numero falso: daria un numero
-            // que ya no se sabe que mide.
-            if p.file_name().is_some_and(|n| n == "v1alpha2") {
+            // Cada borrador tiene su propio arbol y su propio marcador.
+            // Mezclarlos no daria un numero falso: daria un numero que ya no
+            // se sabe que mide.
+            if p.file_name()
+                .is_some_and(|n| n == "v1alpha2" || n == "v1alpha3")
+            {
                 continue;
             }
             buscar(&p, encontrados);
@@ -280,7 +282,10 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
             // Una apiVersion que esta implementacion no entiende todavia. Se
             // limpia sola: el dia que ORE la soporte, el caso se mide de
             // verdad sin tocar el arnes.
-            if texto.contains("no implementado") || texto.contains("oos.dev/v1alpha2") {
+            if texto.contains("no implementado")
+                || texto.contains("oos.dev/v1alpha2")
+                || texto.contains("oos.dev/v1alpha3")
+            {
                 return Err("no implementado".into());
             }
             if ok {
@@ -775,15 +780,17 @@ fn suite_de_conformidad() {
 /// que este test protege mientras tanto es que **no haya regresiones**: un caso
 /// del borrador que falle por algo que no sea «sin implementar» es un fallo real
 /// aunque la especificación no sea normativa todavía.
-#[test]
-fn borrador_de_v1alpha2() {
+/// Marcador de un borrador. Vive aparte del de v1alpha1 a proposito: un
+/// numero que mezcla una especificacion cerrada con una en curso no informa
+/// de nada, porque ya no se sabe que mide.
+fn marcador(version: &str, familia: &str, titulo: &str) {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor/oos/conformance/v1alpha2")
+        .join(format!("../../vendor/oos/conformance/{version}"))
         .canonicalize()
         .expect("submódulo sin inicializar");
 
     let casos = descubrir(&raiz);
-    assert!(!casos.is_empty(), "el borrador está vacío");
+    assert!(!casos.is_empty(), "el borrador de {version} está vacío");
 
     let mut verdes = 0usize;
     let mut regresiones: Vec<(String, String, String)> = Vec::new();
@@ -799,22 +806,36 @@ fn borrador_de_v1alpha2() {
     let barra = "█".repeat(verdes * 20 / total) + &"░".repeat(20 - verdes * 20 / total);
     println!();
     println!("  ┌─────────────────────────────────────────────┐");
-    println!("  │  BORRADOR · OOS v1alpha2 · efectos          │");
+    println!("  │{:<45}│", format!("  {titulo}"));
     println!("  └─────────────────────────────────────────────┘");
     println!();
-    println!("    OOS7xxx     {barra}  {verdes:>2} / {total:<2}");
+    println!("    {familia:<11} {barra}  {verdes:>2} / {total:<2}");
     println!();
     println!("    No normativo. `spec/v1alpha1/` sigue mandando.");
     println!();
 
     if !regresiones.is_empty() {
-        println!("    \x1b[31mRegresiones:\x1b[0m");
+        println!("    [31mRegresiones:[0m");
         for (g, n, m) in &regresiones {
             println!("      {g}/{n}: {m}");
         }
         println!();
     }
     assert!(regresiones.is_empty(), "{} regresiones", regresiones.len());
+}
+
+#[test]
+fn borrador_de_v1alpha2() {
+    marcador("v1alpha2", "OOS7xxx", "BORRADOR · OOS v1alpha2 · efectos");
+}
+
+/// El borrador de v1alpha3 arranca entero en pendiente: ningun `OOS8xxx` esta
+/// implementado y los casos `accept` traen `apiVersion: oos.dev/v1alpha3`, que
+/// esta implementacion todavia rechaza. Se limpia solo, caso a caso, segun se
+/// implemente — que es exactamente lo que hizo el de v1alpha2.
+#[test]
+fn borrador_de_v1alpha3() {
+    marcador("v1alpha3", "OOS8xxx", "BORRADOR · OOS v1alpha3 · gobierno");
 }
 
 /// La suite del submódulo debe contener exactamente lo que la especificación
