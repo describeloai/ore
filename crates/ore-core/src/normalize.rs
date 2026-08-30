@@ -46,7 +46,48 @@ const CONJUNTOS: &[&str] = &[
     "roles",
     "tags",
     "authoritativeDefinitions",
+    // v1alpha3. Los cuatro son conjuntos y la especificación lo dice de los dos
+    // primeros con todas las letras: `targets` porque la unión es conmutativa,
+    // `assertions` porque **todas** se sostienen y no hay nada que desempatar.
+    // `masks` y `duties` por lo mismo — todas se aplican, ninguna gana.
+    //
+    // Faltaban, y no era cosmético: dos `Ruleset` que decían lo mismo con las
+    // aserciones en otro orden producían **dos digests**. Eso es G1 —el mismo
+    // commit produce el mismo digest— rota en el plano nuevo, y la
+    // especificación afirmaba lo contrario.
+    //
+    // Contrástese con `Resolution.strategies`, que NO está aquí y no debe
+    // estarlo: allí la primera que casa gana, así que reordenarla cambia qué
+    // registros se fusionan. La misma regla trata los dos casos distinto porque
+    // los dos casos son distintos.
+    "targets",
+    "named",
+    "assertions",
+    "masks",
+    "duties",
+    // v1alpha2, y el hueco era el mismo: esta lista no había crecido desde
+    // v1alpha1, así que **todo campo lista añadido después quedó sin
+    // clasificar**. Reordenar los endosos de una función daba otro digest.
+    //
+    // Los cinco son conjuntos por la misma razón: se cumplen todos y ninguno
+    // gana. `endosada()` los recorre con `any`, las precondiciones se exigen
+    // todas, los efectos se comprueban todos.
+    "effects",
+    "endorsements",
+    "preconditions",
+    "sources",
+    "weights",
 ];
+
+// Lo que NO entra, y conviene que se vea la ausencia:
+//
+// - `strategies` de `Resolution`: la primera que casa gana. Ordenarla cambiaría
+//   qué registros se fusionan, que es el fallo silencioso que N4 existe para
+//   impedir.
+// - `normalize` dentro de una estrategia: son transformaciones encadenadas y no
+//   todas conmutan. Ante la duda, secuencia — de los dos errores posibles este
+//   módulo comete el reversible.
+// - `levels` de un retículo: su orden **es** el orden parcial.
 
 /// N1 · Campos cuyo valor es una **referencia** a otro documento y por tanto se
 /// expande al nombre cualificado. Un nombre corto es azúcar del autor, no una
