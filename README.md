@@ -185,7 +185,7 @@ camino caliente.
 | **L0** · Validador | valida, normaliza, comprueba el flujo, emite digest | **no** |
 | **L1** · Servidor de contexto | entidades, relaciones, tipos, políticas, linaje | **no** |
 | **L2** · Ejecutor | resuelve bindings, aplica obligaciones, federa | sí |
-| **L3** · Actor | ejecuta funciones y hace cumplir `autonomy` | sí, con escritura |
+| **L3** · Actor | ejecuta funciones y **verifica el acto que un endoso declara** | sí, con escritura |
 
 **ORE ejecuta la suite de conformidad de OOS como un consumidor externo cualquiera**, por
 su CLI pública y sin acceso privilegiado a sus estructuras internas.
@@ -250,7 +250,7 @@ borrador define.
 | **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | ◐ |
 | **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado | ◐ |
 | **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** | ◐ |
-| **E** | **emisión** · ODCS · Cedar · **GraphQL** | el esquema emitido lo acepta un motor ajeno, y el techo del conducto quita de él **exactamente** lo gobernado | ✅ |
+| **E** | **emisión** · ODCS · Cedar · **GraphQL** | el esquema emitido lo acepta un motor ajeno, el techo del conducto quita de él **exactamente** lo gobernado, y **una mutación que exige firma humana no puede devolver su resultado** | ✅ |
 
 De la fase 3 existe **`ore dev`**: sirve el contrato por MCP sobre stdio y **no
 toca un dato**. Su criterio de éxito —*«el PII vuelve enmascarado»*— es **L2** y

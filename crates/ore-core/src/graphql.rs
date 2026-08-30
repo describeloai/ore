@@ -47,6 +47,24 @@ struct Tipo {
     interfaces: Vec<String>,
 }
 
+/// Una `Function` que sobrevivió al filtro, lista para escribirse.
+struct Mutacion {
+    nombre: String,
+    argumentos: Vec<(String, String)>,
+    retorno: String,
+    /// El tipo de resultado que hay que declarar, si lo hay.
+    resultado: Option<(String, Vec<(String, String)>)>,
+}
+
+/// El tipo que devuelve una mutación cuyo endoso exige una firma humana.
+///
+/// No es política metida en el contrato: es aritmética del tipo de retorno.
+/// `01-efectos` §3.2 fija que `humanApproval` es un endosante **dinámico** —el
+/// compilador verifica la declaración, el motor verifica el acto—, así que en el
+/// instante de la llamada **el acto no ha ocurrido**. No hay resultado que
+/// devolver, y tipar la respuesta como si lo hubiera sería mentir.
+const APROBACION: &str = "ApprovalRequired";
+
 /// Emite el SDL del paquete, o dice por qué no puede.
 ///
 /// El orden de los pasos es el de §4 y no es intercambiable: podar lo que quedó
@@ -140,7 +158,115 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
         }
     }
 
-    Ok(escribir(&tipos))
+    let mutaciones = mutaciones(pkg, &tipos);
+
+    Ok(escribir(&tipos, &mutaciones))
+}
+
+// ── Las mutaciones ──────────────────────────────────────────────────────────
+
+/// Una `Function` emite una `Mutation` **si y solo si** cada propiedad que
+/// escribe está en el contrato. Si una sola quedó fuera por el conducto, la
+/// mutación no se emite: publicar una escritura sobre un campo que el consumidor
+/// no puede leer le pediría que confíe en un efecto que no puede comprobar.
+fn mutaciones(pkg: &Package, tipos: &BTreeMap<String, Tipo>) -> BTreeMap<String, Mutacion> {
+    let mut out = BTreeMap::new();
+    for f in pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == crate::document::Kind::Function)
+    {
+        let Some(qn) = f.qname() else { continue };
+        if !escribe_solo_lo_servido(f, tipos) {
+            continue;
+        }
+        let nombre = corto(&qn);
+        let argumentos = parametros(f, "input");
+        let salida = parametros(f, "output");
+
+        // El endoso decide el tipo, y gana sobre `output`. Un `when:` cuenta
+        // igual que un endoso incondicional: la regla de integridad pregunta si
+        // BASTA para escribir y una condición no es una garantía; el contrato
+        // pregunta qué recibe QUIEN LLAMA, y una condición puede activarse.
+        // Dos preguntas distintas sobre el mismo campo, dos respuestas.
+        let (retorno, resultado) = if exige_firma(f) {
+            (format!("{APROBACION}!"), None)
+        } else if salida.is_empty() {
+            // `effects` es obligatorio, así que siempre hay un hecho que
+            // devolver aunque no haya un valor declarado.
+            ("Boolean!".to_string(), None)
+        } else {
+            let tipo = format!("{}Result", mayuscula_inicial(&nombre));
+            (format!("{tipo}!"), Some((tipo, salida)))
+        };
+
+        out.insert(
+            qn,
+            Mutacion {
+                nombre,
+                argumentos,
+                retorno,
+                resultado,
+            },
+        );
+    }
+    out
+}
+
+fn escribe_solo_lo_servido(f: &Loaded, tipos: &BTreeMap<String, Tipo>) -> bool {
+    let efectos = f.section("effects").map(|n| n.items()).unwrap_or(&[]);
+    if efectos.is_empty() {
+        return false;
+    }
+    efectos.iter().all(|e| {
+        let Some(destino) = e.get("writes").and_then(|(_, v)| v.as_str()) else {
+            return false;
+        };
+        let Some((entidad, propiedad)) = destino.rsplit_once('.') else {
+            return false;
+        };
+        tipos
+            .get(entidad)
+            .is_some_and(|t| t.campos.iter().any(|(p, _)| p == propiedad))
+    })
+}
+
+/// ¿Algún endoso exige una firma humana? El `when:` no se mira: ver arriba.
+fn exige_firma(f: &Loaded) -> bool {
+    f.section("endorsements")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .any(|e| e.get("endorser").and_then(|(_, v)| v.as_str()) == Some("humanApproval"))
+}
+
+/// `input` y `output` son mapas de `nombre -> { type, required }`.
+fn parametros(f: &Loaded, seccion: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = f
+        .section(seccion)
+        .map(|n| n.entries())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|(k, v)| {
+            let nombre = k.as_str()?;
+            let crudo = v.get("type").and_then(|(_, t)| t.as_str())?;
+            let tipo = grafo(crudo).ok()?;
+            let obligatorio = v
+                .get("required")
+                .and_then(|(_, r)| r.as_str())
+                .is_some_and(|r| r == "true");
+            Some((
+                nombre.to_string(),
+                if obligatorio {
+                    format!("{tipo}!")
+                } else {
+                    tipo
+                },
+            ))
+        })
+        .collect();
+    out.sort(); // un mapa, como `properties`
+    out
 }
 
 // ── El techo ────────────────────────────────────────────────────────────────
@@ -353,7 +479,7 @@ fn relaciones(pkg: &Package, e: &Loaded, vivos: &BTreeSet<String>) -> Vec<(Strin
 /// El orden es el de la forma canónica —`BTreeMap` por nombre cualificado— y no
 /// el de aparición en el fichero. Es lo que hace que dos escrituras del mismo
 /// paquete emitan el mismo SDL byte a byte (`01-emision-graphql` §6.3).
-fn escribir(tipos: &BTreeMap<String, Tipo>) -> String {
+fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutacion>) -> String {
     let mut s = String::new();
 
     let mut escalares: BTreeSet<String> = BTreeSet::new();
@@ -364,6 +490,19 @@ fn escribir(tipos: &BTreeMap<String, Tipo>) -> String {
             }
         }
     }
+    for m in mutaciones.values() {
+        for (_, tipo) in m.argumentos.iter().chain(
+            m.resultado
+                .as_ref()
+                .map(|(_, campos)| campos.iter())
+                .unwrap_or_default(),
+        ) {
+            if let Some(e) = propio(tipo) {
+                escalares.insert(e);
+            }
+        }
+    }
+    escalares.remove(APROBACION);
     for e in &escalares {
         let _ = writeln!(s, "scalar {e}");
     }
@@ -412,6 +551,45 @@ fn escribir(tipos: &BTreeMap<String, Tipo>) -> String {
         );
     }
     s.push_str("}\n");
+
+    if mutaciones.is_empty() {
+        return s;
+    }
+
+    for m in mutaciones.values() {
+        if let Some((tipo, campos)) = &m.resultado {
+            let _ = write!(s, "\ntype {tipo} {{\n");
+            for (campo, t) in campos {
+                let _ = writeln!(s, "  {campo}: {t}");
+            }
+            s.push_str("}\n");
+        }
+    }
+
+    if mutaciones
+        .values()
+        .any(|m| m.retorno.starts_with(APROBACION))
+    {
+        s.push_str(
+            "\n\"La invocacion quedo propuesta y espera la firma que su endoso declara.\"\n",
+        );
+        let _ = write!(
+            s,
+            "type {APROBACION} {{\n  request: ID!\n  endorsement: String!\n}}\n"
+        );
+    }
+
+    s.push_str("\ntype Mutation {\n");
+    for m in mutaciones.values() {
+        let args = m
+            .argumentos
+            .iter()
+            .map(|(n, t)| format!("{n}: {t}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(s, "  {}({args}): {}", m.nombre, m.retorno);
+    }
+    s.push_str("}\n");
     s
 }
 
@@ -426,6 +604,14 @@ fn propio(tipo: &str) -> Option<String> {
 
 fn corto(qname: &str) -> String {
     qname.rsplit('.').next().unwrap_or(qname).to_string()
+}
+
+fn mayuscula_inicial(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(p) => p.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 fn minuscula_inicial(s: &str) -> String {
