@@ -114,8 +114,7 @@ fn calidad(
         let Some(Json::Arr(aserciones)) = obj(doc)
             .and_then(|d| d.get("spec"))
             .and_then(obj)
-            .map(|s| s.get("assertions"))
-            .flatten()
+            .and_then(|s| s.get("assertions"))
         else {
             continue;
         };
@@ -355,7 +354,10 @@ fn conceptos_de(canonica: &BTreeMap<String, Json>) -> BTreeMap<String, BTreeMap<
 ///
 /// Lo declarado localmente gana sobre lo heredado, y solo puede ser una cosa:
 /// una etiqueta ELEVADA (`OOS4012`). El tipo no puede redeclararse.
-fn fundir(prop: &BTreeMap<String, Json>, conceptos: &BTreeMap<String, BTreeMap<String, Json>>) -> BTreeMap<String, Json> {
+fn fundir(
+    prop: &BTreeMap<String, Json>,
+    conceptos: &BTreeMap<String, BTreeMap<String, Json>>,
+) -> BTreeMap<String, Json> {
     let Some(Json::Str(qn)) = prop.get("is") else {
         return prop.clone();
     };

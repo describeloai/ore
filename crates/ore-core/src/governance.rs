@@ -450,12 +450,9 @@ fn vacio(r: &Loaded, dom: &Dominio, pos: Pos) -> Diagnostic {
 fn suelo(dom: &Dominio, ret: &str, props: &Props, l: &Lattice) -> Option<usize> {
     match dom {
         Dominio::Predicado(o) => l.index(o.get(ret)?),
-        Dominio::Forma { propiedades, .. } => suelo(
-            &Dominio::Nombres(propiedades.clone()),
-            ret,
-            props,
-            l,
-        ),
+        Dominio::Forma { propiedades, .. } => {
+            suelo(&Dominio::Nombres(propiedades.clone()), ret, props, l)
+        }
         Dominio::Nombres(ns) => ns
             .iter()
             .map(|n| {

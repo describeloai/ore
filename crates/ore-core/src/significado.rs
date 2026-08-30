@@ -161,10 +161,8 @@ pub fn exigencias(pkg: &Package) -> BTreeMap<String, Vec<String>> {
 /// lo que la interfaz no nombra sería acreditar lo que nadie exigió.
 pub fn por_forma(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
     let exige = exigencias(pkg);
-    let mut out: BTreeMap<String, BTreeSet<String>> = exige
-        .keys()
-        .map(|i| (i.clone(), BTreeSet::new()))
-        .collect();
+    let mut out: BTreeMap<String, BTreeSet<String>> =
+        exige.keys().map(|i| (i.clone(), BTreeSet::new())).collect();
 
     for e in pkg.entities() {
         let qn = e.qname().unwrap_or_default();
@@ -172,7 +170,9 @@ pub fn por_forma(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
             continue;
         };
         for i in e.section("implements").map(|n| n.items()).unwrap_or(&[]) {
-            let Some(declarada) = i.as_str() else { continue };
+            let Some(declarada) = i.as_str() else {
+                continue;
+            };
             let Some(suyo) = exige.get(declarada) else {
                 continue;
             };

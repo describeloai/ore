@@ -1,0 +1,223 @@
+# Publicar el binario.
+#
+# La tesis del producto es **G1**: el mismo commit produce el mismo digest. Un
+# proyecto que vende eso y publica un binario sin procedencia ni comprobación de
+# determinismo está pidiendo que se le crea justo donde dice que no hay que
+# creer a nadie. Así que este flujo hace con su propio artefacto lo que `ore`
+# hace con un bundle:
+#
+#   1. no existe si la suite no pasa          — 74/74, la misma puerta que `ci`
+#   2. se comprueba que es determinista        — dos compilaciones, un hash
+#   3. se sella con su procedencia             — atestación SLSA verificable
+#   4. se publica con su digest al lado        — SHA256SUMS
+#
+# DESIGN.md compara OOS con SLSA —*«no define cómo se construye software; define
+# propiedades verificables sobre construcciones y las atestaciones que las
+# prueban»*—. El paso 3 hace esa analogía literal en vez de retórica.
+#
+# ── Por qué binarios crudos y no `.tar.gz`
+#
+# Lo que se atesta y lo que se descarga deben ser **la misma cadena de bytes**.
+# Un archivo comprimido mete en medio un artefacto cuyos bytes dependen de la
+# implementación de `tar` y `gzip` de cada runner —orden, `mtime`, propietario,
+# nivel de compresión—, y entonces el hash publicado ya no es el del binario:
+# es el de una envoltura. Un `chmod +x` en el instalador sale más barato que una
+# fuente de no-determinismo que nadie va a auditar.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# Sin caché de compilación en todo este flujo, y no es un olvido. Una caché
+# envenenada produce un binario envenenado **que además sale firmado**, y la
+# atestación del paso 3 lo avalaría. Por lo mismo, aquí solo se usan acciones de
+# GitHub: una acción de terceros en el camino de publicación habría que fijarla
+# por SHA, y no tenerla sale más barato que auditarla. `ci.yml` sí cachea —ahí
+# lo que está en juego es un minuto, no la procedencia.
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  # ── 1 · La puerta ────────────────────────────────────────────────────────
+  guardia:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - run: rustup show
+
+      # Un tag y un `Cargo.toml` que discrepan producen un binario que se
+      # anuncia con una versión y dice otra al ejecutarse. Nadie lo nota hasta
+      # que alguien reporta un fallo contra la versión equivocada.
+      - name: el tag coincide con la versión declarada
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          decl=$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$tag" != "$decl" ]; then
+            echo "::error::el tag dice $tag y Cargo.toml dice $decl."
+            echo "::error::Sube la versión del workspace antes de etiquetar."
+            exit 1
+          fi
+          if [ "$decl" = "0.0.0" ]; then
+            echo "::error::0.0.0 no es una versión publicable: es el valor de partida."
+            exit 1
+          fi
+          echo "version=$decl" >> "$GITHUB_OUTPUT"
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: suite de conformidad y tests
+        run: cargo test --workspace --all-targets
+
+  # ── 2 · La afirmación que este proyecto no puede dejar sin medir ─────────
+  determinista:
+    needs: guardia
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - run: rustup target add x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # Dos árboles de compilación distintos, mismas entradas. Si el hash no
+      # coincide, `lto`/`codegen-units` no bastan y hay que saberlo ANTES de
+      # publicar, no cuando alguien intente reproducir la compilación.
+      - name: construir dos veces
+        env:
+          ORE_COMMIT: ${{ github.sha }}
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=
+        run: |
+          for d in uno dos; do
+            CARGO_TARGET_DIR="$RUNNER_TEMP/$d" \
+              cargo build --release --locked --target x86_64-unknown-linux-musl
+          done
+          a=$(sha256sum "$RUNNER_TEMP/uno/x86_64-unknown-linux-musl/release/ore" | cut -d' ' -f1)
+          b=$(sha256sum "$RUNNER_TEMP/dos/x86_64-unknown-linux-musl/release/ore" | cut -d' ' -f1)
+          echo "  1ª  $a"
+          echo "  2ª  $b"
+          if [ "$a" != "$b" ]; then
+            echo "::error::dos compilaciones del mismo commit dan binarios distintos."
+            echo "::error::G1 promete lo contrario para un bundle; el motor no puede ser peor."
+            exit 1
+          fi
+
+  # ── 3 · Un runner nativo por plataforma ─────────────────────────────────
+  #
+  # Sin FFI —ni `windows-sys` por los colores de clap, ni un validador de JSON
+  # Schema, ni RocksDB— la lista de dependencias es de cinco crates puras. Aun
+  # así se compila en runner nativo y no cruzando: el enlazador cruzado es una
+  # variable más, y lo que este proyecto afirma es que **no arrastra nada
+  # nativo**, no que sepa configurar cinco toolchains.
+  construir:
+    needs: [guardia, determinista]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  runner: ubuntu-24.04,     musl: true }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, musl: true }
+          - { target: x86_64-apple-darwin,        runner: macos-13 }
+          - { target: aarch64-apple-darwin,       runner: macos-14 }
+          - { target: x86_64-pc-windows-msvc,     runner: windows-2022, ext: .exe }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - run: rustup show
+      - run: rustup target add ${{ matrix.target }}
+      - if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # `--locked` es parte del contrato: una release que resuelva dependencias
+      # distintas de las del lock no es la del commit que dice ser.
+      - name: construir
+        shell: bash
+        env:
+          ORE_COMMIT: ${{ github.sha }}
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # El binario tiene que ARRANCAR en su plataforma. Publicar algo que enlaza
+      # y no ejecuta es el fallo que nadie descubre hasta el primer usuario.
+      - name: arranca y se identifica
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/ore${{ matrix.ext }}"
+          "$bin" --version
+          "$bin" --version | grep -q "${{ github.sha }}" \
+            || { echo "::error::el binario no lleva sellado su commit"; exit 1; }
+
+      - name: nombrar
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ore${{ matrix.ext }}" \
+             "dist/ore-${{ needs.guardia.outputs.version }}-${{ matrix.target }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ore-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  # ── 4 · Sellar y publicar ───────────────────────────────────────────────
+  publicar:
+    needs: [guardia, construir]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write       # crear la release
+      id-token: write       # firmar la procedencia
+      attestations: write   # registrarla
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: recogida
+          pattern: ore-*
+          merge-multiple: true
+
+      # Un artefacto que falta se parece mucho a uno que nunca se pidió. Que la
+      # cuenta sea explícita es lo que impide publicar media matriz en silencio.
+      - name: están los cinco
+        run: |
+          mkdir -p dist && mv recogida/* dist/
+          n=$(ls -1 dist | wc -l)
+          ls -l dist
+          [ "$n" -eq 5 ] || { echo "::error::esperaba 5 binarios y hay $n"; exit 1; }
+
+      - name: digest de cada uno
+        run: cd dist && sha256sum ore-* | tee SHA256SUMS
+
+      # La procedencia: qué commit, qué flujo, qué runner. Es lo que convierte
+      # «confía en esta descarga» en `gh attestation verify`.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/ore-*
+
+      # Las notas viven en un fichero del repositorio y no aquí dentro: así se
+      # revisan en un PR como cualquier otro texto, en vez de esconderse dentro
+      # de un heredoc de shell dentro de un YAML.
+      - name: publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.guardia.outputs.version }}
+        run: |
+          prerelease=""
+          case "$V" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ore $V" \
+            --notes-file .github/notas-de-release.md $prerelease

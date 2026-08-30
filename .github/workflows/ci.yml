@@ -1,0 +1,52 @@
+# La puerta. Nada entra en `main` sin cruzarla, y `release.yml` la vuelve a
+# cruzar antes de publicar nada — porque una puerta que se comprueba en un sitio
+# distinto del que se atraviesa no es una puerta.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Un empujón nuevo cancela el anterior sobre la misma rama: lo que importa es el
+# veredicto de la punta, no el de un commit que ya nadie va a mirar.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: -D warnings
+
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    steps:
+      # `vendor/oos` NO es opcional: los 74 casos de conformidad viven ahí, y sin
+      # ellos esta puerta comprobaría que compila, no que cumple.
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: toolchain
+        run: rustup show   # `rust-toolchain.toml` manda; esto solo lo materializa
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: formato
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 74 conformidad · 55 núcleo · 8 CLI · 2 árbol · 1 ejemplo.
+      - name: suite
+        run: cargo test --workspace --all-targets
+
+      # El binario tiene que arrancar, no solo enlazar. Un `--version` que falla
+      # es un artefacto que no sirve, y sale más barato saberlo aquí.
+      - name: arranca
+        run: cargo run --quiet -- --version

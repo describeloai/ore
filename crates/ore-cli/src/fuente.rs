@@ -98,7 +98,11 @@ struct Fallo {
 
 impl Fallo {
     fn nueva(codigo: u8, mensaje: impl Into<String>) -> Self {
-        Fallo { mensaje: mensaje.into(), ayuda: Vec::new(), codigo }
+        Fallo {
+            mensaje: mensaje.into(),
+            ayuda: Vec::new(),
+            codigo,
+        }
     }
     fn ayuda(mut self, linea: impl Into<String>) -> Self {
         self.ayuda.push(linea.into());
@@ -112,20 +116,26 @@ fn intentar(a: &Alta) -> Result<String, Fallo> {
     let texto = leer_config(&config)?;
 
     let arbol = ore_core::parse::parse(&texto).map_err(|e| {
-        Fallo::nueva(65, format!("`{}` no analiza: {}", config.display(), e.message))
+        Fallo::nueva(
+            65,
+            format!("`{}` no analiza: {}", config.display(), e.message),
+        )
     })?;
 
     let fuente = derivar(a, &arbol)?;
-    let nuevo = insertar(&texto, &bloque(&fuente))
-        .map_err(|m| Fallo::nueva(65, m).ayuda("  Añade la entrada a mano; la forma está arriba."))?;
+    let nuevo = insertar(&texto, &bloque(&fuente)).map_err(|m| {
+        Fallo::nueva(65, m).ayuda("  Añade la entrada a mano; la forma está arriba.")
+    })?;
 
     // Se valida ANTES de escribir. Un comando de andamiaje que deja el
     // repositorio sin compilar ha hecho más daño que trabajo.
     let diags = ore_core::validate_document(&config, &nuevo);
     if let Some(d) = diags.first() {
-        return Err(Fallo::nueva(65, "la entrada resultante no valida contra OOS")
-            .ayuda(d.render(a.raiz))
-            .ayuda("  No se ha escrito nada."));
+        return Err(
+            Fallo::nueva(65, "la entrada resultante no valida contra OOS")
+                .ayuda(d.render(a.raiz))
+                .ayuda("  No se ha escrito nada."),
+        );
     }
 
     // El manifiesto se escribe el ULTIMO, y el orden importa. Si algo falla por
@@ -142,15 +152,20 @@ fn intentar(a: &Alta) -> Result<String, Fallo> {
 
 fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
     if !identificador(a.nombre) {
-        return Err(Fallo::nueva(65, format!("`{}` no es un identificador válido", a.nombre))
-            .ayuda("  Los bindings lo referencian con `datasourceRef`: letra, luego letras,")
-            .ayuda("  dígitos o `_`. Sin puntos ni guiones."));
+        return Err(
+            Fallo::nueva(65, format!("`{}` no es un identificador válido", a.nombre))
+                .ayuda("  Los bindings lo referencian con `datasourceRef`: letra, luego letras,")
+                .ayuda("  dígitos o `_`. Sin puntos ni guiones."),
+        );
     }
 
     if ya_existe(arbol, a.nombre) {
-        return Err(Fallo::nueva(65, format!("`{}` ya está declarado en el manifiesto", a.nombre))
-            .ayuda("  Una fuente registrada dos veces con el mismo nombre haría ambiguo un")
-            .ayuda("  `datasourceRef`. Elige otro nombre o edita la entrada existente."));
+        return Err(Fallo::nueva(
+            65,
+            format!("`{}` ya está declarado en el manifiesto", a.nombre),
+        )
+        .ayuda("  Una fuente registrada dos veces con el mismo nombre haría ambiguo un")
+        .ayuda("  `datasourceRef`. Elige otro nombre o edita la entrada existente."));
     }
 
     let tipo = match a.tipo {
@@ -162,8 +177,10 @@ fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
         })?,
     };
     if !tipo_valido(&tipo) {
-        return Err(Fallo::nueva(65, format!("`{tipo}` no sirve como tipo de driver"))
-            .ayuda("  Minúscula, luego minúsculas, dígitos o `_`."));
+        return Err(
+            Fallo::nueva(65, format!("`{tipo}` no sirve como tipo de driver"))
+                .ayuda("  Minúscula, luego minúsculas, dígitos o `_`."),
+        );
     }
 
     let env = match a.env {
@@ -171,8 +188,10 @@ fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
         None => variable(nombre_del_manifiesto(arbol).as_deref(), a.nombre),
     };
     if !nombre_de_variable(&env) {
-        return Err(Fallo::nueva(65, format!("`{env}` no sirve como nombre de variable"))
-            .ayuda("  Mayúscula, luego mayúsculas, dígitos o `_`."));
+        return Err(
+            Fallo::nueva(65, format!("`{env}` no sirve como nombre de variable"))
+                .ayuda("  Mayúscula, luego mayúsculas, dígitos o `_`."),
+        );
     }
 
     let mut etiquetas = Vec::new();
@@ -181,8 +200,10 @@ fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
             Fallo::nueva(65, format!("`{cruda}` no tiene la forma `clave=valor`"))
         })?;
         if !nombre_cualificado(k) {
-            return Err(Fallo::nueva(65, format!("`{k}` no es un nombre cualificado"))
-                .ayuda("  Una etiqueta se nombra `espacio.nombre`, como `acme.residency`."));
+            return Err(
+                Fallo::nueva(65, format!("`{k}` no es un nombre cualificado"))
+                    .ayuda("  Una etiqueta se nombra `espacio.nombre`, como `acme.residency`."),
+            );
         }
         if !identificador(v) {
             return Err(Fallo::nueva(65, format!("`{v}` no es un identificador")));
@@ -209,7 +230,11 @@ fn esquema(url: &str) -> Option<String> {
         return None;
     }
     let s = s.to_ascii_lowercase().replace(['-', '+'], "_");
-    Some(if s == "postgresql" { "postgres".into() } else { s })
+    Some(if s == "postgresql" {
+        "postgres".into()
+    } else {
+        s
+    })
 }
 
 /// `<manifiesto>_<fuente>_URL`. Derivable, y por eso no se pregunta.
@@ -276,14 +301,16 @@ fn tipo_valido(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.starts_with(|c: char| c.is_ascii_lowercase())
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn nombre_de_variable(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
         && s.starts_with(|c: char| c.is_ascii_uppercase())
-        && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn nombre_cualificado(s: &str) -> bool {
@@ -329,9 +356,11 @@ fn insertar(texto: &str, bloque: &str) -> Result<String, String> {
         // Estilo de flujo: `datasources: [ … ]`. Editarlo a ciegas sería
         // adivinar dónde acaba, y adivinar es lo que este comando no hace.
         if lineas.iter().any(|l| l.starts_with("datasources:")) {
-            return Err("`datasources` está escrito en estilo de flujo y este comando \
+            return Err(
+                "`datasources` está escrito en estilo de flujo y este comando \
                         solo sabe editar la forma de bloque"
-                .into());
+                    .into(),
+            );
         }
         let mut s = texto.trim_end().to_string();
         s.push_str("\n\ndatasources:\n");
@@ -371,10 +400,10 @@ fn escribir_secreto(raiz: &Path, env: &str, url: &str) -> Result<PathBuf, Fallo>
     let ruta = raiz.join(SECRETOS);
     let previo = std::fs::read_to_string(&ruta).unwrap_or_default();
 
-    if previo.lines().any(|l| {
-        l.split_once('=')
-            .is_some_and(|(k, _)| k.trim() == env)
-    }) {
+    if previo
+        .lines()
+        .any(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == env))
+    {
         return Err(Fallo::nueva(73, format!("`{env}` ya está en `{SECRETOS}`"))
             .ayuda("  No se sobrescribe una credencial existente: si es la que quieres,")
             .ayuda("  bórrala a mano primero. No se ha escrito nada."));
@@ -395,18 +424,25 @@ fn escribir_secreto(raiz: &Path, env: &str, url: &str) -> Result<PathBuf, Fallo>
 /// rechaza en vez de escribirse a medias.
 fn valor_env(url: &str) -> Result<String, Fallo> {
     if url.contains(['\n', '\r']) {
-        return Err(Fallo::nueva(65, "la cadena de conexión contiene un salto de línea"));
+        return Err(Fallo::nueva(
+            65,
+            "la cadena de conexión contiene un salto de línea",
+        ));
     }
     if url.contains('\'') {
-        return Err(Fallo::nueva(65, "la cadena de conexión contiene una comilla simple")
-            .ayuda("  Los lectores de `.env` no la escapan dentro de comillas. Codifícala")
-            .ayuda("  en porcentaje (`%27`) o define la variable a mano."));
+        return Err(
+            Fallo::nueva(65, "la cadena de conexión contiene una comilla simple")
+                .ayuda("  Los lectores de `.env` no la escapan dentro de comillas. Codifícala")
+                .ayuda("  en porcentaje (`%27`) o define la variable a mano."),
+        );
     }
-    Ok(if url.contains([' ', '\t', '#', '"', '$']) || url.is_empty() {
-        format!("'{url}'")
-    } else {
-        url.to_string()
-    })
+    Ok(
+        if url.contains([' ', '\t', '#', '"', '$']) || url.is_empty() {
+            format!("'{url}'")
+        } else {
+            url.to_string()
+        },
+    )
 }
 
 fn asegurar_ignorado(raiz: &Path) -> Result<bool, Fallo> {
@@ -500,16 +536,28 @@ fn informe(a: &Alta, f: &Fuente, secreto: &Path, ignorado: bool) -> String {
         "  ✓ credencial en {} como {}{}\n",
         secreto.display(),
         f.env,
-        if ignorado { format!(" (añadido a {IGNORAR})") } else { String::new() }
+        if ignorado {
+            format!(" (añadido a {IGNORAR})")
+        } else {
+            String::new()
+        }
     ));
-    s.push_str(&format!("  ✓ {CONFIG} declara la fuente; el secreto no aparece en él\n"));
+    s.push_str(&format!(
+        "  ✓ {CONFIG} declara la fuente; el secreto no aparece en él\n"
+    ));
 
-    match f.etiquetas.iter().find(|(k, _)| k.rsplit('.').next() == Some("residency")) {
+    match f
+        .etiquetas
+        .iter()
+        .find(|(k, _)| k.rsplit('.').next() == Some("residency"))
+    {
         Some((k, v)) => s.push_str(&format!("  ✓ {k}: {v}\n")),
         None => {
             s.push_str("  · residency: <sin declarar>              ← decisión pendiente\n");
             s.push_str("    Dónde vive el dato es un hecho del mundo, pero afirmarlo es de\n");
-            s.push_str("    quien responde por él. Cuando se sepa:  --label acme.residency=eu_only\n");
+            s.push_str(
+                "    quien responde por él. Cuando se sepa:  --label acme.residency=eu_only\n",
+            );
         }
     }
     s.push_str("\n  Nada se ha leído de la fuente: registrar y consultar son actos distintos.\n");
@@ -524,7 +572,10 @@ mod tests {
 
     #[test]
     fn el_tipo_se_deriva_del_esquema() {
-        assert_eq!(esquema("postgres://u:p@h:5432/db").as_deref(), Some("postgres"));
+        assert_eq!(
+            esquema("postgres://u:p@h:5432/db").as_deref(),
+            Some("postgres")
+        );
         assert_eq!(esquema("postgresql://h/db").as_deref(), Some("postgres"));
         assert_eq!(esquema("SNOWFLAKE://acc/db").as_deref(), Some("snowflake"));
         assert_eq!(esquema("db2-luw://h/db").as_deref(), Some("db2_luw"));
@@ -533,7 +584,10 @@ mod tests {
 
     #[test]
     fn la_variable_se_deriva_del_manifiesto_y_del_nombre() {
-        assert_eq!(variable(Some("acme-retail"), "crm_prod"), "ACME_RETAIL_CRM_PROD_URL");
+        assert_eq!(
+            variable(Some("acme-retail"), "crm_prod"),
+            "ACME_RETAIL_CRM_PROD_URL"
+        );
         assert_eq!(variable(None, "crm"), "CRM_URL");
         // Una variable de entorno no puede empezar por dígito.
         assert_eq!(variable(Some("360"), "crm"), "X360_CRM_URL");
@@ -551,8 +605,14 @@ mod tests {
         );
         // Sin credencial en la URL no hay nada que tapar, y tapar de más
         // ocultaría a qué se ha conectado uno.
-        assert_eq!(redactar("postgres://db.internal/crm"), "postgres://db.internal/crm");
-        assert_eq!(redactar("workday://acme@wd.example.com/hr"), "workday://acme@wd.example.com/hr");
+        assert_eq!(
+            redactar("postgres://db.internal/crm"),
+            "postgres://db.internal/crm"
+        );
+        assert_eq!(
+            redactar("workday://acme@wd.example.com/hr"),
+            "workday://acme@wd.example.com/hr"
+        );
     }
 
     #[test]
@@ -586,7 +646,10 @@ mod tests {
     #[test]
     fn una_cadena_ambigua_se_rechaza_en_vez_de_escribirse_a_medias() {
         assert!(valor_env("postgres://h/db").is_ok());
-        assert_eq!(valor_env("postgres://h/db?a=1 2").unwrap(), "'postgres://h/db?a=1 2'");
+        assert_eq!(
+            valor_env("postgres://h/db?a=1 2").unwrap(),
+            "'postgres://h/db?a=1 2'"
+        );
         assert!(valor_env("postgres://u:it's@h/db").is_err());
         assert!(valor_env("uno\ndos").is_err());
     }
@@ -605,7 +668,10 @@ mod tests {
         };
         let mut ordenadas = f.etiquetas.clone();
         ordenadas.sort();
-        let f = Fuente { etiquetas: ordenadas, ..f };
+        let f = Fuente {
+            etiquetas: ordenadas,
+            ..f
+        };
         assert_eq!(
             bloque(&f),
             "  - name: crm_prod\n\

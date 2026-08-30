@@ -9,12 +9,42 @@ mod fuente;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// La identidad del motor, y es mas que un numero de version.
+///
+/// Un bundle lleva `sha256:...` y **G1** promete que el mismo commit produce el
+/// mismo digest. Quien audite ese bundle tiene que poder contestar *cual motor
+/// lo produjo*, y `ore 0.1.0` contesta *alguna compilacion de la 0.1.0* — que
+/// para una garantia de determinismo no vale.
+///
+/// El commit entra por **variable de entorno al compilar**, no por un `build.rs`
+/// que invoque a git. La diferencia no es de comodidad: asi una compilacion
+/// local dice honestamente que **no viene de un commit conocido**, en vez de
+/// sellar el hash de un arbol que puede estar sucio. Un binario que miente sobre
+/// su procedencia tiene exactamente el mismo aspecto que uno que no.
+///
+/// Y las versiones de OOS **se derivan** de `ApiVersion::ALL` (P2): una lista
+/// escrita a mano aqui envejeceria en silencio la primera vez que el motor
+/// aprendiera una version nueva.
+fn version() -> String {
+    let commit = option_env!("ORE_COMMIT").unwrap_or("sin sellar");
+    let oos: Vec<&str> = ore_core::document::ApiVersion::ALL
+        .iter()
+        .map(|v| v.as_str())
+        .collect();
+    format!(
+        "{} ({commit})
+OOS: {}",
+        env!("CARGO_PKG_VERSION"),
+        oos.join(" · ")
+    )
+}
+
 #[derive(Parser)]
 #[command(
     name = "ore",
     about = "Ontology Runtime Engine — compila, coteja y sirve un repositorio ontológico",
     long_about = None,
-    version
+    version = version()
 )]
 struct Cli {
     #[command(subcommand)]

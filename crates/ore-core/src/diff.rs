@@ -356,10 +356,8 @@ fn shape(pkg: &Package) -> Shape {
                             .unwrap_or(&[])
                             .iter()
                             .filter_map(|i| {
-                                let partes: Vec<String> = campos
-                                    .iter()
-                                    .filter_map(|c| cadena(i, c))
-                                    .collect();
+                                let partes: Vec<String> =
+                                    campos.iter().filter_map(|c| cadena(i, c)).collect();
                                 (!partes.is_empty()).then(|| partes.join("/"))
                             })
                             .collect()
@@ -677,12 +675,10 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             .difference(&antes.preconditions)
             .collect();
         if !nuevas.is_empty() {
-            out.push(
-                Change::new(Code::Oos5025, Axis::Consumer).sujeto(qn).with(
-                    "nowRequires",
-                    Json::Arr(nuevas.iter().map(|p| Json::s(p.as_str())).collect()),
-                ),
-            );
+            out.push(Change::new(Code::Oos5025, Axis::Consumer).sujeto(qn).with(
+                "nowRequires",
+                Json::Arr(nuevas.iter().map(|p| Json::s(p.as_str())).collect()),
+            ));
         }
 
         // OOS5011 · la integridad de una función SE COMPUTA de sus endosos.
@@ -692,12 +688,10 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             .difference(&despues.endorsements)
             .collect();
         if !perdidos.is_empty() {
-            out.push(
-                Change::new(Code::Oos5011, Axis::Policy).sujeto(qn).with(
-                    "lostEndorsements",
-                    Json::Arr(perdidos.iter().map(|e| Json::s(e.as_str())).collect()),
-                ),
-            );
+            out.push(Change::new(Code::Oos5011, Axis::Policy).sujeto(qn).with(
+                "lostEndorsements",
+                Json::Arr(perdidos.iter().map(|e| Json::s(e.as_str())).collect()),
+            ));
         }
     }
 
@@ -712,11 +706,13 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             continue;
         };
         for (id, u) in antes {
-            let Some(ahora) = despues.get(id) else { continue };
+            let Some(ahora) = despues.get(id) else {
+                continue;
+            };
             if menor(ahora, u) {
                 out.push(
                     Change::new(Code::Oos5016, Axis::Policy)
-                        .sujeto(&format!("{qn}.{id}"))
+                        .sujeto(format!("{qn}.{id}"))
                         .de_a(u, ahora),
                 );
             }
@@ -737,20 +733,16 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
         };
         for id in antes.assertions.keys() {
             if !despues.assertions.contains_key(id) {
-                out.push(
-                    Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{id}")),
-                );
+                out.push(Change::new(Code::Oos5007, Axis::Policy).sujeto(format!("{qn}.{id}")));
             }
         }
         for id in antes.masks.keys() {
             if !despues.masks.contains_key(id) {
-                out.push(
-                    Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{id}")),
-                );
+                out.push(Change::new(Code::Oos5007, Axis::Policy).sujeto(format!("{qn}.{id}")));
             }
         }
         for d in antes.duties.difference(&despues.duties) {
-            out.push(Change::new(Code::Oos5007, Axis::Policy).sujeto(&format!("{qn}.{d}")));
+            out.push(Change::new(Code::Oos5007, Axis::Policy).sujeto(format!("{qn}.{d}")));
         }
 
         // OOS5016 · una cota que se afloja. Solo los operadores con dirección
@@ -772,7 +764,7 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                 if aflojado {
                     out.push(
                         Change::new(Code::Oos5016, Axis::Policy)
-                            .sujeto(&format!("{qn}.{id}.{op}"))
+                            .sujeto(format!("{qn}.{id}.{op}"))
                             .de_a(v0, v1),
                     );
                 }
@@ -788,7 +780,7 @@ fn efectos_y_reglas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             if menor(v1, v0) {
                 out.push(
                     Change::new(Code::Oos5016, Axis::Policy)
-                        .sujeto(&format!("{qn}.{id}"))
+                        .sujeto(format!("{qn}.{id}"))
                         .de_a(v0, v1),
                 );
             }
@@ -847,14 +839,10 @@ fn significado(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
         // más. Agrandar lo gobernado es la dirección segura.
         let nuevos: Vec<&String> = despues.iter().filter(|c| !antes.contains(c)).collect();
         if !nuevos.is_empty() {
-            out.push(
-                Change::new(Code::Oos5025, Axis::Consumer)
-                    .sujeto(qn)
-                    .with(
-                        "nowRequires",
-                        Json::Arr(nuevos.iter().map(|c| Json::s(c.as_str())).collect()),
-                    ),
-            );
+            out.push(Change::new(Code::Oos5025, Axis::Consumer).sujeto(qn).with(
+                "nowRequires",
+                Json::Arr(nuevos.iter().map(|c| Json::s(c.as_str())).collect()),
+            ));
         }
     }
 }

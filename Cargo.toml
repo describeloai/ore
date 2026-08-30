@@ -9,6 +9,25 @@ license    = "Apache-2.0"
 repository = "https://github.com/describeloai/ore"
 authors    = ["ORE contributors"]
 
+# El binario que se distribuye. `lto` y `codegen-units = 1` no estan aqui por
+# tamano: **quitan fuentes de no-determinismo**. Con varias unidades de
+# generacion el reparto del trabajo entre hilos puede variar entre compilaciones,
+# y un proyecto cuya tesis es que el mismo commit produce el mismo digest no
+# puede permitirse que el mismo commit produzca dos binarios distintos.
+#
+# `strip` quita los simbolos, que embeben rutas absolutas de la maquina que
+# compilo — un binario que revela el `home` del que lo construyo, y ademas
+# distinto en cada runner.
+#
+# Lo comprueba el trabajo `determinista` de `.github/workflows/release.yml`, que
+# construye dos veces y compara: una afirmacion de determinismo sin medicion es
+# justo lo que este proyecto lleva cuatro versiones desmontando.
+[profile.release]
+lto           = true
+codegen-units = 1
+strip         = true
+panic         = "abort"
+
 [workspace.dependencies]
 anyhow = "1"
 
@@ -18,8 +37,11 @@ anyhow = "1"
 # operativo. Menos dependencias nativas tambien significa compilacion cruzada
 # trivial, que es lo que un binario que se distribuye por brew, cargo, curl,
 # npm y docker necesita.
+# `string` permite que `--version` se construya en tiempo de ejecucion: la
+# identidad del motor incluye el commit, que no es un literal. No arrastra nada
+# nativo, que es la razon por la que las demas features siguen fuera.
 clap = { version = "4", default-features = false, features = [
-    "std", "derive", "help", "usage", "error-context",
+    "std", "derive", "help", "usage", "error-context", "string",
 ] }
 
 # El parser de YAML, a nivel de EVENTOS y no de arbol.

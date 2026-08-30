@@ -203,6 +203,21 @@ debe ser adoptable sin ORE para que ORE valga algo.**
 > `cargo build`. Lo que sigue es la forma que tendrá la distribución, no una
 > instrucción que funcione.
 
+Lo que **sí** existe es el flujo que los alimenta a todos:
+[`release.yml`](.github/workflows/release.yml) publica binarios por plataforma
+desde un tag, y trata a su propio artefacto como `ore` trata a un bundle — la
+suite tiene que pasar, el binario se construye **dos veces** para comprobar que
+las dos dan el mismo `sha256`, y sale con **atestación de procedencia** y sus
+checksums al lado ([ADR 0004](docs/decisions/0004-distribucion-del-binario.md)).
+
+```bash
+gh attestation verify ore-0.1.0-x86_64-unknown-linux-musl --repo describeloai/ore
+```
+
+Los cinco canales de abajo son envoltorios sobre eso. Y todavía no hay ninguna
+release publicada: la versión del workspace es `0.0.0`, y el flujo se niega a
+publicar esa — no es una versión, es el valor de partida.
+
 ```bash
 brew install oos-dev/tap/ore
 cargo install ore-cli

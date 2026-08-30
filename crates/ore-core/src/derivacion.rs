@@ -101,7 +101,7 @@ fn expresion(
 
     for leida in lee(texto, props) {
         let q = format!("{qn}.{leida}");
-        if declaradas.iter().any(|d| *d == q) {
+        if declaradas.contains(&q) {
             continue;
         }
         // Que la propiedad exista lo garantiza `props`: solo se extraen

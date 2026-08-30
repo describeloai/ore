@@ -260,9 +260,7 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
                     // Ordenar después equivale a ordenar durante: los elementos
                     // ya están en forma canónica, que es la única ordenación que
                     // no depende de cómo estén escritos.
-                    if valores_son_conjuntos
-                        && let Json::Arr(ref mut xs) = j
-                    {
+                    if valores_son_conjuntos && let Json::Arr(ref mut xs) = j {
                         xs.sort_by_key(|x| x.jcs());
                     }
                     m.insert(nfc(nombre), j);
@@ -428,7 +426,9 @@ mod tests {
         let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/oos/schemas");
         let mut ficheros = Vec::new();
         fn recorrer(dir: &Path, out: &mut Vec<PathBuf>) {
-            let Ok(es) = std::fs::read_dir(dir) else { return };
+            let Ok(es) = std::fs::read_dir(dir) else {
+                return;
+            };
             for e in es.flatten() {
                 let p = e.path();
                 if p.is_dir() {
@@ -494,7 +494,10 @@ mod tests {
             .filter(|c| !listas.contains(*c))
             .map(|s| s.as_str())
             .collect();
-        assert!(vivos.is_empty(), "clasificados y ya inexistentes: {vivos:?}");
+        assert!(
+            vivos.is_empty(),
+            "clasificados y ya inexistentes: {vivos:?}"
+        );
 
         // Y ninguno en las dos.
         let ambos: Vec<&&str> = CONJUNTOS

@@ -48,8 +48,14 @@ struct Arbol {
 }
 
 const ARBOLES: &[Arbol] = &[
-    Arbol { nombre: "ORE", ruta: "." },
-    Arbol { nombre: "vendor/oos", ruta: "vendor/oos" },
+    Arbol {
+        nombre: "ORE",
+        ruta: ".",
+    },
+    Arbol {
+        nombre: "vendor/oos",
+        ruta: "vendor/oos",
+    },
 ];
 
 fn raiz() -> PathBuf {
@@ -80,7 +86,9 @@ fn politica(base: &Path, arbol: &Arbol) -> Vec<String> {
             continue;
         }
         let mut campos = linea.split_whitespace();
-        let patron = campos.next().expect("una línea no vacía tiene al menos un campo");
+        let patron = campos
+            .next()
+            .expect("una línea no vacía tiene al menos un campo");
         let atributos: Vec<&str> = campos.collect();
 
         if patron == "*" {
