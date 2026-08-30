@@ -219,16 +219,27 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 ## Estado
 
 **La fase 0 está cerrada.** Los 74 casos de la suite de conformidad de OOS están
-en verde, y con ellos existen cuatro comandos: `validate`, `compile`, `diff` y
-`export`. Los **once** restantes que anuncia `ore --help` **no están implementados**
-y lo dicen al ejecutarse.
+en verde, y con ellos existen cinco comandos: `validate`, `compile`, `diff`,
+`export` y `source add`. Los **diez** restantes que anuncia `ore --help` **no
+están implementados** y lo dicen al ejecutarse.
 
 | Fase | Qué | Criterio de éxito | |
 |:---:|---|---|:---:|
 | **0** | esquemas, `ore validate`, `ore compile`, el runner de conformidad | compila el ejemplo de referencia y emite un digest estable | ✅ |
-| **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | — |
+| **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | ◐ |
 | **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado | ◐ |
 | **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** | — |
+
+De la fase 1 existe **`source add`**, que es la parte que no tenía ninguna
+pregunta abierta: separa el secreto de la conexión, deriva lo derivable —`type`
+del esquema de la URL, el nombre de la variable del manifiesto— y **marca la
+residencia como decisión pendiente en vez de adivinarla desde el nombre del
+host**. No abre un socket: la sonda es introspección y va con `discover`.
+
+Lo que bloquea a `discover` no es código: **no existe todavía un vocabulario de
+conceptos publicado**. `kind: Property` solo aparece dentro de casos de
+conformidad, y sin conceptos a los que mapear, las *«cinco preguntas»* del
+criterio vuelven a ser cinco ensayos — justo lo que v1alpha4 existe para impedir.
 
 La fase 2 va a medias y conviene decir por dónde: **el criterio de éxito ya se
 cumple** —retículos, conductos, propagación y la regla de flujo son las nueve

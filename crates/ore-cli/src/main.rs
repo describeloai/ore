@@ -4,6 +4,8 @@
 //! columna que importa no es qué hace cada comando, sino **qué toca**: nueve de
 //! catorce no abren un socket.
 
+mod fuente;
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -19,14 +21,45 @@ struct Cli {
     command: Command,
 }
 
+/// Lo que se puede hacer con una fuente. Hoy solo darla de alta; `list` y
+/// `remove` esperan a tener más de una cosa que decir que la que ya dice el
+/// manifiesto, que se lee.
+#[derive(Subcommand)]
+enum AccionFuente {
+    /// Da de alta una fuente: el secreto va a `.env.local` y el manifiesto solo
+    /// declara de qué variable sale.
+    Add {
+        /// Nombre con el que los bindings la referenciarán (`datasourceRef`).
+        #[arg(long)]
+        name: String,
+        /// Cadena de conexión completa. **No** se escribe en ningún documento OOS.
+        url: String,
+        /// Driver. Por defecto se deriva del esquema de la URL.
+        #[arg(long = "type", value_name = "DRIVER")]
+        tipo: Option<String>,
+        /// Variable de entorno. Por defecto, del manifiesto más el nombre.
+        #[arg(long, value_name = "VAR")]
+        env: Option<String>,
+        /// Etiqueta que hereda todo lo enlazado a esta fuente. Repetible.
+        #[arg(long = "label", value_name = "CLAVE=VALOR")]
+        label: Vec<String>,
+        /// Para qué es esta fuente.
+        #[arg(long, value_name = "TEXTO")]
+        description: Option<String>,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
     // ── Scaffolder ──────── autoría · toca metadatos de producción y, si se pide, un LLM
     /// Crea el esqueleto de un repositorio ontológico.
     Init,
     /// Registra una fuente física, separando la credencial de la conexión.
-    #[command(name = "source")]
-    Source,
+    #[command(name = "source", subcommand)]
+    Source(AccionFuente),
     /// Introspecciona una fuente y propone entidades y bindings en DRAFT.
     Discover,
     /// Cola interactiva de decisiones para lo que el descubrimiento no supo clasificar.
@@ -100,6 +133,25 @@ fn main() -> std::process::ExitCode {
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
+        Command::Source(AccionFuente::Add {
+            name,
+            url,
+            tipo,
+            env,
+            label,
+            description,
+            path,
+        }) => {
+            return fuente::add(&fuente::Alta {
+                raiz: path,
+                nombre: name,
+                url,
+                tipo: tipo.as_deref(),
+                env: env.as_deref(),
+                etiquetas: label,
+                descripcion: description.as_deref(),
+            });
+        }
         _ => {}
     }
 
@@ -107,9 +159,9 @@ fn main() -> std::process::ExitCode {
         Command::Validate { .. }
         | Command::Diff { .. }
         | Command::Compile { .. }
-        | Command::Export { .. } => unreachable!(),
+        | Command::Export { .. }
+        | Command::Source(_) => unreachable!(),
         Command::Init => ("init", "1"),
-        Command::Source => ("source", "1"),
         Command::Discover => ("discover", "1"),
         Command::Review => ("review", "1"),
         Command::Dev { .. } => ("dev", "3"),
@@ -123,7 +175,7 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  Hoy existen: validate, compile, diff y export.");
+    eprintln!("  Hoy existen: source add, validate, compile, diff y export.");
     eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
