@@ -55,19 +55,69 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 continue;
             };
             let via = lista(vianodo);
-            let clave = otra.section("primaryKey").map(lista).unwrap_or_default();
+            let dqn = otra.qname().unwrap_or_default();
+
+            // Contra que clave del destino. Sin `toKey` es su primaria, que es
+            // lo derivable y por eso no se escribe (P2). Con `toKey`, hay que
+            // comprobar antes que lo que nombra ES una clave declarada: si no,
+            // el enlace no identifica una instancia y lo demas sobra.
+            let primaria = otra.section("primaryKey").map(lista).unwrap_or_default();
+            let clave = match rv.get("toKey") {
+                None => primaria,
+                Some((_, tk)) => {
+                    let pedida = lista(tk);
+                    let mut declaradas = vec![primaria];
+                    if let Some(uk) = otra.section("uniqueKeys") {
+                        declaradas.extend(uk.items().iter().map(lista));
+                    }
+                    // Conjunto para decidir si es una clave; secuencia para
+                    // emparejar. `REFERENCES t (b, a)` es legal y no es `(a, b)`.
+                    let mut orden = pedida.clone();
+                    orden.sort();
+                    let es_clave = declaradas.iter().any(|d| {
+                        let mut o = d.clone();
+                        o.sort();
+                        !o.is_empty() && o == orden
+                    });
+                    if !es_clave {
+                        out.push(
+                            Diagnostic::new(
+                                Code::Oos3006,
+                                &e.path,
+                                format!(
+                                    "`{qn}.{rn}` enlaza contra [{}], que `{dqn}` no declara como clave",
+                                    pedida.join(", ")
+                                ),
+                            )
+                            .at(tk.pos())
+                            .help(format!(
+                                "`toKey` tiene que ser una clave declarada del destino: su \
+                                 `primaryKey` o una entrada de sus `uniqueKeys`. Declaradas: \
+                                 {}. Enlazar contra algo que no identifica devuelve más de \
+                                 una fila por instancia, y eso no se ve en el documento",
+                                declaradas
+                                    .iter()
+                                    .filter(|d| !d.is_empty())
+                                    .map(|d| format!("[{}]", d.join(", ")))
+                                    .collect::<Vec<_>>()
+                                    .join(" · ")
+                            )),
+                        );
+                        continue;
+                    }
+                    pedida
+                }
+            };
             if via.is_empty() || clave.is_empty() {
                 continue;
             }
-
-            let dqn = otra.qname().unwrap_or_default();
             if via.len() != clave.len() {
                 out.push(
                     Diagnostic::new(
                         Code::Oos3006,
                         &e.path,
                         format!(
-                            "`{qn}.{rn}` enlaza por {} propiedad{} y `{dqn}` se identifica con {}",
+                            "`{qn}.{rn}` enlaza por {} propiedad{} y la clave de `{dqn}` tiene {}",
                             via.len(),
                             if via.len() == 1 { "" } else { "es" },
                             clave.len()

@@ -1109,11 +1109,11 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 80, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&34));
+    assert_eq!(casos.len(), 82, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&35));
     assert_eq!(por_grupo.get("diff"), Some(&22));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&5));
-    assert_eq!(por_grupo.get("valid"), Some(&2));
+    assert_eq!(por_grupo.get("valid"), Some(&3));
 }

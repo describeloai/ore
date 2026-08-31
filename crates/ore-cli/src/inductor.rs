@@ -64,14 +64,30 @@ struct Columna {
     descripcion: Option<String>,
 }
 
+/// Una clave foranea, tal y como la declara el origen.
+struct Foranea {
+    /// Las columnas locales, en el orden del origen.
+    columnas: Vec<String>,
+    /// La tabla referenciada.
+    destino: String,
+    /// Las columnas del DESTINO, emparejadas en orden con `columnas`. SQL no
+    /// obliga a referenciar la clave primaria, y saber cuales son es lo unico
+    /// que permite no emitir una relacion verde y equivocada.
+    destino_columnas: Vec<String>,
+}
+
 /// Una tabla del origen. `nombre` es **opaco**: sus reglas son del sistema de
 /// origen y por eso viaja tal cual al `Binding`.
 struct Tabla {
     nombre: String,
     columnas: Vec<Columna>,
     clave: Vec<String>,
+    /// Claves alternativas declaradas por el origen. No son adorno: son lo que
+    /// permite enlazar contra otra identidad —`toKey`— y lo que hace posible la
+    /// resolucion determinista entre fuentes.
+    unicas: Vec<Vec<String>>,
     /// `(columnas locales, tabla destino)` — solo lo que el catálogo DECLARA.
-    foraneas: Vec<(Vec<String>, String)>,
+    foraneas: Vec<Foranea>,
     filas: Option<u64>,
     /// `table`, `view` o `materializedView`, tal y como lo dijo el origen.
     clase: String,
@@ -128,16 +144,25 @@ impl Catalogo {
                 nombre: nombre.to_string(),
                 columnas,
                 clave: lista(t, "primaryKey"),
+                unicas: t
+                    .get("uniqueKeys")
+                    .map(|(_, v)| v.items())
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(lista_de)
+                    .filter(|k: &Vec<String>| !k.is_empty())
+                    .collect(),
                 foraneas: t
                     .get("foreignKeys")
                     .map(|(_, v)| v.items())
                     .unwrap_or(&[])
                     .iter()
                     .filter_map(|f| {
-                        Some((
-                            lista(f, "columns"),
-                            f.get("references")?.1.as_str()?.to_string(),
-                        ))
+                        Some(Foranea {
+                            columnas: lista(f, "columns"),
+                            destino: f.get("references")?.1.as_str()?.to_string(),
+                            destino_columnas: lista(f, "toColumns"),
+                        })
                     })
                     .collect(),
                 filas: t
@@ -153,6 +178,14 @@ impl Catalogo {
         }
         Ok(Catalogo { fuente, tablas })
     }
+}
+
+fn lista_de(n: &Node) -> Vec<String> {
+    n.items()
+        .iter()
+        .filter_map(|i| i.as_str())
+        .map(String::from)
+        .collect()
 }
 
 fn lista(n: &Node, clave: &str) -> Vec<String> {
@@ -194,6 +227,15 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
     for t in &cat.tablas {
         por_nombre.entry(entidad(&t.nombre)).or_default().push(t);
     }
+
+    // La clave primaria de cada tabla, para saber si una foranea apunta a
+    // ella o a otra cosa. Solo cuando apunta a otra cosa hace falta `toKey`:
+    // lo derivable no se declara.
+    let claves: BTreeMap<String, Vec<String>> = cat
+        .tablas
+        .iter()
+        .map(|t| (t.nombre.clone(), t.clave.clone()))
+        .collect();
 
     for (nombre, tablas) in &por_nombre {
         if tablas.len() > 1 {
@@ -267,7 +309,7 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
 
         ficheros.insert(
             format!("entities/{nombre}.yaml"),
-            entidad_yaml(nombre, paquete, t),
+            entidad_yaml(nombre, paquete, t, &claves),
         );
         ficheros.insert(
             format!("bindings/{}.yaml", identificador(&t.nombre)),
@@ -363,7 +405,7 @@ fn relaciones_no_declaradas(
 ) -> Vec<Pendiente> {
     let mut out = Vec::new();
     for t in tablas {
-        let declaradas: Vec<&String> = t.foraneas.iter().flat_map(|(c, _)| c).collect();
+        let declaradas: Vec<&String> = t.foraneas.iter().flat_map(|f| &f.columnas).collect();
         let propia = entidad(&t.nombre);
         for c in &t.columnas {
             // Ya declarada como foránea, o parte de la clave: `pedidos.id_pedido`
@@ -444,7 +486,12 @@ fn entrecomillar(s: &str) -> String {
     out
 }
 
-fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
+fn entidad_yaml(
+    nombre: &str,
+    paquete: &str,
+    t: &Tabla,
+    claves: &BTreeMap<String, Vec<String>>,
+) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
@@ -464,7 +511,30 @@ fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
              \x20 # en la voz del compilador.\n",
         );
     } else {
-        let _ = writeln!(s, "  primaryKey: [{}]", t.clave.join(", "));
+        // Por `identificador`, igual que las propiedades: si no, una columna que
+        // empiece por digito produce una clave que nombra algo inexistente.
+        let _ = writeln!(
+            s,
+            "  primaryKey: [{}]",
+            t.clave
+                .iter()
+                .map(|c| identificador(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !t.unicas.is_empty() {
+        s.push_str("  uniqueKeys:\n");
+        for k in &t.unicas {
+            let _ = writeln!(
+                s,
+                "    - [{}]",
+                k.iter()
+                    .map(|c| identificador(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
     s.push_str("  properties:\n");
     for c in &t.columnas {
@@ -512,23 +582,43 @@ fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
     // enlazaria por pares distintos.
     if !t.foraneas.is_empty() {
         s.push_str("  relations:\n");
-        for (columnas, destino) in &t.foraneas {
+        for f in &t.foraneas {
             // `required` es un hecho del origen, no un valor por defecto. Y lo es
             // solo si TODAS las columnas del enlace son NOT NULL: con una que
             // admita nulos, la fila puede no enlazar.
-            let obligatoria = columnas
+            let obligatoria = f
+                .columnas
                 .iter()
                 .all(|col| t.columnas.iter().any(|c| c.nombre == *col && c.obligatoria));
-            let _ = write!(
-                s,
-                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: [{}]\n      required: {obligatoria}\n",
-                identificador(&entidad(destino)).to_lowercase(),
-                entidad(destino),
-                columnas
-                    .iter()
+            let ident = |cs: &[String]| {
+                cs.iter()
                     .map(|c| identificador(c))
                     .collect::<Vec<_>>()
                     .join(", ")
+            };
+            // `toKey` solo cuando el origen NO apunta a la clave primaria del
+            // destino. SQL permite referenciar cualquier UNIQUE, y callarlo
+            // emitiria un enlace contra la identidad equivocada que pasa la
+            // comprobacion de aridad y tipos por casualidad.
+            let primaria = claves.get(&f.destino);
+            let a_otra_clave = !f.destino_columnas.is_empty()
+                && primaria.is_none_or(|p| {
+                    let (mut x, mut y) = (f.destino_columnas.clone(), p.clone());
+                    x.sort();
+                    y.sort();
+                    x != y
+                });
+            let to_key = if a_otra_clave {
+                format!("      toKey: [{}]\n", ident(&f.destino_columnas))
+            } else {
+                String::new()
+            };
+            let _ = write!(
+                s,
+                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: [{}]\n{to_key}      required: {obligatoria}\n",
+                identificador(&entidad(&f.destino)).to_lowercase(),
+                entidad(&f.destino),
+                ident(&f.columnas)
             );
         }
     }
@@ -784,6 +874,12 @@ mod tests {
         let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
         let f = &i.ficheros["entities/Facturas.yaml"];
         assert!(f.contains("via: [id_cliente, cod_pais]"), "{f}");
+        // Apunta a la clave primaria del destino, asi que `toKey` sobra (P2).
+        assert!(
+            !f.contains("toKey"),
+            "declaro lo derivable:
+{f}"
+        );
         // Las dos columnas son NOT NULL, asi que el enlace es obligatorio: eso
         // lo dice el origen, no un valor por defecto.
         assert!(f.contains("required: true"), "{f}");
@@ -792,6 +888,48 @@ mod tests {
             !i.pendientes.iter().any(|p| p.que.contains("compuesta")),
             "sigue reportando lo que ya sabe emitir"
         );
+    }
+
+    /// SQL no obliga a referenciar la clave primaria, y callarlo emitiria un
+    /// enlace contra la identidad equivocada que pasa la comprobacion de aridad
+    /// y tipos por casualidad: verde y falso.
+    #[test]
+    fn una_foranea_contra_otra_clave_dice_cual() {
+        const CAT: &str = r#"{
+          "source": "pg",
+          "tables": [
+            { "name": "public.clientes",
+              "columns": [
+                { "name": "id",  "type": "Integer", "required": true },
+                { "name": "nif", "type": "String",  "required": true }
+              ],
+              "primaryKey": ["id"],
+              "uniqueKeys": [["nif"]] },
+            { "name": "public.facturas",
+              "columns": [
+                { "name": "id_factura",  "type": "Integer", "required": true },
+                { "name": "nif_cliente", "type": "String",  "required": true }
+              ],
+              "primaryKey": ["id_factura"],
+              "foreignKeys": [
+                { "columns": ["nif_cliente"], "references": "public.clientes",
+                  "toColumns": ["nif"] }
+              ] }
+          ]
+        }"#;
+        let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
+        let f = &i.ficheros["entities/Facturas.yaml"];
+        assert!(f.contains("via: [nif_cliente]"), "{f}");
+        assert!(
+            f.contains("toKey: [nif]"),
+            "no dijo contra qué clave enlaza:\n{f}"
+        );
+        // Y el destino tiene que DECLARAR esa clave, o `toKey` apunta a algo que
+        // no identifica. El lector trae las UNIQUE del origen justo para esto:
+        // sin ellas la cadena emitía un `toKey` que su propio destino no
+        // sostenía, y salía OOS3006 sobre un documento que nadie escribió.
+        let c = &i.ficheros["entities/Clientes.yaml"];
+        assert!(c.contains("uniqueKeys:") && c.contains("- [nif]"), "{c}");
     }
 
     /// Y una tabla no se relaciona consigo misma por llamarse como su clave.

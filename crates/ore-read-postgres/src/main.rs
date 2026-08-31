@@ -94,7 +94,20 @@ SELECT n.nspname                            AS esquema,
           JOIN pg_namespace rn ON rn.oid = rc.relnamespace
          WHERE f.conrelid = c.oid AND f.contype = 'f'
            AND a.attnum = ANY (f.conkey)
-         LIMIT 1)                           AS referencia
+         LIMIT 1)                           AS referencia,
+       -- La columna del destino EMPAREJADA con esta. `conkey` y `confkey` son
+       -- dos arrays alineados por posicion, asi que la pareja de la columna
+       -- local esta en el mismo indice. Sin esto no se sabe si la foranea
+       -- apunta a la clave primaria o a otra UNIQUE, y SQL permite las dos:
+       -- emitir la relacion sin saberlo la deja verde y equivocada.
+       (SELECT ra.attname
+          FROM pg_constraint f
+          JOIN LATERAL generate_subscripts(f.conkey, 1) AS i ON TRUE
+          JOIN pg_attribute ra
+            ON ra.attrelid = f.confrelid AND ra.attnum = f.confkey[i]
+         WHERE f.conrelid = c.oid AND f.contype = 'f'
+           AND f.conkey[i] = a.attnum
+         LIMIT 1)                           AS ref_columna
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
@@ -105,6 +118,32 @@ WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND n.nspname !~ '^pg_'
 ORDER BY n.nspname, c.relname, a.attnum";
+
+/// Las claves alternativas, en una segunda consulta.
+///
+/// Va por `pg_index` y no por `pg_constraint` porque una restriccion UNIQUE
+/// siempre tiene indice detras, y `CREATE UNIQUE INDEX` a secas no tiene
+/// restriccion: mirar solo las restricciones perderia la mitad.
+///
+/// Se excluyen las **parciales** —`indpred IS NOT NULL`— y las de **expresion**
+/// —un 0 en `indkey`—. Un indice unico parcial no garantiza unicidad global:
+/// tomarlo por clave alternativa afirmaria una identidad que el origen no
+/// sostiene, que es exactamente lo que este programa no hace.
+///
+/// No es una llamada por tabla: son dos consultas para todo el esquema.
+const UNICAS: &str = "SELECT n.nspname AS esquema,
+       c.relname AS tabla,
+       ARRAY(SELECT a.attname
+               FROM unnest(i.indkey) WITH ORDINALITY AS k(num, ord)
+               JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.num
+              ORDER BY k.ord) AS columnas
+FROM pg_index i
+JOIN pg_class c      ON c.oid = i.indrelid
+JOIN pg_namespace n  ON n.oid = c.relnamespace
+WHERE i.indisunique AND NOT i.indisprimary AND i.indpred IS NULL
+  AND 0 <> ALL (i.indkey)
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_'
+ORDER BY n.nspname, c.relname, i.indexrelid";
 
 fn main() -> ExitCode {
     match intentar() {
@@ -149,8 +188,11 @@ fn intentar() -> Result<String, String> {
     let filas = cliente
         .query(CATALOGO, &[])
         .map_err(|e| format!("la consulta del catálogo falló: {e}"))?;
+    let unicas = cliente
+        .query(UNICAS, &[])
+        .map_err(|e| format!("la consulta de claves alternativas falló: {e}"))?;
 
-    Ok(armar(&fuente, &filas).pretty())
+    Ok(armar(&fuente, &filas, &unicas).pretty())
 }
 
 // ── La costura de tipos ─────────────────────────────────────────────────────
@@ -230,10 +272,29 @@ struct Acc {
     clase: &'static str,
     columnas: Vec<Json>,
     clave: Vec<Json>,
-    foraneas: BTreeMap<String, Vec<String>>,
+    /// destino -> pares (columna local, columna del destino), en orden.
+    foraneas: BTreeMap<String, Vec<(String, String)>>,
 }
 
-fn armar(fuente: &str, filas: &[postgres::Row]) -> Json {
+fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Json {
+    // Indice tabla -> claves alternativas, antes del bucle principal.
+    let mut alternativas: BTreeMap<String, Vec<Json>> = BTreeMap::new();
+    for u in unicas {
+        let (Some(e), Some(t)) = (
+            u.get::<_, Option<String>>("esquema"),
+            u.get::<_, Option<String>>("tabla"),
+        ) else {
+            continue;
+        };
+        let cols: Vec<String> = u.get("columnas");
+        if !cols.is_empty() {
+            alternativas
+                .entry(format!("{e}.{t}"))
+                .or_default()
+                .push(Json::Arr(cols.iter().map(Json::s).collect()));
+        }
+    }
+
     let mut orden: Vec<String> = Vec::new();
     let mut tablas: BTreeMap<String, Acc> = BTreeMap::new();
 
@@ -293,8 +354,10 @@ fn armar(fuente: &str, filas: &[postgres::Row]) -> Json {
         }
         if let Some(r) = cadena("referencia") {
             // Una foránea compuesta llega como una fila por columna, todas
-            // apuntando a la misma tabla: se agrupan en UNA arista.
-            acc.foraneas.entry(r).or_default().push(columna);
+            // apuntando a la misma tabla: se agrupan en UNA arista, y las
+            // columnas de los dos lados se mantienen emparejadas en orden.
+            let par = (columna, cadena("ref_columna").unwrap_or_default());
+            acc.foraneas.entry(r).or_default().push(par);
         }
     }
 
@@ -309,16 +372,26 @@ fn armar(fuente: &str, filas: &[postgres::Row]) -> Json {
             if !a.clave.is_empty() {
                 o.insert("primaryKey".into(), Json::Arr(a.clave));
             }
+            if let Some(u) = alternativas.remove(&t) {
+                o.insert("uniqueKeys".into(), Json::Arr(u));
+            }
             if !a.foraneas.is_empty() {
                 o.insert(
                     "foreignKeys".into(),
                     Json::Arr(
                         a.foraneas
                             .into_iter()
-                            .map(|(destino, cols)| {
+                            .map(|(destino, pares)| {
                                 Json::obj([
-                                    ("columns", Json::Arr(cols.iter().map(Json::s).collect())),
+                                    (
+                                        "columns",
+                                        Json::Arr(pares.iter().map(|(l, _)| Json::s(l)).collect()),
+                                    ),
                                     ("references", Json::s(destino)),
+                                    (
+                                        "toColumns",
+                                        Json::Arr(pares.iter().map(|(_, r)| Json::s(r)).collect()),
+                                    ),
                                 ])
                             })
                             .collect(),

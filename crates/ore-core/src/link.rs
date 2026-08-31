@@ -503,6 +503,26 @@ fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         ));
                     }
                 }
+                // `toKey` nombra propiedades del DESTINO, no locales: se
+                // resuelve contra la otra entidad o no se resuelve contra nada.
+                if let Some((_, tk)) = rv.get("toKey")
+                    && let Some((_, t)) = rv.get("target")
+                    && let Some(otra) = pkg.resolve_entity(t.as_str().unwrap_or(""), e)
+                {
+                    let suyas = properties(otra);
+                    let dqn = otra.qname().unwrap_or_default();
+                    for nodo in tk.items() {
+                        let k = nodo.as_str().unwrap_or("");
+                        if !suyas.contains(k) {
+                            out.push(referencia_rota(
+                                &e.path,
+                                nodo,
+                                &format!("{dqn}.{k}"),
+                                &format!("relations.{rn}.toKey"),
+                            ));
+                        }
+                    }
+                }
                 if let Some((_, v)) = rv.get("via") {
                     for nodo in v.items() {
                         let via = nodo.as_str().unwrap_or("");

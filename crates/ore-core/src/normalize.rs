@@ -146,6 +146,9 @@ const SECUENCIAS: &[&str] = &[
     // que ordenarla enlazaria por pares distintos: `[codPais, id]` contra
     // `[id, codPais]` no es la misma relacion, y el documento se veria igual.
     "via",
+    // `toKey` empareja con `via` en orden, y `REFERENCES t (b, a)` es legal:
+    // ordenarlo emparejaria contra otras posiciones.
+    "toKey",
     "enum",             // retirar un valor o reordenarlos es observable
     "strategies",       // la primera que casa gana
     "normalize",        // una tubería de transformaciones

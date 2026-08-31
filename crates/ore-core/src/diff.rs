@@ -210,6 +210,10 @@ struct Rel {
     /// conjunto: `via` se empareja posicion a posicion con la clave del destino,
     /// asi que reordenarla enlaza por pares distintos.
     via: Vec<String>,
+    /// La clave del destino contra la que se empareja, si no es la primaria.
+    /// Cambiarla enlaza contra OTRA identidad con el documento viendose casi
+    /// igual, asi que cuenta como el mismo cambio observable que `via`.
+    to_key: Vec<String>,
 }
 
 #[derive(Default)]
@@ -573,6 +577,15 @@ fn entidad(d: &Loaded) -> Ent {
                 target: cadena(v, "target").unwrap_or_default(),
                 cardinality: cadena(v, "cardinality").unwrap_or_default(),
                 required: cadena(v, "required").as_deref() == Some("true"),
+                to_key: v
+                    .get("toKey")
+                    .map(|(_, n)| {
+                        n.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 via: v
                     .get("via")
                     .map(|(_, n)| {
@@ -959,7 +972,7 @@ fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             // letra — y devuelve otras filas. Sin codigo propio pasaria por
             // menor. Se compara la SECUENCIA, no el conjunto: reordenar `via`
             // empareja contra otras posiciones de la clave del destino.
-            if r.via != s.via {
+            if r.via != s.via || r.to_key != s.to_key {
                 out.push(
                     Change::new(Code::Oos5027, Axis::Consumer)
                         .sujeto(&sujeto)
