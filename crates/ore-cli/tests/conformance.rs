@@ -119,7 +119,55 @@ const IMPLEMENTADAS: &[&str] = &[
 ];
 
 fn implementada(codigo: &str) -> bool {
-    IMPLEMENTADAS.contains(&codigo)
+    IMPLEMENTADAS.contains(&codigo) || emitidos().contains(codigo)
+}
+
+/// Los códigos que el compilador **sabe emitir de verdad**, leídos de su propio
+/// código fuente.
+///
+/// `IMPLEMENTADAS` se escribe a mano, y se midió lo que eso cuesta: llevaba
+/// **tres códigos de retraso** —`OOS2014`, `OOS2015` y `OOS3006`, los tres
+/// implementados y con casos— y el marcador anunciaba *«5 casos esperando
+/// implementación»* sobre cinco casos que pasaban.
+///
+/// > **Un marcador que se queda corto tiene exactamente el mismo aspecto que
+/// > uno que dice la verdad**, y este además se equivocaba en la dirección
+/// > cómoda: hacia abajo, que no molesta a nadie.
+///
+/// La lista sigue —un código puede emitirse desde el CLI y no desde el núcleo—
+/// pero deja de ser la única fuente. **Lo derivable no se declara** (P2), y
+/// aquí lo derivable es una búsqueda de texto: `Code::Oos1234` en el fuente,
+/// excluyendo el fichero que **declara** el catálogo, donde están todos.
+///
+/// Se lee como texto, no enlazando `ore-core`: la disciplina de consumidor
+/// externo se mantiene, igual que `dependencias.rs` lee `Cargo.lock`.
+fn emitidos() -> &'static std::collections::BTreeSet<String> {
+    static CACHE: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ore-core/src");
+        let mut out = std::collections::BTreeSet::new();
+        let mut pila = vec![raiz];
+        while let Some(d) = pila.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    pila.push(p);
+                } else if p.extension().and_then(|x| x.to_str()) == Some("rs")
+                    && p.file_name().and_then(|x| x.to_str()) != Some("code.rs")
+                    && let Ok(texto) = std::fs::read_to_string(&p)
+                {
+                    for trozo in texto.split("Code::Oos").skip(1) {
+                        let n: String = trozo.chars().take_while(char::is_ascii_digit).collect();
+                        if n.len() == 4 {
+                            out.insert(format!("OOS{n}"));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    })
 }
 
 struct Case {

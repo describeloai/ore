@@ -119,7 +119,7 @@ codes! {
     Oos2012 = "OOS2012", Reference, "secreto de conexión presente en un documento";
     Oos2013 = "OOS2013", Reference, "artefacto generado desincronizado con su fuente";
     Oos2014 = "OOS2014", Reference, "dos bindings del mismo objeto reclaman la misma fila";
-    Oos2015 = "OOS2015", Reference, "`requiredFilters` nombra una propiedad sin mapear";
+    Oos2015 = "OOS2015", Reference, "un filtro exigido nombra una propiedad sin mapear";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";

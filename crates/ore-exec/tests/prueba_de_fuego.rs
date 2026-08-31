@@ -20,24 +20,45 @@
 //! Se ejecuta contra el ejemplo de referencia porque es el que se enseña: un
 //! defecto ahí lo copia todo el mundo.
 //!
-//! # Estado: en rojo, y lo que encontró
+//! # Lo que encontró la primera ejecución
 //!
 //! `ore-exec` está fuera de `default-members`, así que esto **no** corre en la
-//! suite local: se ejecuta a mano, como el driver. Hoy falla, y las cuatro cosas
-//! que sacó la primera ejecución son:
+//! suite local: se ejecuta a mano, como el driver —y en Docker, porque
+//! `windows-sys` exige `dlltool`—. **Hoy está en verde.** Las cinco cosas que
+//! sacó por el camino, y dónde acabó cada una:
 //!
-//! | | Hallazgo | Estado |
+//! | | Hallazgo | Dónde se cerró |
 //! |---|---|---|
-//! | 1 | `entity Role;` sin `in [Role]`, y un `principal: true` sin `Role` entre sus ancestros — declararlo **desconectaba** a la entidad de toda política `principal in Role::"…"` | **corregido** en `cedar_schema.rs` |
-//! | 2 | El esquema comprometido del ejemplo no tenía `context: { purpose: String }`: una decisión entera de retraso, sin que nada se pusiera rojo | **corregido**, y con guardián en `ore-cli/tests/examples.rs` |
-//! | 3 | `forbid-agent-without-purpose` es **imposible**: vigila una petición sin `purpose`, y `purpose` es obligatorio en el esquema — esa petición ya no existe. Dos decisiones correctas por separado que se anulan | abierto |
-//! | 4 | `resource.owner` y `principal.department` no existen en el esquema: el recurso se posiciona **por pertenencia**, nunca por atributos | abierto — decisión de modelo |
+//! | 1 | `entity Role;` sin `in [Role]`, y un `principal: true` sin `Role` entre sus ancestros — declararlo **desconectaba** a la entidad de toda política `principal in Role::"…"` | `cedar_schema.rs` |
+//! | 2 | El esquema comprometido del ejemplo no tenía `context: { purpose: String }`: una decisión entera de retraso, sin que nada se pusiera rojo | `ore-cli/tests/examples.rs`, que ahora lo cobra byte a byte |
+//! | 3 | `forbid-agent-without-purpose` es **imposible**: vigila una petición sin `purpose`, y `purpose` es obligatorio — esa petición ya no existe | `05-ejecutor` §6.1: se rechaza **antes** de ①, y la política se borra del ejemplo |
+//! | 4 | `resource.owner` no existe **y no puede existir**: el recurso se posiciona por pertenencia, nunca por atributos | `v1alpha3/02-ruleset` §4.2 — el **ámbito de fila** |
+//! | 5 | `context.purpose in ["a","b"]` **no es Cedar válido**: `in` es el operador de jerarquía de entidades y `purpose` es un `String` | corregido a `.contains(…)` en el ejemplo, en `diff/widen-purposes` y en el ADR 0003, que lo daba como forma equivalente |
 //!
-//! El 3 y el 4 son la misma pregunta de fondo: **el recurso de esta proyección
-//! es una propiedad, no una fila.** «La compensación de mi departamento» es un
-//! recorte de filas, y un recorte de filas no lo evalúa Cedar por fila —eso
+//! El 5 explica por qué esta prueba tenía que existir. La forma inválida vivía
+//! en tres sitios desde el principio **sin producir ningún síntoma**, porque
+//! `purposes()` extrae las cadenas entrecomilladas y le da igual el operador:
+//! `OOS5015` seguía clasificando bien. La lectura estructural leía
+//! correctamente una política que Cedar habría rechazado.
+//!
+//! El 3 y el 4 eran la misma pregunta: **el recurso de esta proyección es una
+//! propiedad, no una fila.** *«La compensación de mi departamento»* es un
+//! recorte de filas, y un recorte de filas no lo evalúa Cedar fila a fila —eso
 //! sería leer la fila para autorizar la fila—: se **traduce a un filtro** que
-//! viaja al origen. Que es, exactamente, la ley del ejecutor.
+//! viaja al origen, que es exactamente la ley del ejecutor.
+//!
+//! # Lo que sigue abierto, y lo destapó el 4
+//!
+//! Declarar `principal: true` sobre `hr.Employee` mete **todas** sus propiedades
+//! escalares en el esquema como atributos **obligatorios** del principal — y una
+//! de ellas es `nationalId`, clasificada `critical`. Es decir: la capa de
+//! identidad tendría que firmar el DNI en cada petición.
+//!
+//! > Un atributo del principal es lo que **decide** el acceso. Meter ahí un dato
+//! > que el acceso protege es exactamente al revés.
+//!
+//! `atributos()` los emite todos porque no hay forma de decir cuáles son de
+//! identidad. Es la siguiente decisión.
 
 use ore_exec::Motor;
 use std::path::Path;

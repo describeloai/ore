@@ -254,7 +254,7 @@ impl Kind {
                 "idempotency",
             ],
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
-            Kind::Ruleset => &["owner", "targets", "assertions", "masks", "duties"],
+            Kind::Ruleset => &["owner", "targets", "assertions", "masks", "scopes", "duties"],
             // La línea que decide qué cabe en un concepto: **declara lo que es
             // cierto de él en todas partes**. `required`, `unique` y `temporal`
             // no están porque dependen de la tabla, no del significado; `enum`
@@ -519,6 +519,50 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                 None
             },
         },
+        // Un ámbito de fila declara `id`, `property` y `matches`, y NADA más.
+        //
+        // No lleva operador, y eso no es una simplificación de la primera
+        // versión: la igualdad es la única comparación que cierra el canal
+        // lateral de `02-ruleset` §4.2.2 —el lado derecho es un atributo que el
+        // principal ya traía, así que la presencia de una fila no le revela
+        // nada nuevo—. Un `operator: greaterThan` volvería a abrirlo, y ofrecer
+        // una elección que no existe es peor que no ofrecerla.
+        ShapeRule {
+            kind: Kind::Ruleset,
+            path: &["spec", "scopes"],
+            check: |n| {
+                for s in n.items() {
+                    for k in ["id", "property", "matches"] {
+                        if s.get(k).is_none() {
+                            return Some((
+                                format!("un ámbito de fila DEBE declarar `{k}`"),
+                                Some(
+                                    "`property` es la columna que se recorta y `matches` el \
+                                     NOMBRE del atributo del principal contra el que se compara. \
+                                     Sin uno de los dos no hay filtro que construir"
+                                        .into(),
+                                ),
+                            ));
+                        }
+                    }
+                    for (k, _) in s.entries() {
+                        let k = k.as_str().unwrap_or("?");
+                        if !["id", "property", "matches"].contains(&k) {
+                            return Some((
+                                format!("`{k}` no es un campo de un ámbito de fila"),
+                                Some(
+                                    "un ámbito solo compara una columna con un atributo del \
+                                     principal por igualdad. Cualquier otra cosa es un predicado, \
+                                     y un predicado no filtra: lee"
+                                        .into(),
+                                ),
+                            ));
+                        }
+                    }
+                }
+                None
+            },
+        },
         ShapeRule {
             kind: Kind::Property,
             path: &["spec", "requiresGovernance"],
@@ -612,15 +656,16 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         ),
                     ));
                 }
-                if ["assertions", "masks", "duties"]
+                if ["assertions", "masks", "scopes", "duties"]
                     .iter()
                     .all(|k| n.get(k).is_none())
                 {
                     return Some((
                         "este `Ruleset` no declara ninguna regla".into(),
                         Some(
-                            "necesita al menos `assertions`, `masks` o `duties`: un objetivo sin \
-                             nada que sostener selecciona propiedades y no las gobierna"
+                            "necesita al menos `assertions`, `masks`, `scopes` o `duties`: un \
+                             objetivo sin nada que sostener selecciona propiedades y no las \
+                             gobierna"
                                 .into(),
                         ),
                     ));

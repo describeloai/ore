@@ -113,8 +113,10 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
         mascaras(r, &lat, &props, &formas, &mut out);
         aserciones(r, &seleccionadas, &fuentes, &mut out);
         deberes(pkg, r, &mut out);
+        ambitos(pkg, r, &props, &mut out);
     }
     mascara_con_sujeto(pkg, &lat, &props, &sel, &mut out);
+    ambito_con_sujeto(pkg, &mut out);
     if !out.is_empty() {
         return out;
     }
@@ -625,6 +627,130 @@ fn mascaras(
                          suelo que la seleccionó",
                     ),
                 );
+            }
+        }
+    }
+}
+
+// ── El ámbito de fila · OOS2005 · OOS2001 ───────────────────────────────────
+
+/// Los atributos que la capa de identidad puede rellenar: las propiedades de
+/// las entidades que declaran `principal: true`.
+///
+/// Es contra esto —y solo contra esto— que un ámbito puede comparar. Un literal
+/// sería un filtro estático, que es lo que hace un `selector`; otra columna
+/// sería una comparación entre columnas, que `03-binding` §3.5.1 ya rechazó
+/// porque ordena en vez de particionar.
+fn atributos_de_principal(pkg: &Package) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for e in pkg.entities() {
+        if e.section("principal").and_then(|n| n.as_str()) != Some("true") {
+            continue;
+        }
+        if let Some(ps) = e.section("properties") {
+            out.extend(ps.entries().iter().filter_map(|(k, _)| {
+                k.as_str().map(String::from)
+            }));
+        }
+    }
+    out
+}
+
+/// Un ámbito apunta a una columna que existe y a un atributo que alguien puede
+/// rellenar.
+///
+/// La segunda comprobación es la que importa, y es la de siempre: un ámbito que
+/// se compara contra un atributo que **ninguna entidad `principal: true`
+/// declara** no falla. El filtro no se construye, o se construye contra la
+/// nada, y **la fila queda visible**. Una regla que no recorta tiene exactamente
+/// el mismo aspecto que una que recorta.
+fn ambitos(pkg: &Package, r: &Loaded, props: &Props, out: &mut Vec<Diagnostic>) {
+    let atributos = atributos_de_principal(pkg);
+    for s in r.section("scopes").map(|n| n.items()).unwrap_or(&[]) {
+        if let Some((_, v)) = s.get("property")
+            && let Some(prop) = v.as_str()
+            && !props.contains_key(prop)
+        {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2005,
+                    &r.path,
+                    format!("el ámbito recorta por `{prop}`, que no es ninguna propiedad"),
+                )
+                .at(v.pos())
+                .help(
+                    "`property` es la columna sobre la que se construye el filtro que viaja al \
+                     origen. Si no existe, no hay filtro: la fila queda visible",
+                ),
+            );
+        }
+        if let Some((_, v)) = s.get("matches")
+            && let Some(attr) = v.as_str()
+            && !atributos.contains(attr)
+        {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2005,
+                    &r.path,
+                    format!("`{attr}` no es atributo de ninguna entidad `principal: true`"),
+                )
+                .at(v.pos())
+                .help(if atributos.is_empty() {
+                    "ninguna entidad declara `principal: true`, así que el único principal es \
+                     `Role` y no tiene atributos: no hay contra qué comparar. Un ámbito sin \
+                     lado derecho no recorta nada, y una fila sin recortar es una fila visible"
+                        .to_string()
+                } else {
+                    format!(
+                        "el lado derecho de un ámbito es un atributo que el principal trae con \
+                         la petición — es lo que impide que el recorte filtre por algo que él \
+                         no sabía. Declarados: {}",
+                        atributos
+                            .iter()
+                            .map(|a| format!("`{a}`"))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    )
+                }),
+            );
+        }
+    }
+}
+
+/// `@oosScope("<ruleset cualificado>#<id>")` — la misma figura que `@oosMask`,
+/// y por la misma razón: la anotación **nombra** un ámbito declarado, no lo
+/// declara. Es lo que mantiene la definición en un solo sitio, con dueño.
+fn ambito_con_sujeto(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    for (ruta, texto) in pkg.cedar.iter() {
+        for pol in crate::cedar::read(texto) {
+            for referencia in &pol.scopes {
+                let resuelve = referencia.split_once('#').is_some_and(|(rs, id)| {
+                    pkg.docs
+                        .iter()
+                        .find(|d| d.kind == Kind::Ruleset && d.qname().as_deref() == Some(rs))
+                        .is_some_and(|r| {
+                            r.section("scopes")
+                                .map(|n| n.items())
+                                .unwrap_or(&[])
+                                .iter()
+                                .any(|s| s.get("id").and_then(|(_, v)| v.as_str()) == Some(id))
+                        })
+                });
+                if !resuelve {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2001,
+                            ruta,
+                            format!("`@oosScope(\"{referencia}\")` no resuelve a ningún ámbito"),
+                        )
+                        .help(format!(
+                            "la política `{}` nombra un recorte de filas que no existe, así que \
+                             no se recorta ninguna: autoriza sobre TODAS las filas de esa \
+                             propiedad. La forma es `<ruleset cualificado>#<id de ámbito>`",
+                            pol.id
+                        )),
+                    );
+                }
             }
         }
     }

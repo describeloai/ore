@@ -43,6 +43,10 @@ pub struct Policy {
     /// máscara declarada en un `Ruleset`; no la declara. Es lo que mantiene la
     /// definición en un solo sitio, con dueño y con descenso verificado.
     pub masks: Vec<String>,
+    /// De `@oosScope("<ruleset cualificado>#<id>")`. Igual que `masks`, y por la
+    /// misma razon: la anotacion **nombra** un ambito de fila declarado en un
+    /// `Ruleset`. Una mascara recorta el valor; un ambito recorta la fila.
+    pub scopes: Vec<String>,
     /// Las etiquetas que la política menciona — `Label::"gdpr.sensitivity:high"`
     /// en el ámbito o en las condiciones.
     ///
@@ -297,6 +301,7 @@ pub fn read(text: &str) -> Vec<Policy> {
                 effect,
                 obligations: annotations(s, "obligation"),
                 masks: annotations(s, "oosMask"),
+                scopes: annotations(s, "oosScope"),
                 labels: etiquetas(s),
                 purposes: purposes(&conditions),
                 conditions,

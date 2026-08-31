@@ -648,6 +648,59 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
             }
         }
 
+        // OOS2015 · y el otro origen del MISMO defecto. Un ambito de fila
+        // (`v1alpha3/02-ruleset` §4.2) recorta por una columna, y si el binding
+        // no la mapea el motor tampoco tiene con que construir ese filtro.
+        //
+        // Que un requisito de la FUENTE y un requisito de la POLITICA produzcan
+        // el mismo estado no es una coincidencia: son el mismo defecto. Y este
+        // pesa mas, porque `05-ejecutor` §3 obliga a rechazar el plan antes que
+        // servirlo sin recorte — un binding asi deja la entidad inconsultable
+        // para toda politica que nombre ese ambito.
+        let qn = e.qname().unwrap_or_default();
+        for r in pkg.of(Kind::Ruleset) {
+            for s in r.section("scopes").map(|n| n.items()).unwrap_or(&[]) {
+                let Some((_, v)) = s.get("property") else {
+                    continue;
+                };
+                let Some(prop) = v.as_str() else { continue };
+                let Some(corta) = prop.strip_prefix(&format!("{qn}.")) else {
+                    continue;
+                };
+                // Si la propiedad NO EXISTE, el defecto es la referencia rota y
+                // lo dice `OOS2005` desde `governance`. Decir aqui «el mapeo no
+                // la cubre» seria adelantar la consecuencia al error real, y
+                // `99-errors` §2.1 es explicito: gana el codigo especifico.
+                //
+                // Es la segunda vez que esta figura aparece —`politica::check`
+                // se adelantaba a `OOS2001` por lo mismo—, y las dos veces la
+                // encontro un caso, no una lectura.
+                let existe = e
+                    .section("properties")
+                    .map(|p| p.get(corta).is_some())
+                    .unwrap_or(false);
+                if existe && !mapeadas.contains(corta) {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2015,
+                            &b.path,
+                            format!(
+                                "un ámbito de fila recorta `{target}` por `{corta}`, que el \
+                                 mapeo no cubre"
+                            ),
+                            )
+                        .help(
+                            "el recorte por filas se empuja al origen como filtro, y sin la \
+                             propiedad en el mapeo no hay con qué construirlo. El ejecutor no \
+                             puede servir sin el recorte —serían filas que nadie autorizó—, así \
+                             que rechazaría el plan: este binding compila y no se puede \
+                             consultar",
+                        ),
+                    );
+                }
+            }
+        }
+
         let faltan: Vec<&String> = exigidas.iter().filter(|k| !mapeadas.contains(*k)).collect();
         if !faltan.is_empty() {
             out.push(

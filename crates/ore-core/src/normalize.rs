@@ -68,6 +68,7 @@ const CONJUNTOS: &[&str] = &[
     "named",
     "assertions",
     "masks",
+    "scopes",
     "duties",
     // v1alpha2, y el hueco era el mismo: esta lista no había crecido desde
     // v1alpha1, así que **todo campo lista añadido después quedó sin

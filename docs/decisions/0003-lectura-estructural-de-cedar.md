@@ -57,10 +57,18 @@ documento se indexa por `kind:qualifiedName` y no por ruta (`90-canonical-form` 
 la misma regla aplicada dos veces.
 
 **Las finalidades se comparan como conjunto, no como texto.** `context.purpose == "x"` y
-`context.purpose in ["x"]` dicen lo mismo, y una implementación que las comparase como
-cadenas emitiría `OOS5013` —«perdiste una condición»— cada vez que alguien reescribiera la
-primera forma en la segunda. El caso `widen-purposes` de la suite es exactamente esa
-trampa, y falla si se compara texto.
+`["x"].contains(context.purpose)` dicen lo mismo, y una implementación que las comparase
+como cadenas emitiría `OOS5013` —«perdiste una condición»— cada vez que alguien
+reescribiera la primera forma en la segunda. El caso `widen-purposes` de la suite es
+exactamente esa trampa, y falla si se compara texto.
+
+> **Y aquí me equivoqué al escribirlo.** La segunda forma decía
+> `context.purpose in ["x"]`, que **no es Cedar válido**: `in` es el operador de jerarquía
+> de entidades y `purpose` es un `String`. Vivió en este ADR, en un caso de conformidad y
+> en el ejemplo de referencia hasta que un validador de Cedar la miró — porque hasta M0
+> nadie había enfrentado una política contra el esquema. La lectura estructural la leía
+> igual, que es justo por qué nadie se enteró: **`purposes()` extrae las cadenas
+> entrecomilladas y le da igual el operador**, así que el bug no producía ningún síntoma.
 
 ## Lo que se acepta a cambio
 
