@@ -297,7 +297,7 @@ emit       5/5    invalid 41/41  valid    4/4
                                  TOTAL  89/89
 
 BORRADOR v1alpha2 · efectos y derivación  24/24
-BORRADOR v1alpha3 · gobierno              28/28
+BORRADOR v1alpha3 · gobierno              29/29
 BORRADOR v1alpha4 · significado           28/28
 BORRADOR v1alpha5 · emisión a GraphQL     11/11
 ```
