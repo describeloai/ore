@@ -14,11 +14,16 @@
 //! **artefacto**. Una pila TLS enlazada para `discover` está igual de presente
 //! en `compile`.
 //!
-//! Medido, no supuesto. ORE hoy: **29 crates**. Añadiendo un cliente HTTPS
-//! mínimo —`reqwest` sin más, ni OAuth, ni el modelo REST de BigQuery, ni un
-//! segundo driver—: **91 crates**, cinco de ellos cripto o FFI. Triplicar el
-//! árbol para que `discover` llame a una API le quita a `compile` la única
-//! afirmación que podía demostrar.
+//! Medido, no supuesto. `ore` hoy enlaza **28 crates**, ninguna nativa. Un
+//! cliente HTTPS mínimo —`reqwest` a secas, sin OAuth, sin el modelo REST de
+//! BigQuery, sin un segundo driver— son **91**, cinco de ellas cripto o FFI.
+//! Triplicar el árbol para que `discover` llame a una API le quitaría a `compile`
+//! la única afirmación que podía demostrar.
+//!
+//! Y desde que existe `ore-read-postgres` esto no se sostiene sobre la buena
+//! voluntad: `tests/dependencias.rs` lee el cierre de `ore-cli` en `Cargo.lock` y
+//! falla si aparece una crate de red, de TLS o de FFI. La primera vez que corrió
+//! corrigió la cifra que había escrita aquí, que era otra.
 //!
 //! # Cómo habla entonces: delegando
 //!

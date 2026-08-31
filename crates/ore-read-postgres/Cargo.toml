@@ -1,0 +1,29 @@
+# El driver de Postgres. Vive FUERA del binario `ore` a propósito: aquí caben
+# 65 crates y FFI de plataforma, y ninguno de los dos alcanza al compilador.
+# Lo comprueba `crates/ore-cli/tests/dependencias.rs`, que no se fía del reparto
+# en directorios: lee el cierre de `ore-cli` en `Cargo.lock`.
+[package]
+name        = "ore-read-postgres"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de catálogo de PostgreSQL para `ore discover`"
+
+[dependencies]
+# Solo por `Json`: la salida es un documento canónico y escribirlo a mano
+# volvería a plantear el escapado que ese módulo ya resolvió.
+ore-core = { path = "../ore-core" }
+
+# rust-postgres, el driver de referencia del ecosistema. `postgres` es el
+# envoltorio bloqueante: este programa hace UNA consulta y termina, y no tiene
+# nada que hacer con un planificador asíncrono.
+postgres = "0.19"
+
+# TLS de la plataforma, no una pila propia: un cliente de base de datos debe
+# confiar en las mismas CA que el sistema operativo, que es donde el
+# administrador ya puso la CA privada de la empresa. `rustls` costaba 14 crates
+# más y `aws-lc-sys`, que exige cmake y nasm para compilar.
+native-tls          = "0.2"
+postgres-native-tls = "0.5"

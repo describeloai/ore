@@ -2,6 +2,17 @@
 resolver = "3"
 members = ["crates/*"]
 
+# El build POR DEFECTO de este repositorio es el compilador hermetico. Los
+# drivers son miembros —entran en `Cargo.lock`, y por tanto en el radar del
+# guardian de dependencias— pero no se construyen si no se piden.
+#
+# No es comodidad: es la misma frase del proyecto dicha en la unica sintaxis que
+# `cargo` entiende. Y tiene un efecto secundario que vale la pena nombrar: una
+# maquina sin MinGW ni MSVC compila `ore` entero y no puede compilar el driver,
+# porque `ore` no enlaza NADA nativo. La herramienta lo demuestra sin que nadie
+# se lo pida.
+default-members = ["crates/ore-core", "crates/ore-cli"]
+
 [workspace.package]
 version    = "0.0.0"
 edition    = "2024"

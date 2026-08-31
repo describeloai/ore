@@ -240,6 +240,20 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
                 ),
             });
         }
+        // Una foranea compuesta: el origen la declara, y aun asi no se puede
+        // emitir. No es una conjetura del inductor — es que el vocabulario no
+        // llega, y callarlo dejaria una entidad sin una arista que SI existe.
+        for (columnas, destino) in t.foraneas.iter().filter(|(c, _)| c.len() > 1) {
+            pendientes.push(Pendiente {
+                sujeto: format!("{} ({})", t.nombre, columnas.join(", ")),
+                que: format!("foranea compuesta hacia `{}`", entidad(destino)),
+                porque: "el origen la declara sobre varias columnas y `via` es UNA \
+                         propiedad en v1alpha1. Recortarla a la primera uniria de menos \
+                         con el mismo aspecto que una relacion correcta, asi que no se \
+                         emite: hace falta una propiedad que sostenga el enlace entero"
+                    .into(),
+            });
+        }
         // Una vista es una PROYECCION de algo. Puede ser la entidad, o puede ser
         // un informe sobre ella: emitirla sin mas duplicaria el concepto.
         if t.clase != "table" {
@@ -502,12 +516,25 @@ fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
             }
         }
     }
-    if !t.foraneas.is_empty() {
+    // Solo las foraneas de UNA columna. `via` es un identificador en el esquema
+    // de v1alpha1 —*«propiedad local que sostiene el enlace»*, en singular—, asi
+    // que una foranea compuesta no se puede decir. Recortarla a su primera
+    // columna produciria un join que une de menos y tiene exactamente el mismo
+    // aspecto que uno correcto. Va como pendiente, arriba.
+    let simples: Vec<_> = t.foraneas.iter().filter(|(c, _)| c.len() == 1).collect();
+    if !simples.is_empty() {
         s.push_str("  relations:\n");
-        for (columnas, destino) in &t.foraneas {
+        for (columnas, destino) in simples {
+            // `required` es un hecho del origen, no un valor por defecto: si la
+            // columna es NOT NULL, la relacion es obligatoria y decir `false`
+            // seria mentir sobre el modelo.
+            let obligatoria = t
+                .columnas
+                .iter()
+                .any(|c| c.nombre == columnas[0] && c.obligatoria);
             let _ = write!(
                 s,
-                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: {}\n      required: false\n",
+                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: {}\n      required: {obligatoria}\n",
                 identificador(&entidad(destino)).to_lowercase(),
                 entidad(destino),
                 identificador(&columnas[0])
