@@ -605,6 +605,32 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
         exigidas.dedup();
 
+        // OOS2015 · un filtro que el origen EXIGE y el binding no mapea deja la fuente
+        // inconsultable: el motor no tiene con que construirlo. Compila y no sirve.
+        for f in b
+            .section("capabilities")
+            .and_then(|c| c.get("requiredFilters").map(|(_, v)| v.items()))
+            .unwrap_or(&[])
+        {
+            let Some(prop) = f.as_str() else { continue };
+            if !mapeadas.contains(prop) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2015,
+                        &b.path,
+                        format!("`{target}` exige filtrar por `{prop}`, que el mapeo no cubre"),
+                    )
+                    .at(f.pos())
+                    .help(
+                        "`requiredFilters` dice que el origen NO acepta una consulta sin ese \
+                         filtro. Sin la propiedad en el mapeo el motor no tiene con qué \
+                         construirlo, así que este binding compila y no se puede consultar \
+                         nunca",
+                    ),
+                );
+            }
+        }
+
         let faltan: Vec<&String> = exigidas.iter().filter(|k| !mapeadas.contains(*k)).collect();
         if !faltan.is_empty() {
             out.push(
