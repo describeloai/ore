@@ -6,7 +6,7 @@
 # creer a nadie. Así que este flujo hace con su propio artefacto lo que `ore`
 # hace con un bundle:
 #
-#   1. no existe si la suite no pasa          — 74/74, la misma puerta que `ci`
+#   1. no existe si la suite no pasa          — la misma puerta que `ci`, entera
 #   2. se comprueba que es determinista        — dos compilaciones, un hash
 #   3. se sella con su procedencia             — atestación SLSA verificable
 #   4. se publica con su digest al lado        — SHA256SUMS
