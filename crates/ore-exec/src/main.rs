@@ -83,7 +83,7 @@ fn main() -> std::process::ExitCode {
                 purpose: valor(&args, "--purpose").unwrap_or_default(),
                 entidad: valor(&args, "--entidad").unwrap_or_default(),
                 propiedades: lista(&args, "--props"),
-                claves: lista(&args, "--claves"),
+                claves: lista(&args, "--claves").into_iter().map(|k| vec![k]).collect(),
             };
 
             match motor.planificar(&c) {
@@ -109,11 +109,14 @@ fn main() -> std::process::ExitCode {
                     if p.claves.is_empty() {
                         println!("   sin claves: el índice de topología es de M3");
                     } else {
-                        println!("   {} clave(s): {}", p.claves.len(), p.claves.join(", "));
+                        println!("   {} clave(s)", p.claves.len());
                     }
                     println!("\n③ CARGA ÚTIL");
                     for l in &p.lecturas {
                         println!("   {} · {}", l.datasource, l.objeto);
+                        if !l.clave_columnas.is_empty() {
+                            println!("      clave: {}", l.clave_columnas.join(", "));
+                        }
                         for (prop, col) in &l.proyeccion {
                             println!("      {prop} ← {col}");
                         }

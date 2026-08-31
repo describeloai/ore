@@ -49,7 +49,10 @@ pub struct Consulta {
     pub purpose: String,
     pub entidad: String,
     pub propiedades: Vec<String>,
-    pub claves: Vec<String>,
+    /// Los valores de clave, **como tuplas**: una clave compuesta es una tupla,
+    /// y aplanarla habría vuelto a perder la aridad que `via` como secuencia
+    /// costó cerrar.
+    pub claves: Vec<Vec<String>>,
 }
 
 /// Las condiciones de `05-ejecutor` §9. **No son códigos de documento**: un
@@ -79,7 +82,11 @@ pub struct Lectura {
     /// Propiedad → columna física. Es **la proyección**, y lo que no está aquí
     /// no se pide.
     pub proyeccion: BTreeMap<String, String>,
-    pub claves: Vec<String>,
+    /// Las columnas **físicas** de la clave primaria, en el orden que la entidad
+    /// declara. Sin ellas el driver tendría los valores y no sabría contra qué
+    /// compararlos.
+    pub clave_columnas: Vec<String>,
+    pub claves: Vec<Vec<String>>,
     /// Los predicados que salen de los **ámbitos** de las políticas que
     /// autorizaron: `<columna> = <valor de la reclamación>`. Viajan al origen.
     pub filtros: Vec<Filtro>,
@@ -101,12 +108,72 @@ pub struct Plan {
     /// puede auditar.
     pub podadas: BTreeMap<String, String>,
     /// ② — en v1 no hay travesía: las claves llegan con la consulta.
-    pub claves: Vec<String>,
+    pub claves: Vec<Vec<String>>,
     /// ③
     pub lecturas: Vec<Lectura>,
     /// ④ — por qué propiedades se ensambla. Con una sola lectura no hay nada
     /// que ensamblar, y decirlo es mejor que omitirlo.
     pub ensamblar_por: Vec<String>,
+}
+
+/// Una lista de tuplas, en forma canónica.
+fn tuplas(v: &[Vec<String>]) -> Json {
+    Json::Arr(
+        v.iter()
+            .map(|t| Json::Arr(t.iter().map(|x| Json::s(x.as_str())).collect()))
+            .collect(),
+    )
+}
+
+impl Lectura {
+    /// La petición que viaja al driver: **un fragmento del plan, no SQL**
+    /// (`docs/decisions/0008-el-protocolo-del-driver.md`).
+    ///
+    /// La URL entra aquí y no en el plan a propósito: **el plan es puro**, y un
+    /// secreto dentro de él lo volvería no imprimible. Quien invoca elige la
+    /// identidad, que es lo que §6.2 pide al separar el proceso que refresca del
+    /// que responde.
+    pub fn peticion(&self, url: &str) -> String {
+        Json::obj([
+            ("url", Json::s(url)),
+            ("objeto", Json::s(self.objeto.as_str())),
+            (
+                "proyeccion",
+                Json::Obj(
+                    self.proyeccion
+                        .iter()
+                        .map(|(p, c)| (p.clone(), Json::s(c.as_str())))
+                        .collect(),
+                ),
+            ),
+            (
+                "claveColumnas",
+                Json::Arr(
+                    self.clave_columnas
+                        .iter()
+                        .map(|c| Json::s(c.as_str()))
+                        .collect(),
+                ),
+            ),
+            ("claves", tuplas(&self.claves)),
+            (
+                "filtros",
+                Json::Arr(
+                    self.filtros
+                        .iter()
+                        .map(|f| {
+                            Json::obj([
+                                ("columna", Json::s(f.columna.as_str())),
+                                ("operador", Json::s("eq")),
+                                ("valor", Json::s(f.valor.as_str())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+        .jcs()
+    }
 }
 
 impl Plan {
@@ -137,10 +204,7 @@ impl Plan {
                         .collect(),
                 ),
             ),
-            (
-                "claves",
-                Json::Arr(self.claves.iter().map(|k| Json::s(k.as_str())).collect()),
-            ),
+            ("claves", tuplas(&self.claves)),
             (
                 "lecturas",
                 Json::Arr(
@@ -159,10 +223,14 @@ impl Plan {
                                             .collect(),
                                     ),
                                 ),
+                                ("claves", tuplas(&l.claves)),
                                 (
-                                    "claves",
+                                    "claveColumnas",
                                     Json::Arr(
-                                        l.claves.iter().map(|k| Json::s(k.as_str())).collect(),
+                                        l.clave_columnas
+                                            .iter()
+                                            .map(|c| Json::s(c.as_str()))
+                                            .collect(),
                                     ),
                                 ),
                                 (
@@ -382,10 +450,26 @@ impl Motor {
                 }
             }
 
+            // Las columnas de la clave: la `primaryKey` de la entidad, pasada
+            // por el mapeo de ESTE binding.
+            let clave_columnas: Vec<String> = self
+                .paquete
+                .entity(&c.entidad)
+                .and_then(|e| e.section("primaryKey"))
+                .map(|k| {
+                    k.items()
+                        .iter()
+                        .filter_map(|i| i.as_str())
+                        .filter_map(|p| mapa.get(p).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+
             lecturas.push(Lectura {
                 datasource: ds.to_string(),
                 objeto: objeto.to_string(),
                 proyeccion,
+                clave_columnas,
                 claves: claves.clone(),
                 filtros,
             });

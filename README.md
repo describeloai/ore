@@ -516,22 +516,29 @@ cientos de fuentes:
 funciona sin declarar nada*. La búsqueda por clave sola **ya contesta una consulta**,
 así que ③ es el primer trozo que vale por sí mismo.
 
-**Listo cuando:**
+**Listo, y medido contra un PostgreSQL de verdad:**
 
-- El protocolo está escrito en un ADR: es del motor, no del formato (§8).
-- `ore-read-postgres` contesta una búsqueda por clave y devuelve filas.
-- **El SQL que emite contiene solo las columnas proyectadas.** Una prueba lee el SQL
-  construido y afirma que la columna redactada **no está**: el enmascarado por
-  omisión se vuelve observable en lugar de prometido.
-- Un plan con proyección vacía **no llega a lanzar el driver**. Se mide: el
-  subproceso no se crea.
-- La conexión es **de solo lectura** (§6.2), y hay una prueba de que una escritura
-  falla — no porque no la intentemos, sino porque la fuente la rechaza.
-- El proceso que refresca y el que responde toman **credenciales distintas**, y
-  colapsarlas en una es un aviso, no un silencio.
-- El formato de fila está decidido y razonado. Para v1, NDJSON: la costura ya habla
-  JSON para el catálogo, y dos codificaciones en la misma costura son una de más.
-  Por qué Arrow IPC es su sucesor —y qué lo dispara— va escrito al lado.
+- ~~El protocolo en un ADR~~ ✅ [0008](docs/decisions/0008-el-protocolo-del-driver.md) —
+  **la petición es un fragmento del plan, no SQL**, y traducir es del driver. Añadir una
+  familia de fuentes es escribir un traductor, no tocar el planificador.
+- ~~`ore-read-postgres` contesta una búsqueda por clave~~ ✅ — y el **filtro del ámbito**
+  llegó hasta el `WHERE`: dos claves pedidas, **una fila devuelta**, porque
+  `cost_center = "finanzas"` dejó fuera a la otra.
+- ~~**El SQL solo pide las columnas proyectadas**~~ ✅ — con pruebas puras, sin servidor,
+  porque un aserto que exigiera una base de datos no se ejecutaría nunca. `SELECT *` no
+  existe: una propiedad `redact` no está en el plan, luego no está en la petición, luego
+  **no puede estar en el SQL**.
+- ~~Un plan con proyección vacía no llega a lanzar el driver~~ ✅ — y si llega, el driver
+  la rechaza: *«no hay nada que pedir»*.
+- ~~La conexión es de solo lectura~~ ✅ — `SET SESSION CHARACTERISTICS AS TRANSACTION READ
+  ONLY`, y el servidor contesta `cannot execute INSERT in a read-only transaction`. **La
+  propiedad se compra pidiéndosela**, no prometiéndola.
+- ~~El formato de fila decidido y razonado~~ ✅ — NDJSON, con **propiedades** por clave y
+  no columnas físicas, y con el disparador de Arrow IPC escrito al lado: la caché de carga
+  útil.
+
+**Queda:** el proceso que refresca y el que responde toman credenciales distintas — hoy
+quien invoca elige la URL, que es la mitad; la otra mitad es que colapsarlas avise.
 
 **No hace:** ni junta entre fuentes, que es ④; ni travesía; ni caché.
 

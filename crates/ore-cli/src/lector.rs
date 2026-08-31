@@ -447,7 +447,14 @@ fn externo(tipo: &str, fuente: &str, url: &str) -> Result<String, Fallo> {
             ],
         ));
     }
-    let salida = ejecutar(&programa, &[fuente.to_string()], Some(url))?;
+    // El verbo, explicito. Desde que el driver tiene dos —`catalogo` y `leer`—
+    // deducirlo del contenido de stdin seria adivinar
+    // (`docs/decisions/0008-el-protocolo-del-driver.md`).
+    let salida = ejecutar(
+        &programa,
+        &["catalogo".to_string(), fuente.to_string()],
+        Some(url),
+    )?;
     // Se comprueba que analiza aquí para que el error diga QUIÉN lo produjo.
     parse::parse(&salida).map_err(|e| {
         fallo(

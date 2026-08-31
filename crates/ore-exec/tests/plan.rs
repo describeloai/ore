@@ -42,7 +42,7 @@ fn consulta(props: &[&str], claves: &[&str]) -> Consulta {
         purpose: "compensation_review".into(),
         entidad: "hr.Employee".into(),
         propiedades: props.iter().map(|p| p.to_string()).collect(),
-        claves: claves.iter().map(|k| k.to_string()).collect(),
+        claves: claves.iter().map(|k| vec![k.to_string()]).collect(),
     }
 }
 
@@ -119,12 +119,12 @@ fn sin_capacidades_solo_hay_busqueda_por_clave() {
         purpose: "compensation_review".into(),
         entidad: "hr.Employee".into(),
         propiedades: vec!["hr.Employee.nationalId".into()],
-        claves: vec!["emp-7".into()],
+        claves: vec![vec!["emp-7".to_string()]],
     };
 
     // Con clave, plan.
     let plan = m.planificar(&c).expect("por clave sí");
-    assert_eq!(plan.lecturas[0].claves, vec!["emp-7".to_string()]);
+    assert_eq!(plan.lecturas[0].claves, vec![vec!["emp-7".to_string()]]);
 
     // Sin clave, no — y el rechazo nombra el campo que falta.
     c.claves.clear();
@@ -151,7 +151,7 @@ fn una_propiedad_redactada_no_llega_a_la_proyeccion() {
         purpose: "compensation_review".into(),
         entidad: "hr.Employee".into(),
         propiedades: vec!["hr.Employee.nationalId".into()],
-        claves: vec!["emp-7".into()],
+        claves: vec![vec!["emp-7".to_string()]],
     };
 
     // La política PERMITE, y aun así la columna no se pide: la máscara es

@@ -56,6 +56,8 @@
 //! conjetura barata y un hecho carísimo, no emitir nada es lo correcto: el campo
 //! es opcional justamente para esto.
 
+mod leer;
+
 use ore_core::json::Json;
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -161,20 +163,33 @@ fn main() -> ExitCode {
 }
 
 fn intentar() -> Result<String, String> {
-    let fuente = std::env::args().nth(1).unwrap_or_else(|| "postgres".into());
+    // El verbo es explícito desde que hay dos. Antes estaba implícito en que
+    // solo hubiera uno; deducirlo del contenido de stdin sería adivinar.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (verbo, fuente) = match args.first().map(String::as_str) {
+        Some("leer") => ("leer", args.get(1).cloned().unwrap_or_default()),
+        Some("catalogo") => ("catalogo", args.get(1).cloned().unwrap_or_default()),
+        // La forma anterior —`ore-read-postgres <fuente>`— sigue significando
+        // `catalogo`: quien la usara no tiene por qué enterarse de que ahora
+        // hay dos verbos.
+        otro => ("catalogo", otro.unwrap_or("postgres").to_string()),
+    };
 
-    let mut url = String::new();
+    let mut entrada = String::new();
     std::io::stdin()
-        .read_to_string(&mut url)
-        .map_err(|e| format!("no se pudo leer la URL de stdin: {e}"))?;
-    let url = url.trim();
-    if url.is_empty() {
+        .read_to_string(&mut entrada)
+        .map_err(|e| format!("no se pudo leer stdin: {e}"))?;
+    if entrada.trim().is_empty() {
         return Err(
-            "no llegó ninguna URL por stdin. La espera de `ore discover \
-                    --source`, que se la pasa por ahí y no por la línea de órdenes"
+            "no llegó nada por stdin. `catalogo` espera una URL y `leer` una \
+             petición JSON, y las dos van por ahí y no por la línea de órdenes"
                 .into(),
         );
     }
+    if verbo == "leer" {
+        return filas(&entrada);
+    }
+    let url = entrada.trim();
 
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
@@ -486,4 +501,47 @@ mod tests {
         assert_eq!(clase("m"), "materializedView");
         assert_eq!(clase("f"), "foreignTable");
     }
+}
+
+// ── El segundo verbo ────────────────────────────────────────────────────────
+
+/// Devuelve filas, en NDJSON: una por línea.
+///
+/// La conexión se abre **de solo lectura** pidiéndoselo al servidor, no
+/// prometiéndolo. La diferencia es la de siempre: un motor que no escribe porque
+/// no tiene código para escribir tiene una **propiedad**; uno que promete no
+/// hacerlo tiene una **política** — y aquí el código de escritura existe, lo
+/// trae este mismo driver, así que la propiedad hay que comprarla.
+fn filas(peticion: &str) -> Result<String, String> {
+    let p = leer::leer_peticion(peticion)?;
+    let (consulta, params) = leer::sql(&p);
+
+    let tls = postgres_native_tls::MakeTlsConnector::new(
+        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+    );
+    let mut cliente = postgres::Client::connect(&p.url, tls)
+        .map_err(|e| format!("no se pudo conectar: {e}"))?;
+
+    cliente
+        .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
+
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+        params.iter().map(|v| v as &(dyn postgres::types::ToSql + Sync)).collect();
+    let resultado = cliente
+        .query(consulta.as_str(), &refs)
+        .map_err(|e| format!("la consulta falló: {e}\n  {consulta}"))?;
+
+    let mut out = String::new();
+    for fila in &resultado {
+        // Todo sale como texto: el driver no interpreta tipos, y convertirlos
+        // aquí sería una segunda costura de tipos al lado de la que ya existe
+        // para el catálogo.
+        let valores: Vec<Option<String>> = (0..p.proyeccion.len())
+            .map(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
+            .collect();
+        out.push_str(&leer::fila(&p, &valores));
+        out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
 }
