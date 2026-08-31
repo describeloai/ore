@@ -62,7 +62,7 @@ seguridad.
 | **Compilador** | CI | `lint` `validate` `test` `diff` `plan` `compile` `promote` `export` | **nada. Sin red, sin credenciales, sin reloj** |
 | **Runtime** | producción | `dev` `serve` + Helm | credenciales vivas de todas las fuentes |
 
-**Ocho de quince comandos no abren un socket** — la fila del compilador entera. De ahí sale un argumento que no es
+**La fila del compilador entera no abre un socket.** De ahí sale un argumento que no es
 marketing:
 
 > El paso que decide **qué significan las cosas** es el único que no puede filtrar nada.
@@ -238,10 +238,10 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 
 ## Estado
 
-**La fase 0 está cerrada.** Los 90 casos de la suite de conformidad de OOS están
-en verde, y con ellos existen siete comandos: `validate`, `compile`, `diff`,
-`export`, `source add`, **`dev`** y **`report`**. Los **ocho** restantes que
-anuncia `ore --help` **no están implementados** y lo dicen al ejecutarse.
+**La fase 0 está cerrada.** Los 90 casos del árbol `v1alpha1` de la suite de
+conformidad están en verde, y con ellos existen estos comandos: `validate`,
+`compile`, `diff`, `export`, `source add`, **`dev`** y **`report`**. Los demás
+que anuncia `ore --help` **no están implementados** y lo dicen al ejecutarse.
 
 `ore report` es el registro de **qué gobierna qué y quién responde**, y lo que lo
 define es lo que no puede ser: **no es una lista de incumplimientos**, porque una
@@ -257,9 +257,9 @@ clasificación.
 
 Y hay una quinta columna que la tabla de abajo no tenía: **las superficies de
 emisión**, que no son una fase sino un eje propio. `export` habla cuatro
-formatos —ODCS, Cedar, OOS canónico y **GraphQL**— y el cuarto certifica los
-ocho casos de `v1alpha5`, incluidos los cuatro peldaños de *listo* que ese
-borrador define.
+formatos —ODCS, Cedar, OOS canónico y **GraphQL**— y el cuarto deja el borrador
+de `v1alpha5` entero en verde, incluidos los cuatro peldaños de *listo* que ese
+borrador define. El marcador imprime la cuenta al correr; aquí no se copia.
 
 | Fase | Qué | Criterio de éxito | |
 |:---:|---|---|:---:|

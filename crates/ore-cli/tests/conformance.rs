@@ -15,9 +15,10 @@
 //!
 //! # Qué mide
 //!
-//! Los 76 casos del submódulo `vendor/oos`, agrupados por la operación que
-//! afirman. Arrancaron todos en rojo y hoy están todos en verde; lo que este
-//! runner protege a partir de aquí es que ninguno vuelva.
+//! Los casos del árbol `v1alpha1` del submódulo `vendor/oos`, agrupados por la
+//! operación que afirman. Arrancaron todos en rojo y hoy están todos en verde;
+//! lo que este runner protege a partir de aquí es que ninguno vuelva. Cuántos
+//! son lo cuenta un testigo, no este comentario.
 //!
 //! `IMPLEMENTADAS` deja de ser una lista que crece y pasa a ser un cierre: un
 //! caso que espera un código ausente de ella cuenta como *pendiente* en vez de
@@ -1109,9 +1110,9 @@ fn borrador_de_v1alpha4() {
     );
 }
 
-/// El borrador de v1alpha5 arranca entero en pendiente: `--format graphql` no
-/// existe. Sus ocho casos certifican los cuatro peldanos de `01-emision-graphql`
-/// §6, y se limpian segun se implemente el emisor.
+/// El borrador de v1alpha5 arranco entero en pendiente —`--format graphql` no
+/// existia— y hoy esta entero en verde: sus casos certifican los cuatro peldanos
+/// de `01-emision-graphql` §6. Cuantos son lo dice el marcador al correr.
 #[test]
 fn borrador_de_v1alpha5() {
     marcador(

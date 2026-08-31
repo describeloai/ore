@@ -6,8 +6,8 @@
 
 ## Contexto
 
-Siete de los veinte casos de `conformance/diff/` comparan políticas Cedar entre dos
-versiones de un paquete. Cinco códigos dependen de ello:
+Hay casos de `conformance/diff/` que comparan políticas Cedar entre dos versiones de un
+paquete: **uno por cada código que depende de ello**, y son estos cinco:
 
 | Código | Qué hay que saber |
 |---|---|

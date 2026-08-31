@@ -28,7 +28,8 @@ ore --version
 
 ## Qué existe y qué no
 
-`ore --help` anuncia quince comandos. Los implementados lo dicen al ejecutarse;
+`ore --help` anuncia más comandos de los que implementa. Los que existen lo
+dicen al ejecutarse;
 el resto falla explicando en qué fase está. Consulta el `README` del repositorio
 para el estado por fases: es la única copia de ese marcador, a propósito.
 
