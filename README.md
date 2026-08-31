@@ -451,10 +451,15 @@ poda. Y retira la única decisión irreversible de todo L2.
 - ~~El `Deny` deja de ser mudo~~ ✅ — se distinguen tres: **prohibida** por un `forbid` que
   se nombra, **sin política** que la alcance (que no es un fallo: es P4), y **ninguna casó**
   entre las que sí la alcanzan, nombrándolas. Cedar devuelve el mismo `Deny` para las tres.
-- `resource in principal` se responde con el índice de topología, que en M0 no
-  existe: es un **hueco con condición nombrada**, no un `false` silencioso. Un
-  denegado por falta de índice y uno por política tienen el mismo aspecto, y esa es
-  precisamente la forma de fallo que este proyecto persigue.
+- ~~El hueco de la jerarquía es una **condición nombrada**, no un `false`
+  silencioso~~ ✅ — y `resource in principal` **se retiró**: el recurso de una
+  autorización es una propiedad, no una fila. Lo que quedó es la mitad del
+  principal —`principal in Employee::"…"`—, que sí es expresable y sí necesita el
+  índice: sin él evalúa a falso, así que el veredicto dice **jerarquía no
+  disponible** en vez de fingir que ninguna política casó.
+
+**M0 está cerrado.** Los cinco criterios, y el crate no abre nada: el almacén de
+entidades sale del bundle.
 
 **No hace:** ni plan, ni fuente, ni una sola fila.
 
@@ -551,7 +556,8 @@ ventana y firmado.
   *contiene datos* —saber que el paciente X enlaza con la clínica Y es el
   diagnóstico—, así que el flujo de release **falla** si encuentra uno en el contexto
   de construcción. La consecuencia de seguridad se convierte en una prueba.
-- Se cierra el hueco de M0: `resource in principal` se resuelve contra el índice.
+- Se cierra el hueco de M0: `principal in Employee::"…"` deja de ser la condición
+  **jerarquía no disponible** y pasa a evaluarse contra el índice.
 
 **No hace:** ni refresco incremental —reconstruir por ventana es el coste declarado
 en el ADR 0006— ni distribución entre nodos, que es la frontera abierta de abajo.
