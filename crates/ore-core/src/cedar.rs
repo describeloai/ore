@@ -71,6 +71,18 @@ pub struct Policy {
     /// lectura miraba solo las etiquetas, asi que la enumeracion —que es la
     /// otra mitad de la proyeccion— no contaba.
     pub properties: BTreeSet<String>,
+    /// Los tipos de entidad **de dominio** que la politica nombra por instancia
+    /// —`Employee::"ceo"`—, que son los que exigen la JERARQUIA DEL PRINCIPAL.
+    ///
+    /// Se distinguen de los cuatro vocabularios que la proyeccion genera
+    /// —`Label`, `Role`, `Property`, `Action`—: aquellos llegan con la peticion
+    /// o los pone el compilador, y una instancia de dominio no. Sus aristas
+    /// viven en el indice de topologia.
+    ///
+    /// Existe para poder decirlo: una politica asi, sin indice, **evalua a
+    /// falso**, y una denegacion por falta de indice tiene exactamente el mismo
+    /// aspecto que una por politica.
+    pub jerarquia: BTreeSet<String>,
 }
 
 impl Policy {
@@ -192,6 +204,34 @@ fn nombrados(s: &str, tipo: &str) -> BTreeSet<String> {
             }
             None => break,
         }
+    }
+    out
+}
+
+/// Los tipos de entidad de DOMINIO nombrados por instancia: `Employee::"ceo"`.
+///
+/// Los cuatro vocabularios que la proyeccion genera se excluyen porque no
+/// necesitan indice — `Label` y `Action` los pone el compilador, y `Role` llega
+/// con la peticion. Lo que queda es una instancia de una entidad del modelo, y
+/// sus aristas solo estan en el indice de topologia.
+fn tipos_de_dominio(s: &str) -> BTreeSet<String> {
+    const PROPIOS: &[&str] = &["Label", "Role", "Property", "Action"];
+    let mut out = BTreeSet::new();
+    let bytes: Vec<char> = s.chars().collect();
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        if bytes[i] == ':' && bytes[i + 1] == ':' && bytes[i + 2] == '"' {
+            // Retrocede sobre el identificador que precede a `::"`.
+            let mut j = i;
+            while j > 0 && (bytes[j - 1].is_alphanumeric() || bytes[j - 1] == '_') {
+                j -= 1;
+            }
+            let tipo: String = bytes[j..i].iter().collect();
+            if !tipo.is_empty() && !PROPIOS.contains(&tipo.as_str()) {
+                out.insert(tipo);
+            }
+        }
+        i += 1;
     }
     out
 }
@@ -333,6 +373,7 @@ pub fn read(text: &str) -> Vec<Policy> {
                 labels: etiquetas(s),
                 roles: nombrados(s, "Role"),
                 properties: nombrados(s, "Property"),
+                jerarquia: tipos_de_dominio(s),
                 purposes: purposes(&conditions),
                 conditions,
             })

@@ -157,3 +157,39 @@ fn una_reclamacion_no_declarada_no_se_cree() {
         "la reclamación de más tenía que invalidar la petición, y salió {v:?}"
     );
 }
+
+/// **El hueco nombrado.** Una política del lado del principal —*«el que pregunta
+/// está bajo esa cadena»*— es expresable y hoy no se puede evaluar: sus aristas
+/// viven en el índice de topología, que es de M3.
+///
+/// Sin él la política **evalúa a falso**, así que sale el mismo `Deny` que si no
+/// existiera. Denegar es correcto —P4—; **callar por qué, no**: una denegación
+/// por falta de un subsistema tiene exactamente el mismo aspecto que una por
+/// política, y ese es el modo de fallo que este proyecto persigue.
+#[test]
+fn una_politica_que_exige_la_cadena_lo_dice_en_vez_de_denegar_en_mudo() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("casos/jerarquia");
+    let m = Motor::cargar(&raiz).expect("el caso carga");
+
+    let p = Peticion {
+        emisor: "https://id.example".into(),
+        audiencia: "ore".into(),
+        sujeto: "emp-42".into(),
+        roles: vec![],
+        claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        accion: "read".into(),
+        propiedad: "hr.Employee.baseSalary".into(),
+        purpose: "compensation_review".into(),
+    };
+
+    let v = m.autorizar(&p);
+    let Veredicto::Denegado { porque, .. } = &v else {
+        panic!("sin índice no se puede permitir, y salió {v:?}");
+    };
+    let Denegacion::JerarquiaNoDisponible { candidatas } = porque else {
+        panic!(
+            "tenía que decir que no pudo evaluarla, no que ninguna casó — dijo {porque:?}"
+        );
+    };
+    assert_eq!(candidatas, &["under-the-ceo-reads-comp"], "{v:?}");
+}

@@ -1,0 +1,18 @@
+apiVersion: oos.dev/v1alpha1
+kind: Entity
+metadata: { name: Employee, namespace: hr }
+spec:
+  nature: entity
+  primaryKey: [employeeId]
+  principal: true
+  properties:
+    employeeId: { type: String }
+    managerId:  { type: String }
+    baseSalary:
+      type: String
+      labels: { gdpr.sensitivity: high }
+  relations:
+    manager:
+      target: hr.Employee
+      cardinality: many_to_one
+      via: [managerId]

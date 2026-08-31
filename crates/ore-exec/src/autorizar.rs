@@ -68,6 +68,16 @@ pub enum Denegacion {
     /// Hay políticas que la alcanzan y ninguna casó — por el rol, por la
     /// finalidad, por una condición. Se nombran para que haya contra qué mirar.
     NingunaCaso { candidatas: Vec<String> },
+    /// **El hueco nombrado.** Alguna política que alcanza esta propiedad exige la
+    /// **jerarquía del principal** —`principal in Employee::"…"`— y el almacén no
+    /// la lleva: sus aristas viven en el índice de topología, que no existe
+    /// todavía.
+    ///
+    /// Sin índice, esa política **evalúa a falso**, así que el `Deny` sale igual
+    /// — y una denegación por falta de un subsistema tiene exactamente el mismo
+    /// aspecto que una por política. Por eso se separa: **denegar es correcto
+    /// (P4); callar por qué, no.**
+    JerarquiaNoDisponible { candidatas: Vec<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +250,23 @@ impl Motor {
                         .filter(|(_, props)| props.iter().any(|x| *x == p.propiedad))
                         .map(|(id, _)| id.clone())
                         .collect();
-                    if candidatas.is_empty() {
+                    // Antes de decir «ninguna casó»: ¿alguna de ellas no
+                    // PUDO evaluarse? Una que exige la cadena del principal no
+                    // casa por falta de aristas, no por falta de derecho.
+                    let sin_indice: Vec<String> = candidatas
+                        .iter()
+                        .filter(|id| {
+                            self.leidas
+                                .get(*id)
+                                .is_some_and(|p| !p.jerarquia.is_empty())
+                        })
+                        .cloned()
+                        .collect();
+                    if !sin_indice.is_empty() {
+                        Denegacion::JerarquiaNoDisponible {
+                            candidatas: sin_indice,
+                        }
+                    } else if candidatas.is_empty() {
                         Denegacion::SinPolitica
                     } else {
                         Denegacion::NingunaCaso { candidatas }
