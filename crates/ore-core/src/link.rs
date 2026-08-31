@@ -553,7 +553,7 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
             })
             .unwrap_or_default();
 
-        let clave: Vec<String> = e
+        let mut exigidas: Vec<String> = e
             .section("primaryKey")
             .map(|k| {
                 k.items()
@@ -563,14 +563,33 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
             })
             .unwrap_or_default();
 
-        let faltan: Vec<&String> = clave.iter().filter(|k| !mapeadas.contains(*k)).collect();
+        // Y las propiedades de cada `via`. El esquema del binding ya lo decia
+        // —*«las relaciones no se mapean: el enlace fisico sale de mapear la
+        // propiedad `via`»*— y nadie lo comprobaba: un binding que mapeaba la
+        // clave y ninguna propiedad del enlace validaba limpio, dejando una
+        // relacion sin columna fisica por ningun lado. Tiene exactamente el
+        // mismo aspecto que una relacion enlazable.
+        if let Some(rels) = e.section("relations") {
+            for (_, rv) in rels.entries() {
+                if let Some((_, v)) = rv.get("via") {
+                    exigidas.extend(
+                        v.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from)),
+                    );
+                }
+            }
+        }
+        exigidas.dedup();
+
+        let faltan: Vec<&String> = exigidas.iter().filter(|k| !mapeadas.contains(*k)).collect();
         if !faltan.is_empty() {
             out.push(
                 Diagnostic::new(
                     Code::Oos2011,
                     &b.path,
                     format!(
-                        "el mapeo no cubre la clave primaria de `{target}`: falta{} {}",
+                        "el mapeo de `{target}` no cubre su identidad ni sus enlaces: falta{} {}",
                         if faltan.len() == 1 { "" } else { "n" },
                         faltan
                             .iter()
@@ -586,7 +605,9 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 .help(
                     "un binding sin clave produce filas, no instancias: no hay índice de \
                      topología, ni recurso identificable, ni forma de volver a unirlo con \
-                     los demás bindings de la misma entidad",
+                     los demás bindings de la misma entidad. Y una propiedad de `via` sin \
+                     mapear deja la relacion sin columna fisica: el enlace se \
+                     declara y no se puede recorrer",
                 ),
             );
         }
