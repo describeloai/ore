@@ -1,0 +1,19 @@
+# El protocolo del driver, en un sitio.
+#
+# Estaba dentro de `ore-read-postgres`, y al escribir el segundo driver quedo
+# claro lo que eso significaba: la peticion es EL CONTRATO entre el motor y
+# cualquier fuente, y un contrato repetido en cada implementacion es un contrato
+# que diverge en la tercera.
+#
+# Sin dependencias nativas: leer una peticion no exige hablar con nadie.
+[package]
+name        = "ore-driver"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El protocolo que comparten los lectores de ORE"
+
+[dependencies]
+ore-core = { path = "../ore-core" }

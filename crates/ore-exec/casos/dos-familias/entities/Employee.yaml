@@ -1,0 +1,17 @@
+apiVersion: oos.dev/v1alpha1
+kind: Entity
+metadata: { name: Employee, namespace: hr }
+spec:
+  nature: entity
+  primaryKey: [employeeId]
+  principal: true
+  properties:
+    employeeId: { type: String }
+    # De PostgreSQL.
+    baseSalary:
+      type: String
+      labels: { gdpr.sensitivity: high }
+    # De un FICHERO. La misma entidad, otra familia de fuente.
+    alias:
+      type: String
+      labels: { gdpr.sensitivity: high }

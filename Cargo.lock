@@ -1163,6 +1163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-driver"
+version = "0.0.0"
+dependencies = [
+ "ore-core",
+]
+
+[[package]]
 name = "ore-exec"
 version = "0.0.0"
 dependencies = [
@@ -1171,11 +1178,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-jsonl"
+version = "0.0.0"
+dependencies = [
+ "ore-core",
+ "ore-driver",
+]
+
+[[package]]
 name = "ore-read-postgres"
 version = "0.0.0"
 dependencies = [
  "native-tls",
  "ore-core",
+ "ore-driver",
  "postgres",
  "postgres-native-tls",
 ]

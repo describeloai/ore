@@ -83,6 +83,9 @@ pub enum Rechazo {
     },
     /// Una propiedad no la mapea ningún binding: no hay de dónde leerla.
     SinBinding { propiedad: String },
+    /// Hay más de una lectura que ensamblar y la clave no está autorizada.
+    /// Juntar por un campo vacío produciría una fila que mezcla dos personas.
+    SinClaveParaEnsamblar { propiedad: String },
     /// Se pidió una travesía y no hay índice de topología cargado. **Denegar
     /// sería correcto y callar por qué no**: sin índice no es que no haya
     /// vecinos, es que no se pudo mirar.
@@ -625,6 +628,32 @@ impl Motor {
         // Sobre flujos ya reducidos, y por la clave primaria de la entidad. Con
         // una sola lectura no hay nada que ensamblar, y el plan lo dice en vez
         // de callarlo.
+        // ④ necesita la clave, y pedirla sin que este autorizada seria devolver
+        // un dato que ① no permitio. Asi que si hay que ensamblar y la clave no
+        // esta entre lo pedido, el plan lo DICE en vez de juntar por un campo
+        // vacio — que es lo que produciria una fila que mezcla dos personas.
+        if lecturas.len() > 1 {
+            let clave: Vec<String> = self
+                .paquete
+                .entity(&c.entidad)
+                .and_then(|e| e.section("primaryKey"))
+                .map(|k| {
+                    k.items()
+                        .iter()
+                        .filter_map(|i| i.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for k in &clave {
+                let cualificado = format!("{}.{k}", c.entidad);
+                if !autorizadas.contains_key(&cualificado) {
+                    return Err(Rechazo::SinClaveParaEnsamblar {
+                        propiedad: cualificado,
+                    });
+                }
+            }
+        }
+
         let ensamblar_por = if lecturas.len() > 1 {
             self.paquete
                 .entity(&c.entidad)

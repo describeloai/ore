@@ -16,6 +16,9 @@ description = "Lector de catálogo de PostgreSQL para `ore discover`"
 # volvería a plantear el escapado que ese módulo ya resolvió.
 ore-core = { path = "../ore-core" }
 
+# El protocolo, compartido. Lo que este crate anade es la TRADUCCION.
+ore-driver = { path = "../ore-driver" }
+
 # rust-postgres, el driver de referencia del ecosistema. `postgres` es el
 # envoltorio bloqueante: este programa hace UNA consulta y termina, y no tiene
 # nada que hacer con un planificador asíncrono.

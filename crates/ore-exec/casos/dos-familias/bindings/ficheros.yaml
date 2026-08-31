@@ -1,0 +1,10 @@
+apiVersion: oos.dev/v1alpha1
+kind: Binding
+metadata: { name: ficheros, namespace: hr }
+spec:
+  targetEntity: hr.Employee
+  datasourceRef: ficheros
+  source: "empleados.ndjson"
+  properties:
+    employeeId: id
+    alias:      apodo

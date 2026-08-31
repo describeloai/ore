@@ -1,0 +1,18 @@
+# La segunda familia: un FICHERO, no una base de datos.
+#
+# Existe para demostrar lo que ningun argumento demuestra: si el mismo plan sirve
+# a PostgreSQL y a un directorio de NDJSON, la peticion estaba cortada por el
+# sitio correcto. Y su cierre —lo que trae `ore-core` y nada mas— dice que el
+# peso del driver de Postgres es de PostgreSQL, no del protocolo.
+[package]
+name        = "ore-read-jsonl"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de ficheros NDJSON para la fase ③"
+
+[dependencies]
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }

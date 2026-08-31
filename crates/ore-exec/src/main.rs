@@ -81,26 +81,7 @@ fn main() -> std::process::ExitCode {
             }
         }
         "plan" => {
-            let claims: BTreeMap<String, String> = lista(&args, "--claims")
-                .iter()
-                .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.into(), v.into())))
-                .collect();
-            let c = Consulta {
-                quien: Identidad {
-                    emisor: valor(&args, "--emisor").unwrap_or_default(),
-                    audiencia: valor(&args, "--audiencia").unwrap_or_default(),
-                    sujeto: valor(&args, "--sujeto").unwrap_or_default(),
-                    roles: lista(&args, "--roles"),
-                    claims,
-                },
-                accion: valor(&args, "--accion").unwrap_or_else(|| "read".into()),
-                purpose: valor(&args, "--purpose").unwrap_or_default(),
-                entidad: valor(&args, "--entidad").unwrap_or_default(),
-                propiedades: lista(&args, "--props"),
-                claves: lista(&args, "--claves").into_iter().map(|k| vec![k]).collect(),
-                travesia: None,
-            };
-
+            let c = consulta_de(&args);
             match motor.planificar(&c) {
                 Err(r) => {
                     // Una condición de tiempo de consulta NO es un código de
@@ -150,12 +131,72 @@ fn main() -> std::process::ExitCode {
             }
         }
         "index" => indice(&motor, &args),
+        "responder" => {
+            let c = consulta_de(&args);
+            match motor.planificar(&c) {
+                Err(r) => {
+                    eprintln!("{}", rechazo(&r));
+                    std::process::ExitCode::from(77)
+                }
+                Ok(p) => match motor.responder(
+                    &p,
+                    valor(&args, "--instante").as_deref(),
+                    valor(&args, "--sla").as_deref(),
+                ) {
+                    Err(e) => {
+                        eprintln!("no se pudo responder · {e}");
+                        std::process::ExitCode::FAILURE
+                    }
+                    Ok(r) => {
+                        for f in &r.filas {
+                            let campos: Vec<String> =
+                                f.iter().map(|(k, v)| format!("{k}={v:?}")).collect();
+                            println!("{}", campos.join("  "));
+                        }
+                        eprintln!();
+                        eprintln!("digest   {}", r.digest);
+                        eprintln!("marca    {}", r.marca.as_deref().unwrap_or("—"));
+                        eprintln!("instante {}", r.instante.as_deref().unwrap_or("—"));
+                        if let Some(d) = &r.degradado {
+                            eprintln!("DEGRADADO · {d}");
+                        }
+                        std::process::ExitCode::SUCCESS
+                    }
+                },
+            }
+        }
         otro => {
             eprintln!("`{otro}` no es un verbo de `ore-exec`");
             std::process::ExitCode::from(64)
         }
     }
 }
+
+/// La consulta, leida de las banderas. Una sola vez: `plan` y `responder` piden
+/// lo mismo, y dos lecturas de las mismas banderas acabarian divergiendo.
+fn consulta_de(args: &[String]) -> Consulta {
+    let claims: BTreeMap<String, String> = lista(args, "--claims")
+        .iter()
+        .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.into(), v.into())))
+        .collect();
+    Consulta {
+        quien: Identidad {
+            emisor: valor(args, "--emisor").unwrap_or_default(),
+            audiencia: valor(args, "--audiencia").unwrap_or_default(),
+            sujeto: valor(args, "--sujeto").unwrap_or_default(),
+            roles: lista(args, "--roles"),
+            claims,
+        },
+        accion: valor(args, "--accion").unwrap_or_else(|| "read".into()),
+        purpose: valor(args, "--purpose").unwrap_or_default(),
+        entidad: valor(args, "--entidad").unwrap_or_default(),
+        propiedades: lista(args, "--props"),
+        claves: lista(args, "--claves").into_iter().map(|k| vec![k]).collect(),
+        travesia: None,
+    }
+}
+
+
 
 fn si_hay(v: &[String]) -> String {
     if v.is_empty() {
@@ -179,6 +220,9 @@ fn rechazo(r: &Rechazo) -> String {
         Rechazo::SinBinding { propiedad } => {
             format!("sin binding · `{propiedad}` no la mapea ninguno: no hay de dónde leerla")
         }
+        Rechazo::SinClaveParaEnsamblar { propiedad } => format!(
+            "sin clave para ensamblar · `{propiedad}` no está autorizada, y hay dos lecturas              que juntar: sin clave, la fila mezclaría dos personas"
+        ),
         Rechazo::TravesiaNoDisponible { relacion } => format!(
             "travesía no disponible · `{relacion}`\n  no hay índice de topología cargado:              no es que no haya vecinos, es que no se pudo mirar"
         ),

@@ -26,10 +26,12 @@
 pub mod autorizar;
 pub mod motor;
 pub mod plan;
+pub mod responder;
 pub mod topologia;
 
 pub use autorizar::{Denegacion, Identidad, Peticion, Veredicto};
 pub use plan::{Consulta, Filtro, Lectura, Plan, Rechazo};
 pub use plan::Travesia;
+pub use responder::Respuesta;
 pub use topologia::{Arista, Topologia};
 pub use motor::{Carga, Motor};

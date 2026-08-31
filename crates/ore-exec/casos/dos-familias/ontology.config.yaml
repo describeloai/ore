@@ -1,0 +1,6 @@
+apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: dos-familias, version: 0.1.0 }
+datasources:
+  - { name: erp,      type: postgres, connectionEnv: ERP_URL }
+  - { name: ficheros, type: jsonl,    connectionEnv: FICHEROS_DIR }

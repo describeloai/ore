@@ -181,7 +181,7 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
         "`{raiz}` no está en Cargo.lock: ¿se renombró el paquete?"
     );
 
-    let propios: BTreeSet<&str> = ["ore-core", "ore-cli", "ore-exec", "ore-read-postgres"].into();
+    let propios: BTreeSet<&str> = ["ore-core", "ore-cli", "ore-driver", "ore-exec", "ore-read-jsonl", "ore-read-postgres"].into();
     let mut vistos = BTreeSet::new();
     let mut pila = vec![raiz.to_string()];
     while let Some(p) = pila.pop() {

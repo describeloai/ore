@@ -56,7 +56,7 @@
 //! conjetura barata y un hecho carísimo, no emitir nada es lo correcto: el campo
 //! es opcional justamente para esto.
 
-mod leer;
+mod sql;
 
 use ore_core::json::Json;
 use std::collections::BTreeMap;
@@ -422,6 +422,49 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Jso
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
 
+// ── El segundo verbo ────────────────────────────────────────────────────────
+
+/// Devuelve filas, en NDJSON: una por línea.
+///
+/// La conexión se abre **de solo lectura** pidiéndoselo al servidor, no
+/// prometiéndolo. La diferencia es la de siempre: un motor que no escribe porque
+/// no tiene código para escribir tiene una **propiedad**; uno que promete no
+/// hacerlo tiene una **política** — y aquí el código de escritura existe, lo
+/// trae este mismo driver, así que la propiedad hay que comprarla.
+fn filas(peticion: &str) -> Result<String, String> {
+    let p = ore_driver::leer_peticion(peticion)?;
+    let (consulta, params) = sql::sql(&p);
+
+    let tls = postgres_native_tls::MakeTlsConnector::new(
+        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+    );
+    let mut cliente = postgres::Client::connect(&p.url, tls)
+        .map_err(|e| format!("no se pudo conectar: {e}"))?;
+
+    cliente
+        .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
+
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+        params.iter().map(|v| v as &(dyn postgres::types::ToSql + Sync)).collect();
+    let resultado = cliente
+        .query(consulta.as_str(), &refs)
+        .map_err(|e| format!("la consulta falló: {e}\n  {consulta}"))?;
+
+    let mut out = String::new();
+    for fila in &resultado {
+        // Todo sale como texto: el driver no interpreta tipos, y convertirlos
+        // aquí sería una segunda costura de tipos al lado de la que ya existe
+        // para el catálogo.
+        let valores: Vec<Option<String>> = (0..p.proyeccion.len())
+            .map(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
+            .collect();
+        out.push_str(&ore_driver::fila(&p, &valores));
+        out.push('\n');
+    }
+    Ok(out.trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,45 +546,3 @@ mod tests {
     }
 }
 
-// ── El segundo verbo ────────────────────────────────────────────────────────
-
-/// Devuelve filas, en NDJSON: una por línea.
-///
-/// La conexión se abre **de solo lectura** pidiéndoselo al servidor, no
-/// prometiéndolo. La diferencia es la de siempre: un motor que no escribe porque
-/// no tiene código para escribir tiene una **propiedad**; uno que promete no
-/// hacerlo tiene una **política** — y aquí el código de escritura existe, lo
-/// trae este mismo driver, así que la propiedad hay que comprarla.
-fn filas(peticion: &str) -> Result<String, String> {
-    let p = leer::leer_peticion(peticion)?;
-    let (consulta, params) = leer::sql(&p);
-
-    let tls = postgres_native_tls::MakeTlsConnector::new(
-        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
-    );
-    let mut cliente = postgres::Client::connect(&p.url, tls)
-        .map_err(|e| format!("no se pudo conectar: {e}"))?;
-
-    cliente
-        .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
-
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
-        params.iter().map(|v| v as &(dyn postgres::types::ToSql + Sync)).collect();
-    let resultado = cliente
-        .query(consulta.as_str(), &refs)
-        .map_err(|e| format!("la consulta falló: {e}\n  {consulta}"))?;
-
-    let mut out = String::new();
-    for fila in &resultado {
-        // Todo sale como texto: el driver no interpreta tipos, y convertirlos
-        // aquí sería una segunda costura de tipos al lado de la que ya existe
-        // para el catálogo.
-        let valores: Vec<Option<String>> = (0..p.proyeccion.len())
-            .map(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
-            .collect();
-        out.push_str(&leer::fila(&p, &valores));
-        out.push('\n');
-    }
-    Ok(out.trim_end().to_string())
-}
