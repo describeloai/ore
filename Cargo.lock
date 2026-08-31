@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "ore-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "ore-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "saphyr-parser",
  "sha2 0.10.9",
@@ -1164,14 +1164,14 @@ dependencies = [
 
 [[package]]
 name = "ore-driver"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ore-core",
 ]
 
 [[package]]
 name = "ore-exec"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "cedar-policy",
  "ore-core",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "ore-read-jsonl"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ore-core",
  "ore-driver",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "ore-read-postgres"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "native-tls",
  "ore-core",

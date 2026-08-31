@@ -215,8 +215,13 @@ gh attestation verify ore-0.1.0-x86_64-unknown-linux-musl --repo describeloai/or
 ```
 
 Los cinco canales de abajo son envoltorios sobre eso. Y todavía no hay ninguna
-release publicada: la versión del workspace es `0.0.0`, y el flujo se niega a
-publicar esa — no es una versión, es el valor de partida.
+release: **`v0.1.0`**, la primera. Publica el binario `ore` para cinco
+plataformas, con su atestación de procedencia y sus checksums al lado.
+
+`ore-exec` y los lectores **no se distribuyen todavía**: enlazan lo que el
+compilador no puede enlazar —un evaluador trae un reloj, un driver trae una pila
+TLS— y su distribución es una decisión aparte, con las mismas exigencias de
+procedencia ([ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md)).
 
 ```bash
 brew install oos-dev/tap/ore
