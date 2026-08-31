@@ -7,7 +7,8 @@
 > a tus aplicaciones y a tus agentes.
 
 Apache-2.0 · implementación de referencia de [**OOS**](https://github.com/oos-dev/oos) ·
-**pre-alfa, no existe todavía**
+**alfa · `v0.1.0`** — el compilador existe y está en verde; el resto está en fases, y el
+[estado](#estado) dice cuáles
 
 ---
 
@@ -59,7 +60,7 @@ seguridad.
 | Cara | Momento | Comandos | Qué toca |
 |---|---|---|---|
 | **Scaffolder** | autoría | `init` `source add` `discover` `review` `drift-detect` | metadatos de producción y, si se pide, un LLM |
-| **Compilador** | CI | `lint` `validate` `test` `diff` `plan` `compile` `promote` `export` | **nada. Sin red, sin credenciales, sin reloj** |
+| **Compilador** | CI | `lint` `validate` `test` `diff` `plan` `report` `compile` `promote` `export` | **nada. Sin red, sin credenciales, sin reloj** |
 | **Runtime** | producción | `dev` `serve` + Helm | credenciales vivas de todas las fuentes |
 
 **La fila del compilador entera no abre un socket.** De ahí sale un argumento que no es
@@ -102,6 +103,34 @@ orígenes, y por eso la etiqueta sigue siendo cierta dentro de seis meses.
 
 Sin conexión a la base de datos. Sin credenciales. Sin un solo dato leído. **Un auditor
 externo lo verifica clonando el repositorio.**
+
+### Las tres fronteras se declaran — y la tercera faltaba
+
+Un bundle dice por dónde **entra** el dato (`datasources`) y por dónde **sale**
+(`ConduitPolicy`). La entrada de identidad no se declaraba en ninguna parte, y es **la única
+entrada que decide** en vez de ser gobernada. Sin sitio donde decir qué es un principal, su
+forma se tomaba prestada de un recurso: el DNI de un empleado acababa entrando en el esquema
+de autorización como atributo obligatorio **del que pregunta**.
+
+> **Lo que decide el acceso no puede estar sujeto al acceso que decide.**
+
+Un `RequestPolicy` cierra esa frontera: qué atributos entran con una petición, de qué
+reclamación sale cada uno, quién los firma (`issuer`, `audience`) y qué finalidades existen.
+Con ella, una política que exige un rol **no compila** si nadie declara de dónde vienen los
+roles, y una que limita por finalidad tampoco si esa finalidad no la declara nadie.
+
+**Y el recorte de filas es un filtro, no una máscara.** Cedar gobierna propiedades: decide si
+`baseSalary` se puede leer, no *qué filas*. Un `scope` de un `Ruleset` declara el recorte
+—«solo las filas cuyo `managerId` es el del que pregunta»— y el compilador lo baja al plan
+como un filtro sobre la columna que el binding mapea. *Una máscara recorta el valor; un
+ámbito recorta la fila.* Y un ámbito **falla al compilar** si la propiedad no existe o si
+ningún binding la mapea, en vez de descubrirse al responder.
+
+**Cada techo tiene dueño.** Elevar la autorización de un conducto es *la* decisión de
+seguridad de este modelo, así que un `ConduitPolicy` declara `owner` —un `team:<handle>`, que
+es lo que se alinea con CODEOWNERS— y de él **heredan las políticas de Cedar**, que eran la
+otra superficie sin dueño propio. `ore report` es el registro que sale de ahí
+([ADR 0011](docs/decisions/0011-el-informe-no-lista-incumplimientos.md)).
 
 ### Nadie escribe un binding a mano
 
@@ -221,7 +250,7 @@ plataformas, con su atestación de procedencia y sus checksums al lado.
 `ore-exec` y los lectores **no se distribuyen todavía**: enlazan lo que el
 compilador no puede enlazar —un evaluador trae un reloj, un driver trae una pila
 TLS— y su distribución es una decisión aparte, con las mismas exigencias de
-procedencia ([ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md)).
+procedencia ([ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md), [ADR 0009](docs/decisions/0009-que-se-distribuye.md)).
 
 ```bash
 brew install oos-dev/tap/ore
@@ -294,9 +323,27 @@ Con dos avisos que no se callan: **un refresco incremental no ve una fila borrad
 
 Y lo que **no** hace, dicho y no disimulado: no verifica la firma criptográfica de los
 atributos —emisor y audiencia sí; la firma exige JWKS, que es red—, no materializa la
-carga útil, y no mapea el índice en memoria. De las tres estrategias de refresco solo
-`poll` está implementada: `cdc` exige una fuente que emita cambios, y `table_version`
-**es de la caché de carga útil**, no de aquí.
+carga útil, y no mapea en memoria el `.oretopo` —el artefacto de topología, un CSR sellado
+contra el digest del bundle que lo produjo, de modo que un índice de otro paquete se rechaza
+al cargarlo ([ADR 0006](docs/decisions/0006-el-artefacto-de-topologia.md))—. De las tres
+estrategias de refresco solo `poll` está implementada: `cdc` exige una fuente que emita
+cambios, y `table_version` **es de la caché de carga útil**, no de aquí.
+
+### Y lo que se afirma aquí está medido
+
+Cada afirmación de arriba fue un `echo` en una terminal mientras se construía. Un `echo`
+demuestra algo **una vez**, así que viven en [`pruebas-de-fuego/`](pruebas-de-fuego/) y las
+corre la CI en cada empujón, contra sistemas reales y no contra dobles:
+
+| | Contra qué | Qué caería si se rompe |
+|---|---|---|
+| `fuentes-reales.sh` | un **PostgreSQL** de verdad | que el driver solo pide lo proyectado, que la sesión es de solo lectura, que dos índices de la misma instantánea son idénticos, que el refresco **sustituye**, y que una consulta cruza dos familias de fuente |
+| `graphql.sh` | **`graphql-js`**, un motor ajeno | que el SDL emitido lo acepta alguien que no somos nosotros |
+
+Es el primer peldaño de *listo* de `v1alpha5`, y no una aserción nuestra sobre nuestro propio
+formato. La razón de que estén ahí y no en una libreta:
+
+> **Una prueba que no corre tiene exactamente el mismo aspecto que una que pasa.**
 
 De la fase 3 existe **`ore dev`**: sirve el contrato por MCP sobre stdio y **no
 toca un dato**. Su criterio de éxito —*«el PII vuelve enmascarado»*— es **L2** y
@@ -455,3 +502,6 @@ estándar no hay nada que construir encima.
 Que sean dos cosas es deliberado: **otro proveedor podría construir una experiencia de
 autoría mejor que esta y seguir produciendo paquetes conformes.** Eso es exactamente lo que
 un estándar hace posible, y la razón de que el motor no se guarde nada.
+
+Las decisiones que cerraron puertas —y lo que se aceptó a cambio de cada una— están en
+[`docs/decisions/`](docs/decisions/README.md).
