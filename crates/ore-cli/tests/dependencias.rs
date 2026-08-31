@@ -115,6 +115,37 @@ fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
     );
 }
 
+/// El ejecutor está fuera por un motivo DISTINTO al del driver, y la lista de
+/// vetadas lo dice sola: el driver trae `tokio`, `native-tls` y `openssl` —la
+/// red—; el evaluador trae `chrono` y `time` —el reloj—. Enlazar `cedar-policy`
+/// dentro de `ore` metería un reloj en un binario cuyo invariante III dice que
+/// la compilación es pura.
+///
+/// Y el reloj es la evidencia, no el argumento: el compilador contesta *qué dice
+/// este documento* y el evaluador *puede ESTE principal*, que necesita una
+/// petición. `ore validate` no tiene peticiones
+/// (`docs/decisions/0007-enlazar-el-evaluador-de-cedar.md`).
+#[test]
+fn el_evaluador_esta_donde_esta_por_algo() {
+    let ore = cierre_de("ore-cli");
+    let exec = cierre_de("ore-exec");
+    assert!(
+        exec.len() > ore.len() * 4,
+        "`ore-exec` tiene {} crates y `ore-cli` {}. La costura existe para que el          peso caiga fuera; si ya no hay peso, sobra la costura.",
+        exec.len(),
+        ore.len()
+    );
+    // Y lo que de verdad no puede pasar: que el reloj cruce la costura.
+    let reloj: Vec<&String> = ore
+        .iter()
+        .filter(|n| n.as_str() == "chrono" || n.as_str() == "time" || n.starts_with("time-"))
+        .collect();
+    assert!(
+        reloj.is_empty(),
+        "el binario que compila ha ganado un reloj: {reloj:?}. La compilación es          pura por invariante III, y un digest que dependa del instante deja de          ser una identidad."
+    );
+}
+
 /// Y el driver tiene que seguir siendo gordo: si adelgazara hasta parecerse al
 /// compilador, la costura habría dejado de separar nada y valdría la pena
 /// preguntarse si sigue haciendo falta.
@@ -150,7 +181,7 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
         "`{raiz}` no está en Cargo.lock: ¿se renombró el paquete?"
     );
 
-    let propios: BTreeSet<&str> = ["ore-core", "ore-cli", "ore-read-postgres"].into();
+    let propios: BTreeSet<&str> = ["ore-core", "ore-cli", "ore-exec", "ore-read-postgres"].into();
     let mut vistos = BTreeSet::new();
     let mut pila = vec![raiz.to_string()];
     while let Some(p) = pila.pop() {

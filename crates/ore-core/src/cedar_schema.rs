@@ -131,7 +131,10 @@ pub fn emit(pkg: &Package) -> Json {
         "Label".into(),
         Json::obj([("enum", Json::Arr(etiquetas.clone()))]),
     );
-    tipos.insert("Role".into(), entidad(&[]));
+    // `Role in [Role]`: una jerarquia de roles —`Role::"admin" in Role::"staff"`—
+    // es RBAC estandar, y sin la arista no es expresable. Cedar la exige
+    // declarada: `memberOfTypes` es exhaustivo, no una sugerencia.
+    tipos.insert("Role".into(), entidad(&["Role"]));
 
     let mut nombres: Vec<String> = Vec::new();
     // `Role` se queda para el principal que NO es una persona modelada: un
@@ -147,11 +150,19 @@ pub fn emit(pkg: &Package) -> Json {
 
         // Autorreferencia: la entidad es miembro de sí misma, y eso **es** la
         // jerarquía. `manager in Employee` sale de aquí y no de un sistema aparte.
-        let padres = if auto {
+        let mut padres = if auto {
             vec![corto.clone()]
         } else {
             Vec::new()
         };
+        // Un principal TIENE que poder pertenecer a un rol. Sin esta arista,
+        // declarar `principal: true` desconectaba a la entidad de toda politica
+        // escrita como `principal in Role::"..."` —que son casi todas—: no
+        // fallaba, dejaba de casar. La misma forma de fallo de siempre, y esta
+        // vez la producia nuestra propia proyeccion.
+        if es_principal(e) {
+            padres.push("Role".to_string());
+        }
         let mut t = miembro_de(&padres);
         // Los atributos SOLO en un principal. El recurso se posiciona por
         // PERTENENCIA —`resource in Label::"..."`, `resource in principal`— y no
@@ -268,17 +279,24 @@ pub fn emit_text(pkg: &Package) -> String {
         })
         .collect();
     out.push_str(&format!("entity Label enum [{}];\n", etiquetas.join(", ")));
-    out.push_str("entity Role;\n");
+    out.push_str("entity Role in [Role];\n");
 
     let mut nombres: Vec<String> = Vec::new();
     let mut principales: Vec<String> = vec!["Role".to_string()];
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let corto = qn.rsplit('.').next().unwrap_or(&qn).to_string();
-        let jerarquia = if autorreferencia(e, &qn) {
-            format!(" in [{corto}]")
-        } else {
+        let mut ancestros: Vec<String> = Vec::new();
+        if autorreferencia(e, &qn) {
+            ancestros.push(corto.clone());
+        }
+        if es_principal(e) {
+            ancestros.push("Role".to_string());
+        }
+        let jerarquia = if ancestros.is_empty() {
             String::new()
+        } else {
+            format!(" in [{}]", ancestros.join(", "))
         };
         // Los atributos SOLO en un principal: el recurso se posiciona por
         // pertenencia, no describiendolo con atributos.

@@ -111,3 +111,60 @@ fn los_ejemplos_validan() {
         panic!("{msg}");
     }
 }
+
+/// Y el artefacto generado que el ejemplo compromete tiene que ser **el que hoy
+/// emite el motor**, byte a byte.
+///
+/// `OOS2013` ya vigila que el esquema comprometido conozca cada nivel de cada
+/// retículo, y su razonamiento para no comparar texto es correcto: dos
+/// implementaciones pueden formatear distinto. Pero eso cubre **una** dimensión
+/// del artefacto, y el artefacto tiene muchas.
+///
+/// Se midió al cerrar el contexto en `purpose`: el esquema comprometido del
+/// ejemplo llevaba **una decisión entera de retraso** —`context: { purpose:
+/// String }` no estaba— y nada se puso rojo, porque los niveles seguían todos
+/// ahí.
+///
+/// > **Un artefacto generado que está obsoleto tiene exactamente el mismo
+/// > aspecto que uno al día.**
+///
+/// Aquí sí se comparan bytes, y se puede: no es una afirmación de conformidad
+/// sobre implementaciones ajenas, es este repositorio comprobando que lo que
+/// enseña es lo que produce. El fichero lo dice en su primera línea — NO EDITAR.
+#[test]
+fn lo_generado_en_los_ejemplos_esta_al_dia() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/oos/examples")
+        .canonicalize()
+        .expect("no se encuentra vendor/oos/examples");
+    let ore = env!("CARGO_BIN_EXE_ore");
+    let mut fallos = Vec::new();
+
+    for dir in &ontologias(&raiz) {
+        for fichero in std::fs::read_dir(dir.join("policies")).into_iter().flatten().flatten() {
+            let p = fichero.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("cedarschema") {
+                continue;
+            }
+            let comprometido = std::fs::read_to_string(&p).unwrap_or_default();
+            let salida = Command::new(ore)
+                .args(["export"])
+                .arg(dir)
+                .args(["--format", "cedarschema"])
+                .output()
+                .expect("no se pudo invocar `ore`");
+            let emitido = String::from_utf8_lossy(&salida.stdout).replace("\r\n", "\n");
+            if comprometido.replace("\r\n", "\n") != emitido {
+                fallos.push(p.display().to_string());
+            }
+        }
+    }
+
+    assert!(
+        fallos.is_empty(),
+        "el artefacto generado que el ejemplo compromete no es el que el motor emite \
+         hoy:\n  {}\n\nRegenéralo con `ore export <dir> --format cedarschema`. Un \
+         esquema obsoleto no falla: deja de casar, y el dato queda sin gobernar.",
+        fallos.join("\n  ")
+    );
+}

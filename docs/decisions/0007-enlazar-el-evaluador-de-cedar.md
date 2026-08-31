@@ -135,7 +135,9 @@ exactamente el mismo aspecto.
   que este documento descarta.
 - **El cierre de `ore-exec` no está medido contra el árbol real**, solo aparte. La cifra
   exacta se fija cuando el crate exista, y `CIERRE` gana un hermano en el guardián.
-- **No está medido si `ore-exec` compila en esta máquina.** `psm` y `stacker` llevan
-  ensamblador, y el toolchain `x86_64-pc-windows-gnu` de aquí no tiene `dlltool` — el
-  mismo muro que obliga a construir el driver en Docker. Se sabrá en M0, y no cambia la
-  decisión: la cambiaría al revés, si acaso.
+- **`ore-exec` no compila en una máquina sin MinGW ni MSVC**, y se midió al crearlo:
+  `error calling dlltool 'dlltool.exe': program not found`, sobre `windows-sys` y
+  `parking_lot_core`. Es el mismo muro que obliga a construir el driver en Docker, y
+  llega por la misma puerta que el reloj. **El compilador entero sigue construyéndose
+  sin nada de eso** — la herramienta demuestra la costura sin que nadie se lo pida, que
+  es lo que el manifiesto del espacio de trabajo ya decía del driver.
