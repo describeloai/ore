@@ -574,7 +574,7 @@ que esto es un índice.
 el ADR 0006— ni `mmap`, que es una dependencia y se paga cuando el artefacto sea lo
 bastante grande para que se note.
 
-#### M4 · La respuesta, con sus dos ejes
+#### M4 · La respuesta, con sus tres ejes
 
 **Qué.** ④ ensambla sobre flujos ya reducidos, y la respuesta lleva lo que la hace
 auditable.
@@ -585,27 +585,45 @@ reducidos no queda nada que optimizar. DataFusion —y con él Arrow y un modelo
 coste— **es una decisión de M5**, cuando exista caché de carga útil: es sobre lo
 materializado donde un optimizador se gana el sueldo. Se decide **con v1 delante**.
 
-**Listo cuando:**
+**Y antes de la lista, la altura.** El criterio heredado de la fase 3 —*«un agente
+pregunta por MCP y el PII vuelve enmascarado»*— **mezcla dos planos**, y la propia
+especificación ya los había separado: `05-ejecutor` §8 dice que **MCP, GraphQL y el
+nativo son superficies, no niveles**.
 
-- Toda respuesta puede acompañarse del **digest del bundle** y de la **marca de agua**
-  de lo materializado que intervino (§7): *qué significaba* y *hasta cuándo era
-  cierto*. Sin el segundo eje, *«¿qué sabía el agente el martes a las 14:32?»* no
-  tiene respuesta.
-- Superar `freshnessSLA` produce **estado degradado declarado en la respuesta**, y no
-  un dato viejo con aspecto de fresco.
-- `ore serve` existe **como delegación**: resuelve `ore-exec` en el PATH igual que
-  `lector.rs` resuelve `ore-read-<tipo>`, y sin él instalado **falla diciéndolo**.
-- La respuesta se deriva del **contrato emitido, no del paquete** (§4). Hay un caso
-  donde el conducto quitó una propiedad y el ejecutor **no puede contarla** — ni
-  siquiera para decir cuántas hay.
-- **Una consulta cruza dos fuentes de familias distintas** y devuelve una entidad
-  ensamblada. Es el criterio que faltaba: sin él, todo lo anterior puede ponerse en
-  verde **sin haber demostrado nunca que la forma escala**, que es lo único que se pidió
-  desde el principio. La segunda familia más barata y honesta es BigQuery — el lector ya
-  la habla, y trae otra forma de clave y otros tipos sin compartir transporte.
-- Y con eso se cumple, por fin, el criterio que la fase 3 ya tenía escrito: **un
-  agente pregunta por MCP y el PII vuelve enmascarado sin que el agente haya hecho
-  nada** — ahora con un dato de verdad, que es lo que lo hacía L2.
+> **La capa de agentes es una abstracción sobre el sustrato. M4 cierra el sustrato.**
+
+Así que ese criterio se parte: *«el PII vuelve enmascarado sin que el agente haya hecho
+nada»* es de aquí, y *«pregunta por MCP»* es de la superficie que lo sirva — hoy
+`ore dev`, mañana `serve`. Por eso M4 **no** trae `ore serve`: traerlo sería construir
+la superficie antes que el suelo.
+
+**Listo, y medido con dos familias de fuente:**
+
+- ~~**Una consulta cruza dos familias distintas** y devuelve una entidad ensamblada~~ ✅
+  — `alias` de un **fichero NDJSON**, `baseSalary` de **PostgreSQL**, unidos por
+  `employeeId`. Y la segunda familia no es otra base de datos a propósito: **si el
+  mismo plan sirve a un servidor y a un fichero, la petición estaba cortada por el
+  sitio correcto.** Es lo único que demuestra que la forma escala, y ningún argumento
+  lo demuestra.
+- ~~La respuesta lleva sus ejes~~ ✅ — digest, marca de agua e **instante**, el tercero
+  que salió del [ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md): una
+  política con `datetime` es función del tiempo.
+- ~~Superar `freshnessSLA` produce **estado degradado declarado**~~ ✅ — *«la marca de
+  agua es 09:00 y el `freshnessSLA` es 30m: lo materializado lleva 10800 s de
+  retraso»*.
+- **El motor no lee el reloj**: el instante llega con la petición, igual que los
+  atributos del principal. Es lo que hace la respuesta reproducible a partir de sus
+  entradas — y de paso, que el estado degradado no dependa de cuándo se ejecute la
+  prueba.
+- **Y ④ exige la clave.** Lo encontró la primera ejecución con dos fuentes: ensamblar
+  sin ella juntaría dos personas en una fila, así que si la clave no está autorizada el
+  plan lo **dice**. Si no puedes leer el identificador, no se te puede dar una fila
+  identificada por él.
+
+**Queda:** que la respuesta se derive del **contrato emitido y no del paquete** (§4).
+Hoy `Motor` carga el paquete, así que el corolario —*una herramienta que leyera el
+paquete podría contar lo que el conducto quitó*— sigue sin guardián. Es de `serve`,
+que es quien sirve un contrato.
 
 #### Lo que v1 **no** es, dicho antes de empezar
 
