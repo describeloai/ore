@@ -297,7 +297,7 @@ emit       5/5    invalid 41/41  valid    4/4
                                  TOTAL  89/89
 
 BORRADOR v1alpha2 · efectos y derivación  24/24
-BORRADOR v1alpha3 · gobierno              29/29
+BORRADOR v1alpha3 · gobierno              30/30
 BORRADOR v1alpha4 · significado           28/28
 BORRADOR v1alpha5 · emisión a GraphQL     11/11
 ```
@@ -434,20 +434,23 @@ poda. Y retira la única decisión irreversible de todo L2.
   estructural en compilación— sigue en pie, y **evaluar es otra decisión que vive en
   otro artefacto**. No lo revoca: **ejecuta la puerta de salida que él mismo dejó
   escrita**.
-- Los atributos del principal **llegan con la petición**, se **verifican**, y una
-  petición sin ellos se **rechaza** (§6.1). Los tres verbos, y el del medio es el que
-  faltaba: *«firmados por la capa de identidad»* no significa nada si nadie comprueba la
-  firma, porque **un atributo firmado sin verificar tiene el mismo aspecto que uno
-  verificado** — y decide el acceso. Que no vengan y que no validen son **dos rechazos
-  distintos, y se nombran distinto**. *Queda abierto dónde se declara el emisor de
-  confianza: lo que decide el acceso no puede estar sujeto al acceso que decide, así que
-  no puede ser un binding — y probablemente sea superficie de OOS, no de ORE.*
+- ~~Los atributos del principal **llegan**, se **verifican**, y una petición sin ellos se
+  **rechaza**~~ ✅ — y el emisor contra el que verificar lo declara ahora
+  [`06-request`](vendor/oos/spec/v1alpha1/06-request.md), que era el hueco. Emisor,
+  audiencia y reclamaciones se comprueban; **la firma criptográfica no**, y se dice: para
+  validarla hace falta la red (JWKS), que es una capacidad que se decide con `serve`.
 - El esquema que carga el evaluador es **el que emite
   `ore export --format cedarschema`**, no un segundo esquema. Si divergieran, la
   política se habría validado contra uno y se evaluaría contra otro — que es
   exactamente lo que la prueba de fuego de `00-overview` §4.1.1 fue a buscar.
-- Dos principales, mismo recurso, veredictos distintos, y el veredicto **nombra la
-  política que decidió**.
+- ~~Dos principales, mismo recurso, veredictos distintos, y el veredicto **nombra la
+  política que decidió**~~ ✅ — con **nuestro** `@id`, porque Cedar los nombra por posición
+  y eso es justo la identidad que el ADR 0003 rechazó. Y el veredicto trae además las
+  obligaciones, las máscaras y los **ámbitos**, que es lo que la fase ③ necesita para saber
+  qué filtro empujar.
+- ~~El `Deny` deja de ser mudo~~ ✅ — se distinguen tres: **prohibida** por un `forbid` que
+  se nombra, **sin política** que la alcance (que no es un fallo: es P4), y **ninguna casó**
+  entre las que sí la alcanzan, nombrándolas. Cedar devuelve el mismo `Deny` para las tres.
 - `resource in principal` se responde con el índice de topología, que en M0 no
   existe: es un **hueco con condición nombrada**, no un `false` silencioso. Un
   denegado por falta de índice y uno por política tienen el mismo aspecto, y esa es

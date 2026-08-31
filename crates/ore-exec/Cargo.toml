@@ -28,8 +28,3 @@ ore-core = { path = "../ore-core" }
 # `cedar.rs`. Este crate es ese dia.
 cedar-policy = "4"
 
-[dev-dependencies]
-# La sonda del terreno necesita el paquete cargado para construir el almacen de
-# entidades: cada propiedad clasificada es un `Property` cuyos padres son sus
-# etiquetas EFECTIVAS, y eso lo computa `flow`.
-ore-core = { path = "../ore-core" }

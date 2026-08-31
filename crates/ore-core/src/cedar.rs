@@ -54,6 +54,23 @@ pub struct Policy {
     /// sin evaluar nada: la proyección a esquema Cedar convierte cada nivel en
     /// un tipo de entidad, así que mencionarlo **es** apuntar a la clasificación.
     pub labels: BTreeSet<String>,
+    /// Los roles que la politica menciona — `Role::"hr_analyst"`.
+    ///
+    /// Se leen por la misma razon que las etiquetas: para poder responder si la
+    /// politica **puede casar con algo**. Un rol no se declara en ninguna parte
+    /// —son cadenas que trae la capa de identidad— asi que lo comprobable no es
+    /// CUAL, sino **si pueden llegar roles**: sin `subject.roles` declarado, la
+    /// politica no casa nunca.
+    pub roles: BTreeSet<String>,
+    /// Las propiedades que la politica nombra DIRECTAMENTE —
+    /// `resource == Property::"hr.Employee.nationalId"`.
+    ///
+    /// Faltaban, y se vio al usar `alcance()` para explicar una denegacion: el
+    /// `forbid` sobre el DNI del ejemplo salia como *«no alcanza ninguna
+    /// propiedad todavia»* siendo la politica mas contundente del fichero. La
+    /// lectura miraba solo las etiquetas, asi que la enumeracion —que es la
+    /// otra mitad de la proyeccion— no contaba.
+    pub properties: BTreeSet<String>,
 }
 
 impl Policy {
@@ -152,10 +169,21 @@ fn annotations(s: &str, nombre: &str) -> Vec<String> {
 /// emite para cada nivel de cada retículo, así que buscarlo literalmente no es
 /// un atajo: es leer el vocabulario que nosotros mismos generamos.
 fn etiquetas(s: &str) -> BTreeSet<String> {
-    let marca = "Label::\"";
+    nombrados(s, "Label")
+}
+
+/// Los identificadores que la política nombra de un tipo de entidad dado:
+/// `Tipo::"…"`.
+///
+/// Se generalizó al añadir los roles, y no por economía: **leer `Label::"…"` y
+/// leer `Role::"…"` son la misma pregunta** —*¿con qué puede casar esta
+/// política?*— sobre dos vocabularios. Dos analizadores para una pregunta
+/// acaban divergiendo en el caso raro, que es donde importa.
+fn nombrados(s: &str, tipo: &str) -> BTreeSet<String> {
+    let marca = format!("{tipo}::\"");
     let mut out = BTreeSet::new();
     let mut resto = s;
-    while let Some(i) = resto.find(marca) {
+    while let Some(i) = resto.find(&marca) {
         let tras = &resto[i + marca.len()..];
         match tras.find('"') {
             Some(j) => {
@@ -303,6 +331,8 @@ pub fn read(text: &str) -> Vec<Policy> {
                 masks: annotations(s, "oosMask"),
                 scopes: annotations(s, "oosScope"),
                 labels: etiquetas(s),
+                roles: nombrados(s, "Role"),
+                properties: nombrados(s, "Property"),
                 purposes: purposes(&conditions),
                 conditions,
             })

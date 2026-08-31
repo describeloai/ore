@@ -23,6 +23,8 @@
 //! evaluaría contra otro, y ninguna prueba lo vería — el fallo no tiene aspecto
 //! de fallo.
 
+pub mod autorizar;
 pub mod motor;
 
+pub use autorizar::{Denegacion, Peticion, Veredicto};
 pub use motor::{Carga, Motor};

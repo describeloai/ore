@@ -118,6 +118,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     mascara_con_sujeto(pkg, &lat, &props, &sel, &mut out);
     ambito_con_sujeto(pkg, &mut out);
     finalidades(pkg, &mut out);
+    roles_sin_origen(pkg, &mut out);
     if !out.is_empty() {
         return out;
     }
@@ -777,6 +778,63 @@ fn ambitos(pkg: &Package, r: &Loaded, props: &Props, out: &mut Vec<Diagnostic>) 
                     )
                 }),
             );
+        }
+    }
+}
+
+/// `OOS2005` · una política por rol en un paquete donde los roles no pueden
+/// llegar.
+///
+/// Un rol no se declara en ninguna parte —son cadenas que trae la capa de
+/// identidad— así que no se puede comprobar **cuál**. Lo que sí se puede, y es
+/// lo que importa, es **si pueden llegar**: sin `subject.roles` en el
+/// `RequestPolicy`, el principal no pertenece a nada y `principal in
+/// Role::"hr_analyst"` **no casa nunca**.
+///
+/// Está medido, no deducido: un principal sin aristas de padre devuelve `Deny`
+/// ante la misma petición que un principal con el rol devuelve `Allow`. Y
+/// deniega **en silencio**, que es la forma de fallo de siempre.
+fn roles_sin_origen(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    let declarada = pkg
+        .of(Kind::RequestPolicy)
+        .next()
+        .and_then(|rp| rp.section("subject"))
+        .and_then(|s| s.get("roles"))
+        .is_some();
+    if declarada {
+        return;
+    }
+    // Y solo aplica si el principal es una ENTIDAD. Sin ninguna `principal:
+    // true`, el único principal expresable es `Role`, y entonces la pertenencia
+    // **es la identidad**: `Role::"analyst" in Role::"analyst"` es cierto por
+    // reflexividad, así que la política casa sin que llegue ninguna
+    // reclamación. Es el RBAC degenerado que v1alpha1 siempre admitió.
+    //
+    // La reclamación hace falta justo cuando el sujeto deja de ser el rol: una
+    // `Employee` no es un `Role`, así que su pertenencia tiene que llegar.
+    if !pkg
+        .entities()
+        .any(|e| e.section("principal").and_then(|n| n.as_str()) == Some("true"))
+    {
+        return;
+    }
+    for (ruta, texto) in pkg.cedar.iter() {
+        for pol in crate::cedar::read(texto) {
+            for rol in &pol.roles {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2005,
+                        ruta,
+                        format!("`{}` exige el rol `{rol}`, y nadie declara de dónde vienen los roles", pol.id),
+                    )
+                    .help(
+                        "una pertenencia a rol no es un atributo: llega en una reclamación, y \
+                         cuál es lo declara `subject.roles` en el `RequestPolicy`. Sin ella el \
+                         principal no pertenece a nada y esta política no casa nunca — no \
+                         falla, deniega en silencio",
+                    ),
+                );
+            }
         }
     }
 }

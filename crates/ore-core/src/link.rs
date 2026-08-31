@@ -78,6 +78,15 @@ impl Package {
         self.of(Kind::Entity)
     }
 
+    /// El `RequestPolicy` del paquete, si lo hay.
+    ///
+    /// Accesor con nombre y no `of(Kind::…)` publico: **como mucho hay uno**, y
+    /// devolver un iterador insinuaria que puede haber varios — dos fronteras de
+    /// confianza sin nada que dijera cual manda.
+    pub fn request_policy(&self) -> Option<&Loaded> {
+        self.of(Kind::RequestPolicy).next()
+    }
+
     pub fn entity(&self, qname: &str) -> Option<&Loaded> {
         self.of(Kind::Entity)
             .find(|d| d.qname().as_deref() == Some(qname))

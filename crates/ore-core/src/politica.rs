@@ -140,7 +140,12 @@ pub fn alcance(pkg: &Package) -> BTreeMap<String, Vec<String>> {
         for p in crate::cedar::read(texto) {
             let alcanzadas: Vec<String> = efectivas
                 .iter()
-                .filter(|(_, etiquetas)| {
+                .filter(|(prop, etiquetas)| {
+                    // Nombrada directamente. Es la otra mitad de la proyeccion
+                    // —`Property in [Label, <Entidad>]`— y solo se miraba una.
+                    if p.properties.contains(*prop) {
+                        return true;
+                    }
                     // La comparación es EXACTA, y no por orden: `cedar_schema`
                     // emite `Label` sin jerarquía, así que en el esquema que
                     // nosotros generamos dos niveles no están relacionados. Una

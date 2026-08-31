@@ -6,6 +6,7 @@
 
 use cedar_policy::{PolicySet, Schema, ValidationMode, Validator};
 use ore_core::link::Package;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -13,6 +14,44 @@ pub struct Motor {
     pub esquema: Schema,
     pub politicas: PolicySet,
     pub paquete: Package,
+    /// Las políticas leídas estructuralmente, indexadas por **nuestro** `@id`.
+    ///
+    /// Hace falta porque Cedar nombra las políticas por POSICIÓN —`policy0`,
+    /// `policy1`…— que es exactamente la identidad que el ADR 0003 rechazó por
+    /// escrito: *«sin `@id`, mover una política de línea parecería borrarla y
+    /// crear otra»*. Un veredicto que dijera `policy2` sería inauditable en
+    /// cuanto alguien reordenase el fichero.
+    pub leidas: BTreeMap<String, ore_core::cedar::Policy>,
+    /// Qué propiedades alcanza cada política. Es lo que permite distinguir *«no
+    /// hay ninguna política»* de *«hay tres y ninguna casó»*, que Cedar devuelve
+    /// como el mismo `Deny`.
+    pub alcance: BTreeMap<String, Vec<String>>,
+    /// El `@id` que corresponde a un identificador de Cedar.
+    nombres: BTreeMap<String, String>,
+}
+
+impl Motor {
+    /// Traduce un identificador de Cedar al `@id` del documento.
+    pub(crate) fn nombre_de(&self, cedar: &str) -> String {
+        self.nombres.get(cedar).cloned().unwrap_or_else(|| cedar.to_string())
+    }
+
+    /// Propiedad → sus etiquetas efectivas, en la forma `<retículo>:<nivel>`.
+    pub(crate) fn etiquetas_por_propiedad(&self) -> BTreeMap<String, Vec<String>> {
+        let lat = ore_core::flow::lattices(&self.paquete);
+        ore_core::flow::efectivas(&self.paquete, &lat)
+            .into_iter()
+            .map(|(prop, etiquetas)| {
+                (
+                    prop,
+                    etiquetas
+                        .iter()
+                        .map(|(ret, nivel)| format!("{ret}:{nivel}"))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
 }
 
 /// Por qué no se pudo cargar. Los tres son fallos **del artefacto**, no de la
@@ -56,10 +95,32 @@ impl Motor {
         let politicas =
             PolicySet::from_str(&texto).map_err(|e| Carga::PoliticasIlegibles(e.to_string()))?;
 
+        let nombres: BTreeMap<String, String> = politicas
+            .policies()
+            .map(|p| {
+                let cedar = p.id().to_string();
+                let nuestro = p
+                    .annotation("id")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| cedar.clone());
+                (cedar, nuestro)
+            })
+            .collect();
+        let leidas: BTreeMap<String, ore_core::cedar::Policy> = paquete
+            .cedar
+            .iter()
+            .flat_map(|(_, t)| ore_core::cedar::read(t))
+            .map(|p| (p.id.clone(), p))
+            .collect();
+        let alcance = ore_core::politica::alcance(&paquete);
+
         Ok(Motor {
             esquema,
             politicas,
             paquete,
+            leidas,
+            alcance,
+            nombres,
         })
     }
 
