@@ -25,6 +25,8 @@
 
 pub mod autorizar;
 pub mod motor;
+pub mod plan;
 
-pub use autorizar::{Denegacion, Peticion, Veredicto};
+pub use autorizar::{Denegacion, Identidad, Peticion, Veredicto};
+pub use plan::{Consulta, Filtro, Lectura, Plan, Rechazo};
 pub use motor::{Carga, Motor};

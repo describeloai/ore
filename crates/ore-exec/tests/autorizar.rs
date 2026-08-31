@@ -5,7 +5,7 @@
 //! *«ninguna política alcanza esto»* de *«hay políticas que lo alcanzan y
 //! ninguna casó»*, que es lo único que le sirve a quien escribe políticas.
 
-use ore_exec::{Denegacion, Motor, Peticion, Veredicto};
+use ore_exec::{Denegacion, Identidad, Motor, Peticion, Veredicto};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -21,14 +21,16 @@ fn ejemplo() -> &'static Path {
 
 fn peticion(roles: &[&str], propiedad: &str, purpose: &str) -> Peticion {
     Peticion {
-        emisor: "https://id.acme.example".into(),
-        audiencia: "ore".into(),
-        sujeto: "emp-42".into(),
-        roles: roles.iter().map(|r| r.to_string()).collect(),
-        claims: BTreeMap::from([
-            ("employeeId".to_string(), "emp-42".to_string()),
-            ("departmentId".to_string(), "finanzas".to_string()),
-        ]),
+        quien: Identidad {
+            emisor: "https://id.acme.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            claims: BTreeMap::from([
+                ("employeeId".to_string(), "emp-42".to_string()),
+                ("departmentId".to_string(), "finanzas".to_string()),
+            ]),
+        },
         accion: "read".into(),
         propiedad: propiedad.into(),
         purpose: purpose.into(),
@@ -130,14 +132,14 @@ fn otro_emisor_u_otra_audiencia_no_son_una_peticion() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
 
     let mut ajeno = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
-    ajeno.emisor = "https://id.otra.example".into();
+    ajeno.quien.emisor = "https://id.otra.example".into();
     assert!(
         matches!(m.autorizar(&ajeno), Veredicto::Invalida(_)),
         "un emisor ajeno no puede producir una decisión de política"
     );
 
     let mut otra = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
-    otra.audiencia = "otro-servicio".into();
+    otra.quien.audiencia = "otro-servicio".into();
     assert!(
         matches!(m.autorizar(&otra), Veredicto::Invalida(_)),
         "una audiencia ajena tampoco"
@@ -150,7 +152,7 @@ fn otro_emisor_u_otra_audiencia_no_son_una_peticion() {
 fn una_reclamacion_no_declarada_no_se_cree() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
     let mut p = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
-    p.claims.insert("clearance".into(), "SECRET".into());
+    p.quien.claims.insert("clearance".into(), "SECRET".into());
     let v = m.autorizar(&p);
     assert!(
         matches!(v, Veredicto::Invalida(_)),
@@ -172,11 +174,13 @@ fn una_politica_que_exige_la_cadena_lo_dice_en_vez_de_denegar_en_mudo() {
     let m = Motor::cargar(&raiz).expect("el caso carga");
 
     let p = Peticion {
-        emisor: "https://id.example".into(),
-        audiencia: "ore".into(),
-        sujeto: "emp-42".into(),
-        roles: vec![],
-        claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        quien: Identidad {
+            emisor: "https://id.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: vec![],
+            claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        },
         accion: "read".into(),
         propiedad: "hr.Employee.baseSalary".into(),
         purpose: "compensation_review".into(),

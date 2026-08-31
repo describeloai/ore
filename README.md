@@ -478,26 +478,27 @@ plan**, y porque planificar es puro: se prueba con la misma maquinaria de casos 
 L0. **La primera versión del ejecutor no toca un dato**, y eso no es una limitación —
 es lo que la hace verificable.
 
-**Listo cuando:**
+**Listo, y así se comprueba:**
 
-- `ore-exec plan` imprime las cuatro fases en orden, y cada petición de ③ muestra
-  `(datasourceRef, objeto, proyección, claves)`.
-- Los rechazos nombran **el binding y el campo** que los causó:
-  - `fullScan: forbidden` y el plan necesita recorrido → **plan rechazado** (§5)
-  - sin `capabilities` y el plan necesita un predicado → **plan rechazado** (§5.1)
-  - la política poda hasta vaciarlo → **no autorizado** (§3 ①)
-- Una propiedad con máscara `redact` **no aparece en la proyección**, y se comprueba
-  leyendo el plan. *La forma más fuerte de aplicar una máscara es no pedir la
-  columna* deja de ser una cita y pasa a ser un aserto.
-- El plan se produce **sin ninguna fuente configurada**: sin `.env.local`, sin
-  socket y sin credencial.
-- **Mismas tres entradas → el mismo plan, byte a byte.** Es G1 aplicado a L2, y sin
-  eso no hay forma de auditar por qué una consulta devolvió lo que devolvió.
-- Hay casos en `crates/ore-exec/casos/`, con la misma figura que la suite de
-  conformidad: `(bundle, consulta, principal) → plan esperado | condición esperada`.
+- ~~`ore-exec plan` imprime las cuatro fases en orden~~ ✅, con `(datasourceRef,
+  objeto, proyección, claves)` y **los filtros** de cada lectura.
+- ~~Los rechazos nombran el binding y el campo~~ ✅ — `fullScan: forbidden` sobre
+  `hr.workday`, `capabilities` ausente (§5.1), y *no autorizado* cuando ① lo poda todo.
+- ~~Una propiedad con máscara `redact` **no aparece en la proyección**~~ ✅ — y no se
+  redacta después: se **quita antes de pedirla**.
+- ~~El plan se produce **sin ninguna fuente configurada**~~ ✅, y hay una prueba que
+  falla si alguien pone la variable.
+- ~~**Mismas entradas → el mismo plan, byte a byte**~~ ✅ — y con `Json::jcs()`, que es
+  **la forma canónica del bundle**: G1 aplicado a L2 y no una segunda definición de
+  determinismo que podría divergir de la primera.
+- ~~Casos en `crates/ore-exec/casos/`~~ ✅ — `jerarquia`, `sin-capacidades`, `redactado`.
 
-**No hace:** ninguna travesía —una consulta de más de un salto es la condición
-nombrada *travesía no disponible*— y ninguna fila.
+**Y un defecto que salió de ejecutarlo, no de leerlo.** `nationalId` está autorizada
+para `read` y el binding de Workday **no la mapea**: el plan decía ✓ en ① y la columna
+desaparecía de ③ **en silencio**. Que un binding no lo mapee todo es legal; callarlo,
+no. Ahora se poda con motivo.
+
+**No hace:** ninguna travesía —el índice es de M3— y ninguna fila.
 
 #### M2 · La carga útil — el segundo verbo del driver
 

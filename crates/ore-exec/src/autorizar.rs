@@ -42,7 +42,7 @@ use std::str::FromStr;
 ///
 /// Los valores llegan **de fuera**: nada de aquí se resuelve contra un binding.
 #[derive(Debug, Clone)]
-pub struct Peticion {
+pub struct Identidad {
     /// Quién dice ser el emisor, y para quién dice estar acuñado el token.
     pub emisor: String,
     pub audiencia: String,
@@ -52,6 +52,16 @@ pub struct Peticion {
     pub roles: Vec<String>,
     /// Las reclamaciones declaradas en `claims`, por su nombre interno.
     pub claims: BTreeMap<String, String>,
+}
+
+/// Una autorización: **una propiedad**, no una fila.
+///
+/// Se separó de [`Identidad`] al llegar el plan, y no por comodidad: un plan
+/// autoriza N propiedades para **el mismo** principal, y repetir la identidad en
+/// cada una habría permitido que dos de ellas discrepasen.
+#[derive(Debug, Clone)]
+pub struct Peticion {
+    pub quien: Identidad,
     /// `read` · `aggregate` · `export` · `invoke`.
     pub accion: String,
     /// El nombre cualificado de la propiedad.
@@ -130,17 +140,17 @@ impl Motor {
                     .into(),
             );
         };
-        if p.emisor != emisor {
+        if p.quien.emisor != emisor {
             return Veredicto::Invalida(format!(
                 "emisor `{}`, y el declarado es `{emisor}`",
-                p.emisor
+                p.quien.emisor
             ));
         }
-        if p.audiencia != audiencia {
+        if p.quien.audiencia != audiencia {
             return Veredicto::Invalida(format!(
                 "audiencia `{}`, y la declarada es `{audiencia}` — un token acuñado para otro \
                  destinatario es un token robado, aunque lo firme quien debe",
-                p.audiencia
+                p.quien.audiencia
             ));
         }
 
@@ -163,17 +173,19 @@ impl Motor {
             .collect();
 
         let attrs: HashMap<String, RestrictedExpression> = p
+            .quien
             .claims
             .iter()
             .map(|(k, v)| (k.clone(), RestrictedExpression::new_string(v.clone())))
             .collect();
         let padres: HashSet<EntityUid> = p
+            .quien
             .roles
             .iter()
             .filter_map(|r| EntityUid::from_str(&format!("Role::{r:?}")).ok())
             .collect();
-        let Ok(uid_principal) = EntityUid::from_str(&format!("{tipo}::{:?}", p.sujeto)) else {
-            return Veredicto::Invalida(format!("`{}` no es un identificador válido", p.sujeto));
+        let Ok(uid_principal) = EntityUid::from_str(&format!("{tipo}::{:?}", p.quien.sujeto)) else {
+            return Veredicto::Invalida(format!("`{}` no es un identificador válido", p.quien.sujeto));
         };
         match Entity::new(uid_principal.clone(), attrs, padres) {
             Ok(e) => entidades.push(e),
@@ -219,7 +231,7 @@ impl Motor {
         let decidieron: Vec<String> = respuesta
             .diagnostics()
             .reason()
-            .map(|id| self.nombre_de(&id.to_string()))
+            .map(|id| self.nombre_de(id.as_ref()))
             .collect();
 
         match respuesta.decision() {
@@ -247,7 +259,7 @@ impl Motor {
                     let candidatas: Vec<String> = self
                         .alcance
                         .iter()
-                        .filter(|(_, props)| props.iter().any(|x| *x == p.propiedad))
+                        .filter(|(_, props)| props.contains(&p.propiedad))
                         .map(|(id, _)| id.clone())
                         .collect();
                     // Antes de decir «ninguna casó»: ¿alguna de ellas no

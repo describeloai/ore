@@ -57,6 +57,7 @@ fn almacen(m: &Motor, principal: &Entity) -> Entities {
     Entities::from_entities(es, Some(&m.esquema)).expect("el almacén tiene que casar con el esquema")
 }
 
+#[allow(clippy::too_many_arguments)] // una sonda, no una API: cada argumento es un eje que se quiere variar
 fn tiro(
     etiqueta: &str,
     a: &Authorizer,

@@ -1,0 +1,5 @@
+apiVersion: oos.dev/v1alpha3
+kind: Lattice
+metadata: { name: sensitivity, namespace: gdpr }
+spec:
+  levels: [none, low, high]
