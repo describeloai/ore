@@ -175,7 +175,18 @@ pub fn clasificacion_de_listas() -> (&'static [&'static str], &'static [&'static
 /// documentos: ordenado en un `Property`, sin ordenar en un `Lattice`. **Dos
 /// semánticas para un nombre**, que es exactamente lo que este proyecto
 /// persigue — y una G1 rota que llevaba desde v1alpha3 sin que nadie mirase.
-const MAPAS_DE_CONJUNTOS: &[&str] = &["requiresGovernance"];
+const MAPAS_DE_CONJUNTOS: &[&str] = &[
+    "requiresGovernance",
+    // `selector` de un `Binding`: sus claves son columnas fisicas, asi que la
+    // lista de valores cuelga de un nombre ARBITRARIO y la clasificacion por
+    // nombre no la alcanza — el guardian de mas abajo tampoco la ve, porque
+    // recorre nombres de campo y aqui no hay ninguno fijo.
+    //
+    // Y es un conjunto: `estado: [nuevo, enviado]` es pertenencia, no una
+    // secuencia. Sin esto, dos documentos que dicen lo mismo en distinto orden
+    // producirian digests distintos, que es la G1 rota de siempre.
+    "selector",
+];
 
 // Lo que NO entra, y conviene que se vea la ausencia:
 //

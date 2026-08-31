@@ -69,7 +69,7 @@ pub struct Package {
 }
 
 impl Package {
-    fn of(&self, kind: Kind) -> impl Iterator<Item = &Loaded> {
+    pub(crate) fn of(&self, kind: Kind) -> impl Iterator<Item = &Loaded> {
         self.docs.iter().filter(move |d| d.kind == kind)
     }
 
@@ -110,6 +110,9 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     datasources(pkg, &mut d);
     entities(pkg, &mut d);
     bindings(pkg, &mut d);
+    // OOS2014 vive aparte porque no mira UN binding: mira los que comparten
+    // objeto y decide si reparten las filas o se pisan.
+    crate::selector::comprobar(pkg, &mut d);
     secrets(pkg, &mut d);
     d
 }

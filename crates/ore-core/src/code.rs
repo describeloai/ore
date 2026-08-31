@@ -118,6 +118,7 @@ codes! {
     Oos2011 = "OOS2011", Reference, "el mapeo no cubre la primaryKey de la entidad destino";
     Oos2012 = "OOS2012", Reference, "secreto de conexión presente en un documento";
     Oos2013 = "OOS2013", Reference, "artefacto generado desincronizado con su fuente";
+    Oos2014 = "OOS2014", Reference, "dos bindings del mismo objeto reclaman la misma fila";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -258,7 +259,7 @@ codes! {
 mod tests {
     use super::*;
 
-    /// La cobertura declarada en `99-errors.md` §10 —55 códigos de v1alpha1—
+    /// La cobertura declarada en `99-errors.md` §10 —56 códigos de v1alpha1—
     /// y los borradores, contados aparte para que ese 52 siga significando lo
     /// mismo: *una implementación de referencia pasa la especificación
     /// completa*. Un número que mezclara una versión cerrada con dos en curso
@@ -288,7 +289,7 @@ mod tests {
             })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
-        assert_eq!(cerrados, 55, "v1alpha1");
+        assert_eq!(cerrados, 56, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()

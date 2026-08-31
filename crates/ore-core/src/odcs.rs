@@ -316,7 +316,7 @@ fn binding_a_server(b: &Json) -> Option<Json> {
         s.insert("x-oos-namespace".into(), ns.clone());
     }
     // §5.1 · `materialization`, `freshnessSLA` y `profile` bajo `x-oos-`.
-    for k in ["materialization", "profile", "properties"] {
+    for k in ["materialization", "profile", "properties", "selector"] {
         if let Some(v) = spec.get(k) {
             s.insert(format!("x-oos-{k}"), v.clone());
         }
@@ -801,7 +801,13 @@ fn server_a_binding(s: &Json) -> Option<(String, Json)> {
     let mut spec: BTreeMap<String, Json> = BTreeMap::new();
     desprefijar(
         m,
-        &["targetEntity", "materialization", "profile", "properties"],
+        &[
+            "targetEntity",
+            "materialization",
+            "profile",
+            "properties",
+            "selector",
+        ],
         &mut spec,
     );
     for (de, a) in [("type", "datasourceRef"), ("dataset", "source")] {

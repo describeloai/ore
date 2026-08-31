@@ -219,6 +219,7 @@ impl Kind {
                 "datasourceRef",
                 "profile",
                 "source",
+                "selector",
                 "properties",
                 "capabilities",
                 "materialization",

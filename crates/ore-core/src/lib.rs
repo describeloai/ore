@@ -45,6 +45,7 @@ pub mod link;
 pub mod normalize;
 pub mod odcs;
 pub mod parse;
+pub mod selector;
 pub mod significado;
 pub mod sync;
 pub mod types;
