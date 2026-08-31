@@ -80,6 +80,13 @@ pub enum Kind {
     Property,
     /// v1alpha4. La forma: un conjunto de entidades nombrado por lo que tienen.
     Interface,
+    /// v1alpha1. La frontera que faltaba: que entra con una peticion y quien
+    /// responde de que sea cierto.
+    ///
+    /// Las otras dos fronteras estaban declaradas —`datasources` la entrada de
+    /// datos, `ConduitPolicy` la salida— y la de identidad no. Y es la unica
+    /// entrada que DECIDE en vez de ser gobernada.
+    RequestPolicy,
 }
 
 impl Kind {
@@ -95,6 +102,7 @@ impl Kind {
         Kind::Ruleset,
         Kind::Property,
         Kind::Interface,
+        Kind::RequestPolicy,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -110,6 +118,7 @@ impl Kind {
             Kind::Ruleset => "Ruleset",
             Kind::Property => "Property",
             Kind::Interface => "Interface",
+            Kind::RequestPolicy => "RequestPolicy",
         }
     }
 
@@ -167,7 +176,10 @@ impl Kind {
             | Kind::Function
             | Kind::Resolution
             | Kind::Ruleset
-            | Kind::Interface => &["name", "namespace", "description"],
+            | Kind::Interface
+            // `RequestPolicy` es como `ConduitPolicy`: uno por paquete, sin
+            // espacio de nombres. No porta datos, luego no tiene clasificacion.
+            | Kind::RequestPolicy => &["name", "namespace", "description"],
             // `Property` es el único documento con `labels` en LOS DOS SITIOS,
             // y la primera versión de este `match` se lo negó por miedo a la
             // duplicación. Era un error, y lo destapó `confidence`: un concepto
@@ -254,6 +266,7 @@ impl Kind {
                 "idempotency",
             ],
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
+            Kind::RequestPolicy => &["owner", "issuer", "subject", "claims", "purposes"],
             Kind::Ruleset => &["owner", "targets", "assertions", "masks", "scopes", "duties"],
             // La línea que decide qué cabe en un concepto: **declara lo que es
             // cierto de él en todas partes**. `required`, `unique` y `temporal`
@@ -513,6 +526,88 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         return Some((
                             format!("`{mala}` no es una naturaleza de regla, en `{nivel}`"),
                             Some(AYUDA_NATURALEZA.into()),
+                        ));
+                    }
+                }
+                None
+            },
+        },
+        // La tercera frontera. Los cuatro campos son obligatorios y ninguno es
+        // decorativo:
+        //
+        //   `owner`     — es OTRO equipo. Quien opera la identidad no modela el
+        //                 dominio ni escribe las políticas.
+        //   `issuer`    — contra quién se verifica la firma. `05-ejecutor` §6.1
+        //                 ya exigía verificarla y no había contra qué.
+        //   `subject`   — qué tipo es el sujeto, y qué reclamación lo nombra.
+        //   `purposes`  — sin esto, `OOS4005` no tiene contra qué comprobar, y
+        //                 una finalidad mal escrita deja de casar en silencio.
+        ShapeRule {
+            kind: Kind::RequestPolicy,
+            path: &["spec"],
+            check: |n| {
+                for (k, ayuda) in [
+                    ("owner", "quien opera la identidad no es quien modela el dominio"),
+                    (
+                        "issuer",
+                        "sin emisor, «los atributos llegan firmados» no es comprobable",
+                    ),
+                    (
+                        "subject",
+                        "hace falta saber qué tipo es el sujeto para responder `resource in \
+                         principal`",
+                    ),
+                    (
+                        "purposes",
+                        "una finalidad que nadie declara no falla: deja de casar, y el dato \
+                         queda sin gobernar en silencio",
+                    ),
+                ] {
+                    if n.get(k).is_none() {
+                        return Some((
+                            format!("un `RequestPolicy` DEBE declarar `{k}`"),
+                            Some(ayuda.to_string()),
+                        ));
+                    }
+                }
+                None
+            },
+        },
+        ShapeRule {
+            kind: Kind::RequestPolicy,
+            path: &["spec", "issuer"],
+            check: |n| {
+                // La audiencia importa tanto como el emisor: un token acuñado
+                // para otro destinatario es un token robado, aunque lo firme
+                // quien debe. Es `bound_audiences`, y el `aud` de un ID token.
+                for k in ["url", "audience"] {
+                    if n.get(k).is_none() {
+                        return Some((
+                            format!("`issuer` DEBE declarar `{k}`"),
+                            Some(
+                                "un token acuñado para otro destinatario es un token robado, \
+                                 aunque lo firme quien debe"
+                                    .into(),
+                            ),
+                        ));
+                    }
+                }
+                None
+            },
+        },
+        ShapeRule {
+            kind: Kind::RequestPolicy,
+            path: &["spec", "subject"],
+            check: |n| {
+                for k in ["entity", "claim"] {
+                    if n.get(k).is_none() {
+                        return Some((
+                            format!("`subject` DEBE declarar `{k}`"),
+                            Some(
+                                "`entity` es el tipo del sujeto y `claim` la reclamación que lo \
+                                 identifica: sin las dos no se sabe a quién se refiere el token"
+                                    .into(),
+                            ),
                         ));
                     }
                 }

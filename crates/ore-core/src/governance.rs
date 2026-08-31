@@ -117,6 +117,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     }
     mascara_con_sujeto(pkg, &lat, &props, &sel, &mut out);
     ambito_con_sujeto(pkg, &mut out);
+    finalidades(pkg, &mut out);
     if !out.is_empty() {
         return out;
     }
@@ -634,26 +635,89 @@ fn mascaras(
 
 // ── El ámbito de fila · OOS2005 · OOS2001 ───────────────────────────────────
 
-/// Los atributos que la capa de identidad puede rellenar: las propiedades de
-/// las entidades que declaran `principal: true`.
+/// Las reclamaciones que la capa de identidad afirma: las claves de `claims` en
+/// el `RequestPolicy`.
 ///
 /// Es contra esto —y solo contra esto— que un ámbito puede comparar. Un literal
 /// sería un filtro estático, que es lo que hace un `selector`; otra columna
 /// sería una comparación entre columnas, que `03-binding` §3.5.1 ya rechazó
 /// porque ordena en vez de particionar.
-fn atributos_de_principal(pkg: &Package) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for e in pkg.entities() {
-        if e.section("principal").and_then(|n| n.as_str()) != Some("true") {
-            continue;
-        }
-        if let Some(ps) = e.section("properties") {
-            out.extend(ps.entries().iter().filter_map(|(k, _)| {
-                k.as_str().map(String::from)
-            }));
+///
+/// **Y antes se leían las propiedades de la entidad `principal: true`**, que es
+/// el defecto que `06-request` §1.1 ① existe para cerrar: una propiedad la
+/// afirma la fuente y está gobernada; una reclamación la firma la identidad y
+/// **es lo que gobierna**. Se llaman igual y no son lo mismo.
+fn reclamaciones(pkg: &Package) -> BTreeSet<String> {
+    pkg.of(Kind::RequestPolicy)
+        .next()
+        .and_then(|rp| rp.section("claims"))
+        .map(|cs| {
+            cs.entries()
+                .iter()
+                .filter_map(|(k, _)| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `OOS4005` · una finalidad que ningún `RequestPolicy` declara.
+///
+/// # Por qué vuelve un código retirado
+///
+/// Se retiró razonando que *«la comprobación corresponde al validador de
+/// Cedar»*. **Se midió, y Cedar no puede hacerla**: `context.purpose` es un
+/// `String`, y un validador comprueba el **tipo**, no el **valor**.
+/// `context.purpose == "compenstaion_review"` tipa perfectamente y no casa con
+/// nada — el defecto de siempre, en la dirección de siempre.
+///
+/// Un código retirado por una razón que resulta falsa se reabre. Lo que no se
+/// puede es darle otro significado, y no se le da: significa exactamente lo que
+/// significaba el día que se escribió.
+fn finalidades(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    let declaradas: BTreeSet<String> = pkg
+        .of(Kind::RequestPolicy)
+        .next()
+        .and_then(|rp| rp.section("purposes"))
+        .map(|ps| {
+            ps.items()
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (ruta, texto) in pkg.cedar.iter() {
+        for pol in crate::cedar::read(texto) {
+            for p in &pol.purposes {
+                if declaradas.contains(p) {
+                    continue;
+                }
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos4005,
+                        ruta,
+                        format!("`{}` limita por la finalidad `{p}`, que nadie declara", pol.id),
+                    )
+                    .help(if declaradas.is_empty() {
+                        "el paquete no declara ningún `RequestPolicy`, así que no hay ninguna \
+                         finalidad válida. Una política que limita por una finalidad \
+                         inexistente no falla: deja de casar, y el dato queda sin gobernar en \
+                         silencio"
+                            .to_string()
+                    } else {
+                        format!(
+                            "una finalidad mal escrita no falla: deja de casar. Declaradas: {}",
+                            declaradas
+                                .iter()
+                                .map(|d| format!("`{d}`"))
+                                .collect::<Vec<_>>()
+                                .join(" · ")
+                        )
+                    }),
+                );
+            }
         }
     }
-    out
 }
 
 /// Un ámbito apunta a una columna que existe y a un atributo que alguien puede
@@ -665,7 +729,7 @@ fn atributos_de_principal(pkg: &Package) -> BTreeSet<String> {
 /// nada, y **la fila queda visible**. Una regla que no recorta tiene exactamente
 /// el mismo aspecto que una que recorta.
 fn ambitos(pkg: &Package, r: &Loaded, props: &Props, out: &mut Vec<Diagnostic>) {
-    let atributos = atributos_de_principal(pkg);
+    let atributos = reclamaciones(pkg);
     for s in r.section("scopes").map(|n| n.items()).unwrap_or(&[]) {
         if let Some((_, v)) = s.get("property")
             && let Some(prop) = v.as_str()
@@ -692,19 +756,19 @@ fn ambitos(pkg: &Package, r: &Loaded, props: &Props, out: &mut Vec<Diagnostic>) 
                 Diagnostic::new(
                     Code::Oos2005,
                     &r.path,
-                    format!("`{attr}` no es atributo de ninguna entidad `principal: true`"),
+                    format!("`{attr}` no es una reclamación declarada"),
                 )
                 .at(v.pos())
                 .help(if atributos.is_empty() {
-                    "ninguna entidad declara `principal: true`, así que el único principal es \
-                     `Role` y no tiene atributos: no hay contra qué comparar. Un ámbito sin \
-                     lado derecho no recorta nada, y una fila sin recortar es una fila visible"
+                    "el paquete no declara ningún `RequestPolicy`, así que no hay ninguna \
+                     reclamación que creer: no hay contra qué comparar. Un ámbito sin lado \
+                     derecho no recorta nada, y una fila sin recortar es una fila visible"
                         .to_string()
                 } else {
                     format!(
-                        "el lado derecho de un ámbito es un atributo que el principal trae con \
-                         la petición — es lo que impide que el recorte filtre por algo que él \
-                         no sabía. Declarados: {}",
+                        "el lado derecho de un ámbito es una reclamación que el principal trae \
+                         firmada — es lo que impide que el recorte filtre por algo que él no \
+                         sabía. Declaradas: {}",
                         atributos
                             .iter()
                             .map(|a| format!("`{a}`"))

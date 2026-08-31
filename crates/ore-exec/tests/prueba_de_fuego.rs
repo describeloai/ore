@@ -47,18 +47,24 @@
 //! sería leer la fila para autorizar la fila—: se **traduce a un filtro** que
 //! viaja al origen, que es exactamente la ley del ejecutor.
 //!
-//! # Lo que sigue abierto, y lo destapó el 4
+//! # El sexto, que salió de preguntar por qué
 //!
-//! Declarar `principal: true` sobre `hr.Employee` mete **todas** sus propiedades
+//! Declarar `principal: true` sobre `hr.Employee` metía **todas** sus propiedades
 //! escalares en el esquema como atributos **obligatorios** del principal — y una
-//! de ellas es `nationalId`, clasificada `critical`. Es decir: la capa de
-//! identidad tendría que firmar el DNI en cada petición.
+//! de ellas es `nationalId`, clasificada `critical`. La capa de identidad tenía
+//! que firmar el DNI en cada petición.
 //!
 //! > Un atributo del principal es lo que **decide** el acceso. Meter ahí un dato
 //! > que el acceso protege es exactamente al revés.
 //!
-//! `atributos()` los emite todos porque no hay forma de decir cuáles son de
-//! identidad. Es la siguiente decisión.
+//! No era un defecto de `atributos()`: era que **no había dónde declarar qué es
+//! una reclamación de identidad**. OOS declaraba la entrada de datos
+//! —`datasources`— y la salida —`ConduitPolicy`— y **no la entrada de identidad**,
+//! que es la única que decide en vez de ser gobernada. Lo cierra
+//! [`06-request`](../../vendor/oos/spec/v1alpha1/06-request.md), y con él vuelve
+//! `OOS4005`.
+//!
+//! Hoy el esquema del ejemplo emite `Employee { departmentId, employeeId }`.
 
 use ore_exec::Motor;
 use std::path::Path;

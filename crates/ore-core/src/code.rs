@@ -133,6 +133,11 @@ codes! {
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
     Oos4002 = "OOS4002", Flow, "etiqueta por encima de la autorización del conducto";
     Oos4003 = "OOS4003", Flow, "etiqueta que no pertenece a ningún retículo";
+    // REABIERTO. Se retiro delegando en el validador de Cedar una comprobacion
+    // que Cedar no puede hacer: `context.purpose` es un `String`, y un validador
+    // comprueba el TIPO, no el VALOR. Un codigo retirado por una razon que
+    // resulta falsa se reabre, y significa exactamente lo que significaba.
+    Oos4005 = "OOS4005", Flow, "finalidad que ningun `RequestPolicy` declara";
     Oos4006 = "OOS4006", Flow, "desclasificador fuera del conjunto cerrado";
     Oos4007 = "OOS4007", Flow, "aggregate sin minGroupSize o por debajo del umbral";
     Oos4008 = "OOS4008", Flow, "propiedad derivada que declara etiqueta en vez de computarla";
@@ -290,7 +295,9 @@ mod tests {
             })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
-        assert_eq!(cerrados, 57, "v1alpha1");
+        // 58 desde que `OOS4005` se reabre: se retiro delegando en el validador
+        // de Cedar una comprobacion que Cedar no puede hacer (`06-request` §4).
+        assert_eq!(cerrados, 58, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()

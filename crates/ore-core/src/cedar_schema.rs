@@ -25,6 +25,7 @@
 
 use crate::flow;
 use crate::json::Json;
+use crate::document::Kind;
 use crate::link::Package;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,12 +81,30 @@ fn tipo_cedar(t: &str) -> Option<&'static str> {
     })
 }
 
-fn atributos(e: &crate::link::Loaded) -> BTreeMap<String, Json> {
+/// Los atributos del principal: **las reclamaciones del `RequestPolicy`**, no
+/// las propiedades de la entidad.
+///
+/// La primera version las tomaba de la entidad, y se midio lo que costaba: al
+/// declarar `hr.Employee` como principal, `nationalId` —clasificada `critical`—
+/// entraba en el esquema como atributo OBLIGATORIO de quien pregunta. El dato
+/// que la politica protege, convertido en lo que la politica consume.
+///
+/// La diferencia no es de tamano sino de PROCEDENCIA: una propiedad la afirma
+/// la fuente y esta gobernada; una reclamacion la firma la capa de identidad y
+/// **es lo que gobierna**. Se llaman igual y pueden discrepar (`06-request`
+/// §2.1).
+fn atributos(pkg: &Package) -> BTreeMap<String, Json> {
     let mut out = BTreeMap::new();
-    let Some(ps) = e.section("properties") else {
+    let Some(rp) = pkg.of(Kind::RequestPolicy).next() else {
+        // Sin `RequestPolicy` no hay ninguna reclamacion que creer, y el
+        // principal vuelve a ser una bolsa sin atributos. Es P4 en la entrada:
+        // lo que no se declara, no se cree.
         return out;
     };
-    for (k, v) in ps.entries() {
+    let Some(cs) = rp.section("claims") else {
+        return out;
+    };
+    for (k, v) in cs.entries() {
         let (Some(nombre), Some(t)) = (k.as_str(), v.get("type").and_then(|(_, x)| x.as_str()))
         else {
             continue;
@@ -170,7 +189,7 @@ pub fn emit(pkg: &Package) -> Json {
         // recurso para autorizar, que es la lectura gobernada que decide el
         // acceso a si misma.
         if es_principal(e) {
-            let attrs = atributos(e);
+            let attrs = atributos(pkg);
             if let Json::Obj(ref mut m) = t
                 && !attrs.is_empty()
             {
@@ -302,7 +321,7 @@ pub fn emit_text(pkg: &Package) -> String {
         // pertenencia, no describiendolo con atributos.
         let forma = if es_principal(e) {
             principales.push(corto.clone());
-            let attrs = atributos(e);
+            let attrs = atributos(pkg);
             let campos: Vec<String> = attrs
                 .iter()
                 .map(|(k, v)| {

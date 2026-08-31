@@ -70,6 +70,9 @@ const CONJUNTOS: &[&str] = &[
     "masks",
     "scopes",
     "duties",
+    // v1alpha1 · las finalidades. Ninguna es MAS que otra —no hay orden, luego
+    // no es un reticulo— y se cumplen todas por igual: conjunto.
+    "purposes",
     // v1alpha2, y el hueco era el mismo: esta lista no había crecido desde
     // v1alpha1, así que **todo campo lista añadido después quedó sin
     // clasificar**. Reordenar los endosos de una función daba otro digest.
