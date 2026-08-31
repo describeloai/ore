@@ -1,0 +1,11 @@
+apiVersion: oos.dev/v1alpha1
+kind: Binding
+metadata: { name: erp, namespace: hr }
+spec:
+  targetEntity: hr.Employee
+  datasourceRef: erp
+  source: "public.employees"
+  properties:
+    employeeId: employee_id
+    managerId:  manager_id
+    baseSalary: national_id

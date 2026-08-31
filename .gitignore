@@ -4,3 +4,8 @@
 .env.local
 .DS_Store
 Thumbs.db
+
+# El artefacto de topologia CONTIENE DATOS —saber que el paciente X esta
+# enlazado con la clinica Y es el diagnostico (ADR 0006 §4)—, asi que no viaja
+# con la configuracion. Lo cobra `crates/ore-cli/tests/topologia_fuera.rs`.
+*.oretopo

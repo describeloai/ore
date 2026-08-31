@@ -9,3 +9,13 @@ permit (
     resource in Label::"gdpr.sensitivity:high"
 )
 when { context.purpose == "compensation_review" };
+
+// Una segunda politica, por ROL, para que ① pueda pasar sin la cadena: asi la
+// fase ② se puede probar por separado de la jerarquia del principal.
+@id("analyst-reads-comp")
+permit (
+    principal in Role::"analyst",
+    action == Action::"read",
+    resource in Label::"gdpr.sensitivity:high"
+)
+when { context.purpose == "compensation_review" };

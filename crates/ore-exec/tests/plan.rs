@@ -43,6 +43,7 @@ fn consulta(props: &[&str], claves: &[&str]) -> Consulta {
         entidad: "hr.Employee".into(),
         propiedades: props.iter().map(|p| p.to_string()).collect(),
         claves: claves.iter().map(|k| vec![k.to_string()]).collect(),
+        travesia: None,
     }
 }
 
@@ -120,6 +121,7 @@ fn sin_capacidades_solo_hay_busqueda_por_clave() {
         entidad: "hr.Employee".into(),
         propiedades: vec!["hr.Employee.nationalId".into()],
         claves: vec![vec!["emp-7".to_string()]],
+        travesia: None,
     };
 
     // Con clave, plan.
@@ -152,6 +154,7 @@ fn una_propiedad_redactada_no_llega_a_la_proyeccion() {
         entidad: "hr.Employee".into(),
         propiedades: vec!["hr.Employee.nationalId".into()],
         claves: vec![vec!["emp-7".to_string()]],
+        travesia: None,
     };
 
     // La política PERMITE, y aun así la columna no se pide: la máscara es
@@ -233,4 +236,65 @@ fn una_propiedad_que_ningun_binding_sirve_se_dice_en_vez_de_desaparecer() {
         .get("hr.Employee.nationalId")
         .expect("tiene que estar podada, con motivo");
     assert!(porque.contains("ningún binding"), "{porque}");
+}
+
+/// **La fase ② deja de recibir las claves de fuera.** Con índice, la travesía
+/// las computa en local — y por eso, cuando el motor abre una conexión, ya sabe
+/// exactamente qué claves pide.
+#[test]
+fn con_indice_la_fase_dos_produce_las_claves() {
+    use ore_exec::{Topologia, Travesia};
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("casos/jerarquia");
+    let digest = {
+        let m = Motor::cargar(&raiz).expect("carga");
+        ore_core::digest::bundle(&m.paquete)
+    };
+    let t = Topologia::construir(
+        &digest,
+        "2026-08-31T12:00:00Z",
+        &[
+            ("hr.Employee.manager".into(), "emp-42".into(), "jefa".into()),
+            ("hr.Employee.manager".into(), "jefa".into(), "ceo".into()),
+        ],
+    );
+    let fichero = std::env::temp_dir().join("ore-topo-fase2.bin");
+    std::fs::write(&fichero, t.bytes()).expect("se escribe");
+
+    let mut m = Motor::cargar(&raiz).expect("carga");
+    let quien = Identidad {
+        emisor: "https://id.example".into(),
+        audiencia: "ore".into(),
+        sujeto: "emp-42".into(),
+        // Con rol: asi ① pasa por la politica de rol y la fase ② se prueba
+        // por separado de la jerarquia del principal.
+        roles: vec!["analyst".into()],
+        claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+    };
+    let c = Consulta {
+        quien,
+        accion: "read".into(),
+        purpose: "compensation_review".into(),
+        entidad: "hr.Employee".into(),
+        propiedades: vec!["hr.Employee.baseSalary".into()],
+        claves: vec![],
+        travesia: Some(Travesia {
+            relacion: "hr.Employee.manager".into(),
+            desde: "emp-42".into(),
+            saltos: 3,
+        }),
+    };
+
+    // Sin índice: **no es que no haya vecinos, es que no se pudo mirar**.
+    let r = m.planificar(&c).expect_err("sin índice no hay travesía");
+    assert!(matches!(r, Rechazo::TravesiaNoDisponible { .. }), "{r:?}");
+
+    // Con índice: las claves salen del grafo, no de la consulta.
+    m.cargar_topologia(&fichero).expect("es de este bundle");
+    let plan = m.planificar(&c).expect("con índice sí");
+    assert_eq!(
+        plan.claves,
+        vec![vec!["ceo".to_string()], vec!["jefa".to_string()]],
+        "la fase ② tiene que haber producido las claves de la cadena"
+    );
+    assert_eq!(plan.lecturas[0].claves.len(), 2);
 }

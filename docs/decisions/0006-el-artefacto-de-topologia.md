@@ -116,3 +116,28 @@ registro.
 - **No se mide todavía.** Este documento decide una forma, no un rendimiento. La afirmación
   *«la travesía es sub-milisegundo»* sigue sin medición y no debe repetirse como si la
   tuviera.
+- **No se mapea en memoria: se lee entero.** El formato está preparado —anchuras fijas, sin
+  analizar nada— pero `mmap` es una dependencia y se paga cuando el artefacto sea lo bastante
+  grande para que se note. Afirmar que se mapea sin mapearlo sería la clase de promesa que
+  este proyecto no hace.
+
+## Construido, y medido contra un PostgreSQL de verdad
+
+```
+3 arista(s), 1 relacion(es) -> /tmp/topo.bin
+--- travesia emp-42, 3 saltos ---
+ceo
+jefa
+--- determinismo ---
+byte a byte identicos
+```
+
+Tres aristas de cuatro filas: `ceo` no reporta a nadie y su `NULL` no produce arista. La
+travesía de tres saltos devuelve la cadena entera **sin abrir ninguna conexión** — el índice
+ya estaba construido— y dos construcciones sobre la misma instantánea dan el mismo fichero.
+
+Y hay una pieza del protocolo que se validó sola: **el driver no se entera de que esto es un
+índice.** Las aristas se leen con una petición de la fase ③ cuya proyección se llama `desde`
+y `hasta`, y como las filas salen con nombres de propiedad, lo que devuelve **ya es una
+arista**. Que el mismo verbo sirva para la carga útil y para el índice es la prueba de que
+[el protocolo](0008-el-protocolo-del-driver.md) estaba bien cortado.

@@ -548,27 +548,31 @@ quien invoca elige la URL, que es la mitad; la otra mitad es que colapsarlas avi
 forma; esto la construye. CSR, inmutable, mapeado en memoria, reconstruido por
 ventana y firmado.
 
-**Listo cuando:**
+**Listo, y medido contra un PostgreSQL de verdad:**
 
-- `ore-exec index build` produce el artefacto desde las fuentes declaradas, y dos
-  construcciones sobre la misma instantánea dan **el mismo artefacto byte a byte**.
-  Es la figura de G1 otra vez: un índice que difiere entre nodos hace que dos nodos
-  contesten distinto a la misma pregunta.
-- Una travesía de N saltos desde una clave raíz devuelve un conjunto de claves **sin
-  abrir una conexión a ninguna fuente**. Es la frase que hace asequible la ley de §2,
-  y hasta aquí no estaba medida.
-- El artefacto lleva su **marca de agua** y el digest del bundle contra el que se
-  construyó. Un plan que use un índice de otro bundle es una condición nombrada, no
-  una junta silenciosa.
-- **El artefacto no está en la imagen OCI.** El ADR 0006 §4 dice que la topología
-  *contiene datos* —saber que el paciente X enlaza con la clínica Y es el
-  diagnóstico—, así que el flujo de release **falla** si encuentra uno en el contexto
-  de construcción. La consecuencia de seguridad se convierte en una prueba.
-- Se cierra el hueco de M0: `principal in Employee::"…"` deja de ser la condición
-  **jerarquía no disponible** y pasa a evaluarse contra el índice.
+- ~~`ore-exec index build` produce el artefacto desde las fuentes declaradas~~ ✅, y
+  dos construcciones sobre la misma instantánea dan **el mismo fichero byte a byte**.
+  G1 otra vez: un índice que difiere entre nodos hace que dos nodos contesten distinto
+  a la misma pregunta.
+- ~~Una travesía de N saltos devuelve claves **sin abrir una conexión**~~ ✅ — `emp-42`
+  → `jefa`, `ceo`. Es la frase que hace asequible la ley de §2, y ya está medida.
+- ~~El artefacto lleva su marca de agua y el digest del bundle~~ ✅ — y uno de otro
+  bundle **no se carga**: las aristas serían de un modelo y las políticas de otro, y
+  esa junta no falla, devuelve filas.
+- ~~El artefacto **no está** en el árbol~~ ✅ — con un guardián que busca por **magia y
+  no por extensión**, porque renombrarlo es exactamente lo que haría quien quiera
+  colarlo. *La mitad OCI llega con la imagen, que todavía no existe.*
+- ~~Se cierra el hueco de M0~~ ✅ — `principal in Employee::"ceo"` casa para quien está
+  dos saltos por debajo, y la fase ② deja de recibir las claves de fuera.
 
-**No hace:** ni refresco incremental —reconstruir por ventana es el coste declarado
-en el ADR 0006— ni distribución entre nodos, que es la frontera abierta de abajo.
+**Y el protocolo se validó solo.** Las aristas se leen con una petición de la fase ③
+cuya proyección se llama `desde` y `hasta`; como las filas salen con nombres de
+propiedad, lo que el driver devuelve **ya es una arista**. El driver no se entera de
+que esto es un índice.
+
+**No hace:** ni refresco incremental —reconstruir por ventana es el coste declarado en
+el ADR 0006— ni `mmap`, que es una dependencia y se paga cuando el artefacto sea lo
+bastante grande para que se note.
 
 #### M4 · La respuesta, con sus dos ejes
 

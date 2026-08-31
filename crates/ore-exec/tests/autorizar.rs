@@ -197,3 +197,71 @@ fn una_politica_que_exige_la_cadena_lo_dice_en_vez_de_denegar_en_mudo() {
     };
     assert_eq!(candidatas, &["under-the-ceo-reads-comp"], "{v:?}");
 }
+
+/// Y con el índice cargado, **el hueco se cierra**: la misma política que ayer
+/// decía *jerarquía no disponible* evalúa, y el que está bajo la cadena pasa.
+#[test]
+fn con_el_indice_la_cadena_del_principal_se_recorre() {
+    use ore_exec::Topologia;
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("casos/jerarquia");
+
+    // El índice, construido contra ESTE bundle. Sin esa correspondencia no se
+    // carga: las aristas serían de un modelo y las políticas de otro.
+    let digest = {
+        let m = Motor::cargar(&raiz).expect("carga");
+        ore_core::digest::bundle(&m.paquete)
+    };
+    let t = Topologia::construir(
+        &digest,
+        "2026-08-31T10:00:00Z",
+        &[
+            ("hr.Employee.manager".into(), "emp-42".into(), "jefa".into()),
+            ("hr.Employee.manager".into(), "jefa".into(), "ceo".into()),
+        ],
+    );
+    let fichero = std::env::temp_dir().join("ore-topo-prueba.bin");
+    std::fs::write(&fichero, t.bytes()).expect("se escribe");
+
+    let mut m = Motor::cargar(&raiz).expect("carga");
+    m.cargar_topologia(&fichero).expect("el índice es de este bundle");
+
+    let p = Peticion {
+        quien: Identidad {
+            emisor: "https://id.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: vec![],
+            claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        },
+        accion: "read".into(),
+        propiedad: "hr.Employee.baseSalary".into(),
+        purpose: "compensation_review".into(),
+    };
+
+    // `emp-42` está bajo `ceo` a dos saltos, y la política es `principal in
+    // Employee::"ceo"`. Con el índice, casa.
+    let v = m.autorizar(&p);
+    let Veredicto::Permitido { politicas, .. } = &v else {
+        panic!("con el índice la cadena se recorre, y salió {v:?}");
+    };
+    assert_eq!(politicas, &["under-the-ceo-reads-comp"], "{v:?}");
+}
+
+/// Un índice de otro bundle **no se carga**. Las aristas serían de un modelo y
+/// las políticas de otro, y esa junta no falla: devuelve filas.
+#[test]
+fn un_indice_de_otro_bundle_se_rechaza_al_cargarlo() {
+    use ore_exec::Topologia;
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("casos/jerarquia");
+    let t = Topologia::construir(
+        "sha256:de-otro-sitio",
+        "w",
+        &[("hr.Employee.manager".into(), "a".into(), "b".into())],
+    );
+    let fichero = std::env::temp_dir().join("ore-topo-ajena.bin");
+    std::fs::write(&fichero, t.bytes()).expect("se escribe");
+
+    let mut m = Motor::cargar(&raiz).expect("carga");
+    let e = m.cargar_topologia(&fichero).expect_err("no puede cargarse");
+    assert!(e.contains("de-otro-sitio"), "{e}");
+}

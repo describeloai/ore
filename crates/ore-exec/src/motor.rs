@@ -28,12 +28,58 @@ pub struct Motor {
     pub alcance: BTreeMap<String, Vec<String>>,
     /// El `@id` que corresponde a un identificador de Cedar.
     nombres: BTreeMap<String, String>,
+    /// El índice de topología, si se cargó. **Opcional a propósito**: sin él el
+    /// motor sigue autorizando y planificando —lo que no puede es resolver una
+    /// jerarquía, y lo dice— y eso es lo que permitió que M0 y M1 existieran
+    /// antes que M3.
+    pub topologia: Option<crate::topologia::Topologia>,
 }
 
 impl Motor {
     /// Traduce un identificador de Cedar al `@id` del documento.
     pub(crate) fn nombre_de(&self, cedar: &str) -> String {
         self.nombres.get(cedar).cloned().unwrap_or_else(|| cedar.to_string())
+    }
+
+    /// Carga un artefacto de topología, **y lo rechaza si es de otro bundle**.
+    ///
+    /// `05-ejecutor` §7 pide que la respuesta pueda acompañarse del digest y de
+    /// la marca de agua. Un índice construido contra otro bundle significaría
+    /// que las aristas son de un modelo y las políticas de otro, y una junta así
+    /// **no tiene aspecto de fallo**: devuelve filas.
+    ///
+    /// Por eso se comprueba al cargar y no al usar: es el momento en que hay las
+    /// dos cosas delante.
+    pub fn cargar_topologia(&mut self, ruta: &Path) -> Result<(), String> {
+        let bytes = std::fs::read(ruta).map_err(|e| format!("no se pudo leer el índice: {e}"))?;
+        let t = crate::topologia::Topologia::leer(&bytes)?;
+        let mio = ore_core::digest::bundle(&self.paquete);
+        if t.digest != mio {
+            return Err(format!(
+                "el índice se construyó contra `{}` y este bundle es `{mio}`: las aristas                  serían de un modelo y las políticas de otro, y esa junta devuelve filas                  en vez de fallar",
+                t.digest
+            ));
+        }
+        self.topologia = Some(t);
+        Ok(())
+    }
+
+    /// La relación **autorreferente** de la entidad principal, cualificada.
+    ///
+    /// Es la que la proyección convierte en jerarquía de entidades, y por tanto
+    /// la única que `principal in Employee::"…"` puede recorrer.
+    pub(crate) fn relacion_de_jerarquia(&self) -> Option<String> {
+        let rp = self.paquete.request_policy()?;
+        let qn = rp.section("subject")?.get("entity")?.1.as_str()?.to_string();
+        let e = self.paquete.entity(&qn)?;
+        for (k, v) in e.section("relations")?.entries() {
+            let destino = v.get("target").and_then(|(_, t)| t.as_str())?;
+            let ns = e.meta("namespace").and_then(|n| n.as_str());
+            if ore_core::normalize::qualify(destino, ns) == qn {
+                return Some(format!("{qn}.{}", k.as_str()?));
+            }
+        }
+        None
     }
 
     /// Propiedad → sus etiquetas efectivas, en la forma `<retículo>:<nivel>`.
@@ -121,6 +167,7 @@ impl Motor {
             leidas,
             alcance,
             nombres,
+            topologia: None,
         })
     }
 

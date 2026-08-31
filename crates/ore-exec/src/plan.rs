@@ -53,6 +53,17 @@ pub struct Consulta {
     /// y aplanarla habría vuelto a perder la aridad que `via` como secuencia
     /// costó cerrar.
     pub claves: Vec<Vec<String>>,
+    /// La fase ②, si se pide: desde qué clave, por qué relación y cuántos
+    /// saltos. Con ella las claves **se computan** en local en vez de llegar de
+    /// fuera, que es lo que convierte un escaneo en una búsqueda por clave.
+    pub travesia: Option<Travesia>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Travesia {
+    pub relacion: String,
+    pub desde: String,
+    pub saltos: usize,
 }
 
 /// Las condiciones de `05-ejecutor` §9. **No son códigos de documento**: un
@@ -72,6 +83,10 @@ pub enum Rechazo {
     },
     /// Una propiedad no la mapea ningún binding: no hay de dónde leerla.
     SinBinding { propiedad: String },
+    /// Se pidió una travesía y no hay índice de topología cargado. **Denegar
+    /// sería correcto y callar por qué no**: sin índice no es que no haya
+    /// vecinos, es que no se pudo mirar.
+    TravesiaNoDisponible { relacion: String },
 }
 
 /// Una petición de la fase ③: **una por (fuente, objeto), y por clave**.
@@ -305,6 +320,86 @@ impl Motor {
         ))
     }
 
+    /// Las lecturas que hacen falta para **construir el índice**: por cada
+    /// relación con `via`, la clave de la entidad y la columna del enlace.
+    ///
+    /// Y lo interesante es que **no hay protocolo nuevo**: la proyección se
+    /// nombra `desde` y `hasta`, y como el driver devuelve las filas con los
+    /// nombres de propiedad, lo que sale ya es una arista. El driver no se
+    /// entera de que esto es un índice, que es la prueba de que el protocolo de
+    /// la fase ③ era el correcto.
+    ///
+    /// Devuelve también las relaciones que **no puede** leer, y por qué: una
+    /// `via` compuesta es una clave de destino en tupla, y aplanarla aquí
+    /// inventaría una codificación que nadie declaró.
+    pub fn lecturas_de_aristas(&self) -> Vec<(String, Lectura)> {
+        let mut out = Vec::new();
+        for e in self.paquete.entities() {
+            let Some(qn) = e.qname() else { continue };
+            let Some(rels) = e.section("relations") else {
+                continue;
+            };
+            let clave: Vec<String> = e
+                .section("primaryKey")
+                .map(|k| {
+                    k.items()
+                        .iter()
+                        .filter_map(|i| i.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if clave.len() != 1 {
+                continue;
+            }
+            for (rk, rv) in rels.entries() {
+                let Some(nombre) = rk.as_str() else { continue };
+                let via: Vec<String> = rv
+                    .get("via")
+                    .map(|(_, v)| {
+                        v.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if via.len() != 1 {
+                    continue;
+                }
+                for b in self.paquete.docs.iter().filter(|d| {
+                    d.kind == ore_core::document::Kind::Binding
+                        && d.section("targetEntity").and_then(|t| t.as_str()) == Some(qn.as_str())
+                }) {
+                    let mapa = columnas(b);
+                    let (Some(cd), Some(ch)) = (mapa.get(&clave[0]), mapa.get(&via[0])) else {
+                        continue;
+                    };
+                    let Some(ds) = b.section("datasourceRef").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    out.push((
+                        format!("{qn}.{nombre}"),
+                        Lectura {
+                            datasource: ds.to_string(),
+                            objeto: b
+                                .section("source")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            proyeccion: BTreeMap::from([
+                                ("desde".to_string(), cd.clone()),
+                                ("hasta".to_string(), ch.clone()),
+                            ]),
+                            clave_columnas: Vec::new(),
+                            claves: Vec::new(),
+                            filtros: Vec::new(),
+                        },
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     pub fn planificar(&self, c: &Consulta) -> Result<Plan, Rechazo> {
         // ── ① AUTORIZAR ──────────────────────────────────────────────────────
         //
@@ -363,9 +458,28 @@ impl Motor {
 
         // ── ② TRAVESÍA ───────────────────────────────────────────────────────
         //
-        // En v1 no hay: las claves llegan con la consulta. El índice es de M3, y
-        // fingir una travesía trivial sería insinuar una fase que no existe.
-        let claves = c.claves.clone();
+        // **En local, sobre las aristas materializadas.** Cuando el motor abra
+        // una conexión ya sabrá exactamente qué claves pide, y por eso puede
+        // permitirse no compensar lo que la fuente no sabe hacer.
+        let claves = match (&c.travesia, &self.topologia) {
+            (None, _) => c.claves.clone(),
+            (Some(t), None) => {
+                return Err(Rechazo::TravesiaNoDisponible {
+                    relacion: t.relacion.clone(),
+                });
+            }
+            (Some(t), Some(indice)) => {
+                let mut ks: Vec<Vec<String>> = indice
+                    .travesia(&t.relacion, &t.desde, t.saltos)
+                    .into_iter()
+                    .map(|k| vec![k])
+                    .collect();
+                ks.extend(c.claves.iter().cloned());
+                ks.sort();
+                ks.dedup();
+                ks
+            }
+        };
 
         // ── ③ CARGA ÚTIL ─────────────────────────────────────────────────────
         let bindings: Vec<&ore_core::link::Loaded> = self

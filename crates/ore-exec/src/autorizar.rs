@@ -178,12 +178,22 @@ impl Motor {
             .iter()
             .map(|(k, v)| (k.clone(), RestrictedExpression::new_string(v.clone())))
             .collect();
-        let padres: HashSet<EntityUid> = p
+        let mut padres: HashSet<EntityUid> = p
             .quien
             .roles
             .iter()
             .filter_map(|r| EntityUid::from_str(&format!("Role::{r:?}")).ok())
             .collect();
+        // Y la CADENA, si hay indice. `in` en Cedar es alcanzabilidad
+        // transitiva, asi que darle los ancestros como padres es exactamente lo
+        // que espera — no hace falta ninguna funcion de grafo.
+        if let (Some(t), Some(rel)) = (&self.topologia, self.relacion_de_jerarquia()) {
+            padres.extend(
+                t.ancestros(&rel, &p.quien.sujeto)
+                    .iter()
+                    .filter_map(|a| EntityUid::from_str(&format!("{tipo}::{a:?}")).ok()),
+            );
+        }
         let Ok(uid_principal) = EntityUid::from_str(&format!("{tipo}::{:?}", p.quien.sujeto)) else {
             return Veredicto::Invalida(format!("`{}` no es un identificador válido", p.quien.sujeto));
         };
@@ -265,15 +275,23 @@ impl Motor {
                     // Antes de decir «ninguna casó»: ¿alguna de ellas no
                     // PUDO evaluarse? Una que exige la cadena del principal no
                     // casa por falta de aristas, no por falta de derecho.
-                    let sin_indice: Vec<String> = candidatas
-                        .iter()
-                        .filter(|id| {
-                            self.leidas
-                                .get(*id)
-                                .is_some_and(|p| !p.jerarquia.is_empty())
-                        })
-                        .cloned()
-                        .collect();
+                    // Con indice cargado, esa politica SI se pudo evaluar: si no
+                    // caso, no caso. La condicion nombrada existe para el caso
+                    // en que no se pudo, no para el caso en que no procede.
+                    let hay_indice = self.topologia.is_some();
+                    let sin_indice: Vec<String> = if hay_indice {
+                        Vec::new()
+                    } else {
+                        candidatas
+                            .iter()
+                            .filter(|id| {
+                                self.leidas
+                                    .get(*id)
+                                    .is_some_and(|p| !p.jerarquia.is_empty())
+                            })
+                            .cloned()
+                            .collect()
+                    };
                     if !sin_indice.is_empty() {
                         Denegacion::JerarquiaNoDisponible {
                             candidatas: sin_indice,
