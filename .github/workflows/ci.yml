@@ -25,7 +25,7 @@ jobs:
   suite:
     runs-on: ubuntu-24.04
     steps:
-      # `vendor/oos` NO es opcional: los 74 casos de conformidad viven ahí, y sin
+      # `vendor/oos` NO es opcional: los casos de conformidad viven ahí, y sin
       # ellos esta puerta comprobaría que compila, no que cumple.
       - uses: actions/checkout@v5
         with:
@@ -42,7 +42,14 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # 74 conformidad · 55 núcleo · 8 CLI · 2 árbol · 1 ejemplo.
+      # `--workspace` y no el build por defecto: los drivers y el ejecutor están
+      # FUERA de `default-members` a propósito —el build por defecto de este
+      # repositorio es el compilador hermético— pero la puerta los cruza igual.
+      # Ahí dentro va la prueba de fuego de Cedar, que enfrenta las políticas de
+      # un paquete al esquema que ese mismo paquete proyecta.
+      #
+      # Sin números: una cuenta escrita a mano en un fichero de CI envejece, y
+      # hoy se ha medido lo que eso cuesta en otro sitio del repositorio.
       - name: suite
         run: cargo test --workspace --all-targets
 
@@ -50,3 +57,64 @@ jobs:
       # es un artefacto que no sirve, y sale más barato saberlo aquí.
       - name: arranca
         run: cargo run --quiet -- --version
+
+  # ── Las pruebas de fuego ───────────────────────────────────────────────────
+  #
+  # Enfrentan lo que emitimos a la implementación de referencia AJENA, y lo que
+  # planificamos a una fuente de verdad. Viven fuera de `cargo test` porque
+  # necesitan cosas que el compilador no puede necesitar —Node, un servidor— y
+  # entran aquí porque **una prueba que no corre tiene exactamente el mismo
+  # aspecto que una que pasa**.
+
+  graphql:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # La implementación de referencia, no la nuestra. Encontró defectos que
+      # llevaban versiones ahí y que no se veían leyendo: un esquema puede estar
+      # bien escrito y ser inválido, y solo lo dice quien lo tiene que consumir.
+      - name: graphql-js
+        run: |
+          npm install --no-save graphql
+          bash pruebas-de-fuego/graphql.sh
+
+  fuentes-reales:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: hr
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # Seis escenarios que se midieron A MANO al construir L2: el driver, el
+      # solo-lectura, el índice determinista, el refresco que sustituye en vez de
+      # sumar, una consulta que cruza dos familias de fuente y el estado
+      # degradado. Cada uno era un `echo` en una terminal; aquí es una aserción.
+      - name: contra un PostgreSQL de verdad
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432/hr
+        run: |
+          cargo build --quiet -p ore-exec -p ore-read-postgres -p ore-read-jsonl
+          export PATH="$PWD/target/debug:$PATH"
+          bash pruebas-de-fuego/fuentes-reales.sh

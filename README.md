@@ -331,7 +331,20 @@ BORRADOR v1alpha4 · significado           28/28
 BORRADOR v1alpha5 · emisión a GraphQL     11/11
 ```
 
-Los cuatro se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
+Y hay dos comprobaciones que **no** están en `cargo test`, porque necesitan cosas que un
+compilador hermético no puede necesitar — Node y un servidor:
+
+| | Qué enfrenta | Qué encontró |
+|---|---|---|
+| **`graphql-js`** | el SDL que emitimos, a la implementación de referencia | defectos con versiones de antigüedad, ninguno visible leyendo |
+| **fuentes reales** | el plan, a un PostgreSQL y a un fichero | seis escenarios que se midieron a mano al construir L2 |
+| **`cedar-policy`** | las políticas de un paquete, al esquema que ese paquete proyecta | está en Rust y entra en `cargo test --workspace` como cualquier otra |
+
+Las tres las corre `ci.yml` en cada empujón, y esa es la mitad importante:
+
+> **Una prueba que no corre tiene exactamente el mismo aspecto que una que pasa.**
+
+Los cuatro contadores se reproducen con `cargo test -p ore-cli --test conformance -- --nocapture`,
 y se cuentan **aparte** a propósito: un número que mezclara una especificación
 cerrada con tres en curso ya no se sabría qué mide.
 
