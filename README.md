@@ -234,9 +234,21 @@ Binario estático nativo en Rust, distribuido con la misma simplicidad que `dock
 ## Estado
 
 **La fase 0 está cerrada.** Los 89 casos de la suite de conformidad de OOS están
-en verde, y con ellos existen seis comandos: `validate`, `compile`, `diff`,
-`export`, `source add` y **`dev`**. Los **nueve** restantes que anuncia
-`ore --help` **no están implementados** y lo dicen al ejecutarse.
+en verde, y con ellos existen siete comandos: `validate`, `compile`, `diff`,
+`export`, `source add`, **`dev`** y **`report`**. Los **ocho** restantes que
+anuncia `ore --help` **no están implementados** y lo dicen al ejecutarse.
+
+`ore report` es el registro de **qué gobierna qué y quién responde**, y lo que lo
+define es lo que no puede ser: **no es una lista de incumplimientos**, porque una
+propiedad sin la clase que exige su clasificación no compila. Eso lo separa del
+*compliance status report* de GitLab, que evalúa cada doce horas sobre algo ya
+desplegado; aquí se evalúa al compilar, así que la pregunta deja de ser *¿está
+gobernado?* y pasa a ser **¿quién responde, y por qué vía?**
+
+Tampoco lista todas las propiedades: de las **40** clasificadas del ejemplo, **29
+no exigen nada**, y un informe que las listara sería el 72% de filas diciendo
+*«nada que gobernar»*. Lo que exige lo decide `requiresGovernance`, no la
+clasificación.
 
 Y hay una quinta columna que la tabla de abajo no tenía: **las superficies de
 emisión**, que no son una fase sino un eje propio. `export` habla cuatro
@@ -326,7 +338,7 @@ emit       5/5    invalid 41/41  valid    4/4
                                  TOTAL  89/89
 
 BORRADOR v1alpha2 · efectos y derivación  24/24
-BORRADOR v1alpha3 · gobierno              30/30
+BORRADOR v1alpha3 · gobierno              31/31
 BORRADOR v1alpha4 · significado           28/28
 BORRADOR v1alpha5 · emisión a GraphQL     11/11
 ```

@@ -157,6 +157,15 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// El registro de qué gobierna qué, y quién responde.
+    ///
+    /// No es una lista de incumplimientos y no puede serlo: una propiedad sin
+    /// la clase que exige su clasificación no compila. La pregunta que contesta
+    /// es la otra — **quién responde, y por qué vía**.
+    Report {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Compila el repositorio a un Ontology Bundle firmado.
     Compile {
         #[arg(default_value = ".")]
@@ -198,6 +207,7 @@ fn main() -> std::process::ExitCode {
 
     match &cli.command {
         Command::Validate { path } => return validar(path),
+        Command::Report { path } => return informar(path),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -239,6 +249,7 @@ fn main() -> std::process::ExitCode {
         | Command::Dev { .. }
         | Command::Init { .. }
         | Command::Discover { .. }
+        | Command::Report { .. }
         | Command::Source(_) => unreachable!(),
         Command::Review => ("review", "1"),
         Command::Lint { .. } => ("lint", "posterior"),
@@ -640,5 +651,140 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
         }
     };
     println!("{}", salida.pretty());
+    std::process::ExitCode::SUCCESS
+}
+/// `ore report` — **el registro de qué gobierna qué, y quién responde**.
+///
+/// # Lo que NO es, y por qué eso lo define
+///
+/// No es una lista de incumplimientos. **Aquí no puede haber filas rojas**:
+/// una propiedad sin la clase de gobierno que exige su clasificación no
+/// compila (`OOS8001`), así que un paquete que llega hasta aquí ya está
+/// cubierto entero.
+///
+/// Eso lo separa del *compliance status report* de GitLab, que es fila por
+/// (proyecto, control) con su estado, y existe porque **allí el gobierno se
+/// evalúa cada doce horas sobre un objetivo que ya está desplegado**. Aquí se
+/// evalúa al compilar, así que la pregunta interesante deja de ser *¿está
+/// gobernado?* y pasa a ser:
+///
+/// > **¿Quién responde, y por qué vía?**
+///
+/// # Por qué no lista todas las propiedades
+///
+/// Porque la mayoría no exige nada. Medido sobre la ontología de referencia:
+/// **40 propiedades clasificadas, 29 sin ninguna exigencia**. Un informe que
+/// las listara sería el 72% de filas diciendo *«nada que gobernar»*, y el ruido
+/// esconde exactamente lo que se viene a mirar.
+///
+/// Lo que exige gobierno lo decide `requiresGovernance`, **no** la
+/// clasificación: una propiedad `low` está clasificada y no exige nada.
+///
+/// # Y lo ámbar no son filas
+///
+/// Una regla que **existe y no cuenta** —una aserción `severity: warning`, una
+/// `type: text` que se transporta sin interpretar— no corresponde a ninguna
+/// pareja (propiedad, clase): corresponde a una regla. Va al margen, y va,
+/// porque *«lo vimos y no paramos nada»* tiene el mismo aspecto que no haberlo
+/// visto.
+fn informar(path: &std::path::Path) -> std::process::ExitCode {
+    let pkg = match cargar_valido(path, true) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    let lat = ore_core::flow::lattices(&pkg);
+    let props = ore_core::flow::efectivas(&pkg, &lat);
+    let cubierto = ore_core::governance::cobertura_atribuida(&pkg);
+    let alcance = ore_core::politica::alcance(&pkg);
+
+    let mut filas = 0usize;
+    for (prop, etiquetas) in &props {
+        // Lo que EXIGE cada clasificación que alcanza. Es la misma lectura que
+        // hace `OOS8001`, en la otra dirección: allí para señalar lo que falta,
+        // aquí para nombrar lo que hay.
+        let mut exigidas: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (ret, nivel) in etiquetas {
+            let Some(l) = lat.get(ret) else { continue };
+            for (piso, naturalezas) in &l.requires_governance {
+                if l.ge(nivel, piso) == Some(true) {
+                    exigidas.extend(naturalezas.iter().map(String::as_str));
+                }
+            }
+        }
+        if exigidas.is_empty() {
+            continue;
+        }
+        if filas == 0 {
+            println!("{:<34} {:<15} QUIÉN RESPONDE", "PROPIEDAD", "EXIGE");
+        }
+        filas += 1;
+        for clase in &exigidas {
+            let quienes = cubierto
+                .get(prop)
+                .and_then(|m| m.get(clase))
+                .map(|v| {
+                    v.iter()
+                        .map(|d| match &d.owner {
+                            Some(o) => format!("{} ({o})", d.regla),
+                            // Una política de Cedar no tiene dónde declarar
+                            // dueño. Un `Ruleset` sí, y por eso existe.
+                            None => format!("{} (sin dueño declarado)", d.regla),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            println!("{prop:<34} {clase:<15} {quienes}");
+        }
+    }
+
+    if filas == 0 {
+        println!("Ninguna propiedad de este paquete exige gobierno.");
+        println!("No es un vacío: `requiresGovernance` es lo que exige, y ningún retículo");
+        println!("declarado lo pide en los niveles que este modelo alcanza.");
+        return std::process::ExitCode::SUCCESS;
+    }
+
+    // ── El margen ───────────────────────────────────────────────────────────
+    let mut margen: Vec<String> = Vec::new();
+    for (id, alcanzadas) in &alcance {
+        if alcanzadas.is_empty() {
+            margen.push(format!(
+                "la política `{id}` no alcanza ninguna propiedad — no es un defecto: \
+                 `Property in [Label, …]` existe para que una entidad quede gobernada el día \
+                 que se etiqueta"
+            ));
+        }
+    }
+    for r in pkg.docs.iter().filter(|d| d.kind == ore_core::document::Kind::Ruleset) {
+        let q = r.qname().unwrap_or_default();
+        for a in r.section("assertions").map(|n| n.items()).unwrap_or(&[]) {
+            let id = a.get("id").and_then(|(_, v)| v.as_str()).unwrap_or("?");
+            let tipo = a.get("type").and_then(|(_, v)| v.as_str()).unwrap_or("library");
+            let sev = a.get("severity").and_then(|(_, v)| v.as_str()).unwrap_or("error");
+            if sev == "warning" {
+                margen.push(format!(
+                    "`{q}#{id}` es `severity: warning` y **no cuenta**: un aviso es, por \
+                     definición, «lo vimos y no paramos nada»"
+                ));
+            } else if tipo == "text" || tipo == "custom" {
+                margen.push(format!(
+                    "`{q}#{id}` es `type: {tipo}` y **no cuenta**: se transporta sin \
+                     interpretar, así que el compilador no sabe qué afirma"
+                ));
+            }
+        }
+    }
+    if !margen.is_empty() {
+        println!("\nAl margen — existen y no descargan nada:");
+        for m in &margen {
+            println!("  · {m}");
+        }
+    }
+
+    println!(
+        "\n{filas} propiedad(es) exigen gobierno, y las {filas} lo tienen: si alguna no lo \
+         tuviera, esto no habría compilado."
+    );
     std::process::ExitCode::SUCCESS
 }
