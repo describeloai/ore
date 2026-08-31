@@ -288,7 +288,8 @@ una decisión distinta de las que ya están tomadas
 De la fase 3, la parte que faltaba **decir** ya está dicha: el enmascarado que ese
 criterio describe es un desclasificador de v1alpha1 aplicado por objetivo y sin
 sujeto, y `ore validate` ya comprueba que baje de verdad (`OOS8003`). Lo que falta
-es ejecutarlo, que es L2.
+es ejecutarlo, que es L2. El camino hasta ahí está al final de esta
+sección.
 
 ```
 canonical  9/9    diff  20/20   digest  7/7
@@ -371,6 +372,238 @@ Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla d
 arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.
 El compilador solo hace lo suyo — **decir que no**: un documento que no está en
 `DRAFT` no puede contener una sola conjetura (`OOS9003`).
+
+### L2 · el camino hasta el ejecutor v1
+
+[`05-ejecutor`](vendor/oos/spec/v1alpha1/05-ejecutor.md) está cerrado y es normativo:
+dice **qué** debe hacer un L2. Esta sección dice **en qué orden lo construye ORE**, y
+es deliberadamente **desechable** — su contrato de caducidad está abajo.
+
+Las etapas se numeran **M0–M4** y no continúan la tabla de arriba a propósito: las
+fases 0–3 son capas del producto, y esto es el interior de una sola de sus filas. El
+criterio de orden sí es el mismo —**riesgo retirado**—, y aquí hay uno que no se
+parece a los demás porque es el único irreversible.
+
+#### La medición que ordena el resto
+
+Antes de la primera línea, con el mismo cierre que mide
+[`dependencias.rs`](crates/ore-cli/tests/dependencias.rs): `cedar-policy` 4 arrastra
+**153 crates**, de las que **135 son nuevas** en este árbol. Cuatro están en su lista
+de vetadas — `chrono`, `time`, `time-core` y `time-macros`, vetadas como *«el reloj;
+la compilación no lo lee»*.
+
+`cedar-policy-core` depende de `chrono` porque Cedar 4 tiene una extensión `datetime`,
+y una política puede decir *«antes del 1 de enero»*. La arista es opcional, y
+desactivarla **no sirve**: se midió, y el `Cargo.lock` sale idéntico, porque no depende
+de las features a propósito.
+
+> **Un evaluador de políticas necesita reloj. Un compilador no puede tenerlo**
+> —invariante III, la compilación es pura.
+
+De ahí sale la forma del ejecutor entero, y no hay que discutirla: **el guardián que
+se escribió para el driver ya la decide**. Enlazar el evaluador dentro de `ore-cli`
+llevaría su cierre de 32 a **167** y dispararía
+`el_binario_que_se_distribuye_no_sabe_hablar_por_la_red` nombrando `chrono`. El
+razonamiento entero está en el
+[ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md).
+
+> **El ejecutor vive donde vive el driver: fuera.** `crates/ore-exec`, miembro del
+> espacio de trabajo y **fuera de `default-members`**, igual que `ore-read-postgres`.
+> Y `ore serve` **delega** en él por PATH, exactamente como `lector.rs` delega en
+> `ore-read-<tipo>`.
+
+Lo que eso compra es una frase que deja de ser una promesa: **el binario que compila
+no sabe servir, y se demuestra midiendo, no leyendo el código.**
+
+#### M0 · Autorizar de verdad
+
+**Qué.** Nace `crates/ore-exec` y enlaza `cedar-policy`. Contesta una sola pregunta:
+dado un bundle, un principal con sus atributos, una acción y un recurso — qué dice la
+política, y qué máscara aplica.
+
+**Por qué primero.** §3 hace normativo que autorizar vaya delante, y da la razón:
+autorizar al final es haber abierto ya la conexión. Esa razón vale también para el
+orden de construcción, porque todo lo que viene después toma su forma de lo que ①
+poda. Y retira la única decisión irreversible de todo L2.
+
+**Listo cuando:**
+
+- ~~**ADR 0007**~~ ✅ [escrito](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md):
+  el [ADR 0003](docs/decisions/0003-lectura-estructural-de-cedar.md) —lectura
+  estructural en compilación— sigue en pie, y **evaluar es otra decisión que vive en
+  otro artefacto**. No lo revoca: **ejecuta la puerta de salida que él mismo dejó
+  escrita**.
+- Los atributos del principal **llegan con la petición**, se **verifican**, y una
+  petición sin ellos se **rechaza** (§6.1). Los tres verbos, y el del medio es el que
+  faltaba: *«firmados por la capa de identidad»* no significa nada si nadie comprueba la
+  firma, porque **un atributo firmado sin verificar tiene el mismo aspecto que uno
+  verificado** — y decide el acceso. Que no vengan y que no validen son **dos rechazos
+  distintos, y se nombran distinto**. *Queda abierto dónde se declara el emisor de
+  confianza: lo que decide el acceso no puede estar sujeto al acceso que decide, así que
+  no puede ser un binding — y probablemente sea superficie de OOS, no de ORE.*
+- El esquema que carga el evaluador es **el que emite
+  `ore export --format cedarschema`**, no un segundo esquema. Si divergieran, la
+  política se habría validado contra uno y se evaluaría contra otro — que es
+  exactamente lo que la prueba de fuego de `00-overview` §4.1.1 fue a buscar.
+- Dos principales, mismo recurso, veredictos distintos, y el veredicto **nombra la
+  política que decidió**.
+- `resource in principal` se responde con el índice de topología, que en M0 no
+  existe: es un **hueco con condición nombrada**, no un `false` silencioso. Un
+  denegado por falta de índice y uno por política tienen el mismo aspecto, y esa es
+  precisamente la forma de fallo que este proyecto persigue.
+
+**No hace:** ni plan, ni fuente, ni una sola fila.
+
+**Guardianes.** `cierre_de("ore-cli")` sigue en **32**: el binario que compila no ha
+ganado un reloj. `propios`, en `dependencias.rs`, gana `ore-exec` — si no, la
+medición deja de medir lo que dice que mide. Y `el_driver_esta_donde_esta_por_algo`
+gana un hermano: `cierre_de("ore-exec") > cierre_de("ore-cli") * 4` — hoy daría 4,8×.
+
+#### M1 · El plan es un artefacto, y se rechaza sin abrir una conexión
+
+**Qué.** Bundle + consulta + principal → un `Plan` con las cuatro fases de §3, o una
+de las condiciones de §9.
+
+**Por qué aquí.** Porque todo lo que viene después es una **comprobación contra el
+plan**, y porque planificar es puro: se prueba con la misma maquinaria de casos que
+L0. **La primera versión del ejecutor no toca un dato**, y eso no es una limitación —
+es lo que la hace verificable.
+
+**Listo cuando:**
+
+- `ore-exec plan` imprime las cuatro fases en orden, y cada petición de ③ muestra
+  `(datasourceRef, objeto, proyección, claves)`.
+- Los rechazos nombran **el binding y el campo** que los causó:
+  - `fullScan: forbidden` y el plan necesita recorrido → **plan rechazado** (§5)
+  - sin `capabilities` y el plan necesita un predicado → **plan rechazado** (§5.1)
+  - la política poda hasta vaciarlo → **no autorizado** (§3 ①)
+- Una propiedad con máscara `redact` **no aparece en la proyección**, y se comprueba
+  leyendo el plan. *La forma más fuerte de aplicar una máscara es no pedir la
+  columna* deja de ser una cita y pasa a ser un aserto.
+- El plan se produce **sin ninguna fuente configurada**: sin `.env.local`, sin
+  socket y sin credencial.
+- **Mismas tres entradas → el mismo plan, byte a byte.** Es G1 aplicado a L2, y sin
+  eso no hay forma de auditar por qué una consulta devolvió lo que devolvió.
+- Hay casos en `crates/ore-exec/casos/`, con la misma figura que la suite de
+  conformidad: `(bundle, consulta, principal) → plan esperado | condición esperada`.
+
+**No hace:** ninguna travesía —una consulta de más de un salto es la condición
+nombrada *travesía no disponible*— y ninguna fila.
+
+#### M2 · La carga útil — el segundo verbo del driver
+
+**Qué.** Hoy `ore-read-<tipo>` recibe una URL por stdin y emite un **catálogo**. Gana
+un segundo verbo: recibe una **petición** y emite **filas**.
+
+Y la afirmación que hay que acertar aquí, porque es la que decide si esto escala a
+cientos de fuentes:
+
+> **La petición es la misma para todos los drivers.** Es un fragmento del plan, no
+> SQL. **Traducir es del driver.** Añadir una familia de fuentes es escribir un
+> traductor, no tocar el ejecutor.
+
+**Por qué antes que la travesía.** Porque §5.1 ya lo dijo: *el camino principal
+funciona sin declarar nada*. La búsqueda por clave sola **ya contesta una consulta**,
+así que ③ es el primer trozo que vale por sí mismo.
+
+**Listo cuando:**
+
+- El protocolo está escrito en un ADR: es del motor, no del formato (§8).
+- `ore-read-postgres` contesta una búsqueda por clave y devuelve filas.
+- **El SQL que emite contiene solo las columnas proyectadas.** Una prueba lee el SQL
+  construido y afirma que la columna redactada **no está**: el enmascarado por
+  omisión se vuelve observable en lugar de prometido.
+- Un plan con proyección vacía **no llega a lanzar el driver**. Se mide: el
+  subproceso no se crea.
+- La conexión es **de solo lectura** (§6.2), y hay una prueba de que una escritura
+  falla — no porque no la intentemos, sino porque la fuente la rechaza.
+- El proceso que refresca y el que responde toman **credenciales distintas**, y
+  colapsarlas en una es un aviso, no un silencio.
+- El formato de fila está decidido y razonado. Para v1, NDJSON: la costura ya habla
+  JSON para el catálogo, y dos codificaciones en la misma costura son una de más.
+  Por qué Arrow IPC es su sucesor —y qué lo dispara— va escrito al lado.
+
+**No hace:** ni junta entre fuentes, que es ④; ni travesía; ni caché.
+
+#### M3 · La travesía — el artefacto de topología
+
+**Qué.** El [ADR 0006](docs/decisions/0006-el-artefacto-de-topologia.md) decidió la
+forma; esto la construye. CSR, inmutable, mapeado en memoria, reconstruido por
+ventana y firmado.
+
+**Listo cuando:**
+
+- `ore-exec index build` produce el artefacto desde las fuentes declaradas, y dos
+  construcciones sobre la misma instantánea dan **el mismo artefacto byte a byte**.
+  Es la figura de G1 otra vez: un índice que difiere entre nodos hace que dos nodos
+  contesten distinto a la misma pregunta.
+- Una travesía de N saltos desde una clave raíz devuelve un conjunto de claves **sin
+  abrir una conexión a ninguna fuente**. Es la frase que hace asequible la ley de §2,
+  y hasta aquí no estaba medida.
+- El artefacto lleva su **marca de agua** y el digest del bundle contra el que se
+  construyó. Un plan que use un índice de otro bundle es una condición nombrada, no
+  una junta silenciosa.
+- **El artefacto no está en la imagen OCI.** El ADR 0006 §4 dice que la topología
+  *contiene datos* —saber que el paciente X enlaza con la clínica Y es el
+  diagnóstico—, así que el flujo de release **falla** si encuentra uno en el contexto
+  de construcción. La consecuencia de seguridad se convierte en una prueba.
+- Se cierra el hueco de M0: `resource in principal` se resuelve contra el índice.
+
+**No hace:** ni refresco incremental —reconstruir por ventana es el coste declarado
+en el ADR 0006— ni distribución entre nodos, que es la frontera abierta de abajo.
+
+#### M4 · La respuesta, con sus dos ejes
+
+**Qué.** ④ ensambla sobre flujos ya reducidos, y la respuesta lleva lo que la hace
+auditable.
+
+**Y ④ es un ensamblador por clave, no un motor de consulta.** La ley de §2 lo hace
+suficiente: el índice ya decidió qué claves se piden, así que sobre flujos que llegan
+reducidos no queda nada que optimizar. DataFusion —y con él Arrow y un modelo de
+coste— **es una decisión de M5**, cuando exista caché de carga útil: es sobre lo
+materializado donde un optimizador se gana el sueldo. Se decide **con v1 delante**.
+
+**Listo cuando:**
+
+- Toda respuesta puede acompañarse del **digest del bundle** y de la **marca de agua**
+  de lo materializado que intervino (§7): *qué significaba* y *hasta cuándo era
+  cierto*. Sin el segundo eje, *«¿qué sabía el agente el martes a las 14:32?»* no
+  tiene respuesta.
+- Superar `freshnessSLA` produce **estado degradado declarado en la respuesta**, y no
+  un dato viejo con aspecto de fresco.
+- `ore serve` existe **como delegación**: resuelve `ore-exec` en el PATH igual que
+  `lector.rs` resuelve `ore-read-<tipo>`, y sin él instalado **falla diciéndolo**.
+- La respuesta se deriva del **contrato emitido, no del paquete** (§4). Hay un caso
+  donde el conducto quitó una propiedad y el ejecutor **no puede contarla** — ni
+  siquiera para decir cuántas hay.
+- **Una consulta cruza dos fuentes de familias distintas** y devuelve una entidad
+  ensamblada. Es el criterio que faltaba: sin él, todo lo anterior puede ponerse en
+  verde **sin haber demostrado nunca que la forma escala**, que es lo único que se pidió
+  desde el principio. La segunda familia más barata y honesta es BigQuery — el lector ya
+  la habla, y trae otra forma de clave y otros tipos sin compartir transporte.
+- Y con eso se cumple, por fin, el criterio que la fase 3 ya tenía escrito: **un
+  agente pregunta por MCP y el PII vuelve enmascarado sin que el agente haya hecho
+  nada** — ahora con un dato de verdad, que es lo que lo hacía L2.
+
+#### Lo que v1 **no** es, dicho antes de empezar
+
+| | Por qué queda fuera |
+|---|---|
+| **Caché de carga útil** (`payload`) | v1 **materializa el grafo, no las filas**. La travesía hace asequible la ley de §2; la caché **habilita consultas que §2 rechazaría** (§5.2), y eso es estrictamente aditivo |
+| **Identidad delegada** (nivel 1 de §6.2) | es lo que hace que el motor deje de ser el único muro, y es un hito propio. v1 se queda en *referencia a secreto*, que es lo que `source add` ya produce |
+| **Reconstrucción por cambio de máscara** (§7.1) | no hay nada horneado que reconstruir hasta que exista caché de carga útil |
+| **Escritura** | es L3 y exige una `Function`. No es alcance recortado: es normativo |
+| **DataFusion y un modelo de coste** | ④ es un ensamblador por clave, y §2 lo hace suficiente. Un optimizador se gana el sueldo sobre lo materializado, así que la decisión va con la caché — M5, y con v1 delante |
+| **Alta disponibilidad y sincronía entre nodos** | frontera abierta, abajo |
+
+#### Cuándo se borra esto
+
+Cuando M4 esté en verde, esta sección **desaparece** y se colapsa en una fila de la
+tabla de arriba. No se archiva, ni se deja «por si acaso»:
+
+> **Un plan que sobrevive a su ejecución deja de ser un plan y pasa a ser
+> documentación de un pasado que ya nadie comprueba** — y eso tiene exactamente el
+> mismo aspecto que documentación de un presente que sí.
 
 ### Frontera abierta
 
