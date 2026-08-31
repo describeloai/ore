@@ -206,6 +206,10 @@ struct Rel {
     target: String,
     cardinality: String,
     required: bool,
+    /// Las propiedades que sostienen el enlace, EN ORDEN. Secuencia y no
+    /// conjunto: `via` se empareja posicion a posicion con la clave del destino,
+    /// asi que reordenarla enlaza por pares distintos.
+    via: Vec<String>,
 }
 
 #[derive(Default)]
@@ -569,6 +573,15 @@ fn entidad(d: &Loaded) -> Ent {
                 target: cadena(v, "target").unwrap_or_default(),
                 cardinality: cadena(v, "cardinality").unwrap_or_default(),
                 required: cadena(v, "required").as_deref() == Some("true"),
+                via: v
+                    .get("via")
+                    .map(|(_, n)| {
+                        n.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             },
         );
     }
@@ -938,6 +951,19 @@ fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                     Change::new(Code::Oos5002, Axis::Consumer)
                         .sujeto(&sujeto)
                         .de_a(&r.target, &s.target),
+                );
+            }
+            // OOS5027 · el enlace pasa a unir por otras propiedades. Es el
+            // cambio que un consumidor NO puede ver venir: el campo se llama
+            // igual, devuelve el mismo tipo, el SDL emitido no cambia ni una
+            // letra — y devuelve otras filas. Sin codigo propio pasaria por
+            // menor. Se compara la SECUENCIA, no el conjunto: reordenar `via`
+            // empareja contra otras posiciones de la clave del destino.
+            if r.via != s.via {
+                out.push(
+                    Change::new(Code::Oos5027, Axis::Consumer)
+                        .sujeto(&sujeto)
+                        .de_a(r.via.join(", "), s.via.join(", ")),
                 );
             }
         }

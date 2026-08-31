@@ -504,14 +504,16 @@ fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     }
                 }
                 if let Some((_, v)) = rv.get("via") {
-                    let via = v.as_str().unwrap_or("");
-                    if !props.contains(via) {
-                        out.push(referencia_rota(
-                            &e.path,
-                            v,
-                            &format!("{qn}.{via}"),
-                            &format!("relations.{rn}.via"),
-                        ));
+                    for nodo in v.items() {
+                        let via = nodo.as_str().unwrap_or("");
+                        if !props.contains(via) {
+                            out.push(referencia_rota(
+                                &e.path,
+                                nodo,
+                                &format!("{qn}.{via}"),
+                                &format!("relations.{rn}.via"),
+                            ));
+                        }
                     }
                 }
             }

@@ -36,6 +36,7 @@ pub mod diff;
 pub mod digest;
 pub mod document;
 pub mod effect;
+pub mod enlace_compuesto;
 pub mod flow;
 pub mod governance;
 pub mod graphql;

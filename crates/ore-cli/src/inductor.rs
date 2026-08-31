@@ -240,20 +240,6 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
                 ),
             });
         }
-        // Una foranea compuesta: el origen la declara, y aun asi no se puede
-        // emitir. No es una conjetura del inductor — es que el vocabulario no
-        // llega, y callarlo dejaria una entidad sin una arista que SI existe.
-        for (columnas, destino) in t.foraneas.iter().filter(|(c, _)| c.len() > 1) {
-            pendientes.push(Pendiente {
-                sujeto: format!("{} ({})", t.nombre, columnas.join(", ")),
-                que: format!("foranea compuesta hacia `{}`", entidad(destino)),
-                porque: "el origen la declara sobre varias columnas y `via` es UNA \
-                         propiedad en v1alpha1. Recortarla a la primera uniria de menos \
-                         con el mismo aspecto que una relacion correcta, asi que no se \
-                         emite: hace falta una propiedad que sostenga el enlace entero"
-                    .into(),
-            });
-        }
         // Una vista es una PROYECCION de algo. Puede ser la entidad, o puede ser
         // un informe sobre ella: emitirla sin mas duplicaria el concepto.
         if t.clase != "table" {
@@ -516,28 +502,33 @@ fn entidad_yaml(nombre: &str, paquete: &str, t: &Tabla) -> String {
             }
         }
     }
-    // Solo las foraneas de UNA columna. `via` es un identificador en el esquema
-    // de v1alpha1 —*«propiedad local que sostiene el enlace»*, en singular—, asi
-    // que una foranea compuesta no se puede decir. Recortarla a su primera
-    // columna produciria un join que une de menos y tiene exactamente el mismo
-    // aspecto que uno correcto. Va como pendiente, arriba.
-    let simples: Vec<_> = t.foraneas.iter().filter(|(c, _)| c.len() == 1).collect();
-    if !simples.is_empty() {
+    // `via` es una secuencia desde que se cerro la decision del enlace compuesto,
+    // asi que una foranea de varias columnas se dice ENTERA. Antes habia que
+    // reportarla: recortarla a su primera columna produce un join que une de
+    // menos y tiene exactamente el mismo aspecto que uno correcto.
+    //
+    // El ORDEN es el que declaro el origen y no se toca: `via` se empareja
+    // posicion a posicion con la clave del destino, y reordenarlo por estetica
+    // enlazaria por pares distintos.
+    if !t.foraneas.is_empty() {
         s.push_str("  relations:\n");
-        for (columnas, destino) in simples {
-            // `required` es un hecho del origen, no un valor por defecto: si la
-            // columna es NOT NULL, la relacion es obligatoria y decir `false`
-            // seria mentir sobre el modelo.
-            let obligatoria = t
-                .columnas
+        for (columnas, destino) in &t.foraneas {
+            // `required` es un hecho del origen, no un valor por defecto. Y lo es
+            // solo si TODAS las columnas del enlace son NOT NULL: con una que
+            // admita nulos, la fila puede no enlazar.
+            let obligatoria = columnas
                 .iter()
-                .any(|c| c.nombre == columnas[0] && c.obligatoria);
+                .all(|col| t.columnas.iter().any(|c| c.nombre == *col && c.obligatoria));
             let _ = write!(
                 s,
-                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: {}\n      required: {obligatoria}\n",
+                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: [{}]\n      required: {obligatoria}\n",
                 identificador(&entidad(destino)).to_lowercase(),
                 entidad(destino),
-                identificador(&columnas[0])
+                columnas
+                    .iter()
+                    .map(|c| identificador(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
@@ -761,6 +752,46 @@ mod tests {
             .expect("no agrupó la columna repetida");
         assert!(p.sujeto.contains("pedidos") && p.sujeto.contains("clientes"));
         assert!(!i.ficheros.keys().any(|k| k.starts_with("concepts/")));
+    }
+
+    /// El caso que antes no se podia escribir. `via` era un identificador, asi
+    /// que una foranea compuesta se emitia recortada a su primera columna — un
+    /// join que une de menos con el mismo aspecto que uno correcto. Cerrada la
+    /// decision, se dice entera y EN ORDEN.
+    #[test]
+    fn una_foranea_compuesta_se_dice_entera() {
+        const CAT: &str = r#"{
+          "source": "pg",
+          "tables": [
+            { "name": "public.clientes",
+              "columns": [
+                { "name": "id", "type": "Integer", "required": true },
+                { "name": "cod_pais", "type": "String", "required": true }
+              ],
+              "primaryKey": ["id", "cod_pais"] },
+            { "name": "public.facturas",
+              "columns": [
+                { "name": "id_factura", "type": "Integer", "required": true },
+                { "name": "id_cliente", "type": "Integer", "required": true },
+                { "name": "cod_pais", "type": "String", "required": true }
+              ],
+              "primaryKey": ["id_factura"],
+              "foreignKeys": [
+                { "columns": ["id_cliente", "cod_pais"], "references": "public.clientes" }
+              ] }
+          ]
+        }"#;
+        let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
+        let f = &i.ficheros["entities/Facturas.yaml"];
+        assert!(f.contains("via: [id_cliente, cod_pais]"), "{f}");
+        // Las dos columnas son NOT NULL, asi que el enlace es obligatorio: eso
+        // lo dice el origen, no un valor por defecto.
+        assert!(f.contains("required: true"), "{f}");
+        // Y ya no queda nada que reportar sobre ella.
+        assert!(
+            !i.pendientes.iter().any(|p| p.que.contains("compuesta")),
+            "sigue reportando lo que ya sabe emitir"
+        );
     }
 
     /// Y una tabla no se relaciona consigo misma por llamarse como su clave.

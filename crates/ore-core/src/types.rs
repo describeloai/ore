@@ -113,6 +113,9 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     tipos_de_conceptos(pkg, &mut out);
+    // OOS3006 vive en su propio modulo porque necesita el paquete entero: hay
+    // que leer la `primaryKey` de OTRA entidad. Es de esta familia igualmente.
+    crate::enlace_compuesto::comprobar(pkg, &mut out);
     for e in pkg.entities() {
         tipos_declarados(e, &mut out);
         temporalidad(e, &mut out);
@@ -314,21 +317,29 @@ fn cardinalidades(e: &Loaded, out: &mut Vec<Diagnostic>) {
     let qn = e.qname().unwrap_or_default();
 
     // Una relación `one_to_one` afirma que ninguna otra instancia apunta al
-    // mismo destino. Solo una clave de UNA propiedad sostiene esa afirmación:
-    // con `[a, b]` compuesta, `a` por sí sola no es única.
-    let mut unicas: Vec<String> = Vec::new();
-    if let Some(pk) = e.section("primaryKey")
-        && pk.items().len() == 1
-        && let Some(s) = pk.items()[0].as_str()
-    {
-        unicas.push(s.to_string());
+    // mismo destino, y eso solo lo sostiene una clave declarada. Ahora que `via`
+    // es una secuencia la condición se puede decir entera: **`via` tiene que
+    // CONTENER una clave**, no estar contenida en ella. Un superconjunto de una
+    // clave sigue siendo único; un subconjunto no lo es, y la redacción anterior
+    // —«que `via` esté en `primaryKey`»— aceptaba justo eso.
+    let lista = |n: &Node| -> Vec<String> {
+        n.items()
+            .iter()
+            .filter_map(|i| i.as_str().map(String::from))
+            .collect()
+    };
+    let mut claves: Vec<Vec<String>> = Vec::new();
+    if let Some(pk) = e.section("primaryKey") {
+        let k = lista(pk);
+        if !k.is_empty() {
+            claves.push(k);
+        }
     }
     if let Some(uk) = e.section("uniqueKeys") {
-        for clave in uk.items() {
-            if clave.items().len() == 1
-                && let Some(s) = clave.items()[0].as_str()
-            {
-                unicas.push(s.to_string());
+        for c in uk.items() {
+            let k = lista(c);
+            if !k.is_empty() {
+                claves.push(k);
             }
         }
     }
@@ -345,30 +356,31 @@ fn cardinalidades(e: &Loaded, out: &mut Vec<Diagnostic>) {
         let Some((_, vianode)) = rv.get("via") else {
             continue;
         };
-        let via = vianode.as_str().unwrap_or("");
-        if !unicas.contains(&via.to_string()) {
+        let via = lista(vianode);
+        if !claves.iter().any(|k| k.iter().all(|p| via.contains(p))) {
             out.push(
                 Diagnostic::new(
                     Code::Oos3005,
                     &e.path,
                     format!(
-                        "`{qn}.{rn}` declara `one_to_one` a través de `{via}`, que no es única"
+                        "`{qn}.{rn}` declara `one_to_one` a través de [{}], que no es única",
+                        via.join(", ")
                     ),
                 )
                 .at(vianode.pos())
-                .help(if unicas.is_empty() {
-                    "`one_to_one` afirma que ninguna otra instancia apunta al mismo destino, y \
-                     nada en las claves declaradas lo sostiene. Declara `{via}` en `uniqueKeys`, \
-                     o usa `many_to_one`"
+                .help(if claves.is_empty() {
+                    "`one_to_one` afirma que ninguna otra instancia apunta al mismo \
+                     destino, y nada en las claves declaradas lo sostiene. Declara esas \
+                     propiedades en `uniqueKeys`, o usa `many_to_one`"
                         .to_string()
                 } else {
                     format!(
-                        "sostienen `one_to_one`: {}. Con `{via}` la cardinalidad afirma algo \
-                         que las claves no respaldan, y de ella dependen la estructura del \
-                         índice y la detección de cambios rompedores",
-                        unicas
+                        "`via` tiene que CONTENER una clave entera, no una parte de \
+                         ella. Sostienen `one_to_one`: {}. De la cardinalidad dependen \
+                         la estructura del indice y la deteccion de cambios rompedores",
+                        claves
                             .iter()
-                            .map(|u| format!("`{u}`"))
+                            .map(|k| format!("[{}]", k.join(", ")))
                             .collect::<Vec<_>>()
                             .join(" · ")
                     )

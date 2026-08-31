@@ -140,8 +140,12 @@ const CONJUNTOS: &[&str] = &[
 /// que uno clasificado bien.**
 const SECUENCIAS: &[&str] = &[
     // El orden ES el significado.
-    "levels",           // ascendente por restrictividad: el retículo entero
-    "primaryKey",       // en una clave compuesta el orden es significativo
+    "levels",     // ascendente por restrictividad: el retículo entero
+    "primaryKey", // en una clave compuesta el orden es significativo
+    // `via` se empareja POSICION A POSICION con la `primaryKey` del destino, asi
+    // que ordenarla enlazaria por pares distintos: `[codPais, id]` contra
+    // `[id, codPais]` no es la misma relacion, y el documento se veria igual.
+    "via",
     "enum",             // retirar un valor o reordenarlos es observable
     "strategies",       // la primera que casa gana
     "normalize",        // una tubería de transformaciones

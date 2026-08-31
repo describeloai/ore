@@ -125,6 +125,7 @@ codes! {
     Oos3003 = "OOS3003", Type, "temporal declarado sin validTime";
     Oos3004 = "OOS3004", Type, "incompatibilidad de unidades en una derivación";
     Oos3005 = "OOS3005", Type, "cardinalidad incoherente con las claves declaradas";
+    Oos3006 = "OOS3006", Type, "`via` no casa la clave del destino";
 
     // ── OOS4xxx · gobernanza y flujo ────────────────────────────────────────
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
@@ -146,6 +147,7 @@ codes! {
     Oos5002 = "OOS5002", Compatibility, "tipo estrechado o valor retirado de un enum";
     Oos5003 = "OOS5003", Compatibility, "cardinalidad endurecida";
     Oos5006 = "OOS5006", Compatibility, "primaryKey cambiada";
+    Oos5027 = "OOS5027", Compatibility, "`via` de una relacion cambiado";
     Oos5007 = "OOS5007", Compatibility, "entidad o relación eliminada";
     Oos5008 = "OOS5008", Compatibility, "oos.maturity rebajada en una entidad STABLE";
     Oos5009 = "OOS5009", Compatibility, "etiqueta de una propiedad elevada";
@@ -256,7 +258,7 @@ codes! {
 mod tests {
     use super::*;
 
-    /// La cobertura declarada en `99-errors.md` §10 —53 códigos de v1alpha1—
+    /// La cobertura declarada en `99-errors.md` §10 —55 códigos de v1alpha1—
     /// y los borradores, contados aparte para que ese 52 siga significando lo
     /// mismo: *una implementación de referencia pasa la especificación
     /// completa*. Un número que mezclara una versión cerrada con dos en curso
@@ -286,7 +288,7 @@ mod tests {
             })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
-        assert_eq!(cerrados, 53, "v1alpha1");
+        assert_eq!(cerrados, 55, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()

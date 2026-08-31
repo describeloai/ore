@@ -634,10 +634,14 @@ fn materializaciones(
                 .unwrap_or_default();
             if let Some(rels) = entidad.section("relations") {
                 for (_, rv) in rels.entries() {
-                    if let Some((_, via)) = rv.get("via")
-                        && let Some(s) = via.as_str()
-                    {
-                        v.push(s.to_string());
+                    // `via` es una secuencia: un enlace compuesto hace fluir
+                    // TODAS sus propiedades, no la primera.
+                    if let Some((_, via)) = rv.get("via") {
+                        v.extend(
+                            via.items()
+                                .iter()
+                                .filter_map(|i| i.as_str().map(String::from)),
+                        );
                     }
                 }
             }
