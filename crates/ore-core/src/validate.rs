@@ -305,7 +305,18 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     // conjuntos, y calcularla sobre etiquetas que aún podrían estar mal daría
     // una ausencia falsa — el peor diagnóstico posible, porque señala algo que
     // nadie escribió.
-    crate::governance::check(&pkg)
+    let gobierno = crate::governance::check(&pkg);
+    if !gobierno.is_empty() {
+        return gobierno;
+    }
+    // Y las etiquetas que MENCIONA una politica, al final del todo. Son
+    // referencias como las demas y fallan igual —apuntan a algo que no
+    // existe—, pero llegan aqui y no con el enlazado por una razon que salio
+    // ejecutando: si una dependencia no resuelve, su reticulo no se carga y
+    // TODAS sus etiquetas parecen inexistentes. Este diagnostico seria entonces
+    // la CONSECUENCIA del error real, adelantandolo — y `99-errors` §2.1 dice
+    // que gana el codigo especifico.
+    crate::politica::check(&pkg)
 }
 
 /// Lee un directorio y construye el paquete, con lo que falló al hacerlo.

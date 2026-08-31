@@ -1147,8 +1147,8 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 88, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&40));
+    assert_eq!(casos.len(), 89, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&41));
     assert_eq!(por_grupo.get("diff"), Some(&22));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));

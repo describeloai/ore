@@ -278,6 +278,27 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
 
     if diags.is_empty() {
         println!("ok · sin errores");
+        // El acuse de recibo. Escribir Cedar es hoy un acto a ciegas: se declara
+        // una politica y nada dice si alcanza lo que uno creia. Que una politica
+        // no alcance nada NO es un error —`Property in [Label, EntityType]`
+        // existe para que una entidad quede gobernada el dia que se etiqueta, sin
+        // tocar la politica—, pero verlo es la diferencia entre saberlo y
+        // suponerlo.
+        let alcance = if path.is_dir() {
+            ore_core::politica::alcance(&ore_core::validate::cargar_paquete(path).0)
+        } else {
+            Default::default()
+        };
+        if !alcance.is_empty() {
+            println!();
+            for (id, props) in &alcance {
+                if props.is_empty() {
+                    println!("  · {id} — no alcanza ninguna propiedad todavia");
+                } else {
+                    println!("  · {id} — {}", resumir(props));
+                }
+            }
+        }
         return std::process::ExitCode::SUCCESS;
     }
 
@@ -300,6 +321,20 @@ fn validar(path: &std::path::Path) -> std::process::ExitCode {
 /// Escribe lo que es un hecho y **reporta lo que es una conjetura**. Lo inducido
 /// entra en `DRAFT` y probablemente no compile: una entidad sin clave falla con
 /// `OOS2010`, y está bien que falle — inventar la clave sería lo único peor.
+/// Las primeras propiedades y cuantas quedan. Una politica sobre `critical`
+/// puede alcanzar doscientas, y doscientas lineas no informan: abruman.
+fn resumir(props: &[String]) -> String {
+    const MUESTRA: usize = 4;
+    if props.len() <= MUESTRA {
+        return props.join(", ");
+    }
+    format!(
+        "{}, y {} mas",
+        props[..MUESTRA].join(", "),
+        props.len() - MUESTRA
+    )
+}
+
 fn descubrir(
     origen: Option<&std::path::Path>,
     fuente: Option<&String>,
