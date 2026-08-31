@@ -86,7 +86,13 @@ fn filas(peticion: &str) -> Result<String, String> {
             }
         }
         // Y el filtro del ámbito, que llega igual que a una base de datos.
-        if !p.filtros.iter().all(|(c, v)| campo(c) == v) {
+        // El mismo vocabulario que en SQL, sobre texto: un fichero no tiene
+        // tipos, así que `gt` compara cadenas — que es exactamente lo que hace
+        // falta para una marca de agua ISO-8601, y nada más.
+        if !p.filtros.iter().all(|(c, op, v)| match op.as_str() {
+            "gt" => campo(c) > v.as_str(),
+            _ => campo(c) == v,
+        }) {
             continue;
         }
 

@@ -218,6 +218,65 @@ impl Motor {
     }
 }
 
+impl Motor {
+    /// `(connectionEnv, refreshEnv)` de una fuente.
+    ///
+    /// Dos variables porque son **dos identidades**: el que refresca necesita
+    /// lectura amplia y programada; el que responde, lectura por clave y por
+    /// petición. `05-ejecutor` §6.2 lo exige, y hasta que hubo dónde declararlo
+    /// la exigencia no era comprobable.
+    pub fn variables_de(&self, nombre: &str) -> Result<(String, Option<String>), String> {
+        let cfg = self
+            .paquete
+            .docs
+            .iter()
+            .find(|d| d.kind == ore_core::document::Kind::OntologyConfig)
+            .ok_or("no hay manifiesto raíz")?;
+        let ds = cfg
+            .section("datasources")
+            .ok_or("el manifiesto no declara ninguna fuente")?
+            .items()
+            .iter()
+            .find(|d| d.get("name").and_then(|(_, v)| v.as_str()) == Some(nombre))
+            .ok_or_else(|| format!("`{nombre}` no está declarada en el manifiesto"))?;
+        Ok((
+            ds.get("connectionEnv")
+                .and_then(|(_, v)| v.as_str())
+                .ok_or_else(|| format!("`{nombre}` no declara `connectionEnv`"))?
+                .to_string(),
+            ds.get("refreshEnv")
+                .and_then(|(_, v)| v.as_str())
+                .map(String::from),
+        ))
+    }
+
+    /// La columna física de la propiedad que ordena el avance del refresco.
+    ///
+    /// Sale de `materialization.topology.watermark` del binding, pasada por su
+    /// mapeo. Sin ella el refresco **no sabe desde dónde continuar** y solo puede
+    /// recargar entero — que es exactamente lo que `05-ejecutor` §7 dice.
+    pub fn columna_de_marca(&self, relacion: &str) -> Option<String> {
+        let entidad = relacion.rsplit_once('.')?.0;
+        for b in self.paquete.docs.iter().filter(|d| {
+            d.kind == ore_core::document::Kind::Binding
+                && d.section("targetEntity").and_then(|t| t.as_str()) == Some(entidad)
+        }) {
+            let prop = b
+                .section("materialization")
+                .and_then(|m| m.get("topology").map(|(_, v)| v))
+                .and_then(|t| t.get("watermark").map(|(_, v)| v))
+                .and_then(|w| w.as_str())?;
+            if let Some((_, c)) = b.section("properties").and_then(|p| p.get(prop)) {
+                return c
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| c.get("column").and_then(|(_, x)| x.as_str()).map(String::from));
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

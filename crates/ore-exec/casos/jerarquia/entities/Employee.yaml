@@ -8,6 +8,7 @@ spec:
   properties:
     employeeId: { type: String }
     managerId:  { type: String }
+    actualizado: { type: String }
     baseSalary:
       type: String
       labels: { gdpr.sensitivity: high }

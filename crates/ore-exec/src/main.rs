@@ -281,6 +281,16 @@ fn indice(motor: &Motor, args: &[String]) -> std::process::ExitCode {
                 }
             }
         }
+        Some("refresh") => match refrescar(motor, args) {
+            Ok((previas, nuevas)) => {
+                eprintln!("{previas} arista(s) previas + {nuevas} nueva(s)");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::ExitCode::FAILURE
+            }
+        },
         Some("traverse") => {
             let Some(t) = &motor.topologia else {
                 eprintln!("travesia no disponible · falta `--indice <fichero>`");
@@ -297,9 +307,30 @@ fn indice(motor: &Motor, args: &[String]) -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("uso: ore-exec index <build|traverse> <ruta> [banderas]");
+            eprintln!("uso: ore-exec index <build|refresh|traverse> <ruta> [banderas]");
             std::process::ExitCode::from(64)
         }
+    }
+}
+
+/// De qué variable sale la credencial del refresco, y si hay que avisar.
+///
+/// `--url-env` manda porque quien opera puede saber más que el manifiesto. Si no
+/// lo da, se busca `refreshEnv` en la fuente; y si tampoco está, se usa la de las
+/// consultas **avisando**: colapsar las dos identidades es una decisión, y una
+/// decisión en silencio no es una decisión (`05-ejecutor` §6.2).
+fn identidad_de_refresco(motor: &Motor, args: &[String]) -> Result<(String, bool), String> {
+    if let Some(v) = valor(args, "--url-env") {
+        return Ok((v, false));
+    }
+    let ds = motor
+        .lecturas_de_aristas()
+        .first()
+        .map(|(_, l)| l.datasource.clone())
+        .ok_or("no hay ninguna relación con `via` que leer")?;
+    match motor.variables_de(&ds)? {
+        (_, Some(refresco)) => Ok((refresco, false)),
+        (consultas, None) => Ok((consultas, true)),
     }
 }
 
@@ -363,6 +394,169 @@ fn aristas_de_la_fuente(motor: &Motor, args: &[String]) -> Result<Vec<ore_exec::
             let hasta = n.get("hasta").and_then(|(_, v)| v.as_str()).unwrap_or("");
             if !desde.is_empty() && !hasta.is_empty() {
                 out.push((relacion.clone(), desde.to_string(), hasta.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `index refresh` — **reconstruir la ventana, no mutar**.
+///
+/// CSR no admite actualizaciones dinámicas sin reconstruir el array de aristas
+/// entero, y eso aquí **no es un defecto**: refrescar es reconstruir por
+/// ventana, y era el modo de operación desde el ADR 0006. Lo que el refresco
+/// añade es que la ventana no empiece de cero — se leen solo las filas que la
+/// marca de agua deja fuera, y se fusionan sobre las que ya había.
+///
+/// # Las tres estrategias, y cuál está implementada
+///
+/// | | Qué es la marca de agua | Estado |
+/// |---|---|---|
+/// | `poll` | la propiedad que declara `watermark` | **implementada** |
+/// | `cdc` | igual, pero el origen emite los cambios | pendiente: exige una fuente que los emita |
+/// | `table_version` | la versión nativa del formato | pendiente: **es de la caché de carga útil**, no de aquí |
+///
+/// # Lo que un refresco incremental NO puede ver
+///
+/// > **Una arista borrada no tiene marca de agua.**
+///
+/// `poll` lee lo que cambió *después* de un instante; una fila que ya no está no
+/// cambió después de nada — desapareció. Así que un refresco incremental
+/// **conserva aristas muertas**, y la única forma de quitarlas es reconstruir
+/// entero. Eso no es un fallo de esta implementación: es la propiedad del
+/// mecanismo, y `freshnessSLA` existe justamente para acotar cuánto tiempo se
+/// vive con ella.
+fn refrescar(motor: &Motor, args: &[String]) -> Result<(usize, usize), String> {
+    // `--anterior`, no `--desde`: en `traverse`, `--desde` es una CLAVE. La
+    // misma bandera con dos significados en el mismo verbo es una trampa
+    // esperando a la primera prisa.
+    let anterior = valor(args, "--anterior")
+        .map(|f| -> Result<ore_exec::Topologia, String> {
+            let b = std::fs::read(&f).map_err(|e| format!("no se pudo leer `{f}`: {e}"))?;
+            ore_exec::Topologia::leer(&b)
+        })
+        .transpose()?;
+
+    let marca_anterior = anterior.as_ref().map(|t| t.marca.clone()).unwrap_or_default();
+    let mut aristas = anterior.as_ref().map(|t| t.aristas()).unwrap_or_default();
+    let previas = aristas.len();
+
+    // La marca nueva la pone quien refresca: el motor no lee el reloj, y un
+    // artefacto que se fechara a sí mismo dejaría de ser reproducible.
+    let marca = valor(args, "--marca").ok_or("falta `--marca <instante>`")?;
+    if !marca_anterior.is_empty() && marca <= marca_anterior {
+        return Err(format!(
+            "la marca nueva `{marca}` no es posterior a `{marca_anterior}`: un refresco que \
+             no avanza no es un refresco"
+        ));
+    }
+
+    let nuevas = leer_aristas_incremental(motor, args, &marca_anterior)?;
+
+    // **La fusión no es una suma.** Una fila ES el conjunto de aristas de su
+    // clave para esa relación, así que si la fila vuelve en el delta lo que
+    // traiga **sustituye** a lo que hubiera.
+    //
+    // Lo encontró ejecutarlo. La primera versión sumaba, y con eso un cambio de
+    // jefe dejaba las dos aristas: `emp-42` habría quedado reportando a la vez a
+    // `jefa` y al `ceo`, y la cadena de mando habría tenido dos ramas. Sumar
+    // hacía que un cambio se pareciera a una ampliación.
+    let tocadas: std::collections::BTreeSet<(String, String)> = nuevas
+        .iter()
+        .map(|(r, d, _)| (r.clone(), d.clone()))
+        .collect();
+    aristas.retain(|(r, d, _)| !tocadas.contains(&(r.clone(), d.clone())));
+    let reemplazadas = previas - aristas.len();
+    aristas.extend(nuevas.iter().cloned());
+
+    let t = ore_exec::Topologia::construir(
+        &ore_core::digest::bundle(&motor.paquete),
+        &marca,
+        &aristas,
+    );
+    let salida = valor(args, "-o").unwrap_or_else(|| "topologia.oretopo".into());
+    std::fs::write(&salida, t.bytes())
+        .map_err(|e| format!("no se pudo escribir `{salida}`: {e}"))?;
+
+    if !marca_anterior.is_empty() {
+        eprintln!(
+            "aviso: un refresco incremental no ve una FILA BORRADA — una fila que ya no está \
+             no cambió después de nada, así que sus aristas sobreviven. Un CAMBIO sí se ve: \
+             la fila vuelve en el delta y sustituye lo que hubiera. Reconstruye entero para \
+             quitar lo borrado."
+        );
+        eprintln!("{reemplazadas} arista(s) sustituidas por el delta");
+    }
+    Ok((previas, nuevas.len()))
+}
+
+/// Como `aristas_de_la_fuente`, pero acotado por la marca de agua.
+///
+/// El predicado es `gt` sobre la propiedad que el binding declara en
+/// `materialization.topology.watermark`. Es el **único** sitio donde el motor
+/// emite un operador de orden, y se puede: una marca de agua **no tiene
+/// principal**, así que no filtra por nadie.
+fn leer_aristas_incremental(
+    motor: &Motor,
+    args: &[String],
+    desde: &str,
+) -> Result<Vec<ore_exec::Arista>, String> {
+    let (var, avisar) = identidad_de_refresco(motor, args)?;
+    let url = std::env::var(&var).map_err(|_| format!("la variable `{var}` no está puesta"))?;
+    if avisar {
+        eprintln!(
+            "aviso: el refresco usa `{var}`, la misma credencial que responde consultas. \
+             `05-ejecutor` §6.2 pide que puedan ser distintas: declara `refreshEnv` en la \
+             fuente. El que refresca necesita lectura amplia; el que responde, por clave."
+        );
+    }
+    let tipo = valor(args, "--tipo").unwrap_or_else(|| "postgres".into());
+
+    let mut out = Vec::new();
+    for (relacion, mut lectura) in motor.lecturas_de_aristas() {
+        if !desde.is_empty() {
+            let Some(columna) = motor.columna_de_marca(&relacion) else {
+                return Err(format!(
+                    "`{relacion}` no declara `materialization.topology.watermark`, así que no \
+                     hay desde dónde continuar: sin ella el refresco solo puede recargar entero"
+                ));
+            };
+            lectura.filtros.push(ore_exec::Filtro {
+                columna,
+                operador: "gt".into(),
+                valor: desde.to_string(),
+                ambito: "marca-de-agua".into(),
+            });
+        }
+        let salida = std::process::Command::new(format!("ore-read-{tipo}"))
+            .args(["leer", &lectura.datasource])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut h| {
+                use std::io::Write as _;
+                h.stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(lectura.peticion(&url).as_bytes())?;
+                h.wait_with_output()
+            })
+            .map_err(|e| format!("no se pudo invocar `ore-read-{tipo}`: {e}"))?;
+        if !salida.status.success() {
+            return Err(String::from_utf8_lossy(&salida.stderr).trim().to_string());
+        }
+        for linea in String::from_utf8_lossy(&salida.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+        {
+            let Ok(n) = ore_core::parse::parse(linea) else {
+                continue;
+            };
+            let d = n.get("desde").and_then(|(_, v)| v.as_str()).unwrap_or("");
+            let h = n.get("hasta").and_then(|(_, v)| v.as_str()).unwrap_or("");
+            if !d.is_empty() && !h.is_empty() {
+                out.push((relacion.clone(), d.to_string(), h.to_string()));
             }
         }
     }

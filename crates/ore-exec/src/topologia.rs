@@ -275,6 +275,30 @@ impl Topologia {
         self.travesia(relacion, desde, self.claves.len().max(1))
     }
 
+    /// Las aristas que el artefacto contiene, para poder **fusionar** un
+    /// refresco sobre él.
+    ///
+    /// Hace falta porque CSR no se muta: refrescar es **reconstruir la ventana**,
+    /// y para reconstruirla hay que partir de lo que ya había. Es la limitación
+    /// documentada de CSR usada como lo que es aquí — un no-problema, porque la
+    /// reconstrucción estaba prevista.
+    pub fn aristas(&self) -> Vec<Arista> {
+        let mut out = Vec::new();
+        for (rel, (origenes, offsets, destinos)) in &self.relaciones {
+            for (i, o) in origenes.iter().enumerate() {
+                let Some(desde) = self.claves.get(*o as usize) else {
+                    continue;
+                };
+                for d in &destinos[offsets[i] as usize..offsets[i + 1] as usize] {
+                    if let Some(hasta) = self.claves.get(*d as usize) {
+                        out.push((rel.clone(), desde.clone(), hasta.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn relaciones(&self) -> Vec<&str> {
         self.relaciones.keys().map(String::as_str).collect()
     }
@@ -325,6 +349,18 @@ mod tests {
         );
         // El CEO no reporta a nadie.
         assert!(t.ancestros("hr.Employee.manager", "ceo").is_empty());
+    }
+
+    /// Y las aristas se pueden sacar: es lo que permite refrescar sobre lo que
+    /// ya había, porque CSR no se muta — se reconstruye.
+    #[test]
+    fn las_aristas_se_recuperan_para_poder_fusionar() {
+        let t = Topologia::construir("d", "w", &cadena_de_mando());
+        let mut a = t.aristas();
+        a.sort();
+        let mut b = cadena_de_mando();
+        b.sort();
+        assert_eq!(a, b);
     }
 
     #[test]

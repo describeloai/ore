@@ -47,7 +47,17 @@ pub struct Peticion {
     pub proyeccion: Vec<(String, String)>,
     pub clave_columnas: Vec<String>,
     pub claves: Vec<Vec<String>>,
-    pub filtros: Vec<(String, String)>,
+    /// `(columna, operador, valor)`.
+    ///
+    /// Dos operadores, y la asimetría tiene motivo. Un **ámbito** solo produce
+    /// `eq`, y eso está cerrado en `v1alpha3/02-ruleset` §4.2.2 porque su lado
+    /// derecho es **un atributo del principal**: con una comparación de orden, la
+    /// presencia de una fila revelaría algo que el principal no traía.
+    ///
+    /// La **marca de agua** no tiene principal. Es el progreso del propio motor
+    /// al refrescar, no depende de quién pregunta y no puede filtrar por nadie.
+    /// Por eso `gt` es admisible aquí y no allí.
+    pub filtros: Vec<(String, String, String)>,
 }
 
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
@@ -84,22 +94,28 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         })
         .unwrap_or_default();
 
-    let filtros: Vec<(String, String)> = n
+    let filtros: Vec<(String, String, String)> = n
         .get("filtros")
         .map(|(_, v)| {
             v.items()
                 .iter()
                 .filter_map(|f| {
-                    // Solo `eq`: es el único operador que un ámbito produce, y
-                    // aceptar otros aquí sería admitir un predicado que nadie
-                    // declaró.
-                    match f.get("operador").and_then(|(_, o)| o.as_str()) {
-                        Some("eq") | None => Some((
-                            f.get("columna")?.1.as_str()?.to_string(),
-                            f.get("valor")?.1.as_str()?.to_string(),
-                        )),
-                        _ => None,
+                    // Vocabulario cerrado. Un operador que el driver no sabe
+                    // traducir NO se ignora: se descarta la petición entera, y
+                    // arriba se convierte en error. Ignorarlo devolvería más
+                    // filas de las pedidas, que es la dirección insegura.
+                    let op = f
+                        .get("operador")
+                        .and_then(|(_, o)| o.as_str())
+                        .unwrap_or("eq");
+                    if !["eq", "gt"].contains(&op) {
+                        return None;
                     }
+                    Some((
+                        f.get("columna")?.1.as_str()?.to_string(),
+                        op.to_string(),
+                        f.get("valor")?.1.as_str()?.to_string(),
+                    ))
                 })
                 .collect()
         })
@@ -163,7 +179,7 @@ mod tests {
             ],
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["emp-7".into()], vec!["emp-9".into()]],
-            filtros: vec![("cost_center".into(), "finanzas".into())],
+            filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
         }
     }
 
@@ -178,7 +194,14 @@ mod tests {
         assert_eq!(p.objeto, "public.employees");
         assert_eq!(p.proyeccion, vec![("baseSalary".to_string(), "base_pay".to_string())]);
         assert_eq!(p.claves, vec![vec!["emp-7".to_string()]]);
-        assert_eq!(p.filtros, vec![("cost_center".to_string(), "finanzas".to_string())]);
+        assert_eq!(
+            p.filtros,
+            vec![(
+                "cost_center".to_string(),
+                "eq".to_string(),
+                "finanzas".to_string()
+            )]
+        );
     }
 
     /// Una proyección vacía no es una petición: el plan que la produjera no

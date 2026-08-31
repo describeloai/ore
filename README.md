@@ -260,14 +260,26 @@ día que el último se puso verde**: un plan que sobrevive a su ejecución deja 
 plan y pasa a ser documentación de un pasado que ya nadie comprueba.
 
 Lo que dejó, y se puede ejecutar: `ore-exec validar · plan · responder · index build ·
-index traverse`, dos lectores —`ore-read-postgres` y `ore-read-jsonl`—, y el protocolo
-que comparten en `ore-driver`. La segunda familia es **un fichero y no otra base de
+index refresh · index traverse`, dos lectores —`ore-read-postgres` y `ore-read-jsonl`—,
+y el protocolo que comparten en `ore-driver`. La segunda familia es **un fichero y no otra base de
 datos** a propósito: si el mismo plan sirve a un servidor y a un fichero, la petición
 estaba cortada por el sitio correcto.
 
+**Y el refresco.** `index refresh` lee solo lo que la marca de agua deja fuera —un `gt`
+sobre la propiedad que el binding declara en `watermark`— y lo **fusiona** sobre el
+artefacto anterior. La fusión **no es una suma**: una fila *es* el conjunto de aristas de
+su clave, así que si vuelve en el delta, sustituye. Lo encontró ejecutarlo — sumando, un
+cambio de jefe dejaba las dos aristas y la cadena de mando tenía dos ramas.
+
+Con dos avisos que no se callan: **un refresco incremental no ve una fila borrada**
+—una fila que ya no está no cambió después de nada— y **colapsar las dos identidades de
+§6.2** es una decisión, así que si no hay `refreshEnv` se dice.
+
 Y lo que **no** hace, dicho y no disimulado: no verifica la firma criptográfica de los
 atributos —emisor y audiencia sí; la firma exige JWKS, que es red—, no materializa la
-carga útil, y no mapea el índice en memoria.
+carga útil, y no mapea el índice en memoria. De las tres estrategias de refresco solo
+`poll` está implementada: `cdc` exige una fuente que emita cambios, y `table_version`
+**es de la caché de carga útil**, no de aquí.
 
 De la fase 3 existe **`ore dev`**: sirve el contrato por MCP sobre stdio y **no
 toca un dato**. Su criterio de éxito —*«el PII vuelve enmascarado»*— es **L2** y

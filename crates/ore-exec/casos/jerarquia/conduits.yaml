@@ -1,0 +1,12 @@
+apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: caso }
+spec:
+  conduits:
+    # Materializar la topologia INSTANCIA un conducto, y un conducto sin
+    # autorizacion es ⊥. Aqui solo viajan claves —`employeeId` y `managerId`,
+    # sin clasificar— pero la autorizacion se declara igual: que hoy no pase
+    # nada sensible no es una propiedad del binding, es una casualidad del
+    # modelo de hoy.
+    materialization.topology:
+      gdpr.sensitivity: low

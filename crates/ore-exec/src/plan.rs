@@ -113,6 +113,9 @@ pub struct Lectura {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filtro {
     pub columna: String,
+    /// `eq` o `gt`. Un ámbito solo produce `eq`; `gt` es de la marca de agua,
+    /// que no tiene principal.
+    pub operador: String,
     pub valor: String,
     /// Qué ámbito lo produjo, para que el filtro sea rastreable hasta su regla.
     pub ambito: String,
@@ -182,7 +185,7 @@ impl Lectura {
                         .map(|f| {
                             Json::obj([
                                 ("columna", Json::s(f.columna.as_str())),
-                                ("operador", Json::s("eq")),
+                                ("operador", Json::s(f.operador.as_str())),
                                 ("valor", Json::s(f.valor.as_str())),
                             ])
                         })
@@ -260,6 +263,7 @@ impl Plan {
                                                 Json::obj([
                                                     ("ambito", Json::s(f.ambito.as_str())),
                                                     ("columna", Json::s(f.columna.as_str())),
+                                                    ("operador", Json::s(f.operador.as_str())),
                                                     ("valor", Json::s(f.valor.as_str())),
                                                 ])
                                             })
@@ -528,6 +532,7 @@ impl Motor {
                 };
                 filtros.push(Filtro {
                     columna: col.clone(),
+                    operador: "eq".into(),
                     valor: valor.clone(),
                     ambito: a.clone(),
                 });

@@ -48,9 +48,13 @@ pub fn sql(p: &Peticion) -> (String, Vec<String>) {
         ));
     }
 
-    for (col, valor) in &p.filtros {
+    for (col, op, valor) in &p.filtros {
         params.push(valor.clone());
-        condiciones.push(format!("{} = ${}", ident(col), params.len()));
+        let simbolo = match op.as_str() {
+            "gt" => ">",
+            _ => "=",
+        };
+        condiciones.push(format!("{} {simbolo} ${}", ident(col), params.len()));
     }
 
     if !condiciones.is_empty() {
@@ -75,7 +79,7 @@ mod tests {
             ],
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["emp-7".into()], vec!["emp-9".into()]],
-            filtros: vec![("cost_center".into(), "finanzas".into())],
+            filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
         }
     }
 
