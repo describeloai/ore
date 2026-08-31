@@ -128,7 +128,13 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl,  runner: ubuntu-24.04,     musl: true }
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, musl: true }
-          - { target: x86_64-apple-darwin,        runner: macos-13 }
+          # `macos-13` se retiro el 4-dic-2025 y la cola no lo dice: un trabajo
+          # con una etiqueta que ya no existe se queda ESPERANDO, con el mismo
+          # aspecto que uno que va a arrancar en un minuto. Lo descubrio la
+          # primera release, tres horas parada. `macos-15-intel` es el ultimo
+          # x86_64 que GitHub va a ofrecer —hasta otono de 2027—, asi que esta
+          # fila tiene fecha de caducidad conocida y escrita.
+          - { target: x86_64-apple-darwin,        runner: macos-15-intel }
           - { target: aarch64-apple-darwin,       runner: macos-14 }
           - { target: x86_64-pc-windows-msvc,     runner: windows-2022, ext: .exe }
     runs-on: ${{ matrix.runner }}
