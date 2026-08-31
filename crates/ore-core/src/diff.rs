@@ -230,7 +230,10 @@ struct Ent {
 #[derive(Default)]
 struct Bind {
     source: String,
-    mode: String,
+    /// Los ejes de materializacion declarados, en orden canonico. Antes era
+    /// un enum de tres valores; ahora son dos independientes, asi que lo que
+    /// se compara es el CONJUNTO.
+    ejes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -508,9 +511,15 @@ fn shape(pkg: &Package) -> Shape {
                             .and_then(|n| n.as_str())
                             .unwrap_or_default()
                             .to_string(),
-                        mode: d
+                        ejes: d
                             .section("materialization")
-                            .and_then(|m| cadena(m, "mode"))
+                            .map(|m| {
+                                ["topology", "payload"]
+                                    .iter()
+                                    .filter(|e| m.get(e).is_some())
+                                    .map(|e| (*e).to_string())
+                                    .collect()
+                            })
                             .unwrap_or_default(),
                     },
                 );
@@ -1118,13 +1127,22 @@ fn materializacion(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
         let Some(despues) = b.bindings.get(entidad) else {
             continue;
         };
-        // OOS5020 · cambiar el modo. No rompe a nadie, pero decide si el índice
-        // existe: callarlo dejaría un índice fantasma sirviendo lecturas.
-        if antes.mode != despues.mode {
+        // OOS5020 · cambiar qué se materializa. No rompe a nadie, pero decide si
+        // el índice existe: callarlo dejaría un índice fantasma sirviendo
+        // lecturas. Y con dos ejes hay más que decir — quitar `topology` deja la
+        // travesía federada, quitar `payload` deja la búsqueda en el origen.
+        if antes.ejes != despues.ejes {
+            let txt = |e: &[String]| {
+                if e.is_empty() {
+                    "nada".to_string()
+                } else {
+                    e.join("+")
+                }
+            };
             out.push(
                 Change::new(Code::Oos5020, Axis::Index)
                     .sujeto(entidad)
-                    .de_a(&antes.mode, &despues.mode),
+                    .de_a(txt(&antes.ejes), txt(&despues.ejes)),
             );
         }
         if antes.source != despues.source {

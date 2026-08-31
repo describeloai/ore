@@ -575,127 +575,128 @@ fn materializaciones(
         let Some(mat) = b.section("materialization") else {
             continue;
         };
-        let modo = mat
-            .get("mode")
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("passthrough");
-        if modo == "passthrough" {
-            continue;
-        }
-        let conducto = format!("materialization.{modo}");
-
-        // OOS4011 · omitir un conducto no es dejarlo abierto: es cerrarlo.
-        let Some(autorizacion) = conductos.get(&conducto) else {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos4011,
-                    &b.path,
-                    format!("el conducto `{conducto}` no tiene autorización declarada"),
-                )
-                .at(mat.pos())
-                .help(format!(
-                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}` \
-                     en la política de conductos, o baja el modo a `passthrough`"
-                )),
-            );
-            continue;
-        };
-
-        let Some(target) = b.section("targetEntity").and_then(|t| t.as_str()) else {
-            continue;
-        };
-        let Some(entidad) = pkg.entity(target) else {
-            continue;
-        };
-        let Some(props) = efectivas.get(target) else {
-            continue;
-        };
-
-        // Qué fluye: en `cache`, lo declarado; en `index`, la topología —clave
-        // primaria y propiedades `via`—, que es derivable.
-        let fluyen: Vec<String> = if modo == "cache" {
-            mat.get("properties")
-                .map(|(_, p)| {
-                    p.items()
-                        .iter()
-                        .filter_map(|i| i.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            let mut v: Vec<String> = entidad
-                .section("primaryKey")
-                .map(|k| {
-                    k.items()
-                        .iter()
-                        .filter_map(|i| i.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if let Some(rels) = entidad.section("relations") {
-                for (_, rv) in rels.entries() {
-                    // `via` es una secuencia: un enlace compuesto hace fluir
-                    // TODAS sus propiedades, no la primera.
-                    if let Some((_, via)) = rv.get("via") {
-                        v.extend(
-                            via.items()
-                                .iter()
-                                .filter_map(|i| i.as_str().map(String::from)),
-                        );
-                    }
-                }
-            }
-            v
-        };
-
-        for p in fluyen {
-            let Some(labels) = props.get(&p) else {
+        // Dos ejes independientes, cada uno con SU conducto. Antes eran un enum
+        // de tres valores, y eso impedia declarar los dos a la vez sin ninguna
+        // razon: copian cosas distintas y aceleran cosas distintas.
+        for eje in ["topology", "payload"] {
+            let Some((_, cfg)) = mat.get(eje) else {
                 continue;
             };
-            for (ret, (nivel, origen)) in labels {
-                let Some(l) = lat.get(ret) else { continue };
-                let permitido = autorizacion
-                    .get(ret)
-                    .and_then(|(n, _)| l.index(n))
-                    .unwrap_or(0);
-                let Some(tiene) = l.index(nivel) else {
-                    continue;
-                };
-                if tiene <= permitido {
-                    continue;
-                }
+            let conducto = format!("materialization.{eje}");
 
-                let (code, como) = match *origen {
-                    Origin::Computed => (Code::Oos4001, "computada por join"),
-                    Origin::Declared => (Code::Oos4002, "declarada"),
-                    Origin::Inherited => (Code::Oos4002, "heredada"),
-                };
-                let permitido_txt = autorizacion
-                    .get(ret)
-                    .map(|(n, _)| n.clone())
-                    .unwrap_or_else(|| l.levels[0].clone());
-
+            // OOS4011 · omitir un conducto no es dejarlo abierto: es cerrarlo.
+            let Some(autorizacion) = conductos.get(&conducto) else {
                 out.push(
                     Diagnostic::new(
-                        code,
+                        Code::Oos4011,
                         &b.path,
-                        format!(
-                            "`{target}.{p}` alcanza `{conducto}` con `{ret} = {nivel}` \
-                             ({como}); el conducto admite `{permitido_txt}`"
-                        ),
+                        format!("el conducto `{conducto}` no tiene autorización declarada"),
                     )
                     .at(mat.pos())
-                    .help(if *origen == Origin::Computed {
-                        "nadie escribió esa etiqueta: la computó el compilador propagando \
-                         `join` desde los orígenes de la derivación. Baja el modo a \
-                         `passthrough`, aplica un desclasificador autorizado, o eleva la \
+                    .help(format!(
+                        "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}` \
+                     en la política de conductos, o quita el eje `{eje}` del binding"
+                    )),
+                );
+                continue;
+            };
+
+            let Some(target) = b.section("targetEntity").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            let Some(entidad) = pkg.entity(target) else {
+                continue;
+            };
+            let Some(props) = efectivas.get(target) else {
+                continue;
+            };
+
+            // Qué fluye: por `payload`, lo declarado; por `topology`, la clave
+            // primaria y las propiedades `via`, que son derivables.
+            let fluyen: Vec<String> = if eje == "payload" {
+                cfg.get("properties")
+                    .map(|(_, p)| {
+                        p.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                let mut v: Vec<String> = entidad
+                    .section("primaryKey")
+                    .map(|k| {
+                        k.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(rels) = entidad.section("relations") {
+                    for (_, rv) in rels.entries() {
+                        // `via` es una secuencia: un enlace compuesto hace fluir
+                        // TODAS sus propiedades, no la primera.
+                        if let Some((_, via)) = rv.get("via") {
+                            v.extend(
+                                via.items()
+                                    .iter()
+                                    .filter_map(|i| i.as_str().map(String::from)),
+                            );
+                        }
+                    }
+                }
+                v
+            };
+
+            for p in fluyen {
+                let Some(labels) = props.get(&p) else {
+                    continue;
+                };
+                for (ret, (nivel, origen)) in labels {
+                    let Some(l) = lat.get(ret) else { continue };
+                    let permitido = autorizacion
+                        .get(ret)
+                        .and_then(|(n, _)| l.index(n))
+                        .unwrap_or(0);
+                    let Some(tiene) = l.index(nivel) else {
+                        continue;
+                    };
+                    if tiene <= permitido {
+                        continue;
+                    }
+
+                    let (code, como) = match *origen {
+                        Origin::Computed => (Code::Oos4001, "computada por join"),
+                        Origin::Declared => (Code::Oos4002, "declarada"),
+                        Origin::Inherited => (Code::Oos4002, "heredada"),
+                    };
+                    let permitido_txt = autorizacion
+                        .get(ret)
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_else(|| l.levels[0].clone());
+
+                    out.push(
+                        Diagnostic::new(
+                            code,
+                            &b.path,
+                            format!(
+                                "`{target}.{p}` alcanza `{conducto}` con `{ret} = {nivel}` \
+                             ({como}); el conducto admite `{permitido_txt}`"
+                            ),
+                        )
+                        .at(mat.pos())
+                        .help(if *origen == Origin::Computed {
+                            "nadie escribió esa etiqueta: la computó el compilador propagando \
+                         `join` desde los orígenes de la derivación. Quita el eje del \
+                         binding, aplica un desclasificador autorizado, o eleva la \
                          autorización del conducto — lo último exige revisión de CODEOWNERS"
-                    } else {
-                        "baja el modo a `passthrough`, aplica un desclasificador autorizado, o \
+                        } else {
+                            "quita el eje del binding, aplica un desclasificador autorizado, o \
                          eleva la autorización del conducto — lo último exige revisión de \
                          CODEOWNERS"
-                    }),
-                );
+                        }),
+                    );
+                }
             }
         }
     }

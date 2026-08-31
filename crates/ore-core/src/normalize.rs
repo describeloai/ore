@@ -317,25 +317,36 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
 
 /// N2 · Materialización de valores por defecto.
 ///
-/// La forma canónica no contiene valores implícitos: un binding que omite
-/// `materialization` y otro que escribe `mode: passthrough` **dicen lo mismo**, y
+/// La forma canónica no contiene valores implícitos: un manifiesto que omite
+/// `workspace.members` y otro que escribe `[packages/*]` **dicen lo mismo**, y
 /// tienen que producir el mismo digest. Omitir es un atajo de escritura, no una
 /// afirmación distinta.
 fn defaults(kind: crate::document::Kind, doc: &mut Json) {
     use crate::document::Kind;
     let Json::Obj(raiz) = doc else { return };
-    let Some(Json::Obj(spec)) = raiz.get_mut("spec") else {
-        return;
-    };
-    if kind == Kind::Binding {
-        let mat = spec
-            .entry("materialization".to_string())
+
+    // `workspace.members` vale `packages/*` por convencion, y el esquema lo
+    // declara como `default`. Nadie lo materializaba: dos manifiestos que dicen
+    // lo mismo —uno omitiendo el campo, otro escribiendolo— producian digests
+    // DISTINTOS. Y `ore init` lo omite a proposito citando P2, asi que todo
+    // repositorio recien creado caia de un lado del corte.
+    //
+    // Es la cuarta vez que N2 se rompe por lo mismo: la regla estaba escrita y
+    // se aplicaba a un solo campo de los que cubria.
+    if kind == Kind::OntologyConfig {
+        let ws = raiz
+            .entry("workspace".to_string())
             .or_insert_with(|| Json::Obj(BTreeMap::new()));
-        if let Json::Obj(m) = mat {
-            m.entry("mode".to_string())
-                .or_insert_with(|| Json::s("passthrough"));
+        if let Json::Obj(w) = ws {
+            w.entry("members".to_string())
+                .or_insert_with(|| Json::Arr(vec![Json::s("packages/*")]));
         }
     }
+
+    // `materialization` ya NO tiene defecto que materializar: sus dos ejes son
+    // opcionales y **la ausencia es el valor**. Un vocabulario que no crea la
+    // ambiguedad no necesita que N2 la repare, y eso es mejor que repararla
+    // bien.
 }
 
 /// La identidad de un documento: `kind:nombreCualificado`.
@@ -550,9 +561,21 @@ mod tests {
     }
 
     #[test]
-    fn n2_materializa_el_modo_por_defecto() {
-        let j = document(&doc(Kind::Binding, "spec: { targetEntity: hr.E }\n"));
-        assert!(j.jcs().contains(r#""mode":"passthrough""#), "{}", j.jcs());
+    fn n2_materializa_el_defecto_del_esquema() {
+        // Omitirlo y escribirlo tienen que dar los MISMOS BYTES, y no los daban:
+        // nadie materializaba este defecto, y `ore init` omite el campo a
+        // propósito citando P2.
+        let a = document(&doc(Kind::OntologyConfig, "metadata: { name: m }\n"));
+        let b = document(&doc(
+            Kind::OntologyConfig,
+            "metadata: { name: m }\nworkspace: { members: [packages/*] }\n",
+        ));
+        assert!(
+            a.jcs().contains(r#""members":["packages/*"]"#),
+            "{}",
+            a.jcs()
+        );
+        assert_eq!(a.jcs(), b.jcs(), "omitir y escribir el defecto divergen");
     }
 
     #[test]
