@@ -370,6 +370,42 @@ fn naturaleza_desconocida(n: &crate::parse::Node) -> Option<String> {
 
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
+        // Una cache ES UNA COPIA DE DATOS, y por eso el esquema le exige dos
+        // cosas que a `topology` no: QUE copia y CUANTO tolera que envejezca.
+        // Ninguna de las dos se comprobaba — un `payload: {}` validaba limpio,
+        // que es justo la regla que justifica que el campo exista.
+        ShapeRule {
+            kind: Kind::Binding,
+            path: &["spec", "materialization", "payload"],
+            check: |n| {
+                if n.get("properties")
+                    .is_none_or(|(_, v)| v.items().is_empty())
+                {
+                    return Some((
+                        "`payload` no declara `properties`".to_string(),
+                        Some(
+                            "una caché es una copia de datos, y quien la declara tiene que \
+                             decir exactamente de qué. En `topology` no hace falta porque lo \
+                             materializado es derivable; aquí no lo es"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if n.get("freshnessSLA").is_none() {
+                    return Some((
+                        "`payload` no declara `freshnessSLA`".to_string(),
+                        Some(
+                            "una copia sin cota declarada es una copia que nadie va a notar \
+                             ponerse mala. Y ese número es lo que acota la respuesta a una \
+                             solicitud de supresión: un borrado en el origen tarda hasta ese \
+                             plazo en propagarse"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                None
+            },
+        },
         ShapeRule {
             kind: Kind::Entity,
             path: &["spec", "primaryKey"],

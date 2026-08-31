@@ -603,6 +603,23 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 }
             }
         }
+
+        // Y lo que se REPLICA. Una copia necesita una columna de la que copiar,
+        // igual que una clave o un enlace: `payload.properties` fuera del mapeo
+        // es una replica sin origen. Validaba limpio, incluso nombrando una
+        // propiedad que la entidad no tiene.
+        if let Some(pl) = b
+            .section("materialization")
+            .and_then(|m| m.get("payload").map(|(_, v)| v))
+            .and_then(|pl| pl.get("properties").map(|(_, v)| v))
+        {
+            exigidas.extend(
+                pl.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from)),
+            );
+        }
+        exigidas.sort();
         exigidas.dedup();
 
         // OOS2015 · un filtro que el origen EXIGE y el binding no mapea deja la fuente
@@ -638,7 +655,7 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     Code::Oos2011,
                     &b.path,
                     format!(
-                        "el mapeo de `{target}` no cubre su identidad ni sus enlaces: falta{} {}",
+                        "el mapeo de `{target}` no cubre lo que necesita columna: falta{} {}",
                         if faltan.len() == 1 { "" } else { "n" },
                         faltan
                             .iter()
@@ -656,7 +673,7 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
                      topología, ni recurso identificable, ni forma de volver a unirlo con \
                      los demás bindings de la misma entidad. Y una propiedad de `via` sin \
                      mapear deja la relacion sin columna fisica: el enlace se \
-                     declara y no se puede recorrer",
+                     declara y no se puede recorrer. Y una replica sin columna no tiene de donde copiar",
                 ),
             );
         }
