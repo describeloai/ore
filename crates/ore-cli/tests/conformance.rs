@@ -732,6 +732,10 @@ fn claves_conocidas(bloque: &str) -> Result<(), String> {
         "members",
         "actions",
         "contains",
+        "principalOf",
+        "attributes",
+        "context",
+        "attributesOn",
         "reason",
         "description",
         "mustContain",
@@ -791,6 +795,33 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
                 return Err(format!("falta la acción `{a}`"));
             }
         }
+        // `principalOf` — el tipo es principal de esas acciones. Sin esto la
+        // jerarquía emitida no la puede usar nadie: `resource in principal`
+        // sería un error de tipos.
+        if let Some(tipo) = campo_json(bloque, "entity") {
+            for a in lista_json(bloque, "principalOf") {
+                let acc = objeto_en(esquema, &format!("/actions/{a}"));
+                if !acc.contains(&format!("\"{tipo}\"")) {
+                    return Err(format!("`{tipo}` no es principal de `{a}`"));
+                }
+            }
+            let forma = objeto_en(esquema, &format!("/entityTypes/{tipo}/shape"));
+            for at in lista_json(bloque, "attributes") {
+                if !forma.contains(&format!("\"{at}\"")) {
+                    return Err(format!("`{tipo}` no declara el atributo `{at}`"));
+                }
+            }
+        }
+        // `context` — cada acción lo declara. Se leía para OOS5015 y no se
+        // declaraba en ninguna parte.
+        for c in lista_json(bloque, "context") {
+            for a in ["read", "aggregate", "export", "invoke"] {
+                let ctx = objeto_en(esquema, &format!("/actions/{a}/appliesTo/context"));
+                if !ctx.contains(&format!("\"{c}\"")) {
+                    return Err(format!("`{a}` no declara `context.{c}`"));
+                }
+            }
+        }
         // La forma genérica: una cadena que tiene que aparecer. Las tres de
         // arriba son de Cedar; esta sirve para cualquier formato, y es lo que
         // permite afirmar sobre un contrato ODCS sin escribir un comparador
@@ -815,6 +846,13 @@ fn comprobar_estructura(esquema: &str, esperado: &str) -> Result<(), String> {
         for c in lista_json(bloque, "contains") {
             if esquema.contains(&c) {
                 return Err(format!("`{c}` aparece y no debería"));
+            }
+        }
+        // Un recurso descrito con atributos obligaría al motor a LEERLO para
+        // autorizarlo, que es la lectura gobernada que decide su propio acceso.
+        for t in lista_json(bloque, "attributesOn") {
+            if !objeto_en(esquema, &format!("/entityTypes/{t}/shape")).is_empty() {
+                return Err(format!("`{t}` declara atributos y no debería"));
             }
         }
     }
@@ -1109,8 +1147,8 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 87, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&39));
+    assert_eq!(casos.len(), 88, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&40));
     assert_eq!(por_grupo.get("diff"), Some(&22));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));

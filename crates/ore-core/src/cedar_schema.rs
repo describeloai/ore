@@ -60,6 +60,46 @@ fn autorreferencia(e: &crate::link::Loaded, qn: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Una entidad que declara `principal: true` puede ser el SUJETO de una
+/// peticion, y sus propiedades son la forma que la capa de identidad tiene que
+/// rellenar. Sin esto el principal era `Role` —una bolsa sin atributos— y
+/// `principal.department` no era expresable: lo que emitiamos era RBAC.
+fn es_principal(e: &crate::link::Loaded) -> bool {
+    e.section("principal").and_then(|n| n.as_str()) == Some("true")
+}
+
+/// El tipo Cedar de cada propiedad. Solo los escalares que Cedar tiene: lo
+/// demas se omite en vez de traducirse a `String`, porque un tipo inventado en
+/// el esquema hace que el analizador estatico valide lo que no debe.
+fn tipo_cedar(t: &str) -> Option<&'static str> {
+    Some(match t {
+        "String" | "Date" | "Time" | "DateTime" | "DateTimeTz" | "Opaque" => "String",
+        "Integer" => "Long",
+        "Boolean" => "Bool",
+        _ => return None,
+    })
+}
+
+fn atributos(e: &crate::link::Loaded) -> BTreeMap<String, Json> {
+    let mut out = BTreeMap::new();
+    let Some(ps) = e.section("properties") else {
+        return out;
+    };
+    for (k, v) in ps.entries() {
+        let (Some(nombre), Some(t)) = (k.as_str(), v.get("type").and_then(|(_, x)| x.as_str()))
+        else {
+            continue;
+        };
+        if let Some(ct) = tipo_cedar(t) {
+            out.insert(
+                nombre.to_string(),
+                Json::obj([("type", Json::s(ct)), ("required", Json::Bool(true))]),
+            );
+        }
+    }
+    out
+}
+
 fn miembro_de(tipos: &[String]) -> Json {
     Json::obj([(
         "memberOfTypes",
@@ -87,6 +127,9 @@ pub fn emit(pkg: &Package) -> Json {
     tipos.insert("Role".into(), entidad(&[]));
 
     let mut nombres: Vec<String> = Vec::new();
+    // `Role` se queda para el principal que NO es una persona modelada: un
+    // servicio, un trabajo programado. RBAC puro sigue siendo valido.
+    let mut principales: Vec<String> = vec!["Role".to_string()];
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let corto = qn.rsplit('.').next().unwrap_or(&qn).to_string();
@@ -102,7 +145,22 @@ pub fn emit(pkg: &Package) -> Json {
         } else {
             Vec::new()
         };
-        tipos.insert(corto.clone(), miembro_de(&padres));
+        let mut t = miembro_de(&padres);
+        // Los atributos SOLO en un principal. El recurso se posiciona por
+        // PERTENENCIA —`resource in Label::"..."`, `resource in principal`— y no
+        // por atributos: describirlo con atributos obligaria al motor a LEER el
+        // recurso para autorizar, que es la lectura gobernada que decide el
+        // acceso a si misma.
+        if es_principal(e) {
+            let attrs = atributos(e);
+            if let Json::Obj(ref mut m) = t
+                && !attrs.is_empty()
+            {
+                m.insert("shape".into(), Json::Obj(attrs));
+            }
+            principales.push(corto.clone());
+        }
+        tipos.insert(corto.clone(), t);
         nombres.push(corto);
     }
 
@@ -125,10 +183,29 @@ pub fn emit(pkg: &Package) -> Json {
                 Json::obj([(
                     "appliesTo",
                     Json::obj([
-                        ("principalTypes", Json::Arr(vec![Json::s("Role")])),
+                        (
+                            "principalTypes",
+                            Json::Arr(principales.iter().map(|r| Json::s(r.as_str())).collect()),
+                        ),
                         (
                             "resourceTypes",
                             Json::Arr(recursos.iter().map(|r| Json::s(r.as_str())).collect()),
+                        ),
+                        // `context` cerrado en `purpose`, y OBLIGATORIO. Se leia
+                        // para `OOS5015` y no se declaraba en ninguna parte: una
+                        // politica que la usara no validaba contra nuestro
+                        // propio esquema. Obligatorio porque una peticion sin
+                        // finalidad no se puede comprobar contra la limitacion
+                        // de finalidad, y lo que no se declara se deniega (P4).
+                        (
+                            "context",
+                            Json::obj([(
+                                "purpose",
+                                Json::obj([
+                                    ("type", Json::s("String")),
+                                    ("required", Json::Bool(true)),
+                                ]),
+                            )]),
                         ),
                     ]),
                 )]),
@@ -175,15 +252,42 @@ pub fn emit_text(pkg: &Package) -> String {
     out.push_str("entity Role;\n");
 
     let mut nombres: Vec<String> = Vec::new();
+    let mut principales: Vec<String> = vec!["Role".to_string()];
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let corto = qn.rsplit('.').next().unwrap_or(&qn).to_string();
-        let auto = autorreferencia(e, &qn);
-        if auto {
-            out.push_str(&format!("entity {corto} in [{corto}];\n"));
+        let jerarquia = if autorreferencia(e, &qn) {
+            format!(" in [{corto}]")
         } else {
-            out.push_str(&format!("entity {corto};\n"));
-        }
+            String::new()
+        };
+        // Los atributos SOLO en un principal: el recurso se posiciona por
+        // pertenencia, no describiendolo con atributos.
+        let forma = if es_principal(e) {
+            principales.push(corto.clone());
+            let attrs = atributos(e);
+            let campos: Vec<String> = attrs
+                .iter()
+                .map(|(k, v)| {
+                    let t = match v {
+                        Json::Obj(m) => match m.get("type") {
+                            Some(Json::Str(x)) => x.as_str(),
+                            _ => "String",
+                        },
+                        _ => "String",
+                    };
+                    format!("{k}: {t}")
+                })
+                .collect();
+            if campos.is_empty() {
+                String::new()
+            } else {
+                format!(" {{ {} }}", campos.join(", "))
+            }
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("entity {corto}{jerarquia}{forma};\n"));
         nombres.push(corto);
     }
 
@@ -195,7 +299,9 @@ pub fn emit_text(pkg: &Package) -> String {
     recursos.push("Property".to_string());
     for a in ACCIONES {
         out.push_str(&format!(
-            "action \"{a}\" appliesTo {{ principal: [Role], resource: [{}] }};\n",
+            "action \"{a}\" appliesTo {{ principal: [{}], resource: [{}], \
+             context: {{ purpose: String }} }};\n",
+            principales.join(", "),
             recursos.join(", ")
         ));
     }

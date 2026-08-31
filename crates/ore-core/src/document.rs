@@ -203,6 +203,7 @@ impl Kind {
             ],
             Kind::Entity => &[
                 "nature",
+                "principal",
                 "primaryKey",
                 "timeKey",
                 "uniqueKeys",
@@ -404,6 +405,26 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     ));
                 }
                 None
+            },
+        },
+        // Un `event` no tiene identidad estable por registro, asi que no hay
+        // sujeto que nombrar: `principal` sobre un evento declara algo que no
+        // puede existir.
+        ShapeRule {
+            kind: Kind::Entity,
+            path: &["spec"],
+            check: |n| {
+                let principal = n.get("principal").and_then(|(_, v)| v.as_str()) == Some("true");
+                let evento = n.get("nature").and_then(|(_, v)| v.as_str()) == Some("event");
+                (principal && evento).then(|| {
+                    (
+                        "`principal: true` sobre `nature: event`".to_string(),
+                        Some(
+                            "un evento no tiene identidad estable por registro, asi que no                              hay sujeto que nombrar. Un principal es alguien, y `event`                              situa hechos en el tiempo en vez de identificar sujetos"
+                                .to_string(),
+                        ),
+                    )
+                })
             },
         },
         ShapeRule {
