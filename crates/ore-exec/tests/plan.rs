@@ -19,7 +19,9 @@ fn ejemplo() -> &'static Path {
 }
 
 fn caso(nombre: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("casos").join(nombre)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("casos")
+        .join(nombre)
 }
 
 fn analista() -> Identidad {
@@ -78,7 +80,10 @@ fn las_cuatro_fases_y_el_ambito_convertido_en_filtro() {
     // Y el ámbito se ha convertido en un PREDICADO que viaja al origen, con el
     // valor que trajo el principal. Es la decisión del ámbito, de punta a punta.
     assert_eq!(l.filtros.len(), 1, "{:?}", l.filtros);
-    assert_eq!(l.filtros[0].columna, "Organization_Data.Cost_Center_Reference");
+    assert_eq!(
+        l.filtros[0].columna,
+        "Organization_Data.Cost_Center_Reference"
+    );
     assert_eq!(l.filtros[0].valor, "finanzas");
     assert_eq!(l.filtros[0].ambito, "eu.gdpr-minimization#own-department");
 }
@@ -93,7 +98,9 @@ fn un_recorrido_completo_que_el_binding_prohibe_rechaza_el_plan() {
     c.accion = "aggregate".into();
     c.purpose = "workforce_analytics".into();
 
-    let r = m.planificar(&c).expect_err("sin claves y sin filtro, es un escaneo");
+    let r = m
+        .planificar(&c)
+        .expect_err("sin claves y sin filtro, es un escaneo");
     let Rechazo::PlanRechazado { binding, campo, .. } = &r else {
         panic!("tenía que rechazar el plan, y salió {r:?}");
     };
@@ -206,7 +213,9 @@ fn si_la_politica_lo_poda_todo_no_hay_plan() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
     let mut c = consulta(&["hr.Employee.baseSalary"], &["emp-7"]);
     c.quien.roles.clear();
-    let r = m.planificar(&c).expect_err("sin rol no hay nada autorizado");
+    let r = m
+        .planificar(&c)
+        .expect_err("sin rol no hay nada autorizado");
     assert!(matches!(r, Rechazo::NoAutorizado { .. }), "{r:?}");
 }
 

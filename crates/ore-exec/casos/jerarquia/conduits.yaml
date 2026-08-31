@@ -2,6 +2,7 @@ apiVersion: oos.dev/v1alpha1
 kind: ConduitPolicy
 metadata: { name: caso }
 spec:
+  owner: team:data
   conduits:
     # Materializar la topologia INSTANCIA un conducto, y un conducto sin
     # autorizacion es ⊥. Aqui solo viajan claves —`employeeId` y `managerId`,

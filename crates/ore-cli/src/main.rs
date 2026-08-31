@@ -758,12 +758,22 @@ fn informar(path: &std::path::Path) -> std::process::ExitCode {
             ));
         }
     }
-    for r in pkg.docs.iter().filter(|d| d.kind == ore_core::document::Kind::Ruleset) {
+    for r in pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::Ruleset)
+    {
         let q = r.qname().unwrap_or_default();
         for a in r.section("assertions").map(|n| n.items()).unwrap_or(&[]) {
             let id = a.get("id").and_then(|(_, v)| v.as_str()).unwrap_or("?");
-            let tipo = a.get("type").and_then(|(_, v)| v.as_str()).unwrap_or("library");
-            let sev = a.get("severity").and_then(|(_, v)| v.as_str()).unwrap_or("error");
+            let tipo = a
+                .get("type")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("library");
+            let sev = a
+                .get("severity")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("error");
             if sev == "warning" {
                 margen.push(format!(
                     "`{q}#{id}` es `severity: warning` y **no cuenta**: un aviso es, por \

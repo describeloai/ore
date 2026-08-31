@@ -41,11 +41,7 @@ pub fn sql(p: &Peticion) -> (String, Vec<String>) {
                 .collect();
             tuplas.push(format!("({})", marcas.join(", ")));
         }
-        condiciones.push(format!(
-            "({}) IN ({})",
-            cols.join(", "),
-            tuplas.join(", ")
-        ));
+        condiciones.push(format!("({}) IN ({})", cols.join(", "), tuplas.join(", ")));
     }
 
     for (col, op, valor) in &p.filtros {
@@ -83,13 +79,18 @@ mod tests {
         }
     }
 
-
     /// El aserto de M2: **solo las columnas proyectadas**.
     #[test]
     fn el_sql_no_pide_una_columna_que_no_este_en_la_proyeccion() {
         let (q, _) = sql(&peticion());
-        assert!(q.starts_with("SELECT \"base_pay\", \"employee_id\" FROM"), "{q}");
-        assert!(!q.contains('*'), "un `SELECT *` traería la columna redactada: {q}");
+        assert!(
+            q.starts_with("SELECT \"base_pay\", \"employee_id\" FROM"),
+            "{q}"
+        );
+        assert!(
+            !q.contains('*'),
+            "un `SELECT *` traería la columna redactada: {q}"
+        );
         assert!(!q.contains("national_id"), "{q}");
     }
 

@@ -35,7 +35,6 @@
 //! `ore_core::parse` que lee los documentos. Añadir un analizador de JSON para
 //! esto habría sido la segunda gramática para la misma forma.
 
-
 /// Lo que el motor pide. Nombres físicos ya resueltos: el driver no conoce el
 /// modelo, solo el objeto y sus columnas.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -62,7 +61,12 @@ pub struct Peticion {
 
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
     let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
-    let cadena = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string();
+    let cadena = |k: &str| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let lista = |k: &str| -> Vec<String> {
         n.get(k)
             .map(|(_, v)| {
@@ -89,7 +93,12 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         .map(|(_, v)| {
             v.items()
                 .iter()
-                .map(|t| t.items().iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|t| {
+                    t.items()
+                        .iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -192,7 +201,10 @@ mod tests {
             "url":"postgres://x"}"#;
         let p = leer_peticion(texto).expect("analiza");
         assert_eq!(p.objeto, "public.employees");
-        assert_eq!(p.proyeccion, vec![("baseSalary".to_string(), "base_pay".to_string())]);
+        assert_eq!(
+            p.proyeccion,
+            vec![("baseSalary".to_string(), "base_pay".to_string())]
+        );
         assert_eq!(p.claves, vec![vec!["emp-7".to_string()]]);
         assert_eq!(
             p.filtros,

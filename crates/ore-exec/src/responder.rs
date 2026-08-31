@@ -194,16 +194,14 @@ impl Motor {
         // único materializado que interviene en v1.
         let marca = self.topologia.as_ref().map(|t| t.marca.clone());
         let degradado = match (&marca, instante, sla) {
-            (Some(m), Some(ahora), Some(sla)) => {
-                match (epoca(m), epoca(ahora), duracion(sla)) {
-                    (Some(m0), Some(t0), Some(d)) if t0 > m0 + d => Some(format!(
-                        "la marca de agua es `{m}` y el `freshnessSLA` es `{sla}`: lo \
+            (Some(m), Some(ahora), Some(sla)) => match (epoca(m), epoca(ahora), duracion(sla)) {
+                (Some(m0), Some(t0), Some(d)) if t0 > m0 + d => Some(format!(
+                    "la marca de agua es `{m}` y el `freshnessSLA` es `{sla}`: lo \
                          materializado lleva {} s de retraso",
-                        t0 - m0
-                    )),
-                    _ => None,
-                }
-            }
+                    t0 - m0
+                )),
+                _ => None,
+            },
             _ => None,
         };
 
@@ -267,10 +265,11 @@ impl Motor {
                 .and_then(|t| t.get("watermark").map(|(_, v)| v))
                 .and_then(|w| w.as_str())?;
             if let Some((_, c)) = b.section("properties").and_then(|p| p.get(prop)) {
-                return c
-                    .as_str()
-                    .map(String::from)
-                    .or_else(|| c.get("column").and_then(|(_, x)| x.as_str()).map(String::from));
+                return c.as_str().map(String::from).or_else(|| {
+                    c.get("column")
+                        .and_then(|(_, x)| x.as_str())
+                        .map(String::from)
+                });
             }
         }
         None

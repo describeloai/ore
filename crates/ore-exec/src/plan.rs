@@ -293,11 +293,9 @@ impl Motor {
     /// Resuelve un `@oosMask("<ruleset>#<id>")` a su desclasificador.
     fn declasificador(&self, referencia: &str) -> Option<String> {
         let (rs, id) = referencia.split_once('#')?;
-        let regla = self
-            .paquete
-            .docs
-            .iter()
-            .find(|d| d.kind == ore_core::document::Kind::Ruleset && d.qname().as_deref() == Some(rs))?;
+        let regla = self.paquete.docs.iter().find(|d| {
+            d.kind == ore_core::document::Kind::Ruleset && d.qname().as_deref() == Some(rs)
+        })?;
         regla
             .section("masks")?
             .items()
@@ -311,11 +309,9 @@ impl Motor {
     /// Resuelve un `@oosScope("<ruleset>#<id>")` a `(property, matches)`.
     fn ambito(&self, referencia: &str) -> Option<(String, String)> {
         let (rs, id) = referencia.split_once('#')?;
-        let regla = self
-            .paquete
-            .docs
-            .iter()
-            .find(|d| d.kind == ore_core::document::Kind::Ruleset && d.qname().as_deref() == Some(rs))?;
+        let regla = self.paquete.docs.iter().find(|d| {
+            d.kind == ore_core::document::Kind::Ruleset && d.qname().as_deref() == Some(rs)
+        })?;
         let s = regla
             .section("scopes")?
             .items()
@@ -525,8 +521,7 @@ impl Motor {
                     continue;
                 };
                 let corta = prop.rsplit('.').next().unwrap_or(&prop).to_string();
-                let (Some(col), Some(valor)) =
-                    (mapa.get(&corta), c.quien.claims.get(&reclamacion))
+                let (Some(col), Some(valor)) = (mapa.get(&corta), c.quien.claims.get(&reclamacion))
                 else {
                     continue;
                 };
@@ -607,9 +602,7 @@ impl Motor {
             .collect();
         let huerfanas: Vec<String> = autorizadas
             .keys()
-            .filter(|p| {
-                !servidas.contains(p.rsplit('.').next().unwrap_or(p))
-            })
+            .filter(|p| !servidas.contains(p.rsplit('.').next().unwrap_or(p)))
             .cloned()
             .collect();
         for h in huerfanas {
@@ -693,10 +686,11 @@ fn columnas(b: &ore_core::link::Loaded) -> BTreeMap<String, String> {
     };
     for (k, v) in ps.entries() {
         let Some(nombre) = k.as_str() else { continue };
-        let col = v
-            .as_str()
-            .map(str::to_string)
-            .or_else(|| v.get("column").and_then(|(_, c)| c.as_str()).map(str::to_string));
+        let col = v.as_str().map(str::to_string).or_else(|| {
+            v.get("column")
+                .and_then(|(_, c)| c.as_str())
+                .map(str::to_string)
+        });
         if let Some(col) = col {
             out.insert(nombre.to_string(), col);
         }

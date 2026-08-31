@@ -81,7 +81,11 @@ fn filas(peticion: &str) -> Result<String, String> {
         // tuplas: una clave compuesta lo sigue siendo aquí.
         if !p.claves.is_empty() {
             let mia: Vec<&str> = p.clave_columnas.iter().map(|c| campo(c)).collect();
-            if !p.claves.iter().any(|t| t.iter().zip(&mia).all(|(a, b)| a == b)) {
+            if !p
+                .claves
+                .iter()
+                .any(|t| t.iter().zip(&mia).all(|(a, b)| a == b))
+            {
                 continue;
             }
         }

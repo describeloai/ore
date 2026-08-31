@@ -720,7 +720,7 @@ fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
                                 "un ámbito de fila recorta `{target}` por `{corta}`, que el \
                                  mapeo no cubre"
                             ),
-                            )
+                        )
                         .help(
                             "el recorte por filas se empuja al origen como filtro, y sin la \
                              propiedad en el mapeo no hay con qué construirlo. El ejecutor no \

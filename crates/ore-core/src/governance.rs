@@ -177,7 +177,9 @@ pub struct Descarga {
 ///
 /// Se arregla usando `alcance`, que ya mira las dos — en vez de una segunda
 /// lectura que volvería a poder divergir.
-pub fn cobertura_atribuida(pkg: &Package) -> BTreeMap<String, BTreeMap<&'static str, Vec<Descarga>>> {
+pub fn cobertura_atribuida(
+    pkg: &Package,
+) -> BTreeMap<String, BTreeMap<&'static str, Vec<Descarga>>> {
     let sel = selecciones(pkg);
     let mut out: BTreeMap<String, BTreeMap<&'static str, Vec<Descarga>>> = BTreeMap::new();
 
@@ -192,10 +194,14 @@ pub fn cobertura_atribuida(pkg: &Package) -> BTreeMap<String, BTreeMap<&'static 
             .map(String::from);
         for clase in aporta(pkg, r) {
             for prop in seleccionadas {
-                out.entry(prop.clone()).or_default().entry(clase).or_default().push(Descarga {
-                    regla: q.clone(),
-                    owner: owner.clone(),
-                });
+                out.entry(prop.clone())
+                    .or_default()
+                    .entry(clase)
+                    .or_default()
+                    .push(Descarga {
+                        regla: q.clone(),
+                        owner: owner.clone(),
+                    });
             }
         }
     }
@@ -771,7 +777,10 @@ fn finalidades(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     Diagnostic::new(
                         Code::Oos4005,
                         ruta,
-                        format!("`{}` limita por la finalidad `{p}`, que nadie declara", pol.id),
+                        format!(
+                            "`{}` limita por la finalidad `{p}`, que nadie declara",
+                            pol.id
+                        ),
                     )
                     .help(if declaradas.is_empty() {
                         "el paquete no declara ningún `RequestPolicy`, así que no hay ninguna \
@@ -899,7 +908,10 @@ fn roles_sin_origen(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     Diagnostic::new(
                         Code::Oos2005,
                         ruta,
-                        format!("`{}` exige el rol `{rol}`, y nadie declara de dónde vienen los roles", pol.id),
+                        format!(
+                            "`{}` exige el rol `{rol}`, y nadie declara de dónde vienen los roles",
+                            pol.id
+                        ),
                     )
                     .help(
                         "una pertenencia a rol no es un atributo: llega en una reclamación, y \

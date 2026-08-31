@@ -141,7 +141,11 @@ fn lo_generado_en_los_ejemplos_esta_al_dia() {
     let mut fallos = Vec::new();
 
     for dir in &ontologias(&raiz) {
-        for fichero in std::fs::read_dir(dir.join("policies")).into_iter().flatten().flatten() {
+        for fichero in std::fs::read_dir(dir.join("policies"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let p = fichero.path();
             if p.extension().and_then(|e| e.to_str()) != Some("cedarschema") {
                 continue;

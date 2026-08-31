@@ -39,7 +39,11 @@ fn main() -> std::process::ExitCode {
     // `index` lleva subverbo, así que la ruta va un hueco más allá. Se lee aquí
     // y no dentro para que el motor se cargue una sola vez.
     let verbo = args.first().cloned().unwrap_or_default();
-    let ruta = if verbo == "index" { args.get(2) } else { args.get(1) };
+    let ruta = if verbo == "index" {
+        args.get(2)
+    } else {
+        args.get(1)
+    };
     let Some(ruta) = ruta else {
         eprintln!("uso: ore-exec <validar|plan> <ruta> [banderas]");
         eprintln!("     ore-exec index <build|traverse> <ruta> [banderas]");
@@ -117,7 +121,10 @@ fn main() -> std::process::ExitCode {
                             println!("      {prop} ← {col}");
                         }
                         for f in &l.filtros {
-                            println!("      filtro: {} = {:?}  ({})", f.columna, f.valor, f.ambito);
+                            println!(
+                                "      filtro: {} = {:?}  ({})",
+                                f.columna, f.valor, f.ambito
+                            );
                         }
                     }
                     println!("\n④ ENSAMBLAR");
@@ -191,12 +198,13 @@ fn consulta_de(args: &[String]) -> Consulta {
         purpose: valor(args, "--purpose").unwrap_or_default(),
         entidad: valor(args, "--entidad").unwrap_or_default(),
         propiedades: lista(args, "--props"),
-        claves: lista(args, "--claves").into_iter().map(|k| vec![k]).collect(),
+        claves: lista(args, "--claves")
+            .into_iter()
+            .map(|k| vec![k])
+            .collect(),
         travesia: None,
     }
 }
-
-
 
 fn si_hay(v: &[String]) -> String {
     if v.is_empty() {
@@ -209,7 +217,9 @@ fn si_hay(v: &[String]) -> String {
 fn rechazo(r: &Rechazo) -> String {
     match r {
         Rechazo::PeticionInvalida(m) => {
-            format!("petición inválida · {m}\n  no es una denegación: es una petición que no existe")
+            format!(
+                "petición inválida · {m}\n  no es una denegación: es una petición que no existe"
+            )
         }
         Rechazo::NoAutorizado { porque } => format!("no autorizado · {}", porque.join(" · ")),
         Rechazo::PlanRechazado {
@@ -437,7 +447,10 @@ fn refrescar(motor: &Motor, args: &[String]) -> Result<(usize, usize), String> {
         })
         .transpose()?;
 
-    let marca_anterior = anterior.as_ref().map(|t| t.marca.clone()).unwrap_or_default();
+    let marca_anterior = anterior
+        .as_ref()
+        .map(|t| t.marca.clone())
+        .unwrap_or_default();
     let mut aristas = anterior.as_ref().map(|t| t.aristas()).unwrap_or_default();
     let previas = aristas.len();
 
@@ -469,11 +482,8 @@ fn refrescar(motor: &Motor, args: &[String]) -> Result<(usize, usize), String> {
     let reemplazadas = previas - aristas.len();
     aristas.extend(nuevas.iter().cloned());
 
-    let t = ore_exec::Topologia::construir(
-        &ore_core::digest::bundle(&motor.paquete),
-        &marca,
-        &aristas,
-    );
+    let t =
+        ore_exec::Topologia::construir(&ore_core::digest::bundle(&motor.paquete), &marca, &aristas);
     let salida = valor(args, "-o").unwrap_or_else(|| "topologia.oretopo".into());
     std::fs::write(&salida, t.bytes())
         .map_err(|e| format!("no se pudo escribir `{salida}`: {e}"))?;

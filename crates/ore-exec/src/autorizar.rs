@@ -194,8 +194,12 @@ impl Motor {
                     .filter_map(|a| EntityUid::from_str(&format!("{tipo}::{a:?}")).ok()),
             );
         }
-        let Ok(uid_principal) = EntityUid::from_str(&format!("{tipo}::{:?}", p.quien.sujeto)) else {
-            return Veredicto::Invalida(format!("`{}` no es un identificador válido", p.quien.sujeto));
+        let Ok(uid_principal) = EntityUid::from_str(&format!("{tipo}::{:?}", p.quien.sujeto))
+        else {
+            return Veredicto::Invalida(format!(
+                "`{}` no es un identificador válido",
+                p.quien.sujeto
+            ));
         };
         match Entity::new(uid_principal.clone(), attrs, padres) {
             Ok(e) => entidades.push(e),

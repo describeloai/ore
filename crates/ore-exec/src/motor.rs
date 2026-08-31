@@ -38,7 +38,10 @@ pub struct Motor {
 impl Motor {
     /// Traduce un identificador de Cedar al `@id` del documento.
     pub(crate) fn nombre_de(&self, cedar: &str) -> String {
-        self.nombres.get(cedar).cloned().unwrap_or_else(|| cedar.to_string())
+        self.nombres
+            .get(cedar)
+            .cloned()
+            .unwrap_or_else(|| cedar.to_string())
     }
 
     /// Carga un artefacto de topología, **y lo rechaza si es de otro bundle**.
@@ -70,7 +73,12 @@ impl Motor {
     /// la única que `principal in Employee::"…"` puede recorrer.
     pub(crate) fn relacion_de_jerarquia(&self) -> Option<String> {
         let rp = self.paquete.request_policy()?;
-        let qn = rp.section("subject")?.get("entity")?.1.as_str()?.to_string();
+        let qn = rp
+            .section("subject")?
+            .get("entity")?
+            .1
+            .as_str()?
+            .to_string();
         let e = self.paquete.entity(&qn)?;
         for (k, v) in e.section("relations")?.entries() {
             let destino = v.get("target").and_then(|(_, t)| t.as_str())?;
@@ -180,7 +188,8 @@ impl Motor {
     /// proyecciones. Que una política **entera** sea válida contra el esquema
     /// entero es otra pregunta, y solo la contesta un validador de Cedar.
     pub fn validar(&self) -> Vec<String> {
-        let r = Validator::new(self.esquema.clone()).validate(&self.politicas, ValidationMode::Strict);
+        let r =
+            Validator::new(self.esquema.clone()).validate(&self.politicas, ValidationMode::Strict);
         r.validation_errors().map(|e| e.to_string()).collect()
     }
 
@@ -188,7 +197,8 @@ impl Motor {
     /// condición imposible es una política que no gobierna, y ya sabemos que
     /// tiene el mismo aspecto que una que sí.
     pub fn avisos(&self) -> Vec<String> {
-        let r = Validator::new(self.esquema.clone()).validate(&self.politicas, ValidationMode::Strict);
+        let r =
+            Validator::new(self.esquema.clone()).validate(&self.politicas, ValidationMode::Strict);
         r.validation_warnings().map(|w| w.to_string()).collect()
     }
 }

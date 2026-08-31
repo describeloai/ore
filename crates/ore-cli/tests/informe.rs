@@ -15,7 +15,9 @@ use std::path::Path;
 use std::process::Command;
 
 fn informe(dir: &str) -> String {
-    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(dir);
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(dir);
     let s = Command::new(env!("CARGO_BIN_EXE_ore"))
         .arg("report")
         .arg(&raiz)

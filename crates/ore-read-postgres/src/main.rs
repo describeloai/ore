@@ -438,15 +438,17 @@ fn filas(peticion: &str) -> Result<String, String> {
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
     );
-    let mut cliente = postgres::Client::connect(&p.url, tls)
-        .map_err(|e| format!("no se pudo conectar: {e}"))?;
+    let mut cliente =
+        postgres::Client::connect(&p.url, tls).map_err(|e| format!("no se pudo conectar: {e}"))?;
 
     cliente
         .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
 
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
-        params.iter().map(|v| v as &(dyn postgres::types::ToSql + Sync)).collect();
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = params
+        .iter()
+        .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+        .collect();
     let resultado = cliente
         .query(consulta.as_str(), &refs)
         .map_err(|e| format!("la consulta falló: {e}\n  {consulta}"))?;
@@ -545,4 +547,3 @@ mod tests {
         assert_eq!(clase("f"), "foreignTable");
     }
 }
-

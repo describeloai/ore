@@ -23,9 +23,9 @@
 //! propia entidad— se proyecta como jerarquía de entidades. De ahí sale el ReBAC
 //! estilo Zanzibar sin añadir un segundo sistema de autorización.
 
+use crate::document::Kind;
 use crate::flow;
 use crate::json::Json;
-use crate::document::Kind;
 use crate::link::Package;
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -30,8 +30,8 @@ pub mod responder;
 pub mod topologia;
 
 pub use autorizar::{Denegacion, Identidad, Peticion, Veredicto};
-pub use plan::{Consulta, Filtro, Lectura, Plan, Rechazo};
+pub use motor::{Carga, Motor};
 pub use plan::Travesia;
+pub use plan::{Consulta, Filtro, Lectura, Plan, Rechazo};
 pub use responder::Respuesta;
 pub use topologia::{Arista, Topologia};
-pub use motor::{Carga, Motor};

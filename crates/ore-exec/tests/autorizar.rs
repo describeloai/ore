@@ -84,7 +84,11 @@ fn dos_principales_mismo_recurso_veredictos_distintos() {
 #[test]
 fn el_forbid_se_nombra() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
-    let mut p = peticion(&["hr_analyst"], "hr.Employee.nationalId", "regulatory_reporting");
+    let mut p = peticion(
+        &["hr_analyst"],
+        "hr.Employee.nationalId",
+        "regulatory_reporting",
+    );
     p.accion = "export".into();
 
     let v = m.autorizar(&p);
@@ -114,7 +118,11 @@ fn sin_politica_que_lo_alcance_es_denegacion_por_defecto() {
 #[test]
 fn una_finalidad_ajena_no_deniega_en_mudo() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
-    let v = m.autorizar(&peticion(&["hr_analyst"], "hr.Employee.baseSalary", "marketing"));
+    let v = m.autorizar(&peticion(
+        &["hr_analyst"],
+        "hr.Employee.baseSalary",
+        "marketing",
+    ));
     let Veredicto::Denegado { porque, .. } = &v else {
         panic!("`marketing` no está entre las finalidades de esa política, y salió {v:?}");
     };
@@ -131,14 +139,22 @@ fn una_finalidad_ajena_no_deniega_en_mudo() {
 fn otro_emisor_u_otra_audiencia_no_son_una_peticion() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
 
-    let mut ajeno = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
+    let mut ajeno = peticion(
+        &["hr_analyst"],
+        "hr.Employee.baseSalary",
+        "compensation_review",
+    );
     ajeno.quien.emisor = "https://id.otra.example".into();
     assert!(
         matches!(m.autorizar(&ajeno), Veredicto::Invalida(_)),
         "un emisor ajeno no puede producir una decisión de política"
     );
 
-    let mut otra = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
+    let mut otra = peticion(
+        &["hr_analyst"],
+        "hr.Employee.baseSalary",
+        "compensation_review",
+    );
     otra.quien.audiencia = "otro-servicio".into();
     assert!(
         matches!(m.autorizar(&otra), Veredicto::Invalida(_)),
@@ -151,7 +167,11 @@ fn otro_emisor_u_otra_audiencia_no_son_una_peticion() {
 #[test]
 fn una_reclamacion_no_declarada_no_se_cree() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
-    let mut p = peticion(&["hr_analyst"], "hr.Employee.baseSalary", "compensation_review");
+    let mut p = peticion(
+        &["hr_analyst"],
+        "hr.Employee.baseSalary",
+        "compensation_review",
+    );
     p.quien.claims.insert("clearance".into(), "SECRET".into());
     let v = m.autorizar(&p);
     assert!(
@@ -191,9 +211,7 @@ fn una_politica_que_exige_la_cadena_lo_dice_en_vez_de_denegar_en_mudo() {
         panic!("sin índice no se puede permitir, y salió {v:?}");
     };
     let Denegacion::JerarquiaNoDisponible { candidatas } = porque else {
-        panic!(
-            "tenía que decir que no pudo evaluarla, no que ninguna casó — dijo {porque:?}"
-        );
+        panic!("tenía que decir que no pudo evaluarla, no que ninguna casó — dijo {porque:?}");
     };
     assert_eq!(candidatas, &["under-the-ceo-reads-comp"], "{v:?}");
 }
@@ -223,7 +241,8 @@ fn con_el_indice_la_cadena_del_principal_se_recorre() {
     std::fs::write(&fichero, t.bytes()).expect("se escribe");
 
     let mut m = Motor::cargar(&raiz).expect("carga");
-    m.cargar_topologia(&fichero).expect("el índice es de este bundle");
+    m.cargar_topologia(&fichero)
+        .expect("el índice es de este bundle");
 
     let p = Peticion {
         quien: Identidad {

@@ -267,7 +267,14 @@ impl Kind {
             ],
             Kind::Resolution => &["entity", "sources", "strategies", "endorsements"],
             Kind::RequestPolicy => &["owner", "issuer", "subject", "claims", "purposes"],
-            Kind::Ruleset => &["owner", "targets", "assertions", "masks", "scopes", "duties"],
+            Kind::Ruleset => &[
+                "owner",
+                "targets",
+                "assertions",
+                "masks",
+                "scopes",
+                "duties",
+            ],
             // La línea que decide qué cabe en un concepto: **declara lo que es
             // cierto de él en todas partes**. `required`, `unique` y `temporal`
             // no están porque dependen de la tabla, no del significado; `enum`
@@ -577,7 +584,10 @@ pub fn shape_rules() -> Vec<ShapeRule> {
             path: &["spec"],
             check: |n| {
                 for (k, ayuda) in [
-                    ("owner", "quien opera la identidad no es quien modela el dominio"),
+                    (
+                        "owner",
+                        "quien opera la identidad no es quien modela el dominio",
+                    ),
                     (
                         "issuer",
                         "sin emisor, «los atributos llegan firmados» no es comprobable",
