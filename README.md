@@ -250,7 +250,24 @@ borrador define.
 | **1** | `source add` · `discover` · `review` sobre PostgreSQL | apuntar a un esquema sucio de ~50 tablas y que un arquitecto diga *«está un 80% bien»* tras contestar cinco preguntas | ◐ |
 | **2** | retículos, conductos, propagación, chequeo de flujo, Cedar embebido | `ore validate` falla con la cadena causal completa ante PII que alcanza un conducto no autorizado | ◐ |
 | **3** | `ore dev` + servidor MCP + obligaciones en lectura | un agente pregunta por MCP y el PII vuelve enmascarado **sin que el agente haya hecho nada** | ◐ |
+| **L2** | **el ejecutor** · autorizar · planificar · federar | **una consulta cruza dos familias de fuente y devuelve una entidad ensamblada**, con el plan rechazable sin abrir una conexión y la respuesta acompañada de sus tres ejes | ✅ |
 | **E** | **emisión** · ODCS · Cedar · **GraphQL** | el esquema emitido lo acepta un motor ajeno, el techo del conducto quita de él **exactamente** lo gobernado, y **una mutación que exige firma humana no puede devolver su resultado** | ✅ |
+
+**La fila `L2` tampoco lleva número, y por lo mismo que la `E`.** Es un nivel de
+conformidad, no una capa del producto: la cruzan la 1 —los drivers— y la 3 —lo que se
+sirve—. Se construyó en cinco hitos con criterios de listo, y ese plan **se borró el
+día que el último se puso verde**: un plan que sobrevive a su ejecución deja de ser un
+plan y pasa a ser documentación de un pasado que ya nadie comprueba.
+
+Lo que dejó, y se puede ejecutar: `ore-exec validar · plan · responder · index build ·
+index traverse`, dos lectores —`ore-read-postgres` y `ore-read-jsonl`—, y el protocolo
+que comparten en `ore-driver`. La segunda familia es **un fichero y no otra base de
+datos** a propósito: si el mismo plan sirve a un servidor y a un fichero, la petición
+estaba cortada por el sitio correcto.
+
+Y lo que **no** hace, dicho y no disimulado: no verifica la firma criptográfica de los
+atributos —emisor y audiencia sí; la firma exige JWKS, que es red—, no materializa la
+carga útil, y no mapea el índice en memoria.
 
 De la fase 3 existe **`ore dev`**: sirve el contrato por MCP sobre stdio y **no
 toca un dato**. Su criterio de éxito —*«el PII vuelve enmascarado»*— es **L2** y
@@ -373,277 +390,6 @@ Lo que **no** se implementó es la otra mitad, y la frontera es la misma tabla d
 arriba: proponer mapeos es del scaffolder, necesita fuente y modelo, y es fase 1.
 El compilador solo hace lo suyo — **decir que no**: un documento que no está en
 `DRAFT` no puede contener una sola conjetura (`OOS9003`).
-
-### L2 · el camino hasta el ejecutor v1
-
-[`05-ejecutor`](vendor/oos/spec/v1alpha1/05-ejecutor.md) está cerrado y es normativo:
-dice **qué** debe hacer un L2. Esta sección dice **en qué orden lo construye ORE**, y
-es deliberadamente **desechable** — su contrato de caducidad está abajo.
-
-Las etapas se numeran **M0–M4** y no continúan la tabla de arriba a propósito: las
-fases 0–3 son capas del producto, y esto es el interior de una sola de sus filas. El
-criterio de orden sí es el mismo —**riesgo retirado**—, y aquí hay uno que no se
-parece a los demás porque es el único irreversible.
-
-#### La medición que ordena el resto
-
-Antes de la primera línea, con el mismo cierre que mide
-[`dependencias.rs`](crates/ore-cli/tests/dependencias.rs): `cedar-policy` 4 arrastra
-**153 crates**, de las que **135 son nuevas** en este árbol. Cuatro están en su lista
-de vetadas — `chrono`, `time`, `time-core` y `time-macros`, vetadas como *«el reloj;
-la compilación no lo lee»*.
-
-`cedar-policy-core` depende de `chrono` porque Cedar 4 tiene una extensión `datetime`,
-y una política puede decir *«antes del 1 de enero»*. La arista es opcional, y
-desactivarla **no sirve**: se midió, y el `Cargo.lock` sale idéntico, porque no depende
-de las features a propósito.
-
-> **Un evaluador de políticas necesita reloj. Un compilador no puede tenerlo**
-> —invariante III, la compilación es pura.
-
-De ahí sale la forma del ejecutor entero, y no hay que discutirla: **el guardián que
-se escribió para el driver ya la decide**. Enlazar el evaluador dentro de `ore-cli`
-llevaría su cierre de 32 a **167** y dispararía
-`el_binario_que_se_distribuye_no_sabe_hablar_por_la_red` nombrando `chrono`. El
-razonamiento entero está en el
-[ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md).
-
-> **El ejecutor vive donde vive el driver: fuera.** `crates/ore-exec`, miembro del
-> espacio de trabajo y **fuera de `default-members`**, igual que `ore-read-postgres`.
-> Y `ore serve` **delega** en él por PATH, exactamente como `lector.rs` delega en
-> `ore-read-<tipo>`.
-
-Lo que eso compra es una frase que deja de ser una promesa: **el binario que compila
-no sabe servir, y se demuestra midiendo, no leyendo el código.**
-
-#### M0 · Autorizar de verdad
-
-**Qué.** Nace `crates/ore-exec` y enlaza `cedar-policy`. Contesta una sola pregunta:
-dado un bundle, un principal con sus atributos, una acción y un recurso — qué dice la
-política, y qué máscara aplica.
-
-**Por qué primero.** §3 hace normativo que autorizar vaya delante, y da la razón:
-autorizar al final es haber abierto ya la conexión. Esa razón vale también para el
-orden de construcción, porque todo lo que viene después toma su forma de lo que ①
-poda. Y retira la única decisión irreversible de todo L2.
-
-**Listo cuando:**
-
-- ~~**ADR 0007**~~ ✅ [escrito](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md):
-  el [ADR 0003](docs/decisions/0003-lectura-estructural-de-cedar.md) —lectura
-  estructural en compilación— sigue en pie, y **evaluar es otra decisión que vive en
-  otro artefacto**. No lo revoca: **ejecuta la puerta de salida que él mismo dejó
-  escrita**.
-- ~~Los atributos del principal **llegan**, se **verifican**, y una petición sin ellos se
-  **rechaza**~~ ✅ — y el emisor contra el que verificar lo declara ahora
-  [`06-request`](vendor/oos/spec/v1alpha1/06-request.md), que era el hueco. Emisor,
-  audiencia y reclamaciones se comprueban; **la firma criptográfica no**, y se dice: para
-  validarla hace falta la red (JWKS), que es una capacidad que se decide con `serve`.
-- El esquema que carga el evaluador es **el que emite
-  `ore export --format cedarschema`**, no un segundo esquema. Si divergieran, la
-  política se habría validado contra uno y se evaluaría contra otro — que es
-  exactamente lo que la prueba de fuego de `00-overview` §4.1.1 fue a buscar.
-- ~~Dos principales, mismo recurso, veredictos distintos, y el veredicto **nombra la
-  política que decidió**~~ ✅ — con **nuestro** `@id`, porque Cedar los nombra por posición
-  y eso es justo la identidad que el ADR 0003 rechazó. Y el veredicto trae además las
-  obligaciones, las máscaras y los **ámbitos**, que es lo que la fase ③ necesita para saber
-  qué filtro empujar.
-- ~~El `Deny` deja de ser mudo~~ ✅ — se distinguen tres: **prohibida** por un `forbid` que
-  se nombra, **sin política** que la alcance (que no es un fallo: es P4), y **ninguna casó**
-  entre las que sí la alcanzan, nombrándolas. Cedar devuelve el mismo `Deny` para las tres.
-- ~~El hueco de la jerarquía es una **condición nombrada**, no un `false`
-  silencioso~~ ✅ — y `resource in principal` **se retiró**: el recurso de una
-  autorización es una propiedad, no una fila. Lo que quedó es la mitad del
-  principal —`principal in Employee::"…"`—, que sí es expresable y sí necesita el
-  índice: sin él evalúa a falso, así que el veredicto dice **jerarquía no
-  disponible** en vez de fingir que ninguna política casó.
-
-**M0 está cerrado.** Los cinco criterios, y el crate no abre nada: el almacén de
-entidades sale del bundle.
-
-**No hace:** ni plan, ni fuente, ni una sola fila.
-
-**Guardianes.** `cierre_de("ore-cli")` sigue en **32**: el binario que compila no ha
-ganado un reloj. `propios`, en `dependencias.rs`, gana `ore-exec` — si no, la
-medición deja de medir lo que dice que mide. Y `el_driver_esta_donde_esta_por_algo`
-gana un hermano: `cierre_de("ore-exec") > cierre_de("ore-cli") * 4` — hoy daría 4,8×.
-
-#### M1 · El plan es un artefacto, y se rechaza sin abrir una conexión
-
-**Qué.** Bundle + consulta + principal → un `Plan` con las cuatro fases de §3, o una
-de las condiciones de §9.
-
-**Por qué aquí.** Porque todo lo que viene después es una **comprobación contra el
-plan**, y porque planificar es puro: se prueba con la misma maquinaria de casos que
-L0. **La primera versión del ejecutor no toca un dato**, y eso no es una limitación —
-es lo que la hace verificable.
-
-**Listo, y así se comprueba:**
-
-- ~~`ore-exec plan` imprime las cuatro fases en orden~~ ✅, con `(datasourceRef,
-  objeto, proyección, claves)` y **los filtros** de cada lectura.
-- ~~Los rechazos nombran el binding y el campo~~ ✅ — `fullScan: forbidden` sobre
-  `hr.workday`, `capabilities` ausente (§5.1), y *no autorizado* cuando ① lo poda todo.
-- ~~Una propiedad con máscara `redact` **no aparece en la proyección**~~ ✅ — y no se
-  redacta después: se **quita antes de pedirla**.
-- ~~El plan se produce **sin ninguna fuente configurada**~~ ✅, y hay una prueba que
-  falla si alguien pone la variable.
-- ~~**Mismas entradas → el mismo plan, byte a byte**~~ ✅ — y con `Json::jcs()`, que es
-  **la forma canónica del bundle**: G1 aplicado a L2 y no una segunda definición de
-  determinismo que podría divergir de la primera.
-- ~~Casos en `crates/ore-exec/casos/`~~ ✅ — `jerarquia`, `sin-capacidades`, `redactado`.
-
-**Y un defecto que salió de ejecutarlo, no de leerlo.** `nationalId` está autorizada
-para `read` y el binding de Workday **no la mapea**: el plan decía ✓ en ① y la columna
-desaparecía de ③ **en silencio**. Que un binding no lo mapee todo es legal; callarlo,
-no. Ahora se poda con motivo.
-
-**No hace:** ninguna travesía —el índice es de M3— y ninguna fila.
-
-#### M2 · La carga útil — el segundo verbo del driver
-
-**Qué.** Hoy `ore-read-<tipo>` recibe una URL por stdin y emite un **catálogo**. Gana
-un segundo verbo: recibe una **petición** y emite **filas**.
-
-Y la afirmación que hay que acertar aquí, porque es la que decide si esto escala a
-cientos de fuentes:
-
-> **La petición es la misma para todos los drivers.** Es un fragmento del plan, no
-> SQL. **Traducir es del driver.** Añadir una familia de fuentes es escribir un
-> traductor, no tocar el ejecutor.
-
-**Por qué antes que la travesía.** Porque §5.1 ya lo dijo: *el camino principal
-funciona sin declarar nada*. La búsqueda por clave sola **ya contesta una consulta**,
-así que ③ es el primer trozo que vale por sí mismo.
-
-**Listo, y medido contra un PostgreSQL de verdad:**
-
-- ~~El protocolo en un ADR~~ ✅ [0008](docs/decisions/0008-el-protocolo-del-driver.md) —
-  **la petición es un fragmento del plan, no SQL**, y traducir es del driver. Añadir una
-  familia de fuentes es escribir un traductor, no tocar el planificador.
-- ~~`ore-read-postgres` contesta una búsqueda por clave~~ ✅ — y el **filtro del ámbito**
-  llegó hasta el `WHERE`: dos claves pedidas, **una fila devuelta**, porque
-  `cost_center = "finanzas"` dejó fuera a la otra.
-- ~~**El SQL solo pide las columnas proyectadas**~~ ✅ — con pruebas puras, sin servidor,
-  porque un aserto que exigiera una base de datos no se ejecutaría nunca. `SELECT *` no
-  existe: una propiedad `redact` no está en el plan, luego no está en la petición, luego
-  **no puede estar en el SQL**.
-- ~~Un plan con proyección vacía no llega a lanzar el driver~~ ✅ — y si llega, el driver
-  la rechaza: *«no hay nada que pedir»*.
-- ~~La conexión es de solo lectura~~ ✅ — `SET SESSION CHARACTERISTICS AS TRANSACTION READ
-  ONLY`, y el servidor contesta `cannot execute INSERT in a read-only transaction`. **La
-  propiedad se compra pidiéndosela**, no prometiéndola.
-- ~~El formato de fila decidido y razonado~~ ✅ — NDJSON, con **propiedades** por clave y
-  no columnas físicas, y con el disparador de Arrow IPC escrito al lado: la caché de carga
-  útil.
-
-**Queda:** el proceso que refresca y el que responde toman credenciales distintas — hoy
-quien invoca elige la URL, que es la mitad; la otra mitad es que colapsarlas avise.
-
-**No hace:** ni junta entre fuentes, que es ④; ni travesía; ni caché.
-
-#### M3 · La travesía — el artefacto de topología
-
-**Qué.** El [ADR 0006](docs/decisions/0006-el-artefacto-de-topologia.md) decidió la
-forma; esto la construye. CSR, inmutable, mapeado en memoria, reconstruido por
-ventana y firmado.
-
-**Listo, y medido contra un PostgreSQL de verdad:**
-
-- ~~`ore-exec index build` produce el artefacto desde las fuentes declaradas~~ ✅, y
-  dos construcciones sobre la misma instantánea dan **el mismo fichero byte a byte**.
-  G1 otra vez: un índice que difiere entre nodos hace que dos nodos contesten distinto
-  a la misma pregunta.
-- ~~Una travesía de N saltos devuelve claves **sin abrir una conexión**~~ ✅ — `emp-42`
-  → `jefa`, `ceo`. Es la frase que hace asequible la ley de §2, y ya está medida.
-- ~~El artefacto lleva su marca de agua y el digest del bundle~~ ✅ — y uno de otro
-  bundle **no se carga**: las aristas serían de un modelo y las políticas de otro, y
-  esa junta no falla, devuelve filas.
-- ~~El artefacto **no está** en el árbol~~ ✅ — con un guardián que busca por **magia y
-  no por extensión**, porque renombrarlo es exactamente lo que haría quien quiera
-  colarlo. *La mitad OCI llega con la imagen, que todavía no existe.*
-- ~~Se cierra el hueco de M0~~ ✅ — `principal in Employee::"ceo"` casa para quien está
-  dos saltos por debajo, y la fase ② deja de recibir las claves de fuera.
-
-**Y el protocolo se validó solo.** Las aristas se leen con una petición de la fase ③
-cuya proyección se llama `desde` y `hasta`; como las filas salen con nombres de
-propiedad, lo que el driver devuelve **ya es una arista**. El driver no se entera de
-que esto es un índice.
-
-**No hace:** ni refresco incremental —reconstruir por ventana es el coste declarado en
-el ADR 0006— ni `mmap`, que es una dependencia y se paga cuando el artefacto sea lo
-bastante grande para que se note.
-
-#### M4 · La respuesta, con sus tres ejes
-
-**Qué.** ④ ensambla sobre flujos ya reducidos, y la respuesta lleva lo que la hace
-auditable.
-
-**Y ④ es un ensamblador por clave, no un motor de consulta.** La ley de §2 lo hace
-suficiente: el índice ya decidió qué claves se piden, así que sobre flujos que llegan
-reducidos no queda nada que optimizar. DataFusion —y con él Arrow y un modelo de
-coste— **es una decisión de M5**, cuando exista caché de carga útil: es sobre lo
-materializado donde un optimizador se gana el sueldo. Se decide **con v1 delante**.
-
-**Y antes de la lista, la altura.** El criterio heredado de la fase 3 —*«un agente
-pregunta por MCP y el PII vuelve enmascarado»*— **mezcla dos planos**, y la propia
-especificación ya los había separado: `05-ejecutor` §8 dice que **MCP, GraphQL y el
-nativo son superficies, no niveles**.
-
-> **La capa de agentes es una abstracción sobre el sustrato. M4 cierra el sustrato.**
-
-Así que ese criterio se parte: *«el PII vuelve enmascarado sin que el agente haya hecho
-nada»* es de aquí, y *«pregunta por MCP»* es de la superficie que lo sirva — hoy
-`ore dev`, mañana `serve`. Por eso M4 **no** trae `ore serve`: traerlo sería construir
-la superficie antes que el suelo.
-
-**Listo, y medido con dos familias de fuente:**
-
-- ~~**Una consulta cruza dos familias distintas** y devuelve una entidad ensamblada~~ ✅
-  — `alias` de un **fichero NDJSON**, `baseSalary` de **PostgreSQL**, unidos por
-  `employeeId`. Y la segunda familia no es otra base de datos a propósito: **si el
-  mismo plan sirve a un servidor y a un fichero, la petición estaba cortada por el
-  sitio correcto.** Es lo único que demuestra que la forma escala, y ningún argumento
-  lo demuestra.
-- ~~La respuesta lleva sus ejes~~ ✅ — digest, marca de agua e **instante**, el tercero
-  que salió del [ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md): una
-  política con `datetime` es función del tiempo.
-- ~~Superar `freshnessSLA` produce **estado degradado declarado**~~ ✅ — *«la marca de
-  agua es 09:00 y el `freshnessSLA` es 30m: lo materializado lleva 10800 s de
-  retraso»*.
-- **El motor no lee el reloj**: el instante llega con la petición, igual que los
-  atributos del principal. Es lo que hace la respuesta reproducible a partir de sus
-  entradas — y de paso, que el estado degradado no dependa de cuándo se ejecute la
-  prueba.
-- **Y ④ exige la clave.** Lo encontró la primera ejecución con dos fuentes: ensamblar
-  sin ella juntaría dos personas en una fila, así que si la clave no está autorizada el
-  plan lo **dice**. Si no puedes leer el identificador, no se te puede dar una fila
-  identificada por él.
-
-**Queda:** que la respuesta se derive del **contrato emitido y no del paquete** (§4).
-Hoy `Motor` carga el paquete, así que el corolario —*una herramienta que leyera el
-paquete podría contar lo que el conducto quitó*— sigue sin guardián. Es de `serve`,
-que es quien sirve un contrato.
-
-#### Lo que v1 **no** es, dicho antes de empezar
-
-| | Por qué queda fuera |
-|---|---|
-| **Caché de carga útil** (`payload`) | v1 **materializa el grafo, no las filas**. La travesía hace asequible la ley de §2; la caché **habilita consultas que §2 rechazaría** (§5.2), y eso es estrictamente aditivo |
-| **Identidad delegada** (nivel 1 de §6.2) | es lo que hace que el motor deje de ser el único muro, y es un hito propio. v1 se queda en *referencia a secreto*, que es lo que `source add` ya produce |
-| **Reconstrucción por cambio de máscara** (§7.1) | no hay nada horneado que reconstruir hasta que exista caché de carga útil |
-| **Escritura** | es L3 y exige una `Function`. No es alcance recortado: es normativo |
-| **DataFusion y un modelo de coste** | ④ es un ensamblador por clave, y §2 lo hace suficiente. Un optimizador se gana el sueldo sobre lo materializado, así que la decisión va con la caché — M5, y con v1 delante |
-| **Alta disponibilidad y sincronía entre nodos** | frontera abierta, abajo |
-
-#### Cuándo se borra esto
-
-Cuando M4 esté en verde, esta sección **desaparece** y se colapsa en una fila de la
-tabla de arriba. No se archiva, ni se deja «por si acaso»:
-
-> **Un plan que sobrevive a su ejecución deja de ser un plan y pasa a ser
-> documentación de un pasado que ya nadie comprueba** — y eso tiene exactamente el
-> mismo aspecto que documentación de un presente que sí.
 
 ### Frontera abierta
 
