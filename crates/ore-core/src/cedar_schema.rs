@@ -123,7 +123,14 @@ pub fn emit(pkg: &Package) -> Json {
         .collect();
 
     let mut tipos: BTreeMap<String, Json> = BTreeMap::new();
-    tipos.insert("Label".into(), entidad(&[]));
+    // `Label` es un tipo ENUMERADO, y eso lo dice Cedar: `entity Label enum
+    // [...]`. La forma JSON lo perdia y los niveles viajaban en un
+    // `x-oos-labels` inventado, que Cedar rechaza — no admite campos
+    // desconocidos en el espacio de nombres. Es P7: el anfitrion ya lo tiene.
+    tipos.insert(
+        "Label".into(),
+        Json::obj([("enum", Json::Arr(etiquetas.clone()))]),
+    );
     tipos.insert("Role".into(), entidad(&[]));
 
     let mut nombres: Vec<String> = Vec::new();
@@ -156,7 +163,14 @@ pub fn emit(pkg: &Package) -> Json {
             if let Json::Obj(ref mut m) = t
                 && !attrs.is_empty()
             {
-                m.insert("shape".into(), Json::Obj(attrs));
+                // Un `shape` es un TIPO en el formato JSON de Cedar, no un mapa
+                // de atributos: `{ "type": "Record", "attributes": {...} }`. La
+                // forma legible no lo exige, asi que las dos representaciones
+                // divergian y solo una era valida.
+                let mut forma: BTreeMap<String, Json> = BTreeMap::new();
+                forma.insert("type".into(), Json::s("Record"));
+                forma.insert("attributes".into(), Json::Obj(attrs));
+                m.insert("shape".into(), Json::Obj(forma));
             }
             principales.push(corto.clone());
         }
@@ -199,13 +213,19 @@ pub fn emit(pkg: &Package) -> Json {
                         // de finalidad, y lo que no se declara se deniega (P4).
                         (
                             "context",
-                            Json::obj([(
-                                "purpose",
-                                Json::obj([
-                                    ("type", Json::s("String")),
-                                    ("required", Json::Bool(true)),
-                                ]),
-                            )]),
+                            Json::obj([
+                                ("type", Json::s("Record")),
+                                (
+                                    "attributes",
+                                    Json::obj([(
+                                        "purpose",
+                                        Json::obj([
+                                            ("type", Json::s("String")),
+                                            ("required", Json::Bool(true)),
+                                        ]),
+                                    )]),
+                                ),
+                            ]),
                         ),
                     ]),
                 )]),
@@ -220,7 +240,6 @@ pub fn emit(pkg: &Package) -> Json {
         Json::obj([
             ("entityTypes", Json::Obj(tipos)),
             ("actions", Json::Obj(acciones)),
-            ("x-oos-labels", Json::Arr(etiquetas)),
         ]),
     )])
 }
