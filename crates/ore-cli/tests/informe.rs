@@ -97,3 +97,29 @@ fn sin_exigencias_lo_dice_en_vez_de_no_decir_nada() {
          aspecto:\n{out}"
     );
 }
+
+/// **De una política de Cedar responde el dueño del `ConduitPolicy`.**
+///
+/// No es una inferencia cómoda: quien eleva la autorización de un conducto y
+/// quien escribe un `permit` toman la misma clase de decisión —*quién ve qué*— y
+/// son la misma persona. El ejemplo de referencia lo llevaba escrito **en un
+/// comentario** antes de que existiera el campo, y un dueño en prosa no viaja en
+/// el bundle.
+#[test]
+fn una_politica_hereda_el_dueno_de_la_superficie_de_seguridad() {
+    let out = informe("vendor/oos/examples/acme-retail");
+    assert!(
+        !out.contains("sin dueño declarado"),
+        "ninguna regla puede quedarse sin quien responda:\n{out}"
+    );
+    assert!(
+        out.contains("forbid-national-id-egress (team:acme-security)"),
+        "la política tiene que heredar el dueño del `ConduitPolicy`:\n{out}"
+    );
+    // Y el `Ruleset` conserva el suyo: son decisiones distintas, de partes
+    // distintas, y colapsarlas sería perder justo lo que el informe enseña.
+    assert!(
+        out.contains("eu.gdpr-minimization (team:compliance)"),
+        "el `Ruleset` responde por su cuenta:\n{out}"
+    );
+}

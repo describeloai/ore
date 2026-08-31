@@ -130,11 +130,14 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 
 /// **Quién descarga** una clase de gobierno sobre una propiedad.
 ///
-/// El `owner` es `None` para una política de Cedar, y **eso no es un descuido de
-/// esta estructura**: un `Ruleset` tiene dueño porque *«tiene que poder vivir en
-/// otro repositorio, con otros revisores y otra cadencia»*, y una política de
-/// Cedar no tiene dónde declararlo. Que la asimetría se vea es parte de lo que
-/// un informe de cobertura sirve para enseñar.
+/// De un `Ruleset` responde su `owner`. De una **política de Cedar** responde el
+/// dueño del `ConduitPolicy`, y eso no es una inferencia cómoda: quien eleva la
+/// autorización de un conducto y quien escribe un `permit` toman la misma clase
+/// de decisión —**quién ve qué**— y son la misma persona.
+///
+/// El `owner` sigue siendo `Option` porque con **varios** `ConduitPolicy` no se
+/// hereda: no habría forma de saber de cuál, y adivinar el dueño de una decisión
+/// de seguridad es peor que no tenerlo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Descarga {
     /// El `Ruleset` cualificado, o el `@id` de la política.
@@ -197,6 +200,28 @@ pub fn cobertura_atribuida(pkg: &Package) -> BTreeMap<String, BTreeMap<&'static 
         }
     }
 
+    // **De una política de Cedar responde quien responde de los conductos.**
+    //
+    // No es una inferencia cómoda: quien eleva la autorización de un conducto y
+    // quien escribe un `permit` toman la misma clase de decisión —quién ve qué—
+    // y en la práctica son la misma persona. El ejemplo de referencia lo llevaba
+    // escrito en un comentario antes de que existiera el campo.
+    //
+    // Con VARIOS `ConduitPolicy` no se hereda: no habría forma de saber de cuál,
+    // y adivinar el dueño de una decisión de seguridad es peor que no tenerlo.
+    // Ahí la salida es `@oosOwner` en la propia política — el caso raro, no la
+    // forma.
+    let dueno_de_politicas = {
+        let mut cps = pkg.of(Kind::ConduitPolicy);
+        match (cps.next(), cps.next()) {
+            (Some(cp), None) => cp
+                .section("owner")
+                .and_then(|o| o.as_str())
+                .map(String::from),
+            _ => None,
+        }
+    };
+
     // `authorization` la descarga una política de Cedar, y **qué alcanza cada
     // política** ya lo computa `alcance`: reutilizarlo es lo que impide que esta
     // lectura y aquella se separen.
@@ -208,7 +233,7 @@ pub fn cobertura_atribuida(pkg: &Package) -> BTreeMap<String, BTreeMap<&'static 
                 .or_default()
                 .push(Descarga {
                     regla: politica.clone(),
-                    owner: None,
+                    owner: dueno_de_politicas.clone(),
                 });
         }
     }

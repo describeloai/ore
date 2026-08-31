@@ -251,7 +251,7 @@ impl Kind {
                 "axis",
                 "requiresGovernance",
             ],
-            Kind::ConduitPolicy => &["conduits"],
+            Kind::ConduitPolicy => &["owner", "conduits"],
             Kind::Function => &[
                 "runtime",
                 "entrypoint",
@@ -530,6 +530,36 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     }
                 }
                 None
+            },
+        },
+        // El dueño de la superficie de SEGURIDAD.
+        //
+        // Era el único de los cuatro documentos que gobiernan sin declararlo, y
+        // no porque no lo tuviera: el ejemplo de referencia lo llevaba escrito
+        // **en un comentario** —*«CODEOWNERS exige revisión de @acme/security
+        // para cualquier cambio en este fichero»*—. Un dueño en prosa no viaja
+        // en el bundle, y lo que va a una auditoría es el bundle.
+        //
+        // Y es lo que da dueño a las políticas de Cedar, que son la única
+        // superficie de gobierno que no lo tenía: quien eleva la autorización de
+        // un conducto y quien escribe un `permit` son la misma persona.
+        ShapeRule {
+            kind: Kind::ConduitPolicy,
+            path: &["spec"],
+            check: |n| {
+                n.get("owner").is_none().then(|| {
+                    (
+                        "un `ConduitPolicy` DEBE declarar `owner`".into(),
+                        Some(
+                            "elevar la autorización de un conducto es LA decisión de \
+                             seguridad de este modelo, y un techo del que nadie responde es \
+                             el hueco que este campo cierra. Usa `team:<handle>`, que es lo \
+                             que se alinea con CODEOWNERS — y de él heredan las políticas de \
+                             Cedar, que son la otra superficie sin dueño propio"
+                                .into(),
+                        ),
+                    )
+                })
             },
         },
         // La tercera frontera. Los cuatro campos son obligatorios y ninguno es

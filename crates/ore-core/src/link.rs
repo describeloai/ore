@@ -131,6 +131,29 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
 const ESTADOS_ODCS: &[&str] = &["proposed", "draft", "active", "deprecated", "retired"];
 
 fn package_metadata(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    // El dueño de la superficie de seguridad, con el mismo vocabulario y el
+    // mismo código: `owner` es `owner` lo declare quien lo declare, y dos formas
+    // de escribir un handle acabarían con dos maneras de resolverlo contra
+    // CODEOWNERS.
+    for cp in pkg.of(Kind::ConduitPolicy) {
+        if let Some(v) = cp.section("owner") {
+            let s = v.as_str().unwrap_or("");
+            if !es_handle(s) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2009,
+                        &cp.path,
+                        format!("`owner: {s}` no es un handle"),
+                    )
+                    .at(v.pos())
+                    .help(
+                        "usa `team:<handle>` o `user:<handle>`: es lo que se alinea con                          CODEOWNERS, que es quien hace cumplir la revisión",
+                    ),
+                );
+            }
+        }
+    }
+
     for p in pkg.of(Kind::Package) {
         if let Some(v) = p.meta("version")
             && !es_semver(v.as_str().unwrap_or(""))

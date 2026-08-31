@@ -726,9 +726,11 @@ fn informar(path: &std::path::Path) -> std::process::ExitCode {
                     v.iter()
                         .map(|d| match &d.owner {
                             Some(o) => format!("{} ({o})", d.regla),
-                            // Una política de Cedar no tiene dónde declarar
-                            // dueño. Un `Ruleset` sí, y por eso existe.
-                            None => format!("{} (sin dueño declarado)", d.regla),
+                            // Solo pasa con VARIOS `ConduitPolicy`: no habría
+                            // forma de saber de cuál hereda, y adivinar el dueño
+                            // de una decisión de seguridad es peor que no
+                            // tenerlo. La salida es `@oosOwner` en la política.
+                            None => format!("{} (varios ConduitPolicy: sin herencia)", d.regla),
                         })
                         .collect::<Vec<_>>()
                         .join(", ")
