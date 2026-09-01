@@ -165,6 +165,21 @@ fn intentar(raiz: &Path, r: &Respuestas) -> Result<String, (u8, Vec<String>)> {
         .map_err(|e| (73, vec![format!("no se pudo crear `{PAQUETES}/`: {e}")]))?;
     escribir(&raiz.join(PAQUETES).join(".gitkeep"), "")?;
 
+    // Y el mapa: un directorio por cada cosa que esta organización escribe con su
+    // propia mano, con un README que dice qué decide.
+    for (dir, titulo, desde, cuerpo) in MAPA {
+        escribir(
+            &raiz.join(dir).join("README.md"),
+            &format!(
+                "# `{dir}` · {titulo}
+
+Introducido por **{desde}**.
+
+{cuerpo}"
+            ),
+        )?;
+    }
+
     escribir(&raiz.join(FLUJO), &flujo())?;
     escribir(&raiz.join(AGENTES), &agentes(&nombre, &dependencias))?;
 
@@ -182,6 +197,91 @@ fn intentar(raiz: &Path, r: &Respuestas) -> Result<String, (u8, Vec<String>)> {
 
     Ok(informe(&nombre, &dependencias, &claves, &logs))
 }
+
+/// **El mapa: un directorio por cada cosa que se escribe aquí a mano.**
+///
+/// La pregunta que contesta es la que se hace cualquiera al abrir un repositorio
+/// recién creado y ver una carpeta: *¿qué puedo poner aquí?*. Un `.gitkeep` no
+/// la contesta, y la alternativa —leer cuatro documentos de la especificación
+/// para averiguar dónde va un `Ruleset`— es peor.
+///
+/// # La línea de qué entra y qué no
+///
+/// **Directorios para lo que vas a escribir; nada para lo que el silencio ya
+/// decide.** Por eso no hay `conduits.yaml` ni `request.yaml`: los dos son
+/// ficheros cuya AUSENCIA significa denegación por defecto, y crearlos vacíos
+/// cambiaría una postura por un formulario a medio rellenar.
+///
+/// Tampoco están `entities/`, `bindings/` ni `concepts/`: esos los escribe
+/// `discover` dentro de un paquete, y adelantarlos aquí insinuaría que van en la
+/// raíz.
+const MAPA: &[(&str, &str, &str, &str)] = &[
+    (
+        "lattices",
+        "las escalas de clasificación",
+        "v1alpha1",
+        "Un `Lattice` es un orden: `none ⊑ low ⊑ medium ⊑ high`. Es lo que hace comparable
+         una clasificación, y sin uno no hay nada que gobernar — una etiqueta suelta no dice
+         si algo es más sensible que otra cosa.
+         
+         **Puede estar vacío.** Si este repositorio depende de un vocabulario, su retículo
+         viene con él y la autoridad sobre el orden no es de aquí. Escribir uno propio es
+         decir que sí lo es.
+",
+    ),
+    (
+        "rulesets",
+        "el gobierno, que apunta por clasificación",
+        "v1alpha3",
+        "Un `Ruleset` dice qué debe sostenerse y **quién responde**. Apunta por
+         clasificación —`atLeast: { gdpr.sensitivity: high }`— y no por nombre, que es la
+         diferencia entre una regla que se pudre y una que no: lo que alguien clasifique
+         mañana queda gobernado el mismo día.
+         
+         Vive en su propio documento, con su propio `owner`, porque quien responde del
+         cumplimiento tiene que poder restringir el modelo SIN poder editarlo.
+",
+    ),
+    (
+        "policies",
+        "la autorización, en Cedar",
+        "v1alpha1",
+        "OOS no define un lenguaje de autorización: las políticas **son** Cedar. Aquí van
+         los `.cedar` y el `.cedarschema` que el compilador compara con lo que el paquete
+         implica.
+         
+         El esquema es un artefacto **generado** que se compromete a git para que el tooling
+         de Cedar funcione sin compilar. Puede quedar obsoleto, y `OOS2013` lo cobra.
+",
+    ),
+    (
+        "interfaces",
+        "las formas: conjuntos nombrados por lo que tienen",
+        "v1alpha4",
+        "Una `Interface` nombra un conjunto de entidades por los conceptos que llevan, no
+         por su nombre. Es lo que permite que una regla alcance a algo que todavía no
+         existe cuando se escribe.
+",
+    ),
+    (
+        "functions",
+        "la superficie de efecto",
+        "v1alpha2",
+        "Una `Function` es lo que se puede **causar**, el dual de lo que se puede saber. Su
+         integridad SE COMPUTA de sus endosos: no admite `labels`, porque una afirmación
+         sobre uno mismo no es una garantía.
+",
+    ),
+    (
+        "resolutions",
+        "el efecto sobre la identidad",
+        "v1alpha2",
+        "Una `Resolution` dice cuándo dos registros son el mismo. Sus `strategies` son una
+         **secuencia** y no un conjunto: la primera que casa gana, así que reordenarlas
+         cambia qué se fusiona.
+",
+    ),
+];
 
 /// Lo que no entra en git, con el motivo al lado.
 ///
@@ -414,6 +514,30 @@ fn agentes(nombre: &str, deps: &[Par]) -> String {
          | `vendor/` | lo importado, **comprometido a git a propósito** |\n\
          | `ontology.lock` | generado. Fija el digest de cada dependencia |\n\
          \n\
+         ## Dónde va cada documento\n\
+         \n\
+         | `kind` | Dónde | Desde |\n\
+         |---|---|---|\n\
+         | `Lattice` | `lattices/` | v1alpha1 |\n\
+         | `Entity` | `packages/<x>/entities/` | v1alpha1 |\n\
+         | `Binding` | `packages/<x>/bindings/` | v1alpha1 |\n\
+         | `ConduitPolicy` | `conduits.yaml` **en la raíz** | v1alpha1 |\n\
+         | `RequestPolicy` | `request.yaml` **en la raíz** | v1alpha1 |\n\
+         | `Function` | `functions/` | v1alpha2 |\n\
+         | `Resolution` | `resolutions/` | v1alpha2 |\n\
+         | `Ruleset` | `rulesets/` | v1alpha3 |\n\
+         | `Property` (concepto) | `packages/<x>/concepts/` | v1alpha4 |\n\
+         | `Interface` | `interfaces/` | v1alpha4 |\n\
+         \n\
+         Cada directorio lleva un `README.md` con qué decide lo que va dentro.\n\
+         \n\
+         `entities/`, `bindings/` y `concepts/` los escribe `ore discover` dentro del\n\
+         paquete que se le pase en `--out`; los demás se escriben a mano.\n\
+         \n\
+         **`conduits.yaml` y `request.yaml` no existen todavía a propósito.** Los dos son\n\
+         ficheros cuya ausencia significa denegación por defecto, así que crearlos vacíos\n\
+         cambiaría una postura por un formulario a medio rellenar.\n\
+         \n\
          ## Las órdenes\n\
          \n\
          ```bash\n\
@@ -456,6 +580,15 @@ fn informe(nombre: &str, deps: &[Par], claves: &[Par], logs: &[Par]) -> String {
          \x20 ✓ {IGNORAR} · el secreto y la caché fuera; `vendor/` NO\n\
          \x20 ✓ {FLUJO} · `lock --check` y `validate` en cada empujón\n\
          \x20 ✓ {AGENTES} · qué es este sitio y qué no se puede romper\n"
+    );
+    s.push_str("\n  Y un sitio para cada cosa que se escribe aquí a mano:\n\n");
+    for (dir, titulo, desde, _) in MAPA {
+        s.push_str(&format!("    {dir:<12} {titulo}  ·  {desde}\n"));
+    }
+    s.push_str(
+        "\n  No hay `conduits.yaml` ni `request.yaml`, y es deliberado: su AUSENCIA ya\n\
+         \x20 significa denegación por defecto. Crearlos vacíos cambiaría una postura\n\
+         \x20 por un formulario a medio rellenar.\n",
     );
     if deps.is_empty() {
         s.push_str(
@@ -650,10 +783,16 @@ mod tests {
         assert!(!d.join(CONFIG).exists(), "escribió el repositorio a medias");
     }
 
-    /// Y lo que NO escribe importa igual: un retículo o un `ConduitPolicy`
-    /// inventados saldrían con aspecto de valor por defecto sensato, que es la
-    /// peor forma de inventar una decisión de gobierno. `--depend` no es una
-    /// excepción: acogerse a la clasificación de otro no es inventar una.
+    /// Y lo que NO escribe importa igual: un reticulo o un `ConduitPolicy`
+    /// inventados saldrian con aspecto de valor por defecto sensato, que es la
+    /// peor forma de inventar una decision de gobierno. `--depend` no es una
+    /// excepcion: acogerse a la clasificacion de otro no es inventar una.
+    ///
+    /// Se mide por **documentos y no por nombres de fichero**. La version
+    /// anterior buscaba «lattice» en los nombres, y empezo a fallar el dia que
+    /// la plantilla gano un directorio `lattices/` con un README dentro — que no
+    /// inventa nada: dice que iria ahi si alguien lo escribiera. Un guardian que
+    /// confunde un mapa con una decision no guarda lo que dice guardar.
     #[test]
     fn no_inventa_gobierno() {
         let d = en("gobierno");
@@ -662,18 +801,28 @@ mod tests {
             &con("pedidos", &["oos.dev/regulatory/gdpr@^0.1".into()]),
         )
         .unwrap();
-        let ficheros: Vec<String> = std::fs::read_dir(&d)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+
+        let mut pila = vec![d.clone()];
+        let mut culpables = Vec::new();
+        while let Some(dir) = pila.pop() {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    pila.push(p);
+                    continue;
+                }
+                let t = std::fs::read_to_string(&p).unwrap_or_default();
+                if t.lines().any(|l| {
+                    let l = l.trim();
+                    l == "kind: Lattice" || l == "kind: ConduitPolicy"
+                }) {
+                    culpables.push(p.display().to_string());
+                }
+            }
+        }
         assert!(
-            !ficheros.iter().any(|f| f.contains("lattice")),
-            "{ficheros:?}"
-        );
-        assert!(
-            !ficheros.iter().any(|f| f.contains("conduit")),
-            "{ficheros:?}"
+            culpables.is_empty(),
+            "invento una decision de gobierno: {culpables:?}"
         );
     }
 
@@ -713,6 +862,38 @@ mod tests {
         assert!(t.contains("sha256sum -c -"), "{t}");
         assert!(t.contains("ore lock --check"), "{t}");
         assert!(t.contains("ore validate"), "{t}");
+    }
+
+    /// **La pregunta que contesta el mapa**: quien abre un repositorio recien
+    /// creado ve carpetas y pregunta que puede poner en cada una. Un `.gitkeep`
+    /// no lo contesta, y leer cuatro documentos de la especificacion para saber
+    /// donde va un `Ruleset` es peor.
+    #[test]
+    fn cada_directorio_dice_que_decide_lo_que_va_dentro() {
+        let d = en("mapa");
+        intentar(&d, &con("pedidos", &[])).unwrap();
+        for (dir, _, desde, _) in MAPA {
+            let readme = d.join(dir).join("README.md");
+            let t = std::fs::read_to_string(&readme)
+                .unwrap_or_else(|_| panic!("falta `{dir}/README.md`"));
+            assert!(t.contains(desde), "`{dir}` no dice desde que version: {t}");
+        }
+    }
+
+    /// Y lo que NO se crea: `conduits.yaml` y `request.yaml` son ficheros cuya
+    /// AUSENCIA significa denegacion por defecto. Crearlos vacios cambiaria una
+    /// postura por un formulario a medio rellenar.
+    #[test]
+    fn no_crea_los_ficheros_cuya_ausencia_ya_decide() {
+        let d = en("ausencia");
+        intentar(&d, &con("pedidos", &[])).unwrap();
+        assert!(!d.join("conduits.yaml").exists());
+        assert!(!d.join("request.yaml").exists());
+        // Y tampoco los que escribe `discover`, que van DENTRO de un paquete:
+        // adelantarlos aqui insinuaria que van en la raiz.
+        for x in ["entities", "bindings", "concepts"] {
+            assert!(!d.join(x).exists(), "creo `{x}/` en la raiz");
+        }
     }
 
     #[test]
