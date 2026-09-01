@@ -5,6 +5,7 @@
 //! catorce no abren un socket.
 
 mod candado;
+mod empaquetar;
 mod fuente;
 mod inductor;
 mod inicio;
@@ -127,6 +128,19 @@ enum Command {
         /// Nombre y espacio de nombres del paquete. Por defecto, el del directorio.
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Escribe el paquete publicable: un `.oob`.
+    ///
+    /// No es un archivo comprimido, y esa es la decisión: uno lleva marcas de
+    /// tiempo y orden de entradas, así que el mismo paquete daría bytes
+    /// distintos. Un `.oob` es **la forma canónica escrita en un fichero**, y su
+    /// digest es el del paquete — el contenedor no cambia la identidad.
+    Pack {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Dónde se escribe. Sin esto, el `.oob` sale por stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
     /// Resuelve `dependencies` y escribe `ontology.lock`.
     ///
@@ -251,6 +265,7 @@ fn main() -> std::process::ExitCode {
         } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
         Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
         Command::Lock { path, check } => return candado::lock(path, *check),
+        Command::Pack { path, out } => return empaquetar::pack(path, out.as_deref()),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -284,6 +299,7 @@ fn main() -> std::process::ExitCode {
         | Command::Report { .. }
         | Command::Review { .. }
         | Command::Lock { .. }
+        | Command::Pack { .. }
         | Command::Source(_) => unreachable!(),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),

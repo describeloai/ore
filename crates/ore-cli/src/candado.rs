@@ -318,10 +318,16 @@ fn relativa(raiz: &Path, dir: &Path) -> String {
 }
 
 /// El digest de lo que hay en el árbol, con el mismo `digest::package` del
-/// bundle. No es el de un `.oob` publicado, porque ese formato no existe — y
-/// llamarlo así sería afirmar una procedencia que nadie puede comprobar.
+/// bundle — y sobre **el mismo conjunto de documentos** que empaquetaría
+/// `ore pack`.
+///
+/// Eso último no es un detalle: `01-distribucion` §2 promete que **el contenedor
+/// no cambia la identidad**, y digerir aquí el manifiesto del miembro —que
+/// `pack` excluye por ser del workspace— rompía la promesa. Salió midiendo: el
+/// mismo directorio daba `b28cae9b` por un lado y `d47f6ee8` por el otro.
 fn digest_de(dir: &Path) -> String {
-    ore_core::digest::package(&ore_core::validate::cargar_paquete(dir).0)
+    let (pkg, _) = ore_core::validate::cargar_paquete(dir);
+    ore_core::digest::package(&crate::empaquetar::publicables(&pkg))
 }
 
 /// Qué aporta un paquete, **derivado de lo que tiene dentro**. Lo derivable no

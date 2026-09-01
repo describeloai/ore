@@ -268,6 +268,10 @@ fn descubrir(raiz: &Path) -> Vec<Case> {
                 Some("odcs") => "odcs",
                 Some("ossie") => "ossie",
                 Some("graphql") => "graphql",
+                // El paquete publicable. No sale de `export` y no debe: empaquetar
+                // valida antes, porque publicar lo que no compila reparte un
+                // problema. Que comando lo produce es asunto del corredor.
+                Some("oob") => "oob",
                 Some("cedar-schema") | None => "cedar",
                 Some(otro) => panic!("`format: {otro}` desconocido en {nombre}"),
             }
@@ -333,13 +337,18 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
     if matches!(caso.grupo.as_str(), "canonical" | "digest") {
         return ejecutar_compile(caso, &correr_args);
     }
-    if caso.grupo == "emit" {
+    // `pack` va con `emit` porque la MECANICA es la misma —producir un
+    // artefacto y afirmar su forma— y es una familia aparte porque lo que
+    // produce no lo es: `emit` habla formatos ajenos y un `.oob` es NUESTRO
+    // artefacto (`v1alpha6/00-scope` §3). Mezclarlos habria dado un numero que
+    // ya no se sabe que mide.
+    if matches!(caso.grupo.as_str(), "emit" | "pack") {
         return ejecutar_emit(caso);
     }
 
     // Cada grupo por su operación: `validate` para `valid/` e `invalid/`,
     // `diff` para `diff/`, `compile` para `canonical/` y `digest/`, `export`
-    // para `emit/`.
+    // para `emit/` y `pack` para `pack/`.
     if !matches!(caso.grupo.as_str(), "valid" | "invalid") {
         return Err("no implementado".into());
     }
@@ -649,21 +658,34 @@ fn objeto_en(texto: &str, puntero: &str) -> String {
 
 /// Invoca `ore export` sobre una ruta absoluta.
 fn exportar(destino: &Path, formato: &str) -> Result<(bool, String), String> {
-    let salida = Command::new(env!("CARGO_BIN_EXE_ore"))
-        .arg("export")
-        .arg(destino)
-        .arg("--format")
-        .arg(formato)
+    // `oob` no sale de `export` y no debe: empaquetar valida antes, y publicar
+    // lo que no compila reparte un problema. Qué comando produce cada artefacto
+    // es asunto del corredor, que **no es normativo** (`conformance/README` §8);
+    // lo que el caso declara es qué artefacto se está afirmando.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ore"));
+    if formato == "oob" {
+        cmd.arg("pack").arg(destino);
+    } else {
+        cmd.arg("export").arg(destino).arg("--format").arg(formato);
+    }
+    let salida = cmd
         .output()
         .map_err(|e| format!("no se pudo invocar `ore`: {e}"))?;
-    Ok((
-        salida.status.success(),
+    // Si emitio, lo que se afirma es EL ARTEFACTO — stdout— y no lo que el
+    // comando contara por stderr mientras tanto. Concatenar los dos metia el
+    // resumen de `pack` dentro de lo comparado, y una asercion sobre el
+    // artefacto pasaba a hablar tambien de la charla. Si NO emitio, lo unico que
+    // hay es el error, y es lo que un caso `emit-fails` mira.
+    let texto = if salida.status.success() {
+        String::from_utf8_lossy(&salida.stdout).to_string()
+    } else {
         format!(
             "{}{}",
             String::from_utf8_lossy(&salida.stdout),
             String::from_utf8_lossy(&salida.stderr)
-        ),
-    ))
+        )
+    };
+    Ok((salida.status.success(), texto))
 }
 
 /// Un contrato de otro formato dentro de `input/`, si lo hay. Distingue las dos
@@ -680,7 +702,9 @@ fn contrato_ajeno(dir: &Path) -> Option<PathBuf> {
 /// Formatos con emisor. Uno ausente de esta lista deja sus casos en
 /// *pendiente*, igual que `IMPLEMENTADAS` hace con los codigos: el marcador solo
 /// sube, y una regresion de verdad destaca.
-const EMISORES: &[&str] = &["odcs", "ossie", "cedar", "graphql", "oos", "json"];
+/// Lo que este motor sabe producir. `oob` esta aqui aunque no salga de
+/// `export`: la lista dice que ARTEFACTOS existen, no de que comando salen.
+const EMISORES: &[&str] = &["odcs", "ossie", "cedar", "graphql", "oos", "json", "oob"];
 
 fn ejecutar_emit(caso: &Case) -> Result<(), String> {
     if !EMISORES.contains(&caso.formato.as_str()) {
@@ -1119,6 +1143,18 @@ fn borrador_de_v1alpha5() {
         "v1alpha5",
         "emisión",
         "BORRADOR · OOS v1alpha5 · emisión a GraphQL",
+    );
+}
+
+/// El borrador de v1alpha6 no anade gramatica: anade un ARTEFACTO —el paquete
+/// publicable— y un contrato con el programa que lo trae. Su suite empieza por
+/// el formato, que es la mitad que no necesita un registro para existir.
+#[test]
+fn borrador_de_v1alpha6() {
+    marcador(
+        "v1alpha6",
+        "distribución",
+        "BORRADOR · OOS v1alpha6 · distribución",
     );
 }
 
