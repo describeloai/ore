@@ -145,6 +145,8 @@ impl Comparador {
 ///   forma conservadora por algo que no se entiende: si lee una columna
 ///   `critical`, lo que produzca es `critical`, sin necesidad de mirar dentro.
 /// - **`tipo`** — qué promete devolver. Se cree, y el esquema dice que se cree.
+/// - **`determinista`** — si dos evaluaciones sobre los mismos valores dan lo
+///   mismo. **Por defecto no**, y el porqué está debajo.
 ///
 /// Es la misma figura que `effects:` en una función: **lo que no se puede
 /// analizar se puede acotar, si quien lo escribe declara su superficie.**
@@ -154,6 +156,33 @@ pub struct Opaca {
     pub texto: String,
     pub lee: Vec<String>,
     pub tipo: Type,
+    /// **Si dos evaluaciones sobre los mismos valores dan lo mismo.**
+    ///
+    /// El valor por defecto es `false` — se supone volátil— y es P4:
+    /// denegación por defecto. Quien escribe la expresión sabe si su dialecto
+    /// tiene un `RANDOM()` dentro; este motor no puede saberlo, y suponer que no
+    /// lo tiene sería suponer en la dirección insegura.
+    ///
+    /// # Por qué existe, y por qué se vio tarde
+    ///
+    /// Faltaba desde que la opaca existe, y se vio al medir el mantenimiento
+    /// incremental: **el determinismo es precondición de la incrementalidad.**
+    /// La lista de lo que Snowflake **no** mantiene incrementalmente empieza
+    /// por *«UDF volátiles»*, y una vista con una dentro **cae a recomputar
+    /// entero**.
+    ///
+    /// El resto del álgebra no necesita el campo porque no puede ser volátil:
+    /// no hay reloj, no hay aleatoriedad y no hay literal `Float` — esa última
+    /// se decidió por el digest, no por esto. **La opaca es el único agujero**, y
+    /// este campo es lo que lo tapa.
+    ///
+    /// # No es lo mismo que ser analizable
+    ///
+    /// Son ortogonales, y confundirlos sería relajar una de las dos.
+    /// [`Nodo::analizable`] pregunta *«¿se puede razonar sobre lo que
+    /// computa?»* — una opaca **nunca** lo es. Esto pregunta *«¿computa lo
+    /// mismo dos veces?»*, y una opaca puede perfectamente.
+    pub determinista: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,23 +253,31 @@ impl Expr {
             Expr::Y(v) => Json::obj([("op", Json::s("y")), ("e", conmutativa(v))]),
             Expr::O(v) => Json::obj([("op", Json::s("o")), ("e", conmutativa(v))]),
             Expr::No(e) => Json::obj([("op", Json::s("no")), ("e", e.json())]),
-            Expr::Opaca(o) => Json::obj([
-                ("op", Json::s("opaca")),
-                ("dialecto", Json::s(o.dialecto.as_str())),
-                ("texto", Json::s(o.texto.as_str())),
-                (
-                    "lee",
-                    Json::Arr(
-                        o.lee
-                            .iter()
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .map(|c| Json::s(c.as_str()))
-                            .collect(),
+            Expr::Opaca(o) => Json::obj(
+                [
+                    ("op", Json::s("opaca")),
+                    ("dialecto", Json::s(o.dialecto.as_str())),
+                    ("texto", Json::s(o.texto.as_str())),
+                    (
+                        "lee",
+                        Json::Arr(
+                            o.lee
+                                .iter()
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .map(|c| Json::s(c.as_str()))
+                                .collect(),
+                        ),
                     ),
-                ),
-                ("tipo", Json::s(o.tipo.to_string())),
-            ]),
+                    ("tipo", Json::s(o.tipo.to_string())),
+                ]
+                .into_iter()
+                // Se escribe **solo cuando es cierto**, y no por ahorrar bytes: así
+                // el valor por defecto —volátil— es la ausencia, que es lo que un
+                // plan escrito antes de que este campo existiera ya dice.
+                .chain(o.determinista.then_some(("determinista", Json::Bool(true))))
+                .collect::<Vec<_>>(),
+            ),
         }
     }
 
@@ -349,6 +386,10 @@ impl Expr {
                     })
                     .unwrap_or_default(),
                 tipo: parse_type(&cadena("tipo")?).map_err(|_| "un tipo que no es de OOS")?,
+                determinista: n
+                    .get("determinista")
+                    .and_then(|(_, v)| v.as_str())
+                    .is_some_and(|v| v == "true"),
             }),
             otro => return Err(format!("`{otro}` no es una expresión")),
         })
@@ -513,6 +554,19 @@ impl Nodo {
     /// pierde su valor sin que nadie lo note.
     pub fn analizable(&self) -> bool {
         self.opacas().is_empty()
+    }
+
+    /// **¿Computa este plan lo mismo dos veces?**
+    ///
+    /// Es otra pregunta que [`Nodo::analizable`], y las dos hacen falta. Un plan
+    /// que no es determinista no se puede mantener incrementalmente —el
+    /// determinismo es precondición de la incrementalidad— y su resultado no es
+    /// reproducible, que es la garantía de la que vive el resto del proyecto.
+    ///
+    /// Solo una opaca puede romperlo: el resto del álgebra no tiene reloj, ni
+    /// aleatoriedad, ni coma flotante.
+    pub fn deterministico(&self) -> bool {
+        self.opacas().iter().all(|o| o.determinista)
     }
 
     pub fn opacas(&self) -> Vec<&Opaca> {
@@ -1023,6 +1077,7 @@ mod tests {
                     texto: "PARSE_DATE(fmt, pais)".into(),
                     lee: vec!["pais".into()],
                     tipo: t("Date"),
+                    determinista: false,
                 }),
             )]
             .into(),
@@ -1062,5 +1117,83 @@ mod tests {
         let mut fuentes: Vec<&str> = hojas.iter().map(|l| l.datasource.as_str()).collect();
         fuentes.sort();
         assert_eq!(fuentes, ["lago", "sap"]);
+    }
+
+    /// **Una opaca se supone volátil mientras no diga lo contrario.**
+    ///
+    /// Es P4: quien la escribe sabe si su dialecto tiene un `RANDOM()` dentro;
+    /// este motor no puede saberlo, y suponer que no lo tiene sería suponer en
+    /// la dirección insegura.
+    #[test]
+    fn una_opaca_se_supone_volatil_mientras_no_diga_lo_contrario() {
+        let con = |determinista| Nodo::Proyecta {
+            entrada: Box::new(pedidos()),
+            campos: [(
+                "x".to_string(),
+                Expr::Opaca(Opaca {
+                    dialecto: "bigquery".into(),
+                    texto: "algo(pais)".into(),
+                    lee: vec!["pais".into()],
+                    tipo: t("String"),
+                    determinista,
+                }),
+            )]
+            .into(),
+        };
+        assert!(!con(false).deterministico(), "sin declarar, volátil");
+        assert!(con(true).deterministico());
+
+        // Y sin ninguna opaca, el resto del álgebra no puede ser volátil: no
+        // hay reloj, ni aleatoriedad, ni coma flotante.
+        assert!(pedidos().deterministico());
+    }
+
+    /// **Determinista y analizable son preguntas distintas**, y confundirlas
+    /// relajaría una de las dos. Una opaca NUNCA es analizable, y puede
+    /// perfectamente ser determinista.
+    #[test]
+    fn ser_determinista_no_es_ser_analizable() {
+        let p = Nodo::Filtra {
+            entrada: Box::new(pedidos()),
+            predicado: Expr::Opaca(Opaca {
+                dialecto: "bigquery".into(),
+                texto: "REGEXP_CONTAINS(pais, r'^E')".into(),
+                lee: vec!["pais".into()],
+                tipo: t("Boolean"),
+                determinista: true,
+            }),
+        };
+        assert!(p.deterministico(), "una regex no es volátil");
+        assert!(!p.analizable(), "y sigue sin poder razonarse sobre ella");
+    }
+
+    /// El campo **no se escribe cuando es falso**, y no por ahorrar bytes: así
+    /// el valor por defecto —volátil— es la ausencia, que es lo que un plan
+    /// escrito antes de que el campo existiera ya dice.
+    ///
+    /// Y declarar pureza **sí** cambia el digest: son dos declaraciones
+    /// distintas, y una de las dos se puede mantener incrementalmente.
+    #[test]
+    fn declarar_pureza_cambia_el_plan_y_no_declararla_no_deja_rastro() {
+        let con = |determinista| Nodo::Filtra {
+            entrada: Box::new(pedidos()),
+            predicado: Expr::Opaca(Opaca {
+                dialecto: "bigquery".into(),
+                texto: "algo(pais)".into(),
+                lee: vec!["pais".into()],
+                tipo: t("Boolean"),
+                determinista,
+            }),
+        };
+        assert!(!con(false).canonico().contains("determinista"));
+        assert!(con(true).canonico().contains(r#""determinista":true"#));
+        assert_ne!(con(false).digest(), con(true).digest());
+
+        // Y las dos van y vuelven.
+        for d in [false, true] {
+            let vuelta = Nodo::leer(&con(d).canonico()).expect("se lee");
+            assert_eq!(vuelta.opacas()[0].determinista, d);
+            assert_eq!(vuelta.canonico(), con(d).canonico());
+        }
     }
 }

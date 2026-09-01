@@ -415,10 +415,11 @@ Deliberadamente al final. No condiciona el diseño; lo paga.
 **El veto de dependencias.** Substrait es protobuf, y `prost` es Rust puro: emitirlo **no** rompe
 la hermeticidad. Es mejor noticia de la esperada.
 
-**«ORE no opera ninguna base de datos».** M6 la rompe. El mantenimiento incremental **tiene
-estado** —los circuitos DBSP guardan el pasado— y ese estado hay que ponerlo en algún sitio. Las
-salidas son tres y hay que elegir a sabiendas: que viva en el lago del cliente, que viva en un
-programa delegado, o que se reabra el ADR 0006. **No la elijo yo.**
+**«ORE no opera ninguna base de datos».** Parecía que M6 la rompía, y **no la rompe**. El
+mantenimiento incremental tiene estado —DBSP: *«ese estado vive enteramente en los operadores de
+retardo»*— y la decisión de dónde ponerlo está tomada: **estado parcial en el almacenamiento del
+cliente**, la forma de Noria. Lo que ORE guarda sigue siendo metadato, y **un fallo de estado es
+una lectura a la fuente, que es un plan**. Está en el [Anexo](#anexo--m5-y-m6) §II.5.
 
 **La ejecución del residuo.** O se empuja todo y se rechaza lo que no se pueda empujar
 —coherente con lo que ya hacemos, y limitante—, o hace falta un motor de consulta delegado. Es
@@ -661,10 +662,9 @@ literales `Float` — y esa última la decidimos en M0 por el digest, no por est
 **El álgebra de M0 es incrementalizable por construcción**, y es un dividendo que no se buscó.
 
 Lo que sí tenemos es la **expresión opaca**, que es exactamente el agujero de Snowflake con
-otro nombre. La respuesta honesta ya está escrita en su contrato: declara `lee` y declara
-`tipo`, y **no declara determinismo**. Un `Opaca` sin una declaración de pureza no se puede
-incrementalizar, y eso es un campo que hay que añadir — o una vista que la contenga cae a
-recomputar, y lo dice.
+otro nombre. La respuesta está en su contrato, y **ya está construida**: declara `lee`, declara
+`tipo` y declara `determinista`. Una opaca sin declaración de pureza **se supone volátil**, así
+que una vista que la contenga cae a recomputar — y lo dice, en vez de mantenerse mal.
 
 La segunda lección es más incómoda:
 
@@ -704,9 +704,21 @@ Con eso, las tres salidas de §7 del documento principal se ordenan solas:
    hermético y el estado es de otro proceso.
 3. Reabrir el ADR 0006.
 
-**Recomendación: 1, con 2 como ejecutor.** Es la única de las tres que no obliga a retirar una
-frase ya publicada, y las dos piezas que necesita —el manifiesto y el planificador— están
-construidas. **La decisión sigue siendo tuya**, y conviene tomarla antes de M6.3, no durante.
+> ## **DECIDIDO · 2026-09-01 · estado parcial en el cliente**
+>
+> La salida **1**. Lo que ORE guarda sigue siendo metadato —qué claves están calientes y bajo
+> qué identidades—, y los bytes viven donde ya viven. **No hay que retirar ninguna frase
+> publicada:** *«ORE no opera ninguna base de datos»* sigue en pie, porque el estado parcial no
+> es una base de datos nuestra, es un manifiesto con granularidad de clave.
+>
+> Y las dos piezas que necesita están construidas: el manifiesto es `ore_core::cache`, y el
+> camino del fallo es `repartir` de M4.
+>
+> La salida **2** —un programa delegado que sostenga los *arrangements*— queda como el
+> ejecutor cuando haga falta, con la frontera de siempre: por stdin, y lo que devuelve no se
+> cree.
+
+Con la decisión tomada, M6.3 deja de estar bloqueado y pasa a ser lo que era: trabajo.
 
 ### II.6 · Los peldaños de M6
 
@@ -735,7 +747,16 @@ reescritor útil; `M5.4` —juntas— es donde la literatura se rompe.
 necesita ni estado ni decisión, y es lo que permite diseñar vistas mantenibles en vez de
 descubrirlo tarde.
 
-**Y hay un campo que falta en el IR desde M0**: `Opaca` declara `lee` y `tipo`, y **no declara
-si es determinista**. Sin eso no se puede saber si una vista que la contiene es
-incrementalizable — y es el mismo agujero que Snowflake documenta como *«UDF volátiles»*. Es un
-campo, y se ve ahora porque hasta ahora no había quien lo preguntara.
+**Y había un campo que faltaba en el IR desde M0** — **arreglado el 2026-09-01**. `Opaca`
+declaraba `lee` y `tipo` y no decía **si es determinista**, y sin eso no se puede saber si una
+vista que la contiene es incrementalizable. Era el mismo agujero que Snowflake documenta como
+*«UDF volátiles»*, y se vio aquí porque hasta ahora no había quien lo preguntara.
+
+`Opaca::determinista` existe, **por defecto `false`** —P4: quien la escribe sabe si su dialecto
+tiene un `RANDOM()` dentro; este motor no—, y se escribe en la forma canónica **solo cuando es
+cierto**, para que la ausencia siga significando lo que significaba. Con él, `Nodo::deterministico()`
+contesta la precondición de M6.1.
+
+Y el campo obligó a decir algo que estaba implícito: **determinista y analizable son preguntas
+distintas.** Una opaca **nunca** es analizable, y puede perfectamente ser determinista — una
+expresión regular lo es. Confundirlas habría relajado una de las dos.

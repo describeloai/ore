@@ -484,6 +484,7 @@ mod tests {
                         texto: "redondea".into(),
                         lee: vec!["total".into()],
                         tipo: parse_type("Decimal").unwrap(),
+                        determinista: true,
                     }),
                 ),
             ]

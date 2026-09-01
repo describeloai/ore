@@ -810,6 +810,7 @@ mod tests {
                 texto: "REGEXP_CONTAINS(pais, r'^E')".into(),
                 lee: vec!["pais".into()],
                 tipo: parse_type("Boolean").unwrap(),
+                determinista: true,
             })
         };
         let caps = |d: Option<&str>| -> BTreeMap<String, Capacidades> {
@@ -851,6 +852,7 @@ mod tests {
                 texto: "REGEXP_CONTAINS(donde, r'^E')".into(),
                 lee: vec!["donde".into()],
                 tipo: parse_type("Boolean").unwrap(),
+                determinista: true,
             }),
         );
         let caps: BTreeMap<String, Capacidades> = [(

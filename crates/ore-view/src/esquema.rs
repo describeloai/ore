@@ -509,6 +509,7 @@ mod tests {
                 texto: "algo".into(),
                 lee: vec![lee.to_string()],
                 tipo: t("Date"),
+                determinista: true,
             })
         };
         let malo = Nodo::Proyecta {
