@@ -1297,7 +1297,10 @@ fn repetidas(tablas: &[Tabla]) -> BTreeMap<(String, String), Vec<String>> {
                 .push(t.nombre.clone());
         }
     }
-    donde.retain(|(n, _), v| v.len() > 1 && !estructural(n));
+    // El filtro estructural se queda: `id`, `*_id` y `*_at` son andamiaje de la
+    // tabla, no conceptos de nadie. El de «aparece más de una vez» se movió a
+    // quien pregunta, porque ya no es el único motivo para preguntar.
+    donde.retain(|(n, _), _| !estructural(n));
     donde
 }
 
@@ -1307,6 +1310,19 @@ fn repetidas(tablas: &[Tabla]) -> BTreeMap<(String, String), Vec<String>> {
 fn candidatas_a_concepto(tablas: &[Tabla], dec: &Decisiones, voc: &Vocabulario) -> Vec<Pendiente> {
     repetidas(tablas)
         .into_iter()
+        // **Dos motivos para preguntar, y solo uno estaba.**
+        //
+        // El original era la repetición: una columna en varias tablas es una
+        // candidata a concepto, y decidirlo una vez vale por todas. Se midió
+        // contra un dataset de verdad y faltaba el otro: `nif` sale en UNA
+        // tabla y `gdpr.nationalId` la lleva de sinónimo; `nom` sale en una y
+        // `gdpr.fullName` también. Eran las dos mejores acuñaciones
+        // disponibles y **la cola no las mencionaba**.
+        //
+        // Ampliar no reabre la inflación que el filtro evitaba, porque los dos
+        // motivos piden cosas distintas: repetir invita a ACUÑAR —caro, hay
+        // que clasificar— y parecerse invita a APUNTAR, que no crea nada.
+        .filter(|((n, tipo), v)| v.len() > 1 || !voc.candidatos(n, tipo).is_empty())
         .filter(|((n, tipo), _)| {
             dec.de(&id(Clase::Concepto, &concepto_id(n, Some(tipo))))
                 .is_none()
@@ -1321,9 +1337,9 @@ fn candidatas_a_concepto(tablas: &[Tabla], dec: &Decisiones, voc: &Vocabulario) 
                  ningún concepto publicado de este tipo al que apuntar, así que contestar \
                  con un nombre lo ACUÑA, y entonces hay que clasificarlo"
             } else {
-                "acuñar uno por columna repetida es la inflación que produce cuatro mil \
-                 conceptos. Decidirlo una vez vale por todas las apariciones — y apuntar a \
-                 uno publicado hereda su clasificación sin escribirla"
+                "hay un concepto publicado que dice ser esto, y apuntarlo hereda su \
+                 clasificación sin escribirla. Acuñar uno nuevo cuando ya existe es la \
+                 inflación por la otra puerta"
             };
             pendiente(
                 Clase::Concepto,
