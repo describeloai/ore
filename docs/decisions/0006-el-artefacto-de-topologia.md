@@ -141,3 +141,60 @@ Y hay una pieza del protocolo que se validó sola: **el driver no se entera de q
 y `hasta`, y como las filas salen con nombres de propiedad, lo que devuelve **ya es una
 arista**. Que el mismo verbo sirva para la carga útil y para el índice es la prueba de que
 [el protocolo](0008-el-protocolo-del-driver.md) estaba bien cortado.
+
+---
+
+## Y es también el modelo de consistencia, que no se vio al decidirlo
+
+Esta decisión se tomó por almacenamiento —dónde se guarda lo materializado— y contesta una
+pregunta distinta que apareció cuando se empezó a diseñar el motor de funciones:
+
+> **¿Cómo se consigue consistencia sobre dato que no se posee?**
+
+Foundry la consigue **poseyendo el dato**: materializa en su object backend y entonces
+transacciona. Es una solución buena, y es la razón por la que hay que meterlo todo dentro. La
+industria no puede: su dato está en BigQuery, en SAP, en un mainframe.
+
+La respuesta que estos tres planos ya daban, sin nombrarla:
+
+> **Lo difícil de una consulta federada no son los valores: es la correspondencia.**
+
+Saber qué filas de un sistema son las mismas cosas que qué filas de otro es la parte cara, y
+es exactamente lo que el índice de topología contiene. Y como es **un artefacto inmutable y
+versionado**, de ahí sale reproducibilidad sin instantánea global:
+
+| | Se posee | Qué garantiza |
+|---|---|---|
+| **contexto** | sí | mismo bundle → mismas propiedades autorizadas, mismas podadas y por qué |
+| **topología** | sí | misma versión → **mismo conjunto de claves** en una travesía |
+| **carga útil** | **no** | nada. Y por eso la frescura se declara en vez de prometerse |
+
+### Lo que da y lo que no
+
+Poseer los dos primeros da **reproducibilidad**, no **aislamiento**. Si el dato cambia en el
+origen entre dos lecturas, la topología no lo evita — y decir lo contrario sería la clase de
+promesa que este proyecto no hace.
+
+Lo que cierra ese hueco no es una instantánea: es **acotar la mentira**. `05-ejecutor` §7 lo
+tenía escrito antes de que esta pregunta existiera —*«el digest del bundle y la marca de agua…
+son los dos ejes: **qué significaba** y **hasta cuándo era cierto**»*— y `Respuesta` ya lleva
+los dos, más el instante de autorización y el motivo de degradación.
+
+> **La consistencia no viene de poseer el dato. Viene de poseer el significado y la
+> correspondencia, y de decir la verdad sobre la frescura de lo demás.**
+
+Es más débil que Foundry en el eje del dato y más fuerte en el de la auditoría. Para un
+regulado, el segundo es el que se compra.
+
+### Y de aquí sale lo que un efecto tiene que llevar dentro
+
+Si una función se computa sobre este régimen, su resultado no puede ser solo *qué escribir*:
+tiene que llevar **bajo qué se decidió**. Las cuatro identidades —digest del bundle, versión de
+topología, marcas de agua y el plan de lectura— son lo que hace que un efecto sea reproducible,
+y lo que convierte *«se computó sobre dato rancio»* en una pregunta contestable en vez de una
+sospecha. Está desarrollado en [`docs/functions.md`](../functions.md).
+
+Y el peligro que §7.1 ya nombra es de este motor antes que de ningún otro: **refrescar responde
+a que el dato cambió; reconstruir, a que la REGLA cambió.** Un efecto computado bajo una regla
+nueva sobre datos enmascarados con la vieja es *«la clase de fallo que no tiene aspecto de
+fallo»*.
