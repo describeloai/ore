@@ -20,7 +20,8 @@
 //! capacidades y no hay incremental: solo hay cadenas de SQL.
 //!
 //! Los peldaños y lo que cada uno cuesta están en `docs/handoff-view-engine.md`.
-//! Esto es **M0**.
+//! Esto es **M0** —el IR, en [`plan`] y [`esquema`]— y **M1** —el expansor, en
+//! [`catalogo`]—.
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -29,8 +30,10 @@
 //! expansor, M3 el flujo de etiquetas— viene después y **a propósito**: la pieza
 //! se está construyendo por su cuenta antes de decidir cómo entra.
 
+pub mod catalogo;
 pub mod esquema;
 pub mod plan;
 
+pub use catalogo::{Catalogo, Expansion, Vista};
 pub use esquema::{Desajuste, Esquema, esquema};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};

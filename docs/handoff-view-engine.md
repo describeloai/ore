@@ -212,13 +212,35 @@ De paso, `ore_core::types::Type` no se podía escribir de vuelta: había `parse_
 `Display`. Ahora lo hay, con la invariante `parse_type(t.to_string()) == t` ejercida sobre el
 conjunto cerrado entero.
 
-### M1 · El expansor
+### M1 · El expansor ✅
 
-Vista → plan. Vista sobre vistas → plan con las de dentro incorporadas. Detección de ciclos.
-Es donde *«un pipeline es una cadena de vistas»* deja de ser una frase.
+`catalogo.rs`. Una vista es **un nombre y un cuerpo**, y el cuerpo es un plan cuyas hojas pueden
+ser lecturas de una fuente **o [`Nodo::Referencia`] a otra vista**. Expandir es sustituirlas
+hasta que no queda ninguna.
 
 **Listo cuando:** una cadena de N vistas produce **un** plan, y un ciclo se rechaza nombrando
-las vistas que lo forman.
+las vistas que lo forman. ✅ · `ciclo entre vistas · a → b → c → a`
+
+Tres cosas de construirlo:
+
+**La referencia no es una rareza: es una exploración con otro nombre.** Un `TableScan` de
+Calcite se apoya en una tabla que puede ser una vista, y el `ReadRel` de Substrait admite una
+`NamedTable`. Con eso, componer no necesita un concepto nuevo — y **no hace falta «pipeline»**.
+
+**El compilador señaló una decisión que no estaba tomada.** Al añadir la referencia, el tipado
+dejó de ser exhaustivo, y la respuesta correcta no era «trátala como una hoja vacía»: un plan
+sin expandir **no se puede tipar**, porque un esquema sobre medio plan parece bueno. Es
+`Desajuste::SinExpandir`, y tiene prueba.
+
+**El camino, no un conjunto de visitados.** Es el error clásico: con un `visitados` global, un
+**rombo** —dos vistas apoyadas en una tercera— se confunde con un ciclo, y la primera persona
+que reutilizara una vista limpia en dos sitios se encontraría un ciclo que no existe. Hay una
+comprobación que falla si alguien lo cambia.
+
+Y dos límites que salen por su nombre en vez de producir algo raro: **incorporar duplica** —una
+vista referenciada dos veces se copia dos veces, y lo que lo arregla es M5, no un parche aquí— y
+**no hay alias**, así que dos referencias a la misma vista chocan por nombre de columna y lo
+dice `ColisionAlUnir`.
 
 ### M2 · El linaje, derivado del plan
 

@@ -56,6 +56,13 @@ pub enum Desajuste {
     /// Un agregado que necesita una columna y no la tiene. Solo `cuenta` puede
     /// no tenerla: sumar la nada no significa nada.
     AgregadoSinCampo { nombre: String },
+    /// Se pide el esquema de un plan que todavía nombra una vista.
+    ///
+    /// **Lo señaló el compilador al añadir la referencia**, y la respuesta
+    /// correcta no era «trátala como una hoja vacía»: un plan sin expandir no se
+    /// puede tipar porque le faltan trozos, y devolver un esquema parcial daría
+    /// un análisis que parece bueno sobre medio plan.
+    SinExpandir { vista: String },
     /// Una expresión opaca que dice leer un campo que no existe. **Es el único
     /// control que tiene**, y por eso no se puede saltar: si su superficie
     /// declarada miente, las etiquetas dejan de fluir por donde de verdad pasan.
@@ -86,6 +93,9 @@ impl Desajuste {
             Desajuste::AgregadoSinCampo { nombre } => {
                 format!("`{nombre}` agrega sin decir sobre qué, y solo `cuenta` puede")
             }
+            Desajuste::SinExpandir { vista } => format!(
+                "el plan todavía nombra a `{vista}`: hay que expandirlo antes de tiparlo,                  porque un esquema sobre medio plan parece bueno"
+            ),
             Desajuste::OpacaLeeLoQueNoHay { campo } => format!(
                 "una expresión opaca declara leer `{campo}` y no está: su superficie declarada \
                  es lo único que se puede comprobar de ella"
@@ -98,6 +108,8 @@ impl Desajuste {
 pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
     match n {
         Nodo::Lee(l) => Ok(l.campos.clone()),
+
+        Nodo::Referencia(v) => Err(Desajuste::SinExpandir { vista: v.clone() }),
 
         Nodo::Proyecta { entrada, campos } => {
             let dentro = esquema(entrada)?;

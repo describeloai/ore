@@ -429,6 +429,19 @@ pub struct Agregacion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Nodo {
     Lee(Lectura),
+    /// Una hoja que nombra a **otra vista**.
+    ///
+    /// Es lo que hace que *«un pipeline es una cadena de vistas»* sea una
+    /// estructura y no una frase: componer no necesita un concepto nuevo, solo
+    /// una hoja que en vez de un objeto de una fuente nombra a un vecino.
+    ///
+    /// Y no es una rareza nuestra: un `TableScan` de Calcite se apoya en una
+    /// tabla que puede ser una vista, y el `ReadRel` de Substrait admite una
+    /// `NamedTable`. **Una referencia es una exploración con otro nombre.**
+    ///
+    /// Después de expandir no queda ninguna, y eso se puede afirmar:
+    /// [`Nodo::expandido`].
+    Referencia(String),
     Proyecta {
         entrada: Box<Nodo>,
         /// `BTreeMap` y no `Vec`: el orden de las columnas de salida no
@@ -494,6 +507,27 @@ impl Nodo {
         out
     }
 
+    /// Las vistas a las que este plan se refiere **sin haberlas incorporado**.
+    pub fn referencias(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        self.recorrer(&mut |n| {
+            if let Nodo::Referencia(v) = n {
+                out.push(v.as_str());
+            }
+        });
+        out
+    }
+
+    /// **¿Está el plan entero delante?**
+    ///
+    /// Un plan con referencias no se puede tipar del todo, no se puede repartir
+    /// por capacidades y no se puede ejecutar: le faltan trozos. Poder
+    /// preguntarlo es lo que impide que un análisis se haga sobre medio plan y
+    /// dé un resultado que parece bueno.
+    pub fn expandido(&self) -> bool {
+        self.referencias().is_empty()
+    }
+
     /// Las lecturas que hay debajo: las hojas del plan.
     pub fn lecturas(&self) -> Vec<&Lectura> {
         let mut out = Vec::new();
@@ -516,7 +550,7 @@ impl Nodo {
     /// repetir el `match` en cada análisis.
     pub fn entradas(&self) -> Vec<&Nodo> {
         match self {
-            Nodo::Lee(_) => Vec::new(),
+            Nodo::Lee(_) | Nodo::Referencia(_) => Vec::new(),
             Nodo::Proyecta { entrada, .. }
             | Nodo::Filtra { entrada, .. }
             | Nodo::Agrupa { entrada, .. }
@@ -628,6 +662,9 @@ impl Nodo {
                     ),
                 ),
             ]),
+            Nodo::Referencia(v) => {
+                Json::obj([("op", Json::s("ref")), ("vista", Json::s(v.as_str()))])
+            }
             Nodo::Distingue(e) => Json::obj([("op", Json::s("distingue")), ("e", e.json())]),
             Nodo::Limita { entrada, n } => Json::obj([
                 ("op", Json::s("limita")),
@@ -755,6 +792,7 @@ impl Nodo {
                     .map(|(_, v)| v.items().iter().map(Nodo::de).collect())
                     .unwrap_or_else(|| Err("a `unifica` le falta `e`".to_string()))?,
             ),
+            "ref" => Nodo::Referencia(cadena("vista")?),
             "distingue" => Nodo::Distingue(Box::new(hijo("e")?)),
             "limita" => Nodo::Limita {
                 entrada: Box::new(hijo("e")?),
