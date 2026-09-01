@@ -244,6 +244,28 @@ impl Expr {
         }
     }
 
+    /// **Los campos que esta expresión lee**, incluida la superficie declarada
+    /// de una opaca.
+    ///
+    /// Es la primitiva de la que vive el linaje: sin ella, «qué columna influye
+    /// en qué» habría que deducirlo en cada análisis por separado. Y que la
+    /// opaca aporte su `lee` es lo que hace que un trozo que nadie entiende siga
+    /// dejando fluir las etiquetas de forma conservadora.
+    pub fn campos_leidos(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        self.recorrer(&mut |e| match e {
+            Expr::Campo(c) => {
+                out.insert(c.clone());
+            }
+            Expr::EnConjunto { campo, .. } => {
+                out.insert(campo.clone());
+            }
+            Expr::Opaca(o) => out.extend(o.lee.iter().cloned()),
+            _ => {}
+        });
+        out
+    }
+
     /// Las expresiones opacas que hay debajo, para que un plan pueda decir que
     /// no es del todo analizable **en vez de aparentar que sí**.
     pub fn opacas(&self) -> Vec<&Opaca> {

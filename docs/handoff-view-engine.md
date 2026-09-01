@@ -242,13 +242,41 @@ vista referenciada dos veces se copia dos veces, y lo que lo arregla es M5, no u
 **no hay alias**, así que dos referencias a la misma vista chocan por nombre de columna y lo
 dice `ColisionAlUnir`.
 
-### M2 · El linaje, derivado del plan
+### M2 · El linaje, derivado del plan ✅
 
-Calculado del IR, no observado de una ejecución. `DIRECT` e `INDIRECT` con subtipos. Emisión al
-facet de OpenLineage.
+`linaje.rs`. Calculado del IR, no observado de una ejecución, así que existe antes de que nadie
+abra nada. Vocabulario de OpenLineage tal cual —`DIRECT` con `IDENTITY`/`TRANSFORMATION`/
+`AGGREGATION`, `INDIRECT` con `JOIN`/`GROUP_BY`/`FILTER`— y emisión del facet `columnLineage`.
 
 **Listo cuando:** cada campo de salida nombra sus campos raíz, y **un campo que solo aparece en
-un filtro sale como `INDIRECT`** — que es la mitad que nadie calcula.
+un filtro sale como `INDIRECT`**. ✅ · 39 comprobaciones en el crate.
+
+**La regla de composición es una y es la que hace que la influencia no se pierda:**
+
+> **Derivar es transitivo solo a través de derivaciones. Si cualquiera de los dos pasos es
+> influencia, el resultado es influencia.**
+
+Sin ella, proyectar después de filtrar borraría el flujo implícito — y el análisis parecería más
+limpio justo donde deja de ser cierto. Hay una prueba con cuatro proyecciones apiladas sobre un
+filtro.
+
+Cuatro decisiones que salieron de escribirlo:
+
+| | |
+|---|---|
+| **`DIRECT` e `INDIRECT` son familias, no un enum plano** | `DIRECT` con subtipo `FILTER` no significa nada, y un enum plano lo dejaría escribir |
+| **`Distingue` produce `GROUP_BY`** | quitar duplicados **es** agrupar por todas las columnas, que es como lo reescribe cualquier planificador |
+| **`Limita` no inventa aristas** | sin orden, qué filas sobreviven no lo decide ninguna columna. `SORT` llegará con el nodo de orden |
+| **`cuenta` sin columna no queda huérfana** | no deriva de ninguna, y aun así su valor lo decide qué filas caen en el grupo: sale por las aristas de agrupación |
+
+Y la opaca sigue pagando su precio y cumpliendo su parte: **su `lee` declarado entra en el
+linaje**, así que un trozo que nadie entiende sigue dejando fluir las etiquetas de forma
+conservadora.
+
+Dos cosas del facet que **no** se emiten, con su razón: `masking` —saber si algo enmascara es un
+juicio de gobierno, y aquí no hay retículo: es de M3— y el array `dataset` de dependencias
+indirectas de todo el conjunto —es una compactación, y tener el mismo hecho en dos sitios es lo
+que este proyecto no hace—.
 
 ### M3 · El retículo fluye por el linaje, y se niega a compilar
 
