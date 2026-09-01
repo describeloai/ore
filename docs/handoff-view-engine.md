@@ -370,7 +370,7 @@ ignora. Esta pieza no sabe cuál es cuál, así que deja el predicado escrito en
 que quien sí lo sepa pueda volver a aplicarlo — y cuando esto se absorba, el campo que los marca
 ya existe: es el `ambito` de un filtro.
 
-### M5 · Reescritura con materializaciones — **la criba** y **el cotejo**
+### M5 · Reescritura con materializaciones — **Filter Tree** y **View Matcher**
 
 > **Medido en profundidad en el [Anexo](#anexo--las-piezas-que-faltan), Parte I.** Lo de aquí es el
 > planteamiento; allí están las cuatro condiciones, la frontera de decidibilidad y los seis
@@ -384,8 +384,8 @@ de joins **queda fuera**, y Calcite documenta por qué.
 cuyo predicado lo implica; y uno cuyo predicado **no** lo implica va al origen **con el
 motivo**.
 
-### M6 · Mantenimiento incremental — **el diferenciador**, **el dictamen**,
-### **la despensa** y **la báscula**
+### M6 · Mantenimiento incremental — **Delta Compiler**, **Refresh Analyzer**,
+### **Partial State Store** y **Cost Model**
 
 > **Medido en profundidad en el [Anexo](#anexo--las-piezas-que-faltan), Parte II.** Allí están las reglas
 > delta operador por operador, lo que no se puede incrementalizar, y las tres formas del sector
@@ -450,9 +450,14 @@ opaca y paga el análisis.
 >
 > Fecha: 2026-09-01 · Escrito después de cerrar M0–M4 y **antes** de tocar M5 o M6.
 >
-> La versión anterior de este anexo era un estudio. Esta es **el plano de la máquina**: qué
-> piezas faltan, **cómo se llama cada una**, qué contesta, con qué entra y con qué sale. La
-> teoría sigue dentro, pero debajo de cada pieza y justificando su forma — no delante.
+> Esto es **el plano de la máquina**: qué piezas faltan, **cómo se llama cada una**, qué
+> contesta, con qué entra y con qué sale. La teoría está debajo de cada pieza, justificando su
+> forma — no delante.
+>
+> **Las piezas se nombran en inglés y con la terminología del sector**, no con nombres propios:
+> *filter tree* es de Goldstein–Larson, *view matching* es de Oracle y de Calcite, *upquery* y
+> *partial state* son de Noria, *refresh mode* y *target lag* son de Snowflake, y *cost model*
+> es de Databricks. Un ingeniero de datos tiene que poder leer este plano sin traducir nada.
 
 ---
 
@@ -460,38 +465,38 @@ opaca y paga el análisis.
 
 ```mermaid
 flowchart TB
-    subgraph DECL["lo declarado — nada de esto se lee de una conexión"]
+    subgraph DECL["declared — nada de esto se lee de una conexión"]
         direction LR
-        V["vistas"]
-        CAP["capacidades"]
-        RET["retículo · etiquetas"]
-        MAT["materializaciones"]
+        V["views"]
+        CAP["capabilities"]
+        RET["lattice · labels"]
+        MAT["materializations"]
     end
 
-    V --> EXP["el expansor<br/>catalogo.rs"]
-    EXP --> PLAN["el álgebra<br/>plan.rs<br/>el plan, con identidad"]
+    V --> EXP["View Expander<br/>catalogo.rs"]
+    EXP --> PLAN["Plan IR<br/>plan.rs"]
 
-    PLAN --> TIP["el tipador<br/>esquema.rs"]
-    PLAN --> TRZ["el trazador<br/>linaje.rs"]
-    TRZ --> ADU["la aduana<br/>flujo.rs"]
+    PLAN --> TIP["Schema Resolver<br/>esquema.rs"]
+    PLAN --> TRZ["Lineage Analyzer<br/>linaje.rs"]
+    TRZ --> ADU["Flow Checker<br/>flujo.rs"]
     RET --> ADU
-    ADU --> Q1{{"¿compila?"}}
+    ADU --> Q1{{"compiles?"}}
 
-    MAT --> CRI["la criba<br/>criba.rs"]
+    MAT --> CRI["Filter Tree<br/>filter_tree.rs"]
     PLAN --> CRI
-    CRI --> COT["el cotejo<br/>cotejo.rs"]
-    COT --> Q2{{"¿lo contesta?<br/>compensación · precinto"}}
+    CRI --> COT["View Matcher<br/>view_matcher.rs"]
+    COT --> Q2{{"answers it?<br/>compensation · label seal"}}
 
-    PLAN --> RPT["el repartidor<br/>capacidades.rs"]
+    PLAN --> RPT["Pushdown Planner<br/>capacidades.rs"]
     CAP --> RPT
-    RPT --> Q3{{"empujado · residuo"}}
+    RPT --> Q3{{"pushed · residual"}}
 
-    PLAN --> DIF["el diferenciador<br/>diferenciador.rs"]
-    DIF --> DIC["el dictamen<br/>dictamen.rs"]
-    DIC --> Q4{{"¿mantenible?<br/>y si no, por qué"}}
-    DIF --> DSP["la despensa<br/>despensa.rs"]
-    DSP -. "la reposición<br/>es un plan" .-> RPT
-    DIC --> BAS["la báscula<br/>bascula.rs"]
+    PLAN --> DIF["Delta Compiler<br/>delta_compiler.rs"]
+    DIF --> DIC["Refresh Analyzer<br/>refresh_analyzer.rs"]
+    DIC --> Q4{{"refresh mode<br/>INCREMENTAL · FULL"}}
+    DIF --> DSP["Partial State Store<br/>state_store.rs"]
+    DSP -. "upquery<br/>= a plan" .-> RPT
+    DIC --> BAS["Cost Model<br/>cost_model.rs"]
 
     classDef hecho fill:#0f5132,stroke:#0f5132,color:#fff
     classDef m5 fill:#664d03,stroke:#664d03,color:#fff
@@ -503,46 +508,51 @@ flowchart TB
     class Q1,Q2,Q3,Q4 pregunta
 ```
 
-### 1.1 · El censo, con nombre
+### 1.1 · El censo
 
 | Pieza | Módulo | Fase | Qué contesta | |
 |---|---|---|---|---|
-| **el álgebra** | `plan.rs` | M0 | *qué se va a hacer*, con identidad determinista | ✅ |
-| **el tipador** | `esquema.rs` | M0 | *qué columnas salen y de qué tipo* | ✅ |
-| **el expansor** | `catalogo.rs` | M1 | *una cadena de vistas es un plan* | ✅ |
-| **el trazador** | `linaje.rs` | M2 | *de qué columna raíz sale cada salida, y por qué arista* | ✅ |
-| **la aduana** | `flujo.rs` | M3 | *por qué esto no compila* | ✅ |
-| **el repartidor** | `capacidades.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
-| **la criba** | `criba.rs` | **M5** | *de todas las materializaciones, ¿cuáles pueden servir?* | ⏳ |
-| **el cotejo** | `cotejo.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ⏳ |
-| **el diferenciador** | `diferenciador.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
-| **el dictamen** | `dictamen.rs` | **M6** | *¿se puede mantener, y si no, por qué no?* | ⏳ |
-| **la despensa** | `despensa.rs` | **M6** | *qué hay guardado, y qué falta* | ⏳ |
-| **la báscula** | `bascula.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
+| **Plan IR** | `plan.rs` | M0 | *qué se va a hacer*, con identidad determinista | ✅ |
+| **Schema Resolver** | `esquema.rs` | M0 | *qué columnas salen y de qué tipo* | ✅ |
+| **View Expander** | `catalogo.rs` | M1 | *una cadena de vistas es un plan* | ✅ |
+| **Lineage Analyzer** | `linaje.rs` | M2 | *de qué columna raíz sale cada salida, y por qué arista* | ✅ |
+| **Flow Checker** | `flujo.rs` | M3 | *por qué esto no compila* | ✅ |
+| **Pushdown Planner** | `capacidades.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
+| **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ⏳ |
+| **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ⏳ |
+| **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
+| **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
+| **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
+| **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
 **Doce piezas, seis construidas.** Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
+> **Sobre los ficheros:** los seis módulos construidos conservan su nombre, y no hace falta
+> tocarlos — cinco son la traducción literal de su pieza (`plan`, `esquema`, `catalogo`,
+> `linaje`, `flujo`) y el sexto, `capacidades`, es el sustantivo del que el *pushdown* depende.
+> Los seis nuevos se llaman como su pieza porque todavía no existen y sale gratis.
+
 ---
 
 ## Parte I · M5 · lo que lo hace **rápido**
 
-Dos piezas: **la criba** y **el cotejo**. La primera reduce el problema; la segunda lo resuelve.
+Dos piezas: el **Filter Tree** reduce el problema, el **View Matcher** lo resuelve.
 
-### I.1 · **La criba** — `criba.rs`
+### I.1 · **Filter Tree** — `filter_tree.rs`
 
 > **De N materializaciones a las candidatas de este plan, sin mirar ninguna por dentro.**
 
 ```text
-entra   el plan  +  el catálogo de materializaciones
-sale    las candidatas, ordenadas por lo específicas que son
+in    plan  +  catálogo de materializaciones
+out   candidatas
 ```
 
-Es la aportación de Goldstein–Larson que se cita menos y la que decide si esto sirve en
-producción: su *filter tree*. Calcite reconoce por escrito que no lo tiene — *«la regla intenta
-emparejar todas las vistas contra cada consulta. Planeamos implementar técnicas de filtrado más
-refinadas»*—, y con mil vistas eso es mil intentos por plan.
+El nombre es de Goldstein–Larson (SIGMOD'01) y es la aportación suya que se cita menos, aunque
+es la que decide si esto sirve en producción. Calcite reconoce por escrito que no lo tiene —*«la
+regla intenta emparejar todas las vistas contra cada consulta. Planeamos implementar técnicas de
+filtrado más refinadas»*—, y con mil vistas eso son mil intentos por plan.
 
 **La firma ya existe desde M0**: `Nodo::lecturas()` da el conjunto de hojas
 `(datasource, objeto)`. Una materialización solo puede servir a un plan si sus hojas están
@@ -550,92 +560,93 @@ refinadas»*—, y con mil vistas eso es mil intentos por plan.
 99 % antes de cotejar nada.
 
 **Listo cuando:** con mil materializaciones y un plan de dos hojas, se cotejan solo las que
-tocan esas dos hojas — y hay una prueba que cuenta cuántas se cotejan, no cuánto tarda.
+tocan esas dos hojas — y hay una prueba que **cuenta cuántas se cotejan**, no cuánto tarda.
 
 **Coste:** bajo. La firma está construida y el índice es un `BTreeMap`.
 
 ---
 
-### I.2 · **El cotejo** — `cotejo.rs`
+### I.2 · **View Matcher** — `view_matcher.rs`
 
 > **¿Contesta esta materialización a este plan, y qué hay que hacerle encima?**
 
 ```text
-entra   el plan  +  UNA candidata
-sale    Reescritura { desde, compensación, precinto }   ·  o el motivo de que no
+in    plan  +  UNA candidata
+out   Rewrite { from, compensation, label_seal }   ·  o el motivo de que no
 ```
 
-Las cuatro condiciones son las mismas en Oracle, Calcite y SQL Server, y aquí son **cuatro
-comprobaciones con nombre**, en este orden:
+*View matching* es el nombre que le dan Oracle y SQL Server; Calcite lo llama *query rewriting*.
+Las cuatro condiciones son las mismas en los tres, y aquí son **cuatro comprobaciones con
+nombre**, en este orden:
 
-| | Comprobación | Qué falla si se salta |
+| | Check | Qué falla si se salta |
 |---|---|---|
-| **1** | **juntas** | una junta **de más** en la materialización solo vale si es **sin pérdida**; si no, tira o duplica filas |
-| **2** | **suficiencia** | cada columna que el plan necesita tiene que derivarse de lo que ella produce |
-| **3** | **subsunción** | el predicado del plan tiene que **implicar** el suyo; lo que sobra es la **compensación** |
-| **4** | **agregados** | su agrupación tiene que ser igual o **más fina**, y los agregados **enrollables** |
+| **1** | **join compatibility** | un join **de más** en la materialización solo vale si es **lossless**; si no, tira o duplica filas |
+| **2** | **data sufficiency** | cada columna que el plan necesita tiene que derivarse de lo que ella produce |
+| **3** | **predicate subsumption** | el predicado del plan tiene que **implicar** el suyo; lo que sobra es la **compensation** |
+| **4** | **aggregate computability** | su agrupación tiene que ser igual o **más fina**, y los agregados **rollup-ables** |
 
 Y dos detalles que hunden una implementación ingenua, los dos documentados por quien ya se
 estrelló:
 
-**La ausencia de pérdida se demuestra, no se supone.** Oracle: *«las restricciones se usan para
-determinar juntas sin pérdida»*. Calcite se apoya en *«claves ajenas, claves primarias, claves
-únicas o `not null`»* para reconocer cuándo una junta **solo añade columnas sin cambiar la
-multiplicidad de las tuplas**. Sin una clave declarada, esa reescritura devuelve otro número de
-filas. **Regla de la pieza: sin clave declarada, la junta no se cruza.**
+**El *lossless join* se demuestra, no se supone.** Oracle: *«las restricciones se usan para
+determinar joins sin pérdida»*. Calcite se apoya en *«foreign keys, primary keys, unique keys o
+`not null`»* para reconocer cuándo un join **solo añade columnas sin cambiar la multiplicidad de
+las tuplas**. Sin una clave declarada, esa reescritura devuelve otro número de filas. **Regla de
+la pieza: sin clave declarada, el join no se cruza.**
 
-**`AVG` no se enrolla.** `SUMA`, `CUENTA`, `MIN` y `MAX` sí. `PROMEDIO` solo si la
-materialización guardó suma y cuenta por separado — y **es la misma regla que el diferenciador
-necesita en M6.3**, así que se escribe una vez y la usan las dos.
+**`AVG` no hace rollup.** `SUM`, `COUNT`, `MIN` y `MAX` sí. `AVG` solo si la materialización
+guardó suma y cuenta por separado — y **es la misma regla que el Delta Compiler necesita en
+M6**, así que se escribe una vez y la usan las dos.
 
-#### La compensación
+#### La *compensation*
 
-Lo que sobra de la condición 3, aplicado encima. Es lo que separa una caché que sirve el 90 % de
-una que no sirve: Calcite combina la vista con una consulta al origen por el resto en vez de
-descartarla. Y aquí es barato porque **la compensación es un `Nodo`**: sale del mismo álgebra, y
-`repartir` la reparte como a cualquier otro plan.
+Lo que sobra del check 3, aplicado encima. Es lo que separa una caché que sirve el 90 % de una
+que no sirve: Calcite combina la vista con una consulta al origen por el resto en vez de
+descartarla. Y aquí es barato porque **la compensation es un `Nodo`**: sale del mismo álgebra, y
+el Pushdown Planner la reparte como a cualquier otro plan.
 
-#### El precinto — y esto no lo tiene nadie
+#### El *label seal* — y esto no tiene término estándar porque no lo tiene nadie
 
 > **La clasificación de una materialización se hereda. No se recalcula.**
 
 Una vista que filtró por `nif` produce un resultado `critical` aunque `nif` **no esté entre sus
-columnas** — eso lo dice el trazador con una arista `INDIRECTO`. Si al reescribir se recalculase
-el linaje sobre la tabla materializada, esa columna no aparecería y la etiqueta desaparecería
-con ella.
+columnas** — eso lo dice el Lineage Analyzer con una arista `INDIRECT`. Si al reescribir se
+recalculase el linaje sobre la tabla materializada, esa columna no aparecería y la etiqueta
+desaparecería con ella.
 
 **Es exactamente el fallo que M2 y M3 existen para impedir, entrando por la puerta de M5.** La
-materialización viaja con su clasificación precintada, y romper el precinto es recalcular.
+materialización viaja con su clasificación **sellada**, y romper el sello es recalcular.
 
 Su generalización ya está construida: `cache::ReglaDistinta` —una materialización escrita bajo
-otro bundle no vale—. El cotejo lo extiende de *«otro bundle»* a *«otra autorización»*.
+otro bundle no vale—. El View Matcher lo extiende de *«otro bundle»* a *«otra autorización»*.
 
 #### Dónde para, y por qué se dice antes de empezar
 
-- La contención de consultas conjuntivas es **NP-completa**.
-- La **determinación** —*¿se puede contestar esto a partir de estas vistas, de alguna manera?*—
-  es **indecidible**. El artículo se titula *The Hunt for a Red Spider*.
+- La *containment* de consultas conjuntivas es **NP-completa**.
+- La *determinacy* —*¿se puede contestar esto a partir de estas vistas, de alguna manera?*— es
+  **indecidible**. El artículo se titula *The Hunt for a Red Spider*.
 - Y Calcite documenta su propio techo: enumerar reescrituras *«no es escalable con vistas con un
-  número arbitrario de juntas»*.
+  número arbitrario de joins»*.
 
-> **El cotejo no implementa «la reescritura». Implementa el subconjunto decidible, y dice cuál
-> es.** Prometer más sería prometer algo que nadie tiene.
+> **El View Matcher no implementa «la reescritura». Implementa el subconjunto decidible, y dice
+> cuál es.** Prometer más sería prometer algo que nadie tiene.
 
 #### El orden dentro de la pieza
 
 | | Qué entra | Coste |
 |---|---|---|
-| **1** | suficiencia (2) sobre planes, con clases de equivalencia de igualdades | medio |
-| **2** | **subsunción (3) y la compensación** — conjunciones de comparaciones simples | medio · **es el corazón** |
-| **3** | el **precinto** | bajo · y es el que nadie tiene |
-| **4** | enrollado de agregados (4), con la regla de `PROMEDIO` | medio |
-| **5** | juntas (1), **solo con clave declarada** | alto |
+| **1** | *data sufficiency* sobre planes, con clases de equivalencia de igualdades | medio |
+| **2** | ***predicate subsumption* y la *compensation*** — conjunciones de comparaciones simples | medio · **es el corazón** |
+| **3** | el ***label seal*** | bajo · y es el que nadie tiene |
+| **4** | *aggregate rollup*, con la regla de `AVG` | medio |
+| **5** | *join compatibility*, **solo con clave declarada** | alto |
 
-**Con 1–3 el cotejo ya sirve.** El 4 lo hace útil para analítica; el 5 es donde la literatura se
-rompe.
+**Con 1–3 el View Matcher ya sirve.** El 4 lo hace útil para analítica; el 5 es donde la
+literatura se rompe.
 
-**Fuera, con su razón:** subsunción de disyunciones, reescritura con juntas arbitrarias, y
-cualquier cotejo que atraviese una expresión opaca — su texto no se lee, así que no se puede
+**Fuera, con su razón:** subsumption de disyunciones, reescritura con joins arbitrarios, y
+cualquier match que atraviese una expresión opaca — su texto no se lee, así que no se puede
 razonar sobre él.
 
 ---
@@ -645,13 +656,13 @@ razonar sobre él.
 Cuatro piezas. Dos son puras y caben ya; una necesita la decisión —**tomada**—; la última
 necesita medidas que no tenemos.
 
-### II.1 · **El diferenciador** — `diferenciador.rs`
+### II.1 · **Delta Compiler** — `delta_compiler.rs`
 
 > **El circuito Δ de un plan: qué hay que recomputar cuando llega un cambio, y nada más.**
 
 ```text
-entra   el plan
-sale    el circuito Δ  +  el estado que exige, enumerado
+in    plan
+out   circuito Δ  +  el state que exige, enumerado
 ```
 
 La teoría es DBSP (VLDB'23) y no deja margen:
@@ -663,131 +674,133 @@ La teoría es DBSP (VLDB'23) y no deja margen:
 > operadores de retardo `z⁻¹`**.
 
 Esa segunda frase es la que convierte «el estado» de problema difuso en **una lista**: se
-enumera, se mide y se decide dónde vive. Y los **Z-sets** —peso con signo, negativo para las
-bajas— son lo que hace que funcione para cualquier mezcla de altas y bajas, y no solo para
-*appends*.
+enumera, se mide y se decide dónde vive. Y los **Z-sets** —peso con signo, negativo para los
+*retractions*— son lo que hace que funcione para cualquier mezcla de altas y bajas, y no solo
+para *appends*.
 
 **Nuestra álgebra, operador por operador.** Esto es lo que la pieza escribe:
 
-| Operador | Regla | Estado que exige |
+| Operador | Regla | State que exige |
 |---|---|---|
 | `Proyecta`, `Filtra`, `Unifica` | **lineales** · `Δσ(R) = σ(ΔR)` | **ninguno** |
-| `Une` | **bilineal** · `Δ(a⋈b) = Δa⋈Δb + a⋈Δb + Δa⋈b` | los dos lados, indexados por la clave |
-| `Agrupa` · `SUMA`/`CUENTA` | homomorfismos de grupo | un acumulador por grupo |
-| `Agrupa` · `MIN`/`MAX` | **no invertibles bajo baja** | el multiconjunto del grupo |
-| `Agrupa` · `PROMEDIO` | no es homomorfismo | suma y cuenta aparte — **la regla del cotejo** |
+| `Une` | **bilineal** · `Δ(a⋈b) = Δa⋈Δb + a⋈Δb + Δa⋈b` | los dos lados, indexados por la join key |
+| `Agrupa` · `SUM`/`COUNT` | homomorfismos de grupo | un acumulador por grupo |
+| `Agrupa` · `MIN`/`MAX` | **no invertibles bajo retraction** | el multiset del grupo |
+| `Agrupa` · `AVG` | no es homomorfismo | suma y cuenta aparte — **la regla del View Matcher** |
 | `Distingue` | cuenta por fila | una cuenta por fila distinta |
 | `Limita` | **no incrementalizable en general** | borrar dentro del top-N exige el N+1 |
 
 Dos observaciones que valen más que la tabla:
 
-**Los operadores sin estado son exactamente los que el repartidor empuja al origen.** Lo que se
-queda arriba es lo que cuesta mantener. Las dos piezas encajan sin haberlo buscado.
+**Los operadores sin state son exactamente los que el Pushdown Planner empuja al origen.** Lo
+que se queda arriba es lo que cuesta mantener. Las dos piezas encajan sin haberlo buscado.
 
-**`MIN`/`MAX` bajo baja y `Limita` son los dos casos duros**, y lo son para todo el mundo.
-Nombrarlos antes de empezar es la diferencia entre un peldaño y una sorpresa.
+**`MIN`/`MAX` bajo *retraction* y `Limita` son los dos casos duros**, y lo son para todo el
+mundo. Nombrarlos antes de empezar es la diferencia entre un peldaño y una sorpresa.
 
 **Listo cuando:** aplicar un delta da **el mismo estado que recomputar**, sobre secuencias
 generadas de altas **y bajas** mezcladas. Es la única prueba que vale, porque los modelos de
-solo-alta pasan por buenos hasta la primera baja.
+solo-*append* pasan por buenos hasta la primera baja.
 
 **Coste:** medio. Puro, compila aquí, y la teoría no deja margen de interpretación.
 
 ---
 
-### II.2 · **El dictamen** — `dictamen.rs`
+### II.2 · **Refresh Analyzer** — `refresh_analyzer.rs`
 
-> **¿Se puede mantener esta vista incrementalmente? Y si no, ¿por qué no?**
+> **`INCREMENTAL` o `FULL`. Y si es `FULL`, por qué.**
 
 ```text
-entra   el plan
-sale    Mantenible { estado que exige }  ·  o NoMantenible { por qué, operador por operador }
+in    plan
+out   RefreshMode::Incremental { state }  ·  RefreshMode::Full { porque, operador a operador }
 ```
 
-**Esta pieza vale por sí sola, sin la despensa y sin la báscula**, y es la que más se subestima.
+El vocabulario es el de Snowflake —`REFRESH_MODE` es literalmente su columna— y la pieza hace lo
+que su motor hace, **un paso antes**.
 
-Snowflake solo descubre que una vista no se puede mantener **al refrescarla**: si el `SELECT`
-tiene una junta lateral, un `INTERSECT`, un `PERCENTILE_CONT`, un `RANDOM()` o una UDF volátil,
-**cae a refresco completo** — y te enteras por la factura.
+**Vale por sí sola, sin el Partial State Store y sin el Cost Model**, y es la que más se
+subestima. Snowflake solo descubre que una vista no se puede mantener **al refrescarla**: si el
+`SELECT` tiene un lateral join, un `INTERSECT`, un `PERCENTILE_CONT`, un `RANDOM()` o una UDF
+volátil, **cae a `FULL`** — y te enteras por la factura.
 
 Un motor que dice, **antes de escribir la vista**:
 
 ```text
-`ventas.resumen` no se puede mantener incrementalmente
-  ← Agrupa · MIN(total)        no es invertible bajo baja: exige el multiconjunto del grupo
-  ← Opaca  · bigquery          no declara ser determinista
-  remedio: guardar el multiconjunto, o declarar la opaca pura si lo es
+ventas.resumen  →  REFRESH_MODE = FULL
+  ← Agrupa · MIN(total)   no invertible bajo retraction: exige el multiset del grupo
+  ← Opaca  · bigquery     no declara ser determinista
+  fix: guardar el multiset, o declarar la opaca pura si lo es
 ```
 
 …es un motor con el que se **diseñan** vistas mantenibles en vez de descubrirlo tarde.
 
-**Y aquí hay un dividendo que no se buscó.** La lista de lo que Snowflake no mantiene empieza
-por *UDF volátiles*, y **nuestra álgebra no tiene funciones volátiles, ni reloj, ni
-aleatoriedad, ni siquiera literales `Float`** — esa última se decidió en M0 por el digest, no por
-esto.
+**Y aquí hay un dividendo que no se buscó.** La lista de lo que Snowflake no mantiene empieza por
+*volatile UDFs*, y **nuestra álgebra no tiene funciones volátiles, ni reloj, ni aleatoriedad, ni
+siquiera literales `Float`** — esa última se decidió en M0 por el digest, no por esto.
 
 > **El álgebra de M0 es incrementalizable por construcción.**
 
 El único agujero era la expresión opaca, y **ya está tapado**: `Opaca::determinista`, por defecto
 `false`. `Nodo::deterministico()` es literalmente la precondición que esta pieza consulta.
 
-**Listo cuando:** una vista con un `MIN` y una opaca volátil sale como no mantenible **nombrando
-los dos**, y una que solo tiene proyecciones y filtros sale como mantenible **con estado cero**.
+**Listo cuando:** una vista con un `MIN` y una opaca volátil sale como `FULL` **nombrando los
+dos**, y una que solo tiene projections y filters sale como `INCREMENTAL` **con state cero**.
 
 **Coste:** bajo. Es una lectura del plan contra la tabla de §II.1.
 
 ---
 
-### II.3 · **La despensa** y **la reposición** — `despensa.rs`
+### II.3 · **Partial State Store** y las ***upqueries*** — `state_store.rs`
 
-> **Se guarda lo que se pide, se desaloja lo que no, y lo que falte se repone yendo a la fuente.**
+> **Se cachea lo que se pide, se desaloja lo que no, y lo que falte se repone yendo a la fuente.**
 
 ```text
-entra   el circuito Δ  +  qué claves se piden
-sale    lo que hay guardado  ·  y las reposiciones que hacen falta
+in    circuito Δ  +  qué claves se piden
+out   lo que hay cacheado  ·  y las upqueries que hacen falta
 ```
 
-El nombre no es un adorno: una despensa **no guarda el supermercado entero**. Guarda lo que se
-consume, se vacía de lo que no, y cuando falta algo se va a por ello.
+*Partial state*, *eviction* y *upquery* son los tres términos de **Noria** (OSDI'18), y su modelo
+es el que encaja: cada operador mantiene **solo un subconjunto**, los *eviction notices* fluyen
+hacia delante y las *upqueries* hacia atrás repueblan lo que falte.
 
-Es la forma de **Noria** (OSDI'18) —*estado parcial*: cada operador mantiene **solo un
-subconjunto**, los desalojos fluyen hacia delante y las ***upqueries*** hacia atrás repueblan lo
-que falte—, frente a las otras dos del sector: **Materialize** lo tiene todo en memoria
-(*arrangements*) y **Feldera** lo desborda a disco con checkpoints.
+Frente a las otras dos formas del sector: **Materialize** lo tiene todo en memoria
+(*arrangements*, índices por clave y tiempo) y **Feldera** lo desborda a disco con *checkpoints*
+incrementales.
 
 **Noria es la que encaja, y no por casualidad.** En un sistema que posee sus datos, la *upquery*
 va a un operador de más abajo. En el nuestro, **la de más abajo es la fuente del cliente**:
 
-> **Una reposición es un plan.** Y un fallo de despensa es un `Veredicto::NoMaterializada`, que
-> ya existe y ya dice *«leer de la fuente»*.
+> **Una *upquery* es un plan.** Y un *miss* del store es un `Veredicto::NoMaterializada`, que ya
+> existe y ya dice *«leer de la fuente»*.
 
-Con eso, la pieza no necesita casi nada nuevo: el índice de lo guardado es
-`ore_core::cache::Manifiesto` con granularidad de clave, y el camino del fallo es `repartir`.
+Con eso, la pieza no necesita casi nada nuevo: el índice de lo cacheado es
+`ore_core::cache::Manifiesto` con granularidad de clave, y el camino del *miss* es el Pushdown
+Planner.
 
-> **DECIDIDO · 2026-09-01 · el estado es parcial y vive en el cliente.**
+> **DECIDIDO · 2026-09-01 · *partial state*, en el cliente.**
 >
 > Y de ahí sale algo que este anexo daba por perdido en su primera versión: **M6 no rompe
-> *«ORE no opera ninguna base de datos»***. El estado parcial no es una base de datos nuestra —
+> *«ORE no opera ninguna base de datos»***. El *partial state* no es una base de datos nuestra —
 > es un manifiesto con granularidad de clave. Los bytes viven donde ya viven.
 >
 > Sostener los *arrangements* cuando haga falta es de un programa delegado, con la frontera de
 > siempre: por stdin, y lo que devuelve no se cree.
 
-**Listo cuando:** una clave que no está en la despensa produce **una** reposición, y esa
-reposición es un plan que el repartidor acepta; y una clave desalojada deja de recibir
-actualizaciones **sin que nadie tenga que acordarse de ella**.
+**Listo cuando:** una clave que no está produce **una** *upquery*, y esa *upquery* es un plan que
+el Pushdown Planner acepta; y una clave desalojada deja de recibir actualizaciones **sin que
+nadie tenga que acordarse de ella**.
 
 **Coste:** alto. Es la única pieza de las doce que guarda algo.
 
 ---
 
-### II.4 · **La báscula** — `bascula.rs`
+### II.4 · **Cost Model** — `cost_model.rs`
 
 > **¿Sale más barato incrementar o recomputar?**
 
-Databricks lo hace explícito con `Enzyme`, que elige entre incremental y completo **por coste**.
-Y Snowflake documenta la forma de la respuesta: lo incremental gana cuando cambia **menos del
-5 %** de la tabla base entre refrescos. Por encima, gana recomputar.
+*Cost model* es el término de Databricks: su `Enzyme` elige entre incremental y full **por
+coste**. Y Snowflake documenta la forma de la respuesta: lo incremental gana cuando cambia
+**menos del 5 %** de la tabla base entre refrescos. Por encima, gana recomputar.
 
 > **Un motor que siempre incrementa es más lento que uno que sabe cuándo no hacerlo.**
 
@@ -802,22 +815,22 @@ cuele como un `if` improvisado dentro de otra pieza el día que haga falta.
 ## 3. El orden
 
 ```text
-M5   la criba  ──►  el cotejo (1·2·3)  ──►  el cotejo (4)  ──►  el cotejo (5)
-                         ▲
-                    el corazón
+M5   Filter Tree  ──►  View Matcher (1·2·3)  ──►  (4)  ──►  (5)
+                              ▲
+                         el corazón
 
-M6   el diferenciador  ──►  el dictamen  ──►  la despensa  ──►  la báscula
-                                 ▲                                   ▲
-                            vale ya solo                     bloqueada por medidas
+M6   Delta Compiler  ──►  Refresh Analyzer  ──►  Partial State Store  ──►  Cost Model
+                                 ▲                                              ▲
+                            vale ya solo                             bloqueado por medidas
 ```
 
-**Las cuatro primeras casillas son puras y compilan en esta máquina**: la criba, el cotejo
-1–3, el diferenciador y el dictamen. Son las que se pueden medir sin depender de CI y sin
+**Las cuatro primeras casillas son puras y compilan en esta máquina**: Filter Tree, View Matcher
+1–3, Delta Compiler y Refresh Analyzer. Son las que se pueden medir sin depender de CI y sin
 depender de nadie.
 
-Y hay un orden **entre** las dos partes que conviene ver: **el dictamen antes que la despensa**.
-Saber qué vistas se pueden mantener es lo que dice cuánto estado hará falta — construir el
-almacén antes de saber qué va dentro es el orden equivocado.
+Y hay un orden **entre** las dos partes que conviene ver: **el Refresh Analyzer antes que el
+Partial State Store**. Saber qué vistas se pueden mantener es lo que dice cuánto *state* hará
+falta — construir el almacén antes de saber qué va dentro es el orden equivocado.
 
 ---
 
@@ -826,10 +839,10 @@ almacén antes de saber qué va dentro es el orden equivocado.
 **M5 y M6 no son dos peldaños: son seis piezas**, y ahora cada una tiene nombre, entrada, salida
 y criterio.
 
-**Dos piezas valen solas.** El dictamen sin la despensa —diseñar vistas mantenibles— y el cotejo
-1–3 sin el 4 y el 5 —contestar desde una materialización simple—. Ninguna de las dos espera a su
-fase entera.
+**Dos piezas valen solas.** El Refresh Analyzer sin el State Store —diseñar vistas mantenibles— y
+el View Matcher 1–3 sin el 4 y el 5 —contestar desde una materialización simple—. Ninguna de las
+dos espera a su fase entera.
 
-**Y una regla se escribe una vez y la usan las dos fases**: `PROMEDIO` no se enrolla ni se
-mantiene sin guardar suma y cuenta por separado. El cotejo la necesita en su condición 4 y el
-diferenciador en su tabla. Escribirla dos veces sería dos sitios donde divergir.
+**Y una regla se escribe una vez y la usan las dos fases**: `AVG` no hace rollup ni se mantiene
+sin guardar suma y cuenta por separado. El View Matcher la necesita en su check 4 y el Delta
+Compiler en su tabla. Escribirla dos veces sería dos sitios donde divergir.
