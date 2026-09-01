@@ -167,7 +167,10 @@ pub fn impacto(antes: &Package, despues: &Package) -> Vec<Cambio> {
             out.push(Cambio::SinCobertura {
                 propiedad: prop.clone(),
                 clases: nuevas,
-                porque: porques.get(prop).map(|e| e.porque.clone()).unwrap_or_default(),
+                porque: porques
+                    .get(prop)
+                    .map(|e| e.porque.clone())
+                    .unwrap_or_default(),
             });
         }
         let cerradas: BTreeSet<String> = falta_antes.difference(&falta_despues).cloned().collect();
