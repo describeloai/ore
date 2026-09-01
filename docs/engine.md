@@ -39,7 +39,7 @@ Medido contra el árbol, no contra la intención:
 |---|---|---|---|---|---|---|
 | **Contexto** | el bundle compilado | ✅ `digest::bundle` | ✅ | ✅ | ✅ registro | por commit |
 | **Topología** | claves de join y aristas | ✅ **`Topologia::version`** | ❌ | ❌ | ❌ | ✅ `index refresh` |
-| **Carga útil** | tabla en el lago del cliente | — | — | — | — | ✅ **`ore cache check`** |
+| **Carga útil** | tabla en el lago del cliente | — | — | — | — | ✅ **`ore cache check`**, y el plan la consulta |
 
 La asimetría entre la primera fila y las otras dos es el trabajo. **El plano de contexto está
 terminado** —tiene identidad determinista, se firma, entra en un log de transparencia
@@ -151,6 +151,28 @@ versión sobrevive al ida y vuelta por el fichero. ✅
 **Listo cuando:** una caché escrita bajo otro bundle no sirve, **y el remedio que se propone no
 es refrescar**. ✅ — y medido sobre el repositorio de un cliente, no sobre una maqueta.
 
+### E4 · El plan consulta la caché ✅
+
+Va antes que E2 y E3 en el orden real porque es el que **cierra la cuña**: hasta que la fase ③
+pregunta al manifiesto antes de abrir una conexión, *«federamos el dato y almacenamos el
+contexto y la topología»* es una tesis del documento y no algo que el binario haga.
+
+**Listo cuando:** un plan cuya caché sirve no produce ninguna lectura contra el origen, y uno
+cuya caché se escribió bajo otro bundle produce la lectura contra el origen **con el motivo
+dentro**. ✅
+
+Lo que lo hizo pequeño estaba decidido en el ADR 0006 §3 y nadie lo había leído así:
+
+> **Servirse de la caché es cambiarle a una lectura la fuente y el objeto. Nada más.**
+
+Y de eso salen tres cosas que conviene no deshacer:
+
+| | Qué | Por qué |
+|---|---|---|
+| **las columnas de la caché son nombres de propiedad** | la proyección se vuelve la identidad | la caché la escribimos nosotros, y una tabla autodescriptiva no puede desviarse de un binding que alguien edite mañana |
+| **la caché necesita proyección + clave + filtros** | no solo lo que se proyecta | sin la columna de un ámbito, el predicado que restringe lo que el principal ve **no se puede aplicar**, y esa lectura devuelve filas de más |
+| **la marca es la más vieja** | ya no es la del índice | una respuesta es tan fresca como su parte más rancia |
+
 ### E2 · La topología se firma y se distribuye
 
 Lo que el ADR 0006 promete —*«se construye una vez, se firma, se distribuye y se mapea»*— y de
@@ -163,23 +185,20 @@ inclusión.
 Y arrastra la restricción de §4 del ADR, que no se puede olvidar al distribuirlo: **el
 artefacto de topología contiene datos.** El bundle viaja en la imagen; este no.
 
-### E3 · `ore-cache`, el programa delegado
+### E3 · El materializador
 
-Escribir y leer la tabla. Fuera, por stdin, como `ore-fetch`, `ore-sign` y `ore-log`. Lo que
-devuelve **no se cree**: lo que escriba se anota en el manifiesto con el bundle y la versión de
-topología del momento, que es lo que E1 comprueba después.
+**Se encogió al construir E4, y conviene decir por qué.** Iba a ser *«escribir y leer la
+tabla»*; leer ya no hace falta. Una tabla Iceberg en el lago del cliente es una tabla, y ya hay
+un protocolo para leer tablas — el ADR 0006 §3 lo decía y lo que faltaba era `datasource` en la
+entrada del manifiesto.
+
+Queda **escribirla**, que es un materializador y no un lector. Fuera, por stdin, como
+`ore-fetch`, `ore-sign` y `ore-log`. Y lo que escriba se anota en el manifiesto con el bundle y
+la versión de topología del momento, que es lo que E1 comprueba después.
 
 **Listo cuando:** una materialización deja una entrada en el manifiesto que `ore cache check`
 acepta, y la misma entrada deja de aceptarse en cuanto el paquete se recompila con otra
 clasificación.
-
-### E4 · El plan consulta la caché
-
-Hoy `plan` va siempre a la fuente. La fase ③ tiene que preguntar primero al manifiesto, y la
-respuesta tiene que **decir de dónde salió cada lectura** — una respuesta que no distingue
-caché de origen no se puede auditar.
-
-**Listo cuando:** un plan cuya caché sirve no abre ninguna conexión, y la respuesta lo dice.
 
 ---
 
@@ -190,6 +209,13 @@ reabre.
 
 **Escribir Parquet dentro de `ore`.** Es la dependencia nativa que `dependencias.rs` veta, y el
 motivo por el que E3 es un programa aparte.
+
+**Servir media lectura.** Si la caché tiene tres de las cuatro propiedades, se va al origen
+entera. Partir una lectura en dos y ensamblarlas es trabajo de ④ y no hay medida que diga que
+merezca la pena.
+
+**Decidir por latencia.** La caché se usa si sirve. Un planificador que estime costes y elija
+es otro proyecto, y sin medidas sería adivinar con aspecto de optimizar.
 
 **Aislamiento transaccional sobre el dato del cliente.** No lo tenemos y decir lo contrario
 sería la clase de promesa que este proyecto no hace. Lo que sí se puede es **acotar la
