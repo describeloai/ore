@@ -57,6 +57,12 @@ pub struct Concepto {
     /// Lo que el concepto declara del **dato**, no del documento. Sale de
     /// `spec.labels`; `metadata.labels` clasifica el documento y no se hereda.
     pub labels: BTreeMap<String, String>,
+    /// El conjunto cerrado de valores, si lo declara. Se hereda igual que el
+    /// tipo —`02-property` §5— y por el mismo motivo: un codigo de moneda es
+    /// ISO 4217 en los quince sistemas donde aparezca, asi que la lista es del
+    /// concepto y no de cada columna. **En orden de declaracion**: retirar un
+    /// valor o reordenarlos es un cambio observable.
+    pub enum_values: Vec<String>,
 }
 
 /// Los conceptos que el paquete puede nombrar.
@@ -89,12 +95,22 @@ pub fn conceptos(pkg: &Package) -> BTreeMap<String, Concepto> {
                     .collect()
             })
             .unwrap_or_default();
+        let enum_values = d
+            .section("enum")
+            .map(|n| {
+                n.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         out.insert(
             q,
             Concepto {
                 tipo,
                 labels,
                 requiere,
+                enum_values,
             },
         );
     }

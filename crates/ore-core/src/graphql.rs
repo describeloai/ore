@@ -27,6 +27,7 @@
 
 use crate::flow::{self, Lattice};
 use crate::link::{Loaded, Package};
+use crate::parse::Node;
 use crate::significado::{self, Concepto};
 use crate::types::{Type, parse_type};
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,13 +84,19 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
     // resolverlo — ODCS transporta la referencia y no pierde nada; un SDL
     // obliga a escribir un tipo concreto para cada campo.
     let conceptos = significado::conceptos(pkg);
+    // Los conjuntos cerrados que aparezcan, por nombre. Se acumulan aquí y no
+    // por entidad porque **dos propiedades que declaran el mismo concepto tienen
+    // que salir con el mismo tipo**: cuatro columnas que son la misma moneda con
+    // cuatro enums distintos dejan al cliente pasar una donde va otra.
+    let mut conjuntos: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     // ── 1 y 2 · descartar por madurez y por clasificación ───────────────────
     let mut tipos: BTreeMap<String, Tipo> = BTreeMap::new();
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let nombre = corto(&qn);
-        let props = propiedades_visibles(e, &qn, &efectivas, &techo, &lat, &conceptos)?;
+        let props =
+            propiedades_visibles(e, &qn, &efectivas, &techo, &lat, &conceptos, &mut conjuntos)?;
         // 4 · un tipo sin campos no se emite
         if props.is_empty() {
             continue;
@@ -169,7 +176,7 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
 
     let mutaciones = mutaciones(pkg, &tipos);
 
-    Ok(escribir(&tipos, &mutaciones))
+    Ok(escribir(&tipos, &mutaciones, &conjuntos))
 }
 
 // ── Las mutaciones ──────────────────────────────────────────────────────────
@@ -347,6 +354,7 @@ fn propiedades_visibles(
     techo: &BTreeMap<String, String>,
     lat: &BTreeMap<String, Lattice>,
     conceptos: &BTreeMap<String, Concepto>,
+    conjuntos: &mut BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     let Some(props) = e.section("properties") else {
@@ -382,7 +390,27 @@ fn propiedades_visibles(
                     })?
             }
         };
-        out.push((nombre.to_string(), grafo(&crudo)?));
+        // Un conjunto cerrado no es otro tipo: es una restricción encima, y
+        // §2.10 decide qué se hace con ella. Sea o no emisible como `enum`, el
+        // campo pasa a tener SU nombre — porque lo que no cabe en la traducción
+        // se nombra, no se tira.
+        let valores = valores_de(v, conceptos);
+        let tipo = match valores {
+            Some(vs) if !vs.is_empty() => {
+                let n = nombre_conjunto(significado::mapeo(v).as_deref(), qn, nombre);
+                if let Some(previos) = conjuntos.get(&n)
+                    && *previos != vs
+                {
+                    return Err(format!(
+                        "dos conjuntos de valores distintos reclaman el tipo `{n}`. Desambiguarlos con un sufijo daria dos tipos que se llaman casi igual, que es peor que no emitir."
+                    ));
+                }
+                conjuntos.insert(n.clone(), vs);
+                envolver(&grafo(&crudo)?, &n)
+            }
+            _ => grafo(&crudo)?,
+        };
+        out.push((nombre.to_string(), tipo));
     }
     // `properties` es un MAPA en la forma canónica (`90-canonical-form` §N4), y
     // un mapa se ordena por clave. Emitir en orden de aparición haría que el
@@ -523,7 +551,11 @@ fn relaciones(pkg: &Package, e: &Loaded, vivos: &BTreeSet<String>) -> Vec<(Strin
 /// El orden es el de la forma canónica —`BTreeMap` por nombre cualificado— y no
 /// el de aparición en el fichero. Es lo que hace que dos escrituras del mismo
 /// paquete emitan el mismo SDL byte a byte (`01-emision-graphql` §6.3).
-fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutacion>) -> String {
+fn escribir(
+    tipos: &BTreeMap<String, Tipo>,
+    mutaciones: &BTreeMap<String, Mutacion>,
+    conjuntos: &BTreeMap<String, Vec<String>>,
+) -> String {
     let mut s = String::new();
 
     let mut escalares: BTreeSet<String> = BTreeSet::new();
@@ -548,6 +580,18 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
     }
     escalares.remove(APROBACION);
 
+    // §2.10. Un conjunto cuyos valores son todos identificadores se dice entero;
+    // uno con `es-ES` dentro no cabe en un `enum` de GraphQL y sale como escalar
+    // especializado — la salida de §3.1, y por lo mismo: el conjunto es parte
+    // del tipo y GraphQL no puede escribirlo, así que se nombra.
+    let emisibles: BTreeMap<&String, &Vec<String>> = conjuntos
+        .iter()
+        .filter(|(_, vs)| vs.iter().all(|v| identificador_graphql(v)))
+        .collect();
+    for n in emisibles.keys() {
+        escalares.remove(*n);
+    }
+
     // Un esquema que usa una directiva que no declara **no es un esquema
     // válido**, y es exactamente la misma regla que ya obliga a declarar los
     // escalares propios — escrita en §2.2 y aplicada solo a una de las dos cosas
@@ -566,6 +610,17 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
     }
     if !escalares.is_empty() {
         s.push('\n');
+    }
+
+    // Los valores van EN ORDEN DE DECLARACIÓN y no ordenados: reordenarlos es un
+    // cambio observable de la forma canónica, así que ordenarlos aquí haría que
+    // el SDL dejara de decir lo que dice el paquete.
+    for (n, vs) in &emisibles {
+        let _ = writeln!(s, "enum {n} {{");
+        for v in vs.iter() {
+            let _ = writeln!(s, "  {v}");
+        }
+        s.push_str("}\n\n");
     }
 
     for t in tipos.values() {
@@ -655,6 +710,55 @@ fn escribir(tipos: &BTreeMap<String, Tipo>, mutaciones: &BTreeMap<String, Mutaci
     }
     s.push_str("}\n");
     s
+}
+
+/// El conjunto cerrado de una propiedad: el suyo, o el del concepto que dice
+/// ser. `02-property` §5 lo hereda igual que el tipo.
+fn valores_de(v: &Node, conceptos: &BTreeMap<String, Concepto>) -> Option<Vec<String>> {
+    if let Some((_, n)) = v.get("enum") {
+        return Some(
+            n.items()
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect(),
+        );
+    }
+    let c = significado::mapeo(v)?;
+    let vs = &conceptos.get(&c)?.enum_values;
+    (!vs.is_empty()).then(|| vs.clone())
+}
+
+/// El nombre del conjunto: del concepto si viene de uno, del campo si no.
+///
+/// Del **concepto** y no del campo cuando lo hay, y esa es la decisión que
+/// importa: es lo que hace que cuatro columnas que son la misma moneda salgan
+/// con el mismo tipo. Nombrarlo por el campo daría cuatro tipos idénticos y
+/// mutuamente incompatibles.
+fn nombre_conjunto(concepto: Option<&str>, entidad: &str, campo: &str) -> String {
+    match concepto {
+        Some(q) => mayuscula_inicial(&q.replace('.', "_")),
+        None => format!("{}_{campo}", corto(entidad)),
+    }
+}
+
+/// Un valor de enumeración de GraphQL es un identificador, y `true`, `false` y
+/// `null` están reservados. `EUR` cabe; `es-ES`, `2` y `sin definir` no.
+fn identificador_graphql(v: &str) -> bool {
+    !matches!(v, "true" | "false" | "null")
+        && v.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Sustituye el tipo base conservando la lista: un `list<String>` con conjunto
+/// cerrado sigue siendo una lista.
+fn envolver(grafo: &str, nombre: &str) -> String {
+    if grafo.starts_with('[') {
+        format!("[{nombre}!]")
+    } else {
+        nombre.to_string()
+    }
 }
 
 /// Un escalar que GraphQL no trae de serie y que el esquema tiene que declarar.

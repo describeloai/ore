@@ -327,7 +327,8 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
 /// una operación.
 pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
     let mut ficheros = Vec::new();
-    recolectar(root, &mut ficheros);
+    let fuera = excluidos(root);
+    recolectar(root, root, &fuera, &mut ficheros);
     ficheros.sort();
 
     let mut diags = Vec::new();
@@ -417,12 +418,80 @@ fn cargar(path: &Path, text: &str) -> Vec<crate::link::Loaded> {
         .collect()
 }
 
-fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Lo que `workspace.exclude` saca de la compilación.
+///
+/// **Excluido del workspace es no compilado, y por tanto no gobernado**
+/// (`02-ruleset` §2.5.3). La especificación se apoya en esa frase para explicar
+/// por qué un `Ruleset` no necesita un `scope` de miembros — «un concepto en vez
+/// de dos»— y el campo se declaraba sin que nadie lo leyera: un directorio
+/// excluido compilaba igual. La alternativa que se descartó por innecesaria no
+/// estaba cubierta por lo que se puso en su lugar.
+///
+/// `members` NO se lee, y no es una omisión. Dice **dónde están los paquetes**,
+/// y todo lo que hoy pregunta eso —la atribución de un documento a su miembro en
+/// `OOS9004`— lo contesta mejor mirando dónde hay un `package.yaml`: funciona con
+/// cualquier disposición sin expandir un patrón, que es justo para lo que existe
+/// declararlo. Un motor de globs para un campo que no cambia ningún resultado
+/// sería código que solo puede estar mal.
+fn excluidos(root: &Path) -> Vec<Vec<String>> {
+    let Ok(t) = std::fs::read_to_string(root.join("ontology.config.yaml")) else {
+        return Vec::new();
+    };
+    let Ok(arbol) = crate::parse::parse(&t) else {
+        return Vec::new();
+    };
+    arbol
+        .get("workspace")
+        .and_then(|(_, w)| w.get("exclude"))
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|i| i.as_str())
+        .map(|p| {
+            p.split(['/', '\\'])
+                .filter(|s| !s.is_empty() && *s != ".")
+                .map(String::from)
+                .collect()
+        })
+        .filter(|s: &Vec<String>| !s.is_empty())
+        .collect()
+}
+
+/// Un patrón excluye a una ruta si es **prefijo** de sus segmentos. Un `*` vale
+/// por un segmento entero; dentro de un segmento vale por cualquier trozo.
+///
+/// Prefijo y no igualdad porque excluir un directorio excluye lo que hay dentro:
+/// esa es la unidad con la que alguien piensa cuando escribe `exclude`.
+fn excluida(patrones: &[Vec<String>], rel: &Path) -> bool {
+    let segmentos: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    patrones.iter().any(|p| {
+        p.len() <= segmentos.len() && p.iter().zip(&segmentos).all(|(pat, seg)| casa(pat, seg))
+    })
+}
+
+fn casa(patron: &str, segmento: &str) -> bool {
+    match patron.split_once('*') {
+        None => patron == segmento,
+        Some((antes, despues)) => {
+            segmento.len() >= antes.len() + despues.len()
+                && segmento.starts_with(antes)
+                && segmento.ends_with(despues)
+        }
+    }
+}
+
+fn recolectar(root: &Path, dir: &Path, fuera: &[Vec<String>], out: &mut Vec<PathBuf>) {
     let Ok(entradas) = std::fs::read_dir(dir) else {
         return;
     };
     for e in entradas.flatten() {
         let p = e.path();
+        if !fuera.is_empty() && p.strip_prefix(root).is_ok_and(|rel| excluida(fuera, rel)) {
+            continue;
+        }
         if p.is_dir() {
             // Un directorio oculto no forma parte del paquete. La regla es
             // general y no una lista: `.ore/` es caché derivada, `.github/` y
@@ -438,7 +507,7 @@ fn recolectar(dir: &Path, out: &mut Vec<PathBuf>) {
             {
                 continue;
             }
-            recolectar(&p, out);
+            recolectar(root, &p, fuera, out);
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
             || p.extension()
                 .is_some_and(|x| x == "cedar" || x == "cedarschema")
