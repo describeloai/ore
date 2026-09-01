@@ -63,6 +63,13 @@ pub struct Concepto {
     /// concepto y no de cada columna. **En orden de declaracion**: retirar un
     /// valor o reordenarlos es un cambio observable.
     pub enum_values: Vec<String>,
+    /// La prosa del concepto, y como se dice ahi fuera. `02-property` §5 los
+    /// hereda igual que el tipo, y es el motivo de subirlos a un concepto:
+    /// declararlos una vez evita que cada una de cuatro mil columnas los vuelva
+    /// a adivinar.
+    pub descripcion: Option<String>,
+    pub sinonimos: Vec<String>,
+    pub guia: Option<String>,
 }
 
 /// Los conceptos que el paquete puede nombrar.
@@ -95,6 +102,24 @@ pub fn conceptos(pkg: &Package) -> BTreeMap<String, Concepto> {
                     .collect()
             })
             .unwrap_or_default();
+        let descripcion = d
+            .section("description")
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+        let ai = d.section("aiContext");
+        let sinonimos = ai
+            .and_then(|a| a.get("synonyms").map(|(_, v)| v))
+            .map(|v| {
+                v.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let guia = ai
+            .and_then(|a| a.get("guidance").map(|(_, v)| v))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let enum_values = d
             .section("enum")
             .map(|n| {
@@ -111,6 +136,9 @@ pub fn conceptos(pkg: &Package) -> BTreeMap<String, Concepto> {
                 labels,
                 requiere,
                 enum_values,
+                descripcion,
+                sinonimos,
+                guia,
             },
         );
     }

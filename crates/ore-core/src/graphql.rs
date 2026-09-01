@@ -47,6 +47,10 @@ struct Tipo {
     /// El nombre del campo de la raíz de consulta: `employee` y `employees`.
     raiz: String,
     interfaces: Vec<String>,
+    /// La documentación del tipo, y la de cada campo por su nombre. Aparte de
+    /// `campos` porque las aristas también la llevan y no viven ahí.
+    doc: Option<String>,
+    docs: BTreeMap<String, String>,
 }
 
 /// Una `Function` que sobrevivió al filtro, lista para escribirse.
@@ -84,6 +88,12 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
     // resolverlo — ODCS transporta la referencia y no pierde nada; un SDL
     // obliga a escribir un tipo concreto para cada campo.
     let conceptos = significado::conceptos(pkg);
+    let amb = Ambiente {
+        efectivas: &efectivas,
+        techo: &techo,
+        lat: &lat,
+        conceptos: &conceptos,
+    };
     // Los conjuntos cerrados que aparezcan, por nombre. Se acumulan aquí y no
     // por entidad porque **dos propiedades que declaran el mismo concepto tienen
     // que salir con el mismo tipo**: cuatro columnas que son la misma moneda con
@@ -95,8 +105,8 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let nombre = corto(&qn);
-        let props =
-            propiedades_visibles(e, &qn, &efectivas, &techo, &lat, &conceptos, &mut conjuntos)?;
+        let mut docs: BTreeMap<String, String> = BTreeMap::new();
+        let props = propiedades_visibles(e, &qn, &amb, &mut conjuntos, &mut docs)?;
         // 4 · un tipo sin campos no se emite
         if props.is_empty() {
             continue;
@@ -130,6 +140,15 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
                 campos,
                 aristas: Vec::new(),
                 claves,
+                // De `metadata` y no de `spec`: en una entidad la prosa
+                // documenta EL DOCUMENTO, y ahí es donde el esquema la pone.
+                // Dentro de una propiedad es al revés, porque ahí documenta el
+                // dato.
+                doc: documentacion(
+                    e.meta("description").and_then(|n| n.as_str()),
+                    e.meta("aiContext"),
+                ),
+                docs,
                 raiz: minuscula_inicial(&nombre),
                 interfaces: implementa(e),
             },
@@ -347,14 +366,22 @@ fn cabe(
 
 // ── La entidad ──────────────────────────────────────────────────────────────
 
+/// Lo que toda propiedad necesita saber y no cambia al recorrerlas: el techo
+/// del conducto, las etiquetas efectivas, los retículos con los que se comparan
+/// y los conceptos de los que se hereda.
+struct Ambiente<'a> {
+    efectivas: &'a BTreeMap<String, BTreeMap<String, String>>,
+    techo: &'a BTreeMap<String, String>,
+    lat: &'a BTreeMap<String, Lattice>,
+    conceptos: &'a BTreeMap<String, Concepto>,
+}
+
 fn propiedades_visibles(
     e: &Loaded,
     qn: &str,
-    efectivas: &BTreeMap<String, BTreeMap<String, String>>,
-    techo: &BTreeMap<String, String>,
-    lat: &BTreeMap<String, Lattice>,
-    conceptos: &BTreeMap<String, Concepto>,
+    amb: &Ambiente,
     conjuntos: &mut BTreeMap<String, Vec<String>>,
+    docs: &mut BTreeMap<String, String>,
 ) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     let Some(props) = e.section("properties") else {
@@ -362,7 +389,11 @@ fn propiedades_visibles(
     };
     for (k, v) in props.entries() {
         let Some(nombre) = k.as_str() else { continue };
-        if !cabe(efectivas.get(&format!("{qn}.{nombre}")), techo, lat) {
+        if !cabe(
+            amb.efectivas.get(&format!("{qn}.{nombre}")),
+            amb.techo,
+            amb.lat,
+        ) {
             continue;
         }
         // El tipo, o el del concepto que dice ser. Antes se caía a `String`
@@ -378,7 +409,7 @@ fn propiedades_visibles(
   exige un tipo. Es `OOS1004` y lo dice `ore validate`."
                     )
                 })?;
-                conceptos
+                amb.conceptos
                     .get(&c)
                     .and_then(|x| x.tipo.clone())
                     .ok_or_else(|| {
@@ -394,7 +425,7 @@ fn propiedades_visibles(
         // §2.10 decide qué se hace con ella. Sea o no emisible como `enum`, el
         // campo pasa a tener SU nombre — porque lo que no cabe en la traducción
         // se nombra, no se tira.
-        let valores = valores_de(v, conceptos);
+        let valores = valores_de(v, amb.conceptos);
         let tipo = match valores {
             Some(vs) if !vs.is_empty() => {
                 let n = nombre_conjunto(significado::mapeo(v).as_deref(), qn, nombre);
@@ -410,6 +441,13 @@ fn propiedades_visibles(
             }
             _ => grafo(&crudo)?,
         };
+        // La documentación, la suya o la del concepto que dice ser. No hace
+        // falta filtrarla: hereda las etiquetas de lo que la contiene, y lo que
+        // la contiene ya pasó el techo — un campo podado no lleva su prosa a
+        // ninguna parte porque el campo no está.
+        if let Some(d) = documentacion_de(v, amb.conceptos) {
+            docs.insert(nombre.to_string(), d);
+        }
         out.push((nombre.to_string(), tipo));
     }
     // `properties` es un MAPA en la forma canónica (`90-canonical-form` §N4), y
@@ -631,11 +669,14 @@ fn escribir(
         for clave in &t.claves {
             let _ = write!(cabecera, " @key(fields: \"{}\")", clave.join(" "));
         }
-        let _ = writeln!(s, "{cabecera} {{");
-        for (campo, tipo) in &t.campos {
-            let _ = writeln!(s, "  {campo}: {tipo}");
+        if let Some(d) = &t.doc {
+            s.push_str(&bloque(d, ""));
         }
-        for (campo, tipo) in &t.aristas {
+        let _ = writeln!(s, "{cabecera} {{");
+        for (campo, tipo) in t.campos.iter().chain(&t.aristas) {
+            if let Some(d) = t.docs.get(campo) {
+                s.push_str(&bloque(d, "  "));
+            }
             let _ = writeln!(s, "  {campo}: {tipo}");
         }
         s.push_str("}\n\n");
@@ -709,6 +750,90 @@ fn escribir(
         let _ = writeln!(s, "  {}({args}): {}", m.nombre, m.retorno);
     }
     s.push_str("}\n");
+    s
+}
+
+/// La documentación de una propiedad: la suya, o la del concepto que dice ser.
+///
+/// `02-property` §5 hereda `description` y `aiContext` igual que el tipo, y ese
+/// es el motivo de subirlos a un concepto: declararlos una vez evita que cada
+/// una de cuatro mil columnas los vuelva a adivinar.
+fn documentacion_de(v: &Node, conceptos: &BTreeMap<String, Concepto>) -> Option<String> {
+    let propia = documentacion(
+        v.get("description").and_then(|(_, d)| d.as_str()),
+        v.get("aiContext").map(|(_, a)| a),
+    );
+    if propia.is_some() {
+        return propia;
+    }
+    let c = conceptos.get(&significado::mapeo(v)?)?;
+    texto(c.descripcion.as_deref(), &c.sinonimos, c.guia.as_deref())
+}
+
+/// La documentación tal y como la fija `01-emision-graphql` §2.9: la prosa
+/// primero, y debajo los delimitados con el nombre de su campo de OOS.
+fn documentacion(descripcion: Option<&str>, ai: Option<&Node>) -> Option<String> {
+    let sinonimos: Vec<String> = ai
+        .and_then(|a| a.get("synonyms").map(|(_, v)| v))
+        .map(|v| {
+            v.items()
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let guia = ai
+        .and_then(|a| a.get("guidance").map(|(_, v)| v))
+        .and_then(|v| v.as_str());
+    texto(descripcion, &sinonimos, guia)
+}
+
+/// El nombre del campo de OOS es la etiqueta, y no una traducción: es lo que
+/// dice de dónde salió cada línea.
+///
+/// Los sinónimos van **ordenados**, y eso no es estética: la forma canónica los
+/// trata como un CONJUNTO —`synonyms` no está en la lista de secuencias de
+/// `90-canonical-form`, al contrario que `enum`—, así que dos ficheros que solo
+/// difieren en su orden tienen el mismo digest. Emitirlos en orden de fichero
+/// haría que el SDL dejara de ser función del bundle, que es el peldaño 3.
+fn texto(descripcion: Option<&str>, sinonimos: &[String], guia: Option<&str>) -> Option<String> {
+    let mut partes: Vec<String> = Vec::new();
+    if let Some(d) = descripcion.map(str::trim).filter(|d| !d.is_empty()) {
+        partes.push(d.to_string());
+    }
+    let mut delimitados: Vec<String> = Vec::new();
+    if !sinonimos.is_empty() {
+        let mut ss: Vec<&String> = sinonimos.iter().collect();
+        ss.sort();
+        let ss: Vec<&str> = ss.into_iter().map(String::as_str).collect();
+        delimitados.push(format!("synonyms: {}", ss.join(", ")));
+    }
+    if let Some(g) = guia.map(str::trim).filter(|g| !g.is_empty()) {
+        delimitados.push(format!("guidance: {}", g.replace('\n', " ")));
+    }
+    if !delimitados.is_empty() {
+        partes.push(delimitados.join("\n"));
+    }
+    // Sin nada que decir NO se emite bloque: un docstring vacío es ruido, y
+    // además cambia el digest del SDL.
+    (!partes.is_empty()).then(|| partes.join("\n\n"))
+}
+
+/// Un bloque de documentación de GraphQL, con la sangría de lo que documenta.
+///
+/// `"""` dentro del texto cerraría el bloque, así que se escapa. Es el único
+/// escape que un bloque necesita, y por eso se emite con esta forma y no con la
+/// de comillas simples: la prosa de un origen trae saltos de línea.
+fn bloque(texto: &str, sangria: &str) -> String {
+    let mut s = format!("{sangria}\"\"\"\n");
+    for l in texto.replace("\"\"\"", "\\\"\"\"").lines() {
+        if l.is_empty() {
+            s.push('\n');
+        } else {
+            let _ = writeln!(s, "{sangria}{l}");
+        }
+    }
+    let _ = writeln!(s, "{sangria}\"\"\"");
     s
 }
 
