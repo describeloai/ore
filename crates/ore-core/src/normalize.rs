@@ -140,6 +140,13 @@ const CONJUNTOS: &[&str] = &[
     // árbol, sin que la primera valga más.
     "signedBy",
     "trustedKeys",
+    // Y los del log, por lo mismo. El camino de una prueba de Merkle NO esta en
+    // ninguna de las dos listas y no debe estarlo: vive en el sobre de un
+    // `.oob`, que no es un documento de la ontologia y no pasa por aqui. Anadirlo
+    // habria sido clasificar un campo que esta funcion no ve nunca.
+    "logged",
+    "logs",
+    "trustedLogs",
 ];
 
 /// Lo que **no** es un conjunto, y por qué.

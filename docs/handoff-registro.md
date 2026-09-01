@@ -187,6 +187,26 @@ producto: poder probar qué decía la definición de dato personal en una fecha.
 **Listo cuando:** un tercero replica el log y verifica la inclusión de una versión **sin
 preguntarnos nada**.
 
+> **Hecho.** Un árbol de Merkle de RFC 6962 —no uno propio, que habría sido el mismo cómputo
+> con menos gente que sabe leerlo— con las **dos** pruebas: inclusión y consistencia. La
+> aritmética vive dentro de `ore` porque es SHA-256 sobre hashes que ya están en el árbol; el
+> log vive fuera, en `ore-log`, porque es estado y disco.
+>
+> Y hay un reparto que no es de capas sino **de momento**: la inclusión viaja dentro del `.oob`
+> —quien publica sabe en qué árbol entró— y la consistencia **no puede**, porque quien publica
+> no sabe qué cabeza viste tú la última vez. De ahí sale que compilar siga siendo hermético y
+> que avanzar la cabeza sea lo único que habla con el log.
+>
+> La cabeza va firmada, y se comprueba **antes** que la inclusión: sin ella una raíz es un
+> número que alguien escribió, y cualquiera construye un árbol con la hoja que quiera para
+> probar su inclusión en él.
+>
+> La bifurcación se para de las dos formas: dos raíces para el mismo tamaño lo ve `validate`
+> contra la cabeza que el lock anotó, y dos historias de tamaños distintos las ve `ore lock`
+> pidiendo la prueba de consistencia. Medido con dos listas que **contienen las dos** la
+> entrada del paquete — con una sola entrada la cazaría la inclusión, y el caso no probaría lo
+> que dice probar.
+
 ### P4 · El servicio, que va el último a propósito
 
 Un índice y blobs direccionados por contenido. Estático, replicable con un `rsync`, sin base

@@ -96,7 +96,7 @@ const IMPLEMENTADAS: &[&str] = &[
     "OOS2009", "OOS2010", "OOS2011", "OOS2012", "OOS2013",
     // Lo introduce v1alpha6 con la firma: la familia habla de referencias —lo
     // importado no es de quien dice ser— y la versión es otra cosa.
-    "OOS2016", // OOS3xxx · sistema de tipos
+    "OOS2016", "OOS2017", // OOS3xxx · sistema de tipos
     "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
     // OOS4xxx · gobernanza y flujo
     "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",
@@ -1156,8 +1156,8 @@ fn borrador_de_v1alpha5() {
 fn borrador_de_v1alpha6() {
     marcador(
         "v1alpha6",
-        "distribución y firma",
-        "BORRADOR · OOS v1alpha6 · distribución y firma",
+        "distribución, firma y log",
+        "BORRADOR · OOS v1alpha6 · distribución, firma y log",
     );
 }
 

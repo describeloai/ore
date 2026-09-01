@@ -50,8 +50,13 @@ fn fallo(codigo: u8, mensaje: impl Into<String>, ayuda: &[&str]) -> Fallo {
     }
 }
 
-pub fn pack(raiz: &Path, destino: Option<&Path>, firmar: Option<&str>) -> ExitCode {
-    match intentar(raiz, destino, firmar) {
+pub fn pack(
+    raiz: &Path,
+    destino: Option<&Path>,
+    firmar: Option<&str>,
+    anotar: Option<&str>,
+) -> ExitCode {
+    match intentar(raiz, destino, firmar, anotar) {
         // Sin `-o` el `.oob` sale por **stdout** y el resumen por stderr, que es
         // la forma de todo lo que emite aquí: lo que se canaliza es el
         // artefacto, y lo que se lee es lo otro. Con `-o` no hay nada que
@@ -81,6 +86,7 @@ fn intentar(
     raiz: &Path,
     destino: Option<&Path>,
     firmar: Option<&str>,
+    anotar: Option<&str>,
 ) -> Result<(String, String), Fallo> {
     if !raiz.is_dir() {
         return Err(fallo(
@@ -125,7 +131,26 @@ fn intentar(
         ("documents", Json::Obj(canonica.into_iter().collect())),
     ];
     if let Some(id) = firmar {
-        campos.push(("signatures", firmas(id, &nombre, &version, &digest)?));
+        let (json, firma) = firmas(id, &nombre, &version, &digest)?;
+        campos.push(("signatures", json));
+        // Anotar exige haber firmado, y no es una limitacion tecnica: la hoja
+        // del log es el enunciado Y QUIEN LO FIRMO. Sin firma, lo que quedaria
+        // anotado es que un paquete existio — que no es lo que un log de
+        // transparencia sirve para demostrar.
+        if let Some(log) = anotar {
+            let enunciado = ore_core::firma::enunciado(&nombre, &version, &digest);
+            campos.push(("transparency", transparencia(log, id, &enunciado, &firma)?));
+        }
+    } else if anotar.is_some() {
+        return Err(fallo(
+            64, // EX_USAGE
+            "`--log` sin `--sign`",
+            &[
+                "  La entrada del log es el enunciado y QUIEN LO FIRMO. Sin firma, anotar",
+                "  dejaria constancia de que un paquete existio, que no es lo que un log de",
+                "  transparencia sirve para demostrar.",
+            ],
+        ));
     }
     let sobre = Json::obj(campos);
     // JCS y no `pretty`: dos productores conformes escriben LOS MISMOS BYTES, y
@@ -179,7 +204,7 @@ const FIRMADOR: &str = "ore-sign";
 /// clave pública que el propio firmador declara, y una firma que no case no se
 /// escribe. Publicar un `.oob` con una firma rota repartiría un paquete que no
 /// se puede usar, y el fallo saldría en el árbol de otro.
-fn firmas(id: &str, paquete: &str, version: &str, digest: &str) -> Result<Json, Fallo> {
+fn firmas(id: &str, paquete: &str, version: &str, digest: &str) -> Result<(Json, String), Fallo> {
     let enunciado = ore_core::firma::enunciado(paquete, version, digest);
     let peticion = Json::obj([("keyId", Json::s(id)), ("statement", Json::s(&enunciado))]).jcs();
     let pedir = |args: &[String]| {
@@ -210,10 +235,119 @@ fn firmas(id: &str, paquete: &str, version: &str, digest: &str) -> Result<Json, 
         },
     )?;
 
-    Ok(Json::Arr(vec![Json::obj([
+    let json = Json::Arr(vec![Json::obj([
         ("algorithm", Json::s(ore_core::firma::ED25519)),
         ("keyId", Json::s(id)),
         ("signature", Json::s(&firma)),
+    ])]);
+    Ok((json, firma))
+}
+
+/// El programa que anota en el log, y tampoco esta aqui dentro.
+const LOG: &str = "ore-log";
+
+/// Anota el enunciado firmado en un log y se trae la prueba de que esta.
+///
+/// # Por que se anota lo firmado y no el paquete
+///
+/// Porque lo que hay que poder demostrar mas tarde no es *«este paquete
+/// existio»* sino *«esta clave dijo esto»*. Una firma dice de quien es un
+/// paquete y no dice nada sobre si esa clave le ha dicho lo mismo a todo el
+/// mundo: quien la tenga puede firmar dos `0.2.0` distintos —uno para el auditor
+/// y otro para ti— y las dos firmas verifican. Ninguna comprobacion local puede
+/// distinguirlas, porque el defecto no esta en lo que tienes.
+///
+/// Un log no lo impide. Lo que garantiza es que **no se pueda hacer en
+/// privado**, y eso basta: lo que se anota, se lee.
+///
+/// # Y lo que devuelve tampoco se cree
+///
+/// La prueba se comprueba aqui mismo, contra la clave que el propio log publica.
+/// Es la misma postura que con la firma: publicar un `.oob` con una prueba rota
+/// repartiria un paquete que no se puede usar, y el fallo saldria en el arbol de
+/// otro.
+fn transparencia(log: &str, key_id: &str, enunciado: &str, firma: &str) -> Result<Json, Fallo> {
+    use ore_core::transparencia as t;
+    let entrada = t::entrada(enunciado, key_id, firma);
+    let peticion = Json::obj([("op", Json::s("append")), ("entry", Json::s(&entrada))]).jcs();
+    let pedir = |args: &[String]| {
+        crate::lector::ejecutar(LOG, args, (args.is_empty()).then_some(&*peticion)).map_err(|f| {
+            Fallo {
+                codigo: f.codigo,
+                mensaje: f.mensaje,
+                ayuda: f.ayuda,
+            }
+        })
+    };
+    let bruta = pedir(&[])?;
+    let publica = pedir(&["--public".into()])?.trim().to_string();
+
+    let r = ore_core::parse::parse(&bruta)
+        .map_err(|e| fallo(65, format!("`{LOG}` no devolvio JSON: {e:?}"), &[]))?;
+    let campo = |k: &str| r.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
+    let entero = |k: &str| campo(k).parse::<u64>().unwrap_or(u64::MAX);
+    let camino: Vec<t::Hash> = r
+        .get("inclusion")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|h| h.as_str().and_then(t::de_hex))
+        .collect();
+
+    let (indice, tamano) = (entero("index"), entero("treeSize"));
+    let raiz = t::de_hex(campo("root")).ok_or_else(|| {
+        fallo(
+            65,
+            format!("`{LOG}` devolvio una raiz que no es un hash"),
+            &[],
+        )
+    })?;
+
+    // La cabeza firmada primero: una prueba de inclusion demuestra que la hoja
+    // esta en un arbol CON ESA RAIZ, y no dice de donde salio la raiz.
+    // Cualquiera construye un arbol con la hoja que quiera y presenta una prueba
+    // impecable de algo que ningun log ha visto.
+    ore_core::firma::verificar(
+        ore_core::firma::ED25519,
+        &publica,
+        campo("rootSignature"),
+        &t::cabeza(log, tamano, &raiz),
+    )
+    .map_err(|e| {
+        fallo(
+            65,
+            format!(
+                "`{LOG}` devolvio una cabeza que no verifica: {}",
+                e.como_texto()
+            ),
+            &[
+                "  Sin cabeza firmada, una raiz es un numero que alguien escribio: cualquiera",
+                "  construye un arbol con la hoja que quiera y prueba su inclusion en el.",
+            ],
+        )
+    })?;
+    t::inclusion(&t::hoja(entrada.as_bytes()), indice, tamano, &camino, &raiz).map_err(|e| {
+        fallo(
+            65,
+            format!(
+                "`{LOG}` devolvio una prueba que no verifica: {}",
+                e.como_texto()
+            ),
+            &["  Se comprueba aqui: repartir una prueba rota es repartir un paquete inusable."],
+        )
+    })?;
+
+    Ok(Json::Arr(vec![Json::obj([
+        ("index", Json::Int(indice as i64)),
+        (
+            "inclusion",
+            Json::Arr(camino.iter().map(|h| Json::s(t::a_hex(h))).collect()),
+        ),
+        ("keyId", Json::s(key_id)),
+        ("logId", Json::s(log)),
+        ("root", Json::s(t::a_hex(&raiz))),
+        ("rootSignature", Json::s(campo("rootSignature"))),
+        ("treeSize", Json::Int(tamano as i64)),
     ])]))
 }
 

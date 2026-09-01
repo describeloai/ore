@@ -1,0 +1,26 @@
+# El log de transparencia de referencia, y **fuera** del compilador.
+#
+# Servir un log es lo mismo que servir un paquete: estado, disco y —en cuanto
+# sea de verdad— red. Nada de eso entra en un binario cuyo invariante III dice
+# que la compilacion es pura.
+#
+# Lo que si vive dentro es COMPROBAR una prueba, que es SHA-256 y nada mas. La
+# aritmetica esta en `ore-core::transparencia` y este programa la usa: con dos
+# implementaciones del arbol, la misma lista daria dos raices — y eso ya paso una
+# vez en este proyecto, con el digest de un paquete.
+#
+# Guarda el log en un directorio por lo mismo que `ore-fetch` trae de uno: si el
+# mismo protocolo sirve a un fichero y a un servicio replicado, la costura esta
+# cortada por el sitio correcto.
+[package]
+name        = "ore-log"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Log de transparencia de referencia: append-only sobre un directorio"
+
+[dependencies]
+ore-core        = { path = "../ore-core" }
+ed25519-compact.workspace = true

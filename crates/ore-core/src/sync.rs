@@ -53,6 +53,265 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     coincide_con_el_lock(pkg, &mut out);
     el_rango_se_cumple(pkg, &mut out);
     las_firmas_verifican(pkg, &mut out);
+    las_pruebas_del_log_verifican(pkg, &mut out);
+    out
+}
+
+/// Las pruebas de transparencia de lo que se importó — `OOS2017`.
+///
+/// Una firma dice **de quién** es un paquete. No dice si esa clave le ha dicho
+/// lo mismo a todo el mundo: quien la tenga puede firmar dos `0.2.0` distintos
+/// —uno para el auditor y otro para ti— y las dos firmas verifican. Ninguna
+/// comprobación local los distingue, porque el defecto no está en lo que tienes.
+///
+/// Un log de transparencia no lo impide; garantiza que **no se pueda hacer en
+/// privado**. Y eso basta, porque lo que se anota se lee.
+///
+/// # Tres comprobaciones, en este orden
+///
+/// 1. **La cabeza está firmada por el log.** Va primero porque sin ella lo demás
+///    no significa nada: una prueba de inclusión demuestra que una hoja está en
+///    un árbol *con esa raíz*, y cualquiera construye un árbol con la hoja que
+///    quiera y presenta una prueba impecable de algo que ningún log ha visto.
+/// 2. **La hoja está en el árbol**, y la hoja se construye aquí con el digest
+///    recomputado y la firma que el `.oob` trae — no con nada que venga escrito.
+/// 3. **La raíz es la que el lock vio.** Es lo que hace que esto sea una
+///    garantía y no un adorno: si el lock fijó `(tamaño, raíz)` y el paquete
+///    trae otra raíz para el mismo tamaño, el log tiene dos historias. Se llama
+///    bifurcación y es el ataque entero.
+///
+/// La tercera es también la que impide quitar la prueba, igual que `signedBy`
+/// impide quitar la firma: si el lock anotó el log, el `.oob` tiene que seguir
+/// probándolo.
+fn las_pruebas_del_log_verifican(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    if pkg.sobres.is_empty() {
+        return;
+    }
+    let logs = logs_de_confianza(pkg);
+    let anotados = logs_del_lock(pkg);
+    let vistas = raices_del_lock(pkg);
+    if logs.is_empty() && anotados.is_empty() {
+        return;
+    }
+    let miembros = crate::link::miembros(pkg);
+
+    for (fichero, sobre) in &pkg.sobres {
+        let (Some(nombre), Some(version)) = (
+            sobre.get("package").and_then(|(_, v)| v.as_str()),
+            sobre.get("version").and_then(|(_, v)| v.as_str()),
+        ) else {
+            continue;
+        };
+        let suyos = crate::link::publicables(&solo(pkg, &miembros, fichero));
+        let enunciado = crate::firma::enunciado(nombre, version, &crate::digest::package(&suyos));
+        let firmas = firmas_del_sobre(sobre);
+
+        let mut probados: BTreeSet<String> = BTreeSet::new();
+        for e in sobre
+            .get("transparency")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+        {
+            let leer = |k: &str| e.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
+            let log_id = leer("logId");
+            let Some(publica) = logs.get(log_id) else {
+                continue; // un log que este árbol no conoce: nada que comprobar
+            };
+            let mal = |que: String, ayuda: String| {
+                Diagnostic::new(
+                    Code::Oos2017,
+                    fichero,
+                    format!("la prueba de `{nombre}` en el log `{log_id}` no verifica: {que}"),
+                )
+                .help(ayuda)
+            };
+
+            let (Some(tamano), Some(indice)) = (
+                leer("treeSize").parse::<u64>().ok(),
+                leer("index").parse::<u64>().ok(),
+            ) else {
+                out.push(mal(
+                    "el índice o el tamaño no son números".into(),
+                    "una prueba mal formada no es una prueba de otra cosa: no es una prueba".into(),
+                ));
+                continue;
+            };
+            let Some(raiz) = crate::transparencia::de_hex(leer("root")) else {
+                out.push(mal(
+                    "la raíz no es un hash de 32 bytes".into(),
+                    "la raíz es lo que el log firma, y un hash corto no es un hash".into(),
+                ));
+                continue;
+            };
+
+            // 1 · la cabeza, primero.
+            if let Err(e) = crate::firma::verificar(
+                crate::firma::ED25519,
+                publica,
+                leer("rootSignature"),
+                &crate::transparencia::cabeza(log_id, tamano, &raiz),
+            ) {
+                out.push(mal(
+                    format!(
+                        "la cabeza del log no está firmada por `{log_id}`: {}",
+                        e.como_texto()
+                    ),
+                    "sin cabeza firmada, una raíz es un número que alguien escribió, y \
+                     cualquiera construye un árbol con la hoja que quiera para probar su \
+                     inclusión en él"
+                        .into(),
+                ));
+                continue;
+            }
+
+            // 2 · la hoja, construida aquí y no leída.
+            let Some(firma) = firmas.get(leer("keyId")) else {
+                out.push(mal(
+                    format!(
+                        "dice anotar la firma de `{}` y el paquete no la trae",
+                        leer("keyId")
+                    ),
+                    "lo que el log anota es el enunciado Y QUIEN LO FIRMO; sin esa firma en \
+                     el paquete, la prueba habla de una hoja que no se puede reconstruir"
+                        .into(),
+                ));
+                continue;
+            };
+            let hoja = crate::transparencia::hoja(
+                crate::transparencia::entrada(&enunciado, leer("keyId"), firma).as_bytes(),
+            );
+            let camino: Vec<crate::transparencia::Hash> = e
+                .get("inclusion")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|h| h.as_str().and_then(crate::transparencia::de_hex))
+                .collect();
+            if let Err(err) = crate::transparencia::inclusion(&hoja, indice, tamano, &camino, &raiz)
+            {
+                out.push(mal(
+                    err.como_texto().into(),
+                    "la hoja se construye aquí con el digest recomputado y la firma que el \
+                     paquete trae, nunca con algo que venga escrito. Si no cae en el árbol, \
+                     lo que hay no es lo que el log vio"
+                        .into(),
+                ));
+                continue;
+            }
+
+            // 3 · y la raíz que el lock vio.
+            if let Some((visto, raiz_vista)) = vistas.get(log_id)
+                && *visto == tamano
+                && *raiz_vista != crate::transparencia::a_hex(&raiz)
+            {
+                out.push(mal(
+                    format!("el lock vio otra raíz para el árbol de {tamano} entradas"),
+                    "dos raíces para el mismo tamaño es un log con dos historias. Se llama \
+                     bifurcación, y es contra lo que existe un log de transparencia: \
+                     ninguna prueba de inclusión la ve, porque cada una cuadra contra la \
+                     suya"
+                        .into(),
+                ));
+                continue;
+            }
+            probados.insert(log_id.to_string());
+        }
+
+        for id in anotados.get(nombre).map(Vec::as_slice).unwrap_or(&[]) {
+            if probados.contains(id) {
+                continue;
+            }
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2017,
+                    fichero,
+                    format!("`{nombre}` no prueba estar en el log `{id}`"),
+                )
+                .help(format!(
+                    "`ontology.lock` dice que `{nombre}` está anotado en `{id}`, y lo que hay \
+                     en el árbol no lo demuestra. Quitar una prueba no es lo mismo que no \
+                     haberla tenido nunca: el lock ya afirmó que la tenía"
+                )),
+            );
+        }
+    }
+}
+
+/// `keyId → firma` de un sobre. La firma es lo que entra en la hoja del log.
+fn firmas_del_sobre(sobre: &crate::parse::Node) -> BTreeMap<String, String> {
+    sobre
+        .get("signatures")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|f| {
+            let leer = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+            Some((leer("keyId")?, leer("signature")?))
+        })
+        .collect()
+}
+
+/// `logId → clave pública`, del manifiesto del workspace.
+fn logs_de_confianza(pkg: &Package) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for d in pkg.of(Kind::OntologyConfig) {
+        for l in d.section("trustedLogs").map(|n| n.items()).unwrap_or(&[]) {
+            let leer = |c: &str| l.get(c).and_then(|(_, v)| v.as_str()).map(String::from);
+            if let (Some(id), Some(pk)) = (leer("id"), leer("publicKey")) {
+                out.insert(id, pk);
+            }
+        }
+    }
+    out
+}
+
+/// `paquete → logs` que el lock afirma haber comprobado.
+fn logs_del_lock(pkg: &Package) -> BTreeMap<String, Vec<String>> {
+    let mut out = BTreeMap::new();
+    let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
+        return out;
+    };
+    if let Some((_, ps)) = l.root.get("packages") {
+        for p in ps.items() {
+            let Some(n) = p.get("name").and_then(|(_, v)| v.as_str()) else {
+                continue;
+            };
+            let ids: Vec<String> = p
+                .get("logged")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+            if !ids.is_empty() {
+                out.insert(n.to_string(), ids);
+            }
+        }
+    }
+    out
+}
+
+/// `logId → (tamaño, raíz)`: **la última cabeza que este árbol dio por buena**.
+///
+/// Es el ancla contra la bifurcación, y es el lock por la misma razón que lo era
+/// para la firma: ya existe, ya se compromete a Git y ya se revisa en un pull
+/// request. Una segunda superficie de confianza habría sido una segunda cosa que
+/// mantener al día.
+fn raices_del_lock(pkg: &Package) -> BTreeMap<String, (u64, String)> {
+    let mut out = BTreeMap::new();
+    let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
+        return out;
+    };
+    if let Some((_, ls)) = l.root.get("logs") {
+        for x in ls.items() {
+            let leer = |c: &str| x.get(c).and_then(|(_, v)| v.as_str()).map(String::from);
+            if let (Some(id), Some(t), Some(r)) = (leer("id"), leer("treeSize"), leer("root"))
+                && let Ok(t) = t.parse::<u64>()
+            {
+                out.insert(id, (t, r));
+            }
+        }
+    }
     out
 }
 

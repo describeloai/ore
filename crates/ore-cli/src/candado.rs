@@ -152,11 +152,19 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
             raiz: *raiz_de_quien,
             provides: provides_de(&pkg, dir),
             firmantes: firmantes_de(&pkg, dir, coordenada, version),
+            logs: logs_de(&pkg, dir, coordenada, version),
+            sitio: dir.clone(),
         });
     }
     entradas.sort_by(|a, b| a.nombre.cmp(&b.nombre));
 
-    let texto = escribir(&nombre_del_workspace(&pkg), &entradas);
+    // Las cabezas de log, avanzadas CON PRUEBA. Es la mitad de la transparencia
+    // que no cabe en un paquete: quien publica no sabe que cabeza viste tu la
+    // ultima vez, asi que la prueba de que el log extiende lo que ya viste se
+    // pide igual que se pide un paquete.
+    let observadas = observaciones(&pkg, &entradas, &raices_previas(&pkg))?;
+
+    let texto = escribir(&nombre_del_workspace(&pkg), &entradas, &observadas);
     let ruta = raiz.join(LOCK);
 
     if comprobar {
@@ -199,6 +207,10 @@ struct Entrada {
     rango: String,
     raiz: bool,
     provides: BTreeMap<String, Vec<String>>,
+    /// Donde vive el miembro. Se guarda en vez de reconstruirlo de `ruta`, que
+    /// esta normalizada con barras hacia delante para que el lock sea el mismo
+    /// en cualquier sistema: rehacerla daria una ruta que no casa con ninguna.
+    sitio: PathBuf,
     /// Quién lo firmó, de lo que **se pudo comprobar aquí**.
     ///
     /// No se copia lo que el `.oob` dice de sí mismo: se verifica contra una
@@ -206,6 +218,8 @@ struct Entrada {
     /// que anotara firmantes sin comprobarlos sería un rumor con formato de
     /// artefacto — y el lock es justo el documento del que todo lo demás tira.
     firmantes: Vec<String>,
+    /// En qué logs de transparencia está probado, tambien comprobado aquí.
+    logs: Vec<String>,
 }
 
 /// Las dependencias declaradas, y si las pide el manifiesto o un paquete.
@@ -549,6 +563,265 @@ fn del_miembro(pkg: &Package, miembro: &Path) -> Package {
     }
 }
 
+/// El programa que sirve el log, y tampoco está aquí dentro.
+const REGISTRADOR: &str = "ore-log";
+
+/// Lo que este árbol ha visto de un log: su última cabeza dada por buena.
+struct Observacion {
+    id: String,
+    tamano: u64,
+    raiz: String,
+}
+
+/// En qué logs está probado un miembro, de lo que se comprueba aquí.
+///
+/// Misma postura que con la firma: se verifica la cabeza —que es lo que
+/// convierte una raíz en la afirmación de alguien— y luego la inclusión, con la
+/// hoja construida aquí a partir del digest recomputado. Nada de lo que el
+/// paquete dice de sí mismo entra en el lock sin pasar por eso.
+fn logs_de(pkg: &Package, miembro: &Path, nombre: &str, version: &str) -> Vec<String> {
+    let mut out: Vec<String> = pruebas_de(pkg, miembro, nombre, version)
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Las pruebas de transparencia de un miembro que **verifican**: `(log, tamaño,
+/// raíz)`.
+fn pruebas_de(
+    pkg: &Package,
+    miembro: &Path,
+    nombre: &str,
+    version: &str,
+) -> Vec<(String, u64, String)> {
+    use ore_core::transparencia as t;
+    let Some((_, sobre)) = pkg.sobres.iter().find(|(p, _)| p == miembro) else {
+        return Vec::new();
+    };
+    let logs = logs_confiados(pkg);
+    if logs.is_empty() {
+        return Vec::new();
+    }
+    let enunciado = ore_core::firma::enunciado(nombre, version, &digest_de(pkg, miembro));
+    let firmas: BTreeMap<String, String> = sobre
+        .get("signatures")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|f| {
+            let leer = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+            Some((leer("keyId")?, leer("signature")?))
+        })
+        .collect();
+
+    sobre
+        .get("transparency")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|e| {
+            let leer = |k: &str| e.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
+            let publica = logs.get(leer("logId"))?;
+            let tamano = leer("treeSize").parse::<u64>().ok()?;
+            let indice = leer("index").parse::<u64>().ok()?;
+            let raiz = t::de_hex(leer("root"))?;
+            ore_core::firma::verificar(
+                ore_core::firma::ED25519,
+                publica,
+                leer("rootSignature"),
+                &t::cabeza(leer("logId"), tamano, &raiz),
+            )
+            .ok()?;
+            let hoja = t::hoja(
+                t::entrada(&enunciado, leer("keyId"), firmas.get(leer("keyId"))?).as_bytes(),
+            );
+            let camino: Vec<t::Hash> = e
+                .get("inclusion")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|h| h.as_str().and_then(t::de_hex))
+                .collect();
+            t::inclusion(&hoja, indice, tamano, &camino, &raiz).ok()?;
+            Some((leer("logId").to_string(), tamano, t::a_hex(&raiz)))
+        })
+        .collect()
+}
+
+/// `logId → clave pública` del manifiesto.
+fn logs_confiados(pkg: &Package) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
+        for l in d.section("trustedLogs").map(|n| n.items()).unwrap_or(&[]) {
+            let leer = |c: &str| l.get(c).and_then(|(_, v)| v.as_str()).map(String::from);
+            if let (Some(id), Some(pk)) = (leer("id"), leer("publicKey")) {
+                out.insert(id, pk);
+            }
+        }
+    }
+    out
+}
+
+/// La observación de cada log que se escribe en el lock, **avanzada con prueba**.
+///
+/// Aquí está la mitad de la transparencia que no cabe en un paquete: quien
+/// publica no sabe qué cabeza viste tú la última vez, así que la prueba de que
+/// el log **extiende** lo que ya viste no puede viajar dentro del `.oob`. Se
+/// pide, como se pide un paquete.
+///
+/// Y por eso vive en `lock` y no en `validate`: aquí se delega, allí no se toca
+/// la red. `validate` comprueba lo que ya está en el árbol —inclusión, cabeza
+/// firmada, y que la raíz sea la que este lock fijó— y eso es hermético.
+///
+/// Sin esto, la única garantía sería *«el log dijo esto»*, que es lo que dice
+/// cualquier firma. Lo que convierte eso en *«y no ha dicho nunca otra cosa»* es
+/// la consistencia.
+fn observaciones(
+    pkg: &Package,
+    entradas: &[Entrada],
+    previas: &BTreeMap<String, (u64, String)>,
+) -> Result<Vec<Observacion>, Fallo> {
+    use ore_core::transparencia as t;
+    // La cabeza más alta que traiga cualquier paquete, por log.
+    let mut vistas: BTreeMap<String, (u64, String)> = BTreeMap::new();
+    for e in entradas {
+        for (id, tamano, raiz) in pruebas_de(pkg, &e.sitio, &e.nombre, &e.version) {
+            let hueco = vistas.entry(id).or_insert((tamano, raiz.clone()));
+            if tamano > hueco.0 {
+                *hueco = (tamano, raiz);
+            }
+        }
+    }
+    // Y las que ya estaban, aunque ningun paquete las mencione esta vez: una
+    // observacion no se pierde porque este lock no la haya vuelto a ver. Si se
+    // perdiera, el ancla contra la bifurcacion se borraria sola con solo dejar
+    // de traer la prueba.
+    for (id, (tamano, raiz)) in previas {
+        vistas.entry(id.clone()).or_insert((*tamano, raiz.clone()));
+    }
+
+    let mut out = Vec::new();
+    for (id, (tamano, raiz)) in vistas {
+        let Some((antes, raiz_antes)) = previas.get(&id) else {
+            // Primera cabeza de este log. No hay nada anterior con lo que ser
+            // consistente, y exigirlo dejaría imposible empezar.
+            out.push(Observacion { id, tamano, raiz });
+            continue;
+        };
+        if *antes == tamano {
+            if *raiz_antes != raiz {
+                return Err(bifurcacion(&id, tamano, raiz_antes, &raiz));
+            }
+            out.push(Observacion { id, tamano, raiz });
+            continue;
+        }
+        // El grande tiene que extender al pequeño, venga el pequeño del lock o
+        // del paquete: un `.oob` viejo se comprueba igual que uno nuevo.
+        let (menor, r_menor, mayor, r_mayor) = if *antes < tamano {
+            (*antes, raiz_antes.clone(), tamano, raiz.clone())
+        } else {
+            (tamano, raiz.clone(), *antes, raiz_antes.clone())
+        };
+        let prueba = pedir_consistencia(&id, menor, mayor)?;
+        let (Some(a), Some(b)) = (t::de_hex(&r_menor), t::de_hex(&r_mayor)) else {
+            return Err(fallo(65, format!("`{id}`: una raíz no es un hash"), &[]));
+        };
+        t::consistencia(menor, &a, mayor, &b, &prueba).map_err(|e| {
+            fallo(
+                65,
+                format!(
+                    "`{id}` no demuestra que el árbol de {mayor} extienda al de {menor}: {}",
+                    e.como_texto()
+                ),
+                &[
+                    "  Un log que no puede probar que solo ha crecido no es un log de",
+                    "  transparencia: es una lista firmada, y una lista firmada puede tener",
+                    "  dos versiones sin que ninguna prueba de inclusión lo note.",
+                ],
+            )
+        })?;
+        out.push(Observacion {
+            id,
+            tamano: mayor,
+            raiz: r_mayor,
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+fn bifurcacion(id: &str, tamano: u64, antes: &str, ahora: &str) -> Fallo {
+    let mut f = fallo(
+        65,
+        format!("`{id}` da dos raíces para el árbol de {tamano} entradas"),
+        &[
+            "  El lock fijó una y lo que llega trae otra. Dos historias del mismo log es",
+            "  una bifurcación, y es el ataque entero: ninguna prueba de inclusión la ve,",
+            "  porque cada una cuadra contra la suya.",
+            "  Aquí no hay nada que arreglar en el árbol. Hay un log que no se puede usar.",
+        ],
+    );
+    // Las dos raíces, literales. Es lo único de este error que se puede llevar
+    // a otra parte: quien lo reciba tiene que poder enseñárselas a alguien.
+    f.ayuda.push(format!("  lock: {antes}"));
+    f.ayuda.push(format!("  trae: {ahora}"));
+    f
+}
+
+/// Lo que el lock que ya existe fija de cada log.
+///
+/// Se lee del árbol cargado y no del fichero: el lock **es** un documento del
+/// paquete desde que el cargador lo abre, y releerlo aparte habría sido una
+/// segunda forma de leer lo mismo.
+fn raices_previas(pkg: &Package) -> BTreeMap<String, (u64, String)> {
+    let mut out = BTreeMap::new();
+    let Some(l) = pkg.docs.iter().find(|d| ore_core::normalize::es_lock(d)) else {
+        return out;
+    };
+    if let Some((_, ls)) = l.root.get("logs") {
+        for x in ls.items() {
+            let leer = |c: &str| x.get(c).and_then(|(_, v)| v.as_str()).map(String::from);
+            if let (Some(id), Some(t), Some(r)) = (leer("id"), leer("treeSize"), leer("root"))
+                && let Ok(t) = t.parse::<u64>()
+            {
+                out.insert(id, (t, r));
+            }
+        }
+    }
+    out
+}
+
+/// Pide la prueba de que un árbol extiende a otro. Se delega, como todo lo que
+/// sale de esta máquina.
+fn pedir_consistencia(
+    id: &str,
+    desde: u64,
+    hasta: u64,
+) -> Result<Vec<ore_core::transparencia::Hash>, Fallo> {
+    let peticion = ore_core::json::Json::obj([
+        ("from", ore_core::json::Json::Int(desde as i64)),
+        ("op", ore_core::json::Json::s("consistency")),
+        ("to", ore_core::json::Json::Int(hasta as i64)),
+    ])
+    .jcs();
+    let bruta = crate::lector::ejecutar(REGISTRADOR, &[], Some(&peticion)).map_err(|f| Fallo {
+        codigo: f.codigo,
+        mensaje: format!("`{id}`: {}", f.mensaje),
+        ayuda: f.ayuda,
+    })?;
+    let r = ore_core::parse::parse(&bruta)
+        .map_err(|e| fallo(65, format!("`{REGISTRADOR}` no devolvió JSON: {e:?}"), &[]))?;
+    Ok(r.get("consistency")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|h| h.as_str().and_then(ore_core::transparencia::de_hex))
+        .collect())
+}
+
 /// Quién firmó un miembro, **de lo que se puede comprobar aquí y ahora**.
 ///
 /// Se verifica cada firma del sobre contra las claves que el consumidor declara
@@ -646,7 +919,7 @@ fn nombre_del_workspace(pkg: &Package) -> String {
         .unwrap_or_else(|| "desconocido".into())
 }
 
-fn escribir(para: &str, entradas: &[Entrada]) -> String {
+fn escribir(para: &str, entradas: &[Entrada], logs: &[Observacion]) -> String {
     let mut s = String::from(
         "# =============================================================================\n\
          # GENERADO POR ORE — NO EDITAR A MANO\n\
@@ -687,11 +960,27 @@ fn escribir(para: &str, entradas: &[Entrada]) -> String {
         if !e.firmantes.is_empty() {
             let _ = writeln!(s, "    signedBy: [{}]", e.firmantes.join(", "));
         }
+        if !e.logs.is_empty() {
+            let _ = writeln!(s, "    logged: [{}]", e.logs.join(", "));
+        }
         if !e.provides.is_empty() {
             s.push_str("    provides:\n");
             for (clave, valores) in &e.provides {
                 let _ = writeln!(s, "      {clave}: [{}]", valores.join(", "));
             }
+        }
+    }
+    // Las cabezas van al final y **fuera de `packages`**, porque no son de
+    // ningún paquete: son de este árbol. Es lo último que vio de cada log, y lo
+    // que hace que una raíz distinta para el mismo tamaño se note.
+    if !logs.is_empty() {
+        s.push_str("\nlogs:\n");
+        for l in logs {
+            let _ = write!(
+                s,
+                "\n  - id: {}\n    treeSize: {}\n    root: {}\n",
+                l.id, l.tamano, l.raiz
+            );
         }
     }
     s

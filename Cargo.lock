@@ -1192,6 +1192,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-log"
+version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "ore-core",
+]
+
+[[package]]
 name = "ore-read-jsonl"
 version = "0.1.0"
 dependencies = [

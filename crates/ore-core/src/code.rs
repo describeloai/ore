@@ -121,6 +121,7 @@ codes! {
     Oos2014 = "OOS2014", Reference, "dos bindings del mismo objeto reclaman la misma fila";
     Oos2015 = "OOS2015", Reference, "un filtro exigido nombra una propiedad sin mapear";
     Oos2016 = "OOS2016", Reference, "la firma de un paquete importado no verifica";
+    Oos2017 = "OOS2017", Reference, "la prueba de transparencia de un paquete no verifica";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -285,6 +286,7 @@ mod tests {
             // importó no es de quien dice ser— así que la familia es la de
             // v1alpha1 y la versión no.
             Code::Oos2016,
+            Code::Oos2017,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

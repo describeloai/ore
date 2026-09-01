@@ -149,6 +149,13 @@ enum Command {
         /// haberle confiado nada a nadie.
         #[arg(long, value_name = "KEY_ID")]
         sign: Option<String>,
+        /// Anota el paquete firmado en este log, delegando en `ore-log`.
+        ///
+        /// Exige `--sign`: lo que se anota es el enunciado **y quién lo firmó**.
+        /// Una firma dice de quién es un paquete; el log es lo que impide que
+        /// esa clave le diga cosas distintas a dos personas en privado.
+        #[arg(long, value_name = "LOG_ID", requires = "sign")]
+        log: Option<String>,
     },
     /// Resuelve `dependencies` y escribe `ontology.lock`.
     ///
@@ -277,8 +284,13 @@ fn main() -> std::process::ExitCode {
         } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
         Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
         Command::Lock { path, check } => return candado::lock(path, *check),
-        Command::Pack { path, out, sign } => {
-            return empaquetar::pack(path, out.as_deref(), sign.as_deref());
+        Command::Pack {
+            path,
+            out,
+            sign,
+            log,
+        } => {
+            return empaquetar::pack(path, out.as_deref(), sign.as_deref(), log.as_deref());
         }
         Command::Source(AccionFuente::Add {
             name,

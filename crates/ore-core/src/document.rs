@@ -214,6 +214,13 @@ impl Kind {
                 // verifica. La confianza la declara quien consume o no la
                 // declara nadie.
                 "trustedKeys",
+                // Y los logs en los que confía, que es lo mismo un piso más
+                // arriba: una firma dice de quién es un paquete, y un log dice
+                // que esa clave no le ha dicho dos cosas distintas a dos
+                // personas. La clave del log la declara quien consume por la
+                // misma razón, y con más motivo — es la que convierte una raíz
+                // en la afirmación de alguien.
+                "trustedLogs",
             ],
             Kind::Package => &[
                 "owner",
