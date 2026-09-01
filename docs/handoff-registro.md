@@ -130,6 +130,16 @@ escribir el lock, no después de que falle el build.
 una de más, que sería ruido, ni una de menos, que sería una fuga— no sirve, y es la misma
 exigencia que el peldaño 2 de v1alpha5 le pone al techo de un conducto.
 
+> **Hecho.** `ore lock` enumera, antes de escribir el lock, las propiedades **propias** que
+> cambian de clasificación y las que se quedan sin regla que las cubra —con el porqué, tal y
+> como lo nombra el compilador— y dice también cuando no cambia nada. Se computa entre los dos
+> estados del **mismo árbol**, no entre las dos versiones del vocabulario, que es toda la
+> diferencia entre informar y hacer ruido.
+>
+> Lo que lo hace fiable no es el informe: es que **no computa nada nuevo**. La exigencia de
+> gobierno se extrajo de `OOS8001` a `governance::exigencias` en vez de copiarse, así que lo que
+> se anuncia y lo que rompe la compilación son la misma función. Medido ejecutando las dos.
+
 ### P2 · La firma, y dónde vive cada mitad
 
 Un digest dice **qué** es. Una firma dice **de quién**, y es lo único que un digest no puede

@@ -43,6 +43,7 @@
 //! que lo es sería exactamente la clase de afirmación que este proyecto desmonta.
 
 use ore_core::document::Kind;
+use ore_core::impacto::Cambio;
 use ore_core::link::Package;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -106,10 +107,23 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
     // red. Lo que llega se vendoriza en el árbol —no en una caché— para que a
     // partir de aquí compilar no necesite a nadie: un clon recién hecho tiene
     // todo lo que el lock nombra, y su CI también.
-    let (pkg, traidas) = match traer_lo_que_falte(raiz, &pkg, &declaradas, comprobar)? {
-        Some((nuevo, cuantas)) => (nuevo, cuantas),
-        None => (pkg, Vec::new()),
+    let (nuevo, traidas) = match traer_lo_que_falte(raiz, &pkg, &declaradas, comprobar)? {
+        Some((nuevo, cuantas)) => (Some(nuevo), cuantas),
+        None => (None, Vec::new()),
     };
+    // El impacto, y este es el momento: el `.oob` nuevo ya está en el árbol pero
+    // el lock todavía no se ha escrito, así que se puede decir qué cambia
+    // **antes** de que cambie. Después es una compilación rota explicando algo
+    // que ya pasó.
+    //
+    // Se computa entre los dos estados del MISMO árbol, no entre las dos
+    // versiones del vocabulario: lo que le importa a quien lee esto no es que el
+    // artículo 9 se moviera, es cuáles de sus propiedades se movieron con él.
+    let cambios = nuevo
+        .as_ref()
+        .map(|n| ore_core::impacto::impacto(&pkg, n))
+        .unwrap_or_default();
+    let pkg = nuevo.unwrap_or(pkg);
 
     let disponibles = miembros(&pkg);
     let mut entradas = Vec::new();
@@ -171,7 +185,7 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
             &[],
         )
     })?;
-    Ok(informe(&entradas, &ruta, &traidas))
+    Ok(informe(&entradas, &ruta, &traidas, &cambios))
 }
 
 // ── Lo que se declara y lo que hay ──────────────────────────────────────────
@@ -613,7 +627,7 @@ fn escribir(para: &str, entradas: &[Entrada]) -> String {
     s
 }
 
-fn informe(entradas: &[Entrada], ruta: &Path, traidas: &[String]) -> String {
+fn informe(entradas: &[Entrada], ruta: &Path, traidas: &[String], cambios: &[Cambio]) -> String {
     let mut s = format!("  ✓ {}\n", ruta.display());
     for e in entradas {
         let _ = writeln!(
@@ -643,8 +657,98 @@ fn informe(entradas: &[Entrada], ruta: &Path, traidas: &[String]) -> String {
              \x20 que permite que su origen no tenga que ser de confianza. A partir de\n\
              \x20 aquí este árbol compila sin nadie.\n",
         );
+        impacto(&mut s, cambios);
     }
     s
+}
+
+/// Qué cambia **en el árbol de quien lee esto**, que es la única versión de la
+/// pregunta que se puede accionar.
+///
+/// Se dice también cuando no cambia nada. «Ninguna propiedad tuya se mueve» es
+/// información —significa que se puede aceptar sin mirar— y callarlo dejaría el
+/// silencio haciendo dos trabajos: el de «no pasa nada» y el de «esto no se
+/// comprobó».
+///
+/// No hay tope ni resumen. Un informe que dijera *«y 14 más»* volvería a poner a
+/// quien lo lee donde estaba, que es compilando para enterarse.
+fn impacto(s: &mut String, cambios: &[Cambio]) {
+    s.push_str("\n  Y esto es lo que cambia EN TU ÁRBOL:\n");
+    if cambios.is_empty() {
+        s.push_str(
+            "  · nada. Ninguna propiedad tuya cambia de clasificación ni se queda sin\n\
+             \x20   regla que la cubra.\n",
+        );
+        return;
+    }
+
+    let mut mueven = Vec::new();
+    let mut sin = Vec::new();
+    let mut con = Vec::new();
+    for c in cambios {
+        match c {
+            Cambio::Clasificacion {
+                propiedad,
+                reticulo,
+                antes,
+                despues,
+            } => {
+                // `—` y no un hueco en blanco: que una etiqueta no estuviera
+                // antes es un dato, y el hueco se lee como un fallo de formato.
+                let (a, d) = (
+                    antes.as_deref().unwrap_or("—"),
+                    despues.as_deref().unwrap_or("—"),
+                );
+                mueven.push(format!("      {propiedad} · {reticulo}: {a} → {d}"));
+            }
+            Cambio::SinCobertura {
+                propiedad,
+                clases,
+                porque,
+            } => sin.push(format!(
+                "      {propiedad} · exige {} · lo pide {}",
+                lista(clases),
+                if porque.is_empty() {
+                    "el vocabulario".to_string()
+                } else {
+                    porque.join(", ")
+                }
+            )),
+            Cambio::ConCobertura { propiedad, clases } => {
+                con.push(format!("      {propiedad} · ya no exige {}", lista(clases)));
+            }
+        }
+    }
+
+    for (titulo, lineas) in [
+        ("cambia(n) de clasificación", &mueven),
+        ("se queda(n) sin regla que la(s) cubra", &sin),
+        ("deja(n) de faltarle una regla", &con),
+    ] {
+        if lineas.is_empty() {
+            continue;
+        }
+        let _ = writeln!(s, "  · {} {titulo}", lineas.len());
+        for l in lineas {
+            let _ = writeln!(s, "{l}");
+        }
+    }
+
+    if !sin.is_empty() {
+        s.push_str(
+            "\n  Lo del medio es `OOS8001` con fecha futura: el lock ya está escrito, y\n\
+             \x20 la próxima compilación se parará ahí.\n",
+        );
+    }
+}
+
+/// `` `authorization` y `retention` ``.
+fn lista(clases: &std::collections::BTreeSet<String>) -> String {
+    clases
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(" y ")
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────

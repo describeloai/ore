@@ -39,6 +39,7 @@ pub mod effect;
 pub mod enlace_compuesto;
 pub mod flow;
 pub mod governance;
+pub mod impacto;
 pub mod graphql;
 pub mod json;
 pub mod link;

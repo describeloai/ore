@@ -432,3 +432,236 @@ fn sin_dependencias_no_hay_lock() {
         "escribió un lock vacío"
     );
 }
+
+/// Un consumidor con clasificacion de verdad: un reticulo que EXIGE por nivel,
+/// un concepto etiquetado, y una entidad propia que lo hereda con `is:`.
+///
+/// `escenario` no sirve aqui: su vocabulario no clasifica nada, y sobre un arbol
+/// sin etiquetas el impacto seria vacio por construccion — la prueba pasaria sin
+/// probar.
+fn con_clasificacion(nombre: &str, nivel: &str, version: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("ore-lock-{nombre}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let escribir = |rel: &str, texto: &str| {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, texto).unwrap();
+    };
+    escribir(
+        "ontology.config.yaml",
+        r#"apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: rrhh, version: 0.1.0 }
+dependencies:
+  - { package: oos.dev/regulatory/gdpr, version: "^0.1" }
+"#,
+    );
+    escribir(
+        "entities/Empleado.yaml",
+        r#"apiVersion: oos.dev/v1alpha1
+kind: Entity
+metadata: { name: Empleado, namespace: rrhh }
+spec:
+  nature: entity
+  primaryKey: [id]
+  properties:
+    id: { type: String }
+    nacido: { is: gdpr.dateOfBirth }
+"#,
+    );
+    escribir(
+        "packages/gdpr/package.yaml",
+        &format!(
+            r#"apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata:
+  name: oos.dev/regulatory/gdpr
+  version: {version}
+  status: draft
+  domain: compliance
+spec: {{ owner: "team:compliance" }}
+"#
+        ),
+    );
+    // El reticulo exige `constraint` a partir de `high`, que es lo que convierte
+    // subir una etiqueta en un problema de gobierno y no en un detalle.
+    escribir(
+        "packages/gdpr/lattices/sensitivity.yaml",
+        r#"apiVersion: oos.dev/v1alpha3
+kind: Lattice
+metadata: { name: sensitivity, namespace: gdpr }
+spec:
+  levels: [none, low, medium, high, critical]
+  join: max
+  requiresGovernance:
+    high: [constraint]
+"#,
+    );
+    // Una entidad DENTRO de la dependencia. Sin ella la prueba de que solo se
+    // enumera lo propio no probaria nada: un vocabulario no tiene entidades, asi
+    // que sus propiedades no llegarian al informe aunque nadie las filtrara.
+    escribir(
+        "packages/gdpr/entities/Interesado.yaml",
+        r#"apiVersion: oos.dev/v1alpha1
+kind: Entity
+metadata: { name: Interesado, namespace: gdpr }
+spec:
+  nature: entity
+  primaryKey: [id]
+  properties:
+    id: { type: String }
+    fecha: { is: gdpr.dateOfBirth }
+"#,
+    );
+    // Y su propia regla, porque su entidad tambien queda sujeta al reticulo que
+    // publica: un paquete que exigiera a los demas lo que el mismo no cumple no
+    // se puede empaquetar, y con razon.
+    //
+    // Apunta POR NOMBRE y no por clasificacion a proposito. Un `atLeast` cubriria
+    // tambien la propiedad del consumidor en cuanto se vendorizara —lo cual es
+    // correcto y es lo que se quiere de una regla asi— y dejaria esta prueba sin
+    // el hueco de cobertura que viene a medir.
+    escribir(
+        "packages/gdpr/rulesets/sensible.yaml",
+        r#"apiVersion: oos.dev/v1alpha3
+kind: Ruleset
+metadata: { name: sensible, namespace: gdpr }
+spec:
+  owner: team:compliance
+  targets:
+    - named: [gdpr.Interesado.fecha]
+  assertions:
+    - id: sin-nulos
+      metric: nullValues
+      mustBe: 0
+      dimension: completeness
+      severity: error
+      businessImpact: Un dato personal ausente no se puede rectificar a peticion del interesado.
+"#,
+    );
+    escribir(
+        "packages/gdpr/concepts/dateOfBirth.yaml",
+        &format!(
+            r#"apiVersion: oos.dev/v1alpha4
+kind: Property
+metadata: {{ name: dateOfBirth, namespace: gdpr }}
+spec:
+  type: Date
+  labels: {{ gdpr.sensitivity: {nivel} }}
+  description: La fecha de nacimiento de una persona fisica.
+"#
+        ),
+    );
+    dir
+}
+
+/// **El informe de impacto, que es la pregunta que alguien paga por contestar.**
+///
+/// `ore diff` dice que cambio en el vocabulario. Nadie decia que significa en el
+/// arbol de quien lo usa, y esa es la unica version de la pregunta accionable:
+/// no *«el articulo 9 cambio»* sino *«tu `rrhh.Empleado.nacido` sube de
+/// clasificacion y se queda sin regla que la cubra»*.
+///
+/// Y se dice ANTES de escribir el lock. Despues ya no es un informe: es una
+/// compilacion rota explicando algo que ya paso.
+#[test]
+fn subir_una_dependencia_enumera_las_propiedades_propias_afectadas() {
+    let dir = con_clasificacion("impacto", "medium", "0.1.0");
+    let registro = std::env::temp_dir().join("ore-registro-impacto");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+    publicar(&dir.join("packages/gdpr"), &registro, "gdpr-0.1.0.oob");
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+    assert!(con_registro(&dir, &["lock"], &registro).status.success());
+
+    // La 0.2.0 eleva `dateOfBirth` de `medium` a `high`, que es donde el
+    // reticulo empieza a exigir.
+    let nueva = con_clasificacion("impacto-v2", "high", "0.2.0");
+    publicar(&nueva.join("packages/gdpr"), &registro, "gdpr-0.2.0.oob");
+    let c = dir.join("ontology.config.yaml");
+    let t = std::fs::read_to_string(&c).unwrap().replace("^0.1", "^0.2");
+    std::fs::write(&c, t).unwrap();
+
+    let o = con_registro(&dir, &["lock"], &registro);
+    let texto = salida(&o);
+    assert!(o.status.success(), "{texto}");
+
+    // Habla de la propiedad PROPIA, no del concepto importado: `gdpr.dateOfBirth`
+    // cambio, pero quien lee esto no puede hacer nada con eso.
+    assert!(
+        texto.contains("rrhh.Empleado.nacido") && texto.contains("medium → high"),
+        "no dijo que la propiedad propia cambia de clasificacion:\n{texto}"
+    );
+    assert!(
+        texto.contains("constraint"),
+        "no dijo que se queda sin regla que la cubra:\n{texto}"
+    );
+    // Y NO habla de `gdpr.Interesado.fecha`, que cambia exactamente igual pero
+    // es de la dependencia: quien lee esto no puede hacer nada con eso, ni tiene
+    // por que.
+    assert!(
+        !texto.contains("gdpr.Interesado"),
+        "enumero una propiedad de la dependencia, que no es del arbol de quien lee:\n{texto}"
+    );
+}
+
+/// La mitad que hace util a la otra: el informe promete **el build que va a
+/// correr**, no uno parecido.
+///
+/// Si `OOS8001` y el informe computaran la exigencia por su cuenta serian dos
+/// semanticas, y la que se imprime no seria la que rompe la compilacion. Por eso
+/// la exigencia se extrajo a una funcion en vez de copiarse — y por eso esto se
+/// comprueba ejecutando las dos.
+#[test]
+fn lo_que_el_informe_anuncia_es_lo_que_el_compilador_falla() {
+    let dir = con_clasificacion("promesa", "high", "0.1.0");
+    let registro = std::env::temp_dir().join("ore-registro-promesa");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+    publicar(&dir.join("packages/gdpr"), &registro, "gdpr-0.1.0.oob");
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+
+    let anunciado = salida(&con_registro(&dir, &["lock"], &registro));
+    assert!(
+        anunciado.contains("rrhh.Empleado.nacido") && anunciado.contains("constraint"),
+        "{anunciado}"
+    );
+
+    let compilado = con_registro(&dir, &["validate"], &registro);
+    assert!(!compilado.status.success(), "el build no fallo");
+    let dicho = salida(&compilado);
+    assert!(
+        dicho.contains("OOS8001")
+            && dicho.contains("rrhh.Empleado.nacido")
+            && dicho.contains("constraint"),
+        "el informe anuncio una cosa y el compilador fallo por otra:\n{dicho}"
+    );
+}
+
+/// Que no cambie nada **se dice**. El silencio haria dos trabajos —«no pasa
+/// nada» y «esto no se comprobo»— y solo uno de los dos deja aceptar sin mirar.
+#[test]
+fn una_actualizacion_sin_efecto_lo_dice() {
+    let dir = con_clasificacion("inocuo", "medium", "0.1.0");
+    let registro = std::env::temp_dir().join("ore-registro-inocuo");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+    publicar(&dir.join("packages/gdpr"), &registro, "gdpr-0.1.0.oob");
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+    assert!(con_registro(&dir, &["lock"], &registro).status.success());
+
+    // La 0.2.0 no toca la clasificacion: solo sube de version.
+    let nueva = con_clasificacion("inocuo-v2", "medium", "0.2.0");
+    publicar(&nueva.join("packages/gdpr"), &registro, "gdpr-0.2.0.oob");
+    let c = dir.join("ontology.config.yaml");
+    let t = std::fs::read_to_string(&c).unwrap().replace("^0.1", "^0.2");
+    std::fs::write(&c, t).unwrap();
+
+    let o = con_registro(&dir, &["lock"], &registro);
+    let texto = salida(&o);
+    assert!(o.status.success(), "{texto}");
+    assert!(
+        texto.contains("Ninguna propiedad tuya"),
+        "callo que no cambia nada:\n{texto}"
+    );
+}

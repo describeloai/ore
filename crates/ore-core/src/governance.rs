@@ -246,6 +246,100 @@ pub fn cobertura_atribuida(
     out
 }
 
+/// Lo que una propiedad **exige** que se gobierne, y de dónde sale la exigencia.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exigencia {
+    pub clases: BTreeSet<&'static str>,
+    /// En prosa: `gdpr.sensitivity:high`, `el concepto \`gdpr.dateOfBirth\``.
+    /// Es lo que convierte «te falta autorización» en «te falta autorización
+    /// **porque** el vocabulario que importas la pide».
+    pub porque: Vec<String>,
+}
+
+/// Qué exige cada propiedad, que es la otra mitad de `OOS8001`.
+///
+/// `cobertura_efectiva` dice lo que una propiedad **tiene**; esta dice lo que
+/// **debería**, y la resta de las dos es el diagnóstico. Se expone por la misma
+/// razón que aquella y con el mismo aviso: la exigencia que rompe la compilación
+/// tiene que ser la que se imprime en un informe de impacto, o el informe estaría
+/// prometiendo un build que no es el que va a correr.
+pub fn exigencias(pkg: &Package) -> BTreeMap<String, Exigencia> {
+    let lat = flow::lattices(pkg);
+    let props = flow::efectivas(pkg, &lat);
+    exigencias_con(
+        &lat,
+        &props,
+        &crate::significado::conceptos(pkg),
+        &crate::significado::mapeos(pkg),
+    )
+}
+
+/// El cómputo, con el contexto ya leído.
+///
+/// Existe para que `cobertura` no vuelva a leerlo todo cuando ya lo tiene en la
+/// mano, y **no** para tener dos versiones: la pública es esta con el contexto
+/// puesto. Es literalmente lo que el comentario de `cobertura_efectiva` avisa que
+/// no se haga, y ya pasó una vez.
+///
+/// # Los dos orígenes de una exigencia
+///
+/// Un **retículo** exige por NIVEL —*todo lo que esté en `high` o por encima*—
+/// y un **concepto** exige por CATEGORÍA: por ser lo que es, independientemente
+/// de lo que pese. El segundo llegó con v1alpha4 y no es un lujo: es la forma
+/// que tiene la regulación de clasificar, y sin él la exigencia depende de que
+/// alguien acertara a etiquetar, que es justo el hueco que v1alpha4 cierra.
+fn exigencias_con(
+    lat: &BTreeMap<String, Lattice>,
+    props: &Props,
+    conceptos: &BTreeMap<String, crate::significado::Concepto>,
+    mapeos: &BTreeMap<String, String>,
+) -> BTreeMap<String, Exigencia> {
+    let mut out = BTreeMap::new();
+    for (prop, etiquetas) in props {
+        // Lo que exigen todas las clasificaciones que alcanza, en conjunción:
+        // si bastara satisfacer una, importar un paquete laxo sería la forma de
+        // escapar de uno estricto.
+        let mut clases: BTreeSet<&str> = BTreeSet::new();
+        let mut porque: Vec<String> = Vec::new();
+        for (ret, nivel) in etiquetas {
+            let Some(l) = lat.get(ret) else { continue };
+            for (piso, naturalezas) in &l.requires_governance {
+                if l.ge(nivel, piso) != Some(true) {
+                    continue;
+                }
+                porque.push(format!("{ret}:{piso}"));
+                for n in naturalezas {
+                    if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
+                        clases.insert(v);
+                    }
+                }
+            }
+        }
+        // Y lo que exige su concepto, si mapea a uno. Se compone con UNIÓN
+        // igual que entre retículos: asociativa, conmutativa e idempotente,
+        // luego el orden de los orígenes no puede cambiar el resultado. Y solo
+        // puede exigir MÁS — no hay forma de descargar una obligación desde
+        // aquí, que es lo que impide que importar vocabulario laxo afloje una
+        // exigencia local.
+        if let Some(q) = mapeos.get(prop)
+            && let Some(c) = conceptos.get(q)
+            && !c.requiere.is_empty()
+        {
+            porque.push(format!("el concepto `{q}`"));
+            for n in &c.requiere {
+                if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
+                    clases.insert(v);
+                }
+            }
+        }
+        if clases.is_empty() {
+            continue;
+        }
+        out.insert(prop.clone(), Exigencia { clases, porque });
+    }
+    out
+}
+
 /// La misma cobertura, sin atribución. **Derivada**, no recomputada.
 pub fn cobertura_efectiva(pkg: &Package) -> BTreeMap<String, BTreeSet<&'static str>> {
     cobertura_atribuida(pkg)
@@ -1273,15 +1367,6 @@ fn cobertura(
     sel: &BTreeMap<String, BTreeSet<String>>,
     out: &mut Vec<Diagnostic>,
 ) {
-    // v1alpha4 · el **tercer origen** de exigencia, junto a los retículos.
-    //
-    // Un retículo exige por NIVEL —*todo lo que esté en `high` o por encima*—
-    // y un concepto exige por CATEGORÍA: por ser lo que es, independientemente
-    // de lo que pese. Es la forma que tiene la regulación de clasificar, y sin
-    // ella la exigencia depende de que alguien acertara a etiquetar — que es
-    // justo el hueco que v1alpha4 existe para cerrar.
-    let conceptos = crate::significado::conceptos(pkg);
-    let mapeos = crate::significado::mapeos(pkg);
     // **La misma cobertura que se expone**, no una segunda.
     //
     // Esto recomputaba lo suyo aparte, y `cobertura_efectiva` avisaba por
@@ -1296,57 +1381,28 @@ fn cobertura(
     let cubierto = cobertura_atribuida(pkg);
     let _ = (reglas, sel);
 
-    for (prop, etiquetas) in props {
-        // Lo que exigen todas las clasificaciones que alcanza, en conjunción:
-        // si bastara satisfacer una, importar un paquete laxo sería la forma de
-        // escapar de uno estricto.
-        let mut exigidas: BTreeSet<&str> = BTreeSet::new();
-        let mut porque: Vec<String> = Vec::new();
-        for (ret, nivel) in etiquetas {
-            let Some(l) = lat.get(ret) else { continue };
-            for (piso, naturalezas) in &l.requires_governance {
-                if l.ge(nivel, piso) != Some(true) {
-                    continue;
-                }
-                porque.push(format!("{ret}:{piso}"));
-                for n in naturalezas {
-                    if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
-                        exigidas.insert(v);
-                    }
-                }
-            }
-        }
-        // Y lo que exige su concepto, si mapea a uno. Se compone con UNIÓN
-        // igual que entre retículos: asociativa, conmutativa e idempotente,
-        // luego el orden de los orígenes no puede cambiar el resultado. Y solo
-        // puede exigir MÁS — no hay forma de descargar una obligación desde
-        // aquí, que es lo que impide que importar vocabulario laxo afloje una
-        // exigencia local.
-        if let Some(q) = mapeos.get(prop)
-            && let Some(c) = conceptos.get(q)
-            && !c.requiere.is_empty()
-        {
-            porque.push(format!("el concepto `{q}`"));
-            for n in &c.requiere {
-                if let Some(v) = NATURALEZAS.iter().find(|x| *x == n) {
-                    exigidas.insert(v);
-                }
-            }
-        }
+    // La exigencia se computa una vez y en un solo sitio, y es la misma que lee
+    // un informe de impacto. Con dos, el informe prometería un build distinto
+    // del que va a correr — que es el defecto que `cobertura_efectiva` ya
+    // documenta haber tenido por el otro lado de la resta.
+    let exige = exigencias_con(
+        lat,
+        props,
+        &crate::significado::conceptos(pkg),
+        &crate::significado::mapeos(pkg),
+    );
 
-        if exigidas.is_empty() {
-            continue;
-        }
-
+    for (prop, exigidas) in &exige {
         let cubiertas: BTreeSet<&str> = cubierto
             .get(prop)
             .map(|m| m.keys().copied().collect())
             .unwrap_or_default();
 
-        let faltan: Vec<&str> = exigidas.difference(&cubiertas).copied().collect();
+        let faltan: Vec<&str> = exigidas.clases.difference(&cubiertas).copied().collect();
         if faltan.is_empty() {
             continue;
         }
+        let porque = &exigidas.porque;
         let (fichero, pos) = donde(pkg, prop);
         let mut d = Diagnostic::new(
             Code::Oos8001,
