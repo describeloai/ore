@@ -203,7 +203,18 @@ impl Kind {
     /// Claves admitidas bajo `spec`.
     pub const fn spec_keys(self) -> &'static [&'static str] {
         match self {
-            Kind::OntologyConfig => &["workspace", "dependencies", "datasources"],
+            Kind::OntologyConfig => &[
+                "workspace",
+                "dependencies",
+                "datasources",
+                // Las claves públicas en las que este árbol confía. Van aquí y
+                // no dentro de un `.oob` porque una clave que viniera con el
+                // paquete que firma cerraría el círculo: quien sustituye el
+                // paquete sustituye la clave, firma con la suya, y todo
+                // verifica. La confianza la declara quien consume o no la
+                // declara nadie.
+                "trustedKeys",
+            ],
             Kind::Package => &[
                 "owner",
                 "team",

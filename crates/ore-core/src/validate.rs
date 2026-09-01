@@ -344,6 +344,7 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
     let mut cargados = Vec::new();
     let mut cedar = Vec::new();
     let mut generated = Vec::new();
+    let mut sobres = Vec::new();
 
     for f in ficheros {
         // El esquema Cedar es un artefacto generado: no se valida, se compara
@@ -387,8 +388,11 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
         // así que no se vuelven a normalizar: se analizan y entran como
         // cualquier otro.
         if f.extension().is_some_and(|x| x == "oob") {
-            let (docs, d) = abrir_oob(&f, &text);
+            let (docs, sobre, d) = abrir_oob(&f, &text);
             cargados.extend(docs);
+            if let Some(n) = sobre {
+                sobres.push((f.clone(), n));
+            }
             diags.extend(d);
             continue;
         }
@@ -405,6 +409,7 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
         docs: cargados,
         cedar,
         generated,
+        sobres,
     };
     (pkg, diags)
 }
@@ -521,11 +526,24 @@ fn casa(patron: &str, segmento: &str) -> bool {
 /// sí solo. Mezclar las dos cosas daría un cargador que decide qué se puede
 /// usar, que es exactamente la clase de decisión que este proyecto pone donde se
 /// pueda revisar.
-fn abrir_oob(f: &Path, texto: &str) -> (Vec<crate::link::Loaded>, Vec<Diagnostic>) {
+///
+/// Por eso el sobre sale de aquí **entero y sin interpretar**, junto a los
+/// documentos: la firma se comprueba donde estan el lock y las claves que el
+/// consumidor declara, que es el unico sitio donde se puede contrastar con algo
+/// en vez de creersela.
+fn abrir_oob(
+    f: &Path,
+    texto: &str,
+) -> (
+    Vec<crate::link::Loaded>,
+    Option<crate::parse::Node>,
+    Vec<Diagnostic>,
+) {
     let mut docs = Vec::new();
     let Ok(raiz) = crate::parse::parse(texto) else {
         return (
             docs,
+            None,
             vec![
                 Diagnostic::new(Code::Oos1001, f, "no analiza como JSON".to_string()).help(
                     "un `.oob` es la forma canónica en JCS, tal y como la escribe `ore pack`",
@@ -536,6 +554,7 @@ fn abrir_oob(f: &Path, texto: &str) -> (Vec<crate::link::Loaded>, Vec<Diagnostic
     let Some((_, documentos)) = raiz.get("documents") else {
         return (
             docs,
+            None,
             vec![
                 Diagnostic::new(Code::Oos1002, f, "no hay `documents`".to_string())
                     .help("un `.oob` sin documentos es un fichero que nadie puede importar"),
@@ -563,7 +582,10 @@ fn abrir_oob(f: &Path, texto: &str) -> (Vec<crate::link::Loaded>, Vec<Diagnostic
             root: doc.clone(),
         });
     }
-    (docs, Vec::new())
+    // El sobre se devuelve ENTERO y sin mirar. Lo que dice de si mismo
+    // —incluidas sus firmas— es materia de `sync`, que es donde se puede
+    // contrastar con lo que el consumidor declara y con su lock.
+    (docs, Some(raiz), Vec::new())
 }
 
 fn recolectar(root: &Path, dir: &Path, fuera: &[Vec<String>], out: &mut Vec<PathBuf>) {

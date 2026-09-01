@@ -120,6 +120,7 @@ codes! {
     Oos2013 = "OOS2013", Reference, "artefacto generado desincronizado con su fuente";
     Oos2014 = "OOS2014", Reference, "dos bindings del mismo objeto reclaman la misma fila";
     Oos2015 = "OOS2015", Reference, "un filtro exigido nombra una propiedad sin mapear";
+    Oos2016 = "OOS2016", Reference, "la firma de un paquete importado no verifica";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -280,6 +281,10 @@ mod tests {
         // cuándo llegó.
         const POSTERIORES: &[Code] = &[
             Code::Oos2001,
+            // La firma llega con v1alpha6, y habla de una referencia —lo que se
+            // importó no es de quien dice ser— así que la familia es la de
+            // v1alpha1 y la versión no.
+            Code::Oos2016,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

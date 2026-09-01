@@ -75,6 +75,29 @@ saphyr-parser = "0.0.12"
 # los colores de clap no aplica aqui.
 sha2 = "0.10"
 
+# Ed25519, y **solo para verificar**.
+#
+# Un digest dice QUE es un paquete; una firma dice DE QUIEN, y es lo unico que un
+# digest no puede contestar — uno correcto lo produce cualquiera que tenga los
+# bytes, incluido quien los sustituyo.
+#
+# Verificar vive dentro porque es aritmetica sobre bytes que ya estan en el
+# arbol: no es red, no es reloj y no es una credencial. Firmar vive fuera, en
+# `ore-sign`, porque exige una clave privada — la misma frontera que `source add`
+# traza para un secreto.
+#
+# El veto de `dependencias.rs` no lo impide y conviene decir por que: veta RED y
+# FFI. `ring` esta vetada por traer ensamblador, no por ser cripto, y `sha2` ya
+# esta dentro. `ed25519-compact` es Rust puro; sin `default-features` no arrastra
+# `getrandom` —que si esta vetada— porque verificar no necesita aleatoriedad. El
+# cierre de `ore-cli` sube en UNA crate, y `CIERRE` lo dice.
+#
+# La alternativa era escribir la aritmetica de curva a mano. No: equivocarse en
+# ella no da un fallo visible, da firmas invalidas que verifican — que es
+# exactamente el modo de fallo silencioso y en la direccion insegura contra el
+# que existe la denegacion por defecto.
+ed25519-compact = { version = "2.4.2", default-features = false }
+
 # NFC (N5). Normalizacion Unicode es tablas, no algoritmo: "compañia" escrita
 # con n-tilde precompuesta y con n + combinante son el MISMO texto, y si no
 # convergen el digest deja de ser una identidad y pasa a ser un accidente de

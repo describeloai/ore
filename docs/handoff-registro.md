@@ -161,6 +161,22 @@ deliberada que se escribe en el commit.
 **Listo cuando:** el lock lleva, junto al digest, quién lo firmó; y un `.oob` cuya firma no
 case **no se usa**, con el mismo trato que hoy recibe un digest que no case.
 
+> **Hecho.** `ore pack --sign` delega en `ore-sign` —la clave privada nunca entra en el
+> compilador— y `ore` verifica dentro, que es la asimetría entera: comprobar no necesita nada
+> que no esté ya en el árbol, así que una firma que no case se rechaza **sin haber confiado en
+> nadie**. Lo que se firma es el enunciado —paquete, versión y digest en forma canónica— y no
+> el fichero: firmar no mueve el digest, así que un lock resuelto antes de firmar sigue
+> valiendo.
+>
+> Y hay una segunda comprobación que es la que de verdad protege: **el lock recuerda quién
+> firmó**, así que quitar la firma tampoco compila. Sin ella, borrar el campo habría sido la
+> forma barata de saltarse la primera — y una comprobación evitable no es una comprobación.
+> El ancla no es una declaración nueva: es el lock, que ya se revisa en un pull request.
+>
+> `CIERRE` sube de 32 a 33. Una crate, `ed25519-compact`, Rust puro y sin `getrandom`: el veto
+> es a la red y al FFI, no a la criptografía — `ring` está vetada por traer ensamblador, y
+> `sha2` lleva dentro desde que el digest existe.
+
 ### P3 · El log de transparencia
 
 Sin firma no significa nada, y por eso va después. Con firma, es lo que convierte *«confío en

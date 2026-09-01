@@ -50,8 +50,8 @@ fn fallo(codigo: u8, mensaje: impl Into<String>, ayuda: &[&str]) -> Fallo {
     }
 }
 
-pub fn pack(raiz: &Path, destino: Option<&Path>) -> ExitCode {
-    match intentar(raiz, destino) {
+pub fn pack(raiz: &Path, destino: Option<&Path>, firmar: Option<&str>) -> ExitCode {
+    match intentar(raiz, destino, firmar) {
         // Sin `-o` el `.oob` sale por **stdout** y el resumen por stderr, que es
         // la forma de todo lo que emite aquí: lo que se canaliza es el
         // artefacto, y lo que se lee es lo otro. Con `-o` no hay nada que
@@ -77,7 +77,11 @@ pub fn pack(raiz: &Path, destino: Option<&Path>) -> ExitCode {
     }
 }
 
-fn intentar(raiz: &Path, destino: Option<&Path>) -> Result<(String, String), Fallo> {
+fn intentar(
+    raiz: &Path,
+    destino: Option<&Path>,
+    firmar: Option<&str>,
+) -> Result<(String, String), Fallo> {
     if !raiz.is_dir() {
         return Err(fallo(
             66, // EX_NOINPUT
@@ -112,17 +116,21 @@ fn intentar(raiz: &Path, destino: Option<&Path>) -> Result<(String, String), Fal
             &["  Un `.oob` sin documentos es un fichero que nadie puede importar."],
         ));
     }
-    let sobre = Json::obj([
+    let digest = ore_core::digest::package(&publicables);
+    let mut campos = vec![
         ("oobVersion", Json::Int(1)),
         ("package", Json::s(&nombre)),
         ("version", Json::s(&version)),
         ("oos", Json::s(oos_de(&publicables))),
         ("documents", Json::Obj(canonica.into_iter().collect())),
-    ]);
+    ];
+    if let Some(id) = firmar {
+        campos.push(("signatures", firmas(id, &nombre, &version, &digest)?));
+    }
+    let sobre = Json::obj(campos);
     // JCS y no `pretty`: dos productores conformes escriben LOS MISMOS BYTES, y
     // eso es el peldaño 1. Un `.oob` no se lee a mano.
     let bytes = sobre.jcs();
-    let digest = ore_core::digest::package(&publicables);
 
     let donde = match destino {
         None => "-".to_string(),
@@ -151,6 +159,62 @@ fn intentar(raiz: &Path, destino: Option<&Path>) -> Result<(String, String), Fal
         bytes.len()
     );
     Ok((bytes, resumen))
+}
+
+/// El programa que firma, y **no está aquí dentro**.
+const FIRMADOR: &str = "ore-sign";
+
+/// Delega la firma y devuelve lo que va en el sobre.
+///
+/// `ore` no toca una clave privada, así que no firma: construye el **enunciado**
+/// —la coordenada y el digest, en forma canónica— y se lo pasa a un programa del
+/// usuario. Es la misma frontera que `source add` traza para un secreto, y la
+/// misma delegación que `ore lock` hace para traer.
+///
+/// La asimetría con verificar es el punto entero: comprobar una firma no
+/// necesita nada que no esté ya en el árbol, así que eso sí vive dentro y un
+/// `.oob` que no case se para sin haber confiado en nadie.
+///
+/// Lo que devuelve el firmador **no se cree**: se verifica aquí mismo contra la
+/// clave pública que el propio firmador declara, y una firma que no case no se
+/// escribe. Publicar un `.oob` con una firma rota repartiría un paquete que no
+/// se puede usar, y el fallo saldría en el árbol de otro.
+fn firmas(id: &str, paquete: &str, version: &str, digest: &str) -> Result<Json, Fallo> {
+    let enunciado = ore_core::firma::enunciado(paquete, version, digest);
+    let peticion = Json::obj([("keyId", Json::s(id)), ("statement", Json::s(&enunciado))]).jcs();
+    let pedir = |args: &[String]| {
+        crate::lector::ejecutar(FIRMADOR, args, (args.is_empty()).then_some(&*peticion)).map_err(
+            |f| Fallo {
+                codigo: f.codigo,
+                mensaje: f.mensaje,
+                ayuda: f.ayuda,
+            },
+        )
+    };
+    let firma = pedir(&[])?.trim().to_string();
+    let publica = pedir(&["--public".into(), id.into()])?.trim().to_string();
+
+    ore_core::firma::verificar(ore_core::firma::ED25519, &publica, &firma, &enunciado).map_err(
+        |e| {
+            fallo(
+                65, // EX_DATAERR
+                format!(
+                    "`{FIRMADOR}` devolvió una firma que no verifica: {}",
+                    e.como_texto()
+                ),
+                &[
+                    "  Se comprueba aquí porque publicar un `.oob` con una firma rota reparte",
+                    "  un paquete que nadie puede usar, y el fallo saldría en el árbol de otro.",
+                ],
+            )
+        },
+    )?;
+
+    Ok(Json::Arr(vec![Json::obj([
+        ("algorithm", Json::s(ore_core::firma::ED25519)),
+        ("keyId", Json::s(id)),
+        ("signature", Json::s(&firma)),
+    ])]))
 }
 
 fn identidad(pkg: &Package) -> Result<(String, String), Fallo> {

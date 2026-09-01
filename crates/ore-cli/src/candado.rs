@@ -151,6 +151,7 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
             rango,
             raiz: *raiz_de_quien,
             provides: provides_de(&pkg, dir),
+            firmantes: firmantes_de(&pkg, dir, coordenada, version),
         });
     }
     entradas.sort_by(|a, b| a.nombre.cmp(&b.nombre));
@@ -198,6 +199,13 @@ struct Entrada {
     rango: String,
     raiz: bool,
     provides: BTreeMap<String, Vec<String>>,
+    /// Quién lo firmó, de lo que **se pudo comprobar aquí**.
+    ///
+    /// No se copia lo que el `.oob` dice de sí mismo: se verifica contra una
+    /// clave que el consumidor declaró, y solo entra lo que verifica. Un lock
+    /// que anotara firmantes sin comprobarlos sería un rumor con formato de
+    /// artefacto — y el lock es justo el documento del que todo lo demás tira.
+    firmantes: Vec<String>,
 }
 
 /// Las dependencias declaradas, y si las pide el manifiesto o un paquete.
@@ -537,7 +545,61 @@ fn del_miembro(pkg: &Package, miembro: &Path) -> Package {
             .collect(),
         cedar: Vec::new(),
         generated: Vec::new(),
+        sobres: Vec::new(),
     }
+}
+
+/// Quién firmó un miembro, **de lo que se puede comprobar aquí y ahora**.
+///
+/// Se verifica cada firma del sobre contra las claves que el consumidor declara
+/// en `trustedKeys`, y solo sale lo que verifica. Una firma de una clave
+/// desconocida no entra: no hay con qué comprobarla, y escribirla en el lock la
+/// convertiría en un hecho por el mero acto de anotarla.
+///
+/// El digest se recomputa del árbol en vez de leerse del sobre por la misma
+/// razón por la que el `.oob` no lleva el suyo dentro: **un número que un lector
+/// no debe creerse acaba creído**.
+fn firmantes_de(pkg: &Package, miembro: &Path, nombre: &str, version: &str) -> Vec<String> {
+    let Some((_, sobre)) = pkg.sobres.iter().find(|(p, _)| p == miembro) else {
+        return Vec::new(); // un miembro que es un directorio no tiene sobre
+    };
+    let confianza = claves(pkg);
+    if confianza.is_empty() {
+        return Vec::new();
+    }
+    let digest = digest_de(pkg, miembro);
+    let enunciado = ore_core::firma::enunciado(nombre, version, &digest);
+    let mut out: Vec<String> = sobre
+        .get("signatures")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|f| {
+            let leer = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
+            let (alg, publica) = confianza.get(leer("keyId"))?;
+            (leer("algorithm") == alg
+                && ore_core::firma::verificar(alg, publica, leer("signature"), &enunciado).is_ok())
+            .then(|| leer("keyId").to_string())
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `keyId → (algoritmo, clave pública)` del manifiesto.
+fn claves(pkg: &Package) -> BTreeMap<String, (String, String)> {
+    let mut out = BTreeMap::new();
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
+        for k in d.section("trustedKeys").map(|n| n.items()).unwrap_or(&[]) {
+            let leer = |c: &str| k.get(c).and_then(|(_, v)| v.as_str()).map(String::from);
+            if let (Some(id), Some(pk)) = (leer("id"), leer("publicKey")) {
+                let alg = leer("algorithm").unwrap_or_else(|| ore_core::firma::ED25519.to_string());
+                out.insert(id, (alg, pk));
+            }
+        }
+    }
+    out
 }
 
 /// Qué aporta un paquete, **derivado de lo que tiene dentro**. Lo derivable no
@@ -602,6 +664,11 @@ fn escribir(para: &str, entradas: &[Entrada]) -> String {
          # existe todavía, y decir que lo es sería afirmar una procedencia que nadie\n\
          # puede comprobar. Por lo mismo no hay `profiles`: sus digests no se pueden\n\
          # computar de nada, y uno inventado es peor que ninguno.\n\
+         #\n\
+         # `signedBy` es lo que se COMPROBÓ, no lo que el paquete dice de sí mismo: solo\n\
+         # entra una firma que verifique contra una clave declarada en `trustedKeys`. Y\n\
+         # una vez escrita obliga — quitar la firma del árbol deja de compilar, que es lo\n\
+         # que impide saltarse la comprobación borrando un campo.\n\
          # =============================================================================\n\
          \n\
          lockfileVersion: 1\n",
@@ -616,6 +683,9 @@ fn escribir(para: &str, entradas: &[Entrada]) -> String {
         );
         if e.raiz {
             s.push_str("    requestedBy: root\n");
+        }
+        if !e.firmantes.is_empty() {
+            let _ = writeln!(s, "    signedBy: [{}]", e.firmantes.join(", "));
         }
         if !e.provides.is_empty() {
             s.push_str("    provides:\n");

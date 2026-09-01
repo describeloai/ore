@@ -141,6 +141,14 @@ enum Command {
         /// Dónde se escribe. Sin esto, el `.oob` sale por stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Firma el paquete con esta clave, delegando en `ore-sign`.
+        ///
+        /// `ore` no toca una clave privada: construye el enunciado —coordenada
+        /// y digest— y lo manda a firmar fuera. Verificar sí vive dentro, y esa
+        /// asimetría es la que permite parar ante una firma que no case sin
+        /// haberle confiado nada a nadie.
+        #[arg(long, value_name = "KEY_ID")]
+        sign: Option<String>,
     },
     /// Resuelve `dependencies` y escribe `ontology.lock`.
     ///
@@ -269,7 +277,9 @@ fn main() -> std::process::ExitCode {
         } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
         Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
         Command::Lock { path, check } => return candado::lock(path, *check),
-        Command::Pack { path, out } => return empaquetar::pack(path, out.as_deref()),
+        Command::Pack { path, out, sign } => {
+            return empaquetar::pack(path, out.as_deref(), sign.as_deref());
+        }
         Command::Source(AccionFuente::Add {
             name,
             url,

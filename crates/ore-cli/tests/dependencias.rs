@@ -52,7 +52,7 @@ const VETADAS: &[(&str, &str)] = &[
     ),
     (
         "ring",
-        "ensamblador; `sha2` cubre lo que el digest necesita",
+        "ensamblador; `sha2` cubre lo que el digest necesita, y `ed25519-compact` la firma",
     ),
     (
         "reqwest",
@@ -77,7 +77,7 @@ const VETADAS: &[(&str, &str)] = &[
 /// Un número exacto obliga a que cualquier dependencia nueva —buena o mala— pase
 /// por aquí y se justifique. Un techo holgado dejaría entrar cinco crates de
 /// tapadillo, que es como crecen los árboles de dependencias.
-const CIERRE: usize = 32;
+const CIERRE: usize = 33;
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {

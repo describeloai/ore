@@ -93,7 +93,10 @@ const IMPLEMENTADAS: &[&str] = &[
     // OOS2xxx · referencias e integridad. `OOS2001` lo reservó v1alpha1 y lo
     // activa v1alpha3: su caso vive en el otro árbol.
     "OOS2001", "OOS2002", "OOS2003", "OOS2004", "OOS2005", "OOS2006", "OOS2007", "OOS2008",
-    "OOS2009", "OOS2010", "OOS2011", "OOS2012", "OOS2013", // OOS3xxx · sistema de tipos
+    "OOS2009", "OOS2010", "OOS2011", "OOS2012", "OOS2013",
+    // Lo introduce v1alpha6 con la firma: la familia habla de referencias —lo
+    // importado no es de quien dice ser— y la versión es otra cosa.
+    "OOS2016", // OOS3xxx · sistema de tipos
     "OOS3001", "OOS3002", "OOS3003", "OOS3004", "OOS3005",
     // OOS4xxx · gobernanza y flujo
     "OOS4001", "OOS4002", "OOS4003", "OOS4006", "OOS4007", "OOS4008", "OOS4011", "OOS4012",
@@ -1153,8 +1156,8 @@ fn borrador_de_v1alpha5() {
 fn borrador_de_v1alpha6() {
     marcador(
         "v1alpha6",
-        "distribución",
-        "BORRADOR · OOS v1alpha6 · distribución",
+        "distribución y firma",
+        "BORRADOR · OOS v1alpha6 · distribución y firma",
     );
 }
 

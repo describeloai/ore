@@ -1,0 +1,23 @@
+# El firmador de referencia, y la mitad de la firma que NO puede vivir dentro.
+#
+# Firmar exige una clave privada, y una credencial nunca entra en el compilador:
+# es la misma frontera que `source add` traza para un secreto y que
+# `ore-read-<tipo>` traza para una conexion. Verificar si vive dentro —es
+# aritmetica sobre bytes que ya estan en el arbol— y por eso `ore` puede parar
+# ante una firma que no case sin haber tocado una clave privada en su vida.
+#
+# Este trae la clave de un directorio, por lo mismo que `ore-fetch` trae un
+# paquete de un directorio: si el mismo protocolo sirve a un fichero y a un HSM,
+# la costura esta cortada por el sitio correcto.
+[package]
+name        = "ore-sign"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Firmador de referencia: firma un enunciado con una clave de un directorio"
+
+[dependencies]
+ore-core        = { path = "../ore-core" }
+ed25519-compact.workspace = true

@@ -491,6 +491,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ed25519-compact"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05391a505666bdf2b5d2626f41b7f0f49052b1e33cceac960eaa818008141da"
+
+[[package]]
 name = "educe"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1157,6 +1163,7 @@ dependencies = [
 name = "ore-core"
 version = "0.1.0"
 dependencies = [
+ "ed25519-compact",
  "saphyr-parser",
  "sha2 0.10.9",
  "unicode-normalization",
@@ -1201,6 +1208,14 @@ dependencies = [
  "ore-driver",
  "postgres",
  "postgres-native-tls",
+]
+
+[[package]]
+name = "ore-sign"
+version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "ore-core",
 ]
 
 [[package]]

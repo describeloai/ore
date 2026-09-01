@@ -130,6 +130,16 @@ const CONJUNTOS: &[&str] = &[
     // El de `materialization`: **qué propiedades se copian**. No confundir con
     // el `properties` de una entidad, que es un mapa y no llega aquí.
     "properties",
+    // v1alpha6, con la firma. Los dos son conjuntos por la misma razón: **una
+    // firma no depende de las otras.**
+    //
+    // `signedBy` enumera quién firmó, y que `[a, b]` y `[b, a]` fueran dos
+    // documentos distintos habría metido un orden que nadie decide en un
+    // artefacto generado — y el lock entra en el digest del bundle.
+    // `trustedKeys` es la misma forma por el otro lado: en quién confía este
+    // árbol, sin que la primera valga más.
+    "signedBy",
+    "trustedKeys",
 ];
 
 /// Lo que **no** es un conjunto, y por qué.

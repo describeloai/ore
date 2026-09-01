@@ -7,6 +7,7 @@ license.workspace    = true
 repository.workspace = true
 
 [dependencies]
+ed25519-compact.workspace = true
 saphyr-parser.workspace = true
 sha2.workspace           = true
 unicode-normalization.workspace = true

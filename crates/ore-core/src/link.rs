@@ -113,6 +113,7 @@ pub fn publicables(pkg: &Package) -> Package {
             .collect(),
         cedar: Vec::new(),
         generated: Vec::new(),
+        sobres: Vec::new(),
     }
 }
 
@@ -127,6 +128,15 @@ pub struct Package {
     /// esquema Cedar. Se comprometen para que el tooling funcione sin compilar,
     /// y por eso pueden quedar obsoletos — `OOS2013`.
     pub generated: Vec<(PathBuf, String)>,
+    /// Los **sobres** de los `.oob` del arbol: la ruta del fichero y lo que
+    /// dice de si mismo.
+    ///
+    /// El cargador los guarda y no los interpreta, que es la division que
+    /// `abrir_oob` deja escrita: cargar es leer, y decidir que se puede usar es
+    /// de `sync`. Sin esto la firma habria tenido que comprobarse en el
+    /// cargador, y un cargador que decide que se usa es exactamente la clase de
+    /// decision que este proyecto pone donde se pueda revisar.
+    pub sobres: Vec<(PathBuf, Node)>,
 }
 
 impl Package {
