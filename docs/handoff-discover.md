@@ -91,7 +91,7 @@ pregunta que nadie sabe contestar.
 
 ### P1 · Publicar un vocabulario mínimo
 
-**El código ya no bloquea: falta el contenido.** La pregunta 7 lee los `kind: Property` del
+**El código ya no bloquea: falta el contenido.** La pregunta 7 lee los `kind: Concept` del
 repositorio, ofrece los del tipo de la columna —el que se llama igual primero, luego el que
 la nombra entre sus `synonyms`— y enseña **la clasificación que se hereda al elegirlos**.
 Elegir uno no escribe nada. Acuñar uno nuevo sí, y abre la pregunta 11.

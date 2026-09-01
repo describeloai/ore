@@ -127,7 +127,7 @@ spec: { owner: "team:compliance" }
 YAML
 cat > packages/gdpr/concepts/personalEmail.yaml <<'YAML'
 apiVersion: oos.dev/v1alpha4
-kind: Property
+kind: Concept
 metadata: { name: personalEmail, namespace: gdpr }
 spec:
   type: String
@@ -234,7 +234,7 @@ dice packages/ventas/entities/Clientes.yaml 'is: gdpr.personalEmail' "no hablo e
 # colgando seria peor que no preguntar— con la clasificacion que alguien dijo.
 # Un concepto sin etiquetas no gobierna nada, y eso no lo puede decidir el
 # silencio.
-dice packages/ventas/concepts/telefonoPersonal.yaml 'kind: Property' "no acuno el concepto nuevo"
+dice packages/ventas/concepts/telefonoPersonal.yaml 'kind: Concept' "no acuno el concepto nuevo"
 dice packages/ventas/concepts/telefonoPersonal.yaml 'labels: { gdpr.sensitivity: critical }' \
   "acuno un concepto que no clasifica nada"
 
