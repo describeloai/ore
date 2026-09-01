@@ -32,7 +32,7 @@
 
 use ore_core::document::Kind;
 use ore_core::json::Json;
-use ore_core::link::{Loaded, Package};
+use ore_core::link::Package;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -100,7 +100,7 @@ fn intentar(raiz: &Path, destino: Option<&Path>) -> Result<(String, String), Fal
     }
 
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let publicables = publicables(&pkg);
+    let publicables = ore_core::link::publicables(&pkg);
     let (nombre, version) = identidad(&pkg)?;
     sin_fuentes_ajenas(&publicables)?;
 
@@ -151,32 +151,6 @@ fn intentar(raiz: &Path, destino: Option<&Path>) -> Result<(String, String), Fal
         bytes.len()
     );
     Ok((bytes, resumen))
-}
-
-/// Lo que se publica, que no es todo lo que hay.
-///
-/// `01-distribucion` §1.1: el manifiesto es **del workspace** y publicarlo sería
-/// publicar las fuentes físicas y las dependencias de quien compila; el lock es
-/// de quien consume; y un artefacto generado se deriva de lo que sí va dentro,
-/// así que publicarlo sería publicar dos veces lo mismo y una de las dos copias
-/// envejece.
-pub fn publicables(pkg: &Package) -> Package {
-    Package {
-        root: pkg.root.clone(),
-        docs: pkg
-            .docs
-            .iter()
-            .filter(|d| d.kind != Kind::OntologyConfig)
-            .filter(|d| !ore_core::normalize::es_lock(d))
-            .map(|d| Loaded {
-                path: d.path.clone(),
-                kind: d.kind,
-                root: d.root.clone(),
-            })
-            .collect(),
-        cedar: Vec::new(),
-        generated: Vec::new(),
-    }
 }
 
 fn identidad(pkg: &Package) -> Result<(String, String), Fallo> {

@@ -1,0 +1,21 @@
+# El obtenedor de referencia, y trae paquetes de UN DIRECTORIO.
+#
+# Existe por lo mismo que `ore-read-jsonl` es un fichero y no una segunda base de
+# datos: si el mismo protocolo sirve a un directorio y a un registro, la costura
+# estaba cortada por el sitio correcto. Y su cierre —`ore-core` y nada mas— dice
+# que el peso de hablar con un registro es del registro, no del protocolo.
+#
+# `ore` no sabe hablar por la red y eso es una propiedad comprobada por
+# `dependencias.rs`. Este binario tampoco: quien quiera una API que escriba el
+# suyo, que es justo lo que el contrato permite.
+[package]
+name        = "ore-fetch"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Obtenedor de referencia: trae un .oob de un directorio"
+
+[dependencies]
+ore-core = { path = "../ore-core" }

@@ -373,6 +373,17 @@ pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
             continue;
         }
 
+        // Un `.oob` es un paquete entero dentro de un fichero, y se abre aquí.
+        // Sus documentos ya vienen en forma canónica —los escribió `ore pack`—
+        // así que no se vuelven a normalizar: se analizan y entran como
+        // cualquier otro.
+        if f.extension().is_some_and(|x| x == "oob") {
+            let (docs, d) = abrir_oob(&f, &text);
+            cargados.extend(docs);
+            diags.extend(d);
+            continue;
+        }
+
         let d = validate_document(&f, &text);
         if d.is_empty() {
             cargados.extend(cargar(&f, &text));
@@ -483,6 +494,69 @@ fn casa(patron: &str, segmento: &str) -> bool {
     }
 }
 
+/// Abre un `.oob`: un paquete publicado, dentro de un fichero.
+///
+/// # La ruta sintética, que hace más de lo que parece
+///
+/// Cada documento entra con la ruta `<el .oob>/<su identidad>`, y esa barra no
+/// es cosmética: hace que **el `.oob` sea el directorio de sus documentos**. La
+/// atribución de un documento a su miembro del workspace —la que decide a quién
+/// se le exige que hable un concepto, `OOS9004`— mira el ancestro que tiene un
+/// `Package`, y con esta forma un paquete importado es su propio miembro sin que
+/// esa regla se entere de que aquí no hay directorio.
+///
+/// # Por qué no se verifica aquí
+///
+/// Comprobar que lo que hay es lo que el lock nombra es de `sync`, no del
+/// cargador: cargar es leer, y un fichero que no se pueda analizar ya falla por
+/// sí solo. Mezclar las dos cosas daría un cargador que decide qué se puede
+/// usar, que es exactamente la clase de decisión que este proyecto pone donde se
+/// pueda revisar.
+fn abrir_oob(f: &Path, texto: &str) -> (Vec<crate::link::Loaded>, Vec<Diagnostic>) {
+    let mut docs = Vec::new();
+    let Ok(raiz) = crate::parse::parse(texto) else {
+        return (
+            docs,
+            vec![
+                Diagnostic::new(Code::Oos1001, f, "no analiza como JSON".to_string()).help(
+                    "un `.oob` es la forma canónica en JCS, tal y como la escribe `ore pack`",
+                ),
+            ],
+        );
+    };
+    let Some((_, documentos)) = raiz.get("documents") else {
+        return (
+            docs,
+            vec![
+                Diagnostic::new(Code::Oos1002, f, "no hay `documents`".to_string())
+                    .help("un `.oob` sin documentos es un fichero que nadie puede importar"),
+            ],
+        );
+    };
+    for (id, doc) in documentos.entries() {
+        let Some(id) = id.as_str() else { continue };
+        let Some(kind) = doc
+            .get("kind")
+            .and_then(|(_, k)| k.as_str())
+            .and_then(Kind::parse)
+        else {
+            continue;
+        };
+        docs.push(crate::link::Loaded {
+            // La barra se escapa, y hace falta: el `docId` de un `Package`
+            // publicado lleva su coordenada dentro —`Package:oos.dev/…/gdpr`— y
+            // sin escaparla la ruta sintética se parte en tres componentes. El
+            // ancestro dejaba de ser el `.oob`, la atribución de miembro no
+            // encontraba el `Package`, y catorce conceptos importados salían
+            // como vocabulario muerto. Se midió con el primero que se importó.
+            path: f.join(id.replace('/', "%2f")),
+            kind,
+            root: doc.clone(),
+        });
+    }
+    (docs, Vec::new())
+}
+
 fn recolectar(root: &Path, dir: &Path, fuera: &[Vec<String>], out: &mut Vec<PathBuf>) {
     let Ok(entradas) = std::fs::read_dir(dir) else {
         return;
@@ -510,7 +584,7 @@ fn recolectar(root: &Path, dir: &Path, fuera: &[Vec<String>], out: &mut Vec<Path
             recolectar(root, &p, fuera, out);
         } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml")
             || p.extension()
-                .is_some_and(|x| x == "cedar" || x == "cedarschema")
+                .is_some_and(|x| x == "cedar" || x == "cedarschema" || x == "oob")
             || p.file_name().is_some_and(|n| n == "ontology.lock")
         {
             out.push(p);

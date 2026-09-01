@@ -1178,6 +1178,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-fetch"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+]
+
+[[package]]
 name = "ore-read-jsonl"
 version = "0.1.0"
 dependencies = [

@@ -55,6 +55,67 @@ impl Loaded {
     }
 }
 
+/// El sitio de cada miembro del workspace: donde esta su `package.yaml`.
+///
+/// Los miembros son **ubicaciones**, y no es una convencion de este motor: el
+/// esquema de `OntologyConfig` declara `workspace.members` como una lista de
+/// patrones de ruta con `packages/*` por defecto, y dice que *«el valor por
+/// defecto lo aplica el COMPILADOR al normalizar»*. Se derivan de donde esta
+/// cada `package.yaml` en vez de expandir el patron porque el resultado es el
+/// mismo y una disposicion no estandar —que es justo para lo que existe
+/// declarar `members`— sigue funcionando sin leerla.
+///
+/// Y un `.oob` sale de aqui como cualquier otro miembro: sus documentos entran
+/// con la ruta `<el .oob>/<identidad>`, asi que el fichero ES su directorio.
+/// Un paquete importado se atribuye solo.
+pub fn miembros(pkg: &Package) -> Vec<PathBuf> {
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter_map(|d| d.path.parent().map(Path::to_path_buf))
+        .collect()
+}
+
+/// El miembro al que pertenece un documento: el mas largo que es prefijo de su
+/// ruta.
+///
+/// El mas largo y no el primero, porque un miembro puede estar dentro de otro y
+/// entonces manda el de dentro.
+pub fn miembro_de<'a>(miembros: &'a [PathBuf], doc: &Path) -> Option<&'a Path> {
+    miembros
+        .iter()
+        .filter(|m| doc.starts_with(m))
+        .max_by_key(|m| m.components().count())
+        .map(PathBuf::as_path)
+}
+
+/// Lo que un paquete PUBLICA, que no es todo lo que tiene cargado.
+///
+/// El manifiesto es del **workspace** —lleva las fuentes fisicas y las
+/// dependencias de quien compila— y el lock es de quien consume; ninguno de los
+/// dos es del paquete. Vive aqui y no en quien empaqueta porque los tres que lo
+/// necesitan tienen que estar de acuerdo: el que escribe un `.oob`, el que
+/// resuelve un lock y el que verifica que lo que hay es lo que el lock nombra.
+/// Con dos definiciones, el mismo paquete tendria dos digests — y eso ya paso.
+pub fn publicables(pkg: &Package) -> Package {
+    Package {
+        root: pkg.root.clone(),
+        docs: pkg
+            .docs
+            .iter()
+            .filter(|d| d.kind != Kind::OntologyConfig)
+            .filter(|d| !crate::normalize::es_lock(d))
+            .map(|d| Loaded {
+                path: d.path.clone(),
+                kind: d.kind,
+                root: d.root.clone(),
+            })
+            .collect(),
+        cedar: Vec::new(),
+        generated: Vec::new(),
+    }
+}
+
 /// Un paquete cargado: todos sus documentos, ya despachados.
 pub struct Package {
     pub root: PathBuf,

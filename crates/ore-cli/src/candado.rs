@@ -102,6 +102,15 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
         ));
     }
 
+    // Lo que falta se trae, y traerlo se DELEGA: `ore` no sabe hablar por la
+    // red. Lo que llega se vendoriza en el árbol —no en una caché— para que a
+    // partir de aquí compilar no necesite a nadie: un clon recién hecho tiene
+    // todo lo que el lock nombra, y su CI también.
+    let (pkg, traidas) = match traer_lo_que_falte(raiz, &pkg, &declaradas, comprobar)? {
+        Some((nuevo, cuantas)) => (nuevo, cuantas),
+        None => (pkg, Vec::new()),
+    };
+
     let disponibles = miembros(&pkg);
     let mut entradas = Vec::new();
     for (coordenada, raiz_de_quien) in &declaradas {
@@ -124,10 +133,10 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
             nombre: coordenada.clone(),
             version: version.clone(),
             ruta: relativa(raiz, dir),
-            digest: digest_de(dir),
+            digest: digest_de(&pkg, dir),
             rango,
             raiz: *raiz_de_quien,
-            provides: provides_de(dir),
+            provides: provides_de(&pkg, dir),
         });
     }
     entradas.sort_by(|a, b| a.nombre.cmp(&b.nombre));
@@ -162,7 +171,7 @@ fn intentar(raiz: &Path, comprobar: bool) -> Result<String, Fallo> {
             &[],
         )
     })?;
-    Ok(informe(&entradas, &ruta))
+    Ok(informe(&entradas, &ruta, &traidas))
 }
 
 // ── Lo que se declara y lo que hay ──────────────────────────────────────────
@@ -235,11 +244,13 @@ fn miembros(pkg: &Package) -> BTreeMap<String, (PathBuf, String)> {
 
 fn no_encontrada(coordenada: &str, disponibles: &BTreeMap<String, (PathBuf, String)>) -> Fallo {
     let mut ayuda = vec![
-        "  No se busca fuera: `ore` no sabe hablar por la red, y eso es una propiedad".to_string(),
-        "  comprobada. Hoy una dependencia se resuelve contra un paquete que esté en el"
+        "  `ore` no sabe hablar por la red, así que traerla se delega: pon un `ore-fetch`"
             .to_string(),
-        "  árbol —vendorizado como un miembro más— y el día que exista un registro,".to_string(),
-        "  traerla se delegará como se delega leer una fuente.".to_string(),
+        "  en el PATH que lea la petición por stdin y escriba el `.oob` por stdout, o".to_string(),
+        "  vendoriza el paquete en el árbol como un miembro más.".to_string(),
+        "  Lo que llegue se comprueba igual —el paquete, la versión y el digest—, que es"
+            .to_string(),
+        "  lo que permite que su origen no tenga que ser de confianza.".to_string(),
     ];
     if !disponibles.is_empty() {
         ayuda.push(format!(
@@ -252,6 +263,113 @@ fn no_encontrada(coordenada: &str, disponibles: &BTreeMap<String, (PathBuf, Stri
         mensaje: format!("`{coordenada}` no está en el árbol"),
         ayuda,
     }
+}
+
+// ── Traer lo que no está ────────────────────────────────────────────────────
+
+const OBTENEDOR: &str = "ore-fetch";
+const VENDOR: &str = "vendor";
+
+/// Trae las coordenadas que no estén en el árbol, y devuelve el árbol recargado
+/// si trajo alguna.
+///
+/// `--check` **no trae nada**: comprobar es comprobar, y un lock que se arregla
+/// solo al mirarlo no se distingue de uno al día.
+fn traer_lo_que_falte(
+    raiz: &Path,
+    pkg: &Package,
+    declaradas: &[(String, bool)],
+    comprobar: bool,
+) -> Result<Option<(Package, Vec<String>)>, Fallo> {
+    let hay = miembros(pkg);
+    let faltan: Vec<&(String, bool)> = declaradas
+        .iter()
+        .filter(|(c, _)| !hay.contains_key(c))
+        .collect();
+    if faltan.is_empty() || comprobar {
+        return Ok(None);
+    }
+    if crate::lector::resolver(OBTENEDOR).is_none() {
+        return Ok(None); // sin obtenedor, el error de siempre y su ayuda
+    }
+
+    let mut traidas = Vec::new();
+    for (coordenada, _) in faltan {
+        let rango = rango_de(pkg, coordenada)?;
+        let bytes = obtener(coordenada, &rango)?;
+        let (nombre, version) = sobre_de(&bytes, coordenada, &rango)?;
+        let ruta = raiz.join(VENDOR).join(format!(
+            "{}-{version}.oob",
+            nombre.rsplit('/').next().unwrap_or(&nombre)
+        ));
+        std::fs::create_dir_all(raiz.join(VENDOR))
+            .map_err(|e| fallo(73, format!("no se pudo crear `{VENDOR}/`: {e}"), &[]))?;
+        std::fs::write(&ruta, &bytes).map_err(|e| {
+            fallo(
+                73,
+                format!("no se pudo escribir `{}`: {e}", ruta.display()),
+                &[],
+            )
+        })?;
+        traidas.push(nombre);
+    }
+    Ok(Some((ore_core::validate::cargar_paquete(raiz).0, traidas)))
+}
+
+/// Ejecuta el obtenedor. La petición va por **stdin**, nunca por `argv`: lo lee
+/// cualquier proceso de la máquina, y una coordenada privada dice de qué depende
+/// una organización.
+fn obtener(coordenada: &str, rango: &str) -> Result<String, Fallo> {
+    let peticion = ore_core::json::Json::obj([
+        ("package", ore_core::json::Json::s(coordenada)),
+        ("range", ore_core::json::Json::s(rango)),
+    ])
+    .jcs();
+    crate::lector::ejecutar(OBTENEDOR, &[], Some(&peticion)).map_err(|f| Fallo {
+        codigo: f.codigo,
+        mensaje: f.mensaje,
+        ayuda: f.ayuda,
+    })
+}
+
+/// Lo que dice el sobre, comprobado contra lo que se pidió.
+///
+/// **Nada de lo que llega se cree.** El obtenedor puede equivocarse o mentir, y
+/// da igual cuál de las dos: un `.oob` que diga otro paquete o una versión fuera
+/// del rango no se escribe. Es la misma postura que hace que el origen no tenga
+/// que ser de confianza — y por eso el obtenedor de referencia ni siquiera
+/// interpreta el rango.
+fn sobre_de(bytes: &str, coordenada: &str, rango: &str) -> Result<(String, String), Fallo> {
+    let j = ore_core::parse::parse(bytes).map_err(|e| {
+        fallo(
+            65,
+            format!("lo que devolvió `{OBTENEDOR}` no analiza: {e:?}"),
+            &[],
+        )
+    })?;
+    let campo = |k: &str| j.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+    let (Some(nombre), Some(version)) = (campo("package"), campo("version")) else {
+        return Err(fallo(
+            65,
+            format!("lo que devolvió `{OBTENEDOR}` no dice qué paquete es"),
+            &["  Un `.oob` lleva su identidad dentro: uno renombrado es uno que miente."],
+        ));
+    };
+    if nombre != coordenada {
+        return Err(fallo(
+            65,
+            format!("se pidió `{coordenada}` y llegó `{nombre}`"),
+            &["  No se escribe lo que no es lo que se pidió, venga de donde venga."],
+        ));
+    }
+    if !satisface(&version, rango)? {
+        return Err(fallo(
+            65,
+            format!("`{coordenada}` llegó en `{version}`, y se pidió `{rango}`"),
+            &["  El obtenedor no interpreta el rango, y por eso se comprueba aquí."],
+        ));
+    }
+    Ok((nombre, version))
 }
 
 // ── Los rangos ──────────────────────────────────────────────────────────────
@@ -325,16 +443,40 @@ fn relativa(raiz: &Path, dir: &Path) -> String {
 /// no cambia la identidad**, y digerir aquí el manifiesto del miembro —que
 /// `pack` excluye por ser del workspace— rompía la promesa. Salió midiendo: el
 /// mismo directorio daba `b28cae9b` por un lado y `d47f6ee8` por el otro.
-fn digest_de(dir: &Path) -> String {
-    let (pkg, _) = ore_core::validate::cargar_paquete(dir);
-    ore_core::digest::package(&crate::empaquetar::publicables(&pkg))
+fn digest_de(pkg: &Package, miembro: &Path) -> String {
+    ore_core::digest::package(&ore_core::link::publicables(&del_miembro(pkg, miembro)))
+}
+
+/// Los documentos de un miembro, sacados del workspace ya cargado.
+///
+/// Se filtra en vez de volver a leer el directorio, y no es una optimización: un
+/// miembro **puede no ser un directorio**. Un paquete importado es un `.oob`, y
+/// releerlo como carpeta daba el digest de la nada — `e3b0c442…`, el SHA de la
+/// cadena vacía, escrito tan campante en un lock.
+fn del_miembro(pkg: &Package, miembro: &Path) -> Package {
+    let miembros = ore_core::link::miembros(pkg);
+    Package {
+        root: pkg.root.clone(),
+        docs: pkg
+            .docs
+            .iter()
+            .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(miembro))
+            .map(|d| ore_core::link::Loaded {
+                path: d.path.clone(),
+                kind: d.kind,
+                root: d.root.clone(),
+            })
+            .collect(),
+        cedar: Vec::new(),
+        generated: Vec::new(),
+    }
 }
 
 /// Qué aporta un paquete, **derivado de lo que tiene dentro**. Lo derivable no
 /// se declara (P2), y una lista escrita a mano en un artefacto generado sería
 /// dos veces lo mismo.
-fn provides_de(dir: &Path) -> BTreeMap<String, Vec<String>> {
-    let (pkg, _) = ore_core::validate::cargar_paquete(dir);
+fn provides_de(pkg: &Package, miembro: &Path) -> BTreeMap<String, Vec<String>> {
+    let pkg = del_miembro(pkg, miembro);
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for d in &pkg.docs {
         let clave = match d.kind {
@@ -417,7 +559,7 @@ fn escribir(para: &str, entradas: &[Entrada]) -> String {
     s
 }
 
-fn informe(entradas: &[Entrada], ruta: &Path) -> String {
+fn informe(entradas: &[Entrada], ruta: &Path, traidas: &[String]) -> String {
     let mut s = format!("  ✓ {}\n", ruta.display());
     for e in entradas {
         let _ = writeln!(
@@ -429,7 +571,25 @@ fn informe(entradas: &[Entrada], ruta: &Path) -> String {
             &e.digest[..e.digest.len().min(19)]
         );
     }
-    s.push_str("\n  Resuelto contra el árbol. Nada se ha traído de fuera.\n");
+    // Decir «nada se ha traído de fuera» justo después de traerlo era una línea
+    // escrita cuando no había obtenedor, y dejó de ser cierta el día que lo
+    // hubo. Un informe que no distingue las dos cosas deja de informar de la que
+    // importa: qué entró en este árbol desde fuera.
+    if traidas.is_empty() {
+        s.push_str("\n  Todo estaba en el árbol. No se ha traído nada de fuera.\n");
+    } else {
+        let _ = writeln!(
+            s,
+            "\n  {} traída(s) con `ore-fetch` y vendorizada(s) en `vendor/`: {}.",
+            traidas.len(),
+            traidas.join(", ")
+        );
+        s.push_str(
+            "  Verificadas —paquete, versión y digest— antes de escribirlas, que es lo\n\
+             \x20 que permite que su origen no tenga que ser de confianza. A partir de\n\
+             \x20 aquí este árbol compila sin nadie.\n",
+        );
+    }
     s
 }
 

@@ -44,13 +44,102 @@ use crate::document::Kind;
 use crate::flow;
 use crate::link::{Loaded, Package};
 use crate::normalize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     esquema_cedar(pkg, &mut out);
     lock(pkg, &mut out);
+    lo_que_se_usa(pkg, &mut out);
     out
+}
+
+/// **`usar(P) ⟹ digest(P) ∈ lock`** — la regla de v1alpha6.
+///
+/// Un paquete que está en el árbol y que el lock nombra tiene que ser **el que
+/// el lock nombra**. No es una comprobación de higiene: es lo único que hace que
+/// no importe de dónde vino. Un registro que sirviera otra cosa, un `.oob`
+/// editado a mano o un vendorizado que alguien tocó producen otro digest, y
+/// aquí se paran.
+///
+/// Sin esto, «el registro no es de confianza» sería una frase: lo que la
+/// convierte en una propiedad es que **alguien compare**.
+fn lo_que_se_usa(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
+        return;
+    };
+    let esperados = digests(l);
+    if esperados.is_empty() {
+        return;
+    }
+    let miembros = crate::link::miembros(pkg);
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Package) {
+        let (Some(nombre), Some(sitio)) =
+            (d.meta("name").and_then(|n| n.as_str()), d.path.parent())
+        else {
+            continue;
+        };
+        let Some(esperado) = esperados.get(nombre) else {
+            continue;
+        };
+        let suyos = crate::link::publicables(&solo(pkg, &miembros, sitio));
+        let real = crate::digest::package(&suyos);
+        if real == *esperado {
+            continue;
+        }
+        out.push(
+            Diagnostic::new(
+                Code::Oos2013,
+                &d.path,
+                format!("`{nombre}` no es lo que `ontology.lock` dice que es"),
+            )
+            .at(d.root.pos())
+            .help(format!(
+                "el lock lo fija en `{esperado}` y lo que hay digiere `{real}`. Un paquete \
+                 se identifica por lo que CONTIENE y no por de dónde vino, que es lo que \
+                 permite que su origen no tenga que ser de confianza — y lo que obliga a \
+                 parar aquí. Si el cambio es deliberado, `ore lock` lo vuelve a fijar y el \
+                 nuevo digest se revisa en un pull request"
+            )),
+        );
+    }
+}
+
+/// `nombre → digest` del lock.
+fn digests(l: &crate::link::Loaded) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some((_, ps)) = l.root.get("packages") {
+        for p in ps.items() {
+            if let (Some(n), Some(d)) = (
+                p.get("name").and_then(|(_, v)| v.as_str()),
+                p.get("digest").and_then(|(_, v)| v.as_str()),
+            ) {
+                out.insert(n.to_string(), d.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Los documentos de un miembro. Se filtra el árbol ya cargado en vez de
+/// releerlo: un miembro **puede no ser un directorio** — un paquete importado es
+/// un `.oob`, y sus documentos entran con la ruta `<el .oob>/<identidad>`.
+fn solo(pkg: &Package, miembros: &[std::path::PathBuf], sitio: &std::path::Path) -> Package {
+    Package {
+        root: pkg.root.clone(),
+        docs: pkg
+            .docs
+            .iter()
+            .filter(|d| crate::link::miembro_de(miembros, &d.path) == Some(sitio))
+            .map(|d| crate::link::Loaded {
+                path: d.path.clone(),
+                kind: d.kind,
+                root: d.root.clone(),
+            })
+            .collect(),
+        cedar: Vec::new(),
+        generated: Vec::new(),
+    }
 }
 
 // ── El esquema Cedar ────────────────────────────────────────────────────────

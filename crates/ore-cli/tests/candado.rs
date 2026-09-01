@@ -60,9 +60,38 @@ fn escenario(nombre: &str, rango: &str) -> PathBuf {
 }
 
 fn ore(dir: &Path, args: &[&str]) -> Output {
+    con_registro(dir, args, &vacio())
+}
+
+/// Un directorio vacío hace de registro que no tiene nada. Hace falta un valor
+/// SIEMPRE: `ore-fetch` está en el PATH de las pruebas —cargo pone ahí los
+/// binarios— así que sin esto una prueba dependería de lo que hubiera en el
+/// entorno de quien la corre.
+fn vacio() -> PathBuf {
+    let d = std::env::temp_dir().join("ore-registro-vacio");
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn con_registro(dir: &Path, args: &[&str], registro: &Path) -> Output {
+    // El `PATH` se pone a mano, y hace falta: `ore` busca ahí el obtenedor, y
+    // que `cargo test` deje el directorio de binarios en el `PATH` es cierto en
+    // Windows y no en todas partes. Una prueba que dependa de eso pasa aquí y
+    // falla en la CI por un motivo que no tiene nada que ver con lo que mide.
+    let bin = Path::new(env!("CARGO_BIN_EXE_ore")).parent().unwrap();
+    let path = match std::env::var_os("PATH") {
+        Some(p) => {
+            let mut dirs = vec![bin.to_path_buf()];
+            dirs.extend(std::env::split_paths(&p));
+            std::env::join_paths(dirs).unwrap()
+        }
+        None => bin.as_os_str().to_owned(),
+    };
     Command::new(env!("CARGO_BIN_EXE_ore"))
         .args(args)
         .arg(dir)
+        .env("ORE_FETCH_DIR", registro)
+        .env("PATH", path)
         .output()
         .expect("no se pudo invocar `ore`")
 }
@@ -136,20 +165,95 @@ fn comprobar_no_toca_el_arbol() {
     );
 }
 
-/// No se busca fuera, y el error lo dice: `ore` no sabe hablar por la red y esa
-/// es una propiedad comprobada, no una promesa.
+/// Lo que no está ni en el árbol ni donde se busca **no se inventa**, y lo que
+/// cuenta el obtenedor se muestra literal: es lo único accionable que existe.
 #[test]
-fn lo_que_no_esta_en_el_arbol_no_se_inventa() {
+fn lo_que_no_esta_en_ninguna_parte_no_se_inventa() {
     let dir = escenario("ausente", "^0.1");
     std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
     let o = ore(&dir, &["lock"]);
     assert!(!o.status.success(), "resolvió algo que no está");
-    let t = salida(&o);
-    assert!(t.contains("no está en el árbol"), "{t}");
     assert!(
         !dir.join("ontology.lock").exists(),
         "escribió un lock sin resolver"
     );
+}
+
+/// La delegación entera: `ore` no habla por la red, ejecuta un programa que sí,
+/// y **comprueba lo que le devuelve**. Después el árbol compila sin nadie, que
+/// es el punto de vendorizar en vez de cachear.
+#[test]
+fn lo_que_falta_se_trae_y_se_queda() {
+    let dir = escenario("traer", "^0.1");
+    let registro = std::env::temp_dir().join("ore-registro-traer");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+
+    // Se publica el paquete y se saca del árbol: a partir de aquí solo está
+    // «fuera».
+    let publicado = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .args(["pack", dir.join("packages/gdpr").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(publicado.status.success());
+    std::fs::write(registro.join("gdpr-0.1.0.oob"), &publicado.stdout).unwrap();
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+
+    let o = con_registro(&dir, &["lock"], &registro);
+    assert!(o.status.success(), "{}", salida(&o));
+    assert!(
+        dir.join("vendor/gdpr-0.1.0.oob").exists(),
+        "no lo vendorizó: {}",
+        salida(&o)
+    );
+    assert!(salida(&o).contains("ore-fetch"), "{}", salida(&o));
+
+    // Y ya no hace falta nadie: el registro se vacía y sigue compilando.
+    std::fs::remove_dir_all(&registro).unwrap();
+    let v = ore(&dir, &["validate"]);
+    assert!(v.status.success(), "{}", salida(&v));
+}
+
+/// Nada de lo que llega se cree. Un `.oob` que diga otro paquete no se escribe,
+/// venga de donde venga — que es lo que permite que el origen no tenga que ser
+/// de confianza.
+#[test]
+fn lo_que_llega_y_no_es_lo_que_se_pidio_no_se_escribe() {
+    let dir = escenario("impostor", "^0.1");
+    let registro = std::env::temp_dir().join("ore-registro-impostor");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+
+    // Se publica OTRO paquete con el nombre de fichero que el obtenedor espera.
+    let otro = escenario("impostor-otro", "^0.1");
+    std::fs::write(
+        otro.join("package.yaml"),
+        r#"apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata:
+  name: oos.dev/otro/paquete
+  version: 0.1.0
+  status: draft
+  domain: x
+spec: { owner: "team:x" }
+"#,
+    )
+    .unwrap();
+    let publicado = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .args(["pack", otro.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(publicado.status.success());
+    std::fs::write(registro.join("gdpr-0.1.0.oob"), &publicado.stdout).unwrap();
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+
+    let o = con_registro(&dir, &["lock"], &registro);
+    assert!(
+        !o.status.success(),
+        "aceptó un paquete que no era el pedido"
+    );
+    assert!(salida(&o).contains("llegó"), "{}", salida(&o));
+    assert!(!dir.join("vendor").exists(), "escribió lo que no era");
 }
 
 /// Un rango que la versión del árbol no satisface no se resuelve. Escribirlo

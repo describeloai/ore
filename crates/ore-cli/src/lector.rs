@@ -479,7 +479,7 @@ fn externo(tipo: &str, fuente: &str, url: &str) -> Result<String, Fallo> {
 /// es «es ejecutable», y los dos candidatos tienen exactamente el mismo aspecto.
 /// Donde `PATHEXT` no existe —todo lo que no sea Windows— la lista está vacía y el
 /// nombre desnudo es el único candidato, que es lo correcto allí.
-fn resolver(programa: &str) -> Option<PathBuf> {
+pub fn resolver(programa: &str) -> Option<PathBuf> {
     let exts: Vec<OsString> = std::env::var_os("PATHEXT")
         .map(|p| {
             p.to_string_lossy()
@@ -506,7 +506,7 @@ fn resolver(programa: &str) -> Option<PathBuf> {
     None
 }
 
-fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Result<String, Fallo> {
+pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Result<String, Fallo> {
     let ruta = resolver(programa).ok_or_else(|| {
         fallo(
             69,
