@@ -22,7 +22,8 @@
 //! Los peldaños y lo que cada uno cuesta están en `docs/handoff-view-engine.md`.
 //! Esto es **M0** —el IR, en [`plan`] y [`esquema`]—, **M1** —el expansor, en
 //! [`catalogo`]—, **M2** —el linaje derivado del plan, en [`linaje`]— y **M3**
-//! —el retículo fluyendo por él, en [`flujo`]—.
+//! —el retículo fluyendo por él, en [`flujo`]— y **M4** —capacidades y reparto,
+//! en [`capacidades`]—.
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -31,12 +32,14 @@
 //! expansor, M3 el flujo de etiquetas— viene después y **a propósito**: la pieza
 //! se está construyendo por su cuenta antes de decidir cómo entra.
 
+pub mod capacidades;
 pub mod catalogo;
 pub mod esquema;
 pub mod flujo;
 pub mod linaje;
 pub mod plan;
 
+pub use capacidades::{Capacidades, Peticion, Recorrido, Reparto, repartir};
 pub use catalogo::{Catalogo, Expansion, Vista};
 pub use esquema::{Desajuste, Esquema, esquema};
 pub use flujo::{Clasificacion, Fuga, Veredicto, comprobar};

@@ -326,13 +326,49 @@ Tres decisiones más, todas en la dirección de no callar:
 Y una medida del propio trabajo: **el tipador de M0 rechazó tres de mis fixtures** por comparar
 `Decimal` con `Integer`. Tenía razón.
 
-### M4 · Capacidades y reparto
+### M4 · Capacidades y reparto ✅
 
-`(empujado, residuo)` a partir de las capacidades declaradas.
+`capacidades.rs`. `(empujado, residuo)` a partir de las capacidades declaradas.
 
 **Listo cuando:** un plan contra un origen con `fullScan: forbidden` y sin claves se rechaza
 **sin abrir una conexión**, y uno con `predicatePushdown: [eq]` empuja el `eq` y deja el resto
-de residuo, **diciendo cuál es el residuo**.
+de residuo, **diciendo cuál es el residuo**. ✅ · 67 comprobaciones en el crate.
+
+Es lo que convierte un escaneo en una búsqueda por clave — el argumento entero del ADR 0006. Un
+predicado se aplana en conyuntos y baja hasta la hoja, **y cada nodo por el que pasa tiene su
+regla y su motivo**:
+
+| | Qué baja | Por qué |
+|---|---|---|
+| **proyección** | lo que nombra columnas copiadas tal cual | reescribir un predicado sobre algo computado es donde un optimizador se equivoca en silencio |
+| **junta** | cada conyunto al lado que tiene sus columnas | el que cruza los dos lados cambiaría el resultado si bajara a uno |
+| **grupo** | solo sobre claves de grupo | filtrar por un agregado es un `HAVING`, y por debajo del grupo no significa nada |
+| **unión** | a **todas** las ramas | la propiedad distributiva, y es lo que evita traer entera la rama que no aporta |
+| **límite** | **nada** | filtrar y luego limitar no es limitar y luego filtrar |
+
+Esa última es la trampa, y está encodada con su prueba: equivocarse ahí **devuelve un resultado
+plausible** — salen filas, menos de las que debían.
+
+**Dos puertas que se cierran sin abrir nada**, que es toda la gracia de declarar en vez de
+intentar: `fullScan: forbidden` sin ningún filtro bajado, y un `requiredFilters` que no llega. Y
+**la ausencia de capacidades es una negativa, no una laguna** — P4 aplicada al reparto, y
+`05-ejecutor` §5.1 dicho en código.
+
+Y la escapatoria deja de ser solo cara: **una opaca se empuja si el origen habla su dialecto**.
+Lo que no hace es cruzar una proyección que renombra — su texto nombra columnas por dentro y
+este motor no lo lee, así que traducir solo su `lee` dejaría el texto apuntando a nombres que ya
+no existen.
+
+Dos cosas que M4 **no** hace, con su razón: **no poda columnas** —es una segunda optimización
+con su propia medida, y hacerla sin medirla sería inventarla— y **no baja agregados ni juntas**,
+que son las dos que más cambian el reparto y las dos que más fácil se hacen mal.
+
+Y el aviso que quedó por escrito en la cabecera del módulo: bajar un predicado y quitarlo del
+residuo **confía en la declaración**. Para un filtro cualquiera es una optimización; para uno que
+restringe **qué puede ver un principal**, confiar es devolver filas de más si el origen lo
+ignora. Esta pieza no sabe cuál es cuál, así que deja el predicado escrito en la `Peticion` para
+que quien sí lo sepa pueda volver a aplicarlo — y cuando esto se absorba, el campo que los marca
+ya existe: es el `ambito` de un filtro.
 
 ### M5 · Reescritura con materializaciones
 
