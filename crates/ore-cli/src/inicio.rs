@@ -65,6 +65,27 @@ type Par = (String, String);
 /// Lo que sale de leer una bandera, o el fallo con su ayuda ya escrita.
 type Leidos = Result<Vec<Par>, (u8, Vec<String>)>;
 
+/// La única dependencia que se emite sin que nadie la pida.
+///
+/// # Por qué esta sí, cuando el retículo no
+///
+/// Porque **no clasifica nada**. `iso` da nombre a `countryCode`, `currencyCode`
+/// y `languageTag`, y ninguno lleva etiquetas: no puede gobernar, no puede
+/// clasificar mal un dato, y lo peor que hace es ofrecer un nombre. Un retículo
+/// del RGPD sí decide —qué es sensible y cuánto— y por eso no se emite.
+///
+/// La otra mitad del argumento la dio un dataset de verdad: la columna
+/// `cod_pais` aparecía en tres tablas y la cola solo sabía decir *«acúñalo»*,
+/// cuando `iso.countryCode` **la lleva de sinónimo**. La respuesta correcta
+/// existía y el repositorio no la tenía a mano.
+///
+/// **Y tiene un precio que conviene decir:** hasta que exista un registro que la
+/// sirva, `ore lock` de un repositorio recién creado no la resuelve — dirá que no
+/// está en el árbol y cómo traerla. `ore validate` sí pasa, porque `01-package`
+/// §3.1 admite una dependencia declarada y sin resolver. Cualquier `--depend`
+/// explícito sustituye esto entero.
+const POR_DEFECTO: &[&str] = &["oos.dev/types/iso@^0.1"];
+
 /// Las respuestas del diálogo de creación.
 ///
 /// Cada una es algo que este comando **no puede saber** y que tampoco debe
@@ -139,7 +160,12 @@ fn intentar(raiz: &Path, r: &Respuestas) -> Result<String, (u8, Vec<String>)> {
     // Las respuestas se leen ANTES de escribir nada. Un repositorio a medio
     // emitir por una bandera mal escrita es peor que uno no emitido: el error
     // sale al final y lo que hay ya no se puede volver a crear con `init`.
-    let dependencias = leer_dependencias(r.depende)?;
+    let depende: Vec<String> = if r.depende.is_empty() {
+        POR_DEFECTO.iter().map(|s| (*s).to_string()).collect()
+    } else {
+        r.depende.to_vec()
+    };
+    let dependencias = leer_dependencias(&depende)?;
     let claves = leer_claves(r.claves, "--trust")?;
     let logs = leer_claves(r.logs, "--trust-log")?;
 
@@ -823,6 +849,44 @@ mod tests {
         assert!(
             culpables.is_empty(),
             "invento una decision de gobierno: {culpables:?}"
+        );
+    }
+
+    /// Sin `--depend`, sale la de por defecto — y es la unica que se emite sin
+    /// que nadie la pida, porque **no clasifica nada**.
+    #[test]
+    fn sin_banderas_importa_los_tipos_iso_y_nada_mas() {
+        let d = en("por-defecto");
+        intentar(
+            &d,
+            &Respuestas {
+                nombre: Some("pedidos"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(d.join(CONFIG)).unwrap();
+        assert!(t.contains("oos.dev/types/iso"), "{t}");
+        // Y NO un reticulo: eso si decide.
+        assert!(!t.contains("regulatory/gdpr"), "{t}");
+    }
+
+    /// Un `--depend` explicito sustituye lo de por defecto entero. Quien nombra
+    /// sus dependencias no quiere que le añadan una.
+    #[test]
+    fn una_dependencia_explicita_sustituye_la_de_por_defecto() {
+        let d = en("sustituye");
+        intentar(
+            &d,
+            &con("pedidos", &["oos.dev/regulatory/gdpr@^0.1".into()]),
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(d.join(CONFIG)).unwrap();
+        assert!(t.contains("regulatory/gdpr"), "{t}");
+        assert!(
+            !t.contains("types/iso"),
+            "añadio una que nadie pidio:
+{t}"
         );
     }
 

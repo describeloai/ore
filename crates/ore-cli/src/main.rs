@@ -937,6 +937,13 @@ fn informar(path: &std::path::Path) -> std::process::ExitCode {
     let props = ore_core::flow::efectivas(&pkg, &lat);
     let cubierto = ore_core::governance::cobertura_atribuida(&pkg);
     let alcance = ore_core::politica::alcance(&pkg);
+    // Cuantos `ConduitPolicy` hay, porque el motivo por el que una politica de
+    // Cedar se queda sin dueno depende de eso y **no es el mismo**.
+    let conductos = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::ConduitPolicy)
+        .count();
 
     let mut filas = 0usize;
     for (prop, etiquetas) in &props {
@@ -967,10 +974,20 @@ fn informar(path: &std::path::Path) -> std::process::ExitCode {
                     v.iter()
                         .map(|d| match &d.owner {
                             Some(o) => format!("{} ({o})", d.regla),
-                            // Solo pasa con VARIOS `ConduitPolicy`: no habría
-                            // forma de saber de cuál hereda, y adivinar el dueño
-                            // de una decisión de seguridad es peor que no
-                            // tenerlo. La salida es `@oosOwner` en la política.
+                            // Sin dueño hay DOS motivos y no eran el mismo. El
+                            // comentario que había aquí decía «solo pasa con
+                            // varios `ConduitPolicy`», y se midió que también
+                            // pasa con NINGUNO — que es el caso de cualquier
+                            // repositorio recién creado. Decir «varios» ahí manda
+                            // a buscar un segundo conducto que no existe, y un
+                            // mensaje que nombra la causa equivocada es peor que
+                            // uno que calla.
+                            //
+                            // La salida es la misma para los dos: `@oosOwner` en
+                            // la propia política.
+                            None if conductos == 0 => {
+                                format!("{} (sin ConduitPolicy del que heredar)", d.regla)
+                            }
                             None => format!("{} (varios ConduitPolicy: sin herencia)", d.regla),
                         })
                         .collect::<Vec<_>>()
