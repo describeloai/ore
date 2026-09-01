@@ -71,6 +71,14 @@ fn intentar() -> Result<String, String> {
              demuestra que el contrato no depende de uno"
         )
     })?;
+    // Un registro de verdad —`index/` y `blobs/`— si lo hay. Es la misma orden
+    // para las dos formas a proposito: un espejo de un registro es una copia de
+    // un directorio, y quien lo consume no tiene por que enterarse de cual de las
+    // dos tiene delante.
+    if let Some(bytes) = del_registro(std::path::Path::new(&dir), coordenada)? {
+        return Ok(bytes);
+    }
+
     let corto = coordenada.rsplit('/').next().unwrap_or(coordenada);
 
     // La más alta que haya. NO se interpreta el rango: quien pide comprueba de
@@ -102,4 +110,54 @@ fn intentar() -> Result<String, String> {
         ));
     };
     std::fs::read_to_string(&ruta).map_err(|e| format!("no se pudo leer `{}`: {e}", ruta.display()))
+}
+
+/// El registro estatico de `04-registro`: `index/<paquete>.json` y
+/// `blobs/sha256/<hash>`.
+///
+/// Devuelve `None` si esa raiz no es un registro, para que la misma orden sirva
+/// tambien al directorio plano — que sigue siendo el caso que se puede escribir
+/// sin nada.
+///
+/// La version mas alta y **sin interpretar el rango**, igual que antes: quien
+/// pide comprueba de todos modos que lo devuelto sea lo que pidio, y esmerarse
+/// aqui solo haria que esa comprobacion pareciera de mas.
+///
+/// Y tampoco se comprueba el blob contra su nombre. No es dejadez: es la misma
+/// razon. `ore` recomputa el digest contra su lock, y `ore-registry verify` lo
+/// recomprueba entero — un obtenedor que ademas lo hiciera repartiria la
+/// sensacion de que el que importa es este.
+fn del_registro(raiz: &std::path::Path, coordenada: &str) -> Result<Option<String>, String> {
+    let idx = raiz.join("index").join(format!("{coordenada}.json"));
+    let Ok(texto) = std::fs::read_to_string(&idx) else {
+        return Ok(None);
+    };
+    let j = ore_core::parse::parse(&texto)
+        .map_err(|e| format!("`{}` no analiza: {e:?}", idx.display()))?;
+    let mut versiones: Vec<(Vec<u64>, String)> = j
+        .get("versions")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|v| {
+            let leer = |k: &str| v.get(k).and_then(|(_, x)| x.as_str());
+            let n = leer("version")?
+                .split(['-', '+'])
+                .next()?
+                .split('.')
+                .map(|x| x.parse().unwrap_or(0))
+                .collect();
+            Some((n, leer("blob")?.to_string()))
+        })
+        .collect();
+    versiones.sort();
+    let Some((_, blob)) = versiones.pop() else {
+        return Err(format!(
+            "`{coordenada}` esta en el indice y no tiene ninguna version publicada"
+        ));
+    };
+    let ruta = raiz.join("blobs/sha256").join(&blob);
+    std::fs::read_to_string(&ruta)
+        .map(Some)
+        .map_err(|e| format!("el indice apunta a `blobs/sha256/{blob}` y no se pudo leer: {e}"))
 }

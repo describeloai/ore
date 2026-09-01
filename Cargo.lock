@@ -1219,6 +1219,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-registry"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "ore-sign"
 version = "0.1.0"
 dependencies = [

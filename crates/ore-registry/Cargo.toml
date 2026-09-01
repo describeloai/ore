@@ -1,0 +1,22 @@
+# El registro de referencia, y es un ARBOL DE FICHEROS.
+#
+# No hay servidor: `index/` y `blobs/`, estaticos, sin base de datos en el camino
+# critico. Cualquier servidor de ficheros es un registro conforme y un espejo es
+# un `rsync` — que es exactamente la propiedad que se quiere conservar, porque un
+# registro del que se puede prescindir es uno que no ata a nadie.
+#
+# Va el ultimo del camino a proposito. Para cuando llega, direccionar por
+# contenido ya le quito la integridad, la firma la procedencia y el log la
+# historia: lo que le queda es servir ficheros.
+[package]
+name        = "ore-registry"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Registro de referencia: indice y blobs direccionados por contenido, sobre ficheros"
+
+[dependencies]
+ore-core = { path = "../ore-core" }
+sha2.workspace = true
