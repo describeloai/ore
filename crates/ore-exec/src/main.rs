@@ -10,6 +10,12 @@
 //!                         --emisor https://… --audiencia ore
 //! ```
 //!
+//! Y dos banderas que valen para `plan` y para `responder`: `--indice` carga el
+//! artefacto de topología y `--cache` el manifiesto de lo materializado. La
+//! segunda **no rechaza un manifiesto de otro bundle**, a diferencia de la
+//! primera: uno de otro bundle sí dice algo —que hay caché y que no sirve— y
+//! callarlo haría que el plan dijera «no había caché».
+//!
 //! Sin `clap`: este binario vive fuera del compilador y no hay razón para que
 //! su árbol crezca más de lo que ya crece por el evaluador. Las banderas se leen
 //! a mano porque son ocho y no van a ser ochenta.
@@ -67,6 +73,16 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(65);
     }
 
+    // El manifiesto de cache. A diferencia del indice, NO se rechaza por ser de
+    // otro bundle: un manifiesto de otro bundle si dice algo —que hay cache y
+    // que no sirve— y callarlo haria que el plan dijera «no habia cache».
+    if let Some(m) = valor(&args, "--cache")
+        && let Err(e) = motor.cargar_cache(std::path::Path::new(&m))
+    {
+        eprintln!("manifiesto ilegible · {e}");
+        return std::process::ExitCode::from(65);
+    }
+
     match verbo.as_str() {
         "validar" => {
             let errores = motor.validar();
@@ -114,6 +130,15 @@ fn main() -> std::process::ExitCode {
                     println!("\n③ CARGA ÚTIL");
                     for l in &p.lecturas {
                         println!("   {} · {}", l.datasource, l.objeto);
+                        match &l.origen {
+                            ore_exec::Origen::Cache { marca } => {
+                                println!("      de la cache · marca {marca}");
+                            }
+                            ore_exec::Origen::Fuente { porque: Some(x) } => {
+                                println!("      del origen · {x}");
+                            }
+                            ore_exec::Origen::Fuente { porque: None } => {}
+                        }
                         if !l.clave_columnas.is_empty() {
                             println!("      clave: {}", l.clave_columnas.join(", "));
                         }
@@ -161,6 +186,9 @@ fn main() -> std::process::ExitCode {
                             println!("{}", campos.join("  "));
                         }
                         eprintln!();
+                        for (donde, de) in &r.origenes {
+                            eprintln!("origen   {donde} <- {de}");
+                        }
                         eprintln!("digest   {}", r.digest);
                         eprintln!("marca    {}", r.marca.as_deref().unwrap_or("—"));
                         eprintln!("instante {}", r.instante.as_deref().unwrap_or("—"));
@@ -203,6 +231,11 @@ fn consulta_de(args: &[String]) -> Consulta {
             .map(|k| vec![k])
             .collect(),
         travesia: None,
+        // El instante entra en la CONSULTA porque decidir si lo materializado
+        // esta rancio decide si se abre una conexion, y eso es planificar. No
+        // rompe la pureza: se recibe, no se lee.
+        instante: valor(args, "--instante"),
+        sla: valor(args, "--sla"),
     }
 }
 
@@ -556,6 +589,10 @@ fn leer_aristas_incremental(
                 ));
             };
             lectura.filtros.push(ore_exec::Filtro {
+                // La marca de agua no sale de una propiedad del principal: sale
+                // del binding. Se nombra igual que la columna porque no hay una
+                // propiedad corta a la que atribuirsela.
+                propiedad: columna.clone(),
                 columna,
                 operador: "gt".into(),
                 valor: desde.to_string(),

@@ -37,7 +37,8 @@ pub struct Respuesta {
     pub filas: Vec<BTreeMap<String, String>>,
     /// **Qué significaba.**
     pub digest: String,
-    /// **Hasta cuándo era cierto.** Ausente si no intervino nada materializado.
+    /// **Hasta cuándo era cierto**, y es la **más vieja** de las que
+    /// intervinieron. Ausente si no intervino nada materializado.
     pub marca: Option<String>,
     /// **Cuándo se autorizó.**
     pub instante: Option<String>,
@@ -47,6 +48,11 @@ pub struct Respuesta {
     /// Qué hay que aplicar a cada propiedad — las obligaciones que el veredicto
     /// trajo. El ejecutor las transporta; aplicarlas con sujeto es otra pieza.
     pub obligaciones: BTreeMap<String, Vec<String>>,
+    /// **De dónde salió cada lectura**, y si fue del origen, por qué no de la
+    /// caché. Una respuesta que no lo distingue no se puede auditar, y *«¿esto
+    /// vino del lago o del sistema de gestión?»* es la primera pregunta de
+    /// cualquiera que revise un número raro.
+    pub origenes: BTreeMap<String, String>,
 }
 
 // `epoca` y `duracion` se movieron a `ore_core::frescura` cuando el veredicto
@@ -158,9 +164,22 @@ impl Motor {
             por_clave.into_values().collect()
         };
 
-        // El estado degradado. Se compara con la marca del índice, que es lo
-        // único materializado que interviene en v1.
-        let marca = self.topologia.as_ref().map(|t| t.marca.clone());
+        // **La respuesta es tan fresca como su parte más rancia.**
+        //
+        // Dejó de ser la marca del índice el día que la caché entró en el plan:
+        // ahora interviene más de una cosa materializada. Componerla de otra
+        // forma —la más nueva, o la del índice a secas— declararía una frescura
+        // que ninguna de las partes tiene, que es justo la mentira que este
+        // proyecto existe para acotar.
+        let mut marcas: Vec<String> = self.topologia.iter().map(|t| t.marca.clone()).collect();
+        marcas.extend(p.lecturas.iter().filter_map(|l| match &l.origen {
+            crate::plan::Origen::Cache { marca } => Some(marca.clone()),
+            crate::plan::Origen::Fuente { .. } => None,
+        }));
+        // Una marca que no se sabe fechar ordena PRIMERO, es decir, gana como la
+        // más vieja. Es la dirección conservadora: esconderla detrás de una
+        // fresca sería afirmar una frescura que nadie ha comprobado.
+        let marca = mas_vieja(marcas);
         let degradado = match (&marca, instante, sla) {
             (Some(m), Some(ahora), Some(sla)) => match (epoca(m), epoca(ahora), duracion(sla)) {
                 (Some(m0), Some(t0), Some(d)) if t0 > m0 + d => Some(format!(
@@ -180,8 +199,38 @@ impl Motor {
             instante: instante.map(String::from),
             degradado,
             obligaciones: p.autorizadas.clone(),
+            origenes: p
+                .lecturas
+                .iter()
+                .map(|l| {
+                    (
+                        format!("{}·{}", l.datasource, l.objeto),
+                        match &l.origen {
+                            crate::plan::Origen::Cache { marca } => format!("cache ({marca})"),
+                            crate::plan::Origen::Fuente { porque: Some(x) } => {
+                                format!("fuente — {x}")
+                            }
+                            crate::plan::Origen::Fuente { porque: None } => "fuente".into(),
+                        },
+                    )
+                })
+                .collect(),
         })
     }
+}
+
+/// **La respuesta es tan fresca como su parte más rancia.**
+///
+/// Es una función aparte porque es una regla, no un detalle: componerla de otra
+/// forma —la más nueva, o la del índice a secas— declararía una frescura que
+/// ninguna de las partes tiene.
+///
+/// Una marca que no se sabe fechar ordena **primero**, es decir, gana como la
+/// más vieja. Es la dirección conservadora: esconderla detrás de una fresca
+/// sería afirmar una frescura que nadie ha comprobado.
+pub fn mas_vieja(mut marcas: Vec<String>) -> Option<String> {
+    marcas.sort_by_key(|m| epoca(m).unwrap_or(i64::MIN));
+    marcas.into_iter().next()
 }
 
 impl Motor {
@@ -241,5 +290,48 @@ impl Motor {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mas_vieja;
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// El criterio, y la prueba falla si se coge la otra.
+    #[test]
+    fn la_marca_de_la_respuesta_es_la_mas_vieja_de_las_que_intervinieron() {
+        assert_eq!(
+            mas_vieja(v(&["2026-09-01T10:00:00Z", "2026-08-15T04:00:00Z"])),
+            Some("2026-08-15T04:00:00Z".to_string())
+        );
+        // Y no depende del orden de llegada: si dependiera, la frescura
+        // declarada seria un accidente de como se recorrieron las lecturas.
+        assert_eq!(
+            mas_vieja(v(&["2026-08-15T04:00:00Z", "2026-09-01T10:00:00Z"])),
+            Some("2026-08-15T04:00:00Z".to_string())
+        );
+    }
+
+    /// Una marca que no se sabe fechar gana como la mas vieja. La direccion
+    /// importa: al reves, un dato sin fechar se serviria con la frescura de
+    /// otro.
+    #[test]
+    fn lo_que_no_se_sabe_fechar_no_se_esconde_detras_de_lo_fresco() {
+        assert_eq!(
+            mas_vieja(v(&["2026-09-01T10:00:00Z", "snapshot-91827"])),
+            Some("snapshot-91827".to_string())
+        );
+    }
+
+    /// Sin nada materializado no hay marca, y eso NO es lo mismo que una marca
+    /// vacia: una respuesta que no lee nada materializado no tiene de que
+    /// declarar frescura.
+    #[test]
+    fn sin_nada_materializado_no_hay_marca() {
+        assert_eq!(mas_vieja(Vec::new()), None);
     }
 }

@@ -80,6 +80,20 @@ pub struct Entrada {
     /// **este campo es lo único que no gobernamos**: se transporta para que
     /// quien tenga el driver sepa qué abrir.
     pub tabla: String,
+    /// De qué fuente declarada sale esa tabla.
+    ///
+    /// Hace falta para elegir driver y resolver la credencial, y va aparte de
+    /// `tabla` por la misma razón que `source add` separó la conexión del
+    /// documento: una coordenada que llevara dentro cómo conectarse sería una
+    /// cadena de conexión escrita en un fichero publicable.
+    ///
+    /// # Y de aquí sale que leer la caché no necesite nada nuevo
+    ///
+    /// Con este campo, servirse de la caché es **cambiarle a una lectura la
+    /// fuente y el objeto**. Es lo que el ADR 0006 §3 ya decía: *«el escaneo
+    /// columnar lo hace el mismo camino que ya lee cualquier tabla del cliente:
+    /// la caché entra por la puerta que ya existe»*.
+    pub datasource: String,
 }
 
 /// Lo que se le pregunta a la caché: bajo qué se compiló el plan y qué pide.
@@ -246,6 +260,7 @@ impl Manifiesto {
                             props.dedup();
                             let mut campos = vec![
                                 ("bundle", Json::s(&e.bundle)),
+                                ("datasource", Json::s(&e.datasource)),
                                 ("entity", Json::s(&e.entidad)),
                                 ("properties", Json::Arr(props.iter().map(Json::s).collect())),
                                 ("table", Json::s(&e.tabla)),
@@ -302,6 +317,7 @@ fn entrada(n: &Node) -> Result<Entrada, String> {
         topologia: campo("topology"),
         marca: obligatorio("watermark")?,
         tabla: obligatorio("table")?,
+        datasource: obligatorio("datasource")?,
     })
 }
 
@@ -323,6 +339,7 @@ mod tests {
                 topologia: Some(TOPO.into()),
                 marca: "2026-08-31T10:00:00Z".into(),
                 tabla: "lago.cache.ventas_pedidos".into(),
+                datasource: "lago".into(),
             }],
         }
     }
@@ -499,6 +516,7 @@ mod tests {
             topologia: None,
             marca: "2026-08-31T10:00:00Z".into(),
             tabla: "lago.cache.ventas_clientes".into(),
+            datasource: "lago".into(),
         });
         let mut c = b.clone();
         c.entradas.reverse();

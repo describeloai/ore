@@ -57,6 +57,16 @@ pub struct Consulta {
     /// saltos. Con ella las claves **se computan** en local en vez de llegar de
     /// fuera, que es lo que convierte un escaneo en una búsqueda por clave.
     pub travesia: Option<Travesia>,
+    /// Cuándo se pregunta, y **por qué está aquí y no en `responder`**.
+    ///
+    /// Decidir si lo materializado está rancio necesita saberlo, y esa decisión
+    /// es de planificación: es la que decide si se abre una conexión. No rompe
+    /// la pureza del plan — el instante es una entrada más, como los atributos
+    /// del principal. Lo que la rompería sería **leerlo**, no recibirlo.
+    pub instante: Option<String>,
+    /// El `freshnessSLA` que aplique. Sin él no hay rancio: nadie declaró
+    /// cuánto se tolera, e inventarlo fallaría en una de las dos direcciones.
+    pub sla: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +102,25 @@ pub enum Rechazo {
     TravesiaNoDisponible { relacion: String },
 }
 
+/// De dónde sale una lectura.
+///
+/// Que esto sea parte del plan y no un detalle de ejecución es el punto: **una
+/// respuesta que no distingue caché de origen no se puede auditar**, y *«¿esto
+/// vino del lago o del sistema de gestión?»* es la primera pregunta de
+/// cualquiera que revise un número raro.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origen {
+    /// Del origen declarado en el binding.
+    ///
+    /// `porque` distingue tres cosas que producen la misma lectura y **no
+    /// significan lo mismo**: que no había manifiesto que consultar (`None`),
+    /// que había uno y estaba rancio, y que había uno escrito **bajo otra
+    /// regla**. La tercera es la que alguien tiene que ver.
+    Fuente { porque: Option<String> },
+    /// De la caché, con hasta cuándo era cierta.
+    Cache { marca: String },
+}
+
 /// Una petición de la fase ③: **una por (fuente, objeto), y por clave**.
 #[derive(Debug, Clone)]
 pub struct Lectura {
@@ -108,11 +137,20 @@ pub struct Lectura {
     /// Los predicados que salen de los **ámbitos** de las políticas que
     /// autorizaron: `<columna> = <valor de la reclamación>`. Viajan al origen.
     pub filtros: Vec<Filtro>,
+    /// De dónde sale esta lectura, y si es del origen, por qué no de la caché.
+    pub origen: Origen,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filtro {
     pub columna: String,
+    /// La propiedad de la que salió esa columna, en corto.
+    ///
+    /// Viaja al lado porque **la caché nombra sus columnas como las
+    /// propiedades**, así que servirse de ella exige poder reescribir el
+    /// predicado. Derivarla de la columna sería imposible: el mapeo va en un
+    /// sentido y dos propiedades pueden apuntar a la misma columna.
+    pub propiedad: String,
     /// `eq` o `gt`. Un ámbito solo produce `eq`; `gt` es de la marca de agua,
     /// que no tiene principal.
     pub operador: String,
@@ -147,6 +185,38 @@ fn tuplas(v: &[Vec<String>]) -> Json {
 }
 
 impl Lectura {
+    /// Servirse de la caché: **cambiarle a esta lectura la fuente y el objeto**.
+    ///
+    /// Nada más, y eso no es una simplificación mía — es lo que el
+    /// [ADR 0006](../../docs/decisions/0006-el-artefacto-de-topologia.md) §3
+    /// decidió sin que nadie lo leyera así: *«el escaneo columnar lo hace el
+    /// mismo camino que ya lee cualquier tabla del cliente: la caché entra por
+    /// la puerta que ya existe»*. Una tabla Iceberg en el lago del cliente es una
+    /// tabla, y ya hay un protocolo para leer tablas.
+    ///
+    /// # Por qué la proyección se vuelve la identidad
+    ///
+    /// Un binding mapea propiedad → columna **del origen**. La caché no tiene por
+    /// qué llamarlas igual, y la convención es que **la columna se llama como la
+    /// propiedad**. Dos razones: la caché la escribimos nosotros, así que
+    /// elegimos los nombres; y una tabla cuyas columnas son propiedades es
+    /// autodescriptiva y no puede desviarse de un binding que alguien edite
+    /// mañana. Con nombres del origen habría dos mapas del mismo hecho y ninguno
+    /// diría cuál manda.
+    fn desde_la_cache(&mut self, e: &ore_core::cache::Entrada, clave: &[String]) {
+        self.datasource = e.datasource.clone();
+        self.objeto = e.tabla.clone();
+        let props: Vec<String> = self.proyeccion.keys().cloned().collect();
+        self.proyeccion = props.into_iter().map(|p| (p.clone(), p)).collect();
+        self.clave_columnas = clave.to_vec();
+        for f in &mut self.filtros {
+            f.columna = f.propiedad.clone();
+        }
+        self.origen = Origen::Cache {
+            marca: e.marca.clone(),
+        };
+    }
+
     /// La petición que viaja al driver: **un fragmento del plan, no SQL**
     /// (`docs/decisions/0008-el-protocolo-del-driver.md`).
     ///
@@ -245,6 +315,22 @@ impl Plan {
                                     ),
                                 ),
                                 ("claves", tuplas(&l.claves)),
+                                // Un plan que leyera de dos sitios distintos y
+                                // saliera igual habria dejado de describir lo
+                                // que paso.
+                                (
+                                    "origen",
+                                    match &l.origen {
+                                        Origen::Cache { marca } => Json::obj([
+                                            ("de", Json::s("cache")),
+                                            ("marca", Json::s(marca.as_str())),
+                                        ]),
+                                        Origen::Fuente { porque } => Json::obj([
+                                            ("de", Json::s("fuente")),
+                                            ("porque", Json::s(porque.as_deref().unwrap_or(""))),
+                                        ]),
+                                    },
+                                ),
                                 (
                                     "claveColumnas",
                                     Json::Arr(
@@ -527,6 +613,7 @@ impl Motor {
                 };
                 filtros.push(Filtro {
                     columna: col.clone(),
+                    propiedad: corta.clone(),
                     operador: "eq".into(),
                     valor: valor.clone(),
                     ambito: a.clone(),
@@ -589,6 +676,9 @@ impl Motor {
                 clave_columnas,
                 claves: claves.clone(),
                 filtros,
+                // Del origen mientras nadie diga otra cosa: la cache se
+                // consulta despues, cuando ya estan todas y ordenadas.
+                origen: Origen::Fuente { porque: None },
             });
         }
 
@@ -621,6 +711,73 @@ impl Motor {
         }
         lecturas.sort_by(|a, b| (&a.datasource, &a.objeto).cmp(&(&b.datasource, &b.objeto)));
 
+        // ── ③ bis · LA CACHÉ ─────────────────────────────────────────────────
+        //
+        // **Después de ③ y antes de ④**, y es el único punto donde las dos cosas
+        // que hacen falta son ciertas a la vez: las lecturas ya están completas
+        // —así que se sabe qué propiedades necesita cada una— y todavía no se ha
+        // abierto nada.
+        let clave_props: Vec<String> = self
+            .paquete
+            .entity(&c.entidad)
+            .and_then(|e| e.section("primaryKey"))
+            .map(|k| {
+                k.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // La versión del índice **solo si hubo travesía**: sin ella la topología
+        // no resolvió ninguna clave, y exigir que casen dejaría la caché
+        // inservible para la mitad de los planes por una razón inventada.
+        let version = c
+            .travesia
+            .as_ref()
+            .and(self.topologia.as_ref())
+            .map(|t| t.version());
+        if let Some(m) = &self.cache {
+            let bundle = ore_core::digest::bundle(&self.paquete);
+            for l in &mut lecturas {
+                // Las de la proyección, **más las de la clave, más las de los
+                // filtros**. Las tres hacen falta y ninguna es obvia: sin la
+                // clave se tiene la tabla y no se sabe qué fila pedir, y sin la
+                // columna de un ámbito el predicado que restringe lo que el
+                // principal puede ver **no se puede aplicar** — que es la peor
+                // de las tres, porque devolvería filas de más.
+                let mut necesita: Vec<String> = l.proyeccion.keys().cloned().collect();
+                necesita.extend(clave_props.iter().cloned());
+                necesita.extend(l.filtros.iter().map(|f| f.propiedad.clone()));
+                necesita.sort();
+                necesita.dedup();
+                let v = m.consultar(&ore_core::cache::Pregunta {
+                    bundle: &bundle,
+                    topologia: version.as_deref(),
+                    entidad: &c.entidad,
+                    propiedades: &necesita,
+                    instante: c.instante.as_deref(),
+                    sla: c.sla.as_deref(),
+                });
+                match m.entradas.iter().find(|e| e.entidad == c.entidad) {
+                    Some(e) if v.sirve() => l.desde_la_cache(e, &clave_props),
+                    // Y el motivo viaja. Tres cosas distintas producen esta
+                    // misma lectura al origen —no hay caché, la hay y está
+                    // rancia, la hay y se escribió bajo otra regla— y la tercera
+                    // es la que alguien tiene que ver.
+                    _ => {
+                        l.origen = Origen::Fuente {
+                            porque: Some(v.como_texto()),
+                        }
+                    }
+                }
+            }
+            // Servirse de la caché le cambia la fuente y el objeto a una
+            // lectura, así que el orden de antes ya no vale. Se reordena por lo
+            // mismo de siempre: dos ejecuciones tienen que dar el mismo plan
+            // byte a byte, y el orden es parte de los bytes.
+            lecturas.sort_by(|a, b| (&a.datasource, &a.objeto).cmp(&(&b.datasource, &b.objeto)));
+        }
+
         // ── ④ ENSAMBLAR ──────────────────────────────────────────────────────
         //
         // Sobre flujos ya reducidos, y por la clave primaria de la entidad. Con
@@ -631,18 +788,7 @@ impl Motor {
         // esta entre lo pedido, el plan lo DICE en vez de juntar por un campo
         // vacio — que es lo que produciria una fila que mezcla dos personas.
         if lecturas.len() > 1 {
-            let clave: Vec<String> = self
-                .paquete
-                .entity(&c.entidad)
-                .and_then(|e| e.section("primaryKey"))
-                .map(|k| {
-                    k.items()
-                        .iter()
-                        .filter_map(|i| i.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            for k in &clave {
+            for k in &clave_props {
                 let cualificado = format!("{}.{k}", c.entidad);
                 if !autorizadas.contains_key(&cualificado) {
                     return Err(Rechazo::SinClaveParaEnsamblar {
@@ -653,16 +799,7 @@ impl Motor {
         }
 
         let ensamblar_por = if lecturas.len() > 1 {
-            self.paquete
-                .entity(&c.entidad)
-                .and_then(|e| e.section("primaryKey"))
-                .map(|k| {
-                    k.items()
-                        .iter()
-                        .filter_map(|i| i.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default()
+            clave_props.clone()
         } else {
             Vec::new()
         };

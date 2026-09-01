@@ -33,6 +33,11 @@ pub struct Motor {
     /// jerarquía, y lo dice— y eso es lo que permitió que M0 y M1 existieran
     /// antes que M3.
     pub topologia: Option<crate::topologia::Topologia>,
+    /// Lo que hay materializado, si se cargó. **Opcional por la misma razón que
+    /// la topología**: sin manifiesto el motor planifica igual —lo que no puede
+    /// es evitar una conexión, y lo dice en cada lectura— y eso es lo que
+    /// permite que E4 exista antes que el materializador que escribe la tabla.
+    pub cache: Option<ore_core::cache::Manifiesto>,
 }
 
 impl Motor {
@@ -64,6 +69,21 @@ impl Motor {
             ));
         }
         self.topologia = Some(t);
+        Ok(())
+    }
+
+    /// Carga un manifiesto de caché.
+    ///
+    /// **No se rechaza aquí por ser de otro bundle**, y la diferencia con el
+    /// índice es deliberada: un índice de otro bundle no se puede usar para
+    /// nada, mientras que un manifiesto de otro bundle **sí dice algo** — dice
+    /// que hay una caché y que no sirve. Rechazarlo al cargar convertiría esa
+    /// información en un silencio, y el plan diría «no había caché» cuando la
+    /// había, escrita bajo una clasificación que ya no rige.
+    pub fn cargar_cache(&mut self, ruta: &Path) -> Result<(), String> {
+        let texto = std::fs::read_to_string(ruta)
+            .map_err(|e| format!("no se pudo leer el manifiesto: {e}"))?;
+        self.cache = Some(ore_core::cache::Manifiesto::leer(&texto)?);
         Ok(())
     }
 
@@ -176,6 +196,7 @@ impl Motor {
             alcance,
             nombres,
             topologia: None,
+            cache: None,
         })
     }
 

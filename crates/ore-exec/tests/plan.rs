@@ -46,6 +46,8 @@ fn consulta(props: &[&str], claves: &[&str]) -> Consulta {
         propiedades: props.iter().map(|p| p.to_string()).collect(),
         claves: claves.iter().map(|k| vec![k.to_string()]).collect(),
         travesia: None,
+        instante: None,
+        sla: None,
     }
 }
 
@@ -129,6 +131,8 @@ fn sin_capacidades_solo_hay_busqueda_por_clave() {
         propiedades: vec!["hr.Employee.nationalId".into()],
         claves: vec![vec!["emp-7".to_string()]],
         travesia: None,
+        instante: None,
+        sla: None,
     };
 
     // Con clave, plan.
@@ -162,6 +166,8 @@ fn una_propiedad_redactada_no_llega_a_la_proyeccion() {
         propiedades: vec!["hr.Employee.nationalId".into()],
         claves: vec![vec!["emp-7".to_string()]],
         travesia: None,
+        instante: None,
+        sla: None,
     };
 
     // La política PERMITE, y aun así la columna no se pide: la máscara es
@@ -291,6 +297,8 @@ fn con_indice_la_fase_dos_produce_las_claves() {
             desde: "emp-42".into(),
             saltos: 3,
         }),
+        instante: None,
+        sla: None,
     };
 
     // Sin índice: **no es que no haya vecinos, es que no se pudo mirar**.

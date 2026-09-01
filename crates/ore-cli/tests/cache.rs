@@ -44,7 +44,7 @@ fn manifiesto(dir: &Path, bundle: &str, marca: &str) -> PathBuf {
         &ruta,
         format!(
             r#"{{"oreCache":1,"entries":[{{"bundle":"{bundle}","entity":"hr.Employee",
-               "properties":["employeeId","nationalId"],"table":"lago.cache.hr_employee",
+               "properties":["employeeId","nationalId"],"table":"lago.cache.hr_employee","datasource":"lago",
                "watermark":"{marca}"}}]}}"#
         ),
     )
