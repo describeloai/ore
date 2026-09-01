@@ -103,6 +103,20 @@ enum Command {
         /// Nombre del repositorio. Por defecto, el del directorio.
         #[arg(long)]
         name: Option<String>,
+        /// Vocabulario del que depender: `<coordenada>@<rango>`. Repetible.
+        ///
+        /// Es la salida que no inventa: en vez de escribir un retículo propio,
+        /// el repositorio **se acoge al de otro**. Declarar una dependencia es
+        /// transferir autoridad, y con ella el repo tiene clasificación desde el
+        /// minuto cero sin que nadie de dentro haya decidido nada.
+        #[arg(long, value_name = "COORDENADA@RANGO")]
+        depend: Vec<String>,
+        /// Clave con la que comprobar una firma: `<id>=<clavePublica>`. Repetible.
+        #[arg(long, value_name = "ID=CLAVE")]
+        trust: Vec<String>,
+        /// Clave de un log de transparencia: `<id>=<clavePublica>`. Repetible.
+        #[arg(long = "trust-log", value_name = "ID=CLAVE")]
+        trust_log: Vec<String>,
         #[arg(default_value = ".")]
         path: PathBuf,
     },
@@ -275,7 +289,23 @@ fn main() -> std::process::ExitCode {
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
         Command::Dev { path } => return desarrollo(path),
-        Command::Init { name, path } => return inicio::init(path, name.as_deref()),
+        Command::Init {
+            name,
+            depend,
+            trust,
+            trust_log,
+            path,
+        } => {
+            return inicio::init(
+                path,
+                &inicio::Respuestas {
+                    nombre: name.as_deref(),
+                    depende: depend,
+                    claves: trust,
+                    logs: trust_log,
+                },
+            );
+        }
         Command::Discover {
             from,
             source,
