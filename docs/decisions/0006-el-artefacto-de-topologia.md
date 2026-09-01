@@ -198,3 +198,8 @@ Y el peligro que §7.1 ya nombra es de este motor antes que de ningún otro: **r
 a que el dato cambió; reconstruir, a que la REGLA cambió.** Un efecto computado bajo una regla
 nueva sobre datos enmascarados con la vieja es *«la clase de fallo que no tiene aspecto de
 fallo»*.
+
+Ese peligro dejó de ser una advertencia el 2026-09-01: es el veredicto `ReglaDistinta` de
+`ore_core::cache`, y se comprueba con `ore cache check`. Lo que hacía falta para poder
+comprobarlo era metadato —bajo qué bundle se escribieron las filas—, que es exactamente lo que
+esta decisión dice que se posee. El alcance del motor está en [`docs/engine.md`](../engine.md).

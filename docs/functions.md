@@ -65,6 +65,11 @@ es nuestro **a propósito**, y su frescura se declara con la marca de agua en ve
 **Consecuencia práctica:** este motor no está bloqueado por almacenamiento. La caché de carga
 útil hace falta para que una función vaya **rápida**, no para que sea **correcta**.
 
+Lo que sí lo bloqueaba era otra cosa, y se vio al ir a escribir §4.1: **de las cuatro
+identidades que una propuesta lleva dentro, la de topología no existía**. El artefacto se
+construía, se distribuía y se recorría, y no tenía forma de decir cuál era. Está construido en
+[`engine.md`](engine.md) E0, junto con la mitad del tercer plano que sí es nuestra.
+
 ---
 
 ## 4. La forma: la función **no aplica, propone**
@@ -83,7 +88,7 @@ Y una `Propuesta` no lleva solo qué escribir: lleva **bajo qué se decidió**.
 | | Contesta |
 |---|---|
 | **digest del bundle** | bajo qué significado se decidió — y si sigue vigente |
-| **versión de topología** | con qué correspondencia se resolvieron las claves |
+| **versión de topología** | con qué correspondencia se resolvieron las claves — `Topologia::version`, el digest de las aristas |
 | **marcas de agua** | hasta cuándo era cierto el dato que se leyó |
 | **el `Plan`** | qué se leyó, qué se podó y **por qué** |
 
@@ -204,5 +209,7 @@ porque solo admitía un valor: *mejor un error que un campo*. Cruzar dos fuentes
 es un problema que no vamos a resolver mejor que nadie; lo que sí se puede es **decir que no se
 hace, y comprobarlo antes de escribir**.
 
-**La caché de carga útil.** Es del ADR 0006 y va por su cuenta: hace falta para la latencia, no
-para la corrección.
+**La caché de carga útil.** Es del ADR 0006 y va por su cuenta, en [`engine.md`](engine.md): hace
+falta para la latencia, no para la corrección. Lo que sí es requisito de aquí es que las dos
+identidades que una propuesta cita —el digest del bundle y **la versión de topología**—
+existan de verdad. La segunda no existía cuando se escribió esta página.

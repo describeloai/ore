@@ -45,6 +45,21 @@
 //! bytes. Es G1 otra vez, y no es cosmética — un índice que difiera entre nodos
 //! hace que dos nodos contesten distinto a la misma pregunta.
 //!
+//! # Las dos cabeceras están fuera del cuerpo, y por eso hay `version`
+//!
+//! El fichero son **tres afirmaciones**, no una, y cada una caduca por su lado:
+//!
+//! | | Contesta | Cambia cuando |
+//! |---|---|---|
+//! | digest del bundle | qué significaba | se recompila el modelo |
+//! | **cuerpo** → [`Topologia::version`] | **qué se corresponde con qué** | aparece o desaparece una arista |
+//! | marca de agua | hasta cuándo era cierto | **cada refresco** |
+//!
+//! Por eso el cuerpo se escribe aparte y se digiere aparte: la identidad de la
+//! correspondencia no puede moverse cada vez que alguien mira el reloj. Es lo
+//! que una propuesta cita como *«con qué correspondencia se resolvieron las
+//! claves»*.
+//!
 //! # Lo que v1 NO hace, y se dice
 //!
 //! **No se mapea en memoria: se lee entero.** El formato está preparado —anchuras
@@ -142,6 +157,43 @@ impl Topologia {
         out.extend_from_slice(MAGIA);
         cadena(&self.digest, &mut out);
         cadena(&self.marca, &mut out);
+        out.extend_from_slice(&self.cuerpo());
+        out
+    }
+
+    /// **La versión de la topología: el digest de sus aristas.**
+    ///
+    /// Deja fuera a propósito las dos cabeceras —contra qué bundle se construyó
+    /// y hasta cuándo era cierto— porque esta identidad contesta **una** pregunta
+    /// y las cabeceras contestan otras dos:
+    ///
+    /// | | Contesta |
+    /// |---|---|
+    /// | digest del bundle | qué significaba |
+    /// | **versión** | **qué se corresponde con qué** |
+    /// | marca de agua | hasta cuándo era cierto |
+    ///
+    /// Son los dos ejes de `05-ejecutor` §7 con el que faltaba en medio. Si la
+    /// versión incluyera la marca, refrescar sin que ninguna arista cambiase
+    /// diría *«otra correspondencia»* cuando la travesía da exactamente el mismo
+    /// conjunto de claves — y un auditor que compare dos propuestas concluiría
+    /// que cambió algo que no cambió.
+    ///
+    /// Es lo que el [ADR 0006](../../docs/decisions/0006-el-artefacto-de-topologia.md)
+    /// prometía sin nombrar: *«misma versión → mismo conjunto de claves en una
+    /// travesía»*. Hasta ahora ese renglón no tenía a qué apuntar.
+    ///
+    /// La magia va dentro del hash para separar dominios: el digest de un cuerpo
+    /// no puede coincidir con el de otra cosa que empiece por los mismos bytes.
+    pub fn version(&self) -> String {
+        let mut b = Vec::from(MAGIA);
+        b.extend_from_slice(&self.cuerpo());
+        ore_core::digest::de_bytes(&b)
+    }
+
+    /// Las aristas y nada más: la tabla de claves y las relaciones.
+    fn cuerpo(&self) -> Vec<u8> {
+        let mut out = Vec::new();
         u32le(self.claves.len() as u32, &mut out);
         for k in &self.claves {
             cadena(k, &mut out);
@@ -328,6 +380,52 @@ mod tests {
         revueltas.reverse();
         let b = Topologia::construir("sha256:x", "2026-08-31T10:00:00Z", &revueltas);
         assert_eq!(a.bytes(), b.bytes());
+    }
+
+    /// **La versión es de las aristas, no del fichero.**
+    ///
+    /// Refrescar sin que ninguna arista cambie produce otros bytes —la marca es
+    /// otra— y **la misma correspondencia**. Si la versión fuera el digest del
+    /// fichero, un auditor comparando dos propuestas vería cambiar algo que no
+    /// cambió, y la pregunta *«¿daría la travesía lo mismo?»* dejaría de tener
+    /// respuesta.
+    #[test]
+    fn refrescar_sin_aristas_nuevas_no_cambia_la_version() {
+        let a = Topologia::construir("sha256:x", "2026-08-31T10:00:00Z", &cadena_de_mando());
+        let b = Topologia::construir("sha256:x", "2026-09-01T10:00:00Z", &cadena_de_mando());
+        assert_ne!(a.bytes(), b.bytes(), "la marca sí cambia el fichero");
+        assert_eq!(a.version(), b.version());
+    }
+
+    /// Y tampoco es del bundle: el mismo grafo bajo otro significado sigue
+    /// diciendo que las mismas filas son las mismas cosas. Que sea de OTRO
+    /// bundle ya lo rechaza `cargar_topologia`, que es donde se ven las dos
+    /// cosas a la vez.
+    #[test]
+    fn la_version_no_es_la_del_bundle() {
+        let a = Topologia::construir("sha256:uno", "w", &cadena_de_mando());
+        let b = Topologia::construir("sha256:dos", "w", &cadena_de_mando());
+        assert_eq!(a.version(), b.version());
+    }
+
+    /// Lo que sí tiene que cambiarla: una arista.
+    #[test]
+    fn una_arista_de_mas_es_otra_correspondencia() {
+        let a = Topologia::construir("d", "w", &cadena_de_mando());
+        let mut mas = cadena_de_mando();
+        mas.push(("hr.Employee.manager".into(), "emp-1".into(), "ceo".into()));
+        let b = Topologia::construir("d", "w", &mas);
+        assert_ne!(a.version(), b.version());
+    }
+
+    /// Y sobrevive al ida y vuelta: si no, un consumidor que lee el artefacto
+    /// citaría una versión distinta de la que citó quien lo construyó.
+    #[test]
+    fn la_version_sobrevive_al_fichero() {
+        let a = Topologia::construir("sha256:abc", "w", &cadena_de_mando());
+        let b = Topologia::leer(&a.bytes()).expect("se lee");
+        assert_eq!(a.version(), b.version());
+        assert!(b.version().starts_with("sha256:"));
     }
 
     #[test]

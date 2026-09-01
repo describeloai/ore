@@ -42,6 +42,18 @@ fn representar(d: [u8; 32]) -> String {
     s
 }
 
+/// El digest de unos bytes cualesquiera, en la misma convención.
+///
+/// Existe porque el plano de contexto no es lo único que tiene identidad: el
+/// artefacto de topología también, y su contenido no es un documento OOS sino un
+/// fichero binario. Que las dos identidades salgan de **la misma función** no es
+/// comodidad — dos convenciones de digest en el mismo sistema son dos formas de
+/// escribir lo mismo, y la primera vez que alguien compare una con otra tendrá
+/// razón en desconfiar.
+pub fn de_bytes(b: &[u8]) -> String {
+    representar(sha256(b))
+}
+
 /// `docDigest = SHA-256( bytes_canónicos_JCS(documento) )`
 pub fn document(j: &Json) -> String {
     representar(sha256(j.jcs().as_bytes()))

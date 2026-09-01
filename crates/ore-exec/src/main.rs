@@ -46,7 +46,7 @@ fn main() -> std::process::ExitCode {
     };
     let Some(ruta) = ruta else {
         eprintln!("uso: ore-exec <validar|plan> <ruta> [banderas]");
-        eprintln!("     ore-exec index <build|traverse> <ruta> [banderas]");
+        eprintln!("     ore-exec index <build|refresh|id|traverse> <ruta> [banderas]");
         return std::process::ExitCode::from(64); // EX_USAGE
     };
 
@@ -283,6 +283,11 @@ fn indice(motor: &Motor, args: &[String]) -> std::process::ExitCode {
                         aristas.len(),
                         t.relaciones().len()
                     );
+                    // La version se imprime porque es lo que una propuesta cita
+                    // como «con que correspondencia se resolvieron las claves»,
+                    // y quien construye el indice es el unico que la sabe antes
+                    // de que nadie lo lea.
+                    eprintln!("version  {}", t.version());
                     std::process::ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -301,6 +306,25 @@ fn indice(motor: &Motor, args: &[String]) -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         },
+        Some("id") => {
+            let Some(t) = &motor.topologia else {
+                eprintln!("falta `--indice <fichero>`");
+                return std::process::ExitCode::from(64);
+            };
+            // Las tres afirmaciones del artefacto, por separado, porque caducan
+            // por separado: el bundle cuando se recompila el modelo, la version
+            // cuando aparece o desaparece una arista, y la marca en cada
+            // refresco.
+            println!("bundle   {}", t.digest);
+            println!("version  {}", t.version());
+            let marca = if t.marca.is_empty() {
+                "—"
+            } else {
+                t.marca.as_str()
+            };
+            println!("marca    {marca}");
+            std::process::ExitCode::SUCCESS
+        }
         Some("traverse") => {
             let Some(t) = &motor.topologia else {
                 eprintln!("travesia no disponible · falta `--indice <fichero>`");
@@ -317,7 +341,7 @@ fn indice(motor: &Motor, args: &[String]) -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("uso: ore-exec index <build|refresh|traverse> <ruta> [banderas]");
+            eprintln!("uso: ore-exec index <build|refresh|id|traverse> <ruta> [banderas]");
             std::process::ExitCode::from(64)
         }
     }

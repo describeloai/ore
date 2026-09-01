@@ -26,6 +26,7 @@
 //! Es lo que hace verdad la frase que vende el producto: *el paso que decide
 //! qué significan las cosas es el único que no puede filtrar nada.*
 
+pub mod cache;
 pub mod canonical;
 pub mod cedar;
 pub mod cedar_schema;
@@ -39,6 +40,7 @@ pub mod effect;
 pub mod enlace_compuesto;
 pub mod firma;
 pub mod flow;
+pub mod frescura;
 pub mod governance;
 pub mod graphql;
 pub mod impacto;

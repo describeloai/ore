@@ -1,9 +1,13 @@
 //! La CLI de ORE.
 //!
 //! Tres caras bajo un solo binario, con fronteras de confianza distintas. La
-//! columna que importa no es qué hace cada comando, sino **qué toca**: nueve de
-//! catorce no abren un socket.
+//! columna que importa no es qué hace cada comando, sino **qué toca**.
+//!
+//! De los trece comandos implementados, **diez no invocan a nada**. Los tres que
+//! delegan son `discover --source`, `lock` y `pack --sign/--log` — y ninguno de
+//! los tres abre el socket: lo abre el programa que llaman.
 
+mod cache;
 mod candado;
 mod empaquetar;
 mod fuente;
@@ -86,6 +90,41 @@ enum AccionFuente {
         description: Option<String>,
         /// Raíz del repositorio ontológico.
         #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+/// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
+/// **escribirla no es nuestro**, porque las filas viven en una tabla del lago
+/// del cliente y quien las escribe es quien tiene el driver (ADR 0006).
+#[derive(Subcommand)]
+enum AccionCache {
+    /// Contesta si lo materializado puede servir una consulta, y si no, por que.
+    Check {
+        /// El manifiesto de cache.
+        #[arg(long, value_name = "FICHERO")]
+        manifest: std::path::PathBuf,
+        /// La entidad cualificada por la que se pregunta.
+        #[arg(long, value_name = "QNAME")]
+        entity: String,
+        /// Las propiedades que la consulta necesita.
+        #[arg(long, value_name = "A,B", value_delimiter = ',')]
+        props: Vec<String>,
+        /// La version de topologia con la que el plan resolvio las claves.
+        ///
+        /// Se teclea porque leer un artefacto `ORETOPO1` es de `ore-exec`, y
+        /// `ore` no enlaza contra el. Sin esta bandera se entiende que el plan
+        /// no hizo travesia, y entonces la topologia de la cache no le concierne.
+        #[arg(long, value_name = "SHA256")]
+        topology: Option<String>,
+        /// Cuando se pregunta. **El motor no lee el reloj**: el instante llega
+        /// de fuera, igual que en una respuesta.
+        #[arg(long, value_name = "ISO8601")]
+        at: Option<String>,
+        /// El `freshnessSLA` que aplique: `30m`, `2h`, `7d`.
+        #[arg(long, value_name = "DURACION")]
+        sla: Option<String>,
+        #[arg(default_value = ".")]
         path: PathBuf,
     },
 }
@@ -243,6 +282,13 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Pregunta a la cache si lo materializado sirve, y si no, por que.
+    ///
+    /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
+    /// tabla del lago del cliente; **la afirmacion sobre bajo que se escribieron
+    /// es de aqui**, y sin ella una cache es un acelerador sin gobierno.
+    #[command(name = "cache", subcommand)]
+    Cache(AccionCache),
     /// Compila el repositorio a un Ontology Bundle firmado.
     Compile {
         #[arg(default_value = ".")]
@@ -322,6 +368,31 @@ fn main() -> std::process::ExitCode {
         } => {
             return empaquetar::pack(path, out.as_deref(), sign.as_deref(), log.as_deref());
         }
+        Command::Cache(AccionCache::Check {
+            manifest,
+            entity,
+            props,
+            topology,
+            at,
+            sla,
+            path,
+        }) => {
+            let pkg = match cargar_valido(path, false) {
+                Ok(p) => p,
+                Err(c) => return c,
+            };
+            return cache::check(
+                &cache::Consulta {
+                    manifiesto: manifest,
+                    entidad: entity,
+                    propiedades: props.clone(),
+                    topologia: topology.as_deref(),
+                    instante: at.as_deref(),
+                    sla: sla.as_deref(),
+                },
+                &pkg,
+            );
+        }
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -356,7 +427,8 @@ fn main() -> std::process::ExitCode {
         | Command::Review { .. }
         | Command::Lock { .. }
         | Command::Pack { .. }
-        | Command::Source(_) => unreachable!(),
+        | Command::Source(_)
+        | Command::Cache(_) => unreachable!(),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
