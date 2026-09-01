@@ -73,19 +73,65 @@ fn vacio() -> PathBuf {
     d
 }
 
+/// Un obtenedor **que no es el nuestro**, escrito aquí mismo.
+///
+/// Empezó siendo `ore-fetch`, el de referencia, y falló en la CI por un motivo
+/// que no tenía nada que ver con lo que mide: `cargo test --workspace` no
+/// garantiza que el binario de OTRO miembro esté enlazado cuando corren estas
+/// pruebas. El arreglo mejora la prueba — lo que el contrato dice es *«un
+/// programa del usuario en el PATH»*, y un guion de tres líneas lo demuestra
+/// mejor que un binario nuestro.
+///
+/// El de referencia tiene su propia prueba, en su propia crate, que es donde
+/// `cargo` sí garantiza que exista.
+fn obtenedor(registro: &Path) -> PathBuf {
+    // Uno por registro: las pruebas corren en paralelo, y un solo directorio
+    // compartido las hacía pisarse el obtenedor unas a otras — que es un fallo
+    // del andamio disfrazado de fallo del producto.
+    let bin = std::env::temp_dir().join(format!(
+        "ore-obtenedor-{}",
+        registro.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    let oob = registro.join("gdpr-0.1.0.oob");
+    if cfg!(windows) {
+        let p = bin.join("ore-fetch.bat");
+        std::fs::write(
+            &p,
+            format!(
+                "@echo off\r\nif not exist \"{0}\" exit /b 1\r\ntype \"{0}\"\r\n",
+                oob.display()
+            ),
+        )
+        .unwrap();
+    } else {
+        let p = bin.join("ore-fetch");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\n[ -f '{0}' ] || exit 1\ncat '{0}'\n",
+                oob.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    bin
+}
+
 fn con_registro(dir: &Path, args: &[&str], registro: &Path) -> Output {
-    // El `PATH` se pone a mano, y hace falta: `ore` busca ahí el obtenedor, y
-    // que `cargo test` deje el directorio de binarios en el `PATH` es cierto en
-    // Windows y no en todas partes. Una prueba que dependa de eso pasa aquí y
-    // falla en la CI por un motivo que no tiene nada que ver con lo que mide.
-    let bin = Path::new(env!("CARGO_BIN_EXE_ore")).parent().unwrap();
+    let bin = obtenedor(registro);
     let path = match std::env::var_os("PATH") {
         Some(p) => {
-            let mut dirs = vec![bin.to_path_buf()];
+            let mut dirs = vec![bin];
             dirs.extend(std::env::split_paths(&p));
             std::env::join_paths(dirs).unwrap()
         }
-        None => bin.as_os_str().to_owned(),
+        None => bin.into_os_string(),
     };
     Command::new(env!("CARGO_BIN_EXE_ore"))
         .args(args)
@@ -206,7 +252,7 @@ fn lo_que_falta_se_trae_y_se_queda() {
         "no lo vendorizó: {}",
         salida(&o)
     );
-    assert!(salida(&o).contains("ore-fetch"), "{}", salida(&o));
+    assert!(salida(&o).contains("vendor/"), "{}", salida(&o));
 
     // Y ya no hace falta nadie: el registro se vacía y sigue compilando.
     std::fs::remove_dir_all(&registro).unwrap();
