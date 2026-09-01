@@ -232,14 +232,35 @@ fn analizar(bytes: &str, donde: &str) -> Result<Sobre, String> {
     };
     // Se carga como paquete para digerirlo, que es lo mismo que hace quien lo
     // consume. Con dos formas de computarlo, el registro y el consumidor podrian
-    // discrepar sobre qué es el mismo fichero.
-    let dir = std::env::temp_dir().join(format!("ore-registry-{}", hash(bytes)));
+    // discrepar sobre qué es el mismo fichero, y el registro estaria afirmando
+    // algo que el compilador no confirma.
+    //
+    // El sitio de paso es UNO POR LLAMADA y no por contenido. Con el contenido
+    // como nombre, dos procesos que digirieran el mismo blob usaban el mismo
+    // directorio y el primero en terminar lo borraba mientras el otro leia: el
+    // segundo cargaba la nada y digeria `e3b0c442…`, el SHA de la cadena vacia,
+    // que es un digest perfectamente valido de un paquete que no existe. Solo
+    // pasaba a veces, que es la peor clase de fallo.
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ore-registry-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo preparar la lectura: {e}"))?;
     let tmp = dir.join("p.oob");
     std::fs::write(&tmp, bytes).map_err(|e| format!("no se pudo preparar la lectura: {e}"))?;
     let (pkg, _) = ore_core::validate::cargar_paquete(&tmp);
     let digest = ore_core::digest::package(&ore_core::link::publicables(&pkg));
     let _ = std::fs::remove_dir_all(&dir);
+
+    // Y un digest de la nada no se devuelve. Si algo salio mal al leer, decirlo
+    // es mejor que publicar un indice que afirma el paquete vacio.
+    if pkg.docs.is_empty() {
+        return Err(format!(
+            "`{donde}` no trajo ningun documento al cargarse. Un indice con el digest del              paquete vacio afirmaria algo que nadie puede usar"
+        ));
+    }
 
     Ok(Sobre {
         paquete: campo("package")?,
