@@ -253,9 +253,15 @@ fn no_encontrada(coordenada: &str, disponibles: &BTreeMap<String, (PathBuf, Stri
         "  lo que permite que su origen no tenga que ser de confianza.".to_string(),
     ];
     if !disponibles.is_empty() {
+        // Con la versión: en un fallo de rango, saber que `gdpr` está pero en
+        // `0.1.0` es justo el dato que convierte el error en una acción.
         ayuda.push(format!(
             "  En el árbol hay: {}",
-            disponibles.keys().cloned().collect::<Vec<_>>().join(", ")
+            disponibles
+                .iter()
+                .map(|(n, (_, v))| format!("{n} {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     Fallo {
@@ -282,9 +288,18 @@ fn traer_lo_que_falte(
     comprobar: bool,
 ) -> Result<Option<(Package, Vec<String>)>, Fallo> {
     let hay = miembros(pkg);
+    // Falta lo que no está **y también lo que está y se quedó corto**: subir el
+    // rango de `^0.1` a `^0.2` con la vieja vendorizada fallaba en vez de traer
+    // la nueva, así que actualizar era borrar un fichero a mano. Un ciclo de
+    // vida que solo cubre la primera vez no es un ciclo de vida.
     let faltan: Vec<&(String, bool)> = declaradas
         .iter()
-        .filter(|(c, _)| !hay.contains_key(c))
+        .filter(|(c, _)| match hay.get(c) {
+            None => true,
+            Some((_, v)) => rango_de(pkg, c)
+                .and_then(|r| satisface(v, &r))
+                .is_ok_and(|ok| !ok),
+        })
         .collect();
     if faltan.is_empty() || comprobar {
         return Ok(None);
@@ -311,9 +326,48 @@ fn traer_lo_que_falte(
                 &[],
             )
         })?;
+        // Y se retira la que había. Dos `.oob` del mismo paquete en el árbol son
+        // dos verdades sobre lo mismo, y el cargador las metería las dos: el
+        // concepto quedaría declarado dos veces y ganaría la que ordenara antes.
+        retirar_anteriores(raiz, &nombre, &ruta)?;
         traidas.push(nombre);
     }
     Ok(Some((ore_core::validate::cargar_paquete(raiz).0, traidas)))
+}
+
+/// Quita los `.oob` del mismo paquete que no sean el que se acaba de traer.
+///
+/// No se borra por nombre de fichero —que es una convención— sino por lo que el
+/// sobre **dice ser**: un `.oob` renombrado seguiría siendo el mismo paquete, y
+/// dejarlo ahí dejaría dos versiones del mismo concepto compitiendo en silencio.
+fn retirar_anteriores(raiz: &Path, nombre: &str, salvo: &Path) -> Result<(), Fallo> {
+    let Ok(entradas) = std::fs::read_dir(raiz.join(VENDOR)) else {
+        return Ok(());
+    };
+    for e in entradas.flatten() {
+        let p = e.path();
+        if p == salvo || p.extension().is_none_or(|x| x != "oob") {
+            continue;
+        }
+        let Ok(t) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let suyo = ore_core::parse::parse(&t).ok().and_then(|j| {
+            j.get("package")
+                .and_then(|(_, v)| v.as_str())
+                .map(String::from)
+        });
+        if suyo.as_deref() == Some(nombre) {
+            std::fs::remove_file(&p).map_err(|e| {
+                fallo(
+                    73,
+                    format!("no se pudo retirar `{}`: {e}", p.display()),
+                    &[],
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Ejecuta el obtenedor. La petición va por **stdin**, nunca por `argv`: lo lee

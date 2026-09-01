@@ -59,6 +59,16 @@ fn escenario(nombre: &str, rango: &str) -> PathBuf {
     dir
 }
 
+/// Empaqueta un paquete del árbol y lo deja en el registro.
+fn publicar(paquete: &Path, registro: &Path, como: &str) {
+    let o = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .args(["pack", paquete.to_str().unwrap()])
+        .output()
+        .expect("no se pudo invocar `ore`");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    std::fs::write(registro.join(como), &o.stdout).unwrap();
+}
+
 fn ore(dir: &Path, args: &[&str]) -> Output {
     con_registro(dir, args, &vacio())
 }
@@ -96,7 +106,15 @@ fn obtenedor(registro: &Path) -> PathBuf {
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&bin).unwrap();
-    let oob = registro.join("gdpr-0.1.0.oob");
+    // El de mayor version que haya, como haria un registro. Se resuelve al
+    // escribir el guion porque un `.bat` no sabe ordenar.
+    let mut ficheros: Vec<std::path::PathBuf> = std::fs::read_dir(registro)
+        .map(|e| e.flatten().map(|x| x.path()).collect())
+        .unwrap_or_default();
+    ficheros.sort();
+    let oob = ficheros
+        .pop()
+        .unwrap_or_else(|| registro.join("ninguno.oob"));
     if cfg!(windows) {
         let p = bin.join("ore-fetch.bat");
         std::fs::write(
@@ -263,6 +281,80 @@ fn una_dependencia_ausente_se_obtiene_y_se_vendoriza() {
     assert!(v.status.success(), "{}", salida(&v));
 }
 
+/// Actualizar es el resto del ciclo de vida, y no existía: con la vieja
+/// vendorizada y el rango subido, `ore lock` fallaba en vez de traer la nueva.
+/// Un ciclo que solo cubre la primera vez no es un ciclo.
+#[test]
+fn subir_el_rango_trae_la_nueva_y_retira_la_vieja() {
+    let dir = escenario("subir", "^0.1");
+    let registro = std::env::temp_dir().join("ore-registro-subir");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+    publicar(&dir.join("packages/gdpr"), &registro, "gdpr-0.1.0.oob");
+    std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
+    assert!(con_registro(&dir, &["lock"], &registro).status.success());
+    assert!(dir.join("vendor/gdpr-0.1.0.oob").exists());
+
+    // Se publica la 0.2.0 y se sube el rango.
+    let nueva = escenario("subir-v2", "^0.1");
+    let p = nueva.join("packages/gdpr/package.yaml");
+    let t = std::fs::read_to_string(&p)
+        .unwrap()
+        .replace("0.1.0", "0.2.0");
+    std::fs::write(&p, t).unwrap();
+    publicar(&nueva.join("packages/gdpr"), &registro, "gdpr-0.2.0.oob");
+    let c = dir.join("ontology.config.yaml");
+    let t = std::fs::read_to_string(&c).unwrap().replace("^0.1", "^0.2");
+    std::fs::write(&c, t).unwrap();
+
+    let o = con_registro(&dir, &["lock"], &registro);
+    assert!(o.status.success(), "{}", salida(&o));
+    assert!(
+        dir.join("vendor/gdpr-0.2.0.oob").exists(),
+        "no trajo la nueva"
+    );
+    // Y la vieja se retira: dos `.oob` del mismo paquete son dos verdades, y el
+    // cargador metería las dos.
+    assert!(
+        !dir.join("vendor/gdpr-0.1.0.oob").exists(),
+        "dejó las dos versiones en el árbol"
+    );
+    assert!(
+        con_registro(&dir, &["validate"], &registro)
+            .status
+            .success()
+    );
+}
+
+/// Un rango que el lock no satisface **no compila**. El manifiesto pedía una
+/// cosa, el lock resolvía otra, y lo que gobernaba era la clasificación vieja —
+/// en verde.
+#[test]
+fn un_rango_que_el_lock_no_resuelve_no_compila() {
+    let dir = escenario("desfasado", "^0.1");
+    let registro = std::env::temp_dir().join("ore-registro-desfasado");
+    let _ = std::fs::remove_dir_all(&registro);
+    std::fs::create_dir_all(&registro).unwrap();
+    publicar(&dir.join("packages/gdpr"), &registro, "gdpr-0.1.0.oob");
+    assert!(con_registro(&dir, &["lock"], &registro).status.success());
+    assert!(
+        con_registro(&dir, &["validate"], &registro)
+            .status
+            .success()
+    );
+
+    let c = dir.join("ontology.config.yaml");
+    let t = std::fs::read_to_string(&c).unwrap().replace("^0.1", "^0.9");
+    std::fs::write(&c, t).unwrap();
+
+    let o = con_registro(&dir, &["validate"], &registro);
+    assert!(
+        !o.status.success(),
+        "el manifiesto y el lock discrepan y pasó"
+    );
+    assert!(salida(&o).contains("OOS2013"), "{}", salida(&o));
+}
+
 /// Nada de lo que llega se cree. Un `.oob` que diga otro paquete no se escribe,
 /// venga de donde venga — que es lo que permite que el origen no tenga que ser
 /// de confianza.
@@ -305,15 +397,22 @@ spec: { owner: "team:x" }
     assert!(!dir.join("vendor").exists(), "escribió lo que no era");
 }
 
-/// Un rango que la versión del árbol no satisface no se resuelve. Escribirlo
-/// diría que se cumple algo que no se cumple, y el lock es justamente el sitio
-/// donde eso se afirma.
+/// Un rango que la versión del árbol no satisface **se pide**, y si nadie la
+/// tiene, no se escribe nada.
+///
+/// Que se pida es lo que cambió al existir el ciclo de actualización: una
+/// versión corta ya no es un callejón, es una dependencia por resolver. Lo que
+/// no cambia es lo de siempre — escribir en el lock que se cumple un rango que
+/// no se cumple sería afirmar en el único sitio donde eso se afirma.
 #[test]
 fn un_rango_que_no_se_satisface_no_se_escribe() {
     let dir = escenario("rango", "^0.2");
-    let o = ore(&dir, &["lock"]);
+    let o = ore(&dir, &["lock"]); // el registro vacío: nadie tiene la 0.2
     assert!(!o.status.success(), "resolvió un rango que no se cumple");
-    assert!(salida(&o).contains("^0.2"), "{}", salida(&o));
+    assert!(
+        !dir.join("ontology.lock").exists(),
+        "escribió un lock que no cumple el rango"
+    );
 }
 
 /// Sin dependencias no se escribe un lock. Un artefacto generado que no resuelve

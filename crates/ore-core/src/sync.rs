@@ -51,7 +51,118 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     esquema_cedar(pkg, &mut out);
     lock(pkg, &mut out);
     coincide_con_el_lock(pkg, &mut out);
+    el_rango_se_cumple(pkg, &mut out);
     out
+}
+
+/// Lo que el manifiesto **pide** y lo que el lock **resolvió** tienen que ser
+/// compatibles.
+///
+/// `OOS2013` comprobaba que cada dependencia declarada estuviera en el lock, y
+/// `coincide_con_el_lock` que el árbol fuera lo que el lock dice. Nadie comparaba
+/// las dos puntas: con `^0.2` declarado y `0.1.0` resuelto, **el build salía
+/// verde** — el manifiesto pedía una cosa, el lock resolvía otra, y la
+/// clasificación que gobernaba era la vieja.
+///
+/// Es el mismo síntoma de siempre —dos documentos generados y declarados que
+/// discrepan— así que es el mismo código.
+fn el_rango_se_cumple(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
+        return;
+    };
+    let resueltas = versiones(l);
+    if resueltas.is_empty() {
+        return;
+    }
+    for d in &pkg.docs {
+        if !matches!(d.kind, Kind::OntologyConfig | Kind::Package) {
+            continue;
+        }
+        for it in d.section("dependencies").map(|s| s.items()).unwrap_or(&[]) {
+            let (Some((k, nombre)), Some(rango)) = (
+                it.get("package"),
+                it.get("version").and_then(|(_, v)| v.as_str()),
+            ) else {
+                continue;
+            };
+            let Some(nombre) = nombre.as_str() else {
+                continue;
+            };
+            let Some(version) = resueltas.get(nombre) else {
+                continue; // ausente del lock: es `OOS2013` por la otra puerta
+            };
+            if satisface(version, rango) {
+                continue;
+            }
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2013,
+                    &d.path,
+                    format!("`{nombre}` se pide en `{rango}` y el lock resuelve `{version}`"),
+                )
+                .at(k.pos())
+                .help(
+                    "el manifiesto pide una cosa y el lock resolvió otra, así que lo que \
+                     gobierna no es lo que alguien declaró. `ore lock` lo vuelve a resolver, \
+                     y si la versión que hace falta no está, lo dirá en vez de dejarlo pasar",
+                ),
+            );
+        }
+    }
+}
+
+/// `nombre → versión` del lock.
+fn versiones(l: &crate::link::Loaded) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some((_, ps)) = l.root.get("packages") {
+        for p in ps.items() {
+            if let (Some(n), Some(v)) = (
+                p.get("name").and_then(|(_, v)| v.as_str()),
+                p.get("version").and_then(|(_, v)| v.as_str()),
+            ) {
+                out.insert(n.to_string(), v.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `^`, `~` y la versión exacta, con `0.x` estricto.
+///
+/// Un rango que no se sabe leer **se da por bueno aquí**, y es la decisión
+/// contraria a la de `ore lock`: allí se está ESCRIBIENDO una resolución y
+/// aceptar lo que no se comprueba la afirmaría; aquí se está leyendo una que ya
+/// existe, y rechazarla por no saber leer el rango rompería un paquete válido
+/// por una carencia nuestra.
+fn satisface(version: &str, rango: &str) -> bool {
+    fn partes(v: &str) -> Option<(u64, u64, u64)> {
+        let limpio = v.split(['-', '+']).next()?;
+        let mut it = limpio.split('.');
+        Some((
+            it.next()?.parse().ok()?,
+            it.next().unwrap_or("0").parse().ok()?,
+            it.next().unwrap_or("0").parse().ok()?,
+        ))
+    }
+    let r = rango.trim();
+    let Some(v) = partes(version) else {
+        return true;
+    };
+    let (op, resto) = match r.strip_prefix('^') {
+        Some(x) => ('^', x),
+        None => match r.strip_prefix('~') {
+            Some(x) => ('~', x),
+            None => ('=', r),
+        },
+    };
+    let Some(p) = partes(resto) else { return true };
+    let techo = match op {
+        '^' if p.0 == 0 => (0, p.1 + 1, 0),
+        '^' => (p.0 + 1, 0, 0),
+        '~' => (p.0, p.1 + 1, 0),
+        _ => return v == p,
+    };
+    v >= p && v < techo
 }
 
 /// **`usar(P) ⟹ digest(P) ∈ lock`** — la regla de v1alpha6.
