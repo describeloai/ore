@@ -4,6 +4,7 @@
 //! columna que importa no es qué hace cada comando, sino **qué toca**: nueve de
 //! catorce no abren un socket.
 
+mod candado;
 mod fuente;
 mod inductor;
 mod inicio;
@@ -127,6 +128,20 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Resuelve `dependencies` y escribe `ontology.lock`.
+    ///
+    /// Contra **el árbol**, no contra un registro: `ore` no sabe hablar por la
+    /// red. Un paquete se resuelve si está vendorizado como miembro del
+    /// workspace, y si no, esto falla en vez de inventar una entrada.
+    Lock {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Comprueba sin escribir. En CI hace falta saber que el lock quedó
+        /// atrás **sin** tocar el árbol: uno que se arregla solo al mirarlo no
+        /// se distingue de uno al día.
+        #[arg(long)]
+        check: bool,
+    },
     /// Cola interactiva de decisiones para lo que el descubrimiento no supo clasificar.
     ///
     /// No edita lo inducido: **vuelve a inducir** el catálogo que `discover` dejó
@@ -235,6 +250,7 @@ fn main() -> std::process::ExitCode {
             name,
         } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
         Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
+        Command::Lock { path, check } => return candado::lock(path, *check),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -267,6 +283,7 @@ fn main() -> std::process::ExitCode {
         | Command::Discover { .. }
         | Command::Report { .. }
         | Command::Review { .. }
+        | Command::Lock { .. }
         | Command::Source(_) => unreachable!(),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),

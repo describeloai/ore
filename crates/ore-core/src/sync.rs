@@ -129,7 +129,12 @@ fn declaradas(pkg: &Package) -> Vec<(String, crate::diag::Pos, std::path::PathBu
 
 fn lock(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // Sin lock no hay desincronización: hay un paquete cuyas dependencias
-    // todavía no se han resuelto, que es otro estado y otro error.
+    // todavía no se han resuelto, y eso **no es un error**. `01-package` §3.1 lo
+    // permite en voz alta —«la resolución PUEDE no estar implementada en
+    // v1alpha1, pero el campo DEBE existir en la gramática para que activarla
+    // después no sea un cambio rompedor»—, así que declarar sin resolver es un
+    // estado legítimo y no un descuido. Lo que se comprueba aquí es lo otro: un
+    // lock que existe y quedó atrás.
     let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
         return;
     };
@@ -150,8 +155,9 @@ fn lock(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 "`ontology.lock` es un artefacto generado, y este quedó atrás. Sin la \
                  entrada, la clasificación y las políticas que ese paquete aporta no entran \
                  en la compilación — y el digest del bundle describiría un artefacto que \
-                 nadie ha construido. El resolutor que escribe el lock todavía no existe: \
-                 hoy la entrada se añade a mano",
+                 nadie ha construido. `ore lock` lo reescribe: resuelve contra el árbol, \
+                 así que la coordenada tiene que ser el nombre de un paquete vendorizado \
+                 como miembro del workspace",
             ),
         );
     }
