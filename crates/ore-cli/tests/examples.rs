@@ -1,11 +1,16 @@
-//! Las ontologías de referencia de `vendor/oos/examples/` validan sin un solo
-//! diagnóstico.
+//! Lo que OOS **publica** valida sin un solo diagnóstico: `examples/` y
+//! `packages/`.
 //!
 //! # La regla
 //!
-//! **Todo lo que entra en `examples/` valida.** No hay excepciones, listas de
-//! exclusión ni ejemplos «casi». Un directorio nuevo bajo `examples/` entra en
-//! esta comprobación por existir, y si no valida, este test se pone rojo.
+//! **Todo lo que entra ahí valida.** No hay excepciones, listas de exclusión ni
+//! ejemplos «casi». Un directorio nuevo entra en esta comprobación por existir,
+//! y si no valida, este test se pone rojo.
+//!
+//! Son dos directorios y la misma regla, aunque no fallen igual de caro. Un
+//! **ejemplo** que no valida enseña una gramática que no existe; un
+//! **vocabulario** que no valida rompe a todo el que lo importe, y el fallo
+//! aparece en el repositorio de otro — que es donde nadie puede arreglarlo.
 //!
 //! El corolario importa tanto como la regla: una ontología escrita contra un
 //! lenguaje que la especificación **no** define —construcciones aplazadas,
@@ -37,41 +42,80 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Los directorios de primer nivel bajo `examples/`. Se descubren, no se
-/// enumeran: un ejemplo nuevo entra en CI por existir, que es exactamente la
-/// propiedad que se quiere.
-fn ontologias(raiz: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(raiz)
-        .expect("no se puede leer vendor/oos/examples")
+/// Las raíces validables bajo un directorio: las que tienen un
+/// `ontology.config.yaml`.
+///
+/// Se descubren y no se enumeran, y **por contenido y no por profundidad**: los
+/// ejemplos cuelgan de un nivel y los paquetes publicados de dos
+/// —`packages/regulatory/gdpr`, que espeja la coordenada con la que se
+/// importan—. Enumerar niveles habría dejado fuera al siguiente que no encajara.
+///
+/// No se desciende dentro de una raíz encontrada: un paquete miembro de un
+/// workspace se valida **con su workspace**, que es la unidad que se compila
+/// (`02-ruleset` §2.5). Validarlo suelto comprobaría otra cosa.
+fn raices(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.join("ontology.config.yaml").is_file() {
+        out.push(dir.to_path_buf());
+        return;
+    }
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut hijos: Vec<PathBuf> = entradas
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
+    hijos.sort();
+    for h in &hijos {
+        raices(h, out);
+    }
+}
+
+/// Todo lo publicable del submódulo. `packages/` puede no existir todavía —el
+/// submódulo puede ser anterior a que se publicara vocabulario— y eso no es un
+/// fallo de nadie: lo que no puede pasar es que el conjunto quede vacío sin que
+/// se note, y de eso se encarga la aserción del test.
+fn ontologias(vendor: &Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    for d in ["examples", "packages"] {
+        let sub = vendor.join(d);
+        if sub.is_dir() {
+            raices(&sub, &mut v);
+        }
+    }
     v.sort();
     v
 }
 
 #[test]
 fn los_ejemplos_validan() {
-    let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor/oos/examples")
+    let vendor = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/oos")
         .canonicalize()
         .expect(
-            "no se encuentra vendor/oos/examples — \
+            "no se encuentra vendor/oos — \
              ejecuta `git submodule update --init`",
         );
 
-    let ontologias = ontologias(&raiz);
+    let ontologias = ontologias(&vendor);
     assert!(
         !ontologias.is_empty(),
-        "no hay ninguna ontología de ejemplo en vendor/oos/examples"
+        "no hay nada que validar en vendor/oos/{{examples,packages}} — \
+         un test que no comprueba nada tiene el mismo aspecto que uno que pasa"
     );
 
     let ore = env!("CARGO_BIN_EXE_ore");
     let mut fallos = Vec::new();
 
     for dir in &ontologias {
-        let nombre = dir.file_name().unwrap().to_string_lossy().to_string();
+        // La ruta desde el submódulo, no el nombre a secas: `gdpr` a solas no
+        // dice si es un ejemplo o un paquete publicado, y no fallan igual.
+        let nombre = dir
+            .strip_prefix(&vendor)
+            .unwrap_or(dir)
+            .to_string_lossy()
+            .replace('\\', "/");
         let salida = Command::new(ore)
             .arg("validate")
             .arg(dir)
@@ -100,11 +144,12 @@ fn los_ejemplos_validan() {
     if !fallos.is_empty() {
         let mut msg = String::from("\n");
         for (nombre, texto) in &fallos {
-            msg.push_str(&format!("── examples/{nombre} ──\n{texto}\n"));
+            msg.push_str(&format!("── {nombre} ──\n{texto}\n"));
         }
         msg.push_str(&format!(
-            "\n{} de {} ontologías de ejemplo no validan.\n\
-             Un ejemplo que no valida enseña una gramática que no existe.\n",
+            "\n{} de {} ontologías publicadas no validan.\n\
+             Un ejemplo que no valida enseña una gramática que no existe; un \
+             vocabulario que no valida rompe a quien lo importe.\n",
             fallos.len(),
             ontologias.len()
         ));

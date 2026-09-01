@@ -40,6 +40,7 @@ use crate::flow;
 use crate::link::Package;
 use crate::parse::Node;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 /// Un concepto: lo que una propiedad hereda al escribir `is`.
 #[derive(Debug, Clone, Default)]
@@ -447,6 +448,35 @@ fn conjeturas(pkg: &Package, out: &mut Vec<Diagnostic>) {
 ///
 /// No se aplica a un paquete **sin entidades**, que es el caso degenerado —y
 /// legítimo— de publicar vocabulario para que otros lo importen.
+/// El directorio de cada miembro del workspace: el de su `package.yaml`.
+///
+/// Los miembros son **directorios**, y no es una convención de este motor: el
+/// esquema de `OntologyConfig` declara `workspace.members` como una lista de
+/// patrones de ruta con `packages/*` por defecto, y dice que *«el valor por
+/// defecto lo aplica el COMPILADOR al normalizar»*. Se derivan de dónde está
+/// cada `package.yaml` en vez de expandir el patrón porque el resultado es el
+/// mismo y una disposición no estándar —que es justo para lo que existe declarar
+/// `members`— sigue funcionando sin leerla.
+fn miembros(pkg: &Package) -> Vec<PathBuf> {
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter_map(|d| d.path.parent().map(Path::to_path_buf))
+        .collect()
+}
+
+/// El miembro que declara un documento: el más largo que es prefijo de su ruta.
+///
+/// El más largo y no el primero, porque un miembro puede estar dentro de otro y
+/// entonces el de dentro es el que manda.
+fn miembro_de<'a>(miembros: &'a [PathBuf], doc: &Path) -> Option<&'a Path> {
+    miembros
+        .iter()
+        .filter(|m| doc.starts_with(m))
+        .max_by_key(|m| m.components().count())
+        .map(PathBuf::as_path)
+}
+
 fn palabras_muertas(
     pkg: &Package,
     conceptos: &BTreeMap<String, Concepto>,
@@ -461,14 +491,39 @@ fn palabras_muertas(
     // silencio daría dos códigos para una situación —este aquí y `OOS9001` en
     // la entidad que no la satisface—, y este registro emite **un código por
     // síntoma, no por causa**.
+    //
+    // Y se busca en el WORKSPACE entero, que es la unidad que se compila
+    // (`02-ruleset` §2.5). Quien habla un concepto no tiene por qué estar en el
+    // paquete que lo publica: **ese es el caso normal.**
     let mut hablados: BTreeSet<String> = mapeos(pkg).into_values().collect();
     for (_, requiere) in exigencias(pkg) {
         hablados.extend(requiere);
     }
 
+    // La excepción de `02-property` §6.1 es de un **paquete** sin entidades, y
+    // un workspace no es un paquete: tiene miembros. Evaluarla sobre el árbol
+    // entero convertía la forma de publicar vocabulario en un error — un
+    // paquete de quince conceptos vendorizado junto a uno que habla dos dejaba
+    // trece `OOS9004`, y la ayuda del diagnóstico recomendaba exactamente lo
+    // que ya se había hecho. Se midió con el primer vocabulario de verdad.
+    let miembros = miembros(pkg);
+    let con_entidades: BTreeSet<&Path> = pkg
+        .entities()
+        .filter_map(|e| miembro_de(&miembros, &e.path))
+        .collect();
+
     for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
         let Some(q) = d.qname() else { continue };
         if !conceptos.contains_key(&q) || hablados.contains(&q) {
+            continue;
+        }
+        // Un concepto de un miembro que no modela nada es vocabulario
+        // publicado: quien lo importa es quien lo habla. Uno que no está en
+        // ningún miembro —suelto en la raíz del workspace— se juzga contra el
+        // workspace, que es el único paquete al que pertenece.
+        if let Some(m) = miembro_de(&miembros, &d.path)
+            && !con_entidades.contains(m)
+        {
             continue;
         }
         out.push(

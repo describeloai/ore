@@ -501,6 +501,25 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                             ),
                         ));
                     }
+                    // La otra mitad del `oneOf`, y estaba sin implementar. El
+                    // esquema exige DECLARAR LOCALMENTE o REFERENCIAR UN
+                    // CONCEPTO —v1alpha1 con `required: [type]`, v1alpha4 con el
+                    // `oneOf` entero—, y aquí solo se comprobaba que no fueran
+                    // las dos. Una propiedad sin ninguna de las dos validaba, y
+                    // el emisor de GraphQL le inventaba `String` porque no tenía
+                    // otra cosa que poner: una columna sin tipo salía en el
+                    // contrato **tipada**, que es peor que no salir.
+                    if !referencia && v.get("type").is_none() {
+                        return Some((
+                            format!("`{nombre}` no declara `type` ni `is`"),
+                            Some(
+                                "una propiedad declara su tipo localmente o referencia un \
+                                 concepto que lo pone. Sin ninguna de las dos no hay tipo, y \
+                                 lo que emite el contrato tendría que inventarlo"
+                                    .into(),
+                            ),
+                        ));
+                    }
                     if !referencia && v.get("confidence").is_some() {
                         return Some((
                             format!("`{nombre}` declara `confidence` sin `is`"),

@@ -27,6 +27,7 @@
 
 use crate::flow::{self, Lattice};
 use crate::link::{Loaded, Package};
+use crate::significado::{self, Concepto};
 use crate::types::{Type, parse_type};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -77,13 +78,18 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
     let lat = flow::lattices(pkg);
     let techo = techo(pkg, &lat)?;
     let efectivas = flow::efectivas(pkg, &lat);
+    // Los conceptos, porque una propiedad que declara `is` **no tiene tipo
+    // propio**: lo pone el concepto. Esta es la única emisión que tiene que
+    // resolverlo — ODCS transporta la referencia y no pierde nada; un SDL
+    // obliga a escribir un tipo concreto para cada campo.
+    let conceptos = significado::conceptos(pkg);
 
     // ── 1 y 2 · descartar por madurez y por clasificación ───────────────────
     let mut tipos: BTreeMap<String, Tipo> = BTreeMap::new();
     for e in pkg.entities() {
         let Some(qn) = e.qname() else { continue };
         let nombre = corto(&qn);
-        let props = propiedades_visibles(e, &qn, &efectivas, &techo, &lat)?;
+        let props = propiedades_visibles(e, &qn, &efectivas, &techo, &lat, &conceptos)?;
         // 4 · un tipo sin campos no se emite
         if props.is_empty() {
             continue;
@@ -340,6 +346,7 @@ fn propiedades_visibles(
     efectivas: &BTreeMap<String, BTreeMap<String, String>>,
     techo: &BTreeMap<String, String>,
     lat: &BTreeMap<String, Lattice>,
+    conceptos: &BTreeMap<String, Concepto>,
 ) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     let Some(props) = e.section("properties") else {
@@ -350,11 +357,32 @@ fn propiedades_visibles(
         if !cabe(efectivas.get(&format!("{qn}.{nombre}")), techo, lat) {
             continue;
         }
-        let crudo = v
-            .get("type")
-            .and_then(|(_, t)| t.as_str())
-            .unwrap_or("String");
-        out.push((nombre.to_string(), grafo(crudo)?));
+        // El tipo, o el del concepto que dice ser. Antes se caía a `String`
+        // cuando no había `type`, y una propiedad que declara `is` NUNCA lo
+        // tiene: `gdpr.dateOfBirth` es `Date` y salía `String`. Un contrato que
+        // miente sobre el tipo de un campo es peor que uno al que le falta.
+        let crudo = match v.get("type").and_then(|(_, t)| t.as_str()) {
+            Some(t) => t.to_string(),
+            None => {
+                let c = significado::mapeo(v).ok_or_else(|| {
+                    format!(
+                        "`{qn}.{nombre}` no declara `type` ni `is`, y un campo de GraphQL 
+  exige un tipo. Es `OOS1004` y lo dice `ore validate`."
+                    )
+                })?;
+                conceptos
+                    .get(&c)
+                    .and_then(|x| x.tipo.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "`{qn}.{nombre}` dice ser `{c}`, y ese concepto no está en el 
+  paquete o no declara `type`. El tipo lo pone el concepto, así que sin él 
+  no hay nada que emitir — y ponerle uno sería inventarlo."
+                        )
+                    })?
+            }
+        };
+        out.push((nombre.to_string(), grafo(&crudo)?));
     }
     // `properties` es un MAPA en la forma canónica (`90-canonical-form` §N4), y
     // un mapa se ordena por clave. Emitir en orden de aparición haría que el
