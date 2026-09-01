@@ -73,6 +73,28 @@ impl Type {
     }
 }
 
+/// Cómo se escribe un tipo ya analizado.
+///
+/// Existía `parse_type` y no existía la vuelta, y eso es un agujero en cuanto
+/// alguien tiene que **enseñar** un tipo o meterlo en una forma canónica. La
+/// invariante es que `parse_type(t.to_string()) == t` para todo tipo que se
+/// haya analizado, y hay una prueba que la ejerce sobre el conjunto cerrado
+/// entero — si no, habría dos escrituras del mismo tipo y ninguna diría cuál
+/// manda.
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Scalar(s) | Type::Imported(s) => f.write_str(s),
+            Type::List(s) => write!(f, "list<{s}>"),
+            Type::Parametric {
+                ctor,
+                unit,
+                precision,
+            } => write!(f, "{ctor}<{unit}, {precision}>"),
+        }
+    }
+}
+
 /// Por qué un tipo no es válido.
 #[derive(Debug)]
 pub enum TypeError {
@@ -404,6 +426,32 @@ fn cardinalidades(e: &Loaded, out: &mut Vec<Diagnostic>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`parse_type(t.to_string()) == t`**, sobre el conjunto cerrado entero y
+    /// las tres formas compuestas.
+    ///
+    /// Se ejerce sobre `escalares()` y no sobre una lista escrita a mano aqui
+    /// por lo mismo que `escalares()` existe: una copia envejece en silencio la
+    /// primera vez que el conjunto crezca.
+    #[test]
+    fn todo_tipo_que_se_analiza_se_puede_volver_a_escribir() {
+        let mut casos: Vec<String> = escalares().iter().map(|s| (*s).to_string()).collect();
+        casos.push("list<String>".into());
+        casos.push("Money<EUR, 2>".into());
+        casos.push("Quantity<km, 1>".into());
+        casos.push("iso.CountryAlpha2".into());
+        for c in casos {
+            let t = parse_type(&c).unwrap_or_else(|_| panic!("`{c}` tenia que analizar"));
+            assert_eq!(t.to_string(), c, "la vuelta no coincide");
+            assert_eq!(parse_type(&t.to_string()).unwrap(), t, "no es idempotente");
+        }
+        // Y la forma laxa converge en la canonica: `Quantity<km,1>` sin espacio
+        // se escribe con espacio, que es la unica de las dos que se emite.
+        assert_eq!(
+            parse_type("Quantity<km,1>").unwrap().to_string(),
+            "Quantity<km, 1>"
+        );
+    }
 
     #[test]
     fn escalares_y_paramtericos() {

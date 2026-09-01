@@ -1,0 +1,25 @@
+# El motor de vistas. **No ejecuta nada**, y eso no es una limitacion nuestra:
+# es la descripcion literal de los dos artefactos mas usados de esta categoria
+# —Apache Calcite, que no tiene ni almacenamiento ni ejecucion, y Substrait, que
+# es una especificacion sin motor—.
+#
+#   Un motor de vistas es un compilador de algebra relacional con un catalogo
+#   versionado, un modelo de capacidades y un reescritor. La ejecucion es de otro.
+#
+# Razonamiento completo y peldanos: docs/handoff-view-engine.md
+[package]
+name        = "ore-view"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El IR de vistas de ORE: algebra relacional con identidad determinista"
+
+[dependencies]
+# La forma canonica, el digest, el analizador y el vocabulario de tipos.
+#
+# Se depende de `ore-core` en vez de escribir aqui una segunda forma canonica, y
+# el motivo es el de siempre: dos definiciones de «los mismos bytes» divergen, y
+# la identidad determinista de todo el proyecto descansa en que haya una.
+ore-core = { path = "../ore-core" }

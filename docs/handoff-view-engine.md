@@ -176,13 +176,41 @@ demuestra hoy con el plan, un piso más abajo.
 
 > **Desde aquí es desechable.**
 
-### M0 · El IR
+### M0 · El IR ✅
 
-Álgebra tipada con forma canónica y digest. `Scan`, `Project`, `Filter`, `Join`, `Aggregate`,
-`Union`, `Distinct`, `Limit`, y la expresión opaca declarada.
+`crates/ore-view` — `Lee`, `Proyecta`, `Filtra`, `Une`, `Agrupa`, `Unifica`, `Distingue`,
+`Limita`, y la expresión opaca declarada. Forma canónica RFC 8785 —**la del bundle**, no una
+segunda— y digest `sha256:` con separación de dominio `OREPLAN1`.
 
-**Listo cuando:** dos declaraciones de la misma vista dan el mismo digest de plan, el plan va y
-vuelve por su serialización, y un plan con una expresión opaca **dice que lo es**.
+**Listo cuando:** dos escrituras del mismo plan dan el mismo digest, el plan va y vuelve, y un
+plan con una expresión opaca **dice que lo es**. ✅ · 19 comprobaciones.
+
+Cuatro cosas que salieron de construirlo y no estaban previstas:
+
+**El digest es del significado, no de la escritura.** La forma canónica reordena lo conmutativo
+—operandos de `Y` y `O`, ramas de `Unifica`, columnas de una proyección, pares de una junta— y
+deduplica. Lo que **no** se conmuta son los lados de una junta: en una externa no son
+conmutables, y tener dos reglas según el tipo de junta sería peor que no tener ninguna.
+
+**La vuelta no reconstruye la escritura: reconstruye la forma canónica.** Lo dijo ejecutarlo. Es
+lo correcto, y lo que hay que exigir es lo otro — que **leer la forma canónica sea un punto
+fijo**, y eso tiene su comprobación.
+
+**No hay literal `Float`.** `OOS6003` prohíbe los decimales sin comillas para que la forma
+canónica no serialice nunca una coma flotante; aquí es la misma regla. Un decimal lleva sus
+dígitos tal cual, y comparar contra un campo `Float` no cabe en v1. Mejor que no quepa a que
+quepa dando un digest distinto por máquina.
+
+**El tipado caza cuatro cosas que en un almacén no fallan hasta ejecutar** — y una de ellas no
+falla nunca: juntar dos tablas con una columna del mismo nombre, unir dos ramas que no producen
+lo mismo, **comparar tipos que solo se comparan por conversión implícita** —que no da un error,
+da cifras incorrectas— y una expresión opaca que declara leer una columna que no existe. Esa
+última es el único control que una opaca tiene, y por eso no se puede saltar: si su superficie
+declarada miente, las etiquetas dejan de fluir por donde de verdad pasan.
+
+De paso, `ore_core::types::Type` no se podía escribir de vuelta: había `parse_type` y no había
+`Display`. Ahora lo hay, con la invariante `parse_type(t.to_string()) == t` ejercida sobre el
+conjunto cerrado entero.
 
 ### M1 · El expansor
 
