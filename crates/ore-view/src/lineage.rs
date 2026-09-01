@@ -46,8 +46,8 @@
 //! en dos sitios es exactamente lo que este proyecto no hace. Se emite por
 //! columna, que es completo y es la forma que el retículo necesita.
 
-use crate::esquema::{Desajuste, esquema};
 use crate::plan::{Agregado, Expr, Nodo};
+use crate::schema::{Desajuste, esquema};
 use ore_core::json::Json;
 use std::collections::{BTreeMap, BTreeSet};
 

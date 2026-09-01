@@ -19,29 +19,38 @@
 //! se pueda mirar no hay reescritura, no hay linaje derivado, no hay reparto por
 //! capacidades y no hay incremental: solo hay cadenas de SQL.
 //!
-//! Los peldaños y lo que cada uno cuesta están en `docs/handoff-view-engine.md`.
-//! Esto es **M0** —el IR, en [`plan`] y [`esquema`]—, **M1** —el expansor, en
-//! [`catalogo`]—, **M2** —el linaje derivado del plan, en [`linaje`]— y **M3**
-//! —el retículo fluyendo por él, en [`flujo`]— y **M4** —capacidades y reparto,
-//! en [`capacidades`]—.
+//! # Las seis piezas construidas
+//!
+//! Se nombran con la terminología del sector y no con nombres propios: un
+//! ingeniero de datos tiene que poder leer esto sin traducir nada. El plano
+//! entero —con las seis que faltan— está en `docs/handoff-view-engine.md`.
+//!
+//! | Pieza | Módulo | Fase | Qué contesta |
+//! |---|---|---|---|
+//! | **Plan IR** | [`plan`] | M0 | qué se va a hacer, con identidad determinista |
+//! | **Schema Resolver** | [`schema`] | M0 | qué columnas salen y de qué tipo |
+//! | **View Expander** | [`catalog`] | M1 | una cadena de vistas es un plan |
+//! | **Lineage Analyzer** | [`lineage`] | M2 | de qué columna raíz sale cada salida, y por qué arista |
+//! | **Flow Checker** | [`flow`] | M3 | por qué esto no compila |
+//! | **Pushdown Planner** | [`capabilities`] | M4 | qué hace el origen y qué queda de residuo |
 //!
 //! # Lo que este crate no toca todavía
 //!
 //! No lee documentos OOS, no sabe qué es una entidad y no conoce el retículo. Es
-//! álgebra sobre nombres y tipos. Lo que lo conectará con el resto —M1 el
-//! expansor, M3 el flujo de etiquetas— viene después y **a propósito**: la pieza
-//! se está construyendo por su cuenta antes de decidir cómo entra.
+//! álgebra sobre nombres y tipos. Lo que lo conectará con el resto viene
+//! después y **a propósito**: la pieza se está construyendo por su cuenta antes
+//! de decidir cómo entra.
 
-pub mod capacidades;
-pub mod catalogo;
-pub mod esquema;
-pub mod flujo;
-pub mod linaje;
+pub mod capabilities;
+pub mod catalog;
+pub mod flow;
+pub mod lineage;
 pub mod plan;
+pub mod schema;
 
-pub use capacidades::{Capacidades, Peticion, Recorrido, Reparto, repartir};
-pub use catalogo::{Catalogo, Expansion, Vista};
-pub use esquema::{Desajuste, Esquema, esquema};
-pub use flujo::{Clasificacion, Fuga, Veredicto, comprobar};
-pub use linaje::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
+pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
+pub use catalog::{Catalogo, Expansion, Vista};
+pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
+pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
+pub use schema::{Desajuste, Esquema, esquema};

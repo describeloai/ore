@@ -43,7 +43,7 @@
 //! compilador —una propiedad sin clasificar no está gobernada— y usar otra aquí
 //! haría que la misma columna se clasificara distinto según quién preguntase.
 
-use crate::linaje::{Clase, Linaje, Raiz};
+use crate::lineage::{Clase, Linaje, Raiz};
 use ore_core::flow::{Axis, Lattice};
 use std::collections::BTreeMap;
 
@@ -280,7 +280,7 @@ fn empujar(fugas: &mut Vec<Fuga>, f: Fuga) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linaje::{Directa, Indirecta, linaje};
+    use crate::lineage::{Directa, Indirecta, linaje};
     use crate::plan::{Comparador, Expr, Junta, Lectura, Nodo, Valor};
     use ore_core::types::parse_type;
     use std::collections::BTreeMap;

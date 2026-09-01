@@ -214,7 +214,7 @@ conjunto cerrado entero.
 
 ### M1 · El expansor ✅
 
-`catalogo.rs`. Una vista es **un nombre y un cuerpo**, y el cuerpo es un plan cuyas hojas pueden
+`catalog.rs`. Una vista es **un nombre y un cuerpo**, y el cuerpo es un plan cuyas hojas pueden
 ser lecturas de una fuente **o [`Nodo::Referencia`] a otra vista**. Expandir es sustituirlas
 hasta que no queda ninguna.
 
@@ -244,7 +244,7 @@ dice `ColisionAlUnir`.
 
 ### M2 · El linaje, derivado del plan ✅
 
-`linaje.rs`. Calculado del IR, no observado de una ejecución, así que existe antes de que nadie
+`lineage.rs`. Calculado del IR, no observado de una ejecución, así que existe antes de que nadie
 abra nada. Vocabulario de OpenLineage tal cual —`DIRECT` con `IDENTITY`/`TRANSFORMATION`/
 `AGGREGATION`, `INDIRECT` con `JOIN`/`GROUP_BY`/`FILTER`— y emisión del facet `columnLineage`.
 
@@ -280,7 +280,7 @@ que este proyecto no hace—.
 
 ### M3 · El retículo fluye por el linaje, y se niega a compilar ✅
 
-`flujo.rs`. **El peldaño que vale dinero:** todo lo anterior lo tienen otros.
+`flow.rs`. **El peldaño que vale dinero:** todo lo anterior lo tienen otros.
 
 **Listo cuando:** una vista que expone por debajo de la clasificación de una entrada no
 compila, **y el caso `INDIRECT` falla igual**. ✅ · 52 comprobaciones en el crate.
@@ -328,7 +328,7 @@ Y una medida del propio trabajo: **el tipador de M0 rechazó tres de mis fixture
 
 ### M4 · Capacidades y reparto ✅
 
-`capacidades.rs`. `(empujado, residuo)` a partir de las capacidades declaradas.
+`capabilities.rs`. `(empujado, residuo)` a partir de las capacidades declaradas.
 
 **Listo cuando:** un plan contra un origen con `fullScan: forbidden` y sin claves se rechaza
 **sin abrir una conexión**, y uno con `predicatePushdown: [eq]` empuja el `eq` y deja el resto
@@ -473,12 +473,12 @@ flowchart TB
         MAT["materializations"]
     end
 
-    V --> EXP["View Expander<br/>catalogo.rs"]
+    V --> EXP["View Expander<br/>catalog.rs"]
     EXP --> PLAN["Plan IR<br/>plan.rs"]
 
-    PLAN --> TIP["Schema Resolver<br/>esquema.rs"]
-    PLAN --> TRZ["Lineage Analyzer<br/>linaje.rs"]
-    TRZ --> ADU["Flow Checker<br/>flujo.rs"]
+    PLAN --> TIP["Schema Resolver<br/>schema.rs"]
+    PLAN --> TRZ["Lineage Analyzer<br/>lineage.rs"]
+    TRZ --> ADU["Flow Checker<br/>flow.rs"]
     RET --> ADU
     ADU --> Q1{{"compiles?"}}
 
@@ -487,7 +487,7 @@ flowchart TB
     CRI --> COT["View Matcher<br/>view_matcher.rs"]
     COT --> Q2{{"answers it?<br/>compensation · label seal"}}
 
-    PLAN --> RPT["Pushdown Planner<br/>capacidades.rs"]
+    PLAN --> RPT["Pushdown Planner<br/>capabilities.rs"]
     CAP --> RPT
     RPT --> Q3{{"pushed · residual"}}
 
@@ -513,11 +513,11 @@ flowchart TB
 | Pieza | Módulo | Fase | Qué contesta | |
 |---|---|---|---|---|
 | **Plan IR** | `plan.rs` | M0 | *qué se va a hacer*, con identidad determinista | ✅ |
-| **Schema Resolver** | `esquema.rs` | M0 | *qué columnas salen y de qué tipo* | ✅ |
-| **View Expander** | `catalogo.rs` | M1 | *una cadena de vistas es un plan* | ✅ |
-| **Lineage Analyzer** | `linaje.rs` | M2 | *de qué columna raíz sale cada salida, y por qué arista* | ✅ |
-| **Flow Checker** | `flujo.rs` | M3 | *por qué esto no compila* | ✅ |
-| **Pushdown Planner** | `capacidades.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
+| **Schema Resolver** | `schema.rs` | M0 | *qué columnas salen y de qué tipo* | ✅ |
+| **View Expander** | `catalog.rs` | M1 | *una cadena de vistas es un plan* | ✅ |
+| **Lineage Analyzer** | `lineage.rs` | M2 | *de qué columna raíz sale cada salida, y por qué arista* | ✅ |
+| **Flow Checker** | `flow.rs` | M3 | *por qué esto no compila* | ✅ |
+| **Pushdown Planner** | `capabilities.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
 | **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ⏳ |
 | **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ⏳ |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
@@ -529,10 +529,10 @@ flowchart TB
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
-> **Sobre los ficheros:** los seis módulos construidos conservan su nombre, y no hace falta
-> tocarlos — cinco son la traducción literal de su pieza (`plan`, `esquema`, `catalogo`,
-> `linaje`, `flujo`) y el sexto, `capacidades`, es el sustantivo del que el *pushdown* depende.
-> Los seis nuevos se llaman como su pieza porque todavía no existen y sale gratis.
+> **Los ficheros dicen lo mismo que el plano.** Los seis módulos construidos se renombraron al
+> inglés el 2026-09-01 — traducción literal, sin tocar una línea de lógica— y los seis que faltan
+> se llaman como su pieza. Un plano y un árbol de ficheros que no coinciden es un sitio donde
+> equivocarse.
 
 ---
 
