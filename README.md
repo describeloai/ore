@@ -337,6 +337,7 @@ corre la CI en cada empujón, contra sistemas reales y no contra dobles:
 
 | | Contra qué | Qué caería si se rompe |
 |---|---|---|
+| `descubrimiento.sh` | un **PostgreSQL sucio** | que `discover --source` resuelve el driver en el `PATH`, le pasa la URL por stdin y analiza lo que devuelve; que de un esquema con colisión de nombres, tabla sin clave, tipo compuesto, vista y familia fechada salen **las decisiones que tienen que salir**; y que contestarlas deja un paquete que `ore validate` acepta |
 | `fuentes-reales.sh` | un **PostgreSQL** de verdad | que el driver solo pide lo proyectado, que la sesión es de solo lectura, que dos índices de la misma instantánea son idénticos, que el refresco **sustituye**, y que una consulta cruza dos familias de fuente |
 | `graphql.sh` | **`graphql-js`**, un motor ajeno | que el SDL emitido lo acepta alguien que no somos nosotros |
 
@@ -358,16 +359,57 @@ se ordenaron por riesgo retirado y describen capas del producto; la emisión las
 cruza todas: usa el compilador de la 0, el gobierno de la 2 y es lo que la 3 va
 a servir. Tenerla dentro de una fase habría obligado a elegir cuál miente.
 
-De la fase 1 existe **`source add`**, que es la parte que no tenía ninguna
-pregunta abierta: separa el secreto de la conexión, deriva lo derivable —`type`
-del esquema de la URL, el nombre de la variable del manifiesto— y **marca la
+De la fase 1 está la cadena entera: **`source add` · `discover` · `review`**.
+
+**`source add`** separa el secreto de la conexión, deriva lo derivable —`type` del
+esquema de la URL, el nombre de la variable del manifiesto— y **marca la
 residencia como decisión pendiente en vez de adivinarla desde el nombre del
 host**. No abre un socket: la sonda es introspección y va con `discover`.
 
-Lo que bloquea a `discover` no es código: **no existe todavía un vocabulario de
-conceptos publicado**. `kind: Property` solo aparece dentro de casos de
-conformidad, y sin conceptos a los que mapear, las *«cinco preguntas»* del
-criterio vuelven a ser cinco ensayos — justo lo que v1alpha4 existe para impedir.
+**`discover` son dos actos separados**, y la costura entre ellos es la decisión
+que sostiene lo demás: **leer** un catálogo y **proponer** una ontología fallan por
+separado, así que se piden por separado. El lector conoce el sistema de tipos de
+*su* fuente —una receta para BigQuery, un `ore-read-<tipo>` en el `PATH` para el
+resto—; el inductor conoce el de OOS y es puro. Y la regla que gobierna lo que
+sale: **se emite lo que es un hecho y se reporta lo que es una conjetura.** Una
+tabla es una entidad; una columna `id_cliente` que *parece* apuntar a `clientes`
+es una conjetura, y `01-package` §5 dice qué hacer con ella — marcarla, nunca
+inventarla.
+
+**`review` es la cara de esa cola**, y no edita lo inducido: **vuelve a inducir**
+el catálogo con las decisiones tomadas. Hay respuestas que no caben en una
+edición local —resolver una colisión de nombres crea dos entidades donde no había
+ninguna; unir una familia fechada borra tres ficheros y escribe uno con tres
+bindings—, así que lo que sale es siempre `inducir(catálogo, respuestas)` y
+contestar dos veces lo mismo produce el mismo paquete byte a byte. Tiene
+`--answers` porque una cola que solo se contesta a mano **no se puede probar**.
+
+### Y por qué la séptima pregunta es la que importa
+
+De las once clases de decisión, diez ordenan el modelo. Una lo **gobierna**.
+
+*«¿El mismo concepto?»* tiene dos respuestas y hacen cosas distintas. Si el
+repositorio publica vocabulario, la pregunta ofrece **candidatos con la
+clasificación que se hereda al elegirlos**, y elegir uno no escribe nada: apunta
+con `is`. Si no hay ninguno, contestar con un nombre lo **acuña** —`is` exige que
+el concepto exista, `OOS2001`, y una referencia colgando sería peor que no
+preguntar— y entonces aparece la pregunta que faltaba: **cómo se clasifica**. Un
+concepto sin etiquetas no gobierna nada, y eso no lo puede decidir el silencio.
+
+Porque la etiqueta de un concepto es la **tercera fuente** de la clasificación
+efectiva, y la clasificación efectiva es lo que poda la superficie emitida. Está
+medido de punta a punta en `pruebas-de-fuego/descubrimiento.sh`: se contesta que
+`email` es `gdpr.personalEmail` —`high`— con el techo de `contextSurface` en
+`medium`, y el campo **no está** en el SDL que un agente puede pedir. Nadie
+escribió una etiqueta en una entidad.
+
+> Contestar la séptima pregunta es lo que hace desaparecer un campo de la
+> superficie. Las otras diez ordenan el modelo; esta lo cierra.
+
+Lo que sigue faltando es **contenido**: un paquete de conceptos publicado que
+otros importen. Acuñar uno por columna repetida sigue siendo la inflación que
+`02-property` §6.2 nombra — la diferencia es que ahora hay a quién apuntar en
+cuanto alguien publica el primero.
 
 La fase 2 va a medias y conviene decir por dónde: **el criterio de éxito ya se
 cumple** —retículos, conductos, propagación y la regla de flujo son las nueve
@@ -415,8 +457,8 @@ cerrada con tres en curso ya no se sabría qué mide.
 ### v1alpha4, y por qué llegó antes que su especificación
 
 `Property`, `Interface`, `is`, `implements` y la familia `OOS9xxx` están
-implementados con `02-property` y `03-interface` **todavía sin escribir**, y no es
-un adelanto: el alcance de esa versión pide enfrentar el vocabulario a algo que lo
+implementados **antes** de que se escribieran `02-property` y `03-interface`, y no
+fue un adelanto: el alcance de esa versión pide enfrentar el vocabulario a algo que lo
 use *«antes de escribir los esquemas»*. El motor fue esa prueba, y encontró tres
 defectos que no se ven leyendo —uno de ellos con **cuatro versiones de
 antigüedad**, un `$def` que contradecía la regla de forma canónica del propio

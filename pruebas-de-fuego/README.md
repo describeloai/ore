@@ -19,12 +19,23 @@ referencia. Encontró defectos que llevaban versiones ahí, y ninguno se veía l
 un esquema puede estar *bien escrito* y ser inválido, y solo lo dice quien lo tiene
 que consumir.
 
+**`descubrimiento.sh`** tira del **eslabón vivo** de `discover`. `--from` estaba
+cubierto por once pruebas y `--source` por ninguna: el que resuelve
+`ore-read-postgres` en el `PATH`, lo ejecuta, le pasa la URL por stdin y analiza
+lo que devuelve se podía romper en silencio por cualquiera de los tres sitios. Lo
+que comprueba no es que el comando termine, sino **las decisiones que salen** de
+un esquema sucio — que contestarlas deja un paquete que `ore validate` acepta, y
+que decidir un concepto **quita el campo de la superficie emitida**: se contesta
+que `email` es `gdpr.personalEmail` —`high`—, el techo del conducto admite hasta
+`medium`, y el campo no está en el SDL. Nadie escribió una etiqueta en una
+entidad.
+
 **`fuentes-reales.sh`** ejecuta contra un PostgreSQL real lo que se midió a mano al
 construir L2 — el driver, el índice, el refresco y una consulta que cruza dos
 familias de fuente. Cada medición de esas era un `echo` en una terminal; aquí es una
 aserción.
 
-Y hay una tercera que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
+Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`
 es una dependencia y no un servicio.
 
@@ -33,6 +44,9 @@ es una dependencia y no un servicio.
 ```bash
 pruebas-de-fuego/graphql.sh          # necesita node
 pruebas-de-fuego/fuentes-reales.sh   # necesita docker
+pruebas-de-fuego/descubrimiento.sh   # necesita docker, y `ore` en el PATH
 ```
 
-Las dos las corre `ci.yml` en cada empujón, que es el punto.
+Las tres las corre `ci.yml` en cada empujón, que es el punto. Y cada una tiene
+**base de datos propia**: el lector lee todos los esquemas, así que las tablas que
+deja una prueba serían entidades de la siguiente.

@@ -86,6 +86,42 @@ jobs:
           npm install --no-save graphql
           bash pruebas-de-fuego/graphql.sh
 
+  # El eslabon vivo de `discover`. Estaba cubierto por un lado y por el otro no:
+  # once pruebas sobre `--from` y NINGUNA sobre `--source`, que es el que resuelve
+  # el driver en el PATH, le pasa la URL por stdin y analiza lo que devuelve. Los
+  # tres se podian romper en silencio, y con base de datos propia porque cada
+  # prueba de fuego tiene que ser dueña de su terreno: el lector lee TODOS los
+  # esquemas, asi que las tablas de otra prueba serian entidades de esta.
+  descubrimiento:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: descubrimiento
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: init → source add → discover --source → review → validate
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432/descubrimiento
+        run: |
+          cargo build --quiet
+          cargo build --quiet -p ore-read-postgres
+          export PATH="$PWD/target/debug:$PATH"
+          bash pruebas-de-fuego/descubrimiento.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:

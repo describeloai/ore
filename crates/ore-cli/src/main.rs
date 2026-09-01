@@ -9,6 +9,8 @@ mod inductor;
 mod inicio;
 mod lector;
 mod mcp;
+mod revision;
+mod vocabulario;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -126,7 +128,20 @@ enum Command {
         name: Option<String>,
     },
     /// Cola interactiva de decisiones para lo que el descubrimiento no supo clasificar.
-    Review,
+    ///
+    /// No edita lo inducido: **vuelve a inducir** el catálogo que `discover` dejó
+    /// al lado, esta vez con las decisiones tomadas. Por eso es puro igual que el
+    /// inductor —sin red, sin credenciales, sin driver— y por eso contestar dos
+    /// veces lo mismo produce el mismo paquete byte a byte.
+    Review {
+        /// El paquete inducido: donde `discover` escribió.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Contesta en diferido, sin terminal. Es lo que permite probar esto en
+        /// CI, y una cola que solo se contesta a mano no se prueba.
+        #[arg(long, value_name = "FICHERO")]
+        answers: Option<PathBuf>,
+    },
     /// Compara la declaración con el esquema físico real y abre un pull request.
     #[command(name = "drift-detect")]
     DriftDetect,
@@ -219,6 +234,7 @@ fn main() -> std::process::ExitCode {
             out,
             name,
         } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
+        Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -250,8 +266,8 @@ fn main() -> std::process::ExitCode {
         | Command::Init { .. }
         | Command::Discover { .. }
         | Command::Report { .. }
+        | Command::Review { .. }
         | Command::Source(_) => unreachable!(),
-        Command::Review => ("review", "1"),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
@@ -262,11 +278,30 @@ fn main() -> std::process::ExitCode {
 
     eprintln!("ore {nombre}: no implementado todavía (fase {fase})");
     eprintln!();
-    eprintln!("  Hoy existen: init, source add, discover, validate, compile, diff, export y dev.");
+    eprintln!("  Hoy existen: {}.", implementados().join(", "));
     eprintln!("  Marcador:    cargo test -p ore-cli --test conformance -- --nocapture");
 
     std::process::ExitCode::from(70) // EX_SOFTWARE
 }
+
+/// Los comandos que hoy hacen algo.
+///
+/// **Se deriva de `clap`**, que es quien sabe qué hay. La lista anterior estaba
+/// escrita a mano, era la tercera copia de la misma cosa y le faltaba `report` —
+/// que es exactamente lo que le pasa a una cuenta escrita a mano en cuanto la
+/// realidad avanza sin ella.
+fn implementados() -> Vec<String> {
+    use clap::CommandFactory as _;
+    Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .filter(|n| !SIN_IMPLEMENTAR.contains(&n.as_str()))
+        .collect()
+}
+
+/// Lo que está declarado y todavía no hace nada. Es la lista corta, y es la que
+/// encoge: un comando desaparece de aquí el día que existe.
+const SIN_IMPLEMENTAR: [&str; 6] = ["lint", "test", "plan", "promote", "drift-detect", "serve"];
 
 /// `ore validate` — nivel L0. Hermético: no abre un socket ni lee una credencial.
 fn validar(path: &std::path::Path) -> std::process::ExitCode {
@@ -389,25 +424,128 @@ fn descubrir(
             .unwrap_or_else(|| "inducido".into())
     });
 
-    let ind = inductor::inducir(&catalogo, &paquete);
-    for (rel, contenido) in &ind.ficheros {
-        let ruta = destino.join(rel);
-        if let Some(d) = ruta.parent()
-            && let Err(e) = std::fs::create_dir_all(d)
-        {
-            eprintln!("error: no se pudo crear `{}`: {e}", d.display());
-            return std::process::ExitCode::from(73); // EX_CANTCREAT
-        }
-        if let Err(e) = std::fs::write(&ruta, contenido) {
-            eprintln!("error: no se pudo escribir `{}`: {e}", ruta.display());
-            return std::process::ExitCode::from(73);
-        }
+    // El vocabulario que el repositorio ya publica. Sin esto la séptima pregunta
+    // solo sabe ofrecer «acuña uno», que es la respuesta cara y la que produce
+    // cuatro mil conceptos.
+    let voc = match raiz_del_repositorio(destino) {
+        Some(r) => vocabulario::Vocabulario::leer(&r),
+        None => vocabulario::Vocabulario::default(),
+    };
+    let ind = inductor::inducir_con(&catalogo, &paquete, &inductor::Decisiones::default(), &voc);
+    if let Err((codigo, mensaje)) = escribir_paquete(&ind, destino) {
+        eprintln!("error: {mensaje}");
+        return std::process::ExitCode::from(codigo);
     }
-    let informe_json = destino.join("discover.pending.json");
-    let _ = std::fs::write(&informe_json, inductor::informe_json(&ind).pretty());
+
+    // El catálogo, al lado de lo que produjo. No es un caché: es lo que hace que
+    // `--source` sea reproducible como `--from`, y lo que permite que `review`
+    // vuelva a inducir sin hablar con la fuente ni custodiar una credencial.
+    let catalogo_json = destino.join("discover.catalog.json");
+    if let Err(e) = std::fs::write(&catalogo_json, &texto) {
+        eprintln!(
+            "error: no se pudo escribir `{}`: {e}",
+            catalogo_json.display()
+        );
+        return std::process::ExitCode::from(73);
+    }
+    let _ = std::fs::write(revision::ruta_cola(destino), revision::cola(&ind));
 
     print!("{}", inductor::informe(&ind, destino));
+    for l in costura(destino, &catalogo) {
+        eprintln!("{l}");
+    }
     std::process::ExitCode::SUCCESS
+}
+
+/// Escribe los ficheros de una inducción bajo `destino`.
+///
+/// Lo comparten `discover` y `review` porque escriben lo mismo: el inductor dice
+/// QUÉ, y quien llama dice DÓNDE. Dos copias de este bucle serían dos sitios
+/// donde arreglar el mismo permiso denegado.
+fn escribir_paquete(
+    ind: &inductor::Induccion,
+    destino: &std::path::Path,
+) -> Result<(), (u8, String)> {
+    for (rel, contenido) in &ind.ficheros {
+        let ruta = destino.join(rel);
+        if let Some(d) = ruta.parent() {
+            std::fs::create_dir_all(d)
+                .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", d.display())))?;
+        }
+        std::fs::write(&ruta, contenido)
+            .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
+    }
+    Ok(())
+}
+
+/// El directorio que manda sobre un paquete: el primero, subiendo, que tiene un
+/// manifiesto.
+///
+/// Lo necesitan dos cosas por motivos distintos y es el mismo directorio: ahí
+/// está la fuente declarada, y ahí están los conceptos publicados que `discover`
+/// puede ofrecer. Buscarlo dos veces sería tener dos ideas de dónde empieza el
+/// repositorio.
+pub fn raiz_del_repositorio(desde: &std::path::Path) -> Option<std::path::PathBuf> {
+    // `canonicalize` exige que la ruta exista, y `--out` normalmente **no existe
+    // todavía**: se resuelve desde el ancestro más cercano que sí exista. Sin
+    // esto, subir desde una ruta relativa acaba en el directorio vacío y el
+    // repositorio parece no estar donde está.
+    let absoluto = desde
+        .ancestors()
+        .find_map(|d| std::fs::canonicalize(d).ok())
+        .or_else(|| std::env::current_dir().ok())?;
+    absoluto
+        .ancestors()
+        .find(|d| d.join("ontology.config.yaml").is_file())
+        .map(std::path::Path::to_path_buf)
+}
+
+/// El aviso de la costura: un binding referencia una fuente, y esa fuente la
+/// declara **el manifiesto del repositorio**.
+///
+/// Salió midiendo, no leyendo. `discover --out <dir fuera de un repo>` escribe
+/// bindings con `datasourceRef: crm_prod` y nada declara ese datasource, así que
+/// `ore validate` responde `OOS2004` por cada uno. Es coherente —el inductor no
+/// inventa un manifiesto— pero significa que **el camino de verdad es dentro de
+/// un repositorio**, y eso no lo decía nadie: el comando terminaba en verde y el
+/// error aparecía un paso después, lejos de su causa.
+fn costura(destino: &std::path::Path, cat: &inductor::Catalogo) -> Vec<String> {
+    let fuente = cat.fuente();
+    let manifiesto = raiz_del_repositorio(destino).map(|r| r.join("ontology.config.yaml"));
+
+    let Some(m) = manifiesto else {
+        return vec![
+            format!("aviso: nada declara la fuente `{fuente}`, y los bindings la referencian."),
+            format!(
+                "  `{}` no está dentro de un repositorio ontológico: no hay",
+                destino.display()
+            ),
+            "  `ontology.config.yaml` en ningún directorio por encima, así que".to_string(),
+            "  `ore validate` dirá OOS2004 una vez por binding.".to_string(),
+            "  `ore init` crea uno, y `ore discover --out packages/<nombre>` induce dentro."
+                .to_string(),
+        ];
+    };
+    let declarada = std::fs::read_to_string(&m)
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .map(|a| {
+            a.get("datasources")
+                .map(|(_, v)| v.items())
+                .unwrap_or(&[])
+                .iter()
+                .any(|d| d.get("name").and_then(|(_, v)| v.as_str()) == Some(fuente))
+        })
+        .unwrap_or(false);
+    if declarada {
+        return Vec::new();
+    }
+    vec![
+        format!("aviso: `{}` no declara la fuente `{fuente}`.", m.display()),
+        "  Los bindings la referencian, así que `ore validate` dirá OOS2004 por cada uno."
+            .to_string(),
+        format!("  `ore source add --name {fuente} <url>` la declara sin escribir el secreto."),
+    ]
 }
 
 /// `ore dev` — el servidor de contexto.

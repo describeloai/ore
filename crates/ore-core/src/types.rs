@@ -35,6 +35,17 @@ const ESCALARES: &[&str] = &[
     "Opaque",
 ];
 
+/// El conjunto cerrado, para quien tenga que OFRECERLO.
+///
+/// `ore review` pregunta por el tipo de una columna que el lector no supo
+/// traducir, y las opciones que ofrece son estas. Se exponen en vez de copiarse
+/// porque una lista escrita a mano en otro fichero envejece en silencio la
+/// primera vez que el conjunto crezca — que es la figura que este repositorio
+/// lleva encontrando.
+pub fn escalares() -> &'static [&'static str] {
+    ESCALARES
+}
+
 /// Un tipo ya analizado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
