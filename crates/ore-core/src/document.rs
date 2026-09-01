@@ -76,8 +76,18 @@ pub enum Kind {
     Resolution,
     /// v1alpha3. La regla que apunta.
     Ruleset,
-    /// v1alpha4. El concepto: qué ES un dato.
-    Property,
+    /// v1alpha4. **El concepto: qué ES un dato**, no una propiedad de una
+    /// entidad.
+    ///
+    /// Se llamó `Property` hasta que la pregunta llegó de fuera: *«¿nuestro
+    /// `properties` no cubre ya el tema propiedades?»*. No lo cubre —son las dos
+    /// puntas de `is:`— pero el nombre invitaba a creerlo, y el directorio
+    /// `concepts/` ya delataba la duda.
+    ///
+    /// Peor: **`Property` era dos cosas a la vez.** En Cedar es el tipo de
+    /// entidad de un CAMPO —`Property::"hr.Employee.nationalId"`— y aquí era el
+    /// concepto. Renombrar no crea una colisión: deshace la que había.
+    Concept,
     /// v1alpha4. La forma: un conjunto de entidades nombrado por lo que tienen.
     Interface,
     /// v1alpha1. La frontera que faltaba: que entra con una peticion y quien
@@ -100,7 +110,7 @@ impl Kind {
         Kind::Function,
         Kind::Resolution,
         Kind::Ruleset,
-        Kind::Property,
+        Kind::Concept,
         Kind::Interface,
         Kind::RequestPolicy,
     ];
@@ -116,7 +126,7 @@ impl Kind {
             Kind::Function => "Function",
             Kind::Resolution => "Resolution",
             Kind::Ruleset => "Ruleset",
-            Kind::Property => "Property",
+            Kind::Concept => "Concept",
             Kind::Interface => "Interface",
             Kind::RequestPolicy => "RequestPolicy",
         }
@@ -130,7 +140,7 @@ impl Kind {
         match self {
             Kind::Function | Kind::Resolution => ApiVersion::V1Alpha2,
             Kind::Ruleset => ApiVersion::V1Alpha3,
-            Kind::Property | Kind::Interface => ApiVersion::V1Alpha4,
+            Kind::Concept | Kind::Interface => ApiVersion::V1Alpha4,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -196,7 +206,7 @@ impl Kind {
             // Es la misma distinción que en `Entity`, que lleva `labels` en
             // `metadata` y otras dentro de cada propiedad sin que nadie las
             // confunda.
-            Kind::Property => &["name", "namespace", "labels", "description"],
+            Kind::Concept => &["name", "namespace", "labels", "description"],
         }
     }
 
@@ -300,7 +310,7 @@ impl Kind {
             // quince sistemas y los sinónimos de un concepto son los mismos en
             // todos. `derivedFrom` y `expression` tampoco: un correo personal
             // significa lo mismo se calcule como se calcule.
-            Kind::Property => &[
+            Kind::Concept => &[
                 "type",
                 "labels",
                 "description",
@@ -736,7 +746,7 @@ pub fn shape_rules() -> Vec<ShapeRule> {
             },
         },
         ShapeRule {
-            kind: Kind::Property,
+            kind: Kind::Concept,
             path: &["spec", "requiresGovernance"],
             check: |n| {
                 if n.items().is_empty() {
@@ -754,7 +764,7 @@ pub fn shape_rules() -> Vec<ShapeRule> {
             },
         },
         ShapeRule {
-            kind: Kind::Property,
+            kind: Kind::Concept,
             path: &["spec"],
             check: |n| {
                 n.get("type").is_none().then(|| {

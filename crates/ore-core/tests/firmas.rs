@@ -41,7 +41,7 @@ spec: { owner: "team:compliance" }
     escribir(
         &dir.join("concepts/dateOfBirth.yaml"),
         r#"apiVersion: oos.dev/v1alpha4
-kind: Property
+kind: Concept
 metadata: { name: dateOfBirth, namespace: gdpr }
 spec:
   type: Date

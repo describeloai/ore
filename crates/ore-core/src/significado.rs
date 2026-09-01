@@ -79,7 +79,7 @@ pub struct Concepto {
 /// dos semánticas, que es justo el fallo que `is` existe para no cometer.
 pub fn conceptos(pkg: &Package) -> BTreeMap<String, Concepto> {
     let mut out = BTreeMap::new();
-    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Concept) {
         let Some(q) = d.qname() else { continue };
         let tipo = d
             .section("type")
@@ -459,7 +459,7 @@ fn conjeturas(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // Y acuñar es una inferencia igual que mapear, así que un concepto cae bajo
     // la misma regla. El mecanismo no distingue las dos, y no debe: son la
     // misma clase de acto, y lo que las separa es la consecuencia.
-    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Concept) {
         let Some(c) = d.section("confidence") else {
             continue;
         };
@@ -527,7 +527,7 @@ fn palabras_muertas(
         .filter_map(|e| crate::link::miembro_de(&miembros, &e.path))
         .collect();
 
-    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Concept) {
         let Some(q) = d.qname() else { continue };
         if !conceptos.contains_key(&q) || hablados.contains(&q) {
             continue;

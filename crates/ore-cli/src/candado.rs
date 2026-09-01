@@ -883,7 +883,7 @@ fn provides_de(pkg: &Package, miembro: &Path) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for d in &pkg.docs {
         let clave = match d.kind {
-            Kind::Property => "concepts",
+            Kind::Concept => "concepts",
             Kind::Lattice => "lattices",
             Kind::ConduitPolicy => "conduits",
             Kind::Ruleset => "rulesets",

@@ -55,7 +55,7 @@ fn fuente(dir: &Path, version: &str) {
     );
     escribir(
         &dir.join("concepts/dateOfBirth.yaml"),
-        "apiVersion: oos.dev/v1alpha4\nkind: Property\n\
+        "apiVersion: oos.dev/v1alpha4\nkind: Concept\n\
          metadata: { name: dateOfBirth, namespace: gdpr }\n\
          spec:\n  type: Date\n  description: La fecha de nacimiento.\n",
     );
@@ -225,7 +225,7 @@ fn una_version_publicada_no_cambia_de_digest() {
     fuente(&otra, "0.1.0");
     escribir(
         &otra.join("concepts/email.yaml"),
-        "apiVersion: oos.dev/v1alpha4\nkind: Property\n\
+        "apiVersion: oos.dev/v1alpha4\nkind: Concept\n\
          metadata: { name: personalEmail, namespace: gdpr }\n\
          spec:\n  type: String\n  description: El correo.\n",
     );

@@ -299,7 +299,7 @@ fn subir_de_version_avanza_la_cabeza_con_prueba_de_consistencia() {
         );
         escribir(
             fuente.join("concepts/dateOfBirth.yaml"),
-            "apiVersion: oos.dev/v1alpha4\nkind: Property\n\
+            "apiVersion: oos.dev/v1alpha4\nkind: Concept\n\
              metadata: { name: dateOfBirth, namespace: gdpr }\n\
              spec:\n  type: Date\n  description: La fecha de nacimiento.\n",
         );

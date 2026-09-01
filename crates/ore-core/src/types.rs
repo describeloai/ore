@@ -158,7 +158,7 @@ fn tipos_de(e: &Loaded) -> BTreeMap<String, (Node, Option<Type>)> {
 /// referencie. Sin esto, un `type` mal escrito en un `Property` se propagaría
 /// en silencio a las quince propiedades que lo mapean.
 fn tipos_de_conceptos(pkg: &Package, out: &mut Vec<Diagnostic>) {
-    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Property) {
+    for d in pkg.docs.iter().filter(|d| d.kind == Kind::Concept) {
         let Some(t) = d.section("type") else { continue };
         let Some(s) = t.as_str() else { continue };
         if parse_type(s).is_err() {

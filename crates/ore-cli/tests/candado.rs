@@ -50,7 +50,7 @@ fn escenario(nombre: &str, rango: &str) -> PathBuf {
     escribir(
         "packages/gdpr/concepts/personalEmail.yaml",
         "apiVersion: oos.dev/v1alpha4\n\
-         kind: Property\n\
+         kind: Concept\n\
          metadata: { name: personalEmail, namespace: gdpr }\n\
          spec:\n  \
            type: String\n  \
@@ -543,7 +543,7 @@ spec:
         "packages/gdpr/concepts/dateOfBirth.yaml",
         &format!(
             r#"apiVersion: oos.dev/v1alpha4
-kind: Property
+kind: Concept
 metadata: {{ name: dateOfBirth, namespace: gdpr }}
 spec:
   type: Date

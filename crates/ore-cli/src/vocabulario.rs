@@ -114,7 +114,7 @@ impl Vocabulario {
 fn conceptos(pkg: &Package) -> Vec<Concepto> {
     pkg.docs
         .iter()
-        .filter(|d| d.kind == ore_core::document::Kind::Property)
+        .filter(|d| d.kind == ore_core::document::Kind::Concept)
         .filter_map(|d| {
             Some(Concepto {
                 qname: d.qname()?,

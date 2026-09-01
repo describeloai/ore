@@ -463,7 +463,7 @@ fn shape(pkg: &Package) -> Shape {
                     s.reglas.insert(qn, r);
                 }
             }
-            crate::document::Kind::Property => {
+            crate::document::Kind::Concept => {
                 if let Some(qn) = d.qname()
                     && let Some(spec) = d.root.get("spec").map(|(_, v)| v)
                 {

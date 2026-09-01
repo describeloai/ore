@@ -1746,7 +1746,7 @@ fn concepto_yaml(
     };
     format!(
         "apiVersion: oos.dev/v1alpha4\n\
-         kind: Property\n\
+         kind: Concept\n\
          metadata: {{ name: {nombre}, namespace: {paquete} }}\n\
          spec:\n  \
            type: {tipo}\n\
@@ -2435,7 +2435,7 @@ mod tests {
             .get("concepts/importeTotal.yaml")
             .expect("no acuñó el concepto");
         assert!(
-            c.contains("kind: Property") && c.contains("type: Decimal"),
+            c.contains("kind: Concept") && c.contains("type: Decimal"),
             "{c}"
         );
         // Y donde está el concepto NO está el tipo: el esquema lo prohíbe con un

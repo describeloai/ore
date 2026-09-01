@@ -38,7 +38,7 @@ fn escenario(nombre: &str) -> PathBuf {
     escribir(
         "concepts/personalEmail.yaml",
         "apiVersion: oos.dev/v1alpha4\n\
-         kind: Property\n\
+         kind: Concept\n\
          metadata: { name: personalEmail, namespace: gdpr }\n\
          spec:\n  \
            type: String\n  \
@@ -190,7 +190,7 @@ fn un_paquete_que_no_valida_no_se_empaqueta() {
     std::fs::write(
         dir.join("concepts/personalEmail.yaml"),
         "apiVersion: oos.dev/v1alpha4\n\
-         kind: Property\n\
+         kind: Concept\n\
          metadata: { name: personalEmail, namespace: gdpr }\n\
          spec: { clave_inventada: si }\n",
     )
@@ -222,7 +222,7 @@ fn comparar_dos_oob_da_el_mismo_informe_que_comparar_sus_arboles() {
     std::fs::write(
         despues.join("concepts/personalEmail.yaml"),
         r#"apiVersion: oos.dev/v1alpha4
-kind: Property
+kind: Concept
 metadata: { name: personalEmail, namespace: gdpr }
 spec:
   type: Integer
