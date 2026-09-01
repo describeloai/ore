@@ -481,6 +481,11 @@ impl Motor {
                             clave_columnas: Vec::new(),
                             claves: Vec::new(),
                             filtros: Vec::new(),
+                            // Siempre del origen, y no por olvido: esta lectura
+                            // es la que CONSTRUYE el indice. Servirla de una
+                            // cache seria construir la correspondencia a partir
+                            // de una materializacion que ya la dio por buena.
+                            origen: Origen::Fuente { porque: None },
                         },
                     ));
                 }
