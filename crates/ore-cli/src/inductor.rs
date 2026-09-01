@@ -656,10 +656,24 @@ pub fn inducir_con(
             entidad_yaml(nombre, paquete, t, &claves, &mapeo, &extra),
         );
         for objeto in &t.objetos {
-            ficheros.insert(
-                format!("bindings/{}.yaml", identificador(&objeto.nombre)),
-                binding_yaml(nombre, paquete, &cat.fuente, t, objeto),
+            // El nombre del fichero lleva **la entidad delante**, y no solo la
+            // tabla. Se midio perdiendo un documento: `rubix_demo_ventas.Pedidos`
+            // y `rubix_demo_ventas.pedidos` son dos tablas y daban dos ficheros
+            // que en Windows —y en macOS— SON EL MISMO. El segundo piso al
+            // primero, quedo el nombre de uno con el contenido del otro, y
+            // `PedidosLegacy` se quedo sin binding. `ore validate` salio verde,
+            // porque una entidad sin binding es legal en DRAFT.
+            //
+            // La entidad delante lo cierra sin inventar nada: los nombres de
+            // entidad ya son unicos porque **eso es lo que la decision de
+            // colision resolvio**, asi que el fichero hereda esa unicidad en vez
+            // de pedir una segunda respuesta.
+            let ruta = format!(
+                "bindings/{}__{}.yaml",
+                identificador(nombre),
+                identificador(&objeto.nombre)
             );
+            ficheros.insert(ruta, binding_yaml(nombre, paquete, &cat.fuente, t, objeto));
         }
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
@@ -1986,10 +2000,10 @@ mod tests {
         assert!(i.ficheros.contains_key("entities/Facturas.yaml"));
         assert!(
             i.ficheros
-                .contains_key("bindings/rubix_demo_ventas_facturas.yaml")
+                .contains_key("bindings/Facturas__rubix_demo_ventas_facturas.yaml")
         );
         // El nombre físico viaja ENTERO al binding: es opaco y es del origen.
-        let b = &i.ficheros["bindings/rubix_demo_ventas_facturas.yaml"];
+        let b = &i.ficheros["bindings/Facturas__rubix_demo_ventas_facturas.yaml"];
         assert!(b.contains(r#"source: "rubix_demo_ventas.facturas""#), "{b}");
     }
 
@@ -2325,8 +2339,57 @@ mod tests {
         assert!(i.ficheros.contains_key("entities/PedidosViejos.yaml"));
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Colision));
         // Y cada una conserva su nombre físico, que es del origen y es opaco.
-        let b = &i.ficheros["bindings/rubix_demo_ventas_Pedidos.yaml"];
+        let b = &i.ficheros["bindings/PedidosViejos__rubix_demo_ventas_Pedidos.yaml"];
         assert!(b.contains("targetEntity: ventas.PedidosViejos"), "{b}");
+    }
+
+    /// **Dos ficheros que solo se distinguen por las mayusculas son UN fichero**
+    /// en Windows y en macOS, y esto se midio perdiendo uno.
+    ///
+    /// `rubix_demo_ventas.Pedidos` y `rubix_demo_ventas.pedidos` daban
+    /// `bindings/rubix_demo_ventas_Pedidos.yaml` y su gemelo en minusculas: dos
+    /// claves distintas en memoria y **la misma ruta en disco**. El segundo piso
+    /// al primero, quedo el nombre de uno con el contenido del otro, y una de las
+    /// dos entidades se quedo sin binding. `ore validate` salio verde, porque una
+    /// entidad sin binding es legal en DRAFT — el peor final posible.
+    ///
+    /// La entidad delante lo cierra sin pedir una respuesta nueva: esos nombres
+    /// ya son unicos porque **es lo que la decision de colision resolvio**.
+    #[test]
+    fn dos_tablas_que_solo_difieren_en_mayusculas_dan_dos_ficheros() {
+        let i = con(&[(
+            "colision/Pedidos",
+            Respuesta::Mapa(BTreeMap::from([
+                (
+                    "rubix_demo_ventas.pedidos".to_string(),
+                    "Pedidos".to_string(),
+                ),
+                (
+                    "rubix_demo_ventas.Pedidos".to_string(),
+                    "PedidosViejos".to_string(),
+                ),
+            ])),
+        )]);
+        let rutas: Vec<&String> = i
+            .ficheros
+            .keys()
+            .filter(|k| k.starts_with("bindings/"))
+            .collect();
+        for (n, a) in rutas.iter().enumerate() {
+            for b in rutas.iter().skip(n + 1) {
+                assert!(
+                    !a.eq_ignore_ascii_case(b),
+                    "`{a}` y `{b}` son el mismo fichero en un sistema que no                      distingue mayusculas, asi que uno de los dos se pierde"
+                );
+            }
+        }
+        // Y las dos de la colision estan, cada una con su entidad delante.
+        for r in [
+            "bindings/Pedidos__rubix_demo_ventas_pedidos.yaml",
+            "bindings/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
+        ] {
+            assert!(i.ficheros.contains_key(r), "falta {r}: {rutas:?}");
+        }
     }
 
     /// Una vista que resulta ser un informe no es una entidad, y dejar de
@@ -2393,14 +2456,20 @@ mod tests {
             "{:?}",
             i.ficheros.keys()
         );
-        assert!(i.ficheros.contains_key("bindings/public_pedidos_2023.yaml"));
-        assert!(i.ficheros.contains_key("bindings/public_pedidos_2024.yaml"));
-        let viejo = &i.ficheros["bindings/public_pedidos_2023.yaml"];
+        assert!(
+            i.ficheros
+                .contains_key("bindings/Pedidos__public_pedidos_2023.yaml")
+        );
+        assert!(
+            i.ficheros
+                .contains_key("bindings/Pedidos__public_pedidos_2024.yaml")
+        );
+        let viejo = &i.ficheros["bindings/Pedidos__public_pedidos_2023.yaml"];
         assert!(
             !viejo.contains("canal"),
             "atribuyó una columna que no está ahí:\n{viejo}"
         );
-        assert!(i.ficheros["bindings/public_pedidos_2024.yaml"].contains("canal"));
+        assert!(i.ficheros["bindings/Pedidos__public_pedidos_2024.yaml"].contains("canal"));
         // La unión conserva la columna nueva: perderla sería perder un hecho.
         assert!(i.ficheros["entities/Pedidos.yaml"].contains("canal"));
     }

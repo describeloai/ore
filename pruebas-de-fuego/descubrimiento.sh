@@ -222,8 +222,8 @@ dice packages/ventas/package.yaml 'team:datos' "la segunda pasada perdio el duen
 # Unir una familia es UNA entidad servida desde N tablas, que es N bindings:
 # lo que el ejecutor ya sabe federar.
 dice packages/ventas/entities/Pedidos.yaml 'name: Pedidos' "no unio la familia"
-[ -e packages/ventas/bindings/public_pedidos.yaml ]      || falla "falta el binding de la hermana viva"
-[ -e packages/ventas/bindings/public_pedidos_2024.yaml ] || falla "falta el binding de la hermana fechada"
+[ -e packages/ventas/bindings/Pedidos__public_pedidos.yaml ]      || falla "falta el binding de la hermana viva"
+[ -e packages/ventas/bindings/Pedidos__public_pedidos_2024.yaml ] || falla "falta el binding de la hermana fechada"
 
 # Apuntar a un concepto publicado NO escribe una copia: acunar lo que ya existe
 # es la inflacion por la otra puerta. Se apunta, y se hereda su clasificacion.
