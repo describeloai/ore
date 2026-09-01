@@ -186,7 +186,7 @@ impl Topologia {
     /// La magia va dentro del hash para separar dominios: el digest de un cuerpo
     /// no puede coincidir con el de otra cosa que empiece por los mismos bytes.
     pub fn version(&self) -> String {
-        let mut b = Vec::from(MAGIA);
+        let mut b = MAGIA.to_vec();
         b.extend_from_slice(&self.cuerpo());
         ore_core::digest::de_bytes(&b)
     }
