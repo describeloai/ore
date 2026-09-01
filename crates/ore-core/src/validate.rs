@@ -327,9 +327,18 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
 /// una operación.
 pub fn cargar_paquete(root: &Path) -> (crate::link::Package, Vec<Diagnostic>) {
     let mut ficheros = Vec::new();
-    let fuera = excluidos(root);
-    recolectar(root, root, &fuera, &mut ficheros);
-    ficheros.sort();
+    // Un `.oob` es un paquete entero dentro de un fichero, así que también es
+    // una **raíz** y no solo un miembro de un árbol. `ore diff` pregunta qué
+    // cambia entre lo que tienes y lo que vendría, y lo que vendría se publica
+    // como `.oob`: exigir un directorio obligaba a desempaquetarlo a mano antes
+    // de poder preguntar, que es justo el paso que la forma canónica evita.
+    if root.extension().is_some_and(|x| x == "oob") {
+        ficheros.push(root.to_path_buf());
+    } else {
+        let fuera = excluidos(root);
+        recolectar(root, root, &fuera, &mut ficheros);
+        ficheros.sort();
+    }
 
     let mut diags = Vec::new();
     let mut cargados = Vec::new();

@@ -195,6 +195,10 @@ enum Command {
     ///
     /// Es el único comando que toma DOS entradas: la clasificación de un cambio
     /// no es una propiedad de un paquete, es una relación entre dos.
+    ///
+    /// Cada entrada es un árbol **o** un `.oob`, y se pueden mezclar: comparar
+    /// lo que tienes con lo que vendría es la pregunta entera de una
+    /// actualización, y lo que vendría se publica empaquetado.
     Diff { before: PathBuf, after: PathBuf },
     /// Muestra el delta semántico antes de aplicarlo.
     Plan {
@@ -600,19 +604,33 @@ fn desarrollo(path: &std::path::Path) -> std::process::ExitCode {
     }
 }
 
+/// Lo que se puede cargar como paquete: un árbol, o un `.oob` que ya lo lleva
+/// entero dentro.
+fn es_paquete(p: &std::path::Path) -> bool {
+    p.is_dir() || (p.is_file() && p.extension().is_some_and(|x| x == "oob"))
+}
+
 /// `ore diff` — la familia `OOS5xxx`.
 ///
-/// Igual de hermético que `validate`: compara dos árboles de ficheros. Que el
-/// carácter rompedor de un cambio **se compute** en lugar de afirmarse es
-/// exactamente lo que hace que la versión sea una comprobación y no una
-/// promesa.
+/// Igual de hermético que `validate`: compara dos paquetes, y le da igual en qué
+/// forma vengan —un árbol o un `.oob`—, porque la comparación es entre sus
+/// formas canónicas y esas no saben de contenedores. Que el carácter rompedor de
+/// un cambio **se compute** en lugar de afirmarse es exactamente lo que hace que
+/// la versión sea una comprobación y no una promesa.
 ///
 /// El código de salida distingue las dos cosas que a un CI le importan por
 /// separado: `0` compatible, `1` hay cambios rompedores.
 fn diferir(antes: &std::path::Path, despues: &std::path::Path) -> std::process::ExitCode {
     for p in [antes, despues] {
-        if !p.is_dir() {
-            eprintln!("error: `{}` no es un directorio de paquete", p.display());
+        // Un directorio **o** un `.oob`: un paquete es un paquete, y el `.oob`
+        // es la forma en que un paquete viaja. La pregunta entera de una
+        // actualización —qué me rompe la versión que vendría— se hace contra lo
+        // que se publica, no contra un árbol que quien consume no tiene.
+        if !es_paquete(p) {
+            eprintln!(
+                "error: `{}` no es un paquete: ni un directorio ni un `.oob`",
+                p.display()
+            );
             return std::process::ExitCode::from(66); // EX_NOINPUT
         }
     }

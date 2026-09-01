@@ -200,6 +200,68 @@ fn un_paquete_que_no_valida_no_se_empaqueta() {
     assert!(todo(&o).contains("no valida"), "{}", todo(&o));
 }
 
+/// El hermano de `el_contenedor_no_cambia_la_identidad`, sobre la otra pregunta
+/// que se le hace a un paquete: **el contenedor tampoco cambia el veredicto.**
+///
+/// Comparar los dos `.oob` da byte a byte el mismo informe que comparar los dos
+/// árboles de los que salieron, y tiene que darlo por construcción: `ore diff`
+/// compara formas canónicas, y un `.oob` **es** la forma canónica.
+///
+/// Importa porque es la única versión de la pregunta que alguien puede hacerse
+/// de verdad. Quien consume no tiene el árbol de quien publica —tiene lo que se
+/// publicó—, así que un `diff` que solo aceptara directorios contestaba *«qué me
+/// rompe esta actualización»* únicamente a quien ya no necesitaba preguntarlo.
+#[test]
+fn comparar_dos_oob_da_el_mismo_informe_que_comparar_sus_arboles() {
+    let antes = escenario("diff-antes");
+    let despues = std::env::temp_dir().join("ore-pack-diff-despues");
+    let _ = std::fs::remove_dir_all(&despues);
+    copiar(&antes, &despues);
+    // Un cambio rompedor de verdad, no una reordenación: quien tenga
+    // `personalEmail` tipada como texto deja de compilar.
+    std::fs::write(
+        despues.join("concepts/personalEmail.yaml"),
+        r#"apiVersion: oos.dev/v1alpha4
+kind: Property
+metadata: { name: personalEmail, namespace: gdpr }
+spec:
+  type: Integer
+  description: La direccion de correo de una persona fisica.
+"#,
+    )
+    .unwrap();
+
+    let empaquetar = |dir: &Path, nombre: &str| {
+        let oob = std::env::temp_dir().join(nombre);
+        let o = ore(&["pack", dir.to_str().unwrap(), "-o", oob.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", todo(&o));
+        oob
+    };
+    let a = empaquetar(&antes, "ore-pack-diff-antes.oob");
+    let b = empaquetar(&despues, "ore-pack-diff-despues.oob");
+
+    let arboles = ore(&["diff", antes.to_str().unwrap(), despues.to_str().unwrap()]);
+    let paquetes = ore(&["diff", a.to_str().unwrap(), b.to_str().unwrap()]);
+
+    // Que el informe diga algo, primero: dos informes vacíos también serían
+    // iguales, y no demostrarían nada.
+    assert!(
+        stdout(&arboles).contains("OOS5002") && stdout(&arboles).contains("\"major\""),
+        "{}",
+        todo(&arboles)
+    );
+    assert_eq!(
+        stdout(&arboles),
+        stdout(&paquetes),
+        "el mismo cambio da un veredicto distinto según venga en árbol o en `.oob`"
+    );
+    assert_eq!(
+        arboles.status.code(),
+        paquetes.status.code(),
+        "y el código de salida es lo que lee un CI"
+    );
+}
+
 fn copiar(de: &Path, a: &Path) {
     std::fs::create_dir_all(a).unwrap();
     for e in std::fs::read_dir(de).unwrap().flatten() {

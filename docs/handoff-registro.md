@@ -99,10 +99,13 @@ existe.** Publicar y consumir por primera vez funcionan; lo que pasa después, n
 **Listo cuando:** subir `^0.1` a `^0.2` trae la nueva, reescribe el lock, retira la vieja, y
 declarar un rango que el lock no satisface **no compila**.
 
-> **Hecho** — dos de tres. Una versión corta ya no es un callejón sino una dependencia por
-> resolver: se pide, se verifica y se vendoriza, y la anterior se retira **por lo que su sobre
-> dice ser** y no por el nombre del fichero. Y un rango que el lock no satisface es `OOS2013`,
-> sin código nuevo. Queda `ore diff` sobre un `.oob`, que es lo que P1 necesita.
+> **Hecho.** Una versión corta ya no es un callejón sino una dependencia por resolver: se pide,
+> se verifica y se vendoriza, y la anterior se retira **por lo que su sobre dice ser** y no por
+> el nombre del fichero. Un rango que el lock no satisface es `OOS2013`, sin código nuevo. Y
+> `ore diff` acepta un `.oob` donde acepta un directorio, mezclados si hace falta: comparar dos
+> `.oob` da **byte a byte** el mismo informe que comparar los dos árboles de los que salieron,
+> que es la misma propiedad que ya tenía el digest —el contenedor no cambia la identidad—
+> aplicada al veredicto. P1 ya tiene de dónde tirar.
 
 **Por qué primero:** es la única tarea que puede cambiar todo lo demás. Un vocabulario que no
 se puede actualizar no se adopta, y entonces la firma, el log y el registro decoran algo que
@@ -196,7 +199,13 @@ nueva y un aviso**, no borrar el pasado.
 
 ## 4. Deriva encontrada de paso
 
-- `ore diff` acepta directorios y **el resto del motor ya acepta un `.oob`** desde que el
-  cargador lo abre. Es el único comando que se quedó atrás.
-- El aviso de `no_encontrada` en `candado.rs` enumera lo que hay en el árbol, y **no dice la
-  versión** — que en un fallo de rango es justo el dato que falta.
+- ~~`ore diff` acepta directorios y **el resto del motor ya acepta un `.oob`** desde que el
+  cargador lo abre. Es el único comando que se quedó atrás.~~ Resuelto en la raíz y no en el
+  comando: cargar un paquete admite las dos formas, así que ninguno de los que vengan volverá
+  a quedarse atrás por separado.
+- ~~El aviso de `no_encontrada` en `candado.rs` enumera lo que hay en el árbol, y **no dice la
+  versión** — que en un fallo de rango es justo el dato que falta.~~ Resuelto.
+- La especificación dice que el contenedor no cambia la **identidad**, y no dice que tampoco
+  cambia lo que una herramienta **concluye** sobre el paquete. Hoy es cierto por construcción
+  —se comparan formas canónicas— y por eso vale la pena escribirlo antes de que alguien
+  implemente un motor donde no lo sea.
