@@ -278,13 +278,53 @@ juicio de gobierno, y aquí no hay retículo: es de M3— y el array `dataset` d
 indirectas de todo el conjunto —es una compactación, y tener el mismo hecho en dos sitios es lo
 que este proyecto no hace—.
 
-### M3 · El retículo fluye por el linaje, y se niega a compilar
+### M3 · El retículo fluye por el linaje, y se niega a compilar ✅
 
-**El peldaño que vale dinero.** Todo lo anterior lo tienen otros.
+`flujo.rs`. **El peldaño que vale dinero:** todo lo anterior lo tienen otros.
 
 **Listo cuando:** una vista que expone por debajo de la clasificación de una entrada no
-compila, **y el caso `INDIRECT` falla igual** — filtrar por una columna `critical` y exponer el
-resultado a un conducto `medium` tiene que ser un error, o la mitad de §4 es decorativa.
+compila, **y el caso `INDIRECT` falla igual**. ✅ · 52 comprobaciones en el crate.
+
+```text
+`cuanto` no compila
+  ← lago·ventas.pedidos.nif  por INFLUENCIA (Filtro)
+  gdpr.sensitivity del origen    : critical
+  gdpr.sensitivity de esta vista : medium
+```
+
+`nif` **no sale** en el resultado: solo se filtra por él. En control de flujo de información eso
+es un **flujo implícito**, y el tratamiento clásico —Denning— es que la etiqueta de la condición
+se une a todo lo que se computa bajo ella. Aquí es literal: una arista `INDIRECTO` clasifica
+igual que una `DIRECTO`.
+
+Se podría argumentar que un flujo implícito filtra *menos*. **No tenemos el argumento
+cuantitativo**, y aflojar sin él sería aflojar por comodidad en la dirección insegura. Lo que
+hace vivible la regla estricta no es relajarla: es **desclasificar explícitamente**, que es lo
+que una máscara de `Ruleset` ya hace en OOS.
+
+**Y hay una cosa que no habría acertado solo**, que estaba escrita en `ore_core::flow::Axis`
+desde antes que esta pieza:
+
+| Eje | Pregunta | Combina | Viola si |
+|---|---|---|---|
+| **confidencialidad** | *¿cuánto daño si esto se filtra?* | `max` | la salida sale **por encima** de lo autorizado |
+| **integridad** | *¿cuánto daño si esto es falso?* | `min` | la salida queda **por debajo** de lo exigido |
+
+Con `max` en los dos, una vista que junta un dato fiable con uno dudoso **parecería fiable**.
+Por eso el retículo se reutiliza entero en vez de redefinirlo: la regla ya estaba escrita, y una
+segunda copia habría divergido justo aquí. Hay una prueba que pasa **el mismo par de etiquetas**
+por los dos ejes y comprueba que salen al revés.
+
+Tres decisiones más, todas en la dirección de no callar:
+
+| | |
+|---|---|
+| **una raíz sin etiqueta no participa** | no es el fondo ni lo más alto: es que no está. Es la convención del compilador, y otra aquí clasificaría la misma columna distinto según quién pregunte |
+| **un nivel mal escrito no es «estar por debajo»** | confundirlos convertiría una errata en una columna que parece limpia |
+| **se dicen todas las fugas y todos los culpables** | un compilador que informa de un error cada vez se ejecuta diez veces; y arreglar una raíz dejando la otra no arregla nada |
+
+Y una medida del propio trabajo: **el tipador de M0 rechazó tres de mis fixtures** por comparar
+`Decimal` con `Integer`. Tenía razón.
 
 ### M4 · Capacidades y reparto
 

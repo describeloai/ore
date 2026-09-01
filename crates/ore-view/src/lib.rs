@@ -21,7 +21,8 @@
 //!
 //! Los peldaños y lo que cada uno cuesta están en `docs/handoff-view-engine.md`.
 //! Esto es **M0** —el IR, en [`plan`] y [`esquema`]—, **M1** —el expansor, en
-//! [`catalogo`]— y **M2** —el linaje derivado del plan, en [`linaje`]—.
+//! [`catalogo`]—, **M2** —el linaje derivado del plan, en [`linaje`]— y **M3**
+//! —el retículo fluyendo por él, en [`flujo`]—.
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -32,10 +33,12 @@
 
 pub mod catalogo;
 pub mod esquema;
+pub mod flujo;
 pub mod linaje;
 pub mod plan;
 
 pub use catalogo::{Catalogo, Expansion, Vista};
 pub use esquema::{Desajuste, Esquema, esquema};
+pub use flujo::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use linaje::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
