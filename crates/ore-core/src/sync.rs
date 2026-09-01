@@ -50,7 +50,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     esquema_cedar(pkg, &mut out);
     lock(pkg, &mut out);
-    lo_que_se_usa(pkg, &mut out);
+    coincide_con_el_lock(pkg, &mut out);
     out
 }
 
@@ -64,7 +64,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 ///
 /// Sin esto, «el registro no es de confianza» sería una frase: lo que la
 /// convierte en una propiedad es que **alguien compare**.
-fn lo_que_se_usa(pkg: &Package, out: &mut Vec<Diagnostic>) {
+fn coincide_con_el_lock(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let Some(l) = pkg.docs.iter().find(|d| normalize::es_lock(d)) else {
         return;
     };

@@ -185,7 +185,7 @@ fn un_paquete_con_bindings_no_se_publica() {
 /// Publicar lo que no compila reparte un problema en vez de un paquete, y quien
 /// lo importe lo descubrirá en su árbol, que es donde no puede arreglarlo.
 #[test]
-fn lo_que_no_valida_no_se_publica() {
+fn un_paquete_que_no_valida_no_se_empaqueta() {
     let dir = escenario("invalido");
     std::fs::write(
         dir.join("concepts/personalEmail.yaml"),

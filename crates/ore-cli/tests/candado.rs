@@ -85,12 +85,15 @@ fn vacio() -> PathBuf {
 /// El de referencia tiene su propia prueba, en su propia crate, que es donde
 /// `cargo` sí garantiza que exista.
 fn obtenedor(registro: &Path) -> PathBuf {
-    // Uno por registro: las pruebas corren en paralelo, y un solo directorio
-    // compartido las hacía pisarse el obtenedor unas a otras — que es un fallo
-    // del andamio disfrazado de fallo del producto.
+    // Uno por LLAMADA, no por registro: las pruebas corren en paralelo y varias
+    // comparten el registro vacío, así que escribían el mismo fichero a la vez.
+    // Es un fallo del andamio disfrazado de fallo del producto, y de los que
+    // solo aparecen a veces — que es la peor clase.
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let bin = std::env::temp_dir().join(format!(
-        "ore-obtenedor-{}",
-        registro.file_name().unwrap_or_default().to_string_lossy()
+        "ore-obtenedor-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&bin).unwrap();
     let oob = registro.join("gdpr-0.1.0.oob");
@@ -214,7 +217,7 @@ fn comprobar_no_toca_el_arbol() {
 /// Lo que no está ni en el árbol ni donde se busca **no se inventa**, y lo que
 /// cuenta el obtenedor se muestra literal: es lo único accionable que existe.
 #[test]
-fn lo_que_no_esta_en_ninguna_parte_no_se_inventa() {
+fn una_coordenada_que_no_esta_en_ninguna_parte_no_se_resuelve() {
     let dir = escenario("ausente", "^0.1");
     std::fs::remove_dir_all(dir.join("packages/gdpr")).unwrap();
     let o = ore(&dir, &["lock"]);
@@ -229,7 +232,7 @@ fn lo_que_no_esta_en_ninguna_parte_no_se_inventa() {
 /// y **comprueba lo que le devuelve**. Después el árbol compila sin nadie, que
 /// es el punto de vendorizar en vez de cachear.
 #[test]
-fn lo_que_falta_se_trae_y_se_queda() {
+fn una_dependencia_ausente_se_obtiene_y_se_vendoriza() {
     let dir = escenario("traer", "^0.1");
     let registro = std::env::temp_dir().join("ore-registro-traer");
     let _ = std::fs::remove_dir_all(&registro);
@@ -264,7 +267,7 @@ fn lo_que_falta_se_trae_y_se_queda() {
 /// venga de donde venga — que es lo que permite que el origen no tenga que ser
 /// de confianza.
 #[test]
-fn lo_que_llega_y_no_es_lo_que_se_pidio_no_se_escribe() {
+fn un_oob_que_no_es_el_que_se_pidio_no_se_escribe() {
     let dir = escenario("impostor", "^0.1");
     let registro = std::env::temp_dir().join("ore-registro-impostor");
     let _ = std::fs::remove_dir_all(&registro);

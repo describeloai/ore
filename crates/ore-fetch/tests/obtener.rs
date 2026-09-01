@@ -78,7 +78,7 @@ fn devuelve_la_mas_alta_y_no_interpreta_el_rango() {
 /// Sin nada que traer falla, y lo cuenta por **stderr**: `ore` lo muestra
 /// literal, y es lo único accionable que existe.
 #[test]
-fn lo_que_no_esta_se_dice_por_stderr() {
+fn un_paquete_ausente_se_dice_por_stderr() {
     let d = registro("vacio", &[]);
     let (ok, out, err) = pedir(Some(&d), "{\"package\":\"oos.dev/regulatory/gdpr\"}");
     assert!(!ok);
