@@ -44,6 +44,23 @@ impl Loaded {
             .map(|(_, v)| v)
     }
 
+    /// La versión que **este documento** declara.
+    ///
+    /// Hacía falta desde que una regla puede ser de una versión y no de las
+    /// anteriores. El `apiVersion` es por documento —es lo que hace que la
+    /// migración no roce— así que quien comprueba una regla acotada tiene que
+    /// poder preguntárselo al documento, y no al paquete.
+    ///
+    /// `None` si no la declara o no se entiende: el despacho ya lo habría
+    /// rechazado con `OOS1002`, así que eso solo pasa sobre algo que nadie
+    /// validó.
+    pub fn version(&self) -> Option<crate::document::ApiVersion> {
+        self.root
+            .get("apiVersion")
+            .and_then(|(_, v)| v.as_str())
+            .and_then(crate::document::ApiVersion::parse)
+    }
+
     /// `<namespace>.<name>`, o solo `<name>` si el documento no lleva espacio de
     /// nombres.
     pub fn qname(&self) -> Option<String> {

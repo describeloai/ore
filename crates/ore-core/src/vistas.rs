@@ -914,7 +914,21 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         // entidad sigue declarando el doble, COMPILA EN VERDE, y las propiedades
         // huérfanas responden vacío para siempre. Se midió sobre un paquete de
         // tres propiedades y dos sin campo: `ok · sin errores`.
-        if let Some(props) = e.section("properties") {
+        //
+        // **Y solo de v1alpha8.** Un documento anterior declaró su versión, y esa
+        // versión sí admitía cobertura parcial: v1alpha1 porque otro binding la
+        // cubría, y v1alpha7 porque el binding seguía en la gramática.
+        // Aplicársela cambiaría lo que significa un documento ya escrito, y el
+        // invariante que esta versión sostuvo en cinco peldaños es que **no
+        // cambia un solo resultado de v1alpha1 a v1alpha7**.
+        //
+        // Se midió sin la puerta: `conformance/v1alpha7` caía de 13/13 a 12/13
+        // —`valid/entity-backed-by-view`—, `acme-retail` dejaba de validar y
+        // tres pruebas de `cache.rs` caían detrás de ella.
+        if e.version()
+            .is_some_and(|ver| ver >= crate::document::ApiVersion::V1Alpha8)
+            && let Some(props) = e.section("properties")
+        {
             for (k, cuerpo) in props.entries() {
                 let Some(prop) = k.as_str() else { continue };
                 // `derivedFrom` es la excepción, y es la única: una propiedad
