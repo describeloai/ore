@@ -195,6 +195,69 @@ fn la_fase_tres_lee_de_la_vista_por_su_raiz() {
     assert!(m.planificar(&sin_clave).is_ok(), "la raíz admite recorrido");
 }
 
+/// **La misma fase ③, con el puntero fuera de la vista.** `con-tabla` es
+/// `con-vista` en v1alpha8: el objeto se registra una vez como `kind: Table`,
+/// la vista solo lo nombra, y las capacidades salen de `reads` — que describen
+/// a `erp` y no a quien lo consulta.
+///
+/// Lo que este caso afirma es que **la fase ③ no se entera**: pide a una
+/// fuente, un objeto, unas columnas y unas capacidades, y de dónde salió el
+/// puntero es asunto de quien lo declaró. Las cuatro afirmaciones son las
+/// mismas que las de `con-vista`, palabra por palabra.
+///
+/// Y `con-vista` **se queda**: un documento v1alpha7 sigue compilando mientras
+/// v1alpha1 sea normativo, así que el ejecutor tiene que seguir sirviéndolo.
+/// Los dos casos juntos son, aquí, lo que `valid/mixed-versions` es en la
+/// suite de conformidad.
+#[test]
+fn la_fase_tres_lee_de_la_tabla_por_la_raiz_de_la_vista() {
+    let m = Motor::cargar(&caso("con-tabla")).expect("el caso carga");
+    let c = Consulta {
+        quien: Identidad {
+            emisor: "https://id.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: vec!["analyst".into()],
+            claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        },
+        accion: "read".into(),
+        purpose: "compensation_review".into(),
+        entidad: "hr.Employee".into(),
+        propiedades: vec!["hr.Employee.dni".into()],
+        claves: vec![vec!["emp-7".to_string()]],
+        travesia: None,
+        instante: None,
+        sla: None,
+    };
+    let plan = m.planificar(&c).expect("por clave, y con rol, hay plan");
+    assert_eq!(plan.lecturas.len(), 1, "{:?}", plan.lecturas);
+    let l = &plan.lecturas[0];
+
+    // La fuente y el objeto salen de la TABLA, no de la vista.
+    assert_eq!(l.datasource, "erp");
+    assert_eq!(l.objeto, "public.employees");
+
+    // Y la columna sigue siendo la de la raíz, compuesta por la cadena: `dni`
+    // es `nationalId` en `iberia` y `national_id` en la tabla.
+    assert_eq!(
+        l.proyeccion.get("dni").map(String::as_str),
+        Some("national_id"),
+        "la columna es la de la RAÍZ, compuesta por la cadena: {:?}",
+        l.proyeccion
+    );
+    assert_eq!(l.clave_columnas, vec!["employee_id".to_string()]);
+
+    // Sin clave, `reads.fullScan: cheap` de la TABLA lo permite. Es la
+    // afirmación de T2: la capacidad ya no se lee de `capabilities` de la vista
+    // —que en v1alpha8 no existe— sino de la cara `I` del objeto.
+    let mut sin_clave = c.clone();
+    sin_clave.claves.clear();
+    assert!(
+        m.planificar(&sin_clave).is_ok(),
+        "`reads` de la tabla admite recorrido"
+    );
+}
+
 /// **La forma más fuerte de aplicar una máscara es no pedir la columna.**
 #[test]
 fn una_propiedad_redactada_no_llega_a_la_proyeccion() {

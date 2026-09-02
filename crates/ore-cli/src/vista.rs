@@ -99,6 +99,15 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         );
         if let Ok(r) = vistas::raiz(&pkg, v) {
             println!("  raíz      {} · {}", r.datasource, r.objeto);
+            // Las dos caras del objeto, y **qué regla las usa**. Una vista
+            // v1alpha7 no las tiene: su puntero no es un documento, así que no
+            // hay nada que enseñar — y esa ausencia también dice algo.
+            if let Some(tqn) = r.tabla.as_deref()
+                && let Some(tabla) = pkg.table(tqn)
+            {
+                println!("  caras     {}", caras(tabla));
+                println!("            {}", raiz_de_lectura(&pkg, v, tabla));
+            }
         }
 
         let esquema_de = match esquema(&plan) {
@@ -258,6 +267,94 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// Las dos caras de una tabla, en el vocabulario en que están escritas.
+///
+/// Se enseñan con los nombres de OOS —`reads`, `changes`, `witness`— y no
+/// traducidos: quien lee esto tiene el documento delante, y un segundo
+/// vocabulario para lo mismo obligaría a traducir de vuelta para arreglarlo.
+fn caras(tabla: &Loaded) -> String {
+    let lista = |n: &Node| -> String {
+        n.items()
+            .iter()
+            .filter_map(|i| i.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut partes: Vec<String> = Vec::new();
+
+    match tabla.section("reads") {
+        // `reads: none` — un tópico se escribe, no se pregunta. Es la cara que
+        // `OOS2020` mira.
+        Some(r) if r.as_str() == Some("none") => partes.push("reads: none".to_string()),
+        Some(r) => {
+            partes.push(format!(
+                "reads: {}",
+                r.get("predicatePushdown")
+                    .map(|(_, v)| lista(v))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "nada empujable".to_string())
+            ));
+            if let Some((_, f)) = r.get("fullScan") {
+                partes.push(format!("fullScan: {}", f.as_str().unwrap_or("?")));
+            }
+            if let Some((_, rf)) = r.get("requiredFilters")
+                && !rf.items().is_empty()
+            {
+                partes.push(format!("requiredFilters: {}", lista(rf)));
+            }
+        }
+        None => partes.push("reads: sin declarar".to_string()),
+    }
+
+    if let Some(c) = tabla.section("changes") {
+        let campo = |k: &str| c.get(k).and_then(|(_, v)| v.as_str()).unwrap_or("?");
+        partes.push(format!("changes: {}", campo("mode")));
+        partes.push(format!("witness: {}", campo("witness")));
+        if let Some((_, k)) = c.get("key") {
+            partes.push(format!("key: {}", lista(k)));
+        }
+        if let Some((_, f)) = c.get("field") {
+            partes.push(format!("field: {}", f.as_str().unwrap_or("?")));
+        }
+        if let Some((_, r)) = c.get("retention") {
+            partes.push(format!("retention: {}", r.as_str().unwrap_or("?")));
+        }
+    }
+    partes.join(" · ")
+}
+
+/// De dónde salen de verdad las filas, y la regla que lo decidió.
+///
+/// La distinción raíz / raíz de lectura no se enseña por precisión: se enseña
+/// porque **es la que decide si el paquete compila**. Un usuario que ve
+/// `reads: none` y una vista virtual tiene ahí la explicación de `OOS2020` sin
+/// tener que provocarlo.
+fn raiz_de_lectura(pkg: &Package, v: &Loaded, tabla: &Loaded) -> String {
+    let copia = vistas::raiz_de_lectura(pkg, v);
+    let donde = copia.and_then(|c| c.section("materialized")).map(|m| {
+        format!(
+            "{}·{}",
+            m.get("datasource")
+                .and_then(|(_, x)| x.as_str())
+                .unwrap_or("?"),
+            m.get("table").and_then(|(_, x)| x.as_str()).unwrap_or("?")
+        )
+    });
+    let modo = vistas::modo(tabla);
+    match (donde, vistas::se_lee(tabla), modo) {
+        (Some(d), false, _) => format!(
+            "raíz de lectura: la copia en {d} — `OOS2020` la exige: lo que no se puede leer se \
+             debe materializar"
+        ),
+        (Some(d), true, vistas::Modo::Anexa) => format!(
+            "raíz de lectura: la copia en {d} — `OOS2021`: sin retractación solo respalda \
+             `nature: event`"
+        ),
+        (Some(d), true, _) => format!("raíz de lectura: la copia en {d}"),
+        (None, _, _) => "raíz de lectura: la tabla".to_string(),
+    }
+}
+
 trait Vistas {
     fn of_view(&self) -> Vec<&Loaded>;
 }
@@ -387,8 +484,22 @@ fn cuerpo(pkg: &Package, v: &Loaded, tipos: &BTreeMap<(String, String, String), 
                     .cloned()
                     .unwrap_or_else(|| Type::Scalar("String".into()))
             };
+            // v1alpha8 · las columnas de la hoja son **las de la tabla**, no las
+            // que esta vista usa. Es la diferencia entre describir el objeto y
+            // describir a quien lo consulta, y es para lo que la tabla existe:
+            // el `Lee` deja de ser la huella de una consulta y pasa a ser el
+            // objeto. Dos vistas sobre la misma tabla producen ahora la misma
+            // hoja, que es lo que permite reconocer que comparten origen.
+            if let Some(vistas::Fuente::Tabla(qn)) = vistas::fuente(v)
+                && let Some(tabla) = pkg.table(&qn)
+            {
+                for c in vistas::columnas(tabla) {
+                    let t = tipo(&c);
+                    columnas.insert(c, t);
+                }
+            }
             for c in campos.values() {
-                columnas.insert(c.clone(), tipo(c));
+                columnas.entry(c.clone()).or_insert_with(|| tipo(c));
             }
             // Las columnas del `where` también se leen, aunque no se expongan:
             // por eso existe la arista INDIRECT.
@@ -598,31 +709,47 @@ fn subir(
 
 // ── El paquete → las capacidades ────────────────────────────────────────────
 
-/// Las capacidades de cada fuente, leídas de la vista que la toca. El
-/// vocabulario de OOS —`predicatePushdown`, `fullScan`, `requiredFilters`— es
-/// el del binding sin cambios, y se traduce al del motor sin inventar nada:
-/// `like` y `fullText` no tienen equivalente y no se traducen.
+/// Las capacidades de cada fuente. El vocabulario de OOS
+/// —`predicatePushdown`, `fullScan`, `requiredFilters`— es el mismo desde el
+/// binding, y se traduce al del motor sin inventar nada: `like` y `fullText`
+/// no tienen equivalente y no se traducen.
+///
+/// **Dónde vive el contrato es lo que cambia en v1alpha8**, no el vocabulario:
+/// era `capabilities` de la vista y es `reads` de la tabla. Por eso
+/// `Capacidades::de_oos` no se toca — sería una segunda traducción del mismo
+/// vocabulario, y un contrato escrito dos veces diverge en el tercer consumidor.
 fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
     let mut out: BTreeMap<String, Capacidades> = BTreeMap::new();
     for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
         let Some((datasource, _)) = objeto_fisico(pkg, v) else {
             continue;
         };
-        // T2 · en v1alpha8 esto se lee de `reads` de la tabla, que es donde el
-        // contrato del objeto vive ahora. Hasta entonces una vista v1alpha8 no
-        // declara capacidades y el planificador la trata como sin declarar —
-        // que es lo que hacía con una vista v1alpha7 sin `capabilities`.
+
+        // v1alpha8 · el contrato es del objeto. Y `requiredFilters` **ya son
+        // columnas**: lo exige el origen, y el origen habla de columnas. Por
+        // eso aquí no se traduce nada, que es justo lo que la línea de abajo
+        // tiene que hacer y era el síntoma de que el campo estaba mal colocado.
+        //
+        // `reads: none` es un escalar y no un mapa, así que `de_oos` devuelve
+        // lo que devuelve para un contrato vacío: nada empujable y sin
+        // recorrido. Es la lectura correcta —a un tópico no se le pide nada— y
+        // no hace falta un caso especial para llegar a ella.
+        if let Some(vistas::Fuente::Tabla(qn)) = vistas::fuente(v)
+            && let Some(tabla) = pkg.table(&qn)
+            && let Some(reads) = tabla.section("reads")
+        {
+            out.insert(datasource, Capacidades::de_oos(reads));
+            continue;
+        }
+
+        // v1alpha7 · el contrato repetido dentro de cada vista que toca la
+        // fuente. Se queda mientras haya documentos que lo escriban así.
         let Some(caps) = v.section("capabilities") else {
             continue;
         };
-        // La traducción del vocabulario de OOS vive en `ore-view`, no aquí. La
-        // escribió este módulo primero, y cuando el mantenedor delegado necesitó
-        // la misma quedó claro qué era: **el contrato entre un paquete y el
-        // planificador**, y un contrato repetido en dos consumidores diverge en
-        // el tercero. Es la historia de `ore-driver`, otra vez.
         let mut c = Capacidades::de_oos(caps);
-        // Lo único que sí es de aquí: `requiredFilters` viene en nombres de
-        // campo de la vista, y lo que el planificador empuja son columnas.
+        // Y aquí sí hay que traducir: sus `requiredFilters` vienen en nombres
+        // de campo de la vista, y lo que el planificador empuja son columnas.
         let campos = vistas::campos(v);
         c.filtros_obligatorios = c
             .filtros_obligatorios

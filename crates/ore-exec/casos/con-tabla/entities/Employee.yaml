@@ -1,0 +1,15 @@
+# Igual que en `con-vista` salvo el `apiVersion`: la entidad no cambia en
+# v1alpha8, y `backedBy` sigue nombrando UNA VISTA, nunca la tabla.
+apiVersion: oos.dev/v1alpha8
+kind: Entity
+metadata: { name: Employee, namespace: hr }
+spec:
+  nature: entity
+  primaryKey: [id]
+  principal: true
+  backedBy: iberia
+  properties:
+    id: { type: String }
+    dni:
+      type: String
+      labels: { gdpr.sensitivity: high }

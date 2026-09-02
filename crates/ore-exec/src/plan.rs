@@ -613,10 +613,16 @@ impl Motor {
             // Sin claves y sin filtros, esto es un recorrido completo — y eso lo
             // autoriza quien declaró la fuente, no el motor (§5).
             if claves.is_empty() && filtros.is_empty() {
-                let full = f
-                    .capacidades
-                    .and_then(|x| x.get("fullScan"))
-                    .and_then(|(_, v)| v.as_str());
+                // `reads: none` es un ESCALAR, no un mapa: a este objeto no se
+                // le puede pedir nada. Leerlo con `get("fullScan")` habría dado
+                // `None` y el rechazo correcto con el motivo equivocado —«sin
+                // capacidades declaradas» sobre unas capacidades declaradas—, y
+                // un diagnóstico que miente sobre la causa cuesta la tarde de
+                // quien lo lee.
+                let full = f.capacidades.and_then(|x| {
+                    x.as_str()
+                        .or_else(|| x.get("fullScan").and_then(|(_, v)| v.as_str()))
+                });
                 let nombre = f.nombre.clone();
                 match full {
                     // Sin `capabilities`, un binding sirve la búsqueda por clave
@@ -627,6 +633,16 @@ impl Motor {
                             campo: "capabilities".into(),
                             porque: "sin capacidades declaradas un binding sirve la búsqueda por \
                                      clave y nada más, y este plan no trae claves"
+                                .into(),
+                        });
+                    }
+                    Some("none") => {
+                        return Err(Rechazo::PlanRechazado {
+                            binding: nombre,
+                            campo: "reads".into(),
+                            porque: "`reads: none` es la negativa más fuerte: a este objeto no se \
+                                     le puede pedir nada. Se consulta a través de una copia, y \
+                                     `OOS2020` obliga a que exista"
                                 .into(),
                         });
                     }
@@ -821,8 +837,9 @@ struct Fisica<'a> {
     /// cadena: la entidad nombra campos de su vista, la vista renombra los de
     /// abajo, y la raíz es la que tiene columnas.
     columnas: BTreeMap<String, String>,
-    /// Las capacidades del **origen**. En una cadena son las de la vista que
-    /// toca la fuente: describen lo que la fuente sabe hacer, no la vista.
+    /// Las capacidades del **origen**: describen lo que la fuente sabe hacer,
+    /// no quien la consulta. En v1alpha8 es `reads` de la tabla, que es el
+    /// sitio donde esa frase deja de ser una advertencia y pasa a ser la forma.
     capacidades: Option<&'a ore_core::parse::Node>,
 }
 
@@ -860,12 +877,25 @@ impl Motor {
             && let Ok(raiz) = ore_core::vistas::raiz(&self.paquete, v)
             && let Ok(cadena) = ore_core::vistas::cadena(&self.paquete, v)
         {
+            // v1alpha8 · el contrato es del OBJETO, así que las capacidades
+            // salen de `reads` de la tabla. v1alpha7 las tenía repetidas dentro
+            // de cada vista que tocaba la fuente, y ese camino se queda mientras
+            // haya documentos que lo escriban así.
+            //
+            // El resto de este `push` no cambia una letra, y esa es la
+            // afirmación: la fase ③ pide a una fuente, un objeto, unas columnas
+            // y unas capacidades, y de dónde salió el puntero es asunto de quien
+            // lo declaró.
+            let capacidades = match raiz.tabla.as_deref() {
+                Some(qn) => self.paquete.table(qn).and_then(|t| t.section("reads")),
+                None => cadena.last().and_then(|hoja| hoja.section("capabilities")),
+            };
             out.push(Fisica {
                 nombre: v.qname().unwrap_or_default(),
                 datasource: raiz.datasource,
                 objeto: raiz.objeto,
                 columnas: raiz.columnas,
-                capacidades: cadena.last().and_then(|hoja| hoja.section("capabilities")),
+                capacidades,
             });
         }
         out.sort_by(|a, b| (&a.datasource, &a.objeto).cmp(&(&b.datasource, &b.objeto)));

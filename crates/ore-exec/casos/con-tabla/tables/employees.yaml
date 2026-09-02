@@ -1,0 +1,22 @@
+# El objeto, registrado UNA VEZ y con sus dos caras. En `con-vista` esto vivia
+# dentro de la vista que tocaba la fuente, repetido por cada vista que la tocara.
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: employees, namespace: erp }
+spec:
+  datasource: erp
+  object: public.employees
+  columns:
+    employee_id: { physicalType: "varchar(16)" }
+    national_id: { physicalType: "varchar(16)" }
+    country:     { physicalType: "char(2)" }
+  # La cara I: lo que `erp` sabe hacer. Es `capabilities` de la vista, mudado al
+  # objeto — describen a la fuente, no a quien la consulta.
+  reads:
+    predicatePushdown: [eq, in]
+    fullScan: cheap
+  # La cara D, que v1alpha7 no tenia: `version: { witness: log }` decia que
+  # FECHA el cambio y no decia que LLEGA.
+  changes:
+    mode: retract
+    witness: log
