@@ -19,7 +19,7 @@
 //! se pueda mirar no hay reescritura, no hay linaje derivado, no hay reparto por
 //! capacidades y no hay incremental: solo hay cadenas de SQL.
 //!
-//! # Las seis piezas construidas
+//! # Las piezas construidas
 //!
 //! Se nombran con la terminología del sector y no con nombres propios: un
 //! ingeniero de datos tiene que poder leer esto sin traducir nada. El plano
@@ -33,6 +33,7 @@
 //! | **Lineage Analyzer** | [`lineage`] | M2 | de qué columna raíz sale cada salida, y por qué arista |
 //! | **Flow Checker** | [`flow`] | M3 | por qué esto no compila |
 //! | **Pushdown Planner** | [`capabilities`] | M4 | qué hace el origen y qué queda de residuo |
+//! | **Filter Tree** | [`filter_tree`] | M5 | de todas las materializaciones, cuáles podrían servir |
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -43,6 +44,7 @@
 
 pub mod capabilities;
 pub mod catalog;
+pub mod filter_tree;
 pub mod flow;
 pub mod lineage;
 pub mod plan;
@@ -50,6 +52,7 @@ pub mod schema;
 
 pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
 pub use catalog::{Catalogo, Expansion, Vista};
+pub use filter_tree::{FilterTree, Hoja, Materializacion, Registro, firma};
 pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};

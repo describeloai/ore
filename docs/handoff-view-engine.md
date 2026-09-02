@@ -518,14 +518,14 @@ flowchart TB
 | **Lineage Analyzer** | `lineage.rs` | M2 | *de qué columna raíz sale cada salida, y por qué arista* | ✅ |
 | **Flow Checker** | `flow.rs` | M3 | *por qué esto no compila* | ✅ |
 | **Pushdown Planner** | `capabilities.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
-| **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ⏳ |
+| **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ✅ |
 | **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ⏳ |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
 | **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
 | **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, seis construidas.** Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, siete construidas.** Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -561,8 +561,20 @@ filtrado más refinadas»*—, y con mil vistas eso son mil intentos por plan.
 
 **Listo cuando:** con mil materializaciones y un plan de dos hojas, se cotejan solo las que
 tocan esas dos hojas — y hay una prueba que **cuenta cuántas se cotejan**, no cuánto tarda.
+✅ · **mil registradas, cuatro cotejadas.**
 
-**Coste:** bajo. La firma está construida y el índice es un `BTreeMap`.
+**Coste:** bajo, y lo fue. La firma estaba construida y el índice es un `BTreeMap`.
+
+Dos cosas que salieron de construirlo:
+
+**La tabla se comprueba contra el plan al registrar.** Una materialización cuya tabla dice
+producir otras columnas que su plan es *el registro que parece bueno y no lo es*: el índice la
+ofrecería, el View Matcher razonaría sobre el plan y la tabla devolvería otra cosa. Se rechaza
+al entrar, nombrando las dos listas.
+
+**Y la tabla es una `Lectura`.** Lo materializado es una hoja más, que se lee por la puerta que
+ya existe — es E4 dicho otra vez: *servirse de la caché es cambiarle a una lectura la fuente y el
+objeto*. La misma frase, tres piezas después, sigue sin necesitar excepción.
 
 ---
 
