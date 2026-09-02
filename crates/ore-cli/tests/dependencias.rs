@@ -77,7 +77,12 @@ const VETADAS: &[(&str, &str)] = &[
 /// Un número exacto obliga a que cualquier dependencia nueva —buena o mala— pase
 /// por aquí y se justifique. Un techo holgado dejaría entrar cinco crates de
 /// tapadillo, que es como crecen los árboles de dependencias.
-const CIERRE: usize = 33;
+///
+/// 33 → 34 con `ore-view`, el motor de vistas, para `ore view`. Es un crate
+/// del workspace sin una sola dependencia ajena: el cierre sube exactamente en
+/// él y en nada más, que es la clase de subida que este testigo existe para
+/// distinguir de las otras.
+const CIERRE: usize = 34;
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {

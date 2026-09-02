@@ -302,15 +302,26 @@ anotando el impedimento; la vista lo quita de paso.
 | | Qué | Dónde |
 |---|---|---|
 | **V0** | `kind: View` que compila: esquema, normalización, digest — **hecho**: `crates/ore-core/src/vistas.rs`, `spec/v1alpha7`, trece casos en `conformance/v1alpha7` | `ore-core` ✅ local |
-| **V1** | `Entity.backedBy`, y la fase ③ lee de vistas | `ore-exec`, CI |
-| **V2** | **vista sobre vistas** — el vocabulario de operaciones | `ore-core` |
-| **V3** | el flujo de etiquetas **atraviesa la cadena y se niega a compilar** | `ore-core` |
+| **V1** | `Entity.backedBy`, y la fase ③ lee de vistas — **hecho**: `Motor::fisicas` en `ore-exec/src/plan.rs`, una noción para binding y vista; caso `casos/con-vista`, el primer plan sin binding | `ore-exec`, CI |
+| **V2** | **vista sobre vistas** — el vocabulario de operaciones — **hecho en lo que la gramática tiene**: `from: { view }`, seleccionar, renombrar, recortar; `vistas::raiz` compone la cadena y `ore view` la expande en el IR. **Lo que queda** es el vocabulario que la gramática aún no admite (unir, agregar, deduplicar, limitar): el IR lo tiene con sus reglas, y entra cuando se decida su precio | `ore-core`, `ore-cli` |
+| **V3** | el flujo de etiquetas **atraviesa la cadena y se niega a compilar** — **hecho, en dos capas**: el núcleo por lo que se copia (`flow::vistas_materializadas`, `OOS4002`), y el motor por lo que **decide qué filas salen** (`ore view`, la arista `INDIRECT`; `crates/ore-cli/src/vista.rs`). La segunda vive en `ore-cli` porque el núcleo no tiene linaje por columna; el día que lo tenga, se muda | `ore-core`, `ore-cli` |
 | **V4** | `discover` propone vistas primero | `ore-cli` |
 | **V5** | el `Binding` se borra, y este documento con él | todo |
 
 **V0 y V1 conviven con el `Binding`**, y es el único momento del proyecto en que dos cosas
 dirán lo mismo. Está acotado a dos peldaños y es el puente; V5 lo cierra. Si el puente se
 queda puesto, hemos fallado.
+
+**La costura es una y está en `crates/ore-cli/src/vista.rs`.** `ore-view` sigue sin saber qué
+es un paquete; ese módulo lee las `View`, el retículo, las etiquetas efectivas y las
+capacidades del paquete y los convierte en el IR, la clasificación y las capacidades del motor.
+`ore view <paquete>` es lo que sale: plan e identidad, esquema, linaje, refresco, empuje y
+flujo, sin abrir nada. Y `CIERRE` subió a 34 por él: un crate del workspace sin una sola
+dependencia ajena.
+
+**Un hueco heredado, nombrado:** el ejecutor no empuja el `where` de la vista, igual que nunca
+empujó el `selector` del binding. Es el mismo defecto con dos nombres y se cierra una vez para
+los dos — en `Motor::fisicas` está escrito dónde.
 
 **V0 llegó con parte de V2 y de V3 dentro**, porque no se podían separar: una vista sobre otra
 es un `from: { view }` y la cadena se compone en `vistas::raiz`; y la etiqueta de una entidad

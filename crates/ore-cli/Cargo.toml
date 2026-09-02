@@ -12,5 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 ore-core = { path = "../ore-core" }
+# El motor de vistas, para `ore view`. Rust puro sin una sola crate ajena: el
+# cierre de `ore-cli` sube en UNA —el propio crate— y `dependencias.rs` lo dice.
+# Se enlaza aqui y no en `ore-core` porque la dependencia va al reves: el motor
+# usa la forma canonica y el reticulo del nucleo, y el nucleo no sabe de algebra.
+ore-view = { path = "../ore-view" }
 anyhow.workspace = true
 clap.workspace   = true

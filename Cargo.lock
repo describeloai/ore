@@ -1157,6 +1157,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ore-core",
+ "ore-view",
 ]
 
 [[package]]

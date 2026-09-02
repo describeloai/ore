@@ -129,10 +129,13 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
 
 ## 6. Lo que sigue
 
-- **La absorción.** Esta pieza se diseñó libre y no sabe qué es un paquete OOS. Conectarla —el
-  retículo real, las etiquetas efectivas, las restricciones desde `primaryKey` y las relaciones,
-  el `datasource` real de cada hoja— es el trabajo de `docs/handoff-vistas.md`, que sigue abierto
-  hasta que `Kind::Binding` desaparezca.
+- **La absorción, hecha en su primera mitad.** Esta pieza sigue sin saber qué es un paquete OOS,
+  y la única costura es `crates/ore-cli/src/vista.rs`: lee las `View` de v1alpha7, el retículo,
+  las etiquetas efectivas y las capacidades, y los convierte en el IR, la clasificación y las
+  capacidades de aquí. `ore view` es lo que contesta. Lo que falta —que `discover` proponga
+  vistas y que `Kind::Binding` desaparezca— es de `docs/handoff-vistas.md`, que sigue abierto
+  hasta entonces. Las restricciones desde `primaryKey` y las relaciones para el View Matcher no
+  se han conectado todavía: nadie reescribe consultas contra materializaciones aún.
 - **El ejecutor.** Un programa delegado, por stdin, que corra el circuito Δ y sostenga el estado
   parcial en el almacenamiento del cliente. La política ya está escrita; el sitio está decidido
   ([ADR 0012](decisions/0012-el-estado-es-parcial-y-vive-en-el-cliente.md)).

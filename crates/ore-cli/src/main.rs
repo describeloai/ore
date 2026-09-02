@@ -16,6 +16,7 @@ mod inicio;
 mod lector;
 mod mcp;
 mod revision;
+mod vista;
 mod vocabulario;
 
 use clap::{Parser, Subcommand};
@@ -282,6 +283,16 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Lo que el motor de vistas dice de cada `kind: View` del paquete.
+    ///
+    /// Plan e identidad, esquema, linaje por columna —con la arista INDIRECT,
+    /// la del `where`, que `validate` no mira—, modo de refresco, qué empuja al
+    /// origen, y si la copia compila. Todo desde el árbol de ficheros: no
+    /// ejecuta, no mide, no abre nada.
+    View {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
     /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
@@ -331,6 +342,7 @@ fn main() -> std::process::ExitCode {
     match &cli.command {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
+        Command::View { path } => return vista::ver(path),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -424,6 +436,7 @@ fn main() -> std::process::ExitCode {
         | Command::Init { .. }
         | Command::Discover { .. }
         | Command::Report { .. }
+        | Command::View { .. }
         | Command::Review { .. }
         | Command::Lock { .. }
         | Command::Pack { .. }
