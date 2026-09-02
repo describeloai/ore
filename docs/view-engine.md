@@ -95,9 +95,14 @@ sin reloj y sin fechas.
 **Un relleno no pedido se rechaza, y uno bajo otro bundle también.** La regla de la caché
 —`ReglaDistinta`— a granularidad de clave.
 
-**El Cost Model no inventa ningún número.** El 5 % es de Snowflake y se ofrece con su
-procedencia; los coeficientes de uno dicen ser lo que son. Un `if` con un número escondido es lo
-que la pieza existe para que no ocurra.
+**El Cost Model no inventa ningún número, y ya tiene los suyos.** El 5 % sigue siendo de
+Snowflake y se ofrece con su procedencia. Lo medido está en `crates/ore-view/tests/medidas.rs`,
+contando **filas miradas por un operador** y no tiempo — un reloj mide la máquina de quien mide
+([ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)).
+
+**El estado se guarda indexado por su clave, y esa es la diferencia entre incrementalizar y
+decir que se incrementaliza.** Los integradores de la junta y del agregado eran multiconjuntos
+planos: un paso costaba la base. Lo destapó intentar medirlo.
 
 ## 4. Lo que no hace, y no por falta de tiempo
 
@@ -114,9 +119,10 @@ se mantiene incrementalmente. Está dicho antes de que lo descubra una prueba.
 conjuntivas es NP-completa y la determinación es indecidible; el View Matcher implementa el
 subconjunto decidible y dice cuál es.
 
-**No mide.** Las medidas del Cost Model las pone quien llama, y el Partial State Store las
-cuenta —aciertos, fallos, desalojos, rellenos—. Calibrar los coeficientes es trabajo pendiente y
-está nombrado como tal.
+**No cronometra.** La unidad es la fila mirada, no el segundo: sirve para comparar dos caminos
+sobre los mismos datos, que es la pregunta del Cost Model, y no para prometer latencias. Y mide
+la máquina de referencia; un ejecutor sobre otro almacén tendría otros números, y el método para
+volver a sacarlos está escrito.
 
 ## 5. Dónde está la diferencia
 
@@ -144,4 +150,15 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   está probado a través del protocolo: **lo que sale de mantener es lo que saldría de
   recomputar**. Lo que queda es persistir entre sesiones — hoy la sesión es el estado, y
   arrancar cuesta una *upquery* por clave caliente.
-- **Las medidas.** Sin ellas el Cost Model es una forma. Con ellas, deja de serlo.
+- **Las medidas, hechas.** `crates/ore-view/tests/medidas.rs` cuenta trabajo —filas miradas— en
+  los dos caminos y sobre los mismos datos, con las cifras afirmadas para que un cambio las
+  rompa. Salieron tres cosas: que dos integradores no estaban indexados y por tanto **la
+  incrementalización no ocurría**; que con eso arreglado **mantener gana siempre salvo en el
+  agregado**; y que **dónde se cruza el agregado es dato y no plan** — el mismo documento se
+  cruza en el 2 % con veinte grupos y en el 22,3 % con doscientos cincuenta, con el 5 % de
+  Snowflake entre medias. De ahí sale `Politica::Trabajo`, que compara medidas en vez de
+  extrapolar, y `ore-maintain` la alimenta con lo suyo: la carga inicial de una sesión **es** un
+  recómputo, así que de ella sale el coste por fila de recomputar.
+
+  Lo que queda medido a medias es el **almacén real**: estas cifras son de la máquina de
+  referencia, sobre Z-sets en memoria.

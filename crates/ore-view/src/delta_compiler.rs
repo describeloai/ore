@@ -13,6 +13,24 @@
 //! lista: son los **integradores** —lo acumulado a la entrada de cada operador
 //! que no es lineal—, y [`Circuito::estado`] los enumera.
 //!
+//! # Lo que cuesta, contado
+//!
+//! Cada operador cuenta las filas que mira, y la suma es [`Circuito::trabajo`].
+//! No es tiempo: un reloj mediría la máquina de quien mide, y aquí hace falta
+//! un número que dos ejecuciones repitan. La unidad es [`Trabajo`].
+//!
+//! | operador | qué cuenta |
+//! |---|---|
+//! | hoja | nada — el Δ es su entrada, no lo mira nadie |
+//! | proyecta · filtra | una por fila de entrada |
+//! | unifica | una por fila de cada rama |
+//! | distingue | una por fila del Δ |
+//! | une | una por fila del Δ, una por pareja que sale, una por fila que entra al índice |
+//! | agrupa | una por fila del Δ, una por fila de los grupos que toca —dos veces, antes y después— y una por fila al entrar al índice |
+//!
+//! Las medidas que salen de esto, y las dos conclusiones que cambian el Cost
+//! Model, están en `tests/medidas.rs`.
+//!
 //! # Z-sets
 //!
 //! Una relación es un multiconjunto con **pesos con signo**: `+1` una fila que
@@ -75,6 +93,35 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Una fila: columna → valor. Los decimales entran **normalizados**, para que
 /// `0.10` y `0.1` sean la misma clave al agrupar, juntar o deduplicar.
 pub type Fila = BTreeMap<String, Valor>;
+
+/// **La unidad de coste: una fila mirada por un operador.**
+///
+/// No es tiempo, y no por comodidad. Un reloj mide la máquina de quien mide —su
+/// caché, su carga, su compilador— y este proyecto entero descansa en que dos
+/// ejecuciones den lo mismo. Contar filas miradas mide **el algoritmo**, es
+/// exacto, es entero y es reproducible: la misma entrada da el mismo número en
+/// cualquier sitio.
+///
+/// Es la unidad clásica de un optimizador —*tuples processed*— y la única que
+/// se puede contar dentro de un compilador que tiene prohibido leer la hora.
+///
+/// Qué cuenta cada operador está en una tabla, en la cabecera del módulo.
+pub type Trabajo = u64;
+
+/// Un integrador **indexado por la clave de junta**.
+///
+/// El Refresh Analyzer lo venía prometiendo desde M6 —*«I(izquierda) indexada
+/// por [pais]»*— y esta máquina guardaba un multiconjunto plano. La promesa no
+/// era decorativa: con el integrador plano, `I(a)⋈Δb` **iteraba el integrador
+/// entero** en cada paso, así que mantener una vista costaba lo que la base y
+/// no lo que el delta. Un mantenimiento incremental con el coste de un
+/// recómputo no es mantenimiento incremental.
+///
+/// Lo encontró intentar **medirlo**: al contar el trabajo de un paso salía
+/// proporcional a la base, que es justo lo que la incrementalización existe
+/// para evitar. Medir una pieza es la forma más barata de descubrir que no hace
+/// lo que dice.
+type Indice = BTreeMap<Vec<Valor>, Zset>;
 
 /// Un multiconjunto con pesos con signo. Un peso cero **no se guarda**: una fila
 /// que se puso y se quitó no está.
@@ -303,14 +350,22 @@ enum Op {
         izquierda: Box<Op>,
         derecha: Box<Op>,
         sobre: Vec<(String, String)>,
-        i_izquierda: Zset,
-        i_derecha: Zset,
+        /// Las columnas de junta de cada lado, en el orden de `sobre`, para que
+        /// la clave de un lado se corresponda posición a posición con la del
+        /// otro. Se precalculan porque se usan en cada paso.
+        columnas_izquierda: Vec<String>,
+        columnas_derecha: Vec<String>,
+        i_izquierda: Indice,
+        i_derecha: Indice,
     },
     Agrupa {
         entrada: Box<Op>,
         por: BTreeSet<String>,
         agregados: BTreeMap<String, Agregacion>,
-        integrado: Zset,
+        /// Partido **por clave de grupo**, por lo mismo que el de la junta: sin
+        /// eso, recomputar «los grupos que el Δ toca» recorría el integrado
+        /// entero para encontrarlos, y el paso costaba la base.
+        integrado: Indice,
     },
     Unifica(Vec<Op>),
     Distingue {
@@ -322,6 +377,7 @@ enum Op {
 /// El circuito Δ de un plan, con su estado dentro.
 pub struct Circuito {
     raiz: Op,
+    trabajo: Trabajo,
 }
 
 impl Circuito {
@@ -337,13 +393,29 @@ impl Circuito {
         }
         Ok(Circuito {
             raiz: construir(plan)?,
+            trabajo: 0,
         })
     }
 
     /// **Un paso**: llega un Δ por hoja, sale el Δ de la salida, y el estado
     /// avanza. Una hoja que no aparece en `deltas` no cambió.
     pub fn paso(&mut self, deltas: &BTreeMap<Hoja, Zset>) -> Result<Zset, Evaluacion> {
-        self.raiz.paso(deltas)
+        let mut t = 0;
+        let r = self.raiz.paso(deltas, &mut t);
+        // El trabajo se acumula **aunque el paso falle**: lo que se miró, se
+        // miró, y un contador que solo suma en el camino bueno mide otra cosa.
+        self.trabajo += t;
+        r
+    }
+
+    /// **Cuántas filas ha mirado este circuito** desde que se compiló.
+    ///
+    /// Es lo que convierte al Cost Model en algo medido en vez de una forma:
+    /// quien mantiene una vista puede comparar este número con el de recomputar
+    /// —[`recomputar_contando`]— sobre los mismos datos, y decidir con lo suyo
+    /// en vez de con la cifra de otro.
+    pub fn trabajo(&self) -> Trabajo {
+        self.trabajo
     }
 
     /// Los integradores, enumerados. Vacío para un plan lineal, que es lo que
@@ -468,8 +540,10 @@ fn construir(n: &Nodo) -> Result<Op, NoIncrementalizable> {
                 izquierda: Box::new(construir(izquierda)?),
                 derecha: Box::new(construir(derecha)?),
                 sobre: sobre.clone(),
-                i_izquierda: Zset::nuevo(),
-                i_derecha: Zset::nuevo(),
+                columnas_izquierda: sobre.iter().map(|(a, _)| a.clone()).collect(),
+                columnas_derecha: sobre.iter().map(|(_, b)| b.clone()).collect(),
+                i_izquierda: Indice::new(),
+                i_derecha: Indice::new(),
             }
         }
         Nodo::Agrupa {
@@ -489,7 +563,7 @@ fn construir(n: &Nodo) -> Result<Op, NoIncrementalizable> {
                 entrada: Box::new(construir(entrada)?),
                 por: por.clone(),
                 agregados: agregados.clone(),
-                integrado: Zset::nuevo(),
+                integrado: Indice::new(),
             }
         }
         Nodo::Unifica(v) => Op::Unifica(v.iter().map(construir).collect::<Result<_, _>>()?),
@@ -511,41 +585,58 @@ fn sin_volatiles(x: &Expr) -> Result<(), NoIncrementalizable> {
 }
 
 impl Op {
-    fn paso(&mut self, deltas: &BTreeMap<Hoja, Zset>) -> Result<Zset, Evaluacion> {
+    fn paso(&mut self, deltas: &BTreeMap<Hoja, Zset>, t: &mut Trabajo) -> Result<Zset, Evaluacion> {
         match self {
+            // Una hoja no mira nada: el Δ es su entrada.
             Op::Hoja(h) => Ok(deltas.get(h).cloned().unwrap_or_default()),
 
             // Lineal: el Δ se proyecta, y ya.
-            Op::Proyecta { entrada, campos } => proyectar(&entrada.paso(deltas)?, campos),
+            Op::Proyecta { entrada, campos } => proyectar(&entrada.paso(deltas, t)?, campos, t),
 
             // Lineal: el Δ se filtra, y ya.
-            Op::Filtra { entrada, predicado } => filtrar(&entrada.paso(deltas)?, predicado),
+            Op::Filtra { entrada, predicado } => filtrar(&entrada.paso(deltas, t)?, predicado, t),
 
             // Lineal: los Δ se suman.
             Op::Unifica(ramas) => {
                 let mut out = Zset::nuevo();
                 for r in ramas {
-                    out.sumar(&r.paso(deltas)?);
+                    let d = r.paso(deltas, t)?;
+                    *t += d.filas().count() as Trabajo;
+                    out.sumar(&d);
                 }
                 Ok(out)
             }
 
             // **Bilineal.** `Δ(a⋈b) = Δa⋈Δb + I(a)⋈Δb + Δa⋈I(b)`, y después los
             // integradores avanzan. El orden importa: los `I` son los de ANTES.
+            //
+            // Los tres términos **se iteran por el lado del delta** y se buscan
+            // en el índice del otro. Es la diferencia entre costar lo que el Δ y
+            // costar lo que la base, y era lo que faltaba: ver [`Indice`].
             Op::Une {
                 izquierda,
                 derecha,
-                sobre,
+                columnas_izquierda,
+                columnas_derecha,
                 i_izquierda,
                 i_derecha,
+                ..
             } => {
-                let da = izquierda.paso(deltas)?;
-                let db = derecha.paso(deltas)?;
-                let mut out = juntar(&da, &db, sobre);
-                out.sumar(&juntar(i_izquierda, &db, sobre));
-                out.sumar(&juntar(&da, i_derecha, sobre));
-                i_izquierda.sumar(&da);
-                i_derecha.sumar(&db);
+                let da = izquierda.paso(deltas, t)?;
+                let db = derecha.paso(deltas, t)?;
+
+                // Δa ⋈ Δb — los dos son pequeños, así que da igual cuál se
+                // indexe; se indexa el derecho por simetría con lo de abajo.
+                let mut idx_db = Indice::new();
+                indexar(&mut idx_db, &db, columnas_derecha, t);
+                let mut out = juntar_indexado(&da, columnas_izquierda, &idx_db, t);
+
+                // I(a) ⋈ Δb y Δa ⋈ I(b): se itera el delta, se busca el índice.
+                out.sumar(&juntar_indexado(&db, columnas_derecha, i_izquierda, t));
+                out.sumar(&juntar_indexado(&da, columnas_izquierda, i_derecha, t));
+
+                indexar(i_izquierda, &da, columnas_izquierda, t);
+                indexar(i_derecha, &db, columnas_derecha, t);
                 Ok(out)
             }
 
@@ -557,19 +648,30 @@ impl Op {
                 agregados,
                 integrado,
             } => {
-                let d = entrada.paso(deltas)?;
+                let d = entrada.paso(deltas, t)?;
                 let tocados: BTreeSet<Vec<Valor>> = d.filas().map(|(f, _)| clave(f, por)).collect();
-                let antes = agregar(integrado, por, agregados, Some(&tocados))?;
-                integrado.sumar(&d);
-                let despues = agregar(integrado, por, agregados, Some(&tocados))?;
+                *t += d.filas().count() as Trabajo;
+                let antes = agregar_grupos(integrado, &tocados, por, agregados, t)?;
+                for (f, w) in d.filas() {
+                    *t += 1;
+                    integrado
+                        .entry(clave(f, por))
+                        .or_default()
+                        .insertar(f.clone(), w);
+                }
+                // Un grupo que se quedó sin filas se va del índice: dejarlo
+                // vacío sería estado que crece y nunca baja.
+                integrado.retain(|_, z| !z.es_vacio());
+                let despues = agregar_grupos(integrado, &tocados, por, agregados, t)?;
                 Ok(despues.menos(&antes))
             }
 
             // No lineal: se recomputan **las filas que el Δ toca**.
             Op::Distingue { entrada, integrado } => {
-                let d = entrada.paso(deltas)?;
+                let d = entrada.paso(deltas, t)?;
                 let mut out = Zset::nuevo();
                 for (f, _) in d.filas() {
+                    *t += 1;
                     let antes = i64::from(integrado.peso(f) > 0);
                     let despues = i64::from(integrado.peso(f) + d.peso(f) > 0);
                     if despues != antes {
@@ -642,6 +744,29 @@ impl Op {
 /// **`Q`**, sin incrementalizar: el plan entero sobre las bases enteras. Es
 /// contra lo que se comprueba el circuito.
 pub fn recomputar(plan: &Nodo, bases: &BTreeMap<Hoja, Zset>) -> Result<Zset, Evaluacion> {
+    recomputar_contando(plan, bases).map(|(z, _)| z)
+}
+
+/// **`Q`, y cuánto costó.**
+///
+/// El otro lado de la balanza del Cost Model: [`Circuito::trabajo`] dice lo que
+/// cuesta mantener y esto lo que cuesta recomputar, **contados con la misma
+/// unidad y sobre los mismos datos**. Comparar dos números que se midieron
+/// igual es toda la diferencia entre calibrar y adivinar.
+pub fn recomputar_contando(
+    plan: &Nodo,
+    bases: &BTreeMap<Hoja, Zset>,
+) -> Result<(Zset, Trabajo), Evaluacion> {
+    let mut t = 0;
+    let z = recomputar_con(plan, bases, &mut t)?;
+    Ok((z, t))
+}
+
+fn recomputar_con(
+    plan: &Nodo,
+    bases: &BTreeMap<Hoja, Zset>,
+    t: &mut Trabajo,
+) -> Result<Zset, Evaluacion> {
     Ok(match plan {
         Nodo::Referencia(_) => return Err(Evaluacion::SinSemantica("referencia sin expandir")),
         Nodo::Limita { .. } => return Err(Evaluacion::SinSemantica("limita")),
@@ -649,8 +774,12 @@ pub fn recomputar(plan: &Nodo, bases: &BTreeMap<Hoja, Zset>) -> Result<Zset, Eva
             .get(&(l.datasource.clone(), l.objeto.clone()))
             .cloned()
             .unwrap_or_default(),
-        Nodo::Proyecta { entrada, campos } => proyectar(&recomputar(entrada, bases)?, campos)?,
-        Nodo::Filtra { entrada, predicado } => filtrar(&recomputar(entrada, bases)?, predicado)?,
+        Nodo::Proyecta { entrada, campos } => {
+            proyectar(&recomputar_con(entrada, bases, t)?, campos, t)?
+        }
+        Nodo::Filtra { entrada, predicado } => {
+            filtrar(&recomputar_con(entrada, bases, t)?, predicado, t)?
+        }
         Nodo::Une {
             izquierda,
             derecha,
@@ -661,33 +790,42 @@ pub fn recomputar(plan: &Nodo, bases: &BTreeMap<Hoja, Zset>) -> Result<Zset, Eva
                 return Err(Evaluacion::SinSemantica("junta externa"));
             }
             juntar(
-                &recomputar(izquierda, bases)?,
-                &recomputar(derecha, bases)?,
+                &recomputar_con(izquierda, bases, t)?,
+                &recomputar_con(derecha, bases, t)?,
                 sobre,
+                t,
             )
         }
         Nodo::Agrupa {
             entrada,
             por,
             agregados,
-        } => agregar(&recomputar(entrada, bases)?, por, agregados, None)?,
+        } => agregar(&recomputar_con(entrada, bases, t)?, por, agregados, None, t)?,
         Nodo::Unifica(v) => {
             let mut out = Zset::nuevo();
             for r in v {
-                out.sumar(&recomputar(r, bases)?);
+                let z = recomputar_con(r, bases, t)?;
+                *t += z.filas().count() as Trabajo;
+                out.sumar(&z);
             }
             out
         }
         Nodo::Distingue(e) => {
-            let z = recomputar(e, bases)?;
+            let z = recomputar_con(e, bases, t)?;
+            *t += z.filas().count() as Trabajo;
             Zset::de(z.presentes().map(|(f, _)| (f.clone(), 1)))
         }
     })
 }
 
-fn proyectar(z: &Zset, campos: &BTreeMap<String, Expr>) -> Result<Zset, Evaluacion> {
+fn proyectar(
+    z: &Zset,
+    campos: &BTreeMap<String, Expr>,
+    t: &mut Trabajo,
+) -> Result<Zset, Evaluacion> {
     let mut out = Zset::nuevo();
     for (f, w) in z.filas() {
+        *t += 1;
         let mut nueva = Fila::new();
         for (k, x) in campos {
             nueva.insert(k.clone(), evaluar(x, f)?);
@@ -697,9 +835,10 @@ fn proyectar(z: &Zset, campos: &BTreeMap<String, Expr>) -> Result<Zset, Evaluaci
     Ok(out)
 }
 
-fn filtrar(z: &Zset, p: &Expr) -> Result<Zset, Evaluacion> {
+fn filtrar(z: &Zset, p: &Expr, t: &mut Trabajo) -> Result<Zset, Evaluacion> {
     let mut out = Zset::nuevo();
     for (f, w) in z.filas() {
+        *t += 1;
         match evaluar(p, f)? {
             Valor::Booleano(true) => out.insertar(f.clone(), w),
             Valor::Booleano(false) => {}
@@ -713,9 +852,54 @@ fn clave(f: &Fila, cols: &BTreeSet<String>) -> Vec<Valor> {
     cols.iter().filter_map(|c| f.get(c).cloned()).collect()
 }
 
-/// Junta interna por igualdad de pares. El peso de una fila juntada es el
-/// producto de los pesos: es lo que hace que la regla bilineal cuadre.
-fn juntar(a: &Zset, b: &Zset, sobre: &[(String, String)]) -> Zset {
+/// La clave de junta de una fila, en el orden de `sobre`.
+fn clave_de_junta(f: &Fila, cols: &[String]) -> Vec<Valor> {
+    cols.iter().filter_map(|c| f.get(c).cloned()).collect()
+}
+
+/// Mete un Z-set en un índice por clave de junta. Cuesta una fila por fila.
+fn indexar(idx: &mut Indice, z: &Zset, cols: &[String], t: &mut Trabajo) {
+    for (f, w) in z.filas() {
+        *t += 1;
+        idx.entry(clave_de_junta(f, cols))
+            .or_default()
+            .insertar(f.clone(), w);
+    }
+}
+
+/// **Δ ⋈ I**: se itera el delta y se busca en el índice del otro lado.
+///
+/// Aquí está el coste del mantenimiento incremental de una junta: una fila por
+/// fila del delta, más una por cada pareja que sale. **Nada proporcional a la
+/// base** — que es lo que la incrementalización promete y lo que esta máquina
+/// no cumplía mientras el integrador fue plano.
+///
+/// El resultado es el mismo se itere el lado que se itere: las columnas de los
+/// dos lados son disjuntas —el Schema Resolver lo exige con `ColisionAlUnir`—
+/// así que la fila fusionada es la misma, y el peso es un producto, que
+/// conmuta.
+fn juntar_indexado(d: &Zset, cols_d: &[String], idx: &Indice, t: &mut Trabajo) -> Zset {
+    let mut out = Zset::nuevo();
+    for (fd, wd) in d.filas() {
+        *t += 1;
+        let Some(casan) = idx.get(&clave_de_junta(fd, cols_d)) else {
+            continue;
+        };
+        for (fi, wi) in casan.filas() {
+            *t += 1;
+            let mut fila = fd.clone();
+            fila.extend(fi.iter().map(|(k, v)| (k.clone(), v.clone())));
+            out.insertar(fila, wd * wi);
+        }
+    }
+    out
+}
+
+/// Junta interna por igualdad de pares, **sin estado**: la del recómputo. Se
+/// indexa un lado y se itera el otro, así que cuesta las dos bases enteras.
+/// El peso de una fila juntada es el producto de los pesos: es lo que hace que
+/// la regla bilineal cuadre.
+fn juntar(a: &Zset, b: &Zset, sobre: &[(String, String)], t: &mut Trabajo) -> Zset {
     let ka: BTreeSet<String> = sobre.iter().map(|(x, _)| x.clone()).collect();
     let kb: BTreeSet<String> = sobre.iter().map(|(_, y)| y.clone()).collect();
     // Los pares van en el orden de `sobre`, no en el del BTreeSet, para que la
@@ -735,12 +919,15 @@ fn juntar(a: &Zset, b: &Zset, sobre: &[(String, String)]) -> Zset {
     let _ = (&ka, &kb);
     let mut indice: BTreeMap<Vec<Valor>, Vec<(&Fila, i64)>> = BTreeMap::new();
     for (f, w) in b.filas() {
+        *t += 1;
         indice.entry(clave_b(f)).or_default().push((f, w));
     }
     let mut out = Zset::nuevo();
     for (fa, wa) in a.filas() {
+        *t += 1;
         if let Some(casan) = indice.get(&clave_a(fa)) {
             for (fb, wb) in casan {
+                *t += 1;
                 let mut fila = fa.clone();
                 fila.extend(fb.iter().map(|(k, v)| (k.clone(), v.clone())));
                 out.insertar(fila, wa * wb);
@@ -757,9 +944,11 @@ fn agregar(
     por: &BTreeSet<String>,
     agregados: &BTreeMap<String, Agregacion>,
     solo: Option<&BTreeSet<Vec<Valor>>>,
+    t: &mut Trabajo,
 ) -> Result<Zset, Evaluacion> {
     let mut grupos: BTreeMap<Vec<Valor>, Vec<(&Fila, i64)>> = BTreeMap::new();
     for (f, w) in z.presentes() {
+        *t += 1;
         let k = clave(f, por);
         if solo.is_none_or(|s| s.contains(&k)) {
             grupos.entry(k).or_default().push((f, w));
@@ -767,7 +956,46 @@ fn agregar(
     }
     let mut out = Zset::nuevo();
     for (k, filas) in grupos {
-        let mut fila: Fila = por.iter().cloned().zip(k).collect();
+        *t += filas.len() as Trabajo;
+        out.insertar(de_un_grupo(&k, &filas, por, agregados)?, 1);
+    }
+    Ok(out)
+}
+
+/// **Solo los grupos que se piden**, buscándolos en el índice en vez de
+/// recorriéndolo entero. Es lo que hace que el paso de un agregado cueste lo
+/// que pesan los grupos que el Δ toca y no lo que pesa la vista.
+fn agregar_grupos(
+    idx: &Indice,
+    tocados: &BTreeSet<Vec<Valor>>,
+    por: &BTreeSet<String>,
+    agregados: &BTreeMap<String, Agregacion>,
+    t: &mut Trabajo,
+) -> Result<Zset, Evaluacion> {
+    let mut out = Zset::nuevo();
+    for k in tocados {
+        let Some(z) = idx.get(k) else { continue };
+        let filas: Vec<(&Fila, i64)> = z.presentes().collect();
+        *t += filas.len() as Trabajo;
+        if filas.is_empty() {
+            continue;
+        }
+        out.insertar(de_un_grupo(k, &filas, por, agregados)?, 1);
+    }
+    Ok(out)
+}
+
+/// El valor de cada agregado sobre las filas de **un** grupo. Escrito una vez:
+/// lo llaman el recómputo y el paso, y dos definiciones de `MIN` divergirían en
+/// el empate.
+fn de_un_grupo(
+    k: &[Valor],
+    filas: &[(&Fila, i64)],
+    por: &BTreeSet<String>,
+    agregados: &BTreeMap<String, Agregacion>,
+) -> Result<Fila, Evaluacion> {
+    {
+        let mut fila: Fila = por.iter().cloned().zip(k.iter().cloned()).collect();
         for (nombre, a) in agregados {
             let v = match (a.funcion, &a.sobre) {
                 (Agregado::Cuenta, _) => Valor::Entero(filas.iter().map(|(_, w)| w).sum()),
@@ -775,7 +1003,7 @@ fn agregar(
                 (_, None) => return Err(Evaluacion::ColumnaAusente(nombre.clone())),
                 (Agregado::Suma, Some(c)) => {
                     let mut acc: Option<Valor> = None;
-                    for (f, w) in &filas {
+                    for (f, w) in filas {
                         let v = f
                             .get(c)
                             .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?;
@@ -789,7 +1017,7 @@ fn agregar(
                 }
                 (f, Some(c)) => {
                     let mut mejor: Option<&Valor> = None;
-                    for (fila, _) in &filas {
+                    for (fila, _) in filas {
                         let v = fila
                             .get(c)
                             .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?;
@@ -812,9 +1040,8 @@ fn agregar(
             };
             fila.insert(nombre.clone(), v);
         }
-        out.insertar(fila, 1);
+        Ok(fila)
     }
-    Ok(out)
 }
 
 // ── Expresiones ─────────────────────────────────────────────────────────────

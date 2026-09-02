@@ -10,19 +10,42 @@
 //!
 //! # Esta pieza no inventa ningún número
 //!
-//! Estuvo bloqueada por medidas, y sigue sin tener las nuestras. Lo que se
-//! construye es la **forma** de la decisión, que sí está clara:
-//!
-//! - **entran medidas** —cuántas filas tiene la base y cuántas trae el delta—
-//!   que **mide quien llama**, sobre los Z-sets que ya tiene;
+//! - **entran medidas** —cuántas filas tiene la base, cuántas trae el delta y,
+//!   si quien llama lo contó, **cuánto trabajo costó de verdad el paso**;
 //! - **entra una política declarada**, con sus números a la vista;
 //! - **sale un dictamen auditable**: la decisión, **y todo lo que entró en ella**.
 //!
 //! El 5 % está aquí como [`Politica::documentada_por_snowflake`], **con su
-//! procedencia y sin hacerlo nuestro**. Y [`Politica::sin_medir`] es lo que dice
-//! ser: coeficientes de uno, para que la forma funcione hasta que haya medidas
-//! que los sustituyan. Un `if` con un número escondido dentro de otra pieza es
-//! exactamente lo que este módulo existe para que no ocurra.
+//! procedencia y sin hacerlo nuestro**. Un `if` con un número escondido dentro
+//! de otra pieza es exactamente lo que este módulo existe para que no ocurra.
+//!
+//! # Y ya hay medidas: `tests/medidas.rs`
+//!
+//! Estuvo bloqueada por ellas y ya no lo está. Contando **filas miradas por un
+//! operador** —no tiempo: un reloj mide la máquina de quien mide— sobre una base
+//! de mil filas, salen dos resultados que cambian lo que esta pieza debería
+//! hacer:
+//!
+//! | forma | integradores | cruce |
+//! |---|---|---|
+//! | filtra y proyecta | 0 | **no hay** |
+//! | junta por una clave | 2 | **no hay** |
+//! | suma por grupo | 1 | **2 %** con 20 grupos · **22,3 %** con 250 |
+//!
+//! > **Mantener gana siempre salvo en el agregado.** Un paso lineal mira el
+//! > delta; uno de junta, el delta y lo que empareja. El único operador cuyo
+//! > paso mira filas que no venían en el delta es el agregado, que relee los
+//! > grupos que el Δ toca.
+//!
+//! > **Y dónde se cruza el agregado es dato, no plan.** El mismo documento se
+//! > cruza en el 2 % o en el 22,3 % según cuántas filas tenga un grupo. **Un
+//! > umbral global no puede acertar en los dos** — y el 5 % cae entre medias.
+//!
+//! De ahí sale [`Politica::Trabajo`], que es la conclusión hecha código: si el
+//! cruce depende de los datos, la única forma de acertar es **medir en vez de
+//! extrapolar**. Quien mantiene ya cuenta el trabajo de cada paso
+//! ([`crate::delta_compiler::Circuito::trabajo`]); pasarlo aquí convierte la
+//! estimación en una comparación.
 //!
 //! # Lo que sí se sabe sin medir
 //!
@@ -40,7 +63,7 @@
 //! en `u128`. Es la regla de M0 una vez más — y aquí además hace que dos
 //! ejecuciones con las mismas medidas den el mismo dictamen byte a byte.
 
-use crate::delta_compiler::Zset;
+use crate::delta_compiler::{Trabajo, Zset};
 use crate::plan::Nodo;
 use crate::refresh_analyzer::{RefreshMode, analizar};
 
@@ -49,6 +72,13 @@ use crate::refresh_analyzer::{RefreshMode, analizar};
 pub struct Medida {
     pub filas_base: u64,
     pub filas_delta: u64,
+    /// **Lo que costó de verdad el paso**, en filas miradas, si quien llama lo
+    /// contó. Con esto la decisión deja de extrapolar del tamaño del delta y
+    /// pasa a comparar un número medido contra otro.
+    ///
+    /// `None` es lo normal para quien solo tiene tamaños; entonces se estima, y
+    /// el dictamen lo dice.
+    pub trabajo: Option<Trabajo>,
 }
 
 impl Medida {
@@ -58,6 +88,17 @@ impl Medida {
         Medida {
             filas_base: base.filas().count() as u64,
             filas_delta: delta.filas().count() as u64,
+            trabajo: None,
+        }
+    }
+
+    /// Con el trabajo del paso ya contado. Es lo que puede dar quien mantiene:
+    /// [`crate::delta_compiler::Circuito::trabajo`] antes y después.
+    pub fn contada(filas_base: u64, filas_delta: u64, trabajo: Trabajo) -> Medida {
+        Medida {
+            filas_base,
+            filas_delta,
+            trabajo: Some(trabajo),
         }
     }
 }
@@ -76,6 +117,24 @@ pub enum Politica {
         por_fila_recomputo: u64,
         por_integrador: u64,
     },
+    /// **Lo medido contra lo medido.** El coste de mantener es el trabajo que
+    /// el paso costó —`medida.trabajo`, contado, no estimado— y el de recomputar
+    /// es `filas_base · por_fila_recomputo`.
+    ///
+    /// `por_fila_recomputo` también se mide, y quien mantiene lo tiene gratis:
+    /// **la carga inicial de una sesión ES un recómputo**, así que lo que costó
+    /// dividido por las filas que entraron es el coste por fila de recomputar
+    /// esta vista sobre estos datos. Medido en `tests/medidas.rs`: 2 para un
+    /// plan lineal, 3 para una junta, 2 para un agregado.
+    ///
+    /// Es la política que sale de haber medido, y existe porque la medición dijo
+    /// que **el cruce depende de los datos**: un umbral fijo no puede acertar en
+    /// una vista con veinte grupos y en otra con doscientos cincuenta.
+    ///
+    /// Sin `medida.trabajo` no puede decidir, y **lo dice** en vez de estimar por
+    /// su cuenta: una política que se llama «lo medido» y adivina sería la peor
+    /// clase de número escondido.
+    Trabajo { por_fila_recomputo: u64 },
 }
 
 impl Politica {
@@ -113,6 +172,9 @@ impl Politica {
                 "coeficientes delta={por_fila_delta} recómputo={por_fila_recomputo} \
                  integrador={por_integrador}"
             ),
+            Politica::Trabajo { por_fila_recomputo } => {
+                format!("trabajo medido · recómputo={por_fila_recomputo} por fila")
+            }
         }
     }
 }
@@ -203,6 +265,27 @@ pub fn decidir(plan: &Nodo, medida: Medida, politica: &Politica) -> Dictamen {
                     )
                 }
             }
+            // Con el trabajo contado no hay nada que extrapolar: se compara.
+            Politica::Trabajo { por_fila_recomputo } => match medida.trabajo {
+                None => (
+                    Decision::Incremental,
+                    "la política decide con el trabajo medido y esta medida no lo trae; \
+                     se mantiene, que es lo que conserva la frescura"
+                        .into(),
+                ),
+                Some(w) => {
+                    let recomputar =
+                        u128::from(medida.filas_base) * u128::from(*por_fila_recomputo);
+                    let porque = format!(
+                        "mantener costó {w} filas miradas y recomputar costaría {recomputar}"
+                    );
+                    if u128::from(w) <= recomputar {
+                        (Decision::Incremental, porque)
+                    } else {
+                        (Decision::Recomputar, porque)
+                    }
+                }
+            },
             Politica::Coeficientes {
                 por_fila_delta,
                 por_fila_recomputo,
@@ -281,7 +364,48 @@ mod tests {
         Medida {
             filas_base: base,
             filas_delta: delta,
+            trabajo: None,
         }
+    }
+
+    /// **Con el trabajo contado, la decisión deja de extrapolar.**
+    ///
+    /// Es la política que sale de haber medido: `tests/medidas.rs` dice que el
+    /// cruce depende de los datos, así que la única forma de acertar es comparar
+    /// lo que el paso costó contra lo que costaría recomputar. Las dos cifras
+    /// son filas miradas, así que se restan sin convertir nada.
+    #[test]
+    fn la_politica_del_trabajo_compara_medidas_en_vez_de_estimar() {
+        let plan = lineal();
+        // Una vista de mil filas que cuesta 2 por fila recomputar: 2000.
+        let p = Politica::Trabajo {
+            por_fila_recomputo: 2,
+        };
+
+        // Un paso que costó 8 filas miradas: mantener, sin discusión.
+        let d = decidir(&plan, Medida::contada(1000, 4, 8), &p);
+        assert_eq!(d.decision, Decision::Incremental);
+        assert!(
+            d.porque.contains("costó 8") && d.porque.contains("2000"),
+            "{}",
+            d.porque
+        );
+
+        // Uno que costó 2001: recomputar. Y el dictamen enseña los dos números,
+        // que es lo que permite discutirlo.
+        let d = decidir(&plan, Medida::contada(1000, 900, 2001), &p);
+        assert_eq!(d.decision, Decision::Recomputar);
+        assert!(
+            d.porque.contains("2001") && d.porque.contains("2000"),
+            "{}",
+            d.porque
+        );
+
+        // Y sin trabajo medido **no adivina**: lo dice y mantiene, que es lo
+        // que conserva la frescura.
+        let d = decidir(&plan, m(1000, 900), &p);
+        assert_eq!(d.decision, Decision::Incremental);
+        assert!(d.porque.contains("no lo trae"), "{}", d.porque);
     }
 
     /// **Sin regla no hay decisión.** Un plan `FULL` se recomputa sea cual sea

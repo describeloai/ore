@@ -58,6 +58,20 @@
 //! sitio más donde vive un secreto. La petición sale sin ella y la completa
 //! quien la tiene.
 //!
+//! ## 2 bis · Mide los dos lados, y **la carga inicial es el patrón**
+//!
+//! Cada paso trae `trabajo`: las filas que el circuito miró para producirlo,
+//! contadas, no estimadas. Y la otra mitad de la balanza —lo que costaría
+//! recomputar— sale de un sitio que ya se paga: **la carga inicial de una
+//! sesión es un recómputo**, así que lo que costó dividido por las filas que
+//! entraron es el coste por fila de recomputar *esta* vista sobre *estos*
+//! datos.
+//!
+//! Por eso la política por defecto es [`Politica::Trabajo`] y no un umbral: las
+//! medidas dicen que el cruce depende de los datos —el mismo agregado se cruza
+//! en el 2 % con veinte grupos y en el 22,3 % con doscientos cincuenta— así que
+//! un número fijo no puede acertar en los dos. Comparar dos medidas sí.
+//!
 //! ## 3 · El dictamen viaja, y **no se obedece solo**
 //!
 //! Cada paso trae su dictamen del Cost Model, con las medidas que entraron. Y
@@ -98,8 +112,16 @@ pub struct Sesion {
     circuito: Circuito,
     almacen: StateStore,
     capacidades: BTreeMap<String, Capacidades>,
-    politica: Politica,
+    /// La declarada, si la sesión trajo una. Sin ella se usa la medida.
+    politica: Option<Politica>,
     pasos: u64,
+    /// Filas que hay en las hojas, en neto: se suman los pesos de cada delta,
+    /// así que una retractación baja. Es `filas_base` para el Cost Model.
+    filas_hojas: i64,
+    /// Lo que costó recomputar una fila, medido en la carga inicial. `None`
+    /// hasta que haya un primer paso del que sacarlo.
+    por_fila_recomputo: Option<u64>,
+    trabajo: u64,
 }
 
 impl Sesion {
@@ -166,13 +188,12 @@ impl Sesion {
             })
             .unwrap_or_default();
 
-        // Sin política declarada, la que dice ser lo que es. **No se elige la de
-        // Snowflake por defecto**: es su cifra, no la nuestra, y ponerla de
-        // silencio la convertiría en nuestra.
-        let politica = n
-            .get("politica")
-            .and_then(|(_, p)| politica_de(p))
-            .unwrap_or_else(Politica::sin_medir);
+        // Una política declarada manda. Sin ella, la sesión **mide**: cuenta lo
+        // que cuesta cada paso y saca de la carga inicial lo que cuesta
+        // recomputar una fila. **No se elige la de Snowflake por defecto**: es
+        // su cifra, no la nuestra, y ponerla en silencio la convertiría en
+        // nuestra.
+        let politica = n.get("politica").and_then(|(_, p)| politica_de(p));
 
         Ok(Sesion {
             plan,
@@ -181,6 +202,9 @@ impl Sesion {
             capacidades,
             politica,
             pasos: 0,
+            filas_hojas: 0,
+            por_fila_recomputo: None,
+            trabajo: 0,
         })
     }
 
@@ -300,18 +324,37 @@ impl Sesion {
             deltas.insert((ds.to_string(), ob.to_string()), z);
         }
 
-        // La medida, ANTES del paso: el dictamen habla de lo que había.
-        let medida = Medida {
-            filas_base: entero(n, "base").unwrap_or_else(|| self.almacen.filas()),
-            filas_delta,
-        };
-        let dictamen = decidir(&self.plan, medida, &self.politica);
+        // Las filas de las hojas, en neto: es la base contra la que se compara
+        // un recómputo. Quien llame puede decirla con `base` si la sabe mejor.
+        let neto: i64 = deltas
+            .values()
+            .flat_map(|z| z.filas().map(|(_, w)| w))
+            .sum();
+        self.filas_hojas += neto;
 
+        // El paso, contando lo que mira.
+        let antes = self.circuito.trabajo();
         let salida = match self.circuito.paso(&deltas) {
             Ok(s) => s,
             Err(e) => return error("delta", &e.como_texto()),
         };
+        let trabajo = self.circuito.trabajo() - antes;
+        self.trabajo += trabajo;
         self.pasos += 1;
+
+        // **La carga inicial es un recómputo**, así que de ella sale el coste
+        // por fila de recomputar esta vista. Se toma del primer paso y no se
+        // vuelve a tocar: los siguientes son incrementales y medirían otra cosa.
+        if self.por_fila_recomputo.is_none() && self.filas_hojas > 0 {
+            self.por_fila_recomputo = Some(trabajo.div_ceil(self.filas_hojas as u64).max(1));
+        }
+
+        let base = entero(n, "base").unwrap_or(self.filas_hojas.max(0) as u64);
+        let medida = Medida::contada(base, filas_delta, trabajo);
+        let politica = self.politica.clone().unwrap_or(Politica::Trabajo {
+            por_fila_recomputo: self.por_fila_recomputo.unwrap_or(1),
+        });
+        let dictamen = decidir(&self.plan, medida, &politica);
 
         let aplicacion = match self.almacen.aplicar(&salida, marca) {
             Ok(a) => a,
@@ -331,6 +374,9 @@ impl Sesion {
             ("base", Json::Int(medida.filas_base as i64)),
             ("delta", Json::Int(medida.filas_delta as i64)),
             ("integradores", Json::Int(dictamen.integradores as i64)),
+            // Lo que este paso costó de verdad, en filas miradas. No es tiempo:
+            // un reloj mediría la máquina de quien mide.
+            ("trabajo", Json::Int(trabajo as i64)),
             ("salida", salida.json()),
             ("aplicadas", Json::Int(aplicacion.aplicadas as i64)),
             (
@@ -369,6 +415,7 @@ impl Sesion {
             ("rellenos", Json::Int(s.rellenos as i64)),
             ("calientes", Json::Int(self.almacen.claves().len() as i64)),
             ("filas", Json::Int(self.almacen.filas() as i64)),
+            ("trabajo", Json::Int(self.trabajo as i64)),
         ])
     }
 
@@ -385,6 +432,11 @@ impl Sesion {
             ("rellenos", Json::Int(s.rellenos as i64)),
             ("calientes", Json::Int(self.almacen.claves().len() as i64)),
             ("filas", Json::Int(self.almacen.filas() as i64)),
+            ("trabajo", Json::Int(self.trabajo as i64)),
+            (
+                "porFilaRecomputo",
+                Json::Int(self.por_fila_recomputo.unwrap_or(0) as i64),
+            ),
         ])
     }
 }
@@ -417,6 +469,11 @@ fn clave_de(n: &Node) -> Result<Vec<Valor>, String> {
 }
 
 fn politica_de(n: &Node) -> Option<Politica> {
+    if let Some((_, t)) = n.get("trabajo") {
+        return Some(Politica::Trabajo {
+            por_fila_recomputo: entero(t, "porFilaRecomputo")?,
+        });
+    }
     if let Some((_, u)) = n.get("umbral") {
         return Some(Politica::Umbral {
             numerador: entero(u, "numerador")?,

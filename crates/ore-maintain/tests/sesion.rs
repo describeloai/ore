@@ -600,6 +600,102 @@ fn el_dictamen_dice_recomputar_y_el_paso_se_aplica_igual() {
     assert_eq!(campo(&r, "integradores"), "2", "{r:?}");
 }
 
+// ── 6 bis · mide los dos lados ──────────────────────────────────────────────
+
+/// **La sesión mide, y decide con lo medido.**
+///
+/// Sin política declarada, el mantenedor cuenta lo que cuesta cada paso y saca
+/// de la carga inicial —que **es** un recómputo— lo que cuesta recomputar una
+/// fila. Con eso el dictamen deja de extrapolar del tamaño del delta y pasa a
+/// comparar dos números que se midieron igual.
+#[test]
+fn la_sesion_mide_los_dos_lados_y_decide_con_lo_medido() {
+    let mut s = abrir(&sesion_json(&vista(), vec![])).expect("abre");
+
+    // La carga: doscientos pedidos y la tabla de dimensión.
+    let mut carga = Zset::nuevo();
+    for i in 0..200i64 {
+        carga.insertar(
+            fila(&[
+                ("id", Valor::Entero(i)),
+                ("pais", cadena(if i % 2 == 0 { "ES" } else { "PT" })),
+                ("total", dec(&i.to_string())),
+            ]),
+            1,
+        );
+    }
+    let dim = Zset::de([
+        (
+            fila(&[("codigo", cadena("ES")), ("region", cadena("sur"))]),
+            1,
+        ),
+        (
+            fila(&[("codigo", cadena("PT")), ("region", cadena("oeste"))]),
+            1,
+        ),
+    ]);
+    let r = orden(
+        &mut s,
+        Json::obj([
+            ("op", Json::s("delta")),
+            ("marca", Json::Int(1)),
+            (
+                "hojas",
+                Json::Arr(vec![
+                    hoja("lago", "ventas.pedidos", &carga),
+                    hoja("referencias", "ref.paises", &dim),
+                ]),
+            ),
+        ]),
+    );
+    let carga_trabajo: u64 = campo(&r, "trabajo").parse().expect("un número");
+    assert!(
+        carga_trabajo > 200,
+        "la carga mira al menos sus filas: {r:?}"
+    );
+
+    // Y ahora un paso de una fila. Cuesta un puñado de miradas contra las
+    // cientos que costaría recomputar: mantener, y el dictamen enseña las dos.
+    let una = Zset::de([(
+        fila(&[
+            ("id", Valor::Entero(999)),
+            ("pais", cadena("ES")),
+            ("total", dec("1")),
+        ]),
+        1,
+    )]);
+    let r = orden(
+        &mut s,
+        Json::obj([
+            ("op", Json::s("delta")),
+            ("marca", Json::Int(2)),
+            (
+                "hojas",
+                Json::Arr(vec![hoja("lago", "ventas.pedidos", &una)]),
+            ),
+        ]),
+    );
+    let paso: u64 = campo(&r, "trabajo").parse().expect("un número");
+    assert!(paso < 10, "un paso de una fila mira un puñado: {paso}");
+    assert_eq!(campo(&r, "decision"), "incremental", "{r:?}");
+    assert!(
+        campo(&r, "porque").contains("filas miradas"),
+        "el dictamen compara medidas: {r:?}"
+    );
+
+    // El informe trae lo que se midió, que es lo que queda cuando la sesión ya
+    // no está.
+    let fin = parse(&s.fin().jcs()).expect("analiza");
+    assert!(
+        campo(&fin, "porFilaRecomputo").parse::<u64>().unwrap() >= 1,
+        "{fin:?}"
+    );
+    assert_eq!(
+        campo(&fin, "trabajo").parse::<u64>().unwrap(),
+        carga_trabajo + paso
+    );
+}
+
 // ── 7 · y todo eso, por stdin ───────────────────────────────────────────────
 
 /// El protocolo de verdad: un proceso, líneas por stdin, una respuesta por

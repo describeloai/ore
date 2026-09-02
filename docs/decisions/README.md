@@ -23,6 +23,11 @@ favor no es un registro: es una colección de justificaciones.
 | [0011](0011-el-informe-no-lista-incumplimientos.md) · el informe no lista incumplimientos | `ore report` atribuye; el compilador es quien rechaza | aceptado |
 | [0012](0012-el-estado-es-parcial-y-vive-en-el-cliente.md) · el estado es parcial y vive en el cliente | el mantenimiento incremental recuerda por clave, en el almacenamiento del cliente; un *miss* es un plan | aceptado |
 | [0013](0013-el-protocolo-del-mantenedor.md) · el protocolo del mantenedor | mantener es una **sesión** por stdin, y el dictamen de coste no se obedece a sí mismo | aceptado |
+| [0014](0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) · no se mide el tiempo, se cuenta el trabajo | la unidad de coste es **una fila mirada por un operador**; y medir destapó que la incrementalización estaba escrita y no ocurría | aceptado |
+
+**0013 y 0014 salieron del mismo trabajo**: construir el ejecutor delegado dejó por primera vez
+un sitio donde el circuito corre, y eso hizo posible medirlo — que fue lo que destapó que dos
+integradores no estaban indexados.
 
 **0008 y 0013 son el mismo protocolo con y sin memoria**: el driver es una función —entra una
 petición, sale una respuesta, el proceso muere— y el mantenedor es una sesión, porque el estado
