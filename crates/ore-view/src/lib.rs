@@ -36,6 +36,7 @@
 //! | **Filter Tree** | [`filter_tree`] | M5 | de todas las materializaciones, cuáles podrían servir |
 //! | **View Matcher** | [`view_matcher`] | M5 | si esta la contesta, con qué compensation, y qué hereda |
 //! | **Delta Compiler** | [`delta_compiler`] | M6 | el circuito Δ de un plan, y el estado que exige |
+//! | **Refresh Analyzer** | [`refresh_analyzer`] | M6 | `INCREMENTAL` o `FULL`, y si `FULL`, todos los motivos |
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -51,6 +52,7 @@ pub mod filter_tree;
 pub mod flow;
 pub mod lineage;
 pub mod plan;
+pub mod refresh_analyzer;
 pub mod schema;
 pub mod view_matcher;
 

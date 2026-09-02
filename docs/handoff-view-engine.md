@@ -521,11 +521,11 @@ flowchart TB
 | **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ✅ |
 | **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ✅ |
-| **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
+| **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ✅ |
 | **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, nueve construidas.** M5 está entero; M6 ha empezado. Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, diez construidas.** M5 está entero; de M6 quedan el estado y el coste. Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -836,10 +836,32 @@ siquiera literales `Float`** — esa última se decidió en M0 por el digest, no
 El único agujero era la expresión opaca, y **ya está tapado**: `Opaca::determinista`, por defecto
 `false`. `Nodo::deterministico()` es literalmente la precondición que esta pieza consulta.
 
-**Listo cuando:** una vista con un `MIN` y una opaca volátil sale como `FULL` **nombrando los
-dos**, y una que solo tiene projections y filters sale como `INCREMENTAL` **con state cero**.
+**Listo cuando:** una vista con un `PROMEDIO` y una opaca volátil sale como `FULL` **nombrando
+los dos**, y una que solo tiene projections y filters sale como `INCREMENTAL` **con state cero**.
+✅ · 125 comprobaciones en el crate.
 
-**Coste:** bajo. Es una lectura del plan contra la tabla de §II.1.
+**Coste:** bajo, y lo fue. Es una lectura del plan contra la tabla de §II.1.
+
+> **Construido · 2026-09-01, y con una corrección al plano.** El criterio decía *«una vista con
+> un `MIN`»*, y un `MIN` **no** es `FULL`: el Delta Compiler lo mantiene recomputando el grupo que
+> el Δ toca. Lo que `MIN` y `MAX` cuestan es **estado** —el multiconjunto del grupo, porque no
+> son invertibles bajo baja— y salen `INCREMENTAL` con el estado dicho. Lo medido manda sobre lo
+> planeado, y el criterio se reescribió con lo que es `FULL` de verdad: `Limita`, `PROMEDIO`, una
+> opaca volátil, una junta externa.
+>
+> **Una regla, escrita una vez.** Los motivos de `FULL` son exactamente los refusals del Delta
+> Compiler: `delta_compiler::motivos` los recoge **por todo el árbol** —un `Limita` arriba y un
+> `PROMEDIO` abajo salen los dos—, y `Circuito::compilar` consulta la misma función antes de
+> construir nada. Hay una prueba que compara las dos piezas sobre planes de todas las formas: si
+> esta dijera `INCREMENTAL` y el compilador refusara, habría dos definiciones de «mantenible».
+>
+> Y el informe es el que Snowflake escribe en su catálogo, dicho **antes de escribir la vista**:
+>
+> ```text
+> ventas.resumen  →  REFRESH_MODE = FULL
+>   ← `media` es un promedio y mantenerlo exige dividir, y el álgebra no tiene división
+>   ← una opaca en `bigquery` no declara ser determinista
+> ```
 
 ---
 
@@ -910,13 +932,13 @@ cuele como un `if` improvisado dentro de otra pieza el día que haga falta.
 ```text
 M5   Filter Tree ✅  ──►  View Matcher ✅ (1·2·3·4·5)
 
-M6   Delta Compiler ✅  ──►  Refresh Analyzer  ──►  Partial State Store  ──►  Cost Model
-                                    ▲                                              ▲
-                               vale ya solo                             bloqueado por medidas
+M6   Delta Compiler ✅  ──►  Refresh Analyzer ✅  ──►  Partial State Store  ──►  Cost Model
+                                                                                   ▲
+                                                                        bloqueado por medidas
 ```
 
-**M5 está entero y compiló en esta máquina.** Lo que queda de puro son el Delta Compiler y el
-Refresh Analyzer, que se miden sin depender de CI y sin depender de nadie.
+**M5 está entero, y de M6 lo puro también.** Lo que queda —el Partial State Store y el Cost
+Model— es lo único que guarda algo o necesita medidas.
 
 Y hay un orden **entre** las dos partes que conviene ver: **el Refresh Analyzer antes que el
 Partial State Store**. Saber qué vistas se pueden mantener es lo que dice cuánto *state* hará

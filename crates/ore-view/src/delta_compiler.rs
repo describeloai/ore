@@ -153,8 +153,11 @@ pub enum NoIncrementalizable {
         nombre: String,
     },
     /// Una opaca que no declara ser determinista puede dar otro valor la
-    /// segunda vez, y entonces `Δ` no significa nada.
-    OpacaVolatil,
+    /// segunda vez, y entonces `Δ` no significa nada. Se dice de qué dialecto,
+    /// para que el informe la sitúe.
+    OpacaVolatil {
+        dialecto: String,
+    },
     /// Una junta externa produce filas con columnas ausentes, y esta semántica
     /// no tiene nulos. La regla bilineal es de la interna.
     JuntaExterna,
@@ -173,10 +176,10 @@ impl NoIncrementalizable {
                 "`{nombre}` es un promedio y mantenerlo exige dividir, y el álgebra no tiene \
                  división: guárdense SUMA y CUENTA aparte"
             ),
-            NoIncrementalizable::OpacaVolatil => "una opaca que no declara ser determinista puede \
-                                                  dar otro valor la segunda vez, y entonces Δ no \
-                                                  significa nada"
-                .into(),
+            NoIncrementalizable::OpacaVolatil { dialecto } => format!(
+                "una opaca en `{dialecto}` no declara ser determinista: puede dar otro valor \
+                 la segunda vez, y entonces Δ no significa nada"
+            ),
             NoIncrementalizable::JuntaExterna => "una junta externa produce filas con columnas \
                                                   ausentes, y esta semántica no tiene nulos: la \
                                                   regla bilineal es de la interna"
@@ -253,9 +256,17 @@ pub struct Circuito {
 
 impl Circuito {
     /// **`Q^Δ`.** Falla por lo que no se puede mantener, y lo dice.
+    ///
+    /// Consulta [`motivos`] antes de construir nada: es la **misma lista** que
+    /// el Refresh Analyzer enseña, y por eso no pueden discrepar. Los brazos
+    /// que refusan dentro de `construir` se quedan por si acaso, y devuelven lo
+    /// mismo.
     pub fn compilar(plan: &Nodo) -> Result<Circuito, NoIncrementalizable> {
+        if let Some(m) = motivos(plan).into_iter().next() {
+            return Err(m);
+        }
         Ok(Circuito {
-            raiz: compilar(plan)?,
+            raiz: construir(plan)?,
         })
     }
 
@@ -274,7 +285,87 @@ impl Circuito {
     }
 }
 
-fn compilar(n: &Nodo) -> Result<Op, NoIncrementalizable> {
+/// **Todos** los motivos por los que un plan no se mantiene incrementalmente,
+/// recorriendo el árbol entero. Es la única definición de «mantenible» que hay:
+/// `Circuito::compilar` devuelve el primero de esta lista, y el Refresh
+/// Analyzer la enseña entera.
+///
+/// Un motivo idéntico no se repite: dos opacas volátiles del mismo dialecto son
+/// un aviso, no dos. Repetir el mismo defecto veinte veces entierra los otros
+/// diecinueve.
+pub fn motivos(plan: &Nodo) -> Vec<NoIncrementalizable> {
+    fn empujar(out: &mut Vec<NoIncrementalizable>, m: NoIncrementalizable) {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    fn de_expr(x: &Expr, out: &mut Vec<NoIncrementalizable>) {
+        for o in x.opacas() {
+            if !o.determinista {
+                empujar(
+                    out,
+                    NoIncrementalizable::OpacaVolatil {
+                        dialecto: o.dialecto.clone(),
+                    },
+                );
+            }
+        }
+    }
+    fn recorrer(n: &Nodo, out: &mut Vec<NoIncrementalizable>) {
+        match n {
+            Nodo::Referencia(v) => {
+                empujar(out, NoIncrementalizable::SinExpandir { vista: v.clone() })
+            }
+            Nodo::Lee(_) => {}
+            Nodo::Proyecta { entrada, campos } => {
+                campos.values().for_each(|x| de_expr(x, out));
+                recorrer(entrada, out);
+            }
+            Nodo::Filtra { entrada, predicado } => {
+                de_expr(predicado, out);
+                recorrer(entrada, out);
+            }
+            Nodo::Une {
+                izquierda,
+                derecha,
+                tipo,
+                ..
+            } => {
+                if *tipo != Junta::Interna {
+                    empujar(out, NoIncrementalizable::JuntaExterna);
+                }
+                recorrer(izquierda, out);
+                recorrer(derecha, out);
+            }
+            Nodo::Agrupa {
+                entrada, agregados, ..
+            } => {
+                for (nombre, a) in agregados {
+                    if a.funcion == Agregado::Promedio {
+                        empujar(
+                            out,
+                            NoIncrementalizable::Promedio {
+                                nombre: nombre.clone(),
+                            },
+                        );
+                    }
+                }
+                recorrer(entrada, out);
+            }
+            Nodo::Unifica(v) => v.iter().for_each(|r| recorrer(r, out)),
+            Nodo::Distingue(e) => recorrer(e, out),
+            Nodo::Limita { entrada, .. } => {
+                empujar(out, NoIncrementalizable::Limita);
+                recorrer(entrada, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    recorrer(plan, &mut out);
+    out
+}
+
+fn construir(n: &Nodo) -> Result<Op, NoIncrementalizable> {
     Ok(match n {
         Nodo::Referencia(v) => return Err(NoIncrementalizable::SinExpandir { vista: v.clone() }),
         Nodo::Lee(l) => Op::Hoja((l.datasource.clone(), l.objeto.clone())),
@@ -283,14 +374,14 @@ fn compilar(n: &Nodo) -> Result<Op, NoIncrementalizable> {
                 sin_volatiles(x)?;
             }
             Op::Proyecta {
-                entrada: Box::new(compilar(entrada)?),
+                entrada: Box::new(construir(entrada)?),
                 campos: campos.clone(),
             }
         }
         Nodo::Filtra { entrada, predicado } => {
             sin_volatiles(predicado)?;
             Op::Filtra {
-                entrada: Box::new(compilar(entrada)?),
+                entrada: Box::new(construir(entrada)?),
                 predicado: predicado.clone(),
             }
         }
@@ -304,8 +395,8 @@ fn compilar(n: &Nodo) -> Result<Op, NoIncrementalizable> {
                 return Err(NoIncrementalizable::JuntaExterna);
             }
             Op::Une {
-                izquierda: Box::new(compilar(izquierda)?),
-                derecha: Box::new(compilar(derecha)?),
+                izquierda: Box::new(construir(izquierda)?),
+                derecha: Box::new(construir(derecha)?),
                 sobre: sobre.clone(),
                 i_izquierda: Zset::nuevo(),
                 i_derecha: Zset::nuevo(),
@@ -325,15 +416,15 @@ fn compilar(n: &Nodo) -> Result<Op, NoIncrementalizable> {
                 });
             }
             Op::Agrupa {
-                entrada: Box::new(compilar(entrada)?),
+                entrada: Box::new(construir(entrada)?),
                 por: por.clone(),
                 agregados: agregados.clone(),
                 integrado: Zset::nuevo(),
             }
         }
-        Nodo::Unifica(v) => Op::Unifica(v.iter().map(compilar).collect::<Result<_, _>>()?),
+        Nodo::Unifica(v) => Op::Unifica(v.iter().map(construir).collect::<Result<_, _>>()?),
         Nodo::Distingue(e) => Op::Distingue {
-            entrada: Box::new(compilar(e)?),
+            entrada: Box::new(construir(e)?),
             integrado: Zset::nuevo(),
         },
         Nodo::Limita { .. } => return Err(NoIncrementalizable::Limita),
@@ -341,8 +432,10 @@ fn compilar(n: &Nodo) -> Result<Op, NoIncrementalizable> {
 }
 
 fn sin_volatiles(x: &Expr) -> Result<(), NoIncrementalizable> {
-    if x.opacas().iter().any(|o| !o.determinista) {
-        return Err(NoIncrementalizable::OpacaVolatil);
+    if let Some(o) = x.opacas().iter().find(|o| !o.determinista) {
+        return Err(NoIncrementalizable::OpacaVolatil {
+            dialecto: o.dialecto.clone(),
+        });
     }
     Ok(())
 }
@@ -1122,7 +1215,9 @@ mod tests {
         };
         assert_eq!(
             Circuito::compilar(&volatil).err(),
-            Some(NoIncrementalizable::OpacaVolatil)
+            Some(NoIncrementalizable::OpacaVolatil {
+                dialecto: "bigquery".into()
+            })
         );
         assert_eq!(
             Circuito::compilar(&Nodo::Referencia("v".into())).err(),
