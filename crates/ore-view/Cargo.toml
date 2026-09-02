@@ -6,7 +6,7 @@
 #   Un motor de vistas es un compilador de algebra relacional con un catalogo
 #   versionado, un modelo de capacidades y un reescritor. La ejecucion es de otro.
 #
-# Razonamiento completo y peldanos: docs/handoff-view-engine.md
+# Que es, las doce piezas y las reglas que no hay que deshacer: docs/view-engine.md
 [package]
 name        = "ore-view"
 version     = { workspace = true }

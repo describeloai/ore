@@ -19,11 +19,11 @@
 //! se pueda mirar no hay reescritura, no hay linaje derivado, no hay reparto por
 //! capacidades y no hay incremental: solo hay cadenas de SQL.
 //!
-//! # Las piezas construidas
+//! # Las doce piezas
 //!
 //! Se nombran con la terminología del sector y no con nombres propios: un
-//! ingeniero de datos tiene que poder leer esto sin traducir nada. El plano
-//! entero —con las seis que faltan— está en `docs/handoff-view-engine.md`.
+//! ingeniero de datos tiene que poder leer esto sin traducir nada. Lo que hay
+//! que saber para no deshacerlas está en `docs/view-engine.md`.
 //!
 //! | Pieza | Módulo | Fase | Qué contesta |
 //! |---|---|---|---|
@@ -38,16 +38,18 @@
 //! | **Delta Compiler** | [`delta_compiler`] | M6 | el circuito Δ de un plan, y el estado que exige |
 //! | **Refresh Analyzer** | [`refresh_analyzer`] | M6 | `INCREMENTAL` o `FULL`, y si `FULL`, todos los motivos |
 //! | **Partial State Store** | [`state_store`] | M6 | qué claves están calientes, y la *upquery* de las que no |
+//! | **Cost Model** | [`cost_model`] | M6 | incrementar o recomputar, con todo lo que entró a la vista |
 //!
-//! # Lo que este crate no toca todavía
+//! # Lo que este crate no toca
 //!
 //! No lee documentos OOS, no sabe qué es una entidad y no conoce el retículo. Es
-//! álgebra sobre nombres y tipos. Lo que lo conectará con el resto viene
-//! después y **a propósito**: la pieza se está construyendo por su cuenta antes
-//! de decidir cómo entra.
+//! álgebra sobre nombres y tipos. Se construyó libre **a propósito**, y
+//! conectarlo con el resto —la absorción— es el trabajo de
+//! `docs/handoff-vistas.md`, que sigue abierto.
 
 pub mod capabilities;
 pub mod catalog;
+pub mod cost_model;
 pub mod delta_compiler;
 pub mod filter_tree;
 pub mod flow;
@@ -60,6 +62,7 @@ pub mod view_matcher;
 
 pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
 pub use catalog::{Catalogo, Expansion, Vista};
+pub use cost_model::{Decision, Dictamen, Medida, Politica, decidir};
 pub use delta_compiler::{
     Circuito, Estado, Evaluacion, Fila, NoIncrementalizable, Zset, recomputar,
 };

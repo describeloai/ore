@@ -21,6 +21,11 @@ favor no es un registro: es una colección de justificaciones.
 | [0009](0009-que-se-distribuye.md) · qué se distribuye | se publica el compilador; el ejecutor se construye desde la fuente | aceptado |
 | [0010](0010-el-refresco-sustituye.md) · el refresco sustituye | una fila es el conjunto de aristas de su clave, y la marca avanza | aceptado |
 | [0011](0011-el-informe-no-lista-incumplimientos.md) · el informe no lista incumplimientos | `ore report` atribuye; el compilador es quien rechaza | aceptado |
+| [0012](0012-el-estado-es-parcial-y-vive-en-el-cliente.md) · el estado es parcial y vive en el cliente | el mantenimiento incremental recuerda por clave, en el almacenamiento del cliente; un *miss* es un plan | aceptado |
+
+**0006 y 0012 se leen juntas**: la primera dice que ORE no opera ninguna base de datos; la
+segunda, dónde vive entonces lo que el mantenimiento incremental tiene que recordar, y por qué
+eso no contradice a la primera.
 
 **0007 y 0009 son la misma decisión mirada en dos momentos**: la primera saca el evaluador del
 compilador, la segunda decide qué pasa con lo que quedó fuera el día de publicar. Si alguna
