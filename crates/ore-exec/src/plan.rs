@@ -85,13 +85,16 @@ pub enum Rechazo {
     PeticionInvalida(String),
     /// La política podó el plan hasta dejarlo vacío.
     NoAutorizado { porque: Vec<String> },
-    /// El plan exige una operación que las capacidades no autorizan.
+    /// El plan exige una operación que las capacidades no autorizan. `binding`
+    /// nombra a quien las declaró: un binding, o la vista que toca la fuente.
     PlanRechazado {
         binding: String,
         campo: String,
         porque: String,
     },
-    /// Una propiedad no la mapea ningún binding: no hay de dónde leerla.
+    /// Una propiedad no la mapea ningún binding ni la vista que respalda a la
+    /// entidad: no hay de dónde leerla. El nombre es de antes de la vista y se
+    /// queda: quien lo recibe pregunta lo mismo que preguntaba.
     SinBinding { propiedad: String },
     /// Hay más de una lectura que ensamblar y la clave no está autorizada.
     /// Juntar por un campo vacío produciría una fila que mezcla dos personas.
@@ -454,26 +457,16 @@ impl Motor {
                 if via.len() != 1 {
                     continue;
                 }
-                for b in self.paquete.docs.iter().filter(|d| {
-                    d.kind == ore_core::document::Kind::Binding
-                        && d.section("targetEntity").and_then(|t| t.as_str()) == Some(qn.as_str())
-                }) {
-                    let mapa = columnas(b);
-                    let (Some(cd), Some(ch)) = (mapa.get(&clave[0]), mapa.get(&via[0])) else {
-                        continue;
-                    };
-                    let Some(ds) = b.section("datasourceRef").and_then(|v| v.as_str()) else {
+                for f in self.fisicas(&qn) {
+                    let (Some(cd), Some(ch)) = (f.columnas.get(&clave[0]), f.columnas.get(&via[0]))
+                    else {
                         continue;
                     };
                     out.push((
                         format!("{qn}.{nombre}"),
                         Lectura {
-                            datasource: ds.to_string(),
-                            objeto: b
-                                .section("source")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
+                            datasource: f.datasource.clone(),
+                            objeto: f.objeto.clone(),
                             proyeccion: BTreeMap::from([
                                 ("desde".to_string(), cd.clone()),
                                 ("hasta".to_string(), ch.clone()),
@@ -576,23 +569,14 @@ impl Motor {
         };
 
         // ── ③ CARGA ÚTIL ─────────────────────────────────────────────────────
-        let bindings: Vec<&ore_core::link::Loaded> = self
-            .paquete
-            .docs
-            .iter()
-            .filter(|d| d.kind == ore_core::document::Kind::Binding)
-            .filter(|d| {
-                d.section("targetEntity").and_then(|t| t.as_str()) == Some(c.entidad.as_str())
-            })
-            .collect();
-
+        //
+        // Una petición por fuente física, venga de un binding o de la raíz de
+        // una cadena de vistas: la fase no distingue, y no tiene por qué.
         let mut lecturas: Vec<Lectura> = Vec::new();
-        for b in &bindings {
-            let Some(ds) = b.section("datasourceRef").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let objeto = b.section("source").and_then(|v| v.as_str()).unwrap_or("");
-            let mapa = columnas(b);
+        for f in self.fisicas(&c.entidad) {
+            let ds = f.datasource.as_str();
+            let objeto = f.objeto.as_str();
+            let mapa = &f.columnas;
 
             let proyeccion: BTreeMap<String, String> = autorizadas
                 .keys()
@@ -627,13 +611,13 @@ impl Motor {
             filtros.sort_by(|x, y| (&x.ambito, &x.columna).cmp(&(&y.ambito, &y.columna)));
 
             // Sin claves y sin filtros, esto es un recorrido completo — y eso lo
-            // autoriza el binding, no el motor (§5).
+            // autoriza quien declaró la fuente, no el motor (§5).
             if claves.is_empty() && filtros.is_empty() {
-                let caps = b.section("capabilities");
-                let full = caps
+                let full = f
+                    .capacidades
                     .and_then(|x| x.get("fullScan"))
                     .and_then(|(_, v)| v.as_str());
-                let nombre = b.qname().unwrap_or_default();
+                let nombre = f.nombre.clone();
                 match full {
                     // Sin `capabilities`, un binding sirve la búsqueda por clave
                     // y nada más — P4, y `05-ejecutor` §5.1.
@@ -660,7 +644,7 @@ impl Motor {
             }
 
             // Las columnas de la clave: la `primaryKey` de la entidad, pasada
-            // por el mapeo de ESTE binding.
+            // por el mapeo de ESTA fuente.
             let clave_columnas: Vec<String> = self
                 .paquete
                 .entity(&c.entidad)
@@ -687,10 +671,10 @@ impl Motor {
             });
         }
 
-        // Una propiedad autorizada que ningún binding mapea **desaparecería de
+        // Una propiedad autorizada que ninguna fuente mapea **desaparecería de
         // la proyección sin decirlo**, y el plan diría ✓ sobre un dato que nunca
-        // va a llegar. Un binding no está obligado a mapearlo todo —eso es
-        // legal— así que lo que no puede ser legal es callarlo.
+        // va a llegar. Un binding o una vista no están obligados a mapearlo todo
+        // —eso es legal— así que lo que no puede ser legal es callarlo.
         let servidas: BTreeSet<String> = lecturas
             .iter()
             .flat_map(|l| l.proyeccion.keys().cloned())
@@ -704,7 +688,8 @@ impl Motor {
             autorizadas.remove(&h);
             podadas.insert(
                 h,
-                "autorizada, y ningún binding de la entidad la mapea: no hay de dónde leerla"
+                "autorizada, y ningún binding ni vista de la entidad la mapea: no hay de dónde \
+                 leerla"
                     .into(),
             );
         }
@@ -816,6 +801,75 @@ impl Motor {
             lecturas,
             ensamblar_por,
         })
+    }
+}
+
+/// De dónde se lee una entidad, **físicamente**: un binding, o la raíz de la
+/// cadena de vistas que `backedBy` nombra.
+///
+/// Es una noción y no dos porque la fase ③ no distingue: pide a una fuente, un
+/// objeto, unas columnas, y respeta unas capacidades. Que eso venga de un
+/// `Binding` o de una `View` es asunto de quien lo declaró. Mientras los dos
+/// documentos convivan (`docs/handoff-vistas.md`), aquí es donde se juntan —
+/// y el día que el binding se retire, este `struct` no cambia una letra.
+struct Fisica<'a> {
+    /// Quién lo declaró, para nombrarlo en un rechazo.
+    nombre: String,
+    datasource: String,
+    objeto: String,
+    /// Propiedad → columna física. En una vista, **ya compuesta** por la
+    /// cadena: la entidad nombra campos de su vista, la vista renombra los de
+    /// abajo, y la raíz es la que tiene columnas.
+    columnas: BTreeMap<String, String>,
+    /// Las capacidades del **origen**. En una cadena son las de la vista que
+    /// toca la fuente: describen lo que la fuente sabe hacer, no la vista.
+    capacidades: Option<&'a ore_core::parse::Node>,
+}
+
+impl Motor {
+    /// Las fuentes físicas de una entidad, ordenadas por (fuente, objeto) para
+    /// que el plan sea el mismo byte a byte.
+    ///
+    /// Lo que **no** viaja todavía: el `where` de la vista, igual que hoy no
+    /// viaja el `selector` del binding. Es el mismo hueco —un recorte declarado
+    /// que el ejecutor no empuja— y se cierra una vez para los dos, no aquí a
+    /// medias para uno.
+    fn fisicas(&self, entidad: &str) -> Vec<Fisica<'_>> {
+        let mut out: Vec<Fisica<'_>> = Vec::new();
+        for b in self.paquete.docs.iter().filter(|d| {
+            d.kind == ore_core::document::Kind::Binding
+                && d.section("targetEntity").and_then(|t| t.as_str()) == Some(entidad)
+        }) {
+            let Some(ds) = b.section("datasourceRef").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            out.push(Fisica {
+                nombre: b.qname().unwrap_or_default(),
+                datasource: ds.to_string(),
+                objeto: b
+                    .section("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                columnas: columnas(b),
+                capacidades: b.section("capabilities"),
+            });
+        }
+        if let Some(e) = self.paquete.entity(entidad)
+            && let Some(v) = ore_core::vistas::respaldo(&self.paquete, e)
+            && let Ok(raiz) = ore_core::vistas::raiz(&self.paquete, v)
+            && let Ok(cadena) = ore_core::vistas::cadena(&self.paquete, v)
+        {
+            out.push(Fisica {
+                nombre: v.qname().unwrap_or_default(),
+                datasource: raiz.datasource,
+                objeto: raiz.objeto,
+                columnas: raiz.columnas,
+                capacidades: cadena.last().and_then(|hoja| hoja.section("capabilities")),
+            });
+        }
+        out.sort_by(|a, b| (&a.datasource, &a.objeto).cmp(&(&b.datasource, &b.objeto)));
+        out
     }
 }
 

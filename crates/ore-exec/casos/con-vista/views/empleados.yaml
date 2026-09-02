@@ -1,0 +1,16 @@
+# La vista que toca la fuente. Es la unica que sabe de columnas, y la unica
+# que declara capacidades: describen lo que `erp` sabe hacer, no la vista.
+apiVersion: oos.dev/v1alpha7
+kind: View
+metadata: { name: empleados, namespace: hr }
+spec:
+  owner: team:hr
+  from: { datasource: erp, object: public.employees }
+  version: { witness: log }
+  fields:
+    employeeId: employee_id
+    nationalId: national_id
+    pais: country
+  capabilities:
+    predicatePushdown: [eq, in]
+    fullScan: cheap

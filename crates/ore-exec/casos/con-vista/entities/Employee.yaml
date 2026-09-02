@@ -1,0 +1,15 @@
+# La entidad nombra a su vista, y sus propiedades se llaman como los campos de
+# ESA vista: `id` y `dni`, no `employee_id` ni `nationalId`.
+apiVersion: oos.dev/v1alpha7
+kind: Entity
+metadata: { name: Employee, namespace: hr }
+spec:
+  nature: entity
+  primaryKey: [id]
+  principal: true
+  backedBy: iberia
+  properties:
+    id: { type: String }
+    dni:
+      type: String
+      labels: { gdpr.sensitivity: high }

@@ -1,0 +1,14 @@
+# Una vista sobre otra: renombra, y recorta por un campo de la de abajo. No
+# tiene columnas ni capacidades — las de la raiz son las que valen.
+apiVersion: oos.dev/v1alpha7
+kind: View
+metadata: { name: iberia, namespace: hr }
+spec:
+  owner: team:hr
+  from: { view: empleados }
+  version: { witness: none }
+  fields:
+    id: employeeId
+    dni: nationalId
+  where:
+    pais: [ES, PT]

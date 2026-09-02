@@ -1,0 +1,5 @@
+apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: con-vista, version: 0.1.0 }
+datasources:
+  - { name: erp, type: postgres, connectionEnv: ERP_URL }

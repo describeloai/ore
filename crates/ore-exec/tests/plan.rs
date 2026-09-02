@@ -148,6 +148,53 @@ fn sin_capacidades_solo_hay_busqueda_por_clave() {
     assert_eq!(campo, "capabilities");
 }
 
+/// **La fase ③ lee de la vista por su raíz.** La entidad nombra a `iberia`,
+/// `iberia` sale de `empleados`, y `empleados` toca `erp`. La lectura va a
+/// `erp` / `public.employees` con las columnas **compuestas** por la cadena
+/// —`dni` es `nationalId` en `iberia` y `national_id` en la raíz— y con las
+/// capacidades de la vista que toca la fuente, que son las de la fuente.
+///
+/// Ningún binding en el caso. Es el primer plan del proyecto sin uno.
+#[test]
+fn la_fase_tres_lee_de_la_vista_por_su_raiz() {
+    let m = Motor::cargar(&caso("con-vista")).expect("el caso carga");
+    let c = Consulta {
+        quien: Identidad {
+            emisor: "https://id.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: vec!["analyst".into()],
+            claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        },
+        accion: "read".into(),
+        purpose: "compensation_review".into(),
+        entidad: "hr.Employee".into(),
+        propiedades: vec!["hr.Employee.dni".into()],
+        claves: vec![vec!["emp-7".to_string()]],
+        travesia: None,
+        instante: None,
+        sla: None,
+    };
+    let plan = m.planificar(&c).expect("por clave, y con rol, hay plan");
+    assert_eq!(plan.lecturas.len(), 1, "{:?}", plan.lecturas);
+    let l = &plan.lecturas[0];
+    assert_eq!(l.datasource, "erp");
+    assert_eq!(l.objeto, "public.employees");
+    assert_eq!(
+        l.proyeccion.get("dni").map(String::as_str),
+        Some("national_id"),
+        "la columna es la de la RAÍZ, compuesta por la cadena: {:?}",
+        l.proyeccion
+    );
+    assert_eq!(l.clave_columnas, vec!["employee_id".to_string()]);
+
+    // Y sin clave, `fullScan: cheap` de la vista que toca la fuente lo permite:
+    // las capacidades son de la raíz, no de `iberia`, que no declara ninguna.
+    let mut sin_clave = c.clone();
+    sin_clave.claves.clear();
+    assert!(m.planificar(&sin_clave).is_ok(), "la raíz admite recorrido");
+}
+
 /// **La forma más fuerte de aplicar una máscara es no pedir la columna.**
 #[test]
 fn una_propiedad_redactada_no_llega_a_la_proyeccion() {
