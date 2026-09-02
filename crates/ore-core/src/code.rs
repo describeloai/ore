@@ -138,6 +138,15 @@ codes! {
     // el precio que paga v1alpha8, y lo que compra.
     Oos2020 = "OOS2020", Reference, "una vista cuya raiz de lectura no se deja leer no se materializa";
     Oos2021 = "OOS2021", Reference, "una copia de un flujo que solo anexa respalda una entidad mutable";
+    // Lo introduce v1alpha8 al RETIRAR algo, y por eso es distinto de los dos
+    // de arriba: aquellos salen del algebra, este sale de una ausencia.
+    //
+    // Con bindings, una cobertura parcial era legal porque otro documento cubria
+    // el resto —`03-binding` §2.1 lo dice normativo—. Sin federacion no hay
+    // resto, asi que la pregunta «de donde sale esta propiedad» vuelve a tener
+    // respuesta local, y una propiedad sin campo pasa de «la cubre otro» a «no
+    // la cubre nadie».
+    Oos2022 = "OOS2022", Reference, "una propiedad de una entidad no es campo de su vista";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -309,6 +318,7 @@ mod tests {
             // La tabla llega con v1alpha8, y los suyos tambien.
             Code::Oos2020,
             Code::Oos2021,
+            Code::Oos2022,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

@@ -386,6 +386,7 @@ documenta como limitación. Aquí no compila.
 | **T2** | la costura y el ejecutor | `ore-cli`, `ore-exec` | `ore view` imprime las dos caras; las tres pruebas de `vistas.rs` pasan sobre tablas; `Motor::fisicas` llega a la tabla |
 | **T3** | el catálogo foráneo | `ore-cli/inductor.rs`, `ore-read-*`, `ore-driver` | `pruebas-de-fuego/descubrimiento.sh` verde emitiendo `Table` y **cero** `Binding`; lo inducido falla en `validate` solo por decisiones pendientes, nunca por una tabla |
 | **T4** | la migración del árbol | `vendor/oos`, `crates/ore-exec/casos` | `examples.rs` verde con `acme-retail` en v1alpha8; ningún `from.datasource` ni `kind: Binding` fuera de `conformance/v1alpha1–7` |
+| **T4b** | la federación, decidida | `C:\oos` | `00-scope` §6 dice que una entidad servida desde N objetos **no entra**, y §6.1 dice por qué las cinco exclusiones son una sola frontera — la de la invertibilidad. **HECHO** |
 | **T5** | el retiro | `ore-core/document.rs`, docs | `Binding` con `hasta`; `03-binding` marcado histórico; **este documento y `handoff-vistas.md` borrados** |
 
 ### T0 · la especificación
@@ -469,6 +470,17 @@ borrados; `docs/view-engine.md` §6 actualizado.
 
 **Listo cuando.** No queda ningún documento de trabajo que describa la migración, porque no queda
 migración que describir. Es la condición de borrado de la cabecera.
+
+---
+
+## 8b. Dónde sigue esto cuando se acabe
+
+Este documento se borra en T5. Lo que **no** se borra es
+[`docs/sustrato.md`](sustrato.md): tablas y vistas no son la capa física de la ontología, son el
+**sustrato**, y el modelo ontológico —versionado y ramificado— se construye encima y reposa ahí.
+Allí están los tres movimientos que siguen —la cara `writes`, la entidad que deja de repetir, la
+función que aterriza— y la medida que los motiva: nueve de once nombres de `acme-retail` están
+escritos dos veces.
 
 ---
 

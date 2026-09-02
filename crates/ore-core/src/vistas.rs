@@ -25,6 +25,7 @@
 //! | la vista que respalda una entidad no expone su clave o sus `via` | `OOS2011` — lo que necesita columna, dicho de la vista |
 //! | una vista cuya **raíz de lectura** no se deja leer y no lleva `materialized` | `OOS2020` — v1alpha8 |
 //! | una copia de un flujo que solo anexa respaldando una entidad **mutable** | `OOS2021` — v1alpha8 |
+//! | una propiedad de una entidad que su vista no expone, sin `derivedFrom` | `OOS2022` — v1alpha8, y la otra cara de haber retirado la federación |
 //!
 //! # v1alpha8 · la tabla, y por qué `OOS2018` llega ahora hasta el suelo
 //!
@@ -891,6 +892,52 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                          ni recurso identificable en una política; sin la columna de un enlace, \
                          la relación se declara y no se puede recorrer. Añade el campo a la \
                          vista o quítalo de la entidad",
+                    ),
+                );
+            }
+        }
+
+        // ── OOS2022 · una propiedad sin campo no tiene de dónde salir ────────
+        //
+        // **La otra cara de haber retirado la federación.** `03-binding` §2.1
+        // admitía que una entidad tuviera varios bindings, «cada uno cubre un
+        // subconjunto de sus propiedades»: con eso, una cobertura parcial no
+        // solo era legal, era el mecanismo, y preguntar de dónde sale una
+        // propiedad no tenía respuesta local.
+        //
+        // v1alpha8 retira eso (`00-scope` §6): una entidad sale de UNA vista. Y
+        // en cuanto no hay otro documento donde mirar, una propiedad sin campo
+        // pasa de «la cubre otro» a «no la cubre nadie».
+        //
+        // Sin esto, la migración que esta versión pide produce el fallo que este
+        // proyecto persigue: se escribe la vista con la mitad de los campos, la
+        // entidad sigue declarando el doble, COMPILA EN VERDE, y las propiedades
+        // huérfanas responden vacío para siempre. Se midió sobre un paquete de
+        // tres propiedades y dos sin campo: `ok · sin errores`.
+        if let Some(props) = e.section("properties") {
+            for (k, cuerpo) in props.entries() {
+                let Some(prop) = k.as_str() else { continue };
+                // `derivedFrom` es la excepción, y es la única: una propiedad
+                // derivada declara de qué otras sale, y eso ES su origen.
+                // Exigirle además una columna sería exigirle que esté calculada
+                // en la fuente — justo lo que la migración de
+                // `Binding.properties.<x>.expression` deja de poder hacer.
+                if cuerpo.get("derivedFrom").is_some() || expone.contains_key(prop) {
+                    continue;
+                }
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2022,
+                        &e.path,
+                        format!("`{vista_qn}` no expone `{prop}`, que `{qn}` declara"),
+                    )
+                    .at(k.pos())
+                    .help(
+                        "una entidad sale de UNA vista, así que una propiedad que la vista no \
+                         da no tiene de dónde salir: responde vacía y nada lo dice. Añade el \
+                         campo a la vista, declara `derivedFrom` si de verdad se computa, o \
+                         quita la propiedad. Con bindings esto era legal porque otro binding \
+                         podía cubrirla; en v1alpha8 no hay otro",
                     ),
                 );
             }
