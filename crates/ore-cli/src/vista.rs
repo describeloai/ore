@@ -315,6 +315,30 @@ fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
 /// el literal de un `where` como la columna que compara.
 type Tipador<'a> = Box<dyn Fn(&str) -> Type + 'a>;
 
+/// A qué objeto físico toca una vista: `(datasource, objeto)`, venga el puntero
+/// de v1alpha7 —dentro de la vista— o de v1alpha8 —una `Table` aparte.
+///
+/// **Una operación, tres consumidores**: el cuerpo del IR, las etiquetas de
+/// raíz y las capacidades preguntan lo mismo y tienen que verlo igual. Escrito
+/// tres veces divergiría en el que ninguna prueba ejerce, que es exactamente
+/// lo que le pasó al binding.
+///
+/// `None` si la vista sale de otra vista, o si la tabla que nombra no existe —
+/// eso lo dice `OOS2018` y aquí no se repite.
+fn objeto_fisico(pkg: &Package, v: &Loaded) -> Option<(String, String)> {
+    match vistas::fuente(v)? {
+        vistas::Fuente::Datasource { datasource, objeto } => Some((datasource, objeto)),
+        vistas::Fuente::Tabla(qn) => {
+            let t = pkg.table(&qn)?;
+            Some((
+                t.section("datasource")?.as_str()?.to_string(),
+                t.section("object")?.as_str()?.to_string(),
+            ))
+        }
+        vistas::Fuente::Vista(_) => None,
+    }
+}
+
 /// El cuerpo de una vista en el IR: `Proyecta(Filtra(Lee | Referencia))`.
 ///
 /// Es exactamente el vocabulario de v1alpha7 —seleccionar, renombrar,
@@ -347,7 +371,15 @@ fn cuerpo(pkg: &Package, v: &Loaded, tipos: &BTreeMap<(String, String, String), 
             };
             (Nodo::Referencia(abajo), Box::new(f))
         }
-        Some(vistas::Fuente::Datasource { datasource, objeto }) => {
+        // Las dos versiones convergen aquí, y **`Lectura` no cambia**: `Lectura`
+        // YA ERA la tabla —datasource, objeto y columnas—, escrita antes de que
+        // la tabla existiera en la gramática. Por eso una reforma de la
+        // gramática no toca el motor.
+        //
+        // Lo que falta es de T2: los `campos` salen de lo que la vista usa y no
+        // de `columns`, y las capacidades siguen leyéndose de la vista.
+        Some(vistas::Fuente::Datasource { .. }) | Some(vistas::Fuente::Tabla(_)) => {
+            let (datasource, objeto) = objeto_fisico(pkg, v).unwrap_or_default();
             let mut columnas: BTreeMap<String, Type> = BTreeMap::new();
             let tipo = |c: &str| {
                 tipos
@@ -463,7 +495,7 @@ fn etiquetas_de_raiz(
     // Las columnas raíz que existen: las de cada hoja, por campos y por filtros.
     let mut hojas: Vec<(String, String, BTreeSet<String>)> = Vec::new();
     for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
-        let Some(vistas::Fuente::Datasource { datasource, objeto }) = vistas::fuente(v) else {
+        let Some((datasource, objeto)) = objeto_fisico(pkg, v) else {
             continue;
         };
         let mut cols: BTreeSet<String> = vistas::campos(v).into_values().collect();
@@ -573,9 +605,13 @@ fn subir(
 fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
     let mut out: BTreeMap<String, Capacidades> = BTreeMap::new();
     for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
-        let Some(vistas::Fuente::Datasource { datasource, .. }) = vistas::fuente(v) else {
+        let Some((datasource, _)) = objeto_fisico(pkg, v) else {
             continue;
         };
+        // T2 · en v1alpha8 esto se lee de `reads` de la tabla, que es donde el
+        // contrato del objeto vive ahora. Hasta entonces una vista v1alpha8 no
+        // declara capacidades y el planificador la trata como sin declarar —
+        // que es lo que hacía con una vista v1alpha7 sin `capabilities`.
         let Some(caps) = v.section("capabilities") else {
             continue;
         };

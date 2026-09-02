@@ -163,6 +163,14 @@ const SECUENCIAS: &[&str] = &[
     // El orden ES el significado.
     "levels",     // ascendente por restrictividad: el retículo entero
     "primaryKey", // en una clave compuesta el orden es significativo
+    // `changes.key` de una `Table` es una clave compuesta, y por lo mismo: la
+    // clave de un upsert es lo que empareja un tombstone con la fila que retira,
+    // y quien la codifica lo hace POSICION A POSICION. `[pais, id]` contra
+    // `[id, pais]` no retira lo mismo, y los dos documentos se verian iguales.
+    //
+    // Lo destapo la prueba que exige que todo campo lista de los esquemas este
+    // clasificado — no un razonamiento: el campo entro y la prueba se puso roja.
+    "key",
     // `via` se empareja POSICION A POSICION con la `primaryKey` del destino, asi
     // que ordenarla enlazaria por pares distintos: `[codPais, id]` contra
     // `[id, codPais]` no es la misma relacion, y el documento se veria igual.
@@ -237,6 +245,22 @@ fn es_referencia(clave: &str) -> bool {
     matches!(clave, "targetEntity" | "target" | "backedBy" | "view")
 }
 
+/// N1 · Referencias que **la clave sola no distingue**: hace falta saber de qué
+/// mapa cuelgan. Es la figura de `MAPAS_DE_CONJUNTOS` — el que sabe es el mapa,
+/// no la clave.
+///
+/// `from.table` lo necesita y `materialized.table` es la razón: los dos llevan
+/// una clave `table` y **solo una es una referencia**. La de `from` nombra un
+/// `kind: Table` del paquete; la de `materialized` es el nombre físico de la
+/// copia, opaco como cualquier nombre del origen. Decidirlo por la clave sola
+/// habría cualificado la segunda, y un `cache.pedidos` convertido en
+/// `ventas.cache.pedidos` no lo nota nadie hasta que el refresco escribe en una
+/// tabla que no existe.
+///
+/// Y no vale marcar el mapa entero: `from` lleva también `object`, que es tan
+/// opaco como aquél. La pareja es lo mínimo que distingue.
+const REFERENCIAS_POR_MAPA: &[(&str, &str)] = &[("from", "table")];
+
 /// N1 · Expande un nombre corto con el espacio de nombres de quien lo escribe.
 ///
 /// Pública porque **la fase de enlazado tiene que resolver con esta misma
@@ -308,6 +332,12 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
                     // no depende de cómo estén escritos.
                     if valores_son_conjuntos && let Json::Arr(ref mut xs) = j {
                         xs.sort_by_key(|x| x.jcs());
+                    }
+                    // N1 · la referencia que la clave sola no distingue.
+                    if REFERENCIAS_POR_MAPA.contains(&(clave, nombre))
+                        && let Json::Str(ref s) = j
+                    {
+                        j = Json::Str(qualify(s, ctx.namespace.as_deref()));
                     }
                     m.insert(nfc(nombre), j);
                 }

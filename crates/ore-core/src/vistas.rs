@@ -19,10 +19,27 @@
 //!
 //! | | |
 //! |---|---|
-//! | `from.datasource` o `materialized.datasource` sin declarar | `OOS2004` — el mismo que para `datasourceRef`, porque es el mismo defecto |
-//! | `from.view`, `backedBy`, un campo o un filtro que nombran lo que la vista de abajo no expone | `OOS2018` |
+//! | `from.datasource`, `materialized.datasource` o el `datasource` de una tabla sin declarar | `OOS2004` — el mismo que para `datasourceRef`, porque es el mismo defecto |
+//! | `from.view`, `from.table`, `backedBy`, un campo o un filtro que nombran lo que no existe | `OOS2018` |
 //! | una cadena de vistas que vuelve sobre sí misma | `OOS2019` |
 //! | la vista que respalda una entidad no expone su clave o sus `via` | `OOS2011` — lo que necesita columna, dicho de la vista |
+//! | una vista cuya **raíz de lectura** no se deja leer y no lleva `materialized` | `OOS2020` — v1alpha8 |
+//! | una copia de un flujo que solo anexa respaldando una entidad **mutable** | `OOS2021` — v1alpha8 |
+//!
+//! # v1alpha8 · la tabla, y por qué `OOS2018` llega ahora hasta el suelo
+//!
+//! Hasta v1alpha8 el puntero físico vivía **dentro** de la vista, y con él el
+//! límite de lo comprobable: ningún documento decía qué columnas tenía la
+//! fuente, así que la comprobación de nombres cubría el eslabón vista→vista y
+//! **creía** el último tramo — el que toca el mundo. `kind: Table` declara las
+//! columnas, y por eso la misma regla, con el mismo código, alcanza ahora la
+//! columna física.
+//!
+//! Las dos versiones conviven sin condicionales repartidos: la diferencia está
+//! en `Fuente`, que ahora tiene tres variantes, y en `raiz()`, que sabe llegar
+//! por los dos caminos. **Todo lo de encima —`flow`, `governance`, el ejecutor,
+//! `ore view`— llama a `raiz()` y no se entera**, que es lo que la absorción
+//! V0–V3 compró y aquí se cobra.
 //!
 //! El flujo de etiquetas atraviesa la cadena en `flow`: la entidad hereda del
 //! datasource **raíz** de su vista, y una vista con `materialized` instancia el
@@ -37,11 +54,68 @@ use crate::link::{Loaded, Package};
 use crate::normalize::qualify;
 use crate::parse::Node;
 
-/// De dónde sale una vista: de una fuente declarada, o de otra vista.
+/// De dónde sale una vista: de una tabla, de otra vista, o —v1alpha7— del
+/// puntero físico que la vista llevaba dentro.
+///
+/// Las dos primeras variantes dicen lo mismo del mundo y no son la misma cosa
+/// para quien las escribe: `Datasource` es el contrato físico **repetido en
+/// cada vista que toca la fuente**, y `Tabla` es el mismo contrato **nombrado
+/// una vez**. Por eso la primera no se borra —un documento v1alpha7 sigue
+/// compilando— y por eso no se fusionan: fusionarlas sería volver a tener un
+/// sitio donde el objeto se describe y otro donde se describe otra vez.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fuente {
-    Datasource { datasource: String, objeto: String },
+    /// v1alpha7: `from: {datasource, object}`, el puntero dentro de la vista.
+    Datasource {
+        datasource: String,
+        objeto: String,
+    },
+    /// v1alpha8: `from: {table}`, el nombre cualificado de un `kind: Table`.
+    Tabla(String),
     Vista(String),
+}
+
+/// Cómo codifica una tabla los cambios que emite: la cara `D`.
+///
+/// Son exactamente las tres formas que Flink documenta de convertir una tabla
+/// dinámica en un flujo, más la ausencia. El vocabulario es **cerrado** por lo
+/// mismo que `predicatePushdown`: cada modo dice qué **pesos** son legales en
+/// un delta, y si un perfil pudiera inventar una codificación el mantenedor no
+/// podría razonar sobre los que le llegan — un delta con un peso ilegal
+/// entraría sin que nadie lo notara.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modo {
+    /// No emite cambios, o no se sabe si los emite. No se inventa.
+    Ninguno,
+    /// Solo altas: solo `+1`. Una marca de agua no ve borrados.
+    Anexa,
+    /// Un borrado retracta; una actualización retracta la vieja y añade la
+    /// nueva. `-1` y `+1`. El *Change Data Feed* de Delta es esto con cuatro
+    /// nombres.
+    Retracta,
+    /// `+1` por clave, `-1` por *tombstone*. Exige clave única.
+    Upsert,
+}
+
+impl Modo {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "none" => Modo::Ninguno,
+            "append" => Modo::Anexa,
+            "retract" => Modo::Retracta,
+            "upsert" => Modo::Upsert,
+            _ => return None,
+        })
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Modo::Ninguno => "none",
+            Modo::Anexa => "append",
+            Modo::Retracta => "retract",
+            Modo::Upsert => "upsert",
+        }
+    }
 }
 
 /// La hoja de una cadena de vistas, ya compuesta: **a qué fuente y objeto se
@@ -57,6 +131,13 @@ pub struct Raiz {
     /// `(columna, valores)`. Una vista sobre otra hereda las filas que la de
     /// abajo ya recortó — lo que no está en la de abajo no está en ninguna.
     pub filtros: Vec<(String, Vec<String>)>,
+    /// El nombre cualificado de la `Table` de la que sale, si sale de una.
+    ///
+    /// `None` en una cadena v1alpha7, donde el objeto no es un documento y no
+    /// tiene nombre que dar. Quien necesite las dos caras —el planificador, el
+    /// mantenedor— pregunta por aquí; quien solo necesite dónde vive el dato
+    /// tiene `datasource` y `objeto` en los dos casos, y por eso no se entera.
+    pub tabla: Option<String>,
 }
 
 /// Por qué una cadena no llega a una raíz.
@@ -64,6 +145,11 @@ pub struct Raiz {
 pub enum SinRaiz {
     /// `from.view` nombra una vista que no existe. Lleva la que la nombró.
     NoExiste { vista: String, desde: String },
+    /// `from.table` nombra una tabla que no existe. Es un caso aparte y no el
+    /// mismo con otro nombre: una cadena que no llega a la tabla no llega al
+    /// suelo, y el mensaje tiene que decir qué se buscaba para que se entienda
+    /// que falta un documento, no un eslabón más.
+    TablaNoExiste { tabla: String, desde: String },
     /// La cadena vuelve sobre sí misma. La cadena entera, para que el mensaje
     /// la enseñe.
     Ciclo(Vec<String>),
@@ -86,15 +172,30 @@ impl Package {
         let ns = desde.meta("namespace").and_then(|n| n.as_str());
         self.view(&qualify(referencia, ns))
     }
+
+    /// La tabla con este nombre cualificado.
+    pub fn table(&self, qname: &str) -> Option<&Loaded> {
+        self.of(Kind::Table)
+            .find(|d| d.qname().as_deref() == Some(qname))
+    }
+
+    /// Resuelve una referencia a tabla con la misma regla que a una vista: la
+    /// forma corta vale dentro del mismo espacio de nombres (N1).
+    pub fn resolve_table(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        let ns = desde.meta("namespace").and_then(|n| n.as_str());
+        self.table(&qualify(referencia, ns))
+    }
 }
 
 /// `spec.from` de una vista.
 pub fn fuente(v: &Loaded) -> Option<Fuente> {
     let from = v.section("from")?;
+    let ns = v.meta("namespace").and_then(|n| n.as_str());
     if let Some((_, vista)) = from.get("view") {
-        let nombre = vista.as_str()?;
-        let ns = v.meta("namespace").and_then(|n| n.as_str());
-        return Some(Fuente::Vista(qualify(nombre, ns)));
+        return Some(Fuente::Vista(qualify(vista.as_str()?, ns)));
+    }
+    if let Some((_, tabla)) = from.get("table") {
+        return Some(Fuente::Tabla(qualify(tabla.as_str()?, ns)));
     }
     let datasource = from.get("datasource")?.1.as_str()?.to_string();
     let objeto = from
@@ -105,8 +206,50 @@ pub fn fuente(v: &Loaded) -> Option<Fuente> {
     Some(Fuente::Datasource { datasource, objeto })
 }
 
+/// Las columnas que una tabla declara.
+///
+/// Es lo único verdaderamente nuevo de v1alpha8, y lo que hace comprobable lo
+/// que antes no lo era. El nombre es **opaco** —puede llevar puntos si el
+/// origen es anidado— y por eso no es un identificador.
+pub fn columnas(t: &Loaded) -> BTreeSet<String> {
+    t.section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, _)| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// La cara `I`: si a esta tabla se le puede pedir algo.
+///
+/// `reads: none` significa *no se le puede pedir nada* — un tema de Kafka se
+/// escribe, no se pregunta. Es lo único que hace falta saber para `OOS2020`;
+/// **qué** se le puede pedir lo lee el planificador, y eso es de `ore-cli`.
+pub fn se_lee(t: &Loaded) -> bool {
+    t.section("reads")
+        .is_none_or(|r| r.as_str() != Some("none"))
+}
+
+/// La cara `D`: cómo codifica sus cambios. Un modo fuera del vocabulario se lee
+/// como `Ninguno` **aquí** y lo rechaza la forma con `OOS1004`: esta función no
+/// es el sitio donde se decide qué es legal.
+pub fn modo(t: &Loaded) -> Modo {
+    t.section("changes")
+        .and_then(|c| c.get("mode"))
+        .and_then(|(_, m)| m.as_str())
+        .and_then(Modo::parse)
+        .unwrap_or(Modo::Ninguno)
+}
+
 /// Campo → nombre en la fuente. Admite la forma breve y la expandida, como el
 /// mapeo del binding: la canónica es la expandida.
+///
+/// La forma expandida se retira en v1alpha8 —existía para llevar
+/// `physicalType`, y el tipo físico lo dice ahora `columns`— y **esta función
+/// sigue leyéndola**, porque sigue habiendo documentos v1alpha7 que la usan.
+/// Lo que decide qué se admite es `spec_keys_en`, no esto.
 pub fn campos(v: &Loaded) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let Some(fs) = v.section("fields") else {
@@ -174,7 +317,10 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
         fila.push(actual);
         match fuente(actual) {
             None => return Err(SinRaiz::SinFrom(qn)),
-            Some(Fuente::Datasource { .. }) => return Ok(fila),
+            // Las dos formas de tocar el suelo. Una vista NO sale de una tabla
+            // y de otra vista a la vez: `from` es exactamente una de dos, y por
+            // eso aquí no hay que decidir nada.
+            Some(Fuente::Datasource { .. }) | Some(Fuente::Tabla(_)) => return Ok(fila),
             Some(Fuente::Vista(otra)) => match pkg.view(&otra) {
                 Some(n) => actual = n,
                 None => {
@@ -196,8 +342,32 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
 pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
     let fila = cadena(pkg, v)?;
     let hoja = fila.last().expect("una cadena tiene al menos un eslabón");
-    let Some(Fuente::Datasource { datasource, objeto }) = fuente(hoja) else {
-        unreachable!("la cadena termina en una fuente por construcción")
+    // Los dos caminos al suelo, y el único sitio del núcleo donde se distinguen.
+    // Todo lo que llama a `raiz()` recibe la misma forma y no se entera de por
+    // cuál vino: es lo que permite que un paquete tenga vistas de las dos
+    // versiones a la vez sin que nadie más lleve un condicional.
+    let (datasource, objeto, tabla) = match fuente(hoja) {
+        Some(Fuente::Datasource { datasource, objeto }) => (datasource, objeto, None),
+        Some(Fuente::Tabla(qn)) => {
+            let Some(t) = pkg.table(&qn) else {
+                return Err(SinRaiz::TablaNoExiste {
+                    tabla: qn,
+                    desde: hoja.qname().unwrap_or_default(),
+                });
+            };
+            (
+                t.section("datasource")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                t.section("object")
+                    .and_then(|o| o.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                Some(qn),
+            )
+        }
+        _ => unreachable!("la cadena termina en una tabla o en una fuente por construcción"),
     };
 
     // De abajo arriba: la hoja nombra columnas físicas; cada eslabón de encima
@@ -221,7 +391,24 @@ pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
         objeto,
         columnas,
         filtros: filtros_fisicos,
+        tabla,
     })
+}
+
+/// La **raíz de lectura**: de dónde salen de verdad las filas.
+///
+/// Es la vista `materialized` más cercana bajando por la cadena —ella misma
+/// incluida—, y `None` cuando no hay ninguna y por tanto se lee del objeto.
+///
+/// La distinción con la raíz es todo el asunto de `OOS2020`, y no es un
+/// tecnicismo: si la regla mirara la raíz, una vista virtual sobre una
+/// materializada sobre un flujo fallaría, y obligaría a materializar dos veces
+/// lo mismo. Hay dónde preguntar; está un eslabón más abajo.
+pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    cadena(pkg, v)
+        .ok()?
+        .into_iter()
+        .find(|e| e.section("materialized").is_some())
 }
 
 /// Las fuentes físicas de una entidad: las de sus bindings y la raíz de su
@@ -332,9 +519,110 @@ fn no_expone(
         })
 }
 
-/// Las comprobaciones de enlazado de las vistas y de `backedBy`.
+/// El gemelo de `no_expone` con el sujeto de v1alpha8: lo que se nombra no es
+/// una columna de la tabla.
+///
+/// Es el mismo código y no el mismo mensaje, y la diferencia importa: *«la
+/// vista de abajo no lo expone»* invita a mirar otra vista, y aquí no hay otra
+/// vista — hay un objeto que no tiene esa columna, y la ayuda tiene que
+/// enseñar las que sí tiene.
+fn no_es_columna(
+    path: &std::path::Path,
+    nodo: &Node,
+    que: String,
+    tabla: &str,
+    cols: &BTreeSet<String>,
+) -> Diagnostic {
+    Diagnostic::new(Code::Oos2018, path, que)
+        .at(nodo.pos())
+        .help(if cols.is_empty() {
+            format!("`{tabla}` no declara ninguna columna")
+        } else {
+            format!(
+                "`{tabla}` tiene: {}",
+                cols.iter().cloned().collect::<Vec<_>>().join(" · ")
+            )
+        })
+}
+
+/// Las comprobaciones de enlazado de las tablas, las vistas y `backedBy`.
 pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let declarados = datasources_declarados(pkg);
+
+    // ── Las tablas ──────────────────────────────────────────────────────────
+    //
+    // Una tabla se sostiene sola: es el puntero a un objeto que existe, y
+    // existe lo consulte alguien o no. Lo único que se le puede preguntar aquí
+    // es si la fuente está declarada y si lo que sus dos caras nombran son
+    // columnas suyas — que es exactamente lo que un esquema JSON no alcanza,
+    // porque exige que un campo ESTÉ y no puede saber si lo que dice EXISTE.
+    for tabla in pkg.of(Kind::Table) {
+        let tqn = tabla.qname().unwrap_or_default();
+        let cols = columnas(tabla);
+
+        // OOS2004 · el mismo código que `datasourceRef` y que `from.datasource`.
+        // Que el sujeto haya cambiado tres veces y el código sea el mismo es la
+        // afirmación de que la tabla no cambia la regla, cambia el sujeto.
+        if let Some(ds) = tabla.section("datasource")
+            && !declarados.contains(ds.as_str().unwrap_or(""))
+        {
+            out.push(no_declarado(tabla, ds, "datasource", &declarados));
+        }
+
+        if let Some(cambios) = tabla.section("changes") {
+            // OOS2018 · la clave del upsert. Sin clave real, un tombstone no
+            // dice qué fila retira y el mantenedor aplicaría un `-1` a nada.
+            if let Some((_, k)) = cambios.get("key") {
+                for i in k.items() {
+                    let Some(c) = i.as_str() else { continue };
+                    if !cols.contains(c) {
+                        out.push(no_es_columna(
+                            &tabla.path,
+                            i,
+                            format!("`{tqn}` declara `changes.key: {c}`, que no es columna suya"),
+                            &tqn,
+                            &cols,
+                        ));
+                    }
+                }
+            }
+            // OOS2018 · la marca de agua. Una que no es columna no la lee nadie,
+            // y el refresco incremental no tendría por dónde empezar.
+            if let Some((_, f)) = cambios.get("field") {
+                let c = f.as_str().unwrap_or("");
+                if !cols.contains(c) {
+                    out.push(no_es_columna(
+                        &tabla.path,
+                        f,
+                        format!("`{tqn}` declara `changes.field: {c}`, que no es columna suya"),
+                        &tqn,
+                        &cols,
+                    ));
+                }
+            }
+        }
+
+        // OOS2018 · un filtro exigido que no es columna no lo puede poner nadie.
+        // Cambia de sujeto respecto al binding, donde eran PROPIEDADES: lo exige
+        // el origen, y el origen habla de columnas.
+        if let Some((_, rf)) = tabla
+            .section("reads")
+            .and_then(|r| r.get("requiredFilters"))
+        {
+            for i in rf.items() {
+                let Some(c) = i.as_str() else { continue };
+                if !cols.contains(c) {
+                    out.push(no_es_columna(
+                        &tabla.path,
+                        i,
+                        format!("`{tqn}` exige filtrar por `{c}`, que no es columna suya"),
+                        &tqn,
+                        &cols,
+                    ));
+                }
+            }
+        }
+    }
 
     for v in pkg.of(Kind::View) {
         let qn = v.qname().unwrap_or_default();
@@ -353,6 +641,62 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             && !declarados.contains(ds.as_str().unwrap_or(""))
         {
             out.push(no_declarado(v, ds, "materialized.datasource", &declarados));
+        }
+
+        // OOS2018 · v1alpha8 · la tabla existe, y tiene las columnas que esta
+        // vista nombra. Es la misma regla que para `from.view` con el sujeto
+        // cambiado, y es **la primera vez que llega hasta la columna física**:
+        // hasta que la tabla no declaró `columns` no había contra qué comprobar,
+        // así que el último tramo —el que toca el mundo— se creía.
+        if let Some((_, nodo)) = from.get("table") {
+            let referencia = nodo.as_str().unwrap_or("");
+            match pkg.resolve_table(referencia, v) {
+                None => out.push(
+                    Diagnostic::new(
+                        Code::Oos2018,
+                        &v.path,
+                        format!("`from.table: {referencia}` no existe"),
+                    )
+                    .at(nodo.pos())
+                    .help(
+                        "una vista sale de una tabla del paquete o de una dependencia. Una                          cadena que no llega al suelo no tiene raíz, y sin raíz no hay de dónde                          heredar etiquetas ni de dónde leer",
+                    ),
+                ),
+                Some(tabla) => {
+                    let cols = columnas(tabla);
+                    let tqn = tabla.qname().unwrap_or_default();
+                    let mios = campos(v);
+                    if let Some(fs) = v.section("fields") {
+                        for (k, val) in fs.entries() {
+                            let Some(campo) = k.as_str() else { continue };
+                            let col = mios.get(campo).cloned().unwrap_or_default();
+                            if !cols.contains(&col) {
+                                out.push(no_es_columna(
+                                    &v.path,
+                                    val,
+                                    format!("`{qn}.{campo}` lee `{col}`, que `{tqn}` no tiene"),
+                                    &tqn,
+                                    &cols,
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(w) = v.section("where") {
+                        for (k, _) in w.entries() {
+                            let Some(col) = k.as_str() else { continue };
+                            if !cols.contains(col) {
+                                out.push(no_es_columna(
+                                    &v.path,
+                                    k,
+                                    format!("`{qn}` filtra por `{col}`, que `{tqn}` no tiene"),
+                                    &tqn,
+                                    &cols,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // OOS2018 · la vista de abajo existe, y expone lo que esta le pide.
@@ -449,6 +793,43 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
     }
 
+    // ── OOS2020 · lo que no se puede leer se debe materializar ──────────────
+    //
+    // En su propio recorrido y no dentro del de arriba: aquel tiene `continue`
+    // en cada rama de error, y una regla que solo se comprueba cuando ninguna
+    // otra falló es una regla que un día deja de comprobarse sin que se note.
+    for v in pkg.of(Kind::View) {
+        // Hay copia en la cadena —ella misma incluida—: se lee de ahí.
+        if raiz_de_lectura(pkg, v).is_some() {
+            continue;
+        }
+        let Ok(fila) = cadena(pkg, v) else { continue };
+        let hoja = fila.last().copied().expect("una cadena tiene un eslabón");
+        let Some(Fuente::Tabla(tqn)) = fuente(hoja) else {
+            continue;
+        };
+        let Some(tabla) = pkg.table(&tqn) else {
+            continue;
+        };
+        if se_lee(tabla) {
+            continue;
+        }
+        let qn = v.qname().unwrap_or_default();
+        let pos = v.section("from").map(|f| f.pos());
+        let mut d = Diagnostic::new(
+            Code::Oos2020,
+            &v.path,
+            format!("`{qn}` es virtual y `{tqn}` declara `reads: none`: no hay dónde preguntar"),
+        )
+        .help(
+            "una tabla con `reads: none` no responde consultas, solo emite cambios — un tema se              escribe, no se pregunta. Esta vista promete un sitio donde preguntar que no existe,              y lo promete al compilar para fallar al consultar. Ponle `materialized`, o sácala de              una vista de abajo que ya lo lleve",
+        );
+        if let Some(p) = pos {
+            d = d.at(p);
+        }
+        out.push(d);
+    }
+
     // `backedBy` · la entidad nombra a su vista.
     for e in pkg.entities() {
         let Some(b) = e.section("backedBy") else {
@@ -513,6 +894,46 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     ),
                 );
             }
+        }
+
+        // ── OOS2021 · sin retractación no se mantiene lo mutable ─────────────
+        //
+        // El peor modo de fallo del motor, porque **no produce ningún síntoma**:
+        // la vista se materializa, la consulta responde, los números salen — y
+        // son los de antes. Sin este código se derivaría en silencio, y por eso
+        // Foundry lo documenta como una limitación en vez de rechazarlo.
+        //
+        // Exige las tres cosas a la vez, y ninguna sobra: la entidad es MUTABLE
+        // —un hecho ocurrido no se retira, y por eso un `nature: event` sí se
+        // respalda de un `append`—; hay una COPIA en la cadena —una vista
+        // virtual lee del origen, que sí tiene el estado presente—; y la raíz
+        // SOLO ANEXA.
+        if e.section("nature").and_then(|n| n.as_str()) == Some("entity")
+            && raiz_de_lectura(pkg, v).is_some()
+            && let Ok(r) = raiz(pkg, v)
+            && let Some(tqn) = r.tabla.as_deref()
+            && let Some(tabla) = pkg.table(tqn)
+            && modo(tabla) == Modo::Anexa
+        {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2021,
+                    &e.path,
+                    format!(
+                        "`{qn}` es `nature: entity` y se respalda de una copia de `{tqn}`, que \
+                         solo anexa"
+                    ),
+                )
+                .at(b.pos())
+                .help(
+                    "una entidad es una cosa que cambia y sigue siendo la misma, así que \
+                     mantener su estado presente exige poder QUITAR lo que dejó de ser cierto. \
+                     Un `changes.mode: append` no puede: lo que se copia no es el estado \
+                     presente, es el histórico con las filas viejas dentro. La consulta \
+                     responde, los números salen, y son los de antes. Un `nature: event` sí se \
+                     respalda de un `append`",
+                ),
+            );
         }
     }
 }
@@ -710,5 +1131,284 @@ mod tests {
         comprobar(&pkg, &mut out);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].code, Code::Oos2018);
+    }
+
+    // ── v1alpha8 · la tabla ─────────────────────────────────────────────────
+
+    fn tabla(nombre: &str, spec: &str) -> Loaded {
+        doc(
+            Kind::Table,
+            &format!(
+                "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+                 metadata: {{ name: {nombre}, namespace: erp }}\nspec:\n{spec}"
+            ),
+        )
+    }
+
+    /// La tabla de referencia: las dos caras puestas, y se deja leer.
+    fn employees() -> Loaded {
+        tabla(
+            "employees",
+            "  datasource: erp\n  object: public.employees\n  \
+             columns:\n    employee_id: {}\n    national_id: {}\n    country: {}\n    deleted: {}\n  \
+             reads: { predicatePushdown: [eq, in], fullScan: cheap }\n  \
+             changes: { mode: retract, witness: log }\n",
+        )
+    }
+
+    /// Un tema: se escribe, no se pregunta. Y solo anexa, para `OOS2021`.
+    fn topico(modo: &str) -> Loaded {
+        tabla(
+            "orders",
+            &format!(
+                "  datasource: erp\n  object: orders.v2\n  \
+                 columns:\n    order_id: {{}}\n    total: {{}}\n  \
+                 reads: none\n  changes: {{ mode: {modo}, witness: log }}\n"
+            ),
+        )
+    }
+
+    fn vista8(nombre: &str, spec: &str) -> Loaded {
+        doc(
+            Kind::View,
+            &format!(
+                "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+                 metadata: {{ name: {nombre}, namespace: hr }}\nspec:\n  owner: team:hr\n{spec}"
+            ),
+        )
+    }
+
+    fn codigos(pkg: &Package) -> Vec<Code> {
+        let mut out = Vec::new();
+        comprobar(pkg, &mut out);
+        out.into_iter().map(|d| d.code).collect()
+    }
+
+    /// La cadena llega al suelo por el camino nuevo, y **lo que llega es lo
+    /// mismo**: quien llama a `raiz()` no se entera de por cuál de los dos vino.
+    #[test]
+    fn la_raiz_atraviesa_una_tabla_y_da_la_misma_forma() {
+        let v = vista8(
+            "empleados",
+            "  from: { table: erp.employees }\n  fields:\n    id: employee_id\n    dni: national_id\n  \
+             where: { deleted: 'false' }\n",
+        );
+        let pkg = paquete(vec![config(), employees(), v]);
+        let r = raiz(&pkg, pkg.view("hr.empleados").unwrap()).unwrap();
+        assert_eq!(r.datasource, "erp");
+        assert_eq!(r.objeto, "public.employees");
+        assert_eq!(
+            r.columnas.get("dni").map(String::as_str),
+            Some("national_id")
+        );
+        assert_eq!(
+            r.filtros,
+            vec![("deleted".to_string(), vec!["false".to_string()])]
+        );
+        // Lo único que cambia: ahora hay un documento que nombrar.
+        assert_eq!(r.tabla.as_deref(), Some("erp.employees"));
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// **OOS2018 llega hasta el suelo.** En v1alpha7 esto compilaba, y no por
+    /// indulgencia: no había ningún documento contra el que comprobarlo.
+    #[test]
+    fn un_campo_que_no_es_columna_de_la_tabla_no_compila() {
+        let v = vista8(
+            "empleados",
+            "  from: { table: erp.employees }\n  fields:\n    dni: nif\n",
+        );
+        let pkg = paquete(vec![config(), employees(), v]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2018]);
+    }
+
+    #[test]
+    fn un_filtro_que_no_es_columna_de_la_tabla_no_compila() {
+        let v = vista8(
+            "empleados",
+            "  from: { table: erp.employees }\n  fields:\n    id: employee_id\n  where: { borrado: 'false' }\n",
+        );
+        let pkg = paquete(vec![config(), employees(), v]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2018]);
+    }
+
+    #[test]
+    fn una_tabla_que_no_existe_no_es_una_raiz() {
+        let v = vista8(
+            "empleados",
+            "  from: { table: erp.employes }\n  fields:\n    id: employee_id\n",
+        );
+        let pkg = paquete(vec![config(), employees(), v]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2018]);
+    }
+
+    /// Las dos caras nombran columnas suyas, y eso un esquema no lo puede
+    /// mirar: exige que el campo ESTÉ, no puede saber si lo que dice EXISTE.
+    #[test]
+    fn las_dos_caras_nombran_columnas_de_la_tabla() {
+        let mala = tabla(
+            "orders",
+            "  datasource: erp\n  object: orders.v2\n  columns:\n    order_id: {}\n  \
+             reads: { requiredFilters: [tenant_id] }\n  \
+             changes: { mode: upsert, key: [order_key], witness: field, field: updated_at }\n",
+        );
+        let pkg = paquete(vec![config(), mala]);
+        // Tres nombres inventados, tres diagnósticos, un solo código.
+        assert_eq!(
+            codigos(&pkg),
+            vec![Code::Oos2018, Code::Oos2018, Code::Oos2018]
+        );
+    }
+
+    #[test]
+    fn la_fuente_de_una_tabla_se_declara_en_el_manifiesto() {
+        let t = doc(
+            Kind::Table,
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: a, namespace: crm }\nspec:\n  \
+             datasource: salesforce\n  object: Account\n  columns:\n    Id: {}\n  \
+             reads: none\n  changes: { mode: none, witness: none }\n",
+        );
+        let pkg = paquete(vec![config(), t]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2004]);
+    }
+
+    /// **OOS2020 · lo que no se puede leer se debe materializar.**
+    #[test]
+    fn una_vista_virtual_sobre_algo_que_no_se_lee_no_compila() {
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n",
+        );
+        let pkg = paquete(vec![config(), topico("upsert"), v]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2020]);
+    }
+
+    #[test]
+    fn con_la_copia_puesta_la_misma_vista_compila() {
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n  \
+             materialized: { datasource: erp, table: cache.pedidos }\n",
+        );
+        let pkg = paquete(vec![config(), topico("upsert"), v]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// La distinción raíz / raíz de lectura, que es todo el asunto: si la regla
+    /// mirara la raíz, esto fallaría y obligaría a copiar dos veces lo mismo.
+    #[test]
+    fn una_virtual_sobre_una_copia_sobre_un_topico_lee_de_la_copia() {
+        let abajo = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n    total: total\n  \
+             materialized: { datasource: erp, table: cache.pedidos }\n",
+        );
+        let arriba = vista8(
+            "iberia",
+            "  from: { view: pedidos }\n  fields:\n    id: id\n",
+        );
+        let pkg = paquete(vec![config(), topico("upsert"), abajo, arriba]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+        // Y la raíz de lectura de la de arriba es la copia, no el tópico.
+        let a = pkg.view("hr.iberia").unwrap();
+        assert_eq!(
+            raiz_de_lectura(&pkg, a).and_then(|v| v.qname()).as_deref(),
+            Some("hr.pedidos")
+        );
+    }
+
+    fn entidad(naturaleza: &str, extra: &str) -> Loaded {
+        doc(
+            Kind::Entity,
+            &format!(
+                "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+                 metadata: {{ name: Pedido, namespace: hr }}\nspec:\n  nature: {naturaleza}\n\
+                 {extra}  backedBy: pedidos\n  properties:\n    id: {{ type: String }}\n"
+            ),
+        )
+    }
+
+    fn copia_de(modo: &str) -> Vec<Loaded> {
+        vec![
+            config(),
+            topico(modo),
+            vista8(
+                "pedidos",
+                "  from: { table: erp.orders }\n  fields:\n    id: order_id\n  \
+                 materialized: { datasource: erp, table: cache.pedidos }\n",
+            ),
+        ]
+    }
+
+    /// **OOS2021 · sin retractación no se mantiene lo mutable.** El peor modo
+    /// de fallo del motor: sin este código la copia se deriva en silencio y los
+    /// números salen — los de antes.
+    #[test]
+    fn una_copia_de_lo_que_solo_anexa_no_respalda_una_entidad_mutable() {
+        let mut docs = copia_de("append");
+        docs.push(entidad("entity", "  primaryKey: [id]\n"));
+        let pkg = paquete(docs);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2021]);
+    }
+
+    /// Y la mitad que **sí** compila: un hecho ocurrido no se retira.
+    #[test]
+    fn una_copia_de_lo_que_solo_anexa_si_respalda_un_evento() {
+        let mut docs = copia_de("append");
+        docs.push(entidad("event", "  timeKey: id\n"));
+        let pkg = paquete(docs);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// Y con retractación, lo mutable se mantiene: la regla es sobre el modo,
+    /// no sobre materializar.
+    #[test]
+    fn una_copia_de_lo_que_retracta_si_respalda_una_entidad() {
+        let mut docs = copia_de("retract");
+        docs.push(entidad("entity", "  primaryKey: [id]\n"));
+        let pkg = paquete(docs);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// Una vista VIRTUAL sobre un `append` que se deja leer compila: se lee del
+    /// origen, que sí tiene el estado presente. La regla es sobre la COPIA.
+    #[test]
+    fn sin_copia_un_append_si_respalda_una_entidad() {
+        let plana = tabla(
+            "orders",
+            "  datasource: erp\n  object: orders.v2\n  columns:\n    order_id: {}\n  \
+             reads: { fullScan: cheap }\n  changes: { mode: append, witness: log }\n",
+        );
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n",
+        );
+        let pkg = paquete(vec![
+            config(),
+            plana,
+            v,
+            entidad("entity", "  primaryKey: [id]\n"),
+        ]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// Las dos versiones en el mismo paquete. Si esto fallara, la migración
+    /// sería un salto, y un salto sobre un árbol grande no se da.
+    #[test]
+    fn una_vista_v1alpha7_y_una_tabla_v1alpha8_conviven() {
+        let pkg = paquete(vec![config(), base(), employees(), {
+            vista8(
+                "nuevos",
+                "  from: { table: erp.employees }\n  fields:\n    id: employee_id\n",
+            )
+        }]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+        // Y las dos llegan al mismo suelo por caminos distintos.
+        let vieja = raiz(&pkg, pkg.view("hr.empleados").unwrap()).unwrap();
+        let nueva = raiz(&pkg, pkg.view("hr.nuevos").unwrap()).unwrap();
+        assert_eq!(vieja.datasource, nueva.datasource);
+        assert_eq!(vieja.objeto, nueva.objeto);
+        assert_eq!(vieja.tabla, None);
+        assert_eq!(nueva.tabla.as_deref(), Some("erp.employees"));
     }
 }

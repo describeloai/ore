@@ -103,6 +103,29 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
             )),
         ];
     }
+    // Y uno que EXISTIO y ya no: tampoco es desconocido. `Binding` se retira en
+    // v1alpha8 —no se borra— y el mensaje tiene que decir en qué se convirtió,
+    // porque la respuesta no es «quítalo»: son dos documentos.
+    if let Some(k) = kv.as_str().and_then(Kind::parse)
+        && let Some(h) = k.hasta()
+        && version >= h
+    {
+        return vec![
+            Diagnostic::new(
+                Code::Oos1003,
+                file,
+                format!("`kind: {}` se retiró en {}", k.as_str(), h.as_str()),
+            )
+            .at(kk.pos())
+            .help(
+                "en v1alpha8 esto son una `Table` —el objeto, con sus dos caras— y una `View` \
+                 —qué sale de él y cómo se llama—, y la entidad nombra a la vista con \
+                 `backedBy`. Decirlo en dos documentos es lo que permite que dos vistas \
+                 compartan un objeto sin repetir su contrato. Un documento que declare \
+                 `apiVersion: oos.dev/v1alpha1` sigue compilando tal cual",
+            ),
+        ];
+    }
     let Some(kind) = kv.as_str().and_then(Kind::parse) else {
         let nombre = kv.as_str().unwrap_or("<no es una cadena>");
         return vec![
@@ -134,7 +157,7 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     // `datasources` antes de llegar a mirarla.
     let mut raiz_ok: Vec<&str> = kind.root_keys().to_vec();
     if kind.sections_at_root() {
-        raiz_ok.extend_from_slice(kind.spec_keys());
+        raiz_ok.extend_from_slice(kind.spec_keys_en(version));
     }
     check_keys(file, root, &raiz_ok, "", &mut diags);
 
@@ -144,7 +167,7 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     if !kind.sections_at_root()
         && let Some((_, spec)) = root.get("spec")
     {
-        check_keys(file, spec, kind.spec_keys(), "spec.", &mut diags);
+        check_keys(file, spec, kind.spec_keys_en(version), "spec.", &mut diags);
         // Y dentro de cada propiedad. Sin esto, un `qualtiy:` mal escrito se
         // acepta en silencio y la propiedad queda sin gobernar — un hueco que
         // no produce ningún síntoma.

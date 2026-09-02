@@ -128,6 +128,16 @@ codes! {
     // codigo, no cuando llego.
     Oos2018 = "OOS2018", Reference, "una vista o `backedBy` nombra una vista o un campo que no existe";
     Oos2019 = "OOS2019", Reference, "la cadena de vistas vuelve sobre si misma";
+    // Los introduce v1alpha8 con la tabla, y son los dos que NINGUN COMPETIDOR
+    // COMPRUEBA AL COMPILAR: Databricks descubre el primero cuando `readStream`
+    // no existe sobre una foreign table, y Foundry documenta el segundo como
+    // una limitacion. La familia sigue siendo la de las referencias porque de
+    // eso hablan: de lo que una vista puede pedirle a lo que tiene debajo.
+    //
+    // Y solo son comprobables desde que la tabla declara sus dos caras. Ese es
+    // el precio que paga v1alpha8, y lo que compra.
+    Oos2020 = "OOS2020", Reference, "una vista cuya raiz de lectura no se deja leer no se materializa";
+    Oos2021 = "OOS2021", Reference, "una copia de un flujo que solo anexa respalda una entidad mutable";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -296,6 +306,9 @@ mod tests {
             // La vista llega con v1alpha7, y sus dos codigos son referencias.
             Code::Oos2018,
             Code::Oos2019,
+            // La tabla llega con v1alpha8, y los suyos tambien.
+            Code::Oos2020,
+            Code::Oos2021,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

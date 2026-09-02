@@ -42,6 +42,13 @@ pub enum ApiVersion {
     /// consecuencia de haber anadido un `kind`**, igual que un directorio de
     /// esquemas. v1alpha7 anade uno —la vista— y por eso existe aqui.
     V1Alpha7,
+    /// v1alpha8. Anade `Table`, adelgaza `View` y **retira** `Binding`.
+    ///
+    /// Es la primera version que quita algo, y por eso `Kind` necesita `hasta`
+    /// al lado de `since`: un `Binding` que declare esta version no es un kind
+    /// desconocido ni uno del futuro — es uno del pasado, y el error tiene que
+    /// decir eso y decir por que dos documentos.
+    V1Alpha8,
 }
 
 impl ApiVersion {
@@ -51,6 +58,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha3,
         ApiVersion::V1Alpha4,
         ApiVersion::V1Alpha7,
+        ApiVersion::V1Alpha8,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -60,6 +68,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha3 => "oos.dev/v1alpha3",
             ApiVersion::V1Alpha4 => "oos.dev/v1alpha4",
             ApiVersion::V1Alpha7 => "oos.dev/v1alpha7",
+            ApiVersion::V1Alpha8 => "oos.dev/v1alpha8",
         }
     }
 
@@ -116,6 +125,25 @@ pub enum Kind {
     /// Conviven mientras dure la migracion (`docs/handoff-vistas.md`); el dia
     /// que `Binding` se borre, este comentario se queda y aquel no.
     View,
+    /// v1alpha8. **La tabla: el puntero a un objeto fisico, registrado una vez,
+    /// con sus dos caras.**
+    ///
+    /// v1alpha7 metio el puntero DENTRO de la vista porque el binding lo tenia
+    /// asi. Era el puente correcto y la forma equivocada para quedarse: el
+    /// contrato es del OBJETO, no de quien lo consulta. Cada vista sobre una
+    /// fuente repetia el contrato fisico, una vista sobre otra vista no tenia
+    /// ninguno, y las columnas de la fuente no se declaraban en ninguna parte —
+    /// por eso `OOS2018` sobre una vista de fuente no era comprobable: no habia
+    /// contra que.
+    ///
+    /// Las dos caras son `reads` —que se le puede pedir, el `capabilities`
+    /// mudado— y `changes` —que cambios emite y como los codifica, que es lo
+    /// que `version.witness` decia a medias: aquel decia que FECHA el cambio y
+    /// no decia que LLEGA.
+    ///
+    /// **No hay `kind: Stream`**, y no es un olvido: un stream es el nombre
+    /// corriente de una tabla cuya cara de lectura es `none`.
+    Table,
 }
 
 impl Kind {
@@ -133,6 +161,7 @@ impl Kind {
         Kind::Interface,
         Kind::RequestPolicy,
         Kind::View,
+        Kind::Table,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -150,6 +179,7 @@ impl Kind {
             Kind::Interface => "Interface",
             Kind::RequestPolicy => "RequestPolicy",
             Kind::View => "View",
+            Kind::Table => "Table",
         }
     }
 
@@ -163,7 +193,28 @@ impl Kind {
             Kind::Ruleset => ApiVersion::V1Alpha3,
             Kind::Concept | Kind::Interface => ApiVersion::V1Alpha4,
             Kind::View => ApiVersion::V1Alpha7,
+            Kind::Table => ApiVersion::V1Alpha8,
             _ => ApiVersion::V1Alpha1,
+        }
+    }
+
+    /// La version en la que este documento **se retira**, si se retira.
+    ///
+    /// El gemelo de `since`, y hasta v1alpha8 no hacia falta porque ninguna
+    /// version habia quitado nada. Se retira NO ES SE BORRA: un `Binding` que
+    /// declare v1alpha1 sigue compilando, porque v1alpha1 es normativo y sigue
+    /// diciendo lo que decia. Lo que no cabe es declarar la version nueva y
+    /// usar la forma vieja.
+    ///
+    /// Que sea un dato del `kind` y no un `if` en el validador es lo que hace
+    /// que el mensaje pueda decir **en que version** y **por que**: un
+    /// `Binding` en v1alpha8 son una `Table` y una `View`, y decirlo en dos
+    /// documentos es lo que permite que dos vistas compartan un objeto sin
+    /// repetir su contrato.
+    pub const fn hasta(self) -> Option<ApiVersion> {
+        match self {
+            Kind::Binding => Some(ApiVersion::V1Alpha8),
+            _ => None,
         }
     }
 
@@ -217,7 +268,11 @@ impl Kind {
             // entidad y en el datasource; si la vista pudiera declararlas habria
             // dos sitios diciendo que es una columna, y el dia que discrepen
             // ninguno diria cual manda.
-            | Kind::View => &["name", "namespace", "description"],
+            | Kind::View
+            // Y la tabla tampoco, por lo mismo que la vista y con mas razon:
+            // es el objeto tal cual esta. Su ubicacion la etiqueta el
+            // `datasource`, y lo que significa una columna lo dice la entidad.
+            | Kind::Table => &["name", "namespace", "description"],
             // `Property` es el único documento con `labels` en LOS DOS SITIOS,
             // y la primera versión de este `match` se lo negó por miedo a la
             // duplicación. Era un error, y lo destapó `confidence`: un concepto
@@ -372,6 +427,37 @@ impl Kind {
                 "capabilities",
                 "materialized",
             ],
+            // v1alpha8. Las dos caras y lo que hay entre ellas: `columns`, que
+            // es lo unico nuevo de verdad — hasta aqui ningun documento decia
+            // que columnas tenia el objeto, y por eso `OOS2018` sobre una vista
+            // de fuente no era comprobable.
+            Kind::Table => &["datasource", "object", "columns", "reads", "changes"],
+        }
+    }
+
+    /// Las claves de `spec` **en una version**.
+    ///
+    /// Casi todas son las mismas en todas: un `kind` nace con su forma y la
+    /// conserva. La `View` es la excepcion, y la excepcion es el asunto de
+    /// v1alpha8: pierde `capabilities` y `version`, que pasan a ser `reads` y
+    /// `changes.witness` de la tabla.
+    ///
+    /// Comprobar contra la union habria dejado compilar una vista v1alpha8 con
+    /// el contrato fisico dentro — que es exactamente lo que esta version viene
+    /// a impedir, y el defecto no produciria ningun sintoma: la vista compila,
+    /// nadie lee ese `capabilities`, y el planificador usa el de la tabla. Un
+    /// campo que nadie lee es peor que uno que no existe, porque promete algo.
+    pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
+        match self {
+            Kind::View if version >= ApiVersion::V1Alpha8 => &[
+                "owner",
+                "from",
+                "freshness",
+                "fields",
+                "where",
+                "materialized",
+            ],
+            _ => self.spec_keys(),
         }
     }
 
@@ -466,6 +552,110 @@ fn naturaleza_desconocida(n: &crate::parse::Node) -> Option<String> {
 
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
+        // ── v1alpha8 · la tabla ─────────────────────────────────────────────
+        //
+        // Lo que un puntero necesita para serlo. Sin `columns` no es un puntero
+        // a nada: es un nombre — y ademas es contra lo que se comprueba todo lo
+        // demas, asi que su ausencia no da un error, da SILENCIO.
+        ShapeRule {
+            kind: Kind::Table,
+            path: &["spec"],
+            check: |n| {
+                for (clave, ayuda) in [
+                    (
+                        "datasource",
+                        "una tabla es el puntero a un objeto de una fuente declarada, y sin \
+                         fuente no apunta a ninguna parte",
+                    ),
+                    (
+                        "object",
+                        "el nombre del objeto en el origen. Es opaco —sus reglas son del \
+                         origen— pero tiene que estar",
+                    ),
+                    (
+                        "reads",
+                        "la cara `I`: que se le puede pedir. `none` es una respuesta legal y \
+                         tiene consecuencias (OOS2020); no declararla no lo es, porque el \
+                         planificador se quedaria sin con que rechazar un plan",
+                    ),
+                    (
+                        "changes",
+                        "la cara `D`: que cambios emite. `{ mode: none, witness: none }` es \
+                         una respuesta legal —no se sabe, y no se inventa—; callarse no lo \
+                         es, porque el mantenedor tendria que adivinar que pesos son legales",
+                    ),
+                ] {
+                    if n.get(clave).is_none() {
+                        return Some((format!("una tabla sin `{clave}`"), Some(ayuda.to_string())));
+                    }
+                }
+                if n.get("columns").is_none_or(|(_, v)| v.entries().is_empty()) {
+                    return Some((
+                        "una tabla sin `columns`".to_string(),
+                        Some(
+                            "las columnas que HAY, no las que usa una vista. Es contra lo que se \
+                             comprueba que un campo exista, y sin ellas esa comprobacion no \
+                             falla: no se hace"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                None
+            },
+        },
+        // `key` y `field` solo significan algo con su modo y su testigo. Que
+        // FALTEN donde hacen falta deja al mantenedor sin saber que retirar;
+        // que SOBREN donde no, promete algo que nadie lee — y un campo que
+        // nadie lee es peor que uno que no existe.
+        ShapeRule {
+            kind: Kind::Table,
+            path: &["spec", "changes"],
+            check: |n| {
+                let modo = n.get("mode").and_then(|(_, v)| v.as_str()).unwrap_or("");
+                let testigo = n.get("witness").and_then(|(_, v)| v.as_str()).unwrap_or("");
+                if modo == "upsert" && n.get("key").is_none() {
+                    return Some((
+                        "`changes.mode: upsert` sin `key`".to_string(),
+                        Some(
+                            "un upsert retira por clave: sin ella un tombstone no dice que fila \
+                             quita, y el mantenedor aplicaria un -1 a nada"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if modo != "upsert" && n.get("key").is_some() {
+                    return Some((
+                        format!("`changes.key` con `mode: {modo}`"),
+                        Some(
+                            "la clave es lo que hace retirable un upsert. Con cualquier otro \
+                             modo no la lee nadie"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if testigo == "field" && n.get("field").is_none() {
+                    return Some((
+                        "`changes.witness: field` sin `field`".to_string(),
+                        Some(
+                            "el testigo por campo dice que una columna de la tabla ordena el \
+                             avance. Cual, es lo unico que hace falta y lo unico que falta"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if testigo != "field" && n.get("field").is_some() {
+                    return Some((
+                        format!("`changes.field` con `witness: {testigo}`"),
+                        Some(
+                            "la columna que ordena el avance solo la lee `witness: field`. Con \
+                             otro testigo se ignora, y un campo que se ignora promete algo"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                None
+            },
+        },
         // Una cache ES UNA COPIA DE DATOS, y por eso el esquema le exige dos
         // cosas que a `topology` no: QUE copia y CUANTO tolera que envejezca.
         // Ninguna de las dos se comprobaba — un `payload: {}` validaba limpio,
