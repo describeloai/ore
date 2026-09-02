@@ -519,13 +519,13 @@ flowchart TB
 | **Flow Checker** | `flow.rs` | M3 | *por qué esto no compila* | ✅ |
 | **Pushdown Planner** | `capabilities.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
 | **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ✅ |
-| **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ⏳ |
+| **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ checks 2·3·seal |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
 | **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
 | **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, siete construidas.** Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, ocho construidas** — la octava a falta de dos checks. Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -656,6 +656,27 @@ otro bundle no vale—. El View Matcher lo extiende de *«otro bundle»* a *«ot
 
 **Con 1–3 el View Matcher ya sirve.** El 4 lo hace útil para analítica; el 5 es donde la
 literatura se rompe.
+
+> **1–3 construidos · 2026-09-01** · 91 comprobaciones en el crate. El subconjunto que decide es
+> **select-project sobre una hoja**, y lo que no cabe sale nombrando el operador.
+>
+> Tres cosas que salieron de construirlo:
+>
+> **La implicación se razona por columna, con decimales exactos.** `total >= 10.25` implica
+> `total > 0.5` sin pasar por un doble: el orden de dos decimales se decide sobre sus dígitos,
+> `0.10` es `0.1` y el signo manda. Es la regla de M0 —no hay coma flotante— pagándose una vez
+> más. Fuera de comparaciones simples, igualdades e `IN`, **no hay implicación**, y no haberla es
+> la respuesta segura: afirmar una que no se sabe demostrar es servir filas que no debían salir.
+>
+> **Una opaca idéntica a los dos lados solo implica si es determinista.** `RANDOM() > 0.5` escrito
+> dos veces son dos filtros distintos. Es el campo que faltaba en M0 dando su primer dividendo
+> antes de M6.
+>
+> **Y el *label seal* es el Flow Checker sin una segunda copia.** Las raíces del plan reescrito
+> son las columnas de la tabla materializada, y sus etiquetas son las selladas. La prueba que
+> importa enseña las dos mitades: con el sello, `total` hereda `critical`; recalculando desde los
+> orígenes sobre el plan reescrito, `total` sale **sin etiqueta** — porque `nif` no está en la
+> tabla. Es el fallo entero, medido, y la razón de que el sello no se pueda romper.
 
 **Fuera, con su razón:** subsumption de disyunciones, reescritura con joins arbitrarios, y
 cualquier match que atraviese una expresión opaca — su texto no se lee, así que no se puede
