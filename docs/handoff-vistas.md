@@ -165,7 +165,10 @@ Lo único que inventamos sigue siendo lo que ya inventamos: la forma canónica, 
 
 ## 3. La forma
 
-Borrador, no normativo. Lo normativo lo fija el ADR.
+Lo normativo es `vendor/oos/spec/v1alpha7/01-view.md`; esto es el boceto del que salió, con
+las dos cosas que cambiaron al escribir el esquema: **`from` es una fuente, no una lista**
+—sin junta en el vocabulario, dos fuentes no tendrían forma de combinarse— y **`where`**, que es
+el `selector` mudado y que el boceto había olvidado.
 
 ```yaml
 apiVersion: oos.dev/v1alpha7
@@ -176,12 +179,13 @@ metadata:
 spec:
   owner: team:rrhh
 
-  # De dónde. Una fuente declarada, u OTRAS VISTAS.
+  # De dónde. Una fuente declarada, u OTRA VISTA (`from: { view: … }`).
   from:
-    - datasource: hr_workday
-      object: "Worker"
+    datasource: hr_workday
+    object: "Worker"
 
   # El testigo. Obligatorio; `none` es legal y tiene precio.
+  # `none | snapshot | log | field` — todos ordinales.
   version:
     witness: none
 
@@ -194,6 +198,10 @@ spec:
     baseSalary:
       column: "Compensation_Data.Base_Pay.Amount"
       physicalType: "decimal(18,2)"
+
+  # Qué filas son suyas. Es `Binding.selector`, mudado: la misma gramática cerrada.
+  where:
+    "Worker_Status": Active
 
   # Qué sabe hacer el origen. Es `Binding.capabilities`, mudado.
   capabilities:
@@ -293,7 +301,7 @@ anotando el impedimento; la vista lo quita de paso.
 
 | | Qué | Dónde |
 |---|---|---|
-| **V0** | `kind: View` que compila: esquema, normalización, digest | `ore-core` ✅ local |
+| **V0** | `kind: View` que compila: esquema, normalización, digest — **hecho**: `crates/ore-core/src/vistas.rs`, `spec/v1alpha7`, trece casos en `conformance/v1alpha7` | `ore-core` ✅ local |
 | **V1** | `Entity.backedBy`, y la fase ③ lee de vistas | `ore-exec`, CI |
 | **V2** | **vista sobre vistas** — el vocabulario de operaciones | `ore-core` |
 | **V3** | el flujo de etiquetas **atraviesa la cadena y se niega a compilar** | `ore-core` |
@@ -303,6 +311,13 @@ anotando el impedimento; la vista lo quita de paso.
 **V0 y V1 conviven con el `Binding`**, y es el único momento del proyecto en que dos cosas
 dirán lo mismo. Está acotado a dos peldaños y es el puente; V5 lo cierra. Si el puente se
 queda puesto, hemos fallado.
+
+**V0 llegó con parte de V2 y de V3 dentro**, porque no se podían separar: una vista sobre otra
+es un `from: { view }` y la cadena se compone en `vistas::raiz`; y la etiqueta de una entidad
+baja por la cadena hasta la vista que se materializa (`flow::vistas_materializadas`), que es
+el caso `materialized-view-leaks-entity-label`. Lo que queda de V2 es el vocabulario más allá
+de seleccionar, renombrar y recortar; lo que queda de V3 es el linaje **por columna** con la
+arista `INDIRECT`, que es del motor de vistas y no del núcleo.
 
 **V2 es el peldaño difícil** y no está diseñado. Lo que decide si esto es un producto o un dbt
 peor es el vocabulario cerrado y el precio de la escapatoria — §2.3.

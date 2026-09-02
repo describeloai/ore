@@ -943,12 +943,14 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
             let huerfanas: Vec<String> = ore_core::normalize::sin_binding(&pkg);
             if !huerfanas.is_empty() {
                 eprintln!(
-                    "error: no se puede emitir a Ossie: {} sin binding",
+                    "error: no se puede emitir a Ossie: {} sin fuente física (ni binding ni `backedBy`)",
                     huerfanas.join(", ")
                 );
                 eprintln!();
                 eprintln!("  Un `Dataset` de Ossie exige `source`; cada `Field`, `expression`.");
-                eprintln!("  Ninguno de los dos está en la entidad: están en el binding.");
+                eprintln!(
+                    "  Ninguno de los dos está en la entidad: están en el binding o en la vista."
+                );
                 eprintln!("  Emitir de todos modos exigiría inventarlos, y el documento");
                 eprintln!("  resultante validaría contra Ossie y mentiría sobre dónde vive");
                 eprintln!("  el dato. Por eso `Entity` es gramática propia y no perfil.");

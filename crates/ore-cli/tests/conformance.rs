@@ -1161,6 +1161,15 @@ fn borrador_de_v1alpha6() {
     );
 }
 
+/// El borrador de v1alpha7 anade el primer `kind` desde v1alpha4 —la vista— y
+/// es el primero que SUSTITUYE a uno: absorbe al `Binding`. Sus casos
+/// certifican el primer peldano de `01-view` §9: la cadena compila y se niega.
+/// Los otros dos peldanos son la migracion, y no son casos.
+#[test]
+fn borrador_de_v1alpha7() {
+    marcador("v1alpha7", "la vista", "BORRADOR · OOS v1alpha7 · la vista");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

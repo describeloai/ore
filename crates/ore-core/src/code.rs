@@ -122,6 +122,12 @@ codes! {
     Oos2015 = "OOS2015", Reference, "un filtro exigido nombra una propiedad sin mapear";
     Oos2016 = "OOS2016", Reference, "la firma de un paquete importado no verifica";
     Oos2017 = "OOS2017", Reference, "la prueba de transparencia de un paquete no verifica";
+    // Los introduce v1alpha7 con la vista. Hablan de referencias —una vista que
+    // nombra lo que no hay, o que se nombra a si misma— y la familia es la de
+    // v1alpha1 por lo mismo que `OOS2016`: la familia dice de que habla el
+    // codigo, no cuando llego.
+    Oos2018 = "OOS2018", Reference, "una vista o `backedBy` nombra una vista o un campo que no existe";
+    Oos2019 = "OOS2019", Reference, "la cadena de vistas vuelve sobre si misma";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -287,6 +293,9 @@ mod tests {
             // v1alpha1 y la versión no.
             Code::Oos2016,
             Code::Oos2017,
+            // La vista llega con v1alpha7, y sus dos codigos son referencias.
+            Code::Oos2018,
+            Code::Oos2019,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

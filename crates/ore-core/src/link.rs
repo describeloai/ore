@@ -190,6 +190,11 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     datasources(pkg, &mut d);
     entities(pkg, &mut d);
     bindings(pkg, &mut d);
+    // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
+    // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
+    // una operacion —componer renombres— que `flow` y el ejecutor tambien
+    // necesitan, y con dos copias divergirian.
+    crate::vistas::comprobar(pkg, &mut d);
     // OOS2014 vive aparte porque no mira UN binding: mira los que comparten
     // objeto y decide si reparten las filas o se pisan.
     crate::selector::comprobar(pkg, &mut d);

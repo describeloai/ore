@@ -37,6 +37,11 @@ pub enum ApiVersion {
     V1Alpha2,
     V1Alpha3,
     V1Alpha4,
+    /// v1alpha5 y v1alpha6 no estan, y no faltan: no anadieron gramatica, asi
+    /// que ningun documento puede declararlas. **Un `apiVersion` es
+    /// consecuencia de haber anadido un `kind`**, igual que un directorio de
+    /// esquemas. v1alpha7 anade uno —la vista— y por eso existe aqui.
+    V1Alpha7,
 }
 
 impl ApiVersion {
@@ -45,6 +50,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha2,
         ApiVersion::V1Alpha3,
         ApiVersion::V1Alpha4,
+        ApiVersion::V1Alpha7,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -53,6 +59,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha2 => "oos.dev/v1alpha2",
             ApiVersion::V1Alpha3 => "oos.dev/v1alpha3",
             ApiVersion::V1Alpha4 => "oos.dev/v1alpha4",
+            ApiVersion::V1Alpha7 => "oos.dev/v1alpha7",
         }
     }
 
@@ -97,6 +104,18 @@ pub enum Kind {
     /// datos, `ConduitPolicy` la salida— y la de identidad no. Y es la unica
     /// entrada que DECIDE en vez de ser gobernada.
     RequestPolicy,
+    /// v1alpha7. **La vista: que existe fisicamente y como se llama.**
+    ///
+    /// Absorbe al `Binding` entero —fuente, mapeo, capacidades, copia— y le
+    /// invierte la flecha: el binding nombraba a la entidad, y ahora la entidad
+    /// la nombra a ella con `backedBy`. Asi una vista existe antes de que nadie
+    /// modele nada, varias entidades pueden respaldarse de la misma, y lo
+    /// fisico deja de saber de significado. Y puede salir de OTRA vista, que es
+    /// lo que hace que un pipeline sea una estructura y no una frase.
+    ///
+    /// Conviven mientras dure la migracion (`docs/handoff-vistas.md`); el dia
+    /// que `Binding` se borre, este comentario se queda y aquel no.
+    View,
 }
 
 impl Kind {
@@ -113,6 +132,7 @@ impl Kind {
         Kind::Concept,
         Kind::Interface,
         Kind::RequestPolicy,
+        Kind::View,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -129,6 +149,7 @@ impl Kind {
             Kind::Concept => "Concept",
             Kind::Interface => "Interface",
             Kind::RequestPolicy => "RequestPolicy",
+            Kind::View => "View",
         }
     }
 
@@ -141,6 +162,7 @@ impl Kind {
             Kind::Function | Kind::Resolution => ApiVersion::V1Alpha2,
             Kind::Ruleset => ApiVersion::V1Alpha3,
             Kind::Concept | Kind::Interface => ApiVersion::V1Alpha4,
+            Kind::View => ApiVersion::V1Alpha7,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -189,7 +211,13 @@ impl Kind {
             | Kind::Interface
             // `RequestPolicy` es como `ConduitPolicy`: uno por paquete, sin
             // espacio de nombres. No porta datos, luego no tiene clasificacion.
-            | Kind::RequestPolicy => &["name", "namespace", "description"],
+            | Kind::RequestPolicy
+            // Una vista tampoco admite `labels`, y es la decision de forma que
+            // la define: NO LLEVA SIGNIFICADO. Las etiquetas viven en la
+            // entidad y en el datasource; si la vista pudiera declararlas habria
+            // dos sitios diciendo que es una columna, y el dia que discrepen
+            // ninguno diria cual manda.
+            | Kind::View => &["name", "namespace", "description"],
             // `Property` es el único documento con `labels` en LOS DOS SITIOS,
             // y la primera versión de este `match` se lo negó por miedo a la
             // duplicación. Era un error, y lo destapó `confidence`: un concepto
@@ -254,6 +282,10 @@ impl Kind {
                 "reserved",
                 // v1alpha4. La forma que la entidad declara satisfacer.
                 "implements",
+                // v1alpha7. La vista que la respalda. Es `Binding.targetEntity`
+                // con la flecha al reves: lo fisico existe antes y no sabe de
+                // esto; la entidad elige de que vista salir.
+                "backedBy",
             ],
             Kind::Binding => &[
                 "targetEntity",
@@ -325,6 +357,21 @@ impl Kind {
                 "confidence",
             ],
             Kind::Interface => &["requires", "description"],
+            // v1alpha7. Lo que era del binding, mudado, y dos cosas nuevas: de
+            // que vista se sale (`from.view`) y con que testigo se versiona.
+            // `where` es el `selector`, con la misma gramatica cerrada y por lo
+            // mismo. `materialized` y `freshness` son la `materialization`
+            // partida en dos: donde vive la copia, y cuanto retraso se tolera.
+            Kind::View => &[
+                "owner",
+                "from",
+                "version",
+                "freshness",
+                "fields",
+                "where",
+                "capabilities",
+                "materialized",
+            ],
         }
     }
 

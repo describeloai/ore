@@ -56,6 +56,7 @@ pub mod sync;
 pub mod transparencia;
 pub mod types;
 pub mod validate;
+pub mod vistas;
 
 pub use code::{Code, Family};
 pub use diag::{Diagnostic, Pos};

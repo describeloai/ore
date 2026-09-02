@@ -163,15 +163,15 @@ pub fn emit(pkg: &Package) -> Result<String, String> {
         ));
     }
 
-    // ── sin `Binding` no hay resolver ───────────────────────────────────────
+    // ── sin fuente física no hay resolver ───────────────────────────────────
     let huerfanas: Vec<String> = crate::normalize::sin_binding(pkg)
         .into_iter()
         .filter(|q| tipos.contains_key(q))
         .collect();
     if !huerfanas.is_empty() {
         return Err(format!(
-            "sin `Binding`, y por tanto sin resolver: {}.\n  Un campo en un SDL es la \
-             promesa de que preguntar por él devuelve algo.",
+            "sin `Binding` ni `backedBy`, y por tanto sin resolver: {}.\n  Un campo en un SDL \
+             es la promesa de que preguntar por él devuelve algo.",
             huerfanas.join(", ")
         ));
     }

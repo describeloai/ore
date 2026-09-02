@@ -1165,22 +1165,13 @@ fn mascara_con_sujeto(
 
 /// Entidad cualificada → las fuentes físicas a las que se enlaza.
 fn fuentes_por_entidad(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
-    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for b in pkg.docs.iter().filter(|d| d.kind == Kind::Binding) {
-        let Some(e) = b.section("targetEntity").and_then(|n| n.as_str()) else {
-            continue;
-        };
-        let Some(ds) = b.section("datasourceRef").and_then(|n| n.as_str()) else {
-            continue;
-        };
-        out.entry(normalize::qualify(
-            e,
-            b.meta("namespace").and_then(|n| n.as_str()),
-        ))
-        .or_default()
-        .insert(ds.to_string());
-    }
-    out
+    // Bindings y vista, por la misma funcion que usa `flow` para heredar la
+    // ubicacion: si esta regla y aquella vieran fuentes distintas, una
+    // asercion `sql` podria abarcar dos fuentes que el flujo cree una.
+    pkg.entities()
+        .filter_map(|e| Some((e.qname()?, crate::vistas::datasources_de(pkg, e))))
+        .filter(|(_, ds)| !ds.is_empty())
+        .collect()
 }
 
 fn aserciones(

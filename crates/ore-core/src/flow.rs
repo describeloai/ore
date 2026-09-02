@@ -253,6 +253,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     // 3 · Los conductos y la regla de flujo.
     let conductos = clearances(pkg, &lat);
     materializaciones(pkg, &lat, &efectivas, &conductos, &mut out);
+    vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
 
     // 4 · Desclasificadores y valores de ejemplo.
     desclasificadores(pkg, &mut out);
@@ -337,16 +338,15 @@ fn propagar(
 
     // Heredadas del datasource: la ubicación física es un hecho del mundo, no
     // una decisión de modelado, así que se computa.
-    for b in pkg.docs.iter().filter(|d| d.kind == Kind::Binding) {
-        if b.section("targetEntity").and_then(|t| t.as_str()) != Some(qn.as_str()) {
-            continue;
-        }
-        let Some(dsref) = b.section("datasourceRef").and_then(|d| d.as_str()) else {
-            continue;
-        };
+    //
+    // Por los bindings y por la vista, y la vista **atraviesa la cadena**: una
+    // entidad respaldada por una vista sobre otra vista hereda del datasource
+    // en el que la cadena termina, porque de ahí es de donde salen los bytes.
+    // `vistas::datasources_de` es quien sabe llegar; aquí solo se etiqueta.
+    for dsref in crate::vistas::datasources_de(pkg, e) {
         for c in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
             for ds in c.section("datasources").map(|n| n.items()).unwrap_or(&[]) {
-                if ds.get("name").and_then(|(_, v)| v.as_str()) != Some(dsref) {
+                if ds.get("name").and_then(|(_, v)| v.as_str()) != Some(dsref.as_str()) {
                     continue;
                 }
                 for (r, n, _) in read_labels(ds) {
@@ -522,6 +522,159 @@ fn propagar(
 fn propagar_solo(pkg: &Package, e: &Loaded, lat: &BTreeMap<String, Lattice>) -> EntityLabels {
     let mut descartar = Vec::new();
     propagar(pkg, e, lat, &mut descartar)
+}
+
+// ── OOS4001 · OOS4002 · la vista materializada ──────────────────────────────
+
+/// Una vista con `materialized` **copia datos**, y una copia instancia un
+/// conducto: `materialization.payload`, el mismo que el eje `payload` del
+/// binding, porque es la misma cosa con otro dueño.
+///
+/// Lo que fluye por él es **cada campo de la vista**, y lo que lleva puesto
+/// cada campo se sabe por dos vías:
+///
+/// - la del datasource raíz, que etiqueta a todo lo que sale de él;
+/// - la de **cada entidad cuya cadena pasa por esta vista**: la entidad
+///   etiqueta sus propiedades, las propiedades nombran campos de SU vista, y
+///   `vistas::proyectar` baja esos nombres hasta la que se copia.
+///
+/// La segunda vía es la que vale: una entidad puede declarar `nationalId: high`
+/// sobre una vista de tres eslabones, y **la de abajo, que es la que se
+/// materializa, no lo sabe**. Sin esto se copiaría en claro un dato que la
+/// entidad clasificó — y compilaría.
+fn vistas_materializadas(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    conductos: &BTreeMap<String, Labels>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let conducto = "materialization.payload";
+    for v in pkg.of(Kind::View) {
+        let Some(mat) = v.section("materialized") else {
+            continue;
+        };
+        let vqn = v.qname().unwrap_or_default();
+
+        // OOS4011 · omitir un conducto no es dejarlo abierto: es cerrarlo.
+        let Some(autorizacion) = conductos.get(conducto) else {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos4011,
+                    &v.path,
+                    format!("el conducto `{conducto}` no tiene autorización declarada"),
+                )
+                .at(mat.pos())
+                .help(format!(
+                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}`                      en la política de conductos, o quita `materialized` de la vista"
+                )),
+            );
+            continue;
+        };
+
+        // Qué lleva puesto cada campo. Se acumula por `join` —el más
+        // restrictivo— porque dos entidades pueden nombrar el mismo campo con
+        // clasificaciones distintas, y la copia es una.
+        let mut por_campo: BTreeMap<String, Labels> = BTreeMap::new();
+        let subir = |ls: &mut Labels, ret: &str, nivel: &str, origen: Origin| {
+            let sube = match (ls.get(ret), lat.get(ret)) {
+                (Some((actual, _)), Some(l)) => l.index(nivel) > l.index(actual),
+                (None, _) => true,
+                _ => false,
+            };
+            if sube {
+                ls.insert(ret.to_string(), (nivel.to_string(), origen));
+            }
+        };
+
+        // Vía 1 · el datasource raíz.
+        if let Ok(raiz) = crate::vistas::raiz(pkg, v) {
+            for c in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
+                for ds in c.section("datasources").map(|n| n.items()).unwrap_or(&[]) {
+                    if ds.get("name").and_then(|(_, x)| x.as_str())
+                        != Some(raiz.datasource.as_str())
+                    {
+                        continue;
+                    }
+                    for (r, n, _) in read_labels(ds) {
+                        for campo in raiz.columnas.keys() {
+                            subir(
+                                por_campo.entry(campo.clone()).or_default(),
+                                &r,
+                                &n,
+                                Origin::Inherited,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Vía 2 · cada entidad cuya cadena pasa por aquí.
+        for e in pkg.entities() {
+            let Some(suya) = crate::vistas::respaldo(pkg, e) else {
+                continue;
+            };
+            let Some(mapa) = crate::vistas::proyectar(pkg, suya, &vqn) else {
+                continue;
+            };
+            let eqn = e.qname().unwrap_or_default();
+            let Some(props) = efectivas.get(&eqn) else {
+                continue;
+            };
+            for (prop, labels) in props {
+                let Some(campo) = mapa.get(prop) else {
+                    continue;
+                };
+                for (ret, (nivel, origen)) in labels {
+                    subir(
+                        por_campo.entry(campo.clone()).or_default(),
+                        ret,
+                        nivel,
+                        *origen,
+                    );
+                }
+            }
+        }
+
+        for (campo, labels) in por_campo {
+            for (ret, (nivel, origen)) in labels {
+                let Some(l) = lat.get(&ret) else { continue };
+                let permitido = autorizacion
+                    .get(&ret)
+                    .and_then(|(n, _)| l.index(n))
+                    .unwrap_or(0);
+                let Some(tiene) = l.index(&nivel) else {
+                    continue;
+                };
+                if tiene <= permitido {
+                    continue;
+                }
+                let (code, como) = match origen {
+                    Origin::Computed => (Code::Oos4001, "computada por join"),
+                    Origin::Declared => (Code::Oos4002, "declarada"),
+                    Origin::Inherited => (Code::Oos4002, "heredada"),
+                };
+                let permitido_txt = autorizacion
+                    .get(&ret)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| l.levels[0].clone());
+                out.push(
+                    Diagnostic::new(
+                        code,
+                        &v.path,
+                        format!(
+                            "`{vqn}.{campo}` lleva `{ret}:{nivel}` ({como}) y `{conducto}`                              solo admite `{ret}:{permitido_txt}`"
+                        ),
+                    )
+                    .at(mat.pos())
+                    .help(
+                        "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
+                    ),
+                );
+            }
+        }
+    }
 }
 
 // ── Conductos ───────────────────────────────────────────────────────────────

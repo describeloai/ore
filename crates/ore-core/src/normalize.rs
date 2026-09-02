@@ -207,6 +207,10 @@ const MAPAS_DE_CONJUNTOS: &[&str] = &[
     // secuencia. Sin esto, dos documentos que dicen lo mismo en distinto orden
     // producirian digests distintos, que es la G1 rota de siempre.
     "selector",
+    // `where` de una `View` es el `selector` mudado, con la misma forma: las
+    // claves son nombres de columna —o campos de la vista de abajo— y los
+    // valores, pertenencia. La misma regla porque es el mismo caso.
+    "where",
 ];
 
 // Lo que NO entra, y conviene que se vea la ausencia:
@@ -227,7 +231,10 @@ const MAPAS_DE_CONJUNTOS: &[&str] = &[
 const ANIDADA: &str = "";
 
 fn es_referencia(clave: &str) -> bool {
-    matches!(clave, "targetEntity" | "target")
+    // `backedBy` y `from.view` son de v1alpha7: la entidad nombra a su vista y
+    // una vista nombra a la de abajo. Las dos admiten la forma corta dentro del
+    // mismo espacio de nombres, y el enlazado resuelve con esta misma regla.
+    matches!(clave, "targetEntity" | "target" | "backedBy" | "view")
 }
 
 /// N1 · Expande un nombre corto con el espacio de nombres de quien lo escribe.
@@ -408,7 +415,12 @@ pub fn foreign(root: &Node) -> Json {
     valor(root, "", &ctx).unwrap_or(Json::Obj(BTreeMap::new()))
 }
 
-/// Entidades del paquete que ningún binding enlaza.
+/// Entidades del paquete sin fuente fisica: ningun binding las enlaza y no
+/// declaran `backedBy`.
+///
+/// El nombre es el de antes de la vista y se queda: quien lo llama pregunta lo
+/// mismo que preguntaba —si la entidad tiene de donde leerse— y la respuesta
+/// hoy tiene dos caminos.
 pub fn sin_binding(pkg: &Package) -> Vec<String> {
     let enlazadas: std::collections::BTreeSet<String> = pkg
         .docs
@@ -422,6 +434,7 @@ pub fn sin_binding(pkg: &Package) -> Vec<String> {
     pkg.docs
         .iter()
         .filter(|d| d.kind == crate::document::Kind::Entity)
+        .filter(|e| e.section("backedBy").is_none())
         .filter_map(|e| e.qname())
         .filter(|qn| !enlazadas.contains(qn))
         .collect()
