@@ -34,7 +34,7 @@
 //! | **Flow Checker** | [`flow`] | M3 | por qué esto no compila |
 //! | **Pushdown Planner** | [`capabilities`] | M4 | qué hace el origen y qué queda de residuo |
 //! | **Filter Tree** | [`filter_tree`] | M5 | de todas las materializaciones, cuáles podrían servir |
-//! | **View Matcher** | [`view_matcher`] | M5 | si esta la contesta, y con qué compensation |
+//! | **View Matcher** | [`view_matcher`] | M5 | si esta la contesta, con qué compensation, y qué hereda |
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -59,4 +59,4 @@ pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
 pub use schema::{Desajuste, Esquema, esquema};
-pub use view_matcher::{NoContesta, Rewrite, cotejar, sello};
+pub use view_matcher::{NoContesta, Restriccion, Rewrite, cotejar, sello};

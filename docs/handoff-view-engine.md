@@ -519,13 +519,13 @@ flowchart TB
 | **Flow Checker** | `flow.rs` | M3 | *por qué esto no compila* | ✅ |
 | **Pushdown Planner** | `capabilities.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
 | **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ✅ |
-| **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ checks 2·3·seal |
+| **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
 | **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
 | **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, ocho construidas** — la octava a falta de dos checks. Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, ocho construidas.** M5 está entero. Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -656,6 +656,34 @@ otro bundle no vale—. El View Matcher lo extiende de *«otro bundle»* a *«ot
 
 **Con 1–3 el View Matcher ya sirve.** El 4 lo hace útil para analítica; el 5 es donde la
 literatura se rompe.
+
+> **Los cinco construidos · 2026-09-01** · 105 comprobaciones en el crate. El subconjunto que
+> decide es **select-project-join interno con un agregado encima como mucho**, y lo que no cabe
+> sale nombrando el operador.
+>
+> **Check 4.** A la misma granularidad los agregados se copian —también `AVG`—. A una más gruesa
+> se enrollan: `SUM(SUM)`, `SUM(COUNT)`, `MIN(MIN)`, `MAX(MAX)`. Y **`AVG` no se enrolla, y aquí
+> además no se puede escribir**: harían falta `SUMA` y `CUENTA` aparte, y el álgebra no tiene
+> división — no es una omisión, no hay aritmética porque no hay coma flotante. Una compensación
+> **por debajo del agregado** solo vale sobre columnas de grupo: lo demás ya se sumó y no se
+> separa. Y un `HAVING` en la materialización está fuera: razonar sobre grupos filtrados por
+> valores agregados es otro peldaño.
+>
+> **Check 5.** Mismas hojas y misma junta: se lee la tabla sin volver a juntar. La
+> materialización junta **menos** que el plan: la hoja que falta se trae de vuelta enganchada
+> sobre la clave que la tabla expone, y si no la expone, se dice qué hoja queda ausente. La
+> materialización junta **más** que el plan: **solo con dos restricciones declaradas**, y el
+> error dice cuál falta —una clave **única** en el lado de más evita duplicar; una
+> **referencial** hacia él evita perder; con una sola no hay garantía—. Sin restricciones no se
+> supone ninguna. Y el Filter Tree ganó la consulta que hace posible el check: las candidatas
+> **superconjunto**, las que leen todo lo que el plan lee y quizá más.
+>
+> **Lo que cazó una prueba.** La derivación por clases de equivalencia usaba como fuente las
+> columnas de una hoja de vuelta, y derivaba la clave de junta **desde la hoja que había que
+> traer**: salía `cid = cid`, una junta consigo misma, y el reescrito no cuadraba. Una columna de
+> una hoja de vuelta ya no sirve de fuente. Y los enganches se resuelven **iterando hasta que
+> ninguno progrese**, para que una cadena de hojas de vuelta no dependa del orden en que se
+> declararon.
 
 > **1–3 construidos · 2026-09-01** · 91 comprobaciones en el crate. El subconjunto que decide es
 > **select-project sobre una hoja**, y lo que no cabe sale nombrando el operador.
@@ -848,18 +876,15 @@ cuele como un `if` improvisado dentro de otra pieza el día que haga falta.
 ## 3. El orden
 
 ```text
-M5   Filter Tree  ──►  View Matcher (1·2·3)  ──►  (4)  ──►  (5)
-                              ▲
-                         el corazón
+M5   Filter Tree ✅  ──►  View Matcher ✅ (1·2·3·4·5)
 
 M6   Delta Compiler  ──►  Refresh Analyzer  ──►  Partial State Store  ──►  Cost Model
                                  ▲                                              ▲
                             vale ya solo                             bloqueado por medidas
 ```
 
-**Las cuatro primeras casillas son puras y compilan en esta máquina**: Filter Tree, View Matcher
-1–3, Delta Compiler y Refresh Analyzer. Son las que se pueden medir sin depender de CI y sin
-depender de nadie.
+**M5 está entero y compiló en esta máquina.** Lo que queda de puro son el Delta Compiler y el
+Refresh Analyzer, que se miden sin depender de CI y sin depender de nadie.
 
 Y hay un orden **entre** las dos partes que conviene ver: **el Refresh Analyzer antes que el
 Partial State Store**. Saber qué vistas se pueden mantener es lo que dice cuánto *state* hará

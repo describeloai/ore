@@ -169,6 +169,42 @@ impl FilterTree {
     /// lista. Cuando el View Matcher sepa contestar **parte** de un plan y unir
     /// el resto, el orden importará más; hoy es el que hace determinista la
     /// salida.
+    /// **Las que leen todo lo que el plan lee, y quizá más.**
+    ///
+    /// Es la otra consulta, y es la que hace posible el *check 1* del View
+    /// Matcher: una materialización con una junta **de más** solo vale si esa
+    /// junta es sin pérdida, y decidirlo es del matcher — pero encontrarla es de
+    /// aquí. Se calcula intersecando, hoja a hoja del plan, quién la toca; lo que
+    /// queda toca todas. Orden: menos hojas de más primero, y nombre.
+    pub fn candidatas_superconjunto(&self, plan: &Nodo) -> Vec<&Materializacion> {
+        let del_plan = firma(plan);
+        let mut hojas = del_plan.iter();
+        let Some(primera) = hojas.next() else {
+            return Vec::new();
+        };
+        let mut comunes: BTreeSet<&String> = match self.por_hoja.get(primera) {
+            Some(s) => s.iter().collect(),
+            None => return Vec::new(),
+        };
+        for h in hojas {
+            match self.por_hoja.get(h) {
+                Some(s) => comunes.retain(|n| s.contains(*n)),
+                None => return Vec::new(),
+            }
+        }
+        let mut out: Vec<&Materializacion> = comunes
+            .into_iter()
+            .map(|n| &self.materializaciones[n])
+            .collect();
+        out.sort_by(|a, b| {
+            self.firmas[&a.nombre]
+                .len()
+                .cmp(&self.firmas[&b.nombre].len())
+                .then_with(|| a.nombre.cmp(&b.nombre))
+        });
+        out
+    }
+
     pub fn candidatas(&self, plan: &Nodo) -> Vec<&Materializacion> {
         let del_plan = firma(plan);
         // Todas las que tocan alguna hoja del plan…
@@ -444,6 +480,38 @@ mod tests {
         let mut ft = FilterTree::default();
         ft.registrar(materializacion("l", lineas())).unwrap();
         assert!(ft.candidatas(&pedidos()).is_empty());
+    }
+
+    /// **La otra consulta.** Las que leen todo lo que el plan lee y quizá más:
+    /// son las candidatas del check 1, donde una junta de más puede ser sin
+    /// pérdida. Las de menos hojas de más van primero.
+    #[test]
+    fn el_superconjunto_encuentra_las_que_leen_de_mas() {
+        let mut ft = FilterTree::default();
+        let junta = Nodo::Une {
+            izquierda: Box::new(pedidos()),
+            derecha: Box::new(lineas()),
+            tipo: Junta::Interna,
+            sobre: vec![("id".into(), "id_pedido".into())],
+        };
+        ft.registrar(materializacion("solo_pedidos", pedidos()))
+            .unwrap();
+        ft.registrar(materializacion("con_lineas", junta)).unwrap();
+        ft.registrar(materializacion("solo_lineas", lineas()))
+            .unwrap();
+
+        // El plan solo lee pedidos: las dos que lo leen son candidatas, la que
+        // no lo toca no. Y la exacta va antes que la que trae una hoja de más.
+        let n: Vec<&str> = ft
+            .candidatas_superconjunto(&pedidos())
+            .iter()
+            .map(|m| m.nombre.as_str())
+            .collect();
+        assert_eq!(n, ["solo_pedidos", "con_lineas"]);
+
+        // Y un plan que lee una hoja que nadie toca no tiene superconjunto.
+        let otra = hoja("lago", "ventas.otra", &["x"]);
+        assert!(ft.candidatas_superconjunto(&otra).is_empty());
     }
 
     /// El orden es determinista: dos ejecuciones dan la misma lista, y las de la
