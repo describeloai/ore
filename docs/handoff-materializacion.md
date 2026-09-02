@@ -100,7 +100,18 @@ Eso es lo que **abierto por diseño** significa aquí, y se mide con una pregunt
 nueva de copia, ¿cuesta un mecanismo o cuesta registrar un plan?* Si cuesta un mecanismo, el
 registro está mal.
 
-### 3.1 · El testigo entra el primer día, aunque esté vacío
+### 3.1 · Y su forma ya está decidida
+
+Qué es una copia **como cosa que se guarda** lo cierra el
+[ADR 0015](decisions/0015-el-protocolo-del-almacen.md): un sobre nuestro alrededor de una carga en
+Parquet, **nombrado por su digest**, inmutable, y subido por un programa delegado porque `ore` no
+puede abrir un socket.
+
+Eso le da al registro dos cosas que aquí se daban por pendientes: el **destino** tiene forma —una
+clave en un almacén de objetos— y el **testigo** tiene sitio —la cabecera del sobre—. Lo que este
+plan sigue teniendo que resolver es **quién las conoce**, que es otra pregunta.
+
+### 3.2 · El testigo entra el primer día, aunque esté vacío
 
 Ninguna pieza del motor sabe hoy fechar nada: `StateStore` lleva un `tic` lógico y su propio
 comentario dice *«no un reloj»*. El `.oretopo` sí lo tiene, en la cabecera, porque hizo falta.
@@ -163,7 +174,7 @@ Después de eso, cada iteración mueve **un** mecanismo al registro sin que nada
 | **I2** | el matcher decide | `ore-cli/vista.rs` | `cotejar` contesta, con compensación y sello; las restricciones desde `primaryKey` y relaciones, conectadas |
 | **I3** | el testigo deja de estar vacío | `ore-view`, la costura | una copia dice hasta cuándo fue cierta; `freshness` **degrada** en vez de mentir, y se prueba con una copia vencida |
 | **I4** | la topología es una copia más | `ore-exec` | `lecturas_de_aristas` emite un plan registrado; `.oretopo` es solo su formato; **borrar su ruta de refresco propia no pierde ninguna prueba** |
-| **I5** | la copia existe de verdad | `ore-cli`, `lector.rs` | BigQuery se materializa a sí mismo con **una** consulta, medido contra un dataset real |
+| **I5** | la copia existe de verdad — [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) | `ore-cli`, `ore-store-r2` | BigQuery se materializa a sí mismo con **una** consulta, medido contra un dataset real |
 
 ### I0 · el árbol en verde
 
@@ -247,13 +258,23 @@ sigue siéndolo.
 caras** —hoy una tabla suya sale con `reads: {}` y `changes: { mode: none }`—, así que no empuja
 nada y nada se puede refrescar.
 
-**Y la forma que lo hace barato.** Si origen y destino son el mismo BigQuery, materializar es
-**una consulta**: el plan compila a un `SELECT` y `bq query --destination_table` escribe la copia.
-Ni una fila pasa por ORE y no entra una sola dependencia — que es la doctrina que
-`tests/dependencias.rs` ya hace cumplir leyendo el `Cargo.lock`.
+**Y lo que la decisión del sobre le quitó.** Este peldaño se escribió diciendo que si origen y
+destino eran el mismo BigQuery, materializar sería **una consulta** —`bq query
+--destination_table`— sin que una fila pasara por ORE. **Eso dejó de ser cierto** al decidir que
+el artefacto es nuestro: BigQuery no sabe producir nuestro sobre, así que las filas pasan por la
+máquina que ejecuta.
 
-**Listo cuando.** Una vista declarada `materialized` se puebla contra un dataset real, y `ore
-view` dice de ella qué contesta, dónde vive y hasta cuándo fue cierta.
+No se pierde para siempre, y por eso la carga es Parquet y no un formato propio: el día que
+Snowflake o Databricks escriban el Parquet directo a un destino compatible con S3, **cambia quién
+produce la carga y no cambia el sobre**. Es la puerta que el ADR 0015 dejó abierta a propósito.
+
+Y lo que sí sobrevive del atajo es lo que más valía: el paso 4 del ciclo. **Se sabe si hay que
+copiar sin copiar nada**, con un `HEAD` sobre el nombre del digest.
+
+**Listo cuando.** Una vista declarada `materialized` se puebla contra un dataset real de
+BigQuery, el artefacto queda en R2 **nombrado por su digest**, `ore view` dice de ella qué
+contesta, dónde vive y hasta cuándo fue cierta — y **un segundo intento con el mismo testigo no
+sube ni un byte**.
 
 ---
 

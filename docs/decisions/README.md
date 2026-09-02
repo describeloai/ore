@@ -24,10 +24,20 @@ favor no es un registro: es una colección de justificaciones.
 | [0012](0012-el-estado-es-parcial-y-vive-en-el-cliente.md) · el estado es parcial y vive en el cliente | el mantenimiento incremental recuerda por clave, en el almacenamiento del cliente; un *miss* es un plan | aceptado |
 | [0013](0013-el-protocolo-del-mantenedor.md) · el protocolo del mantenedor | mantener es una **sesión** por stdin, y el dictamen de coste no se obedece a sí mismo | aceptado |
 | [0014](0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) · no se mide el tiempo, se cuenta el trabajo | la unidad de coste es **una fila mirada por un operador**; y medir destapó que la incrementalización estaba escrita y no ocurría | aceptado |
+| [0015](0015-el-protocolo-del-almacen.md) · el protocolo del almacén | una copia es un **artefacto nombrado por su digest** —sobre nuestro, carga Parquet— y subirlo es de un programa delegado | aceptado |
 
 **0013 y 0014 salieron del mismo trabajo**: construir el ejecutor delegado dejó por primera vez
 un sitio donde el circuito corre, y eso hizo posible medirlo — que fue lo que destapó que dos
 integradores no estaban indexados.
+
+**0006, 0008, 0013 y 0015 son la misma frontera puesta cuatro veces**: `ore` no abre sockets, así
+que todo lo que toca el mundo —leer un origen, correr el circuito Δ, subir una copia— es un
+programa delegado, y lo que viaja entre ellos es **un fragmento del plan o el artefacto**, nunca
+una llamada a un sistema concreto. Si alguna vez se relaja una, hay que abrir las cuatro.
+
+**0006 y 0015 son el mismo artefacto con dos cargas**: aristas en CSR y filas en Parquet, con el
+mismo sobre sellado contra el digest del bundle. La segunda salió de mirar la primera y ver que
+la topología ya era una vista materializada escrita a mano.
 
 **0008 y 0013 son el mismo protocolo con y sin memoria**: el driver es una función —entra una
 petición, sale una respuesta, el proceso muere— y el mantenedor es una sesión, porque el estado
