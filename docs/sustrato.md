@@ -111,12 +111,32 @@ Al migrar el árbol apareció que v1alpha8 **no sabe expresar una entidad servid
 salidas: que el binding sobreviviera para eso, que `backedBy` aceptara una lista, o aceptar la
 exclusión.
 
-Con la tercera cara delante, deja de ser una elección de gusto: **una entidad servida desde N
-objetos es una junta, y por una junta no se sabe escribir.** Admitir federación en la vista habría
-metido en el sustrato justo lo que lo vuelve de solo lectura para siempre.
+Hay dos razones para la tercera, y el orden importa porque la primera es la que no se arregla
+con más gramática.
 
-Así que la exclusión no es una concesión: **es un requisito de la dirección**. Está escrita como
-tal en `v1alpha8/00-scope` §6.
+**Una · federar une por una clave que nadie reconcilió.**
+
+Foundry y Cognite sí pueden. Cognite direcciona cada instancia por `space` + `externalId`, y ese
+identificador lo pone quien ingiere; un objeto multi-fuente de Foundry une por la clave primaria
+que la tubería dejó consistente. **La reconciliación ocurrió aguas arriba, en la ingesta**, y el
+modelo la da por hecha.
+
+Aquí no hay ingesta. Y —esto es lo que cuesta ver— **materializar tampoco la crea**: copiar filas
+no reconcilia identidades, y la afirmación *«estas dos filas son la misma cosa»* es exactamente la
+misma antes y después de copiar. Dos copias con una clave que colisiona siguen siendo dos copias.
+
+Así que no es del sustrato. Es de `v1alpha2/03-resolution`, cuya estrategia `deterministic` está
+descrita allí como **«un `join`»**, con `match` entre fuentes, `normalize` y conducto. El binding
+hacía eso sin declarar ninguna de las tres.
+
+**Dos · y por una junta no se sabe escribir.**
+
+Con la tercera cara delante, admitir federación en la vista habría metido en el sustrato justo lo
+que lo vuelve de solo lectura para siempre. Es la segunda razón y es suficiente por sí sola; la
+primera es la que sigue siendo cierta aunque nunca se escriba nada.
+
+Está escrito en `v1alpha8/00-scope` §6, y la corroboración en §6.1: las *materialized views* de
+Snowflake solo consultan **una** tabla y no admiten juntas. Misma frontera, otro camino.
 
 ### 3.2 · Y `v1alpha2` llevaba esperando esto
 
@@ -128,6 +148,51 @@ Con `writes` en la tabla, el destino de un efecto es **una vista escribible**, y
 de la escritura es el espejo de la de lectura, ya escrita, sin inventar nada.
 
 ---
+
+### 3.3 · Y qué cambia cuando el almacén es nuestro
+
+La dirección es traer el almacenamiento de lo materializado **a nuestro lado** —almacenamiento de
+objetos— en vez de escribirlo en el almacén del cliente. No es un giro de doctrina: es lo que el
+[ADR 0006](decisions/0006-el-artefacto-de-topologia.md) ya decidió para la topología —*«ORE no
+opera ninguna base de datos; el índice se construye una vez, se firma, se distribuye y se
+mapea»*—, extendido de las aristas a las filas. **Una copia es un artefacto, no una base de
+datos.**
+
+Lo que desbloquea, y conviene tenerlo separado de lo que no:
+
+- **La varianza de `reads` desaparece para lo copiado.** Hoy lo que una vista puede servir es lo
+  que su origen afronte: un Workday con `fullScan: forbidden` no sirve una búsqueda, y el
+  planificador lo rechaza. Sobre una copia nuestra, en un formato que elegimos, las capacidades
+  son **las mismas siempre**. Es lo que el índice de objetos le compra a Foundry, dicho en
+  nuestros términos.
+- **El testigo tiene casa.** Hoy no vive en ninguna pieza del motor. En un artefacto vive en la
+  cabecera, como en el `.oretopo`.
+- **La copia entra en el grafo de artefactos versionado.** Determinista y firmada ⟹ tiene digest
+  ⟹ el lock la puede fijar, `ore diff` la puede comparar y una rama la puede nombrar. Eso es lo
+  que hace que *«versionado y ramificado en plenitud»* valga también para lo materializado, y no
+  solo para las declaraciones.
+- **La topología deja de ser un caso especial.** Mismo almacén, misma familia de formato, mismo
+  testigo — que es exactamente lo que I4 de [`handoff-materializacion.md`](handoff-materializacion.md)
+  persigue.
+
+Lo que **no** desbloquea, y es lo importante: **la identidad**. Escribir filas en un almacén
+propio no reconcilia nada. Lo que sí abre es la *posibilidad* de reconciliar al copiar — que
+sería ingerir, y sería exactamente lo que hacen los otros dos. Y esa posibilidad tiene precio:
+quien reconcilia responde de la reconciliación. Por eso seguiría siendo `Resolution` y no una
+propiedad de la vista.
+
+Y lo que cuesta, dicho antes de que llegue:
+
+- **ORE pasa a sostener dato del cliente.** El conducto que autoriza una copia deja de autorizar
+  un movimiento dentro de su casa y pasa a autorizar **sacarlo de su frontera**.
+  `acme.residency: eu_only` deja de ser una etiqueta que se propaga y pasa a ser una pregunta
+  sobre dónde está el bucket. La maquinaria para decirlo ya existe; lo que cambia es que ahora
+  decide algo caro.
+- **Dos frases de la especificación hay que volver a mirarlas.** *«ORE no opera ninguna base de
+  datos»* probablemente sobrevive —un artefacto en almacenamiento de objetos no lo es, y ADR 0006
+  ya defendió ese límite—. *«La copia es del cliente»*, en `materialized.datasource`, **no
+  sobrevive**. No se toca hoy: se toca cuando exista, porque una especificación describe lo que
+  es normativo, no lo que se planea.
 
 ## 4. La ramificación sale gratis, y no por suerte
 
