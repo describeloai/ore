@@ -37,6 +37,7 @@
 //! | **View Matcher** | [`view_matcher`] | M5 | si esta la contesta, con qué compensation, y qué hereda |
 //! | **Delta Compiler** | [`delta_compiler`] | M6 | el circuito Δ de un plan, y el estado que exige |
 //! | **Refresh Analyzer** | [`refresh_analyzer`] | M6 | `INCREMENTAL` o `FULL`, y si `FULL`, todos los motivos |
+//! | **Partial State Store** | [`state_store`] | M6 | qué claves están calientes, y la *upquery* de las que no |
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -54,6 +55,7 @@ pub mod lineage;
 pub mod plan;
 pub mod refresh_analyzer;
 pub mod schema;
+pub mod state_store;
 pub mod view_matcher;
 
 pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
@@ -66,4 +68,5 @@ pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
 pub use schema::{Desajuste, Esquema, esquema};
+pub use state_store::{Aplicacion, Clave, Estadisticas, Identidades, StateStore};
 pub use view_matcher::{NoContesta, Restriccion, Rewrite, cotejar, sello};

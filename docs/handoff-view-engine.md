@@ -522,10 +522,10 @@ flowchart TB
 | **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ |
 | **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ✅ |
 | **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ✅ |
-| **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
+| **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ✅ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, diez construidas.** M5 está entero; de M6 quedan el estado y el coste. Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, once construidas.** Queda el Cost Model, que espera medidas. Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -903,9 +903,37 @@ Planner.
 
 **Listo cuando:** una clave que no está produce **una** *upquery*, y esa *upquery* es un plan que
 el Pushdown Planner acepta; y una clave desalojada deja de recibir actualizaciones **sin que
-nadie tenga que acordarse de ella**.
+nadie tenga que acordarse de ella**. ✅ · 134 comprobaciones en el crate.
 
-**Coste:** alto. Es la única pieza de las doce que guarda algo.
+**Coste:** alto en reglas, no en líneas. Es la única pieza de las doce que guarda algo, y por eso
+es la que más reglas tiene — siete, y cada una viene de un sitio.
+
+> **Construido · 2026-09-01.** El **contrato** del almacén, implementado sobre un `Zset` en
+> memoria como implementación de referencia — igual que el Delta Compiler es la semántica de
+> referencia del circuito—. Dónde viven los bytes es del ejecutor que lo adapte; **la política es
+> esta y no cambia con el sitio.** No abre nada: un *miss* devuelve un plan, no lo ejecuta.
+>
+> | Regla | De dónde |
+> |---|---|
+> | un *miss* produce **una** *upquery*; leer la misma clave ausente dos veces no produce dos | Noria: las *upqueries* en vuelo se coalescen |
+> | un delta para una clave **ausente** se **descarta** | Noria: *«operators drop updates that would affect evicted state entries»* — la próxima lectura repone desde la fuente |
+> | un delta para una clave **en vuelo** se guarda, y se aplica **solo si es más nuevo** que el relleno | la carrera clásica relleno/actualización, resuelta con la marca: aplicar lo que el relleno ya contenía lo contaría dos veces |
+> | un delta **más viejo** que lo que hay se descarta | marcas monótonas |
+> | un relleno **no pedido** se rechaza — también uno pedido para `ES` que trae filas de `PT` | P4: un almacén que acepta lo que nadie pidió se puede envenenar |
+> | un relleno bajo **otro bundle** u otra topología se rechaza | **la regla de E1 a granularidad de clave** |
+> | se desaloja la clave **menos leída** | LRU sobre un contador lógico, no sobre un reloj |
+>
+> **La marca es un ordinal, no una fecha.** Todos los testigos de la tabla de §I.4 —LSN, SCN,
+> offset, `snapshot-id`— están totalmente ordenados; se modelan como `u64` y quien adapte el
+> almacén decide cómo mapea el suyo. Sin reloj que leer ni texto que interpretar.
+>
+> **Y la *upquery* es literalmente un plan**: el de la vista, filtrado a la clave. La prueba lo
+> pasa por el Pushdown Planner con un origen que **prohíbe** el recorrido completo, y el reparto
+> baja la clave hasta la hoja — que es lo que convierte el *miss* en una búsqueda por clave. Cada
+> `aplicar` devuelve qué pasó con cada trozo —aplicado, guardado, descartado por ausente,
+> descartado por viejo—, porque un descarte silencioso es la forma de fallo que este almacén no
+> tiene. Y expone contadores —aciertos, fallos, desalojos, rellenos—: son las medidas que el Cost
+> Model espera.
 
 ---
 
@@ -932,13 +960,13 @@ cuele como un `if` improvisado dentro de otra pieza el día que haga falta.
 ```text
 M5   Filter Tree ✅  ──►  View Matcher ✅ (1·2·3·4·5)
 
-M6   Delta Compiler ✅  ──►  Refresh Analyzer ✅  ──►  Partial State Store  ──►  Cost Model
-                                                                                   ▲
-                                                                        bloqueado por medidas
+M6   Delta Compiler ✅  ──►  Refresh Analyzer ✅  ──►  Partial State Store ✅  ──►  Cost Model
+                                                                                      ▲
+                                                                           bloqueado por medidas
 ```
 
-**M5 está entero, y de M6 lo puro también.** Lo que queda —el Partial State Store y el Cost
-Model— es lo único que guarda algo o necesita medidas.
+**Once de doce.** Lo que queda —el Cost Model— es lo único que necesita medidas, y el Partial
+State Store ya cuenta lo que hace falta medir.
 
 Y hay un orden **entre** las dos partes que conviene ver: **el Refresh Analyzer antes que el
 Partial State Store**. Saber qué vistas se pueden mantener es lo que dice cuánto *state* hará
