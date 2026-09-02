@@ -22,6 +22,11 @@ favor no es un registro: es una colección de justificaciones.
 | [0010](0010-el-refresco-sustituye.md) · el refresco sustituye | una fila es el conjunto de aristas de su clave, y la marca avanza | aceptado |
 | [0011](0011-el-informe-no-lista-incumplimientos.md) · el informe no lista incumplimientos | `ore report` atribuye; el compilador es quien rechaza | aceptado |
 | [0012](0012-el-estado-es-parcial-y-vive-en-el-cliente.md) · el estado es parcial y vive en el cliente | el mantenimiento incremental recuerda por clave, en el almacenamiento del cliente; un *miss* es un plan | aceptado |
+| [0013](0013-el-protocolo-del-mantenedor.md) · el protocolo del mantenedor | mantener es una **sesión** por stdin, y el dictamen de coste no se obedece a sí mismo | aceptado |
+
+**0008 y 0013 son el mismo protocolo con y sin memoria**: el driver es una función —entra una
+petición, sale una respuesta, el proceso muere— y el mantenedor es una sesión, porque el estado
+de una junta no cabe en una petición. El transporte es el mismo a propósito.
 
 **0006 y 0012 se leen juntas**: la primera dice que ORE no opera ninguna base de datos; la
 segunda, dónde vive entonces lo que el mantenimiento incremental tiene que recordar, y por qué

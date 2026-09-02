@@ -52,6 +52,7 @@
 //! optimizador que devuelven un resultado plausible. Tiene su comprobación.
 
 use crate::plan::{Comparador, Expr, Nodo};
+use ore_core::parse::Node;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Si el origen admite que se le pida la tabla entera.
@@ -67,6 +68,12 @@ pub enum Recorrido {
 }
 
 /// Qué sabe hacer un origen.
+///
+/// Se construye a mano o **se lee del vocabulario de OOS** con
+/// [`Capacidades::de_oos`]. La segunda existe porque hay dos consumidores —`ore
+/// view` y el mantenedor delegado— y una traducción repetida es una traducción
+/// que diverge en el tercero: es la misma razón por la que `ore-driver` dejó de
+/// vivir dentro del driver de PostgreSQL.
 #[derive(Debug, Clone, Default)]
 pub struct Capacidades {
     /// Los comparadores que sabe empujar.
@@ -84,6 +91,65 @@ pub struct Capacidades {
     /// Columnas que **tienen** que llegar filtradas. Una API con cuota las
     /// declara, y pedirle sin ellas es una petición que va a fallar.
     pub filtros_obligatorios: Vec<String>,
+}
+
+impl Capacidades {
+    /// Lee un `capabilities:` de OOS —el del `Binding` de v1alpha1, el mismo de
+    /// la `View` de v1alpha7— y lo traduce a lo que este crate entiende.
+    ///
+    /// Tres cosas **no** se traducen, y la ausencia es la respuesta:
+    ///
+    /// - `like` y `fullText` no tienen comparador aquí. Inventarles uno sería
+    ///   prometer un empuje que el planificador no sabe comprobar.
+    /// - `joinPushdown`, `aggregatePushdown` y `maxRowsPerRequest` los declara
+    ///   OOS y este planificador todavía no baja juntas ni agregados: leerlos
+    ///   sin usarlos daría un campo que promete algo.
+    /// - `disyuncion`, `negacion` y `dialecto` no existen en OOS, así que
+    ///   quedan en su valor por defecto, que es **no** (P4).
+    ///
+    /// `requiredFilters` viene en nombres de OOS —propiedades o campos de la
+    /// vista—; **traducirlos a columnas físicas es de quien llama**, que es el
+    /// único que tiene el mapeo delante.
+    pub fn de_oos(n: &Node) -> Capacidades {
+        let mut c = Capacidades::default();
+        for p in n
+            .get("predicatePushdown")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+        {
+            match p.as_str() {
+                Some("eq") => {
+                    c.predicados.insert(Comparador::Igual);
+                }
+                Some("neq") => {
+                    c.predicados.insert(Comparador::Distinto);
+                }
+                Some("range") => {
+                    c.predicados.extend([
+                        Comparador::Menor,
+                        Comparador::MenorIgual,
+                        Comparador::Mayor,
+                        Comparador::MayorIgual,
+                    ]);
+                }
+                Some("in") => c.en_conjunto = true,
+                Some("isNull") => c.es_nulo = true,
+                _ => {}
+            }
+        }
+        c.recorrido = match n.get("fullScan").and_then(|(_, v)| v.as_str()) {
+            Some("cheap") | Some("expensive") => Recorrido::Permitido,
+            _ => Recorrido::Prohibido,
+        };
+        c.filtros_obligatorios = n
+            .get("requiredFilters")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|f| f.as_str().map(String::from))
+            .collect();
+        c
+    }
 }
 
 /// Lo que se le pide a una hoja.

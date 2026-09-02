@@ -411,6 +411,19 @@ impl StateStore {
         &self.stats
     }
 
+    /// Cuántas filas sostiene ahora mismo. Es la medida que el Cost Model
+    /// espera como `filas_base` cuando quien llama no sabe el tamaño real de la
+    /// fuente — **y es una medida parcial por construcción**, porque un almacén
+    /// parcial solo tiene lo caliente. Subestimar la base infla la razón
+    /// delta/base y empuja el dictamen hacia recomputar: se pierde velocidad,
+    /// nunca frescura, que es la dirección en la que hay que equivocarse.
+    pub fn filas(&self) -> u64 {
+        self.presentes
+            .values()
+            .map(|e| e.filas.filas().count() as u64)
+            .sum()
+    }
+
     /// Lo que un reparto de la *upquery* le pediría a cada hoja. Es una
     /// comodidad para quien ejecute: la misma llamada al Pushdown Planner que
     /// haría a mano.

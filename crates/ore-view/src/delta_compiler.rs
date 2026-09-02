@@ -67,6 +67,8 @@
 
 use crate::filter_tree::Hoja;
 use crate::plan::{Agregacion, Agregado, Comparador, Expr, Junta, Nodo, Valor};
+use ore_core::json::Json;
+use ore_core::parse::Node;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -137,6 +139,55 @@ impl Zset {
     /// Solo las filas con peso positivo: lo que **está**, como multiconjunto.
     fn presentes(&self) -> impl Iterator<Item = (&Fila, i64)> {
         self.0.iter().filter(|(_, w)| **w > 0).map(|(f, w)| (f, *w))
+    }
+
+    /// **Cómo viaja un Z-set**, y su vuelta.
+    ///
+    /// Vive aquí y no en quien lo manda por lo mismo que la forma canónica vive
+    /// en `ore-core`: en cuanto hay un programa delegado que recibe filas y
+    /// devuelve filas, **dos definiciones de los mismos bytes divergen**, y la
+    /// primera divergencia se ve como un peso que no cuadra.
+    ///
+    /// Una lista de `{"f": fila, "w": peso}`. El peso viaja **con signo y
+    /// explícito**: una retractación es un peso negativo, y omitirlo obligaría a
+    /// suponer `1` — que es exactamente el valor que convierte una baja en un
+    /// alta duplicada.
+    pub fn json(&self) -> Json {
+        Json::Arr(
+            self.0
+                .iter()
+                .map(|(f, w)| {
+                    Json::obj([
+                        (
+                            "f",
+                            Json::Obj(f.iter().map(|(k, v)| (k.clone(), v.json())).collect()),
+                        ),
+                        ("w", Json::Int(*w)),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
+    pub fn leer(n: &Node) -> Result<Zset, String> {
+        let mut z = Zset::nuevo();
+        for it in n.items() {
+            let (_, f) = it.get("f").ok_or("una fila sin `f`")?;
+            let mut fila = Fila::new();
+            for (k, v) in f.entries() {
+                let nombre = k.as_str().ok_or("una columna sin nombre")?;
+                let valor = Valor::leer(v).ok_or_else(|| format!("`{nombre}` no es un valor"))?;
+                fila.insert(nombre.to_string(), valor);
+            }
+            let w: i64 = it
+                .get("w")
+                .and_then(|(_, x)| x.as_str())
+                .ok_or("una fila sin `w`")?
+                .parse()
+                .map_err(|_| "un peso que no es entero".to_string())?;
+            z.insertar(fila, w);
+        }
+        Ok(z)
     }
 }
 
@@ -211,6 +262,25 @@ pub enum Evaluacion {
 /// Es la enumeración del estado de DBSP hecha lista, y describe lo que un
 /// almacén de producción tendría que sostener — no lo que esta semántica de
 /// referencia guarda, que es siempre la entrada entera.
+impl Evaluacion {
+    /// Todos los errores de este crate lo tienen, y este no lo tenía. Se vio al
+    /// escribir el mantenedor: un protocolo que devolviera el `Debug` de un
+    /// enum estaría publicando el nombre de una variante de Rust como si fuera
+    /// contrato.
+    pub fn como_texto(&self) -> String {
+        match self {
+            Evaluacion::ColumnaAusente(c) => format!("la fila no trae `{c}`"),
+            Evaluacion::TiposDistintos => {
+                "comparar dos valores de tipos distintos: no hay ensanchamiento implícito".into()
+            }
+            Evaluacion::Opaca => "una opaca no se evalúa aquí: su texto es de otro dialecto".into(),
+            Evaluacion::Desborde => "la suma se sale del rango exacto".into(),
+            Evaluacion::SinSemantica(q) => format!("`{q}` no tiene semántica en esta máquina"),
+            Evaluacion::NoEsBooleano => "donde hacía falta una condición hay otra cosa".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Estado {
     pub operador: &'static str,
@@ -875,6 +945,54 @@ fn por_peso(v: &Valor, w: i64) -> Result<Valor, Evaluacion> {
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod viaje {
+    use super::*;
+
+    /// **Escribir un Z-set y volverlo a leer es la identidad.**
+    ///
+    /// Con las cuatro clases de valor, un peso negativo —una retractación— y un
+    /// decimal que se normaliza. La prueba existe desde que hay un programa
+    /// delegado que recibe filas: sin ella, la primera divergencia entre las dos
+    /// direcciones se vería como un peso que no cuadra tres pasos después.
+    #[test]
+    fn un_zset_escrito_y_leido_es_el_mismo() {
+        let z = Zset::de([
+            (
+                Fila::from([
+                    ("pais".to_string(), Valor::Cadena("ES".into())),
+                    ("n".to_string(), Valor::Entero(-3)),
+                    ("total".to_string(), Valor::Decimal("10.50".into())),
+                    ("activo".to_string(), Valor::Booleano(true)),
+                ]),
+                2,
+            ),
+            (
+                Fila::from([("pais".to_string(), Valor::Cadena("PT".into()))]),
+                -1,
+            ),
+        ]);
+        let texto = z.json().jcs();
+        let arbol = ore_core::parse::parse(&texto).expect("analiza");
+        assert_eq!(Zset::leer(&arbol).expect("se lee"), z);
+    }
+
+    /// Y lo que no es un Z-set **se dice**, en vez de convertirse en un Z-set
+    /// vacío — que tendría el mismo aspecto que un paso sin cambios.
+    #[test]
+    fn lo_que_no_es_un_zset_no_se_lee_como_uno_vacio() {
+        for malo in [
+            r#"[{"w":1}]"#,
+            r#"[{"f":{"a":{"s":"x"}}}]"#,
+            r#"[{"f":{"a":{"s":"x"}},"w":"dos"}]"#,
+            r#"[{"f":{"a":{"z":"x"}},"w":1}]"#,
+        ] {
+            let arbol = ore_core::parse::parse(malo).expect("analiza");
+            assert!(Zset::leer(&arbol).is_err(), "{malo}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

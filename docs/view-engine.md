@@ -102,8 +102,9 @@ que la pieza existe para que no ocurra.
 ## 4. Lo que no hace, y no por falta de tiempo
 
 **No ejecuta.** El Delta Compiler y el Partial State Store son la **semántica** y el **contrato**
-de referencia, sobre Z-sets en memoria, para que lo demás sea comprobable. Correr eso sobre una
-tabla del cliente es de un ejecutor delegado. Los dos artefactos más usados de esta categoría
+de referencia, sobre Z-sets en memoria, para que lo demás sea comprobable. Correr eso es de un
+programa delegado —`crates/ore-maintain`, [ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)—
+que vive fuera de este crate y habla por stdin. Los dos artefactos más usados de esta categoría
 tampoco ejecutan.
 
 **No tiene nulos en la semántica de referencia.** `EsNulo` evalúa a falso y una junta externa no
@@ -136,7 +137,11 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   vistas y que `Kind::Binding` desaparezca— es de `docs/handoff-vistas.md`, que sigue abierto
   hasta entonces. Las restricciones desde `primaryKey` y las relaciones para el View Matcher no
   se han conectado todavía: nadie reescribe consultas contra materializaciones aún.
-- **El ejecutor.** Un programa delegado, por stdin, que corra el circuito Δ y sostenga el estado
-  parcial en el almacenamiento del cliente. La política ya está escrita; el sitio está decidido
-  ([ADR 0012](decisions/0012-el-estado-es-parcial-y-vive-en-el-cliente.md)).
+- **El ejecutor, hecho.** `crates/ore-maintain` es el programa delegado que corre el circuito Δ
+  y sostiene el estado parcial: una **sesión** por stdin, con el Refresh Analyzer en la puerta,
+  la *upquery* saliendo como petición al origen y el dictamen viajando en cada paso
+  ([ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)). Lo que sostiene todo lo demás
+  está probado a través del protocolo: **lo que sale de mantener es lo que saldría de
+  recomputar**. Lo que queda es persistir entre sesiones — hoy la sesión es el estado, y
+  arrancar cuesta una *upquery* por clave caliente.
 - **Las medidas.** Sin ellas el Cost Model es una forma. Con ellas, deja de serlo.

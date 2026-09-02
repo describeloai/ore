@@ -41,8 +41,8 @@ use ore_core::types::{Type, parse_type};
 use ore_core::vistas;
 use ore_view::refresh_analyzer::analizar;
 use ore_view::{
-    Capacidades, Catalogo, Clase, Clasificacion, Comparador, Expr, Lectura, Nodo, Raiz, Recorrido,
-    Valor, Vista, comprobar, esquema, linaje, repartir,
+    Capacidades, Catalogo, Clase, Clasificacion, Comparador, Expr, Lectura, Nodo, Raiz, Valor,
+    Vista, comprobar, esquema, linaje, repartir,
 };
 
 /// El conducto que una vista materializada instancia. El mismo que el eje
@@ -579,46 +579,21 @@ fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
         let Some(caps) = v.section("capabilities") else {
             continue;
         };
+        // La traducción del vocabulario de OOS vive en `ore-view`, no aquí. La
+        // escribió este módulo primero, y cuando el mantenedor delegado necesitó
+        // la misma quedó claro qué era: **el contrato entre un paquete y el
+        // planificador**, y un contrato repetido en dos consumidores diverge en
+        // el tercero. Es la historia de `ore-driver`, otra vez.
+        let mut c = Capacidades::de_oos(caps);
+        // Lo único que sí es de aquí: `requiredFilters` viene en nombres de
+        // campo de la vista, y lo que el planificador empuja son columnas.
         let campos = vistas::campos(v);
-        let c = out.entry(datasource).or_default();
-        for p in caps
-            .get("predicatePushdown")
-            .map(|(_, n)| n.items())
-            .unwrap_or(&[])
-        {
-            match p.as_str() {
-                Some("eq") => {
-                    c.predicados.insert(Comparador::Igual);
-                }
-                Some("neq") => {
-                    c.predicados.insert(Comparador::Distinto);
-                }
-                Some("range") => {
-                    c.predicados.extend([
-                        Comparador::Menor,
-                        Comparador::MenorIgual,
-                        Comparador::Mayor,
-                        Comparador::MayorIgual,
-                    ]);
-                }
-                Some("in") => c.en_conjunto = true,
-                Some("isNull") => c.es_nulo = true,
-                _ => {}
-            }
-        }
-        c.recorrido = match caps.get("fullScan").and_then(|(_, n)| n.as_str()) {
-            Some("cheap") | Some("expensive") => Recorrido::Permitido,
-            _ => Recorrido::Prohibido,
-        };
-        for f in caps
-            .get("requiredFilters")
-            .map(|(_, n)| n.items())
-            .unwrap_or(&[])
-        {
-            if let Some(col) = f.as_str().and_then(|p| campos.get(p)) {
-                c.filtros_obligatorios.push(col.clone());
-            }
-        }
+        c.filtros_obligatorios = c
+            .filtros_obligatorios
+            .iter()
+            .filter_map(|f| campos.get(f).cloned())
+            .collect();
+        out.insert(datasource, c);
     }
     out
 }

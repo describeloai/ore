@@ -126,7 +126,15 @@ impl Valor {
         }
     }
 
-    fn json(&self) -> Json {
+    /// Cómo se escribe un valor, y cómo se vuelve a leer. Las dos son públicas
+    /// y son inversas —hay una prueba—, porque en cuanto un programa ajeno tiene
+    /// que mandar una fila hacen falta las dos, y **dos escrituras del mismo
+    /// valor serían dos identidades**.
+    ///
+    /// La etiqueta dice el tipo (`s`, `i`, `d`, `b`) en vez de deducirlo del
+    /// texto: `"7"` y `7` son cosas distintas aquí, y un formato que las
+    /// confundiera haría que un decimal escrito `1.0` volviera como otro valor.
+    pub fn json(&self) -> Json {
         match self {
             Valor::Cadena(s) => Json::obj([("s", Json::s(s.as_str()))]),
             Valor::Entero(n) => Json::obj([("i", Json::Int(*n))]),
@@ -135,7 +143,7 @@ impl Valor {
         }
     }
 
-    fn leer(n: &Node) -> Option<Valor> {
+    pub fn leer(n: &Node) -> Option<Valor> {
         if let Some((_, v)) = n.get("s") {
             return Some(Valor::Cadena(v.as_str()?.to_string()));
         }
@@ -317,7 +325,10 @@ impl Expr {
         self.json().jcs()
     }
 
-    fn json(&self) -> Json {
+    /// La forma canónica de una expresión, como árbol. Pública por lo mismo que
+    /// [`Nodo::json`]: un filtro que se empuja a un origen tiene que poder
+    /// viajar hasta quien lo va a traducir.
+    pub fn json(&self) -> Json {
         match self {
             Expr::Campo(c) => Json::obj([("op", Json::s("campo")), ("n", Json::s(c.as_str()))]),
             Expr::Literal(v) => Json::obj([("op", Json::s("lit")), ("v", v.json())]),
@@ -738,7 +749,14 @@ impl Nodo {
         }
     }
 
-    fn json(&self) -> Json {
+    /// La forma canónica como árbol, no como texto.
+    ///
+    /// Era privada mientras el único consumidor era [`Nodo::canonico`]. Deja de
+    /// serlo en cuanto hay un programa delegado que **manda planes y recibe
+    /// planes**: un lector público con un escritor privado es una asimetría que
+    /// obliga a quien está fuera a reserializar por su cuenta, y eso es una
+    /// segunda escritura de los mismos bytes.
+    pub fn json(&self) -> Json {
         match self {
             Nodo::Lee(l) => Json::obj([
                 ("op", Json::s("lee")),
@@ -858,7 +876,10 @@ impl Nodo {
         Nodo::de(&n)
     }
 
-    fn de(n: &Node) -> Result<Nodo, String> {
+    /// Lee un plan de un árbol ya analizado. Es [`Nodo::leer`] sin volver a
+    /// analizar: quien recibe un plan dentro de un documento mayor —una sesión
+    /// de mantenimiento, por ejemplo— ya lo tiene en árbol.
+    pub fn de(n: &Node) -> Result<Nodo, String> {
         let op = n
             .get("op")
             .and_then(|(_, v)| v.as_str())

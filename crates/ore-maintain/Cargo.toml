@@ -1,0 +1,36 @@
+# El mantenedor delegado: el programa que CORRE el circuito Δ y sostiene el
+# estado parcial.
+#
+# El ADR 0012 decidio donde viven los bytes —el almacenamiento del cliente— y
+# dejo escrito que sostenerlos es de un programa delegado, «con la frontera de
+# siempre: por stdin, y lo que devuelve no se cree». Este es ese programa.
+#
+# Y su cierre dice de que es el peso: `ore-core` y `ore-view`, ninguna crate
+# ajena. Mantener una vista incrementalmente no exige hablar con nadie —el
+# que habla es el driver— asi que este binario tampoco sabe.
+[package]
+name        = "ore-maintain"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El mantenedor delegado de ORE: corre el circuito Δ y sostiene el estado parcial"
+
+[dependencies]
+# La forma canonica, el analizador y el JSON. El protocolo es JSON, y JSON es
+# un subconjunto de YAML: lo lee el mismo analizador que lee los documentos.
+ore-core = { path = "../ore-core" }
+
+# El motor de vistas. Este binario **no reimplementa una sola regla**: compila
+# el circuito con el Delta Compiler, sostiene el estado con el Partial State
+# Store, decide con el Cost Model y reparte la upquery con el Pushdown Planner.
+# Lo unico suyo es el bucle y el protocolo.
+ore-view = { path = "../ore-view" }
+
+[dev-dependencies]
+# Las pruebas construyen planes y Z-sets con los tipos del motor y comparan
+# contra `recomputar`: la afirmacion es que mantener y recomputar dan lo mismo,
+# y para hacerla hay que poder recomputar.
+ore-view = { path = "../ore-view" }
+ore-core = { path = "../ore-core" }

@@ -70,6 +70,7 @@ pub use filter_tree::{FilterTree, Hoja, Materializacion, Registro, firma};
 pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
+pub use refresh_analyzer::{RefreshMode, analizar};
 pub use schema::{Desajuste, Esquema, esquema};
 pub use state_store::{Aplicacion, Clave, Estadisticas, Identidades, StateStore};
 pub use view_matcher::{NoContesta, Restriccion, Rewrite, cotejar, sello};
