@@ -7,6 +7,13 @@
 > Fecha: 2026-09-01 · Escrito después de mirar cómo lo resolvieron Cognite Data Fusion,
 > Palantir Foundry y Snowflake, y **decidido**: la vista absorbe al `Binding` por completo.
 
+> **2026-09-02 — V4 y V5 se mudan a [`handoff-tablas.md`](handoff-tablas.md).** Al cotejar el
+> modelo con foreign tables, virtual tables, shortcuts y dynamic tables quedó claro que el
+> puntero físico se registra una vez, con dos caras, y la vista compone encima. Lo que este
+> documento dice de la **naturaleza** de una vista sigue valiendo entero; lo físico que la
+> v1alpha7 puso dentro de la vista pasa a `kind: Table` en v1alpha8, y el `Binding` se retira
+> allí. Los dos documentos se borran juntos.
+
 ---
 
 ## 1. Qué es una vista
