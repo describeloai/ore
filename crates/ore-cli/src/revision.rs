@@ -67,7 +67,18 @@ const COLA: &str = "discover.pending.json";
 const RESPUESTAS: &str = "discover.answers.json";
 /// Los directorios que el inductor gobierna por completo. Un `.yaml` que esté
 /// aquí y que la inducción nueva no produzca es un resto, y un resto miente.
-const GOBERNADOS: [&str; 3] = ["entities", "bindings", "concepts"];
+///
+/// `tables` y `views` entraron con v1alpha8, y **se midió lo que costaba que no
+/// estuvieran**: contestar `omitir` sobre una vista del origen retiraba su
+/// entidad y dejaba su tabla y su vista en el paquete. Validaba —una vista sin
+/// entidad es legal— así que el resto no daba ningún síntoma: el paquete
+/// seguía afirmando un objeto que alguien había dicho que no entra.
+///
+/// `bindings` se queda aunque el inductor ya no escriba ninguno, y por eso
+/// mismo: en un paquete descubierto con la versión anterior, la primera
+/// revisión retira los que quedaron. Sacarlo de aquí los dejaría al lado de las
+/// tablas que los sustituyen, diciendo lo mismo dos veces.
+const GOBERNADOS: [&str; 5] = ["entities", "bindings", "concepts", "tables", "views"];
 
 pub struct Fallo {
     pub codigo: u8,

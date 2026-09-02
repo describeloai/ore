@@ -105,11 +105,19 @@ struct Tabla {
     filas: Option<u64>,
     /// `table`, `view` o `materializedView`, tal y como lo dijo el origen.
     clase: String,
-    /// Los objetos FÍSICOS que sostienen esta entidad. Casi siempre uno —ella
-    /// misma—, y varios cuando una respuesta unió una familia fechada: una
-    /// entidad servida desde N tablas es N bindings, que es exactamente lo que
-    /// el ejecutor ya sabe federar.
+    /// Los objetos FÍSICOS que sostienen esta entidad. **Uno**, desde que el
+    /// binding se retiró: unir una familia fechada era N bindings, y una vista
+    /// sale de un sitio. Ver `familias`.
     objetos: Vec<Objeto>,
+    /// La cara `I` del objeto, **tal como la declaró el driver**.
+    ///
+    /// Se guarda el nodo del catálogo y se transcribe: no se interpreta, no se
+    /// completa y no se corrige. Qué se le puede pedir a un origen lo sabe
+    /// quien traduce las consultas, y el inductor no es esa pieza. Si lo
+    /// supiera, el vocabulario viviría en dos sitios.
+    lee: Option<Node>,
+    /// La cara `D`, igual: la sondeó el driver preguntándole al servidor.
+    cambia: Option<Node>,
 }
 
 /// Un objeto del origen y las columnas que tiene **dentro**.
@@ -215,6 +223,8 @@ impl Catalogo {
                     .unwrap_or("table")
                     .to_string(),
                 objetos,
+                lee: t.get("reads").map(|(_, v)| v.clone()),
+                cambia: t.get("changes").map(|(_, v)| v.clone()),
             });
         }
         Ok(Catalogo { fuente, tablas })
@@ -535,6 +545,18 @@ pub fn inducir_con(
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
 
+    // ⓪ El dueño, antes que nada: desde v1alpha8 lo llevan DOS documentos —el
+    //    paquete y cada vista— y sigue siendo UNA decisión. Resolverlo dentro
+    //    de cada emisor lo habría convertido en dos preguntas que se pueden
+    //    contestar distinto.
+    let (package_yaml, pend_paquete) = paquete_yaml(paquete, dec);
+    let owner = dec
+        .de(&id(Clase::Dueno, paquete))
+        .and_then(Respuesta::palabra)
+        .filter(|h| handle(h))
+        .unwrap_or("cambiame")
+        .to_string();
+
     // ① Las familias fechadas.
     let (tablas, pend) = familias(&cat.tablas, dec);
     pendientes.extend(pend);
@@ -651,9 +673,14 @@ pub fn inducir_con(
         let (extra, pend) = relaciones_decididas(t, &nombres, &claves, dec);
         pendientes.extend(pend);
 
+        // La vista se llama como la entidad, con la inicial en minuscula. No
+        // es un nombre inventado: la entidad ya lo tiene decidido —por la regla
+        // de nombrado o por quien resolvio la colision— y heredarlo evita pedir
+        // una segunda respuesta para la misma cosa.
+        let vista = minuscula_inicial(nombre);
         ficheros.insert(
             format!("entities/{nombre}.yaml"),
-            entidad_yaml(nombre, paquete, t, &claves, &mapeo, &extra),
+            entidad_yaml(nombre, paquete, &vista, t, &claves, &mapeo, &extra),
         );
         for objeto in &t.objetos {
             // El nombre del fichero lleva **la entidad delante**, y no solo la
@@ -661,19 +688,26 @@ pub fn inducir_con(
             // y `rubix_demo_ventas.pedidos` son dos tablas y daban dos ficheros
             // que en Windows —y en macOS— SON EL MISMO. El segundo piso al
             // primero, quedo el nombre de uno con el contenido del otro, y
-            // `PedidosLegacy` se quedo sin binding. `ore validate` salio verde,
-            // porque una entidad sin binding es legal en DRAFT.
+            // `PedidosLegacy` se quedo sin puntero fisico. `ore validate` salio
+            // verde, porque una entidad sin fuente es legal en DRAFT.
             //
             // La entidad delante lo cierra sin inventar nada: los nombres de
             // entidad ya son unicos porque **eso es lo que la decision de
             // colision resolvio**, asi que el fichero hereda esa unicidad en vez
             // de pedir una segunda respuesta.
-            let ruta = format!(
-                "bindings/{}__{}.yaml",
+            let sufijo = format!(
+                "{}__{}.yaml",
                 identificador(nombre),
                 identificador(&objeto.nombre)
             );
-            ficheros.insert(ruta, binding_yaml(nombre, paquete, &cat.fuente, t, objeto));
+            ficheros.insert(
+                format!("tables/{sufijo}"),
+                tabla_yaml(paquete, &cat.fuente, t, objeto),
+            );
+            ficheros.insert(
+                format!("views/{sufijo}"),
+                vista_yaml(&vista, paquete, &owner, t, objeto),
+            );
         }
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
@@ -689,9 +723,8 @@ pub fn inducir_con(
         }
     }
 
-    let (package_yaml, pend) = paquete_yaml(paquete, dec);
     ficheros.insert("package.yaml".into(), package_yaml);
-    pendientes.extend(pend);
+    pendientes.extend(pend_paquete);
     pendientes.extend(candidatas_a_concepto(&tablas, dec, voc));
     pendientes.extend(relaciones_no_declaradas(&tablas, &nombres, dec));
 
@@ -837,10 +870,24 @@ fn raiz(tabla: &str) -> String {
 /// Las familias fragmentadas por fecha, y lo que se decidió sobre ellas.
 ///
 /// Sin respuesta se reportan y no se tocan. Con `separadas`, cada hermana sigue
-/// siendo su propia entidad y la pregunta se cierra. Con el nombre de una
-/// columna, se **unen**: una entidad servida desde N tablas, que es N bindings —
-/// exactamente lo que el ejecutor ya sabe federar, y por eso se puede escribir
-/// sin inventar nada.
+/// siendo su propia entidad y la pregunta se cierra. Con `omitir`, se van.
+///
+/// # Unir dejó de ser una respuesta posible, y no por comodidad
+///
+/// Hasta v1alpha8 unir una familia era **una entidad servida desde N tablas**, y
+/// eso se escribía con N bindings. El binding se retiró, y lo que lo sustituye
+/// —una vista sobre una tabla— sale de **un** sitio: `from` es exactamente una
+/// de dos formas, y el vocabulario no tiene junta.
+///
+/// No es un hueco de implementación: `v1alpha8/00-scope` §6 deja unir fuera a
+/// propósito, porque una junta trae dos raíces y el precio en la regla de flujo
+/// se decide **antes** de admitir la operación. El IR del motor de vistas ya la
+/// tiene con sus reglas; la gramática la admitirá cuando se decida su coste.
+///
+/// Así que la pregunta se hace igual —una familia fechada sigue siendo un hecho
+/// que quien revisa tiene que ver— y las respuestas son dos. Ofrecer una columna
+/// sería ofrecer algo que luego no se puede escribir, y una respuesta que no se
+/// puede honrar es peor que una pregunta sin respuesta cómoda.
 fn familias(tablas: &[Tabla], dec: &Decisiones) -> (Vec<Tabla>, Vec<Pendiente>) {
     let mut familia: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, t) in tablas.iter().enumerate() {
@@ -851,7 +898,6 @@ fn familias(tablas: &[Tabla], dec: &Decisiones) -> (Vec<Tabla>, Vec<Pendiente>) 
     familia.retain(|r, v| v.len() > 1 && v.iter().any(|i| tablas[*i].nombre != *r));
 
     let mut fuera: Vec<usize> = Vec::new();
-    let mut nuevas: Vec<Tabla> = Vec::new();
     let mut pendientes = Vec::new();
 
     for (r, miembros) in &familia {
@@ -860,122 +906,46 @@ fn familias(tablas: &[Tabla], dec: &Decisiones) -> (Vec<Tabla>, Vec<Pendiente>) 
             .map(|i| tablas[*i].nombre.clone())
             .collect::<Vec<_>>()
             .join(" · ");
-        let respuesta = dec.de(&id(Clase::Familia, r));
-        let columnas: Vec<String> = tablas[miembros[0]]
-            .columnas
-            .iter()
-            .map(|c| c.nombre.clone())
-            .collect();
-        match respuesta {
+        const OPCIONES: &str = "separadas";
+        let opciones = || vec![OPCIONES.to_string(), OMITIR.to_string()];
+        let porque = "el sufijo numérico es el patrón de una tabla fragmentada por fecha, y \
+             verlo es lo que evita modelar la misma cosa N veces. UNIRLAS NO SE PUEDE \
+             ESCRIBIR: una vista sale de un sitio y el vocabulario no tiene junta — \
+             `v1alpha8/00-scope` §6 la deja fuera a propósito, porque una junta trae dos \
+             raíces y su precio en la regla de flujo se decide antes de admitirla";
+        match dec.de(&id(Clase::Familia, r)) {
             None => pendientes.push(pendiente(
                 Clase::Familia,
                 r,
                 sujeto,
-                format!("¿una sola entidad `{}` con eje temporal?", entidad(r)),
-                "el sufijo numérico es el patrón de una tabla fragmentada por fecha. \
-                 Unirlas exige nombrar la columna de tiempo, y eso no está en el catálogo",
-                {
-                    let mut o = vec!["separadas".to_string(), OMITIR.to_string()];
-                    o.extend(columnas);
-                    o
-                },
+                format!("familia fechada de `{}`", entidad(r)),
+                porque,
+                opciones(),
             )),
             Some(x) if x.es("separadas") => {}
             Some(x) if x.omite() => fuera.extend(miembros.iter().copied()),
-            Some(x) => {
-                let Some(eje) = x.palabra() else { continue };
-                match unir(tablas, miembros, r, eje) {
-                    Ok(t) => {
-                        fuera.extend(miembros.iter().copied());
-                        nuevas.push(t);
-                    }
-                    // La respuesta no se puede honrar sin inventar, así que la
-                    // pregunta sigue abierta y dice por qué. Callarlo dejaría a
-                    // alguien creyendo que unió algo.
-                    Err(motivo) => pendientes.push(pendiente(
-                        Clase::Familia,
-                        r,
-                        sujeto,
-                        format!("no se pudo unir por `{eje}`"),
-                        motivo,
-                        {
-                            let mut o = vec!["separadas".to_string(), OMITIR.to_string()];
-                            o.extend(columnas);
-                            o
-                        },
-                    )),
-                }
-            }
+            // Una respuesta que nombra una columna es la de antes: alguien
+            // pidió unir. No se ignora en silencio —eso dejaría a esa persona
+            // creyendo que unió algo— y no se honra a medias: la pregunta sigue
+            // abierta y dice qué cambió.
+            Some(_) => pendientes.push(pendiente(
+                Clase::Familia,
+                r,
+                sujeto,
+                "unir una familia ya no se puede escribir",
+                porque,
+                opciones(),
+            )),
         }
     }
 
-    let mut out: Vec<Tabla> = tablas
+    let out: Vec<Tabla> = tablas
         .iter()
         .enumerate()
         .filter(|(i, _)| !fuera.contains(i))
         .map(|(_, t)| t.clone())
         .collect();
-    out.extend(nuevas);
     (out, pendientes)
-}
-
-/// Une las hermanas de una familia en una tabla sola.
-///
-/// Se niega en los dos casos donde unir exigiría decidir algo que nadie dijo: si
-/// el eje no está en todas —la unión tendría filas sin fecha— o si no comparten
-/// clave primaria —la identidad de la unión no sería la de ninguna—.
-fn unir(tablas: &[Tabla], miembros: &[usize], raiz: &str, eje: &str) -> Result<Tabla, String> {
-    let faltan: Vec<&str> = miembros
-        .iter()
-        .map(|i| &tablas[*i])
-        .filter(|t| !t.columnas.iter().any(|c| c.nombre == eje))
-        .map(|t| t.nombre.as_str())
-        .collect();
-    if !faltan.is_empty() {
-        return Err(format!(
-            "`{eje}` no está en {}. Una unión por un eje que la mitad no tiene deja \
-             filas sin sitio en el tiempo, y ponerlas en alguno sería inventarlo",
-            faltan.join(", ")
-        ));
-    }
-    let primera = &tablas[miembros[0]];
-    if miembros.iter().any(|i| tablas[*i].clave != primera.clave) {
-        return Err(
-            "las hermanas no declaran la misma clave primaria. La identidad de la unión \
-             no puede ser la de una de ellas, y elegirla sería decidir cuál manda"
-                .into(),
-        );
-    }
-
-    // Las columnas, en el orden de la primera hermana y con lo que las demás
-    // añadan detrás. Perder una columna porque una hermana vieja no la tiene
-    // sería perder un hecho del origen.
-    let mut columnas: Vec<Columna> = primera.columnas.clone();
-    for i in &miembros[1..] {
-        for c in &tablas[*i].columnas {
-            if !columnas.iter().any(|x| x.nombre == c.nombre) {
-                columnas.push(c.clone());
-            }
-        }
-    }
-    let filas = miembros
-        .iter()
-        .map(|i| tablas[*i].filas)
-        .try_fold(0u64, |a, f| f.map(|n| a + n));
-
-    Ok(Tabla {
-        nombre: raiz.to_string(),
-        columnas,
-        clave: primera.clave.clone(),
-        unicas: primera.unicas.clone(),
-        foraneas: primera.foraneas.clone(),
-        filas,
-        clase: primera.clase.clone(),
-        objetos: miembros
-            .iter()
-            .flat_map(|i| tablas[*i].objetos.clone())
-            .collect(),
-    })
 }
 
 /// El identificador de una candidata a concepto. Lleva el tipo dentro porque
@@ -1571,6 +1541,7 @@ fn entrecomillar(s: &str) -> String {
 fn entidad_yaml(
     nombre: &str,
     paquete: &str,
+    vista: &str,
     t: &Tabla,
     claves: &BTreeMap<String, Vec<String>>,
     mapeo: &BTreeMap<String, String>,
@@ -1580,27 +1551,16 @@ fn entidad_yaml(
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha1\n\
+        "apiVersion: oos.dev/v1alpha8\n\
          kind: Entity\n\
          metadata:\n  \
            name: {nombre}\n  \
            namespace: {paquete}\n  \
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
-           nature: entity\n"
+           nature: entity\n  \
+           backedBy: {vista}\n"
     );
-    if t.objetos.len() > 1 {
-        // Una familia unida. Se dice DÓNDE está el eje y **no** se escribe un
-        // `temporal`: historiar el dato es una decisión de gobierno con su
-        // propia forma, y derivarla de que las tablas lleven fecha en el nombre
-        // sería exactamente inventarla.
-        let _ = writeln!(
-            s,
-            "  # Une {} objetos del origen, uno por binding. El eje temporal viene de",
-            t.objetos.len()
-        );
-        s.push_str("  # su nombre; `spec.temporal` es otra decisión y no se deriva de aquí.\n");
-    }
     if clave.is_empty() {
         s.push_str(
             "  # Sin clave primaria: el origen no la declara y NO DEBE inferirse.\n\
@@ -1790,27 +1750,170 @@ fn concepto_yaml(
     )
 }
 
-fn binding_yaml(nombre: &str, paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String {
+/// Un escalar de YAML: se entrecomilla lo que no es un identificador simple.
+///
+/// Los nombres físicos son **opacos** —pueden llevar puntos, espacios o empezar
+/// por dígito— y un `Worker_Reference.ID` sin comillas sigue analizando pero
+/// deja de ser lo que era el día que alguien meta un `:`.
+fn escalar_yaml(s: &str) -> String {
+    let simple = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && !s.starts_with(|c: char| c.is_ascii_digit());
+    if simple {
+        s.to_string()
+    } else {
+        entrecomillar(s)
+    }
+}
+
+/// Transcribe un nodo del catálogo a YAML. **No lo interpreta.**
+///
+/// El vocabulario de `reads` y de `changes` lo fija el esquema de OOS, y el
+/// inductor no es el sitio donde se decide qué es legal: si lo supiera habría
+/// dos sitios diciéndolo, y el día que discrepen ninguno diría cuál manda. Lo
+/// que llega del driver se copia; lo que no encaje lo dirá `ore validate`,
+/// que es quien tiene el esquema.
+fn transcribir(n: &Node, sangria: usize) -> String {
+    let ind = " ".repeat(sangria);
+    match n {
+        Node::Mapping { entries, .. } => {
+            let mut s = String::new();
+            for (k, v) in entries {
+                let Some(clave) = k.as_str() else { continue };
+                match v {
+                    Node::Mapping { .. } => {
+                        let _ = writeln!(s, "{ind}{clave}:");
+                        s.push_str(&transcribir(v, sangria + 2));
+                    }
+                    _ => {
+                        let _ = writeln!(s, "{ind}{clave}: {}", transcribir(v, 0).trim_end());
+                    }
+                }
+            }
+            s
+        }
+        // En línea: una lista de escalares es un valor, no una sección.
+        Node::Sequence { items, .. } => format!(
+            "[{}]",
+            items
+                .iter()
+                .filter_map(|i| i.as_str())
+                .map(escalar_yaml)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Node::Scalar { .. } => escalar_yaml(n.as_str().unwrap_or("")),
+    }
+}
+
+/// `kind: Table` — **el puntero al objeto físico, registrado una vez**.
+///
+/// Es la mitad del descubrimiento que **no es un borrador**: que el objeto
+/// existe, qué columnas tiene, qué se le puede pedir y qué cambios emite son
+/// cuatro hechos del origen, no cuatro conjeturas. Por eso esto se emite sin
+/// revisión, y por eso `discover` deja de inferir aquí y pasa a espejar — lo
+/// que un catálogo foráneo hace al crearse.
+///
+/// Lo que **no** lleva, y no por falta de sitio: `materialized` y `freshness`.
+/// Son decisiones de operación con coste, y proponerlas sería exactamente
+/// inventar. Van en la vista, vacías, y `OOS2020` dice dónde no pueden quedar
+/// vacías.
+fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha1\n\
-         kind: Binding\n\
+        "apiVersion: oos.dev/v1alpha8\n\
+         kind: Table\n\
          metadata: {{ name: {}, namespace: {paquete} }}\n\
          spec:\n  \
-           targetEntity: {paquete}.{nombre}\n  \
-           datasourceRef: {fuente}\n  \
-           source: \"{}\"\n  \
-           properties:\n",
+           datasource: {fuente}\n  \
+           object: {}\n  \
+           columns:\n",
         identificador(&objeto.nombre),
-        objeto.nombre
+        entrecomillar(&objeto.nombre)
     );
     for c in t
         .columnas
         .iter()
         .filter(|c| objeto.columnas.contains(&c.nombre))
     {
-        let _ = writeln!(s, "    {}: \"{}\"", identificador(&c.nombre), c.nombre);
+        // El nombre físico ENTERO, sin pasar por `identificador`: la tabla es
+        // el objeto tal cual está. Renombrar es de la vista, y ese es
+        // exactamente el reparto que hace que dos vistas puedan compartir un
+        // objeto sin repetir su contrato.
+        let _ = write!(s, "    {}:", escalar_yaml(&c.nombre));
+        match &c.origen {
+            // El tipo del ORIGEN, citado. `physicalType` es físico, así que
+            // vive aquí; el tipo de OOS es de la entidad y no se mezcla.
+            Some(o) => {
+                let _ = writeln!(s, " {{ physicalType: {} }}", escalar_yaml(o));
+            }
+            None => s.push_str(" {}\n"),
+        }
+    }
+    match &t.lee {
+        Some(n) => {
+            let _ = writeln!(s, "  reads:");
+            s.push_str(&transcribir(n, 4));
+        }
+        // Un catálogo que no declara la cara `I` no dice que no se pueda leer:
+        // dice que su driver no declaró nada. `none` afirmaría lo primero, y
+        // arrastraría un `OOS2020` sobre una vista que nadie ha podido revisar.
+        None => s.push_str(
+            "  # El driver no declaró qué se puede empujar a este origen.\n  reads: {}\n",
+        ),
+    }
+    match &t.cambia {
+        Some(n) => {
+            let _ = writeln!(s, "  changes:");
+            s.push_str(&transcribir(n, 4));
+        }
+        None => s.push_str(
+            "  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n  \
+             changes: { mode: none, witness: none }\n",
+        ),
+    }
+    s
+}
+
+/// La vista trivial: **el objeto expuesto tal cual, con nombres de
+/// identificador**.
+///
+/// Existe porque `backedBy` nombra una vista y **nunca una tabla**. Si nombrara
+/// la tabla, las propiedades de la entidad tendrían que llamarse como las
+/// columnas físicas y lo semántico volvería a saber de lo físico. Cuesta tres
+/// líneas, y esas tres líneas son las que dicen *«esto se expone»*.
+///
+/// Expone **todas** las columnas del objeto, también las que la entidad no
+/// modela por no saber traducir su tipo: la vista es física y no tipa, así que
+/// dar tipo a una columna más tarde no obliga a tocarla.
+fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objeto) -> String {
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        "apiVersion: oos.dev/v1alpha8\n\
+         kind: View\n\
+         metadata: {{ name: {vista}, namespace: {paquete} }}\n\
+         spec:\n  \
+           owner: \"{owner}\"\n  \
+           from: {{ table: {} }}\n  \
+           # Ni `freshness` ni `materialized`: son decisiones de operación con\n  \
+           # coste, y proponerlas sería inventarlas.\n  \
+           fields:\n",
+        identificador(&objeto.nombre)
+    );
+    for c in t
+        .columnas
+        .iter()
+        .filter(|c| objeto.columnas.contains(&c.nombre))
+    {
+        let _ = writeln!(
+            s,
+            "    {}: {}",
+            identificador(&c.nombre),
+            escalar_yaml(&c.nombre)
+        );
     }
     s
 }
@@ -1823,6 +1926,17 @@ fn binding_yaml(nombre: &str, paquete: &str, fuente: &str, t: &Tabla, objeto: &O
 fn entidad(tabla: &str) -> String {
     let ultimo = tabla.rsplit(['.', '/']).next().unwrap_or(tabla);
     capitalizar(&identificador(ultimo))
+}
+
+/// La inicial en minúscula. El gemelo exacto de `capitalizar`, y por eso está
+/// al lado: una entidad se llama `Clientes` y su vista `clientes`, que es el
+/// mismo nombre visto desde la capa de abajo.
+fn minuscula_inicial(id: &str) -> String {
+    let mut c = id.chars();
+    match c.next() {
+        Some(p) => p.to_lowercase().collect::<String>() + c.as_str(),
+        None => id.to_string(),
+    }
 }
 
 fn capitalizar(id: &str) -> String {
@@ -1998,13 +2112,26 @@ mod tests {
     fn una_tabla_es_una_entidad_y_eso_es_un_hecho() {
         let i = inducido();
         assert!(i.ficheros.contains_key("entities/Facturas.yaml"));
+        // Tres documentos y no dos: el objeto, lo que se expone de él, y lo que
+        // significa. Cada capa sabe solo lo suyo.
+        let tabla = &i.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let vista = &i.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let entidad = &i.ficheros["entities/Facturas.yaml"];
+
+        // El nombre físico viaja ENTERO a la tabla: es opaco y es del origen.
         assert!(
-            i.ficheros
-                .contains_key("bindings/Facturas__rubix_demo_ventas_facturas.yaml")
+            tabla.contains(r#"object: "rubix_demo_ventas.facturas""#),
+            "{tabla}"
         );
-        // El nombre físico viaja ENTERO al binding: es opaco y es del origen.
-        let b = &i.ficheros["bindings/Facturas__rubix_demo_ventas_facturas.yaml"];
-        assert!(b.contains(r#"source: "rubix_demo_ventas.facturas""#), "{b}");
+        assert!(tabla.contains("kind: Table"), "{tabla}");
+        // Y la entidad nombra a la VISTA, nunca a la tabla: si nombrara la
+        // tabla, sus propiedades tendrían que llamarse como las columnas
+        // físicas y lo semántico volvería a saber de lo físico.
+        assert!(entidad.contains("backedBy: facturas"), "{entidad}");
+        assert!(
+            vista.contains("from: { table: rubix_demo_ventas_facturas }"),
+            "{vista}"
+        );
     }
 
     /// La colisión no se resuelve: se reporta. Elegir una decidiría cuál de las
@@ -2040,7 +2167,7 @@ mod tests {
         let p = i
             .pendientes
             .iter()
-            .find(|p| p.que.contains("eje temporal"))
+            .find(|p| p.que.contains("familia fechada"))
             .expect("no vio la familia");
         assert!(
             p.sujeto.contains("evento_20190101") && p.sujeto.contains("evento_20190102"),
@@ -2339,8 +2466,11 @@ mod tests {
         assert!(i.ficheros.contains_key("entities/PedidosViejos.yaml"));
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Colision));
         // Y cada una conserva su nombre físico, que es del origen y es opaco.
-        let b = &i.ficheros["bindings/PedidosViejos__rubix_demo_ventas_Pedidos.yaml"];
-        assert!(b.contains("targetEntity: ventas.PedidosViejos"), "{b}");
+        let b = &i.ficheros["tables/PedidosViejos__rubix_demo_ventas_Pedidos.yaml"];
+        assert!(b.contains(r#"object: "rubix_demo_ventas.Pedidos""#), "{b}");
+        // La flecha va al revés que en el binding: la entidad nombra a su vista.
+        let e = &i.ficheros["entities/PedidosViejos.yaml"];
+        assert!(e.contains("backedBy: pedidosViejos"), "{e}");
     }
 
     /// **Dos ficheros que solo se distinguen por las mayusculas son UN fichero**
@@ -2350,8 +2480,11 @@ mod tests {
     /// `bindings/rubix_demo_ventas_Pedidos.yaml` y su gemelo en minusculas: dos
     /// claves distintas en memoria y **la misma ruta en disco**. El segundo piso
     /// al primero, quedo el nombre de uno con el contenido del otro, y una de las
-    /// dos entidades se quedo sin binding. `ore validate` salio verde, porque una
-    /// entidad sin binding es legal en DRAFT — el peor final posible.
+    /// dos entidades se quedo sin puntero fisico. `ore validate` salio verde,
+    /// porque una entidad sin fuente es legal en DRAFT — el peor final posible.
+    ///
+    /// Con v1alpha8 el riesgo se DUPLICA: donde habia un binding hay ahora una
+    /// tabla y una vista, asi que la misma colision perderia dos documentos.
     ///
     /// La entidad delante lo cierra sin pedir una respuesta nueva: esos nombres
     /// ya son unicos porque **es lo que la decision de colision resolvio**.
@@ -2373,7 +2506,7 @@ mod tests {
         let rutas: Vec<&String> = i
             .ficheros
             .keys()
-            .filter(|k| k.starts_with("bindings/"))
+            .filter(|k| k.starts_with("tables/") || k.starts_with("views/"))
             .collect();
         for (n, a) in rutas.iter().enumerate() {
             for b in rutas.iter().skip(n + 1) {
@@ -2383,10 +2516,13 @@ mod tests {
                 );
             }
         }
-        // Y las dos de la colision estan, cada una con su entidad delante.
+        // Y las dos de la colision estan, cada una con su entidad delante y con
+        // sus DOS documentos: el objeto y lo que se expone de el.
         for r in [
-            "bindings/Pedidos__rubix_demo_ventas_pedidos.yaml",
-            "bindings/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
+            "tables/Pedidos__rubix_demo_ventas_pedidos.yaml",
+            "tables/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
+            "views/Pedidos__rubix_demo_ventas_pedidos.yaml",
+            "views/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
         ] {
             assert!(i.ficheros.contains_key(r), "falta {r}: {rutas:?}");
         }
@@ -2420,12 +2556,12 @@ mod tests {
         );
     }
 
-    /// Unir es una entidad servida desde N tablas, que es N bindings — lo que el
-    /// ejecutor ya sabe federar. Y cada binding mapea SOLO las columnas que su
-    /// objeto tiene: atribuirle a la hermana de 2019 una columna de 2024 sería un
-    /// mapeo verde y falso.
+    /// **`separadas` es ahora la única forma de quedarse las dos.** Cada hermana
+    /// es su entidad, con su tabla y su vista, y cada una lleva SOLO las columnas
+    /// que su objeto tiene: atribuirle a la de 2023 una columna de 2024 sería un
+    /// mapeo verde y falso, y eso no cambia porque cambie la gramática.
     #[test]
-    fn unir_una_familia_da_una_entidad_y_un_binding_por_hermana() {
+    fn una_familia_separada_da_una_entidad_por_hermana() {
         const CAT: &str = r#"{
           "source": "pg",
           "tables": [
@@ -2444,41 +2580,44 @@ mod tests {
               "primaryKey": ["id"] }
           ]
         }"#;
-        let d = decisiones(&[("familia/public.pedidos", Respuesta::Palabra("fecha".into()))]);
+        let d = decisiones(&[(
+            "familia/public.pedidos",
+            Respuesta::Palabra("separadas".into()),
+        )]);
         let i = inducir_con(
             &Catalogo::leer(CAT).unwrap(),
             "ventas",
             &d,
             &Vocabulario::default(),
         );
-        assert!(
-            i.ficheros.contains_key("entities/Pedidos.yaml"),
-            "{:?}",
-            i.ficheros.keys()
-        );
-        assert!(
-            i.ficheros
-                .contains_key("bindings/Pedidos__public_pedidos_2023.yaml")
-        );
-        assert!(
-            i.ficheros
-                .contains_key("bindings/Pedidos__public_pedidos_2024.yaml")
-        );
-        let viejo = &i.ficheros["bindings/Pedidos__public_pedidos_2023.yaml"];
+        for f in [
+            "entities/Pedidos_2023.yaml",
+            "entities/Pedidos_2024.yaml",
+            "tables/Pedidos_2023__public_pedidos_2023.yaml",
+            "views/Pedidos_2024__public_pedidos_2024.yaml",
+        ] {
+            assert!(i.ficheros.contains_key(f), "{:?}", i.ficheros.keys());
+        }
+        // Y la pregunta se cierra: `separadas` es una respuesta, no un aplazo.
+        assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Familia));
+
+        let viejo = &i.ficheros["tables/Pedidos_2023__public_pedidos_2023.yaml"];
         assert!(
             !viejo.contains("canal"),
             "atribuyó una columna que no está ahí:\n{viejo}"
         );
-        assert!(i.ficheros["bindings/Pedidos__public_pedidos_2024.yaml"].contains("canal"));
-        // La unión conserva la columna nueva: perderla sería perder un hecho.
-        assert!(i.ficheros["entities/Pedidos.yaml"].contains("canal"));
+        assert!(i.ficheros["tables/Pedidos_2024__public_pedidos_2024.yaml"].contains("canal"));
     }
 
-    /// Un eje que la mitad de las hermanas no tiene deja filas sin sitio en el
-    /// tiempo. La respuesta no se puede honrar, y callarlo dejaría a alguien
+    /// **Unir dejó de poder escribirse, y una respuesta vieja no se traga.**
+    ///
+    /// Hasta v1alpha8 nombrar una columna unía la familia: una entidad servida
+    /// desde N tablas, que eran N bindings. El binding se retiró y una vista
+    /// sale de un sitio, así que la respuesta ya no se puede honrar — y una que
+    /// no se puede honrar se dice, no se ignora: quien la escribió se quedaría
     /// creyendo que unió algo.
     #[test]
-    fn no_une_por_un_eje_que_no_esta_en_todas() {
+    fn una_respuesta_que_pedia_unir_reabre_la_pregunta() {
         const CAT: &str = r#"{
           "source": "pg",
           "tables": [
@@ -2504,7 +2643,15 @@ mod tests {
             .iter()
             .find(|p| p.clase == Clase::Familia)
             .expect("se tragó una respuesta que no podía honrar");
-        assert!(p.porque.contains("public.log_2023"), "{}", p.porque);
+        assert!(p.que.contains("ya no se puede escribir"), "{}", p.que);
+        // Y dice POR QUÉ, que es lo que separa una limitación de un capricho:
+        // el vocabulario no tiene junta, y no por olvido.
+        assert!(p.porque.contains("junta"), "{}", p.porque);
+        // Las dos hermanas siguen emitiéndose por separado: la familia se ve,
+        // y no unirla no es perderla.
+        for e in ["entities/Log_2023.yaml", "entities/Log_2024.yaml"] {
+            assert!(i.ficheros.contains_key(e), "{:?}", i.ficheros.keys());
+        }
     }
 
     /// Acuñar un concepto lo ESCRIBE: `is` exige que exista —`OOS2001`— y dejar

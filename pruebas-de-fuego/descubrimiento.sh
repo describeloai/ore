@@ -151,6 +151,13 @@ dice "$CAT" '"source": "crm_prod"' "el catalogo no dice de que fuente vino"
 dice "$CAT" '"sourceType": "direccion"' "el tipo compuesto no llego entero"
 dice "$CAT" '"uniqueKeys"' "perdio la clave alternativa de nif"
 dice "$CAT" '"kind": "view"' "no distinguio la vista de una tabla"
+# Las dos caras. La `I` es de este driver —lo que `sql.rs` sabe traducir— y la
+# `D` la SONDEO: sale de `wal_level` y de la identidad de replicacion, que solo
+# el servidor contesta. Son hechos, y por eso se emiten sin pasar por revision.
+dice "$CAT" '"reads"' "el catalogo no declara que se le puede pedir al origen"
+dice "$CAT" '"changes"' "el catalogo no sondeo que cambios emite el origen"
+# Una vista no tiene flujo propio: se dice, en vez de callarlo.
+dice "$CAT" '"mode": "none"' "atribuyo cambios a algo que no los emite"
 
 # ── 2 · Y las decisiones que salen ──────────────────────────────────────────
 COLA=packages/ventas/discover.pending.json
@@ -206,12 +213,15 @@ answers:
   tipo/public.clientes.domicilio: omitir
   vacio/public.log_eventos: omitir
   vista/public.v_clientes_activos: omitir
-  familia/public.pedidos: fecha
+  familia/public.pedidos: separadas
   concepto/email.String: gdpr.personalEmail
   concepto/telefono.String: telefonoPersonal
   clasificacion/ventas.telefonoPersonal: "gdpr.sensitivity: critical"
   concepto/fecha.Date: no
   relacion/public.pedidos.id_cliente: si
+  # La hermana fechada es ahora su propia entidad, asi que trae su propia
+  # pregunta. Separar una familia no es perderla: es verla dos veces.
+  relacion/public.pedidos_2024.id_cliente: si
 YAML
 ore review packages/ventas --answers "$R/a2.yaml" > r2.txt || falla "la segunda pasada fallo"
 
@@ -219,11 +229,21 @@ ore review packages/ventas --answers "$R/a2.yaml" > r2.txt || falla "la segunda 
 dice packages/ventas/entities/ClientesVentas.yaml 'name: ClientesVentas' "la segunda pasada deshizo la primera"
 dice packages/ventas/package.yaml 'team:datos' "la segunda pasada perdio el dueno"
 
-# Unir una familia es UNA entidad servida desde N tablas, que es N bindings:
-# lo que el ejecutor ya sabe federar.
-dice packages/ventas/entities/Pedidos.yaml 'name: Pedidos' "no unio la familia"
-[ -e packages/ventas/bindings/Pedidos__public_pedidos.yaml ]      || falla "falta el binding de la hermana viva"
-[ -e packages/ventas/bindings/Pedidos__public_pedidos_2024.yaml ] || falla "falta el binding de la hermana fechada"
+# UNIR DEJO DE PODER ESCRIBIRSE. Era una entidad servida desde N tablas, que
+# eran N bindings; el binding se retiro en v1alpha8 y una vista sale de UN sitio
+# —el vocabulario no tiene junta, y `v1alpha8/00-scope` §6 la deja fuera a
+# proposito—. Asi que la familia se sigue VIENDO, que es lo que evita modelar la
+# misma cosa dos veces, y las respuestas son `separadas` y `omitir`.
+dice packages/ventas/entities/Pedidos.yaml 'name: Pedidos' "perdio la hermana viva"
+dice packages/ventas/entities/Pedidos_2024.yaml 'name: Pedidos_2024' "perdio la hermana fechada"
+for f in \
+  packages/ventas/tables/Pedidos__public_pedidos.yaml \
+  packages/ventas/views/Pedidos__public_pedidos.yaml \
+  packages/ventas/tables/Pedidos_2024__public_pedidos_2024.yaml \
+  packages/ventas/views/Pedidos_2024__public_pedidos_2024.yaml
+do
+  [ -e "$f" ] || falla "falta $f"
+done
 
 # Apuntar a un concepto publicado NO escribe una copia: acunar lo que ya existe
 # es la inflacion por la otra puerta. Se apunta, y se hereda su clasificacion.
@@ -238,10 +258,28 @@ dice packages/ventas/concepts/telefonoPersonal.yaml 'kind: Concept' "no acuno el
 dice packages/ventas/concepts/telefonoPersonal.yaml 'labels: { gdpr.sensitivity: critical }' \
   "acuno un concepto que no clasifica nada"
 
-# Y lo omitido se va del paquete, no se queda de resto.
-[ ! -e packages/ventas/entities/V_clientes_activos.yaml ] || falla "dejo la vista que alguien omitio"
+# Y lo omitido se va del paquete, no se queda de resto — en LOS TRES sitios.
+# Se midio: con `tables` y `views` fuera de los directorios gobernados, omitir
+# retiraba la entidad y dejaba la tabla y la vista. El paquete validaba, porque
+# una vista sin entidad es legal, asi que el resto no daba ningun sintoma.
+for f in   packages/ventas/entities/V_clientes_activos.yaml   packages/ventas/tables/V_clientes_activos__public_v_clientes_activos.yaml   packages/ventas/views/V_clientes_activos__public_v_clientes_activos.yaml
+do
+  [ ! -e "$f" ] || falla "dejo de resto $f, que alguien omitio"
+done
 
 # ── 4 · El criterio: contestar deja un paquete que el compilador acepta ─────
+#
+# Y antes, el recuento que define este peldano: el inductor ESPEJA la mitad
+# fisica —`kind: Table` con sus dos caras— y **no emite ni un binding**.
+grep -rq 'kind: Table' packages/ventas/tables/ || falla "no emitio ninguna tabla"
+grep -rq 'kind: View'  packages/ventas/views/  || falla "no emitio ninguna vista"
+dice packages/ventas/entities/Clientes.yaml 'backedBy:' "la entidad no nombra a su vista"
+if grep -rq 'kind: Binding' packages/ventas/; then
+  falla "emitio un binding: $(grep -rl 'kind: Binding' packages/ventas/)"
+fi
+# Y lo que el driver sondeo llega hasta el documento, sin que nadie lo escriba.
+grep -rq 'changes:' packages/ventas/tables/ || falla "la cara D no llego a la tabla"
+
 dice "$COLA" '"pending": \[\]' "quedaron decisiones sin cerrar: $(cat r2.txt)"
 ore validate . > validado.txt 2>&1 || falla "lo revisado no valida: $(cat validado.txt)"
 dice validado.txt 'ok · sin errores' "valido, pero no en verde: $(cat validado.txt)"
@@ -266,4 +304,15 @@ no_dice superficie.graphql 'email' "sirvio lo que el concepto publicado clasific
 no_dice superficie.graphql 'telefono' "sirvio lo que el concepto acunado clasifico critical"
 dice superficie.graphql 'nif' "podo una columna que nadie clasifico"
 
-echo "el eslabon vivo, diez de las once preguntas, un paquete en verde y una superficie podada"
+# ── 6 · Y las dos caras, hasta el motor ────────────────────────────────────
+#
+# Lo que cierra T3: lo que el driver le pregunto al servidor llega hasta la
+# herramienta que decide si algo se puede mantener incrementalmente, sin que
+# nadie lo haya escrito a mano en ningun sitio.
+ore view . > vistas.txt 2>&1 || falla "el motor de vistas se nego: $(cat vistas.txt)"
+dice vistas.txt 'caras     reads:' 'ore view no ensena la cara de lectura'
+# Con acento: es lo que imprime, y comprobar una version sin acentos seria
+# comprobar otra cosa.
+dice vistas.txt 'raíz de lectura' 'ore view no dice de donde se lee de verdad'
+
+echo "el eslabon vivo, diez de las once preguntas, un paquete en verde, una superficie podada y las dos caras"

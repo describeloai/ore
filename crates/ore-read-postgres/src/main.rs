@@ -77,6 +77,19 @@ const CATALOGO: &str = "\
 SELECT n.nspname                            AS esquema,
        c.relname                            AS tabla,
        c.relkind::text                      AS clase,
+       -- La IDENTIDAD DE REPLICACION: que trae el changelog cuando alguien
+       -- borra o actualiza. Es lo que decide `changes.mode`, y es un hecho del
+       -- objeto que solo se sabe preguntandoselo al servidor.
+       c.relreplident::text                 AS identidad,
+       -- Y con `relreplident = 'i'`, POR QUE INDICE. Sin sus columnas no se
+       -- puede declarar un `upsert`: la clave es lo que empareja un tombstone
+       -- con la fila que retira, y un upsert sin clave no dice que quita.
+       ARRAY(SELECT ra.attname
+               FROM pg_index ix
+               JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(num, ord) ON TRUE
+               JOIN pg_attribute ra ON ra.attrelid = ix.indrelid AND ra.attnum = k.num
+              WHERE ix.indrelid = c.oid AND ix.indisreplident
+              ORDER BY k.ord)               AS identidad_columnas,
        a.attname                            AS columna,
        a.attnotnull                         AS obligatoria,
        format_type(a.atttypid, a.atttypmod) AS tipo,
@@ -207,7 +220,30 @@ fn intentar() -> Result<String, String> {
         .query(UNICAS, &[])
         .map_err(|e| format!("la consulta de claves alternativas falló: {e}"))?;
 
-    Ok(armar(&fuente, &filas, &unicas).pretty())
+    // El sondeo de la cara `D`. Es una pregunta al servidor y no una opción de
+    // este programa: si el clúster no está en `logical`, ningún objeto suyo
+    // emite cambios, y decir otra cosa sería inventarlo.
+    let wal_level: String = cliente
+        .query_one("SELECT current_setting('wal_level')", &[])
+        .map(|r| r.get::<_, String>(0))
+        .unwrap_or_else(|_| String::new());
+    if wal_level != "logical" {
+        // Por stderr, que es donde va lo que no es el catálogo. Y se avisa en
+        // vez de callar: un `changes: none` en cuarenta tablas tiene el mismo
+        // aspecto que un origen que de verdad no cambia nunca.
+        eprintln!(
+            "ore-read-postgres: aviso · `wal_level = {}` y no `logical`, así que ninguna tabla \
+             declara cambios. Sin decodificación lógica no hay changelog que leer, y lo \
+             materializado sobre esto no se podrá refrescar incrementalmente",
+            if wal_level.is_empty() {
+                "?"
+            } else {
+                &wal_level
+            }
+        );
+    }
+
+    Ok(armar(&fuente, &filas, &unicas, &wal_level).pretty())
 }
 
 // ── La costura de tipos ─────────────────────────────────────────────────────
@@ -285,13 +321,21 @@ fn clase(relkind: &str) -> &'static str {
 
 struct Acc {
     clase: &'static str,
+    /// `relkind` sin traducir. `clase` ya lo dice para quien lee el catálogo;
+    /// esto es para quien tiene que **decidir** con ello, y son dos preguntas:
+    /// una vista y una tabla se enseñan distinto y se sondean distinto.
+    relkind: String,
+    /// `relreplident`, tal cual. Decide `changes.mode`.
+    identidad: String,
+    /// Las columnas del índice de identidad de replicación, si lo hay.
+    identidad_columnas: Vec<Json>,
     columnas: Vec<Json>,
     clave: Vec<Json>,
     /// destino -> pares (columna local, columna del destino), en orden.
     foraneas: BTreeMap<String, Vec<(String, String)>>,
 }
 
-fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Json {
+fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_level: &str) -> Json {
     // Indice tabla -> claves alternativas, antes del bucle principal.
     let mut alternativas: BTreeMap<String, Vec<Json>> = BTreeMap::new();
     for u in unicas {
@@ -326,8 +370,16 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Jso
         let cualificado = format!("{esquema}.{tabla}");
         let acc = tablas.entry(cualificado.clone()).or_insert_with(|| {
             orden.push(cualificado.clone());
+            let relkind = cadena("clase").unwrap_or_else(|| "r".into());
             Acc {
-                clase: clase(cadena("clase").as_deref().unwrap_or("r")),
+                clase: clase(&relkind),
+                relkind,
+                identidad: cadena("identidad").unwrap_or_else(|| "d".into()),
+                identidad_columnas: f
+                    .get::<_, Vec<String>>("identidad_columnas")
+                    .iter()
+                    .map(Json::s)
+                    .collect(),
                 columnas: Vec::new(),
                 clave: Vec::new(),
                 foraneas: BTreeMap::new(),
@@ -384,6 +436,21 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Jso
             o.insert("name".into(), Json::s(&t));
             o.insert("kind".into(), Json::s(a.clase));
             o.insert("columns".into(), Json::Arr(a.columnas));
+            // Las dos caras del objeto. Van EN EL CATALOGO y no en el inductor
+            // porque solo el driver las sabe: qué se puede empujar es de quien
+            // traduce, y qué cambios salen es de quien preguntó al servidor.
+            o.insert("reads".into(), reads());
+            // La clave del upsert: la primaria si la identidad es la de por
+            // defecto, y las columnas del índice si alguien eligió otro.
+            let identidad_clave = if a.identidad == "i" {
+                a.identidad_columnas.clone()
+            } else {
+                a.clave.clone()
+            };
+            o.insert(
+                "changes".into(),
+                changes(wal_level, &a.relkind, &a.identidad, &identidad_clave),
+            );
             if !a.clave.is_empty() {
                 o.insert("primaryKey".into(), Json::Arr(a.clave));
             }
@@ -418,6 +485,67 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row]) -> Jso
         .collect();
 
     Json::obj([("source", Json::s(fuente)), ("tables", Json::Arr(tablas))])
+}
+
+// ── Las dos caras ───────────────────────────────────────────────────────────
+
+/// La cara `I`: **lo que este driver sabe empujar**, no lo que PostgreSQL sabe.
+///
+/// La distinción no es escrúpulo: `reads` es el contrato con el que el
+/// planificador decide qué baja al origen, y lo que baja se construye en
+/// `sql::sql`. Declarar `neq`, `range` o `isNull` sería prometer una traducción
+/// que no existe, y el precio lo paga quien menos lo ve — un filtro que el
+/// driver no sabe poner **se cae de la petición**, y una consulta devuelve más
+/// filas de las que pidió sin que nadie vea un error.
+///
+/// Así que aquí se declara lo que hay: `eq`, y el recorrido completo. Ensanchar
+/// esto es un cambio en `sql.rs` primero y en esta lista después, en ese orden.
+///
+/// `gt` existe en el protocolo y **no** aparece: es de la marca de agua, y el
+/// `range` de OOS son las cuatro comparaciones. Declararlo por la mitad sería
+/// prometer las otras tres.
+fn reads() -> Json {
+    Json::obj([
+        ("predicatePushdown", Json::Arr(vec![Json::s("eq")])),
+        ("fullScan", Json::s("cheap")),
+    ])
+}
+
+/// La cara `D`, **sondeada**: qué cambios puede emitir este objeto de verdad.
+///
+/// No es una conjetura ni una preferencia: sale de `wal_level` y de la identidad
+/// de replicación del objeto, que son dos hechos que el servidor contesta. Por
+/// eso puede emitirse sin revisión, que es lo que separa este descubrimiento de
+/// uno con un modelo dentro.
+///
+/// | lo que dice el servidor | lo que emite | por qué |
+/// |---|---|---|
+/// | no es una tabla (`v`, `m`, `f`) | `{none, none}` | una vista no tiene flujo propio; una materializada se refresca, que no es un changelog; una foránea tiene sus datos en otra fuente |
+/// | `wal_level` no es `logical` | `{none, none}` | sin decodificación lógica no sale ningún cambio, y decir otra cosa sería inventarlo |
+/// | `REPLICA IDENTITY FULL` | `{retract, log}` | el changelog trae la imagen previa entera: un borrado retracta y una actualización retracta y añade |
+/// | `DEFAULT` con clave primaria, o `USING INDEX` | `{upsert, log}` | llega la clave y no la fila vieja, que es exactamente un tombstone por clave |
+/// | `DEFAULT` sin clave primaria, o `NOTHING` | `{append, log}` | un borrado no se puede decodificar, así que del flujo solo salen altas |
+///
+/// La última fila es la que más cuesta y la que más vale. `append` NO es la
+/// respuesta cómoda: es la que hace que `OOS2021` rechace materializar esa tabla
+/// para respaldar una entidad mutable, que es justo lo que pasaría de verdad —
+/// las filas borradas se quedarían en la copia y nadie vería nada.
+fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> Json {
+    let ninguno = || Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))]);
+    if !matches!(relkind, "r" | "p") || wal_level != "logical" {
+        return ninguno();
+    }
+    match identidad {
+        "f" => Json::obj([("mode", Json::s("retract")), ("witness", Json::s("log"))]),
+        _ if !clave.is_empty() => Json::obj([
+            ("mode", Json::s("upsert")),
+            ("key", Json::Arr(clave.to_vec())),
+            ("witness", Json::s("log")),
+        ]),
+        // `d` sin clave primaria, `n`, o `i` sin columnas: no hay con qué
+        // retirar una fila. Solo las altas sobreviven al viaje.
+        _ => Json::obj([("mode", Json::s("append")), ("witness", Json::s("log"))]),
+    }
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
@@ -545,5 +673,94 @@ mod tests {
         assert_eq!(clase("v"), "view");
         assert_eq!(clase("m"), "materializedView");
         assert_eq!(clase("f"), "foreignTable");
+    }
+
+    // ── Las dos caras ───────────────────────────────────────────────────────
+    //
+    // Todo lo de aquí corre **sin servidor**, que es la razón de que `changes`
+    // sea una función pura: lo que decide qué puede refrescarse
+    // incrementalmente en toda una empresa no puede probarse solo cuando hay
+    // un PostgreSQL delante.
+
+    fn modo(j: &Json) -> String {
+        j.jcs()
+    }
+
+    /// Sin decodificación lógica no sale ningún cambio, y da igual cómo esté
+    /// configurada la tabla: no hay de dónde leerlos.
+    #[test]
+    fn sin_wal_logical_ninguna_tabla_declara_cambios() {
+        for identidad in ["d", "f", "i", "n"] {
+            assert_eq!(
+                modo(&changes("replica", "r", identidad, &[Json::s("id")])),
+                r#"{"mode":"none","witness":"none"}"#,
+                "identidad {identidad}"
+            );
+        }
+    }
+
+    /// `REPLICA IDENTITY FULL` trae la imagen previa entera: un borrado
+    /// retracta y una actualización retracta y añade. Es el único caso en que
+    /// se puede afirmar `retract`.
+    #[test]
+    fn identidad_full_retracta() {
+        assert_eq!(
+            modo(&changes("logical", "r", "f", &[])),
+            r#"{"mode":"retract","witness":"log"}"#
+        );
+    }
+
+    /// Con la identidad por defecto llega **la clave** y no la fila vieja, que
+    /// es exactamente un tombstone por clave.
+    #[test]
+    fn identidad_por_defecto_con_clave_es_un_upsert() {
+        assert_eq!(
+            modo(&changes("logical", "r", "d", &[Json::s("id")])),
+            r#"{"key":["id"],"mode":"upsert","witness":"log"}"#
+        );
+    }
+
+    /// **La que más vale, y la que más cuesta.** Sin clave primaria un borrado
+    /// no se puede decodificar, así que del flujo solo salen altas.
+    ///
+    /// `append` no es la respuesta cómoda: es la que hace que `OOS2021` rechace
+    /// materializar esto para respaldar una entidad mutable — que es justo lo
+    /// que pasaría de verdad, con las filas borradas quedándose en la copia y
+    /// nadie viendo nada.
+    #[test]
+    fn sin_con_que_retirar_una_fila_solo_quedan_las_altas() {
+        for identidad in ["d", "n", "i"] {
+            assert_eq!(
+                modo(&changes("logical", "r", identidad, &[])),
+                r#"{"mode":"append","witness":"log"}"#,
+                "identidad {identidad}"
+            );
+        }
+    }
+
+    /// Una vista no tiene flujo propio, una materializada se refresca —que no
+    /// es un changelog— y una foránea tiene sus datos en otra fuente.
+    #[test]
+    fn lo_que_no_es_una_tabla_no_emite_cambios() {
+        for relkind in ["v", "m", "f"] {
+            assert_eq!(
+                modo(&changes("logical", relkind, "f", &[Json::s("id")])),
+                r#"{"mode":"none","witness":"none"}"#,
+                "relkind {relkind}"
+            );
+        }
+    }
+
+    /// La cara `I` declara **lo que `sql.rs` sabe traducir**, no lo que
+    /// PostgreSQL sabe hacer. Declarar de más se paga donde menos se ve: un
+    /// filtro que el driver no sabe poner se cae de la petición, y la consulta
+    /// devuelve más filas de las que pidió sin que nadie vea un error.
+    #[test]
+    fn la_cara_de_lectura_no_promete_lo_que_no_traduce() {
+        let j = reads().jcs();
+        assert_eq!(j, r#"{"fullScan":"cheap","predicatePushdown":["eq"]}"#);
+        for inventado in ["neq", "range", "isNull", "like", "fullText", "gt"] {
+            assert!(!j.contains(inventado), "{j} promete `{inventado}`");
+        }
     }
 }

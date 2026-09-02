@@ -72,7 +72,7 @@ enum AccionFuente {
     /// Da de alta una fuente: el secreto va a `.env.local` y el manifiesto solo
     /// declara de qué variable sale.
     Add {
-        /// Nombre con el que los bindings la referenciarán (`datasourceRef`).
+        /// Nombre con el que las tablas la referenciarán (`spec.datasource`).
         #[arg(long)]
         name: String,
         /// Cadena de conexión completa. **No** se escribe en ningún documento OOS.
@@ -163,7 +163,7 @@ enum Command {
     /// Registra una fuente física, separando la credencial de la conexión.
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
-    /// Introspecciona una fuente y propone entidades y bindings en DRAFT.
+    /// Espeja una fuente en tablas y propone entidades y vistas en DRAFT.
     ///
     /// Son dos actos: **leer** un catálogo y **proponer** una ontología, y se
     /// piden por separado porque fallan por separado. `--source` lee de una
@@ -310,7 +310,7 @@ enum Command {
     /// Emite a ODCS o a esquema Cedar (`cedar` en JSON, `cedarschema` nativo).
     ///
     /// `oos` y `json` dan la forma canónica, con y sin interpretar. Apache Ossie
-    /// está declarado y no implementado: falla explicando por qué exige binding.
+    /// está declarado y no implementado: falla explicando por qué exige lo físico.
     Export {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -674,11 +674,11 @@ pub fn raiz_del_repositorio(desde: &std::path::Path) -> Option<std::path::PathBu
         .map(std::path::Path::to_path_buf)
 }
 
-/// El aviso de la costura: un binding referencia una fuente, y esa fuente la
+/// El aviso de la costura: una tabla referencia una fuente, y esa fuente la
 /// declara **el manifiesto del repositorio**.
 ///
 /// Salió midiendo, no leyendo. `discover --out <dir fuera de un repo>` escribe
-/// bindings con `datasourceRef: crm_prod` y nada declara ese datasource, así que
+/// tablas con `datasource: crm_prod` y nada declara ese datasource, así que
 /// `ore validate` responde `OOS2004` por cada uno. Es coherente —el inductor no
 /// inventa un manifiesto— pero significa que **el camino de verdad es dentro de
 /// un repositorio**, y eso no lo decía nadie: el comando terminaba en verde y el
@@ -689,13 +689,13 @@ fn costura(destino: &std::path::Path, cat: &inductor::Catalogo) -> Vec<String> {
 
     let Some(m) = manifiesto else {
         return vec![
-            format!("aviso: nada declara la fuente `{fuente}`, y los bindings la referencian."),
+            format!("aviso: nada declara la fuente `{fuente}`, y las tablas la referencian."),
             format!(
                 "  `{}` no está dentro de un repositorio ontológico: no hay",
                 destino.display()
             ),
             "  `ontology.config.yaml` en ningún directorio por encima, así que".to_string(),
-            "  `ore validate` dirá OOS2004 una vez por binding.".to_string(),
+            "  `ore validate` dirá OOS2004 una vez por tabla.".to_string(),
             "  `ore init` crea uno, y `ore discover --out packages/<nombre>` induce dentro."
                 .to_string(),
         ];
@@ -716,7 +716,7 @@ fn costura(destino: &std::path::Path, cat: &inductor::Catalogo) -> Vec<String> {
     }
     vec![
         format!("aviso: `{}` no declara la fuente `{fuente}`.", m.display()),
-        "  Los bindings la referencian, así que `ore validate` dirá OOS2004 por cada uno."
+        "  Las tablas la referencian, así que `ore validate` dirá OOS2004 por cada una."
             .to_string(),
         format!("  `ore source add --name {fuente} <url>` la declara sin escribir el secreto."),
     ]
