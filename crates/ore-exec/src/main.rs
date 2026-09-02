@@ -559,10 +559,11 @@ fn refrescar(motor: &Motor, args: &[String]) -> Result<(usize, usize), String> {
 
 /// Como `aristas_de_la_fuente`, pero acotado por la marca de agua.
 ///
-/// El predicado es `gt` sobre la propiedad que el binding declara en
-/// `materialization.topology.watermark`. Es el **único** sitio donde el motor
-/// emite un operador de orden, y se puede: una marca de agua **no tiene
-/// principal**, así que no filtra por nadie.
+/// El predicado es `gt` sobre la columna que ordena el avance: `changes.field`
+/// de la tabla en v1alpha8, o `materialization.topology.watermark` del binding
+/// en v1alpha1. Es el **único** sitio donde el motor emite un operador de
+/// orden, y se puede: una marca de agua **no tiene principal**, así que no
+/// filtra por nadie.
 fn leer_aristas_incremental(
     motor: &Motor,
     args: &[String],
@@ -584,14 +585,18 @@ fn leer_aristas_incremental(
         if !desde.is_empty() {
             let Some(columna) = motor.columna_de_marca(&relacion) else {
                 return Err(format!(
-                    "`{relacion}` no declara `materialization.topology.watermark`, así que no \
-                     hay desde dónde continuar: sin ella el refresco solo puede recargar entero"
+                    "`{relacion}` no declara qué columna ordena el avance, así que no hay desde \
+                     dónde continuar: sin ella el refresco solo puede recargar entero. En \
+                     v1alpha8 se dice en la tabla, con `changes: {{ witness: field, field: … }}`"
                 ));
             };
             lectura.filtros.push(ore_exec::Filtro {
-                // La marca de agua no sale de una propiedad del principal: sale
-                // del binding. Se nombra igual que la columna porque no hay una
-                // propiedad corta a la que atribuirsela.
+                // La marca de agua no sale de una propiedad del principal:
+                // sale de la cara `D` del objeto. Se nombra igual que la
+                // columna porque no hay una propiedad corta a la que
+                // atribuírsela — y en v1alpha8 ya llega en columna física,
+                // porque quien la declara es el objeto y el objeto habla de
+                // columnas.
                 propiedad: columna.clone(),
                 columna,
                 operador: "gt".into(),

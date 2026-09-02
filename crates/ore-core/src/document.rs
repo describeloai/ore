@@ -431,7 +431,17 @@ impl Kind {
             // es lo unico nuevo de verdad — hasta aqui ningun documento decia
             // que columnas tenia el objeto, y por eso `OOS2018` sobre una vista
             // de fuente no era comprobable.
-            Kind::Table => &["datasource", "object", "columns", "reads", "changes"],
+            // `profile` es opcional y llego con la migracion: `Binding.profile`
+            // no tenia donde ir, y v1alpha7 ya lo habia perdido sin que nadie
+            // lo notara porque nada se habia migrado todavia.
+            Kind::Table => &[
+                "datasource",
+                "object",
+                "profile",
+                "columns",
+                "reads",
+                "changes",
+            ],
         }
     }
 

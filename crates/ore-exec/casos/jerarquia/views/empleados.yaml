@@ -1,0 +1,15 @@
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: empleados, namespace: hr }
+spec:
+  owner: team:hr
+  from: { table: erp_employees }
+  # Era `materialization.topology.freshnessSLA`. La frescura es de la consulta,
+  # no del objeto: un mismo objeto se tolera fresco de un modo para el indice y
+  # de otro para un informe.
+  freshness: 30m
+  fields:
+    employeeId:  employee_id
+    managerId:   manager_id
+    baseSalary:  national_id
+    actualizado: updated_at

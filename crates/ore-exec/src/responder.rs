@@ -267,11 +267,39 @@ impl Motor {
 
     /// La columna física de la propiedad que ordena el avance del refresco.
     ///
-    /// Sale de `materialization.topology.watermark` del binding, pasada por su
-    /// mapeo. Sin ella el refresco **no sabe desde dónde continuar** y solo puede
+    /// Sin ella el refresco **no sabe desde dónde continuar** y solo puede
     /// recargar entero — que es exactamente lo que `05-ejecutor` §7 dice.
+    ///
+    /// # Dos sitios, y uno de ellos es donde siempre debió estar
+    ///
+    /// En v1alpha1 sale de `materialization.topology.watermark` del binding,
+    /// pasada por su mapeo: una PROPIEDAD, traducida a columna.
+    ///
+    /// En v1alpha8 sale de `changes.field` de la tabla, y llega **ya en columna
+    /// física**. No es un traslado cosmético: qué columna ordena el avance es un
+    /// hecho del objeto —lo sabe quien lo sondeó, no quien lo consulta— y por
+    /// eso vive en la cara `D`. El binding lo tenía dentro de una decisión de
+    /// materialización, que es de la consulta; la tabla lo tiene donde ocurre.
+    ///
+    /// Y es el primer consumidor real de `witness: field`: hasta aquí el testigo
+    /// se declaraba y nadie lo leía.
     pub fn columna_de_marca(&self, relacion: &str) -> Option<String> {
         let entidad = relacion.rsplit_once('.')?.0;
+
+        // v1alpha8 · la cara `D` de la raíz. Va primero porque es la forma
+        // vigente; si el paquete no la usa, se cae al camino del binding.
+        if let Some(e) = self.paquete.entity(entidad)
+            && let Some(v) = ore_core::vistas::respaldo(&self.paquete, e)
+            && let Ok(raiz) = ore_core::vistas::raiz(&self.paquete, v)
+            && let Some(qn) = raiz.tabla.as_deref()
+            && let Some(tabla) = self.paquete.table(qn)
+            && let Some(cambios) = tabla.section("changes")
+            && cambios.get("witness").and_then(|(_, w)| w.as_str()) == Some("field")
+            && let Some((_, campo)) = cambios.get("field")
+        {
+            return campo.as_str().map(String::from);
+        }
+
         for b in self.paquete.docs.iter().filter(|d| {
             d.kind == ore_core::document::Kind::Binding
                 && d.section("targetEntity").and_then(|t| t.as_str()) == Some(entidad)

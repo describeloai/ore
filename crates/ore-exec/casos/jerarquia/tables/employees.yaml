@@ -1,0 +1,22 @@
+# El objeto, con sus dos caras. `reads: {}` no es lo mismo que `reads: none`:
+# significa que nadie declaro que se le puede empujar, no que no se pueda leer.
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: erp_employees, namespace: hr }
+spec:
+  datasource: erp
+  object: public.employees
+  columns:
+    employee_id: {}
+    manager_id:  {}
+    national_id: {}
+    updated_at:  {}
+  reads: {}
+  # `strategy: poll` con `watermark: actualizado` decia dos cosas: que solo se
+  # ven altas, y que columna ordena el avance. Aqui son una sola —la cara D— y
+  # la columna se nombra por su nombre FISICO, porque quien la lee es el
+  # refresco y el refresco habla con el origen.
+  changes:
+    mode: append
+    witness: field
+    field: updated_at

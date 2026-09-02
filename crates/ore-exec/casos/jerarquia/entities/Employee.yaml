@@ -1,8 +1,9 @@
-apiVersion: oos.dev/v1alpha1
+apiVersion: oos.dev/v1alpha8
 kind: Entity
 metadata: { name: Employee, namespace: hr }
 spec:
   nature: entity
+  backedBy: empleados
   primaryKey: [employeeId]
   principal: true
   properties:

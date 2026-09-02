@@ -1,0 +1,14 @@
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: erp_employees, namespace: hr }
+spec:
+  datasource: erp
+  object: public.employees
+  columns:
+    employee_id: {}
+    national_id: {}
+  # Vacio A PROPOSITO: es el caso. Un origen del que nadie declaro que sabe
+  # hacer sirve la busqueda por clave y nada mas, y un plan que necesite
+  # recorrido completo se rechaza antes de abrir una conexion.
+  reads: {}
+  changes: { mode: none, witness: none }
