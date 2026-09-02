@@ -126,6 +126,22 @@ fn implementada(codigo: &str) -> bool {
     IMPLEMENTADAS.contains(&codigo) || emitidos().contains(codigo)
 }
 
+/// El caso trae un `apiVersion` que esta implementación todavía no entiende.
+///
+/// Sustituye a una lista de versiones escrita a mano —`v1alpha2`, `v1alpha3`—
+/// que había que ampliar con cada borrador nuevo y **recortar** con cada uno
+/// implementado. Nadie recorta una lista así: la de v1alpha3 seguía puesta con
+/// v1alpha3 ya soportado, y un caso que hubiera empezado a fallar de verdad se
+/// habría contado como pendiente sin que nadie lo viera.
+///
+/// Aquí se **deriva de lo que el compilador dice** (P2): pide la versión y no
+/// la tiene. Un `apiVersion` **ausente** comparte código y no comparte mensaje,
+/// y por eso el mensaje forma parte de la condición: ese sí es un defecto del
+/// documento, y debe contarse.
+fn version_no_soportada(texto: &str) -> bool {
+    texto.contains("[OOS1002]") && texto.contains("no está soportada")
+}
+
 /// Los códigos que el compilador **sabe emitir de verdad**, leídos de su propio
 /// código fuente.
 ///
@@ -366,6 +382,12 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
                 return Err("no implementado".into());
             }
             let (ok, texto) = correr("validate", "input")?;
+            // Un caso cuyo `apiVersion` esta implementacion no entiende no se
+            // mide: falla con OOS1002 por la version, no por lo que afirma. La
+            // excepcion es el caso que afirma OOS1002 — ese SI mide justo eso.
+            if esperado != "OOS1002" && version_no_soportada(&texto) {
+                return Err("no implementado".into());
+            }
             if texto.contains("no implementado") {
                 return Err("no implementado".into());
             }
@@ -387,10 +409,7 @@ fn ejecutar(caso: &Case) -> Result<(), String> {
             // Una apiVersion que esta implementacion no entiende todavia. Se
             // limpia sola: el dia que ORE la soporte, el caso se mide de
             // verdad sin tocar el arnes.
-            if texto.contains("no implementado")
-                || texto.contains("oos.dev/v1alpha2")
-                || texto.contains("oos.dev/v1alpha3")
-            {
+            if texto.contains("no implementado") || version_no_soportada(&texto) {
                 return Err("no implementado".into());
             }
             if ok {
@@ -1168,6 +1187,20 @@ fn borrador_de_v1alpha6() {
 #[test]
 fn borrador_de_v1alpha7() {
     marcador("v1alpha7", "la vista", "BORRADOR · OOS v1alpha7 · la vista");
+}
+
+/// El borrador de v1alpha8 anade `Table`, adelgaza `View` y retira `Binding`.
+/// Arranca **entero en pendiente**, como arrancó el de v1alpha3: esta
+/// implementacion no entiende todavia `oos.dev/v1alpha8`, asi que los dieciseis
+/// casos fallan con `OOS1002` por la version y ninguno mide lo que afirma. Se
+/// limpia solo, caso a caso, segun se implemente.
+///
+/// Los dos que valen dinero son `OOS2020` —lo que no se puede leer se debe
+/// materializar— y `OOS2021` —sin retractacion no se mantiene lo mutable—:
+/// ningun competidor los comprueba al compilar.
+#[test]
+fn borrador_de_v1alpha8() {
+    marcador("v1alpha8", "la tabla", "BORRADOR · OOS v1alpha8 · la tabla");
 }
 
 #[test]
