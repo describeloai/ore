@@ -35,6 +35,7 @@
 //! | **Pushdown Planner** | [`capabilities`] | M4 | qué hace el origen y qué queda de residuo |
 //! | **Filter Tree** | [`filter_tree`] | M5 | de todas las materializaciones, cuáles podrían servir |
 //! | **View Matcher** | [`view_matcher`] | M5 | si esta la contesta, con qué compensation, y qué hereda |
+//! | **Delta Compiler** | [`delta_compiler`] | M6 | el circuito Δ de un plan, y el estado que exige |
 //!
 //! # Lo que este crate no toca todavía
 //!
@@ -45,6 +46,7 @@
 
 pub mod capabilities;
 pub mod catalog;
+pub mod delta_compiler;
 pub mod filter_tree;
 pub mod flow;
 pub mod lineage;
@@ -54,6 +56,9 @@ pub mod view_matcher;
 
 pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
 pub use catalog::{Catalogo, Expansion, Vista};
+pub use delta_compiler::{
+    Circuito, Estado, Evaluacion, Fila, NoIncrementalizable, Zset, recomputar,
+};
 pub use filter_tree::{FilterTree, Hoja, Materializacion, Registro, firma};
 pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};

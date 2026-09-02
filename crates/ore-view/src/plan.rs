@@ -40,6 +40,7 @@
 use ore_core::json::Json;
 use ore_core::parse::Node;
 use ore_core::types::{Type, parse_type};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Separación de dominio: el digest de un plan no puede coincidir con el de otra
@@ -49,7 +50,13 @@ const MAGIA: &str = "OREPLAN1";
 // ── Valores y expresiones ───────────────────────────────────────────────────
 
 /// Un literal. **Sin coma flotante** — está desarrollado en la cabecera.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Ord` se deriva y es **estructural**: sirve para que un valor pueda ser clave
+/// de un `BTreeMap`, y nada más. El orden **numérico** —el que decide si `10.25 >
+/// 9.999`— es [`Valor::comparar`]. Son dos preguntas, y confundirlas haría que un
+/// `BTreeMap` ordenara `"10"` antes que `"9"`, que es lo que hace y está bien
+/// para lo que es.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Valor {
     Cadena(String),
     Entero(i64),
@@ -72,6 +79,51 @@ impl Valor {
             }
             .to_string(),
         )
+    }
+
+    /// Orden **numérico** entre dos literales del mismo tipo. Tipos distintos no
+    /// se comparan, y no compararlos es la respuesta segura: quien lo necesite
+    /// tiene que decidir qué hace sin ella.
+    ///
+    /// Los decimales se comparan **por sus dígitos, sin pasar por un doble**:
+    /// `0.10` y `0.1` son iguales, `10.25 > 9.999`, y el signo manda. Lo usan el
+    /// View Matcher para implicar predicados y el Delta Compiler para `MIN` y
+    /// `MAX`, y por eso vive aquí y no en ninguno de los dos.
+    pub fn comparar(&self, otro: &Valor) -> Option<Ordering> {
+        Some(match (self, otro) {
+            (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
+            (Valor::Cadena(x), Valor::Cadena(y)) => x.cmp(y),
+            (Valor::Booleano(x), Valor::Booleano(y)) => x.cmp(y),
+            (Valor::Decimal(x), Valor::Decimal(y)) => decimal(x, y)?,
+            _ => return None,
+        })
+    }
+
+    /// La forma canónica de un decimal: `0.10` → `0.1`, `007` → `7`, `-0` → `0`,
+    /// `.5` → `0.5`. Lo demás sale igual.
+    ///
+    /// **No la aplica el IR**: la forma canónica del plan conserva los dígitos
+    /// tal cual se escribieron, porque eso es lo que hace al digest una identidad
+    /// de lo escrito. La aplica quien necesite que dos escrituras del mismo número
+    /// sean **la misma clave** — agrupar, juntar, deduplicar—, que es el Delta
+    /// Compiler.
+    pub fn normalizado(self) -> Valor {
+        match self {
+            Valor::Decimal(d) => Valor::Decimal(match partes_decimal(&d) {
+                None => d,
+                Some((neg, ent, frac)) => {
+                    let ent = if ent.is_empty() { "0" } else { &ent };
+                    let cero = ent == "0" && frac.is_empty();
+                    let signo = if neg && !cero { "-" } else { "" };
+                    if frac.is_empty() {
+                        format!("{signo}{ent}")
+                    } else {
+                        format!("{signo}{ent}.{frac}")
+                    }
+                }
+            }),
+            otro => otro,
+        }
     }
 
     fn json(&self) -> Json {
@@ -98,6 +150,53 @@ impl Valor {
         }
         None
     }
+}
+
+/// `(negativo, parte entera sin ceros a la izquierda, parte decimal sin ceros a
+/// la derecha)`, o `None` si el texto no es un decimal.
+fn partes_decimal(s: &str) -> Option<(bool, String, String)> {
+    let (neg, s) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (ent, frac) = s.split_once('.').unwrap_or((s, ""));
+    if (ent.is_empty() && frac.is_empty())
+        || !ent.chars().all(|c| c.is_ascii_digit())
+        || !frac.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((
+        neg,
+        ent.trim_start_matches('0').to_string(),
+        frac.trim_end_matches('0').to_string(),
+    ))
+}
+
+/// Orden exacto de dos decimales escritos como texto, sin pasar por un doble.
+fn decimal(a: &str, b: &str) -> Option<Ordering> {
+    let (na, ea, fa) = partes_decimal(a)?;
+    let (nb, eb, fb) = partes_decimal(b)?;
+    let cero_a = ea.is_empty() && fa.is_empty();
+    let cero_b = eb.is_empty() && fb.is_empty();
+    if cero_a && cero_b {
+        return Some(Ordering::Equal);
+    }
+    let magnitud = || {
+        ea.len()
+            .cmp(&eb.len())
+            .then_with(|| ea.cmp(&eb))
+            .then_with(|| {
+                let n = fa.len().max(fb.len());
+                format!("{fa:0<n$}").cmp(&format!("{fb:0<n$}"))
+            })
+    };
+    Some(match (na && !cero_a, nb && !cero_b) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => magnitud(),
+        (true, true) => magnitud().reverse(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1117,6 +1216,44 @@ mod tests {
         let mut fuentes: Vec<&str> = hojas.iter().map(|l| l.datasource.as_str()).collect();
         fuentes.sort();
         assert_eq!(fuentes, ["lago", "sap"]);
+    }
+
+    /// El orden numérico es exacto y no pasa por un doble: `0.10` es `0.1`, el
+    /// signo manda, y tipos distintos **no se comparan**.
+    #[test]
+    fn el_orden_de_los_decimales_es_exacto() {
+        let d = |s: &str| Valor::Decimal(s.into());
+        assert_eq!(d("0.10").comparar(&d("0.1")), Some(Ordering::Equal));
+        assert_eq!(d("9.999").comparar(&d("10.25")), Some(Ordering::Less));
+        assert_eq!(d("-3").comparar(&d("2")), Some(Ordering::Less));
+        assert_eq!(d("-0").comparar(&d("0.0")), Some(Ordering::Equal));
+        assert_eq!(d("-1.5").comparar(&d("-1.25")), Some(Ordering::Less));
+        assert_eq!(d("1").comparar(&Valor::Entero(1)), None, "tipos distintos");
+        assert_eq!(
+            Valor::Entero(3).comparar(&Valor::Entero(7)),
+            Some(Ordering::Less)
+        );
+    }
+
+    /// Y la forma canónica hace que dos escrituras del mismo número sean la
+    /// misma clave — sin tocar el IR, que conserva los dígitos como se
+    /// escribieron.
+    #[test]
+    fn la_forma_canonica_de_un_decimal_no_depende_de_como_se_escribio() {
+        let d = |s: &str| Valor::Decimal(s.into());
+        for (escrito, canonico) in [
+            ("0.10", "0.1"),
+            ("007", "7"),
+            ("-0", "0"),
+            ("-0.00", "0"),
+            (".5", "0.5"),
+            ("-3.50", "-3.5"),
+            ("10", "10"),
+        ] {
+            assert_eq!(d(escrito).normalizado(), d(canonico), "{escrito}");
+        }
+        assert_eq!(d("abc").normalizado(), d("abc"));
+        assert_eq!(Valor::Entero(5).normalizado(), Valor::Entero(5));
     }
 
     /// **Una opaca se supone volátil mientras no diga lo contrario.**

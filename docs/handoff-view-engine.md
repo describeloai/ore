@@ -520,12 +520,12 @@ flowchart TB
 | **Pushdown Planner** | `capabilities.rs` | M4 | *qué hace el origen y qué queda* | ✅ |
 | **Filter Tree** | `filter_tree.rs` | **M5** | *de todas las materializaciones, ¿cuáles podrían servir?* | ✅ |
 | **View Matcher** | `view_matcher.rs` | **M5** | *¿esta la contesta, y con qué compensación?* | ✅ |
-| **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ⏳ |
+| **Delta Compiler** | `delta_compiler.rs` | **M6** | *cuál es el circuito Δ de este plan* | ✅ |
 | **Refresh Analyzer** | `refresh_analyzer.rs` | **M6** | *`INCREMENTAL` o `FULL`, y si `FULL`, por qué* | ⏳ |
 | **Partial State Store** | `state_store.rs` | **M6** | *qué hay cacheado, y qué falta* | ⏳ |
 | **Cost Model** | `cost_model.rs` | **M6** | *¿sale más barato incrementar o recomputar?* | ⏳ |
 
-**Doce piezas, ocho construidas.** M5 está entero. Ninguna sabe qué es un paquete OOS y ninguna abre una
+**Doce piezas, nueve construidas.** M5 está entero; M6 ha empezado. Ninguna sabe qué es un paquete OOS y ninguna abre una
 conexión. Es lo mismo que decían Calcite y Substrait desde el principio: **un motor de vistas es
 un compilador**.
 
@@ -761,9 +761,41 @@ mundo. Nombrarlos antes de empezar es la diferencia entre un peldaño y una sorp
 
 **Listo cuando:** aplicar un delta da **el mismo estado que recomputar**, sobre secuencias
 generadas de altas **y bajas** mezcladas. Es la única prueba que vale, porque los modelos de
-solo-*append* pasan por buenos hasta la primera baja.
+solo-*append* pasan por buenos hasta la primera baja. ✅ · 118 comprobaciones en el crate.
 
-**Coste:** medio. Puro, compila aquí, y la teoría no deja margen de interpretación.
+**Coste:** medio, y lo fue. Puro, compiló aquí, y la teoría no dejó margen de interpretación.
+
+> **Construido · 2026-09-01.** Z-sets con pesos con signo, y el circuito de cada plan con su
+> estado dentro. La prueba que vale corre **en cada ronda**, no solo al final —un error que se
+> compensara dos rondas después seguiría siendo un error—, sobre siete formas de plan y ocho
+> semillas de un generador determinista propio: `rand` traería `getrandom`, y este árbol no
+> enlaza contra el sistema operativo.
+>
+> Cuatro cosas que salieron de construirlo:
+>
+> **`comparar` salió del View Matcher y entró en `Valor`.** El Delta Compiler la necesitaba para
+> `MIN` y `MAX`, y una segunda copia habría divergido justo en los decimales. Con ella vino
+> `Valor::normalizado` —`0.10` y `0.1` son **la misma clave** al agrupar— que **no toca el IR**:
+> la forma canónica conserva los dígitos como se escribieron, porque eso es lo que hace al digest
+> una identidad de lo escrito.
+>
+> **La aritmética es exacta.** `0.1 + 0.2` es `0.3`, no `0.30000000000000004`: mantisa en `i128`
+> y escala, sin pasar por un doble. Es la regla de M0 —no hay coma flotante— pagándose una vez
+> más, y esta vez en la suma.
+>
+> **`PROMEDIO` se refusa, con la misma frase que en el View Matcher.** Mantenerlo exige
+> `SUMA / CUENTA`, y el álgebra no tiene división. Una regla, dicha dos veces por dos piezas, y
+> escrita una.
+>
+> **Esto evalúa, y hay que decirlo.** Aplica un Δ sobre Z-sets en memoria. No contradice *«la
+> ejecución es de otro»*: es la **semántica de referencia** del circuito, la que hace comprobable
+> que incrementar da lo mismo que recomputar. DBSP es una semántica que se puede ejecutar. Correr
+> esto sobre una tabla del cliente es el Partial State Store y quien lo ejecute — no es esta
+> pieza. Y por lo mismo **no evalúa opacas**: compilan si son deterministas, porque la regla es
+> lineal; evaluarlas es un error con nombre.
+>
+> Y una limitación dicha antes de que la descubra una prueba: **esta semántica no tiene nulos**.
+> `EsNulo` evalúa a falso, y una junta externa se refusa por ello.
 
 ---
 
@@ -878,9 +910,9 @@ cuele como un `if` improvisado dentro de otra pieza el día que haga falta.
 ```text
 M5   Filter Tree ✅  ──►  View Matcher ✅ (1·2·3·4·5)
 
-M6   Delta Compiler  ──►  Refresh Analyzer  ──►  Partial State Store  ──►  Cost Model
-                                 ▲                                              ▲
-                            vale ya solo                             bloqueado por medidas
+M6   Delta Compiler ✅  ──►  Refresh Analyzer  ──►  Partial State Store  ──►  Cost Model
+                                    ▲                                              ▲
+                               vale ya solo                             bloqueado por medidas
 ```
 
 **M5 está entero y compiló en esta máquina.** Lo que queda de puro son el Delta Compiler y el

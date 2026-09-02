@@ -482,63 +482,6 @@ fn igualdad(x: &Expr) -> Option<(&str, &str)> {
     None
 }
 
-// ── Literales: orden exacto, sin coma flotante ──────────────────────────────
-
-fn comparar(a: &Valor, b: &Valor) -> Option<Ordering> {
-    Some(match (a, b) {
-        (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
-        (Valor::Cadena(x), Valor::Cadena(y)) => x.cmp(y),
-        (Valor::Booleano(x), Valor::Booleano(y)) => x.cmp(y),
-        (Valor::Decimal(x), Valor::Decimal(y)) => decimal(x, y)?,
-        _ => return None,
-    })
-}
-
-/// Orden exacto de dos decimales escritos como texto, **sin pasar por un
-/// doble**: `0.10` y `0.1` son iguales, `10.25 > 9.999`, y el signo manda.
-fn decimal(a: &str, b: &str) -> Option<Ordering> {
-    fn partes(s: &str) -> Option<(bool, String, String)> {
-        let (neg, s) = match s.strip_prefix('-') {
-            Some(r) => (true, r),
-            None => (false, s),
-        };
-        let (ent, frac) = s.split_once('.').unwrap_or((s, ""));
-        if ent.is_empty() && frac.is_empty()
-            || !ent.chars().all(|c| c.is_ascii_digit())
-            || !frac.chars().all(|c| c.is_ascii_digit())
-        {
-            return None;
-        }
-        Some((
-            neg,
-            ent.trim_start_matches('0').to_string(),
-            frac.trim_end_matches('0').to_string(),
-        ))
-    }
-    let (na, ea, fa) = partes(a)?;
-    let (nb, eb, fb) = partes(b)?;
-    let cero_a = ea.is_empty() && fa.is_empty();
-    let cero_b = eb.is_empty() && fb.is_empty();
-    if cero_a && cero_b {
-        return Some(Ordering::Equal);
-    }
-    let magnitud = || {
-        ea.len()
-            .cmp(&eb.len())
-            .then_with(|| ea.cmp(&eb))
-            .then_with(|| {
-                let n = fa.len().max(fb.len());
-                format!("{fa:0<n$}").cmp(&format!("{fb:0<n$}"))
-            })
-    };
-    Some(match (na && !cero_a, nb && !cero_b) {
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        (false, false) => magnitud(),
-        (true, true) => magnitud().reverse(),
-    })
-}
-
 // ── Implicación por columna ─────────────────────────────────────────────────
 
 enum Simple<'a> {
@@ -605,7 +548,7 @@ fn hechos<'a>(base: &'a [Expr], clases: &Clases, columna: &str) -> Hechos<'a> {
 fn ajustar<'a>(cota: &mut Option<(&'a Valor, bool)>, v: &'a Valor, incl: bool, mejor: Ordering) {
     *cota = match *cota {
         None => Some((v, incl)),
-        Some((actual, actual_incl)) => match comparar(v, actual) {
+        Some((actual, actual_incl)) => match v.comparar(actual) {
             Some(o) if o == mejor => Some((v, incl)),
             Some(Ordering::Equal) => Some((actual, actual_incl && incl)),
             _ => Some((actual, actual_incl)),
@@ -615,7 +558,7 @@ fn ajustar<'a>(cota: &mut Option<(&'a Valor, bool)>, v: &'a Valor, incl: bool, m
 
 fn implica_cmp(h: &Hechos, op: Comparador, lit: &Valor) -> bool {
     use Comparador::*;
-    let cmp = |a: &Valor| comparar(a, lit);
+    let cmp = |a: &Valor| a.comparar(lit);
     if let Some(v) = h.igual {
         return matches!(
             (op, cmp(v)),
@@ -679,12 +622,12 @@ fn implica(base: &[Expr], clases: &Clases, objetivo: &Expr) -> bool {
         Some(Simple::En(c, vs)) => {
             let h = hechos(base, clases, c);
             if let Some(v) = h.igual {
-                return vs.iter().any(|w| comparar(v, w) == Some(Ordering::Equal));
+                return vs.iter().any(|w| v.comparar(w) == Some(Ordering::Equal));
             }
             if let Some(mios) = h.en {
                 return mios
                     .iter()
-                    .all(|m| vs.iter().any(|w| comparar(m, w) == Some(Ordering::Equal)));
+                    .all(|m| vs.iter().any(|w| m.comparar(w) == Some(Ordering::Equal)));
             }
             false
         }
@@ -1405,11 +1348,6 @@ mod tests {
             cotejar(&m.plan, &mat("grandes", plan.clone()), &nada(), &[]),
             Err(NoContesta::PredicadoNoSubsumido { .. })
         ));
-        assert_eq!(decimal("0.10", "0.1"), Some(Ordering::Equal));
-        assert_eq!(decimal("9.999", "10.25"), Some(Ordering::Less));
-        assert_eq!(decimal("-3", "2"), Some(Ordering::Less));
-        assert_eq!(decimal("-0", "0.0"), Some(Ordering::Equal));
-        assert_eq!(decimal("-1.5", "-1.25"), Some(Ordering::Less));
     }
 
     #[test]
