@@ -838,7 +838,7 @@ El único agujero era la expresión opaca, y **ya está tapado**: `Opaca::determ
 
 **Listo cuando:** una vista con un `PROMEDIO` y una opaca volátil sale como `FULL` **nombrando
 los dos**, y una que solo tiene projections y filters sale como `INCREMENTAL` **con state cero**.
-✅ · 125 comprobaciones en el crate.
+✅ · 124 comprobaciones en el crate.
 
 **Coste:** bajo, y lo fue. Es una lectura del plan contra la tabla de §II.1.
 
