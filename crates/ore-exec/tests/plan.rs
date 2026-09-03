@@ -93,8 +93,15 @@ fn las_cuatro_fases_y_el_ambito_convertido_en_filtro() {
 /// `fullScan` es una autorización, no una descripción — y la negativa se
 /// respeta. Agregar compensación de toda la plantilla es exactamente el plan que
 /// necesitaría recorrido completo, y Workday lo prohíbe por escrito.
+///
+/// **Quién la declara cambió con v1alpha8, y la negativa no.** Antes era el
+/// binding `hr.workday`; ahora `acme-retail` no tiene bindings y la fuente
+/// física de `hr.Employee` es la vista que la respalda, `hr.empleados`, cuyas
+/// capacidades salen de `reads` de la tabla. Es exactamente lo que
+/// `Rechazo::PlanRechazado` dice de su campo: *nombra a quien las declaró — un
+/// binding, o la vista que toca la fuente*.
 #[test]
-fn un_recorrido_completo_que_el_binding_prohibe_rechaza_el_plan() {
+fn un_recorrido_completo_que_la_fuente_prohibe_rechaza_el_plan() {
     let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
     let mut c = consulta(&["hr.Employee.baseSalary"], &[]);
     c.accion = "aggregate".into();
@@ -107,7 +114,10 @@ fn un_recorrido_completo_que_el_binding_prohibe_rechaza_el_plan() {
         panic!("tenía que rechazar el plan, y salió {r:?}");
     };
     assert_eq!(campo, "fullScan");
-    assert_eq!(binding, "hr.workday");
+    assert_eq!(
+        binding, "hr.empleados",
+        "sin bindings, quien declara las capacidades es la vista que respalda"
+    );
 }
 
 /// §5.1 · sin `capabilities`, un binding sirve **la búsqueda por clave y nada
@@ -335,30 +345,57 @@ fn si_la_politica_lo_poda_todo_no_hay_plan() {
     assert!(matches!(r, Rechazo::NoAutorizado { .. }), "{r:?}");
 }
 
-/// Una propiedad **autorizada** que ningún binding mapea desaparecería de la
+/// Una propiedad **autorizada** que ninguna fuente mapea desaparecería de la
 /// proyección sin decirlo, y el plan diría ✓ sobre un dato que nunca va a
-/// llegar. Que un binding no lo mapee todo es legal; **callarlo, no**.
+/// llegar. Que una fuente no lo mapee todo es legal; **callarlo, no**.
 ///
 /// Salió al ejecutar `ore-exec plan` contra la ontología de referencia:
-/// `nationalId` está autorizada para `read` y el binding de Workday no la mapea.
+/// `nationalId` estaba autorizada para `read` y el binding de Workday no la
+/// mapeaba.
+///
+/// # Por qué esto ya no se prueba contra `acme-retail`
+///
+/// Porque allí dejó de poder ocurrir, y por dos cambios distintos. Al ejemplo
+/// se le dio columna y campo para `nationalId` —no tenerlos era un defecto
+/// suyo— y, más de fondo, **en v1alpha8 una propiedad sin campo es `OOS2022` y
+/// no compila**: la comprobación se mudó de tiempo de ejecución a tiempo de
+/// compilación.
+///
+/// En v1alpha7 sigue siendo legal —con bindings otro podía cubrirla, y con
+/// vistas nadie obliga a que una las mapee todas— así que aquí es donde esta
+/// afirmación tiene que vivir, y por eso `con-vista` declara un `telefono` que
+/// su vista no expone. Los dos regímenes conviven mientras v1alpha1 sea
+/// normativo, y el ejecutor tiene que servir los dos.
 #[test]
-fn una_propiedad_que_ningun_binding_sirve_se_dice_en_vez_de_desaparecer() {
-    let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
-    let plan = m
-        .planificar(&consulta(
-            &["hr.Employee.baseSalary", "hr.Employee.nationalId"],
-            &["emp-7"],
-        ))
-        .expect("hay plan");
+fn una_propiedad_que_ninguna_fuente_sirve_se_dice_en_vez_de_desaparecer() {
+    let m = Motor::cargar(&caso("con-vista")).expect("el caso carga");
+    let c = Consulta {
+        quien: Identidad {
+            emisor: "https://id.example".into(),
+            audiencia: "ore".into(),
+            sujeto: "emp-42".into(),
+            roles: vec!["analyst".into()],
+            claims: BTreeMap::from([("employeeId".to_string(), "emp-42".to_string())]),
+        },
+        accion: "read".into(),
+        purpose: "compensation_review".into(),
+        entidad: "hr.Employee".into(),
+        propiedades: vec!["hr.Employee.dni".into(), "hr.Employee.telefono".into()],
+        claves: vec![vec!["emp-7".to_string()]],
+        travesia: None,
+        instante: None,
+        sla: None,
+    };
+    let plan = m.planificar(&c).expect("hay plan");
 
-    assert!(plan.autorizadas.contains_key("hr.Employee.baseSalary"));
+    assert!(plan.autorizadas.contains_key("hr.Employee.dni"));
     assert!(
-        !plan.autorizadas.contains_key("hr.Employee.nationalId"),
+        !plan.autorizadas.contains_key("hr.Employee.telefono"),
         "no se puede prometer una propiedad que no se va a pedir"
     );
     let porque = plan
         .podadas
-        .get("hr.Employee.nationalId")
+        .get("hr.Employee.telefono")
         .expect("tiene que estar podada, con motivo");
     assert!(porque.contains("ningún binding"), "{porque}");
 }

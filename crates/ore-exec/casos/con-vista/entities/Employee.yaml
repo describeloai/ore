@@ -13,3 +13,19 @@ spec:
     dni:
       type: String
       labels: { gdpr.sensitivity: high }
+    # Y una que la vista NO expone. En v1alpha7 es legal: con bindings otro
+    # podía cubrirla, y con vistas nadie obliga a que una las mapee todas. El
+    # planificador tiene que decirlo en vez de dejarla caer.
+    #
+    # En v1alpha8 esto mismo es `OOS2022` y no compila — la comprobación se
+    # mudó de tiempo de ejecución a tiempo de compilación, y por eso esta
+    # prueba vive en el caso de v1alpha7 y no en `acme-retail`.
+    #
+    # Lleva la misma etiqueta que `dni` porque la política de este caso autoriza
+    # por etiqueta: sin ella la petición se caería antes, por `SinPolitica`, y la
+    # prueba no llegaría a mirar lo que quiere mirar. Lo que se afirma es que una
+    # propiedad **autorizada** y sin fuente se dice; no que una sin autorizar se
+    # rechace, que eso ya lo prueba `sin_rol_no_hay_nada_autorizado`.
+    telefono:
+      type: String
+      labels: { gdpr.sensitivity: high }
