@@ -11,6 +11,25 @@ Lo que hay que hacer sale de [ADR 0016](decisions/0016-el-testigo-y-el-rango.md)
 razonó desde cero: lo leyó en Debezium, Iceberg, Delta, Snowflake, BigQuery y Airbyte, y los seis
 coinciden. Aquí solo se ordena en peldaños.
 
+## 0. Cuándo está listo esto
+
+**No cuando los seis peldaños estén escritos: cuando [R6](#r6--el-ciclo-cerrado-y-medido-en-filas)
+pase.** R6 no añade nada — es **la definición de listo del plan entero**, escrita como una sola
+prueba con números afirmados.
+
+Y «funcionando óptimamente» aquí tiene una definición y solo una, que es la que
+[ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) ya fijó para todo el
+proyecto:
+
+> **El trabajo es proporcional al cambio, no al tamaño.** Y se cuenta en **filas miradas**, no en
+> segundos.
+
+Un refresco que funciona pero relee el origen entero **no está listo**: está poblando otra vez con
+otro nombre. Por eso la prueba de R6 no dice «verde»: dice **cuántas filas se leyeron en cada
+paso**, y falla si son otras.
+
+Los cinco peldaños intermedios tienen su propio criterio, todos falsables. R6 los ata.
+
 ---
 
 ## 1. El problema, medido
@@ -79,9 +98,13 @@ que falta es leerlo.
 | **R3** | `desde` / `hasta` — **0016 B** | los mismos | enmienda a 0008 |
 | **R4** | un solo sitio para el testigo | `ore-exec`, el sobre | ninguno |
 | **R5** | la recogida de basura | `ore-store-r2`, el registro | ninguno |
+| **R6** | **el ciclo cerrado, y medido en filas** | una prueba de fuego | **es la definición de listo** |
 
 **R0 y R1 no dependen de R2 ni de R3**, y cierran agujeros que están abiertos **hoy**. Van primero
 por eso, no por ser fáciles.
+
+**R6 se puede escribir el primero**, y conviene: roja en su primer acto, es la lista de trabajo del
+plan entero, y cada peldaño la va poniendo verde por partes.
 
 ### R0 · la pareja decide la garantía
 
@@ -120,9 +143,14 @@ Es literalmente el `STALE` de Snowflake y el re-snapshot de Debezium, y los cuat
 completo.** Degradar en silencio es lo caro: una copia que se rehace entera sin decirlo es una
 factura que aparece sin explicación.
 
-**Listo cuando.** `ore view` dice, por copia, si su testigo cabe en la retención declarada; una
-copia fuera de plazo se marca y se dice qué hacer; y **la ausencia de `retention` no se inventa** —
-sin dato, no se afirma nada, que es lo que el propio campo pide.
+**Listo cuando.** Tres afirmaciones, y las tres falsables:
+
+1. `ore view` dice, **por copia**, si su testigo cabe en la retención declarada;
+2. una copia cuyo testigo cae fuera se rechaza **nombrando la retención y el testigo**, y **no**
+   degrada a un recorrido completo sin decirlo — hay una prueba que lo provoca y comprueba el
+   texto, no solo el código de salida;
+3. **sin `retention` declarada no se afirma nada**: ni que cabe ni que no. Una prueba con el campo
+   ausente comprueba que la salida no menciona plazo ninguno.
 
 ### R2 · el verbo `testigo` · [0016](decisions/0016-el-testigo-y-el-rango.md) A
 
@@ -179,8 +207,75 @@ crezca sin freno.
 Y parte de partida buena, que el propio ADR ya nombró: **nada referencia una copia por nombre
 mutable**, así que borrarla no puede romper a quien la estuviera usando por casualidad.
 
-**Listo cuando.** Se puede enumerar qué artefactos no nombra ningún bundle, y borrarlos deja el
-árbol verde.
+**Listo cuando.** Se puede enumerar qué artefactos **no nombra ningún bundle**; borrarlos deja el
+árbol verde; y **el almacén queda acotado**: tras `N` refrescos de una vista, el número de objetos
+bajo `ore/v1/` es el que se declare y no `N`.
+
+---
+
+### R6 · el ciclo cerrado, y medido en filas
+
+**Qué.** Nada nuevo. **Es la definición de listo del plan entero**, escrita como una prueba de
+fuego con números afirmados, al modo de
+[`pruebas-de-fuego/almacen-r2.sh`](../pruebas-de-fuego/almacen-r2.sh) y con la unidad de
+[ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md): **una fila mirada**.
+
+#### El escenario
+
+Un origen con **1.000 filas**, un R2 de verdad, y cinco actos:
+
+| | qué pasa | filas leídas del origen | objetos nuevos en el almacén |
+|---|---|---|---|
+| 1 | primera materialización | **1.000** | 1 artefacto + 1 recibo |
+| 2 | `materialize` **sin tocar el origen** | **0** | **0** |
+| 3 | se añaden **10** filas · `materialize` | **10** | 1 artefacto + 1 recibo |
+| 4 | se modifican **3** · `materialize` | **3** | 1 artefacto + 1 recibo |
+| 5 | recogida de basura | — | quedan **los declarados**, no siete |
+
+**El acto 2 es el que separa «funciona» de «está listo».** Cero filas leídas es lo que dice que el
+recibo hace su trabajo antes de abrir nada. Y **el 3 y el 4 son los que separan «refresca» de
+«refresca óptimamente»**: 10 y 3, no 1.010 y 1.013.
+
+#### Y las negativas, que valen igual
+
+Una prueba que solo comprueba el camino bueno no define «listo»: define «anduvo una vez».
+
+| | qué se provoca | qué tiene que pasar |
+|---|---|---|
+| a | `{ witness: field, mode: append }` con `materialized` | **no compila** · R0 |
+| b | un testigo fuera de `changes.retention` | se niega **nombrando la retención**, y no relee entero en silencio · R1 |
+| c | un driver que no sabe `desde` recibe un rango | **falla**, y no devuelve las filas de ahora · R3 |
+| d | el origen retrocede — testigo menor que el de la copia | se niega, y **no** escribe una copia que dice ser más nueva |
+
+#### Lo que la prueba afirma, y que no es «verde»
+
+1. **Filas leídas por acto**, exactas. Si el acto 3 lee 1.010, el peldaño **no está**.
+2. **Objetos en el almacén por acto**, exactos.
+3. **El testigo de cada artefacto es mayor que el del anterior**, leído del sobre.
+4. **Las cuatro negativas fallan por su motivo**, no por otro.
+5. **El bucket queda como se encontró.**
+
+#### Qué es exactamente «óptimamente»
+
+Tres invariantes, y las tres son afirmaciones sobre trabajo, no sobre tiempo:
+
+> **① Sin cambio, cero trabajo.** Ni una fila leída, ni un byte subido.
+> **② Con cambio, trabajo proporcional al cambio.** No al tamaño de la tabla.
+> **③ Con el tiempo, almacén acotado.** No una copia por refresco, para siempre.
+
+Cualquiera de las tres que falle deja el plan sin cerrar, aunque las otras dos pasen y la salida
+sea verde.
+
+#### Por qué esto es un peldaño y no un apéndice
+
+Porque **se puede escribir antes que R0**, y conviene: la prueba roja en su primer acto es la
+lista de trabajo del plan entero, y cada peldaño la va poniendo verde por partes. Es lo mismo que
+`medidas.rs` hizo por el motor — y aquello destapó que *la incrementalización estaba escrita y no
+ocurría*, que es exactamente la clase de cosa que esta prueba existe para encontrar.
+
+**Listo cuando.** Los cinco actos dan los números de arriba, las cuatro negativas fallan por su
+motivo, y las tres invariantes se sostienen. **Entonces el plan está cerrado y este documento se
+borra.**
 
 ---
 
