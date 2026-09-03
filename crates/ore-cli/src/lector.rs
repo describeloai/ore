@@ -221,10 +221,17 @@ fn consulta(d: &str) -> String {
          \x20  AND tc.constraint_type = 'FOREIGN KEY'\n\
          \x20 JOIN `{d}`.INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE u ON u.constraint_name = k.constraint_name\n\
          \x20 GROUP BY k.table_name, k.column_name\n\
-         ), n AS (SELECT table_id, row_count FROM `{d}.__TABLES__`)\n\
+         ), n AS (SELECT table_id, row_count FROM `{d}.__TABLES__`\n\
+         ), o AS (\n\
+         \x20 SELECT table_name,\n\
+         \x20        MAX(IF(option_name = 'require_partition_filter', option_value, NULL)) AS exige_filtro,\n\
+         \x20        MAX(IF(option_name = 'enable_change_history', option_value, NULL)) AS historial\n\
+         \x20 FROM `{d}`.INFORMATION_SCHEMA.TABLE_OPTIONS GROUP BY table_name\n\
+         )\n\
          SELECT c.table_name, t.table_type, n.row_count, c.column_name, c.ordinal_position,\n\
          \x20      c.is_nullable, c.data_type, fp.description AS column_description,\n\
-         \x20      kc.column_name IS NOT NULL AS is_key, fk.ref_table\n\
+         \x20      kc.column_name IS NOT NULL AS is_key, fk.ref_table,\n\
+         \x20      c.is_partitioning_column, o.exige_filtro, o.historial\n\
          FROM `{d}`.INFORMATION_SCHEMA.COLUMNS c\n\
          JOIN `{d}`.INFORMATION_SCHEMA.TABLES t ON t.table_name = c.table_name\n\
          LEFT JOIN n ON n.table_id = c.table_name\n\
@@ -232,6 +239,7 @@ fn consulta(d: &str) -> String {
          \x20 ON fp.table_name = c.table_name AND fp.field_path = c.column_name\n\
          LEFT JOIN kc ON kc.table_name = c.table_name AND kc.column_name = c.column_name\n\
          LEFT JOIN fk ON fk.table_name = c.table_name AND fk.column_name = c.column_name\n\
+         LEFT JOIN o ON o.table_name = c.table_name\n\
          ORDER BY c.table_name, c.ordinal_position"
     )
 }
@@ -318,6 +326,67 @@ fn clase(table_type: &str) -> &'static str {
     }
 }
 
+// ── Las dos caras ───────────────────────────────────────────────────────────
+
+/// **La cara `I`**: qué se le puede pedir a este objeto.
+///
+/// Los operadores son los de GoogleSQL, y se declaran enteros porque `reads`
+/// describe **el objeto**, no a quien lo consulta: BigQuery es un motor SQL
+/// completo y los contesta todos. Es la misma frase que `01-table` insiste en
+/// que la tabla existe para poder decir.
+///
+/// Lo que **sí** se sondea es lo que cambia de tabla a tabla, y son dos hechos
+/// que el servidor afirma:
+///
+/// | lo que dice el servidor | lo que emite | por qué |
+/// |---|---|---|
+/// | `require_partition_filter = true` | `fullScan: forbidden` y `requiredFilters` | BigQuery **rechaza** la consulta sin filtro de partición. No es cara: no se puede |
+/// | cualquier otro objeto legible | `fullScan: expensive` | se factura por bytes leídos. `cheap` empujaría al planificador a recorrerlo, y eso es una factura |
+///
+/// `expensive` frente a `cheap` no es prudencia: es el modelo de precios de
+/// BigQuery, que es un hecho publicado del producto y no una conjetura sobre
+/// este dataset.
+fn reads(particion: Option<&str>, exige_filtro: bool) -> Json {
+    let operadores = ["eq", "neq", "in", "range", "like", "isNull"];
+    let mut o: BTreeMap<String, Json> = BTreeMap::new();
+    o.insert(
+        "predicatePushdown".to_string(),
+        Json::Arr(operadores.iter().map(|o| Json::s(*o)).collect()),
+    );
+    match (exige_filtro, particion) {
+        (true, Some(c)) => {
+            o.insert("fullScan".to_string(), Json::s("forbidden"));
+            o.insert("requiredFilters".to_string(), Json::Arr(vec![Json::s(c)]));
+        }
+        _ => {
+            o.insert("fullScan".to_string(), Json::s("expensive"));
+        }
+    }
+    Json::Obj(o)
+}
+
+/// **La cara `D`**, sondeada: qué cambios emite este objeto de verdad.
+///
+/// | lo que dice el servidor | lo que emite | por qué |
+/// |---|---|---|
+/// | no es `BASE TABLE` | `{none, none}` | una vista no tiene flujo propio, y una materializada **se refresca**, que no es un changelog. Es la misma línea que `ore-read-postgres` traza con `relkind` |
+/// | `enable_change_history` sin poner o a `false` | `{none, none}` | sin historial no sale ningún cambio, y decir otra cosa sería inventarlo |
+/// | `enable_change_history = true` | `{retract, log}` | el historial trae los borrados, así que un borrado retracta y una actualización retracta la vieja y añade la nueva |
+///
+/// El testigo es `log` y no `field`: lo que ordena el avance del historial es
+/// una **posición en el flujo de cambios** —el instante de confirmación con el
+/// que se pide el rango— y no una columna de la propia tabla.
+///
+/// La tercera fila **no se ha podido medir contra un dataset real**: ninguna
+/// tabla de `rubix_demo_ventas` tiene el historial encendido, y encenderlo es
+/// una modificación del dataset de otro. Se dice, en vez de suponerse verificado.
+fn changes(table_type: &str, historial: bool) -> Json {
+    if table_type != "BASE TABLE" || !historial {
+        return Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))]);
+    }
+    Json::obj([("mode", Json::s("retract")), ("witness", Json::s("log"))])
+}
+
 /// Agrupa las filas planas de la consulta en tablas. Llegan ordenadas por
 /// `(table_name, ordinal_position)`, y ese orden se conserva: el orden de las
 /// columnas es del origen y no nos toca reordenarlo.
@@ -328,6 +397,11 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
         columnas: Vec<Json>,
         clave: Vec<Json>,
         foraneas: BTreeMap<String, Vec<String>>,
+        /// Las dos caras, de los hechos que el servidor afirma sobre el objeto.
+        tipo: String,
+        particion: Option<String>,
+        exige_filtro: bool,
+        historial: bool,
     }
     fn campo(n: &Node, k: &str) -> Option<String> {
         n.get(k)
@@ -355,6 +429,12 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
                 columnas: Vec::new(),
                 clave: Vec::new(),
                 foraneas: BTreeMap::new(),
+                tipo: campo(f, "table_type").unwrap_or_default(),
+                particion: None,
+                // `true` y no `TRUE`: `INFORMATION_SCHEMA.TABLE_OPTIONS`
+                // devuelve el literal de GoogleSQL en minusculas.
+                exige_filtro: campo(f, "exige_filtro").as_deref() == Some("true"),
+                historial: campo(f, "historial").as_deref() == Some("true"),
             }
         });
 
@@ -377,6 +457,9 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
         }
         acc.columnas.push(Json::Obj(c));
 
+        if campo(f, "is_partitioning_column").as_deref() == Some("YES") {
+            acc.particion = Some(columna.clone());
+        }
         if campo(f, "is_key").as_deref() == Some("true") {
             acc.clave.push(Json::s(&columna));
         }
@@ -396,6 +479,14 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
             o.insert("name".to_string(), Json::s(format!("{dataset}.{t}")));
             o.insert("kind".to_string(), Json::s(a.clase));
             o.insert("columns".to_string(), Json::Arr(a.columnas));
+            // Las dos caras, del objeto y no de quien lo consulta. Van aqui y no
+            // en la vista por lo mismo que `01-table` §3: el contrato es del
+            // objeto, y dos vistas sobre el mismo no lo repiten.
+            o.insert(
+                "reads".to_string(),
+                reads(a.particion.as_deref(), a.exige_filtro),
+            );
+            o.insert("changes".to_string(), changes(&a.tipo, a.historial));
             if !a.clave.is_empty() {
                 o.insert("primaryKey".to_string(), Json::Arr(a.clave));
             }
@@ -580,19 +671,119 @@ mod tests {
     /// Es una captura, no un invento: la clave compuesta de `clientes` y el
     /// `STRUCT` de `pedidos_anidados` son los dos casos que costaron sangre.
     const FILAS: &str = r#"[
-  {"table_name":"clientes","table_type":"BASE TABLE","row_count":"5000","column_name":"id","ordinal_position":"1","is_nullable":"NO","data_type":"INT64","column_description":null,"is_key":"true","ref_table":null},
+  {"table_name":"clientes","table_type":"BASE TABLE","row_count":"5000","column_name":"id","ordinal_position":"1","is_nullable":"NO","data_type":"INT64","column_description":null,"is_key":"true","ref_table":null,"is_partitioning_column":"NO","exige_filtro":null,"historial":null},
   {"table_name":"clientes","table_type":"BASE TABLE","row_count":"5000","column_name":"cod_pais","ordinal_position":"2","is_nullable":"NO","data_type":"STRING","column_description":null,"is_key":"true","ref_table":null},
   {"table_name":"pedidos","table_type":"BASE TABLE","row_count":"50000","column_name":"id_pedido","ordinal_position":"1","is_nullable":"NO","data_type":"INT64","column_description":null,"is_key":"true","ref_table":null},
   {"table_name":"pedidos","table_type":"BASE TABLE","row_count":"50000","column_name":"fecha","ordinal_position":"5","is_nullable":"YES","data_type":"STRING","column_description":"Formato DDMMAAAA. NO tocar, viene del AS/400.","is_key":"false","ref_table":null},
-  {"table_name":"pedidos","table_type":"BASE TABLE","row_count":"50000","column_name":"creado_en","ordinal_position":"6","is_nullable":"NO","data_type":"TIMESTAMP","column_description":null,"is_key":"false","ref_table":null},
+  {"table_name":"pedidos","table_type":"BASE TABLE","row_count":"50000","column_name":"creado_en","ordinal_position":"6","is_nullable":"NO","data_type":"TIMESTAMP","column_description":null,"is_key":"false","ref_table":null,"is_partitioning_column":"YES","exige_filtro":"false","historial":null},
   {"table_name":"pedidos_anidados","table_type":"BASE TABLE","row_count":"0","column_name":"cliente","ordinal_position":"2","is_nullable":"YES","data_type":"STRUCT<nom STRING, direccion STRUCT<calle STRING>>","column_description":null,"is_key":"false","ref_table":null},
   {"table_name":"pedidos_anidados","table_type":"BASE TABLE","row_count":"0","column_name":"etiquetas","ordinal_position":"4","is_nullable":"NO","data_type":"ARRAY<STRING>","column_description":null,"is_key":"false","ref_table":null},
-  {"table_name":"v_pedidos_2019","table_type":"VIEW","row_count":"0","column_name":"id_pedido","ordinal_position":"1","is_nullable":"YES","data_type":"INT64","column_description":null,"is_key":"false","ref_table":null}
+  {"table_name":"v_pedidos_2019","table_type":"VIEW","row_count":"0","column_name":"id_pedido","ordinal_position":"1","is_nullable":"YES","data_type":"INT64","column_description":null,"is_key":"false","ref_table":null,"is_partitioning_column":"NO","exige_filtro":null,"historial":null}
 ]"#;
 
     fn catalogo() -> String {
         let n = parse::parse(FILAS).unwrap();
         armar("bq_ventas", "rubix_demo_ventas", n.items()).pretty()
+    }
+
+    /// **La deuda de T3, saldada.** La receta emitia `reads: {}` y
+    /// `changes: {mode: none}` para todo, y el inductor lo decia con dos
+    /// comentarios honestos: *«el driver no declaro»*, *«el driver no sondeo»*.
+    /// Ahora sondea, y lo que sale son hechos que el servidor afirma.
+    ///
+    /// Los valores son los del dataset de verdad: `pedidos` esta particionada
+    /// por `creado_en` y `require_partition_filter` esta a `false`.
+    #[test]
+    fn la_receta_emite_las_dos_caras_de_cada_objeto() {
+        let c = catalogo();
+        let cat = crate::inductor::Catalogo::leer(&c).expect("el inductor lo lee");
+        let i = crate::inductor::inducir(&cat, "ventas");
+        let tabla = |n: &str| -> String {
+            i.ficheros
+                .iter()
+                .find(|(k, _)| k.starts_with("tables/") && k.contains(n))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "sin tabla `{n}`: {:?}",
+                        i.ficheros.keys().collect::<Vec<_>>()
+                    )
+                })
+        };
+        for n in ["clientes", "pedidos", "v_pedidos_2019"] {
+            let y = tabla(n);
+            assert!(
+                !y.contains("El driver no declaro") && !y.contains("El driver no sondeo"),
+                "`{n}` sigue sin las dos caras:
+{y}"
+            );
+            assert!(
+                y.contains("predicatePushdown: [eq, neq, in, range, like, isNull]"),
+                "{y}"
+            );
+        }
+        // Se factura por bytes leidos, asi que un recorrido completo es caro
+        // aunque no este prohibido. `cheap` empujaria al planificador a hacerlo.
+        assert!(
+            tabla("pedidos").contains("fullScan: expensive"),
+            "{}",
+            tabla("pedidos")
+        );
+        // Y ninguna de las tres emite cambios: no hay historial encendido.
+        assert!(
+            tabla("clientes").contains("mode: none"),
+            "{}",
+            tabla("clientes")
+        );
+    }
+
+    /// **`require_partition_filter` no es un consejo: BigQuery rechaza la
+    /// consulta.** Por eso sale `forbidden` y no `expensive`, y por eso la
+    /// columna de particion sale ademas como `requiredFilters` — que es lo que
+    /// el planificador de empuje mira para saber que TIENE que bajar.
+    ///
+    /// No hay ninguna tabla asi en `rubix_demo_ventas`, asi que esta rama
+    /// **no se ha medido contra un dataset real** y se prueba aqui.
+    #[test]
+    fn una_tabla_que_exige_filtro_de_particion_prohibe_el_recorrido() {
+        let r = reads(Some("creado_en"), true).pretty();
+        assert!(r.contains("\"forbidden\""), "{r}");
+        assert!(r.contains("requiredFilters"), "{r}");
+        assert!(r.contains("creado_en"), "{r}");
+        // Y sin la exigencia, la misma tabla particionada solo es cara.
+        let s = reads(Some("creado_en"), false).pretty();
+        assert!(
+            s.contains("\"expensive\"") && !s.contains("requiredFilters"),
+            "{s}"
+        );
+    }
+
+    /// La cara `D`, y las tres filas de su tabla de decision. Igual que la de
+    /// `ore-read-postgres`: **lo que no consta, no se inventa.**
+    ///
+    /// La tercera tampoco se ha medido contra un dataset real —encender el
+    /// historial es modificar el dataset de otro— y por eso se prueba aqui y se
+    /// dice en la documentacion de `changes`.
+    #[test]
+    fn los_cambios_salen_de_lo_que_el_servidor_afirma() {
+        let modo = |t: &str, h: bool| {
+            let j = changes(t, h).pretty();
+            if j.contains("retract") {
+                "retract"
+            } else {
+                "none"
+            }
+        };
+        // Una vista no tiene flujo propio; una materializada se refresca, que no
+        // es un changelog. Ni siquiera con el historial encendido.
+        assert_eq!(modo("VIEW", true), "none");
+        assert_eq!(modo("MATERIALIZED VIEW", true), "none");
+        // Una tabla sin historial no emite nada, y decir otra cosa seria
+        // inventarlo.
+        assert_eq!(modo("BASE TABLE", false), "none");
+        // Con historial: trae los borrados, asi que retracta.
+        assert_eq!(modo("BASE TABLE", true), "retract");
+        assert!(changes("BASE TABLE", true).pretty().contains("log"));
     }
 
     /// Lo que sale tiene que entrar: es la misma costura, por el otro lado.

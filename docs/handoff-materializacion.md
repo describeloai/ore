@@ -572,17 +572,52 @@ no detectó un fallo: detectó una dependencia que no hacía falta.
 | **el ciclo en `ore`** | ⏳ compilar el plan, `digest(plan, testigo)`, `HEAD`, canalizar las filas |
 | **BigQuery** | 🚫 **bloqueado** |
 
-**BigQuery está bloqueado y no por el código.** `bq` no arranca —`python3.14: command not found`—
-y `gcloud auth print-access-token` pide reautenticación interactiva:
+#### Hecho · la deuda de T3, contra el dataset real
 
-```
-Reauthentication failed. cannot prompt during non-interactive execution.
-Please run: $ gcloud auth login
-```
+La receta de BigQuery emitía `reads: {}` y `changes: { mode: none, witness: none }` para **todo**,
+y el inductor lo decía con dos comentarios honestos: *«el driver no declaró»*, *«el driver no
+sondeó»*. Ahora sondea, con la misma doctrina que `ore-read-postgres`: **solo lo que el servidor
+afirma.**
 
-La cuenta y el proyecto están (`trino-k8s`), así que es un `gcloud auth login` desde una terminal
-interactiva. Hasta entonces la deuda de T3 —que la receta de BigQuery no emite sus dos caras— no
-se puede ni medir contra un dataset real, que es la única forma honesta de arreglarla.
+Una consulta más a `INFORMATION_SCHEMA.TABLE_OPTIONS` y dos columnas más a la que ya había — sin
+una segunda llamada, que es la propiedad que esta receta compró midiendo.
+
+**La cara `I`:**
+
+| lo que dice el servidor | lo que emite | por qué |
+|---|---|---|
+| `require_partition_filter = true` | `fullScan: forbidden` + `requiredFilters` | BigQuery **rechaza** la consulta. No es cara: no se puede |
+| cualquier otro objeto legible | `fullScan: expensive` | se factura por bytes leídos. `cheap` empujaría al planificador a recorrerlo, y eso es una factura |
+
+Los operadores salen enteros —`eq, neq, in, range, like, isNull`— porque `reads` describe **el
+objeto** y BigQuery los contesta todos.
+
+**La cara `D`**, y es la misma tabla de tres filas que la de Postgres:
+
+| | |
+|---|---|
+| no es `BASE TABLE` | `{none, none}` — una vista no tiene flujo propio; una materializada **se refresca** |
+| sin `enable_change_history` | `{none, none}` — sin historial no sale ningún cambio |
+| `enable_change_history = true` | `{retract, log}` — el historial trae los borrados |
+
+**Medido contra `trino-k8s.rubix_demo_ventas`**, doce objetos: `pedidos` particionada por
+`creado_en` y agrupada por `cod_pais`; `mv_pedidos_por_pais` materializada; dos vistas. Todas
+salen con `fullScan: expensive` y `changes: none`, que es lo correcto para lo que declaran.
+
+**Y dos ramas que no se han podido medir en vivo, dichas en vez de supuestas:** `forbidden` —
+ninguna tabla del dataset exige filtro de partición— y `{retract, log}` — ninguna tiene el
+historial encendido, y encenderlo es modificar el dataset de otro. Las dos se prueban en
+`lector.rs`.
+
+**Dos cosas del entorno, no del código.** `bq` no arrancaba —`python3.14: command not found`— y
+revive fijando `CLOUDSDK_PYTHON` al Python que sí hay; el propio módulo ya citaba ese error como
+ejemplo de por qué la salida del programa delegado se muestra **literal**. Y `gcloud` había
+caducado: un `gcloud auth login` interactivo, que no se puede hacer desde aquí.
+
+**Y una que parecía un fallo y no lo era.** El dataset tiene doce objetos y `discover` emitió
+diez. Las dos que faltan son `pedidos` y `Pedidos` —el duplicado que nadie se atrevió a borrar— y
+no se cayeron en silencio: están en la cola de revisión, `rubix_demo_ventas.Pedidos ·
+rubix_demo_ventas.pedidos — colisionan en 'Pedidos'`. Preguntar en vez de inventar, funcionando.
 
 ---
 
