@@ -687,3 +687,24 @@ vuelve una vista cuando la capa semántica repose en el sustrato, no antes.
 
 **Un almacén.** ORE no opera ninguna base de datos, y esto no lo cambia: se registra dónde vive
 una copia y se delega en quien tenga el cómputo. La misma frase que el motor lleva desde M0.
+
+---
+
+## 8. Cerrado, y qué sigue
+
+Los seis peldaños están, con dos criterios partidos y dichos donde toca: el de **I4** —*borrar la
+ruta de refresco propia*— va después de I5 y no antes, y el de **I5** perdió el atajo de BigQuery
+el día que el artefacto pasó a ser nuestro.
+
+Lo que este plan **no podía cerrar**, y por qué, está en su sitio: el paso ③ del ciclo no tiene
+verbo, así que el testigo va vacío y **la copia puebla una vez y no mantiene**. Esa es la
+distancia que queda.
+
+> Se recoge en [ADR 0016](decisions/0016-el-testigo-y-el-rango.md) —propuesta, y contestada
+> mirando cómo lo resuelven seis sistemas que ya lo resolvieron— y se ordena en peldaños en
+> **[`handoff-refresco.md`](handoff-refresco.md)**.
+
+Y una cosa que salió al llegar aquí y que conviene no perder: un paquete con `{ mode: append,
+witness: field }` y una vista materializada **compila hoy**, y `ore view` recomienda
+`INCREMENTAL` sobre ella. Es la combinación que Airbyte documenta como duplicadora. Es R0 del plan
+siguiente, no cuesta gramática, y está abierta ahora mismo.
