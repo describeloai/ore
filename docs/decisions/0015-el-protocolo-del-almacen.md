@@ -182,10 +182,16 @@ casualidad.
 - **el registro** — que el motor sepa qué copias existen y decida si una contesta una consulta.
   Es I1 e I2 de [`handoff-materializacion.md`](../handoff-materializacion.md), y este ADR solo le
   da el testigo con el que trabajar;
-- **la identidad de solo lectura.** Hoy el bucket solo tiene credencial de escritura.
-  `05-ejecutor` §6.2 pide que quien refresca y quien responde puedan ser distintos, y el R2 Data
-  Catalog ofrece una salida que conviene mirar: su `/v1/config` devuelve un `s3.signer.uri`, o
-  sea que **puede vender credenciales acotadas por tabla**. Sin decidir;
+- **la segunda credencial del almacén.** Hoy el bucket tiene **una sola credencial, con lectura
+  y escritura**: quien refresca y quien responde son el mismo. El hueco no es que falte leer, es
+  que **no hay separación**, y `05-ejecutor` §6.2 pide que puedan ser distintos — el que rellena
+  una copia necesita escribir; el que la sirve, no. El R2 Data Catalog ofrece una salida que
+  conviene mirar: su `/v1/config` devuelve un `s3.signer.uri`, o sea que **puede vender
+  credenciales acotadas por tabla**. Sin decidir.
+
+  Esto es **identidad de acceso** —qué credencial firma la petición— y no tiene nada que ver con
+  la **identidad de las filas**, que es reconciliar quién es el mismo empleado en dos orígenes y
+  vive en `v1alpha2/03-resolution`. La palabra colisiona; las dos cosas no se tocan;
 - **la cara `writes`.** Esto escribe en **una copia**, que la vista declara. Escribir en el
   **origen** es otra cosa y necesita `Table.writes` — M1 de [`sustrato.md`](../sustrato.md).
 
