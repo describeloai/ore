@@ -345,6 +345,69 @@ sola prueba. Mientras no se pueda, I4 no está hecho — aunque el registro ya l
 **No hace.** No cambia el formato del fichero. Un CSR determinista y firmado es una buena idea y
 sigue siéndolo.
 
+#### Lo que I1 e I2 le cambiaron, y una decisión ya tomada
+
+**El plan ya existe, y no está en `ore-exec`.** `ore-cli/src/registro.rs::topologia` lo construye
+desde el sustrato —`backedBy` → raíz de la vista— y lo registra con sus tres caras. Así que I4 ya
+no es *«escribir el plan»*: es **borrar el segundo sitio que lo describe** y hacer que `ore-exec`
+lea el primero.
+
+**Dónde vive el registro entonces.** Hoy en `ore-cli`, y `ore-exec` no depende de él ni de
+`ore-view`. La salida es un crate propio —`ore-registro`, sobre `ore-core` y `ore-view`— del que
+cuelguen los dos. Y **cuesta cero**, medido sobre el `Cargo.lock`:
+
+| crate | cierre transitivo |
+|---|---|
+| `ore-core` | 25 |
+| `ore-view` | 26 |
+| `ore-cli` | 34 |
+| `ore-exec` | **163** |
+
+`ore-view` aporta a `ore-exec` **exactamente ninguna crate nueva**. La dirección es la única que
+respeta la estratificación —el ejecutor está arriba, el álgebra abajo— y `dependencias.rs` sigue
+valiendo: vigila el cierre de `ore-cli`, y este no crece.
+
+#### Y el final al que apunta, que es más limpio que el peldaño
+
+`Camino::IndiceDeTopologia` existe porque la topología se **deriva** de `relations`. Mientras se
+derive, el registro tiene un alimentador de sustrato y otro de ontología — una pata en cada
+paradigma.
+
+> **El final es que la topología deje de derivarse y pase a ser una vista declarada**: dos campos,
+> `materialized`, y ya. Entonces `Camino::IndiceDeTopologia` desaparece, la enumeración baja a un
+> camino, y el registro se queda con **un solo alimentador**.
+
+Es la misma frase de [`01-table.md`](../vendor/oos/spec/v1alpha8/01-table.md) §2 aplicada aquí:
+*materializar es una decisión sobre una consulta*. La topología también.
+
+#### Bloqueado, y por qué
+
+**`ore-exec` no compila en la máquina de trabajo actual.** `cedar-policy` arrastra `psm` y
+`stacker`, que compilan C:
+
+```
+error occurred in cc-rs: failed to find tool "gcc.exe": program not found
+  · psm v0.1.32
+  · stacker v0.1.25
+```
+
+No hay `gcc`, y la ruta MSVC tampoco está disponible: hay toolset de Visual Studio pero **no hay
+Windows SDK**, y el *toolchain* activo es `x86_64-pc-windows-gnu`. Sin poder construir no se puede
+satisfacer el criterio de este peldaño, que es literalmente **una afirmación sobre su suite**:
+*borrar la ruta propia sin perder una prueba*.
+
+Lo que I4 toca, medido para cuando se desbloquee:
+
+| | |
+|---|---|
+| `plan.rs::lecturas_de_aristas` | 427–490 · fabrica `Lectura` a mano |
+| `main.rs` | tres llamadas — `index build`, `refresh`, `traverse` |
+| `topologia.rs` | 481 líneas, **11 pruebas**; el formato **no se toca** |
+| `tests/plan.rs`, `tests/autorizar.rs` | 9 menciones a aristas o topología |
+
+Para desbloquear hace falta **un compilador de C** en el objetivo `gnu` —mingw-w64— o el objetivo
+`msvc` con su SDK. Es una decisión de entorno y no se toma aquí.
+
 ### I5 · la copia existe
 
 **Qué.** Poblar y refrescar. Y antes, la deuda de T3: **la receta de BigQuery no emite sus dos
