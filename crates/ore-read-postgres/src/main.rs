@@ -640,6 +640,18 @@ fn testigo(entrada: &str) -> Result<String, String> {
 /// trae este mismo driver, así que la propiedad hay que comprarla.
 fn filas(peticion: &str) -> Result<String, String> {
     let p = ore_driver::leer_peticion(peticion)?;
+
+    // **Sabe recortar por columna y no sabe leer su changelog.** Es la misma
+    // frase que `changes()` ya decia al reves: este driver hace UN `SELECT`
+    // sobre el estado presente. Un rango sobre el WAL exige decodificacion
+    // logica, una ranura de replicacion y una sesion que dure — otro programa.
+    //
+    // Negarse es lo unico seguro: devolver el estado presente cuando se pidio
+    // un incremento no falla, se sirve, y la copia sale con filas de mas.
+    if let Some(porque) = ore_driver::rango_servible(&p, true, false) {
+        return Err(porque);
+    }
+
     let (consulta, params) = sql::sql(&p);
 
     let tls = postgres_native_tls::MakeTlsConnector::new(

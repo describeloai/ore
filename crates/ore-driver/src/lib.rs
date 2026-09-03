@@ -57,6 +57,37 @@ pub struct Peticion {
     /// al refrescar, no depende de quién pregunta y no puede filtrar por nadie.
     /// Por eso `gt` es admisible aquí y no allí.
     pub filtros: Vec<(String, String, String)>,
+
+    // ── El rango · ADR 0016 B ───────────────────────────────────────────────
+    //
+    // **Y por qué estos tres se llaman en inglés cuando los de arriba no.**
+    //
+    // Porque la industria ya les puso nombre a estos y a los de arriba no.
+    // Iceberg lee con `start-snapshot-id` y `end-snapshot-id`; Delta con
+    // `startingVersion`; BigQuery con `start_timestamp` y `end_timestamp`; y a
+    // la columna que ordena el avance, Airbyte y medio sector la llaman *cursor
+    // field*. Quien escriba un driver nuevo viene de ahí.
+    //
+    // La regla, dicha una vez: **donde la industria tiene un nombre, se usa el
+    // suyo; donde no, el nuestro.** Es la misma que la gramática de OOS ya
+    // sigue —`witness`, `mode`, `retention`, `predicatePushdown`— y la misma por
+    // la que `changes.mode` habla con el vocabulario de Flink.
+    /// Desde dónde. **Exclusivo**: lo que ya estaba en la copia anterior no se
+    /// vuelve a pedir. `None` es *desde el principio*.
+    pub start: Option<String>,
+    /// Hasta dónde. `None` es *hasta donde estés ahora*, que es lo que hacen
+    /// Iceberg y Delta al omitirlo.
+    ///
+    /// Con él, **el desfase desaparece**: el testigo y las filas son el mismo
+    /// instante, y la copia puede ser atómica. Sin él se acepta que lo ocurrido
+    /// durante la lectura se re-entregue en el refresco siguiente.
+    pub end: Option<String>,
+    /// La columna que ordena el avance, cuando el testigo es `witness: field`.
+    /// **`None` significa que el rango es sobre la posición del propio origen**
+    /// —un LSN, un snapshot— y no sobre ninguna columna.
+    ///
+    /// Es el *cursor field* del sector, con su nombre.
+    pub cursor: Option<String>,
 }
 
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
@@ -130,6 +161,7 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         })
         .unwrap_or_default();
 
+    let opcional = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     let p = Peticion {
         url: cadena("url"),
         objeto: cadena("objeto"),
@@ -137,6 +169,9 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         clave_columnas: lista("claveColumnas"),
         claves,
         filtros,
+        start: opcional("start"),
+        end: opcional("end"),
+        cursor: opcional("cursor"),
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());
@@ -153,6 +188,40 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
 ///
 /// No las columnas físicas: el nombre físico es del binding y no tiene por qué
 /// salir del driver.
+/// **Lo que un driver DEBE hacer con un rango que no sabe servir: negarse.**
+///
+/// Es la mitad que hace que el campo valga. Un driver que reciba `start` y lo
+/// ignore devuelve **otras filas de las que se pidieron** — todas en vez del
+/// incremento— y eso **no falla: se sirve**. La copia sale con filas de más, la
+/// consulta responde, los números salen, y nadie ve nada.
+///
+/// Por eso la comprobación se escribe una vez aquí y no en cada driver: la que
+/// se repite en tres sitios es la que falta en el cuarto.
+///
+/// Devuelve el mensaje del rechazo, o `None` si se puede servir. `puedo` es lo
+/// que el driver sabe hacer: `cursor` si sabe recortar por una columna,
+/// `posicion` si sabe leer un rango del changelog del origen.
+pub fn rango_servible(p: &Peticion, puedo_cursor: bool, puedo_posicion: bool) -> Option<String> {
+    if p.start.is_none() && p.end.is_none() {
+        return None;
+    }
+    match (&p.cursor, puedo_cursor, puedo_posicion) {
+        // Un rango sobre una columna, y este driver sabe recortar por columna.
+        (Some(_), true, _) => None,
+        (Some(c), false, _) => Some(format!(
+            "se pidió un rango sobre `{c}` y este driver no sabe recortarlo. Devolver las filas de \
+             ahora sería servir de más sin que nadie lo note, así que no se sirve"
+        )),
+        // Sin `cursor`, el rango es sobre la posición del propio origen.
+        (None, _, true) => None,
+        (None, _, false) => Some(
+            "se pidió un rango sobre la posición del origen y este driver no sabe leer su \
+             changelog: solo sabe leer el estado presente. Devolverlo entero sería servir de más"
+                .into(),
+        ),
+    }
+}
+
 /// **La petición del tercer verbo: una coordenada, no un fragmento de plan.**
 ///
 /// `{"objeto": "...", "url": "..."}` y nada más. Se lee aparte de
@@ -246,6 +315,7 @@ mod tests {
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["emp-7".into()], vec!["emp-9".into()]],
             filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
+            ..Default::default()
         }
     }
 
@@ -288,5 +358,52 @@ mod tests {
         let f = fila(&p, &[Some("1000".into()), Some("emp-7".into())]);
         assert_eq!(f, r#"{"baseSalary":"1000","employeeId":"emp-7"}"#);
         assert!(!f.contains("base_pay"), "{f}");
+    }
+}
+
+#[cfg(test)]
+mod rango {
+    use super::*;
+
+    fn p(start: Option<&str>, cursor: Option<&str>) -> Peticion {
+        Peticion {
+            start: start.map(String::from),
+            cursor: cursor.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    /// **Sin rango, nada que comprobar.** Un driver que no sepa servir rangos
+    /// sigue sirviendo todas las peticiones que no lo llevan.
+    #[test]
+    fn una_peticion_sin_rango_la_sirve_cualquiera() {
+        assert_eq!(rango_servible(&p(None, None), false, false), None);
+    }
+
+    /// **Y la que sí lo lleva se rechaza si no se puede honrar.**
+    ///
+    /// Es la mitad que hace que el campo valga. Ignorarlo devolvería las filas
+    /// de ahora en vez del incremento, y eso **no falla: se sirve** — la copia
+    /// sale con filas de más y nadie ve nada.
+    #[test]
+    fn un_rango_que_no_se_puede_honrar_se_rechaza_y_dice_por_que() {
+        // Sobre una columna, y el driver no sabe recortar por columna.
+        let e = rango_servible(&p(Some("100"), Some("updated_at")), false, true).expect("rechaza");
+        assert!(e.contains("updated_at"), "{e}");
+        assert!(e.contains("servir de más"), "{e}");
+
+        // Sobre la posición del origen, y el driver solo lee el estado presente.
+        let e = rango_servible(&p(Some("0/1A2B"), None), true, false).expect("rechaza");
+        assert!(e.contains("changelog"), "{e}");
+    }
+
+    /// Y cada driver declara lo suyo: los dos casos que sí se sirven.
+    #[test]
+    fn cada_driver_declara_lo_que_sabe() {
+        assert_eq!(
+            rango_servible(&p(Some("100"), Some("t")), true, false),
+            None
+        );
+        assert_eq!(rango_servible(&p(Some("0/1A"), None), false, true), None);
     }
 }

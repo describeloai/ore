@@ -53,6 +53,24 @@ pub fn sql(p: &Peticion) -> (String, Vec<String>) {
         condiciones.push(format!("{} {simbolo} ${}", ident(col), params.len()));
     }
 
+    // **El rango, cuando va sobre una columna.** `start` es exclusivo y `end`
+    // inclusivo, que es la convención que Iceberg usa y la que hace que dos
+    // refrescos encadenados no repitan ni se salten el borde.
+    //
+    // Sale como dos condiciones más y no como un mecanismo aparte, y eso es lo
+    // que dice que la petición estaba cortada por el sitio correcto: para el
+    // SQL, un rango es un `WHERE`.
+    if let Some(cursor) = p.cursor.as_deref() {
+        if let Some(s) = &p.start {
+            params.push(s.clone());
+            condiciones.push(format!("{} > ${}", ident(cursor), params.len()));
+        }
+        if let Some(e) = &p.end {
+            params.push(e.clone());
+            condiciones.push(format!("{} <= ${}", ident(cursor), params.len()));
+        }
+    }
+
     if !condiciones.is_empty() {
         q.push_str(" WHERE ");
         q.push_str(&condiciones.join(" AND "));
@@ -76,6 +94,7 @@ mod tests {
             clave_columnas: vec!["employee_id".into()],
             claves: vec![vec!["emp-7".into()], vec!["emp-9".into()]],
             filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
+            ..Default::default()
         }
     }
 
@@ -113,5 +132,55 @@ mod tests {
         let (q, params) = sql(&p);
         assert!(q.contains("(\"id\", \"cod_pais\") IN (($1, $2))"), "{q}");
         assert_eq!(params[..2], ["7".to_string(), "ES".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod rango {
+    use super::*;
+    use ore_driver::Peticion;
+
+    fn con_rango(start: Option<&str>, end: Option<&str>, cursor: Option<&str>) -> Peticion {
+        Peticion {
+            url: "postgres://x".into(),
+            objeto: "public.clicks".into(),
+            proyeccion: vec![("id".into(), "click_id".into())],
+            start: start.map(String::from),
+            end: end.map(String::from),
+            cursor: cursor.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    /// **`start` exclusivo y `end` inclusivo.**
+    ///
+    /// Es la convención de Iceberg, y la que hace que dos refrescos encadenados
+    /// no repitan ni se salten el borde: lo que fue `end` de uno es `start` del
+    /// siguiente, y una fila cae en exactamente uno de los dos.
+    #[test]
+    fn el_rango_sale_como_dos_condiciones_mas() {
+        let (q, params) = sql(&con_rango(Some("100"), Some("200"), Some("ocurrio_en")));
+        assert!(q.contains("\"ocurrio_en\" > $1"), "{q}");
+        assert!(q.contains("\"ocurrio_en\" <= $2"), "{q}");
+        assert_eq!(params, vec!["100", "200"]);
+    }
+
+    /// Sin `end` se lee hasta donde esté el origen, que es lo que hacen Iceberg y
+    /// Delta al omitirlo.
+    #[test]
+    fn sin_end_se_lee_hasta_donde_este() {
+        let (q, _) = sql(&con_rango(Some("100"), None, Some("ocurrio_en")));
+        assert!(q.contains("> $1") && !q.contains("<="), "{q}");
+    }
+
+    /// **Y sin `cursor` no se toca el SQL.** Ese rango va sobre la posición del
+    /// changelog, y este driver no lo sirve: se rechaza antes de llegar aquí, en
+    /// `rango_servible`. Traducirlo a un `WHERE` sobre alguna columna sería
+    /// inventarse cuál.
+    #[test]
+    fn sin_cursor_el_rango_no_se_traduce_a_un_where() {
+        let (q, params) = sql(&con_rango(Some("0/1A2B"), None, None));
+        assert!(!q.contains("WHERE"), "{q}");
+        assert!(params.is_empty(), "{params:?}");
     }
 }

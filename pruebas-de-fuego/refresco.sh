@@ -110,6 +110,11 @@ print(c.list_objects_v2(Bucket=os.environ["ORE_R2_BUCKET"]).get("KeyCount", 0))
 PY
 }
 leidas() { sed -n 's/.*· \([0-9]*\) leidas ·.*/\1/p' <<<"$1" | head -1; }
+# Cuántas filas quedan **en la copia**. Sin esta, la prueba medía el trabajo y
+# no la corrección: un refresco que leyera 10 filas y sellara una copia de 10
+# pasaría, y esa copia estaría mal. **Trabajo proporcional al cambio** y **copia
+# entera** son dos cosas, y hacen falta las dos.
+copiadas() { sed -n 's/.*  \([0-9]*\) filas ·.*/\1/p' <<<"$1" | head -1; }
 
 echo
 echo "══ los cinco actos · el trabajo se cuenta en filas, no en segundos ══"
@@ -117,6 +122,7 @@ antes=$(objetos)
 
 a1=$("$ORE" materialize "$D" 2>&1)
 cmp_n 1000 "$(leidas "$a1")" "① primera materialización, filas leídas" "I5 (hecho)"
+cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"
 n1=$(objetos); cmp_n 2 "$((n1 - antes))" "① objetos nuevos (artefacto + recibo)" "I5 (hecho)"
 
 a2=$("$ORE" materialize "$D" 2>&1)
@@ -127,11 +133,13 @@ n2=$(objetos); cmp_n 0 "$((n2 - n1))" "② objetos nuevos" "el recibo · I5"
 filas 10 1001 >> "$D/datos/pedidos.jsonl"
 a3=$("$ORE" materialize "$D" 2>&1)
 cmp_n 10 "$(leidas "$a3")" "③ +10 filas: leídas" "R2 y R3"
+cmp_n 1010 "$(copiadas "$a3")" "③ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n3=$(objetos); cmp_n 2 "$((n3 - n2))" "③ objetos nuevos" "R2"
 
 sed -i '1,3s/"pais":"ES"/"pais":"PT"/' "$D/datos/pedidos.jsonl"
 a4=$("$ORE" materialize "$D" 2>&1)
 cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
+cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n4=$(objetos); cmp_n 2 "$((n4 - n3))" "④ objetos nuevos" "R2"
 
 cmp_n 4 "$((n4 - antes))" "⑤ tras 3 copias, objetos acumulados (2 vigentes + basura recogida)" "R5"
@@ -163,10 +171,15 @@ fi
 # Estructural, y a propósito: la afirmación es sobre el PROTOCOLO, no sobre una
 # ejecución. Mientras `Peticion` no tenga el campo, ningún driver puede negarse a
 # un rango porque ningún rango le puede llegar.
-if grep -q "pub desde" crates/ore-driver/src/lib.rs 2>/dev/null; then
+#
+# Y se llaman `start`/`end` y no `desde`/`hasta` porque la industria ya les puso
+# nombre: Iceberg lee con `start-snapshot-id`, BigQuery con `start_timestamp`, y
+# a la columna que ordena, medio sector la llama *cursor field*. La regla queda
+# escrita en `ore-driver`: donde la industria tiene un nombre, se usa el suyo.
+if grep -q "pub start" crates/ore-driver/src/lib.rs 2>/dev/null; then
   ok "c · la petición sabe llevar un rango"
 else
-  mal "c · la petición no tiene \`desde\`/\`hasta\`, así que nadie puede negarse a un rango" "R3"
+  mal "c · la petición no tiene \`start\`/\`end\`, así que nadie puede negarse a un rango" "R3"
 fi
 
 # Y este mira `materialize --seco` y **no** `ore view`, que es donde estaba antes.
@@ -205,7 +218,8 @@ rm -rf "$D" "$D-neg"
 echo
 if [ "$fallos" -eq 0 ]; then
   echo "listo · las tres invariantes se sostienen"
-  echo "  ① sin cambio, cero trabajo   ② con cambio, trabajo proporcional   ③ almacén acotado"
+  echo "  ① sin cambio, cero trabajo   ② con cambio, trabajo proporcional"
+  echo "  ③ almacén acotado             ④ y la copia, entera"
 else
   echo "$fallos afirmacion(es) sin cumplir — y eso es la lista de trabajo de handoff-refresco.md"
 fi

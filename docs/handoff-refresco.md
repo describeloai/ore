@@ -185,6 +185,47 @@ aquí**.
 `ore-view/tests/medidas.rs` — no en tiempo; y un driver sin soporte se niega, y hay una prueba que
 lo provoca.
 
+#### Hecho a medias · el protocolo, y lo que faltaba debajo
+
+`Peticion` lleva **`start`, `end` y `cursor`**, y los nombres son los de la industria: Iceberg lee
+con `start-snapshot-id`, Delta con `startingVersion`, BigQuery con `start_timestamp`, y a la
+columna que ordena el avance medio sector la llama *cursor field*. La regla queda escrita donde se
+declaran:
+
+> **Donde la industria tiene un nombre, se usa el suyo; donde no, el nuestro.** Es la misma que la
+> gramática de OOS ya sigue —`witness`, `mode`, `retention`— y la misma por la que `changes.mode`
+> habla con el vocabulario de Flink.
+
+`start` es **exclusivo** y `end` **inclusivo**: lo que fue `end` de un refresco es `start` del
+siguiente, y una fila cae en exactamente uno de los dos. Y la mitad que hace que el campo valga
+está en `rango_servible`, escrita **una vez** en el protocolo y no en cada driver:
+
+> Un driver que reciba un rango y no sepa servirlo **debe fallar**. Ignorarlo devolvería las filas
+> de ahora en vez del incremento, y eso **no falla: se sirve** — la copia sale con filas de más y
+> nadie ve nada.
+
+`ore-read-postgres` y `ore-read-jsonl` declaran los dos lo mismo: saben recortar por columna, no
+saben leer un changelog. Para el SQL, un rango resulta ser **dos condiciones más en el `WHERE`** —
+que es otra vez la prueba de que la petición estaba cortada por el sitio correcto.
+
+#### Y lo que R3 destapó, que no es de R3
+
+**Un refresco incremental no puede sellar solo el incremento.** Una vista materializada tiene que
+contener el resultado **entero**; si el driver devuelve 10 filas y el almacén sella esas 10, la
+copia queda con 10 y **responde mal**. Leer menos exige, debajo, **fundir** el delta con la copia
+anterior.
+
+R6 no lo veía: medía `leidas` y no cuántas filas quedaban en la copia, así que un refresco que
+leyera 10 y sellara 10 habría pasado en verde. **Ya lo mide**, y de ahí sale la cuarta invariante:
+
+> **④ Y la copia, entera.** Trabajo proporcional al cambio **y** resultado completo son dos cosas,
+> y hacen falta las dos.
+
+Y la fusión **ya tiene dueño en este árbol**: es el circuito Δ —[ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)—
+que existe justamente para aplicar un delta a un estado. Lo que R3 deja visto es que **la copia es
+ese estado**, y que `ore-maintain` y `ore materialize` están resolviendo dos mitades del mismo
+problema sin saberlo. Juntarlas es un peldaño propio y no cabe aquí.
+
 ### R4 · un solo sitio para el testigo
 
 **Qué.** La cabecera del `.oretopo` lleva su marca de agua y el sobre de 0015 lleva su testigo.

@@ -100,6 +100,14 @@ fn testigo(peticion: &str) -> Result<String, String> {
 fn filas(peticion: &str) -> Result<String, String> {
     let p = ore_driver::leer_peticion(peticion)?;
 
+    // **El rango, o la negativa.** Un fichero sabe recortar por una columna
+    // —es un filtro mas— y no sabe leer un changelog, porque no tiene: guarda
+    // el estado presente y nada mas. Las dos cosas se declaran aqui y la
+    // comprobacion es del protocolo, no de este driver.
+    if let Some(porque) = ore_driver::rango_servible(&p, true, false) {
+        return Err(porque);
+    }
+
     let ruta = std::path::Path::new(&p.url).join(&p.objeto);
     let texto = std::fs::read_to_string(&ruta)
         .map_err(|e| format!("no se pudo leer `{}`: {e}", ruta.display()))?;
@@ -119,6 +127,18 @@ fn filas(peticion: &str) -> Result<String, String> {
                 .iter()
                 .any(|t| t.iter().zip(&mia).all(|(a, b)| a == b))
             {
+                continue;
+            }
+        }
+        // **El rango.** `start` es exclusivo: lo que ya estaba en la copia
+        // anterior no se vuelve a pedir, y `end` acota por arriba para que el
+        // testigo y las filas sean el mismo instante.
+        if let Some(cursor) = p.cursor.as_deref() {
+            let v = campo(cursor);
+            if p.start.as_deref().is_some_and(|s| v <= s) {
+                continue;
+            }
+            if p.end.as_deref().is_some_and(|e| v > e) {
                 continue;
             }
         }
