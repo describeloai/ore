@@ -66,7 +66,7 @@ pub use cost_model::{Decision, Dictamen, Medida, Politica, decidir};
 pub use delta_compiler::{
     Circuito, Estado, Evaluacion, Fila, NoIncrementalizable, Zset, recomputar,
 };
-pub use filter_tree::{FilterTree, Hoja, Materializacion, Registro, firma};
+pub use filter_tree::{FilterTree, Hoja, Marca, Materializacion, Registro, Testigo, firma};
 pub use flow::{Clasificacion, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};

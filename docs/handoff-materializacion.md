@@ -174,7 +174,7 @@ Después de eso, cada iteración mueve **un** mecanismo al registro sin que nada
 | **I2** | el matcher decide | `ore-cli/vista.rs` | `cotejar` contesta, con compensación y sello; las restricciones desde `primaryKey` y relaciones, conectadas |
 | **I3** | el testigo deja de estar vacío | `ore-view`, la costura | una copia dice hasta cuándo fue cierta; `freshness` **degrada** en vez de mentir, y se prueba con una copia vencida |
 | **I4** | la topología es una copia más | `ore-exec` | `lecturas_de_aristas` emite un plan registrado; `.oretopo` es solo su formato; **borrar su ruta de refresco propia no pierde ninguna prueba** |
-| **I5** | la copia existe de verdad — [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) | `ore-cli`, `ore-store-r2` | BigQuery se materializa a sí mismo con **una** consulta, medido contra un dataset real |
+| **I5** | la copia existe de verdad — [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) | `ore-cli`, `ore-store-r2` | una vista se puebla contra un dataset real y el artefacto queda en R2 **nombrado por su digest**; un segundo intento con el mismo testigo **no sube ni un byte** |
 
 ### I0 · el árbol en verde
 
@@ -211,6 +211,45 @@ mecanismo nuevo la ponga roja.
 
 **No hace.** No puebla nada, no refresca nada, no borra nada. Es un despeje: su valor es que
 después de él **hay un sitio**.
+
+#### Hecho · lo que quedó, y lo que se midió al hacerlo
+
+El sitio es [`ore-cli/src/registro.rs`](../crates/ore-cli/src/registro.rs), y no un trozo de
+`vista.rs`, por lo que decía la nota de práctica: lo van a mirar tres. `Materializacion` ganó
+`Testigo { marca, valor }` con el vocabulario de `changes.witness` —`Marca::{Ninguna, Instantanea,
+Registro, Campo}`— y `valor: None` en todas, que es lo que hoy son.
+
+`ore view` cierra ahora con el registro del paquete:
+
+```
+registro · 4 copias · nadie 0 · índice de topología 4
+  hr.Employee.manager
+    plan      sha256:34119a2a…
+    destino   oretopo·hr.Employee.manager
+    testigo   sin poblar
+    refresco  índice de topología — `ore index refresh`, con marca de agua propia y ajena al circuito Δ
+```
+
+**El reparto por camino sale con los ceros**, y esa es la línea que hace de guardia: un mecanismo
+que deja de usarse sigue apareciendo hasta que alguien lo borre a mano, así que borrarlo es una
+decisión y no un olvido. Lo demás lo sujeta un `match` exhaustivo sobre `Camino` más la cuenta
+escrita en `los_caminos_de_refresco_estan_enumerados_y_cada_uno_dice_por_que`: un mecanismo nuevo
+**no compila** hasta que alguien diga por qué no le valía ninguno de los que ya estaban.
+
+**Y una medida que no se esperaba tan pronto.** `acme-retail` no declara ni una `materialized`, y
+tiene **cuatro copias**. Todas de topología, y se llega a ellas **por el sustrato**: la fuente
+física de una entidad es la raíz de la vista que la respalda —`backedBy`—, sin un binding de por
+medio. La reconstrucción vale igual en v1alpha8, que era la duda.
+
+**Dos cosas que salieron por el camino y conviene no volver a descubrir:**
+
+- **`Registro::TablaNoCorresponde` no puede dispararse nunca desde aquí.** La declaración de OOS
+  dice **dónde** vive la copia y no **qué columnas** tiene, así que los campos del destino se
+  construyen desde el plan — la única opción honesta. La comprobación existe para quien conozca el
+  destino por otra vía, o sea el ejecutor leyendo un almacén de verdad. El handoff lo anticipaba
+  para I2; aparece en I1 porque construir el destino es de I1.
+- **`ore-exec` no depende de `ore-view`.** Así que I4 no es «llamar a esta función»: o el ejecutor
+  gana la dependencia, o el registro se muda. Es una decisión de I4 y está sin tomar.
 
 ### I2 · el matcher decide
 

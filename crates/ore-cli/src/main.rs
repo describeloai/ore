@@ -15,6 +15,7 @@ mod inductor;
 mod inicio;
 mod lector;
 mod mcp;
+mod registro;
 mod revision;
 mod vista;
 mod vocabulario;

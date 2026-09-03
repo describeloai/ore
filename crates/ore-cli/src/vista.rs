@@ -257,6 +257,15 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         println!();
     }
 
+    // El registro, del paquete entero y no de cada vista: una copia la puede
+    // servir la consulta de otra, asi que la unidad es el paquete. Se construye
+    // UNA vez y de aqui lo miran los tres consumidores.
+    let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
+    crate::registro::imprimir(&inventario);
+    // Una copia declarada que no entra en el registro no es un detalle: el
+    // motor iria al origen sin que nadie sepa por que.
+    fugas += inventario.fuera.len();
+
     if fugas > 0 {
         eprintln!(
             "error: {fugas} {} · el motor de vistas se niega a compilar lo de arriba",
@@ -375,7 +384,7 @@ impl Vistas for Package {
 /// propiedades se llaman como los campos de su vista, y la cadena los lleva
 /// hasta la columna. Lo que ninguna entidad nombra es `String`, que es lo
 /// único que se puede afirmar de una columna de la que solo se sabe el nombre.
-fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
+pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
     let mut out = BTreeMap::new();
     for e in pkg.entities() {
         let Some(v) = vistas::respaldo(pkg, e) else {

@@ -1240,15 +1240,12 @@ mod tests {
         }
     }
     fn mat(nombre: &str, plan: Nodo) -> Materializacion {
-        Materializacion {
-            nombre: nombre.into(),
-            tabla: Lectura {
-                datasource: "lago".into(),
-                objeto: format!("cache.{nombre}"),
-                campos: esquema(&plan).expect("cuadra"),
-            },
-            plan,
-        }
+        let tabla = Lectura {
+            datasource: "lago".into(),
+            objeto: format!("cache.{nombre}"),
+            campos: esquema(&plan).expect("cuadra"),
+        };
+        Materializacion::nueva(nombre, plan, tabla)
     }
     fn nada() -> Clasificacion {
         Clasificacion::default()

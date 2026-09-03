@@ -43,6 +43,70 @@ pub fn firma(n: &Nodo) -> BTreeSet<Hoja> {
         .collect()
 }
 
+/// Con qué se fecha una copia.
+///
+/// Es el vocabulario de `changes.witness` de OOS —`none`, `snapshot`, `log`,
+/// `field`— dicho aquí, y no se inventa otro. Los cuatro son **ordinales**: el
+/// motor los compara, no los interpreta ni los convierte.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Marca {
+    /// Nada la fecha. Legal, y tiene precio: sin marca, lo copiado no puede
+    /// decir hasta cuándo era cierto.
+    #[default]
+    Ninguna,
+    /// La versión nativa de un formato de tabla: el *snapshot-id* de Iceberg,
+    /// la versión de Delta.
+    Instantanea,
+    /// Una posición en un flujo de cambios: LSN, SCN, *offset*.
+    Registro,
+    /// Una columna de la propia tabla que ordena el avance.
+    Campo(String),
+}
+
+impl Marca {
+    pub fn como_texto(&self) -> String {
+        match self {
+            Marca::Ninguna => "sin marca".to_string(),
+            Marca::Instantanea => "instantánea".to_string(),
+            Marca::Registro => "registro".to_string(),
+            Marca::Campo(c) => format!("campo `{c}`"),
+        }
+    }
+}
+
+/// **Hasta cuándo fue cierta**: la tercera cara de una copia.
+///
+/// Entra vacía y se queda vacía varias iteraciones, y aun así entra ahora: la
+/// usa la frescura para **degradar en vez de mentir**, y añadirla después
+/// significa convencer a quienes ya asumieron que no estaba.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Testigo {
+    pub marca: Marca,
+    /// Lo leído la última vez que se pobló. `None` es **nunca**, y no es un
+    /// caso raro: hoy lo son todas.
+    pub valor: Option<String>,
+}
+
+impl Testigo {
+    /// Registrada y sin poblar. El caso de hoy.
+    pub fn vacio() -> Self {
+        Self::default()
+    }
+
+    /// Si la copia puede decir hasta cuándo fue cierta.
+    pub fn fechada(&self) -> bool {
+        self.valor.is_some()
+    }
+
+    pub fn como_texto(&self) -> String {
+        match (&self.marca, &self.valor) {
+            (Marca::Ninguna, None) => "sin poblar".to_string(),
+            (m, None) => format!("{} · sin poblar", m.como_texto()),
+            (m, Some(v)) => format!("{} · {v}", m.como_texto()),
+        }
+    }
+}
+
 /// Una vista materializada: **su definición, y dónde vive el resultado.**
 ///
 /// La tabla es una [`Lectura`] a propósito: lo materializado es una hoja más,
@@ -58,6 +122,25 @@ pub struct Materializacion {
     /// La tabla donde vive el resultado. Sus `campos` tienen que ser **lo que el
     /// plan produce**, y se comprueba al registrar.
     pub tabla: Lectura,
+    /// Hasta cuándo fue cierta. Vacío mientras nadie la pueble.
+    pub testigo: Testigo,
+}
+
+impl Materializacion {
+    /// Registrada y sin poblar, que es como nacen todas.
+    pub fn nueva(nombre: impl Into<String>, plan: Nodo, tabla: Lectura) -> Self {
+        Self {
+            nombre: nombre.into(),
+            plan,
+            tabla,
+            testigo: Testigo::vacio(),
+        }
+    }
+
+    pub fn con_testigo(mut self, t: Testigo) -> Self {
+        self.testigo = t;
+        self
+    }
 }
 
 /// Por qué una materialización no entra en el índice. Los dos son defectos del
@@ -272,15 +355,15 @@ mod tests {
     /// mismo — que es la única forma de que se registre.
     fn materializacion(nombre: &str, plan: Nodo) -> Materializacion {
         let produce = esquema(&plan).expect("cuadra");
-        Materializacion {
-            nombre: nombre.into(),
-            tabla: Lectura {
+        Materializacion::nueva(
+            nombre,
+            plan,
+            Lectura {
                 datasource: "lago".into(),
                 objeto: format!("cache.{nombre}"),
                 campos: produce,
             },
-            plan,
-        }
+        )
     }
 
     /// **EL CRITERIO DE M5.0.** Con mil materializaciones y un plan de dos hojas,
@@ -415,11 +498,11 @@ mod tests {
     #[test]
     fn una_materializacion_sin_expandir_no_se_registra() {
         let mut ft = FilterTree::default();
-        let m = Materializacion {
-            nombre: "rota".into(),
-            plan: Nodo::Referencia("otra".into()),
-            tabla: lectura("lago", "cache.rota", &[]),
-        };
+        let m = Materializacion::nueva(
+            "rota",
+            Nodo::Referencia("otra".into()),
+            lectura("lago", "cache.rota", &[]),
+        );
         assert_eq!(
             ft.registrar(m),
             Err(Registro::PlanNoCuadra {
@@ -438,12 +521,12 @@ mod tests {
     #[test]
     fn una_tabla_que_no_produce_lo_que_su_plan_produce_no_se_registra() {
         let mut ft = FilterTree::default();
-        let m = Materializacion {
-            nombre: "desfasada".into(),
-            plan: pedidos(),
-            // Le falta `total`, y trae una que el plan no da.
-            tabla: lectura("lago", "cache.desfasada", &["id", "pais", "descuento"]),
-        };
+        // Le falta `total`, y trae una que el plan no da.
+        let m = Materializacion::nueva(
+            "desfasada",
+            pedidos(),
+            lectura("lago", "cache.desfasada", &["id", "pais", "descuento"]),
+        );
         let Err(Registro::TablaNoCorresponde {
             plan_produce,
             tabla_tiene,
