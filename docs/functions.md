@@ -1,215 +1,387 @@
 # El motor de funciones
 
-> **Estado:** en diseño · **Fecha:** 2026-09-01
+> **Estado:** en diseño · **Fecha:** 2026-09-03 · **Reescrito contra el sustrato.**
 >
 > La mitad de arriba —la forma y por qué— es permanente. La de abajo —los peldaños— es
 > desechable y se borra cuando el último se pone en verde.
+>
+> La versión anterior es de 2026-09-01, **anterior a que `Table` y `View` fueran el sustrato**.
+> Su forma sobrevivió entera; su camino apuntaba a un mundo que ya no existe.
+> [§9](#9--qué-cambió-al-reescribirlo) dice exactamente qué se movió y qué no.
 
 ---
 
-## 1. Qué falta, medido
+## 1. La frase
 
-`v1alpha2/02-function` define el documento y ORE lo valida. **Nada lo ejecuta.**
+> **Una función no escribe. Propone.** Y lo que propone se escribe **a través de una vista**, o
+> no se escribe.
 
+La primera mitad ya estaba y no se toca: es lo que hace que el efecto se pueda mirar antes de que
+ocurra. La segunda es nueva y es todo lo que este documento añade.
+
+---
+
+## 2. Qué falta, medido
+
+| | |
+|---|---|
+| peldaños construidos | **cero**. No existe `Propuesta`, ni `ore-invoke`, ni ningún aplicador |
+| lo que sí hay | `ore-core/src/effect.rs`, que comprueba **forma y etiquetas** de `effects` |
+| y un hueco que nadie había mirado | **`effects` está huérfano** |
+
+### 2.1 · El hueco
+
+Un efecto declara hoy esto:
+
+```yaml
+effects:
+  - writes: supply_chain.PurchaseOrder.status   # una PROPIEDAD de una ENTIDAD
+    datasourceRef: postgres_erp                 # y una FUENTE, directamente
 ```
-declarar          ✅  kind: Function — runtime, entrypoint, effects, endorsements
-leer              ✅  ore-exec plan  — autorizadas, podadas, filtros, ensamblaje
-ejecutar          ❌  ore-exec solo sabe `validar`, `plan` e `index`
-aplicar           ❌
-```
 
-Y falta con ella la propiedad que la especificación promete y que hoy no tiene consumidor:
+**Va de la propiedad a la fuente sin nada en medio.** Ese «nada en medio» era el `Binding`: el
+documento que decía qué columna es `status` en `postgres_erp`. Y el binding se retiró en
+v1alpha8.
 
-> *Un agente no recibe credenciales, **recibe una superficie**. Fuera de las funciones
-> declaradas no hay forma de escribir nada — no porque se prohíba, sino porque no hay canal.*
+Comprobado en el código: `effect.rs` resuelve `writes` a una **propiedad de entidad** y comprueba
+sus etiquetas de integridad. **Ninguna línea del árbol traduce esa propiedad a una columna.**
+`datasourceRef` se lee, se transporta, y no resuelve a ningún destino físico.
 
----
-
-## 2. El problema, y por qué no es el que resuelve la competencia
-
-Las tres capas que casi todo el mundo mezcla:
-
-| | Qué resuelve | Estado en la industria |
-|---|---|---|
-| **aislamiento** | que el código no se salga | resuelto — Firecracker, el sandbox de wasm |
-| **elasticidad** | arrancar y escalar a cero | resuelto — wasm 1–5 ms, microVM ~125 ms |
-| **autoridad** | **qué puede tocar** | el rol de IAM, que habla de infraestructura |
-| **consistencia** | **sobre dato que no posees** | **nadie** |
-
-Lambda te da un sandbox y un rol: *esta función puede leer ese bucket*. No hay forma de decir
-*«puede escribir `Pedido.estado` y nada más»*, ni *«solo si un humano lo aprobó»*.
-
-Foundry es el que más se acerca y su diseño es bueno: un *edit store* por ejecución, los edits
-colapsados, una transacción atómica, y `@Edits([task])` declarando qué tipos se editan. Pero
-esa declaración **vive en el código**: para saber qué puede causar la plataforma hay que leer
-TypeScript. Y su consistencia se apoya en **poseer el dato**.
-
-Y las funciones del almacén —*remote functions* de BigQuery, *external functions* de
-Snowflake— no son cómputo junto al dato: el almacén agrupa filas y las **manda por HTTP** a
-Cloud Run o a API Gateway. **El dato sale**, y con él se acaba el gobierno: dentro de aquel
-contenedor ya nadie sabe que aquellas columnas eran `gdpr.sensitivity: high`.
+Es el mismo hueco que `OOS2022` cerró para la lectura, un piso más abajo y en el otro sentido:
+*«con bindings esto era legal porque otro podía cubrirlo; en v1alpha8 no hay otro»*. Nadie lo ha
+notado porque no hay ejecutor — y por eso conviene notarlo ahora y no cuando lo haya.
 
 ---
 
-## 3. La consistencia primero, y de dónde sale
+## 3. La forma: la función no aplica, propone
 
-Está desarrollado en el [ADR 0006](decisions/0006-el-artefacto-de-topologia.md). En una línea:
-
-> **La consistencia no viene de poseer el dato. Viene de poseer el significado y la
-> correspondencia, y de decir la verdad sobre la frescura de lo demás.**
-
-Los dos planos que una función necesita —**qué significa** y **qué se corresponde con qué**—
-son artefactos nuestros, inmutables por versión y ya construidos. El tercero, la carga útil, no
-es nuestro **a propósito**, y su frescura se declara con la marca de agua en vez de prometerse.
-
-**Consecuencia práctica:** este motor no está bloqueado por almacenamiento. La caché de carga
-útil hace falta para que una función vaya **rápida**, no para que sea **correcta**.
-
-Lo que sí lo bloqueaba era otra cosa, y se vio al ir a escribir §4.1: **de las cuatro
-identidades que una propuesta lleva dentro, la de topología no existía**. El artefacto se
-construía, se distribuía y se recorría, y no tenía forma de decir cuál era. Está construido en
-[`engine.md`](engine.md) E0, junto con la mitad del tercer plano que sí es nuestra.
-
----
-
-## 4. La forma: la función **no aplica, propone**
-
-Un `Plan` entra, una `Propuesta` sale. La función es **pura**: recibe valores, no una conexión.
-No lee durante la ejecución y no escribe durante la ejecución.
+Un `Plan` entra, una `Propuesta` sale. La función es **pura**: recibe valores, no una conexión. No
+lee durante la ejecución y no escribe durante la ejecución.
 
 ```text
-Plan ──► función ──► Propuesta ──► (verificar) ──► (aplicar)
+Plan ──► función ──► Propuesta ──► (verificar) ──► (aplicar, por la vista)
 ```
 
 Y una `Propuesta` no lleva solo qué escribir: lleva **bajo qué se decidió**.
 
-### 4.1 · Las cuatro identidades
+### 3.1 · Las cinco identidades
 
 | | Contesta |
 |---|---|
 | **digest del bundle** | bajo qué significado se decidió — y si sigue vigente |
-| **versión de topología** | con qué correspondencia se resolvieron las claves — `Topologia::version`, el digest de las aristas |
+| **versión de topología** | con qué correspondencia se resolvieron las claves |
 | **marcas de agua** | hasta cuándo era cierto el dato que se leyó |
 | **el `Plan`** | qué se leyó, qué se podó y **por qué** |
+| **el digest del plan de la vista** | **por dónde se va a escribir**, y bajo qué recorte |
 
-Con las cuatro dentro, una `Propuesta` se contesta sola: *¿se puede reproducir?*, *¿se computó
-sobre dato rancio?*, *¿el significado sigue vigente?*. Sin ellas, las tres son sospechas.
+La quinta es nueva y sale del sustrato. *Bajo qué vista se decidió escribir* es tan auditable como
+*bajo qué bundle*: una vista recorta filas, y una propuesta que escribe a través de ella solo
+puede tocar las que la vista deja ver. Sin esa identidad, *«¿podía esta función tocar esta
+fila?»* no tiene respuesta local.
 
-### 4.2 · Lo que eso regala
+Con las cinco dentro, una `Propuesta` se contesta sola: *¿se puede reproducir?*, *¿se computó
+sobre dato rancio?*, *¿el significado sigue vigente?*, *¿por dónde iba a entrar?*
+
+### 3.2 · Lo que eso regala
 
 | Propiedad | Por qué se sostiene |
 |---|---|
 | **determinismo** | mismas identidades + mismos valores → misma `Propuesta`, y su digest lo prueba. Es **replay para un auditor** |
 | **simulacro gratis** | la `Propuesta` **es** el simulacro. No hay dos caminos que puedan divergir |
 | **idempotencia** | una `Propuesta` tiene identidad, así que *«¿esto ya se aplicó?»* pasa a ser contestable |
-| **alcance atómico** | declara qué fuentes toca, así que `transaction.scope: single-datasource` se comprueba **antes**, no es una sorpresa en ejecución |
-| **auditoría completa** | el par `(Plan, Propuesta)` es la historia entera: qué se leyó, qué se podó y por qué, y qué se iba a escribir |
+| **alcance atómico** | declara qué fuentes toca, así que escribir en dos se rechaza **antes**, no es una sorpresa en ejecución |
+| **auditoría completa** | el par `(Plan, Propuesta)` es la historia entera |
 
-### 4.3 · Y lo que cuesta, dicho claro
+### 3.3 · Y lo que cuesta, dicho claro
 
 **No hay lecturas dinámicas.** La función no puede decidir a mitad de vuelo que necesita otra
-tabla. Si necesita más, lo declara y el `Plan` crece; lo iterativo son varias invocaciones —que
-de paso las hace reanudables.
+tabla. Si necesita más, lo declara y el `Plan` crece; lo iterativo son varias invocaciones —que de
+paso las hace reanudables.
 
-Es menos expresivo que Foundry, donde una función navega enlaces sobre la marcha. Y es **el
-mismo cambio que hace todo lo demás aquí**: Cedar no tiene bucles, el compilador no tiene
-reloj. La expresividad acotada es lo que hace analizable una cosa. Se paga en comodidad y se
-cobra en que **el efecto se puede mirar antes de que ocurra**.
-
----
-
-## 5. Por qué `runtime: wasm` no era una moda
-
-**WASI 0.2 es capability-based**: un componente arranca **sin autoridad ambiente** y solo puede
-hacer aquello para lo que el host le pasa un *handle*. Un componente sin importación de red no
-puede abrir un socket, **y la garantía se sostiene aunque el proceso anfitrión sí pueda**.
-
-Compárese con lo que `02-function` §1 ya decía, escrito antes de elegir runtime:
-
-> *…no porque se prohíba, sino porque **no hay canal**.*
-
-Esa frase es la definición de seguridad por capacidades. Así que `effects:` no tiene que ser
-una política que alguien comprueba: puede ser **la lista de handles que el host entrega**. La
-declaración y la ejecución pasan a ser la misma cosa, y eso no se puede hacer sobre Lambda.
-
-Con la forma de §4 hay además una simplificación que conviene ver: como la función **no lee ni
-escribe**, el sandbox que necesita es aún más pequeño que el de WASI — no le hace falta ninguna
-capacidad. Recibe valores y devuelve valores.
+Es menos expresivo que Foundry, donde una función navega enlaces sobre la marcha. Y es **el mismo
+cambio que hace todo lo demás aquí**: Cedar no tiene bucles, el compilador no tiene reloj. La
+expresividad acotada es lo que hace analizable una cosa.
 
 ---
 
-## 6. La frontera: `ore` declara y verifica; ejecutar se delega
+## 4. Y ahora la mitad que faltaba: por dónde entra
 
-La de siempre, y por la razón de siempre. Un runtime de wasm es una dependencia grande con FFI,
-y `dependencias.rs` veta exactamente eso.
+[`sustrato.md`](sustrato.md) §3.4 lo dejó escrito para la lectura:
+
+> La capa ontológica se sienta **sobre la vista**. La vista se apoya en la tabla o en su copia, y
+> cuál de las dos es una decisión de abajo que la ontología no ve.
+
+**La escritura es la misma frase leída al revés**, y no hay que inventar nada:
+
+> **El destino de un efecto se deriva, no se declara.** Entidad → `backedBy` → vista → raíz →
+> tabla. Exactamente el camino que ya recorre la lectura.
+
+Por eso **`datasourceRef` desaparece del efecto**. Declararlo sería un segundo sitio que puede
+discrepar del primero, y este árbol ya sabe cómo termina eso: la tabla existe porque había N
+sitios describiendo lo físico y pasó a haber uno.
+
+`writes` **se queda tal cual**. Nombrar la propiedad es correcto: es el idioma de la ontología, y
+la ontología no debe saber en qué columna cae.
+
+### 4.1 · Escribir es `Q⁻¹`, y la mitad difícil ya está resuelta
+
+[`v1alpha8/00-scope`](../vendor/oos/spec/v1alpha8/00-scope.md) §6.1 lo decidió al migrar, con una
+corroboración que no venía de aquí:
+
+> *«Lo que la vista sabe hacer es exactamente el fragmento invertible, y eso no se buscó: se
+> descubrió al migrar el árbol.»*
+
+| operación de la vista | ¿invertible? |
+|---|---|
+| renombrar | sí — es una biyección |
+| recortar por partición | sí — la fila escrita cumple el predicado o se cae de la vista |
+| proyectar | **parcialmente** — faltan columnas, así que la escritura es *parcial*, no ambigua |
+| juntar, agregar, deduplicar, limitar | **no**, y por eso no están en el vocabulario |
+
+Y **la pregunta ya es computable con lo que hay**. `linaje` da, por cada campo de salida, de qué
+columna raíz sale y **por qué arista**:
+
+- `Directo(Identidad)` — invertible;
+- `Directo(Transformacion)`, `Directo(Agregacion)`, cualquier `Indirecto` — **no**.
+
+Así que *«esta función escribe a través de una vista que no se puede invertir»* se rechaza **al
+compilar**, con la misma máquina que ya rechaza una copia que fuga. No hace falta motor nuevo:
+hace falta llamar al que hay.
+
+### 4.2 · Y la tercera cara de la tabla
+
+Leer y cambiar están declarados —`reads` es la cara `I`, `changes` la cara `D`—. Escribir es la
+tercera, y le toca el mismo trato: **el objeto declara qué acepta, y el planificador lo respeta
+sin abrir una conexión.**
+
+```yaml
+writes:
+  mode: <qué acepta>        # el vocabulario, en §7.1, es una decisión abierta
+  key: [ ... ]              # con qué identifica la fila que actualiza
+```
+
+La simetría con `changes` no es estética. `changes` dice **qué sale** del objeto; `writes` dice
+**qué entra**. Y las dos preguntas tienen el mismo dueño —el objeto— y la misma consecuencia: una
+tabla que no declara `writes` **no se escribe**, igual que una que declara `reads: none` no se
+consulta. La ausencia es una negativa, que es la doctrina de esta casa desde v1alpha1.
+
+### 4.3 · Y no se escribe en la copia
+
+Conviene decirlo porque los dos caminos existen ahora y se parecen:
+
+| | qué escribe | quién |
+|---|---|---|
+| **materializar** | **la copia**, en nuestro almacén | `ore materialize` · [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) |
+| **aplicar un efecto** | **el origen**, a través de la vista | esto |
+
+Una función que escribiera en la copia estaría escribiendo en una respuesta cacheada, y el origen
+la contradiría en el refresco siguiente. **La copia es derivada; el origen es la verdad.**
+
+---
+
+## 5. La frontera: `ore` declara y verifica; ejecutar se delega
+
+La de siempre, y por la razón de siempre. Un runtime de wasm es una dependencia grande con FFI, y
+`dependencias.rs` veta exactamente eso.
 
 | | Dónde |
 |---|---|
-| computar el `Plan`, cotejar la `Propuesta` contra `effects:`, correr el flujo sobre ella, comprobar endosos | **dentro** |
-| ejecutar el módulo | `ore-invoke`, un programa del usuario en el PATH |
+| computar el `Plan`, cotejar la `Propuesta` contra `effects:`, correr el flujo sobre ella, comprobar endosos, **decidir si la vista se invierte** | **dentro** |
+| ejecutar el módulo | `ore-invoke`, delegado |
+| **escribir en el origen** | `ore-write-<tipo>`, delegado |
 
-La petición va por **stdin**, como en `ore-fetch`, `ore-sign` y `ore-log`. Y **lo que devuelve
-no se cree**: cada edit propuesto se coteja contra los efectos declarados, y lo que quede fuera
-se rechaza. Es lo mismo que hace `ore pack` con una firma que le devuelve `ore-sign`.
+La última fila es nueva, y es la **cuarta delegación** del árbol. Cae junto a las otras tres por
+la misma razón —`ore` no abre sockets— y hereda su protocolo: lo que viaja no son llamadas al
+origen, es **la propuesta ya bajada a columnas**.
+
+Y **lo que devuelve un delegado no se cree**: cada edit propuesto se coteja contra los efectos
+declarados, y lo que quede fuera se rechaza. Es lo mismo que hace `ore pack` con una firma.
 
 ---
 
-## 7. Los peldaños
+## 6. Los peldaños
 
 > **Desde aquí es desechable.**
 
-### F0 · La `Propuesta` como artefacto
+**Listo es [F6](#f6--la-definición-de-listo)**, no que los cinco anteriores estén escritos.
 
-El contrato de invocación y el cotejo, **sin ejecutar nada**: un runner de mentira devuelve
-edits y `ore` comprueba que uno fuera de `effects:` se rechaza.
+| | qué | cuesta |
+|---|---|---|
+| **F0** | la cara `W`, y el efecto pierde su fuente | gramática · v1alpha9 |
+| **F1** | la `Propuesta` como artefacto | nada de protocolo |
+| **F2** | el flujo sobre la propuesta | nada |
+| **F3** | los endosos | nada |
+| **F4** | `ore-invoke` | delegado nuevo |
+| **F5** | aplicar **por la vista** | delegado nuevo |
+| **F6** | **la definición de listo** | es la prueba |
 
-**Listo cuando:** un efecto fuera de la superficie declarada no se aplica, y la `Propuesta`
-lleva las cuatro identidades y digiere igual dos veces.
+### F0 · La cara `W`, y el efecto pierde su fuente
 
-Va primera porque **es lo único que nadie más tiene** y no necesita runtime.
+**Qué.** `Table.writes`, y `datasourceRef` fuera de `effects`. Es lo único de la lista que toca la
+gramática, y va primero porque **sin él los demás no tienen a dónde escribir**.
 
-### F1 · El flujo sobre la propuesta
+> **Es `M1` de [`sustrato.md`](sustrato.md), no un peldaño aparte.** Allí se ve desde abajo —la
+> tabla gana su tercera cara— y aquí desde arriba —un efecto necesita un destino—, y es la misma
+> línea de código. Lo que se añade aquí es lo que aquel documento no podía saber: que el efecto
+> **pierde su `datasourceRef`**.
 
-`flow` y `governance` corriendo sobre los edits propuestos, no sobre el árbol.
+Y con él llega la regla que `linaje` ya puede contestar: una función cuyo efecto atraviese una
+vista **no invertible** no compila, con código propio, al lado de `OOS2020`, `OOS2021` y
+`OOS2023` — que son las otras que miran las caras del objeto.
 
-**Listo cuando:** una función que proponga escribir en un destino por debajo de la
-clasificación de lo que leyó **no compila su propuesta**, con el mismo código que hoy lo dice
-de una materialización.
+**Listo cuando.** Un efecto sobre una vista que agrega **no compila** y el mensaje nombra la
+arista que lo impide; uno sobre una vista que solo renombra y recorta **sí**; y `ore view` dice,
+por vista, **si se puede escribir a través de ella**.
 
-### F2 · Los endosos
+### F1 · La `Propuesta` como artefacto
 
-Comprobar las atestaciones **antes** de invocar. Es verificación de firmas: reutiliza P2 entero.
+**Qué.** El contrato de invocación y el cotejo, **sin ejecutar nada**: un runner de mentira
+devuelve edits y `ore` comprueba que uno fuera de `effects:` se rechaza. Y la `Propuesta` lleva
+las **cinco** identidades.
 
-**Listo cuando:** una función cuyo endoso no verifica no llega a ejecutarse.
+Va aquí porque **es lo único que nadie más tiene** y no necesita runtime.
 
-### F3 · `ore-invoke`
+**Listo cuando.** Un efecto fuera de la superficie declarada no se aplica; la propuesta digiere
+igual dos veces; y **cambiar la vista cambia el digest**, que es lo que hace auditable por dónde
+se iba a entrar.
 
-wasm + WASI 0.2, una capacidad por efecto declarado.
+### F2 · El flujo sobre la propuesta
 
-**Listo cuando:** un módulo que intente abrir un socket falla **por no tener canal**, no por
-una comprobación.
+**Qué.** `flow` y `governance` corriendo sobre los edits propuestos, no sobre el árbol.
 
-### F4 · Aplicar
+**Listo cuando.** Una función que proponga escribir en un destino por debajo de la clasificación
+de lo que leyó **no compila su propuesta**, con el mismo código que hoy lo dice de una copia.
 
-Atómico, idempotente por el digest de la propuesta, y de alcance comprobado antes.
+### F3 · Los endosos
 
-**Listo cuando:** aplicar dos veces la misma propuesta produce el mismo estado, y una que toque
-dos fuentes se rechaza antes de escribir en la primera.
+**Qué.** Comprobar las atestaciones **antes** de invocar. Es verificación de firmas: reutiliza P2.
+
+**Listo cuando.** Una función cuyo endoso no verifica **no llega a ejecutarse**.
+
+### F4 · `ore-invoke`
+
+**Qué.** wasm + WASI 0.2, una capacidad por efecto declarado.
+
+**Listo cuando.** Un módulo que intente abrir un socket falla **por no tener canal**, no por una
+comprobación.
+
+### F5 · Aplicar por la vista
+
+**Qué.** El cuarto delegado. `ore` baja la propuesta a columnas siguiendo la vista, y
+`ore-write-<tipo>` la escribe. Atómico, idempotente por el digest de la propuesta, y de alcance
+comprobado antes.
+
+**Y una escritura parcial es lo normal, no la excepción.** Una vista con tres campos escribe tres
+columnas y deja el resto — que es exactamente lo que `proyectar` invierte *parcialmente*.
+
+**Listo cuando.** Aplicar dos veces la misma propuesta produce el mismo estado; una que toque dos
+fuentes se rechaza **antes** de escribir en la primera; y un `ore-write-<tipo>` que no sepa
+honrar algo **se niega en vez de aproximarlo**, que es la regla que `rango_servible` ya fijó para
+el otro lado.
+
+### F6 · La definición de listo
+
+**Qué.** Nada nuevo: una prueba de fuego con **números afirmados**, al modo de
+`pruebas-de-fuego/refresco.sh`. Nace roja y su salida es la lista de trabajo.
+
+Los actos, sobre un origen de verdad:
+
+| | qué pasa | qué se afirma |
+|---|---|---|
+| 1 | una función propone un cambio | la propuesta lleva las **cinco** identidades, y digiere igual dos veces |
+| 2 | se aplica | **una** fila cambia en el origen, y es la que la vista dejaba ver |
+| 3 | se aplica **otra vez** | **cero** escrituras · la idempotencia por digest |
+| 4 | se lee la vista | el cambio está, sin recompilar nada |
+
+Y las negativas, que valen igual:
+
+| | se provoca | tiene que pasar |
+|---|---|---|
+| a | un efecto por una vista que agrega | **no compila** · F0 |
+| b | un edit fuera de `effects:` | se rechaza, y se dice cuál |
+| c | una propuesta bajo un bundle viejo | se rechaza nombrando los dos digests |
+| d | dos fuentes en un efecto | se rechaza **antes de escribir en la primera** |
+| e | un endoso que no verifica | no se llega a invocar |
+
+**Listo cuando.** Los cuatro actos dan sus números, las cinco negativas fallan por su motivo, y
+**el origen queda como estaba** salvo la fila que tenía que cambiar.
+
+---
+
+## 7. Lo que falta decidir · con datos, no con opinión
+
+Tres, y **no se cierran aquí**. Se cierran como se cerraron las cinco del
+[ADR 0016](decisions/0016-el-testigo-y-el-rango.md): mirando lo que tienen escrito quienes ya lo
+resolvieron. Ahí seis sistemas coincidieron, y una de las lecturas **cambió la propuesta en vez
+de confirmarla**.
+
+### 7.1 · El vocabulario de `writes.mode`
+
+`changes.mode` habla el de Flink —`append`, `retract`, `upsert`— porque era el que ya existía. La
+cara `W` necesita el suyo, y probablemente ya existe también.
+
+**Dónde mirar:** las *vistas auto-actualizables* de SQL —PostgreSQL las tiene con reglas
+publicadas y expone `information_schema.views.is_updatable`, que es **literalmente esta pregunta,
+estandarizada**—; el `MERGE` de SQL:2003; las *Actions* de Foundry; y el `apply` sobre containers
+de Cognite.
+
+**Sospecha, para poder equivocarse por escrito:** que sea `insert`, `update`, `upsert`, `delete`
+como conjunto, y no un modo único — porque una tabla puede aceptar altas y no borrados, y eso hoy
+no se puede decir.
+
+### 7.2 · Qué exige una escritura parcial
+
+Proyectar es invertible **parcialmente**. La pregunta es si eso basta o si la vista **debe cubrir
+la clave** para que la fila escrita sea identificable.
+
+**Sospecha:** la clave es obligatoria, y `changes.key` vuelve a servir — es el mismo campo que
+hizo posible fundir un incremento.
+
+**Dónde mirar:** las condiciones exactas que PostgreSQL exige a una vista auto-actualizable, y qué
+hace Cognite cuando una vista mapea propiedades de **varios** containers.
+
+### 7.3 · Dónde vive la propuesta aplicada
+
+Una propuesta tiene digest, así que *«¿ya se aplicó?»* es contestable — **si alguien lo recuerda**.
+¿Es un artefacto en el almacén, como una copia? ¿Es un registro en el origen? ¿Es del cliente?
+
+**Dónde mirar:** dónde guarda Foundry el historial de *Actions*, y cómo Debezium recuerda su
+*offset* — que es el mismo problema con otro nombre, y su respuesta fue **fuera del origen**.
 
 ---
 
 ## 8. Lo que **no** entra, y no por falta de tiempo
 
-**Lecturas dinámicas.** §4.3. Es la decisión que hace analizable todo lo demás.
+**Lecturas dinámicas.** §3.3. Es la decisión que hace analizable todo lo demás.
 
 **Un runtime dentro de `ore`.** No se reabre: es la propiedad que `dependencias.rs` comprueba.
 
-**Transacciones distribuidas.** `02-function` §2 ya retiró `transaction.scope` como campo
-porque solo admitía un valor: *mejor un error que un campo*. Cruzar dos fuentes de forma atómica
-es un problema que no vamos a resolver mejor que nadie; lo que sí se puede es **decir que no se
-hace, y comprobarlo antes de escribir**.
+**Transacciones distribuidas.** `02-function` §2 ya retiró `transaction.scope` porque solo admitía
+un valor: *mejor un error que un campo*. Cruzar dos fuentes de forma atómica no lo vamos a
+resolver mejor que nadie; lo que sí se puede es **decir que no se hace, y comprobarlo antes de
+escribir**.
 
-**La caché de carga útil.** Es del ADR 0006 y va por su cuenta, en [`engine.md`](engine.md): hace
-falta para la latencia, no para la corrección. Lo que sí es requisito de aquí es que las dos
-identidades que una propuesta cita —el digest del bundle y **la versión de topología**—
-existan de verdad. La segunda no existía cuando se escribió esta página.
+**Escribir en la copia.** §4.3. La copia es derivada; el origen es la verdad.
+
+**Que la entidad deje de repetir.** Es M2 de [`sustrato.md`](sustrato.md), y va después: esto se
+construye sobre lo despejado, no a la vez.
+
+---
+
+## 9. Qué cambió al reescribirlo
+
+Para que se vea qué sobrevivió y qué no, y no haya que compararlo a mano.
+
+| | |
+|---|---|
+| **la forma** —*no aplica, propone*— | **intacta**. Era buena y es anterior al sustrato por casualidad, no por error |
+| las cuatro identidades | **cinco**: entra el plan de la vista |
+| `effects.datasourceRef` | **fuera**. El destino se deriva |
+| F1, F2, F3 · propuesta, flujo, endosos | **intactos**. No sabían que existía un sustrato y no les hacía falta |
+| F4 · `ore-invoke` | **intacto**. Un runtime de wasm no tiene nada que ver con esto |
+| F5 · aplicar | **reescrito**. Decía *«atómico e idempotente»* y no decía **por dónde**; ahora dice por la vista, si `Q` se invierte |
+| y uno delante | **F0**, la cara `W`. Sin él los demás no tienen destino |
+
+**Lo que esto enseña, y vale más que el documento:** la mitad permanente aguantó un cambio de
+paradigma completo debajo, y la desechable no. Es exactamente la línea que separa las dos, y la
+prueba de que estaba bien puesta.

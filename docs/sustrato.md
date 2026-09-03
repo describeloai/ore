@@ -299,6 +299,12 @@ invertir*.
 **Listo cuando** el compilador rechace una escritura sobre una cadena no invertible sin abrir una
 conexión, igual que hoy rechaza `OOS2020`.
 
+> **Y es el mismo peldaño que `F0` de [`functions.md`](functions.md), no dos.** Aquí se ve desde
+> el sustrato —*la tabla gana su tercera cara*— y allí desde arriba —*un efecto necesita un
+> destino*—, y es la misma línea de código. Lo que allí se añade es lo que este documento no
+> podía saber: **el efecto pierde su `datasourceRef`**, porque el destino se deriva por el mismo
+> camino que la lectura.
+
 ### M2 · La entidad deja de repetir
 
 No «`Entity` fuera» sino **su `properties` fuera**: pasa a **anotar** campos de una vista —tipo,
