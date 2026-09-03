@@ -90,6 +90,9 @@ impl Camino {
 pub struct Copia {
     pub nombre: String,
     pub camino: Camino,
+    /// Cuanto guarda el origen su changelog, si lo dice. `None` es **no se
+    /// sabe**, que no es lo mismo que «para siempre».
+    pub retencion: Option<String>,
 }
 
 /// Una que se declaró y no entró, con el motivo. Se cuentan: una copia que se
@@ -135,8 +138,16 @@ pub fn construir(
     tipos: &BTreeMap<(String, String, String), Type>,
 ) -> Inventario {
     let mut inv = Inventario::default();
-    for (nombre, plan, tabla, testigo) in declaradas(pkg, catalogo) {
-        meter(&mut inv, nombre, plan, tabla, testigo, Camino::Nadie);
+    for (nombre, plan, tabla, testigo, retencion) in declaradas(pkg, catalogo) {
+        meter(
+            &mut inv,
+            nombre,
+            plan,
+            tabla,
+            testigo,
+            retencion,
+            Camino::Nadie,
+        );
     }
     // **La topología va sin marca, y no es un olvido.** La suya es una fecha que
     // el operador pasa a `index refresh --marca`, y esa no está en el
@@ -150,6 +161,9 @@ pub fn construir(
             plan,
             tabla,
             Testigo::vacio(),
+            // Y sin retencion, por lo mismo: el `.oretopo` no declara cuanto
+            // guarda, porque no guarda un changelog — se reconstruye entero.
+            None,
             Camino::IndiceDeTopologia,
         );
     }
@@ -169,19 +183,25 @@ pub fn construir(
 /// > camino.** Existe para quien registre una copia cuyo destino ya conoce por
 /// > otra vía —el ejecutor, leyendo un almacén de verdad— y ahí sí es la
 /// > comprobación que separa un registro bueno de uno que *parece* bueno.
+#[allow(clippy::too_many_arguments)]
 fn meter(
     inv: &mut Inventario,
     nombre: String,
     plan: Nodo,
     tabla: Lectura,
     testigo: Testigo,
+    retencion: Option<String>,
     camino: Camino,
 ) {
     match inv
         .arbol
         .registrar(Materializacion::nueva(nombre.clone(), plan, tabla).con_testigo(testigo))
     {
-        Ok(()) => inv.copias.push(Copia { nombre, camino }),
+        Ok(()) => inv.copias.push(Copia {
+            nombre,
+            camino,
+            retencion,
+        }),
         Err(r) => inv.fuera.push(Fuera {
             nombre,
             porque: r.como_texto(),
@@ -227,6 +247,24 @@ pub fn marca_de(pkg: &Package, v: &Loaded) -> Marca {
     }
 }
 
+/// **Cuanto guarda el origen su changelog**, si lo dice.
+///
+/// `changes.retention` lleva desde v1alpha8 declarando para que sirve —*«quien
+/// planifique un refresco lo usa para saber si puede llegar tarde»*— y no tenia
+/// ningun consumidor. Este es el que le faltaba.
+///
+/// `None` es **no se sabe**, y no se convierte en «para siempre»: la
+/// especificacion lo dice donde declara el campo — *no se inventa, ausente
+/// significa que no se sabe*.
+pub fn retencion_de(pkg: &Package, v: &Loaded) -> Option<String> {
+    let r = vistas::raiz(pkg, v).ok()?;
+    pkg.table(r.tabla.as_deref()?)?
+        .section("changes")?
+        .get("retention")
+        .and_then(|(_, x)| x.as_str())
+        .map(String::from)
+}
+
 /// **Si la frescura que una copia declara se puede llegar a comprobar.**
 ///
 /// `Ok` con la marca que la fecharía; `Err` cuando no hay ninguna. No es un
@@ -243,7 +281,10 @@ pub fn frescura_comprobable(pkg: &Package, v: &Loaded) -> Result<Marca, ()> {
 }
 
 /// Las que el paquete declara: una `View` con `materialized`.
-fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura, Testigo)> {
+fn declaradas(
+    pkg: &Package,
+    catalogo: &Catalogo,
+) -> Vec<(String, Nodo, Lectura, Testigo, Option<String>)> {
     let mut out = Vec::new();
     for v in pkg
         .docs
@@ -275,6 +316,7 @@ fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura,
                 marca: marca_de(pkg, v),
                 valor: None,
             },
+            retencion_de(pkg, v),
         ));
     }
     out
@@ -388,6 +430,26 @@ pub fn imprimir(inv: &Inventario, restricciones: &[Restriccion]) {
         println!("    plan      {}", m.plan.digest());
         println!("    destino   {}·{}", m.tabla.datasource, m.tabla.objeto);
         println!("    testigo   {}", m.testigo.como_texto());
+        // **El horizonte.** `changes.retention` llevaba desde v1alpha8
+        // declarando para qué sirve y sin ningún consumidor; este es el suyo.
+        //
+        // Lo que se puede decir hoy es **cuánto guarda el origen**, y con eso ya
+        // se sabe si un refresco puede llegar tarde. Lo que NO se puede decir es
+        // si esta copia concreta ya caducó: eso exige el **valor** del testigo
+        // —que va vacío hasta R2— y un reloj, y `ore` no lee el reloj por
+        // invariante. Cuando los dos estén, la resta es
+        // `ore_core::frescura::alcance`, que ya está escrita y probada.
+        //
+        // Y la ausencia **no se rellena**: sin `retention` el origen no promete
+        // guardar para siempre, promete no decirlo.
+        println!(
+            "    horizonte {}",
+            match &c.retencion {
+                Some(r) => format!("el origen guarda {r} de cambios"),
+                None => "sin declarar · el origen no dice cuánto guarda, así que no se afirma nada"
+                    .to_string(),
+            }
+        );
         println!(
             "    refresco  {} — {}",
             c.camino.nombre(),

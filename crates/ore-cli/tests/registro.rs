@@ -488,3 +488,44 @@ fn una_copia_que_no_puede_fecharse_declara_el_estado_degradado() {
     assert!(out.contains("testigo   sin poblar"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── R1 · `changes.retention` deja de ser decorativa ──────────────────────────
+
+/// **El campo llevaba desde v1alpha8 diciendo para qué sirve y sin lector.**
+///
+/// *«Cuánto guarda el origen su changelog, si se sabe. Informativo: quien
+/// planifique un refresco lo usa para saber si puede llegar tarde.»* Eso es lo
+/// que sale ahora, por copia.
+#[test]
+fn el_horizonte_declarado_se_dice_por_copia() {
+    let (ok, out) = ver(&conformidad8(
+        "valid/field-witness-with-a-key-is-maintainable",
+    ));
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("    horizonte el origen guarda 7d de cambios"),
+        "{out}"
+    );
+}
+
+/// **Y lo que no se declara no se rellena.**
+///
+/// Un origen sin `retention` **no promete guardar para siempre**: promete no
+/// decirlo, y la especificación lo dice donde declara el campo —*no se inventa,
+/// ausente significa que no se sabe*. Colapsarlo con «cabe» sería inventar una
+/// garantía, que es la clase de fallo que no da síntoma hasta que el refresco
+/// falla contra el origen.
+#[test]
+fn sin_retencion_declarada_no_se_afirma_nada() {
+    let (_, out) = ver(&conformidad8(
+        "valid/materialized-view-over-table-within-clearance",
+    ));
+    assert!(
+        out.contains("    horizonte sin declarar"),
+        "la línea sale igual, y dice que no sabe:\n{out}"
+    );
+    assert!(
+        !out.contains("guarda") || out.contains("no dice cuánto guarda"),
+        "no se afirma ningún plazo:\n{out}"
+    );
+}

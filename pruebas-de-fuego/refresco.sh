@@ -151,7 +151,10 @@ else
   ok "a · {witness: field, mode: append} no compila"
 fi
 
-if "$ORE" view "$D" 2>&1 | grep -qi "retenci"; then
+# Sobre el VALOR y no sobre una palabra: lo que se afirma es que `7d` —lo que la
+# tabla declara— salga por la boca de la herramienta. Como se llame la linea es
+# cosa de quien la escriba.
+if "$ORE" view "$D" 2>&1 | grep -qE "horizonte .*7d"; then
   ok "b · la retención declarada se mira"
 else
   mal "b · \`changes.retention: 7d\` está declarada y nadie la nombra" "R1"
