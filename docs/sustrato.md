@@ -218,14 +218,57 @@ Cognite lo dice así, en su documentación:
 | **view** | *«Data is not queried directly from the containers»* · *«map properties from different containers in a flat object and rename or alias»* | no |
 | **data model** | *«group views that belong together for a purpose»* | no |
 
-Nuestra `View` **es** su view, y eso ya estaba medido. Lo nuevo es el piso de abajo: **la copia
-materializada es un container.** Tiene almacenamiento propio, esquema declarado, clave, testigo,
-la lee cualquier motor, se funde incrementalmente y se recoge. No se parece a un container: hace
-lo que hace un container.
+Lo nuevo es el piso de abajo: **la copia materializada es un container.** Tiene almacenamiento
+propio, esquema declarado, clave, testigo, la lee cualquier motor, se funde incrementalmente y se
+recoge. No se parece a un container: hace lo que hace un container.
 
 Con **una asimetría que no se tapa**: el suyo es almacenamiento **primario** —se ingiere dentro y
 se escribe—; el nuestro es **derivado** —es el resultado de un plan sobre un puntero, y es de solo
 lectura—. Esa diferencia tiene nombre y es [M1](#m1--la-tercera-cara).
+
+#### Y una equivalencia que este documento afirmó de más
+
+La primera versión de esta sección decía *«nuestra `View` **es** su view»*. **Es demasiado
+fuerte**, y se ve al mirar qué declara cada una.
+
+> La view de Cognite hace **dos trabajos**: mapea propiedades de containers —*«map properties from
+> different containers in a flat object and rename or alias»*— **y es el tipo lógico**, con
+> `implements` para heredar propiedades y aristas de otras views, agrupadas en un data model.
+>
+> **La nuestra hace uno.** Nuestra `View` es su mitad de mapeo. La mitad de tipo lógico es aquí
+> `Entity` —con su propio `implements`—, `Property.is`, `Concept` e `Interface`.
+
+Nosotros **partimos en dos lo que ellos tienen junto**, y la partición no es cosmética: es lo que
+permite que una vista exista antes de que nadie modele nada y que varias entidades se respalden de
+la misma.
+
+#### La vista no lleva significado. Lo **transporta**
+
+Esto es lo que la hace sustrato y no ontología, y es estructural: **una `View` no admite
+`labels`** — el campo no existe, y `document.rs` lo dice donde se decide:
+
+> *«Una vista tampoco admite `labels`, y es la decisión de forma que la define: NO LLEVA
+> SIGNIFICADO. Las etiquetas viven en la entidad y en el datasource; si la vista pudiera
+> declararlas habría dos sitios diciendo qué es una columna, y el día que discrepen ninguno diría
+> cuál manda.»*
+
+Su vocabulario entero lo confirma: `owner`, `from`, `freshness`, `fields`, `where`,
+`materialized`. Ni una clave dice qué **son** las cosas. `owner` es lo más cerca que llega, y es
+custodia, no semántica.
+
+**Y sin embargo la clasificación la atraviesa, y puede impedir que compile.** Las etiquetas que
+una vista carga le llegan por dos vías, y ninguna es ella misma:
+
+| vía | de dónde | qué aporta |
+|---|---|---|
+| **1** | el `datasource` | procedencia física: etiqueta todo lo que sale de él |
+| **2** | la **entidad**, por la cadena | significado: propiedad → campo → columna raíz, subiendo por el retículo |
+
+La vista es **donde las dos se encuentran**, y por eso es el sitio donde se detecta una fuga —lo
+enseña `ore view`, y `ore validate` no puede—.
+
+> **Está sujeta al significado sin ser fuente de él.** Esa es la frase, y es la que separa los dos
+> pisos.
 
 #### Y lo que hacen los otros dos, verificado
 
@@ -246,29 +289,95 @@ Eso zanja la duda que quedaba abierta desde [§3.1](#31--lo-que-eso-decidió-sob
 No es que ellos puedan servir ontología desde un puntero y nosotros no: **nadie lo hace**. Lo que
 ellos tienen y nosotros acabamos de conseguir es el sitio donde cae la copia.
 
-#### La respuesta, sin ambigüedad
+#### La respuesta, con el recorte exacto
 
-> **La capa ontológica se sienta sobre la VISTA. Ni sobre la tabla, ni sobre la copia.**
->
-> La vista se apoya en la tabla **o** en su copia, y **cuál de las dos es una decisión de
-> rendimiento y de frescura, tomada abajo, que la ontología no ve.**
+> **La capa ontológica que porta DATO se sienta sobre la vista, y solo sobre la vista.**
+> **La que porta SIGNIFICADO no se sienta sobre nada.**
 
-No es una aspiración: está construido y se ve en dos sitios del árbol.
+Las dos mitades, porque confundirlas es de donde salía la ambigüedad:
 
-- **`backedBy` nombra una vista**, nunca una tabla ni una copia. Una entidad no sabe si lo que la
-  respalda está copiado.
-- **`raíz de lectura` decide** cuál de las dos contesta, y `OOS2020` la obliga cuando el origen no
-  se deja leer.
+| | ¿sobre qué se sienta? | por qué |
+|---|---|---|
+| `Concept`, `Interface`, `Lattice`, `Ruleset` | **nada** | un concepto significa lo mismo esté o no instanciado. Ninguno nombra nada físico |
+| `Entity` + `Property` | **una vista**, con `backedBy` | prometen filas, y una promesa de filas necesita quién las conteste |
 
-La ontología nombra **la pregunta**; el sustrato decide **quién la contesta**. Esa indirección es
-la pieza entera: sin ella, mover una vista de virtual a materializada sería un cambio en el
-modelo, y con ella es un cambio en una línea que nadie de arriba nota.
+##### Jamás una tabla, y no por convención
+
+`backedBy` **DEBE** resolver a una vista —`OOS2018`—. **No existe sintaxis para nombrar una tabla
+desde arriba.** No está desaconsejado: no se puede escribir.
+
+El motivo es el que hizo nacer v1alpha8. Una tabla es **el objeto tal cual está**; una entidad es
+**un punto de vista sobre él**. Entre las dos hace falta un sitio donde decir *qué parte, con qué
+nombres y con qué recorte* — y si no existiera, eso viviría dentro de la entidad, y el significado
+y el contrato físico volverían al mismo documento. La prueba de que no es teórico está en el
+corpus: el caso `one-object-many-entities`. Si la entidad nombrara la tabla, **cada una repetiría
+el contrato físico**.
+
+##### Ni una vista materializada, y aquí la pregunta cambia de forma
+
+**No existe ese objeto.** `materialized` es un **campo de la vista**, no un `kind`; no hay
+`kind: MaterializedView`. Así que la ontología no puede sentarse sobre una vista materializada por
+la misma razón por la que no puede sentarse sobre «una vista los martes»: no es una cosa, es un
+**estado** de una cosa.
+
+Y la copia —el artefacto del almacén, nombrado por el digest de su plan— tampoco se nombra nunca
+desde arriba. La copia es **la respuesta**, no la pregunta. Quién contesta lo decide `raíz de
+lectura`, abajo.
+
+##### Y el porqué de verdad, que es uno solo
+
+```text
+Table    siempre física   ─┐
+copia    siempre física   ─┘ el sustrato
+
+View     ◄── la bisagra: puede ser cualquiera de las dos, y pasar de
+             una a otra es una línea que nadie de arriba nota
+
+Entity   siempre lógica   ─── la ontología
+```
+
+**La vista es el único piso indiferente a la física**, y de ahí sale todo lo demás:
+
+- **sobre la tabla**, materializar sería *un cambio en el modelo*: habría que tocar la entidad para
+  ganar velocidad;
+- **sobre la copia**, el modelo no existiría hasta que alguien copiara, y estaría leyendo una
+  respuesta cacheada que el origen desmiente en el refresco siguiente — que es por lo que
+  [`functions.md`](functions.md) §4.3 manda los efectos al origen y no a la copia: *la copia es
+  derivada, el origen es la verdad*;
+- **sobre la vista**, la decisión de rendimiento y frescura se toma abajo y no sube.
+
+Es la misma indirección que hace posible `OOS2020` —*una vista cuya raíz no se deja leer debe
+materializarse*—. Esa frase solo se puede escribir si hay un objeto que **es la pregunta con
+independencia de quién la conteste**.
+
+##### La excepción, con su número
+
+«Solo sobre la vista» es cierto del paradigma actual, no de todo lo que compila:
+
+```text
+v1alpha7   con backedBy:  5  | sin:   0
+v1alpha8   con backedBy: 14  | sin:   1
+v1alpha1   con backedBy:  3  | sin: 237
+```
+
+Las 237 son el mecanismo anterior —`Binding`, con la flecha al revés— y **siguen compilando**,
+porque un documento no caduca. La única de v1alpha8 sin `backedBy` es `hr.Department`, del caso
+`mixed-versions`, y está ahí a propósito: respaldada por un binding v1alpha1 en el mismo paquete,
+para afirmar que la migración no roza.
 
 #### Qué queda para que el piso esté completo
 
-Uno solo, y es el de la asimetría: **la copia es de solo lectura**. Con eso la ontología puede
-**responder** sobre el sustrato y no puede **actuar** sobre él. Escribir en el origen a través de
-la vista es [M1](#m1--la-tercera-cara), y es lo único que separa nuestro container del suyo.
+La asimetría sigue en pie —**la copia es de solo lectura**— y ya no es lo que falta, porque no era
+el sitio donde escribir. Un efecto va **al origen**, no a la copia, y por la vista.
+
+Lo que faltaba era que el objeto pudiera **decir qué acepta**, y eso es [M1](#m1--la-tercera-cara),
+cerrado: la tabla tiene su tercera cara, el compilador rechaza un efecto sobre un objeto que no
+acepta `update`, y una propuesta se coteja contra la superficie declarada sin ejecutar nada.
+
+Con eso la ontología ya puede **actuar** sobre el sustrato **declarando y verificando**. Lo que
+sigue sin poder es **aplicar**, y eso es deliberado: aplicar abre un socket, así que es de un
+programa delegado —`ore-write-<tipo>`, la cuarta delegación— y de
+[`functions.md`](functions.md) `F4` y `F5`.
 
 ## 4. La ramificación sale gratis, y no por suerte
 
@@ -298,6 +407,26 @@ invertir*.
 
 **Listo cuando** el compilador rechace una escritura sobre una cadena no invertible sin abrir una
 conexión, igual que hoy rechaza `OOS2020`.
+
+> ### ✅ Hecho, en `F0a` y `F0b`
+>
+> `Table.writes` es un **conjunto** —`insert`, `update`, `delete`— y no los modos que este
+> documento imaginó: `information_schema.views` de SQL expone tres columnas separadas, no un modo.
+> Sin `upsert` —es la suma de dos— y **sin clave propia**: la fila se identifica con `changes.key`,
+> que ya existía, y `OOS2024` la exige a la **tabla** cuando acepta `update` o `delete`.
+>
+> Que se le exija a la tabla y no a la vista lo decidió una medida en contra de lo que aquí se
+> sospechaba: **de 20 vistas v1alpha8 sobre una tabla resuelta, 17 se apoyan en una tabla sin
+> clave**, así que exigírsela a la vista habría dejado el 85 % del corpus sin poder escribirse.
+>
+> El código nuevo *para lo que hoy no tiene nombre* es `OOS7013`, y con una honestidad que hay que
+> leer entera: **hoy no puede fallar por ningún documento**, porque el vocabulario de la vista es
+> exactamente el fragmento invertible. Lo que tiene dientes es el **censo** que ata la
+> clasificación al vocabulario — añadir una clave a `View` sin decir si se invierte no compila la
+> suite.
+>
+> Y `OOS7012`, que este documento no previó: un efecto sobre un objeto que **no acepta que lo
+> actualicen**. La ausencia de `writes` cuenta como negativa, igual que `reads: none`.
 
 > **Y es el mismo peldaño que `F0` de [`functions.md`](functions.md), no dos.** Aquí se ve desde
 > el sustrato —*la tabla gana su tercera cara*— y allí desde arriba —*un efecto necesita un
