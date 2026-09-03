@@ -25,12 +25,14 @@ favor no es un registro: es una colección de justificaciones.
 | [0013](0013-el-protocolo-del-mantenedor.md) · el protocolo del mantenedor | mantener es una **sesión** por stdin, y el dictamen de coste no se obedece a sí mismo | aceptado |
 | [0014](0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) · no se mide el tiempo, se cuenta el trabajo | la unidad de coste es **una fila mirada por un operador**; y medir destapó que la incrementalización estaba escrita y no ocurría | aceptado |
 | [0015](0015-el-protocolo-del-almacen.md) · el protocolo del almacén | una copia es un **artefacto nombrado por su digest** —sobre nuestro, carga Parquet— y subirlo es de un programa delegado | aceptado |
-| [0016](0016-el-testigo-y-el-instante.md) · el testigo y el instante | preguntarle al origen **hasta dónde está**, y poder pedirle las filas **de ese punto** | **propuesto** |
+| [0016](0016-el-testigo-y-el-rango.md) · el testigo y el rango | preguntarle al origen **hasta dónde está**, y poder pedirle las filas **de un rango** | **propuesto** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
-implementaciones. Lleva al final una lista de preguntas abiertas en vez de respuestas, que es el
-estado en el que de verdad está.
+implementaciones. Es también la única que decide **mirando fuera**: sus cinco preguntas abiertas
+se contestaron leyendo lo que Debezium, Iceberg, Delta, Snowflake, BigQuery y Airbyte tienen
+escrito, y los seis coinciden. Una de esas lecturas —que el modo `field` es *at-least-once* por
+construcción— cambió la propuesta en vez de confirmarla.
 
 **0008, 0015 y 0016 son la misma costura creciendo**: la petición del driver era un fragmento del
 plan; el almacén añadió el artefacto; y esto añade lo único que ninguno de los dos podía contestar
