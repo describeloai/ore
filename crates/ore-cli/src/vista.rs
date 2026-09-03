@@ -47,7 +47,7 @@ use ore_view::{
 
 /// El conducto que una vista materializada instancia. El mismo que el eje
 /// `payload` del binding, porque es la misma cosa con otro dueño.
-const CONDUCTO: &str = "materialization.payload";
+pub(crate) const CONDUCTO: &str = "materialization.payload";
 
 pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     let pkg = match crate::cargar_valido(path, true) {
@@ -538,7 +538,11 @@ fn objeto_fisico(pkg: &Package, v: &Loaded) -> Option<(String, String)> {
 /// Es exactamente el vocabulario de v1alpha7 —seleccionar, renombrar,
 /// recortar— y ni una operación más. Lo que la gramática no tiene, el plan no lo
 /// tiene.
-fn cuerpo(pkg: &Package, v: &Loaded, tipos: &BTreeMap<(String, String, String), Type>) -> Nodo {
+pub(crate) fn cuerpo(
+    pkg: &Package,
+    v: &Loaded,
+    tipos: &BTreeMap<(String, String, String), Type>,
+) -> Nodo {
     let campos = vistas::campos(v);
     let filtros = vistas::filtros(v);
 
@@ -694,7 +698,7 @@ fn literal(raw: &str, t: &Type) -> Valor {
 /// Qué lleva puesto cada columna raíz, por las dos vías que el núcleo conoce:
 /// las etiquetas del datasource, y las de cada propiedad de cada entidad
 /// respaldada por una vista, bajadas por la cadena hasta la columna.
-fn etiquetas_de_raiz(
+pub(crate) fn etiquetas_de_raiz(
     pkg: &Package,
     lat: &BTreeMap<String, Lattice>,
 ) -> BTreeMap<Raiz, BTreeMap<String, String>> {

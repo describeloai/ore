@@ -569,8 +569,60 @@ no detectó un fallo: detectó una dependencia que no hacía falta.
 |---|---|
 | el almacén delegado | ✅ `ore-store-r2`, verificado contra R2 |
 | el sobre y la carga | ✅ `ORECOPY1` + Parquet, deterministas y releídos por un motor ajeno |
-| **el ciclo en `ore`** | ⏳ compilar el plan, `digest(plan, testigo)`, `HEAD`, canalizar las filas |
+| **el ciclo en `ore`** | ✅ `ore materialize`, los seis pasos |
 | **BigQuery** | 🚫 **bloqueado** |
+
+#### Hecho · el ciclo, y el paso que no cuadraba
+
+[`ore materialize`](../crates/ore-cli/src/materializar.rs), corriendo entero:
+
+```
+════ ① a ④ · en seco ════
+ventas.copia
+  haría falta copiarla · testigo sin poblar
+  el recibo no está: ore/v1/plan/d2eac9a2…
+
+════ el ciclo entero ════
+ventas.copia
+  copiada · ore/v1/6f5c9853fc7858019c296b247686a106c43772a1d0501956764c82baf486fd02
+  3 filas · 1278 bytes · subido: true
+
+════ otra vez ════
+ventas.copia
+  ya está · ore/v1/6f5c9853…
+  el recibo lo dijo sin leer una sola fila del origen
+```
+
+**El paso 4 del ADR no se podía hacer como estaba escrito**, y se ve al construirlo: el nombre es
+el digest del artefacto **entero**, así que calcularlo exige haber leído ya todas las filas. Lo
+cierra el **recibo** —71 bytes en `ore/v1/plan/<sha256 de la cabecera>` con la clave dentro— y
+queda como enmienda en el propio [ADR 0015](decisions/0015-el-protocolo-del-almacen.md).
+
+**`ore` no abre un socket en ningún momento.** Está en medio de dos procesos: las filas salen del
+stdout de `ore-read-<tipo>` y entran por el stdin de `ore-store-r2`. Y el origen del ensayo es un
+directorio de NDJSON, no una base de datos — la misma prueba que `ore-read-jsonl` existe para
+hacer: *si el mismo plan sirve a un fichero y a un almacén, la petición estaba cortada por el
+sitio correcto*.
+
+**Dos cosas que el ciclo se niega a hacer, y las dos son la respuesta segura:**
+
+- una vista cuyo conducto no está declarado **no se materializa** — `OOS4011`, y salió en el
+  primer intento del ensayo, que es donde tenía que salir;
+- un `where` con **varios** valores sobre una columna no se copia: la petición del driver expresa
+  una igualdad, y traer de más metería en la copia filas que la vista excluye. Filtrar el residuo
+  en `ore` es puro cómputo y se puede hacer; mientras no se haga, negarse.
+
+**Y el hueco que queda abierto, que es de protocolo.** El paso 3 —*preguntarle al origen su
+testigo*— no tiene verbo: [ADR 0008](decisions/0008-el-protocolo-del-driver.md) define `catalogo`
+y `leer`, y ninguno pregunta *hasta dónde estás ahora*. Así que la **marca** viaja —sale de
+`changes.witness`, que es gramática— y el **valor** va vacío. La consecuencia hay que decirla
+porque es grande:
+
+> Con el testigo vacío, dos materializaciones del mismo plan en momentos distintos dan **la misma
+> cabecera**, el recibo dice «ya está», y la copia **no se refresca nunca**. Sirve para poblar una
+> vez; no sirve para mantener.
+
+Cerrarlo es un verbo más en 0008 —`testigo <url> <objeto>`— y es una decisión de protocolo.
 
 #### Hecho · la deuda de T3, contra el dataset real
 

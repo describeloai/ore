@@ -119,6 +119,44 @@ pub fn clave(artefacto: &[u8]) -> String {
     format!("ore/v1/{}", d.trim_start_matches("sha256:"))
 }
 
+/// **El recibo**, y por qué hace falta uno.
+///
+/// El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md) dice
+/// del paso 4 del ciclo: *«calcula `digest(plan, testigo)` y hace un `HEAD`. Si
+/// está, termina aquí»*, y promete con ello **saber si hay que copiar sin copiar
+/// nada**.
+///
+/// Eso **no se puede hacer** con el nombre del artefacto y nada más: el nombre
+/// es el digest del artefacto **entero**, carga incluida, y para calcularlo hay
+/// que haber leído ya todas las filas. El paso 4, tal y como estaba escrito,
+/// ahorraba la subida y no la lectura — que es el trabajo caro.
+///
+/// El recibo lo arregla con un objeto minúsculo:
+///
+/// ```text
+/// ore/v1/plan/<sha256 de la cabecera>   →   contiene la clave del artefacto
+/// ```
+///
+/// La cabecera se conoce **antes** de leer una fila —plan, esquema, testigo,
+/// conducto y bundle salen todos de la compilación— así que el `HEAD` de verdad
+/// se hace aquí. Y **sigue sin haber puntero mutable**: el nombre del recibo
+/// también es su contenido, y se escribe con `If-None-Match: *`.
+///
+/// # Lo que el recibo mide sin proponérselo
+///
+/// > **Es donde la promesa del testigo se pone a prueba.**
+///
+/// La cabecera determina el artefacto **solo si el origen es determinista dado
+/// el testigo**. Si un testigo no fija de verdad el estado del origen, dos
+/// materializaciones con la misma cabecera producen cargas distintas — y
+/// entonces el mismo recibo apuntaría a dos artefactos. `If-None-Match` deja
+/// ganar al primero, así que la discrepancia queda **detectable** en vez de
+/// silenciosa: el segundo ve que el recibo apunta a otro sitio.
+pub fn recibo(c: &Cabecera) -> String {
+    let d = ore_core::digest::de_bytes(c.jcs().as_bytes());
+    format!("ore/v1/plan/{}", d.trim_start_matches("sha256:"))
+}
+
 /// Vuelve a abrirlo. Existe para que la prueba de ida y vuelta sea una prueba y
 /// no una inspección a ojo, y para que quien lea una copia no tenga que adivinar
 /// dónde acaba la cabecera.

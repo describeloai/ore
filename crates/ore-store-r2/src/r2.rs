@@ -224,6 +224,26 @@ fn cliente() -> Result<ureq::Agent, String> {
         .build())
 }
 
+/// Lee un objeto entero. Solo se usa para el **recibo**, que son 71 bytes: la
+/// clave del artefacto que una cabecera ya produjo.
+pub fn leer(c: &Cuenta, clave: &str) -> Result<Option<String>, String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let cab = firmar(c, "GET", &ruta, Vec::new(), &vacio);
+    let mut r = cliente()?.get(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(resp) => resp
+            .into_string()
+            .map(|s| Some(s.trim().to_string()))
+            .map_err(|e| format!("el recibo `{clave}` no se pudo leer: {e}")),
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
+    }
+}
+
 /// **El paso 4 del ciclo: se sabe si hay que copiar sin copiar nada.**
 ///
 /// Es el que paga el diseño entero. Un `HEAD` sobre el nombre del digest evita

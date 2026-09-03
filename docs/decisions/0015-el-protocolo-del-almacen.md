@@ -115,6 +115,38 @@ es*.
 
 El paso 4 es el que paga el diseño: **se sabe si hay que copiar sin copiar nada**.
 
+### Enmienda · el paso 4 necesitaba un recibo
+
+Lo de arriba se escribió antes de construirlo, y al construirlo no cuadraba: **el nombre es el
+digest del artefacto entero, carga incluida**, así que para calcularlo hay que haber leído ya
+todas las filas. Ese `HEAD` ahorraba la subida y no la lectura — que es el trabajo caro y el que
+la frase prometía ahorrar.
+
+Lo cierra un objeto de 71 bytes:
+
+```text
+ore/v1/plan/<sha256 de la cabecera>   →   contiene la clave del artefacto
+```
+
+La cabecera —plan, esquema, testigo, conducto, bundle— se conoce **antes de pedirle una fila a
+nadie**, porque sale entera de la compilación. Así que el `HEAD` de verdad se hace sobre el
+recibo, y el paso 4 pasa a ser cierto en vez de aspiracional.
+
+**Y sigue sin haber puntero mutable**, que era la propiedad que había que no perder: el nombre del
+recibo también es su contenido, y se escribe con `If-None-Match: *`. Se escribe **después** del
+artefacto, y el orden importa: al revés, un fallo en la subida dejaría un recibo que promete una
+copia que no está.
+
+#### Lo que el recibo mide sin proponérselo
+
+> **Es donde la promesa del testigo se pone a prueba.**
+
+La cabecera determina el artefacto **solo si el origen es determinista dado el testigo**. Si un
+testigo no fija de verdad el estado del origen, dos materializaciones con la misma cabecera
+producen cargas distintas — y entonces el mismo recibo apuntaría a dos artefactos. `If-None-Match`
+deja ganar al primero, así que la discrepancia queda **detectable**: el segundo escritor ve que el
+recibo apunta a otro sitio que el artefacto que acaba de sellar.
+
 ---
 
 ## Medido contra un R2 de verdad

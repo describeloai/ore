@@ -14,6 +14,7 @@ mod fuente;
 mod inductor;
 mod inicio;
 mod lector;
+mod materializar;
 mod mcp;
 mod registro;
 mod revision;
@@ -294,6 +295,19 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Puebla las vistas `materialized`: el ciclo entero del ADR 0015.
+    ///
+    /// Compila el plan, comprueba el flujo, pregunta al almacen si la copia ya
+    /// esta —y si esta, **no lee ni una fila del origen**—, y si no, canaliza
+    /// las filas de `ore-read-<tipo>` a `ore-store-r2`. `ore` no abre un socket
+    /// en ningun momento: esta en medio de dos procesos.
+    Materialize {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Dice que haria y no lo hace. No lee el origen ni escribe nada.
+        #[arg(long)]
+        seco: bool,
+    },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
     /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
@@ -344,6 +358,7 @@ fn main() -> std::process::ExitCode {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),
+        Command::Materialize { path, seco } => return materializar::materializar(path, *seco),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -438,6 +453,7 @@ fn main() -> std::process::ExitCode {
         | Command::Discover { .. }
         | Command::Report { .. }
         | Command::View { .. }
+        | Command::Materialize { .. }
         | Command::Review { .. }
         | Command::Lock { .. }
         | Command::Pack { .. }

@@ -97,7 +97,7 @@ pub fn catalogo(raiz: &Path, fuente: &str) -> Result<String, Fallo> {
 
 // ── El manifiesto y el secreto ──────────────────────────────────────────────
 
-fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), Fallo> {
+pub fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), Fallo> {
     let ruta = raiz.join(MANIFIESTO);
     let texto = std::fs::read_to_string(&ruta).map_err(|e| {
         fallo(
@@ -156,7 +156,7 @@ fn declaracion(raiz: &Path, fuente: &str) -> Result<(String, String), Fallo> {
 /// Que ORE lea `.env.local` no es comodidad: `source add` lo **escribe**, y un
 /// fichero que se escribe y nadie lee es la misma figura que este proyecto lleva
 /// encontrando una y otra vez. En CI no existe, y ahí manda el entorno.
-fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
+pub fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
     if let Ok(v) = std::env::var(env)
         && !v.trim().is_empty()
     {
