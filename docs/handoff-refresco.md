@@ -252,6 +252,38 @@ mutable**, así que borrarla no puede romper a quien la estuviera usando por cas
 árbol verde; y **el almacén queda acotado**: tras `N` refrescos de una vista, el número de objetos
 bajo `ore/v1/` es el que se declare y no `N`.
 
+#### Hecho · y el criterio del ADR no se podía calcular
+
+[ADR 0015](decisions/0015-el-protocolo-del-almacen.md) la dejó abierta diciendo *«una copia cuyo
+digest ya no está en ningún bundle es basura»*. **Eso no se puede calcular**: el bundle no nombra
+copias, así que por ese criterio **todas** serían basura, la vigente incluida.
+
+Lo que sí se puede calcular es **superada**. Bajo el prefijo de un plan hay N recibos, y
+exactamente uno corresponde a la cabecera que `ore` construye **ahora**; los demás son refrescos
+anteriores. No exige nada que no exista ya.
+
+Y para eso el recibo cambia de sitio: **`ore/v1/plan/<plan>/<cabecera>`**. El plan pasa a ser un
+segmento de ruta porque **agrupa** — sin eso no se puede enumerar las copias de un mismo plan— y
+no introduce ningún puntero mutable, que era la propiedad a no perder: los dos segmentos siguen
+siendo contenido.
+
+**Explícita y no automática**, y esto sí es una corrección al ADR. Argumentaba que borrar era
+seguro *«porque nada la referencia por nombre mutable»*: cierto para quien encuentre una copia por
+casualidad, **falso para quien se guardó el digest**. Una copia superada sigue siendo cierta hasta
+su marca. Así que se borra cuando alguien lo pide —`ore materialize --recoger`— y hay un modo seco
+que dice antes qué se iría.
+
+**Medido contra el R2 real**: tres refrescos dejan 6 objetos; recoger deja **2**, el artefacto
+vigente y su recibo. Y el orden importa —primero el recibo, después el artefacto—: al revés, una
+interrupción dejaría un recibo apuntando a algo que ya no está, y el paso ④ diría *«ya está»* de
+una copia borrada.
+
+**Dos cosas que salieron por el camino.** La recogida iba después de sellar, y así **el retorno
+temprano de «ya está» se la saltaba** — justo el caso en el que un almacén lleno de copias viejas
+no se limpia nunca; ahora va en cuanto se conoce la cabecera vigente. Y enumerar por prefijo daba
+`403`: SigV4 firma la cadena de consulta **aparte de la ruta y percent-codificada**, `/` incluido.
+El error llega como *status code 403* y se lee como una credencial mala; era la firma.
+
 ---
 
 ### R6 · el ciclo cerrado, y medido en filas

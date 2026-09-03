@@ -307,6 +307,12 @@ enum Command {
         /// Dice que haria y no lo hace. No lee el origen ni escribe nada.
         #[arg(long)]
         seco: bool,
+        /// Borra las copias del mismo plan que quedaron atras.
+        ///
+        /// **Explicito y no automatico**: una copia superada sigue siendo cierta
+        /// hasta su marca, y alguien puede estar leyendola por su digest.
+        #[arg(long)]
+        recoger: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -358,7 +364,11 @@ fn main() -> std::process::ExitCode {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),
-        Command::Materialize { path, seco } => return materializar::materializar(path, *seco),
+        Command::Materialize {
+            path,
+            seco,
+            recoger,
+        } => return materializar::materializar(path, *seco, *recoger),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),

@@ -94,8 +94,10 @@ fn correr(verbo: &str) -> Result<String, String> {
             .jcs())
         }
         "sellar" => sellar(&cuenta, cab, &recibo, lineas),
+        "recoger" => recoger(&cuenta, &cab, &recibo, false),
+        "recoger-seco" => recoger(&cuenta, &cab, &recibo, true),
         otro => Err(format!(
-            "verbo desconocido `{otro}`: este programa hace `buscar` y `sellar`"
+            "verbo desconocido `{otro}`: este programa hace `buscar`, `sellar`, `recoger` y              `recoger-seco`"
         )),
     }
 }
@@ -205,4 +207,70 @@ fn objeto_plano(linea: &str) -> Result<carga::Fila, String> {
         }
     }
     Ok(out)
+}
+
+/// **La recogida de basura, y por qué el criterio no es el que el ADR escribió.**
+///
+/// [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md) la dejó
+/// abierta diciendo *«una copia cuyo digest ya no está en ningún bundle es
+/// basura»*. **Eso no se puede calcular**: el bundle no nombra copias, así que
+/// por ese criterio todas serían basura, incluida la vigente.
+///
+/// Lo que sí se puede calcular es **superada**: bajo el prefijo de un plan hay
+/// N recibos, y exactamente uno corresponde a la cabecera que `ore` construye
+/// **ahora**. Los otros son refrescos anteriores. Ese criterio no exige nada que
+/// no exista ya, y es el que se usa.
+///
+/// # Por qué es explícita y no automática
+///
+/// Porque una copia superada **sigue siendo cierta hasta su marca**, y alguien
+/// puede estar leyéndola por su digest. El ADR argumentaba que borrar es seguro
+/// *«porque nada la referencia por nombre mutable»* — cierto para quien la
+/// encuentre por casualidad, y falso para quien se guardó el digest. Así que se
+/// borra cuando alguien lo pide, y `recoger-seco` dice antes qué se iría.
+///
+/// # El orden
+///
+/// Primero el recibo, después el artefacto. Al revés, una interrupción dejaría
+/// un recibo apuntando a algo que ya no está — y el paso ④ del ciclo diría *«ya
+/// está»* de una copia borrada.
+fn recoger(
+    cuenta: &r2::Cuenta,
+    cab: &sobre::Cabecera,
+    vigente: &str,
+    seco: bool,
+) -> Result<String, String> {
+    let prefijo = sobre::prefijo_de_plan(&cab.plan);
+    let recibos = r2::listar(cuenta, &prefijo)?;
+
+    let mut borrados = 0usize;
+    let mut sin_artefacto = 0usize;
+    for r in recibos.iter().filter(|r| *r != vigente) {
+        // El artefacto al que apunta, antes de quitarle el puntero.
+        let artefacto = r2::leer(cuenta, r)?;
+        if !seco {
+            r2::borrar(cuenta, r)?;
+            match &artefacto {
+                Some(a) => r2::borrar(cuenta, a)?,
+                None => sin_artefacto += 1,
+            }
+        } else if artefacto.is_none() {
+            sin_artefacto += 1;
+        }
+        borrados += 1;
+    }
+
+    Ok(ore_core::json::Json::obj([
+        ("recibos", ore_core::json::Json::Int(recibos.len() as i64)),
+        ("seco", ore_core::json::Json::Bool(seco)),
+        ("superadas", ore_core::json::Json::Int(borrados as i64)),
+        // Un recibo sin artefacto es una subida que se cortó en medio. Se cuenta
+        // porque no debería pasar, y contarlo es cómo se sabe si pasa.
+        (
+            "sin_artefacto",
+            ore_core::json::Json::Int(sin_artefacto as i64),
+        ),
+        ("vigente", ore_core::json::Json::s(vigente)),
+    ])
+    .jcs())
 }

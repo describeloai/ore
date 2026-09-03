@@ -104,6 +104,23 @@ fn hmac(clave: &[u8], datos: &str) -> Vec<u8> {
     fuera.finalize().to_vec()
 }
 
+/// RFC 3986, que es lo que SigV4 exige de cada clave y cada valor de la cadena
+/// de consulta — **y `/` se codifica**, que es donde esto falla si no se hace.
+///
+/// Costó un `403` averiguarlo, y el error no ayuda: llega como *status code 403*
+/// y se lee como una credencial mala. Lo era la firma, porque la cadena firmada
+/// y la enviada no coincidían.
+fn uri(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// Base64 estándar, que es como S3 quiere el checksum. Son doce líneas y evita
 /// una dependencia más en un binario que ya enlaza TLS.
 fn base64(b: &[u8]) -> String {
@@ -159,6 +176,19 @@ fn firmar(
     c: &Cuenta,
     metodo: &str,
     ruta: &str,
+    cabeceras: Vec<(String, String)>,
+    hash_cuerpo: &str,
+) -> Vec<(String, String)> {
+    firmar_con_consulta(c, metodo, ruta, "", cabeceras, hash_cuerpo)
+}
+
+/// Lo mismo, con cadena de consulta. Existe porque enumerar por prefijo la
+/// necesita —`?list-type=2&prefix=…`— y SigV4 la firma **aparte** de la ruta.
+fn firmar_con_consulta(
+    c: &Cuenta,
+    metodo: &str,
+    ruta: &str,
+    consulta: &str,
     mut cabeceras: Vec<(String, String)>,
     hash_cuerpo: &str,
 ) -> Vec<(String, String)> {
@@ -175,7 +205,16 @@ fn firmar(
         .map(|(k, v)| format!("{k}:{}\n", v.trim()))
         .collect();
 
-    let peticion = format!("{metodo}\n{ruta}\n\n{canonicas}\n{lista}\n{hash_cuerpo}");
+    // Los parámetros, **ordenados por nombre**: la forma canónica otra vez, y
+    // por lo mismo — dos peticiones equivalentes tienen que firmar los mismos
+    // bytes. SigV4 los firma **aparte** de la ruta, así que meterlos dentro de
+    // ella daría `SignatureDoesNotMatch`, que se lee como una credencial mala.
+    let mut ps: Vec<&str> = consulta.split('&').filter(|s| !s.is_empty()).collect();
+    ps.sort_unstable();
+    let peticion = format!(
+        "{metodo}\n{ruta}\n{}\n{canonicas}\n{lista}\n{hash_cuerpo}",
+        ps.join("&")
+    );
     let ambito = format!("{fecha}/{}/s3/aws4_request", c.region);
     let por_firmar = format!(
         "AWS4-HMAC-SHA256\n{marca}\n{ambito}\n{}",
@@ -292,6 +331,59 @@ pub fn subir(c: &Cuenta, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
         // Ya estaba. Y como el nombre es el contenido, ya estaba lo mismo.
         Err(ureq::Error::Status(412, _)) => Ok(false),
         Err(e) => Err(format!("la subida de `{clave}` falla: {e}")),
+    }
+}
+
+
+/// Enumera por prefijo. Es lo único que la recogida necesita del almacén, y R2
+/// lo honra — medido en el ADR 0015 antes de escribirlo.
+///
+/// Sin paginar, y se dice: mil recibos de un mismo plan son mil refrescos sin
+/// recoger, y ese es otro problema que este no arregla.
+pub fn listar(c: &Cuenta, prefijo: &str) -> Result<Vec<String>, String> {
+    // El valor va codificado **una vez** y se usa el mismo texto en la URL y en
+    // la firma: si difirieran, el servidor firmaría otra cosa que el cliente.
+    let consulta = format!("list-type=2&prefix={}", uri(prefijo));
+    let canonica = format!("/{}", c.bucket);
+    let ruta = format!("{canonica}?{consulta}");
+    let vacio = hex(&sha256(b""));
+    let cab = firmar_con_consulta(c, "GET", &canonica, &consulta, Vec::new(), &vacio);
+    let mut r = cliente()?.get(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    let cuerpo = r
+        .call()
+        .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
+        .into_string()
+        .map_err(|e| format!("la respuesta de la enumeración no se pudo leer: {e}"))?;
+    // El XML de S3, leído por sus etiquetas. No entra un analizador de XML para
+    // una lista de claves: lo que hace falta es lo que hay entre `<Key>` y su
+    // cierre, y eso es una partición.
+    Ok(cuerpo
+        .split("<Key>")
+        .skip(1)
+        .filter_map(|t| t.split_once("</Key>").map(|(k, _)| k.to_string()))
+        .collect())
+}
+
+/// Borra. Uno a uno y no en lote: la recogida es una operación deliberada y
+/// pocas, y un `DeleteObjects` en lote pide firmar un cuerpo XML para ahorrar
+/// unas cuantas peticiones que nadie está contando.
+pub fn borrar(c: &Cuenta, clave: &str) -> Result<(), String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let cab = firmar(c, "DELETE", &ruta, Vec::new(), &vacio);
+    let mut r = cliente()?.delete(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(_) => Ok(()),
+        // Ya no estaba. La recogida es idempotente por diseño: dos pasadas
+        // sobre el mismo estado hacen lo mismo que una.
+        Err(ureq::Error::Status(404, _)) => Ok(()),
+        Err(e) => Err(format!("no se pudo borrar `{clave}`: {e}")),
     }
 }
 

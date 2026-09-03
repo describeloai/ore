@@ -9,6 +9,7 @@
 //! | 4 | el recibo: **si está, termina aquí** | `ore-store-r2 buscar` |
 //! | 5 | leer, canalizar, sellar y subir | `ore-read-<tipo> leer` → `ore-store-r2 sellar` |
 //! | 6 | registrar la copia | `ore` |
+//! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-r2 recoger` |
 //!
 //! # Lo que `ore` hace y lo que no
 //!
@@ -44,7 +45,7 @@ use ore_view::{Catalogo, Clasificacion, Vista, comprobar, esquema, linaje};
 /// sitio y no en el otro.
 const CONDUCTO: &str = crate::vista::CONDUCTO;
 
-pub fn materializar(path: &Path, seco: bool) -> std::process::ExitCode {
+pub fn materializar(path: &Path, seco: bool, recoger: bool) -> std::process::ExitCode {
     let pkg = match crate::cargar_valido(path, true) {
         Ok(p) => p,
         Err(c) => return c,
@@ -98,6 +99,7 @@ pub fn materializar(path: &Path, seco: bool) -> std::process::ExitCode {
             &conductos,
             &bundle,
             seco,
+            recoger,
         ) {
             Ok(linea) => println!("  {linea}"),
             Err(e) => {
@@ -129,6 +131,7 @@ fn una(
     conductos: &BTreeMap<String, ore_core::flow::Labels>,
     bundle: &str,
     seco: bool,
+    recoger: bool,
 ) -> Result<String, String> {
     // ── ① El plan, su digest y su esquema ───────────────────────────────────
     let plan = catalogo
@@ -169,6 +172,22 @@ fn una(
     // ── ④ El recibo ─────────────────────────────────────────────────────────
     let cabecera = cabecera(&plan.digest(), &esq, &testigo, bundle);
     let buscado = almacen("buscar", &cabecera, None)?;
+
+    // La recogida va **aquí**, en cuanto se sabe cuál es la cabecera vigente, y
+    // no después de sellar. El motivo salió al probarla: si va al final, el
+    // retorno temprano de *«ya está»* se la salta — y ese es justamente el caso
+    // en el que un almacén lleno de copias viejas no se limpia nunca.
+    let recogidas = if recoger && !seco {
+        let g = almacen("recoger", &cabecera, None)?;
+        g.get("superadas")
+            .and_then(|(_, x)| x.as_str())
+            .filter(|n| *n != "0")
+            .map(|n| format!("\n  recogidas {n} copia(s) superada(s)"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     if buscado
         .get("existe")
         .and_then(|(_, x)| x.as_str())
@@ -179,7 +198,7 @@ fn una(
             .and_then(|(_, x)| x.as_str())
             .unwrap_or("?");
         return Ok(format!(
-            "ya está · {clave}\n  el recibo lo dijo sin leer una sola fila del origen"
+            "ya está · {clave}\n  el recibo lo dijo sin leer una sola fila del origen{recogidas}"
         ));
     }
     if seco {
@@ -207,7 +226,11 @@ fn una(
     let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
     let salida = almacen("sellar", &cabecera, Some(&filas))?;
 
-    // ── ⑥ Registrar ─────────────────────────────────────────────────────────
+    // ── ⑥ Registrar, y recoger lo que quedó atrás ───────────────────────────
+    //
+    // La recogida va **después** de que la copia nueva esté arriba y no antes:
+    // así, si algo se corta en medio, lo que sobra es una copia de más y no una
+    // de menos.
     let campo = |k: &str| {
         salida
             .get(k)
@@ -216,7 +239,7 @@ fn una(
             .to_string()
     };
     Ok(format!(
-        "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}",
+        "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}",
         campo("clave"),
         campo("filas"),
         campo("bytes"),

@@ -152,9 +152,28 @@ pub fn clave(artefacto: &[u8]) -> String {
 /// entonces el mismo recibo apuntaría a dos artefactos. `If-None-Match` deja
 /// ganar al primero, así que la discrepancia queda **detectable** en vez de
 /// silenciosa: el segundo ve que el recibo apunta a otro sitio.
+/// # Y por qué el plan va en la ruta, y no solo en el digest
+///
+/// Porque **agrupa**. `ore/v1/plan/<plan>/<cabecera>` permite enumerar por
+/// prefijo todas las copias de un mismo plan, y sin eso no se puede contestar la
+/// única pregunta que la recogida de basura necesita: *¿cuál de estas es la
+/// vigente y cuáles quedaron atrás?*
+///
+/// No introduce ningún puntero mutable, que era la propiedad a no perder: los
+/// dos segmentos siguen siendo contenido. Lo que añade es **un sitio donde
+/// mirar**, que es exactamente lo que el registro hizo un piso más arriba.
 pub fn recibo(c: &Cabecera) -> String {
     let d = ore_core::digest::de_bytes(c.jcs().as_bytes());
-    format!("ore/v1/plan/{}", d.trim_start_matches("sha256:"))
+    format!(
+        "{}/{}",
+        prefijo_de_plan(&c.plan),
+        d.trim_start_matches("sha256:")
+    )
+}
+
+/// Dónde viven todos los recibos de un plan. Es lo que se enumera para recoger.
+pub fn prefijo_de_plan(plan: &str) -> String {
+    format!("ore/v1/plan/{}", plan.trim_start_matches("sha256:"))
 }
 
 /// Vuelve a abrirlo. Existe para que la prueba de ida y vuelta sea una prueba y

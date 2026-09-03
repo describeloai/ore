@@ -142,7 +142,12 @@ cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n4=$(objetos); cmp_n 2 "$((n4 - n3))" "④ objetos nuevos" "R2"
 
-cmp_n 4 "$((n4 - antes))" "⑤ tras 3 copias, objetos acumulados (2 vigentes + basura recogida)" "R5"
+"$ORE" materialize "$D" --recoger >/dev/null 2>&1
+n5=$(objetos)
+# **Dos**: el artefacto vigente y su recibo. Las tres copias anteriores
+# siguen siendo ciertas hasta su marca, y por eso recoger es EXPLICITO — pero
+# cuando se pide, el almacen queda acotado y no crece con los refrescos.
+cmp_n 2 "$((n5 - antes))" "⑤ tras recoger, objetos que quedan" "R5"
 
 echo
 echo "══ las cuatro negativas · valen igual que los actos ══"
