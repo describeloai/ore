@@ -182,6 +182,7 @@ fn intentar() -> Result<String, String> {
     let (verbo, fuente) = match args.first().map(String::as_str) {
         Some("leer") => ("leer", args.get(1).cloned().unwrap_or_default()),
         Some("catalogo") => ("catalogo", args.get(1).cloned().unwrap_or_default()),
+        Some("testigo") => ("testigo", args.get(1).cloned().unwrap_or_default()),
         // La forma anterior —`ore-read-postgres <fuente>`— sigue significando
         // `catalogo`: quien la usara no tiene por qué enterarse de que ahora
         // hay dos verbos.
@@ -201,6 +202,9 @@ fn intentar() -> Result<String, String> {
     }
     if verbo == "leer" {
         return filas(&entrada);
+    }
+    if verbo == "testigo" {
+        return testigo(&entrada);
     }
     let url = entrada.trim();
 
@@ -545,6 +549,81 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
         // `d` sin clave primaria, `n`, o `i` sin columnas: no hay con qué
         // retirar una fila. Solo las altas sobreviven al viaje.
         _ => Json::obj([("mode", Json::s("append")), ("witness", Json::s("log"))]),
+    }
+}
+
+/// **El tercer verbo: hasta donde esta el servidor ahora.**
+///
+/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
+/// decision A. `changes()` dice **con que** se fecha; esto dice **cuanto vale
+/// ahora mismo**, y son dos preguntas con dos cadencias: la primera cambia
+/// cuando alguien altera la tabla, la segunda **en cada confirmacion**.
+///
+/// # Por que `pg_current_wal_lsn()` y no un reloj
+///
+/// Porque un LSN es una **posicion de confirmacion**: un orden total sin
+/// empates, y replayable. Un `now()` no lo es — dos transacciones pueden
+/// compartir instante, y entonces retomar desde ahi pierde o repite. Es la
+/// diferencia entre `witness: log` y `witness: field`, y es la que decide si
+/// una copia puede ser atomica.
+///
+/// Y es lo mismo que hace Debezium, que tiene este problema exacto y lo
+/// documenta: lee la posicion del log al empezar la instantanea y despues
+/// *«continues streaming from the position that it read in Step 2»*.
+///
+/// # El alcance es del SERVIDOR, no del objeto
+///
+/// Un LSN vale para todo el cluster, asi que la peticion trae `objeto` y aqui
+/// **no se usa**. No sobra: con `witness: field` haria falta, y el protocolo es
+/// uno para todos los drivers. Que el modo decida el alcance es lo que el ADR
+/// 0016 contesto mirando como lo hacen los demas — un snapshot de Iceberg es de
+/// una tabla; un LSN, del servidor.
+///
+/// # Y si no hay decodificacion logica
+///
+/// Se contesta `none`, por lo mismo que `changes()` devuelve `{none, none}`:
+/// sin `wal_level = logical` no sale ningun cambio de este servidor, asi que un
+/// LSN no fecha nada que se pueda volver a pedir. Devolverlo igual seria dar una
+/// marca que no respalda un refresco.
+fn testigo(entrada: &str) -> Result<String, String> {
+    let (url, _objeto) = ore_driver::leer_coordenada(entrada)?;
+
+    let tls = postgres_native_tls::MakeTlsConnector::new(
+        native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+    );
+    let mut cliente =
+        postgres::Client::connect(&url, tls).map_err(|e| format!("no se pudo conectar: {e}"))?;
+
+    let wal_level: String = cliente
+        .query_one("SELECT current_setting('wal_level')", &[])
+        .map(|r| r.get::<_, String>(0))
+        .unwrap_or_default();
+    if wal_level != "logical" {
+        eprintln!(
+            "ore-read-postgres: aviso · `wal_level = {}` y no `logical`: este servidor no emite              cambios, asi que no hay testigo que dar",
+            if wal_level.is_empty() {
+                "?"
+            } else {
+                &wal_level
+            }
+        );
+        return Ok(ore_driver::testigo("none", None));
+    }
+
+    // `pg_current_wal_lsn()` en un primario; en una replica no existe y hay que
+    // pedir `pg_last_wal_replay_lsn()`. Se intenta el segundo si el primero
+    // falla, en vez de decidirlo por una bandera: quien conecta sabe a que
+    // servidor va, y este programa no tiene por que preguntarselo.
+    let lsn: Option<String> = cliente
+        .query_one("SELECT pg_current_wal_lsn()::text", &[])
+        .or_else(|_| cliente.query_one("SELECT pg_last_wal_replay_lsn()::text", &[]))
+        .ok()
+        .and_then(|r| r.try_get::<_, String>(0).ok());
+
+    match lsn {
+        Some(v) => Ok(ore_driver::testigo("log", Some(&v))),
+        // Se pudo conectar y no hay posicion: es una respuesta, no un fallo.
+        None => Ok(ore_driver::testigo("none", None)),
     }
 }
 

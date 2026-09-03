@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | 1 | compilar: el plan, su digest y el conducto que lo autoriza | `ore` |
 //! | 2 | comprobar el flujo | `ore` |
-//! | 3 | preguntarle al origen su testigo | *el driver — **sin protocolo todavía*** |
+//! | 3 | preguntarle al origen su testigo | `ore-read-<tipo> testigo` |
 //! | 4 | el recibo: **si está, termina aquí** | `ore-store-r2 buscar` |
 //! | 5 | leer, canalizar, sellar y subir | `ore-read-<tipo> leer` → `ore-store-r2 sellar` |
 //! | 6 | registrar la copia | `ore` |
@@ -164,7 +164,7 @@ fn una(
 
     // ── ③ El testigo ────────────────────────────────────────────────────────
     let r = vistas::raiz(pkg, v).map_err(|e| format!("sin raíz · {e:?}"))?;
-    let testigo = testigo(pkg, v);
+    let testigo = testigo(pkg, raiz_pkg, v, &r)?;
 
     // ── ④ El recibo ─────────────────────────────────────────────────────────
     let cabecera = cabecera(&plan.digest(), &esq, &testigo, bundle);
@@ -240,16 +240,72 @@ fn una(
 ///
 /// Cerrarlo es un verbo más en [ADR 0008](../../../docs/decisions/0008-el-protocolo-del-driver.md)
 /// —`testigo <url> <objeto>`— y es una decisión de protocolo, no de este módulo.
-fn testigo(pkg: &Package, v: &Loaded) -> (String, Option<String>) {
-    // La marca sale de `registro::marca_de`, que I3 ya escribio: una derivacion
-    // y no dos, por lo mismo de siempre.
-    let modo = match crate::registro::marca_de(pkg, v) {
+fn testigo(
+    pkg: &Package,
+    raiz_pkg: &Path,
+    v: &Loaded,
+    r: &vistas::Raiz,
+) -> Result<(String, Option<String>), String> {
+    // La **marca** sale de la gramática, por `registro::marca_de` — una
+    // derivación y no dos. Es lo que el origen dice que sabe hacer.
+    let declarado = match crate::registro::marca_de(pkg, v) {
         ore_view::Marca::Ninguna => "none",
         ore_view::Marca::Instantanea => "snapshot",
         ore_view::Marca::Registro => "log",
         ore_view::Marca::Campo(_) => "field",
     };
-    (modo.to_string(), None)
+    // Una tabla que declara no fecharse no se le pregunta. Preguntar igual
+    // seria darle la oportunidad de contradecir su propia declaracion, y la
+    // declaracion es la que compila.
+    if declarado == "none" {
+        return Ok(("none".to_string(), None));
+    }
+
+    // Y el **valor** sale del origen, que es el unico que lo sabe. El orden
+    // importa y es el que Debezium documenta: se pregunta ANTES de leer las
+    // filas, asi que lo que cambie durante la copia se re-entrega en el
+    // siguiente refresco. Al reves se perderia, y perder es peor que repetir.
+    let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource)
+        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
+    let url = lector::url(raiz_pkg, &env, &r.datasource)
+        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
+    let peticion = ore_core::json::Json::obj([
+        ("objeto", ore_core::json::Json::s(&r.objeto)),
+        ("url", ore_core::json::Json::s(&url)),
+    ])
+    .jcs();
+
+    let salida = lector::ejecutar(
+        &format!("ore-read-{tipo}"),
+        &["testigo".to_string()],
+        Some(&peticion),
+    )
+    .map_err(|f| f.mensaje)?;
+    let n = ore_core::parse::parse(&salida)
+        .map_err(|e| format!("lo que devolvió el testigo no analiza: {e:?}\n{salida}"))?;
+    let modo = n
+        .get("modo")
+        .and_then(|(_, x)| x.as_str())
+        .unwrap_or("none")
+        .to_string();
+    let valor = n
+        .get("valor")
+        .and_then(|(_, x)| x.as_str())
+        .map(String::from);
+
+    // **Y si los dos no concuerdan, manda el origen — pero se dice.** La tabla
+    // declara `log` y el servidor contesta `none` cuando la decodificacion
+    // logica esta apagada: el documento no miente, esta desactualizado. Callarlo
+    // dejaria una copia con un testigo vacio y nadie sabria por que no se
+    // refresca.
+    if modo != declarado {
+        eprintln!(
+            "aviso · `{}` declara `witness: {declarado}` y el origen contesta `{modo}`: manda el \
+             origen, y esta copia se fecha con lo que hay",
+            r.tabla.as_deref().unwrap_or(&r.objeto)
+        );
+    }
+    Ok((modo, valor))
 }
 
 /// La cabecera del sobre, en JSON canónico y en **una** línea, que es lo que el

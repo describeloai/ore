@@ -61,6 +61,44 @@ El **verbo** pasa a ser explícito: `ore-read-<tipo> catalogo <fuente>` y
 `ore-read-<tipo> leer <fuente>`. Antes el único verbo estaba implícito en que solo hubiera
 uno; con dos, deducirlo del contenido de stdin sería adivinar.
 
+#### Enmienda · el tercer verbo, `testigo`
+
+Decidido en [ADR 0016](0016-el-testigo-y-el-rango.md) A, y añadido aquí porque es **este**
+protocolo el que crece:
+
+```
+ore-read-<tipo> testigo <fuente>
+  stdin  ← {"objeto":"public.employees","url":"postgres://…"}
+  stdout → {"modo":"log","valor":"0/1A2B3C4"}
+```
+
+**Un verbo y no un campo de los otros dos**, porque las tres cosas caducan a ritmos distintos: el
+catálogo cuando alguien altera la tabla, las filas en cada consulta, y el testigo **en cada
+confirmación**. Y meterlo en `leer` sería peor que en `catalogo`: llegaría **con** las filas, y
+quien pregunta lo hace justamente para decidir **si hace falta leerlas**.
+
+**Su petición no es un fragmento del plan: es una coordenada.** `url` y `objeto`, y nada más. Se
+lee con `leer_coordenada` y no reusando `Peticion`, y el motivo salió al construirlo — aquella
+rechaza una proyección vacía, con razón, y preguntar dónde está un origen no proyecta nada.
+Reusarla habría obligado a mandar una proyección de mentira para pasar una comprobación que ahí
+no aplica.
+
+**El vocabulario es el de `changes.witness`** y no se inventa otro: `none`, `snapshot`, `log`,
+`field`. Los cuatro son **ordinales** — quien los recibe los compara, no los interpreta.
+
+**Y `none` es una respuesta, no un fallo.** Un origen que no sabe fecharse lo dice, y con eso ya
+afirma algo cierto. Devolver «ahora» inventaría una marca que no respalda ningún refresco.
+
+Lo que la implementación de referencia contesta:
+
+| driver | qué devuelve | por qué |
+|---|---|---|
+| `ore-read-postgres` | `{log, <LSN>}` de `pg_current_wal_lsn()` | un LSN es una **posición de confirmación**: orden total sin empates, y replayable. Un `now()` no lo es |
+| `ore-read-jsonl` | `{snapshot, <sha256 del fichero>}` | el digest **nombra esa versión del fichero**, que es lo que `snapshot` significa. La `mtime` habría sido la respuesta cómoda y es peor: dos escrituras en el mismo segundo empatan |
+
+La segunda fila mide algo que ningún argumento mide, otra vez: **un directorio de ficheros sabe
+fecharse**, y sin reloj. La primera versión de ese driver se negaba, y era demasiado modesta.
+
 ### 2 · Las filas salen en NDJSON
 
 Una fila por línea, un objeto JSON por fila, con las **propiedades** como claves — no las
@@ -90,7 +128,8 @@ comprarla, y se compra pidiéndosela al servidor.
 
 ## Lo que se acepta a cambio
 
-- **Dos verbos que compartir.** Cada driver nuevo implementa los dos o declara cuál no sabe.
+- **Tres verbos que compartir.** Cada driver nuevo implementa los tres o declara cuál no sabe —
+  y en el caso de `testigo`, «no sé» es literalmente una de las respuestas válidas.
   Es la superficie mínima: menos de dos y no hay federación.
 - **La petición lleva la URL.** Es lo que ya hacía el catálogo, y mantiene al driver sin
   estado — pero significa que **quien invoca elige la identidad**, que es justo lo que §6.2

@@ -47,6 +47,7 @@ fn main() -> ExitCode {
         "catalogo" => Err("`ore-read-jsonl` no sabe leer un catálogo todavía. \
                            Lo que implementa es `leer`, que es el verbo de la fase ③"
             .to_string()),
+        "testigo" => testigo(&entrada),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
 
@@ -61,6 +62,38 @@ fn main() -> ExitCode {
             eprintln!("ore-read-jsonl: {m}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// **El tercer verbo: hasta donde esta este fichero.**
+///
+/// La primera version de esto se negaba —«un directorio no tiene versiones»— y
+/// era **demasiado modesta**. Un fichero si sabe fecharse: el digest de su
+/// contenido **nombra exactamente esta version de el**, y eso es justo lo que
+/// `snapshot` significa. El de Iceberg tampoco es un numero que crezca: es una
+/// identidad.
+///
+/// Y no hay reloj de por medio, que es lo que lo hace bueno. La `mtime` habria
+/// sido la respuesta comoda y es peor: dos escrituras en el mismo segundo
+/// empatan, y entonces el testigo miente sobre haber cambiado.
+///
+/// # Lo que este testigo NO permite, y esta bien
+///
+/// Un rango. Dos digests no se ordenan, asi que no se puede pedir «lo que hay
+/// entre A y B» — y por eso el modo es `snapshot` y no `log`. Un origen con
+/// `snapshot` se lee ENTERO en su version, y lo que compra a cambio es que la
+/// copia sea atomica: el testigo y las filas son la misma cosa.
+fn testigo(peticion: &str) -> Result<String, String> {
+    let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
+    let ruta = std::path::Path::new(&url).join(&objeto);
+    match std::fs::read(&ruta) {
+        Ok(b) => Ok(ore_driver::testigo(
+            "snapshot",
+            Some(&ore_core::digest::de_bytes(&b)),
+        )),
+        // No poder leerlo es un fallo, no un «no se sabe»: la peticion nombra un
+        // fichero que deberia estar.
+        Err(e) => Err(format!("no se pudo leer `{}`: {e}", ruta.display())),
     }
 }
 

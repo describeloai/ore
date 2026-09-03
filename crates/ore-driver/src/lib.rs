@@ -153,6 +153,63 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
 ///
 /// No las columnas físicas: el nombre físico es del binding y no tiene por qué
 /// salir del driver.
+/// **La petición del tercer verbo: una coordenada, no un fragmento de plan.**
+///
+/// `{"objeto": "...", "url": "..."}` y nada más. Se lee aparte de
+/// [`leer_peticion`] y no reusándola, y el motivo salió al construirlo: aquella
+/// **rechaza una proyección vacía**, con razón — *«el plan que la produjera no
+/// habría llegado a lanzar el driver»*. Pero preguntar hasta dónde está un
+/// origen no proyecta nada, así que reusarla obligaría a mandar una proyección
+/// de mentira para pasar una comprobación que aquí no aplica.
+///
+/// Dos formas para dos preguntas, y cada una con la validación de la suya.
+pub fn leer_coordenada(texto: &str) -> Result<(String, String), String> {
+    let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+    let cadena = |k: &str| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let (url, objeto) = (cadena("url"), cadena("objeto"));
+    if url.is_empty() {
+        return Err("la petición no trae `url`: no hay a dónde preguntar".into());
+    }
+    Ok((url, objeto))
+}
+
+/// **La respuesta del tercer verbo: hasta dónde está el origen ahora.**
+///
+/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
+/// decisión A. La petición es la misma `Peticion` —basta `url` y `objeto`— y
+/// esto es lo que vuelve: un ordinal y **nada más**.
+///
+/// # Por qué un verbo y no un campo de los otros dos
+///
+/// Porque las tres cosas caducan a ritmos distintos: el catálogo cuando alguien
+/// altera la tabla, las filas en cada consulta, y **el testigo en cada
+/// confirmación**. Meterlo en `leer` sería peor que en `catalogo`: llegaría
+/// **con** las filas, y quien pregunta lo hace para decidir **si hace falta
+/// leerlas**.
+///
+/// # El vocabulario no se inventa
+///
+/// Es el de `changes.witness` de la tabla — `none`, `snapshot`, `log`, `field`—
+/// y los cuatro son **ordinales**: quien los recibe los compara, no los
+/// interpreta ni los convierte.
+///
+/// `valor: None` con `modo: "none"` es la respuesta de un origen que **no sabe
+/// fecharse**, y es una respuesta cierta. Devolver «ahora» inventaría una marca
+/// que el origen no respalda.
+pub fn testigo(modo: &str, valor: Option<&str>) -> String {
+    let mut o = std::collections::BTreeMap::new();
+    o.insert("modo".to_string(), ore_core::json::Json::s(modo));
+    if let Some(v) = valor {
+        o.insert("valor".to_string(), ore_core::json::Json::s(v));
+    }
+    ore_core::json::Json::Obj(o).jcs()
+}
+
 pub fn fila(p: &Peticion, valores: &[Option<String>]) -> String {
     let obj: std::collections::BTreeMap<String, ore_core::json::Json> = p
         .proyeccion

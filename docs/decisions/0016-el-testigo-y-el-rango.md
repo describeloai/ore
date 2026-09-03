@@ -102,7 +102,11 @@ por una columna.
 
 ---
 
-## Decisión A · el verbo `testigo`
+## Decisión A · el verbo `testigo` · **aceptada e implementada**
+
+> Enmendado en [ADR 0008](0008-el-protocolo-del-driver.md), implementado en
+> `ore-read-postgres` y `ore-read-jsonl`, y cableado en el paso ③ del ciclo. Lo que sigue es lo
+> que se decidió; lo que cambió al construirlo está al final de esta sección.
 
 > **Un tercer verbo, con la forma de los dos que hay: devuelve un ordinal y nada más.**
 
@@ -126,8 +130,24 @@ Meterlo en `catalogo` obligaría a describir el objeto entero para pedir un ordi
 `leer` es peor: llegaría **con** las filas, y el paso ④ del ciclo existe para decidir **antes de
 leer una sola**.
 
-Un modo `none` **se niega, con código distinto de cero**. Devolver «ahora» inventaría una marca
-que el origen no respalda, y `OOS2021` dejaría de morder.
+Un modo `none` **se contesta**, y es una respuesta cierta: el origen dice que no sabe fecharse.
+Devolver «ahora» inventaría una marca que no respalda.
+
+### Lo que cambió al construirla
+
+**La petición no es una `Peticion`.** Es una **coordenada** —`url` y `objeto`— y necesita su
+propio lector: `leer_peticion` rechaza una proyección vacía, con razón, y preguntar dónde está un
+origen no proyecta nada.
+
+**`ore-read-jsonl` no se niega: se fecha por el digest de su contenido.** El primer borrador de
+este documento daba por hecho que un directorio de ficheros no tenía versiones, y era demasiado
+modesto — el digest **nombra esa versión del fichero**, que es exactamente lo que `snapshot`
+significa. Sin reloj, y sin los empates que tendría la `mtime`.
+
+**Y `ore view` nunca podrá enseñar el valor del testigo.** Es el compilador, y el compilador es
+hermético: no abre nada. El valor existe donde se puede existir —en el paso ③ del ciclo, que sí
+ejecuta el driver— y de ahí pasa a la cabecera del sobre. La prueba de R6 lo aprendió de la peor
+forma, pasando en verde dos veces por preguntárselo a la pieza equivocada.
 
 ---
 

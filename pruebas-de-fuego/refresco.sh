@@ -85,7 +85,7 @@ spec:
   object: "pedidos.jsonl"
   columns: { order_id: {}, pais: {}, total: {} }
   reads: { fullScan: cheap }
-  changes: { mode: upsert, key: [order_id], witness: field, field: order_id, retention: 7d }
+  changes: { mode: upsert, key: [order_id], witness: snapshot, retention: 7d }
 X
 cat > "$D/views/copia.yaml" <<'X'
 apiVersion: oos.dev/v1alpha8
@@ -143,7 +143,7 @@ echo "══ las cuatro negativas · valen igual que los actos ══"
 # dos paquetes a la vez y fallaba — y la negativa `d`, que mira su salida,
 # pasaba EN FALSO por no encontrar el texto que buscaba.
 N="$D-neg"; rm -rf "$N"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$N/" 2>/dev/null
-sed -i 's/mode: upsert, key: \[order_id\], witness: field/mode: append, witness: field/' \
+sed -i 's/mode: upsert, key: \[order_id\], witness: snapshot/mode: append, witness: field, field: total/' \
   "$N/tables/pedidos.yaml"
 if "$ORE" validate "$N" >/dev/null 2>&1; then
   mal "a · {witness: field, mode: append} con \`materialized\` compila" "R0"
@@ -169,10 +169,18 @@ else
   mal "c · la petición no tiene \`desde\`/\`hasta\`, así que nadie puede negarse a un rango" "R3"
 fi
 
-# Ojo con este: la primera versión buscaba «testigo   sin poblar» y pasaba en
-# falso, porque I3 puso la MARCA delante — «registro · sin poblar». Un verde
-# falso es peor que un rojo, así que se busca el «sin poblar» donde esté.
-if "$ORE" view "$D" 2>&1 | grep -qE "testigo .*sin poblar"; then
+# Y este mira `materialize --seco` y **no** `ore view`, que es donde estaba antes.
+#
+# Dos versiones fallaron aquí. La primera buscaba «testigo   sin poblar» y no lo
+# encontraba porque I3 puso la marca delante. La segunda lo encontraba siempre, y
+# por un motivo de fondo: **`ore view` es el compilador, y el compilador es
+# hermético.** No abre nada, así que no puede preguntarle al origen dónde está —
+# y su línea del registro dice «sin poblar» aunque el ciclo sí sepa fecharse.
+#
+# El valor del testigo existe donde se puede existir: en el paso ③ del ciclo, que
+# sí ejecuta el driver. Preguntárselo a `ore view` era pedirle a la pieza
+# hermética que contestara lo único que exige abrir una conexión.
+if "$ORE" materialize "$D" --seco 2>&1 | grep -qE "testigo sin poblar"; then
   mal "d · el testigo no lleva valor: un origen que retrocede no se puede detectar" "R2"
 else
   ok "d · el testigo lleva valor"
