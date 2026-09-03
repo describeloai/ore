@@ -172,7 +172,7 @@ Lo que desbloquea, y conviene tenerlo separado de lo que no:
   que hace que *«versionado y ramificado en plenitud»* valga también para lo materializado, y no
   solo para las declaraciones.
 - **La topología deja de ser un caso especial.** Mismo almacén, misma familia de formato, mismo
-  testigo — que es exactamente lo que I4 de [`handoff-materializacion.md`](handoff-materializacion.md)
+  testigo — que es exactamente lo que I4 de [`decisions/0016-el-testigo-y-el-rango.md`](decisions/0016-el-testigo-y-el-rango.md)
   persigue.
 
 Lo que **no** desbloquea, y es lo importante: **la identidad**. Escribir filas en un almacén

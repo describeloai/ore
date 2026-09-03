@@ -212,8 +212,8 @@ casualidad.
 **No cierra**, y va aparte:
 
 - **el registro** — que el motor sepa qué copias existen y decida si una contesta una consulta.
-  Es I1 e I2 de [`handoff-materializacion.md`](../handoff-materializacion.md), y este ADR solo le
-  da el testigo con el que trabajar;
+  Lo cerraron el registro de copias —`ore-cli/src/registro.rs`— y el cotejo del View Matcher;
+  este ADR solo les dio el testigo con el que trabajar;
 - **la segunda credencial del almacén.** Hoy el bucket tiene **una sola credencial, con lectura
   y escritura**: quien refresca y quien responde son el mismo. El hueco no es que falte leer, es
   que **no hay separación**, y `05-ejecutor` §6.2 pide que puedan ser distintos — el que rellena

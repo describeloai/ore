@@ -142,7 +142,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   capacidades de aquí. `ore view` es lo que contesta. Lo que falta —que `discover` proponga
   vistas y que `Kind::Binding` desaparezca— es de `docs/handoff-vistas.md`, que sigue abierto
   hasta entonces. **Las restricciones y el cotejo, conectados** — I2 de
-  [`handoff-materializacion.md`](handoff-materializacion.md): `ore view` dice de cada vista qué
+  [`decisions/0016-el-testigo-y-el-rango.md`](decisions/0016-el-testigo-y-el-rango.md): `ore view` dice de cada vista qué
   copias la contestan, con qué compensación y con el sello heredado, y las restricciones bajan
   desde `changes.key`, `primaryKey`/`uniqueKeys` y las relaciones **obligatorias**. Lo que queda
   sin ejercer por ningún fichero del repositorio es la junta de más: hace falta una
