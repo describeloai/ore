@@ -201,87 +201,60 @@ fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura)
 
 /// **La topología, que es una copia desde siempre y no lo dice.**
 ///
-/// `ore-exec/plan.rs::lecturas_de_aristas` la construye a mano: por cada
-/// relación con `via`, una proyección de dos columnas —la clave de la entidad y
-/// la del enlace— sobre la fuente física de la entidad, refrescada por marca de
-/// agua. Eso es una vista materializada, escrita en el paradigma anterior.
+/// **Quién decide qué aristas hay: [`ore_core::aristas`], y solo él.**
 ///
-/// Aquí se reconstruye desde el sustrato: la fuente física de una entidad es la
-/// raíz de la vista que la respalda —`backedBy`—, sin pasar por ningún binding.
-/// Y el destino nombra su formato, `oretopo`, porque el formato es propiedad del
-/// destino y no del registro — [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md).
+/// Aquí no queda derivación, solo traducción a un plan. Es la mitad de I4: la
+/// otra mitad es que `ore-exec/plan.rs::lecturas_de_aristas` traduce **las
+/// mismas** aristas a su `Lectura` de la fase ③, y una prueba comprueba que los
+/// dos listan lo mismo. Mientras cada lado derivaba por su cuenta, el índice
+/// era una vista materializada que nadie reconocía como copia porque cada uno
+/// la nombraba a su manera.
 ///
-/// Las que `lecturas_de_aristas` descarta se descartan igual y por lo mismo: una
-/// clave o una `via` compuesta es una tupla, y aplanarla aquí inventaría una
-/// codificación que nadie declaró.
+/// El destino nombra su formato —`oretopo`— porque el formato es propiedad del
+/// destino y no del registro:
+/// [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md).
 fn topologia(
     pkg: &Package,
     tipos: &BTreeMap<(String, String, String), Type>,
 ) -> Vec<(String, Nodo, Lectura)> {
     let mut out = Vec::new();
-    for e in pkg.entities() {
-        let (Some(qn), Some(rels)) = (e.qname(), e.section("relations")) else {
-            continue;
+    for a in ore_core::aristas::aristas(pkg) {
+        let tipo = |c: &str| {
+            tipos
+                .get(&(a.datasource.clone(), a.objeto.clone(), c.to_string()))
+                .cloned()
+                .unwrap_or_else(|| Type::Scalar("String".into()))
         };
-        let clave = lista(e.section("primaryKey"));
-        if clave.len() != 1 {
-            continue;
-        }
-        let Some(v) = vistas::respaldo(pkg, e) else {
-            continue;
+        // El `Lee` es el objeto, como en cualquier vista: dos copias sobre la
+        // misma raíz comparten hoja, y es lo que hace que el índice invertido
+        // del Filter Tree sirva para las dos.
+        let columnas: BTreeMap<String, Type> = [&a.desde, &a.hasta]
+            .into_iter()
+            .map(|c| (c.clone(), tipo(c)))
+            .collect();
+        // `desde` y `hasta`: los mismos nombres que el driver ya devuelve, así
+        // que lo que sale de aquí ya es una arista y no hay protocolo nuevo.
+        let plan = Nodo::Proyecta {
+            entrada: Box::new(Nodo::Lee(Lectura {
+                datasource: a.datasource.clone(),
+                objeto: a.objeto.clone(),
+                campos: columnas,
+            })),
+            campos: BTreeMap::from([
+                ("desde".to_string(), Expr::campo(&a.desde)),
+                ("hasta".to_string(), Expr::campo(&a.hasta)),
+            ]),
         };
-        let Ok(raiz) = vistas::raiz(pkg, v) else {
-            continue;
-        };
-        for (rk, rv) in rels.entries() {
-            let Some(rel) = rk.as_str() else { continue };
-            let via = lista(rv.get("via").map(|(_, x)| x));
-            if via.len() != 1 {
-                continue;
-            }
-            let (Some(cd), Some(ch)) = (raiz.columnas.get(&clave[0]), raiz.columnas.get(&via[0]))
-            else {
-                continue;
-            };
-            let tipo = |c: &str| {
-                tipos
-                    .get(&(raiz.datasource.clone(), raiz.objeto.clone(), c.to_string()))
-                    .cloned()
-                    .unwrap_or_else(|| Type::Scalar("String".into()))
-            };
-            // El `Lee` es el objeto, como en cualquier vista: dos copias sobre
-            // la misma raíz comparten hoja, y es lo que hace que el índice
-            // invertido del Filter Tree sirva para las dos.
-            let mut columnas: BTreeMap<String, Type> = BTreeMap::new();
-            for c in [cd, ch] {
-                columnas.insert(c.clone(), tipo(c));
-            }
-            // `desde` y `hasta`: los mismos nombres que el driver ya devuelve,
-            // así que lo que sale de aquí ya es una arista y no hay protocolo
-            // nuevo. Es la prueba de que la fase ③ era el protocolo correcto.
-            let plan = Nodo::Proyecta {
-                entrada: Box::new(Nodo::Lee(Lectura {
-                    datasource: raiz.datasource.clone(),
-                    objeto: raiz.objeto.clone(),
-                    campos: columnas,
-                })),
-                campos: BTreeMap::from([
-                    ("desde".to_string(), Expr::campo(cd)),
-                    ("hasta".to_string(), Expr::campo(ch)),
-                ]),
-            };
-            let Ok(campos) = esquema(&plan) else { continue };
-            let nombre = format!("{qn}.{rel}");
-            out.push((
-                nombre.clone(),
-                plan,
-                Lectura {
-                    datasource: "oretopo".to_string(),
-                    objeto: nombre,
-                    campos,
-                },
-            ));
-        }
+        let Ok(campos) = esquema(&plan) else { continue };
+        out.push((
+            a.nombre.clone(),
+            plan,
+            Lectura {
+                datasource: "oretopo".to_string(),
+                objeto: a.nombre,
+                campos,
+            },
+        ));
     }
     out
 }

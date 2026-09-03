@@ -380,33 +380,79 @@ paradigma.
 Es la misma frase de [`01-table.md`](../vendor/oos/spec/v1alpha8/01-table.md) §2 aplicada aquí:
 *materializar es una decisión sobre una consulta*. La topología también.
 
-#### Bloqueado, y por qué
+#### Hecho · una derivación, y no hacía falta ningún crate nuevo
 
-**`ore-exec` no compila en la máquina de trabajo actual.** `cedar-policy` arrastra `psm` y
-`stacker`, que compilan C:
+**La nota de arriba proponía un crate `ore-registro` y que `ore-exec` ganara `ore-view`.** Al
+mirar el código de cerca hay una salida más pequeña, y la diferencia es de dónde estaba el
+duplicado:
 
-```
-error occurred in cc-rs: failed to find tool "gcc.exe": program not found
-  · psm v0.1.32
-  · stacker v0.1.25
-```
+> Lo que no se puede duplicar es **la derivación** —qué aristas hay y de qué columnas salen—, no
+> la **representación**. La derivación es una lectura de la gramática; la representación es de
+> cada consumidor.
 
-No hay `gcc`, y la ruta MSVC tampoco está disponible: hay toolset de Visual Studio pero **no hay
-Windows SDK**, y el *toolchain* activo es `x86_64-pc-windows-gnu`. Sin poder construir no se puede
-satisfacer el criterio de este peldaño, que es literalmente **una afirmación sobre su suite**:
-*borrar la ruta propia sin perder una prueba*.
+Así que vive en [`ore-core/src/aristas.rs`](../crates/ore-core/src/aristas.rs), al lado de
+`vistas::respaldo` y `vistas::datasources_de`, que también van de una entidad a lo físico. Los dos
+consumidores ya dependían de `ore-core`, y **ninguno necesita al otro**:
 
-Lo que I4 toca, medido para cuando se desbloquee:
+| | qué construye encima |
+|---|---|
+| `ore-exec/plan.rs::lecturas_de_aristas` | la `Lectura` de la fase ③ |
+| `ore-cli/src/registro.rs::topologia` | el plan `Proyecta(Lee)` del motor de vistas |
+
+Los dos pasaron de **derivar** a **traducir**. Cero crates nuevos, cero aristas nuevas en el grafo
+de dependencias.
+
+**Y de paso se recuperó el camino del binding.** El registro solo miraba `backedBy`; el ejecutor
+miraba binding **y** `backedBy`. Unificar por el más pobre habría dejado sin topología, en
+silencio, a un paquete v1alpha7 con bindings — legal mientras v1alpha1 lo sea. La derivación
+común hace los dos, y `un_binding_da_sus_aristas_igual_que_una_vista` lo ejerce: **ningún otro
+fichero del árbol lo hacía**, porque no hay un caso con bindings *y* relaciones a la vez.
+
+**Cómo se comprueba que hay un sitio.** Dos afirmaciones literales, en dos crates:
+`ore-exec/tests/plan.rs::las_aristas_del_ejecutor_son_las_del_registro_de_copias` y
+`ore-cli/tests/registro.rs::la_topologia_entra_en_el_mismo_registro_y_con_su_ruta_aparte` escriben
+los mismos cuatro nombres. Si la derivación se mueve, **las dos se mueven juntas**; si alguien
+reintroduce una local, una se queda atrás y se ve.
+
+#### Lo que este peldaño **no** alcanzó, y por qué el criterio estaba mal puesto
+
+El *listo cuando* de arriba dice: *borrar la ruta de refresco propia sin perder una sola prueba*.
+**No se puede, y no por falta de trabajo: el criterio va después de I5.**
+
+`ore-exec index build/refresh` es hoy **lo único que puebla una copia en todo el árbol**. Borrarlo
+dejaría el `.oretopo` sin quien lo escriba y tumbaría `pruebas-de-fuego/fuentes-reales.sh`, que lo
+ejerce de punta a punta contra un Postgres real. Para que esa ruta sobre hace falta que otra
+escriba copias — que es I5 — y que el circuito Δ cubra esta.
+
+Así que el criterio se parte en dos, y el primero **ya está**:
 
 | | |
 |---|---|
-| `plan.rs::lecturas_de_aristas` | 427–490 · fabrica `Lectura` a mano |
-| `main.rs` | tres llamadas — `index build`, `refresh`, `traverse` |
-| `topologia.rs` | 481 líneas, **11 pruebas**; el formato **no se toca** |
-| `tests/plan.rs`, `tests/autorizar.rs` | 9 menciones a aristas o topología |
+| **una derivación** | ✅ `ore_core::aristas`, con las dos afirmaciones cruzadas |
+| **una ruta de refresco** | ⏳ después de I5, y de que el Δ cubra la topología |
 
-Para desbloquear hace falta **un compilador de C** en el objetivo `gnu` —mingw-w64— o el objetivo
-`msvc` con su SDK. Es una decisión de entorno y no se toma aquí.
+Y sigue en pie lo que esto apunta: mientras la topología se **derive** de `relations`, el registro
+tiene una pata en cada paradigma. El final es que pase a ser una vista **declarada**, y entonces
+`Camino::IndiceDeTopologia` desaparece solo.
+
+#### Sobre el bloqueo que hubo
+
+**`ore-exec` no se pudo construir durante T1–T4 ni al escribir I1–I3.** `cedar-policy` arrastra
+`psm` y `stacker`, que compilan C, y no había compilador:
+
+```
+error occurred in cc-rs: failed to find tool "gcc.exe": program not found
+```
+
+Resuelto instalando `mingw-w64-x86_64-gcc` (MSYS2). **Y al construirlo por fin salieron dos
+pruebas rojas que llevaban ahí desde T4**, las dos consecuencia de la migración y ninguna un fallo
+del código: `fullScan` lo declara ahora la vista que respalda y no un binding, y la propiedad sin
+fuente dejó de poder ocurrir en `acme-retail` —`OOS2022` la convierte en error de compilación en
+v1alpha8— así que su afirmación se mudó al caso v1alpha7.
+
+**La lección, que es de proceso y no de código:** un crate que no se puede construir en la máquina
+de trabajo acumula rojos que nadie ve, y los acumula en silencio durante cuatro peldaños. El árbol
+entero verde en local —**533 pruebas**— es una condición de trabajo, no un resultado.
 
 ### I5 · la copia existe
 

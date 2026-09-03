@@ -462,3 +462,46 @@ fn con_indice_la_fase_dos_produce_las_claves() {
     );
     assert_eq!(plan.lecturas[0].claves.len(), 2);
 }
+
+/// **I4 · hay un sitio.** Las aristas que el ejecutor lee para construir el
+/// índice son **las mismas** que el registro de copias de `ore view` lista, y lo
+/// son porque las dos salen de `ore_core::aristas` — no porque dos derivaciones
+/// coincidan hoy.
+///
+/// Los nombres están escritos a mano y también en
+/// `ore-cli/tests/registro.rs::la_topologia_entra_en_el_mismo_registro_y_con_su_ruta_aparte`.
+/// Dos afirmaciones literales en dos crates distintos: si la derivación se
+/// mueve, **las dos se mueven juntas**, y si alguien reintroduce una local, una
+/// de las dos se queda atrás y se ve.
+#[test]
+fn las_aristas_del_ejecutor_son_las_del_registro_de_copias() {
+    let m = Motor::cargar(ejemplo()).expect("el ejemplo carga");
+    let leidas = m.lecturas_de_aristas();
+
+    let nombres: Vec<&str> = leidas.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        nombres,
+        [
+            "hr.Employee.manager",
+            "hr.Employee.department",
+            "supply.Shipment.supplier",
+            "supply.Shipment.sku",
+        ],
+        "las mismas cuatro, y en el mismo orden que declara el paquete"
+    );
+
+    // Y la proyección sigue siendo la de dos columnas con los nombres del
+    // protocolo: lo que vuelve del driver ya es una arista.
+    let (_, l) = &leidas[0];
+    assert_eq!(l.datasource, "hr_workday");
+    assert_eq!(l.proyeccion.keys().collect::<Vec<_>>(), ["desde", "hasta"]);
+    assert_eq!(
+        l.proyeccion.get("desde").map(String::as_str),
+        Some("Worker_Reference.ID")
+    );
+    assert_eq!(
+        l.proyeccion.get("hasta").map(String::as_str),
+        Some("Management_Chain_Data.Manager_Reference")
+    );
+    assert!(l.claves.is_empty() && l.filtros.is_empty());
+}

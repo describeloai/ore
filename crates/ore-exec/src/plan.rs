@@ -421,70 +421,44 @@ impl Motor {
     /// entera de que esto es un índice, que es la prueba de que el protocolo de
     /// la fase ③ era el correcto.
     ///
-    /// Devuelve también las relaciones que **no puede** leer, y por qué: una
-    /// `via` compuesta es una clave de destino en tupla, y aplanarla aquí
-    /// inventaría una codificación que nadie declaró.
+    /// # Quién decide qué aristas hay, desde I4
+    ///
+    /// **No este método.** La derivación —qué relaciones cuentan, de qué fuente
+    /// física salen y en qué columnas caen— vive en
+    /// [`ore_core::aristas`], y aquí solo se traduce a la `Lectura` de la fase
+    /// ③. El motivo es que hay **dos** que la necesitan: esto, y el registro de
+    /// copias de `ore view`. Mientras cada uno la derivaba por su lado, el
+    /// índice de topología era una vista materializada que nadie reconocía como
+    /// copia porque cada lado la nombraba a su manera.
+    ///
+    /// Lo que descarta lo descarta allí, y por lo mismo: una `via` compuesta es
+    /// una clave de destino en tupla, y aplanarla inventaría una codificación
+    /// que nadie declaró.
     pub fn lecturas_de_aristas(&self) -> Vec<(String, Lectura)> {
-        let mut out = Vec::new();
-        for e in self.paquete.entities() {
-            let Some(qn) = e.qname() else { continue };
-            let Some(rels) = e.section("relations") else {
-                continue;
-            };
-            let clave: Vec<String> = e
-                .section("primaryKey")
-                .map(|k| {
-                    k.items()
-                        .iter()
-                        .filter_map(|i| i.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if clave.len() != 1 {
-                continue;
-            }
-            for (rk, rv) in rels.entries() {
-                let Some(nombre) = rk.as_str() else { continue };
-                let via: Vec<String> = rv
-                    .get("via")
-                    .map(|(_, v)| {
-                        v.items()
-                            .iter()
-                            .filter_map(|i| i.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if via.len() != 1 {
-                    continue;
-                }
-                for f in self.fisicas(&qn) {
-                    let (Some(cd), Some(ch)) = (f.columnas.get(&clave[0]), f.columnas.get(&via[0]))
-                    else {
-                        continue;
-                    };
-                    out.push((
-                        format!("{qn}.{nombre}"),
-                        Lectura {
-                            datasource: f.datasource.clone(),
-                            objeto: f.objeto.clone(),
-                            proyeccion: BTreeMap::from([
-                                ("desde".to_string(), cd.clone()),
-                                ("hasta".to_string(), ch.clone()),
-                            ]),
-                            clave_columnas: Vec::new(),
-                            claves: Vec::new(),
-                            filtros: Vec::new(),
-                            // Siempre del origen, y no por olvido: esta lectura
-                            // es la que CONSTRUYE el indice. Servirla de una
-                            // cache seria construir la correspondencia a partir
-                            // de una materializacion que ya la dio por buena.
-                            origen: Origen::Fuente { porque: None },
-                        },
-                    ));
-                }
-            }
-        }
-        out
+        ore_core::aristas::aristas(&self.paquete)
+            .into_iter()
+            .map(|a| {
+                (
+                    a.nombre,
+                    Lectura {
+                        datasource: a.datasource,
+                        objeto: a.objeto,
+                        proyeccion: BTreeMap::from([
+                            ("desde".to_string(), a.desde),
+                            ("hasta".to_string(), a.hasta),
+                        ]),
+                        clave_columnas: Vec::new(),
+                        claves: Vec::new(),
+                        filtros: Vec::new(),
+                        // Siempre del origen, y no por olvido: esta lectura es
+                        // la que CONSTRUYE el indice. Servirla de una cache
+                        // seria construir la correspondencia a partir de una
+                        // materializacion que ya la dio por buena.
+                        origen: Origen::Fuente { porque: None },
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn planificar(&self, c: &Consulta) -> Result<Plan, Rechazo> {
