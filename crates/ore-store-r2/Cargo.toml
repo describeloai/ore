@@ -1,0 +1,41 @@
+[package]
+name    = "ore-store-r2"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ore-store-r2"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canonica y el digest. La cabecera del sobre es JSON canonico por lo
+# mismo que todo lo demas del proyecto: dos construcciones sobre la misma
+# instantanea tienen que dar LOS MISMOS BYTES, o el digest no nombra nada. Y el
+# nombre del objeto ES el digest, asi que aqui eso deja de ser una promesa de
+# higiene y pasa a ser la direccion.
+ore-core = { path = "../ore-core" }
+
+# Parquet, que es la carga que el ADR 0015 eligio. No se escribe a mano: es un
+# formato columnar con paginas, diccionarios y estadisticas, y una version
+# aproximada seria ilegible justo para los motores por los que se eligio.
+#
+# `default-features = false` deja fuera la compresion nativa —zstd, brotli y
+# lz4 arrastran C— y se queda con SNAPPY, que es Rust puro. Un binario delegado
+# puede enlazar C; que no haga falta es mejor, y la compresion de una copia no
+# es donde se gana.
+parquet = { version = "56", default-features = false, features = ["arrow", "snap"] }
+arrow-array  = "56"
+arrow-schema = "56"
+
+# HTTP con TLS de la plataforma, y bloqueante: este programa hace UNA subida y
+# termina. Es la misma eleccion, y por la misma razon, que `ore-read-postgres`
+# documenta para `native-tls` — el administrador ya puso la CA de la empresa
+# donde el sistema operativo la busca.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
+
+# SHA-256, para el digest del cuerpo y para la firma. HMAC NO se enlaza: es una
+# construccion de seis lineas sobre esto, con vectores oficiales, y la crate
+# `hmac` arrastra `digest 0.10` entera al lado de la `0.11` que el arbol ya usa.
+# `dependencias.rs` lo vio antes que nadie.
+sha2 = { workspace = true }

@@ -529,6 +529,61 @@ BigQuery, el artefacto queda en R2 **nombrado por su digest**, `ore view` dice d
 contesta, dónde vive y hasta cuándo fue cierta — y **un segundo intento con el mismo testigo no
 sube ni un byte**.
 
+#### Hecho · el almacén, medido contra un R2 de verdad
+
+[`crates/ore-store-r2`](../crates/ore-store-r2) es la **tercera delegación** del árbol, y hereda
+la línea de 0008 llevada a su sitio: *lo que viaja no son llamadas al almacén, es el artefacto*.
+Cabecera y filas por **stdin**, una línea JSON por **stdout**, y no sabe qué es una entidad, ni un
+conducto, ni una vista.
+
+Medido, con el bucket devuelto a cero objetos:
+
+```
+1 · sube la primera vez                  subido=true
+    el nombre ES el digest               ore/v1/<sha256 del artefacto>
+2 · el mismo testigo, otra vez           subido=false   ← ni un byte
+    y al mismo nombre
+3 · otro testigo                         otro nombre, y sube
+4 · un `Integer` que llega como texto     se niega, y dice cuál columna
+```
+
+Y la vuelta entera, releyendo de R2: el sha256 del objeto **es su nombre**, la magia es
+`ORECOPY1`, la cabecera es el JSON canónico con los cinco campos, y la carga la lee **pyarrow** —
+un motor ajeno, que es la mitad de por qué se eligió Parquet.
+
+**Dos cosas salieron por el camino y las dos son del árbol, no del almacén.**
+
+`ureq` con `native-tls` **no cablea el TLS solo**: sin engancharlo a mano, cada petición sale con
+*«no TLS backend is configured»*, que es otro error que se lee como una cosa y es otra — el
+tercero de esta familia, con el `1010` de Cloudflare y el `SignatureDoesNotMatch`.
+
+Y **`dependencias.rs` se puso rojo, que es exactamente para lo que existe**: `hmac 0.12` arrastra
+`digest 0.10` entera al lado de la `0.11` que el árbol ya usa, y el cierre de `ore-cli` pasó de 34
+a 35. La salida no fue subir la constante: HMAC **no es una primitiva** —es una construcción de
+seis líneas sobre SHA-256, con vectores oficiales— así que se escribe y la crate se va. El guardián
+no detectó un fallo: detectó una dependencia que no hacía falta.
+
+#### Lo que falta para cerrar I5, y qué lo bloquea
+
+| | |
+|---|---|
+| el almacén delegado | ✅ `ore-store-r2`, verificado contra R2 |
+| el sobre y la carga | ✅ `ORECOPY1` + Parquet, deterministas y releídos por un motor ajeno |
+| **el ciclo en `ore`** | ⏳ compilar el plan, `digest(plan, testigo)`, `HEAD`, canalizar las filas |
+| **BigQuery** | 🚫 **bloqueado** |
+
+**BigQuery está bloqueado y no por el código.** `bq` no arranca —`python3.14: command not found`—
+y `gcloud auth print-access-token` pide reautenticación interactiva:
+
+```
+Reauthentication failed. cannot prompt during non-interactive execution.
+Please run: $ gcloud auth login
+```
+
+La cuenta y el proyecto están (`trino-k8s`), así que es un `gcloud auth login` desde una terminal
+interactiva. Hasta entonces la deuda de T3 —que la receta de BigQuery no emite sus dos caras— no
+se puede ni medir contra un dataset real, que es la única forma honesta de arreglarla.
+
 ---
 
 ## 7. Lo que **no** entra, y no por falta de tiempo
