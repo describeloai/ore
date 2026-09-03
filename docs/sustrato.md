@@ -477,8 +477,13 @@ construcción en vez de con un código nuevo, que es siempre la mejor de las dos
 
 ### M3 · La función aterriza
 
-`effects` apunta a una vista escribible. `I(f) ⊒ I(destino)` deja de ser una regla sin sujeto, y
-escribir en el origen pasa a ser lo que siempre debió ser: **una consulta al revés**.
+`effects` apunta a una vista escribible. `I(f) ⊒ I(destino)` deja de ser una regla sin sujeto.
+
+> **La segunda mitad de esta frase decía «escribir en el origen pasa a ser una consulta al
+> revés».** La corrige el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md): no
+> hay consulta al revés porque no se sale de la consulta — la copia guarda el vocabulario de la
+> vista, así que un edit cae dentro de `Q`, no fuera. *Escribible* pasa a significar
+> **materializada y con clave**, no *invertible*.
 
 ---
 
@@ -496,8 +501,9 @@ vista, el diseño se ha torcido y hay que parar.
 
 ## 7. Lo que este documento **no** decide
 
-- **La forma de `writes`.** El vocabulario cerrado se elegirá midiendo contra orígenes reales, no
-  aquí. Lo único decidido es que la cara existe y que la invertibilidad se deriva.
+- ~~**La forma de `writes`.**~~ **Sin objeto**: el
+  [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) retira la cara. No hay
+  vocabulario que elegir porque no hay pregunta que hacerle al origen.
 - **Si `Entity` sigue siendo un `kind`.** M2 dice que deja de repetir; no dice si lo que queda se
   llama igual.
 - **Cuándo.** Primero se trabaja el sustrato — materializar de verdad, contra fuentes reales. La
