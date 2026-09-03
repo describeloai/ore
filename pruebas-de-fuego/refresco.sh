@@ -139,7 +139,10 @@ cmp_n 4 "$((n4 - antes))" "⑤ tras 3 copias, objetos acumulados (2 vigentes + b
 echo
 echo "══ las cuatro negativas · valen igual que los actos ══"
 
-N="$D/neg"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$N/" 2>/dev/null
+# FUERA de $D, y no es un detalle: creado dentro, `ore view "$D"` cargaba los
+# dos paquetes a la vez y fallaba — y la negativa `d`, que mira su salida,
+# pasaba EN FALSO por no encontrar el texto que buscaba.
+N="$D-neg"; rm -rf "$N"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$N/" 2>/dev/null
 sed -i 's/mode: upsert, key: \[order_id\], witness: field/mode: append, witness: field/' \
   "$N/tables/pedidos.yaml"
 if "$ORE" validate "$N" >/dev/null 2>&1; then
@@ -186,7 +189,7 @@ if ll:
     c.delete_objects(Bucket=B, Delete={"Objects": ll})
 print(f"  borrados {len(ll)} · el bucket queda con {c.list_objects_v2(Bucket=B).get('KeyCount', 0)}")
 PY
-rm -rf "$D"
+rm -rf "$D" "$D-neg"
 
 echo
 if [ "$fallos" -eq 0 ]; then

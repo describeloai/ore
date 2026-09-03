@@ -84,7 +84,7 @@ fn una_vista_materializada_entra_en_el_registro_con_sus_tres_caras() {
         "el destino:\n{out}"
     );
     assert!(
-        out.contains("    testigo   campo `ocurrio_en` · sin poblar"),
+        out.contains("    testigo   registro · sin poblar"),
         "la marca sale de `changes.witness` de la tabla; el valor no, porque nada \
          puebla una copia todavía:\n{out}"
     );
@@ -388,7 +388,12 @@ fn el_testigo_de_una_copia_lleva_la_marca_de_su_tabla() {
     let (_, log) = ver(&conformidad8("valid/stream-table-materialized"));
     assert!(log.contains("testigo   registro · sin poblar"), "{log}");
 
-    let (_, campo) = ver(&conformidad8("valid/append-changes-back-an-event"));
+    // Y el caso por columna es el que la pareja permite: `{ field, upsert }`.
+    // Desde `OOS2023` no hay otro válido, y eso es exactamente lo que la regla
+    // dice — fechar por columna es legítimo; hacerlo sin clave, no.
+    let (_, campo) = ver(&conformidad8(
+        "valid/field-witness-with-a-key-is-maintainable",
+    ));
     assert!(
         campo.contains("testigo   campo `ocurrio_en` · sin poblar"),
         "`witness: field` trae además QUÉ columna ordena el avance:\n{campo}"

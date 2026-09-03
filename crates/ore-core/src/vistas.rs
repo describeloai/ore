@@ -831,6 +831,65 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         out.push(d);
     }
 
+    // ── OOS2023 · la pareja decide la garantía ──────────────────────────────
+    //
+    // `witness: field` fecha por una columna, y eso es **at-least-once por
+    // construcción**: la columna es siempre mayor o igual que sí misma, así que
+    // el solape se re-entrega en cada refresco. Airbyte lo documenta con esas
+    // palabras para su *cursor field*, que es el mismo mecanismo, y admite
+    // además que se pueden **perder** filas si la columna no se mantiene al
+    // modificar una.
+    //
+    // Con `upsert` o `retract` hay clave y re-entregar es idempotente. Con
+    // `append` no hay con qué deduplicar: **cada refresco suma el solape, para
+    // siempre**, y nadie lo ve hasta que llega la factura.
+    //
+    // Es la tercera regla que mira las dos caras a la vez, con `OOS2020` y
+    // `OOS2021`, y como ellas **es sobre la copia y no sobre la tabla**: un log
+    // de eventos fechado por una columna de tiempo es legítimo y existe. Lo que
+    // no se puede es **mantener una copia suya**.
+    for v in pkg.of(Kind::View) {
+        // Solo si esta vista es la que se copia. Una virtual encima de una copia
+        // no declara nada, y la de abajo ya se comprueba por su cuenta.
+        if v.section("materialized").is_none() {
+            continue;
+        }
+        let Ok(r) = raiz(pkg, v) else { continue };
+        let Some(tabla) = r.tabla.as_deref().and_then(|qn| pkg.table(qn)) else {
+            continue;
+        };
+        let por_columna = tabla
+            .section("changes")
+            .and_then(|c| c.get("witness"))
+            .and_then(|(_, w)| w.as_str())
+            == Some("field");
+        if !(por_columna && modo(tabla) == Modo::Anexa) {
+            continue;
+        }
+        let qn = v.qname().unwrap_or_default();
+        let tqn = r.tabla.as_deref().unwrap_or_default();
+        let mut d = Diagnostic::new(
+            Code::Oos2023,
+            &v.path,
+            format!(
+                "`{qn}` se copia de `{tqn}`, que declara `{{ mode: append, witness: field }}`: no \
+                 hay clave con la que deduplicar lo que se re-entrega"
+            ),
+        )
+        .help(
+            "fechar por una columna es at-least-once: la columna es mayor o IGUAL que sí misma, \
+             así que cada refresco vuelve a traer el borde y sin clave no hay forma de quitarlo — \
+             el solape se acumula para siempre y no da ningún síntoma hasta la factura. La tabla \
+             es legítima; lo que no se puede es mantener una copia suya. Declara `key` con \
+             `mode: upsert`, o fecha por `witness: log` o `snapshot`, que nombran una posición \
+             replayable",
+        );
+        if let Some(p) = v.section("materialized").map(|m| m.pos()) {
+            d = d.at(p);
+        }
+        out.push(d);
+    }
+
     // `backedBy` · la entidad nombra a su vista.
     for e in pkg.entities() {
         let Some(b) = e.section("backedBy") else {
@@ -1352,6 +1411,73 @@ mod tests {
              materialized: { datasource: erp, table: cache.pedidos }\n",
         );
         let pkg = paquete(vec![config(), topico("upsert"), v]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    // ── OOS2023 · la pareja decide la garantía ─────────────────────────────
+
+    /// Una tabla fechada por columna, con el modo que se le pase.
+    fn por_columna(modo: &str, clave: &str) -> Loaded {
+        tabla(
+            "clicks",
+            &format!(
+                "  datasource: erp\n  object: public.clicks\n  \
+                 columns:\n    click_id: {{}}\n    ocurrio_en: {{}}\n  \
+                 reads: {{ fullScan: cheap }}\n  \
+                 changes: {{ mode: {modo}, {clave}witness: field, field: ocurrio_en }}\n"
+            ),
+        )
+    }
+
+    fn copia_de_clicks() -> Loaded {
+        vista8(
+            "clics",
+            "  from: { table: erp.clicks }\n  fields:\n    id: click_id\n    \
+             cuando: ocurrio_en\n  materialized: { datasource: erp, table: cache.clics }\n",
+        )
+    }
+
+    /// **`{ witness: field, mode: append }` no se puede mantener.**
+    ///
+    /// Fechar por una columna es at-least-once —la columna es mayor o IGUAL que
+    /// sí misma, así que el borde se re-entrega— y sin clave no hay con qué
+    /// quitarlo. El solape se acumula **para siempre**, y no da ningún síntoma:
+    /// la copia responde, los números salen, y son de más.
+    ///
+    /// Antes de este código el árbol no solo lo aceptaba: `ore view`
+    /// **recomendaba `INCREMENTAL`** sobre esta pareja exacta.
+    #[test]
+    fn una_copia_fechada_por_columna_y_solo_anexa_no_compila() {
+        let pkg = paquete(vec![config(), por_columna("append", ""), copia_de_clicks()]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2023]);
+    }
+
+    /// **Y el rechazo es de la COMBINACIÓN, no del modo ni del testigo.**
+    ///
+    /// Sin esta prueba, `OOS2023` podría estar mirando solo `witness: field` y
+    /// nadie lo notaría: prohibiría fechar por columna, que es legítimo y es lo
+    /// único que muchos orígenes saben hacer. Con clave, re-entregar es
+    /// idempotente y no pasa nada.
+    #[test]
+    fn la_misma_tabla_con_clave_si_se_copia() {
+        let pkg = paquete(vec![
+            config(),
+            por_columna("upsert", "key: [click_id], "),
+            copia_de_clicks(),
+        ]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// **Y es sobre la copia, no sobre la tabla.** Un log de eventos fechado por
+    /// una columna de tiempo es legítimo y existe; lo que no se puede es
+    /// mantener una copia suya. Sin `materialized`, no hay nada que rechazar.
+    #[test]
+    fn la_tabla_que_solo_anexa_es_legitima_mientras_nadie_la_copie() {
+        let virtual_ = vista8(
+            "clics",
+            "  from: { table: erp.clicks }\n  fields:\n    id: click_id\n",
+        );
+        let pkg = paquete(vec![config(), por_columna("append", ""), virtual_]);
         assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
     }
 

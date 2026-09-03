@@ -148,6 +148,24 @@ codes! {
     // la cubre nadie».
     Oos2022 = "OOS2022", Reference, "una propiedad de una entidad no es campo de su vista";
 
+    // OOS2023 · la pareja `(mode, witness)` decide la garantia de entrega, y una
+    // de las cuatro combinaciones no se puede mantener.
+    //
+    // `witness: field` fecha por una columna, y eso es AT-LEAST-ONCE por
+    // construccion: el solape se re-entrega en cada refresco, porque la columna
+    // es siempre mayor o igual que si misma. Airbyte lo documenta asi para su
+    // «cursor field», que es el mismo mecanismo, y admite ademas que se pueden
+    // PERDER filas si la columna no se mantiene al modificar.
+    //
+    // Con `upsert` o `retract` hay clave, asi que re-entregar es idempotente y
+    // no pasa nada. Con `append` no hay con que deduplicar: cada refresco suma
+    // el solape, para siempre.
+    //
+    // Es sobre MATERIALIZAR y no sobre la tabla. Un log de eventos con una
+    // columna de tiempo es legitimo y existe; lo que no se puede es mantener una
+    // copia suya incrementalmente.
+    Oos2023 = "OOS2023", Reference, "una copia fechada por columna sin clave con la que deduplicar no se mantiene";
+
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
     Oos3002 = "OOS3002", Type, "Money o Quantity sin unidad o sin precisión";
@@ -319,6 +337,7 @@ mod tests {
             Code::Oos2020,
             Code::Oos2021,
             Code::Oos2022,
+            Code::Oos2023,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,
