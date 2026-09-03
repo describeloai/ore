@@ -523,7 +523,7 @@ fn raiz_de_lectura(pkg: &Package, v: &Loaded, tabla: &Loaded) -> String {
     }
 }
 
-trait Vistas {
+pub(crate) trait Vistas {
     fn of_view(&self) -> Vec<&Loaded>;
 }
 

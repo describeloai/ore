@@ -18,6 +18,7 @@ mod materializar;
 mod mcp;
 mod registro;
 mod revision;
+mod verificar;
 mod vista;
 mod vocabulario;
 
@@ -295,6 +296,27 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Coteja una **propuesta** contra el paquete que la autoriza.
+    ///
+    /// Una funcion no aplica, propone: devuelve una `Propuesta` con qué
+    /// escribir y **bajo qué lo decidio** —las cinco identidades—, y lo que
+    /// devuelve un delegado no se cree. Esto contesta si cae dentro de lo que
+    /// `effects:` autorizaba, si el significado sigue vigente, y si se sigue
+    /// entrando por la misma vista.
+    ///
+    /// No ejecuta la funcion, no abre el origen y no escribe. Que sea
+    /// contestable sin runtime es lo que hace que el simulacro salga gratis:
+    /// **la propuesta ES el simulacro**.
+    ///
+    /// No es `validate`: aquel juzga si un paquete compila, este si una
+    /// propuesta sobre el es aceptable. Un paquete puede compilar y una
+    /// propuesta sobre el no aplicarse, que es el caso que existe para atrapar.
+    Verify {
+        /// El artefacto que devolvio quien invoco la funcion.
+        propuesta: PathBuf,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Puebla las vistas `materialized`: el ciclo entero del ADR 0015.
     ///
     /// Compila el plan, comprueba el flujo, pregunta al almacen si la copia ya
@@ -364,6 +386,7 @@ fn main() -> std::process::ExitCode {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
         Command::View { path } => return vista::ver(path),
+        Command::Verify { propuesta, path } => return verificar::verificar(path, propuesta),
         Command::Materialize {
             path,
             seco,
@@ -463,6 +486,7 @@ fn main() -> std::process::ExitCode {
         | Command::Discover { .. }
         | Command::Report { .. }
         | Command::View { .. }
+        | Command::Verify { .. }
         | Command::Materialize { .. }
         | Command::Review { .. }
         | Command::Lock { .. }

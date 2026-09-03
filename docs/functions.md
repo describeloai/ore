@@ -272,6 +272,42 @@ Va aquí porque **es lo único que nadie más tiene** y no necesita runtime.
 igual dos veces; y **cambiar la vista cambia el digest**, que es lo que hace auditable por dónde
 se iba a entrar.
 
+> ### ✅ Hecho. `ore verify`, y las tres cláusulas comprobadas
+>
+> `ore_core::propuesta` tiene la forma y el cotejo; `ore verify` es el verbo. **No ejecuta la
+> función, no abre el origen y no escribe** — que sea contestable sin runtime es lo que hace que
+> el simulacro salga gratis.
+>
+> | cláusula | cómo se comprueba |
+> |---|---|
+> | fuera de la superficie no se aplica | un runner devuelve un edit sobre `pais`, la función declara `estado`, y el rechazo **dice qué sí declaraba** |
+> | digiere igual dos veces | dos invocaciones dan los mismos bytes y el mismo nombre, visto desde fuera del proceso |
+> | cambiar la vista cambia el digest | se genera contra un paquete y se verifica contra el mismo con la vista estrechada |
+>
+> Y una cuarta que no estaba pedida y salió del sustrato: un edit tiene que **nombrar la fila con
+> la clave de su entidad**, en propiedades y no en columnas. Un runner descuidado que devuelva
+> `employee_id` en vez de `employeeId` se rechaza, y eso es exactamente el error que separar los
+> dos idiomas existe para hacer visible.
+>
+> ### La forma que la medida impuso
+>
+> **La `Propuesta` es un documento, no un `struct` enlazado**, y no por gusto: tres de sus cinco
+> identidades viven en crates que `ore-cli` **no puede** tener en su cierre —`ore-exec` trae
+> Cedar, `ore-store-r2` trae Parquet y TLS— y `tests/dependencias.rs` lo hace cumplir leyendo el
+> `Cargo.lock`. Así que topología, marcas de agua y el `Plan` **llegan por el protocolo**, en JSON
+> canónico, igual que llega la cabecera de un sobre.
+>
+> `ore verify` las imprime como **«sin verificar aquí»** en vez de callarlas. Decir *no lo he
+> mirado* es una respuesta; omitirlo no lo es.
+>
+> El reparto que eso obliga, y que es el mismo que ya usa `ore view`: **el cotejo de la superficie
+> vive en el núcleo** —es gramática— y **la comparación de la vista vive en la costura** —es
+> álgebra, y el núcleo no ve el motor—.
+>
+> `Plan::digest()` se añadió en `ore-exec`, que no lo tenía: el par `(Plan, Propuesta)` es la
+> historia entera **porque los dos se nombran por su contenido**, no porque uno lleve al otro
+> dentro.
+
 ### F2 · El flujo sobre la propuesta
 
 **Qué.** `flow` y `governance` corriendo sobre los edits propuestos, no sobre el árbol.

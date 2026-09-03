@@ -299,6 +299,16 @@ struct Efecto {
     pos: crate::diag::Pos,
 }
 
+/// **La superficie que una función declara escribir**, en nombres de propiedad.
+///
+/// El único lector de `effects[].writes` fuera de este módulo, y lo llama el
+/// cotejo de [`crate::propuesta`]: lo que devuelve un delegado no se cree, y
+/// «lo declarado» tiene que salir de un solo sitio, o el cotejo compararía
+/// contra una lista distinta de la que la regla comprueba.
+pub fn destinos(f: &Loaded) -> Vec<String> {
+    efectos(f).into_iter().map(|e| e.writes).collect()
+}
+
 fn efectos(f: &Loaded) -> Vec<Efecto> {
     f.section("effects")
         .map(|n| n.items())

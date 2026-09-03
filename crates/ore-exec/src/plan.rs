@@ -273,6 +273,17 @@ impl Lectura {
 impl Plan {
     /// La forma canónica del plan: **los mismos bytes que produciría cualquier
     /// implementación conforme**, porque es la del bundle.
+    /// El nombre del plan **es** su contenido, como el de una copia y como el
+    /// de una propuesta.
+    ///
+    /// Existe porque una `Propuesta` cita el plan bajo el que se decidio, y
+    /// citarlo entero la haria enorme: el par `(Plan, Propuesta)` es la
+    /// historia completa **porque los dos se nombran por su contenido**, no
+    /// porque uno lleve al otro dentro.
+    pub fn digest(&self) -> String {
+        ore_core::digest::de_bytes(self.canonico().as_bytes())
+    }
+
     pub fn canonico(&self) -> String {
         let j = Json::obj([
             (
