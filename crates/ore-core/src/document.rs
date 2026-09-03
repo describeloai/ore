@@ -122,8 +122,9 @@ pub enum Kind {
     /// fisico deja de saber de significado. Y puede salir de OTRA vista, que es
     /// lo que hace que un pipeline sea una estructura y no una frase.
     ///
-    /// Conviven mientras dure la migracion (`docs/handoff-vistas.md`); el dia
-    /// que `Binding` se borre, este comentario se queda y aquel no.
+    /// Convivieron mientras duro la migracion, y el dia que `Binding` se
+    /// retiro este comentario se quedo. `Kind::Binding` sigue ahi con su
+    /// `hasta`, porque un documento v1alpha1 no caduca.
     View,
     /// v1alpha8. **La tabla: el puntero a un objeto fisico, registrado una vez,
     /// con sus dos caras.**

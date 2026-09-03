@@ -1,7 +1,8 @@
 //! **El registro de copias.** Una operación, tres consumidores.
 //!
-//! `handoff-tablas` dijo del puntero físico: *se registra una vez, con sus dos
-//! caras*. Esto dice lo mismo de la copia, un piso más arriba:
+//! De la tabla se dijo: *el puntero físico se registra una vez, con sus dos
+//! caras* —`spec/v1alpha8/01-table`—. Esto dice lo mismo de la copia, un piso
+//! más arriba:
 //!
 //! > **Una materialización es un plan que ya está calculado en algún sitio. Se
 //! > registra una vez, y dice tres cosas: qué contesta, dónde vive, y hasta

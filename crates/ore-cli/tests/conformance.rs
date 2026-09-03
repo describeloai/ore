@@ -1190,14 +1190,17 @@ fn borrador_de_v1alpha7() {
 }
 
 /// El borrador de v1alpha8 anade `Table`, adelgaza `View` y retira `Binding`.
-/// Arranca **entero en pendiente**, como arrancó el de v1alpha3: esta
-/// implementacion no entiende todavia `oos.dev/v1alpha8`, asi que los dieciseis
-/// casos fallan con `OOS1002` por la version y ninguno mide lo que afirma. Se
-/// limpia solo, caso a caso, segun se implemente.
+/// Arranco entero en pendiente —ninguno pasaba, todos con `OOS1002` por la
+/// version— y se limpio caso a caso segun se implementaba. Esta **entero**, y
+/// por eso ya no queda ningun documento de trabajo que describa la migracion.
+/// Sigue siendo borrador: no normativo, `spec/v1alpha1/` manda.
 ///
-/// Los dos que valen dinero son `OOS2020` —lo que no se puede leer se debe
-/// materializar— y `OOS2021` —sin retractacion no se mantiene lo mutable—:
-/// ningun competidor los comprueba al compilar.
+/// Los tres que valen dinero son `OOS2020` —lo que no se puede leer se debe
+/// materializar—, `OOS2021` —sin retractacion no se mantiene lo mutable— y
+/// `OOS2023` —un testigo que no ordena total no sostiene un `append`—: ningun
+/// competidor los comprueba al compilar. Y el que cierra el retiro es
+/// `OOS1003` sobre un `Binding` en v1alpha8, con su gemelo en los casos validos
+/// de v1alpha1, que siguen declarando bindings y siguen compilando.
 #[test]
 fn borrador_de_v1alpha8() {
     marcador("v1alpha8", "la tabla", "BORRADOR · OOS v1alpha8 · la tabla");

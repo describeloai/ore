@@ -43,9 +43,9 @@
 //! # Lo que este crate no toca
 //!
 //! No lee documentos OOS, no sabe qué es una entidad y no conoce el retículo. Es
-//! álgebra sobre nombres y tipos. Se construyó libre **a propósito**, y
-//! conectarlo con el resto —la absorción— es el trabajo de
-//! `docs/handoff-vistas.md`, que sigue abierto.
+//! álgebra sobre nombres y tipos. Se construyó libre **a propósito**, y la
+//! absorción —conectarlo con el resto— está hecha: la costura entera es
+//! `crates/ore-cli/src/vista.rs`, y `docs/view-engine.md` §6 la describe.
 
 pub mod capabilities;
 pub mod catalog;

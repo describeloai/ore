@@ -799,9 +799,9 @@ impl Motor {
 ///
 /// Es una noción y no dos porque la fase ③ no distingue: pide a una fuente, un
 /// objeto, unas columnas, y respeta unas capacidades. Que eso venga de un
-/// `Binding` o de una `View` es asunto de quien lo declaró. Mientras los dos
-/// documentos convivan (`docs/handoff-vistas.md`), aquí es donde se juntan —
-/// y el día que el binding se retire, este `struct` no cambia una letra.
+/// `Binding` o de una `View` es asunto de quien lo declaró. Aquí es donde se
+/// juntan, y el día que el binding se retiró de v1alpha8 este `struct` no
+/// cambió una letra — que era exactamente lo que se predijo aquí.
 struct Fisica<'a> {
     /// Quién lo declaró, para nombrarlo en un rechazo.
     nombre: String,

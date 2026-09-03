@@ -4,7 +4,8 @@
 > cuando termina. Este describe **una dirección**, y se queda: es el sitio donde se retoma el
 > hilo el día que se abra la capa de abstracción.
 >
-> Fecha: 2026-09-02, al terminar T4 de [`handoff-tablas.md`](handoff-tablas.md).
+> Fecha: 2026-09-02, al terminar la migracion a tablas y vistas. Los dos handoffs que la
+> describian se borraron al cerrarla; esto es lo que se quedo de ellos.
 >
 > Distingue tres cosas y no las mezcla: **lo decidido** —que es normativo y está en
 > `spec/v1alpha8`—, **lo proyectado** —que es esto— y **lo abierto**, que se dice como abierto.
@@ -200,8 +201,7 @@ Y lo que cuesta, dicho antes de que llegue:
 
 ### 3.4 · Y entonces sí tenemos container
 
-[`handoff-vistas`](handoff-vistas.md) tomó la forma de la vista de Cognite y terminó con una
-frase:
+Cuando se tomó la forma de la vista de Cognite, la conclusión fue una frase:
 
 > *«Nosotros no tenemos containers, así que nos queda solo la mitad de arriba — que es toda.»*
 

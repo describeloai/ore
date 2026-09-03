@@ -136,12 +136,14 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
 
 ## 6. Lo que sigue
 
-- **La absorción, hecha en su primera mitad.** Esta pieza sigue sin saber qué es un paquete OOS,
-  y la única costura es `crates/ore-cli/src/vista.rs`: lee las `View` de v1alpha7, el retículo,
-  las etiquetas efectivas y las capacidades, y los convierte en el IR, la clasificación y las
-  capacidades de aquí. `ore view` es lo que contesta. Lo que falta —que `discover` proponga
-  vistas y que `Kind::Binding` desaparezca— es de `docs/handoff-vistas.md`, que sigue abierto
-  hasta entonces. **Las restricciones y el cotejo, conectados** — I2 de
+- **La absorción, terminada.** Esta pieza sigue sin saber qué es un paquete OOS, y la única
+  costura es `crates/ore-cli/src/vista.rs`: lee las `View`, el retículo, las etiquetas efectivas
+  y las capacidades, y los convierte en el IR, la clasificación y las capacidades de aquí.
+  `ore view` es lo que contesta. Lo que faltaba ya está: `discover` propone vistas —medido contra
+  BigQuery— y `kind: Binding` se retiró en v1alpha8 con su `OOS1003`, así que no queda migración
+  que describir y los dos documentos que la describían se borraron. Lo que decidieron vive en
+  [`spec/v1alpha8`](../vendor/oos/spec/v1alpha8/00-scope.md) —incluido lo que **no** entra— y en
+  [`sustrato.md`](sustrato.md). **Las restricciones y el cotejo, conectados** — I2 de
   [`decisions/0016-el-testigo-y-el-rango.md`](decisions/0016-el-testigo-y-el-rango.md): `ore view` dice de cada vista qué
   copias la contestan, con qué compensación y con el sello heredado, y las restricciones bajan
   desde `changes.key`, `primaryKey`/`uniqueKeys` y las relaciones **obligatorias**. Lo que queda
