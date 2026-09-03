@@ -335,6 +335,139 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
     }
 }
 
+/// Por qué una vista no se puede invertir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoInvertible {
+    /// Un campo no sale de una columna: sale de **calcularla**. Escribir por
+    /// ahí exigiría deshacer el cálculo, y no todos se deshacen.
+    CampoCalculado { vista: String, campo: String },
+    /// La vista declara algo que esta guarda no sabe clasificar.
+    ///
+    /// **Y por eso el defecto es «no».** Una clave nueva en el vocabulario que
+    /// nadie clasifique llega aquí, en vez de colarse como invertible por no
+    /// haberla mirado.
+    ConstruccionDesconocida { vista: String, clave: String },
+}
+
+/// Las claves de una `View` que **no cambian qué filas ni qué columnas salen**,
+/// y por eso no afectan a la invertibilidad.
+const NEUTRAS: &[&str] = &["owner", "freshness", "materialized"];
+
+/// Las que sí, y son invertibles las tres.
+///
+/// | | por qué |
+/// |---|---|
+/// | `from` | una sola entrada. Es la primera condición que PostgreSQL exige a una vista auto-actualizable |
+/// | `fields` | renombrar es una biyección; proyectar pierde columnas, así que la escritura es **parcial**, no ambigua |
+/// | `where` | recortar es invertible: la fila escrita cumple el predicado, o se cae de la vista |
+const INVERTIBLES: &[&str] = &["from", "fields", "where"];
+
+/// Si se puede escribir a través de esta vista.
+///
+/// # Por qué hoy no puede fallar, y aun así está
+///
+/// El vocabulario de `View` en v1alpha8 es exactamente el fragmento invertible
+/// —`00-scope` §6.1 lo dice, y no se buscó: se descubrió al migrar—. No hay
+/// junta, ni agregado, ni `distinct`, ni límite, así que **ningún documento OOS
+/// puede violar esto hoy**, y se dice aquí en vez de dejar que alguien lo
+/// deduzca de que ningún caso lo ejerce.
+///
+/// Lo que esta guarda hace es que el día que la gramática crezca, el
+/// constructor nuevo tenga que **decidir** si es invertible, en vez de heredar
+/// un «sí» que nadie escribió. El defecto es `ConstruccionDesconocida`, y el
+/// censo de `crate::document` lo ata al vocabulario para que no se pueda
+/// añadir una clave sin pasar por aquí.
+///
+/// Es la misma forma que el IR de `ore-view`, que tiene `Agrupa` y `Une` con
+/// sus reglas medidas y ningún documento que los produzca: la máquina está
+/// lista antes que el vocabulario, a propósito.
+pub fn invertible(v: &Loaded) -> Result<(), NoInvertible> {
+    let qn = v.qname().unwrap_or_default();
+    for (k, _) in v.root.get("spec").map(|(_, s)| s.entries()).unwrap_or(&[]) {
+        let Some(clave) = k.as_str() else { continue };
+        if NEUTRAS.contains(&clave)
+            || INVERTIBLES.contains(&clave)
+            || crate::document::is_extension(clave)
+        {
+            continue;
+        }
+        return Err(NoInvertible::ConstruccionDesconocida {
+            vista: qn,
+            clave: clave.to_string(),
+        });
+    }
+    // Un campo tiene que salir de UNA columna, nombrada. Hoy `OOS2018` ya exige
+    // que sea columna de la raíz, así que esto tampoco puede fallar; el día que
+    // `fields` admita una expresión, falla aquí antes que en ningún sitio.
+    for (campo, origen) in campos(v) {
+        if !es_nombre_de_columna(&origen) {
+            return Err(NoInvertible::CampoCalculado { vista: qn, campo });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod censo {
+    use super::*;
+    use crate::document::{ApiVersion, Kind};
+
+    /// **El vocabulario de `View` está clasificado entero.**
+    ///
+    /// Esta es la prueba que le da dientes a [`invertible`]. Sin ella la guarda
+    /// sería decorativa: alguien añade `groupBy` al vocabulario, nadie lo
+    /// clasifica, y la guarda empieza a rechazarlo TODO en silencio —el defecto
+    /// es «no»— o, peor, si el defecto fuera «sí», lo aceptaría todo.
+    ///
+    /// Con esto, añadir una clave a `View` sin decir si se invierte **no
+    /// compila la suite**. Es el mismo mecanismo que el censo del registro de
+    /// códigos, y por la misma razón: una lista que se puede ampliar sin mirar
+    /// deja de significar algo.
+    #[test]
+    fn el_vocabulario_de_view_esta_clasificado_entero() {
+        let mut sin_clasificar: Vec<&str> = Kind::View
+            .spec_keys_en(ApiVersion::V1Alpha8)
+            .iter()
+            .copied()
+            .filter(|k| !NEUTRAS.contains(k) && !INVERTIBLES.contains(k))
+            .collect();
+        sin_clasificar.sort_unstable();
+        assert!(
+            sin_clasificar.is_empty(),
+            "estas claves de `View` no están clasificadas en `vistas.rs`: {sin_clasificar:?}.\n\
+             Di si cada una cambia qué filas o qué columnas salen —y entonces si eso se \
+             invierte— antes de que un efecto pase por encima de ella sin mirar."
+        );
+    }
+
+    /// Y la simétrica: nada clasificado que ya no exista.
+    #[test]
+    fn no_se_clasifica_lo_que_ya_no_esta_en_el_vocabulario() {
+        let vocabulario = Kind::View.spec_keys_en(ApiVersion::V1Alpha8);
+        let huerfanas: Vec<&&str> = NEUTRAS
+            .iter()
+            .chain(INVERTIBLES)
+            .filter(|k| !vocabulario.contains(k))
+            .collect();
+        assert!(
+            huerfanas.is_empty(),
+            "clasificadas y ya inexistentes: {huerfanas:?}"
+        );
+    }
+}
+
+/// Un nombre de columna, no una expresión.
+///
+/// Deliberadamente permisivo con lo que un origen puede llamar columna
+/// —`"Worker_Reference.ID"` es un nombre legal, y `01-table` lo dice—; lo que
+/// descarta es lo que **solo** puede ser cómputo: operadores, llamadas, comas.
+fn es_nombre_de_columna(s: &str) -> bool {
+    !s.is_empty()
+        && !s.chars().any(|c| {
+            matches!(c, '+' | '-' | '*' | '/' | '(' | ')' | ',' | '|' | '<' | '>' | '=' | '\'')
+        })
+}
+
 /// La raíz de una vista: fuente, objeto, columnas compuestas y filtros.
 ///
 /// Un campo que en algún eslabón no resuelve **no aparece** en `columnas`: la
@@ -1111,6 +1244,93 @@ mod tests {
             kind,
             root: parse(texto).expect("yaml"),
         }
+    }
+
+    /// **La guarda de invertibilidad, ejercida por las dos ramas.**
+    ///
+    /// Ningún documento OOS puede disparar esto hoy: el vocabulario de `View`
+    /// en v1alpha8 es exactamente el fragmento invertible, así que un
+    /// `groupBy` ni siquiera pasa de `OOS1005`. Se construye a mano, aquí,
+    /// **por el mismo motivo por el que el IR de `ore-view` tiene `Agrupa`
+    /// probado sin que ningún documento lo produzca**: la máquina se deja
+    /// lista antes que el vocabulario, y una máquina que nadie ejerce no está
+    /// lista, está escrita.
+    ///
+    /// La rama que importa es la segunda: el defecto es **«no invertible»**.
+    /// Si algún día alguien amplía el vocabulario y se olvida de clasificar lo
+    /// nuevo, esto niega la escritura en vez de concederla por descuido — y el
+    /// censo de arriba hace que además no compile.
+    #[test]
+    fn la_guarda_de_invertibilidad_niega_lo_que_no_sabe_clasificar() {
+        // Lo que hoy se puede escribir: renombra, recorta y proyecta. Invertible.
+        let buena = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: { name: empleados, namespace: hr }\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: { table: erp.employees }\n  \
+               freshness: 15m\n  \
+               fields: { id: employee_id, pais: country }\n  \
+               where: { deleted: \"false\" }\n",
+        );
+        assert_eq!(invertible(&buena), Ok(()));
+
+        // Un constructor que la gramática todavía no tiene. El defecto es «no».
+        let futura = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: { name: por_pais, namespace: hr }\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: { table: erp.employees }\n  \
+               fields: { pais: country }\n  \
+               groupBy: [country]\n",
+        );
+        assert_eq!(
+            invertible(&futura),
+            Err(NoInvertible::ConstruccionDesconocida {
+                vista: "hr.por_pais".to_string(),
+                clave: "groupBy".to_string(),
+            })
+        );
+
+        // Y un campo que sale de calcularlo, que es lo primero que aparecería
+        // el día que `fields` admita algo más que un nombre.
+        let calculada = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: { name: importes, namespace: hr }\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: { table: erp.employees }\n  \
+               fields: { total: \"precio * cantidad\" }\n",
+        );
+        assert_eq!(
+            invertible(&calculada),
+            Err(NoInvertible::CampoCalculado {
+                vista: "hr.importes".to_string(),
+                campo: "total".to_string(),
+            })
+        );
+
+        // Una extensión de proveedor no decide nada sobre las filas, así que no
+        // niega: `x-` es el mecanismo declarado para lo que no es del estándar.
+        let con_extension = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: { name: empleados, namespace: hr }\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: { table: erp.employees }\n  \
+               fields: { id: employee_id }\n  \
+               x-acme-nota: \"la que usa nominas\"\n",
+        );
+        assert_eq!(invertible(&con_extension), Ok(()));
     }
 
     fn paquete(docs: Vec<Loaded>) -> Package {

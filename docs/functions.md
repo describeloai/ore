@@ -233,6 +233,33 @@ vista **no invertible** no compila, con código propio, al lado de `OOS2020`, `O
 arista que lo impide; uno sobre una vista que solo renombra y recorta **sí**; y `ore view` dice,
 por vista, **si se puede escribir a través de ella**.
 
+> ### ✅ Hecho, y en dos peldaños porque al medirlo eran dos
+>
+> **`F0a` · la cara `W`.** `Table.writes` es un **conjunto** —`insert`, `update`, `delete`— y no
+> un modo, y eso no se decidió aquí: `information_schema.views` de SQL expone tres columnas
+> separadas y no un modo. No hay `upsert` —es la suma de dos— ni `writes.key` —la fila se
+> identifica con `changes.key`, que ya existía—. `OOS2024` la exige con `update` o `delete`;
+> `OOS7012` rechaza el efecto cuyo objeto no acepta que lo actualicen; `datasourceRef` sale del
+> efecto y `OOS7008` pasa a derivar la fuente. `ore view` contesta por vista.
+>
+> **`F0b` · la guarda de invertibilidad.** `OOS7013`, sobre la cadena entera.
+>
+> ### Y una parte del «listo cuando» que **no se pudo cumplir**, dicha entera
+>
+> *«Un efecto sobre una vista que agrega no compila»* **no se puede probar con un documento**,
+> porque no se puede declarar una vista que agregue: el vocabulario de `View` en v1alpha8 es
+> exactamente el fragmento invertible. Lo comprobado en su lugar:
+>
+> - la guarda se ejerce **construyendo el paquete a mano**, con el constructor que la gramática
+>   todavía no tiene — igual que el IR de `ore-view` prueba `Agrupa` sin que ningún documento lo
+>   produzca;
+> - y un **censo** ata la clasificación al vocabulario: añadir una clave a `View` sin decir si se
+>   invierte no compila la suite. Falsificado añadiendo `groupBy` y viéndolo saltar.
+>
+> La medida que lo destapó: la costura solo construye cuatro nodos del IR —`Referencia`, `Lee`,
+> `Filtra`, `Proyecta`—, cada campo es siempre `Expr::campo`, y `Une`/`Agrupa`/`Limita` no
+> aparecen en ningún camino que salga de un documento.
+
 ### F1 · La `Propuesta` como artefacto
 
 **Qué.** El contrato de invocación y el cotejo, **sin ejecutar nada**: un runner de mentira
@@ -329,6 +356,11 @@ de Cognite.
 como conjunto, y no un modo único — porque una tabla puede aceptar altas y no borrados, y eso hoy
 no se puede decir.
 
+> **✅ Decidida, y la sospecha acertó a medias.** Conjunto, sí: `information_schema.views` expone
+> `is_insertable_into`, `is_updatable` e `is_trigger_deletable` **por separado**. Pero **sin
+> `upsert`**: es `insert` más `update`, y el conjunto ya lo dice sin una cuarta palabra.
+> `changes.mode` sí lo tiene, porque allí no es una suma sino otra codificación.
+
 ### 7.2 · Qué exige una escritura parcial
 
 Proyectar es invertible **parcialmente**. La pregunta es si eso basta o si la vista **debe cubrir
@@ -336,6 +368,17 @@ la clave** para que la fila escrita sea identificable.
 
 **Sospecha:** la clave es obligatoria, y `changes.key` vuelve a servir — es el mismo campo que
 hizo posible fundir un incremento.
+
+> **✅ Decidida, y la medida fue en contra de la sospecha en su mitad importante.** `changes.key`
+> vuelve a servir, sí, y no hay una segunda. Pero **la clave se le exige a la TABLA, no a la
+> vista**, y el número es la razón: de 20 vistas v1alpha8 sobre una tabla resuelta, **17 se apoyan
+> en una tabla sin clave**. Exigírsela a la vista habría dejado el 85 % del corpus sin poder
+> escribirse, y no por culpa de la vista. Las 3 que sí la tienen la cubren enteras, así que donde
+> aplica no cuesta nada.
+>
+> Que una vista **no exponga** la clave no es un error: la tabla cumple, la vista es legal, el
+> paquete compila. Simplemente por esa vista no se entra, y `ore view` lo dice — que es la
+> respuesta que ninguna otra salida daba.
 
 **Dónde mirar:** las condiciones exactas que PostgreSQL exige a una vista auto-actualizable, y qué
 hace Cognite cuando una vista mapea propiedades de **varios** containers.

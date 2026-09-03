@@ -480,6 +480,49 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
         // Solo se comprueba cuando la entidad sale de una `Table`. En una
         // cadena de v1alpha7 no hay objeto que declare caras, así que no hay a
         // quién preguntar y no se inventa la respuesta.
+        // ── OOS7013 · escribir es `Q⁻¹`, y no toda `Q` se invierte ──────────
+        //
+        // Se comprueba la cadena entera y no solo la vista que la entidad
+        // nombra: componer no diluye: si un eslabón de abajo agrega, lo que
+        // sale de arriba tampoco se puede deshacer.
+        //
+        // **Hoy no puede fallar por ningún documento**, y está dicho donde se
+        // define. Lo que hace es que el constructor que se añada mañana tenga
+        // que decidir si es invertible, en vez de heredar un «sí» tácito.
+        if let Some(vista) = crate::vistas::respaldo(pkg, entidad)
+            && let Ok(cadena) = crate::vistas::cadena(pkg, vista)
+            && let Some(no) = cadena
+                .iter()
+                .find_map(|v| crate::vistas::invertible(v).err())
+        {
+            let (donde, porque) = match &no {
+                crate::vistas::NoInvertible::CampoCalculado { vista, campo } => (
+                    vista.clone(),
+                    format!("`{campo}` no sale de una columna: sale de calcularla"),
+                ),
+                crate::vistas::NoInvertible::ConstruccionDesconocida { vista, clave } => (
+                    vista.clone(),
+                    format!("declara `{clave}`, y nadie ha dicho si eso se invierte"),
+                ),
+            };
+            out.push(
+                Diagnostic::new(
+                    Code::Oos7013,
+                    &f.path,
+                    format!("`{}` entra por `{donde}`, que {porque}", ef.writes),
+                )
+                .at(ef.pos)
+                .help(
+                    "escribir a través de una vista es deshacer la pregunta que la vista hace, \
+                     y no toda pregunta se deshace: renombrar es una biyección y recortar deja \
+                     la fila dentro o fuera, pero de una agregación no se vuelve. O la entidad \
+                     se respalda de una vista que sí se invierta, o el efecto va a otra \
+                     propiedad",
+                ),
+            );
+            continue;
+        }
+
         if let Some(vista) = crate::vistas::respaldo(pkg, entidad)
             && let Ok(raiz) = crate::vistas::raiz(pkg, vista)
             && let Some(tqn) = raiz.tabla.as_deref()
@@ -700,5 +743,127 @@ mod tests {
     fn el_combinador_sale_del_eje() {
         assert_eq!(Axis::Confidentiality.combinador(), "max");
         assert_eq!(Axis::Integrity.combinador(), "min");
+    }
+
+    /// **`OOS7013` se dispara de verdad.**
+    ///
+    /// La guarda de invertibilidad ya está probada en `vistas`, pero probar el
+    /// clasificador y no el cable deja escapar el fallo que importa: que la
+    /// regla esté escrita y no se llame. Aquí se comprueba **el diagnóstico**.
+    ///
+    /// Ningún documento OOS puede llegar hasta aquí hoy —un `groupBy` muere
+    /// antes, en `OOS1005`—, así que el paquete se arma sin pasar por el
+    /// validador. Es deliberado, y es lo mismo que hace el IR de `ore-view` con
+    /// `Agrupa`: se ejerce el camino que todavía no tiene tráfico, para que el
+    /// día que lo tenga ya esté recorrido.
+    #[test]
+    fn un_efecto_a_traves_de_una_vista_no_invertible_no_compila() {
+        use crate::parse::parse;
+        use std::path::PathBuf;
+
+        fn doc(kind: Kind, lineas: &[&str]) -> Loaded {
+            Loaded {
+                path: PathBuf::from("caso.yaml"),
+                kind,
+                root: parse(&lineas.join("\n")).expect("yaml"),
+            }
+        }
+
+        // El mismo paquete dos veces, y lo unico que cambia es la vista. Se
+        // arma en vez de clonarse porque `Loaded` no es `Clone` — un documento
+        // cargado tiene una ruta, y dos copias con la misma ruta serian dos
+        // verdades sobre un fichero.
+        fn armar(vista: &[&str]) -> Package {
+            Package {
+                root: PathBuf::from("."),
+                docs: vec![
+                    doc(
+                        Kind::Table,
+                        &[
+                            "apiVersion: oos.dev/v1alpha8",
+                            "kind: Table",
+                            "metadata: { name: employees, namespace: erp }",
+                            "spec:",
+                            "  datasource: erp",
+                            "  object: 'public.employees'",
+                            "  columns: { employee_id: {}, country: {} }",
+                            "  reads: { fullScan: cheap }",
+                            "  changes: { mode: retract, witness: log, key: [employee_id] }",
+                            "  writes: [insert, update, delete]",
+                        ],
+                    ),
+                    doc(Kind::View, vista),
+                    doc(
+                        Kind::Entity,
+                        &[
+                            "apiVersion: oos.dev/v1alpha1",
+                            "kind: Entity",
+                            "metadata: { name: Pais, namespace: hr }",
+                            "spec:",
+                            "  nature: entity",
+                            "  primaryKey: [pais]",
+                            "  backedBy: hr.por_pais",
+                            "  properties:",
+                            "    pais: { type: String }",
+                        ],
+                    ),
+                    doc(
+                        Kind::Function,
+                        &[
+                            "apiVersion: oos.dev/v1alpha8",
+                            "kind: Function",
+                            "metadata: { name: renombrar, namespace: hr }",
+                            "spec:",
+                            "  runtime: wasm",
+                            "  entrypoint: dist/r.wasm",
+                            "  effects:",
+                            "    - writes: hr.Pais.pais",
+                            "      to: 'ES'",
+                        ],
+                    ),
+                ],
+                cedar: Vec::new(),
+                generated: Vec::new(),
+                sobres: Vec::new(),
+            }
+        }
+
+        const CABECERA: &[&str] = &[
+            "apiVersion: oos.dev/v1alpha8",
+            "kind: View",
+            "metadata: { name: por_pais, namespace: hr }",
+            "spec:",
+            "  owner: team:rrhh",
+            "  from: { table: erp.employees }",
+            "  fields: { pais: country }",
+        ];
+
+        // Con el constructor que la gramatica todavia no tiene.
+        let mut con_groupby = CABECERA.to_vec();
+        con_groupby.push("  groupBy: [country]");
+        let diags = check(&armar(&con_groupby));
+        let d = diags
+            .iter()
+            .find(|d| d.code == Code::Oos7013)
+            .unwrap_or_else(|| {
+                panic!(
+                    "sin OOS7013; salieron {:?}",
+                    diags.iter().map(|d| d.code).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            d.message.contains("hr.por_pais") && d.message.contains("groupBy"),
+            "el mensaje tiene que nombrar la vista y lo que la hace no invertible: {}",
+            d.message
+        );
+
+        // Y el gemelo: la misma forma sin el —que es lo unico que hoy se puede
+        // escribir— no da `OOS7013`.
+        assert!(
+            !check(&armar(CABECERA))
+                .iter()
+                .any(|d| d.code == Code::Oos7013),
+            "sin el constructor nuevo no hay nada que invertir mal"
+        );
     }
 }

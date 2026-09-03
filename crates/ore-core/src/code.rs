@@ -274,6 +274,7 @@ codes! {
     Oos7009 = "OOS7009", Effect, "estrategia probabilística sin conducto declarado";
     Oos7011 = "OOS7011", Effect, "integridad por encima del techo de la estrategia";
     Oos7012 = "OOS7012", Effect, "efecto sobre una tabla que no acepta update";
+    Oos7013 = "OOS7013", Effect, "efecto a traves de una vista que no se puede invertir";
 
     // ── OOS8xxx · gobierno ──────────────────────────────────────────────────
     //
@@ -364,7 +365,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            11,
+            12,
             "borrador de efectos"
         );
         assert_eq!(
