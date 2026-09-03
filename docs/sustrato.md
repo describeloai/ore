@@ -151,6 +151,10 @@ de la escritura es el espejo de la de lectura, ya escrita, sin inventar nada.
 
 ### 3.3 · Y qué cambia cuando el almacén es nuestro
 
+> **Escrito en futuro y ya ocurrido.** El almacén existe —[ADR 0015](decisions/0015-el-protocolo-del-almacen.md)—
+> y el ciclo lo puebla, lo refresca, lo funde y lo recoge. Lo que sigue se deja como se escribió,
+> porque acertó; lo que aquello no podía prever está en [§3.4](#34--y-entonces-sí-tenemos-container).
+
 La dirección es traer el almacenamiento de lo materializado **a nuestro lado** —almacenamiento de
 objetos— en vez de escribirlo en el almacén del cliente. No es un giro de doctrina: es lo que el
 [ADR 0006](decisions/0006-el-artefacto-de-topologia.md) ya decidió para la topología —*«ORE no
@@ -193,6 +197,78 @@ Y lo que cuesta, dicho antes de que llegue:
   ya defendió ese límite—. *«La copia es del cliente»*, en `materialized.datasource`, **no
   sobrevive**. No se toca hoy: se toca cuando exista, porque una especificación describe lo que
   es normativo, no lo que se planea.
+
+### 3.4 · Y entonces sí tenemos container
+
+[`handoff-vistas`](handoff-vistas.md) tomó la forma de la vista de Cognite y terminó con una
+frase:
+
+> *«Nosotros no tenemos containers, así que nos queda solo la mitad de arriba — que es toda.»*
+
+**Esa frase dejó de ser cierta.** Y con ella cambia la respuesta a *sobre qué se sienta la capa
+ontológica*, que es la pregunta que este documento existe para contestar.
+
+#### Los tres pisos, y de quién es cada palabra
+
+Cognite lo dice así, en su documentación:
+
+| | qué es | ¿guarda dato? |
+|---|---|---|
+| **container** | *«the physical storage for properties»* | **sí** |
+| **view** | *«Data is not queried directly from the containers»* · *«map properties from different containers in a flat object and rename or alias»* | no |
+| **data model** | *«group views that belong together for a purpose»* | no |
+
+Nuestra `View` **es** su view, y eso ya estaba medido. Lo nuevo es el piso de abajo: **la copia
+materializada es un container.** Tiene almacenamiento propio, esquema declarado, clave, testigo,
+la lee cualquier motor, se funde incrementalmente y se recoge. No se parece a un container: hace
+lo que hace un container.
+
+Con **una asimetría que no se tapa**: el suyo es almacenamiento **primario** —se ingiere dentro y
+se escribe—; el nuestro es **derivado** —es el resultado de un plan sobre un puntero, y es de solo
+lectura—. Esa diferencia tiene nombre y es [M1](#m1--la-tercera-cara).
+
+#### Y lo que hacen los otros dos, verificado
+
+**Databricks.** Su *foreign table* es exactamente nuestro `Table`, hasta en el motivo: *«Queries
+are read-only»*, y más fuerte — *«Unity Catalog will not issue write credentials under any
+circumstance»*. `01-table` §2 dice *«No se escribe. El puntero es de solo lectura»*. Dos
+proyectos llegaron a la misma frase por su cuenta.
+
+**Foundry.** Una *virtual table* puede respaldar un tipo de objeto. Pero servir ese objeto **no
+lee del puntero**: lee de un índice separado al que los datos **se sincronizan**, y lo sincroniza
+el *Object Data Funnel*. Para los objetos multi-fuente su documentación es explícita —*«Only
+Foundry datasets or restricted views can be used for MDOs»*, y solo cuentan *«datasources that
+are synced to object storage»*.
+
+> **La ontología de Foundry no se sirve del puntero: se sirve de una copia.**
+
+Eso zanja la duda que quedaba abierta desde [§3.1](#31--lo-que-eso-decidió-sobre-la-federación).
+No es que ellos puedan servir ontología desde un puntero y nosotros no: **nadie lo hace**. Lo que
+ellos tienen y nosotros acabamos de conseguir es el sitio donde cae la copia.
+
+#### La respuesta, sin ambigüedad
+
+> **La capa ontológica se sienta sobre la VISTA. Ni sobre la tabla, ni sobre la copia.**
+>
+> La vista se apoya en la tabla **o** en su copia, y **cuál de las dos es una decisión de
+> rendimiento y de frescura, tomada abajo, que la ontología no ve.**
+
+No es una aspiración: está construido y se ve en dos sitios del árbol.
+
+- **`backedBy` nombra una vista**, nunca una tabla ni una copia. Una entidad no sabe si lo que la
+  respalda está copiado.
+- **`raíz de lectura` decide** cuál de las dos contesta, y `OOS2020` la obliga cuando el origen no
+  se deja leer.
+
+La ontología nombra **la pregunta**; el sustrato decide **quién la contesta**. Esa indirección es
+la pieza entera: sin ella, mover una vista de virtual a materializada sería un cambio en el
+modelo, y con ella es un cambio en una línea que nadie de arriba nota.
+
+#### Qué queda para que el piso esté completo
+
+Uno solo, y es el de la asimetría: **la copia es de solo lectura**. Con eso la ontología puede
+**responder** sobre el sustrato y no puede **actuar** sobre él. Escribir en el origen a través de
+la vista es [M1](#m1--la-tercera-cara), y es lo único que separa nuestro container del suyo.
 
 ## 4. La ramificación sale gratis, y no por suerte
 
