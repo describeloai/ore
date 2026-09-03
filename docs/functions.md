@@ -113,8 +113,10 @@ expresividad acotada es lo que hace analizable una cosa.
 
 **La escritura es la misma frase leída al revés**, y no hay que inventar nada:
 
-> **El destino de un efecto se deriva, no se declara.** Entidad → `backedBy` → vista → raíz →
-> tabla. Exactamente el camino que ya recorre la lectura.
+> **El destino de un efecto se deriva, no se declara.** Entidad → `backedBy` → vista → **su
+> copia**. El mismo camino que recorre la lectura, y **se para donde la lectura se para cuando la
+> vista está materializada**: en la copia. No sigue hasta la tabla, porque el puntero es de solo
+> lectura y lo seguirá siendo — [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).
 
 Por eso **`datasourceRef` desaparece del efecto**. Declararlo sería un segundo sitio que puede
 discrepar del primero, y este árbol ya sabe cómo termina eso: la tabla existe porque había N
@@ -123,7 +125,22 @@ sitios describiendo lo físico y pasó a haber uno.
 `writes` **se queda tal cual**. Nombrar la propiedad es correcto: es el idioma de la ontología, y
 la ontología no debe saber en qué columna cae.
 
-### 4.1 · Escribir es `Q⁻¹`, y la mitad difícil ya está resuelta
+### 4.1 · Escribir **no** es `Q⁻¹`, y saber por qué vale la pena
+
+> **Esta sección decía lo contrario y estaba mal.** Se deja reescrita y no borrada porque el
+> razonamiento que contenía sigue siendo correcto — **sobre otro producto**.
+
+Invertir la vista haría falta para llevar un cambio **hasta el origen**. Pero el destino es la
+copia, y la copia guarda **el vocabulario de la vista**: su esquema sale del plan, así que sus
+columnas son `employeeId`, no `employee_id`.
+
+> Un edit nombra una propiedad; la propiedad es un campo de la vista; **el campo es una columna de
+> la copia**. Cae directo. No hay `Q` que deshacer porque no se está saliendo de `Q`.
+
+Lo que sigue —la tabla de qué se invierte y qué no, y `linaje` contestándolo con
+`Directo(Identidad)`— es la respuesta a *«¿esta vista se puede deshacer?»*. Es una pregunta
+legítima y está construida —`OOS7013`, la guarda y su censo— pero **la hace el otro producto**: el
+que escribe de vuelta en los sistemas de origen. Aquí no se hace.
 
 [`v1alpha8/00-scope`](../vendor/oos/spec/v1alpha8/00-scope.md) §6.1 lo decidió al migrar, con una
 corroboración que no venía de aquí:
@@ -148,7 +165,15 @@ Así que *«esta función escribe a través de una vista que no se puede inverti
 compilar**, con la misma máquina que ya rechaza una copia que fuga. No hace falta motor nuevo:
 hace falta llamar al que hay.
 
-### 4.2 · Y la tercera cara de la tabla
+### 4.2 · Y la tercera cara de la tabla, que sobra
+
+> **Construida en `F0a` y retirada por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).**
+> Lo que sigue describe `Table.writes` tal y como se construyó, y se conserva porque el argumento
+> de simetría era bueno y el error estaba **una capa más abajo**: no en cómo declarar lo que el
+> objeto acepta, sino en creer que se le iba a pedir algo.
+>
+> Si nunca se escribe en el origen, **preguntarle qué acepta no sirve de nada**. `Table.writes`,
+> `OOS7012` y su mitad de `OOS2024` salen; la retirada está inventariada en el ADR.
 
 Leer y cambiar están declarados —`reads` es la cara `I`, `changes` la cara `D`—. Escribir es la
 tercera, y le toca el mismo trato: **el objeto declara qué acepta, y el planificador lo respeta
@@ -165,17 +190,31 @@ La simetría con `changes` no es estética. `changes` dice **qué sale** del obj
 tabla que no declara `writes` **no se escribe**, igual que una que declara `reads: none` no se
 consulta. La ausencia es una negativa, que es la doctrina de esta casa desde v1alpha1.
 
-### 4.3 · Y no se escribe en la copia
+### 4.3 · Se escribe en la copia, y el puntero no se toca
 
-Conviene decirlo porque los dos caminos existen ahora y se parecen:
+Los dos caminos existen y **aterrizan en el mismo sitio**, que es lo que los hace componibles:
 
 | | qué escribe | quién |
 |---|---|---|
-| **materializar** | **la copia**, en nuestro almacén | `ore materialize` · [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) |
-| **aplicar un efecto** | **el origen**, a través de la vista | esto |
+| **materializar** | la copia, desde el origen | `ore materialize` · [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) |
+| **aplicar un efecto** | la copia, desde la ontología | esto · [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) |
 
-Una función que escribiera en la copia estaría escribiendo en una respuesta cacheada, y el origen
-la contradiría en el refresco siguiente. **La copia es derivada; el origen es la verdad.**
+```text
+copia  =  Q(origen)  ⊕  ediciones
+```
+
+**La copia sigue siendo derivada**; lo que cambia es de qué. Antes derivaba de una entrada y ahora
+de dos, y las dos son declaradas y reproducibles — que es lo que «derivada» quiere decir.
+
+**Y el puntero sigue siendo de solo lectura**, sin matices: `01-table` §2 vuelve a valer entero, y
+con él la frase de Databricks que decía lo mismo. Aplicar sobre el sistema del cliente exigiría una
+credencial que este proyecto nunca pide.
+
+> **Escribir obliga a materializar.** Una vista virtual no tiene dónde sostener una edición. Es
+> simétrico con `OOS2020` —*lo que no se puede leer se debe materializar*— y decide **por vista** si
+> es un espejo o un registro: sin escrituras puede quedarse virtual y refleja el origen exactamente;
+> con ellas, se materializa. Las dos clases conviven en el mismo paquete y el compilador dice cuál
+> es cuál.
 
 ---
 
@@ -188,11 +227,13 @@ La de siempre, y por la razón de siempre. Un runtime de wasm es una dependencia
 |---|---|
 | computar el `Plan`, cotejar la `Propuesta` contra `effects:`, correr el flujo sobre ella, comprobar endosos, **decidir si la vista se invierte** | **dentro** |
 | ejecutar el módulo | `ore-invoke`, delegado |
-| **escribir en el origen** | `ore-write-<tipo>`, delegado |
+| **aplicar la propuesta sobre la copia** | `ore-store-r2`, que **ya existe** |
 
-La última fila es nueva, y es la **cuarta delegación** del árbol. Cae junto a las otras tres por
-la misma razón —`ore` no abre sockets— y hereda su protocolo: lo que viaja no son llamadas al
-origen, es **la propuesta ya bajada a columnas**.
+La última fila **no añade una delegación: usa una que ya está**. Cuando el destino era el origen,
+esto pedía un cuarto delegado —`ore-write-<tipo>`—; con el destino en la copia, aterriza en el
+almacén, que ya habla el protocolo y ya sabe sellar, fundir y recoger. La corrección del
+[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) **quita** una pieza en vez de
+añadirla, y eso es lo que hace pensar que la dirección es la buena.
 
 Y **lo que devuelve un delegado no se cree**: cada edit propuesto se coteja contra los efectos
 declarados, y lo que quede fuera se rechaza. Es lo mismo que hace `ore pack` con una firma.
@@ -330,44 +371,47 @@ comprobación.
 
 ### F5 · Aplicar por la vista
 
-**Qué.** El cuarto delegado. `ore` baja la propuesta a columnas siguiendo la vista, y
-`ore-write-<tipo>` la escribe. Atómico, idempotente por el digest de la propuesta, y de alcance
-comprobado antes.
+**Qué.** La propuesta se aplica **sobre la copia**, produciendo una copia sucesora. No hay
+delegado nuevo: es `ore-store-r2` sellando, y la carrera entre dos escritores la arbitra el recibo
+de sucesión del [ADR 0017](0017-la-escritura-sobre-el-sustrato.md) §A, que deja de ser una
+precaución y pasa a ser el mecanismo.
 
-**Y una escritura parcial es lo normal, no la excepción.** Una vista con tres campos escribe tres
-columnas y deja el resto — que es exactamente lo que `proyectar` invierte *parcialmente*.
+**Y una escritura parcial es lo normal, no la excepción.** Un edit toca una columna de la copia y
+deja el resto; la fusión por clave que `carga::fundir()` ya hace es exactamente eso.
 
-**Listo cuando.** Aplicar dos veces la misma propuesta produce el mismo estado; una que toque dos
-fuentes se rechaza **antes** de escribir en la primera; y un `ore-write-<tipo>` que no sepa
-honrar algo **se niega en vez de aproximarlo**, que es la regla que `rango_servible` ya fijó para
-el otro lado.
+**Listo cuando.** Aplicar dos veces la misma propuesta produce **la misma copia** —mismo digest, y
+la segunda no escribe nada, como ya hace el recibo en el ciclo de materialización—; una propuesta
+sobre una vista virtual **no compila**; y leer la vista después de aplicar devuelve el valor nuevo
+sin recompilar nada.
 
 ### F6 · La definición de listo
 
 **Qué.** Nada nuevo: una prueba de fuego con **números afirmados**, al modo de
 `pruebas-de-fuego/refresco.sh`. Nace roja y su salida es la lista de trabajo.
 
-Los actos, sobre un origen de verdad:
+Los actos, sobre un origen de verdad y una copia en el almacén:
 
 | | qué pasa | qué se afirma |
 |---|---|---|
 | 1 | una función propone un cambio | la propuesta lleva las **cinco** identidades, y digiere igual dos veces |
-| 2 | se aplica | **una** fila cambia en el origen, y es la que la vista dejaba ver |
-| 3 | se aplica **otra vez** | **cero** escrituras · la idempotencia por digest |
+| 2 | se aplica | **una** fila cambia **en la copia**, y es la que la vista dejaba ver |
+| 3 | se aplica **otra vez** | **cero** objetos nuevos en el almacén · la idempotencia por digest |
 | 4 | se lee la vista | el cambio está, sin recompilar nada |
+| 5 | se refresca desde el origen | la edición **sigue ahí** — y qué gana si el origen la contradice es §7.4, abierto |
 
 Y las negativas, que valen igual:
 
 | | se provoca | tiene que pasar |
 |---|---|---|
-| a | un efecto por una vista que agrega | **no compila** · F0 |
+| a | un efecto sobre una vista **virtual** | **no compila** · la regla de `4.3` |
 | b | un edit fuera de `effects:` | se rechaza, y se dice cuál |
 | c | una propuesta bajo un bundle viejo | se rechaza nombrando los dos digests |
 | d | dos fuentes en un efecto | se rechaza **antes de escribir en la primera** |
 | e | un endoso que no verifica | no se llega a invocar |
 
-**Listo cuando.** Los cuatro actos dan sus números, las cinco negativas fallan por su motivo, y
-**el origen queda como estaba** salvo la fila que tenía que cambiar.
+**Listo cuando.** Los cinco actos dan sus números, las cinco negativas fallan por su motivo, y
+—esto es lo que la prueba existe para afirmar— **el origen queda intacto, byte a byte**. Ni una
+escritura, ni una conexión abierta hacia él.
 
 ---
 
@@ -421,11 +465,37 @@ hace Cognite cuando una vista mapea propiedades de **varios** containers.
 
 ### 7.3 · Dónde vive la propuesta aplicada
 
-Una propuesta tiene digest, así que *«¿ya se aplicó?»* es contestable — **si alguien lo recuerda**.
-¿Es un artefacto en el almacén, como una copia? ¿Es un registro en el origen? ¿Es del cliente?
+> **Medio contestada por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md):**
+> es un artefacto en el almacén, no un registro en el origen — que era una de las tres opciones y
+> ha dejado de serlo. Lo que queda abierto es la forma: si el registro de ediciones es un objeto
+> propio al lado de la copia, o la cadena de copias sucesoras **es** el registro.
+>
+> Foundry conserva el historial y lo **reaplica** en cada reconstrucción del *writeback dataset*,
+> así que en su modelo el historial es primario y la tabla es su pliegue. Nuestra cadena de
+> sucesión del ADR 0017 se le parece bastante, y conviene medir si es lo mismo antes de inventar
+> una pieza.
 
-**Dónde mirar:** dónde guarda Foundry el historial de *Actions*, y cómo Debezium recuerda su
-*offset* — que es el mismo problema con otro nombre, y su respuesta fue **fuera del origen**.
+### 7.4 · Leer lo que acabas de escribir, y qué gana contra el origen
+
+Las dos que el ADR 0018 dejó abiertas **a propósito**, porque son superficie de producto y no
+mecánica:
+
+**Frescura contra el origen no es lo mismo que frescura contra mis escrituras.** `freshness` dice
+lo primero. Si una vista sostiene ediciones, `raíz de lectura` tiene que preferir la copia o una
+consulta devolvería el estado anterior a la edición que acaba de aceptarse. Foundry lo garantiza
+por escrito con seguimiento de *offsets*; puede que hagan falta las dos palabras.
+
+**Y qué gana cuando el origen cambia debajo.** Se edita `estado` y el refresco siguiente trae la
+misma fila con otro `estado`. Foundry reaplica el historial: la edición gana. Nosotros no lo hemos
+escrito, y escribirlo es barato ahora y caro después.
+
+### 7.5 · Si la ontología puede sostener hechos que ningún origen tuvo
+
+Hoy no: `OOS2022` exige que toda propiedad sea campo de su vista o declare `derivedFrom`. Foundry
+sí — sus *edit-only properties* existen solo en la ontología y no tienen columna en ningún origen.
+
+**Es la decisión más grande que queda**, y dice si somos un registro con todas las consecuencias o
+uno a medias. No es de mecánica: es de producto.
 
 ---
 
@@ -440,7 +510,11 @@ un valor: *mejor un error que un campo*. Cruzar dos fuentes de forma atómica no
 resolver mejor que nadie; lo que sí se puede es **decir que no se hace, y comprobarlo antes de
 escribir**.
 
-**Escribir en la copia.** §4.3. La copia es derivada; el origen es la verdad.
+**Escribir en el origen.** §4.3 y [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).
+Es otro producto —el sector lo llama *reverse ETL*— y Foundry lo confirma desde su lado: para tocar
+un sistema externo **no invierte una vista, llama a un webhook**, admitiendo por escrito que la
+llamada puede salir bien y la ontología fallar igualmente. El día que se haga, la invertibilidad
+que `OOS7013` ya comprueba será su primera regla.
 
 **Que la entidad deje de repetir.** Es M2 de [`sustrato.md`](sustrato.md), y va después: esto se
 construye sobre lo despejado, no a la vez.
@@ -464,3 +538,18 @@ Para que se vea qué sobrevivió y qué no, y no haya que compararlo a mano.
 **Lo que esto enseña, y vale más que el documento:** la mitad permanente aguantó un cambio de
 paradigma completo debajo, y la desechable no. Es exactamente la línea que separa las dos, y la
 prueba de que estaba bien puesta.
+
+### Y lo que se le escapó, dicho porque es la lección más cara
+
+La reescritura declaró que el destino se derivaba en vez de declararse, quitó `datasourceRef`… y
+**conservó el destino**. Peor: le escribió una justificación nueva —*«la copia es derivada; el
+origen es la verdad»*— que sonaba a principio y era una herencia de v1alpha2, de cuando una entidad
+se respaldaba de un `Binding` y no había ni tabla ni vista que pudieran ser destino de nada.
+
+> **Un sesgo puede sobrevivir a la refactorización que debía eliminarlo, y salir de ella con mejor
+> argumentación que antes.** Lo destapó una pregunta —*¿por qué el origen y no la copia?*— y no una
+> prueba: ninguna podía verlo, porque el código todavía no aplicaba nada.
+
+Lo corrige el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md), que además
+retira `Table.writes` y `OOS7012` — construidos en `F0a`, en este mismo ciclo, sobre la premisa
+equivocada.

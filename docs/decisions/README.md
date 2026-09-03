@@ -27,6 +27,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0015](0015-el-protocolo-del-almacen.md) · el protocolo del almacén | una copia es un **artefacto nombrado por su digest** —sobre nuestro, carga Parquet— y subirlo es de un programa delegado | aceptado |
 | [0016](0016-el-testigo-y-el-rango.md) · el testigo y el rango | preguntarle al origen **hasta dónde está**, y poder pedirle las filas **de un rango** | **A aceptada · B propuesta** |
 | [0017](0017-la-escritura-sobre-el-sustrato.md) · la escritura sobre el sustrato | una copia nueva **reserva a su base**, y se reescribe entera hasta que una medida diga lo contrario | **propuesto** |
+| [0018](0018-la-ontologia-es-el-sistema-de-registro.md) · la ontología es el sistema de registro | una escritura de la ontología aterriza **en la copia**, nunca en el origen; y escribir obliga a materializar | **aceptado** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -34,6 +35,11 @@ implementaciones. Es también la única que decide **mirando fuera**: sus cinco 
 se contestaron leyendo lo que Debezium, Iceberg, Delta, Snowflake, BigQuery y Airbyte tienen
 escrito, y los seis coinciden. Una de esas lecturas —que el modo `field` es *at-least-once* por
 construcción— cambió la propuesta en vez de confirmarla.
+
+**0017 y 0018 se leen en este orden y no al revés**: el 0018 decide **qué** aterriza en la copia
+—las escrituras de la ontología, y solo ellas— y el 0017 ya había decidido **cómo** sin saber que
+iba a hacer falta para esto. Su recibo de sucesión deja de ser una precaución y pasa a ser el
+mecanismo de `F5`.
 
 **0015, 0016 y 0017 son las tres preguntas de una copia**: qué es y cómo se nombra; hasta cuándo
 fue cierta; y qué pasa cuando dos quieren cambiarla a la vez. La tercera salió de que la primera

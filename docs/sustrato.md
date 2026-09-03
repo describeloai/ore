@@ -22,8 +22,13 @@ construyen**, y se justifica por lo que las demás dejan de tener que saber.
 
 > El modelo ontológico —entidad, concepto, interfaz, regla, función, política—, versionado y
 > ramificado en plenitud, se construye **sobre** tablas y vistas, y **reposa** en ellas. Y es a
-> través de ellas por donde eventualmente se escribe en el origen: como función sobre la
-> ontología, como consulta, o como lo que venga.
+> través de ellas por donde se lee y por donde se escribe: como función sobre la ontología, como
+> consulta, o como lo que venga.
+
+> **La coletilla original decía «por donde eventualmente se escribe en el origen».** El
+> [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) la corrigió: se escribe en
+> **la copia**, y el origen no se toca nunca. Es la primera frase de este documento y llevaba el
+> sesgo dentro.
 
 Todo lo que sigue son consecuencias de tomarse esa frase en serio.
 
@@ -340,10 +345,8 @@ Entity   siempre lógica   ─── la ontología
 
 - **sobre la tabla**, materializar sería *un cambio en el modelo*: habría que tocar la entidad para
   ganar velocidad;
-- **sobre la copia**, el modelo no existiría hasta que alguien copiara, y estaría leyendo una
-  respuesta cacheada que el origen desmiente en el refresco siguiente — que es por lo que
-  [`functions.md`](functions.md) §4.3 manda los efectos al origen y no a la copia: *la copia es
-  derivada, el origen es la verdad*;
+- **sobre la copia**, el modelo no existiría hasta que alguien copiara: una vista virtual no
+  tendría dónde sentarse, y sentarse sobre lo que a veces no existe no es sentarse;
 - **sobre la vista**, la decisión de rendimiento y frescura se toma abajo y no sube.
 
 Es la misma indirección que hace posible `OOS2020` —*una vista cuya raíz no se deja leer debe
@@ -365,19 +368,33 @@ porque un documento no caduca. La única de v1alpha8 sin `backedBy` es `hr.Depar
 `mixed-versions`, y está ahí a propósito: respaldada por un binding v1alpha1 en el mismo paquete,
 para afirmar que la migración no roza.
 
-#### Qué queda para que el piso esté completo
+#### Qué queda para que el piso esté completo, y una asimetría que se cae
 
-La asimetría sigue en pie —**la copia es de solo lectura**— y ya no es lo que falta, porque no era
-el sitio donde escribir. Un efecto va **al origen**, no a la copia, y por la vista.
+La asimetría con el container de Cognite —*el suyo es primario, el nuestro de solo lectura*— **ha
+dejado de ser cierta**, y lo decidió el
+[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md): una escritura que sale de la
+ontología aterriza **en la copia**, nunca en el origen.
 
-Lo que faltaba era que el objeto pudiera **decir qué acepta**, y eso es [M1](#m1--la-tercera-cara),
-cerrado: la tabla tiene su tercera cara, el compilador rechaza un efecto sobre un objeto que no
-acepta `update`, y una propuesta se coteja contra la superficie declarada sin ejecutar nada.
+```text
+copia  =  Q(origen)  ⊕  ediciones
+```
 
-Con eso la ontología ya puede **actuar** sobre el sustrato **declarando y verificando**. Lo que
-sigue sin poder es **aplicar**, y eso es deliberado: aplicar abre un socket, así que es de un
-programa delegado —`ore-write-<tipo>`, la cuarta delegación— y de
-[`functions.md`](functions.md) `F4` y `F5`.
+Sigue siendo **derivada** —lo que cambia es de qué: antes de una entrada, ahora de dos, y las dos
+declaradas y reproducibles—, y **el puntero sigue siendo de solo lectura sin matices**, que es lo
+que este documento llevaba diciendo desde §3.1 y lo que Databricks firma igual.
+
+Lo que eso le da a esta sección es la respuesta que le faltaba, y es del usuario antes que mía:
+
+> **Ser un registro íntegro no impide ser un buen espejo.** Mientras no haya escrituras desde la
+> ontología, la vista puede quedarse virtual y refleja el origen exactamente. En cuanto las hay,
+> **hay materialización**.
+
+Y por eso se decide **por vista**, no por producto: las dos clases conviven en el mismo paquete y
+el compilador dice cuál es cuál, sin que nadie tenga que acordarse.
+
+Lo que sigue sin poder la ontología es **aplicar**, y eso es lo único que queda: `F4` —el runtime
+delegado— y `F5` —sellar la copia sucesora—. Sin cuarta delegación: aterriza en `ore-store-r2`,
+que ya existe.
 
 ## 4. La ramificación sale gratis, y no por suerte
 
@@ -427,6 +444,19 @@ conexión, igual que hoy rechaza `OOS2020`.
 >
 > Y `OOS7012`, que este documento no previó: un efecto sobre un objeto que **no acepta que lo
 > actualicen**. La ausencia de `writes` cuenta como negativa, igual que `reads: none`.
+>
+> ### ⚠️ Y retirado a los dos días, por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md)
+>
+> `M1` estaba **bien planteado y mal dirigido**: la tercera cara es una buena simetría, y no sirve
+> de nada si al objeto nunca se le va a pedir nada. Si la escritura aterriza en la copia,
+> preguntarle a la tabla qué acepta **no responde ninguna pregunta que alguien vaya a hacer**.
+>
+> Salen `Table.writes` y `OOS7012`; `OOS2024` sobrevive con otro sujeto —la clave la exige **ser
+> escribible**, no `writes`—; y `OOS7013` cambia de dueño: pasa a ser la primera regla del producto
+> que escribe de vuelta en los orígenes, que no es este.
+>
+> Se deja escrito arriba en vez de borrado porque **el error no estaba en la forma sino una capa
+> más abajo**, y eso es lo que hay que poder volver a leer.
 
 > **Y es el mismo peldaño que `F0` de [`functions.md`](functions.md), no dos.** Aquí se ve desde
 > el sustrato —*la tabla gana su tercera cara*— y allí desde arriba —*un efecto necesita un

@@ -8,6 +8,23 @@ entera
 > **antes** de construir porque toca el almacén, que ya tiene tres verbos y una prueba de fuego
 > encima. Y como aquel, no razona desde cero: mira lo que tienen escrito Iceberg, Delta, Cognite y
 > Palantir, que ya lo resolvieron.
+>
+> ### Reforzado por el [ADR 0018](0018-la-ontologia-es-el-sistema-de-registro.md)
+>
+> Este documento decía que escribir en el origen *«es otro documento y probablemente otro
+> producto»*, y `functions.md` decía a la vez que un efecto escribe en el origen. **Los dos no
+> podían tener razón, y la tenía este.** El 0018 lo zanja y con ello:
+>
+> - la **Decisión A** —el recibo del sucesor, con `If-None-Match` sobre la base— deja de ser una
+>   precaución para una carrera hipotética y pasa a ser **el mecanismo por el que se aplica una
+>   propuesta**: una edición produce una copia sucesora, y dos escritores simultáneos son ahora el
+>   caso normal, no el raro;
+> - la **Decisión B** —copy-on-write hasta que una medida diga otra cosa— gana el motivo para
+>   revisarse antes de lo previsto: las ediciones son **escrituras pequeñas y frecuentes**, que es
+>   exactamente el perfil que aquí se nombró como el que rompe COW. El criterio escrito abajo
+>   —filas escritas, no segundos— sigue valiendo tal cual;
+> - y lo que este documento dejaba **sin cubrir** —*«la escritura pesada queda sin cubrir»*— pasa
+>   de ser una nota al pie a ser el frente que hay que medir.
 
 ---
 
@@ -174,6 +191,10 @@ request may succeed but Ontology changes could fail»*.
 
 > **La escritura sobre el sustrato y la escritura sobre el origen son dos cosas, y todos los
 > jugadores las tienen separadas.** Este ADR es la primera.
+>
+> **Y el [0018](0018-la-ontologia-es-el-sistema-de-registro.md) confirmó que la segunda no es solo
+> otro documento: es otro producto**, con una mecánica que ninguno de los jugadores hace por
+> inversión de vista. Foundry llama a un webhook; nadie escribe de vuelta por el puntero.
 
 **Qué acepta el objeto físico.** `Table.writes` es `M1` de [`sustrato.md`](../sustrato.md) y `F0`
 de [`functions.md`](../functions.md), y va de la tabla, no del almacén.
