@@ -26,6 +26,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0014](0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) · no se mide el tiempo, se cuenta el trabajo | la unidad de coste es **una fila mirada por un operador**; y medir destapó que la incrementalización estaba escrita y no ocurría | aceptado |
 | [0015](0015-el-protocolo-del-almacen.md) · el protocolo del almacén | una copia es un **artefacto nombrado por su digest** —sobre nuestro, carga Parquet— y subirlo es de un programa delegado | aceptado |
 | [0016](0016-el-testigo-y-el-rango.md) · el testigo y el rango | preguntarle al origen **hasta dónde está**, y poder pedirle las filas **de un rango** | **A aceptada · B propuesta** |
+| [0017](0017-la-escritura-sobre-el-sustrato.md) · la escritura sobre el sustrato | una copia nueva **reserva a su base**, y se reescribe entera hasta que una medida diga lo contrario | **propuesto** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -33,6 +34,11 @@ implementaciones. Es también la única que decide **mirando fuera**: sus cinco 
 se contestaron leyendo lo que Debezium, Iceberg, Delta, Snowflake, BigQuery y Airbyte tienen
 escrito, y los seis coinciden. Una de esas lecturas —que el modo `field` es *at-least-once* por
 construcción— cambió la propuesta en vez de confirmarla.
+
+**0015, 0016 y 0017 son las tres preguntas de una copia**: qué es y cómo se nombra; hasta cuándo
+fue cierta; y qué pasa cuando dos quieren cambiarla a la vez. La tercera salió de que la primera
+celebrase que *«la carrera es inofensiva»* — cierto para leer, **falso en cuanto los escritores
+producen cosas distintas**.
 
 **0008, 0015 y 0016 son la misma costura creciendo**: la petición del driver era un fragmento del
 plan; el almacén añadió el artefacto; y esto añade lo único que ninguno de los dos podía contestar
