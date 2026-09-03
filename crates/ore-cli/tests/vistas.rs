@@ -416,3 +416,118 @@ fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+
+/// **`ore view` contesta, por vista, si se escribe a través de ella.**
+///
+/// Es el «listo cuando» de la cara `W`, y son tres respuestas porque hay tres
+/// situaciones distintas y solo una es un error de compilación:
+///
+/// 1. la tabla **no acepta** `update` — y entonces una función sobre ella no
+///    compila, `OOS7012`;
+/// 2. la acepta y la vista **expone la clave** — se escribe;
+/// 3. la acepta y la vista **no expone la clave** — y esto es lo que ninguna
+///    otra salida dice: la tabla cumple `OOS2024`, la vista es legal, el
+///    paquete compila, y aun así por **esta** vista no se puede entrar porque
+///    nada identifica la fila. Se descubre mirando, no fallando.
+///
+/// Las tres sobre la misma tabla, para que lo único que varíe sea lo que se
+/// afirma.
+#[test]
+fn ore_view_dice_por_vista_si_se_escribe_a_traves_de_ella() {
+    let tabla = |writes: &str| {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: Table\n\
+             metadata: {{ name: employees, namespace: erp }}\n\
+             spec:\n  \
+               datasource: erp\n  \
+               object: \"public.employees\"\n  \
+               columns:\n    \
+                 employee_id: {{ physicalType: \"varchar(16)\" }}\n    \
+                 country:     {{ physicalType: \"char(2)\" }}\n  \
+               reads: {{ predicatePushdown: [eq], fullScan: cheap }}\n  \
+               changes: {{ mode: retract, witness: log{} }}\n\
+             {writes}\n",
+            if writes.is_empty() {
+                ""
+            } else {
+                ", key: [employee_id]"
+            }
+        )
+    };
+    let vista = |campos: &str| {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: {{ name: empleados, namespace: hr }}\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: {{ table: erp.employees }}\n  \
+               fields:\n{campos}"
+        )
+    };
+    const CON_CLAVE: &str = "    id: employee_id\n    pais: country\n";
+    const SIN_CLAVE: &str = "    pais: country\n";
+
+    // 1 · la tabla se calla, y callarse es negarse.
+    let dir = paquete(
+        "escritura-muda",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            ("tables/employees.yaml", &tabla("")),
+            ("views/empleados.yaml", &vista(CON_CLAVE)),
+        ],
+    );
+    let (ok, out, _) = ver(&dir);
+    assert!(ok, "{out}");
+    assert!(out.contains("writes: none"), "las caras:\n{out}");
+    assert!(
+        out.contains("escritura no · la tabla no declara `writes`"),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 2 · acepta, y la vista expone con qué identificar la fila.
+    let dir = paquete(
+        "escritura-si",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            (
+                "tables/employees.yaml",
+                &tabla("  writes: [insert, update, delete]"),
+            ),
+            ("views/empleados.yaml", &vista(CON_CLAVE)),
+        ],
+    );
+    let (ok, out, _) = ver(&dir);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("escritura sí · insert, update, delete · identifica por employee_id"),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 3 · acepta, pero por ESTA vista no se entra. Compila igual.
+    let dir = paquete(
+        "escritura-sin-clave",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            (
+                "tables/employees.yaml",
+                &tabla("  writes: [insert, update, delete]"),
+            ),
+            ("views/empleados.yaml", &vista(SIN_CLAVE)),
+        ],
+    );
+    let (ok, out, _) = ver(&dir);
+    assert!(ok, "la vista es legal y el paquete compila:\n{out}");
+    assert!(
+        out.contains("escritura no · la vista no expone `employee_id`"),
+        "{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

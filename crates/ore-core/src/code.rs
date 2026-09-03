@@ -165,6 +165,7 @@ codes! {
     // columna de tiempo es legitimo y existe; lo que no se puede es mantener una
     // copia suya incrementalmente.
     Oos2023 = "OOS2023", Reference, "una copia fechada por columna sin clave con la que deduplicar no se mantiene";
+    Oos2024 = "OOS2024", Reference, "una tabla que acepta update o delete no declara changes.key";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -272,6 +273,7 @@ codes! {
     // clave desconocida, que ya tiene código.
     Oos7009 = "OOS7009", Effect, "estrategia probabilística sin conducto declarado";
     Oos7011 = "OOS7011", Effect, "integridad por encima del techo de la estrategia";
+    Oos7012 = "OOS7012", Effect, "efecto sobre una tabla que no acepta update";
 
     // ── OOS8xxx · gobierno ──────────────────────────────────────────────────
     //
@@ -338,6 +340,7 @@ mod tests {
             Code::Oos2021,
             Code::Oos2022,
             Code::Oos2023,
+            Code::Oos2024,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,
@@ -361,7 +364,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            10,
+            11,
             "borrador de efectos"
         );
         assert_eq!(

@@ -603,6 +603,47 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             }
         }
 
+        // OOS2024 · la cara `W` exige con qué identificar la fila.
+        //
+        // `insert` no la necesita: no señala a nada que ya esté. `update` y
+        // `delete` sí, y sin ella *«actualiza esta fila»* no nombra ninguna —
+        // es un `UPDATE` sin `WHERE`, que no es una escritura parcial sino un
+        // accidente. La clave es `changes.key` y no una propia: un segundo
+        // sitio diciendo lo mismo es el defecto que la tabla vino a corregir.
+        let ops = crate::document::escrituras(tabla.section("writes"));
+        let necesita: Vec<&str> = ops
+            .iter()
+            .filter(|o| *o == "update" || *o == "delete")
+            .map(String::as_str)
+            .collect();
+        if !necesita.is_empty()
+            && tabla
+                .section("changes")
+                .and_then(|c| c.get("key"))
+                .is_none()
+        {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2024,
+                    &tabla.path,
+                    format!(
+                        "`{tqn}` acepta `{}` y no declara `changes.key`",
+                        necesita.join("` y `")
+                    ),
+                )
+                .at(tabla
+                    .section("writes")
+                    .map_or_else(|| tabla.root.pos(), |w| w.pos()))
+                .help(
+                    "sin clave, `update` no dice qué fila cambia y `delete` no dice cuál \
+                     retira. Declara `changes.key` con las columnas que identifican una fila \
+                     —es la misma que hace fundible un incremento, y por eso no hay una \
+                     segunda—, o deja en `writes` solo `insert`, que no señala a nada que ya \
+                     esté",
+                ),
+            );
+        }
+
         // OOS2018 · un filtro exigido que no es columna no lo puede poner nadie.
         // Cambia de sujeto respecto al binding, donde eran PROPIEDADES: lo exige
         // el origen, y el origen habla de columnas.

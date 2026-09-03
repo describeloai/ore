@@ -442,6 +442,12 @@ impl Kind {
                 "columns",
                 "reads",
                 "changes",
+                // La cara `W`. A diferencia de las otras dos NO es obligatoria,
+                // y esa asimetria es la doctrina: la ausencia es una negativa.
+                // Callarse sobre lo que se PUEDE PEDIR dejaria al planificador
+                // sin con que rechazar un plan; callarse sobre lo que se
+                // ACEPTA ya rechaza.
+                "writes",
             ],
         }
     }
@@ -539,6 +545,29 @@ pub struct ShapeRule {
     pub check: fn(&Node) -> Option<ShapeFailure>,
 }
 
+/// Las operaciones que la cara `W` declara, tal cual estan escritas.
+///
+/// **El unico lector de `writes` del arbol.** Lo llaman tres —la regla de forma
+/// de aqui, `OOS2024` en `vistas` y `OOS7012` en `effect`— y una segunda
+/// derivacion divergiria en la que ninguna prueba ejerce, que es la leccion de
+/// `aristas`.
+///
+/// No valida: devuelve lo que hay. `none`, la ausencia y una lista vacia dan lo
+/// mismo —nada—, porque para quien pregunta *«¿acepta update?»* las tres
+/// significan lo mismo. Que una lista vacia ademas sea un defecto de forma lo
+/// dice la regla, no esto.
+pub fn escrituras(writes: Option<&Node>) -> Vec<String> {
+    let Some(n) = writes else { return Vec::new() };
+    if n.as_str().is_some() {
+        return Vec::new();
+    }
+    n.items()
+        .iter()
+        .filter_map(|i| i.as_str())
+        .map(String::from)
+        .collect()
+}
+
 fn no_vacio(nombre: &'static str, ayuda: &'static str) -> impl Fn(&Node) -> Option<ShapeFailure> {
     move |n: &Node| {
         matches!(n, Node::Sequence { items, .. } if items.is_empty())
@@ -614,6 +643,91 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                 None
             },
         },
+        // La cara `W`, y la clave que ahora pueden pedir dos.
+        //
+        // Vive en `spec` y no en `spec.writes` porque la regla mira DOS
+        // secciones: que `changes.key` este donde significa algo depende de
+        // `changes` **y** de `writes`, y desde dentro de una no se ve la otra.
+        ShapeRule {
+            kind: Kind::Table,
+            path: &["spec"],
+            check: |n| {
+                let w = n.get("writes").map(|(_, v)| v);
+                if let Some(w) = w {
+                    if let Some(lit) = w.as_str() {
+                        if lit != "none" {
+                            return Some((
+                                format!("`writes: {lit}`"),
+                                Some(
+                                    "la cara `W` es o una lista de operaciones o el literal \
+                                     `none`. El vocabulario es cerrado: `insert`, `update`, \
+                                     `delete`"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                    } else if w.items().is_empty() {
+                        return Some((
+                            "`writes` esta vacio".to_string(),
+                            Some(
+                                "una lista vacia no dice nada que la ausencia no diga ya, y \
+                                 obliga a leerla para descubrirlo. Si no acepta nada, quitala \
+                                 o escribe `none`"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                }
+                let ops = escrituras(w);
+                let mut vistas: Vec<&str> = Vec::new();
+                for op in &ops {
+                    if !matches!(op.as_str(), "insert" | "update" | "delete") {
+                        return Some((
+                            format!("`{op}` no es una operacion de escritura"),
+                            Some(
+                                "el vocabulario es cerrado: `insert`, `update`, `delete`. No \
+                                 hay `upsert` — es `insert` mas `update`, y el conjunto ya lo \
+                                 dice sin una cuarta palabra"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    if vistas.contains(&op.as_str()) {
+                        return Some((
+                            format!("`{op}` repetido en `writes`"),
+                            Some(
+                                "es un conjunto: repetirlo no acepta mas, solo deja dos sitios \
+                                 donde puede haber uno"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    vistas.push(op.as_str());
+                }
+                // Y la clave donde no significa nada. La disyuncion es de
+                // v1alpha8: la puede pedir el modo, o la puede pedir la cara `W`.
+                let modo = n
+                    .get("changes")
+                    .and_then(|(_, c)| c.get("mode"))
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tiene_clave = n.get("changes").and_then(|(_, c)| c.get("key")).is_some();
+                let la_pide_w = ops.iter().any(|o| o == "update" || o == "delete");
+                if tiene_clave && modo != "upsert" && !la_pide_w {
+                    return Some((
+                        format!("`changes.key` con `mode: {modo}` y sin `writes` que la use"),
+                        Some(
+                            "la clave la pide el upsert —para saber que retira— o la cara `W` \
+                             —para saber que fila actualiza—. Sin ninguno de los dos no la lee \
+                             nadie, y un campo que nadie lee es peor que uno que no existe"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                None
+            },
+        },
         // `key` y `field` solo significan algo con su modo y su testigo. Que
         // FALTEN donde hacen falta deja al mantenedor sin saber que retirar;
         // que SOBREN donde no, promete algo que nadie lee — y un campo que
@@ -630,16 +744,6 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         Some(
                             "un upsert retira por clave: sin ella un tombstone no dice que fila \
                              quita, y el mantenedor aplicaria un -1 a nada"
-                                .to_string(),
-                        ),
-                    ));
-                }
-                if modo != "upsert" && n.get("key").is_some() {
-                    return Some((
-                        format!("`changes.key` con `mode: {modo}`"),
-                        Some(
-                            "la clave es lo que hace retirable un upsert. Con cualquier otro \
-                             modo no la lee nadie"
                                 .to_string(),
                         ),
                     ));

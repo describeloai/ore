@@ -31,7 +31,7 @@
 
 use crate::code::Code;
 use crate::diag::Diagnostic;
-use crate::document::Kind;
+use crate::document::{ApiVersion, Kind};
 use crate::flow::{self, Axis, Lattice};
 use crate::link::{Loaded, Package};
 use crate::parse::Node;
@@ -276,10 +276,26 @@ fn etiquetas(pkg: &Package, lat: &BTreeMap<String, Lattice>, out: &mut Vec<Diagn
 
 // ── La regla, función a función ─────────────────────────────────────────────
 
-/// Un efecto declarado: qué escribe, dónde, y con qué posición para el error.
+/// Un efecto declarado: qué propiedad escribe, y con qué posición para el error.
+///
+/// **No lleva la fuente.** Hasta v1alpha7 la traía escrita —`datasourceRef`—;
+/// desde v1alpha8 se deriva por el mismo camino que recorre la lectura:
+///
+/// ```text
+/// entidad  →  backedBy  →  vista  →  raíz  →  tabla  →  datasource
+/// ```
+///
+/// Declararla sería un segundo sitio que puede discrepar del primero, que es
+/// justo el defecto que `kind: Table` vino a corregir. Y derivarla no es
+/// trabajo nuevo: [`crate::vistas::datasources_de`] ya contesta esa pregunta
+/// para las dos gramáticas —el `Binding` de antes y el `backedBy` de ahora—,
+/// así que la regla no cambia de significado, cambia de dónde saca el dato.
 struct Efecto {
     writes: String,
-    datasource: String,
+    /// La fuente que el documento **declaró**, si lo hizo. Solo se lee para
+    /// rechazarla en v1alpha8: en las versiones donde era obligatoria, quien
+    /// contesta es la derivación, igual que en la nueva.
+    declarada: Option<String>,
     pos: crate::diag::Pos,
 }
 
@@ -291,11 +307,10 @@ fn efectos(f: &Loaded) -> Vec<Efecto> {
         .filter_map(|e| {
             Some(Efecto {
                 writes: e.get("writes")?.1.as_str()?.to_string(),
-                datasource: e
+                declarada: e
                     .get("datasourceRef")
                     .and_then(|(_, v)| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
+                    .map(String::from),
                 pos: e.pos(),
             })
         })
@@ -314,8 +329,43 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
     let qn = f.qname().unwrap_or_default();
     let efs = efectos(f);
 
+    // ── OOS1005 · `datasourceRef` se retiró del efecto en v1alpha8 ──────────
+    //
+    // El mismo trato que `kind: Binding`, y por la misma razón: un documento no
+    // caduca por haber sido escrito antes, así que bajo v1alpha2 sigue siendo
+    // obligatorio. Lo que no puede pasar es que se acepte en silencio donde ya
+    // no lo lee nadie — un campo que se ignora es peor que uno que no existe,
+    // porque promete algo.
+    if f.version().is_some_and(|v| v >= ApiVersion::V1Alpha8) {
+        for ef in efs.iter().filter(|e| e.declarada.is_some()) {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos1005,
+                    &f.path,
+                    "clave desconocida `datasourceRef` en un efecto".to_string(),
+                )
+                .at(ef.pos)
+                .help(
+                    "se retiró en oos.dev/v1alpha8: el destino se deriva —entidad, `backedBy`, \
+                     vista, raíz, tabla— y declararlo sería un segundo sitio que puede \
+                     discrepar del primero. Bórralo; `writes` se queda tal cual, porque \
+                     nombrar la propiedad es correcto",
+                ),
+            );
+        }
+    }
+
     // ── OOS7008 · una función, una fuente ───────────────────────────────────
-    let mut fuentes: Vec<&str> = efs.iter().map(|e| e.datasource.as_str()).collect();
+    //
+    // Derivada, no declarada. `datasources_de` va de una entidad a lo físico
+    // por los dos caminos —el binding de v1alpha2 y el `backedBy` de v1alpha8—,
+    // así que un paquete que violaba esto lo sigue violando y ninguno que no lo
+    // violaba empieza a hacerlo.
+    let mut fuentes: Vec<String> = efs
+        .iter()
+        .filter_map(|e| propiedad(pkg, &e.writes))
+        .flat_map(|(entidad, _)| crate::vistas::datasources_de(pkg, entidad))
+        .collect();
     fuentes.sort_unstable();
     fuentes.dedup();
     if fuentes.len() > 1 {
@@ -415,6 +465,54 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
         let Some((entidad, def)) = propiedad(pkg, &ef.writes) else {
             continue; // referencia rota: es `OOS2005`, y ya falló antes
         };
+
+        // ── OOS7012 · el objeto no acepta que lo actualicen ─────────────────
+        //
+        // Esto es lo que la cara `W` paga. Un efecto cambia una propiedad de
+        // algo que YA ESTÁ, así que es un `update`; y si la tabla de la que
+        // sale la entidad no lo acepta, el paquete promete una escritura que el
+        // origen rechazaría — en producción, y no al compilar.
+        //
+        // La ausencia de `writes` es una negativa, igual que `reads: none`, así
+        // que una tabla que se calla también falla aquí. Es la doctrina de esta
+        // casa desde v1alpha1: lo que no se declara, no se puede.
+        //
+        // Solo se comprueba cuando la entidad sale de una `Table`. En una
+        // cadena de v1alpha7 no hay objeto que declare caras, así que no hay a
+        // quién preguntar y no se inventa la respuesta.
+        if let Some(vista) = crate::vistas::respaldo(pkg, entidad)
+            && let Ok(raiz) = crate::vistas::raiz(pkg, vista)
+            && let Some(tqn) = raiz.tabla.as_deref()
+            && let Some(tabla) = pkg.table(tqn)
+        {
+            let ops = crate::document::escrituras(tabla.section("writes"));
+            if !ops.iter().any(|o| o == "update") {
+                let dice = if ops.is_empty() {
+                    "no declara `writes`".to_string()
+                } else {
+                    format!("declara `writes: [{}]`", ops.join(", "))
+                };
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos7012,
+                        &f.path,
+                        format!(
+                            "`{}` sale de `{tqn}`, que {dice}",
+                            ef.writes
+                        ),
+                    )
+                    .at(ef.pos)
+                    .help(format!(
+                        "un efecto cambia una propiedad de algo que ya está, así que es un \
+                         `update`, y `{tqn}` no lo acepta. La ausencia es una negativa —igual \
+                         que `reads: none`—, así que si el origen sí lo acepta hay que \
+                         decirlo: añade `update` a su `writes`, y con él `changes.key`, que es \
+                         lo que dice qué fila se toca"
+                    )),
+                );
+                continue;
+            }
+        }
 
         // ── OOS7006 · lo derivado no se escribe ─────────────────────────────
         if def.get("derivedFrom").is_some() {
