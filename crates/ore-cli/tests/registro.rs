@@ -47,7 +47,8 @@ fn paquete(etiqueta: &str, ficheros: &[(&str, &str)]) -> PathBuf {
 
 const CONFIG: &str = "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\n\
      metadata: { name: x, version: 0.1.0 }\ndatasources:\n  \
-     - { name: erp, type: postgres, connectionEnv: ERP_URL }\n";
+     - { name: erp, type: postgres, connectionEnv: ERP_URL }\n  \
+     - { name: lago, type: postgres, connectionEnv: LAGO_URL }\n";
 
 const PAQUETE: &str = "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
      metadata: { name: hr, version: 1.0.0, status: active, domain: people }\n\
@@ -83,8 +84,9 @@ fn una_vista_materializada_entra_en_el_registro_con_sus_tres_caras() {
         "el destino:\n{out}"
     );
     assert!(
-        out.contains("    testigo   sin poblar"),
-        "el testigo, vacío y dicho:\n{out}"
+        out.contains("    testigo   campo `ocurrio_en` · sin poblar"),
+        "la marca sale de `changes.witness` de la tabla; el valor no, porque nada \
+         puebla una copia todavía:\n{out}"
     );
     // Y la cuarta cosa, que no es de la copia: quién la refresca.
     assert!(out.contains("    refresco  nadie —"), "{out}");
@@ -371,5 +373,113 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
         out.contains("restricciones  2 únicas · 1 referencial"),
         "las dos claves primarias y el enlace obligatorio:\n{out}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── I3 · el testigo ──────────────────────────────────────────────────────────
+
+/// **La marca entra en el registro, y sale de la tabla.**
+///
+/// *Qué prueba qué versión de los datos se leyó* es una propiedad del objeto, no
+/// de quien lo consulta — como `reads` y como `changes.mode`. Una vista no puede
+/// fechar mejor que su origen.
+#[test]
+fn el_testigo_de_una_copia_lleva_la_marca_de_su_tabla() {
+    let (_, log) = ver(&conformidad8("valid/stream-table-materialized"));
+    assert!(log.contains("testigo   registro · sin poblar"), "{log}");
+
+    let (_, campo) = ver(&conformidad8("valid/append-changes-back-an-event"));
+    assert!(
+        campo.contains("testigo   campo `ocurrio_en` · sin poblar"),
+        "`witness: field` trae además QUÉ columna ordena el avance:\n{campo}"
+    );
+}
+
+/// **El criterio de I3: una frescura que no se puede comprobar se declara
+/// degradada.**
+///
+/// Y degradada, no inválida — la diferencia es toda la gracia. Declarar
+/// `freshness` sobre una tabla que no emite testigo es **legal**: nadie miente,
+/// simplemente no hay con qué fechar la copia. Lo que no puede pasar es que se
+/// sirva lo viejo como fresco sin que nadie lo diga.
+///
+/// > Para un agente, saber que el contexto está degradado es la diferencia entre
+/// > abstenerse y alucinar.
+///
+/// El mismo paquete provoca la otra mitad del peldaño: `changes: { mode: none }`
+/// hace que el Refresh Analyzer diga `FULL`, cuando por la forma del plan —un
+/// filtro sobre una hoja— habría dicho `INCREMENTAL`.
+#[test]
+fn una_copia_que_no_puede_fecharse_declara_el_estado_degradado() {
+    let dir = paquete(
+        "sin-testigo",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            (
+                "lattices/sensitivity.yaml",
+                "apiVersion: oos.dev/v1alpha3\nkind: Lattice\n\
+                 metadata: { name: sensitivity, namespace: gdpr }\nspec:\n  \
+                 levels: [none, low, high]\n",
+            ),
+            (
+                "conduits.yaml",
+                "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\n\
+                 metadata: { name: hr }\nspec:\n  owner: team:security\n  conduits:\n    \
+                 materialization.payload:\n      gdpr.sensitivity: high\n",
+            ),
+            (
+                "tables/employees.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+                 metadata: { name: employees, namespace: erp }\nspec:\n  \
+                 datasource: erp\n  object: \"public.employees\"\n  \
+                 columns: { employee_id: {}, country: {} }\n  \
+                 reads: { fullScan: cheap }\n  \
+                 changes: { mode: none, witness: none }\n",
+            ),
+            (
+                "views/empleados.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+                 metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
+                 from: { table: erp.employees }\n  freshness: 10m\n  \
+                 fields: { employeeId: employee_id, pais: country }\n  \
+                 where: { country: ES }\n  \
+                 materialized: { datasource: lago, table: \"cache.empleados\" }\n",
+            ),
+        ],
+    );
+    let (ok, out) = ver(&dir);
+    assert!(
+        ok,
+        "no es un error de compilación, es una degradación:\n{out}"
+    );
+
+    // La copia promete una frescura que nada puede verificar, y se dice.
+    assert!(
+        out.contains("frescura  10m · DEGRADADA"),
+        "la línea de frescura:\n{out}"
+    );
+    assert!(
+        out.contains("la copia no puede decir hasta cuándo fue cierta"),
+        "y dice por qué:\n{out}"
+    );
+    assert!(
+        out.contains("degradado · 1 copia declara una frescura que no se puede comprobar"),
+        "y se resume al final, donde se ve sin leer todo:\n{out}"
+    );
+
+    // La otra mitad: sin cambios que lleguen no hay nada que mantener, aunque
+    // el álgebra del plan sea perfectamente incrementalizable.
+    assert!(
+        out.contains("refresco  REFRESH_MODE = FULL"),
+        "el analizador mira ahora la cara `D`:\n{out}"
+    );
+    assert!(
+        out.contains("declara no emitir cambios"),
+        "y dice cuál es el motivo:\n{out}"
+    );
+
+    // Y el testigo del registro lo dice también, con el vocabulario de OOS.
+    assert!(out.contains("testigo   sin poblar"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }

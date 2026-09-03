@@ -329,6 +329,57 @@ degradado**, y hay una prueba que lo provoca. Servir lo viejo como fresco es el 
 proyecto no puede permitirse: para un agente, saber que el contexto está degradado es la
 diferencia entre abstenerse y alucinar.
 
+#### Hecho · la marca sí, el valor no — y con eso ya se degrada
+
+**El testigo son dos cosas y solo una depende de que algo se pueble.** La **marca** —con qué se
+fecharía— sale de `changes.witness` de la tabla, y es una propiedad del objeto como `reads` y como
+`mode`: *una vista no puede fechar mejor que su origen*. El **valor** —hasta cuándo fue cierta—
+necesita que alguien la haya poblado, y eso es I5.
+
+Separarlas es lo que hace que este peldaño valga sin I5:
+
+```
+  frescura  10m · DEGRADADA — la tabla declara `witness: none`,
+            así que la copia no puede decir hasta cuándo fue cierta
+…
+degradado · 1 copia declara una frescura que no se puede comprobar
+```
+
+> **Se sabe que una frescura no se va a poder comprobar nunca sin haber poblado nada.** No hace
+> falta esperar a que una copia venza: basta con que su origen no sepa fecharse.
+
+Y **no cambia el código de salida**, que es lo que lo hace útil: declarar `freshness` sobre una
+tabla sin testigo es legal, nadie miente. Es una **degradación**, no una fuga — y la diferencia es
+la razón de ser del peldaño.
+
+**La otra mitad: el Refresh Analyzer mira la cara `D`.** `analizar_con(plan, emite)` recibe qué
+cambios emite cada hoja, y una que declara `mode: none` da `FULL` con su motivo, donde antes daba
+`INCREMENTAL` por la forma del plan. Son **dos preguntas distintas** y la pieza solo contestaba
+una:
+
+| | |
+|---|---|
+| ¿se puede incrementalizar este plan? | sobre el **álgebra** |
+| ¿se va a mantener esta vista? | además sobre el **origen** |
+
+Un plan lineal sobre una tabla sin cambios es impecable como álgebra y no se refresca nunca,
+porque no llega ningún Δ.
+
+**Y la invariante sobrevivió, reforzada.** `Circuito::compilar` ganó su `_con` también: si solo lo
+hubiera ganado el analizador, este diría `FULL` de un plan que el compilador construye sin
+protestar, y habría otra vez dos definiciones de «mantenible». Ahora la invariante se enuncia
+mejor: *valen lo mismo **para el mismo conocimiento de los orígenes***, y la prueba que las
+compara recorre los planes **dos veces**, con el mapa vacío y con una hoja que no emite.
+
+Una hoja **ausente** del mapa sigue siendo `INCREMENTAL`: ausencia es *no se declaró*, no *no
+emite*. Es la regla de siempre — sin declaración no se supone ninguna — y es lo que deja intacto
+a quien construya un plan a mano.
+
+**Lo que se queda fuera, dicho.** La topología entra en el registro **sin marca**, y no por
+olvido: la suya es una fecha que el operador pasa a `index refresh --marca`, y esa no está en el
+vocabulario de `changes.witness`. Otro síntoma de lo mismo — mientras tenga ruta de refresco
+propia, tiene también testigo propio.
+
 ### I4 · la topología es una copia más
 
 **Qué.** `lecturas_de_aristas` deja de fabricar `Lectura` a mano: emite el **plan** de la vista de

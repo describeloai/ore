@@ -39,10 +39,10 @@ use ore_core::link::{Loaded, Package};
 use ore_core::parse::Node;
 use ore_core::types::{Type, parse_type};
 use ore_core::vistas;
-use ore_view::refresh_analyzer::analizar;
+use ore_view::refresh_analyzer::analizar_con;
 use ore_view::{
-    Capacidades, Catalogo, Clase, Clasificacion, Comparador, Expr, Lectura, Nodo, Raiz, Valor,
-    Vista, comprobar, esquema, linaje, repartir,
+    Capacidades, Catalogo, Clase, Clasificacion, Comparador, Emite, Expr, Lectura, Nodo, Raiz,
+    Valor, Vista, comprobar, esquema, linaje, repartir,
 };
 
 /// El conducto que una vista materializada instancia. El mismo que el eje
@@ -78,8 +78,10 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     // UNA vez, antes del bucle, porque dentro se cotejan planes contra él.
     let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
     let restricciones = crate::registro::restricciones(&pkg);
+    let cambios = cambios_por_fuente(&pkg);
 
     let mut fugas = 0usize;
+    let mut degradadas = 0usize;
     for v in &vistas {
         let Some(qn) = v.qname() else { continue };
         println!("{qn}");
@@ -157,7 +159,12 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
 
         // El modo de refresco se sabe antes de escribir la vista, con todos
         // los motivos — y no al refrescarla y por la factura.
-        let refresco = analizar(&plan).como_texto(&qn);
+        //
+        // Y se le pasa la cara `D`: sin ella el analizador decidía por la forma
+        // del plan y diría `INCREMENTAL` de una vista sobre una tabla que
+        // declara `changes: { mode: none }`. El compilador ya lo sabía; el motor
+        // no se lo preguntaba.
+        let refresco = analizar_con(&plan, &cambios).como_texto(&qn);
         for linea in refresco.lines() {
             let linea = linea.trim_start();
             if linea.starts_with(&qn) {
@@ -306,6 +313,26 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
                     }
                     fugas += veredicto.fugas.len();
                 }
+
+                // La frescura que la copia promete, y si se va a poder
+                // comprobar. **No es una fuga**: declararla sobre una tabla sin
+                // testigo es legal. Es una DEGRADACIÓN, y la diferencia es toda
+                // la gracia — servir lo viejo como fresco es el fallo que este
+                // proyecto no puede permitirse, y para un agente saber que el
+                // contexto está degradado es la diferencia entre abstenerse y
+                // alucinar.
+                if let Some(f) = v.section("freshness").and_then(|x| x.as_str()) {
+                    match crate::registro::frescura_comprobable(&pkg, v) {
+                        Ok(m) => println!("  frescura  {f} · comprobable con {}", m.como_texto()),
+                        Err(()) => {
+                            println!(
+                                "  frescura  {f} · DEGRADADA — la tabla declara `witness: none`, \
+                                 así que la copia no puede decir hasta cuándo fue cierta"
+                            );
+                            degradadas += 1;
+                        }
+                    }
+                }
             }
         }
         println!();
@@ -315,6 +342,17 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     // Una copia declarada que no entra en el registro no es un detalle: el
     // motor iria al origen sin que nadie sepa por que.
     fugas += inventario.fuera.len();
+
+    // Lo degradado se dice al final y **no cambia el codigo de salida**: una
+    // frescura que no se puede comprobar no invalida el paquete, avisa de que
+    // hay una promesa que nadie va a poder verificar.
+    if degradadas > 0 {
+        println!();
+        println!(
+            "degradado · {degradadas} {} declara una frescura que no se puede comprobar",
+            if degradadas == 1 { "copia" } else { "copias" }
+        );
+    }
 
     if fugas > 0 {
         eprintln!(
@@ -777,6 +815,33 @@ fn subir(
 /// era `capabilities` de la vista y es `reads` de la tabla. Por eso
 /// `Capacidades::de_oos` no se toca — sería una segunda traducción del mismo
 /// vocabulario, y un contrato escrito dos veces diverge en el tercer consumidor.
+/// **La cara `D` por hoja: qué cambios emite cada objeto físico.**
+///
+/// Solo de las tablas, y no de las vistas v1alpha7: aquellas declaraban
+/// `version.witness` —*qué fecha el cambio*— y **no decían qué llega**. Es
+/// precisamente el medio contrato que `changes` vino a completar, así que una
+/// hoja v1alpha7 se queda **fuera del mapa**, que es como se dice *no lo
+/// declaró* sin decir *no emite*.
+fn cambios_por_fuente(pkg: &Package) -> BTreeMap<(String, String), Emite> {
+    let mut out = BTreeMap::new();
+    for t in pkg.docs.iter().filter(|d| d.kind == Kind::Table) {
+        let (Some(ds), Some(ob)) = (
+            t.section("datasource").and_then(|v| v.as_str()),
+            t.section("object").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let e = match vistas::modo(t) {
+            vistas::Modo::Ninguno => Emite::Nada,
+            vistas::Modo::Anexa => Emite::Altas,
+            vistas::Modo::Retracta => Emite::Retracciones,
+            vistas::Modo::Upsert => Emite::Upserts,
+        };
+        out.insert((ds.to_string(), ob.to_string()), e);
+    }
+    out
+}
+
 fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
     let mut out: BTreeMap<String, Capacidades> = BTreeMap::new();
     for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {

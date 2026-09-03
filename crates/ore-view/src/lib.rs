@@ -64,13 +64,13 @@ pub use capabilities::{Capacidades, Peticion, Recorrido, Reparto, repartir};
 pub use catalog::{Catalogo, Expansion, Vista};
 pub use cost_model::{Decision, Dictamen, Medida, Politica, decidir};
 pub use delta_compiler::{
-    Circuito, Estado, Evaluacion, Fila, NoIncrementalizable, Zset, recomputar,
+    Circuito, Emite, Estado, Evaluacion, Fila, NoIncrementalizable, Zset, recomputar,
 };
 pub use filter_tree::{FilterTree, Hoja, Marca, Materializacion, Registro, Testigo, firma};
 pub use flow::{Clasificacion, Etiquetas, Fuga, Veredicto, comprobar};
 pub use lineage::{Arista, Clase, Directa, Indirecta, Linaje, Raiz, linaje};
 pub use plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Opaca, Valor};
-pub use refresh_analyzer::{RefreshMode, analizar};
+pub use refresh_analyzer::{RefreshMode, analizar, analizar_con};
 pub use schema::{Desajuste, Esquema, esquema};
 pub use state_store::{Aplicacion, Clave, Estadisticas, Identidades, StateStore};
 pub use view_matcher::{NoContesta, Restriccion, Rewrite, cotejar, sello};

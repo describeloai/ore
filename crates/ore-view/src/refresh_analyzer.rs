@@ -17,11 +17,24 @@
 //! # Una regla, escrita una vez
 //!
 //! Los motivos de `FULL` son **exactamente** los refusals del Delta Compiler:
-//! [`crate::delta_compiler::motivos`] los recoge todos, y `Circuito::compilar`
-//! consulta la misma función antes de construir nada. Si esta pieza dijera
-//! `INCREMENTAL` y el compilador refusara —o al revés— habría dos definiciones
-//! de «mantenible», y la primera vez que alguien las comparara tendría razón en
-//! desconfiar. Hay una prueba que las compara.
+//! [`crate::delta_compiler::motivos_con`] los recoge todos, y
+//! `Circuito::compilar_con` consulta la misma función antes de construir nada.
+//! Si esta pieza dijera `INCREMENTAL` y el compilador refusara —o al revés—
+//! habría dos definiciones de «mantenible», y la primera vez que alguien las
+//! comparara tendría razón en desconfiar. Hay una prueba que las compara.
+//!
+//! La invariante vale **para el mismo conocimiento de los orígenes**, y por eso
+//! los dos tienen su `_con`: saber que una hoja no emite cambios tiene que mover
+//! a los dos o a ninguno.
+//!
+//! # Dos preguntas, y hacían falta las dos
+//!
+//! *¿Se puede incrementalizar este plan?* es una pregunta sobre el **álgebra**.
+//! *¿Se va a mantener esta vista?* es además una pregunta sobre el **origen**:
+//! un plan lineal sobre una tabla que declara `changes: { mode: none }` es
+//! impecable como álgebra y no se va a refrescar nunca, porque no va a llegar
+//! ningún Δ. Esta pieza contestaba solo la primera y decía `INCREMENTAL` de la
+//! segunda; el compilador de OOS ya lo sabía y el motor no se lo preguntaba.
 //!
 //! # Lo que se corrigió al construirla
 //!
@@ -32,8 +45,9 @@
 //! sí es `FULL` es lo que no tiene regla: `Limita`, `PROMEDIO`, una opaca
 //! volátil, una junta externa. Lo medido manda sobre lo planeado.
 
-use crate::delta_compiler::{Circuito, Estado, NoIncrementalizable, motivos};
+use crate::delta_compiler::{Circuito, Emite, Estado, NoIncrementalizable, motivos_con};
 use crate::plan::Nodo;
+use std::collections::BTreeMap;
 
 /// Cómo se refresca una vista, y qué cuesta.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,13 +93,27 @@ impl RefreshMode {
 
 /// **El análisis.** Todos los motivos, o el estado.
 pub fn analizar(plan: &Nodo) -> RefreshMode {
-    let porque = motivos(plan);
+    analizar_con(plan, &BTreeMap::new())
+}
+
+/// Lo mismo, **mirando además la cara `D`**: qué cambios emite cada hoja.
+///
+/// Sin esto, esta pieza decidía por la forma del plan y nada más — y diría
+/// `INCREMENTAL` de una vista sobre una tabla que declara `changes: { mode:
+/// none }`. El compilador de OOS ya lo sabía; el motor no se lo preguntaba, y
+/// esa es exactamente la clase de discrepancia que hace desconfiar de las dos
+/// respuestas.
+///
+/// Una hoja ausente del mapa **no se supone que no emita**: se supone que no se
+/// declaró. Por eso `analizar` sigue contestando lo de siempre.
+pub fn analizar_con(plan: &Nodo, emite: &BTreeMap<(String, String), Emite>) -> RefreshMode {
+    let porque = motivos_con(plan, emite);
     if !porque.is_empty() {
         return RefreshMode::Full { porque };
     }
     // Sin motivos, el compilador no puede refusar: consulta la misma lista. Si
     // lo hiciera, sería un defecto de esta pieza y se diría como tal.
-    match Circuito::compilar(plan) {
+    match Circuito::compilar_con(plan, emite) {
         Ok(c) => RefreshMode::Incremental { state: c.estado() },
         Err(m) => RefreshMode::Full { porque: vec![m] },
     }
@@ -258,13 +286,66 @@ mod tests {
             Nodo::Distingue(Box::new(pedidos())),
             Nodo::Referencia("otra".into()),
         ];
-        for p in &planes {
-            assert_eq!(
-                analizar(p).es_incremental(),
-                Circuito::compilar(p).is_ok(),
-                "discrepan sobre {p:?}"
-            );
+        // Y con la cara `D` puesta: la invariante vale **para el mismo
+        // conocimiento de los orígenes**, que es lo que la hace comprobable. Sin
+        // los dos `_con`, saber que una hoja no emite haría decir `FULL` a esta
+        // pieza de un plan que el compilador construye sin protestar, y habría
+        // otra vez dos definiciones de «mantenible».
+        let ninguno: BTreeMap<(String, String), Emite> = [(
+            ("lago".to_string(), "ventas.pedidos".to_string()),
+            Emite::Nada,
+        )]
+        .into();
+        for mapa in [&BTreeMap::new(), &ninguno] {
+            for p in &planes {
+                assert_eq!(
+                    analizar_con(p, mapa).es_incremental(),
+                    Circuito::compilar_con(p, mapa).is_ok(),
+                    "discrepan sobre {p:?}"
+                );
+            }
         }
+    }
+
+    /// **La cara `D`, que esta pieza no miraba.**
+    ///
+    /// Un plan lineal sobre una tabla que declara `changes: { mode: none }` es
+    /// perfectamente incrementalizable *como álgebra* — y aun así no se va a
+    /// mantener nunca, porque no va a llegar ningún Δ. Decirlo `INCREMENTAL`
+    /// sería prometer un refresco que no ocurre; el compilador de OOS ya lo
+    /// sabía y el motor no se lo preguntaba.
+    ///
+    /// Y una hoja **ausente** del mapa sigue siendo `INCREMENTAL`: ausencia es
+    /// *no se declaró*, no *no emite*. Sin declaración no se supone ninguna.
+    #[test]
+    fn una_hoja_que_no_emite_cambios_no_se_mantiene_aunque_el_algebra_pueda() {
+        let plan = Nodo::Filtra {
+            entrada: Box::new(pedidos()),
+            predicado: Expr::Compara {
+                op: Comparador::Igual,
+                izquierda: Box::new(Expr::campo("pais")),
+                derecha: Box::new(Expr::Literal(Valor::Cadena("ES".into()))),
+            },
+        };
+        assert!(
+            analizar(&plan).es_incremental(),
+            "sin declarar, lo de siempre"
+        );
+
+        let hoja = ("lago".to_string(), "ventas.pedidos".to_string());
+        for (e, incremental) in [
+            (Emite::Nada, false),
+            (Emite::Altas, true),
+            (Emite::Retracciones, true),
+            (Emite::Upserts, true),
+        ] {
+            let r = analizar_con(&plan, &[(hoja.clone(), e)].into());
+            assert_eq!(r.es_incremental(), incremental, "con {e:?}");
+        }
+
+        let t = analizar_con(&plan, &[(hoja, Emite::Nada)].into()).como_texto("ventas.es");
+        assert!(t.contains("REFRESH_MODE = FULL"), "{t}");
+        assert!(t.contains("declara no emitir cambios"), "{t}");
     }
 
     /// Dos opacas volátiles del **mismo** dialecto son un motivo; de dialectos

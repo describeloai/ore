@@ -35,12 +35,13 @@
 
 use std::collections::BTreeMap;
 
-use ore_core::link::Package;
+use ore_core::link::{Loaded, Package};
 use ore_core::types::Type;
 use ore_core::vistas;
 use ore_view::{
-    Catalogo, Clasificacion, Etiquetas, Expr, FilterTree, Hoja, Lectura, Materializacion,
-    NoContesta, Nodo, Raiz, Restriccion, Rewrite, comprobar, cotejar, esquema, linaje, sello,
+    Catalogo, Clasificacion, Etiquetas, Expr, FilterTree, Hoja, Lectura, Marca, Materializacion,
+    NoContesta, Nodo, Raiz, Restriccion, Rewrite, Testigo, comprobar, cotejar, esquema, linaje,
+    sello,
 };
 
 /// **Quién la refresca hoy.** No es una propiedad de la copia —por eso no está
@@ -134,11 +135,23 @@ pub fn construir(
     tipos: &BTreeMap<(String, String, String), Type>,
 ) -> Inventario {
     let mut inv = Inventario::default();
-    for (nombre, plan, tabla) in declaradas(pkg, catalogo) {
-        meter(&mut inv, nombre, plan, tabla, Camino::Nadie);
+    for (nombre, plan, tabla, testigo) in declaradas(pkg, catalogo) {
+        meter(&mut inv, nombre, plan, tabla, testigo, Camino::Nadie);
     }
+    // **La topología va sin marca, y no es un olvido.** La suya es una fecha que
+    // el operador pasa a `index refresh --marca`, y esa no está en el
+    // vocabulario de `changes.witness`. Es otro síntoma de lo mismo: mientras
+    // tenga ruta de refresco propia, tiene también testigo propio. Se cierra
+    // cuando la topología deje de derivarse y pase a ser una vista declarada.
     for (nombre, plan, tabla) in topologia(pkg, tipos) {
-        meter(&mut inv, nombre, plan, tabla, Camino::IndiceDeTopologia);
+        meter(
+            &mut inv,
+            nombre,
+            plan,
+            tabla,
+            Testigo::vacio(),
+            Camino::IndiceDeTopologia,
+        );
     }
     inv
 }
@@ -156,10 +169,17 @@ pub fn construir(
 /// > camino.** Existe para quien registre una copia cuyo destino ya conoce por
 /// > otra vía —el ejecutor, leyendo un almacén de verdad— y ahí sí es la
 /// > comprobación que separa un registro bueno de uno que *parece* bueno.
-fn meter(inv: &mut Inventario, nombre: String, plan: Nodo, tabla: Lectura, camino: Camino) {
+fn meter(
+    inv: &mut Inventario,
+    nombre: String,
+    plan: Nodo,
+    tabla: Lectura,
+    testigo: Testigo,
+    camino: Camino,
+) {
     match inv
         .arbol
-        .registrar(Materializacion::nueva(nombre.clone(), plan, tabla))
+        .registrar(Materializacion::nueva(nombre.clone(), plan, tabla).con_testigo(testigo))
     {
         Ok(()) => inv.copias.push(Copia { nombre, camino }),
         Err(r) => inv.fuera.push(Fuera {
@@ -169,8 +189,61 @@ fn meter(inv: &mut Inventario, nombre: String, plan: Nodo, tabla: Lectura, camin
     }
 }
 
+/// **La marca de una copia: con qué se fecharía.**
+///
+/// Sale de `changes.witness` de la tabla de la que la vista lee, y no de la
+/// vista: *qué prueba qué versión de los datos se leyó* es una propiedad del
+/// objeto, como `reads` y como `mode`. La vista no puede fechar mejor que su
+/// origen.
+///
+/// `Ninguna` es una respuesta legal y tiene precio, y la especificación lo dice
+/// donde se declara: *sin testigo no hay marca, y sin marca lo materializado no
+/// puede decir hasta cuándo era cierto*. Eso es lo que
+/// [`frescura_comprobable`] convierte en una línea de `ore view`.
+pub fn marca_de(pkg: &Package, v: &Loaded) -> Marca {
+    let Ok(r) = vistas::raiz(pkg, v) else {
+        return Marca::Ninguna;
+    };
+    let Some(c) = r
+        .tabla
+        .as_deref()
+        .and_then(|qn| pkg.table(qn))
+        .and_then(|t| t.section("changes"))
+    else {
+        return Marca::Ninguna;
+    };
+    match c.get("witness").and_then(|(_, x)| x.as_str()) {
+        Some("snapshot") => Marca::Instantanea,
+        Some("log") => Marca::Registro,
+        // `witness: field` sin `field` no compila —lo comprueba el núcleo— así
+        // que llegar aquí sin él solo pasa con un documento que no pasó por
+        // `ore validate`. Se degrada a `Ninguna` en vez de inventar la columna.
+        Some("field") => c
+            .get("field")
+            .and_then(|(_, f)| f.as_str())
+            .map(|f| Marca::Campo(f.to_string()))
+            .unwrap_or(Marca::Ninguna),
+        _ => Marca::Ninguna,
+    }
+}
+
+/// **Si la frescura que una copia declara se puede llegar a comprobar.**
+///
+/// `Ok` con la marca que la fecharía; `Err` cuando no hay ninguna. No es un
+/// error de compilación —declarar `freshness` sobre una tabla sin testigo es
+/// legal— es una **degradación**, y la diferencia importa: servir lo viejo como
+/// fresco es el fallo que este proyecto no puede permitirse, y para un agente
+/// saber que el contexto está degradado es la diferencia entre abstenerse y
+/// alucinar.
+pub fn frescura_comprobable(pkg: &Package, v: &Loaded) -> Result<Marca, ()> {
+    match marca_de(pkg, v) {
+        Marca::Ninguna => Err(()),
+        m => Ok(m),
+    }
+}
+
 /// Las que el paquete declara: una `View` con `materialized`.
-fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura)> {
+fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura, Testigo)> {
     let mut out = Vec::new();
     for v in pkg
         .docs
@@ -193,6 +266,14 @@ fn declaradas(pkg: &Package, catalogo: &Catalogo) -> Vec<(String, Nodo, Lectura)
                 datasource: cadena(m, "datasource"),
                 objeto: cadena(m, "table"),
                 campos,
+            },
+            // La marca sí; el valor no, y no por falta de sitio: **nada puebla
+            // una copia todavía**. Que la marca entre ya es lo que permite
+            // decir, hoy y sin poblar nada, que una frescura no se va a poder
+            // comprobar nunca.
+            Testigo {
+                marca: marca_de(pkg, v),
+                valor: None,
             },
         ));
     }

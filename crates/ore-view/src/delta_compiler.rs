@@ -259,6 +259,14 @@ pub enum NoIncrementalizable {
     /// Una junta externa produce filas con columnas ausentes, y esta semántica
     /// no tiene nulos. La regla bilineal es de la interna.
     JuntaExterna,
+    /// **El origen no emite cambios.** No es una propiedad del plan sino de la
+    /// hoja, y por eso solo aparece cuando alguien la declara: sin deltas que
+    /// lleguen no hay nada que mantener, y decir `INCREMENTAL` sería prometer un
+    /// refresco que no va a ocurrir nunca.
+    SinCambios {
+        datasource: String,
+        objeto: String,
+    },
 }
 
 impl NoIncrementalizable {
@@ -282,8 +290,35 @@ impl NoIncrementalizable {
                                                   ausentes, y esta semántica no tiene nulos: la \
                                                   regla bilineal es de la interna"
                 .into(),
+            NoIncrementalizable::SinCambios { datasource, objeto } => format!(
+                "`{datasource}`·`{objeto}` declara no emitir cambios: sin deltas que lleguen no \
+                 hay nada que mantener, y el refresco es recomputar entero"
+            ),
         }
     }
+}
+
+/// **Qué cambios emite una hoja: la cara `D`.**
+///
+/// Es el vocabulario de `changes.mode` de OOS dicho aquí, y es **cerrado** por
+/// lo mismo que allí: si una hoja pudiera inventarse una codificación, el
+/// mantenedor no podría razonar sobre los pesos que le llegan y un delta con un
+/// peso ilegal entraría sin que nadie lo notara.
+///
+/// Hoy solo [`Emite::Nada`] produce un motivo. Los otros tres están escritos
+/// porque **no significan lo mismo para los pesos**: `Altas` solo trae `+1`, y
+/// las otras dos traen `-1`. Cuando el circuito valide lo que le llega, esa
+/// diferencia es la que decide si un delta es legal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emite {
+    /// No emite cambios, o no se sabe si los emite. No se supone.
+    Nada,
+    /// Solo altas: solo `+1`.
+    Altas,
+    /// Un borrado retracta; una actualización retracta y añade. `-1` y `+1`.
+    Retracciones,
+    /// `+1` por clave, `-1` por *tombstone*. Exige clave única.
+    Upserts,
 }
 
 /// Un fallo **al evaluar** con la semántica de referencia. Son fallos de esta
@@ -388,7 +423,22 @@ impl Circuito {
     /// que refusan dentro de `construir` se quedan por si acaso, y devuelven lo
     /// mismo.
     pub fn compilar(plan: &Nodo) -> Result<Circuito, NoIncrementalizable> {
-        if let Some(m) = motivos(plan).into_iter().next() {
+        Self::compilar_con(plan, &BTreeMap::new())
+    }
+
+    /// Lo mismo **sabiendo qué emite cada hoja**, y existe para que la
+    /// invariante siga siendo cierta.
+    ///
+    /// Sin esto, `analizar_con` diría `FULL` de un plan que `compilar`
+    /// construye sin protestar, y habría otra vez dos definiciones de
+    /// «mantenible». Y no sería un tecnicismo: **un circuito sobre una hoja que
+    /// no emite cambios se queda esperando un Δ que no llega**, así que
+    /// construirlo es prometer un mantenimiento que nunca ocurre.
+    pub fn compilar_con(
+        plan: &Nodo,
+        emite: &BTreeMap<(String, String), Emite>,
+    ) -> Result<Circuito, NoIncrementalizable> {
+        if let Some(m) = motivos_con(plan, emite).into_iter().next() {
             return Err(m);
         }
         Ok(Circuito {
@@ -436,6 +486,23 @@ impl Circuito {
 /// un aviso, no dos. Repetir el mismo defecto veinte veces entierra los otros
 /// diecinueve.
 pub fn motivos(plan: &Nodo) -> Vec<NoIncrementalizable> {
+    motivos_con(plan, &BTreeMap::new())
+}
+
+/// Lo mismo, **sabiendo además qué emite cada hoja** — la cara `D`.
+///
+/// Una hoja que no esté en el mapa **no se supone que emita nada**: se supone
+/// que no se declaró. Es la misma regla que el resto del proyecto —*sin
+/// declaración no se supone ninguna*— y es lo que permite que quien construya un
+/// plan a mano siga obteniendo la respuesta de siempre.
+///
+/// Que esta función sea **la única** definición es lo que mantiene la promesa de
+/// la pieza de arriba: el Refresh Analyzer y `Circuito::compilar` no pueden
+/// discrepar porque no hay dos listas, hay una.
+pub fn motivos_con(
+    plan: &Nodo,
+    emite: &BTreeMap<(String, String), Emite>,
+) -> Vec<NoIncrementalizable> {
     fn empujar(out: &mut Vec<NoIncrementalizable>, m: NoIncrementalizable) {
         if !out.contains(&m) {
             out.push(m);
@@ -504,6 +571,20 @@ pub fn motivos(plan: &Nodo) -> Vec<NoIncrementalizable> {
     }
     let mut out = Vec::new();
     recorrer(plan, &mut out);
+    // Y luego lo que no es del plan sino de sus hojas. Va después a propósito:
+    // primero lo que la consulta no deja hacer, y luego lo que el origen no da.
+    for l in plan.lecturas() {
+        let clave = (l.datasource.clone(), l.objeto.clone());
+        if emite.get(&clave) == Some(&Emite::Nada) {
+            empujar(
+                &mut out,
+                NoIncrementalizable::SinCambios {
+                    datasource: clave.0,
+                    objeto: clave.1,
+                },
+            );
+        }
+    }
     out
 }
 
