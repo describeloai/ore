@@ -304,9 +304,18 @@ al matcher permiso para perder filas en silencio.
 relaciones `required: true`. El motivo: apuntan a `Department`, `Supplier` y `Sku`, y **cinco de
 sus siete entidades no declaran `backedBy`**. Sin respaldo no hay raíz física, y sin raíz la
 referencial no se puede bajar a columnas. Es decir: el ejemplo está migrado a v1alpha8 **a
-medias**, y hasta que no lo esté del todo la junta de más no tiene con qué probarse allí. La rama
-no viaja sin ejercer —una prueba escribe el paquete de dos entidades que hacía falta— pero el
-ejemplo sigue corto, y eso es trabajo del repositorio de la especificación.
+medias**, y eso es trabajo del repositorio de la especificación.
+
+**Y qué se hace con esa medida, que es lo que casi sale mal.** Fijarla en una prueba habría hecho
+que **terminar** la migración del ejemplo pusiera roja una afirmación sobre el sustrato — al revés
+de lo que una prueba debe hacer. Así que la medida se queda aquí, escrita, y las pruebas del
+sustrato se afirman sobre casos de conformidad y sobre paquetes propios y mínimos.
+
+> **`acme-retail` solo aparece donde lo afirmado *es* el mecanismo heredado** — que la topología
+> entra en el registro con su ruta aparte. Para todo lo demás arrastraría a la afirmación cosas
+> que no son suyas.
+
+La regla, dicha una vez: **un ejemplo de la superficie ontológica no es una medida del sustrato.**
 
 ### I3 · el testigo
 

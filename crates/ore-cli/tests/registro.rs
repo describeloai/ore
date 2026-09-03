@@ -31,6 +31,28 @@ fn ejemplo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/oos/examples/acme-retail")
 }
 
+/// Un paquete propio para esta prueba. Se usa cuando lo afirmado es del
+/// **sustrato**: un ejemplo grande arrastra a la afirmación cosas que no son
+/// suyas, y `acme-retail` además está migrado a v1alpha8 a medias.
+fn paquete(etiqueta: &str, ficheros: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("ore-reg-{etiqueta}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, txt) in ficheros {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, txt).unwrap();
+    }
+    dir
+}
+
+const CONFIG: &str = "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\n\
+     metadata: { name: x, version: 0.1.0 }\ndatasources:\n  \
+     - { name: erp, type: postgres, connectionEnv: ERP_URL }\n";
+
+const PAQUETE: &str = "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+     metadata: { name: hr, version: 1.0.0, status: active, domain: people }\n\
+     spec: { owner: team:data }\n";
+
 fn ver(dir: &Path) -> (bool, String) {
     let s = Command::new(env!("CARGO_BIN_EXE_ore"))
         .arg("view")
@@ -200,18 +222,54 @@ fn el_sello_de_la_copia_se_hereda_en_la_reescritura() {
 ///
 /// Que el índice invertido la ofreciera **no es un fallo**: comparten hoja, que
 /// es todo lo que el Filter Tree mira. Decidir es del cotejo, y decide.
+/// El paquete es **propio** y mínimo, y no `acme-retail`, a propósito: lo que se
+/// afirma es del cotejo, y un ejemplo grande metería en la afirmación cosas que
+/// no son suyas. `acme-retail` solo se usa arriba, donde lo afirmado **es** el
+/// mecanismo heredado.
 #[test]
 fn una_candidata_que_no_expone_la_columna_dice_cual() {
-    let (ok, out) = ver(&ejemplo());
+    let dir = paquete(
+        "sin-columna",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            (
+                "tables/employees.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+                 metadata: { name: employees, namespace: erp }\nspec:\n  \
+                 datasource: erp\n  object: \"public.employees\"\n  \
+                 columns: { employee_id: {}, dept_id: {}, salario: {} }\n  \
+                 reads: { fullScan: cheap }\n  changes: { mode: retract, witness: log }\n",
+            ),
+            (
+                "views/empleados.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+                 metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
+                 from: { table: erp.employees }\n  \
+                 fields: { employeeId: employee_id, departmentId: dept_id, salario: salario }\n",
+            ),
+            (
+                "entities/Employee.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+                 metadata: { name: Employee, namespace: hr }\nspec:\n  nature: entity\n  \
+                 primaryKey: [employeeId]\n  backedBy: empleados\n  properties:\n    \
+                 employeeId: { type: String }\n    departmentId: { type: String }\n    \
+                 salario: { type: String }\n  relations:\n    department:\n      \
+                 target: hr.Employee\n      cardinality: many_to_one\n      via: [departmentId]\n",
+            ),
+        ],
+    );
+    let (ok, out) = ver(&dir);
     assert!(ok, "{out}");
     assert!(
-        out.contains("cotejo    `hr.Employee.manager` no la contesta"),
+        out.contains("cotejo    `hr.Employee.department` no la contesta"),
         "{out}"
     );
     assert!(
-        out.contains("no se deriva de la materialización: no la expone, su predicado no la fija"),
-        "dice por qué, y no `false`:\n{out}"
+        out.contains("`salario` no se deriva de la materialización: no la expone"),
+        "dice qué columna falta, y no `false`:\n{out}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **Las restricciones se cuentan aunque sean cero**, y por lo mismo que los
@@ -219,23 +277,26 @@ fn una_candidata_que_no_expone_la_columna_dice_cual() {
 /// hoja de más podrá contestar nunca, y sin esta línea ese «no la contesta»
 /// parece un fallo del cotejo en vez de una declaración que falta.
 ///
-/// `acme-retail` da cuatro únicas y **ninguna referencial**, y el motivo está
-/// medido: sus relaciones `required: true` apuntan a entidades —`Department`,
-/// `Supplier`, `Sku`— que **no declaran `backedBy`**, así que el destino no
-/// tiene raíz física y la referencial no se puede bajar a columnas.
+/// Se afirma sobre un caso de conformidad y **no** sobre `acme-retail`. Allí
+/// salen `4 únicas · 0 referenciales`, pero eso no mide el sustrato: mide que
+/// cinco de sus siete entidades no declaran `backedBy` todavía. Fijarlo en una
+/// prueba haría que **terminar** la migración del ejemplo pusiera roja esta
+/// afirmación, que es exactamente al revés de lo que una prueba debe hacer.
 #[test]
 fn las_restricciones_se_cuentan_y_los_ceros_tambien() {
-    let (_, out) = ver(&ejemplo());
-    assert!(
-        out.contains("restricciones  4 únicas · 0 referenciales"),
-        "{out}"
-    );
-    // Y la que sale de `changes.key` de una tabla `upsert`, que la
-    // especificación exige: sin ella el mantenedor no sabe qué retracta.
+    // La que sale de `changes.key` de una tabla `upsert`, que la especificación
+    // exige: sin ella el mantenedor no sabe qué retracta un tombstone.
     let (_, v) = ver(&conformidad8("valid/virtual-over-materialized-over-stream"));
     assert!(
         v.contains("restricciones  1 única · 0 referenciales"),
         "la clave del `upsert`:\n{v}"
+    );
+    // Y un paquete sin ninguna las cuenta igual, que es el caso que explica un
+    // «no la contesta» sin culpar al cotejo.
+    let (_, t) = ver(&conformidad8("valid/view-over-table"));
+    assert!(
+        t.contains("restricciones  0 únicas · 0 referenciales"),
+        "{t}"
     );
 }
 
@@ -253,21 +314,9 @@ fn las_restricciones_se_cuentan_y_los_ceros_tambien() {
 /// toda fila del origen case sale de `required: true`.
 #[test]
 fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
-    let dir = std::env::temp_dir().join(format!("ore-referencial-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
     let ficheros: &[(&str, &str)] = &[
-        (
-            "ontology.config.yaml",
-            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\n\
-             metadata: { name: x, version: 0.1.0 }\ndatasources:\n  \
-             - { name: erp, type: postgres, connectionEnv: ERP_URL }\n",
-        ),
-        (
-            "package.yaml",
-            "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
-             metadata: { name: hr, version: 1.0.0, status: active, domain: people }\n\
-             spec: { owner: team:data }\n",
-        ),
+        ("ontology.config.yaml", CONFIG),
+        ("package.yaml", PAQUETE),
         (
             "tables/employees.yaml",
             "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
@@ -315,12 +364,7 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
              departmentId: { type: String }\n    nombre: { type: String }\n",
         ),
     ];
-    for (rel, txt) in ficheros {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, txt).unwrap();
-    }
-
+    let dir = paquete("referencial", ficheros);
     let (ok, out) = ver(&dir);
     assert!(ok, "{out}");
     assert!(
