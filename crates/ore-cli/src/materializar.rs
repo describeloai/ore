@@ -195,6 +195,16 @@ fn una(
 
     // ── ⑤ Leer, canalizar, sellar ───────────────────────────────────────────
     let filas = leer(raiz_pkg, &r)?;
+    // **Cuántas filas se le pidieron al origen.** Hoy coincide siempre con las
+    // que van a la copia, porque la lectura es entera. Cuando la petición sepa
+    // llevar un rango, las dos cifras se separan — y **esa diferencia es la
+    // medida** de si el refresco es proporcional al cambio o al tamaño.
+    //
+    // Se cuenta aquí y no en el banco de pruebas porque es la unidad que
+    // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
+    // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
+    // dentro de una prueba no sería una unidad, sería un apaño.
+    let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
     let salida = almacen("sellar", &cabecera, Some(&filas))?;
 
     // ── ⑥ Registrar ─────────────────────────────────────────────────────────
@@ -206,7 +216,7 @@ fn una(
             .to_string()
     };
     Ok(format!(
-        "copiada · {}\n  {} filas · {} bytes · subido: {}",
+        "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}",
         campo("clave"),
         campo("filas"),
         campo("bytes"),
