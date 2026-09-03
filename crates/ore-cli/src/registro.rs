@@ -38,7 +38,10 @@ use std::collections::BTreeMap;
 use ore_core::link::Package;
 use ore_core::types::Type;
 use ore_core::vistas;
-use ore_view::{Catalogo, Expr, FilterTree, Lectura, Materializacion, Nodo, esquema};
+use ore_view::{
+    Catalogo, Clasificacion, Etiquetas, Expr, FilterTree, Hoja, Lectura, Materializacion,
+    NoContesta, Nodo, Raiz, Restriccion, Rewrite, comprobar, cotejar, esquema, linaje, sello,
+};
 
 /// **Quién la refresca hoy.** No es una propiedad de la copia —por eso no está
 /// en `Materializacion`— sino del árbol en este momento: *estar registrada y
@@ -302,7 +305,7 @@ fn lista(n: Option<&ore_core::parse::Node>) -> Vec<String> {
 
 /// Lo que `ore view` imprime del paquete: las copias con sus **tres caras**, y
 /// quién las refresca — que es la cuarta cosa, y no es de la copia.
-pub fn imprimir(inv: &Inventario) {
+pub fn imprimir(inv: &Inventario, restricciones: &[Restriccion]) {
     // El reparto por camino sale **con los ceros**, y por eso va en la primera
     // línea: un mecanismo con cero copias sigue siendo un mecanismo que hay que
     // mantener, y esconderlo es cómo se llega a tener tres sin saberlo.
@@ -341,6 +344,202 @@ pub fn imprimir(inv: &Inventario) {
         println!("  {} · NO ENTRA", f.nombre);
         println!("    {}", f.porque);
     }
+    // Con qué cuenta el cotejo para probar una junta sin pérdida. Va aquí y no
+    // en cada vista porque son del paquete, y se dicen aunque sean cero: con
+    // cero, **ninguna** materialización con una hoja de más podrá contestar
+    // nunca, y eso explica un «no la contesta» que si no parece un fallo.
+    let (u, r) = restricciones.iter().fold((0, 0), |(u, r), x| match x {
+        Restriccion::Unica { .. } => (u + 1, r),
+        Restriccion::Referencial { .. } => (u, r + 1),
+    });
+    println!(
+        "  restricciones  {u} {} · {r} {}",
+        if u == 1 { "única" } else { "únicas" },
+        if r == 1 {
+            "referencial"
+        } else {
+            "referenciales"
+        }
+    );
+}
+
+// ── El cotejo ────────────────────────────────────────────────────────────────
+
+/// **Las restricciones declaradas del paquete**, en los términos del View
+/// Matcher — que no sabe de dónde salen, solo qué garantizan.
+///
+/// Hacen falta para una sola cosa, y es la que Oracle llama *«juntas sin
+/// pérdida»*: una materialización que lee una hoja **de más** solo contesta si
+/// esa junta ni pierde ni duplica filas, y eso no se supone, se declara.
+///
+/// Tres procedencias, y las tres son declaraciones que ya existían:
+///
+/// | de dónde | qué garantiza |
+/// |---|---|
+/// | `changes.key` de una tabla `upsert` | única, y la especificación **la exige**: sin ella el mantenedor no sabría qué retracta un *tombstone* |
+/// | `primaryKey` y `uniqueKeys` de una entidad | única, sobre la raíz de la vista que la respalda |
+/// | una relación con `via` **y `required: true`** | referencial, de la columna del enlace a la clave del destino |
+///
+/// # Por qué `required: true` y no toda relación
+///
+/// Una referencial afirma que **toda** fila de un lado casa con una del otro, y
+/// es exactamente lo que prueba que la junta no pierde filas. Una relación
+/// opcional no lo afirma: `manager` con `required: false` son los empleados sin
+/// jefe, y una junta interna por `managerId` los tira. Declararla igual sería
+/// darle al matcher permiso para perder filas en silencio, que es el fallo que
+/// esta pieza existe para no cometer. Sin declaración no se supone ninguna.
+pub fn restricciones(pkg: &Package) -> Vec<Restriccion> {
+    let mut out: Vec<Restriccion> = Vec::new();
+
+    // 1 · La tabla `upsert`, que trae su clave declarada por obligación.
+    for t in pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::Table)
+    {
+        if vistas::modo(t) != vistas::Modo::Upsert {
+            continue;
+        }
+        let columnas = lista(
+            t.section("changes")
+                .and_then(|c| c.get("key"))
+                .map(|(_, v)| v),
+        );
+        let (Some(ds), Some(ob)) = (
+            t.section("datasource").and_then(|v| v.as_str()),
+            t.section("object").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        if !columnas.is_empty() {
+            out.push(Restriccion::Unica {
+                hoja: (ds.to_string(), ob.to_string()),
+                columnas,
+            });
+        }
+    }
+
+    // 2 y 3 · Lo de la ontología, bajado a columnas por la raíz de su respaldo.
+    for e in pkg.entities() {
+        let Some((hoja, columnas)) = raiz_de_entidad(pkg, e) else {
+            continue;
+        };
+        let fisicas = |props: &[String]| -> Option<Vec<String>> {
+            props.iter().map(|p| columnas.get(p).cloned()).collect()
+        };
+        for claves in [e.section("primaryKey").map(|k| lista(Some(k)))]
+            .into_iter()
+            .flatten()
+            .chain(
+                e.section("uniqueKeys")
+                    .into_iter()
+                    .flat_map(|u| u.items().iter().map(|i| lista(Some(i))).collect::<Vec<_>>()),
+            )
+        {
+            if let Some(cols) = fisicas(&claves)
+                && !cols.is_empty()
+            {
+                out.push(Restriccion::Unica {
+                    hoja: hoja.clone(),
+                    columnas: cols,
+                });
+            }
+        }
+
+        let Some(rels) = e.section("relations") else {
+            continue;
+        };
+        for (_, rv) in rels.entries() {
+            if rv.get("required").and_then(|(_, v)| v.as_str()) != Some("true") {
+                continue;
+            }
+            let via = lista(rv.get("via").map(|(_, v)| v));
+            let Some(destino) = rv.get("target").and_then(|(_, v)| v.as_str()) else {
+                continue;
+            };
+            let Some(te) = pkg.entity(destino) else {
+                continue;
+            };
+            let Some((thoja, tcolumnas)) = raiz_de_entidad(pkg, te) else {
+                continue;
+            };
+            // `toKey` cuando el enlace no va contra la primaria — que es legal en
+            // SQL y es como enlazan los sistemas heredados: por NIF, por DUNS.
+            let clave = match rv.get("toKey").map(|(_, v)| lista(Some(v))) {
+                Some(k) if !k.is_empty() => k,
+                _ => lista(te.section("primaryKey")),
+            };
+            let (Some(desde), Some(hacia)) = (
+                fisicas(&via),
+                clave
+                    .iter()
+                    .map(|p| tcolumnas.get(p).cloned())
+                    .collect::<Option<Vec<_>>>(),
+            ) else {
+                continue;
+            };
+            if desde.is_empty() || desde.len() != hacia.len() {
+                continue;
+            }
+            out.push(Restriccion::Referencial {
+                desde: (hoja.clone(), desde),
+                hacia: (thoja, hacia),
+            });
+        }
+    }
+    out.sort_by_key(|r| format!("{r:?}"));
+    out.dedup();
+    out
+}
+
+/// La hoja física de una entidad y su mapa propiedad → columna, por el sustrato:
+/// la raíz de la vista que la respalda. Ni un binding de por medio.
+fn raiz_de_entidad(
+    pkg: &Package,
+    e: &ore_core::link::Loaded,
+) -> Option<(Hoja, BTreeMap<String, String>)> {
+    let v = vistas::respaldo(pkg, e)?;
+    let r = vistas::raiz(pkg, v).ok()?;
+    Some(((r.datasource, r.objeto), r.columnas))
+}
+
+/// **Qué copias contestan este plan**, cada una con su compensación y su sello.
+///
+/// El sello es lo que hace que esto no sea una reescritura cualquiera: la
+/// clasificación de una copia **se hereda, no se recalcula**. Una vista que
+/// recortó por `nif` produce filas `critical` aunque `nif` no esté entre sus
+/// columnas, y recalcular el linaje sobre la tabla copiada perdería esa
+/// etiqueta. Por eso las raíces del plan reescrito son las columnas de la copia
+/// y sus etiquetas son las selladas.
+pub fn cotejos(
+    inv: &Inventario,
+    plan: &Nodo,
+    clasificacion: &Clasificacion,
+    restricciones: &[Restriccion],
+) -> Vec<(String, Result<Rewrite, NoContesta>)> {
+    inv.arbol
+        .candidatas(plan)
+        .into_iter()
+        .map(|m| {
+            let sellada = Clasificacion {
+                reticulos: clasificacion.reticulos.clone(),
+                de_raiz: sello_de(m, clasificacion),
+            };
+            (m.nombre.clone(), cotejar(plan, m, &sellada, restricciones))
+        })
+        .collect()
+}
+
+/// La clasificación efectiva de una copia, colgada de las columnas de su tabla.
+///
+/// Se pide **sin autorización** —`Etiquetas::new()`— a propósito: aquí no se
+/// decide si la copia compila, que eso es del conducto y ya lo hace `ore view`
+/// por su lado. Aquí solo se quiere saber qué lleva puesto cada columna.
+fn sello_de(m: &Materializacion, c: &Clasificacion) -> BTreeMap<Raiz, Etiquetas> {
+    let Ok(lin) = linaje(&m.plan) else {
+        return BTreeMap::new();
+    };
+    sello(m, &comprobar(&lin, c, &Etiquetas::new()).efectivas)
 }
 
 #[cfg(test)]

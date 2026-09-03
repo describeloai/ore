@@ -263,6 +263,51 @@ Construir esa `Lectura` desde el plan es la única opción honesta — y entonce
 `Registro::TablaNoCorresponde` **no puede dispararse nunca desde este camino**. Eso dice algo
 sobre para quién existe esa comprobación, y hay que escribirlo donde se vea.
 
+#### Hecho · la copia deja de ser hoja
+
+`ore view` dice ahora de cada vista qué copias la contestan. La línea que paga el peldaño sale del
+caso `virtual-over-materialized-over-stream`:
+
+```
+ventas.iberia
+  empuje    rechazado · `fullScan: forbidden` … y este plan no le baja ningún filtro
+  cotejo    la contesta `ventas.pedidos` · 1 conyunto de compensación
+```
+
+`iberia` es **virtual** y no declara copia ninguna. Que la copia de `pedidos` la conteste lo
+demuestra el álgebra, no la cadena: `raíz de lectura` dice algo parecido dos líneas más arriba,
+pero recorriendo `from` hasta abajo. **El cotejo compara dos planes y no necesita que haya
+cadena** — el día que dos vistas escritas por separado resulten ser la misma consulta, solo uno de
+los dos lo verá.
+
+Y el sello viaja: `sello heredado: dni {gdpr.sensitivity:high}`. La copia filtró por una columna
+`high` que **no expone**; recalcular el linaje sobre su tabla habría perdido la etiqueta, y la
+consulta reescrita habría parecido limpia. Cruza además el renombre — la etiqueta sale con el
+nombre que le da quien pregunta.
+
+**Las restricciones bajan de tres sitios**, y el reparto se imprime aunque sea cero, por lo mismo
+que los caminos: con cero referenciales ninguna junta de más podrá probarse nunca, y sin la línea
+ese «no la contesta» parece un fallo del cotejo en vez de una declaración que falta.
+
+| de dónde | qué garantiza |
+|---|---|
+| `changes.key` de una tabla `upsert` | única — la especificación **la exige**: sin ella el mantenedor no sabe qué retracta un *tombstone* |
+| `primaryKey` y `uniqueKeys` de una entidad | única, sobre la raíz de la vista que la respalda |
+| una relación con `via` **y `required: true`** | referencial |
+
+**Solo `required: true`**, y no toda relación: una referencial afirma que *toda* fila de un lado
+casa con una del otro, que es justo lo que prueba que la junta no pierde. `manager` con
+`required: false` son los empleados sin jefe, y una junta interna los tira. Declararla sería darle
+al matcher permiso para perder filas en silencio.
+
+**Y una medida incómoda.** `acme-retail` da **4 únicas y 0 referenciales**, aunque tiene cuatro
+relaciones `required: true`. El motivo: apuntan a `Department`, `Supplier` y `Sku`, y **cinco de
+sus siete entidades no declaran `backedBy`**. Sin respaldo no hay raíz física, y sin raíz la
+referencial no se puede bajar a columnas. Es decir: el ejemplo está migrado a v1alpha8 **a
+medias**, y hasta que no lo esté del todo la junta de más no tiene con qué probarse allí. La rama
+no viaja sin ejercer —una prueba escribe el paquete de dos entidades que hacía falta— pero el
+ejemplo sigue corto, y eso es trabajo del repositorio de la especificación.
+
 ### I3 · el testigo
 
 **Qué.** El testigo deja de estar vacío. Vocabulario: el de `changes.witness`. Y el Refresh

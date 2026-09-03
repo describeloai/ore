@@ -148,3 +148,184 @@ fn un_paquete_sin_copias_lo_dice() {
         "{out}"
     );
 }
+
+// ── I2 · el cotejo ───────────────────────────────────────────────────────────
+
+/// **El pago del registro.** `ventas.iberia` es virtual y no declara copia
+/// ninguna; `ventas.pedidos` sí, y es la de abajo en su cadena. El cotejo
+/// demuestra —por álgebra, no siguiendo la cadena— que la copia la contesta, y
+/// dice qué queda por aplicar encima: el `where` que `iberia` añade.
+///
+/// La diferencia con `raíz de lectura`, que dice algo parecido dos líneas más
+/// arriba, es de qué se apoya cada uno: aquella recorre `from` hasta la raíz;
+/// esta compara dos planes y **no necesita que haya una cadena**. El día que dos
+/// vistas escritas por separado resulten ser la misma consulta, solo una de las
+/// dos lo verá.
+#[test]
+fn una_vista_virtual_se_contesta_desde_la_copia_de_otra() {
+    let (ok, out) = ver(&conformidad8("valid/virtual-over-materialized-over-stream"));
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("cotejo    la contesta `ventas.pedidos` · 1 conyunto de compensación"),
+        "la copia de `pedidos` contesta a `iberia`, con el `where` de compensación:\n{out}"
+    );
+    // Y la copia contesta a su propia vista sin nada encima, que es el caso base.
+    assert!(
+        out.contains("cotejo    la contesta `ventas.pedidos` — su copia · sin compensación"),
+        "{out}"
+    );
+}
+
+/// **El label seal, que es lo que no tiene nadie más.**
+///
+/// `hr.empleados` filtra por una columna `high` y la copia no la expone. Si al
+/// reescribir se recalculase el linaje sobre la tabla copiada, la etiqueta
+/// desaparecería y la consulta reescrita parecería limpia. Aquí viaja — y viaja
+/// **con el nombre que le da quien pregunta**, `dni`, no el de la copia.
+#[test]
+fn el_sello_de_la_copia_se_hereda_en_la_reescritura() {
+    let (ok, out) = ver(&conformidad8(
+        "valid/materialized-view-over-table-within-clearance",
+    ));
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("sello heredado: dni {gdpr.sensitivity:high}"),
+        "la etiqueta cruza la reescritura y el renombre:\n{out}"
+    );
+}
+
+/// Una candidata que **no** contesta lo dice con el motivo exacto, y el motivo
+/// es útil: la copia de topología solo lleva dos columnas, así que no puede
+/// servir una consulta que pide una tercera.
+///
+/// Que el índice invertido la ofreciera **no es un fallo**: comparten hoja, que
+/// es todo lo que el Filter Tree mira. Decidir es del cotejo, y decide.
+#[test]
+fn una_candidata_que_no_expone_la_columna_dice_cual() {
+    let (ok, out) = ver(&ejemplo());
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("cotejo    `hr.Employee.manager` no la contesta"),
+        "{out}"
+    );
+    assert!(
+        out.contains("no se deriva de la materialización: no la expone, su predicado no la fija"),
+        "dice por qué, y no `false`:\n{out}"
+    );
+}
+
+/// **Las restricciones se cuentan aunque sean cero**, y por lo mismo que los
+/// caminos de refresco: con cero referenciales, ninguna materialización con una
+/// hoja de más podrá contestar nunca, y sin esta línea ese «no la contesta»
+/// parece un fallo del cotejo en vez de una declaración que falta.
+///
+/// `acme-retail` da cuatro únicas y **ninguna referencial**, y el motivo está
+/// medido: sus relaciones `required: true` apuntan a entidades —`Department`,
+/// `Supplier`, `Sku`— que **no declaran `backedBy`**, así que el destino no
+/// tiene raíz física y la referencial no se puede bajar a columnas.
+#[test]
+fn las_restricciones_se_cuentan_y_los_ceros_tambien() {
+    let (_, out) = ver(&ejemplo());
+    assert!(
+        out.contains("restricciones  4 únicas · 0 referenciales"),
+        "{out}"
+    );
+    // Y la que sale de `changes.key` de una tabla `upsert`, que la
+    // especificación exige: sin ella el mantenedor no sabe qué retracta.
+    let (_, v) = ver(&conformidad8("valid/virtual-over-materialized-over-stream"));
+    assert!(
+        v.contains("restricciones  1 única · 0 referenciales"),
+        "la clave del `upsert`:\n{v}"
+    );
+}
+
+/// **La referencial, que ningún fichero del repositorio produce.**
+///
+/// Y por eso este paquete se escribe aquí: sin él, la única rama de
+/// `restricciones` que construye una `Restriccion::Referencial` viajaría sin que
+/// nadie la haya ejecutado nunca. La medida que la hizo falta es de
+/// `acme-retail`: sus relaciones `required: true` apuntan a entidades sin
+/// `backedBy`, así que allí la rama se cae antes de llegar.
+///
+/// Dos entidades, las dos con respaldo, y una relación **obligatoria** entre
+/// ellas. Eso es lo que hace falta para poder afirmar que una junta de más ni
+/// pierde ni duplica: la unicidad del destino sale de su `primaryKey`, y que
+/// toda fila del origen case sale de `required: true`.
+#[test]
+fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
+    let dir = std::env::temp_dir().join(format!("ore-referencial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let ficheros: &[(&str, &str)] = &[
+        (
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\n\
+             metadata: { name: x, version: 0.1.0 }\ndatasources:\n  \
+             - { name: erp, type: postgres, connectionEnv: ERP_URL }\n",
+        ),
+        (
+            "package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+             metadata: { name: hr, version: 1.0.0, status: active, domain: people }\n\
+             spec: { owner: team:data }\n",
+        ),
+        (
+            "tables/employees.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+             metadata: { name: employees, namespace: erp }\nspec:\n  \
+             datasource: erp\n  object: \"public.employees\"\n  columns:\n    \
+             employee_id: {}\n    dept_id: {}\n  reads:\n    fullScan: cheap\n  \
+             changes: { mode: retract, witness: log }\n",
+        ),
+        (
+            "tables/departments.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+             metadata: { name: departments, namespace: erp }\nspec:\n  \
+             datasource: erp\n  object: \"public.departments\"\n  columns:\n    \
+             dept_pk: {}\n    nombre: {}\n  reads:\n    fullScan: cheap\n  \
+             changes: { mode: retract, witness: log }\n",
+        ),
+        (
+            "views/empleados.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+             metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
+             from: { table: erp.employees }\n  fields:\n    \
+             employeeId: employee_id\n    departmentId: dept_id\n",
+        ),
+        (
+            "views/departamentos.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+             metadata: { name: departamentos, namespace: hr }\nspec:\n  owner: team:hr\n  \
+             from: { table: erp.departments }\n  fields:\n    \
+             departmentId: dept_pk\n    nombre: nombre\n",
+        ),
+        (
+            "entities/Employee.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+             metadata: { name: Employee, namespace: hr }\nspec:\n  nature: entity\n  \
+             primaryKey: [employeeId]\n  backedBy: empleados\n  properties:\n    \
+             employeeId: { type: String }\n    departmentId: { type: String }\n  \
+             relations:\n    department:\n      target: hr.Department\n      \
+             cardinality: many_to_one\n      via: [departmentId]\n      required: true\n",
+        ),
+        (
+            "entities/Department.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+             metadata: { name: Department, namespace: hr }\nspec:\n  nature: entity\n  \
+             primaryKey: [departmentId]\n  backedBy: departamentos\n  properties:\n    \
+             departmentId: { type: String }\n    nombre: { type: String }\n",
+        ),
+    ];
+    for (rel, txt) in ficheros {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, txt).unwrap();
+    }
+
+    let (ok, out) = ver(&dir);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("restricciones  2 únicas · 1 referencial"),
+        "las dos claves primarias y el enlace obligatorio:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

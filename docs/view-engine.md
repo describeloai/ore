@@ -141,8 +141,12 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   las etiquetas efectivas y las capacidades, y los convierte en el IR, la clasificación y las
   capacidades de aquí. `ore view` es lo que contesta. Lo que falta —que `discover` proponga
   vistas y que `Kind::Binding` desaparezca— es de `docs/handoff-vistas.md`, que sigue abierto
-  hasta entonces. Las restricciones desde `primaryKey` y las relaciones para el View Matcher no
-  se han conectado todavía: nadie reescribe consultas contra materializaciones aún.
+  hasta entonces. **Las restricciones y el cotejo, conectados** — I2 de
+  [`handoff-materializacion.md`](handoff-materializacion.md): `ore view` dice de cada vista qué
+  copias la contestan, con qué compensación y con el sello heredado, y las restricciones bajan
+  desde `changes.key`, `primaryKey`/`uniqueKeys` y las relaciones **obligatorias**. Lo que queda
+  sin ejercer por ningún fichero del repositorio es la junta de más: hace falta una
+  materialización que lea una hoja que la consulta no lee, y ninguna lo hace.
 - **El ejecutor, hecho.** `crates/ore-maintain` es el programa delegado que corre el circuito Δ
   y sostiene el estado parcial: una **sesión** por stdin, con el Refresh Analyzer en la puerta,
   la *upquery* saliendo como petición al origen y el dictamen viajando en cada paso

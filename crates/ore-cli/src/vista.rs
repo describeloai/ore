@@ -73,6 +73,11 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     };
     let conductos = ore_core::flow::clearances(&pkg, &lat);
     let capacidades = capacidades_por_fuente(&pkg);
+    // El registro, del paquete entero y no de cada vista: una copia la puede
+    // servir la consulta de otra, así que la unidad es el paquete. Se construye
+    // UNA vez, antes del bucle, porque dentro se cotejan planes contra él.
+    let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
+    let restricciones = crate::registro::restricciones(&pkg);
 
     let mut fugas = 0usize;
     for v in &vistas {
@@ -198,6 +203,55 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
             }
         }
 
+        // El cotejo: de las copias registradas, cuáles contestan **este** plan.
+        // Solo se dice algo cuando hay candidatas — el índice invertido ya las
+        // filtró, y anunciar «ninguna» en cada vista de un paquete sin copias
+        // sería ruido.
+        //
+        // Y el sello va con ellas: la clasificación de una copia se **hereda**.
+        // Recalcular el linaje sobre su tabla perdería lo que la copia lleva
+        // puesto por haber filtrado, que es justo lo que no se ve mirándola.
+        for (nombre, r) in
+            crate::registro::cotejos(&inventario, &plan, &clasificacion, &restricciones)
+        {
+            let suya = if nombre == qn { " — su copia" } else { "" };
+            match r {
+                Ok(rw) => {
+                    println!(
+                        "  cotejo    la contesta `{nombre}`{suya} · {}",
+                        match rw.compensation.len() {
+                            0 => "sin compensación".to_string(),
+                            1 => "1 conyunto de compensación".to_string(),
+                            n => format!("{n} conyuntos de compensación"),
+                        }
+                    );
+                    let sellado: Vec<String> = rw
+                        .label_seal
+                        .iter()
+                        .filter(|(_, ls)| !ls.is_empty())
+                        .map(|(c, ls)| {
+                            format!(
+                                "{c} {{{}}}",
+                                ls.iter()
+                                    .map(|(e, n)| format!("{e}:{n}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })
+                        .collect();
+                    if !sellado.is_empty() {
+                        println!("            sello heredado: {}", sellado.join(" · "));
+                    }
+                }
+                Err(e) => {
+                    println!("  cotejo    `{nombre}` no la contesta");
+                    for linea in e.como_texto().lines() {
+                        println!("            {}", linea.trim());
+                    }
+                }
+            }
+        }
+
         // El flujo. Virtual: no hay copia, nada que autorizar. Materializada:
         // la copia lleva lo que llevan sus columnas raíz, por derivación Y por
         // influencia.
@@ -257,11 +311,7 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         println!();
     }
 
-    // El registro, del paquete entero y no de cada vista: una copia la puede
-    // servir la consulta de otra, asi que la unidad es el paquete. Se construye
-    // UNA vez y de aqui lo miran los tres consumidores.
-    let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
-    crate::registro::imprimir(&inventario);
+    crate::registro::imprimir(&inventario, &restricciones);
     // Una copia declarada que no entra en el registro no es un detalle: el
     // motor iria al origen sin que nadie sepa por que.
     fugas += inventario.fuera.len();
