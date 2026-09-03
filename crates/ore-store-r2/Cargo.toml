@@ -39,3 +39,8 @@ native-tls = "0.2"
 # `hmac` arrastra `digest 0.10` entera al lado de la `0.11` que el arbol ya usa.
 # `dependencias.rs` lo vio antes que nadie.
 sha2 = { workspace = true }
+
+# Solo por `Bytes`, que es lo que el lector de Parquet acepta como fuente. Ya
+# estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al
+# cierre: lo unico que hace es dejar de depender de un reexport.
+bytes = "1"

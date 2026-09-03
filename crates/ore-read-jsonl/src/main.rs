@@ -85,8 +85,33 @@ fn main() -> ExitCode {
 /// copia sea atomica: el testigo y las filas son la misma cosa.
 fn testigo(peticion: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
+    let cursor = ore_core::parse::parse(peticion).ok().and_then(|n| {
+        n.get("cursor")
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+    });
     let ruta = std::path::Path::new(&url).join(&objeto);
     match std::fs::read(&ruta) {
+        // **Si le nombran una columna, se fecha por ella.** Un fichero sabe
+        // hacer las dos cosas, y cual de las dos se quiere lo dice la tabla al
+        // declarar su `witness`. El maximo de la columna ES el testigo, que es
+        // el modelo de *cursor field* que medio sector usa.
+        Ok(b) if cursor.is_some() => {
+            let c = cursor.unwrap_or_default();
+            let texto = String::from_utf8_lossy(&b);
+            let maximo = texto
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| ore_core::parse::parse(l).ok())
+                .filter_map(|n| n.get(&c).and_then(|(_, v)| v.as_str()).map(String::from))
+                .max();
+            match maximo {
+                Some(m) => Ok(ore_driver::testigo("field", Some(&m))),
+                // Un fichero vacio no tiene maximo, y eso no es un fallo: es que
+                // no hay por donde avanzar todavia.
+                None => Ok(ore_driver::testigo("field", None)),
+            }
+        }
         Ok(b) => Ok(ore_driver::testigo(
             "snapshot",
             Some(&ore_core::digest::de_bytes(&b)),

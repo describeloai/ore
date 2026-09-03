@@ -39,7 +39,8 @@ rm -rf "$D"; mkdir -p "$D/datos" "$D/tables" "$D/views"
 filas() { # n desde
   local n=$1 i=$2
   while [ "$i" -lt $((i + n)) ] && [ "$n" -gt 0 ]; do
-    echo "{\"order_id\":\"$i\",\"pais\":\"ES\",\"total\":\"$i.00\"}"
+    printf '{"order_id":"%s","pais":"ES","total":"%s.00","actualizado_en":"%010d"}
+' "$i" "$i" "$i"
     i=$((i + 1)); n=$((n - 1))
   done
 }
@@ -83,9 +84,9 @@ metadata: { name: pedidos, namespace: bus }
 spec:
   datasource: ficheros
   object: "pedidos.jsonl"
-  columns: { order_id: {}, pais: {}, total: {} }
+  columns: { order_id: {}, pais: {}, total: {}, actualizado_en: {} }
   reads: { fullScan: cheap }
-  changes: { mode: upsert, key: [order_id], witness: snapshot, retention: 7d }
+  changes: { mode: upsert, key: [order_id], witness: field, field: actualizado_en, retention: 7d }
 X
 cat > "$D/views/copia.yaml" <<'X'
 apiVersion: oos.dev/v1alpha8
@@ -94,7 +95,7 @@ metadata: { name: copia, namespace: ventas }
 spec:
   owner: team:ventas
   from: { table: bus.pedidos }
-  fields: { id: order_id, pais: pais, total: total }
+  fields: { id: order_id, pais: pais, total: total, cuando: actualizado_en }
   materialized: { datasource: lago, table: "cache.pedidos" }
 X
 export FICHEROS_DIR="$D/datos"
@@ -136,7 +137,7 @@ cmp_n 10 "$(leidas "$a3")" "③ +10 filas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a3")" "③ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n3=$(objetos); cmp_n 2 "$((n3 - n2))" "③ objetos nuevos" "R2"
 
-sed -i '1,3s/"pais":"ES"/"pais":"PT"/' "$D/datos/pedidos.jsonl"
+sed -i '1,3s/"pais":"ES"/"pais":"PT"/; 1,3s/"actualizado_en":"[0-9]*"/"actualizado_en":"0000002000"/' "$D/datos/pedidos.jsonl"
 a4=$("$ORE" materialize "$D" 2>&1)
 cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
@@ -156,7 +157,7 @@ echo "══ las cuatro negativas · valen igual que los actos ══"
 # dos paquetes a la vez y fallaba — y la negativa `d`, que mira su salida,
 # pasaba EN FALSO por no encontrar el texto que buscaba.
 N="$D-neg"; rm -rf "$N"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$N/" 2>/dev/null
-sed -i 's/mode: upsert, key: \[order_id\], witness: snapshot/mode: append, witness: field, field: total/' \
+sed -i 's/mode: upsert, key: \[order_id\], witness: field/mode: append, witness: field/' \
   "$N/tables/pedidos.yaml"
 if "$ORE" validate "$N" >/dev/null 2>&1; then
   mal "a · {witness: field, mode: append} con \`materialized\` compila" "R0"

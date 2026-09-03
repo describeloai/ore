@@ -1,7 +1,9 @@
 # Handoff · del poblar al mantener
 
-> **Desechable.** Cuando sus peldaños estén, este documento sobra: lo que decidan vive en
-> [ADR 0016](decisions/0016-el-testigo-y-el-rango.md) y en la especificación.
+> **Desechable, y ya se puede tirar.** `pruebas-de-fuego/refresco.sh` pasa entero: los cinco
+> actos con sus números, las cuatro negativas, y las cuatro invariantes. Lo que decidieron sus
+> peldaños vive en [ADR 0016](decisions/0016-el-testigo-y-el-rango.md), en `OOS2023` y en el
+> código; esto era el camino.
 
 `ore materialize` corre entero —[ADR 0015](decisions/0015-el-protocolo-del-almacen.md), y el ciclo
 está medido contra un R2 de verdad— y aun así **la copia no se refresca nunca**. Este plan cierra
@@ -99,6 +101,10 @@ que falta es leerlo.
 | **R4** | un solo sitio para el testigo | `ore-exec`, el sobre | ninguno |
 | **R5** | la recogida de basura | `ore-store-r2`, el registro | ninguno |
 | **R6** | **el ciclo cerrado, y medido en filas** | una prueba de fuego | **es la definición de listo** |
+
+**Y hay un séptimo que no estaba en la lista**: la **fusión**. R3 la destapó —leer menos exige
+fundir, o la copia sale incompleta— y está en [§3.bis](#3bis--la-fusión--cerrado). No se planificó
+porque no se veía hasta construir R3, que es exactamente para lo que sirve construir en peldaños.
 
 **R0 y R1 no dependen de R2 ni de R3**, y cierran agujeros que están abiertos **hoy**. Van primero
 por eso, no por ser fáciles.
@@ -349,6 +355,55 @@ ocurría*, que es exactamente la clase de cosa que esta prueba existe para encon
 **Listo cuando.** Los cinco actos dan los números de arriba, las cuatro negativas fallan por su
 motivo, y las tres invariantes se sostienen. **Entonces el plan está cerrado y este documento se
 borra.**
+
+---
+
+## 3.bis · La fusión · **cerrado**
+
+R3 dejó visto que leer menos exige, debajo, **fundir**. Esto es esa mitad, y lo primero fue mirar
+si `ore-maintain` servía — porque el circuito Δ existe justamente para aplicar un delta a un
+estado.
+
+**No servía, y lo dice su propio ADR:**
+
+> *«La sesión ES el estado, y cerrarla es tirarlo.»* — [ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)
+
+Ese estado es **efímero por decisión**. El de una copia **sobrevive**, y vive en un objeto que solo
+el almacén puede abrir. Reusarlo habría sido forzar la pieza; la conclusión de R3 —*«la copia es
+ese estado»*— era medio cierta: lo es, pero de otra clase.
+
+Así que la fusión vive donde puede leer la copia anterior, y es **mecánica de datos sin ninguna
+semántica**: unas columnas identifican una fila, y la fila nueva gana. El almacén sigue sin saber
+qué es una entidad.
+
+### Lo que hizo falta, en orden
+
+| | |
+|---|---|
+| el Parquet **se vuelve a leer** | se escribía desde M0 y no lo abría nadie; refrescar lo exige |
+| la cabecera lleva `clave` | hace la copia autodescriptiva **y** es lo único que permite fundir |
+| el almacén contesta `anterior` | sobre qué copia construir, y **hasta dónde llegaba** — las dos en una enumeración |
+| el ciclo pide el rango | `start` del testigo anterior, `end` del actual, `cursor` de `changes.field` |
+| y el fichero se fecha por columna | un origen sabe fecharse de varias formas; **la que vale la declara la tabla** |
+
+### La trampa que casi se cuela
+
+**Fundir ordena por clave.** Si solo ordenara el camino incremental, una copia rehecha entera y
+una refrescada darían **bytes distintos para el mismo estado** — y el artefacto dejaría de poder
+nombrarse por su digest, que es la propiedad de la que cuelga todo lo demás.
+
+Por eso se funde **siempre** que hay clave, también en la primera materialización, aunque no haya
+nada con qué fundir. La simetría no es estética: es lo que hace que los dos caminos converjan.
+
+Y por lo mismo `base` **no entra en la cabecera**: la cabecera dice **qué contiene** la copia
+—plan y testigo— y no **cómo se construyó**. Si el camino entrara, el recibo dejaría de reconocer
+que una copia ya estaba.
+
+### Y `snapshot` no admite rango, que es lo que significa
+
+`anterior` solo contesta con `log` y `field`. Un *snapshot-id* **identifica**, no ordena: dos no se
+comparan. Un origen así se lee **entero en su versión**, que es exactamente lo que Iceberg y Delta
+hacen. No es una limitación de esto: es lo que ese modo dice de sí mismo.
 
 ---
 

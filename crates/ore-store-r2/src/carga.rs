@@ -124,6 +124,99 @@ pub fn escribir(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Ve
     Ok(out)
 }
 
+/// **Volver a leer el Parquet.** La mitad que faltaba del formato.
+///
+/// Se escribía desde M0 y no lo leía nadie, y eso estaba bien mientras una copia
+/// solo se poblara. En cuanto se **refresca**, hace falta: fundir un incremento
+/// con lo que ya había exige abrir lo que ya había.
+///
+/// Todo vuelve a texto, que es como entró. El tipo de OOS vive en la cabecera
+/// del sobre —ahí es donde el esquema es normativo— así que reconstruirlo aquí
+/// sería una segunda fuente para lo mismo.
+pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let b = bytes::Bytes::copy_from_slice(parquet);
+    let lector = ParquetRecordBatchReaderBuilder::try_new(b)
+        .map_err(|e| format!("la carga no es un Parquet legible: {e}"))?
+        .build()
+        .map_err(|e| format!("no se pudo abrir la carga: {e}"))?;
+
+    let mut out: Vec<Fila> = Vec::new();
+    for lote in lector {
+        let lote = lote.map_err(|e| format!("un lote de la carga no se lee: {e}"))?;
+        let esquema = lote.schema();
+        for i in 0..lote.num_rows() {
+            let mut f = Fila::new();
+            for (c, campo) in esquema.fields().iter().enumerate() {
+                let col = lote.column(c);
+                // Un nulo **no se convierte en cadena vacía**: la fila que no
+                // traía la columna y la que la traía vacía no son la misma, y
+                // confundirlas aquí las fundiría mal en el paso siguiente.
+                if col.is_null(i) {
+                    continue;
+                }
+                let v = match campo.data_type() {
+                    DataType::Int64 => col
+                        .as_any()
+                        .downcast_ref::<arrow_array::Int64Array>()
+                        .map(|a| a.value(i).to_string()),
+                    DataType::Boolean => col
+                        .as_any()
+                        .downcast_ref::<arrow_array::BooleanArray>()
+                        .map(|a| a.value(i).to_string()),
+                    _ => col
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .map(|a| a.value(i).to_string()),
+                };
+                if let Some(v) = v {
+                    f.insert(campo.name().clone(), v);
+                }
+            }
+            out.push(f);
+        }
+    }
+    Ok(out)
+}
+
+/// **La fusión: lo que había, más el incremento, por clave.**
+///
+/// Es la operación que convierte *«leer menos»* en *«leer menos y seguir estando
+/// entera»*, y las dos hacen falta: un refresco que lee 10 filas y sella una
+/// copia de 10 no es más rápido, es **incorrecto**.
+///
+/// # Por qué esto no es el circuito Δ
+///
+/// Se miró si `ore-maintain` servía, y no: [ADR 0013](../../../docs/decisions/0013-el-protocolo-del-mantenedor.md)
+/// dice de él *«la sesión ES el estado, y cerrarla es tirarlo»*. Ese estado es
+/// efímero por decisión; el de una copia **sobrevive**, y vive en un objeto que
+/// solo este programa puede abrir. Reusarlo habría sido forzar la pieza.
+///
+/// Lo que queda aquí es mecánica de datos y **ninguna semántica**: unas columnas
+/// identifican una fila, y la fila nueva gana. El almacén sigue sin saber qué es
+/// una entidad.
+///
+/// # El orden es estable, y hace falta que lo sea
+///
+/// El resultado se ordena por la clave. Si dependiera del orden de llegada, dos
+/// refrescos que trajeran el mismo incremento en distinto orden darían Parquets
+/// distintos — y el artefacto dejaría de poder nombrarse por su digest.
+pub fn fundir(anteriores: Vec<Fila>, delta: Vec<Fila>, clave: &[String]) -> Vec<Fila> {
+    let k = |f: &Fila| -> Vec<String> {
+        clave
+            .iter()
+            .map(|c| f.get(c).cloned().unwrap_or_default())
+            .collect()
+    };
+    let mut por_clave: BTreeMap<Vec<String>, Fila> =
+        anteriores.into_iter().map(|f| (k(&f), f)).collect();
+    for f in delta {
+        por_clave.insert(k(&f), f);
+    }
+    por_clave.into_values().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

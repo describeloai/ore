@@ -658,6 +658,45 @@ fn sello_de(m: &Materializacion, c: &Clasificacion) -> BTreeMap<Raiz, Etiquetas>
     sello(m, &comprobar(&lin, c, &Etiquetas::new()).efectivas)
 }
 
+/// **Qué columnas identifican una fila de esta copia.**
+///
+/// Es `changes.key` de la tabla de la que la vista lee, traducido a los nombres
+/// de la vista — el almacén funde por lo que ve en las filas, y lo que ve son
+/// **campos**, no columnas físicas.
+///
+/// Vacía cuando la tabla no declara clave, y eso tiene consecuencia: sin clave
+/// no se puede fundir un incremento, así que la copia solo se rehace entera. Es
+/// la otra cara de `OOS2023`, que rechaza justo la combinación en la que eso
+/// además sería incorrecto.
+pub fn clave_de(pkg: &Package, v: &Loaded) -> Vec<String> {
+    let Ok(r) = vistas::raiz(pkg, v) else {
+        return Vec::new();
+    };
+    let columnas: Vec<String> = r
+        .tabla
+        .as_deref()
+        .and_then(|qn| pkg.table(qn))
+        .and_then(|t| t.section("changes"))
+        .and_then(|c| c.get("key"))
+        .map(|(_, k)| {
+            k.items()
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Columna física → campo de la vista. Si alguna no se expone, la clave no
+    // sirve: fundir por una columna que no está en las filas juntaría todo.
+    let mut out = Vec::new();
+    for col in columnas {
+        match r.columnas.iter().find(|(_, c)| **c == col) {
+            Some((campo, _)) => out.push(campo.clone()),
+            None => return Vec::new(),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

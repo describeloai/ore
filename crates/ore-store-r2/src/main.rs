@@ -93,11 +93,28 @@ fn correr(verbo: &str) -> Result<String, String> {
             ])
             .jcs())
         }
-        "sellar" => sellar(&cuenta, cab, &recibo, lineas),
+        "sellar" => {
+            // `base` viaja en la línea de la petición y **no entra en la
+            // cabecera**, y eso es deliberado: la cabecera dice QUÉ CONTIENE la
+            // copia —plan y testigo— y no CÓMO se construyó. Si el camino
+            // entrara, una copia rehecha entera y una refrescada tendrían
+            // cabeceras distintas para el mismo estado, y el recibo dejaría de
+            // reconocer que ya estaba.
+            //
+            // Se cae solo: `leer_cabecera` construye la `Cabecera` de campos
+            // nombrados, así que un campo de más simplemente no se lee.
+            let base = ore_core::parse::parse(cabecera).ok().and_then(|n| {
+                n.get("base")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            });
+            sellar(&cuenta, cab, &recibo, base.as_deref(), lineas)
+        }
+        "anterior" => anterior(&cuenta, &cab, &recibo),
         "recoger" => recoger(&cuenta, &cab, &recibo, false),
         "recoger-seco" => recoger(&cuenta, &cab, &recibo, true),
         otro => Err(format!(
-            "verbo desconocido `{otro}`: este programa hace `buscar`, `sellar`, `recoger` y              `recoger-seco`"
+            "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger` y \n             `recoger-seco`"
         )),
     }
 }
@@ -112,11 +129,45 @@ fn sellar<'a>(
     cuenta: &r2::Cuenta,
     cab: sobre::Cabecera,
     recibo: &str,
+    base: Option<&str>,
     filas: impl Iterator<Item = &'a str>,
 ) -> Result<String, String> {
-    let filas: Vec<carga::Fila> = filas
+    let llegadas: Vec<carga::Fila> = filas
         .map(objeto_plano)
         .collect::<Result<Vec<_>, String>>()?;
+
+    // **La fusión, y la trampa de determinismo que trae debajo.**
+    //
+    // Sin clave no hay con qué fundir, así que las filas van tal cual y una
+    // copia solo se puede rehacer entera — la otra cara de `OOS2023`.
+    //
+    // Con clave se funde **siempre**, también cuando no hay base. No es simetría
+    // gratuita: `fundir` ordena por clave, y si solo ordenara el camino
+    // incremental, una copia rehecha entera y una refrescada darían **bytes
+    // distintos para el mismo estado**. El artefacto dejaría de poder nombrarse
+    // por su digest, que es la propiedad de la que cuelga todo lo demás.
+    let filas = if cab.clave.is_empty() {
+        if base.is_some() {
+            return Err(
+                "se pidió fundir sobre una copia anterior y la cabecera no declara \
+                        `clave`: sin ella no se sabe qué fila sustituye a cuál"
+                    .into(),
+            );
+        }
+        llegadas
+    } else {
+        let anteriores = match base {
+            Some(b) => {
+                let bytes = r2::leer_bytes(cuenta, b)?
+                    .ok_or_else(|| format!("la copia base `{b}` no está en el almacén"))?;
+                let (_, payload) = sobre::abrir(&bytes)?;
+                carga::leer(payload)?
+            }
+            None => Vec::new(),
+        };
+        carga::fundir(anteriores, llegadas, &cab.clave)
+    };
+
     let parquet = carga::escribir(&cab.esquema, &filas)?;
     let artefacto = sobre::sellar(&cab, &parquet);
     let clave = sobre::clave(&artefacto);
@@ -182,6 +233,15 @@ fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
         plan: s("plan")?,
         esquema,
         testigo: testigo.unwrap_or_default(),
+        clave: n
+            .get("clave")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|i| i.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         conducto: s("conducto")?,
         bundle: s("bundle")?,
     })
@@ -271,6 +331,81 @@ fn recoger(
             ore_core::json::Json::Int(sin_artefacto as i64),
         ),
         ("vigente", ore_core::json::Json::s(vigente)),
+    ])
+    .jcs())
+}
+
+/// **Sobre qué copia se puede construir la siguiente**, si sobre alguna.
+///
+/// Es el otro lado del recibo. `buscar` contesta *«¿está ya esta?»*; esto
+/// contesta *«¿hay una anterior de la que partir?»*, y las dos preguntas usan el
+/// mismo prefijo por plan.
+///
+/// # Por qué devuelve el testigo y no solo la clave
+///
+/// Porque quien pregunta necesita las dos cosas para la misma decisión: la clave
+/// dice **sobre qué fundir** y el testigo dice **desde dónde leer**. Pedirlas por
+/// separado sería dos enumeraciones para una respuesta.
+///
+/// # Y por qué el modo decide si hay respuesta
+///
+/// Solo se puede partir de una copia anterior si el testigo **ordena**. `log` y
+/// `snapshot` nombran una posición de confirmación; `field` es una columna que
+/// se compara. Pero `snapshot` **no ordena**: dos digests de Iceberg no se
+/// comparan, se identifican — y por eso un origen con snapshots se lee entero en
+/// su versión, que es lo que Iceberg y Delta hacen al omitir el inicio.
+///
+/// Así que aquí solo contestan `log` y `field`, y para `snapshot` la respuesta
+/// correcta es *no hay de dónde partir*. No es una limitación: es lo que ese modo
+/// significa.
+fn anterior(cuenta: &r2::Cuenta, cab: &sobre::Cabecera, vigente: &str) -> Result<String, String> {
+    let ordena = matches!(cab.testigo.modo.as_str(), "log" | "field");
+    let mut mejor: Option<(String, String)> = None;
+
+    if ordena && !cab.clave.is_empty() {
+        let actual = cab.testigo.valor.as_deref().unwrap_or("");
+        for r in r2::listar(cuenta, &sobre::prefijo_de_plan(&cab.plan))? {
+            if r == vigente {
+                continue;
+            }
+            let Some(clave) = r2::leer(cuenta, &r)? else {
+                continue;
+            };
+            // El testigo de esa copia sale de su propia cabecera: es la copia la
+            // que sabe hasta cuándo fue cierta, no el recibo.
+            let Some(bytes) = r2::leer_bytes(cuenta, &clave)? else {
+                continue;
+            };
+            let (cabecera, _) = sobre::abrir(&bytes)?;
+            let Some(t) = ore_core::parse::parse(&cabecera)
+                .ok()
+                .and_then(|n| n.get("testigo").map(|(_, x)| x.clone()))
+                .and_then(|x| {
+                    x.get("valor")
+                        .and_then(|(_, v)| v.as_str())
+                        .map(String::from)
+                })
+            else {
+                continue;
+            };
+            // La mayor de las que quedan por debajo de la actual. Una copia con
+            // un testigo POSTERIOR no es una base: sería leer hacia atrás.
+            if t.as_str() < actual && mejor.as_ref().is_none_or(|(_, m)| t > *m) {
+                mejor = Some((clave, t));
+            }
+        }
+    }
+
+    Ok(ore_core::json::Json::obj([
+        (
+            "clave",
+            ore_core::json::Json::s(mejor.as_ref().map(|(c, _)| c.as_str()).unwrap_or("")),
+        ),
+        ("hay", ore_core::json::Json::Bool(mejor.is_some())),
+        (
+            "testigo",
+            ore_core::json::Json::s(mejor.as_ref().map(|(_, t)| t.as_str()).unwrap_or("")),
+        ),
     ])
     .jcs())
 }

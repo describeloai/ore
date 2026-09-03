@@ -57,6 +57,14 @@ pub struct Cabecera {
     /// Columna → tipo, en el vocabulario de OOS. Ordenado, porque va al digest.
     pub esquema: BTreeMap<String, String>,
     pub testigo: Testigo,
+    /// Qué columnas identifican una fila, si alguna. Es `changes.key` de la
+    /// tabla, y va en la cabecera por dos motivos: hace la copia
+    /// **autodescriptiva** —quien la lea sabe por qué se identifican sus filas—
+    /// y es lo único que permite **fundir** un incremento con ella.
+    ///
+    /// Vacía significa que no hay con qué deduplicar, y entonces la copia solo
+    /// se puede rehacer entera. Es la otra cara de `OOS2023`.
+    pub clave: Vec<String>,
     /// El conducto que la autorizó. Sin él no se sabría bajo qué permiso
     /// existen estas filas fuera de su origen.
     pub conducto: String,
@@ -76,6 +84,7 @@ impl Cabecera {
         };
         Json::obj([
             ("bundle", Json::s(&self.bundle)),
+            ("clave", Json::Arr(self.clave.iter().map(Json::s).collect())),
             ("conducto", Json::s(&self.conducto)),
             (
                 "esquema",
@@ -217,6 +226,7 @@ mod tests {
                 modo: "log".into(),
                 valor: Some("1234".into()),
             },
+            clave: vec!["id".into()],
             conducto: "materialization.payload".into(),
             bundle: "sha256:bbbb".into(),
         }

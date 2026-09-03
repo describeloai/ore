@@ -28,6 +28,7 @@
 //! encontrarlo y por eso está escrito aquí y en el ADR.
 
 use sha2::{Digest, Sha256};
+use std::io::Read as _;
 
 pub struct Cuenta {
     pub endpoint: String,
@@ -334,7 +335,6 @@ pub fn subir(c: &Cuenta, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
     }
 }
 
-
 /// Enumera por prefijo. Es lo único que la recogida necesita del almacén, y R2
 /// lo honra — medido en el ADR 0015 antes de escribirlo.
 ///
@@ -384,6 +384,28 @@ pub fn borrar(c: &Cuenta, clave: &str) -> Result<(), String> {
         // sobre el mismo estado hacen lo mismo que una.
         Err(ureq::Error::Status(404, _)) => Ok(()),
         Err(e) => Err(format!("no se pudo borrar `{clave}`: {e}")),
+    }
+}
+
+/// Lo mismo que [`leer`], pero en bytes: una copia es binaria.
+pub fn leer_bytes(c: &Cuenta, clave: &str) -> Result<Option<Vec<u8>>, String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let cab = firmar(c, "GET", &ruta, Vec::new(), &vacio);
+    let mut r = cliente()?.get(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(resp) => {
+            let mut b = Vec::new();
+            resp.into_reader()
+                .read_to_end(&mut b)
+                .map_err(|e| format!("la copia `{clave}` no se pudo leer entera: {e}"))?;
+            Ok(Some(b))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
     }
 }
 

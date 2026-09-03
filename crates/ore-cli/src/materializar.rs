@@ -165,12 +165,21 @@ fn una(
         return Err(s);
     }
 
+    // El *cursor field*: la columna que ordena el avance, si el testigo es por
+    // columna. `None` significa que el rango va sobre la posición del propio
+    // origen —un LSN, un snapshot— y no sobre ninguna columna.
+    let cursor = match crate::registro::marca_de(pkg, v) {
+        ore_view::Marca::Campo(c) => Some(c),
+        _ => None,
+    };
+    let clave = crate::registro::clave_de(pkg, v);
+
     // ── ③ El testigo ────────────────────────────────────────────────────────
     let r = vistas::raiz(pkg, v).map_err(|e| format!("sin raíz · {e:?}"))?;
     let testigo = testigo(pkg, raiz_pkg, v, &r)?;
 
     // ── ④ El recibo ─────────────────────────────────────────────────────────
-    let cabecera = cabecera(&plan.digest(), &esq, &testigo, bundle);
+    let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave, bundle);
     let buscado = almacen("buscar", &cabecera, None)?;
 
     // La recogida va **aquí**, en cuanto se sabe cuál es la cabecera vigente, y
@@ -212,8 +221,34 @@ fn una(
         ));
     }
 
-    // ── ⑤ Leer, canalizar, sellar ───────────────────────────────────────────
-    let filas = leer(raiz_pkg, &r)?;
+    // ── ⑤ Leer el INCREMENTO, canalizar, fundir y sellar ────────────────────
+    //
+    // Aquí se juntan las dos mitades que estaban separadas. El almacén dice
+    // sobre qué copia se puede construir y hasta dónde llegaba; con eso, al
+    // origen se le pide **solo lo que falta** y al almacén se le dice **sobre
+    // qué fundirlo**.
+    //
+    // Y si no hay anterior —primera vez, o un testigo que no ordena— las dos
+    // salen vacías y esto es exactamente lo que era: una copia entera.
+    let previa = almacen("anterior", &cabecera, None)?;
+    let base = previa
+        .get("clave")
+        .and_then(|(_, x)| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let desde = previa
+        .get("testigo")
+        .and_then(|(_, x)| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    let filas = leer(
+        raiz_pkg,
+        &r,
+        cursor.as_deref(),
+        desde.as_deref(),
+        testigo.1.as_deref(),
+    )?;
     // **Cuántas filas se le pidieron al origen.** Hoy coincide siempre con las
     // que van a la copia, porque la lectura es entera. Cuando la petición sepa
     // llevar un rango, las dos cifras se separan — y **esa diferencia es la
@@ -224,7 +259,13 @@ fn una(
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
     let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
-    let salida = almacen("sellar", &cabecera, Some(&filas))?;
+    // La petición del sellado lleva `base`, y la cabecera que se sella **no**:
+    // qué contiene la copia y cómo se construyó son dos cosas.
+    let peticion = match &base {
+        Some(b) => cabecera.replacen('{', &format!("{{\"base\":\"{b}\","), 1),
+        None => cabecera.clone(),
+    };
+    let salida = almacen("sellar", &peticion, Some(&filas))?;
 
     // ── ⑥ Registrar, y recoger lo que quedó atrás ───────────────────────────
     //
@@ -292,11 +333,17 @@ fn testigo(
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
     let url = lector::url(raiz_pkg, &env, &r.datasource)
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
-    let peticion = ore_core::json::Json::obj([
+    // La coordenada lleva el *cursor* cuando el testigo es por columna: el driver
+    // necesita saber CUAL ordena, porque un fichero o una tabla saben fecharse de
+    // mas de una forma y la que vale es la que la tabla declara.
+    let mut coord = vec![
         ("objeto", ore_core::json::Json::s(&r.objeto)),
         ("url", ore_core::json::Json::s(&url)),
-    ])
-    .jcs();
+    ];
+    if let ore_view::Marca::Campo(c) = crate::registro::marca_de(pkg, v) {
+        coord.push(("cursor", ore_core::json::Json::s(&c)));
+    }
+    let peticion = ore_core::json::Json::obj(coord).jcs();
 
     let salida = lector::ejecutar(
         &format!("ore-read-{tipo}"),
@@ -337,6 +384,7 @@ fn cabecera(
     plan: &str,
     esq: &BTreeMap<String, ore_core::types::Type>,
     testigo: &(String, Option<String>),
+    clave: &[String],
     bundle: &str,
 ) -> String {
     use ore_core::json::Json;
@@ -346,6 +394,7 @@ fn cabecera(
     };
     Json::obj([
         ("bundle", Json::s(bundle)),
+        ("clave", Json::Arr(clave.iter().map(Json::s).collect())),
         ("conducto", Json::s(CONDUCTO)),
         (
             "esquema",
@@ -374,7 +423,13 @@ fn cabecera(
 /// aquí, en `ore`, sin abrir nada — pero no se hace todavía, y mientras no se
 /// haga **hay que negarse**: una copia que trajera filas que la vista excluye no
 /// falla, se sirve. Y sería exactamente el fallo que este árbol no comete.
-fn leer(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<String, String> {
+fn leer(
+    raiz_pkg: &Path,
+    r: &vistas::Raiz,
+    cursor: Option<&str>,
+    desde: Option<&str>,
+    hasta: Option<&str>,
+) -> Result<String, String> {
     let mut filtros = Vec::new();
     for (columna, valores) in &r.filtros {
         match valores.as_slice() {
@@ -400,21 +455,31 @@ fn leer(raiz_pkg: &Path, r: &vistas::Raiz) -> Result<String, String> {
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
 
     use ore_core::json::Json;
-    let peticion = Json::obj([
-        ("url", Json::s(&url)),
-        ("objeto", Json::s(&r.objeto)),
-        (
-            "proyeccion",
-            Json::Obj(
-                r.columnas
-                    .iter()
-                    .map(|(campo, col)| (campo.clone(), Json::s(col)))
-                    .collect(),
-            ),
+    let mut campos: Vec<(&'static str, Json)> =
+        vec![("url", Json::s(&url)), ("objeto", Json::s(&r.objeto))];
+    // El rango, **solo si hay de dónde partir**. Sin `desde` esto es una lectura
+    // entera, que es lo que la primera materialización necesita — y lo que un
+    // testigo que no ordena permite y nada más.
+    if let (Some(c), Some(d)) = (cursor, desde) {
+        campos.push(("cursor", Json::s(c)));
+        campos.push(("start", Json::s(d)));
+        // Y `end` acota por arriba con el testigo que el origen acaba de dar,
+        // para que lo copiado y su marca sean el mismo instante.
+        if let Some(h) = hasta {
+            campos.push(("end", Json::s(h)));
+        }
+    }
+    campos.push((
+        "proyeccion",
+        Json::Obj(
+            r.columnas
+                .iter()
+                .map(|(campo, col)| (campo.clone(), Json::s(col)))
+                .collect(),
         ),
-        ("filtros", Json::Arr(filtros)),
-    ])
-    .jcs();
+    ));
+    campos.push(("filtros", Json::Arr(filtros)));
+    let peticion = Json::obj(campos).jcs();
 
     lector::ejecutar(
         &format!("ore-read-{tipo}"),
