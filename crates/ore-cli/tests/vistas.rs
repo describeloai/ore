@@ -418,45 +418,37 @@ fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
 }
 
 
-/// **`ore view` contesta, por vista, si se escribe a través de ella.**
+/// **Espejo o registro se decide por vista, y `ore view` lo enseña.**
 ///
-/// Es el «listo cuando» de la cara `W`, y son tres respuestas porque hay tres
-/// situaciones distintas y solo una es un error de compilación:
+/// El «listo cuando» de la Decisión B del
+/// [ADR 0018](../../../docs/decisions/0018-la-ontologia-es-el-sistema-de-registro.md), y son tres
+/// situaciones sobre **la misma vista**: lo único que cambia entre ellas es si
+/// hay una función que escriba por ahí y si la vista lo sostiene.
 ///
-/// 1. la tabla **no acepta** `update` — y entonces una función sobre ella no
-///    compila, `OOS7012`;
-/// 2. la acepta y la vista **expone la clave** — se escribe;
-/// 3. la acepta y la vista **no expone la clave** — y esto es lo que ninguna
-///    otra salida dice: la tabla cumple `OOS2024`, la vista es legal, el
-///    paquete compila, y aun así por **esta** vista no se puede entrar porque
-///    nada identifica la fila. Se descubre mirando, no fallando.
-///
-/// Las tres sobre la misma tabla, para que lo único que varíe sea lo que se
-/// afirma.
+/// La primera es la que más dice: una vista que nadie escribe **no enseña nada**
+/// sobre escritura, porque no hay nada que contestar. Presentar un «no» sobre
+/// ella sería enseñar un defecto donde solo hay un espejo — que es exactamente
+/// lo que hacía la versión anterior de esta prueba, cuando la pregunta era «¿la
+/// tabla acepta `update`?» y se le hacía a todo el mundo.
 #[test]
-fn ore_view_dice_por_vista_si_se_escribe_a_traves_de_ella() {
-    let tabla = |writes: &str| {
+fn espejo_o_registro_se_decide_por_vista() {
+    let tabla = |clave: bool| {
         format!(
             "apiVersion: oos.dev/v1alpha8\n\
              kind: Table\n\
              metadata: {{ name: employees, namespace: erp }}\n\
              spec:\n  \
                datasource: erp\n  \
-               object: \"public.employees\"\n  \
+               object: 'public.employees'\n  \
                columns:\n    \
-                 employee_id: {{ physicalType: \"varchar(16)\" }}\n    \
-                 country:     {{ physicalType: \"char(2)\" }}\n  \
+                 employee_id: {{ physicalType: 'varchar(16)' }}\n    \
+                 status: {{ physicalType: 'varchar(16)' }}\n  \
                reads: {{ predicatePushdown: [eq], fullScan: cheap }}\n  \
-               changes: {{ mode: retract, witness: log{} }}\n\
-             {writes}\n",
-            if writes.is_empty() {
-                ""
-            } else {
-                ", key: [employee_id]"
-            }
+               changes: {{ mode: retract, witness: log{} }}\n",
+            if clave { ", key: [employee_id]" } else { "" }
         )
     };
-    let vista = |campos: &str| {
+    let vista = |materializada: bool| {
         format!(
             "apiVersion: oos.dev/v1alpha8\n\
              kind: View\n\
@@ -464,70 +456,117 @@ fn ore_view_dice_por_vista_si_se_escribe_a_traves_de_ella() {
              spec:\n  \
                owner: team:rrhh\n  \
                from: {{ table: erp.employees }}\n  \
-               fields:\n{campos}"
+               fields:\n    \
+                 id: employee_id\n    \
+                 estado: status\n{}",
+            if materializada {
+                "  materialized: { datasource: lago, table: 'cache.hr' }\n"
+            } else {
+                ""
+            }
         )
     };
-    const CON_CLAVE: &str = "    id: employee_id\n    pais: country\n";
-    const SIN_CLAVE: &str = "    pais: country\n";
+    const ENTIDAD: &str = "apiVersion: oos.dev/v1alpha1\n\
+                           kind: Entity\n\
+                           metadata: { name: Employee, namespace: hr }\n\
+                           spec:\n  \
+                             nature: entity\n  \
+                             primaryKey: [id]\n  \
+                             backedBy: hr.empleados\n  \
+                             properties:\n    \
+                               id: { type: String }\n    \
+                               estado:\n      \
+                                 type: String\n      \
+                                 labels: { acme.assurance: reviewed }\n";
+    const RETICULO: &str = "apiVersion: oos.dev/v1alpha2\n\
+                            kind: Lattice\n\
+                            metadata: { name: assurance, namespace: acme }\n\
+                            spec: { axis: integrity, levels: [untrusted, reviewed] }\n";
+    const CONDUCTO: &str = "apiVersion: oos.dev/v1alpha1\n\
+                            kind: ConduitPolicy\n\
+                            metadata: { name: hr }\n\
+                            spec:\n  \
+                              owner: team:security\n  \
+                              conduits: { materialization.payload: { acme.assurance: reviewed } }\n";
+    const FUNCION: &str = "apiVersion: oos.dev/v1alpha8\n\
+                           kind: Function\n\
+                           metadata: { name: activar, namespace: hr }\n\
+                           spec:\n  \
+                             runtime: wasm\n  \
+                             entrypoint: dist/a.wasm\n  \
+                             effects: [{ writes: hr.Employee.estado, to: 'ACTIVO' }]\n  \
+                             endorsements: [{ endorser: attested, attestation: a.jsonl }]\n";
+    let config = CONFIG.replace(
+        "datasources:",
+        "datasources:\n  - { name: lago, type: iceberg, connectionEnv: LAGO_URL }",
+    );
 
-    // 1 · la tabla se calla, y callarse es negarse.
+    // 1 · nadie escribe: es un espejo, y no se le pregunta nada.
     let dir = paquete(
-        "escritura-muda",
+        "espejo",
         &[
-            ("ontology.config.yaml", CONFIG),
+            ("ontology.config.yaml", &config),
             ("package.yaml", PAQUETE),
-            ("tables/employees.yaml", &tabla("")),
-            ("views/empleados.yaml", &vista(CON_CLAVE)),
+            ("tables/employees.yaml", &tabla(true)),
+            ("views/empleados.yaml", &vista(false)),
         ],
     );
-    let (ok, out, _) = ver(&dir);
-    assert!(ok, "{out}");
-    assert!(out.contains("writes: none"), "las caras:\n{out}");
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
     assert!(
-        out.contains("escritura no · la tabla no declara `writes`"),
+        !out.contains("escritura"),
+        "una vista que nadie escribe no tiene nada que contestar:\n{out}"
+    );
+    assert!(out.contains("flujo     virtual"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 2 · alguien escribe y la vista lo sostiene: es un registro.
+    let dir = paquete(
+        "registro",
+        &[
+            ("ontology.config.yaml", &config),
+            ("package.yaml", PAQUETE),
+            ("tables/employees.yaml", &tabla(true)),
+            ("views/empleados.yaml", &vista(true)),
+            ("entities/Employee.yaml", ENTIDAD),
+            ("lattices/assurance.yaml", RETICULO),
+            ("conduits.yaml", CONDUCTO),
+            ("functions/activar.yaml", FUNCION),
+        ],
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    assert!(
+        out.contains("escritura sí · sobre la copia · identifica por employee_id"),
         "{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
-    // 2 · acepta, y la vista expone con qué identificar la fila.
+    // 3 · alguien escribe y la vista es virtual: no compila. `OOS2025`.
     let dir = paquete(
-        "escritura-si",
+        "sin-donde",
         &[
-            ("ontology.config.yaml", CONFIG),
+            ("ontology.config.yaml", &config),
             ("package.yaml", PAQUETE),
-            (
-                "tables/employees.yaml",
-                &tabla("  writes: [insert, update, delete]"),
-            ),
-            ("views/empleados.yaml", &vista(CON_CLAVE)),
+            ("tables/employees.yaml", &tabla(true)),
+            ("views/empleados.yaml", &vista(false)),
+            ("entities/Employee.yaml", ENTIDAD),
+            ("lattices/assurance.yaml", RETICULO),
+            ("conduits.yaml", CONDUCTO),
+            ("functions/activar.yaml", FUNCION),
         ],
     );
-    let (ok, out, _) = ver(&dir);
-    assert!(ok, "{out}");
+    let s = std::process::Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("validate")
+        .arg(&dir)
+        .output()
+        .expect("no se pudo invocar `ore`");
+    let err = String::from_utf8_lossy(&s.stderr).to_string();
+    assert!(!s.status.success(), "tenía que negarse");
+    assert!(err.contains("OOS2025"), "{err}");
     assert!(
-        out.contains("escritura sí · insert, update, delete · identifica por employee_id"),
-        "{out}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-
-    // 3 · acepta, pero por ESTA vista no se entra. Compila igual.
-    let dir = paquete(
-        "escritura-sin-clave",
-        &[
-            ("ontology.config.yaml", CONFIG),
-            ("package.yaml", PAQUETE),
-            (
-                "tables/employees.yaml",
-                &tabla("  writes: [insert, update, delete]"),
-            ),
-            ("views/empleados.yaml", &vista(SIN_CLAVE)),
-        ],
-    );
-    let (ok, out, _) = ver(&dir);
-    assert!(ok, "la vista es legal y el paquete compila:\n{out}");
-    assert!(
-        out.contains("escritura no · la vista no expone `employee_id`"),
-        "{out}"
+        err.contains("la ontología escribe por `hr.empleados`, que es virtual"),
+        "{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

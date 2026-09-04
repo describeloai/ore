@@ -165,7 +165,8 @@ codes! {
     // columna de tiempo es legitimo y existe; lo que no se puede es mantener una
     // copia suya incrementalmente.
     Oos2023 = "OOS2023", Reference, "una copia fechada por columna sin clave con la que deduplicar no se mantiene";
-    Oos2024 = "OOS2024", Reference, "una tabla que acepta update o delete no declara changes.key";
+    Oos2024 = "OOS2024", Reference, "la raiz de una vista escribible no declara changes.key";
+    Oos2025 = "OOS2025", Reference, "una vista por la que la ontologia escribe no se materializa";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -273,8 +274,18 @@ codes! {
     // clave desconocida, que ya tiene código.
     Oos7009 = "OOS7009", Effect, "estrategia probabilística sin conducto declarado";
     Oos7011 = "OOS7011", Effect, "integridad por encima del techo de la estrategia";
-    Oos7012 = "OOS7012", Effect, "efecto sobre una tabla que no acepta update";
-    Oos7013 = "OOS7013", Effect, "efecto a traves de una vista que no se puede invertir";
+    // OOS7012 · RETIRADO por el ADR 0018, y mas rapido que el 7010: existia
+    // para «un efecto sobre una tabla que no acepta update», y duro lo que
+    // tardo en decidirse que LA ESCRITURA NO LLEGA A LA TABLA. La pregunta
+    // desaparecio con su destinatario.
+    //
+    // OOS7013 · RESERVADO, no retirado. Escribir aterriza en la copia, que
+    // guarda el vocabulario de la vista, asi que un edit cae DENTRO de `Q` y no
+    // hay nada que invertir. Es la primera regla del producto que escribe de
+    // vuelta en los origenes, que es otro. Se queda registrado con el
+    // precedente de `OOS2001`, que v1alpha1 reservo sin poder alcanzarlo, y su
+    // maquina —`vistas::invertible` y su censo— sigue construida y ejercida.
+    Oos7013 = "OOS7013", Effect, "efecto a traves de una vista que no se puede invertir · reservado";
 
     // ── OOS8xxx · gobierno ──────────────────────────────────────────────────
     //
@@ -342,6 +353,7 @@ mod tests {
             Code::Oos2022,
             Code::Oos2023,
             Code::Oos2024,
+            Code::Oos2025,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,
@@ -365,7 +377,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            12,
+            11,
             "borrador de efectos"
         );
         assert_eq!(

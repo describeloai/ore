@@ -79,6 +79,9 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
     let restricciones = crate::registro::restricciones(&pkg);
     let cambios = cambios_por_fuente(&pkg);
+    // Por qué vistas escribe la ontología. Del paquete entero y una sola vez:
+    // se deriva de las funciones, no de la vista.
+    let escritas = vistas::escritas(&pkg);
 
     let mut fugas = 0usize;
     let mut degradadas = 0usize;
@@ -114,7 +117,13 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
             {
                 println!("  caras     {}", caras(tabla));
                 println!("            {}", raiz_de_lectura(&pkg, v, tabla));
-                println!("  escritura {}", escritura(tabla, &r));
+            }
+            // Y si la ontología escribe por aquí. Fuera del `if` de arriba a
+            // propósito: esto no depende de que la raíz sea una `Table`, y
+            // enseñarlo solo cuando alguien escribe evita presentar como
+            // defecto lo que en una vista de solo lectura es correcto.
+            if escritas.contains(&qn) {
+                println!("  escritura {}", escritura(&pkg, v, &r));
             }
         }
 
@@ -419,48 +428,26 @@ fn caras(tabla: &Loaded) -> String {
         }
     }
 
-    // La cara `W`. Se enseña siempre, incluida su ausencia, porque la ausencia
-    // ES la respuesta: una tabla que no declara `writes` no se escribe, igual
-    // que una con `reads: none` no se consulta. Callarla dejaría a quien mira
-    // sin distinguir «no acepta nada» de «no lo he mirado».
-    let ops = ore_core::document::escrituras(tabla.section("writes"));
-    partes.push(format!(
-        "writes: {}",
-        if ops.is_empty() {
-            "none".to_string()
-        } else {
-            ops.join(", ")
-        }
-    ));
     partes.join(" · ")
 }
 
-/// Si se puede escribir a través de esta vista, y por qué no cuando no.
+/// Si la ontología escribe por esta vista, y si la vista lo sostiene.
 ///
-/// **Mira la raíz, no la raíz de lectura**, y esa es toda la diferencia con la
-/// línea de arriba: una copia es una respuesta cacheada, y escribir en ella
-/// sería contradecir al origen hasta el refresco siguiente. La copia es
-/// derivada; el origen es la verdad.
+/// **No mira la tabla**, y eso es lo que cambió con el ADR 0018: el puntero es
+/// de solo lectura y no se le pregunta nada. Lo que decide es si la vista tiene
+/// dónde sostener una edición —`materialized`— y si hay con qué identificar la
+/// fila que toca —`changes.key` de su raíz—.
 ///
-/// Tres respuestas, y la tercera es la que sirve de algo: la tabla puede
-/// aceptar `update` y aun así esta vista no valer, porque no expone las
-/// columnas con las que se identifica la fila. Eso no es un error de
-/// compilación —la tabla cumple `OOS2024` y la vista es legal— pero es
-/// exactamente lo que alguien necesita saber antes de escribir una función.
-fn escritura(tabla: &Loaded, r: &vistas::Raiz) -> String {
-    let ops = ore_core::document::escrituras(tabla.section("writes"));
-    if !ops.iter().any(|o| o == "update") {
-        return format!(
-            "no · la tabla {}",
-            if ops.is_empty() {
-                "no declara `writes`".to_string()
-            } else {
-                format!("solo acepta `{}`", ops.join("`, `"))
-            }
-        );
-    }
-    let clave: Vec<String> = tabla
-        .section("changes")
+/// Y solo se enseña cuando alguien escribe: una vista que nadie escribe no
+/// tiene nada que contestar aquí, y decir «no» sobre ella sería enseñar un
+/// defecto donde solo hay un espejo.
+fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
+    let materializada = v.section("materialized").is_some();
+    let clave: Vec<String> = r
+        .tabla
+        .as_deref()
+        .and_then(|qn| pkg.table(qn))
+        .and_then(|t| t.section("changes"))
         .and_then(|c| c.get("key"))
         .map(|(_, k)| {
             k.items()
@@ -470,24 +457,15 @@ fn escritura(tabla: &Loaded, r: &vistas::Raiz) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    let expuestas: Vec<&String> = r.columnas.values().collect();
-    let fuera: Vec<&String> = clave.iter().filter(|c| !expuestas.contains(c)).collect();
-    if fuera.is_empty() {
-        format!(
-            "sí · {} · identifica por {}",
-            ops.join(", "),
-            clave.join(", ")
-        )
-    } else {
-        format!(
-            "no · la vista no expone {}, que es con lo que `{}` identifica una fila",
-            fuera
-                .iter()
-                .map(|c| format!("`{c}`"))
-                .collect::<Vec<_>>()
-                .join(" ni "),
-            tabla.qname().unwrap_or_default()
-        )
+
+    match (materializada, clave.is_empty()) {
+        (true, false) => format!("sí · sobre la copia · identifica por {}", clave.join(", ")),
+        (false, _) => "no · la vista es virtual y no tiene dónde sostener una edición · OOS2025"
+            .to_string(),
+        (true, true) => format!(
+            "no · `{}` no declara `changes.key`, así que nada dice qué fila toca un edit · OOS2024",
+            r.tabla.as_deref().unwrap_or("la raíz")
+        ),
     }
 }
 

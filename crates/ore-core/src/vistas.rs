@@ -362,6 +362,39 @@ const NEUTRAS: &[&str] = &["owner", "freshness", "materialized"];
 /// | `where` | recortar es invertible: la fila escrita cumple el predicado, o se cae de la vista |
 const INVERTIBLES: &[&str] = &["from", "fields", "where"];
 
+/// **Por qué vistas escribe la ontología.** Derivado, nunca declarado.
+///
+/// Existe una `Function` con un `effect` sobre una propiedad de una entidad, y
+/// esa entidad se respalda de esta vista. Es el mismo camino que recorre la
+/// lectura, leído al revés, y por eso *por dónde se lee* y *por dónde se
+/// escribe* no pueden divergir.
+///
+/// Es el sujeto de `OOS2024` y `OOS2025`, y es lo que hace que **ser espejo o
+/// ser registro se decida por vista**: la misma vista, sin una función que la
+/// escriba, compila virtual y refleja el origen exactamente.
+pub fn escritas(pkg: &Package) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for f in pkg.docs.iter().filter(|d| d.kind == Kind::Function) {
+        for e in f.section("effects").map(|n| n.items()).unwrap_or(&[]) {
+            let Some(qn) = e.get("writes").and_then(|(_, v)| v.as_str()) else {
+                continue;
+            };
+            let Some((entidad_qn, _)) = qn.rsplit_once('.') else {
+                continue;
+            };
+            let Some(entidad) = pkg.entity(entidad_qn) else {
+                continue;
+            };
+            if let Some(v) = respaldo(pkg, entidad)
+                && let Some(vqn) = v.qname()
+            {
+                out.insert(vqn);
+            }
+        }
+    }
+    out
+}
+
 /// Si se puede escribir a través de esta vista.
 ///
 /// # Por qué hoy no puede fallar, y aun así está
@@ -682,6 +715,9 @@ fn no_es_columna(
 /// Las comprobaciones de enlazado de las tablas, las vistas y `backedBy`.
 pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let declarados = datasources_declarados(pkg);
+    // Qué vistas escribe la ontología. Se calcula una vez: es del paquete
+    // entero, no de cada vista.
+    let escritas_por_la_ontologia = escritas(pkg);
 
     // ── Las tablas ──────────────────────────────────────────────────────────
     //
@@ -736,47 +772,6 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             }
         }
 
-        // OOS2024 · la cara `W` exige con qué identificar la fila.
-        //
-        // `insert` no la necesita: no señala a nada que ya esté. `update` y
-        // `delete` sí, y sin ella *«actualiza esta fila»* no nombra ninguna —
-        // es un `UPDATE` sin `WHERE`, que no es una escritura parcial sino un
-        // accidente. La clave es `changes.key` y no una propia: un segundo
-        // sitio diciendo lo mismo es el defecto que la tabla vino a corregir.
-        let ops = crate::document::escrituras(tabla.section("writes"));
-        let necesita: Vec<&str> = ops
-            .iter()
-            .filter(|o| *o == "update" || *o == "delete")
-            .map(String::as_str)
-            .collect();
-        if !necesita.is_empty()
-            && tabla
-                .section("changes")
-                .and_then(|c| c.get("key"))
-                .is_none()
-        {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos2024,
-                    &tabla.path,
-                    format!(
-                        "`{tqn}` acepta `{}` y no declara `changes.key`",
-                        necesita.join("` y `")
-                    ),
-                )
-                .at(tabla
-                    .section("writes")
-                    .map_or_else(|| tabla.root.pos(), |w| w.pos()))
-                .help(
-                    "sin clave, `update` no dice qué fila cambia y `delete` no dice cuál \
-                     retira. Declara `changes.key` con las columnas que identifican una fila \
-                     —es la misma que hace fundible un incremento, y por eso no hay una \
-                     segunda—, o deja en `writes` solo `insert`, que no señala a nada que ya \
-                     esté",
-                ),
-            );
-        }
-
         // OOS2018 · un filtro exigido que no es columna no lo puede poner nadie.
         // Cambia de sujeto respecto al binding, donde eran PROPIEDADES: lo exige
         // el origen, y el origen habla de columnas.
@@ -801,6 +796,66 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
 
     for v in pkg.of(Kind::View) {
         let qn = v.qname().unwrap_or_default();
+
+        // ── OOS2025 · lo que se escribe se debe materializar ────────────────
+        //
+        // El gemelo exacto de `OOS2020` leído por el otro lado. Una vista
+        // virtual es una pregunta que se hace al origen cada vez: no tiene
+        // estado, así que no tiene dónde sostener una edición — y el origen no
+        // se toca, porque el puntero es de solo lectura (ADR 0018).
+        //
+        // Y es lo que decide si una vista es ESPEJO o REGISTRO, por vista y no
+        // por producto: sin una función que la escriba, esta misma vista
+        // compila virtual y refleja el origen exactamente.
+        if escritas_por_la_ontologia.contains(&qn) {
+            if v.section("materialized").is_none() {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2025,
+                        &v.path,
+                        format!("la ontología escribe por `{qn}`, que es virtual"),
+                    )
+                    .at(v.root.pos())
+                    .help(
+                        "una vista virtual no tiene dónde sostener una edición, y el origen no \
+                         se toca: el puntero es de solo lectura. Declara `materialized` con la \
+                         fuente y la tabla donde vive la copia — es el gemelo de `OOS2020`, que \
+                         exige lo mismo cuando lo que no se puede es leer",
+                    ),
+                );
+            }
+            // ── OOS2024 · y con qué se identifica la fila que toca un edit ──
+            //
+            // Remedio distinto que el de arriba —aquél se arregla en la vista,
+            // este en la tabla— y por eso son dos códigos y no uno.
+            if let Ok(r) = raiz(pkg, v)
+                && let Some(tqn) = r.tabla.as_deref()
+                && let Some(tabla) = pkg.table(tqn)
+                && tabla
+                    .section("changes")
+                    .and_then(|c| c.get("key"))
+                    .is_none()
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2024,
+                        &tabla.path,
+                        format!(
+                            "la ontología escribe por `{qn}`, y su raíz `{tqn}` no declara \
+                             `changes.key`"
+                        ),
+                    )
+                    .at(tabla.root.pos())
+                    .help(
+                        "un edit dice «la propiedad tal de la fila tal»; sin clave, «la fila \
+                         tal» no nombra ninguna. Declara `changes.key` con las columnas que \
+                         identifican una fila — es la misma que hace fundible un incremento y \
+                         la misma que retira un tombstone, y por eso no hay una segunda",
+                    ),
+                );
+            }
+        }
+
         let Some(from) = v.section("from") else {
             continue;
         };

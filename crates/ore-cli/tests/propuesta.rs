@@ -84,7 +84,8 @@ const CONFIG: &str = "apiVersion: oos.dev/v1alpha1\n\
                       kind: OntologyConfig\n\
                       metadata: { name: f1, version: 0.1.0 }\n\
                       datasources:\n  \
-                        - { name: erp, type: postgres, connectionEnv: ERP_URL }\n";
+                        - { name: erp, type: postgres, connectionEnv: ERP_URL }\n  \
+                        - { name: lago, type: iceberg, connectionEnv: LAGO_URL }\n";
 
 const PAQUETE: &str = "apiVersion: oos.dev/v1alpha1\n\
                        kind: Package\n\
@@ -102,8 +103,7 @@ const TABLA: &str = "apiVersion: oos.dev/v1alpha8\n\
                          country: { physicalType: 'char(2)' }\n    \
                          status: { physicalType: 'varchar(16)' }\n  \
                        reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
-                       changes: { mode: retract, witness: log, key: [employee_id] }\n  \
-                       writes: [insert, update, delete]\n";
+                       changes: { mode: retract, witness: log, key: [employee_id] }\n";
 
 const ENTIDAD: &str = "apiVersion: oos.dev/v1alpha1\n\
                        kind: Entity\n\
@@ -139,6 +139,10 @@ const FUNCION: &str = "apiVersion: oos.dev/v1alpha8\n\
                            - endorser: attested\n      \
                              attestation: attestations/activar.intoto.jsonl\n";
 
+/// La vista **se materializa**, y no es un detalle del fixture: desde el
+/// [ADR 0018] una vista por la que la ontología escribe tiene que tener dónde
+/// sostener la edición — `OOS2025`. Sin esto el paquete no compila, que es
+/// justo lo que la regla existe para conseguir.
 fn vista(campos: &str) -> String {
     format!(
         "apiVersion: oos.dev/v1alpha8\n\
@@ -147,9 +151,19 @@ fn vista(campos: &str) -> String {
          spec:\n  \
            owner: team:rrhh\n  \
            from: {{ table: erp.employees }}\n  \
-           fields:\n{campos}"
+           fields:\n{campos}  \
+           materialized: {{ datasource: lago, table: 'cache.hr_empleados' }}\n"
     )
 }
+
+const CONDUCTO: &str = "apiVersion: oos.dev/v1alpha1\n\
+                        kind: ConduitPolicy\n\
+                        metadata: { name: hr }\n\
+                        spec:\n  \
+                          owner: team:security\n  \
+                          conduits:\n    \
+                            materialization.payload:\n      \
+                              acme.assurance: reviewed\n";
 
 const CAMPOS: &str = "    employeeId: employee_id\n    pais: country\n    estado: status\n";
 
@@ -161,6 +175,7 @@ fn arbol(vista_txt: &str) -> Vec<(&'static str, String)> {
         ("views/empleados.yaml", vista_txt.to_string()),
         ("entities/Employee.yaml", ENTIDAD.to_string()),
         ("lattices/assurance.yaml", RETICULO.to_string()),
+        ("conduits.yaml", CONDUCTO.to_string()),
         ("functions/activar.yaml", FUNCION.to_string()),
     ]
 }
