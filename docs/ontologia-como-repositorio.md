@@ -336,13 +336,88 @@ rutas siguen siendo relativas. Y si algún día la lista nombrara una vista de u
 —como hace Cognite—, la maquinaria para eso ya existe y es `dependencies` + el lock por digest.
 **Compone en vez de chocar.**
 
-### 7.2 · Lo que sí destapó y no es de este asunto
+### 7.2 · La respuesta, entonces
 
-`ore pack` sobre la raíz de un workspace de dos miembros escribió **un solo `.oob` llamado `infra`
-que contiene `Package:infra` y `Package:rrhh` a la vez**. Un paquete publicable que lleva dentro el
-manifiesto de otro es un artefacto que no debería existir, y su digest afirma una identidad —`infra`
-1.0.0— sobre un contenido que no es el suyo. **No es parte de esta pregunta y hay que mirarlo
-aparte.**
+> **Sí: un paquete debe ser de facto un conjunto de vistas, y declararlo es lo que hace que lo
+> sea.** Hoy no lo es ni de hecho ni de derecho — es un directorio, y la costura que parecía cerrada
+> la cierra un mensaje de error tardío que además nombra lo que no es.
+
+Y sale barato, que es lo raro cuando algo es además lo natural: **no hace falta un `kind` nuevo, ni
+tocar el digest, ni prohibir la disposición por directorio** — que puede seguir siendo el defecto,
+igual que `packages/*` es hoy el defecto de `workspace.members`. Lo que cambia es que deja de ser lo
+único.
+
+---
+
+## 8. Y lo que destapó por el camino: la materia de `ore pack`
+
+Medido en [`empaquetar.rs:354`](../crates/ore-cli/src/empaquetar.rs:354):
+
+```rust
+fn identidad(pkg: &Package) -> Result<(String, String), Fallo> {
+    let d = pkg.docs.iter().find(|d| d.kind == Kind::Package)  // ← el PRIMERO
+```
+
+**`identidad()` supone que hay exactamente un `Package` y coge el primero, sin comprobar si hay
+otro.** De ahí sale todo lo demás.
+
+### 8.1 · La identidad la decide el orden del directorio
+
+El mismo árbol, con el miembro dependiente renombrado de `rrhh` a `aaa` y nada más:
+
+```text
+packages/{infra, rrhh}   ->   .oob dice  package: infra   sha256:fd94b8c2…
+packages/{infra, aaa}    ->   .oob dice  package: aaa     sha256:c8486c86…
+```
+
+**Renombrar una carpeta cambia el nombre que el paquete afirma de sí mismo**, sin tocar una sola
+definición. Y `01-distribucion` §2 está escrito contra exactamente esto:
+
+> *«`package` y `version` **DEBEN** estar, y son la identidad que el fichero **declara**. **Un
+> fichero renombrado es un fichero que miente**, así que la identidad va dentro.»*
+
+La identidad va dentro para que renombrar el fichero no pueda mentir. Lo que no se previó es que
+**renombrar un directorio cambia la identidad de dentro.** El mismo fallo, por una puerta que la
+regla no cubría.
+
+### 8.2 · Y el digest es honrado, que es lo que hace esto sutil
+
+Los dos digests son distintos, y **correctamente**: el contenido cambió —el manifiesto ajeno que
+viaja dentro cambió de nombre—. El digest nunca miente sobre el contenido.
+
+> **Lo que miente es la coordenada.** `usar(P) ⟹ digest(P) ∈ lock` garantiza *«recibiste lo que el
+> lock nombra»*; no garantiza *«lo que el lock nombra es un paquete»*. La regla se cumple y aun así
+> deja pasar un `.oob` que dice llamarse `infra` y lleva dentro el manifiesto de `rrhh` con todos
+> sus documentos.
+
+### 8.3 · La maquinaria correcta ya existe, y `pack` no la usa
+
+| | ¿respeta los miembros? |
+|---|---|
+| `lock` · [`candado.rs:269`](../crates/ore-cli/src/candado.rs:269) | **sí** — `miembros()` devuelve un mapa |
+| verificación de sobres · [`sync.rs:105`](../crates/ore-core/src/sync.rs:105) | **sí** — `publicables(&solo(pkg, &miembros, fichero))` |
+| `pack` · [`empaquetar.rs:358`](../crates/ore-cli/src/empaquetar.rs:358) | **no** — el primero |
+| `dev` (MCP) · [`mcp.rs:61`](../crates/ore-cli/src/mcp.rs:61) | **no** — el primero, misma línea |
+
+`sync` ya compone las dos piezas en el orden bueno: **acota al miembro y luego filtra.** `pack`
+filtra sin acotar. Son **dos** sitios con la suposición, no uno.
+
+Y [`publicables()`](../crates/ore-core/src/link.rs:117) quita el `OntologyConfig` y el lock **pero
+no otros `Package`** — se escribió para el caso de un paquete solo.
+
+### 8.4 · Por qué no lo cogió ningún test
+
+`crates/ore-cli/tests/empaquetar.rs` tiene **`el_manifiesto_del_workspace_no_viaja()`**. O sea: ya
+nos preguntamos una vez si un manifiesto que no es del paquete se cuela en la publicación, dijimos
+que no debe, y lo dejamos comprobado.
+
+> **Lo que falta es su hermano: `el_manifiesto_de_otro_paquete_no_viaja`.** Misma clase de error,
+> uno cazado y otro no, y ningún test de `pack` monta dos miembros.
+
+**No es parte de la pregunta de este documento** — se anota aquí porque salió midiéndola, y porque
+la corrección tiene forma conocida: usar `solo(pkg, &miembros, sitio)` como ya hace `sync`, y decidir
+qué debe hacer `pack` apuntado a una raíz con varios miembros —empaquetar cada uno, o negarse—, que
+es la única parte que no está decidida.
 
 ---
 
