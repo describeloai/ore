@@ -712,3 +712,103 @@ vista, el diseño se ha torcido y hay que parar.
   llama igual.
 - **Cuándo.** Primero se trabaja el sustrato — materializar de verdad, contra fuentes reales. La
   abstracción se abre después, y este documento es donde se retoma.
+
+---
+
+## 8. El claim, y por qué invierte el defecto de la industria
+
+Seis reglas de este documento y de los ADR dicen lo mismo con seis sujetos distintos:
+
+| | lo que se debe materializar |
+|---|---|
+| `OOS2020` | lo que **no se puede leer** |
+| `OOS2025` | lo que se **escribe** |
+| `OOS2026` · propuesta | lo que se **atraviesa** |
+| *el del residuo* · propuesta | lo que no se puede **empujar** |
+| *el de la junta* · propuesta | lo que se **une** — los dos lados |
+| *el de servir* · propuesta | lo que se **sirve** |
+
+Y las seis se dejan decir en una:
+
+> ### El sustrato responde desde la copia. El origen se lee **para hacerla**, no para contestar.
+
+### 8.1 · Eso es lo contrario de lo que hace la virtualización, y hay que decirlo
+
+**Denodo** —el referente del sector— es explícito: su módulo de materialización *«está pensado para
+**complementar** un enfoque virtual-first, no para reemplazarlo»*, y materializa como excepción,
+para *«fuentes lentas, sistemas heredados, servicios web o APIs con límite de peticiones»*.
+**Trino** no tiene caché propia. **Cube** tiene las dos cosas: sus *pre-aggregations* son rollups
+materializados con *aggregate awareness* que enrutan la consulta *«en vez de ir a la fuente»*, y el
+*query pushdown* es un mecanismo **aparte**.
+
+O sea: **virtual por defecto, materializar cuando duele.** Nosotros proponemos lo contrario, y una
+inversión así necesita una razón que no sea el gusto.
+
+### 8.2 · La razón, y es estructural
+
+Es una sola frase y se puede comprobar:
+
+> **La virtualización materializa como excepción porque no sabe qué le van a preguntar. Una
+> ontología sí lo sabe: una vista ES la pregunta, declarada.**
+
+Denodo recibe SQL arbitrario y no puede materializar lo que no ha visto todavía, así que su defecto
+tiene que ser federar. Aquí el conjunto de preguntas está **cerrado y escrito en el paquete**:
+`backedBy` nombra una vista, y una vista declara `from`, `fields` y `where`. Materializar lo
+declarado no es una limitación — **es lo que tener declaraciones compra**.
+
+Y hay una convergencia que no se buscó: **el mismo recorte del vocabulario que hace posible
+escribir** —renombrar, recortar, proyectar, el fragmento invertible de §3.0— **es el que hace
+finito el conjunto de consultas**. Una restricción, dos beneficios que no se pidieron juntos.
+
+### 8.3 · Y la ley del ejecutor, dicha por la industria
+
+`05-ejecutor` §2 dijo en v1alpha1 que un motor **no debe compensar** lo que la fuente no sabe hacer,
+porque acabaría siendo *«un almacén de datos mediocre además de un motor de ontologías»*. La
+industria de la virtualización llegó a la misma frase por su cuenta:
+
+> *«El pushdown es la característica de diseño **más consecuente** de un motor de virtualización;
+> sin él, cada consulta degenera en traerse todos los datos de la fuente al motor y filtrarlos allí,
+> lo que **no escala más allá de una demostración**.»*
+
+**El principio se valida.** Lo que cambia entre ellos y nosotros es la salida cuando el pushdown no
+alcanza: **Denodo compensa** con su propio motor federado —*«las juntas entre fuentes que no se
+pueden empujar se ejecutan en el motor federado de Denodo»*— y **nosotros materializamos**. Ellos
+pueden compensar porque **son** un motor de consultas; nosotros decidimos no serlo, y
+`dependencias.rs` lo hace cumplir leyendo el `Cargo.lock`.
+
+### 8.4 · Y en nuestra propia categoría, la ontología, ya es el estándar
+
+Los dos que hacen esto no son de virtualización:
+
+| | cómo sirve |
+|---|---|
+| **Palantir Foundry** | **nunca desde el puntero**. Los datos se sincronizan a un índice separado —el *Object Data Funnel*— y la ontología se sirve de ahí. Una *virtual table* puede respaldar un tipo de objeto y aun así las ediciones y las lecturas van al índice |
+| **Cognite** | desde el **container**, que es almacenamiento primario. *«Data is not queried directly from the containers»* se refiere a la **view**, que mapea; el dato sale del container |
+| **Cube** | construyó **Cube Store**, un motor OLAP propio en Rust, para servir sus materializaciones |
+
+> **Nadie sirve una ontología desde un puntero.** Los tres tienen almacenamiento propio para
+> servir, y los tres lo construyeron a propósito. Nuestro `ore-store-r2` es la misma pieza.
+
+### 8.5 · Lo que esto **no** valida, y hay que medirlo antes de escribirlo
+
+**Que el defecto se invierta del todo.** Cube y Denodo conservan la vuelta al origen porque una
+materialización puede estar **rancia o no existir**, y esa preocupación es real y también es
+nuestra: por eso hay `freshness` por vista, testigo en el sobre y `raíz de lectura`. La máquina
+para el camino de vuelta **está construida**; lo que está sin decidir es si sigue siendo un derecho
+o pasa a ser una excepción declarada.
+
+**Y el precio no está contado.** Hoy `acme-retail` declara **una** materialización sobre dos
+vistas. Antes de escribir *«lo que se sirve se debe materializar»* hay que contar qué parte del
+corpus deja de compilar — igual que se contó el precio de `OOS2026`, que era **una entidad**.
+
+---
+
+### Fuentes
+
+- [Cube · using pre-aggregations](https://docs.cube.dev/docs/pre-aggregations/using-pre-aggregations) ·
+  [query pushdown](https://cube.dev/blog/query-push-down-in-cubes-semantic-layer)
+- [Denodo · expert trail: materialization](https://community.denodo.com/expert-trails/view/document/Expert%20Trail:%20Materialization) ·
+  [best practices: caching](https://community.denodo.com/kb/en/view/document/Best%20Practices%20to%20Maximize%20Performance%20III%3A%20Caching)
+- [Palantir · object indexing](https://www.palantir.com/docs/foundry/object-indexing/overview) ·
+  [Cognite · containers, views, data models](https://docs.cognite.com/cdf/dm/dm_concepts/dm_containers_views_datamodels)
+
