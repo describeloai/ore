@@ -366,9 +366,15 @@ fn un_oob_que_no_es_el_que_se_pidio_no_se_escribe() {
     std::fs::create_dir_all(&registro).unwrap();
 
     // Se publica OTRO paquete con el nombre de fichero que el obtenedor espera.
+    //
+    // Se REESCRIBE el manifiesto del miembro, no se añade uno en la raíz. La
+    // primera versión hacía lo segundo y funcionaba por el fallo que `pack`
+    // tenía: con dos manifiestos en el árbol se quedaba con uno por orden de
+    // directorio. Ahora se niega, y con razón — lo que este test necesita no es
+    // un árbol de dos paquetes, es un paquete que diga otra cosa.
     let otro = escenario("impostor-otro", "^0.1");
     std::fs::write(
-        otro.join("package.yaml"),
+        otro.join("packages/gdpr/package.yaml"),
         r#"apiVersion: oos.dev/v1alpha1
 kind: Package
 metadata:

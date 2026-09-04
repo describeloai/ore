@@ -55,16 +55,32 @@ impl Contexto {
         Ok(Contexto {
             sdl: ore_core::graphql::emit(pkg)?,
             digest: ore_core::digest::bundle(pkg),
-            paquete: pkg
-                .docs
-                .iter()
-                .find(|d| d.kind == ore_core::document::Kind::Package)
-                .and_then(|d| {
-                    let n = d.meta("name")?.as_str()?.to_string();
-                    let v = d.meta("version")?.as_str()?.to_string();
-                    Some(format!("{n}@{v}"))
-                })
-                .unwrap_or_else(|| "desconocido".into()),
+            // Todos, no el primero. `dev` sirve el contrato del ÁRBOL —el SDL
+            // sale de `graphql::emit(pkg)`, que no acota por miembro— así que
+            // sobre un workspace con varios miembros quedarse con el primero
+            // respondía el nombre de uno a una pregunta sobre todos, y el que
+            // salía lo decidía el orden del directorio.
+            //
+            // Aquí no se puede negar como hace `pack`: un workspace de varios
+            // miembros es entrada legítima del bucle de desarrollo. Lo que se
+            // arregla es la respuesta, no la entrada.
+            paquete: {
+                let coordenadas: Vec<String> = pkg
+                    .docs
+                    .iter()
+                    .filter(|d| d.kind == ore_core::document::Kind::Package)
+                    .filter_map(|d| {
+                        let n = d.meta("name")?.as_str()?.to_string();
+                        let v = d.meta("version")?.as_str()?.to_string();
+                        Some(format!("{n}@{v}"))
+                    })
+                    .collect();
+                if coordenadas.is_empty() {
+                    "desconocido".into()
+                } else {
+                    coordenadas.join(", ")
+                }
+            },
         })
     }
 

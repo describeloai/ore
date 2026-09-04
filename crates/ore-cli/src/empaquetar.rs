@@ -110,11 +110,76 @@ fn intentar(
     }
 
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+
+    // Un árbol con VARIOS miembros no produce un `.oob`: produce uno por
+    // miembro. La primera versión de esto cogía el primer `Package` por orden de
+    // directorio y publicaba un artefacto que decía llamarse como él con el
+    // manifiesto del otro dentro — §8 de `docs/ontologia-como-repositorio.md`.
+    //
+    // Se empaqueta cada uno **en el contexto del workspace** y no yendo a su
+    // directorio, y eso está medido: de los ocho miembros de los cuatro árboles
+    // multipaquete del corpus, apuntar `pack` al directorio de uno falla en
+    // CUATRO —`OOS4003`, `OOS2001`, `OOS2004`— porque el retículo, el concepto
+    // ajeno y los `datasources` viven en la raíz y gobiernan a todos. Negarse
+    // pidiendo que se apunte a un miembro habría sido dar un consejo que no
+    // funciona la mitad de las veces.
+    //
+    // Y es lo coherente con el candado, que es el criterio: su unidad TAMBIÉN es
+    // el árbol entero y direcciona los miembros por nombre.
+    let miembros = ore_core::link::miembros(&pkg);
+    if miembros.len() > 1 {
+        return varios(raiz, &pkg, &miembros, destino, firmar, anotar);
+    }
+
     let publicables = ore_core::link::publicables(&pkg);
     let (nombre, version) = identidad(&pkg)?;
-    sin_fuentes_ajenas(&publicables)?;
+    let (bytes, digest) = sobre_de(&publicables, &nombre, &version, firmar, anotar)?;
 
-    let canonica = ore_core::normalize::package(&publicables);
+    let donde = match destino {
+        None => "-".to_string(),
+        Some(ruta) => escribir(ruta, &bytes)?,
+    };
+
+    let resumen = format!(
+        "  ✓ {donde}\n  · {nombre} {version} · {} documentos · {} bytes\n  · {digest}\n\n\
+         \x20 El digest es el del PAQUETE, no el del fichero: el mismo paquete sin\n\
+         \x20 empaquetar digiere igual, así que el contenedor no cambia la identidad.\n",
+        publicables.docs.len(),
+        bytes.len()
+    );
+    Ok((bytes, resumen))
+}
+
+/// Escribe un `.oob`, creando el directorio que haga falta.
+fn escribir(ruta: &Path, bytes: &str) -> Result<String, Fallo> {
+    if let Some(d) = ruta.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(d)
+            .map_err(|e| fallo(73, format!("no se pudo crear `{}`: {e}", d.display()), &[]))?;
+    }
+    std::fs::write(ruta, bytes).map_err(|e| {
+        fallo(
+            73,
+            format!("no se pudo escribir `{}`: {e}", ruta.display()),
+            &[],
+        )
+    })?;
+    Ok(ruta.display().to_string())
+}
+
+/// El sobre de UN paquete: sus bytes canónicos y su digest.
+///
+/// Se separó al hacer que un árbol de varios miembros produzca un `.oob` por
+/// miembro: lo único que cambia entre uno y otro es qué documentos entran y qué
+/// coordenada declaran, y eso son argumentos.
+fn sobre_de(
+    publicables: &Package,
+    nombre: &str,
+    version: &str,
+    firmar: Option<&str>,
+    anotar: Option<&str>,
+) -> Result<(String, String), Fallo> {
+    sin_fuentes_ajenas(publicables)?;
+    let canonica = ore_core::normalize::package(publicables);
     if canonica.is_empty() {
         return Err(fallo(
             65,
@@ -122,12 +187,13 @@ fn intentar(
             &["  Un `.oob` sin documentos es un fichero que nadie puede importar."],
         ));
     }
-    let digest = ore_core::digest::package(&publicables);
+    let digest = ore_core::digest::package(publicables);
+    let (nombre, version) = (nombre.to_string(), version.to_string());
     let mut campos = vec![
         ("oobVersion", Json::Int(1)),
         ("package", Json::s(&nombre)),
         ("version", Json::s(&version)),
-        ("oos", Json::s(oos_de(&publicables))),
+        ("oos", Json::s(oos_de(publicables))),
         ("documents", Json::Obj(canonica.into_iter().collect())),
     ];
     if let Some(id) = firmar {
@@ -155,35 +221,99 @@ fn intentar(
     let sobre = Json::obj(campos);
     // JCS y no `pretty`: dos productores conformes escriben LOS MISMOS BYTES, y
     // eso es el peldaño 1. Un `.oob` no se lee a mano.
-    let bytes = sobre.jcs();
+    Ok((sobre.jcs(), digest))
+}
 
-    let donde = match destino {
-        None => "-".to_string(),
-        Some(ruta) => {
-            if let Some(d) = ruta.parent().filter(|d| !d.as_os_str().is_empty()) {
-                std::fs::create_dir_all(d).map_err(|e| {
-                    fallo(73, format!("no se pudo crear `{}`: {e}", d.display()), &[])
-                })?;
-            }
-            std::fs::write(ruta, &bytes).map_err(|e| {
-                fallo(
-                    73,
-                    format!("no se pudo escribir `{}`: {e}", ruta.display()),
-                    &[],
-                )
-            })?;
-            ruta.display().to_string()
+/// Un árbol con varios miembros: un `.oob` por cada uno.
+///
+/// Cada uno lleva **todo lo del árbol menos los documentos de los otros
+/// miembros**. Lo que vive en la raíz y no es de nadie —el retículo, el
+/// `Ruleset`, la política de conductos— viaja con todos, porque gobierna a
+/// todos: quitárselo dejaría un `.oob` que no valida en el árbol de quien lo
+/// importe.
+///
+/// Exige `--out`, y ahí es un DIRECTORIO. Sin él no habría dónde poner el
+/// segundo: por stdout solo cabe un artefacto, y concatenarlos daría un fichero
+/// que no es un `.oob`. Los nombres son los que espera quien los trae —
+/// `<último segmento del nombre>-<versión>.oob`, la misma forma que escribe el
+/// candado al vendorizar.
+fn varios(
+    raiz: &Path,
+    pkg: &Package,
+    miembros: &[std::path::PathBuf],
+    destino: Option<&Path>,
+    firmar: Option<&str>,
+    anotar: Option<&str>,
+) -> Result<(String, String), Fallo> {
+    let Some(dir) = destino else {
+        let mut ayuda = vec![
+            "  Por stdout solo cabe un artefacto. Con `-o <directorio>` sale uno por".to_string(),
+            "  miembro, con el nombre que espera quien los trae.".to_string(),
+            "  En el árbol hay:".to_string(),
+        ];
+        for m in miembros {
+            let sitio = m.strip_prefix(raiz).unwrap_or(m).display();
+            ayuda.push(format!("    {sitio}"));
         }
+        return Err(fallo(
+            64, // EX_USAGE
+            format!(
+                "hay {} paquetes en el árbol y no se dijo dónde",
+                miembros.len()
+            ),
+            &ayuda.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
     };
 
-    let resumen = format!(
-        "  ✓ {donde}\n  · {nombre} {version} · {} documentos · {} bytes\n  · {digest}\n\n\
-         \x20 El digest es el del PAQUETE, no el del fichero: el mismo paquete sin\n\
-         \x20 empaquetar digiere igual, así que el contenedor no cambia la identidad.\n",
-        publicables.docs.len(),
-        bytes.len()
+    let mut resumen = String::new();
+    let mut ultimo = String::new();
+    for sitio in miembros {
+        let suyo = solo(pkg, miembros, sitio);
+        let publicables = ore_core::link::publicables(&suyo);
+        let (nombre, version) = identidad(&publicables)?;
+        let (bytes, digest) = sobre_de(&publicables, &nombre, &version, firmar, anotar)?;
+        let fichero = dir.join(format!(
+            "{}-{version}.oob",
+            nombre.rsplit('/').next().unwrap_or(&nombre)
+        ));
+        let donde = escribir(&fichero, &bytes)?;
+        resumen.push_str(&format!(
+            "  ✓ {donde}\n  · {nombre} {version} · {} documentos · {} bytes\n  · {digest}\n",
+            publicables.docs.len(),
+            bytes.len()
+        ));
+        ultimo = bytes;
+    }
+    resumen.push_str(
+        "\n  Un `.oob` por miembro, y ninguno lleva dentro el manifiesto de otro:\n  \
+         la identidad que declara un paquete es la suya.\n",
     );
-    Ok((bytes, resumen))
+    Ok((ultimo, resumen))
+}
+
+/// Los documentos que le tocan a un miembro: los suyos, más los que no son de
+/// ningún miembro.
+///
+/// Es `sync::solo` con la excepción que aquí hace falta: allí se acota un `.oob`
+/// ya importado, que es autocontenido; aquí se acota un miembro de un árbol
+/// vivo, y lo que cuelga de la raíz lo gobierna.
+fn solo(pkg: &Package, miembros: &[std::path::PathBuf], sitio: &Path) -> Package {
+    Package {
+        root: pkg.root.clone(),
+        docs: pkg
+            .docs
+            .iter()
+            .filter(|d| ore_core::link::miembro_de(miembros, &d.path).is_none_or(|m| m == sitio))
+            .map(|d| ore_core::link::Loaded {
+                path: d.path.clone(),
+                kind: d.kind,
+                root: d.root.clone(),
+            })
+            .collect(),
+        cedar: Vec::new(),
+        generated: Vec::new(),
+        sobres: Vec::new(),
+    }
 }
 
 /// El programa que firma, y **no está aquí dentro**.
@@ -351,20 +481,69 @@ fn transparencia(log: &str, key_id: &str, enunciado: &str, firma: &str) -> Resul
     ])]))
 }
 
+/// La coordenada que el `.oob` declara, y **de qué paquete es**.
+///
+/// La primera versión hacía `.find(Kind::Package)` y se quedaba con el primero
+/// sin mirar si había otro. Sobre un workspace de dos miembros eso escribía un
+/// `.oob` que decía llamarse como el primero POR ORDEN DE DIRECTORIO y llevaba
+/// dentro el manifiesto del otro con todos sus documentos: renombrar una carpeta
+/// cambiaba la identidad sin tocar una definición.
+///
+/// Es justo lo que [`01-distribucion`](../../../vendor/oos/spec/v1alpha6/01-distribucion.md)
+/// §2 vino a impedir —*«un fichero renombrado es un fichero que miente, así que
+/// la identidad va dentro»*—, entrando por una puerta que la regla no cubría: la
+/// identidad va dentro, y renombrar el directorio cambiaba la de dentro.
+///
+/// La unidad de `pack` es **el paquete**; la del `lock` es el workspace, y por
+/// eso aquel sí trabaja sobre todos los miembros a la vez —los direcciona por
+/// nombre— mientras que aquí apuntar a una raíz con varios es un error de
+/// categoría. Se contesta como lo contesta el candado cuando no encuentra una
+/// coordenada: diciendo qué hay en el árbol.
 fn identidad(pkg: &Package) -> Result<(String, String), Fallo> {
-    let d = pkg
+    let campo =
+        |d: &ore_core::link::Loaded, k: &str| d.meta(k).and_then(|n| n.as_str()).map(String::from);
+    let manifiestos: Vec<&ore_core::link::Loaded> = pkg
         .docs
         .iter()
-        .find(|d| d.kind == Kind::Package)
-        .ok_or_else(|| {
-            fallo(
-                65,
-                "no hay un `package.yaml` que diga qué paquete es este",
-                &["  Sin identidad no hay coordenada, y sin coordenada nadie puede importarlo."],
-            )
-        })?;
-    let campo = |k: &str| d.meta(k).and_then(|n| n.as_str()).map(String::from);
-    match (campo("name"), campo("version")) {
+        .filter(|d| d.kind == Kind::Package)
+        .collect();
+
+    if manifiestos.len() > 1 {
+        let mut ayuda = vec![
+            "  La unidad de `pack` es el paquete, no el workspace: un `.oob` lleva UNA".to_string(),
+            "  coordenada y una firma. Apunta a un miembro y empaquétalo, o repite el".to_string(),
+            "  mandato por cada uno.".to_string(),
+            "  En el árbol hay:".to_string(),
+        ];
+        for d in &manifiestos {
+            let n = campo(d, "name").unwrap_or_else(|| "?".into());
+            let v = campo(d, "version").unwrap_or_else(|| "?".into());
+            let sitio = d
+                .path
+                .parent()
+                .and_then(|p| p.strip_prefix(&pkg.root).ok().or(Some(p)))
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            ayuda.push(format!("    {n} {v}  ·  {sitio}"));
+        }
+        return Err(fallo(
+            65, // EX_DATAERR
+            format!(
+                "hay {} paquetes en el árbol, y un `.oob` solo puede ser de uno",
+                manifiestos.len()
+            ),
+            &ayuda.iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+    }
+
+    let d = manifiestos.first().ok_or_else(|| {
+        fallo(
+            65,
+            "no hay un `package.yaml` que diga qué paquete es este",
+            &["  Sin identidad no hay coordenada, y sin coordenada nadie puede importarlo."],
+        )
+    })?;
+    match (campo(d, "name"), campo(d, "version")) {
         (Some(n), Some(v)) => Ok((n, v)),
         _ => Err(fallo(
             65,

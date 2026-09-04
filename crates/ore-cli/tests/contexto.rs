@@ -219,3 +219,65 @@ fn sirve_el_mismo_contrato_que_emite_export() {
         );
     }
 }
+
+/// Un workspace de varios miembros se anuncia con **todas** sus coordenadas.
+///
+/// `dev` sirve el contrato del ÁRBOL —el SDL sale de `graphql::emit`, que no
+/// acota por miembro— así que quedarse con el primer `Package` respondía el
+/// nombre de uno a una pregunta sobre todos, y cuál salía lo decidía el orden
+/// del directorio. Es el mismo fallo que tenía `pack`, sin su gravedad: aquí es
+/// una etiqueta y allí era la identidad que se firma.
+///
+/// A diferencia de `pack`, aquí no se puede negar: un workspace de varios
+/// miembros es entrada legítima del bucle de desarrollo. Lo que se arregla es la
+/// respuesta, no la entrada.
+///
+/// Se parte de un caso que ya sirve y se le añade un segundo manifiesto, en vez
+/// de montar un árbol entero: lo que se mide es la coordenada, y todo lo demás
+/// sería andamio.
+#[test]
+fn un_workspace_se_anuncia_con_todos_sus_miembros() {
+    let dir = std::env::temp_dir().join("ore-dev-miembros");
+    let _ = std::fs::remove_dir_all(&dir);
+    copiar(&caso("entity-emits-type"), &dir);
+    std::fs::create_dir_all(dir.join("packages/beta")).unwrap();
+    std::fs::write(
+        dir.join("packages/beta/package.yaml"),
+        "apiVersion: oos.dev/v1alpha1\n\
+         kind: Package\n\
+         metadata: { name: beta, version: 2.0.0, status: active, domain: x }\n\
+         spec: { owner: \"team:x\" }\n",
+    )
+    .unwrap();
+
+    let o = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("dev")
+        .arg(&dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("no se pudo lanzar `ore dev`");
+    let dicho = String::from_utf8_lossy(&o.stderr).to_string();
+
+    assert!(
+        dicho.contains("beta@2.0.0"),
+        "no nombra al segundo: {dicho}"
+    );
+    // Y sigue nombrando al primero: la corrección añade, no sustituye.
+    assert!(
+        dicho.matches('@').count() >= 2,
+        "solo anuncia una coordenada: {dicho}"
+    );
+}
+
+fn copiar(de: &Path, a: &Path) {
+    std::fs::create_dir_all(a).unwrap();
+    for e in std::fs::read_dir(de).unwrap() {
+        let e = e.unwrap();
+        let destino = a.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copiar(&e.path(), &destino);
+        } else {
+            std::fs::copy(e.path(), destino).unwrap();
+        }
+    }
+}

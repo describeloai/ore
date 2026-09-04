@@ -349,7 +349,10 @@ igual que `packages/*` es hoy el defecto de `workspace.members`. Lo que cambia e
 
 ---
 
-## 8. Y lo que destapó por el camino: la materia de `ore pack`
+## 8. Y lo que destapó por el camino: la materia de `ore pack` — **corregido**
+
+> **Estado: arreglado.** Lo que sigue describe el fallo tal como se midió, porque el porqué de la
+> corrección no se entiende sin él. Lo que se hizo está en §8.5.
 
 Medido en [`empaquetar.rs:354`](../crates/ore-cli/src/empaquetar.rs:354):
 
@@ -414,10 +417,50 @@ que no debe, y lo dejamos comprobado.
 > **Lo que falta es su hermano: `el_manifiesto_de_otro_paquete_no_viaja`.** Misma clase de error,
 > uno cazado y otro no, y ningún test de `pack` monta dos miembros.
 
-**No es parte de la pregunta de este documento** — se anota aquí porque salió midiéndola, y porque
-la corrección tiene forma conocida: usar `solo(pkg, &miembros, sitio)` como ya hace `sync`, y decidir
-qué debe hacer `pack` apuntado a una raíz con varios miembros —empaquetar cada uno, o negarse—, que
-es la única parte que no está decidida.
+### 8.5 · Lo que se hizo, y la medida que decidió el diseño
+
+Lo único no decidido era qué debe hacer `pack` sobre una raíz con varios miembros: **empaquetar cada
+uno, o negarse pidiendo que se apunte a un miembro.** Parecía que negarse era lo conservador. La
+medida dice que no:
+
+```text
+apuntar `pack` al directorio de un miembro, en los 4 árboles multipaquete del corpus
+  8 miembros  ·  4 empaquetan  ·  4 FALLAN
+    OOS4003   el retículo vive en la raíz
+    OOS2001   el concepto es de otro paquete
+    OOS2004   los `datasources` están en el manifiesto raíz
+```
+
+> **Negarse habría sido dar un consejo que no funciona la mitad de las veces.** Un miembro sacado de
+> su árbol pierde lo que cuelga de la raíz y lo gobierna.
+
+Así que **un `.oob` por miembro, empaquetado en el contexto del workspace**, que además es lo
+coherente con el criterio que se pidió seguir: la unidad del `lock` también es el árbol entero, y
+direcciona los miembros por nombre.
+
+| | |
+|---|---|
+| **qué lleva cada `.oob`** | los documentos de su miembro **más los que no son de ningún miembro** — el retículo, el `Ruleset`, la política de conductos viajan con todos porque gobiernan a todos |
+| **qué no lleva** | los documentos de otro miembro, y su manifiesto |
+| **dónde salen** | `-o <directorio>`, con `<último segmento>-<versión>.oob` — la misma forma que escribe el candado al vendorizar |
+| **sin `-o`** | error: por stdout solo cabe un artefacto, y se listan los miembros |
+| **un solo miembro** | **sin cambios**. `acme-retail` sigue dando 17 documentos y el mismo `sha256:30cd95b6…` |
+
+Y `dev` no se niega —un workspace de varios miembros es entrada legítima del bucle de desarrollo—
+así que lo que se arregla es la respuesta: **anuncia todas las coordenadas**, `alfa@1.0.0,
+beta@2.0.0`, en vez de la primera por orden de directorio.
+
+**Tres tests nuevos**, y uno que se apoyaba en el fallo:
+
+- `el_manifiesto_de_otro_paquete_no_viaja` — el hermano que faltaba, afirmando la propiedad entera:
+  cada `.oob` declara su coordenada, ninguno lleva el manifiesto del otro, y el concepto de un
+  miembro se va con su dueño;
+- `varios_miembros_por_stdout_no_caben`;
+- `un_workspace_se_anuncia_con_todos_sus_miembros`, en `contexto.rs`;
+- y `un_oob_que_no_es_el_que_se_pidio_no_se_escribe`, en `candado.rs`, **construía un árbol de dos
+  manifiestos para cambiar la identidad publicada** — se apoyaba justo en el fallo. Lo que necesita
+  no es un árbol de dos paquetes: es un paquete que diga otra cosa, así que ahora reescribe el
+  manifiesto del miembro en vez de añadir uno en la raíz.
 
 ---
 

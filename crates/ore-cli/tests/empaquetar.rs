@@ -140,6 +140,112 @@ fn el_manifiesto_del_workspace_no_viaja() {
     assert!(!oob.contains("SECRETO_INTERNO_URL"), "{oob}");
 }
 
+/// El hermano del de arriba, que faltaba.
+///
+/// Ya nos habíamos preguntado si un manifiesto que no es del paquete se cuela en
+/// la publicación —el del workspace— y lo dejamos comprobado. No nos preguntamos
+/// lo mismo del manifiesto de OTRO paquete, y ahí sí se colaba: `identidad()`
+/// cogía el primer `Package` por orden de directorio, y el `.oob` salía diciendo
+/// llamarse como uno con el otro dentro.
+///
+/// Se comprueba la propiedad entera y no solo que salgan dos ficheros: **cada
+/// `.oob` declara su coordenada y no lleva dentro el manifiesto del otro.**
+#[test]
+fn el_manifiesto_de_otro_paquete_no_viaja() {
+    let dir = escenario("dos-miembros");
+    // El escenario deja un paquete en la raíz. Se le pone otro al lado, dentro,
+    // que es la disposición multipaquete de `90-canonical-form` §5.2.
+    std::fs::create_dir_all(dir.join("packages/hr")).unwrap();
+    std::fs::write(
+        dir.join("packages/hr/package.yaml"),
+        "apiVersion: oos.dev/v1alpha1\n\
+         kind: Package\n\
+         metadata: { name: hr, version: 2.0.0, status: active, domain: people }\n\
+         spec: { owner: \"team:people\" }\n",
+    )
+    .unwrap();
+
+    let salida = dir.join("publicado");
+    let o = ore(&[
+        "pack",
+        dir.to_str().unwrap(),
+        "-o",
+        salida.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", todo(&o));
+
+    let gdpr = std::fs::read_to_string(salida.join("gdpr-0.1.0.oob")).unwrap();
+    let hr = std::fs::read_to_string(salida.join("hr-2.0.0.oob")).unwrap();
+
+    // Cada uno dice ser quien es...
+    assert!(
+        gdpr.contains("\"package\":\"oos.dev/regulatory/gdpr\""),
+        "{gdpr}"
+    );
+    assert!(hr.contains("\"package\":\"hr\""), "{hr}");
+    // ...y ninguno lleva el manifiesto del otro. Es lo que fallaba: el `.oob` de
+    // uno salía con `Package:` los dos dentro.
+    assert!(!gdpr.contains("\"Package:hr\""), "{gdpr}");
+    assert!(!hr.contains("\"Package:oos.dev/regulatory/gdpr\""), "{hr}");
+    // Y el concepto, que cuelga de la raíz del miembro `gdpr`, es suyo y no del
+    // otro: acotar por miembro tiene que mover los documentos con su dueño.
+    assert!(gdpr.contains("personalEmail"), "{gdpr}");
+    assert!(!hr.contains("personalEmail"), "{hr}");
+}
+
+/// Sin `-o` no hay dónde poner el segundo, y decirlo es mejor que elegir uno.
+///
+/// Por stdout solo cabe un artefacto. La versión que fallaba no se hacía esta
+/// pregunta: cogía el primer `Package` por orden de directorio y publicaba.
+#[test]
+fn varios_miembros_por_stdout_no_caben() {
+    let dir = escenario("dos-sin-salida");
+    std::fs::create_dir_all(dir.join("packages/hr")).unwrap();
+    std::fs::write(
+        dir.join("packages/hr/package.yaml"),
+        "apiVersion: oos.dev/v1alpha1\n\
+         kind: Package\n\
+         metadata: { name: hr, version: 2.0.0, status: active, domain: people }\n\
+         spec: { owner: \"team:people\" }\n",
+    )
+    .unwrap();
+
+    let o = ore(&["pack", dir.to_str().unwrap()]);
+    assert!(!o.status.success(), "{}", todo(&o));
+    let dicho = todo(&o);
+    assert!(dicho.contains("hay 2 paquetes"), "{dicho}");
+    // Y dice cuáles, que es lo que convierte el error en una acción.
+    assert!(dicho.contains("packages"), "{dicho}");
+}
+
+/// Y su control: con un solo miembro, `pack` sigue empaquetando como siempre.
+///
+/// Es lo que protege `package-layout-equivalence` —la disposición plana y la
+/// multipaquete convergen— de que la comprobación de arriba se pase de celosa.
+#[test]
+fn un_solo_miembro_bajo_packages_sigue_empaquetando() {
+    let dir = escenario("un-miembro");
+    std::fs::create_dir_all(dir.join("packages/gdpr/concepts")).unwrap();
+    for (de, a) in [
+        ("package.yaml", "packages/gdpr/package.yaml"),
+        (
+            "concepts/personalEmail.yaml",
+            "packages/gdpr/concepts/personalEmail.yaml",
+        ),
+    ] {
+        std::fs::rename(dir.join(de), dir.join(a)).unwrap();
+    }
+    let _ = std::fs::remove_dir(dir.join("concepts"));
+
+    let o = ore(&["pack", dir.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", todo(&o));
+    let oob = stdout(&o);
+    assert!(
+        oob.contains("\"package\":\"oos.dev/regulatory/gdpr\""),
+        "{oob}"
+    );
+}
+
 /// Un binding dice dónde está el dato DE QUIEN PUBLICA, y viaja hacia alguien
 /// que no tiene esa fuente.
 #[test]
