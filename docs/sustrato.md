@@ -789,17 +789,49 @@ Los dos que hacen esto no son de virtualización:
 > **Nadie sirve una ontología desde un puntero.** Los tres tienen almacenamiento propio para
 > servir, y los tres lo construyeron a propósito. Nuestro `ore-store-r2` es la misma pieza.
 
-### 8.5 · Lo que esto **no** valida, y hay que medirlo antes de escribirlo
+### 8.5 · El precio, contado — y el sexto gemelo **no se puede escribir**
 
-**Que el defecto se invierta del todo.** Cube y Denodo conservan la vuelta al origen porque una
-materialización puede estar **rancia o no existir**, y esa preocupación es real y también es
-nuestra: por eso hay `freshness` por vista, testigo en el sobre y `raíz de lectura`. La máquina
-para el camino de vuelta **está construida**; lo que está sin decidir es si sigue siendo un derecho
-o pasa a ser una excepción declarada.
+`pruebas-de-fuego/medida-servir.py`, sobre el corpus entero:
 
-**Y el precio no está contado.** Hoy `acme-retail` declara **una** materialización sobre dos
-vistas. Antes de escribir *«lo que se sirve se debe materializar»* hay que contar qué parte del
-corpus deja de compilar — igual que se contó el precio de `OOS2026`, que era **una entidad**.
+```text
+vistas que SIRVEN a una entidad     23
+  YA se sirven de una copia         12   ← 52 %, sin que ninguna regla lo obligue
+    (de una copia mas abajo)         4
+  VIRTUALES, dejarian de compilar   11   ← 48 %
+    y ademas necesitan conducto      5
+```
+
+**Once de veintitrés**, y cinco de ellas necesitarían además un `ConduitPolicy` entero para
+autorizar `materialization.payload` — que es `OOS4011`, y no es una línea. Frente a las **dos
+entidades** que cuesta `OOS2026`.
+
+> **No es asequible.** Se dice con el mismo criterio con el que se aceptó el precio de `OOS2026`:
+> allí eran dos casos y aquí es la mitad del corpus.
+
+#### Y la medida corrigió cómo estaba formulada la regla
+
+La primera versión preguntaba *«¿esta vista declara `materialized`?»* y daba **15**. Cuatro de esos
+quince eran falsos: una vista **virtual sobre una materializada** ya se sirve de una copia — lo
+decide `raíz de lectura`, y el caso `materialized-view-over-table-within-clearance` lo tenía en el
+nombre.
+
+> La regla no es *«esta vista se materializa»*: es **«su raíz de lectura es una copia»**. Y esa
+> pregunta ya la contesta el árbol, así que el sexto gemelo no habría necesitado maquinaria nueva
+> — solo un sujeto bien elegido.
+
+#### Lo que se queda, entonces
+
+**El claim se queda como dirección y como defecto, no como regla.** Cinco de los seis gemelos son
+asequibles y cuatro ya están escritos o medidos; el sexto describe **lo que ya hace el 52 % del
+corpus sin que nadie se lo pida**, y esa es la forma de validación que importa: la gente lo hace.
+
+Y con eso volvemos a la misma postura que Cube y Denodo en el único punto donde íbamos a divergir:
+**la vuelta al origen se queda como derecho.** Lo que sí cambia respecto a ellos, y es el claim
+entero, es el **defecto**: ellos federan salvo que duela; aquí se materializa lo declarado, y
+federar es lo que queda para quien no lo declaró.
+
+**Lo que sigue abierto**, y ahora con número: si el 48 % baja —porque `discover` proponga
+`materialized`, o porque los casos se migren— el sexto gemelo vuelve a la mesa. Hoy no.
 
 ---
 
