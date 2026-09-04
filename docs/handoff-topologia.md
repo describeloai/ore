@@ -1,8 +1,10 @@
 # Handoff · la topología, del paradigma viejo al nuevo
 
-> **Este documento es desechable.** Se borra el día que `B4` se ponga en verde. Un plan que
-> sobrevive a su ejecución deja de ser un plan y pasa a ser documentación de un pasado que ya
-> nadie comprueba.
+**Estado:** **desechable** · **Fecha:** 2026-09-04 · **Cierra:** el índice de topología, trayéndolo
+al paradigma de vistas
+
+> **Se borra el día que `B4` se ponga en verde.** Un plan que sobrevive a su ejecución deja de ser
+> un plan y pasa a ser documentación de un pasado que ya nadie comprueba.
 >
 > Fecha: 2026-09-04 · Escrito **después** de medir, no antes. Todo lo que afirma abajo tiene una
 > cifra o un fichero detrás, y donde no la tiene lo dice.
@@ -211,30 +213,107 @@ Ese era el trato entero del índice de topología, y es el que hay que seguir cu
 
 ## 5. Lo que **no** entra, y no por falta de tiempo
 
-**La junta en el vocabulario de la vista.** Es `B2` del análisis original —otro `B2`, y por eso
-este documento numera sus peldaños con el mismo prefijo pero no es lo mismo— y sirve para
-**devolver filas unidas**, no para atravesar. `00-scope` §6.1 la excluyó con tres razones
-convergentes; **una ha caducado** —la invertibilidad, desde que el ADR 0018 manda la escritura a la
-copia— y las otras dos siguen en pie: el precio en la regla de flujo, y la mantenibilidad
-incremental.
+### 5.1 · La junta · su materia exacta
+
+No es *«tiene tres razones en contra»*. Eso son consecuencias. La materia es **una ley normativa**,
+y está en [`05-ejecutor`](../vendor/oos/spec/v1alpha1/05-ejecutor.md) §2:
+
+> **LEY DEL EJECUTOR.** Una implementación L2 **NO DEBE** compensar lo que la fuente no sabe hacer.
+> O empuja la operación al origen, o la rechaza. **NO DEBE** traer filas para filtrarlas,
+> ordenarlas o agregarlas localmente.
+
+**Una junta entre dos fuentes no se puede empujar a ninguna de las dos.** Postgres no une contra
+BigQuery. Así que federar por clave exige **compensar**, y compensar está prohibido — no por
+gusto, sino porque *«un motor que compensa está resolviendo, con una máquina que no es la suya y
+sin el índice que la fuente sí tiene, un problema que la fuente resolvía mejor»*.
+
+Esa es la materia. Las tres razones de `00-scope` §6.1 —el precio en la regla de flujo, la
+mantenibilidad incremental, la invertibilidad— son tres formas de mirar la misma prohibición desde
+fuera.
+
+#### Y de ahí sale el cuarto gemelo, que no habíamos visto
+
+La ley se puede permitir prohibir la compensación **por una razón que el propio documento da**:
+
+> *«El índice convierte escaneos en búsquedas por clave […] por eso puede permitirse no
+> compensar.»*
+
+O sea que **la ley es asequible porque la travesía es local**. `B1` mantiene eso cierto —la
+travesía pasa a ser local sobre copias— así que **este handoff preserva la ley en vez de
+erosionarla**, y conviene saberlo.
+
+Y leído al derecho: una junta **no está prohibida por naturaleza, está prohibida mientras sus lados
+sean virtuales.** Con los dos lados materializados en nuestro almacén no hay compensación —no se
+traen filas de un origen para computar: ya se tienen— y lo que queda es **mantenimiento**, que es
+lo que `ore-maintain` hace incrementalmente y está medido.
+
+| | |
+|---|---|
+| `OOS2020` | lo que **no se puede leer** se debe materializar |
+| `OOS2025` | lo que **se escribe** se debe materializar |
+| `OOS2026` | lo que **se atraviesa** se debe materializar |
+| **↳ el cuarto** | lo que **se une** se debe materializar — **los dos lados** |
+
+**Sigue sin entrar aquí**, y ahora con un motivo mejor que *«son tres razones»*: entra el día que
+alguien la mida, y la mide `B4` produciendo el primer número de una travesía sobre copia. Lo que
+queda en contra, y es independiente de todo esto, es **el precio en la regla de flujo**: una junta
+trae dos clasificaciones y puede revelar lo que ninguna de las dos revelaba.
 
 > Del lado del motor está casi construida: `Une` aparece en **10 de 12 módulos** de `ore-view`, y
 > el delta compiler la mantiene incrementalmente y está medido. El coste está **en la costura**:
 > `Raiz` es singular, y hay 53 usos de `.datasource`, 42 de `.objeto` y 28 de `.tabla` que lo
-> asumen. Reabrirlo de rebote sería exactamente lo que aquella sección avisa de no hacer.
+> asumen. Reabrirlo de rebote sería exactamente lo que `00-scope` §6.1 avisa de no hacer.
 
 **Elegir formato de carga.** La travesía multi-salto es donde CSR ganaba por construcción, y la
 cota está escrita en [`sustrato.md`](sustrato.md) M4: `k`·grado contra `k`·página, y quién gana es
 **propiedad del dato**. `B4` produce el primer número real; elegir con uno solo sería extrapolar,
 que es lo que el [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) prohíbe.
 
-**La travesía del camino viejo.** Una entidad respaldada por un `Binding` no tiene vista que
-materializar. Su travesía murió con `ore-exec` **y no vuelve**. Sigue compilando todo lo demás,
-como siempre.
+### 5.2 · La travesía del camino viejo · **no está bien cerrada**
 
-**Quién responde una lectura.** `ore-exec` era el camino de lectura del paradigma anterior y no hay
-sustituto decidido. Esto repone **la travesía**, que devuelve claves; **servir propiedades sigue sin
-dueño**, y decirlo aquí es mejor que dejar que alguien lo deduzca de que la travesía funciona.
+Del lado del código sí: una entidad respaldada por un `Binding` no tiene vista que materializar, su
+travesía murió con `ore-exec` y no vuelve. Todo lo demás sigue compilando.
+
+**Del lado de la especificación, no.** Y esto hay que decirlo entero:
+
+> [`05-ejecutor`](../vendor/oos/spec/v1alpha1/05-ejecutor.md) — **«Estado: normativo. Parte de OOS
+> v1alpha1»** — §3: *«El plan tiene cuatro fases, y ese orden **es normativo**»*, con la fase ②
+> siendo la travesía sobre el índice. Y §2 apoya la ley del ejecutor en *«las aristas
+> materializadas»*.
+
+O sea que **la spec sigue mandando, normativamente, un artefacto que ya no existe y un orden de
+fases que era del paradigma de bindings.** Su §1 describe L2 como *«resuelve **bindings** contra
+fuentes reales»*, y los bindings se retiraron en v1alpha8.
+
+Eso **no lo cierra este handoff**, y decirlo es la mitad de cerrarlo: es una revisión de
+`05-ejecutor` que hay que hacer, y hacerla bien exige antes contestar §5.3. Lo que `B1` sí puede
+hacer, y debe, es **no empeorarlo**: la travesía sobre copias sigue cumpliendo la ley de §2, así
+que lo que cambia es de dónde salen las aristas, no si el motor compensa.
+
+### 5.3 · «Quién responde una lectura» · qué significa y en qué capa
+
+Significa **quién implementa `L2`**, y `L2` es un **nivel de conformidad de la especificación**, no
+una capa del producto. Los cuatro, de `00-overview`:
+
+| | | ¿tiene peticiones? | quién lo hace hoy |
+|---|---|---|---|
+| **L0** · Validador | analiza, valida, comprueba flujo, emite el digest | no | **`ore`** |
+| **L1** · Servidor de contexto | sirve el plano de contexto: entidades, relaciones, tipos, políticas, linaje | no | **`ore`**, por sus emisiones |
+| **L2** · Ejecutor | *«resuelve bindings contra fuentes reales, aplica políticas y obligaciones en lectura, federa consultas»* | **sí** | **nadie** |
+| **L3** · Actor | ejecuta funciones y verifica el acto que un endoso declara | sí, con escritura | nadie — es `F4`/`F5` |
+
+**La fila que se quedó vacía es `L2`.** No es una capa que falte construir en el producto: es un
+nivel de conformidad de OOS que **ninguna implementación de este repositorio satisface ya**.
+
+Y su definición está escrita en el vocabulario retirado —*«resuelve bindings»*— lo que dice, sin
+más análisis, que **`L2` hay que reescribirlo antes de volver a implementarlo**. Con la travesía de
+`B1` se recupera un trozo de la fase ②; las fases ③ y ④ siguen sin dueño y sin forma decidida en el
+paradigma de vistas.
+
+> **Esto es lo más grande que queda abierto en todo el repositorio**, y se dice aquí para que no
+> parezca que la travesía lo cierra. La travesía devuelve **claves**; servir **propiedades** es otra
+> cosa, y su forma en el paradigma de vistas —¿un plan que el motor produce y otro ejecuta?— no
+> está decidida.
 
 **`ore cache check`.** Se quedó sin consumidor al retirar `ore-exec` y sin productor de la versión
 de topología que transporta. No se toca aquí: la pregunta que contesta es la que el View Matcher
