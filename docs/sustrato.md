@@ -282,6 +282,21 @@ Nosotros **partimos en dos lo que ellos tienen junto**, y la partición no es co
 permite que una vista exista antes de que nadie modele nada y que varias entidades se respalden de
 la misma.
 
+> **⚠️ La segunda mitad de esa frase no aguantó el recuento.** Medido en
+> [`medida-lastre-entidad.py`](../pruebas-de-fuego/medida-lastre-entidad.py): **25 vistas
+> respaldan 25 entidades, una a una, sin una sola excepción.** El caso
+> `one-object-many-entities` es v1alpha1 y va por *bindings*. La razón N:1 **no tiene respaldo
+> empírico en el paradigma de vistas**.
+>
+> Y la primera mitad se sostiene sin exigir dos `kind`: el caso *«significado sin datos»* ya tiene
+> los suyos —`Concept` e `Interface`, que no se sientan sobre nada—, y este mismo documento es
+> normativo al decir que una entidad **sí** se sienta sobre una vista.
+>
+> Con las dos razones caídas, el reparto campo a campo dice que **ninguna clave de `Entity` exige un
+> documento propio**: todas anotan la unidad o anotan un campo, y `backedBy` es el precio de
+> tenerla aparte. Está en [`entidad.md` §10](entidad.md), con lo que cuesta y con la escalera que
+> lo hace posible sin romper nada.
+
 #### La vista no lleva significado. Lo **transporta**
 
 Esto es lo que la hace sustrato y no ontología, y es estructural: **una `View` no admite

@@ -208,3 +208,115 @@ que son el mismo:
   tiene tablas y vistas. Sigue pendiente y es independiente de todo lo anterior.
 - **La otra mitad de la migración.** 35 entidades siguen con `Binding` y sin `backedBy`, y
   `acme-retail` solo tiene 2 de 7 migradas. Eso es deuda de corpus, no de modelo.
+
+---
+
+## 10. Y una que sí se decidió, midiéndola: **`Entity` no necesita ser un documento**
+
+> **Estado: medido.** Guion: [`pruebas-de-fuego/medida-lastre-entidad.py`](../pruebas-de-fuego/medida-lastre-entidad.py).
+> Esta sección contesta una pregunta que §9 no se hacía, y la contesta con un recuento en vez de
+> con una opinión.
+
+El §8 dijo que la entidad es *«dos cosas con un nombre»* y que adelgazarla —M2 y `B0`— la deja en
+las cuatro irreductibles. Lo que no se preguntó es lo siguiente:
+
+> **Adelgazada, ¿queda algo que exija un documento aparte?**
+
+### 10.1 · El reparto: ningún campo se queda sin sitio
+
+Cada clave del vocabulario real de `Entity` —`document.rs`, no de memoria— contra un documento de
+vista fusionado, sobre las 292 entidades del corpus:
+
+```text
+name · namespace     292   se funden con los de la vista
+backedBy              25   DESAPARECE — es la dirección entre los dos documentos
+nature               287   ┐
+primaryKey           286   │
+uniqueKeys · timeKey   19  │  anotan la UNIDAD
+temporal · moved · reserved 15
+implements · principal 19  │
+relations             25   ┘  o se retira —`B0`/`OOS2026`
+properties           291   se funde con `fields`: cada campo, anotado
+
+dentro de cada propiedad, todo anota UN CAMPO de la vista:
+type 291 · labels 137 · is 31 · derivedFrom 14 · description 14 · enum 12
+expression 8 · required 6 · examples 5 · aiContext 2 · confidence 2 · temporal 1
+```
+
+**Diecisiete claves de `Entity`, trece de una propiedad, y todas aterrizan.** La única que no
+aterriza es `backedBy`, y no aterriza porque **no significa nada**: es la dirección entre dos
+ficheros, y sin dos ficheros no existe.
+
+### 10.2 · El residuo de forma es **uno** en todo el corpus
+
+```text
+derivedFrom a una propiedad de la MISMA entidad    25
+derivedFrom a la de OTRA                            1
+    customers.Customer -> customers.Order.totalAmount
+```
+
+Fusionado, esa línea es una referencia entre unidades **que no es `from`**, y el vocabulario de la
+vista no tiene ninguna. Es el único sitio donde la fusión pediría gramática nueva.
+
+De 8 propiedades que no son campo de su vista, 2 son `derivedFrom` —que caben— y las 6 restantes
+son casos inválidos a propósito que ya no compilan bajo `OOS2022`.
+
+### 10.3 · Y eso corrige una de las dos razones de la partición
+
+`sustrato.md` §3.4 justifica partir en dos con dos motivos: que una vista pueda existir antes de
+que nadie modele, **y que varias entidades se respalden de la misma**. El segundo, contado:
+
+```text
+vistas que respaldan N entidades:
+   1 entidad(es): 25 vistas
+vistas distintas respaldando: 25
+```
+
+**Uno a uno, sin excepción.** El caso `one-object-many-entities` es v1alpha1, con *bindings*. La
+mitad N:1 de la razón **no tiene respaldo empírico en el paradigma de vistas**.
+
+Y la otra mitad se sostiene sin exigir dos `kind`: el caso *«significado sin datos»* ya tiene los
+suyos —`Concept` e `Interface`, que no se sientan sobre nada—, y `sustrato.md` §3.4 es normativo al
+decir que una entidad **sí** se sienta sobre una vista, *«porque promete filas, y una promesa de
+filas necesita quién las conteste»*.
+
+### 10.4 · Lo que cuesta, y no es conceptual
+
+```text
+267 de 292 entidades no tienen `backedBy`, y 207 no tienen nada
+ 25 de  25 parejas resueltas tienen nombres DISTINTOS  (hr.Employee <- empleados)
+```
+
+Las 267 son deuda de migración, no una capacidad. Los 25 nombres sí son precio: **cada fusión mata
+un nombre**, y hay que poder decir en qué se convirtió. Es exactamente para lo que existe `moved`
+— que la vista todavía no tiene.
+
+### 10.5 · Y una colisión, con precedente resuelto
+
+`labels`, `description` y `aiContext` existen **en los dos documentos con sujetos distintos**: en la
+vista, el estado del documento —desde [`02-view` §4.1](../vendor/oos/spec/v1alpha8/02-view.md)—; en
+la entidad, la clasificación **del dato**, que `flow::propagar` hereda a todas sus propiedades.
+Fusionados serían una clave con dos significados, que es el modo de fallo que este proyecto
+persigue.
+
+No es un bloqueo: **`Concept` ya las lleva en los dos sitios**, y `document.rs` explica por qué no
+se confunden — `metadata.labels` clasifica *este documento*, `spec.labels` clasifica *el dato*. La
+unidad fusionada usaría esa misma partición.
+
+### 10.6 · El veredicto, y la escalera que ya estaba
+
+> **`Entity` no es una abstracción: es un fichero de anotaciones.** Después de M2 y `B0` no queda
+> en ella nada que necesite un documento propio, y `backedBy` es el precio de tenerlo.
+
+Lo que impide fusionar hoy **no es el modelo: es que la vista todavía no es ciudadana del
+repositorio**. Y eso convierte la escalera que ya estábamos subiendo en la precondición de la
+fusión, no en un rodeo:
+
+| | | por qué es precondición |
+|---|---|---|
+| **1** | madurez en la vista ✅ | la unidad puede decir en qué estado está |
+| **2** | la declaración —§6.3 de [`ontologia-como-repositorio`](ontologia-como-repositorio.md)— | el paquete dice de qué unidades se compone |
+| **3** | `ore diff` ve el sustrato | sin esto, fusionar esconde el cambio donde nadie lo mira |
+| **4** | `moved` en la vista | sin esto, los 25 renombrados de la fusión son 25 roturas mudas |
+| **5** | M2 · `B0` | la entidad se queda en anotaciones puras |
+| **6** | la fusión | ya no es un rediseño: es borrar `backedBy` y mover un fichero |
