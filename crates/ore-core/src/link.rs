@@ -212,6 +212,11 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     // una operacion —componer renombres— que `flow` y el ejecutor tambien
     // necesitan, y con dos copias divergirian.
     crate::vistas::comprobar(pkg, &mut d);
+    // Lo publico, y vive aparte por la misma razon que las vistas: no mira UN
+    // documento, mira la frontera entre miembros. Es la unica fase que
+    // pregunta de que miembro es un documento — el resto del enlazado resuelve
+    // plano sobre el arbol entero y no lo necesita.
+    d.extend(crate::exporta::comprobar(pkg));
     // OOS2014 vive aparte porque no mira UN binding: mira los que comparten
     // objeto y decide si reparten las filas o se pisan.
     crate::selector::comprobar(pkg, &mut d);

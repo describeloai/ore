@@ -101,6 +101,11 @@ const CONJUNTOS: &[&str] = &[
     "requires",
     "implements",
     "requiresGovernance",
+    // v1alpha8. `exports` es un conjunto: exponer dos cosas no pone una antes
+    // que otra, y quien lo lee pregunta por pertenencia. Contrástese con
+    // `primaryKey`, que es lista de nombres y NO es conjunto — ahí el orden es
+    // el de la clave compuesta.
+    "exports",
     // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
     // completa, ni siquiera para la versión con la que se escribió**. Tres de
     // estos se midieron dando dos digests para el mismo contenido —`reserved`,

@@ -335,6 +335,16 @@ impl Kind {
                 "sla",
                 "authoritativeDefinitions",
                 "dependencies",
+                // Lo que este paquete deja usar a OTRO. Es VISIBILIDAD, no
+                // membresia: de que se compone el paquete ya lo dice el
+                // directorio, y redeclararlo seria declarar lo derivable (P2).
+                // Lo que no esta escrito en ningun sitio del arbol es «esto lo
+                // expongo a proposito», y por eso hace falta un campo.
+                //
+                // Ausente NO significa «todo»: significa NADA, que es P4 —
+                // omitir no es dejar abierto, es cerrar. Es el mismo defecto
+                // que un conducto no listado y que `reads` ausente.
+                "exports",
             ],
             Kind::Entity => &[
                 "nature",

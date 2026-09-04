@@ -39,6 +39,7 @@ pub mod digest;
 pub mod document;
 pub mod effect;
 pub mod enlace_compuesto;
+pub mod exporta;
 pub mod firma;
 pub mod flow;
 pub mod frescura;

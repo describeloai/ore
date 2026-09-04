@@ -168,6 +168,24 @@ codes! {
     Oos2024 = "OOS2024", Reference, "la raiz de una vista escribible no declara changes.key";
     Oos2025 = "OOS2025", Reference, "una vista por la que la ontologia escribe no se materializa";
 
+    // ── La declaracion de lo publico ────────────────────────────────────────
+    //
+    // Dos codigos y no uno, con el criterio de `OOS2024`/`OOS2025`: los
+    // remedios son distintos. El primero se arregla en la LISTA —sobra un
+    // nombre o falta el documento—; el segundo, en la REFERENCIA o en el
+    // manifiesto del otro paquete. Un solo codigo mandaria a mirar el fichero
+    // equivocado la mitad de las veces.
+    //
+    // `OOS2026` no se usa: esta hablado para `B0`, la arista que la copia ya
+    // contiene, y ocupar su numero dejaria dos reglas con el mismo nombre en
+    // dos documentos.
+    Oos2027 = "OOS2027", Reference, "`exports` nombra algo que el paquete no contiene";
+    // Y este es el que §7 de `ontologia-como-repositorio` echaba de menos:
+    // hoy una referencia que cruza falla en `pack` con `OOS2018` diciendo «no
+    // existe», y existe — esta en el paquete de al lado. El diagnostico
+    // correcto es otro y hasta aqui no habia codigo que lo dijera.
+    Oos2028 = "OOS2028", Reference, "una referencia cruza a un paquete que no la exporta";
+
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
     Oos3002 = "OOS3002", Type, "Money o Quantity sin unidad o sin precisión";
@@ -354,6 +372,12 @@ mod tests {
             Code::Oos2023,
             Code::Oos2024,
             Code::Oos2025,
+            // Y la declaracion de lo publico, tambien de v1alpha8: los dos
+            // hablan de una referencia —una lista que nombra lo que no tiene,
+            // y una referencia que cruza sin permiso— asi que la familia es la
+            // de v1alpha1 y la version no.
+            Code::Oos2027,
+            Code::Oos2028,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,
