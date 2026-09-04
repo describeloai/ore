@@ -1,6 +1,27 @@
 # 0007 · Enlazar el evaluador de Cedar
 
-**Estado:** aceptado · **Fecha:** 2026-08-31 · **Decide:** el evaluador se enlaza, y vive fuera del compilador
+**Estado:** **sin implementación** · **Fecha:** 2026-08-31 · **Decide:** el evaluador se enlaza, y
+vive fuera del compilador
+
+> ### El evaluador ya no está en ninguna parte, y hay que decirlo entero
+>
+> Este ADR decidió dónde vive el evaluador de Cedar: **en `ore-exec`**. Ese crate se retiró —era el
+> camino de lectura del paradigma de bindings— y con él salió `cedar-policy` del árbol.
+> **Medido: cero apariciones en `Cargo.lock`.**
+>
+> Lo que **sí sigue en pie**, y es la mitad que valía:
+>
+> - **`ore-core` no depende de `cedar-policy`**, y la lectura estructural del
+>   [ADR 0003](0003-lectura-estructural-de-cedar.md) es la que responden `ore diff` y
+>   `ore validate`. Intacta.
+> - **El compilador no tiene reloj.** Era el invariante que esta costura protegía, y ahora lo
+>   comprueba `dependencias.rs::el_compilador_no_tiene_reloj` sin necesitar un binario enfrente.
+> - **Evaluar no es de `ore`.** Sigue siendo cierto: cuando vuelva a hacer falta decidir *«¿puede
+>   ESTE principal?»*, seguirá sin poder hacerse dentro del compilador, porque hace falta una
+>   petición y `ore validate` no las tiene.
+>
+> Lo que **no** está: nadie evalúa una política hoy. El árbol emite el esquema Cedar —`ore export
+> cedar`— y comprueba su forma, y ahí se para. Es un hueco con nombre, no una decisión revocada.
 
 ---
 

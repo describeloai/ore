@@ -15,8 +15,8 @@ favor no es un registro: es una colección de justificaciones.
 | [0003](0003-lectura-estructural-de-cedar.md) · lectura estructural de Cedar | leer la **forma** de una política, no evaluar su semántica | aceptado |
 | [0004](0004-distribucion-del-binario.md) · distribución del binario | determinismo comprobado, procedencia atestada, binarios crudos | aceptado |
 | [0005](0005-la-superficie-de-contexto.md) · la superficie de contexto | qué sirve `ore dev` por MCP, y qué no toca | aceptado |
-| [0006](0006-el-artefacto-de-topologia.md) · el artefacto de topología | CSR sellado contra el digest del bundle | aceptado |
-| [0007](0007-enlazar-el-evaluador-de-cedar.md) · enlazar el evaluador de Cedar | el ejecutor enlaza `cedar-policy`; el compilador **no** | aceptado |
+| [0006](0006-el-artefacto-de-topologia.md) · el artefacto de topología | CSR sellado contra el digest del bundle | aceptado · **sin quien lo escriba** |
+| [0007](0007-enlazar-el-evaluador-de-cedar.md) · enlazar el evaluador de Cedar | el ejecutor enlaza `cedar-policy`; el compilador **no** | **sin implementación** |
 | [0008](0008-el-protocolo-del-driver.md) · el protocolo del driver | la petición es un fragmento del plan, y traducir es del driver | aceptado |
 | [0009](0009-que-se-distribuye.md) · qué se distribuye | se publica el compilador; el ejecutor se construye desde la fuente | aceptado |
 | [0010](0010-el-refresco-sustituye.md) · el refresco sustituye | una fila es el conjunto de aristas de su clave, y la marca avanza | aceptado |
@@ -58,6 +58,12 @@ integradores no estaban indexados.
 que todo lo que toca el mundo —leer un origen, correr el circuito Δ, subir una copia— es un
 programa delegado, y lo que viaja entre ellos es **un fragmento del plan o el artefacto**, nunca
 una llamada a un sistema concreto. Si alguna vez se relaja una, hay que abrir las cuatro.
+
+> **Y esa frase se quedó corta.** Si son el mismo artefacto, el índice de topología **es una
+> vista materializada** y no una pieza aparte con su propio productor, su propio formato y su
+> propia marca de agua. Se escribió aquí antes de tener vistas y nadie le sacó la consecuencia; al
+> retirar `ore-exec` —que era su único productor— se quedó **definida y sin poblar**, que es
+> exactamente el estado que obliga a sacársela.
 
 **0006 y 0015 son el mismo artefacto con dos cargas**: aristas en CSR y filas en Parquet, con el
 mismo sobre sellado contra el digest del bundle. La segunda salió de mirar la primera y ver que

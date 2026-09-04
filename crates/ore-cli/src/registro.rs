@@ -327,12 +327,14 @@ fn declaradas(
 ///
 /// **Quién decide qué aristas hay: [`ore_core::aristas`], y solo él.**
 ///
-/// Aquí no queda derivación, solo traducción a un plan. Es la mitad de I4: la
-/// otra mitad es que `ore-exec/plan.rs::lecturas_de_aristas` traduce **las
-/// mismas** aristas a su `Lectura` de la fase ③, y una prueba comprueba que los
-/// dos listan lo mismo. Mientras cada lado derivaba por su cuenta, el índice
-/// era una vista materializada que nadie reconocía como copia porque cada uno
-/// la nombraba a su manera.
+/// Aquí no queda derivación, solo traducción a un plan. Era la mitad de I4: la
+/// otra mitad la ponía `ore-exec`, que traducía **las mismas** aristas a su
+/// `Lectura`, y una prueba comprobaba que los dos listaban lo mismo.
+///
+/// **Ese gemelo se retiró con él.** Lo que I4 arregló sigue arreglado —la
+/// derivación es una y vive en [`ore_core::aristas`]— pero ya no hay dos
+/// consumidores que la mantengan honesta, y eso conviene saberlo: una
+/// derivación con un solo lector se puede torcer sin que nada la contradiga.
 ///
 /// El destino nombra su formato —`oretopo`— porque el formato es propiedad del
 /// destino y no del registro:
@@ -714,7 +716,7 @@ mod tests {
     ///   aquí y decidir que son tres.
     ///
     /// Y esto es lo que hace que *«hay tres mecanismos de refresco»* deje de ser
-    /// algo que hay que recordar leyendo `ore-exec`.
+    /// algo que hay que recordar leyendo el código de otro binario.
     #[test]
     fn los_caminos_de_refresco_estan_enumerados_y_cada_uno_dice_por_que() {
         let dichos: Vec<(&str, &str)> = Camino::TODOS

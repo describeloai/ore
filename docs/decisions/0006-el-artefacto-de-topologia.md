@@ -1,6 +1,26 @@
 # 0006 · El artefacto de topología
 
-**Estado:** aceptado · **Fecha:** 2026-08-31 · **Decide:** ORE no opera ninguna base de datos
+**Estado:** aceptado · **la decisión se queda; su artefacto se quedó sin quien lo escriba** ·
+**Fecha:** 2026-08-31 · **Decide:** ORE no opera ninguna base de datos
+
+> ### Qué le pasó a esto, y qué no
+>
+> **La decisión no se toca.** *ORE no opera ninguna base de datos* sigue siendo cierta, y la tabla
+> de tres planos de abajo sigue siendo la forma del sistema.
+>
+> Lo que se retiró es **el binario que construía el artefacto**: `ore-exec index build` escribía el
+> `ORETOPO1` y `index refresh` lo mantenía, y `ore-exec` era el camino de lectura del paradigma de
+> bindings, que ya no aplica.
+>
+> Así que hoy el índice de topología está **definido y sin poblar**. Su forma se sigue derivando
+> del paquete —`ore_core::aristas`, intacto— y `ore view` lo sigue enumerando en el registro de
+> copias; lo que no hay es quien lo llene.
+>
+> **Y eso destapa lo que este documento no podía ver en 2026-08-31**, porque las vistas no
+> existían: el índice de topología **es una vista materializada**. Aristas en CSR y filas en
+> Parquet, con la misma naturaleza — cosa que el README de estas decisiones ya decía de este ADR y
+> del 0015 sin sacarle la consecuencia. La salida no es reponer el binario: es que lo puebla quien
+> puebla copias.
 
 ---
 

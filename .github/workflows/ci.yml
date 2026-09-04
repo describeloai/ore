@@ -151,6 +151,6 @@ jobs:
         env:
           PG_URL: postgres://postgres:x@localhost:5432/hr
         run: |
-          cargo build --quiet -p ore-exec -p ore-read-postgres -p ore-read-jsonl
+          cargo build --quiet -p ore-read-postgres -p ore-read-jsonl
           export PATH="$PWD/target/debug:$PATH"
           bash pruebas-de-fuego/fuentes-reales.sh

@@ -130,17 +130,20 @@ fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
 /// este documento* y el evaluador *puede ESTE principal*, que necesita una
 /// petición. `ore validate` no tiene peticiones
 /// (`docs/decisions/0007-enlazar-el-evaluador-de-cedar.md`).
+/// ⚠️ **El evaluador ya no está en ninguna parte.** `ore-exec` era el único que
+/// enlazaba `cedar-policy`, y se retiró con el paradigma de bindings del que era
+/// el camino de lectura. Lo que decidió el ADR 0007 —que evaluar no es de
+/// `ore`— sigue siendo cierto, pero ya no hay un binario al otro lado de esa
+/// costura, así que lo que aquí se medía —que el peso caiga fuera— no se puede
+/// medir contra nadie.
+///
+/// **La mitad que sí se puede seguir midiendo, y es la que importa, se queda**:
+/// que el reloj no cruce. Un digest que dependa del instante deja de ser una
+/// identidad, y eso vale exista o no un evaluador.
 #[test]
-fn el_evaluador_esta_donde_esta_por_algo() {
+fn el_compilador_no_tiene_reloj() {
     let ore = cierre_de("ore-cli");
-    let exec = cierre_de("ore-exec");
-    assert!(
-        exec.len() > ore.len() * 4,
-        "`ore-exec` tiene {} crates y `ore-cli` {}. La costura existe para que el          peso caiga fuera; si ya no hay peso, sobra la costura.",
-        exec.len(),
-        ore.len()
-    );
-    // Y lo que de verdad no puede pasar: que el reloj cruce la costura.
+    // Lo que de verdad no puede pasar: que el reloj cruce la costura.
     let reloj: Vec<&String> = ore
         .iter()
         .filter(|n| n.as_str() == "chrono" || n.as_str() == "time" || n.starts_with("time-"))
@@ -190,7 +193,6 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
         "ore-core",
         "ore-cli",
         "ore-driver",
-        "ore-exec",
         "ore-read-jsonl",
         "ore-read-postgres",
     ]

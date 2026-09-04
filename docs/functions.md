@@ -353,7 +353,7 @@ se iba a entrar.
 > ### La forma que la medida impuso
 >
 > **La `Propuesta` es un documento, no un `struct` enlazado**, y no por gusto: tres de sus cinco
-> identidades viven en crates que `ore-cli` **no puede** tener en su cierre —`ore-exec` trae
+> identidades viven en crates que `ore-cli` **no puede** tener en su cierre —el ejecutor traía
 > Cedar, `ore-store-r2` trae Parquet y TLS— y `tests/dependencias.rs` lo hace cumplir leyendo el
 > `Cargo.lock`. Así que topología, marcas de agua y el `Plan` **llegan por el protocolo**, en JSON
 > canónico, igual que llega la cabecera de un sobre.
@@ -365,7 +365,8 @@ se iba a entrar.
 > vive en el núcleo** —es gramática— y **la comparación de la vista vive en la costura** —es
 > álgebra, y el núcleo no ve el motor—.
 >
-> `Plan::digest()` se añadió en `ore-exec`, que no lo tenía: el par `(Plan, Propuesta)` es la
+> `Plan::digest()` se añadió en el ejecutor, que no lo tenía —y se fue con él: el par
+> `(Plan, Propuesta)` es la
 > historia entera **porque los dos se nombran por su contenido**, no porque uno lleve al otro
 > dentro.
 

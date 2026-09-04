@@ -10,12 +10,22 @@
 //! contestar sola. Se compila el paquete y se compara — que es exactamente lo
 //! que hace `cargar_topologia` con el índice, y por el mismo motivo.
 //!
-//! # La versión de topología sí se teclea, y se dice por qué
+//! # ⚠️ Y este comando se quedó sin quien le pregunte
 //!
-//! Porque leer un artefacto `ORETOPO1` es de `ore-exec`, y `ore` no enlaza contra
-//! él. La versión es una cadena que el artefacto reporta, y transportarla es
-//! honesto; leerla aquí exigiría meter el ejecutor dentro del compilador, que es
-//! justo la frontera que este proyecto no cruza.
+//! `ore-exec` se retiró —era el camino de lectura del paradigma de bindings— y
+//! con él se fue **el único consumidor de este veredicto** y **el único productor
+//! del artefacto `ORETOPO1`** del que salía la versión de topología.
+//!
+//! O sea que hoy esto contesta bien una pregunta que nadie hace, y su bandera
+//! `--topology` transporta una cadena que ya nadie escribe. Se deja en pie y
+//! **dicho**, no borrado, porque la pregunta que contesta —*«¿esta caché puede
+//! servir esta consulta?»*— es exactamente la que el motor de vistas hace con su
+//! View Matcher, y decidir si son una o dos es trabajo aparte.
+//!
+//! La versión de topología se teclea, y la razón original —*leer `ORETOPO1` es de
+//! otro binario, y `ore` no enlaza contra él*— sigue valiendo aunque ese binario
+//! ya no exista: transportar una cadena es honesto; leer un artefacto no es de
+//! aquí.
 
 use ore_core::cache::{Manifiesto, Pregunta, Veredicto};
 use std::path::Path;

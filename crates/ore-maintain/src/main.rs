@@ -17,7 +17,7 @@
 //! y entonces el transporte costaría más que el mantenimiento. La sesión es el
 //! estado, y cerrarla es tirarlo.
 //!
-//! Sin `clap`, como `ore-exec`: un verbo y ninguna bandera.
+//! Sin `clap`, como el resto de los delegados: un verbo y ninguna bandera.
 
 use std::io::BufRead as _;
 use std::process::ExitCode;

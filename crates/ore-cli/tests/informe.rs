@@ -92,7 +92,7 @@ fn el_informe_no_puede_tener_filas_rojas_y_lo_dice() {
 /// exigencias tienen el mismo aspecto.
 #[test]
 fn sin_exigencias_lo_dice_en_vez_de_no_decir_nada() {
-    let out = informe("crates/ore-exec/casos/dos-familias");
+    let out = informe("casos/dos-familias");
     assert!(
         out.contains("Ninguna propiedad de este paquete exige gobierno"),
         "una tabla vacía y un modelo sin exigencias no pueden tener el mismo \

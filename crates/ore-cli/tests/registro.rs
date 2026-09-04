@@ -7,11 +7,17 @@
 //! # La afirmación que importa
 //!
 //! La topología era una vista materializada escrita a mano en el paradigma
-//! anterior: `ore-exec` la construye por su cuenta, la refresca con marca de
-//! agua propia y nadie la llama copia. Aquí aparece **en el mismo registro y
+//! anterior: el ejecutor la construía por su cuenta, la refrescaba con marca de
+//! agua propia y nadie la llamaba copia. Aquí aparece **en el mismo registro y
 //! con las mismas tres caras** que una `materialized`, y su ruta de refresco
 //! aparece **al lado y por separado**: *estar registrada y estar mantenida son
 //! dos cosas*.
+//!
+//! ⚠️ **Y desde que aquel ejecutor se retiró, esa copia no tiene quien la
+//! construya.** El registro la sigue enumerando —está declarada por la
+//! gramática, que es lo que este fichero afirma— y nadie la puebla. Registrada
+//! sin productor es un tercer estado que no teníamos, y conviene que se lea
+//! aquí.
 //!
 //! El inventario de mecanismos —cuántos hay y por qué existe cada uno— lo
 //! guarda `registro.rs` en una prueba propia, porque es una afirmación sobre el
@@ -116,8 +122,8 @@ fn el_plan_registrado_es_el_mismo_que_el_de_la_vista() {
 /// **La topología es una copia, y ahora se ve.**
 ///
 /// `acme-retail` no declara ni una `materialized`, y aun así tiene cuatro copias:
-/// una por cada relación con `via` de una entidad con clave simple. Las construye
-/// `ore-exec` desde siempre; lo nuevo es que estén registradas.
+/// una por cada relación con `via` de una entidad con clave simple. Las construía
+/// el ejecutor del paradigma de bindings; hoy están registradas y sin construir.
 ///
 /// Y se llega a ellas **por el sustrato**: la fuente física de una entidad es la
 /// raíz de la vista que la respalda. Ni un binding de por medio, que es lo que

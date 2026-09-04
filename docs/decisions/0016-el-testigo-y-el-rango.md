@@ -20,7 +20,8 @@ El ciclo de materialización corre entero —[ADR 0015](0015-el-protocolo-del-al
 [ADR 0008](0008-el-protocolo-del-driver.md) define dos verbos, `catalogo` y `leer`, y ninguno
 contesta *hasta dónde estás ahora*.
 
-Lo que hay hoy en su lugar está en `ore-exec/src/main.rs:305`:
+Lo que había en su lugar cuando esto se escribió —en el ejecutor que después se retiró— era
+esto:
 
 ```rust
 // La marca de agua la pone quien construye: el motor no lee el reloj, y un
@@ -36,7 +37,7 @@ Sin eso, tres cosas están rotas:
 1. **La copia no se refresca nunca.** Con el testigo vacío la cabecera del sobre es idéntica cada
    vez, el recibo dice *«ya está»* y no se vuelve a leer el origen. `ore materialize` **puebla una
    vez**; no mantiene.
-2. **El `gt` del refresco incremental no tiene quién lo rellene** — `ore-exec/src/main.rs:602`.
+2. **El `gt` del refresco incremental no tiene quién lo rellene.**
 3. **`freshness` no puede degradar**: el registro tiene la marca desde I3 y el valor vacío.
 
 ---

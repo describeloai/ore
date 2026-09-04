@@ -33,11 +33,17 @@ dicen al ejecutarse;
 el resto falla explicando en qué fase está. Consulta el `README` del repositorio
 para el estado por fases: es la única copia de ese marcador, a propósito.
 
-**Y esto publica `ore`, no el ejecutor.** El nivel L2 —autorizar, planificar,
-federar— vive en `ore-exec` y en los lectores, que son binarios aparte porque
-enlazan cosas que el compilador no puede enlazar: un evaluador de políticas trae
-un reloj, y un driver trae una pila TLS. Se construyen desde el repositorio y
-todavía no se distribuyen.
+**Y esto publica `ore`, no los delegados.** Lo que toca el mundo —leer una
+fuente, mantener un estado, escribir en el almacén— vive en binarios aparte
+porque enlazan cosas que el compilador no puede enlazar: un driver trae una pila
+TLS, y el almacén trae Parquet. Se construyen desde el repositorio y todavía no
+se distribuyen.
+
+> El nivel L2 —autorizar, planificar, federar— vivía en `ore-exec`, que **se
+> retiró**: era el camino de lectura del paradigma de bindings, anterior a que
+> existieran las vistas. Con él se fue el evaluador de políticas, y por tanto el
+> reloj que este párrafo daba como ejemplo. Quién planifica una lectura en el
+> paradigma de vistas está sin decidir.
 
 Que estén fuera no es un reparto de directorios: `ore` sigue sin arrastrar nada
 nativo, y hay una prueba que lee `Cargo.lock` y falla si alguna de esas crates

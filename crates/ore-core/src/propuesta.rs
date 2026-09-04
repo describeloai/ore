@@ -16,9 +16,9 @@
 //! |---|---|---|
 //! | digest del bundle | [`crate::digest::bundle`] | sí |
 //! | digest del plan de la vista | `ore-view`, `Nodo::digest` | sí |
-//! | versión de topología | `ore-exec` | **no** — trae Cedar |
+//! | versión de topología | quien construya el índice | **no** — nadie lo construye hoy |
 //! | marcas de agua | `ore-store-r2` | **no** — trae Parquet, TLS |
-//! | el `Plan` | `ore-exec`, `Plan::digest` | **no** |
+//! | el `Plan` | quien planifique la lectura | **no** |
 //!
 //! `ore-cli` depende de `ore-core` y `ore-view`, y de nada más, porque
 //! `tests/dependencias.rs` lee el `Cargo.lock` y lo hace cumplir. Así que las
@@ -62,9 +62,14 @@ pub struct Bajo {
     pub topologia: String,
     /// Hasta cuándo era cierto el dato que se leyó, por objeto.
     pub testigos: BTreeMap<String, String>,
-    /// Qué se leyó, qué se podó y por qué. Se cita por digest: el `Plan` es un
-    /// artefacto de `ore-exec`, y el par `(Plan, Propuesta)` es la historia
-    /// entera **porque los dos se nombran por su contenido**.
+    /// Qué se leyó, qué se podó y por qué. Se cita por digest, y el par
+    /// `(Plan, Propuesta)` es la historia entera **porque los dos se nombran por
+    /// su contenido**.
+    ///
+    /// **Hoy no hay quien produzca ese plan.** El que lo hacía era el ejecutor
+    /// del paradigma de bindings y se retiró; quién planifica una lectura en el
+    /// paradigma de vistas está sin decidir. El campo se queda porque la
+    /// identidad hace falta, no porque haya quien la rellene.
     pub plan: String,
     /// **Por dónde se va a escribir, y bajo qué recorte.**
     ///

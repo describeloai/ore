@@ -13,7 +13,8 @@ y se ofrecía con su procedencia; los coeficientes eran unos y decían serlo.
 
 Medir parecía trivial y no lo era, porque este proyecto **no puede leer el reloj**. El
 invariante III dice que la compilación es pura; `dependencias.rs` veta `chrono` y `time` con
-todas las letras; `ore-exec` vive fuera del binario precisamente por saber qué hora es. Una
+todas las letras; el ejecutor vivía fuera del binario precisamente por saber qué hora es —y se
+retiró, pero el invariante que lo empujaba fuera sigue comprobándose. Una
 calibración con un cronómetro habría metido por la puerta de atrás lo que el proyecto expulsa
 por la principal.
 

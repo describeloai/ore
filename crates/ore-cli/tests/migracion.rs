@@ -64,12 +64,12 @@ const FUERA: &[(&str, &str)] = &[
 /// Lo que sigue en la forma vieja **dentro** de lo recorrido, con su motivo.
 const TESTIGOS: &[(&str, &str)] = &[
     (
-        "crates/ore-exec/casos/dos-familias",
+        "casos/dos-familias",
         "una entidad servida desde DOS fuentes. v1alpha8 no sabe escribirlo, y \
          el ejecutor sí sabe federarlo — ver el README del caso",
     ),
     (
-        "crates/ore-exec/casos/con-vista",
+        "casos/con-vista",
         "el testigo v1alpha7 del ejecutor: su gemelo `con-tabla` mide el camino \
          nuevo, y este mide que el viejo sigue sirviéndose",
     ),

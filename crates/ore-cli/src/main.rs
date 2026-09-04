@@ -116,9 +116,12 @@ enum AccionCache {
         props: Vec<String>,
         /// La version de topologia con la que el plan resolvio las claves.
         ///
-        /// Se teclea porque leer un artefacto `ORETOPO1` es de `ore-exec`, y
-        /// `ore` no enlaza contra el. Sin esta bandera se entiende que el plan
-        /// no hizo travesia, y entonces la topologia de la cache no le concierne.
+        /// Se teclea porque leer un artefacto es de otro binario y `ore` no
+        /// enlaza contra ninguno. Sin esta bandera se entiende que el plan no
+        /// hizo travesia, y entonces la topologia de la cache no le concierne.
+        ///
+        /// **Hoy nadie produce esa cadena**: el artefacto `ORETOPO1` lo escribia
+        /// `ore-exec`, que se retiro. Ver la cabecera de `cache.rs`.
         #[arg(long, value_name = "SHA256")]
         topology: Option<String>,
         /// Cuando se pregunta. **El motor no lee el reloj**: el instante llega

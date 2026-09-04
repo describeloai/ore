@@ -6,13 +6,18 @@
 //!
 //! # Por qué esto vive aquí y no en quien lo usa
 //!
-//! Porque lo usan dos, y hasta ahora lo derivaban por separado: `ore-exec` para
-//! construir el índice de topología, y el registro de copias de `ore-cli` para
-//! saber qué copias tiene un paquete. Dos derivaciones de la misma cosa divergen
-//! en la que ninguna prueba ejerce — que es exactamente lo que le pasó a esta:
-//! el índice de topología **es** una vista materializada, escrita a mano en el
-//! paradigma anterior, y nadie la reconocía como copia porque cada lado la
-//! nombraba a su manera.
+//! Porque lo usaban dos y lo derivaban por separado: el ejecutor del paradigma
+//! de bindings, para construir el índice de topología, y el registro de copias
+//! de `ore-cli`. Dos derivaciones de la misma cosa divergen en la que ninguna
+//! prueba ejerce — que es exactamente lo que le pasó a esta: el índice de
+//! topología **es** una vista materializada, escrita a mano en el paradigma
+//! anterior, y nadie la reconocía como copia porque cada lado la nombraba a su
+//! manera.
+//!
+//! **De los dos consumidores queda uno**: `ore-exec` se retiró. Esto se queda
+//! aquí igualmente —una lectura de la gramática es del núcleo, la usen dos o
+//! uno— y se dice que el motivo original ya no aplica, que es distinto de que la
+//! decisión haya dejado de ser correcta.
 //!
 //! Y vive en el núcleo porque **es una lectura de la gramática**, no álgebra:
 //! `relations`, `via`, `primaryKey` y de dónde sale físicamente una entidad. Lo
@@ -203,11 +208,10 @@ mod tests {
 
     /// **El camino del binding, que no ejerce ningún otro fichero del árbol.**
     ///
-    /// Ninguno de los casos de `ore-exec` tiene bindings *y* relaciones a la vez,
-    /// y `acme-retail` ya no tiene bindings. Así que si esta rama se cayera al
-    /// mover la derivación aquí, nadie se enteraría — y un paquete v1alpha7 con
-    /// bindings dejaría de tener topología en silencio. Sigue siendo legal
-    /// mientras v1alpha1 lo sea.
+    /// Ninguno de los paquetes de `casos/` tiene bindings *y* relaciones a la
+    /// vez, y `acme-retail` ya no tiene bindings. Así que si esta rama se cayera,
+    /// nadie se enteraría — y un paquete v1alpha7 con bindings dejaría de tener
+    /// topología en silencio. Sigue siendo legal mientras v1alpha1 lo sea.
     #[test]
     fn un_binding_da_sus_aristas_igual_que_una_vista() {
         let b = doc(

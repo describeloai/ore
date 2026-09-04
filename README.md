@@ -247,10 +247,10 @@ Los cinco canales de abajo son envoltorios sobre eso. Y todavía no hay ninguna
 release: **`v0.1.0`**, la primera. Publica el binario `ore` para cinco
 plataformas, con su atestación de procedencia y sus checksums al lado.
 
-`ore-exec` y los lectores **no se distribuyen todavía**: enlazan lo que el
-compilador no puede enlazar —un evaluador trae un reloj, un driver trae una pila
-TLS— y su distribución es una decisión aparte, con las mismas exigencias de
-procedencia ([ADR 0007](docs/decisions/0007-enlazar-el-evaluador-de-cedar.md), [ADR 0009](docs/decisions/0009-que-se-distribuye.md)).
+Los delegados **no se distribuyen todavía**: enlazan lo que el compilador no
+puede enlazar —un driver trae una pila TLS, el almacén trae Parquet— y su
+distribución es una decisión aparte, con las mismas exigencias de procedencia
+([ADR 0009](docs/decisions/0009-que-se-distribuye.md)).
 
 ```bash
 brew install oos-dev/tap/ore
@@ -305,29 +305,35 @@ sirve—. Se construyó en cinco hitos con criterios de listo, y ese plan **se b
 día que el último se puso verde**: un plan que sobrevive a su ejecución deja de ser un
 plan y pasa a ser documentación de un pasado que ya nadie comprueba.
 
-Lo que dejó, y se puede ejecutar: `ore-exec validar · plan · responder · index build ·
-index refresh · index traverse`, dos lectores —`ore-read-postgres` y `ore-read-jsonl`—,
+Lo que dejó, y se puede ejecutar: dos lectores —`ore-read-postgres` y `ore-read-jsonl`—
 y el protocolo que comparten en `ore-driver`. La segunda familia es **un fichero y no otra base de
 datos** a propósito: si el mismo plan sirve a un servidor y a un fichero, la petición
 estaba cortada por el sitio correcto.
 
-**Y el refresco.** `index refresh` lee solo lo que la marca de agua deja fuera —un `gt`
-sobre la propiedad que el binding declara en `watermark`— y lo **fusiona** sobre el
-artefacto anterior. La fusión **no es una suma**: una fila *es* el conjunto de aristas de
-su clave, así que si vuelve en el delta, sustituye. Lo encontró ejecutarlo — sumando, un
-cambio de jefe dejaba las dos aristas y la cadena de mando tenía dos ramas.
-
-Con dos avisos que no se callan: **un refresco incremental no ve una fila borrada**
-—una fila que ya no está no cambió después de nada— y **colapsar las dos identidades de
-§6.2** es una decisión, así que si no hay `refreshEnv` se dice.
-
-Y lo que **no** hace, dicho y no disimulado: no verifica la firma criptográfica de los
-atributos —emisor y audiencia sí; la firma exige JWKS, que es red—, no materializa la
-carga útil, y no mapea en memoria el `.oretopo` —el artefacto de topología, un CSR sellado
-contra el digest del bundle que lo produjo, de modo que un índice de otro paquete se rechaza
-al cargarlo ([ADR 0006](docs/decisions/0006-el-artefacto-de-topologia.md))—. De las tres
-estrategias de refresco solo `poll` está implementada: `cdc` exige una fuente que emita
-cambios, y `table_version` **es de la caché de carga útil**, no de aquí.
+> ### Y el ejecutor de aquel L2 **se retiró**
+>
+> `ore-exec` —autorizar con Cedar, planificar, federar por clave, y el índice de topología con sus
+> verbos `index build · refresh · traverse`— nació el **2026-08-31**, un día antes que el motor de
+> vistas y tres antes de que la palabra *vista* existiera en el núcleo. Era el camino de lectura
+> **del paradigma de entidades y bindings**: pedirle a la fuente por clave y ensamblar N flujos,
+> que es lo que hacía falta cuando N bindings cubrían una entidad.
+>
+> En el paradigma de vistas eso no aplica. `View = Q(Table)`: **leer una vista es ejecutar `Q`**, y
+> responder es decidir si contesta el origen o una copia, qué se empuja y qué queda de residuo —
+> que es lo que hace el motor de vistas, con modelo de coste y *view matching*. La fase ③ de aquel
+> ejecutor era esa misma tarea hecha en el vocabulario anterior, y su fase ④ existía para reparar
+> algo que solo ocurría en el modelo viejo.
+>
+> Lo que se llevó con él, dicho porque son huecos y no adornos:
+>
+> - **el evaluador de Cedar** — era el único que enlazaba `cedar-policy`, y hoy nadie evalúa una
+>   política. El árbol emite el esquema y comprueba su forma, y ahí se para;
+> - **el productor del índice de topología** — su forma se sigue derivando del paquete
+>   (`ore_core::aristas`) y el registro de copias lo sigue enumerando, pero **nadie lo puebla**;
+> - **la travesía** — seguir el grafo para resolver un conjunto de claves.
+>
+> Quién planifica y quién responde una lectura en el paradigma de vistas **está sin decidir**, y
+> eso es más honesto que un binario que contestaba la pregunta de otro modelo.
 
 ### Y lo que se afirma aquí está medido
 

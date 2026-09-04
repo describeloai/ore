@@ -142,7 +142,7 @@ le atribuyó no fuera el suyo.
 ### 3.1 · Lo que eso decidió sobre la federación
 
 Al migrar el árbol apareció que v1alpha8 **no sabe expresar una entidad servida desde N objetos**
-— `crates/ore-exec/casos/dos-familias`, que el binding decía sin esfuerzo. Se barajaron tres
+— `casos/dos-familias`, que el binding decía sin esfuerzo. Se barajaron tres
 salidas: que el binding sobreviviera para eso, que `backedBy` aceptara una lista, o aceptar la
 exclusión.
 

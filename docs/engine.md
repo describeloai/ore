@@ -156,7 +156,9 @@ contestar sola.
 ### E0 · La topología tiene identidad ✅
 
 `Topologia::version` — el digest de las aristas, separado del bundle y de la marca.
-`ore-exec index build` la imprime; `ore-exec index id` la lee de un artefacto ya escrito.
+La imprimía `ore-exec index build` y la leía `index id` de un artefacto ya escrito — **y ese
+binario se retiró**, así que la versión existe como derivación y no hay quien la selle en un
+fichero.
 
 **Listo cuando:** refrescar sin aristas nuevas no cambia la versión, una arista de más sí, y la
 versión sobrevive al ida y vuelta por el fichero. ✅

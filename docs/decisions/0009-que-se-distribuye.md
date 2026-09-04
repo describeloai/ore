@@ -29,7 +29,7 @@ arreglar el binario.
 
 Y hay una asimetría que no es de conveniencia. `ore` se ejecuta en la CI **de otros**, sobre
 repositorios que no son nuestros, y es el que la tesis `G1` obliga a poder verificar sin
-confiar en nadie. `ore-exec` se ejecuta donde ya hay credenciales de la fuente: quien lo
+confiar en nadie. El ejecutor se ejecutaba donde ya hay credenciales de la fuente: quien lo
 despliega está construyendo infraestructura, no descargando una herramienta.
 
 ### No es un reparto de directorios: es una propiedad
@@ -56,7 +56,9 @@ release lo dicen en su propio bloque, y eso es el mínimo — no la solución.
 
 ## Cuándo se revisa
 
-El día que exista un instalador, o que `ore-exec` tenga usuarios fuera de este repositorio.
+El día que exista un instalador, o que un delegado tenga usuarios fuera de este repositorio.
+(`ore-exec`, que era el ejemplo cuando esto se escribió, se retiró; los delegados que quedan son
+`ore-read-<tipo>`, `ore-maintain` y `ore-store-r2`.)
 Entonces la pregunta vuelve a ser la de [`0007`](0007-enlazar-el-evaluador-de-cedar.md): la
 misma atestación para las tres familias, o ninguna. Publicar dos con procedencia y una sin
 ella sería peor que lo de hoy, porque la firma pasaría a significar dos cosas distintas.
