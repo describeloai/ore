@@ -1949,8 +1949,9 @@ fn capitalizar(id: &str) -> String {
 
 /// Lo que no encaja en `^[a-zA-Z][a-zA-Z0-9_]*$` se sustituye por `_`. Un
 /// identificador que empezara por dígito lleva `t_` delante, y eso **sí** es
-/// inventar un carácter — por eso queda anotado en el binding, donde el nombre
-/// físico sigue entero.
+/// inventar un carácter — por eso el nombre físico sigue entero en `columns` de
+/// la tabla y en el valor de `fields` de la vista, que son los dos sitios donde
+/// lo físico se dice tal cual. (Decía «en el binding»: se retiró en v1alpha8.)
 fn identificador(bruto: &str) -> String {
     let mut out = String::new();
     for c in bruto.chars() {
@@ -2004,8 +2005,22 @@ pub fn informe(ind: &Induccion, destino: &Path) -> String {
         .keys()
         .filter(|k| k.starts_with("entities/"))
         .count();
+    let tablas = ind
+        .ficheros
+        .keys()
+        .filter(|k| k.starts_with("tables/"))
+        .count();
+    let vistas = ind
+        .ficheros
+        .keys()
+        .filter(|k| k.starts_with("views/"))
+        .count();
+    // Decía «entidades y sus bindings», y hacía años que no emitía ninguno: los
+    // bindings se retiraron en v1alpha8. Un mensaje que nombra lo que ya no se
+    // escribe es peor que uno que calla, porque enseña el paradigma anterior a
+    // quien está viendo el paquete por primera vez.
     let mut s = format!(
-        "  ✓ {entidades} entidades y sus bindings en {}\n\
+        "  ✓ {entidades} entidades, {tablas} tablas y {vistas} vistas en {}\n\
          \x20 ✓ todas en DRAFT: nada de esto es verdad todavía\n\n",
         destino.display()
     );

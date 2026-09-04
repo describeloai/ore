@@ -443,7 +443,7 @@ vista bifurcaba el contrato físico.
 
 ---
 
-## 5. Los tres movimientos, en orden
+## 5. Los movimientos, en orden
 
 Cada uno es el suelo del siguiente. Ninguno está hecho.
 
@@ -519,6 +519,79 @@ construcción en vez de con un código nuevo, que es siempre la mejor de las dos
 > hay consulta al revés porque no se sale de la consulta — la copia guarda el vocabulario de la
 > vista, así que un edit cae dentro de `Q`, no fuera. *Escribible* pasa a significar
 > **materializada y con clave**, no *invertible*.
+
+---
+
+### M4 · La topología es una vista, y lleva serlo desde antes de haber vistas
+
+Lo destapó retirar `ore-exec`, que era su único productor, y dejarla **definida y sin poblar** —
+un estado que no teníamos y que obliga a mirarla.
+
+#### Qué es, para que no haya que ir a buscarlo
+
+> Por cada **relación con `via`** de una entidad con clave simple: una proyección de **dos
+> columnas** sobre la fuente física de esa entidad — **la clave** y **la columna del enlace**.
+
+Eso es `ore_core::aristas`, y **es exactamente una `View` sobre una `Table`**: un `from`, dos
+`fields`, sin `where`. No se parece a una vista: es una vista, escrita en otro sitio y con otro
+nombre.
+
+Para qué existe, en la frase que llevaba en su cabecera: *«el índice convierte escaneos en
+búsquedas por clave»*. La travesía ocurre en local sobre las aristas, y solo cuando ya sabe qué
+claves quiere se abre una conexión.
+
+#### Lo que este árbol ya sabía y no había cobrado
+
+Tres sitios lo dicen, escritos en tres momentos distintos, y ninguno sacó la consecuencia:
+
+| dónde | qué decía |
+|---|---|
+| `decisions/README` | *«0006 y 0015 son el mismo artefacto con dos cargas»* — aristas en CSR, filas en Parquet |
+| `aristas.rs`, al escribir I4 | *«el índice de topología **es** una vista materializada, escrita a mano en el paradigma anterior»* |
+| `registro.rs` | lo enumera **como copia**, con su camino de refresco: *«marca de agua propia y ajena al circuito Δ»* |
+
+Esa última es la confesión: formato propio, productor propio, marca de agua propia y refresco
+propio, **todo en paralelo** al ciclo que los ADR 0015–0018 construyeron. Era una vista
+materializada que se negaba a saberlo.
+
+#### Quién debería emitirlas · lo que hacen los demás
+
+**Nadie declara un índice de travesía.** En Foundry se declara el *link type* —bidireccional, con
+sus dos lados navegables— y el **Object Data Funnel** indexa como consecuencia; *indexar* es, en
+sus palabras, hacer que un origen tabular esté disponible para recuperación rápida. El usuario no
+escribe un índice: escribe una relación.
+
+Aquí la relación ya está declarada —`relations` con `via`, en la entidad— y la topología ya se
+deriva de ella. Así que la respuesta cae del propio sustrato:
+
+> **La topología no la declara nadie: la puebla quien puebla copias.** Es `ore materialize`, con el
+> protocolo que ya existe — sobre, testigo, recibo, fusión, recogida— y deja de tener marca de agua
+> propia, refresco propio y un formato que solo lee un binario.
+
+Lo que eso obliga a decidir, y **no se decide aquí**: `materialize` hoy recorre las vistas que
+declaran `materialized`, y estas no son documentos. O `discover` las emite, o `materialize` aprende
+a poblar **copias derivadas** además de declaradas. Lo segundo se parece más a Foundry.
+
+#### Y el formato, que es la pregunta de verdad
+
+CSR es *«compacto, amable con el ancho de banda de memoria, y adecuado para travesías
+eficientes»*. La carga de una copia es **Parquet**, elegido en el ADR 0015 *porque cualquiera la
+lee*. No es la misma elección y conviene no fingir que sí.
+
+Lo que la industria pone del lado de Parquet, medido y no supuesto: **filtros de Bloom por grupo de
+filas** —contestan *«seguro que no»* o *«probablemente sí»* antes de leer una columna— e **índices
+de página** con mínimo y máximo, *«particularmente efectivos con datos ordenados»*. Su límite
+conocido es que son **por fichero**, y a miles de ficheros abrirlos es el cuello — y una copia
+nuestra es **un** artefacto por digest de plan, así que ese límite no nos toca.
+
+Lo que queda en el aire no es la búsqueda por clave: es **la travesía multi-salto**, que es donde
+CSR gana por construcción. Y eso no se decide argumentando:
+
+> Se decide **contando filas miradas** en los dos caminos sobre los mismos datos, al modo del
+> [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) y de
+> `ore-view/tests/medidas.rs`. Si Parquet ordenado por clave con Bloom aguanta la travesía, la
+> topología es una copia más y el formato deja de ser una decisión. Si no, la carga de una copia
+> tiene que poder ser otra cosa — y **eso sí cambia el ADR 0015**.
 
 ---
 
