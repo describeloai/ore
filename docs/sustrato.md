@@ -554,44 +554,90 @@ Esa última es la confesión: formato propio, productor propio, marca de agua pr
 propio, **todo en paralelo** al ciclo que los ADR 0015–0018 construyeron. Era una vista
 materializada que se negaba a saberlo.
 
-#### Quién debería emitirlas · lo que hacen los demás
+#### Cómo lo declaran los demás, y por qué la pantalla importa
 
-**Nadie declara un índice de travesía.** En Foundry se declara el *link type* —bidireccional, con
-sus dos lados navegables— y el **Object Data Funnel** indexa como consecuencia; *indexar* es, en
-sus palabras, hacer que un origen tabular esté disponible para recuperación rápida. El usuario no
-escribe un índice: escribe una relación.
+**Se declara a mano, y esa parte la tenía mal escrita.** El asistente de *link type* de Foundry
+obliga a elegir **cómo está respaldado el enlace**, y ofrece exactamente tres formas:
 
-Aquí la relación ya está declarada —`relations` con `via`, en la entidad— y la topología ya se
-deriva de ella. Así que la respuesta cae del propio sustrato:
+| Foundry | qué es | aquí |
+|---|---|---|
+| **Object type foreign keys** | el enlace es **una propiedad** de uno de los dos tipos · *one-to-one* y *one-to-many* | **`via`** — `one_to_one` y `many_to_one` |
+| **Join table dataset** | el enlace vive en **un dataset aparte** con las dos claves primarias · *many-to-many* | **no existe** |
+| **Backing object type** | el enlace **es un objeto** con propiedades propias · *many-to-many con atributos* | **no existe** como relación |
 
-> **La topología no la declara nadie: la puebla quien puebla copias.** Es `ore materialize`, con el
-> protocolo que ya existe — sobre, testigo, recibo, fusión, recogida— y deja de tener marca de agua
-> propia, refresco propio y un formato que solo lee un binario.
+Lo que se declara es **el enlace y dónde se apoya**, no un índice. Y para el primer caso —el
+único que nuestro vocabulario tiene, porque `one_to_many` es derivable del inverso y
+`many_to_many` no se expresa— **no hay artefacto separado en absoluto**: la clave foránea es una
+propiedad del objeto, y el objeto ya está indexado.
 
-Lo que eso obliga a decidir, y **no se decide aquí**: `materialize` hoy recorre las vistas que
-declaran `materialized`, y estas no son documentos. O `discover` las emite, o `materialize` aprende
-a poblar **copias derivadas** además de declaradas. Lo segundo se parece más a Foundry.
+#### Entonces, ¿por qué teníamos un índice? Por federar
 
-#### Y el formato, que es la pregunta de verdad
+Y de ahí sale la respuesta, que no es la que este documento escribió primero.
+
+**`via` nombra una PROPIEDAD**, no una columna: `via: [managerId]`, y `aristas` la resuelve por el
+mapa de la vista. Y una propiedad de una entidad **tiene que ser campo de su vista** —`OOS2022`,
+o declara `derivedFrom`—.
+
+> Así que si la vista está materializada, **la copia ya contiene la arista**: la clave y la columna
+> del enlace son dos de sus campos. No hay nada que construir aparte.
+>
+> **El índice de topología no es una vista que necesite productor: son dos columnas de una copia
+> que ya existe** — o la muleta que hace falta exactamente cuando no existe ninguna copia.
+
+Eso explica por qué Foundry no lo tiene y nosotros sí: ellos indexan el objeto entero, así que un
+salto es una búsqueda local. Nosotros **federamos**, así que sin copia un salto es una consulta al
+origen, y el índice existía para que no lo fuera.
+
+#### La regla que eso escribe sola
+
+Es el tercer gemelo de una familia que ya tiene dos:
+
+| | |
+|---|---|
+| `OOS2020` | lo que **no se puede leer** se debe materializar |
+| `OOS2025` | lo que **se escribe** se debe materializar |
+| **↳ el tercero** | lo que **se atraviesa** se debe materializar |
+
+Con él, el artefacto de topología desaparece en vez de mudarse: atravesar exige copia, y en la
+copia las aristas son columnas. La travesía pasa a ser una consulta sobre la copia —una búsqueda
+por clave, que es lo que el índice compraba— y deja de necesitar formato propio, marca de agua
+propia y refresco propio.
+
+**Y no se decide aquí**, porque tiene un precio que hay que mirar de frente: hoy una entidad se
+puede atravesar sin materializar nada, y esta regla lo prohibiría. Es la misma forma de decisión
+que `OOS2020` —obligar a materializar lo que no se puede servir de otra manera— y merece el mismo
+trato: medirla contra el corpus antes de escribirla.
+
+#### Y el formato, que casi se disuelve con lo anterior
 
 CSR es *«compacto, amable con el ancho de banda de memoria, y adecuado para travesías
 eficientes»*. La carga de una copia es **Parquet**, elegido en el ADR 0015 *porque cualquiera la
 lee*. No es la misma elección y conviene no fingir que sí.
 
-Lo que la industria pone del lado de Parquet, medido y no supuesto: **filtros de Bloom por grupo de
-filas** —contestan *«seguro que no»* o *«probablemente sí»* antes de leer una columna— e **índices
-de página** con mínimo y máximo, *«particularmente efectivos con datos ordenados»*. Su límite
-conocido es que son **por fichero**, y a miles de ficheros abrirlos es el cuello — y una copia
-nuestra es **un** artefacto por digest de plan, así que ese límite no nos toca.
+Pero si las aristas son columnas de una copia, **no hay dos formatos que comparar**: hay una copia
+Parquet y una consulta encima. Lo que la industria pone de ese lado, medido: **filtros de Bloom por
+grupo de filas** —contestan *«seguro que no»* o *«probablemente sí»* antes de leer una columna— e
+**índices de página** con mínimo y máximo, *«particularmente efectivos con datos ordenados»*. Su
+límite conocido es que son **por fichero**, y a miles de ficheros abrirlos es el cuello — y una
+copia nuestra es **un** artefacto por digest de plan, así que ese límite no nos toca.
 
-Lo que queda en el aire no es la búsqueda por clave: es **la travesía multi-salto**, que es donde
-CSR gana por construcción. Y eso no se decide argumentando:
+Lo que queda por medir no es la búsqueda por clave: es **la travesía multi-salto**, que es donde
+CSR ganaba por construcción. Y eso no se decide argumentando:
 
 > Se decide **contando filas miradas** en los dos caminos sobre los mismos datos, al modo del
 > [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) y de
-> `ore-view/tests/medidas.rs`. Si Parquet ordenado por clave con Bloom aguanta la travesía, la
-> topología es una copia más y el formato deja de ser una decisión. Si no, la carga de una copia
-> tiene que poder ser otra cosa — y **eso sí cambia el ADR 0015**.
+> `ore-view/tests/medidas.rs`. Si N saltos sobre una copia Parquet ordenada por clave aguantan, el
+> formato deja de ser una decisión. Si no, la carga de una copia tiene que poder ser otra cosa — y
+> **eso sí cambia el ADR 0015**.
+
+#### Lo que esto deja abierto, en una frase cada uno
+
+1. **¿Se escribe el tercer gemelo?** *Lo que se atraviesa se debe materializar.* Prohíbe algo que
+   hoy se puede, así que se mide antes.
+2. **¿Cuánto cuesta N saltos sobre Parquet?** Filas miradas, no segundos.
+3. **¿Y `many_to_many`?** No lo tenemos, y las otras dos casillas de esa pantalla son justamente
+   eso. El día que haga falta, el *join table dataset* de Foundry **es una vista de dos columnas**
+   — que es exactamente la forma que el índice de topología tenía, con otro dueño.
 
 ---
 
