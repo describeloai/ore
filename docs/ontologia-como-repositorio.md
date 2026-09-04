@@ -81,27 +81,82 @@ inventarlo: hay setenta años de madurez ahí.
 
 ### La comprobación contra la industria
 
-| | su unidad de capa semántica |
-|---|---|
-| **Palantir Foundry** | *object type*, sobre un índice, con *link types* configurados a mano |
-| **Cognite** | **data model = un conjunto de `views`, con versión** — literalmente esto |
-| **Dremio** | *virtual datasets* —vistas— en un catálogo **con ramas y commits** (Nessie) |
-| **Snowflake** | *semantic views* y ficheros YAML de modelo semántico |
-| **dbt** | modelos = vistas, **en un repo git**, con tests, docs, linaje y paquetes |
+| | su unidad de capa semántica | ¿en un repo? |
+|---|---|---|
+| **Palantir Foundry** | *object type*, sobre un índice, con *link types* configurados a mano | no — consola |
+| **Cognite** | **data model = un conjunto de `views`, con versión** | no — API |
+| **Dremio** | *«Views are the foundation»* — tres capas: preparación, negocio, aplicación | **no, y hay que decirlo** |
+| **Snowflake** | *semantic view*, **objeto de esquema** — y antes era un YAML en un *stage* | **al revés** |
+| **dbt** | *semantic model* sobre un modelo (=vista), en YAML | **sí, y explícito** |
 
-*(Foundry y Cognite están cotejados con fuentes en `sustrato.md` §8.4. Dremio, Snowflake y dbt van
-aquí por conocimiento del sector y **no se han cotejado en esta sesión**.)*
+**La primera mitad converge sin discusión: la unidad es la vista.** Dremio lo dice literalmente
+—*«Views are the foundation. A view is a SQL-defined virtual dataset that encapsulates business
+logic»*— y recomienda una arquitectura de **tres capas de vistas**: una vista por tabla de origen,
+encima la lógica de negocio compartida, encima los conjuntos por consumidor. Cognite llama *data
+model* a un conjunto versionado de views. Es la misma forma tres veces.
 
-**La convergencia es de una nitidez incómoda: la unidad de la capa semántica es un conjunto
-versionado de vistas.** Cognite lo llama así sin metáfora. Dremio le puso ramas. dbt demostró a
-escala industrial que vistas-en-un-repo funciona.
+**La segunda mitad —que eso viva en un repositorio— no converge, y el desacuerdo es informativo.**
 
-Y ahí está el hueco, que es exactamente donde estamos:
+#### El que confirma: dbt
 
-> **dbt probó las vistas en un repositorio. Foundry y Cognite probaron la ontología sobre una copia.
-> Nadie ha puesto la ontología *gobernada* en el repositorio, sobre las vistas.** dbt versiona la
-> transformación pero no clasifica ni gobierna; Foundry y Cognite gobiernan pero se configuran en
-> una consola, no se revisan en un *pull request*.
+Y lo dice en su propia documentación, no en un blog de terceros:
+
+> *«You can also commit them to your git repository to ensure everyone on the data and business
+> teams can see and approve them as the true and only source of information.»*
+
+Y la pieza que encaja con §6 de este documento:
+
+> *«Semantic models are the starting points of your data and **correspond to models** in your dbt
+> project. **You can create multiple semantic models from each model.**»*
+
+**N modelos semánticos sobre una misma vista.** dbt ya resolvió que la capa de arriba es N:1 sobre
+la de abajo, no 1:1.
+
+#### El que corrige una afirmación nuestra: Dremio
+
+La versión anterior de este documento decía *«Dremio le puso ramas y commits (Nessie)»* al conjunto
+de vistas. **Es falso, y la fuente lo desmiente.** Nessie versiona el **catálogo** —tablas y vistas
+Iceberg como dato, con ramas, commits y merge— pero la guía de capa semántica de Dremio **no
+menciona git, ni dbt, ni ramas de Nessie** como parte de la capa semántica. Son dos planos, y el
+versionado está en el de abajo.
+
+> **Corrección:** Dremio confirma que la unidad es la vista, y **no** confirma que la capa semántica
+> se versione como un repositorio.
+
+#### El que va en contra, y es un argumento serio: Snowflake
+
+Snowflake tenía el modelo semántico como **fichero YAML en un *stage*** —versionable, en un repo— y
+**se movió en dirección contraria**: a `SEMANTIC VIEW`, un objeto de esquema de la base de datos.
+Su razón está escrita:
+
+> *«Schema-level objects with full RBAC, sharing, and catalog support»* · *«Integrated with
+> Snowflake's privilege and sharing systems»*
+
+**El gobierno se lo da estar dentro del motor.** Un fichero en un *stage* no tiene permisos; un
+objeto de esquema sí. Es exactamente el argumento contrario al nuestro, y hay que contestarlo en
+vez de rodearlo.
+
+**La respuesta es que su solución no nos está disponible, y no por gusto:** un `SEMANTIC VIEW` puede
+heredar los permisos de Snowflake porque **vive en Snowflake y todo lo que toca también**. Un
+paquete nuestro cruza fuentes por definición —`erp`, `workday`, `snowflake`, un lago— y **no hay un
+motor cuyos permisos heredar**. Por eso el gobierno tiene que viajar *con* el artefacto: Cedar, el
+retículo, el análisis de flujo, la firma. Lo que en Snowflake es una comodidad, aquí sería un
+acoplamiento a un proveedor.
+
+Y conviene notar que no lo mataron: `SYSTEM$READ_YAML_FROM_SEMANTIC_VIEW` exporta el objeto a YAML.
+**El fichero sobrevive degradado —de fuente de verdad a serialización—**, que es justo el papel que
+tendría en un producto que no puede permitirse el otro.
+
+#### Entonces el hueco, dicho con precisión
+
+> **dbt probó vistas-en-un-repo pero no gobierna** —versiona la transformación, no clasifica ni
+> aplica política—. **Foundry, Cognite y Snowflake gobiernan pero no se revisan en un *pull
+> request*** — consola, API u objeto de base de datos. **Nadie ha puesto la ontología gobernada en
+> el repositorio, sobre las vistas, y cruzando fuentes.**
+
+Y el marcador honesto es **uno a favor, uno en contra y uno que solo confirma la primera mitad** —
+que es mejor punto de partida que una unanimidad, porque el que va en contra nos obligó a escribir
+por qué su camino no está disponible.
 
 ---
 
@@ -156,13 +211,88 @@ cosa.
 
 ---
 
-## 6. La pregunta que esto abre, y no cierra
+## 6. ¿Es el `Package` esa unidad? Medido
 
 Cognite tiene **dos** unidades: la `view` y el `data model` —el conjunto versionado—. Nosotros
-tenemos la `View`, y el conjunto lo lleva el `Package`.
+tenemos la `View`, y el conjunto lo lleva el `Package`. Medido con
+[`pruebas-de-fuego/medida-paquete.py`](../pruebas-de-fuego/medida-paquete.py):
 
-> **¿Es nuestro `Package` el *data model*?** Si lo es, hay que decirlo y darle la superficie que
-> eso implica. Si no lo es, falta una pieza entre la vista y el paquete, y no la hemos echado de
-> menos todavía porque ningún cliente nos ha pedido dos ontologías sobre el mismo sustrato.
+### 6.1 · El límite cierra, y eso no era obvio
 
-Sin medir, y probablemente lo próximo que haya que medir de esta cara del producto.
+Toda referencia al sustrato se queda dentro del paquete que la escribe:
+
+```text
+backedBy    -> View       22 total    22 dentro    0 cruzan
+from.view   -> View       16 total    16 dentro    0 cruzan
+from.table  -> Table      25 total    25 dentro    0 cruzan
+--------------------------------------------------------------
+                          63 total    63 dentro    0 cruzan
+```
+
+**63 de 63.** Lo único que cruza son 3 `relations.target`, y los tres son `after ⇒ before` de casos
+de `diff` —dos versiones del mismo paquete en dos directorios—, o sea **artefacto de la medida, no
+un cruce**.
+
+> **El límite del paquete es una costura real del sustrato, no una convención de carpetas.** Una
+> vista no se apoya en la tabla de otro paquete, y una entidad no se respalda de la vista de otro.
+> Eso es exactamente lo que hace falta para que la unidad sea proyectable: que el sustrato la
+> respete sin que nadie se lo pida.
+
+### 6.2 · Y los atributos de repositorio ya están
+
+Sobre los 301 paquetes del corpus, los obligatorios son universales —**versión semver 100 %, estado
+100 %, dominio 100 %**—. Los de gobierno son raros en conformidad porque un caso declara lo mínimo;
+en el paquete escrito entero están **todos**:
+
+| | |
+|---|---|
+| `version: 2.4.0` | semver |
+| `dependencies` | **con rango** — `{ package: acme/core-identity, version: "^1.2" }` |
+| `sla.breakingChangePolicy.noticePeriod` | **normativo**: `ore diff` falla si un cambio rompedor llega sin preaviso — `OOS5022` |
+| `owner: team:people-platform` | *handle*, y la spec dice por qué: **«alinea con CODEOWNERS»** |
+| `description.limitations` | dónde **no** se debe usar esto |
+| `status` | vocabulario de madurez de ODCS |
+
+Rango semver, lock por digest, política de cambio rompedor comprobada por el diferenciador y un
+dueño que apunta a CODEOWNERS. **Eso es un paquete en el sentido pleno**, no una carpeta con nombre.
+
+### 6.3 · Lo que le falta, y son tres cosas concretas
+
+**1 · El paquete no *selecciona* vistas: contiene un directorio.** Un *data model* de Cognite
+**lista** sus views con su versión; el nuestro es *«lo que haya en `views/`»*. La consecuencia no es
+estética:
+
+> **Una vista pertenece a exactamente un paquete, y no se pueden publicar dos lecturas ontológicas
+> sobre las mismas vistas.** dbt permite justo lo contrario —*«you can create multiple semantic
+> models from each model»*— y nosotros no, por contención de directorio.
+
+**2 · Hoy un paquete no es, de hecho, un conjunto de vistas.** 41 de 301 tienen alguna vista; **232
+tienen entidades y ninguna vista.** Es sesgo de corpus —casi todo es anterior a v1alpha7— pero
+mientras dure, la frase describe una intención y no el árbol.
+
+**3 · El ejemplo realista no demuestra la unidad.** `acme-retail` tiene **tres** directorios con
+pinta de paquete —`hr`, `customers`, `supply`— y **un solo `package.yaml`**. Los otros dos tienen
+entidades, vistas y tablas sin manifiesto. Es deuda del ejemplo, y hasta que se salde no hay dónde
+enseñar esto.
+
+### 6.4 · El veredicto
+
+> **`Package` sí es proyectable como unidad ontológica.** La costura cierra 63 de 63 y los atributos
+> de repositorio ya están escritos y comprobados. Lo que le falta **no es naturaleza: es una
+> declaración** — que el paquete diga de qué vistas se compone, en vez de heredarlo del directorio.
+
+Y esa es, exactamente, la pieza que Cognite tiene y nosotros no. No hace falta un `kind` nuevo entre
+la vista y el paquete: hace falta que el manifiesto **nombre** su conjunto. Lo que eso cuesta —y si
+rompe la contención por directorio, que hoy es lo que hace cerrar la costura— **no está medido**, y
+es lo próximo de esta cara.
+
+---
+
+### Fuentes
+
+- [Dremio · Semantic Layer: The Definitive Guide](https://www.dremio.com/blog/semantic-layer-the-definitive-guide/) ·
+  [What is Nessie, Catalog Versioning and Git-for-Data?](https://www.dremio.com/blog/what-is-nessie-catalog-versioning-and-git-for-data/)
+- [Snowflake · YAML specification for semantic views](https://docs.snowflake.com/en/user-guide/views-semantic/semantic-view-yaml-spec) ·
+  [Cortex Analyst semantic model specification](https://docs.snowflake.com/user-guide/snowflake-cortex/cortex-analyst/semantic-model-spec)
+- [dbt · About MetricFlow](https://docs.getdbt.com/docs/build/about-metricflow)
+- Foundry y Cognite, cotejados en [`sustrato.md` §8.4](sustrato.md)
