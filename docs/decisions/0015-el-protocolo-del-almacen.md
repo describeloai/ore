@@ -224,8 +224,11 @@ casualidad.
   Esto es **identidad de acceso** —qué credencial firma la petición— y no tiene nada que ver con
   la **identidad de las filas**, que es reconciliar quién es el mismo empleado en dos orígenes y
   vive en `v1alpha2/03-resolution`. La palabra colisiona; las dos cosas no se tocan;
-- **la cara `writes`.** Esto escribe en **una copia**, que la vista declara. Escribir en el
-  **origen** es otra cosa y necesita `Table.writes` — M1 de [`sustrato.md`](../sustrato.md).
+- **escribir en el origen.** Esto escribe en **una copia**, que la vista declara. Tocar el sistema
+  de origen es otra cosa, y el [ADR 0018](0018-la-ontologia-es-el-sistema-de-registro.md) decidió
+  que además es **otro producto**: nunca se hace desde aquí. Este documento acertó al separarlas y
+  se equivocó al suponer que la segunda haría falta — nombraba una cara `Table.writes` que se llegó
+  a construir y se retiró entera.
 
 Y una nota operativa que costó un rato encontrar: **el borde de Cloudflare rechaza peticiones sin
 `User-Agent` reconocible** con `error code: 1010`, que se lee como un fallo de autenticación y no

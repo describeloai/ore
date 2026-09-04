@@ -196,8 +196,9 @@ request may succeed but Ontology changes could fail»*.
 > otro documento: es otro producto**, con una mecánica que ninguno de los jugadores hace por
 > inversión de vista. Foundry llama a un webhook; nadie escribe de vuelta por el puntero.
 
-**Qué acepta el objeto físico.** `Table.writes` es `M1` de [`sustrato.md`](../sustrato.md) y `F0`
-de [`functions.md`](../functions.md), y va de la tabla, no del almacén.
+~~**Qué acepta el objeto físico.**~~ **Sin objeto.** Esto apuntaba a `Table.writes`, que el
+[ADR 0018](0018-la-ontologia-es-el-sistema-de-registro.md) retiró: si al origen no se le pide nada,
+preguntarle qué acepta no contesta nada. La cara se construyó —`F0a`— y se quitó entera.
 
 **La forma de la propuesta.** Es `F1`, y esto solo le dice dónde aterriza.
 

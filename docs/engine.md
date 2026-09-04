@@ -39,11 +39,27 @@ Medido contra el árbol, no contra la intención:
 |---|---|---|---|---|---|---|
 | **Contexto** | el bundle compilado | ✅ `digest::bundle` | ✅ | ✅ | ✅ registro | por commit |
 | **Topología** | claves de join y aristas | ✅ **`Topologia::version`** | ❌ | ❌ | ❌ | ✅ `index refresh` |
-| **Carga útil** | tabla en el lago del cliente | — | — | — | — | ✅ **`ore cache check`**, y el plan la consulta |
+| **Carga útil** | tabla en el lago del cliente **· y, desde el ADR 0018, el sitio donde aterriza lo que la ontología escribe** | — | — | — | — | ✅ **`ore cache check`**, y el plan la consulta |
 
 La asimetría entre la primera fila y las otras dos es el trabajo. **El plano de contexto está
 terminado** —tiene identidad determinista, se firma, entra en un log de transparencia
 verificable y se publica en un registro—. Los otros dos tenían formato y no tenían nada de eso.
+
+> ### La tercera fila cambió de naturaleza sin cambiar de letra
+>
+> Cuando se escribió esta tabla, la carga útil era **solo derivada**: `Q(origen)`, una respuesta
+> cacheada que se rehacía cuando hiciera falta. Perder una copia costaba un refresco.
+>
+> Desde el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) es
+> `Q(origen) ⊕ ediciones`, y **la segunda mitad no está en ningún otro sitio**. Sigue siendo
+> derivada —de dos entradas declaradas en vez de una— pero perder una copia con ediciones ya no
+> cuesta un refresco: cuesta las ediciones.
+>
+> Eso mueve los tres huecos de esta fila de *pendientes* a **urgentes**, y en este orden:
+> **identidad** —una copia con ediciones necesita saber de qué estado salió, y para eso está el
+> recibo de sucesión del [ADR 0017](decisions/0017-la-escritura-sobre-el-sustrato.md) §A—, **log**
+> y **firma**. Un plano que solo refleja puede permitirse no firmarse; uno que **origina** hechos,
+> no.
 
 ### 2.1 · Por qué la topología no tenía identidad, y ahora sí
 
@@ -56,8 +72,9 @@ El artefacto `ORETOPO1` lleva dentro tres afirmaciones y **solo dos tenían nomb
 | marca de agua | hasta cuándo era cierto | **cada refresco** |
 
 Faltaba la de en medio, que es justamente la que el ADR 0006 promete —*«misma versión →
-mismo conjunto de claves en una travesía»*— y la que [`functions.md`](functions.md) §4.1 pide
-que una propuesta cite. Ese renglón no tenía a qué apuntar.
+mismo conjunto de claves en una travesía»*— y la que [`functions.md`](functions.md) §3.1 pide
+que una propuesta cite, como segunda de sus cinco identidades. Ese renglón no tenía a qué apuntar,
+y ahora lo tiene: `Propuesta::bajo.topologia` lo lleva dentro del sello.
 
 Y tiene que ser **del cuerpo**, no del fichero: si incluyera la marca, refrescar sin que
 ninguna arista cambiara diría *«otra correspondencia»* cuando la travesía da exactamente el

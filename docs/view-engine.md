@@ -168,3 +168,14 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
 
   Lo que queda medido a medias es el **almacén real**: estas cifras son de la máquina de
   referencia, sobre Z-sets en memoria.
+- **Y una pregunta que este motor todavía no se hace.** Desde el
+  [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) una copia es
+  `Q(origen) ⊕ ediciones`, y este crate solo sabe de la primera mitad: sus doce piezas computan
+  `Q`, y una edición **no viene de computar nada** — viene de arriba, ya en el vocabulario de la
+  vista.
+
+  Que el motor **no ejecute** sigue siendo cierto y no cambia. Lo que hay que decidir es quién
+  funde las dos mitades y con qué política cuando se contradicen: hoy `carga::fundir()` funde por
+  clave en `ore-store-r2` y no sabe distinguir una fila refrescada de una editada. Es `7.4` de
+  [`functions.md`](functions.md), está abierta a propósito, y se dice aquí para que no la
+  descubra alguien leyendo el delta compiler y suponiendo que es su trabajo.

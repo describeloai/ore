@@ -76,21 +76,35 @@ código y es un fallo sin síntoma.
 
 ---
 
-## 3. La tercera cara, y por qué el vocabulario ya estaba elegido
+## 3. Dos caras, y una frontera que resultó ser de otro
 
-Si el sustrato tiene que soportar la escritura, la tabla no tiene dos caras: tiene **tres**.
+> ### ⚠️ Esta sección se llamaba «La tercera cara», y esa es la corrección más grande del documento
+>
+> Decía: *«si el sustrato tiene que soportar la escritura, la tabla no tiene dos caras: tiene
+> **tres**»*, y proyectaba una cara `W` donde el objeto declararía qué escrituras acepta.
+>
+> **La premisa era falsa**, y el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md)
+> la retiró: una escritura que sale de la ontología aterriza **en la copia**, y al origen no se le
+> pide nada. Preguntarle qué acepta no contesta ninguna pregunta que alguien vaya a hacer. La cara
+> se llegó a construir —`F0a`— y se retiró entera.
+>
+> **La tabla tiene dos caras y no va a tener una tercera**: `reads`, qué se le puede pedir, y
+> `changes`, qué cambios emite. Las dos decididas en v1alpha8.
+>
+> Lo que sigue **no se borra**, y no por nostalgia: el análisis es correcto y lo que estaba mal era
+> a quién se lo aplicábamos.
 
 | cara | pregunta | estado |
 |---|---|---|
 | `reads` — `I` | qué se le puede pedir | **decidido**, v1alpha8 |
 | `changes` — `D` | qué cambios emite | **decidido**, v1alpha8 |
-| `writes` — `W` | qué escrituras acepta | **proyectado** |
 
-Y aquí está lo que cierra el círculo. La regla de la versión dice `View = Q(Table)`. Escribir a
-través de una vista es `Q⁻¹`: el problema clásico de actualización de vistas, que solo se resuelve
-si `Q` es invertible.
+### 3.0 · La frontera de la invertibilidad, y de quién es
 
-**El vocabulario de la vista es exactamente el fragmento invertible.**
+La regla de la versión dice `View = Q(Table)`. Llevar un cambio **hasta el origen** sería `Q⁻¹`: el
+problema clásico de actualización de vistas, que solo se resuelve si `Q` es invertible.
+
+**Y el vocabulario de la vista es exactamente el fragmento invertible.**
 
 | operación | invertible | está en la gramática |
 |---|---|---|
@@ -109,6 +123,21 @@ frontera desde el otro lado**.
 
 > `View = Q(Table)`, con `Q` invertible **por construcción**. Y ahí está, dicha del revés, la
 > razón de que unir y agregar estén fuera.
+
+#### Y de quién es esta frontera, que no es de este producto
+
+Escribir aquí **no es `Q⁻¹`**, y el motivo es una medida: la copia guarda **el vocabulario de la
+vista** —su esquema sale del plan, así que sus columnas son `employeeId` y no `employee_id`—. Un
+edit nombra una propiedad, la propiedad es un campo de la vista, y el campo es una columna de la
+copia. **Cae dentro de `Q`, no fuera**, así que no hay nada que deshacer.
+
+Esta frontera es la primera regla del producto que escribe **de vuelta en los sistemas de origen**,
+que es otro y no está aquí. Está construida y ejercida —`vistas::invertible` y su censo— y su
+código, `OOS7013`, queda **reservado** con el precedente de `OOS2001`.
+
+Que la coincidencia con las cuatro exclusiones de `00-scope` §6 sea exacta **sigue siendo cierta y
+sigue valiendo**: dice que el vocabulario de la vista se eligió bien, aunque el motivo que aquí se
+le atribuyó no fuera el suyo.
 
 ### 3.1 · Lo que eso decidió sobre la federación
 
@@ -227,9 +256,15 @@ Lo nuevo es el piso de abajo: **la copia materializada es un container.** Tiene 
 propio, esquema declarado, clave, testigo, la lee cualquier motor, se funde incrementalmente y se
 recoge. No se parece a un container: hace lo que hace un container.
 
-Con **una asimetría que no se tapa**: el suyo es almacenamiento **primario** —se ingiere dentro y
-se escribe—; el nuestro es **derivado** —es el resultado de un plan sobre un puntero, y es de solo
-lectura—. Esa diferencia tiene nombre y es [M1](#m1--la-tercera-cara).
+Con **una asimetría que se creyó insalvable y no lo era**: el suyo es almacenamiento **primario**
+—se ingiere dentro y se escribe—; el nuestro parecía condenado a ser **solo de lectura**, un plan
+sobre un puntero y nada más.
+
+Ya no. Desde el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) la copia
+**también recibe lo que la ontología escribe** —`Q(origen) ⊕ ediciones`— y sigue siendo derivada,
+de dos entradas en vez de una. Lo que se creía que hacía falta para cerrar esa distancia era darle
+a la tabla una tercera cara: es [M1](#m1--la-tercera-cara), y la distancia se cerró **por el otro
+lado**.
 
 #### Y una equivalencia que este documento afirmó de más
 

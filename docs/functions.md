@@ -21,17 +21,24 @@ ocurra. La segunda es nueva y es todo lo que este documento añade.
 
 ---
 
-## 2. Qué falta, medido
+## 2. Qué hay y qué falta, medido
 
-| | |
+Contra el árbol de hoy, no contra la intención — y remedido después de que el
+[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) cambiara el destino.
+
+| | estado |
 |---|---|
-| peldaños construidos | **cero**. No existe `Propuesta`, ni `ore-invoke`, ni ningún aplicador |
-| lo que sí hay | `ore-core/src/effect.rs`, que comprueba **forma y etiquetas** de `effects` |
-| y un hueco que nadie había mirado | **`effects` está huérfano** |
+| **la `Propuesta`** | ✅ `ore-core/src/propuesta.rs` · 457 líneas · las cinco identidades, la forma canónica, el digest y el cotejo |
+| **el verbo** | ✅ `ore verify` · `ore-cli/src/verificar.rs` · no ejecuta, no abre el origen, no escribe |
+| **las pruebas** | ✅ 370 líneas con un runner de mentira, y las tres cláusulas falsificadas en vivo |
+| **la regla de integridad** | ✅ `effect.rs` · diez códigos `OOS7xxx` vivos |
+| **quién invoca el módulo** | ❌ `F4`, `ore-invoke`. No existe |
+| **quién aplica la propuesta** | ❌ `F5`. No existe |
+| **el flujo y los endosos sobre la propuesta** | ❌ `F2` y `F3` |
 
-### 2.1 · El hueco
+### 2.1 · El hueco que había, y cómo se cerró
 
-Un efecto declara hoy esto:
+Este documento nació señalando uno: *«`effects` está huérfano»*. Un efecto declaraba
 
 ```yaml
 effects:
@@ -39,17 +46,23 @@ effects:
     datasourceRef: postgres_erp                 # y una FUENTE, directamente
 ```
 
-**Va de la propiedad a la fuente sin nada en medio.** Ese «nada en medio» era el `Binding`: el
-documento que decía qué columna es `status` en `postgres_erp`. Y el binding se retiró en
-v1alpha8.
+e iba **de la propiedad a la fuente sin nada en medio**. Ese «nada en medio» era el `Binding`, y
+el binding se retiró en v1alpha8.
 
-Comprobado en el código: `effect.rs` resuelve `writes` a una **propiedad de entidad** y comprueba
-sus etiquetas de integridad. **Ninguna línea del árbol traduce esa propiedad a una columna.**
-`datasourceRef` se lee, se transporta, y no resuelve a ningún destino físico.
+**Está cerrado, y no como este documento esperaba.** La primera respuesta fue *derivar la fuente
+en vez de declararla* —`F0a` quitó `datasourceRef`, y eso se queda—; la segunda fue descubrir que
+**no hace falta llegar a la fuente**. El destino es la copia, y de la propiedad a la copia sí hay
+algo en medio y siempre lo hubo: la vista.
 
-Es el mismo hueco que `OOS2022` cerró para la lectura, un piso más abajo y en el otro sentido:
-*«con bindings esto era legal porque otro podía cubrirlo; en v1alpha8 no hay otro»*. Nadie lo ha
-notado porque no hay ejecutor — y por eso conviene notarlo ahora y no cuando lo haya.
+```text
+propiedad  →  entidad  →  backedBy  →  vista  →  su copia
+```
+
+### 2.2 · Y el hueco que queda
+
+Que **nadie invoca ni aplica**. `ore verify` contesta si una propuesta es aceptable; producirla es
+`F4` y aplicarla es `F5`, y los dos están sin construir. Lo que ya no falta es **saber dónde
+aterriza**, que era lo que faltaba de verdad.
 
 ---
 
@@ -165,30 +178,18 @@ Así que *«esta función escribe a través de una vista que no se puede inverti
 compilar**, con la misma máquina que ya rechaza una copia que fuga. No hace falta motor nuevo:
 hace falta llamar al que hay.
 
-### 4.2 · Y la tercera cara de la tabla, que sobra
+### 4.2 · Y la tercera cara de la tabla, que no existe
 
-> **Construida en `F0a` y retirada por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).**
-> Lo que sigue describe `Table.writes` tal y como se construyó, y se conserva porque el argumento
-> de simetría era bueno y el error estaba **una capa más abajo**: no en cómo declarar lo que el
-> objeto acepta, sino en creer que se le iba a pedir algo.
->
-> Si nunca se escribe en el origen, **preguntarle qué acepta no sirve de nada**. `Table.writes`,
-> `OOS7012` y su mitad de `OOS2024` salen; la retirada está inventariada en el ADR.
+Este documento proyectó una: *«leer y cambiar están declarados —`reads` es la cara `I`, `changes`
+la cara `D`—; escribir es la tercera»*. La simetría era buena y **la premisa no**: si al origen no
+se le pide nada, preguntarle qué acepta no contesta ninguna pregunta que alguien vaya a hacer.
 
-Leer y cambiar están declarados —`reads` es la cara `I`, `changes` la cara `D`—. Escribir es la
-tercera, y le toca el mismo trato: **el objeto declara qué acepta, y el planificador lo respeta
-sin abrir una conexión.**
+Se construyó —`F0a`— y se retiró entera:
+[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md). Salieron `Table.writes`,
+`OOS7012` y `document::escrituras()`; `OOS2024` se quedó con otro sujeto y entró `OOS2025`.
 
-```yaml
-writes:
-  mode: <qué acepta>        # el vocabulario, en §7.1, es una decisión abierta
-  key: [ ... ]              # con qué identifica la fila que actualiza
-```
-
-La simetría con `changes` no es estética. `changes` dice **qué sale** del objeto; `writes` dice
-**qué entra**. Y las dos preguntas tienen el mismo dueño —el objeto— y la misma consecuencia: una
-tabla que no declara `writes` **no se escribe**, igual que una que declara `reads: none` no se
-consulta. La ausencia es una negativa, que es la doctrina de esta casa desde v1alpha1.
+**La tabla tiene dos caras y no va a tener una tercera.** El análisis largo de por qué la simetría
+parecía correcta está en [`sustrato.md`](sustrato.md) §3, que es donde nació.
 
 ### 4.3 · Se escribe en la copia, y el puntero no se toca
 
@@ -248,7 +249,7 @@ declarados, y lo que quede fuera se rechaza. Es lo mismo que hace `ore pack` con
 
 | | qué | cuesta |
 |---|---|---|
-| **F0** | la cara `W`, y el efecto pierde su fuente | gramática · v1alpha9 |
+| ~~**F0**~~ | ~~la cara `W`~~ · **retirado** — solo sobrevive que el efecto pierde su fuente | — |
 | **F1** | la `Propuesta` como artefacto | nada de protocolo |
 | **F2** | el flujo sobre la propuesta | nada |
 | **F3** | los endosos | nada |
@@ -256,7 +257,15 @@ declarados, y lo que quede fuera se rechaza. Es lo mismo que hace `ore pack` con
 | **F5** | aplicar **por la vista** | delegado nuevo |
 | **F6** | **la definición de listo** | es la prueba |
 
-### F0 · La cara `W`, y el efecto pierde su fuente
+### F0 · La cara `W` —retirada— y el efecto pierde su fuente
+
+> **De este peldaño sobrevive la mitad.** Se construyó entero y el
+> [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) retiró la cara `W`; lo que
+> queda en pie es que **el efecto pierde su `datasourceRef`**, que resultó ser lo importante.
+>
+> Lo que sigue se deja **tal y como se escribió**, con su «hecho» debajo, porque la secuencia
+> entera —proyectarlo, construirlo, medir que la premisa era falsa, retirarlo— es la lección; y
+> tacharla dejaría el resultado sin el camino.
 
 **Qué.** `Table.writes`, y `datasourceRef` fuera de `effects`. Es lo único de la lista que toca la
 gramática, y va primero porque **sin él los demás no tienen a dónde escribir**.
@@ -284,6 +293,17 @@ por vista, **si se puede escribir a través de ella**.
 > efecto y `OOS7008` pasa a derivar la fuente. `ore view` contesta por vista.
 >
 > **`F0b` · la guarda de invertibilidad.** `OOS7013`, sobre la cadena entera.
+>
+> ### ⚠️ Y retirado tres días después
+>
+> `Table.writes`, `OOS7012` y `document::escrituras()` salen; el cableado de `OOS7013` también, y
+> su código queda **reservado** para el producto que escribe de vuelta en los orígenes. En su
+> lugar entran `OOS2025` —lo que se escribe se debe materializar— y un `OOS2024` con otro sujeto.
+>
+> **Lo único de este peldaño que sobrevive intacto es `datasourceRef` fuera del efecto** — y una
+> relajación que se coló de rebote y resultó ser un arreglo: `changes.key` es legal con cualquier
+> modo, porque la copia la lee para fundir un incremento y la regla vieja se lo impedía a toda
+> tabla `retract`.
 >
 > ### Y una parte del «listo cuando» que **no se pudo cumplir**, dicha entera
 >
@@ -440,6 +460,13 @@ no se puede decir.
 > `is_insertable_into`, `is_updatable` e `is_trigger_deletable` **por separado**. Pero **sin
 > `upsert`**: es `insert` más `update`, y el conjunto ya lo dice sin una cuarta palabra.
 > `changes.mode` sí lo tiene, porque allí no es una suma sino otra codificación.
+>
+> ### ⚠️ Y después, sin objeto
+>
+> La decisión era correcta y **la pregunta no**. Con la cara `W` retirada no hay vocabulario que
+> elegir, porque no hay nada que preguntarle al origen. Se deja porque enseña algo que ninguna de
+> las otras enseña: **se puede acertar una decisión y estar contestando la pregunta equivocada**,
+> y ninguna cantidad de rigor en la respuesta lo detecta.
 
 ### 7.2 · Qué exige una escritura parcial
 
