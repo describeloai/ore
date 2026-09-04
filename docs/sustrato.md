@@ -588,6 +588,39 @@ Eso explica por qué Foundry no lo tiene y nosotros sí: ellos indexan el objeto
 salto es una búsqueda local. Nosotros **federamos**, así que sin copia un salto es una consulta al
 origen, y el índice existía para que no lo fuera.
 
+#### Y la medida, que era lo que faltaba
+
+La tesis de arriba se apoya en una cadena —`via` nombra una propiedad, una propiedad es campo de su
+vista, luego la copia tiene la arista— y una cadena sin medir es una cadena. Medida contra el
+corpus entero:
+
+```text
+corpus (vendor/oos)            entidades con `via`          25
+                                 relaciones con `via`       27
+                                 de ellas, `via` simple     24
+                               sin `backedBy` · camino viejo 23
+```
+
+**Veintitrés de veinticinco son del paradigma anterior**, así que el corpus de conformidad no
+ejercita esto en absoluto. Donde sí es medible es en el único ejemplo completo:
+
+| entidad | `via` | su vista | ¿la vista expone la `via`? |
+|---|---|---|---|
+| `supply.Shipment` | `supplierId`, `skuCode` | `supply.envios` · **virtual** | **sí** |
+| `hr.Employee` | `managerId`, `departmentId` | `hr.empleados` · **materializada** | **sí** |
+| `hr.Department`, `customers.Customer`, `customers.Order` | — | **sin `backedBy`** | camino viejo |
+
+**Dos de dos: la propiedad de `via` es campo de su vista.** Y no es suerte — `OOS2022` lo obliga,
+así que **no puede no serlo**: una propiedad de una entidad es campo de su vista o declara
+`derivedFrom`. La cadena se sostiene por una regla que ya existe, no por costumbre.
+
+De las dos, **una ya está materializada**: `hr.Employee` tiene sus aristas dentro de su copia hoy
+mismo, sin que nadie lo haya pretendido.
+
+> **El precio del tercer gemelo, contado:** una entidad —`supply.Shipment`— tendría que declarar
+> `materialized` para poder atravesarse. Una, en todo el corpus. Y las tres que no encajan no lo
+> hacen por esto: no están migradas.
+
 #### La regla que eso escribe sola
 
 Es el tercer gemelo de una familia que ya tiene dos:
@@ -621,14 +654,31 @@ grupo de filas** —contestan *«seguro que no»* o *«probablemente sí»* ante
 límite conocido es que son **por fichero**, y a miles de ficheros abrirlos es el cuello — y una
 copia nuestra es **un** artefacto por digest de plan, así que ese límite no nos toca.
 
-Lo que queda por medir no es la búsqueda por clave: es **la travesía multi-salto**, que es donde
-CSR ganaba por construcción. Y eso no se decide argumentando:
+Lo que queda es **la travesía multi-salto**, que es donde CSR ganaba por construcción. Y contarlo
+en la unidad de este proyecto —**filas miradas**, [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)—
+da una cota que conviene tener escrita antes de medir nada:
 
-> Se decide **contando filas miradas** en los dos caminos sobre los mismos datos, al modo del
-> [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) y de
-> `ore-view/tests/medidas.rs`. Si N saltos sobre una copia Parquet ordenada por clave aguantan, el
-> formato deja de ser una decisión. Si no, la carga de una copia tiene que poder ser otra cosa — y
-> **eso sí cambia el ADR 0015**.
+| | un salto cuesta |
+|---|---|
+| **CSR** | localizar la clave y leer **su lista de adyacencia**: del orden del **grado del nodo** |
+| **Parquet ordenado** | descartar grupos de filas por Bloom y leer **una página**: del orden del **tamaño de página** |
+
+Así que `k` saltos son `k · grado` contra `k · página`, y **quién gana es el cociente entre el
+grado medio y el tamaño de página** — que no es una propiedad del plan: **es una propiedad del
+dato**.
+
+> Y esa es exactamente la forma del hallazgo que `ore-view/tests/medidas.rs` ya produjo para el
+> agregado: *«dónde se cruza el agregado es dato y no plan»* — el mismo documento se cruza en el
+> 2 % con veinte grupos y en el 22,3 % con doscientos cincuenta.
+>
+> Si la respuesta tiene la misma forma, **la decisión también**: no se elige un formato en el
+> diseño, se comparan medidas en el momento, que es lo que `Politica::Trabajo` ya hace.
+
+**Y hoy no se puede medir, dicho para que nadie lo confunda con «no se ha medido»:** el CSR se fue
+con `ore-exec`, así que no hay línea base; y una travesía **no se puede expresar como plan** porque
+el vocabulario de la vista no tiene junta. Medirlo exige construir antes las dos cosas que la
+medida tendría que juzgar — y eso, o se acepta, o se decide por la cota de arriba y se mide
+después.
 
 #### Lo que esto deja abierto, en una frase cada uno
 
