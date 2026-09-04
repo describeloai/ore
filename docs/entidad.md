@@ -63,7 +63,7 @@ sobre esas 7, y el tamaño de la muestra se dice cada vez.
 
 | parte | uso | ¿puede decirlo el sustrato? | veredicto |
 |---|---|---|---|
-| **Significado** · `description`, `aiContext`, `is` | **7/7** | no — vista y tabla tienen `labels` **prohibido** | **suyo** |
+| **Significado** · `description`, `aiContext`, `is` | **7/7** | no — vista y tabla tienen **prohibido** clasificar el dato. La vista admite `oos.maturity`, que es su propio estado (`02-view` §4.1) | **suyo** |
 | **Identidad** · `primaryKey`, `timeKey`, `uniqueKeys` | **7/7** | a veces, y hoy casi nunca — §5 | **suyo, por ahora** |
 | **Historia** · `temporal`, `moved`, `reserved` | **7/7** | no | **suyo** |
 | **Conexión** · `relations`, `via` | **5/7** | **sí** — §6 | **el sustrato ya lo sabe** |

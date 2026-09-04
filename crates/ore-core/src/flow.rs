@@ -311,6 +311,16 @@ fn etiquetas_conocidas(pkg: &Package, lat: &BTreeMap<String, Lattice>, out: &mut
             }
         }
     }
+    // Y la vista, desde que admite `oos.maturity`. Solo su `metadata`: no
+    // tiene etiquetas en ningún otro sitio, y `validate` ya rechazó cualquier
+    // clave que no sea esa. Lo que queda por comprobar es lo que un esquema no
+    // puede — que `DRFAT` no es un nivel de `oos.maturity` — y es exactamente
+    // la pregunta que esta función existe para contestar.
+    for v in pkg.of(Kind::View) {
+        if let Some((_, m)) = v.root.get("metadata") {
+            revisar(v, m);
+        }
+    }
     for c in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
         for ds in c.section("datasources").map(|n| n.items()).unwrap_or(&[]) {
             revisar(c, ds);

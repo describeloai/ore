@@ -569,3 +569,69 @@ fn espejo_o_registro_se_decide_por_vista() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── La vista como ciudadana del repositorio ──────────────────────────────────
+
+/// Una pregunta que nadie ha acordado todavía **lo dice**, y se ve.
+///
+/// Hasta que la vista admitió `oos.maturity`, una vista adivinada de un
+/// catálogo por `ore discover` y una que una organización acordó preguntarse
+/// eran el mismo documento — con la ayuda del comando afirmando que las
+/// proponía en `DRAFT`.
+///
+/// Se afirman las tres mitades de la regla juntas, porque por separado no
+/// dicen nada: que el nivel bueno pasa, que un nivel mal escrito **no**
+/// —`OOS4003`, que es lo que un esquema no puede comprobar— y que `ore view`
+/// lo enseña. Una etiqueta que nadie mira acabaría significando lo que nadie
+/// escribió, que es el argumento con el que se le niega a los demás `kind`.
+#[test]
+fn una_pregunta_en_borrador_lo_dice_y_se_ve() {
+    let vista = |labels: &str| {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+             metadata: {{ name: empleados, namespace: hr{labels} }}\nspec:\n  \
+             owner: team:hr\n  from: {{ table: erp.employees }}\n  fields:\n    \
+             employeeId: employee_id\n"
+        )
+    };
+    let acordada = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+         metadata: { name: iberia, namespace: hr }\nspec:\n  owner: team:hr\n  \
+         from: { view: empleados }\n  fields:\n    id: employeeId\n";
+
+    let arbol = |etiqueta: &str, v: &str| {
+        paquete(
+            etiqueta,
+            &[
+                ("ontology.config.yaml", CONFIG),
+                ("package.yaml", PAQUETE),
+                ("tables/employees.yaml", TABLA),
+                ("views/empleados.yaml", v),
+                ("views/iberia.yaml", acordada),
+            ],
+        )
+    };
+
+    // 1 · el estado declarado se ve, y solo en la que lo declara.
+    let dir = arbol("vista-draft", &vista(", labels: { oos.maturity: DRAFT }"));
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    assert!(out.contains("hr.empleados\n  estado    DRAFT\n"), "{out}");
+    assert!(out.contains("hr.iberia\n  plan"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 2 · y un nivel que no existe no compila. El esquema comprueba la forma;
+    //     que `DRFAT` sea un nivel de `oos.maturity` es otra pregunta.
+    let dir = arbol(
+        "vista-draft-mal",
+        &vista(", labels: { oos.maturity: DRFAT }"),
+    );
+    let s = std::process::Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("validate")
+        .arg(&dir)
+        .output()
+        .expect("no se pudo invocar `ore`");
+    let err = String::from_utf8_lossy(&s.stderr).to_string();
+    assert!(!s.status.success(), "tenía que negarse");
+    assert!(err.contains("OOS4003"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

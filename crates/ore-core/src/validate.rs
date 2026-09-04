@@ -163,6 +163,9 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
 
     if let Some((_, meta)) = root.get("metadata") {
         check_keys(file, meta, kind.metadata_keys(), "metadata.", &mut diags);
+        if kind == Kind::View {
+            labels_de_vista(file, meta, &mut diags);
+        }
     }
     if !kind.sections_at_root()
         && let Some((_, spec)) = root.get("spec")
@@ -227,6 +230,48 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     }
 
     diags
+}
+
+/// Una vista solo puede etiquetarse a sí misma, y con un único retículo.
+///
+/// `metadata_keys` decide **qué campos** admite un documento y no puede decidir
+/// **qué claves** admite un mapa dentro de uno, así que la mitad de la regla
+/// vive aquí. Las dos mitades dicen lo mismo: la vista declara su estado y no
+/// declara significado.
+///
+/// El código es `OOS1005` y no uno nuevo, y eso es deliberado: es el mismo con
+/// el que se hacía cumplir la prohibición entera antes de admitir
+/// `oos.maturity`. Lo que cambió es el conjunto admitido —de vacío a uno—, no
+/// la clase de error.
+///
+/// No se admite el prefijo `x-`, a diferencia de `check_keys`: aquí la clave no
+/// es un campo del vocabulario sino **el nombre de un retículo**, y un retículo
+/// se resuelve contra los declarados. Un `x-acme-loquesea` no resolvería contra
+/// nada y `OOS4003` lo diría más tarde y peor.
+fn labels_de_vista(file: &Path, meta: &Node, out: &mut Vec<Diagnostic>) {
+    let Some((_, labels)) = meta.get("labels") else {
+        return;
+    };
+    for (k, _) in labels.entries() {
+        let Some(name) = k.as_str() else { continue };
+        if name == "oos.maturity" {
+            continue;
+        }
+        out.push(
+            Diagnostic::new(
+                Code::Oos1005,
+                file,
+                format!("clave desconocida `metadata.labels.{name}`"),
+            )
+            .at(k.pos())
+            .help(
+                "una vista solo admite `oos.maturity`, que es el estado de ESTE DOCUMENTO. \
+                 Cualquier otro retículo clasificaría el dato, y eso lo dice la entidad: si la \
+                 vista pudiera declararlo habría dos sitios diciendo qué es una columna, y el \
+                 día que discrepen ninguno diría cuál manda",
+            ),
+        );
+    }
 }
 
 fn check_keys(
@@ -681,5 +726,43 @@ mod tests {
             "  x-acme-owner: plataforma\n  nature: entity",
         );
         assert!(codigos(&t).is_empty(), "{:?}", codigos(&t));
+    }
+
+    fn vista(labels: &str) -> String {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+             metadata: {{ name: empleados, namespace: hr{labels} }}\n\
+             spec:\n  owner: team:rrhh\n  from: {{ table: erp.employees }}\n  \
+             fields:\n    employeeId: employee_id\n"
+        )
+    }
+
+    /// La vista se etiqueta **a sí misma** y a nada más.
+    ///
+    /// Las dos mitades de la misma regla: `metadata_keys` admite el campo, y
+    /// `labels_de_vista` admite una sola clave dentro. Sin la segunda, la
+    /// primera reabriría lo que la prohibición protegía.
+    #[test]
+    fn una_vista_declara_su_estado_y_solo_su_estado() {
+        let ok = vista(", labels: { oos.maturity: DRAFT }");
+        assert!(codigos(&ok).is_empty(), "{:?}", codigos(&ok));
+
+        // Y cualquier otro retículo clasificaría el dato, que es de la entidad.
+        let mal = vista(", labels: { gdpr.sensitivity: high }");
+        assert_eq!(codigos(&mal), vec![Code::Oos1005], "{mal}");
+    }
+
+    /// Y la tabla no admite **ni siquiera** la madurez.
+    ///
+    /// Es la asimetría deliberada: una vista es una decisión y se acuerda por
+    /// etapas; una tabla es un hecho del origen, y los cuatro niveles de
+    /// `oos.maturity` son verbos de acuerdo. Nadie acuerda un hecho.
+    #[test]
+    fn una_tabla_no_admite_ni_su_madurez() {
+        let t = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+             metadata: { name: employees, namespace: erp, labels: { oos.maturity: DRAFT } }\n\
+             spec:\n  datasource: erp\n  object: public.employees\n  \
+             columns:\n    employee_id: {}\n";
+        assert_eq!(codigos(t), vec![Code::Oos1005], "{t}");
     }
 }

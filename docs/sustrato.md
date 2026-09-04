@@ -292,9 +292,25 @@ Esto es lo que la hace sustrato y no ontología, y es estructural: **una `View` 
 > declararlas habría dos sitios diciendo qué es una columna, y el día que discrepen ninguno diría
 > cuál manda.»*
 
+> **⚠️ Corregido, y en el alcance y no en el sujeto.** La vista admite `labels` desde
+> [`02-view` §4.1](../vendor/oos/spec/v1alpha8/02-view.md), y **la única clave admitida es
+> `oos.maturity`** — cualquier otra es `OOS1005`, el mismo código con el que la prohibición
+> entera se hacía cumplir.
+>
+> El argumento de arriba **sigue entero y sigue siendo el que manda**, porque habla de *«qué es
+> una columna»*, o sea **del dato**. `oos.maturity` no dice nada de una columna: dice si la
+> pregunta está acordada, y eso es de la vista y de nadie más. Es el mismo error que ya se
+> corrigió con `Concept` —al que se le negaron las etiquetas por miedo a esta misma duplicación—
+> y lo destapó el mismo disparador: **lo acuñado por inferencia tiene que poder decir que todavía
+> no es verdad**. `ore discover` proponía vistas sin poder marcarlas.
+>
+> Y la **tabla no la admite ni siquiera a ella**: una tabla es un hecho del origen, y los cuatro
+> niveles de ese retículo son verbos de acuerdo. Nadie acuerda un hecho.
+
 Su vocabulario entero lo confirma: `owner`, `from`, `freshness`, `fields`, `where`,
 `materialized`. Ni una clave dice qué **son** las cosas. `owner` es lo más cerca que llega, y es
-custodia, no semántica.
+custodia, no semántica — y `oos.maturity`, que se le añadió después, dice de sí misma y no de las
+cosas.
 
 **Y sin embargo la clasificación la atraviesa, y puede impedir que compile.** Las etiquetas que
 una vista carga le llegan por dos vías, y ninguna es ella misma:

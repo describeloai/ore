@@ -264,16 +264,27 @@ impl Kind {
             // `RequestPolicy` es como `ConduitPolicy`: uno por paquete, sin
             // espacio de nombres. No porta datos, luego no tiene clasificacion.
             | Kind::RequestPolicy
-            // Una vista tampoco admite `labels`, y es la decision de forma que
-            // la define: NO LLEVA SIGNIFICADO. Las etiquetas viven en la
-            // entidad y en el datasource; si la vista pudiera declararlas habria
-            // dos sitios diciendo que es una columna, y el dia que discrepen
-            // ninguno diria cual manda.
-            | Kind::View
-            // Y la tabla tampoco, por lo mismo que la vista y con mas razon:
-            // es el objeto tal cual esta. Su ubicacion la etiqueta el
-            // `datasource`, y lo que significa una columna lo dice la entidad.
+            // La tabla no admite `labels`: es el objeto tal cual esta. Su
+            // ubicacion la etiqueta el `datasource`, y lo que significa una
+            // columna lo dice la entidad. Y tampoco admite `oos.maturity`, que
+            // la vista si —abajo—: una tabla es un HECHO, y los cuatro niveles
+            // de ese reticulo son verbos de acuerdo. Nadie acuerda un hecho.
             | Kind::Table => &["name", "namespace", "description"],
+            // La vista admite `labels`, y la restriccion a `oos.maturity` la
+            // pone `validate::labels_de_vista` porque es sobre la CLAVE, no
+            // sobre el campo.
+            //
+            // Le estuvieron prohibidas, y la prohibicion era correcta en su
+            // sujeto y demasiado ancha en su alcance: lo que protegia es que no
+            // hubiera «dos sitios diciendo que es una columna», y eso es un
+            // argumento sobre EL DATO. La madurez no dice nada de una columna;
+            // dice si esta pregunta esta acordada.
+            //
+            // Es el mismo error que ya se corrigio con `Concept` —ver abajo— y
+            // lo destapo el mismo disparador: `ore discover` propone vistas y no
+            // podia marcarlas, asi que una vista adivinada de un catalogo era
+            // indistinguible de una que alguien acordo preguntarse.
+            Kind::View => &["name", "namespace", "labels", "description"],
             // `Property` es el único documento con `labels` en LOS DOS SITIOS,
             // y la primera versión de este `match` se lo negó por miedo a la
             // duplicación. Era un error, y lo destapó `confidence`: un concepto

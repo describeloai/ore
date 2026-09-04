@@ -195,6 +195,20 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
         vista.contains("proponerlas sería inventarlas"),
         "la ausencia no se explica, y entonces parece un olvido:\n{vista}"
     );
+    // Y sale en `DRAFT`, como la entidad: exponer esto es una decisión, y la
+    // tomó esta máquina mirando un catálogo. Mientras no pudo decirlo, una
+    // vista adivinada y una acordada eran el mismo documento — con la ayuda
+    // del comando afirmando que las proponía en `DRAFT`.
+    assert!(
+        vista.contains("oos.maturity: DRAFT"),
+        "la vista inducida no dice que es una propuesta:\n{vista}"
+    );
+    // La tabla NO, y la asimetría es la regla: una tabla es un hecho del
+    // origen, y los cuatro niveles de `oos.maturity` son verbos de acuerdo.
+    assert!(
+        !tabla.contains("oos.maturity"),
+        "un hecho no se acuerda por etapas:\n{tabla}"
+    );
 
     // La entidad nombra a la VISTA, nunca a la tabla. Si nombrara la tabla, sus
     // propiedades tendrían que llamarse como las columnas físicas.

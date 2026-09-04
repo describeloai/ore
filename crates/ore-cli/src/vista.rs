@@ -89,6 +89,21 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         let Some(qn) = v.qname() else { continue };
         println!("{qn}");
 
+        // El estado del documento, lo primero, porque decide si lo demás
+        // significa algo: un plan impecable sobre una pregunta que nadie ha
+        // acordado sigue siendo un borrador.
+        //
+        // Solo si está declarado. El defecto derivado del `status` del paquete
+        // no lo computa nadie todavía, y enseñarlo aquí sería enseñar una
+        // conducta que el compilador no tiene.
+        if let Some(nivel) = v
+            .meta("labels")
+            .and_then(|l| l.get("oos.maturity").map(|(_, x)| x.clone()))
+            .and_then(|x| x.as_str().map(str::to_string))
+        {
+            println!("  estado    {nivel}");
+        }
+
         let plan = match catalogo.expandir(&qn) {
             Ok(p) => p,
             Err(e) => {

@@ -1888,13 +1888,22 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
 /// Expone **todas** las columnas del objeto, también las que la entidad no
 /// modela por no saber traducir su tipo: la vista es física y no tipa, así que
 /// dar tipo a una columna más tarde no obliga a tocarla.
+///
+/// **Y sale en `DRAFT`, como la entidad.** Esas tres líneas dicen *«esto se
+/// expone»*, y eso es una decisión que nadie ha tomado todavía: la propuso esta
+/// máquina mirando un catálogo. Hasta que la vista admitió `oos.maturity` no
+/// había forma de decirlo, y una vista adivinada era indistinguible de una
+/// acordada — con la ayuda del comando afirmando que las proponía en `DRAFT`.
 fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objeto) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
         "apiVersion: oos.dev/v1alpha8\n\
          kind: View\n\
-         metadata: {{ name: {vista}, namespace: {paquete} }}\n\
+         metadata:\n  \
+           name: {vista}\n  \
+           namespace: {paquete}\n  \
+           labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
            from: {{ table: {} }}\n  \
