@@ -282,9 +282,67 @@ enseñar esto.
 > declaración** — que el paquete diga de qué vistas se compone, en vez de heredarlo del directorio.
 
 Y esa es, exactamente, la pieza que Cognite tiene y nosotros no. No hace falta un `kind` nuevo entre
-la vista y el paquete: hace falta que el manifiesto **nombre** su conjunto. Lo que eso cuesta —y si
-rompe la contención por directorio, que hoy es lo que hace cerrar la costura— **no está medido**, y
-es lo próximo de esta cara.
+la vista y el paquete: hace falta que el manifiesto **nombre** su conjunto.
+
+---
+
+## 7. ¿Rompe eso la contención por directorio? **No hay contención que romper**
+
+El recuento de §6.1 —63 de 63— no podía contestar si eso lo *impone* alguien o es como está escrito
+el corpus. Así que se construye el árbol que el corpus no tiene y se le pregunta al motor:
+[`pruebas-de-fuego/medida-contencion.py`](../pruebas-de-fuego/medida-contencion.py).
+
+**Dos miembros. `infra` tiene la tabla y la vista; `rrhh` tiene solo la entidad, con
+`backedBy: hr.empleados` — que vive en el otro.**
+
+```text
+1. validate del WORKSPACE      ok · sin errores
+2. pack     del WORKSPACE      un solo .oob llamado «infra»,
+                               y dentro Package:infra Y Package:rrhh
+3. validate del MIEMBRO solo   error[OOS2018] `backedBy: hr.empleados` no existe
+4. pack     del MIEMBRO solo   se niega: «no valida, así que no se empaqueta»
+```
+
+> ### La contención no la sostiene el compilador. La sostiene el empaquetador.
+
+El enlazado resuelve por **nombre cualificado sobre el árbol entero** —`Package` es
+`{ root, docs }`, una lista plana— y no consulta jamás a qué miembro pertenece un documento. Los
+`miembros` existen y son lo que dice [`link.rs:88`](../crates/ore-core/src/link.rs:88), pero solo los
+usan `sync`, el candado y la superficie de significado. **Nadie los usa para resolver una
+referencia.**
+
+De ahí tres consecuencias, y las tres cambian el diseño:
+
+**1 · El 63 de 63 no lo garantiza ninguna regla.** Es disciplina de quien escribió el corpus. Hoy se
+puede escribir un workspace que valida perfectamente y cuyos miembros no se pueden publicar por
+separado, y nada avisa hasta que alguien intenta empaquetar uno.
+
+**2 · Y cuando avisa, nombra lo que no es.** `OOS2018` dice *«`backedBy: hr.empleados` no existe»*.
+Existe. Está en el paquete de al lado y no se ha declarado dependencia. **El diagnóstico correcto es
+otro**, y hoy no hay código que lo diga.
+
+**3 · Declarar el conjunto no rompe la contención: la crea.** Es la primera cosa que haría
+comprobable, en `validate` y no en `pack`, una propiedad que hoy solo se descubre al publicar.
+
+### 7.1 · Y el digest aguanta
+
+La preocupación legítima era el digest, porque
+[`canonical-form` §5.2](../vendor/oos/spec/v1alpha1/90-canonical-form.md) hace que **las rutas que
+entran en él sean relativas al paquete** —es lo que valida el caso `package-layout-equivalence`, y
+lo que permite migrar de disposición plana a multipaquete moviendo ficheros—.
+
+Una lista declarada **no lo toca**: vive en `package.yaml`, que ya está dentro del paquete, y sus
+rutas siguen siendo relativas. Y si algún día la lista nombrara una vista de una **dependencia**
+—como hace Cognite—, la maquinaria para eso ya existe y es `dependencies` + el lock por digest.
+**Compone en vez de chocar.**
+
+### 7.2 · Lo que sí destapó y no es de este asunto
+
+`ore pack` sobre la raíz de un workspace de dos miembros escribió **un solo `.oob` llamado `infra`
+que contiene `Package:infra` y `Package:rrhh` a la vez**. Un paquete publicable que lleva dentro el
+manifiesto de otro es un artefacto que no debería existir, y su digest afirma una identidad —`infra`
+1.0.0— sobre un contenido que no es el suyo. **No es parte de esta pregunta y hay que mirarlo
+aparte.**
 
 ---
 
