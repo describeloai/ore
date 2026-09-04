@@ -362,7 +362,9 @@ fn un_edit_que_nombra_la_fila_con_la_columna_no_dice_que_fila() {
     let (ok, out, err) = ore(&["verify", p.to_str().unwrap(), dir.to_str().unwrap()]);
     assert!(!ok, "tenía que rechazar:\n{out}");
     assert!(
-        err.contains("nombra la fila con [employee_id] y su entidad se identifica con [employeeId]"),
+        err.contains(
+            "nombra la fila con [employee_id] y su entidad se identifica con [employeeId]"
+        ),
         "{err}"
     );
 

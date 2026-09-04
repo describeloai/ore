@@ -686,5 +686,4 @@ mod tests {
     // construidos y ejercidos en su propio modulo. La pregunta «¿esta vista se
     // puede deshacer?» sigue teniendo respuesta; lo que ya no hay es quien la
     // haga, hasta que exista el producto que escribe de vuelta en los origenes.
-
 }

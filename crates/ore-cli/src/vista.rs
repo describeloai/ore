@@ -460,8 +460,9 @@ fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
 
     match (materializada, clave.is_empty()) {
         (true, false) => format!("sí · sobre la copia · identifica por {}", clave.join(", ")),
-        (false, _) => "no · la vista es virtual y no tiene dónde sostener una edición · OOS2025"
-            .to_string(),
+        (false, _) => {
+            "no · la vista es virtual y no tiene dónde sostener una edición · OOS2025".to_string()
+        }
         (true, true) => format!(
             "no · `{}` no declara `changes.key`, así que nada dice qué fila toca un edit · OOS2024",
             r.tabla.as_deref().unwrap_or("la raíz")

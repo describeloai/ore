@@ -417,7 +417,6 @@ fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// **Espejo o registro se decide por vista, y `ore view` lo enseña.**
 ///
 /// El «listo cuando» de la Decisión B del

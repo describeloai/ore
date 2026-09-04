@@ -97,10 +97,7 @@ pub fn verificar(paquete: &Path, propuesta: &Path) -> ExitCode {
             ]
         )
     );
-    for (nombre, valor) in [
-        ("topologia", &p.bajo.topologia),
-        ("plan", &p.bajo.plan),
-    ] {
+    for (nombre, valor) in [("topologia", &p.bajo.topologia), ("plan", &p.bajo.plan)] {
         println!("  {nombre:<9} {valor} · sin verificar aquí");
     }
     if !p.bajo.testigos.is_empty() {
@@ -108,9 +105,7 @@ pub fn verificar(paquete: &Path, propuesta: &Path) -> ExitCode {
             println!("  testigo   {obj} = {marca} · sin verificar aquí");
         }
     }
-    println!(
-        "            —las tres las contesta un delegado; `ore` no abre sockets—"
-    );
+    println!("            —las tres las contesta un delegado; `ore` no abre sockets—");
 
     if let (Some(ahora), false) = (&vista_ahora, vista_ok) {
         println!("\n  la vista cambió:");

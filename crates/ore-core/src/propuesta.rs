@@ -181,7 +181,9 @@ impl Propuesta {
                 .map(|(_, v)| {
                     v.entries()
                         .iter()
-                        .filter_map(|(a, b)| Some((a.as_str()?.to_string(), b.as_str()?.to_string())))
+                        .filter_map(|(a, b)| {
+                            Some((a.as_str()?.to_string(), b.as_str()?.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default()

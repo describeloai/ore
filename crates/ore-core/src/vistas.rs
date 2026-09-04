@@ -497,7 +497,10 @@ mod censo {
 fn es_nombre_de_columna(s: &str) -> bool {
     !s.is_empty()
         && !s.chars().any(|c| {
-            matches!(c, '+' | '-' | '*' | '/' | '(' | ')' | ',' | '|' | '<' | '>' | '=' | '\'')
+            matches!(
+                c,
+                '+' | '-' | '*' | '/' | '(' | ')' | ',' | '|' | '<' | '>' | '=' | '\''
+            )
         })
 }
 
