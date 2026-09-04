@@ -213,6 +213,25 @@ Ese era el trato entero del índice de topología, y es el que hay que seguir cu
 
 ## 5. Lo que **no** entra, y no por falta de tiempo
 
+> ### ⚠️ Antes de leer §5.1 a §5.3: de cuándo es lo que citan
+>
+> Las tres apoyan su argumento en [`05-ejecutor`](../vendor/oos/spec/v1alpha1/05-ejecutor.md), y
+> hay que saber qué es ese documento antes de darle peso:
+>
+> ```text
+> 2026-08-29   03-binding.md          el paradigma viejo
+> 2026-08-31   05-ejecutor.md         dos dias despues
+> 2026-08-31   ore-exec/plan.rs       EL MISMO DIA. Se escribieron juntos
+> 2026-09-02   01-table · 02-view     el paradigma nuevo, dos dias mas tarde
+> ```
+>
+> **`05-ejecutor` es la especificación del camino de lectura que este handoff retira.** Es al
+> ejecutor lo que `03-binding` es a la vista, y merece el mismo trato: pasar a **histórico**.
+>
+> Se cita igualmente, porque **el razonamiento de su §2 es bueno y sobrevive**. Lo que no
+> sobrevive son sus términos —*«resuelve bindings»*, *«salvo que el binding lo autorice»*— ni su
+> conclusión, que era *rechazar*. Cada sección de abajo dice qué se queda y qué no.
+
 ### 5.1 · La junta · su materia exacta
 
 No es *«tiene tres razones en contra»*. Eso son consecuencias. La materia es **una ley normativa**,
@@ -227,9 +246,29 @@ BigQuery. Así que federar por clave exige **compensar**, y compensar está proh
 gusto, sino porque *«un motor que compensa está resolviendo, con una máquina que no es la suya y
 sin el índice que la fuente sí tiene, un problema que la fuente resolvía mejor»*.
 
-Esa es la materia. Las tres razones de `00-scope` §6.1 —el precio en la regla de flujo, la
-mantenibilidad incremental, la invertibilidad— son tres formas de mirar la misma prohibición desde
-fuera.
+Esa es la materia — **con una corrección que cambia la conclusión y no el análisis.**
+
+Esa ley es de **v1alpha1**, escrita dos días antes de que existiera una vista, y su respuesta a
+*«el origen no sabe hacer esto»* era **rechazar**. El paradigma de vistas tiene una respuesta mejor
+para la misma pregunta, y ya está escrita: **materializar**.
+
+| | ante «el origen no sabe hacer esto» |
+|---|---|
+| `05-ejecutor` §2 · v1alpha1 | **rechaza** — o se empuja, o no se sirve |
+| `OOS2020` · v1alpha8 | **materializa** — lo que no se puede leer se debe materializar |
+
+> **La familia de gemelos *es* la ley del ejecutor, restablecida.** Donde aquella decía «rechaza»,
+> esta dice «materializa», que es la misma negativa a ser un almacén mediocre con una salida que
+> aquel documento no tenía porque no había copias.
+
+Y eso deja un hueco real, medido y no cerrado: **`OOS2020` solo cubre el caso extremo**
+—`reads: none`, no se puede leer nada—. **No hay ninguna regla que diga *«si el filtro no se puede
+empujar, materializa»***; el motor calcula el residuo y **lo reporta** —`ore view` imprime
+*«residuo: el plan entero»*— sin que nadie lo rechace ni lo obligue a materializar. La ley vieja
+prohibía eso; la nueva todavía no dice nada.
+
+Las tres razones de `00-scope` §6.1 —el precio en la regla de flujo, la mantenibilidad incremental,
+la invertibilidad— son tres formas de mirar la misma prohibición desde fuera.
 
 #### Y de ahí sale el cuarto gemelo, que no habíamos visto
 
@@ -285,10 +324,26 @@ O sea que **la spec sigue mandando, normativamente, un artefacto que ya no exist
 fases que era del paradigma de bindings.** Su §1 describe L2 como *«resuelve **bindings** contra
 fuentes reales»*, y los bindings se retiraron en v1alpha8.
 
-Eso **no lo cierra este handoff**, y decirlo es la mitad de cerrarlo: es una revisión de
-`05-ejecutor` que hay que hacer, y hacerla bien exige antes contestar §5.3. Lo que `B1` sí puede
-hacer, y debe, es **no empeorarlo**: la travesía sobre copias sigue cumpliendo la ley de §2, así
-que lo que cambia es de dónde salen las aristas, no si el motor compensa.
+**Pero «la spec lo manda» no es el argumento que parecía.** `05-ejecutor` se escribió el mismo día
+que la implementación que describía, y dos días antes de que hubiera vistas: no es una norma que
+hayamos incumplido, es **el documento gemelo del crate que se retiró**.
+
+Así que lo que hay que hacer con él es lo que se hizo con `03-binding`: **pasarlo a histórico**, con
+la cabecera que distingue lo que eso significa —sigue siendo normativo para quien declare v1alpha1—
+de lo que no —no se escriben implementaciones nuevas contra él—. Y decir en qué se convirtió cada
+una de sus partes, que es la mitad útil de esa operación:
+
+| `05-ejecutor` v1alpha1 | dónde está en el paradigma de vistas |
+|---|---|
+| §2 · la ley del ejecutor | `OOS2020` y su familia — *rechaza* pasa a ser *materializa* |
+| §3 · las cuatro fases, normativas | **sin sustituto**: es §5.3 |
+| §5 · `fullScan` es una autorización | `Table.reads.fullScan`, migrado sin pérdida |
+| §7 · la marca de agua | `Table.changes.witness` y el testigo del sobre |
+| §1 · *«resuelve bindings»* | vocabulario retirado |
+
+**Eso no lo hace este handoff** —es trabajo en `C:\oos` y merece su propio peldaño— y `B1` sí puede
+y debe **no empeorarlo**: la travesía sobre copias es local, así que sigue honrando el principio de
+§2 aunque el documento que lo enuncia esté a punto de pasar a histórico.
 
 ### 5.3 · «Quién responde una lectura» · qué significa y en qué capa
 
@@ -305,10 +360,15 @@ una capa del producto. Los cuatro, de `00-overview`:
 **La fila que se quedó vacía es `L2`.** No es una capa que falte construir en el producto: es un
 nivel de conformidad de OOS que **ninguna implementación de este repositorio satisface ya**.
 
-Y su definición está escrita en el vocabulario retirado —*«resuelve bindings»*— lo que dice, sin
-más análisis, que **`L2` hay que reescribirlo antes de volver a implementarlo**. Con la travesía de
-`B1` se recupera un trozo de la fase ②; las fases ③ y ④ siguen sin dueño y sin forma decidida en el
-paradigma de vistas.
+Y su definición es de **v1alpha1**, escrita en el vocabulario retirado —*«resuelve bindings contra
+fuentes reales»*—, así que *«nadie implementa L2»* está midiendo el árbol contra **un nivel definido
+en un paradigma que ya no existe**. La frase correcta no es que falte implementarlo:
+
+> **`L2` hay que redefinirlo antes de volver a implementarlo.** Un nivel de conformidad que nombra
+> bindings no puede juzgar a una implementación que solo tiene tablas y vistas.
+
+Con la travesía de `B1` se recupera un trozo de la fase ②. Las fases ③ y ④ siguen sin dueño **y sin
+forma**, que son dos carencias distintas y la segunda es la que hay que resolver primero.
 
 > **Esto es lo más grande que queda abierto en todo el repositorio**, y se dice aquí para que no
 > parezca que la travesía lo cierra. La travesía devuelve **claves**; servir **propiedades** es otra
