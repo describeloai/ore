@@ -245,6 +245,20 @@ struct Shape {
     conduits: BTreeMap<String, BTreeMap<String, String>>,
     /// entidad destino → binding
     bindings: BTreeMap<String, Bind>,
+    /// v1alpha8 · el sustrato, por su EFECTO sobre cada vista.
+    ///
+    /// No se guarda lo que la vista declara: se guarda lo que responde. La raíz
+    /// resuelta por la cadena, el recorte acumulado en columnas físicas y de
+    /// dónde salen de verdad las filas. Es el mismo criterio que `gobernadas`
+    /// —comparar el efecto y no la sintaxis— y hace que un renombre en un
+    /// eslabón intermedio no invente un cambio, y que un recorte de la vista de
+    /// abajo salga en todas las de arriba, que es a quienes les pasa.
+    ///
+    /// Y se compara ESTRUCTURALMENTE, como el `Binding` de v1alpha1: `diff`
+    /// vive en `ore-core` y `ore-view` depende de `ore-core`, así que el digest
+    /// del plan **no está disponible aquí**. No es una preferencia: es el grafo
+    /// de crates.
+    vistas: BTreeMap<String, Vista>,
     policies: BTreeMap<String, cedar::Policy>,
     lattices: BTreeMap<String, Lattice>,
     /// Propiedad → clases de gobierno que la cubren **de hecho**.
@@ -341,6 +355,19 @@ fn lista(n: &Node) -> Vec<String> {
         .iter()
         .filter_map(|i| i.as_str().map(String::from))
         .collect()
+}
+
+/// Lo que una vista responde, no lo que declara.
+#[derive(Default, PartialEq, Eq)]
+struct Vista {
+    /// `erp·public.employees`, bajando por la cadena hasta el suelo.
+    raiz: String,
+    /// De dónde salen de verdad las filas: la copia más cercana, o el origen.
+    lectura: String,
+    /// El recorte acumulado, columna física → valores admitidos. Una columna
+    /// ausente no está restringida, que es distinto de estar restringida a
+    /// nada.
+    recorte: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn shape(pkg: &Package) -> Shape {
@@ -524,6 +551,46 @@ fn shape(pkg: &Package) -> Shape {
                     },
                 );
             }
+            crate::document::Kind::View => {
+                let Some(qn) = d.qname() else { continue };
+                let Ok(r) = crate::vistas::raiz(pkg, d) else {
+                    // Sin raíz no hay efecto que comparar, y quien lo dice es
+                    // `OOS2018` sobre la versión que no resuelve. `diff` no
+                    // duplica un diagnóstico de enlazado.
+                    continue;
+                };
+                // El acumulado de la cadena es una CONJUNCIÓN, así que dos
+                // cláusulas sobre la misma columna se cortan.
+                let mut recorte: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                for (col, vals) in &r.filtros {
+                    let nuevos: BTreeSet<String> = vals.iter().cloned().collect();
+                    recorte
+                        .entry(col.clone())
+                        .and_modify(|e| *e = e.intersection(&nuevos).cloned().collect())
+                        .or_insert(nuevos);
+                }
+                let lectura = match crate::vistas::raiz_de_lectura(pkg, d) {
+                    Some(m) => m
+                        .section("materialized")
+                        .map(|n| {
+                            format!(
+                                "{}·{}",
+                                cadena(n, "datasource").unwrap_or_default(),
+                                cadena(n, "table").unwrap_or_default()
+                            )
+                        })
+                        .unwrap_or_default(),
+                    None => format!("{}·{}", r.datasource, r.objeto),
+                };
+                s.vistas.insert(
+                    qn,
+                    Vista {
+                        raiz: format!("{}·{}", r.datasource, r.objeto),
+                        lectura,
+                        recorte,
+                    },
+                );
+            }
             crate::document::Kind::ConduitPolicy => {
                 for (k, v) in d
                     .section("conduits")
@@ -630,6 +697,7 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
     efectos_y_reglas(&a, &b, &mut changes);
     conductos(&a, &b, &mut changes);
     materializacion(&a, &b, &mut changes);
+    sustrato(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
     gobierno(&a, &b, &mut changes);
 
@@ -1118,6 +1186,111 @@ fn conductos(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                         format!("{reticulo}:{nivel_despues}"),
                     ),
             );
+        }
+    }
+}
+
+/// El sustrato — `OOS5007`, `OOS5019`, `OOS5020`, `OOS5028` y `OOS5029`.
+///
+/// # Esto no extiende `diff`: lo repara
+///
+/// El eje `INDEX` existe desde v1alpha1 y su pregunta es *«¿sigue siendo válido
+/// el artefacto materializado?»* — una pregunta sobre el plano físico, que era
+/// contestable porque el `Binding` llevaba dentro `source` y `materialization`.
+/// v1alpha8 partió el binding en `Table` + `View` y **el eje se quedó sin
+/// sujeto**: `OOS5019` y `OOS5020` siguen calculándose sobre `Kind::Binding`,
+/// vivos en el paradigma anterior y ciegos en este.
+///
+/// Aquí se les devuelve el sujeto. La regla no cambia — su texto de
+/// `91-versioning` §5.3 ya era el correcto — y por eso no son códigos nuevos.
+///
+/// # Y uno que sí es nuevo, con su espejo
+///
+/// El `where` es el único orden que el binding no tenía: su `selector`
+/// recortaba y `diff` nunca lo comparó. Y es **el único cambio del modelo que
+/// el análisis de flujo no puede ver por construcción**, porque `flow`
+/// clasifica columnas y un recorte mueve filas: cambiar `[ES, PT]` por `[ES]`
+/// no mueve una sola etiqueta.
+///
+/// Por eso lleva par espejo, y por la razón que el registro ya enseñaba dos
+/// veces —`OOS5009`/`OOS5011` y `OOS5012`/`OOS5026`—: **cada dirección le duele
+/// a otro.** Estrechar deja al consumidor sin filas que tenía; ensanchar sirve
+/// filas que el contrato excluía, que es *«conceder más en silencio»* — la
+/// definición del peligro que este módulo describe en su cabecera.
+///
+/// Un cambio incomparable —`false` por `true`, o dos conjuntos que se cruzan—
+/// emite **los dos**, y no hace falta un tercer código: pierde filas y gana
+/// filas a la vez, que es exactamente lo que los dos dicen.
+fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
+    for (qn, antes) in &a.vistas {
+        let Some(despues) = b.vistas.get(qn) else {
+            // Una vista que desaparece es lo mismo que una entidad que
+            // desaparece, un piso más abajo: el consumidor la nombraba.
+            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            continue;
+        };
+
+        // OOS5019 · el binding físico, con el sujeto devuelto. La raíz sale
+        // RESUELTA por la cadena, así que esto salta tanto si la vista repunta
+        // como si la tabla de debajo apunta a otro objeto — que para quien
+        // consume es el mismo hecho.
+        if antes.raiz != despues.raiz {
+            out.push(
+                Change::new(Code::Oos5019, Axis::Index)
+                    .sujeto(qn)
+                    .de_a(&antes.raiz, &despues.raiz),
+            );
+        }
+
+        // OOS5020 · de dónde salen las filas. Callarlo dejaría exactamente lo
+        // que su comentario original temía: un índice fantasma sirviendo
+        // lecturas.
+        if antes.lectura != despues.lectura {
+            out.push(
+                Change::new(Code::Oos5020, Axis::Index)
+                    .sujeto(qn)
+                    .de_a(&antes.lectura, &despues.lectura),
+            );
+        }
+
+        // OOS5028 · OOS5029 · el recorte, columna a columna.
+        let columnas: BTreeSet<&String> =
+            antes.recorte.keys().chain(despues.recorte.keys()).collect();
+        for col in columnas {
+            // Una columna ausente no está restringida: es el conjunto de
+            // todos, y `None` lo dice mejor que un conjunto vacío, que
+            // significaría lo contrario.
+            let (x, y) = (antes.recorte.get(col), despues.recorte.get(col));
+            // Estrecha si algún valor que estaba deja de estar; ensancha si
+            // aparece alguno que no estaba. Son independientes, y por eso un
+            // cambio incomparable las enciende **las dos**: pierde filas y gana
+            // filas a la vez.
+            let (estrecha, ensancha) = match (x, y) {
+                (None, None) => (false, false),
+                (None, Some(_)) => (true, false),
+                (Some(_), None) => (false, true),
+                (Some(v), Some(w)) => (!v.is_subset(w), !w.is_subset(v)),
+            };
+            let txt = |s: Option<&BTreeSet<String>>| match s {
+                None => "sin recorte".to_string(),
+                Some(v) => v.iter().cloned().collect::<Vec<_>>().join(","),
+            };
+            // El orden de los dos importa para leer el informe: primero lo que
+            // le pasa a quien lee, que es a quien se le rompe la consulta.
+            if estrecha {
+                out.push(
+                    Change::new(Code::Oos5028, Axis::Consumer)
+                        .sujeto(format!("{qn}.{col}"))
+                        .de_a(txt(x), txt(y)),
+                );
+            }
+            if ensancha {
+                out.push(
+                    Change::new(Code::Oos5029, Axis::Policy)
+                        .sujeto(format!("{qn}.{col}"))
+                        .de_a(txt(x), txt(y)),
+                );
+            }
         }
     }
 }

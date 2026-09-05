@@ -28,6 +28,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0016](0016-el-testigo-y-el-rango.md) · el testigo y el rango | preguntarle al origen **hasta dónde está**, y poder pedirle las filas **de un rango** | **A aceptada · B propuesta** |
 | [0017](0017-la-escritura-sobre-el-sustrato.md) · la escritura sobre el sustrato | una copia nueva **reserva a su base**, y se reescribe entera hasta que una medida diga lo contrario | **propuesto** |
 | [0018](0018-la-ontologia-es-el-sistema-de-registro.md) · la ontología es el sistema de registro | una escritura de la ontología aterriza **en la copia**, nunca en el origen; y escribir obliga a materializar | **aceptado** |
+| [0019](0019-un-cambio-es-un-orden-o-una-identidad.md) · un cambio es un orden o una identidad | de dónde sale un código de compatibilidad: un movimiento en un **orden** —con dirección, y por eso con espejo— o una **sustitución** de identidad, que no la tiene. Y el eje es **un público**, no una categoría | **aceptado** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -80,3 +81,9 @@ eso no contradice a la primera.
 **0007 y 0009 son la misma decisión mirada en dos momentos**: la primera saca el evaluador del
 compilador, la segunda decide qué pasa con lo que quedó fuera el día de publicar. Si alguna
 vez se revisa una, hay que abrir la otra.
+
+**0019 explica el registro entero de `OOS5xxx`, incluido lo que ya estaba**: por qué unos códigos
+tienen espejo y otros no —lo tienen los órdenes cuyas dos direcciones se observan— y por qué los
+seis de sustitución son justo los del plano físico. Se escribió al meter el sustrato en `ore diff`,
+y lo primero que dijo es que eso **no era extender `diff` sino repararlo**: el eje `INDEX` existe
+desde v1alpha1 y v1alpha8 le movió el sujeto de debajo.

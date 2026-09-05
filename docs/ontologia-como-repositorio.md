@@ -19,7 +19,7 @@ Ese encargo lo cumple, y hay cuatro cosas que hace bien y que **nadie más en el
 | | qué hace | por qué es irreductible |
 |---|---|---|
 | **Tipa con significado** | `Money<EUR, 2>` | una columna dice `numeric(12,2)`. La moneda y la escala son una **afirmación**, no un hecho físico |
-| **Clasifica** | `labels`, el retículo | vista y tabla lo tienen **estructuralmente prohibido** — y de ahí cuelga el análisis de flujo entero |
+| **Clasifica** | `labels`, el retículo | vista y tabla lo tienen **estructuralmente prohibido** sobre el DATO — y de ahí cuelga el análisis de flujo entero. (La vista admite `oos.maturity` desde `02-view` §4.1: es su propio estado, no el del dato) |
 | **Acuña** | `is` → `Concept`, `implements` → `Interface` | es significado contra significado. Ningún objeto físico participa |
 | **Versiona el nombre** | `moved`, `reserved` | ⟶ §4 |
 
@@ -86,7 +86,6 @@ inventarlo: hay setenta años de madurez ahí.
 | **Palantir Foundry** | *object type*, sobre un índice, con *link types* configurados a mano | no — consola |
 | **Cognite** | **data model = un conjunto de `views`, con versión** | no — API |
 | **Dremio** | *«Views are the foundation»* — tres capas: preparación, negocio, aplicación | **no, y hay que decirlo** |
-| **Snowflake** | *semantic view*, **objeto de esquema** — y antes era un YAML en un *stage* | **al revés** |
 | **dbt** | *semantic model* sobre un modelo (=vista), en YAML | **sí, y explícito** |
 
 **La primera mitad converge sin discusión: la unidad es la vista.** Dremio lo dice literalmente
@@ -165,23 +164,30 @@ por qué su camino no está disponible.
 Lo que hace este documento no es proponer una dirección nueva. Es **nombrar la que ya tomamos sin
 decirla**. La prueba está en la superficie del producto:
 
-**18 de los 22 verbos de la CLI son verbos de repositorio.**
+**16 de los 22 verbos de la CLI son verbos de repositorio.**
 
 ```text
-paquete      init · add · lock · pack
-verificación check · lint · validate · test · verify
+paquete      init · lock · pack
+verificación lint · validate · test · verify
 cambio       diff · review · plan · report · drift-detect
 entrega      compile · export · promote
 bucle        dev
---------------------------------------------------  18
-dato         discover · view · materialize · serve      4
+--------------------------------------------------  16
+dato         source · discover · view · materialize · cache · serve   6
 ```
+
+> **Recontado, y la versión anterior tenía dos erratas y una omisión.** Decía `add` y `check`, que
+> **no existen**, y no nombraba `source` ni `cache`, que sí. Y hay que decir lo que el recuento no
+> dice: **seis de los veintidós están declarados y no hacen nada** —`lint`, `test`, `plan`,
+> `promote`, `drift-detect` y `serve`, en `SIN_IMPLEMENTAR`—, y cinco de esos seis son de
+> repositorio.
 
 Y por debajo:
 
-- **`diff.rs` es el segundo fichero más grande de `ore-core`** —1.408 líneas—, por detrás solo de
-  `vistas.rs`. Diferenciar dos versiones de una ontología es la segunda cosa que más código nos ha
-  costado;
+- **`diff.rs` es de los tres ficheros más grandes de `ore-core`** —`vistas.rs`, `governance.rs` y
+  él—. Los tres son el sustrato, el gobierno y el cambio, que es exactamente lo que este documento
+  dice que somos. *(La versión anterior decía «el segundo, por detrás solo de `vistas.rs`»;
+  `governance.rs` lo pasó y nadie lo recontó.)*;
 - **v1alpha6 entera** es distribución, firma, transparencia y registro. Su regla es
   `usar(P) ⟹ digest(P) ∈ lock`, y su tesis de diseño es *«el registro no es de confianza»* — que es
   literalmente el modelo de contenido direccionable de git;
@@ -265,6 +271,26 @@ estética:
 > **Una vista pertenece a exactamente un paquete, y no se pueden publicar dos lecturas ontológicas
 > sobre las mismas vistas.** dbt permite justo lo contrario —*«you can create multiple semantic
 > models from each model»*— y nosotros no, por contención de directorio.
+
+> ### ✅ Cerrado, y pidiendo lo que no hacía falta
+>
+> **La membresía no se declara, porque es derivable** —el directorio ya la dice, y redeclararla
+> sería violar P2—. Lo que se midió
+> ([`medida-declaracion.py`](../pruebas-de-fuego/medida-declaracion.py)) es que la pregunta era
+> otra: la **visibilidad**. Tres reglas candidatas para derivarla, y la que parecía buena
+> —*público = lo que nadie del paquete usa*— publicaba **catorce documentos de casos
+> `invalid/`**: desde dentro del paquete, algo publicado y algo muerto se ven igual. La
+> información que falta —*«esto lo expongo a propósito»*— **no está escrita en ninguna parte del
+> árbol**, así que no hay de dónde derivarla.
+>
+> De ahí sale `exports` —[`01-package` §3.2](../vendor/oos/spec/v1alpha1/01-package.md)—, con el
+> nombre de Java y de Node y no el de Cognite, porque lo suyo es membresía y esto es visibilidad.
+> **Ausente significa nada, no todo**: es P4. Y con él llegan `OOS2027` y `OOS2028` — el segundo
+> es el que §7 echaba de menos.
+>
+> La consecuencia que este párrafo pedía **se cumple igual**: dos paquetes pueden publicar dos
+> lecturas sobre la misma vista, porque el que la tiene la exporta y los dos la nombran. Lo que
+> cambia es que ahora **está declarado quién lo permite** en vez de ocurrir por resolución plana.
 
 **2 · Hoy un paquete no es, de hecho, un conjunto de vistas.** 41 de 301 tienen alguna vista; **232
 tienen entidades y ninguna vista.** Es sesgo de corpus —casi todo es anterior a v1alpha7— pero

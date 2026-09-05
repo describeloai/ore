@@ -315,8 +315,8 @@ fusión, no en un rodeo:
 | | | por qué es precondición |
 |---|---|---|
 | **1** | madurez en la vista ✅ | la unidad puede decir en qué estado está |
-| **2** | la declaración —§6.3 de [`ontologia-como-repositorio`](ontologia-como-repositorio.md)— | el paquete dice de qué unidades se compone |
-| **3** | `ore diff` ve el sustrato | sin esto, fusionar esconde el cambio donde nadie lo mira |
+| **2** | la declaración ✅ — `exports`, [`01-package` §3.2](../vendor/oos/spec/v1alpha1/01-package.md) | el paquete dice qué deja usar a otro. Resultó ser **visibilidad**, no membresía: lo segundo lo dice el directorio |
+| **3** | `ore diff` ve el sustrato ✅ | sin esto, fusionar esconde el cambio donde nadie lo mira. Hecho en el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md): `OOS5019`, `OOS5020` y `OOS5007` con el sujeto devuelto, y `OOS5028`/`OOS5029` para el recorte |
 | **4** | `moved` en la vista | sin esto, los 25 renombrados de la fusión son 25 roturas mudas |
 | **5** | M2 · `B0` | la entidad se queda en anotaciones puras |
 | **6** | la fusión | ya no es un rediseño: es borrar `backedBy` y mover un fichero |

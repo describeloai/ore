@@ -268,6 +268,19 @@ codes! {
     // y log. La emisión a GraphQL le dio uno a `contextSurface`.
     Oos5026 = "OOS5026", Compatibility, "autorización de un conducto rebajada";
 
+    // El recorte de una vista, y es lo unico del sustrato que NO es un codigo
+    // resujetado: el `selector` del binding recortaba y `diff` nunca lo
+    // comparo. Es ademas el unico cambio del modelo que el analisis de flujo
+    // no puede ver por construccion — `flow` clasifica COLUMNAS y un recorte
+    // mueve FILAS.
+    //
+    // Par espejo, y por la razon que el registro ya ensenaba dos veces: cada
+    // direccion le duele a otro. Estrechar deja sin filas a quien leia;
+    // ensanchar sirve filas que el contrato excluia, que es «conceder mas en
+    // silencio» — y ahi el retículo no llega.
+    Oos5028 = "OOS5028", Compatibility, "el recorte de una vista se estrecha";
+    Oos5029 = "OOS5029", Compatibility, "el recorte de una vista se ensancha";
+
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
 
@@ -378,6 +391,9 @@ mod tests {
             // de v1alpha1 y la version no.
             Code::Oos2027,
             Code::Oos2028,
+            // El recorte de una vista, que el binding no tenia.
+            Code::Oos5028,
+            Code::Oos5029,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

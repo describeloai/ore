@@ -207,7 +207,9 @@ Lo que desbloquea, y conviene tenerlo separado de lo que no:
 - **El testigo tiene casa.** Hoy no vive en ninguna pieza del motor. En un artefacto vive en la
   cabecera, como en el `.oretopo`.
 - **La copia entra en el grafo de artefactos versionado.** Determinista y firmada ⟹ tiene digest
-  ⟹ el lock la puede fijar, `ore diff` la puede comparar y una rama la puede nombrar. Eso es lo
+  ⟹ el lock la puede fijar, `ore diff` la puede comparar —desde el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md),
+  y lo que compara es **de dónde salen las filas**, no los bytes de la copia— y una rama la puede
+  nombrar. Eso es lo
   que hace que *«versionado y ramificado en plenitud»* valga también para lo materializado, y no
   solo para las declaraciones.
 - **La topología deja de ser un caso especial.** Mismo almacén, misma familia de formato, mismo
