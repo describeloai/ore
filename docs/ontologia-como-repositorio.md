@@ -86,6 +86,7 @@ inventarlo: hay setenta años de madurez ahí.
 | **Palantir Foundry** | *object type*, sobre un índice, con *link types* configurados a mano | no — consola |
 | **Cognite** | **data model = un conjunto de `views`, con versión** | no — API |
 | **Dremio** | *«Views are the foundation»* — tres capas: preparación, negocio, aplicación | **no, y hay que decirlo** |
+| **Snowflake** | *semantic view*, **objeto de esquema** — y antes era un YAML en un *stage* | **al revés** |
 | **dbt** | *semantic model* sobre un modelo (=vista), en YAML | **sí, y explícito** |
 
 **La primera mitad converge sin discusión: la unidad es la vista.** Dremio lo dice literalmente
