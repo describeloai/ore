@@ -141,7 +141,31 @@ el enlace y nada más. El sello no mira la entidad: mira las dos columnas que se
 
 ---
 
-## 6. Lo que este modelo **no** dice
+## 6. Qué se certifica, y qué solo se anuncia
+
+Una implementación no «es conforme» a secas: lo es **a un nivel**, y no todo lo que hace se puede
+certificar. Por eso son dos listas.
+
+| | | |
+|---|---|---|
+| **niveles** | `L0` validador · `L1` servidor de contexto | se comprueban con **una suite de ficheros**, así que se declaran y se verifican |
+| **capacidades** | lectura · materialización · mantenimiento · actuación | se **anuncian y se demuestran**. La especificación no las certifica |
+
+La frontera es una sola frase:
+
+> **Un nivel falla al compilar. Una capacidad falla al responder.**
+
+Y de ahí sale la propiedad que hace que esto sea un estándar y no una plataforma: **toda la
+garantía de gobernanza vive en L0**. Un auditor comprueba que un paquete no filtra información
+clasificada ejecutando un validador sobre el repositorio, **sin acceso a un solo dato**. Cada vez
+que una preocupación cruza de tiempo de ejecución a tiempo de compilación —el sello del índice, el
+dueño del suelo— esa garantía crece.
+
+Detalle normativo en [`00-overview` §3.2](../vendor/oos/spec/v1alpha1/00-overview.md).
+
+---
+
+## 7. Lo que este modelo **no** dice
 
 Cuatro lecturas que se midieron y no se sostienen. Están aquí para que no vuelvan:
 
@@ -154,7 +178,7 @@ Cuatro lecturas que se midieron y no se sostienen. Están aquí para que no vuel
 
 ---
 
-## 7. Dónde está lo demás
+## 8. Dónde está lo demás
 
 Este documento no cuenta cómo se llegó a nada. Eso vive en:
 

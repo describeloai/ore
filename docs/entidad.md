@@ -248,8 +248,12 @@ que son el mismo:
 - **Si `02-entity` pasa a histórico o se reescribe.** A diferencia de `03-binding` y `05-ejecutor`,
   aquí lo que caduca es el **encuadre**, no la materia — y un documento no se retira por tener el
   prólogo viejo. Reescribir §1.1, §1.4 y §9.1 puede bastar; hay que decidirlo, no suponerlo.
-- **`L2`.** Su definición nombra bindings y por eso no puede juzgar a una implementación que solo
-  tiene tablas y vistas. Sigue pendiente y es independiente de todo lo anterior.
+- ~~**`L2`.**~~ **Resuelto, y no como se esperaba.** Se midió, y el problema no era que nombrara
+  bindings: era que L2 y L3 **no son niveles de conformidad**. La propia especificación ya lo decía
+  tres documentos más allá —una comprobación sobre datos *«no es certificable por una suite de
+  ficheros»*—, así que la tabla prometía una escalera con dos peldaños que no se podían pisar. Hoy
+  son dos tablas: **niveles** (L0, L1) y **capacidades** (lectura, materialización, mantenimiento,
+  actuación). `pruebas-de-fuego/medida-los-niveles.py`.
 - **La otra mitad de la migración.** **268 de 320** entidades siguen sin `backedBy`, y
   `acme-retail` solo tiene 2 de 7 migradas. Eso es deuda de corpus, no de modelo — pero se nota en
   cada medida: el corpus de conformidad no ejercita el paradigma nuevo casi en ningún sitio, y por
