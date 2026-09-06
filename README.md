@@ -122,9 +122,9 @@ roles, y una que limita por finalidad tampoco si esa finalidad no la declara nad
 **Y el recorte de filas es un filtro, no una máscara.** Cedar gobierna propiedades: decide si
 `baseSalary` se puede leer, no *qué filas*. Un `scope` de un `Ruleset` declara el recorte
 —«solo las filas cuyo `managerId` es el del que pregunta»— y el compilador lo baja al plan
-como un filtro sobre la columna que el binding mapea. *Una máscara recorta el valor; un
+como un filtro sobre la columna que la vista mapea. *Una máscara recorta el valor; un
 ámbito recorta la fila.* Y un ámbito **falla al compilar** si la propiedad no existe o si
-ningún binding la mapea, en vez de descubrirse al responder.
+ninguna vista la expone, en vez de descubrirse al responder.
 
 **Cada techo tiene dueño.** Elevar la autorización de un conducto es *la* decisión de
 seguridad de este modelo, así que un `ConduitPolicy` declara `owner` —un `team:<handle>`, que
@@ -132,7 +132,7 @@ es lo que se alinea con CODEOWNERS— y de él **heredan las políticas de Cedar
 otra superficie sin dueño propio. `ore report` es el registro que sale de ahí
 ([ADR 0011](docs/decisions/0011-el-informe-no-lista-incumplimientos.md)).
 
-### Nadie escribe un binding a mano
+### Nadie escribe el sustrato a mano
 
 ```console
 $ ore source add --name crm_prod postgres://acme:••••@db.internal:5432/crm
@@ -190,9 +190,9 @@ calentamiento.
 
 > **ORE es *stateless* por defecto y *stateful* por declaración.**
 
-Un repositorio con todos sus bindings en `passthrough` **no necesita base de datos alguna**:
-arranca, mapea el bundle y sirve. El almacenamiento aparece solo cuando un binding declara
-`mode: index` o `cache`.
+Un repositorio sin una sola vista `materialized` **no necesita base de datos alguna**:
+arranca, mapea el bundle y sirve. El almacenamiento aparece solo cuando una vista declara
+`materialized`, o cuando una relación con `via` obliga a copiar sus aristas.
 
 Tres consecuencias: el binario abierto es **apto para producción** en el caso mayoritario;
 la complejidad operativa es proporcional a la ambición y no un peaje de entrada; y un pod

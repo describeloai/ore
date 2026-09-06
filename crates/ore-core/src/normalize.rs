@@ -613,13 +613,17 @@ mod tests {
 
     #[test]
     fn n1_expande_la_forma_corta() {
+        // El vehículo era `targetEntity` de un binding. N1 es una regla del
+        // NORMALIZADOR y no del `kind`, así que cambiarlo por `from.table` de
+        // una vista no pierde nada — y deja de probarse sobre un documento que
+        // el despacho ya rechaza.
         let corto = document(&doc(
-            Kind::Binding,
-            "metadata: { name: erp, namespace: hr }\nspec: { targetEntity: Employee }\n",
+            Kind::View,
+            "metadata: { name: v, namespace: hr }\nspec: { from: { table: empleados } }\n",
         ));
         let largo = document(&doc(
-            Kind::Binding,
-            "metadata: { name: erp, namespace: hr }\nspec: { targetEntity: hr.Employee }\n",
+            Kind::View,
+            "metadata: { name: v, namespace: hr }\nspec: { from: { table: hr.empleados } }\n",
         ));
         assert_eq!(corto.jcs(), largo.jcs());
     }
@@ -651,13 +655,15 @@ mod tests {
     /// N4 en sus dos direcciones, que es donde está el contenido de la regla.
     #[test]
     fn n4_ordena_conjuntos_y_respeta_secuencias() {
+        // `predicatePushdown` era del binding y hoy es la cara `reads` de la
+        // tabla, que es de quien siempre fue: lo que el ORIGEN admite.
         let uno = document(&doc(
-            Kind::Binding,
-            "spec: { capabilities: { predicatePushdown: [range, eq, in] } }\n",
+            Kind::Table,
+            "spec: { reads: { predicatePushdown: [range, eq, in] } }\n",
         ));
         let otro = document(&doc(
-            Kind::Binding,
-            "spec: { capabilities: { predicatePushdown: [in, range, eq] } }\n",
+            Kind::Table,
+            "spec: { reads: { predicatePushdown: [in, range, eq] } }\n",
         ));
         assert_eq!(
             uno.jcs(),

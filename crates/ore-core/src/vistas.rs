@@ -587,23 +587,18 @@ pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded
         .find(|e| e.section("materialized").is_some())
 }
 
-/// Las fuentes físicas de una entidad: las de sus bindings y la raíz de su
-/// vista. Es lo que `governance` necesita para `OOS8005` y lo que `flow`
-/// necesita para heredar la ubicación — y las dos deben verlo igual.
+/// Las fuentes físicas de una entidad: la raíz de la vista que la respalda.
+///
+/// Es lo que `governance` necesita para `OOS8005` y lo que `flow` necesita para
+/// heredar la ubicación — y las dos deben verlo igual.
+///
+/// Devolvía un conjunto porque una entidad podía tener varios bindings, cada
+/// uno con su fuente. Con `Binding` retirado el conjunto tiene como mucho un
+/// elemento, y se mantiene el tipo: quien pregunta *«de dónde sale esto»*
+/// pregunta lo mismo, y cambiar la firma obligaría a decidir aquí qué pasa
+/// cuando no hay ninguna.
 pub fn datasources_de(pkg: &Package, e: &Loaded) -> BTreeSet<String> {
-    let qn = e.qname().unwrap_or_default();
-    let mut out: BTreeSet<String> = pkg
-        .of(Kind::Binding)
-        .filter(|b| {
-            b.section("targetEntity")
-                .and_then(|t| t.as_str())
-                .map(|t| qualify(t, b.meta("namespace").and_then(|n| n.as_str())))
-                .as_deref()
-                == Some(qn.as_str())
-        })
-        .filter_map(|b| b.section("datasourceRef").and_then(|d| d.as_str()))
-        .map(String::from)
-        .collect();
+    let mut out: BTreeSet<String> = BTreeSet::new();
     if let Some(v) = respaldo(pkg, e)
         && let Ok(r) = raiz(pkg, v)
     {

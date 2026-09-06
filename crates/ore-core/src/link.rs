@@ -302,7 +302,6 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     nombres_retirados(pkg, &mut d);
     package_metadata(pkg, &mut d);
     dependencies(pkg, &mut d);
-    datasources(pkg, &mut d);
     entities(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
@@ -629,46 +628,6 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
         }
     }
     None
-}
-
-// ── OOS2004 ─────────────────────────────────────────────────────────────────
-
-fn datasources(pkg: &Package, out: &mut Vec<Diagnostic>) {
-    let declarados: BTreeSet<String> = pkg
-        .of(Kind::OntologyConfig)
-        .filter_map(|c| c.section("datasources"))
-        .flat_map(|n| n.items())
-        .filter_map(|it| {
-            it.get("name")
-                .and_then(|(_, v)| v.as_str())
-                .map(String::from)
-        })
-        .collect();
-
-    for b in pkg.of(Kind::Binding) {
-        let Some(v) = b.section("datasourceRef") else {
-            continue;
-        };
-        let r = v.as_str().unwrap_or("");
-        if !declarados.contains(r) {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos2004,
-                    &b.path,
-                    format!("`datasourceRef: {r}` no está declarado en el manifiesto raíz"),
-                )
-                .at(v.pos())
-                .help(if declarados.is_empty() {
-                    "el manifiesto no declara ningún datasource".to_string()
-                } else {
-                    format!(
-                        "declarados: {}",
-                        declarados.iter().cloned().collect::<Vec<_>>().join(" · ")
-                    )
-                }),
-            );
-        }
-    }
 }
 
 // ── OOS2005 · OOS2006 · OOS2010 ─────────────────────────────────────────────

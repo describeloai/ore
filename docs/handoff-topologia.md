@@ -153,9 +153,10 @@ hacia `materialization.topology`, se declare o no. Sin autorización, `OOS4011`;
 la clave o del enlace por encima, `OOS4002`. Y lo que fluye **es** exactamente esas dos
 propiedades: ninguna otra, ni aunque la vista las exponga.
 
-Vive en `flow::indices_de_topologia`, junto a sus dos hermanos, y solo mira las aristas
-**derivadas** —`Arista::derivada`—: las que salen de un binding las sella su propia declaración
-desde v1alpha1, y contarlas dos veces habría cambiado un resultado viejo.
+Vive en `flow::indices_de_topologia`, junto a sus dos hermanos. Miraba solo las aristas
+**derivadas** —`Arista::derivada`— para no contar dos veces el camino viejo, que sellaba su
+propia declaración. Con `Binding` retirado de la lectura ese camino no existe, así que el
+campo es siempre cierto y sobra: se retira con lo demás que se quedó sin motivo.
 
 | | |
 |---|---|
@@ -351,8 +352,9 @@ que es lo que el [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-tra
 
 ### 5.2 · La travesía del camino viejo · **no está bien cerrada**
 
-Del lado del código sí: una entidad respaldada por un `Binding` no tiene vista que materializar, su
-travesía murió con `ore-exec` y no vuelve. Todo lo demás sigue compilando.
+Del lado del código quedó cerrado de la forma más contundente: **`Binding` se retiró de la
+lectura**, así que no hay entidad que llegue por ahí. La travesía del camino viejo no es que no
+vuelva — es que ya no hay camino viejo.
 
 **Del lado de la especificación, no.** Y esto hay que decirlo entero:
 

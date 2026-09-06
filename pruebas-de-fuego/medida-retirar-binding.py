@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Si nada de esto es de un cliente, ¿que deja de haber que mantener?
+"""NOTA: EJECUTADO. `Binding` se retiro de la lectura, y con el todo lo que
+colgaba: 23 sitios del motor a 5 —el nombre, que se conserva para el
+diagnostico—, 35 casos, dos codigos y dos documentos de spec. Lo de abajo
+es el terreno tal como estaba antes, que es lo que decidio hacerlo.
+
+Si nada de esto es de un cliente, ¿que deja de haber que mantener?
 
 `Binding` se conserva legible porque v1alpha1 no caduca, y eso cuesta: 23
 sitios en el motor, dos codigos con sujeto propio, un documento historico y un

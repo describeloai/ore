@@ -133,7 +133,7 @@ salida. Hay tres, y las tres se comprueban al compilar:
 |---|---|---|
 | la **carga** de una vista | `materialization.payload` | `spec.materialized` |
 | las **aristas** de una travesía | `materialization.topology` | **nadie** — se deriva de `relations` con `via` (P2) |
-| el eje de un `Binding` | el que nombre su eje | el binding, camino de v1alpha1 |
+| ~~el eje de un `Binding`~~ | — | **retirado**: el kind ya no se lee, en ninguna versión |
 
 La segunda es la que se lee al revés con más facilidad: **una entidad con propiedades `critical`
 se puede atravesar por un conducto que solo admite `low`**, porque por la arista viajan la clave y

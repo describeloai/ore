@@ -616,13 +616,6 @@ pub fn import(contrato: &Json) -> BTreeMap<String, Json> {
             }
         }
     }
-    if let Some(Json::Arr(xs)) = c.get("servers") {
-        for s in xs {
-            if let Some((id, b)) = server_a_binding(s) {
-                out.insert(id, b);
-            }
-        }
-    }
     out
 }
 
@@ -782,7 +775,6 @@ fn schema_a_entidad(s: &Json) -> Option<(String, Json)> {
 /// Es una tabla campo → versión, y solo tiene dos entradas porque solo hay dos
 /// campos de v1alpha4 que puedan llegar por un contrato ajeno. Que haya que
 /// escribirla es el precio de que `Kind::since()` clasifique documentos y no
-/// campos; si crece, el sitio correcto es el esquema.
 fn usa_v1alpha4(spec: &BTreeMap<String, Json>) -> bool {
     if spec.contains_key("implements") {
         return true;
@@ -790,47 +782,4 @@ fn usa_v1alpha4(spec: &BTreeMap<String, Json>) -> bool {
     spec.get("properties")
         .and_then(obj)
         .is_some_and(|ps| ps.values().filter_map(obj).any(|d| d.contains_key("is")))
-}
-
-fn server_a_binding(s: &Json) -> Option<(String, Json)> {
-    let m = obj(s)?;
-    let mut meta: BTreeMap<String, Json> = BTreeMap::new();
-    meta.insert("name".into(), m.get("server")?.clone());
-    desprefijar(m, &["namespace"], &mut meta);
-
-    let mut spec: BTreeMap<String, Json> = BTreeMap::new();
-    desprefijar(
-        m,
-        &[
-            "targetEntity",
-            "materialization",
-            "profile",
-            "properties",
-            "selector",
-        ],
-        &mut spec,
-    );
-    for (de, a) in [("type", "datasourceRef"), ("dataset", "source")] {
-        if let Some(v) = m.get(de) {
-            spec.insert(a.to_string(), v.clone());
-        }
-    }
-
-    let mut b: BTreeMap<String, Json> = BTreeMap::new();
-    b.insert("apiVersion".into(), Json::s(crate::document::API_VERSION));
-    b.insert("kind".into(), Json::s(Kind::Binding.as_str()));
-    b.insert("metadata".into(), Json::Obj(meta));
-    b.insert("spec".into(), Json::Obj(spec));
-
-    let ns = cadena(&meta_de(&b), "namespace");
-    let nombre = cadena(&meta_de(&b), "name")?;
-    let id = match ns {
-        Some(ns) => format!("Binding:{ns}.{nombre}"),
-        None => format!("Binding:{nombre}"),
-    };
-    Some((id, Json::Obj(b)))
-}
-
-fn meta_de(b: &BTreeMap<String, Json>) -> BTreeMap<String, Json> {
-    b.get("metadata").and_then(obj).cloned().unwrap_or_default()
 }

@@ -435,10 +435,11 @@ v1alpha8   con backedBy: 14  | sin:   1
 v1alpha1   con backedBy:  3  | sin: 237
 ```
 
-Las 237 son el mecanismo anterior —`Binding`, con la flecha al revés— y **siguen compilando**,
-porque un documento no caduca. La única de v1alpha8 sin `backedBy` es `hr.Department`, del caso
-`mixed-versions`, y está ahí a propósito: respaldada por un binding v1alpha1 en el mismo paquete,
-para afirmar que la migración no roza.
+> ⚠️ **Esa cuenta describe un árbol que ya no existe.** Las que estaban en el mecanismo
+> anterior —`Binding`, con la flecha al revés— **ya no compilan**: el kind se retiró de la
+> lectura, no solo de la escritura, y el caso `mixed-versions` que afirmaba la convivencia se
+> fue con él. `docs/modelo.md` §6 guarda lo único que aquello atestiguaba y sigue siendo
+> cierto: v1alpha8 no sabe escribir una entidad servida desde dos fuentes.
 
 #### Qué queda para que el piso esté completo, y una asimetría que se cae
 

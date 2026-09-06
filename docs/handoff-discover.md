@@ -149,6 +149,6 @@ Lo que sí conviene medir cuando se haga, porque es donde se va a notar:
   una propiedad comprobada por `dependencias.rs`, no una promesa. `review` tampoco: lee el
   catálogo que `discover` dejó, y por eso es puro.
 - **Unir una familia sin poder honrarlo.** `familia/<raíz>` con una columna de tiempo emite
-  una entidad y un binding por hermana, y se **niega** si el eje no está en todas o si no
+  una entidad y una vista por hermana, y se **niega** si el eje no está en todas o si no
   comparten clave primaria: la unión tendría filas sin sitio en el tiempo, o una identidad
   que no es la de ninguna.

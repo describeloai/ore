@@ -188,7 +188,7 @@ Y de eso salen tres cosas que conviene no deshacer:
 
 | | Qué | Por qué |
 |---|---|---|
-| **las columnas de la caché son nombres de propiedad** | la proyección se vuelve la identidad | la caché la escribimos nosotros, y una tabla autodescriptiva no puede desviarse de un binding que alguien edite mañana |
+| **las columnas de la caché son nombres de propiedad** | la proyección se vuelve la identidad | la caché la escribimos nosotros, y una tabla autodescriptiva no puede desviarse de una vista que alguien edite mañana |
 | **la caché necesita proyección + clave + filtros** | no solo lo que se proyecta | sin la columna de un ámbito, el predicado que restringe lo que el principal ve **no se puede aplicar**, y esa lectura devuelve filas de más |
 | **la marca es la más vieja** | ya no es la del índice | una respuesta es tan fresca como su parte más rancia |
 

@@ -85,6 +85,7 @@ print("   " + "-" * 88)
 #   retirada   se suprimio: cero trazas vivas o hay residuo
 #   soportada  sigue en v1alpha1 a proposito: las trazas son correctas
 #   viva       es una pieza de hoy: la pregunta no es si queda, es si esta bien
+#   nombre     se retiro, y solo sobrevive el NOMBRE para el diagnostico
 #   descartada se midio y NO se escribio: comprobar que sigue sin existir
 #   documento  no es codigo: lo que se mide es su CABECERA DE ESTADO
 FILAS = [
@@ -97,7 +98,11 @@ FILAS = [
     # el viejo se fue con `ore-exec`.
     ("5 · la lectura desde la abstraccion", "viva", r"Lectura\b", None, None),
     ("6 · functions.md §7.1", "retirada", r"\bFuncion7\b", None, None),
-    ("7 · 03-binding · el kind", "soportada", r"Kind::Binding", None, "kind: Binding"),
+    # Paso de «soportada» a «retirada» el dia que dejo de leerse. Lo que queda
+    # NO es residuo: es el NOMBRE, que se conserva a proposito para que un
+    # fichero viejo reciba la guia de migracion en vez de «kind desconocido».
+    # Por eso se cuenta aparte y con su propio patron.
+    ("7 · 03-binding · el kind", "nombre", r"Kind::Binding", None, "kind: Binding"),
     ("8 · L2 · nivel de conformidad", "documento", None, r"\bL2\b", None),
     ("9 · la regla del residuo", "retirada", r"residuo_regla", None, None),
     # Nunca se escribio, asi que lo que se comprueba es que siga sin existir.
@@ -114,6 +119,10 @@ for nombre, espera, prs, pspec, pcaso in FILAS:
         v = "cerrado" if hay == 0 else "RESIDUO — %d traza(s)" % hay
     elif espera == "soportada":
         v = "trazas correctas: v1alpha1 sigue vivo" if hay else "sin sujeto"
+    elif espera == "nombre":
+        # El enum, `as_str`, `hasta` y las dos ramas que un `match` exhaustivo
+        # exige. Ni una mas: cualquier otra seria una rama que nunca corre.
+        v = ("solo el nombre — %d sitios" % c) if c <= 6 else "RESIDUO: %d sitios" % c
     elif espera == "descartada":
         v = "nunca se escribio · `sustrato.md` §8.5" if hay == 0 else "SE ESCRIBIO"
     elif espera == "descartada":
