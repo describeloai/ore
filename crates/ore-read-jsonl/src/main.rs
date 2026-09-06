@@ -22,9 +22,23 @@
 //!
 //! # Qué es una «fuente» aquí
 //!
-//! La URL es una **ruta**, y el objeto es el nombre del fichero dentro de ella —
-//! un directorio de NDJSON es un esquema, y cada fichero una tabla. Las columnas
-//! son las claves de cada objeto JSON.
+//! La URL es una **ruta** y un directorio de NDJSON es un esquema: cada fichero
+//! es una tabla y las columnas son las claves de cada objeto JSON.
+//!
+//! El objeto es el nombre del fichero **sin extensión** —`pedidos`, no
+//! `pedidos.ndjson`—, y eso salió de mirar lo que pasaba al inducir: el nombre
+//! del catálogo es `<contenedor>.<objeto>` en las otras dos familias, así que el
+//! punto es un separador. Con la extensión dentro, `clientes.ndjson` y
+//! `pedidos.ndjson` daban los dos la entidad `Ndjson`, y el inductor paraba con
+//! una colisión — con razón, y por un nombre que era el del formato y no el del
+//! objeto. `catalogo::fichero` resuelve la extensión en un solo sitio.
+//!
+//! # Los tres verbos, completos
+//!
+//! `catalogo` era el que faltaba, y lo que faltaba de él no era código: era una
+//! decisión, porque un NDJSON no tiene esquema. Está en `catalogo.rs`.
+
+mod catalogo;
 
 use std::io::Read as _;
 use std::process::ExitCode;
@@ -39,17 +53,25 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Lo que no es el catálogo va por stderr, que es donde `ore` lo muestra
+    // literal. Y va **siempre**, no solo cuando algo falla: un aviso que solo
+    // se imprime al fallar es un aviso que nadie lee.
+    let mut avisos: Vec<String> = Vec::new();
     let resultado = match verbo {
         "leer" => filas(&entrada),
-        // El catálogo de un directorio de ficheros es otro trabajo y no lo
-        // necesita M4. Decirlo es mejor que devolver un catálogo vacío, que
-        // tendría el mismo aspecto que un directorio sin tablas.
-        "catalogo" => Err("`ore-read-jsonl` no sabe leer un catálogo todavía. \
-                           Lo que implementa es `leer`, que es el verbo de la fase ③"
-            .to_string()),
+        // La fuente llega como primer argumento —no es un secreto, y el
+        // catálogo tiene que decir de dónde viene—; la ruta, por stdin.
+        "catalogo" => catalogo::de_directorio(
+            args.get(1).map(String::as_str).unwrap_or("fuente"),
+            entrada.trim(),
+            &mut avisos,
+        ),
         "testigo" => testigo(&entrada),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
+    for a in &avisos {
+        eprintln!("ore-read-jsonl: aviso · {a}");
+    }
 
     match resultado {
         Ok(salida) => {
@@ -90,7 +112,7 @@ fn testigo(peticion: &str) -> Result<String, String> {
             .and_then(|(_, v)| v.as_str())
             .map(String::from)
     });
-    let ruta = std::path::Path::new(&url).join(&objeto);
+    let ruta = catalogo::fichero(&url, &objeto)?;
     match std::fs::read(&ruta) {
         // **Si le nombran una columna, se fecha por ella.** Un fichero sabe
         // hacer las dos cosas, y cual de las dos se quiere lo dice la tabla al
@@ -133,7 +155,7 @@ fn filas(peticion: &str) -> Result<String, String> {
         return Err(porque);
     }
 
-    let ruta = std::path::Path::new(&p.url).join(&p.objeto);
+    let ruta = catalogo::fichero(&p.url, &p.objeto)?;
     let texto = std::fs::read_to_string(&ruta)
         .map_err(|e| format!("no se pudo leer `{}`: {e}", ruta.display()))?;
 
