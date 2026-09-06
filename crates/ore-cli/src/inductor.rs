@@ -1895,6 +1895,52 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
 /// había forma de decirlo, y una vista adivinada era indistinguible de una
 /// acordada — con la ayuda del comando afirmando que las proponía en `DRAFT`.
 fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objeto) -> String {
+    let campos: Vec<(String, String)> = t
+        .columnas
+        .iter()
+        .filter(|c| objeto.columnas.contains(&c.nombre))
+        .map(|c| (identificador(&c.nombre), c.nombre.clone()))
+        .collect();
+    documento_vista(
+        vista,
+        paquete,
+        owner,
+        &Origen::Tabla(identificador(&objeto.nombre)),
+        &campos,
+        &[],
+    )
+}
+
+/// De dónde sale una vista. Los dos casos del vocabulario, y no hay un tercero.
+pub enum Origen {
+    Tabla(String),
+    Vista(String),
+}
+
+/// **El emisor de una `View`, y es el único.**
+///
+/// Lo usan el inductor —que propone una por cada objeto espejado— y
+/// `ore view add` —que autora una a mano—. Que sea **el mismo** no es
+/// economía: una vista escrita por una interfaz y una inducida tienen que ser
+/// el mismo texto, o hay dos emisores y divergen en el caso que ninguna prueba
+/// ejerce. Es la figura que este árbol lleva encontrando y cerrando desde que
+/// existen dos derivaciones de lo mismo.
+///
+/// `campos` va **en orden**: el del origen cuando lo emite el inductor, el que
+/// pidió quien la autora cuando es a mano. Reordenar aquí sería decidir por
+/// ellos.
+pub fn documento_vista(
+    vista: &str,
+    paquete: &str,
+    owner: &str,
+    de: &Origen,
+    campos: &[(String, String)],
+    recorte: &[(String, Vec<String>)],
+) -> String {
+    let (clave, valor) = match de {
+        Origen::Tabla(t) => ("table", t),
+        Origen::Vista(v) => ("view", v),
+    };
     let mut s = String::new();
     let _ = write!(
         s,
@@ -1906,23 +1952,30 @@ fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objet
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
-           from: {{ table: {} }}\n  \
+           from: {{ {clave}: {valor} }}\n  \
            # Ni `freshness` ni `materialized`: son decisiones de operación con\n  \
            # coste, y proponerlas sería inventarlas.\n  \
-           fields:\n",
-        identificador(&objeto.nombre)
+           fields:\n"
     );
-    for c in t
-        .columnas
-        .iter()
-        .filter(|c| objeto.columnas.contains(&c.nombre))
-    {
-        let _ = writeln!(
-            s,
-            "    {}: {}",
-            identificador(&c.nombre),
-            escalar_yaml(&c.nombre)
-        );
+    for (prop, col) in campos {
+        let _ = writeln!(s, "    {prop}: {}", escalar_yaml(col));
+    }
+    if !recorte.is_empty() {
+        let _ = writeln!(s, "  where:");
+        for (col, valores) in recorte {
+            let _ = match valores.as_slice() {
+                [uno] => writeln!(s, "    {col}: {}", escalar_yaml(uno)),
+                varios => writeln!(
+                    s,
+                    "    {col}: [{}]",
+                    varios
+                        .iter()
+                        .map(|v| escalar_yaml(v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+        }
     }
     s
 }
@@ -1961,6 +2014,10 @@ fn capitalizar(id: &str) -> String {
 /// inventar un carácter — por eso el nombre físico sigue entero en `columns` de
 /// la tabla y en el valor de `fields` de la vista, que son los dos sitios donde
 /// lo físico se dice tal cual. (Decía «en el binding»: se retiró en v1alpha8.)
+pub fn identificador_publico(bruto: &str) -> String {
+    identificador(bruto)
+}
+
 fn identificador(bruto: &str) -> String {
     let mut out = String::new();
     for c in bruto.chars() {
@@ -3032,5 +3089,88 @@ mod tests {
         assert_eq!(entidad("public.tb_order"), "Tb_order");
         assert_eq!(identificador("2024_total"), "t_2024_total");
         assert_eq!(identificador("first.name"), "first_name");
+    }
+}
+
+#[cfg(test)]
+mod emisor {
+    use super::*;
+
+    /// **El emisor es uno**, y esta prueba es la que impide que se separe.
+    ///
+    /// Lo llaman el inductor —que propone una vista por objeto— y
+    /// `ore view add` —que autora una a mano—. Si divergieran, una vista
+    /// escrita desde una interfaz y una inducida serían textos distintos para
+    /// la misma cosa, y la diferencia aparecería en el caso que ninguna prueba
+    /// ejerce: el escapado de un nombre raro, el orden de los campos.
+    #[test]
+    fn una_vista_sobre_una_tabla_sale_en_draft_y_sin_operacion() {
+        let s = documento_vista(
+            "clientes_eu",
+            "ventas",
+            "team:ventas",
+            &Origen::Tabla("clientes".into()),
+            &[("id".into(), "id".into()), ("pais".into(), "cod_pais".into())],
+            &[],
+        );
+        assert!(s.contains("kind: View"), "{s}");
+        assert!(s.contains("labels: { oos.maturity: DRAFT }"), "{s}");
+        assert!(s.contains("from: { table: clientes }"), "{s}");
+        assert!(s.contains("    id: id\n    pais: cod_pais\n"), "{s}");
+        // Ni `freshness` ni `materialized`: son decisiones de operación con
+        // coste, y proponerlas sería inventarlas.
+        assert!(!s.contains("freshness:"), "{s}");
+        assert!(!s.contains("materialized:"), "{s}");
+        assert!(!s.contains("where:"), "{s}");
+    }
+
+    /// Una vista **sobre otra vista** usa la otra clave de `from`, que es el
+    /// segundo caso del vocabulario y no hay un tercero.
+    #[test]
+    fn una_vista_sobre_otra_vista_sale_por_view_y_no_por_table() {
+        let s = documento_vista(
+            "iberia",
+            "ventas",
+            "team:ventas",
+            &Origen::Vista("clientes".into()),
+            &[("id".into(), "id".into())],
+            &[],
+        );
+        assert!(s.contains("from: { view: clientes }"), "{s}");
+    }
+
+    /// El recorte: **una igualdad o una lista**, que es lo único que el
+    /// vocabulario admite. Un nombre repetido es la lista.
+    #[test]
+    fn el_recorte_sale_como_igualdad_o_como_lista() {
+        let s = documento_vista(
+            "v",
+            "p",
+            "o",
+            &Origen::Tabla("t".into()),
+            &[("id".into(), "id".into())],
+            &[
+                ("borrado".into(), vec!["false".into()]),
+                ("pais".into(), vec!["ES".into(), "PT".into()]),
+            ],
+        );
+        assert!(s.contains("    borrado: false\n"), "{s}");
+        assert!(s.contains("    pais: [ES, PT]\n"), "{s}");
+    }
+
+    /// Y un nombre que no es un escalar simple **se entrecomilla**, con la
+    /// misma función que ya usaba el inductor. Es justo lo que se perdería si
+    /// una interfaz escribiera el YAML por su cuenta.
+    #[test]
+    fn una_columna_con_forma_rara_se_entrecomilla() {
+        let s = documento_vista(
+            "v",
+            "p",
+            "o",
+            &Origen::Tabla("t".into()),
+            &[("ref".into(), "Worker_Reference.ID".into())],
+            &[],
+        );
+        assert!(s.contains("ref: \"Worker_Reference.ID\""), "{s}");
     }
 }

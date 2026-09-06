@@ -11,6 +11,7 @@ mod cache;
 mod candado;
 mod empaquetar;
 mod fuente;
+mod autoria;
 mod inductor;
 mod inicio;
 mod lector;
@@ -70,6 +71,41 @@ struct Cli {
 /// Lo que se puede hacer con una fuente. Hoy solo darla de alta; `list` y
 /// `remove` esperan a tener más de una cosa que decir que la que ya dice el
 /// manifiesto, que se lee.
+/// Lo que se puede hacer con una vista mas alla de mirarla.
+#[derive(Subcommand)]
+enum AccionVista {
+    /// **Autora una pregunta nueva sobre un hecho.**
+    ///
+    /// El tercer acto: `discover` espeja, `review` decide lo que la induccion
+    /// no supo decidir, y esto escribe una vista que nadie propuso. Usa el
+    /// MISMO emisor que el inductor, para que una vista autorada y una
+    /// inducida sean el mismo texto.
+    ///
+    /// `fields` empieza con TODAS las columnas del origen y se restan: quitar
+    /// una es una decision visible y olvidarse de anadir una no lo es.
+    Add {
+        /// Como se llama esta pregunta. **No se deriva**: el nombre derivado ya
+        /// lo cogio la vista que el inductor propuso por el objeto.
+        nombre: String,
+        /// La tabla o la vista de la que sale. Cualificado o corto.
+        #[arg(long = "from", value_name = "TABLA|VISTA")]
+        de: String,
+        /// `propiedad=columna`, o solo `columna`. Repetible. Sin ninguno, van
+        /// todas las del origen.
+        #[arg(long = "field", value_name = "PROP=COL")]
+        campos: Vec<String>,
+        /// `columna=valor`. Repetible; el mismo nombre dos veces es una lista.
+        #[arg(long = "where", value_name = "COL=VALOR")]
+        recorte: Vec<String>,
+        /// Quien responde. Sin el se escribe `cambiame`, que NO valida.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Raiz del paquete donde vive el origen.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
 #[derive(Subcommand)]
 enum AccionFuente {
     /// Da de alta una fuente: el secreto va a `.env.local` y el manifiesto solo
@@ -327,6 +363,14 @@ enum Command {
     /// origen, y si la copia compila. Todo desde el árbol de ficheros: no
     /// ejecuta, no mide, no abre nada.
     View {
+        /// `add` autora una vista nueva; sin subcomando, informa.
+        ///
+        /// Clap prefiere el subcomando cuando el primer token coincide con
+        /// su nombre, asi que `ore view <ruta>` sigue funcionando. Un
+        /// directorio que se llamara literalmente `add` seria ambiguo, y es un
+        /// precio que se paga para no romper el mando que ya existia.
+        #[command(subcommand)]
+        accion: Option<AccionVista>,
         #[arg(default_value = ".")]
         path: PathBuf,
     },
@@ -419,7 +463,13 @@ fn main() -> std::process::ExitCode {
     match &cli.command {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
-        Command::View { path } => return vista::ver(path),
+        Command::View {
+            accion: Some(AccionVista::Add { nombre, de, campos, recorte, owner, path }),
+            ..
+        } => {
+            return autoria::anadir(path, nombre, de, campos, recorte, owner.as_deref());
+        }
+        Command::View { path, .. } => return vista::ver(path),
         Command::Verify { propuesta, path } => return verificar::verificar(path, propuesta),
         Command::Materialize {
             path,
