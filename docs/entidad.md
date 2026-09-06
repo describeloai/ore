@@ -195,6 +195,17 @@ era media vista:
 > partes que nadie más puede decir— **más una redeclaración del sustrato**: 38 nombres repetidos y
 > una arista que la copia ya contiene.
 
+> ⚠️ **La segunda mitad se midió, y no era media entidad: eran 22 nombres.**
+> `pruebas-de-fuego/medida-que-queda-de-la-entidad.py`.
+>
+> La arista **no** la contiene la copia — `via` es de donde el índice la deriva, y quitarla borra
+> el dato; eso mató a `B0`. Y de los «38 nombres repetidos», hoy 76: **54 sostienen** la clave
+> primaria, una `via` o el origen de una derivada, y de los 22 que quedan sobra **el nombre**, no
+> la propiedad — el tipo sigue siendo la única fuente, porque *la vista no tipa*.
+>
+> El diagnóstico acertó la forma —había dos cosas— y se equivocó en el tamaño de la segunda. La
+> entidad no es «dos cosas con un nombre»: es **una**, con 22 nombres de más.
+
 Y es el problema espejo del que medimos en Cognite: **su view hace dos trabajos** —mapear y ser
 tipo lógico con `implements`— y la nuestra hace uno. Aquí es la **entidad** la que hace dos.
 
@@ -203,8 +214,8 @@ que son el mismo:
 
 | | qué hace | precio medido |
 |---|---|---|
-| **M2** | los nombres que solo repiten; `properties` pasa a **anotar** | 38 de 71 entonces, 67 de 121 hoy — y las anotaciones se quedan |
-| ~~**B0** · `OOS2026`~~ | **medido y descartado.** No quitaba y tampoco obligaba: exigía el conducto de la **carga** para copiar **dos columnas** | **cero** — deja la entidad como estaba |
+| **M2** | ~~los nombres que solo repiten~~ → **22 nombres**, y solo el nombre | de 76 que solo tipan, 54 sostienen clave, `via` o derivada. Y quitar el tipo degrada en silencio: `quantity` pasa de `Integer` a `String` **sin un error** |
+| ~~**B0** · `OOS2026`~~ | **medido y descartado.** No quitaba y tampoco obligaba: exigía el conducto de la **carga** para copiar **dos columnas** | **cero** — deja la entidad como estaba. Lo que sí salió de ahí es el sello del índice, encendido en `04-flow` §4.2 |
 
 ---
 
@@ -321,6 +332,22 @@ unidad fusionada usaría esa misma partición.
 > **`Entity` no es una abstracción: es un fichero de anotaciones.** Después de M2 no queda
 > en ella nada que necesite un documento propio, y `backedBy` es el precio de tenerlo.
 
+> ⚠️ **Y esto también se midió, quitando una entidad de verdad.** Sin `supply.Shipment` el
+> repositorio **compila igual** — y sus nueve campos pasan a `String`, sus dos aristas dejan de
+> existir, y el análisis de flujo se queda sin nada que sellar.
+>
+> De los trece campos de su gramática, el sustrato podría decir **dos y medio** —`primaryKey`
+> (`changes.key` lo dice en 8 de 61 tablas), `uniqueKeys`, y el nombre de una propiedad—. Los
+> otros diez no tienen dónde vivir: el tipo, la etiqueta, la arista, el tiempo, la forma, la
+> flecha.
+>
+> Así que no es un fichero de anotaciones: es **el único sitio del repositorio donde hay
+> significado**, y eso es exactamente coherente con lo demás — la tabla es un hecho y no significa
+> nada, la vista es una pregunta y no lleva significado. Alguien tenía que llevarlo.
+>
+> Lo que sigue en pie del §10 es lo otro: que no necesite un **documento** propio no es lo mismo
+> que no haga falta. La fusión sigue siendo mover el significado a la vista, no borrarlo.
+
 Lo que impide fusionar hoy **no es el modelo: es que la vista todavía no es ciudadana del
 repositorio**. Y eso convierte la escalera que ya estábamos subiendo en la precondición de la
 fusión, no en un rodeo:
@@ -331,5 +358,5 @@ fusión, no en un rodeo:
 | **2** | la declaración ✅ — `exports`, [`01-package` §3.2](../vendor/oos/spec/v1alpha1/01-package.md) | el paquete dice qué deja usar a otro. Resultó ser **visibilidad**, no membresía: lo segundo lo dice el directorio |
 | **3** | `ore diff` ve el sustrato ✅ **entero** — 13 mutaciones mudas → 0 | sin esto, fusionar esconde el cambio donde nadie lo mira. Hecho en el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md): `OOS5019`, `OOS5020` y `OOS5007` con el sujeto devuelto, y `OOS5028`/`OOS5029` para el recorte |
 | **4** | `moved` en la vista y en el manifiesto ✅ | sin esto, los renombrados de la fusión eran roturas mudas. Y al medirlo salió que `moved` renombraba **miembros**, no documentos: hacía falta el alcance ancho, que es la semántica original de Terraform — `01-package` §3.4 |
-| **5** | ~~`B0`~~ · M2 | `B0` **se midió y no se escribe**: exigía el conducto de la carga para copiar dos columnas, y dejaba el ejemplo insignia sin compilar sin que el autor pudiera arreglarlo — `pruebas-de-fuego/medida-b0-impagable.py`. **M2** sigue en pie, y arrastra una pieza que no existe: el mapeo `physicalType` → tipo OOS **en el núcleo** — hoy vive una vez por driver y solo en el descubrimiento |
+| **5** | ~~`B0`~~ · ~~M2~~ | Los dos medidos, y ninguno adelgaza la entidad. `B0` pedía el conducto de la **carga** para copiar **dos columnas**, y de ahí salió lo que sí faltaba: el **sello del índice**, encendido en `04-flow` §4.2 con tres casos. **M2** es 22 nombres, no 38: el resto sostiene la clave, una `via` o una derivada, y el tipo no lo repite nadie. Lo que queda de M2 es `OOS2022` con los papeles cambiados, sin pieza nueva |
 | **6** | la fusión | ya no es un rediseño: es borrar `backedBy` y mover un fichero |
