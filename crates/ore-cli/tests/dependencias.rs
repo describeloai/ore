@@ -82,7 +82,18 @@ const VETADAS: &[(&str, &str)] = &[
 /// del workspace sin una sola dependencia ajena: el cierre sube exactamente en
 /// él y en nada más, que es la clase de subida que este testigo existe para
 /// distinguir de las otras.
-const CIERRE: usize = 34;
+///
+/// **34 → 33 al derivar los miembros en vez de enumerarlos.** La cifra no bajó
+/// porque el árbol adelgazara: bajó porque **`ore-view` se estaba contando como
+/// si fuera de fuera**. La lista de miembros estaba escrita a mano con cinco de
+/// los catorce que hay, y de los nueve que faltaban solo uno lo alcanza
+/// `ore-cli` — por eso el error era de uno y no de nueve, y por eso llevaba
+/// tiempo sin verse.
+///
+/// Es exactamente la forma de envejecer que este fichero vigila en el árbol de
+/// dependencias y no vigilaba en sí mismo: cada crate nuevo del workspace
+/// entraba en el recuento sin que nada obligara a añadirlo.
+const CIERRE: usize = 33;
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
@@ -170,6 +181,51 @@ fn el_driver_esta_donde_esta_por_algo() {
     );
 }
 
+/// **Y la derivación también se comprueba**, porque una lista derivada que se
+/// rompe en silencio es peor que una escrita a mano: la escrita envejece y se
+/// ve; una que devuelve vacío hace que el guardián cuente los crates de la casa
+/// como si fueran de fuera, y la cifra sube sin que nadie sepa por qué.
+///
+/// El cotejo contra `crates/` es **un contraste, no la fuente**. Este fichero
+/// dice que el reparto en directorios no demuestra nada sobre dependencias, y
+/// sigue siendo cierto: aquí no se está midiendo qué depende de qué, se está
+/// comprobando que un analizador de texto no se ha quedado corto.
+#[test]
+fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("Cargo.lock"),
+    )
+    .expect("Cargo.lock");
+    let locales = locales(&lock);
+
+    let en_disco: BTreeSet<String> = std::fs::read_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
+    )
+    .expect("crates/")
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().join("Cargo.toml").is_file())
+    .map(|e| e.file_name().to_string_lossy().into_owned())
+    .collect();
+
+    let sin_derivar: Vec<&String> = en_disco.iter().filter(|n| !locales.contains(*n)).collect();
+    assert!(
+        sin_derivar.is_empty(),
+        "estos crates están en `crates/` y la derivación no los ve como de la \
+         casa: {sin_derivar:?}.\n  El guardián los contaría como dependencias \
+         ajenas y su cifra subiría sin motivo."
+    );
+    // Y por el otro lado: nada de fuera se cuela como propio.
+    for ajena in ["clap", "sha2", "anyhow", "thiserror"] {
+        assert!(
+            !locales.contains(ajena),
+            "`{ajena}` viene del registro y la derivación la da por propia: \
+             entonces el guardián dejaría de contarla"
+        );
+    }
+}
+
 // ── La medición ─────────────────────────────────────────────────────────────
 
 /// Cierre transitivo de un paquete según `Cargo.lock`, sin contarlo a él ni a
@@ -189,14 +245,7 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
         "`{raiz}` no está en Cargo.lock: ¿se renombró el paquete?"
     );
 
-    let propios: BTreeSet<&str> = [
-        "ore-core",
-        "ore-cli",
-        "ore-driver",
-        "ore-read-jsonl",
-        "ore-read-postgres",
-    ]
-    .into();
+    let propios = locales(&lock);
     let mut vistos = BTreeSet::new();
     let mut pila = vec![raiz.to_string()];
     while let Some(p) = pila.pop() {
@@ -206,8 +255,45 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
             }
         }
     }
-    vistos.retain(|d| !propios.contains(d.as_str()));
+    vistos.retain(|d| !propios.contains(d));
     vistos
+}
+
+/// **Los crates de la casa, derivados del mismo fichero que todo lo demás.**
+///
+/// Un paquete de `Cargo.lock` que **no lleva `source`** viene de una ruta
+/// local; uno de fuera lleva `source = "registry+…"`. Es lo que cargo escribe,
+/// no una convención nuestra.
+///
+/// # Por qué del lock y no del directorio
+///
+/// Porque este fichero ya lo tiene dicho de la otra medida y vale igual aquí:
+/// *«el reparto en directorios no demuestra nada — `cargo` no mira los
+/// directorios»*. Listar `crates/` habría cambiado una lista a mano por una
+/// convención de carpetas, que envejece igual el día que un miembro viva en
+/// otro sitio.
+///
+/// Esto sustituye a una lista escrita a mano que tenía **cinco de los trece**
+/// miembros. No era un agujero —el guardián seguía saltando si el árbol crecía—
+/// pero contaba ocho crates de la casa como si fueran de fuera, y cada crate
+/// nuevo del workspace entraba en el recuento sin que nada obligara a añadirlo.
+fn locales(lock: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for bloque in lock.split("[[package]]") {
+        let nombre = bloque
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("name = "))
+            .map(|v| v.trim_matches('"').to_string());
+        let de_fuera = bloque
+            .lines()
+            .any(|l| l.trim().starts_with("source = "));
+        if let Some(n) = nombre
+            && !de_fuera
+        {
+            out.insert(n);
+        }
+    }
+    out
 }
 
 /// `Cargo.lock` es TOML, y ORE no lleva un analizador de TOML — ni lo va a llevar
