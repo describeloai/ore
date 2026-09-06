@@ -222,7 +222,9 @@ que son el mismo:
 ## 9. Lo que esta medida **no** decide
 
 - **Si `changes.key` debe volverse obligatorio.** Es lo único que haría derivable `primaryKey`, y
-  es una decisión sobre la tabla. Sin medir.
+  es una decisión sobre la tabla. Medido a medias: hoy lo declaran **8 de 61** tablas, así que
+  derivarlo de ahí serviría para el 13 % y haría obligatorio un campo que hoy es opcional en el 87 %
+  restante. La decisión sigue sin tomar.
 - **Qué pasa con `02-entity` §9.1 y la emisión a Ossie.** Hay una norma muerta y una tabla de
   emisión con tres filas huérfanas. Es trabajo en `C:\oos` y merece su propio peldaño.
 - **Si `02-entity` pasa a histórico o se reescribe.** A diferencia de `03-binding` y `05-ejecutor`,
@@ -230,8 +232,10 @@ que son el mismo:
   prólogo viejo. Reescribir §1.1, §1.4 y §9.1 puede bastar; hay que decidirlo, no suponerlo.
 - **`L2`.** Su definición nombra bindings y por eso no puede juzgar a una implementación que solo
   tiene tablas y vistas. Sigue pendiente y es independiente de todo lo anterior.
-- **La otra mitad de la migración.** 35 entidades siguen con `Binding` y sin `backedBy`, y
-  `acme-retail` solo tiene 2 de 7 migradas. Eso es deuda de corpus, no de modelo.
+- **La otra mitad de la migración.** **268 de 320** entidades siguen sin `backedBy`, y
+  `acme-retail` solo tiene 2 de 7 migradas. Eso es deuda de corpus, no de modelo — pero se nota en
+  cada medida: el corpus de conformidad no ejercita el paradigma nuevo casi en ningún sitio, y por
+  eso las medidas de estos cinco peldaños han tenido que apoyarse en el único ejemplo completo.
 
 ---
 
@@ -307,13 +311,18 @@ filas necesita quién las conteste»*.
 ### 10.4 · Lo que cuesta, y no es conceptual
 
 ```text
-267 de 292 entidades no tienen `backedBy`, y 207 no tienen nada
- 25 de  25 parejas resueltas tienen nombres DISTINTOS  (hr.Employee <- empleados)
+268 de 320 entidades no tienen `backedBy`     deuda de migración, no capacidad
+ 52 de  52 parejas resueltas son 1:1          hoy nada se pierde por cardinalidad
+ 52 de  52 tienen nombres DISTINTOS           `hr.Employee` ← `empleados`
 ```
 
-Las 267 son deuda de migración, no una capacidad. Los 25 nombres sí son precio: **cada fusión mata
-un nombre**, y hay que poder decir en qué se convirtió. Es exactamente para lo que existe `moved`
-— que la vista todavía no tiene.
+Las 268 son deuda de migración. Los 52 nombres sí son precio: **cada fusión mata un nombre**, y hay
+que poder decir en qué se convirtió — para eso existe `moved`, que la vista **ya tiene** desde el
+peldaño 4.
+
+Y el 1:1 hay que leerlo con cuidado: dice que hoy no se pierde nada, no que no se pierda nada. La
+gramática admite n:1 y el propio ejemplo dice para qué —*«dos entidades pueden respaldarse de la
+misma sin duplicar el mapeo»*—. Lo que se perdería es una capacidad que nadie ha usado todavía.
 
 ### 10.5 · Y una colisión, con precedente resuelto
 
@@ -359,4 +368,38 @@ fusión, no en un rodeo:
 | **3** | `ore diff` ve el sustrato ✅ **entero** — 13 mutaciones mudas → 0 | sin esto, fusionar esconde el cambio donde nadie lo mira. Hecho en el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md): `OOS5019`, `OOS5020` y `OOS5007` con el sujeto devuelto, y `OOS5028`/`OOS5029` para el recorte |
 | **4** | `moved` en la vista y en el manifiesto ✅ | sin esto, los renombrados de la fusión eran roturas mudas. Y al medirlo salió que `moved` renombraba **miembros**, no documentos: hacía falta el alcance ancho, que es la semántica original de Terraform — `01-package` §3.4 |
 | **5** | ~~`B0`~~ · ~~M2~~ | Los dos medidos, y ninguno adelgaza la entidad. `B0` pedía el conducto de la **carga** para copiar **dos columnas**, y de ahí salió lo que sí faltaba: el **sello del índice**, encendido en `04-flow` §4.2 con tres casos. **M2** es 22 nombres, no 38: el resto sostiene la clave, una `via` o una derivada, y el tipo no lo repite nadie. Lo que queda de M2 es `OOS2022` con los papeles cambiados, sin pieza nueva |
-| **6** | la fusión | ya no es un rediseño: es borrar `backedBy` y mover un fichero |
+| **6** | la fusión — **medida** | **No es borrar `backedBy` y mover un fichero.** `pruebas-de-fuego/medida-la-fusion.py` |
+
+### 10.7 · El peldaño 6, medido — y el criterio no había que inventarlo
+
+Esta escalera se subió entera para llegar aquí, y el último peldaño nunca se había medido. Al
+medirlo salieron tres cosas.
+
+**Una que la apoya, y es la única que sobrevivió.** El criterio de cuándo algo merece documento
+propio está escrito en el motor, en la ayuda de la regla que obliga a `Ruleset` a tener dueño:
+
+> *«es independiente del dueño de los paquetes a los que apunta: **ahí está la razón de que esto
+> sea un documento y no un bloque dentro de `Entity`**. En un entorno regulado, quien responde del
+> cumplimiento tiene que poder restringir la ontología sin poder editarla.»*
+
+**Un documento existe aparte cuando responde otra persona.** Y `Entity` **no tiene `owner`, ni lo
+admite**; `View` lo exige. Por el criterio de la casa, la entidad no merece documento propio.
+
+**Una que la bloquea, y es una sola.**
+
+> **La entidad es de la CADENA, no de un eslabón.**
+
+Clasifica una vez y su etiqueta baja hasta la copia, esté donde esté — `flow::vistas_materializadas`
+sube las etiquetas por dos vías justo para eso, y su comentario dice qué pasa sin la segunda:
+*«una entidad puede declarar `nationalId: high` sobre una vista de tres eslabones, y **la de abajo,
+que es la que se materializa, no lo sabe**»*. Meter el significado en un `kind: View` lo clava en un
+eslabón, y la que se copia es la de abajo. **Eso no es mover un fichero.**
+
+Y ahí está la diferencia con Cognite, que no es de gusto: **ellos son dueños del almacenamiento y
+nosotros federamos.** Un *container* es suyo y no hay cadena, así que su `view` puede mapear y
+significar a la vez. Nosotros tenemos `View → View → View → Table` y la copia ocurre en un eslabón
+cualquiera. Adoptar su forma sin tener su premisa es lo que este peldaño estaba a punto de hacer.
+
+**Y una tercera, que no era de la fusión y valía por sí sola.** Nadie direcciona una vista —Cedar,
+los rulesets y GraphQL nombran entidades— y **lo que fija el mínimo no respondía ante nadie**. Eso
+se midió aparte y se cerró: `04-flow` §3.3, `owner` en `OntologyConfig` y en `Lattice`.
