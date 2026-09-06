@@ -1,0 +1,28 @@
+# **La forma**, compartida por los lectores que hablan SQL.
+#
+# No es un binario, y eso NO es una preferencia: se midio. Juntar los drivers
+# en un `ore-read-sql` unico embarcaria 89 crates —`tokio`, `native-tls`,
+# `openssl`, FFI de plataforma— a un lector de BigQuery que delega en `bq` y no
+# abre un socket. `crates/ore-cli/tests/dependencias.rs` existe para que eso no
+# pase en silencio, y `pruebas-de-fuego/medida-espectro-dialecto.py` tiene las
+# cifras.
+#
+# EL TRANSPORTE NO ES DIALECTO. Es lo unico del driver que de verdad es suyo, y
+# es lo que pesa. Asi que lo que se comparte es la FORMA —montar el `SELECT` y
+# el `WHERE` a partir de una `Peticion`— y cada driver se queda con su
+# transporte y con una CONSTANTE que describe su dialecto.
+#
+# Por eso no depende de nada: si esta crate arrastrara algo, lo arrastraria a
+# los tres lectores a la vez, que es justo lo que se estaba evitando.
+[package]
+name        = "ore-sql"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "La forma de una consulta SQL, compartida por los lectores"
+
+[dependencies]
+# El protocolo. Es de quien viene la `Peticion`, y nada mas.
+ore-driver = { path = "../ore-driver" }

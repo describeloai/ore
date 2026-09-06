@@ -1152,6 +1152,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-sql"
+version = "0.1.0"
+dependencies = [
+ "ore-driver",
+]
+
+[[package]]
 name = "ore-store-r2"
 version = "0.1.0"
 dependencies = [
