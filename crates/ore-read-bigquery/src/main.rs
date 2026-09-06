@@ -47,7 +47,7 @@
 //! esto— contesta bien. Un lector que no arranca se parece demasiado a uno que
 //! falta, y desde el intérprete equivocado se parece a los dos.
 
-mod sql;
+mod consultas;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -131,8 +131,19 @@ fn filas(peticion: &str) -> Result<String, String> {
 
     let proyecto = proyecto(&p.url)?;
     let tipos = tipos_de(&proyecto, &p.objeto)?;
-    let i = sql::consulta(&p, &proyecto, &tipos)?;
-    let salida = bq(&proyecto, &i)?;
+    // La forma es de `ore-sql` y el dialecto una constante suya. Lo que este
+    // fichero pone es el objeto YA CUALIFICADO —BigQuery antepone el proyecto y
+    // PostgreSQL no tiene nada que anteponer— y el transporte.
+    let c = ore_sql::consulta(
+        &p,
+        &ore_sql::dialectos::BIGQUERY,
+        &consultas::cualificado(&proyecto, &p.objeto),
+        &tipos,
+    )?;
+    let salida = bq(&proyecto, &consultas::Invocacion {
+        consulta: c.texto,
+        parametros: c.parametros,
+    })?;
 
     let arbol = ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
@@ -164,9 +175,9 @@ fn filas(peticion: &str) -> Result<String, String> {
 
 /// Los tipos de las columnas de la tabla, del `INFORMATION_SCHEMA` de su
 /// dataset. Es la consulta de más que GoogleSQL obliga a hacer, y el porqué
-/// está en [`sql`].
+/// está en [`ore_sql`].
 fn tipos_de(proyecto: &str, objeto: &str) -> Result<BTreeMap<String, String>, String> {
-    let salida = bq(proyecto, &sql::tipos(proyecto, objeto)?)?;
+    let salida = bq(proyecto, &consultas::tipos(proyecto, objeto)?)?;
     let arbol = ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió `bq` para los tipos no analiza: {e:?}"))?;
     let mut out = BTreeMap::new();
@@ -222,7 +233,7 @@ fn testigo(peticion: &str) -> Result<String, String> {
         return Ok(ore_driver::testigo("none", None));
     };
     let proyecto = proyecto(&url)?;
-    let salida = bq(&proyecto, &sql::maximo(&proyecto, &objeto, &c)?)?;
+    let salida = bq(&proyecto, &consultas::maximo(&proyecto, &objeto, &c)?)?;
     let arbol = ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
     let maximo = arbol
@@ -269,7 +280,7 @@ fn resolver(programa: &str) -> Option<PathBuf> {
     None
 }
 
-fn bq(proyecto: &str, i: &sql::Invocacion) -> Result<String, String> {
+fn bq(proyecto: &str, i: &consultas::Invocacion) -> Result<String, String> {
     let ruta = resolver("bq").ok_or_else(|| {
         "no se encontró `bq` en el PATH. Es el cliente de BigQuery, y viene con el SDK de \
          Google: este programa no habla con BigQuery, habla con él"

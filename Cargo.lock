@@ -1114,6 +1114,7 @@ version = "0.1.0"
 dependencies = [
  "ore-core",
  "ore-driver",
+ "ore-sql",
 ]
 
 [[package]]
@@ -1131,6 +1132,7 @@ dependencies = [
  "native-tls",
  "ore-core",
  "ore-driver",
+ "ore-sql",
  "postgres",
  "postgres-native-tls",
 ]

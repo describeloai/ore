@@ -102,6 +102,14 @@ pub enum Recorte {
 pub struct Consulta {
     pub texto: String,
     pub parametros: Vec<String>,
+    /// Las columnas del `SELECT`, **sin citar y en su orden**.
+    ///
+    /// Hace falta porque la proyección se **de-duplica**: dos propiedades de la
+    /// misma columna la piden una vez, así que la posición *i* del resultado ya
+    /// no es la propiedad *i* de la petición. Un driver que leyera por índice
+    /// sin mirar esto devolvería las columnas corridas —y solo cuando dos
+    /// propiedades compartieran columna, que es el caso que nadie prueba.
+    pub columnas: Vec<String>,
 }
 
 impl Cita {
@@ -193,18 +201,18 @@ pub fn consulta(
     // devolvería un resultado con el nombre repetido y la fila se leería mal.
     // Se piden las distintas y la fila se arma después por nombre, así que las
     // dos propiedades reciben el mismo valor, que es lo correcto.
-    let mut vistas: Vec<&str> = Vec::new();
     let mut columnas: Vec<String> = Vec::new();
+    let mut citadas: Vec<String> = Vec::new();
     for (_, c) in &p.proyeccion {
-        if vistas.contains(&c.as_str()) {
+        if columnas.iter().any(|x| x == c) {
             continue;
         }
-        vistas.push(c);
-        columnas.push(d.cita.ident(c)?);
+        citadas.push(d.cita.ident(c)?);
+        columnas.push(c.clone());
     }
     let mut texto = format!(
         "SELECT {} FROM {}",
-        columnas.join(", "),
+        citadas.join(", "),
         d.cita.ident(objeto)?
     );
 
@@ -293,6 +301,7 @@ pub fn consulta(
     Ok(Consulta {
         texto,
         parametros: m.parametros,
+        columnas,
     })
 }
 
@@ -489,16 +498,28 @@ mod tests {
     /// Dos propiedades de la misma columna se piden **una vez**: un motor
     /// nombra cada campo del resultado por su columna, y pedirla dos veces
     /// devolvería un nombre repetido.
+    ///
+    /// Y por eso `columnas` sale también: con la de-duplicación, la posición
+    /// *i* del resultado ya no es la propiedad *i* de la petición, y un driver
+    /// que leyera por índice devolvería las columnas corridas. `ore-read-postgres`
+    /// leía por índice y funcionaba porque su traductor **no** de-duplicaba —
+    /// migrarlo sin esto habría cambiado su resultado en silencio.
     #[test]
-    fn una_columna_pedida_por_dos_propiedades_sale_una_vez() {
+    fn una_columna_pedida_por_dos_propiedades_sale_una_vez_y_se_dice_en_que_orden() {
         let mut p = peticion();
         p.proyeccion = vec![
             ("a".into(), "base_pay".into()),
             ("b".into(), "base_pay".into()),
+            ("c".into(), "cost_center".into()),
         ];
         p.claves.clear();
         p.filtros.clear();
         let c = consulta(&p, &POSTGRES, "t", &tipos()).expect("traduce");
-        assert!(c.texto.starts_with("SELECT \"base_pay\" FROM"), "{}", c.texto);
+        assert!(
+            c.texto.starts_with("SELECT \"base_pay\", \"cost_center\" FROM"),
+            "{}",
+            c.texto
+        );
+        assert_eq!(c.columnas, vec!["base_pay", "cost_center"]);
     }
 }

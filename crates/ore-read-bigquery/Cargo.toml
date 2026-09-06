@@ -21,3 +21,5 @@ description = "Lector de filas de BigQuery para la fase ③"
 [dependencies]
 ore-core   = { path = "../ore-core" }
 ore-driver = { path = "../ore-driver" }
+# Y la FORMA, que resulto ser la misma que la de Postgres salvo tres ejes.
+ore-sql    = { path = "../ore-sql" }

@@ -56,8 +56,6 @@
 //! conjetura barata y un hecho carísimo, no emitir nada es lo correcto: el campo
 //! es opcional justamente para esto.
 
-mod sql;
-
 use ore_core::json::Json;
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -497,13 +495,13 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_le
 ///
 /// La distinción no es escrúpulo: `reads` es el contrato con el que el
 /// planificador decide qué baja al origen, y lo que baja se construye en
-/// `sql::sql`. Declarar `neq`, `range` o `isNull` sería prometer una traducción
+/// `ore-sql`. Declarar `neq`, `range` o `isNull` sería prometer una traducción
 /// que no existe, y el precio lo paga quien menos lo ve — un filtro que el
 /// driver no sabe poner **se cae de la petición**, y una consulta devuelve más
 /// filas de las que pidió sin que nadie vea un error.
 ///
 /// Así que aquí se declara lo que hay: `eq`, y el recorrido completo. Ensanchar
-/// esto es un cambio en `sql.rs` primero y en esta lista después, en ese orden.
+/// esto es un cambio en `ore-sql` primero y en esta lista después, en ese orden.
 ///
 /// `gt` existe en el protocolo y **no** aparece: es de la marca de agua, y el
 /// `range` de OOS son las cuatro comparaciones. Declararlo por la mitad sería
@@ -652,7 +650,15 @@ fn filas(peticion: &str) -> Result<String, String> {
         return Err(porque);
     }
 
-    let (consulta, params) = sql::sql(&p);
+    // **La forma es de `ore-sql`; el dialecto, una constante.** Lo que este
+    // fichero aporta a partir de aquí es lo único que de verdad es suyo: el
+    // transporte.
+    let c = ore_sql::consulta(
+        &p,
+        &ore_sql::dialectos::POSTGRES,
+        &p.objeto,
+        &std::collections::BTreeMap::new(),
+    )?;
 
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
@@ -664,21 +670,36 @@ fn filas(peticion: &str) -> Result<String, String> {
         .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
 
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = params
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = c
+        .parametros
         .iter()
         .map(|v| v as &(dyn postgres::types::ToSql + Sync))
         .collect();
     let resultado = cliente
-        .query(consulta.as_str(), &refs)
-        .map_err(|e| format!("la consulta falló: {e}\n  {consulta}"))?;
+        .query(c.texto.as_str(), &refs)
+        .map_err(|e| format!("la consulta falló: {e}\n  {}", c.texto))?;
 
     let mut out = String::new();
     for fila in &resultado {
         // Todo sale como texto: el driver no interpreta tipos, y convertirlos
         // aquí sería una segunda costura de tipos al lado de la que ya existe
         // para el catálogo.
-        let valores: Vec<Option<String>> = (0..p.proyeccion.len())
-            .map(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
+        //
+        // **Y se lee por NOMBRE, no por posición.** Esto leía por índice
+        // —`0..proyeccion.len()`— y funcionaba porque su traductor no
+        // de-duplicaba las columnas. `ore-sql` sí lo hace, así que la posición
+        // *i* del resultado ya no es la propiedad *i*: `c.columnas` dice el
+        // orden real, y dos propiedades de la misma columna reciben el mismo
+        // valor, que es lo correcto.
+        let valores: Vec<Option<String>> = p
+            .proyeccion
+            .iter()
+            .map(|(_, col)| {
+                c.columnas
+                    .iter()
+                    .position(|x| x == col)
+                    .and_then(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
+            })
             .collect();
         out.push_str(&ore_driver::fila(&p, &valores));
         out.push('\n');
