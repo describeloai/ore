@@ -54,6 +54,32 @@
 //! que es otra forma de no decir nada.
 //!
 //! La tercera bandera **sí** era del dialecto, y está: [`Dialecto::exige_tipos`].
+//!
+//! # El tercer dialecto, y qué contestó
+//!
+//! La apuesta estaba escrita: *«si aparece un quinto eje, la forma estaba
+//! extraída de dos casos y no de la clase»*. Se escribió
+//! [`dialectos::MYSQL`] y **no apareció un quinto eje**. Apareció que uno de
+//! los tres tenía más valores de los dos que se habían visto: su marca es `?`
+//! **sin ordinal**, así que [`Marca::Posicional`] ganó un campo.
+//!
+//! Es un resultado distinto y mejor que el que se temía. La forma aguanta; lo
+//! que crece es el alfabeto de un eje que ya existía. Y hay una segunda
+//! evidencia dentro: MySQL cita con **acento grave**, igual que BigQuery, y
+//! necesita la **otra** variante —cita por partes y dobla el acento, mientras
+//! BigQuery no tiene escape y rechaza—. Que el mismo carácter caiga en dos
+//! variantes distintas dice que el eje no estaba cortado por el carácter, que
+//! era lo fácil, sino por si el dialecto sabe escaparlo.
+//!
+//! **Un dialecto no es una familia.** No hay `ore-read-mysql`, así que hoy no
+//! se puede leer MySQL: lo que hay es la evidencia de que cuando lo haya, lo
+//! que tendrá que escribir es un transporte.
+//!
+//! Lo que **sí** sería un quinto eje, y conviene tenerlo escrito para
+//! reconocerlo: un origen cuyo objeto **no es un identificador**. DuckDB lee un
+//! fichero con `FROM 'x.parquet'`, y eso es un *literal*: no se cita, se
+//! entrecomilla como una cadena. Ahí [`Cita`] no alcanza, y sería un eje nuevo
+//! de verdad.
 
 use std::collections::BTreeMap;
 
@@ -88,9 +114,22 @@ pub enum Cita {
 /// Cómo se marca un parámetro, y si además lleva su tipo.
 #[derive(Debug, Clone, Copy)]
 pub enum Marca {
-    /// `$1`, `$2`… — **posicional**. El servidor coacciona el texto al tipo de
-    /// la columna, así que el parámetro no necesita decir de qué tipo es.
-    Posicional(char),
+    /// `$1`, `$2`… o `?`, `?`… — **posicional**. El servidor coacciona el texto
+    /// al tipo de la columna, así que el parámetro no necesita decir de qué
+    /// tipo es.
+    ///
+    /// `numerada` decide si la marca lleva su ordinal. PostgreSQL lo lleva
+    /// (`$1`) y **MySQL no** (`?` a secas, emparejado por orden de aparición).
+    ///
+    /// # Y este campo es el resultado del tramo 4
+    ///
+    /// El espectro decía: *«si aparece un quinto eje, la forma estaba extraída
+    /// de dos casos y no de la clase»*. Al escribir el tercer dialecto **no
+    /// apareció un quinto eje**: apareció que el segundo tenía más valores de
+    /// los dos que se habían visto. Los ejes eran los correctos y el alfabeto
+    /// era corto, que es un resultado distinto y mejor — la forma aguanta, y lo
+    /// que crece es el vocabulario de un eje que ya existía.
+    Posicional { marca: char, numerada: bool },
     /// `@p0`, `@p1`… — **con nombre**, y el parámetro sale como
     /// `nombre:TIPO:valor`.
     ///
@@ -213,9 +252,13 @@ impl Marcador<'_> {
     /// cursor entero sin fallar, que es la dirección insegura.
     fn marcar(&mut self, columna: &str, valor: &str) -> Result<String, String> {
         match self.marca {
-            Marca::Posicional(p) => {
+            Marca::Posicional { marca, numerada } => {
                 self.parametros.push(valor.to_string());
-                Ok(format!("{p}{}", self.parametros.len()))
+                Ok(if numerada {
+                    format!("{marca}{}", self.parametros.len())
+                } else {
+                    marca.to_string()
+                })
             }
             Marca::ConNombre(p) => {
                 let t = self.tipos.get(columna).ok_or_else(|| {
@@ -372,7 +415,30 @@ pub mod dialectos {
 
     pub const POSTGRES: Dialecto = Dialecto {
         cita: Cita::PorPartes('"'),
-        marca: Marca::Posicional('$'),
+        marca: Marca::Posicional {
+            marca: '$',
+            numerada: true,
+        },
+        recorte: Recorte::TuplaEnLista,
+    };
+
+    /// **El tercero, y el que puso la forma a prueba.**
+    ///
+    /// Cita con acento grave **como BigQuery** y sin embargo por el otro
+    /// camino: MySQL cita **por partes** y **dobla** el acento dentro, así que
+    /// es `Cita::PorPartes` con otro caracter y no `Cita::Entero`. Que los dos
+    /// usen el mismo delimitador y necesiten variantes distintas es la mejor
+    /// evidencia de que el eje estaba bien cortado: lo que distingue no es el
+    /// caracter, es si el dialecto sabe escaparlo.
+    ///
+    /// Y su marca es `?` **sin ordinal**, que es lo que obligó a que
+    /// [`Marca::Posicional`] tuviera un campo más.
+    pub const MYSQL: Dialecto = Dialecto {
+        cita: Cita::PorPartes('`'),
+        marca: Marca::Posicional {
+            marca: '?',
+            numerada: false,
+        },
         recorte: Recorte::TuplaEnLista,
     };
 
@@ -535,6 +601,44 @@ mod tests {
         );
         let e = Cita::Entero('`').ident("ma`la").expect_err("se niega");
         assert!(e.contains("no tiene forma de escaparlo"), "{e}");
+    }
+
+    /// **El tercer dialecto, que es el que pone la forma a prueba.**
+    ///
+    /// MySQL cita con acento grave **como BigQuery** y por el camino contrario:
+    /// cita por partes y **dobla** el acento dentro, así que es `PorPartes` con
+    /// otro carácter. Que dos dialectos compartan delimitador y necesiten
+    /// variantes distintas dice que el eje estaba bien cortado — lo que
+    /// distingue no es el carácter, es si el dialecto sabe escaparlo.
+    #[test]
+    fn el_tercer_dialecto_cabe_en_los_mismos_tres_ejes() {
+        use super::dialectos::MYSQL;
+        let mut p = peticion();
+        p.claves = vec![vec!["7".into()]];
+        let c = consulta(&p, &MYSQL, "app.employees", &tipos()).expect("traduce");
+        assert!(
+            c.texto
+                .starts_with("SELECT `base_pay`, `employee_id` FROM `app`.`employees`"),
+            "{}",
+            c.texto
+        );
+        // La marca es `?` SIN ordinal, y los valores van en orden de aparición.
+        assert!(c.texto.contains("(`employee_id`) IN ((?))"), "{}", c.texto);
+        assert!(c.texto.contains("`cost_center` = ?"), "{}", c.texto);
+        assert!(!c.texto.contains("?1"), "{}", c.texto);
+        assert_eq!(c.parametros, vec!["7", "finanzas"]);
+        assert!(!MYSQL.exige_tipos());
+    }
+
+    /// Y el acento grave dentro: MySQL lo **dobla**, BigQuery **rechaza**. El
+    /// mismo carácter y dos respuestas correctas.
+    #[test]
+    fn el_mismo_delimitador_se_dobla_en_uno_y_se_rechaza_en_el_otro() {
+        assert_eq!(
+            Cita::PorPartes('`').ident("ma`la").as_deref(),
+            Ok("`ma``la`")
+        );
+        assert!(Cita::Entero('`').ident("ma`la").is_err());
     }
 
     /// **La forma traduce exactamente los operadores que una petición admite.**
