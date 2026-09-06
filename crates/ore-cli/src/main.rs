@@ -96,6 +96,22 @@ enum AccionFuente {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **¿Qué contiene esta fuente?** Lo que habría que declarar, antes de
+    /// declararlo.
+    ///
+    /// Existe por una asimetría real y no por simetría: una URL de BigQuery
+    /// nombra **un dataset**, así que hasta hoy había que sabérselo de
+    /// antemano y la única forma de comprobar que existía era fallar al
+    /// descubrirlo. Las otras dos familias abarcan su fuente entera, y lo
+    /// contestan diciendo justamente eso.
+    Explore {
+        /// La fuente, tal como la declara el manifiesto. Puede no tener
+        /// contenedor: `bigquery://<proyecto>` se explora y no se descubre.
+        name: String,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// **¿Responde esta fuente?** Y nada más: no lee el catálogo, no propone
     /// nada y no toca un fichero.
     ///
@@ -471,6 +487,9 @@ fn main() -> std::process::ExitCode {
                 },
                 &pkg,
             );
+        }
+        Command::Source(AccionFuente::Explore { name, path }) => {
+            return lector::explorar(path, name);
         }
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);

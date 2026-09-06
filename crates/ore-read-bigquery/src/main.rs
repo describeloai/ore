@@ -94,6 +94,14 @@ fn main() -> ExitCode {
                 Err(e) => ore_driver::comprobacion(false, Some(&e)),
             }),
         },
+        // **El quinto verbo: que contiene esta fuente.** Y existe por una
+        // asimetria real, no por simetria: una URL de BigQuery nombra UN
+        // dataset, asi que hay que saberselo antes de declararlo. Las otras dos
+        // familias abarcan su fuente entera y no tienen esa pregunta.
+        "explorar" => match ore_driver::leer_coordenada(&entrada) {
+            Err(e) => Err(e),
+            Ok((url, _)) => explorar(&url),
+        },
         "catalogo" => Err("`ore` trae la receta del catálogo de BigQuery dentro y es la que \
                            corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
                            aquí. Lo que implementa este programa es `leer`, que es el verbo de \
@@ -268,6 +276,82 @@ fn testigo(peticion: &str) -> Result<String, String> {
     // Una tabla vacía no tiene máximo, y eso no es un fallo: es que no hay por
     // dónde avanzar todavía.
     Ok(ore_driver::testigo("field", maximo.as_deref()))
+}
+
+// ── ⓪ · Que contiene esta fuente ────────────────────────────────────────────
+
+/// **Los datasets del proyecto.**
+///
+/// `bq ls` y no una consulta: listar datasets no es preguntarle nada a ninguno,
+/// y `INFORMATION_SCHEMA` es **por dataset** — para recorrerlos con SQL habria
+/// que saberselos ya, que es justo lo que esto viene a contestar.
+///
+/// Devuelve, por cada uno, la URL que habria que declarar. Que salga hecha no
+/// es comodidad: es lo que evita que alguien la componga a mano y se equivoque
+/// en el separador.
+fn explorar(url: &str) -> Result<String, String> {
+    let proyecto = proyecto(url)?;
+    let ruta = resolver("bq").ok_or_else(|| {
+        "no se encontro `bq` en el PATH. Es el cliente de BigQuery, y viene con el SDK de          Google: este programa no habla con BigQuery, habla con el"
+            .to_string()
+    })?;
+    let salida = Command::new(&ruta)
+        .args([
+            "ls".to_string(),
+            "--format=prettyjson".to_string(),
+            "--datasets=true".to_string(),
+            "--max_results=1000".to_string(),
+            format!("--project_id={proyecto}"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", ruta.display()))?;
+    if !salida.status.success() {
+        return Err(format!(
+            "`bq ls` fallo:
+{}",
+            String::from_utf8_lossy(&salida.stderr).trim()
+        ));
+    }
+    let texto = String::from_utf8_lossy(&salida.stdout).into_owned();
+    let arbol = ore_core::parse::parse(&texto)
+        .map_err(|e| format!("lo que devolvio `bq ls` no analiza: {e:?}"))?;
+    let mut fuera: Vec<ore_core::json::Json> = Vec::new();
+    for d in arbol.items() {
+        // `datasetReference.datasetId` es lo documentado; `id` —`proyecto:ds`—
+        // es el respaldo. Se prueban los dos y no se inventa ninguno.
+        let nombre = d
+            .get("datasetReference")
+            .and_then(|(_, r)| r.get("datasetId"))
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                d.get("id")
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(|s| s.split_once(':'))
+                    .map(|(_, ds)| ds.to_string())
+            });
+        let Some(n) = nombre else { continue };
+        fuera.push(ore_core::json::Json::obj([
+            ("nombre", ore_core::json::Json::s(&n)),
+            (
+                "url",
+                ore_core::json::Json::s(format!("bigquery://{proyecto}/{n}")),
+            ),
+        ]));
+    }
+    if fuera.is_empty() {
+        return Err(format!(
+            "`{proyecto}` no tiene ningun dataset visible con esta credencial. Una lista vacia              tendria el mismo aspecto que un proyecto al que no se llega, asi que se dice"
+        ));
+    }
+    Ok(ore_core::json::Json::obj([(
+        "contiene",
+        ore_core::json::Json::Arr(fuera),
+    )])
+    .pretty())
 }
 
 // ── Ejecutar `bq` ───────────────────────────────────────────────────────────

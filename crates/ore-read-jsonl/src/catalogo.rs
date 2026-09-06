@@ -97,6 +97,43 @@ pub fn fichero(url: &str, objeto: &str) -> Result<std::path::PathBuf, String> {
     }
 }
 
+/// **Qué contiene esta fuente.**
+///
+/// Los ficheros del directorio, y una nota que es la mitad de la respuesta:
+/// aquí **no hay nada que seleccionar**. Una fuente de esta familia es el
+/// directorio entero y su catálogo trae todos sus ficheros, así que la
+/// pregunta que `explorar` contesta —*¿cuál de los contenedores declaro?*—
+/// solo existe donde una URL nombra uno, que es el caso de BigQuery.
+///
+/// Se contesta igualmente en vez de negarse: *«no hay nada que elegir»* es una
+/// respuesta, y un verbo que se niega en dos familias de tres deja de poder
+/// usarse sin saber de antemano cuál es cuál.
+pub fn explorar(url: &str) -> Result<String, String> {
+    let mut avisos = Vec::new();
+    let catalogo = de_directorio("explorar", url, &mut avisos)?;
+    let arbol = ore_core::parse::parse(&catalogo)
+        .map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
+    let contiene: Vec<Json> = arbol
+        .get("tables")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|(_, n)| n.as_str()))
+        .map(|n| Json::obj([("nombre", Json::s(n))]))
+        .collect();
+    Ok(Json::obj([
+        ("contiene", Json::Arr(contiene)),
+        (
+            "nota",
+            Json::s(concat!(
+                "una fuente de esta familia es el directorio entero y su catálogo ",
+                "trae todos estos ficheros: no hay que elegir ninguno"
+            )),
+        ),
+    ])
+    .pretty())
+}
+
 /// Lo que se observó de una columna a lo largo del fichero.
 #[derive(Default)]
 struct Observado {

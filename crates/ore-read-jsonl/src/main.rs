@@ -79,6 +79,15 @@ fn main() -> ExitCode {
                 ),
             }),
         },
+        // **Que contiene esta fuente.** Aqui no hay nada que seleccionar —una
+        // fuente es el directorio ENTERO y su catalogo ya trae todos los
+        // ficheros—, y decirlo es la respuesta: `explorar` existe porque una
+        // URL de BigQuery nombra UN dataset, y esta familia no tiene esa
+        // pregunta.
+        "explorar" => match ore_driver::leer_coordenada(&entrada) {
+            Err(e) => Err(e),
+            Ok((url, _)) => catalogo::explorar(&url),
+        },
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
     for a in &avisos {

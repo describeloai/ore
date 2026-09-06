@@ -248,8 +248,13 @@ fn bigquery(fuente: &str, url: &str) -> Result<String, Fallo> {
     let (proyecto, dataset) = destino(url).ok_or_else(|| {
         fallo(
             65,
-            "la URL de una fuente `bigquery` no tiene la forma esperada",
-            &["  `bigquery://<proyecto>/<dataset>`"],
+            "la URL de una fuente `bigquery` no nombra un dataset",
+            &[
+                "  `bigquery://<proyecto>/<dataset>`",
+                "  Una URL sin dataset SÍ se explora y no se descubre: el catálogo de",
+                "  BigQuery es por dataset, así que hay que decir cuál.",
+                "  `ore source explore <fuente>` lista los que hay, con la orden hecha.",
+            ],
         )
     })?;
     let salida = ejecutar(
@@ -694,6 +699,60 @@ pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Resul
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
+
+/// `ore source explore` — **¿qué contiene esta fuente?**
+///
+/// Delega en el verbo `explorar` del lector, y la URL va por stdin como todo lo
+/// demás: **una URL puede llevar una credencial dentro**, y `argv` lo lee
+/// cualquier proceso de la máquina. Por eso esto toma el nombre de una fuente
+/// declarada y no una URL suelta, aunque para BigQuery la URL no tenga secreto:
+/// el mando no puede depender de qué familia sea.
+pub fn explorar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
+    let (tipo, env) = match declaracion(raiz, fuente) {
+        Ok(x) => x,
+        Err(f) => return imprimir(f),
+    };
+    let url = match url(raiz, &env, fuente) {
+        Ok(u) => u,
+        Err(f) => return imprimir(f),
+    };
+    let coordenada = Json::obj([("url", Json::s(&url))]).jcs();
+    let salida = match ejecutar(
+        &format!("ore-read-{tipo}"),
+        &["explorar".to_string()],
+        Some(&coordenada),
+    ) {
+        Ok(s) => s,
+        Err(f) => return imprimir(f),
+    };
+    let n = match parse::parse(&salida) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("error: lo que devolvió el lector no analiza: {e:?}");
+            return std::process::ExitCode::from(65);
+        }
+    };
+    let items = n.get("contiene").map(|(_, v)| v.items()).unwrap_or(&[]);
+    println!("{fuente} · {} en `{tipo}`", items.len());
+    for it in items {
+        let nombre = it
+            .get("nombre")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("?");
+        match it.get("url").and_then(|(_, v)| v.as_str()) {
+            // La URL sale **hecha**, y eso no es comodidad: es lo que evita que
+            // alguien la componga a mano y se equivoque en el separador.
+            Some(u) => println!("  {nombre}
+      ore source add --name {nombre} {u}"),
+            None => println!("  {nombre}"),
+        }
+    }
+    if let Some(nota) = n.get("nota").and_then(|(_, v)| v.as_str()) {
+        println!();
+        println!("  {nota}");
+    }
+    std::process::ExitCode::SUCCESS
+}
 
 /// `ore source check` — **¿responde esta fuente?**
 ///

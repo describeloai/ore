@@ -208,6 +208,33 @@ fn intentar() -> Result<String, String> {
     // red, por TLS, por la credencial y por `pg_hba.conf`, que son los cuatro
     // sitios donde esto se rompe — y hasta ahora los cuatro se descubrian
     // diciendo «el catalogo no analiza».
+    // **Que contiene esta fuente.** Los esquemas de la base, y una nota que es
+    // la mitad de la respuesta: aqui no hay nada que seleccionar, porque el
+    // catalogo de esta familia ya los recorre todos. `explorar` existe porque
+    // una URL de BigQuery nombra UN dataset; esta abarca su fuente entera.
+    if verbo == "explorar" {
+        let (url, _) = ore_driver::leer_coordenada(&entrada)?;
+        let tls = postgres_native_tls::MakeTlsConnector::new(
+            native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+        );
+        let mut cliente = postgres::Client::connect(&url, tls)
+            .map_err(|e| format!("no se pudo conectar: {e}"))?;
+        let filas = cliente
+            .query(
+                "SELECT nspname FROM pg_namespace                  WHERE nspname NOT IN ('pg_catalog', 'information_schema')                    AND nspname !~ '^pg_' ORDER BY nspname",
+                &[],
+            )
+            .map_err(|e| format!("la consulta de esquemas fallo: {e}"))?;
+        let contiene: Vec<Json> = filas
+            .iter()
+            .map(|f| Json::obj([("nombre", Json::s(f.get::<_, String>(0)))]))
+            .collect();
+        return Ok(Json::obj([
+            ("contiene", Json::Arr(contiene)),
+            ("nota", Json::s("el catalogo de esta familia recorre TODOS los esquemas de la base: no hay que elegir ninguno")),
+        ])
+        .pretty());
+    }
     if verbo == "check" {
         let (url, _) = ore_driver::leer_coordenada(&entrada)?;
         let tls = postgres_native_tls::MakeTlsConnector::new(
