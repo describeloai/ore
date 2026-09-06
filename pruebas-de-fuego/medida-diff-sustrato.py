@@ -50,7 +50,10 @@ CASOS = [
              r"\n  materialized:.*", ""),
             ("vista · recorta filas con un `where`", "views/empleados.yaml",
              r"(\n  materialized:)", '\n  where: { status: "activo" }\\1'),
-            ("vista · afloja la frescura", "views/empleados.yaml",
+            # Esta vista NO tiene `freshness`, asi que anadirla no la afloja: la
+            # crea. Una promesa nueva constrine a quien publica, no a quien lee,
+            # y por eso `diff` calla y calla BIEN.
+            ("(compatible) pone una frescura que no habia", "views/empleados.yaml",
              r"(\n  owner: team:rrhh)", "\\1\n  freshness: 24h"),
             ("vista · pierde un campo", "views/empleados.yaml",
              r"\n    estado: status", ""),
@@ -147,7 +150,7 @@ for titulo, caso, mutaciones in CASOS:
         codigos_d = sorted(set(re.findall(r"OOS\d{4}", sd)) - {"OOS5021"})
         dice = ",".join(codigos_d) if codigos_d else "NADA"
 
-        if cv == 0 and not codigos_d:
+        if cv == 0 and not codigos_d and not nombre.startswith("(compatible)"):
             mudos_total += 1
             dice += "   <- pasa sin que nadie lo vea"
         print("   %-40s %-16s %s" % (nombre, estado_v, dice))
@@ -156,16 +159,13 @@ print()
 print("VEREDICTO")
 print("   cambios que validan en verde y `diff` no reporta:", mudos_total)
 print()
-print("   ERA 13 de 19 cuando se escribio este guion, y `diff.rs` no mencionaba")
-print("   `View` ni `Table` ni una vez. El ADR 0019 y el peldano que lo sigue le")
-print("   devolvieron el sujeto a `OOS5007`, `OOS5019` y `OOS5020` —que eran de")
-print("   v1alpha1 y hablaban del binding— y escribieron el par espejo del")
-print("   recorte, `OOS5028` y `OOS5029`.")
+print("   Empezo en 13 de 19, con `diff.rs` sin mencionar `View` ni `Table` ni")
+print("   una vez. Lo que lo cerro, en orden:")
+print("     ADR 0019   el sujeto devuelto a `OOS5007`/`5019`/`5020`, y el par")
+print("                espejo del recorte —`OOS5028`/`OOS5029`")
+print("     `moved`    la valvula que le faltaba a `OOS5001` sobre campos")
+print("     las tres   `OOS5030` la promesa que se afloja · `OOS5031` lo que la")
+print("                fuente admite · `OOS5032` lo que emite")
 print()
-print("   LO QUE SIGUE MUDO, y se dice para que no se descubra por sorpresa:")
-print("     `freshness` que se afloja     un orden de una sola direccion, sin codigo")
-print("     `reads`/`changes` que encogen idem — «la fuente admite menos»")
-print()
-print("   Y lo que YA NO: un campo que desaparece da `OOS5001` desde que la")
-print("   vista tiene `moved` —`02-view` §4.2—, que era la valvula que le")
-print("   faltaba a la regla.")
+print("   Y la fila marcada `(compatible)` no es un agujero: poner una frescura")
+print("   donde no habia es una promesa NUEVA, y callar es lo correcto.")

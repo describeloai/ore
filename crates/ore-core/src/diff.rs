@@ -379,7 +379,41 @@ struct Vista {
     /// `reserved`. Un nombre anunciado no desaparece en silencio: desaparece
     /// con instrucciones.
     anunciados: BTreeSet<String>,
+    /// La frescura que promete, en segundos. Es lo único de esta lista que es
+    /// una **decisión** y no un hecho: `ore discover` no la propone porque
+    /// «sería exactamente inventar».
+    frescura: Option<i64>,
+    /// Las dos caras de su raíz. Son **hechos del origen**, no promesas — y por
+    /// eso su cambio informa en `INDEX` en vez de bloquear en `CONSUMER`: quien
+    /// publica no las afloja porque quiera.
+    empuje: BTreeSet<String>,
+    escaneo: String,
+    modo: String,
+    testigo: String,
 }
+
+/// Cuánto se degrada una capacidad. Órdenes de UNA dirección: ensanchar es
+/// seguro, y por eso ninguno de los dos códigos tiene espejo.
+///
+/// `upsert` y `retract` empatan a propósito: codifican el cambio distinto y las
+/// dos retractan, así que pasar de una a otra no es degradar. Igual `snapshot`
+/// y `log`: los dos son una posición de confirmación.
+fn peor(escala: &[(&str, usize)], v: &str) -> usize {
+    escala
+        .iter()
+        .find(|(x, _)| *x == v)
+        .map(|(_, r)| *r)
+        .unwrap_or(0)
+}
+
+const ESCANEO: &[(&str, usize)] = &[("cheap", 0), ("expensive", 1), ("forbidden", 2)];
+/// `upsert` y `retract` **empatan**: codifican el cambio distinto y las dos
+/// retractan, así que pasar de una a otra no degrada nada. Una escala por
+/// posición se lo habría inventado.
+const MANTENIBLE: &[(&str, usize)] = &[("none", 0), ("append", 1), ("upsert", 2), ("retract", 2)];
+/// Y `snapshot` con `log`, por lo mismo: los dos son una posición de
+/// confirmación, que es un orden total sin empates.
+const PRECISION: &[(&str, usize)] = &[("none", 0), ("field", 1), ("snapshot", 2), ("log", 2)];
 
 fn shape(pkg: &Package) -> Shape {
     let lat = flow::lattices(pkg);
@@ -603,6 +637,22 @@ fn shape(pkg: &Package) -> Shape {
                             .collect()
                     })
                     .unwrap_or_default();
+                let caras = r
+                    .tabla
+                    .as_deref()
+                    .and_then(|q| pkg.table(q))
+                    .map(|tb| {
+                        let leer = tb.section("reads");
+                        let cam = tb.section("changes");
+                        (
+                            leer.and_then(|n| n.get("predicatePushdown").map(|(_, v)| lista(v)))
+                                .unwrap_or_default(),
+                            leer.and_then(|n| cadena(n, "fullScan")).unwrap_or_default(),
+                            cam.and_then(|n| cadena(n, "mode")).unwrap_or_default(),
+                            cam.and_then(|n| cadena(n, "witness")).unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default();
                 s.vistas.insert(
                     qn,
                     Vista {
@@ -611,6 +661,14 @@ fn shape(pkg: &Package) -> Shape {
                         recorte,
                         campos,
                         anunciados: anunciados(d),
+                        frescura: d
+                            .section("freshness")
+                            .and_then(|n| n.as_str())
+                            .and_then(crate::frescura::duracion),
+                        empuje: caras.0.into_iter().collect(),
+                        escaneo: caras.1,
+                        modo: caras.2,
+                        testigo: caras.3,
                     },
                 );
             }
@@ -1304,6 +1362,56 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                     .sujeto(qn)
                     .de_a(&antes.lectura, &despues.lectura),
             );
+        }
+
+        // OOS5030 · la frescura, que es lo único de aquí que se promete. Solo
+        // aflojarla: apretarla es dar más de lo dicho.
+        // Aflojarla, o RETIRARLA: quedarse sin promesa es la forma extrema de
+        // aflojarla. Ponerla donde no había es lo contrario —una promesa nueva
+        // constriñe a quien publica, no a quien lee— y por eso no se reporta.
+        let afloja = match (antes.frescura, despues.frescura) {
+            (Some(x), Some(y)) => y > x,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if afloja {
+            let txt = |v: Option<i64>| match v {
+                Some(s) => format!("{s}s"),
+                None => "sin promesa".to_string(),
+            };
+            out.push(
+                Change::new(Code::Oos5030, Axis::Consumer)
+                    .sujeto(qn)
+                    .de_a(txt(antes.frescura), txt(despues.frescura)),
+            );
+        }
+
+        // OOS5031 · lo que la fuente ADMITE. El remedio es replanificar —
+        // empujar menos, o materializar para dejar de depender.
+        let perdidos: Vec<&String> = antes.empuje.difference(&despues.empuje).collect();
+        let caro = peor(ESCANEO, &despues.escaneo) > peor(ESCANEO, &antes.escaneo);
+        if !perdidos.is_empty() || caro {
+            let de = |v: &BTreeSet<String>, s: &str| {
+                format!(
+                    "{}·fullScan:{s}",
+                    v.iter().cloned().collect::<Vec<_>>().join(",")
+                )
+            };
+            out.push(Change::new(Code::Oos5031, Axis::Index).sujeto(qn).de_a(
+                de(&antes.empuje, &antes.escaneo),
+                de(&despues.empuje, &despues.escaneo),
+            ));
+        }
+
+        // OOS5032 · lo que la fuente EMITE. Remedio distinto y por eso código
+        // distinto: aquí no hay plan que valga, hay que rehacer la copia.
+        let menos_mantenible = peor(MANTENIBLE, &despues.modo) < peor(MANTENIBLE, &antes.modo);
+        let menos_preciso = peor(PRECISION, &despues.testigo) < peor(PRECISION, &antes.testigo);
+        if menos_mantenible || menos_preciso {
+            out.push(Change::new(Code::Oos5032, Axis::Index).sujeto(qn).de_a(
+                format!("{}·{}", antes.modo, antes.testigo),
+                format!("{}·{}", despues.modo, despues.testigo),
+            ));
         }
 
         // OOS5028 · OOS5029 · el recorte, columna a columna.

@@ -1,16 +1,18 @@
 //! `ore diff` sobre el sustrato — las dos propiedades que deciden el diseño.
 //!
-//! Los cuatro casos de `conformance/v1alpha8/diff` cubren lo normativo: un
-//! código por dirección. Lo que no cubren son las dos consecuencias de haber
-//! elegido comparar **el efecto y no la sintaxis**:
+//! Los casos de `conformance/v1alpha8/diff` cubren lo normativo: un código por
+//! dirección. Lo que no cubren son las tres consecuencias de haber elegido
+//! comparar **el efecto y no la sintaxis**, y de que las escalas sean órdenes:
 //!
 //! 1. un recorte **incomparable** enciende los dos códigos, y por eso no hace
 //!    falta un tercero;
 //! 2. un **renombre** en un eslabón intermedio no inventa un cambio, porque el
-//!    recorte se acumula en columnas físicas de la raíz.
+//!    recorte se acumula en columnas físicas de la raíz;
+//! 3. los **empates** de las escalas de capacidad no degradan.
 //!
-//! La segunda es la que justifica resolver la cadena en vez de comparar lo
-//! declarado, y sin ella cada renombre produciría un falso rompedor.
+//! La segunda justifica resolver la cadena en vez de comparar lo declarado
+//! —sin ella cada renombre sería un falso rompedor— y la tercera, que las
+//! escalas se escriban a mano en vez de derivarlas de una posición.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -147,4 +149,69 @@ fn un_renombre_en_la_cadena_no_inventa_un_cambio() {
         "ni de dónde salen:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Los **empates** de las dos escalas, que ningún caso de conformidad ejerce.
+///
+/// `upsert` y `retract` codifican el cambio distinto y **las dos retractan**;
+/// `snapshot` y `log` son las dos una posición de confirmación. Pasar de una a
+/// otra no degrada nada, y decirlo importa: una escala por posición —o por
+/// orden alfabético— se habría inventado una degradación que no existe, y
+/// `OOS5032` habría gritado en cada migración de codificación.
+#[test]
+fn upsert_y_retract_empatan_y_snapshot_y_log_tambien() {
+    let tabla = |modo: &str, testigo: &str| {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+             metadata: {{ name: employees, namespace: erp }}\nspec:\n  datasource: erp\n  \
+             object: public.employees\n  columns:\n    employee_id: {{}}\n    country: {{}}\n  \
+             reads: {{ predicatePushdown: [eq], fullScan: cheap }}\n  \
+             changes: {{ mode: {modo}, witness: {testigo}, key: [employee_id] }}\n"
+        )
+    };
+    let vista = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+         metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
+         from: { table: erp.employees }\n  fields:\n    id: employee_id\n";
+    let manifiesto = |v: &str| {
+        format!(
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+             metadata: {{ name: hr, version: {v}, status: active, domain: d }}\n\
+             spec: {{ owner: team:data }}\n"
+        )
+    };
+
+    let comparar = |etiqueta: &str, a: (&str, &str), b: (&str, &str)| {
+        let (ta, tb) = (tabla(a.0, a.1), tabla(b.0, b.1));
+        let dir = par(
+            etiqueta,
+            &[
+                ("ontology.config.yaml", CONFIG),
+                ("package.yaml", &manifiesto("1.0.0")),
+                ("tables/employees.yaml", &ta),
+                ("views/empleados.yaml", vista),
+            ],
+            &[
+                ("ontology.config.yaml", CONFIG),
+                ("package.yaml", &manifiesto("1.1.0")),
+                ("tables/employees.yaml", &tb),
+                ("views/empleados.yaml", vista),
+            ],
+        );
+        let out = diferencia(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    };
+
+    // Los dos empates: no degradan, y `diff` calla.
+    let out = comparar("emp-modo", ("retract", "log"), ("upsert", "log"));
+    assert!(!out.contains("OOS5032"), "retract y upsert empatan:\n{out}");
+    let out = comparar("emp-testigo", ("retract", "log"), ("retract", "snapshot"));
+    assert!(!out.contains("OOS5032"), "log y snapshot empatan:\n{out}");
+
+    // Y el control: bajar de verdad sí se dice.
+    let out = comparar("emp-baja", ("retract", "log"), ("append", "log"));
+    assert!(
+        out.contains("OOS5032"),
+        "dejar de retractar sí degrada:\n{out}"
+    );
 }

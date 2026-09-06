@@ -281,6 +281,24 @@ codes! {
     Oos5028 = "OOS5028", Compatibility, "el recorte de una vista se estrecha";
     Oos5029 = "OOS5029", Compatibility, "el recorte de una vista se ensancha";
 
+    // Las tres que cierran el sustrato, y son TRES porque no son la misma
+    // clase de cambio. La pregunta que el ADR 0019 dejo —«¿uno o cada uno?»—
+    // presuponia que si, y el arbol ya decia que no: `ore discover` emite
+    // `reads` y `changes` desde el catalogo y NO emite `freshness`, porque
+    // aquello es un HECHO del origen y esto una DECISION de operacion.
+    //
+    // El primero se separa de los otros dos por PUBLICO —una promesa aflojada
+    // le duele a quien lee; una capacidad encogida, a quien planifica— y hay
+    // precedente exacto de un cambio con dos publicos: `primaryKey` emite
+    // `OOS5006` y `OOS5018`, dos codigos y no uno con dos ejes.
+    //
+    // Y los dos de INDEX se separan entre si por REMEDIO, que es el criterio
+    // de `OOS2024`/`OOS2025`: estrechar lo que se admite se arregla
+    // REPLANIFICANDO; estrechar lo que se emite obliga a REHACER LA COPIA.
+    Oos5030 = "OOS5030", Compatibility, "la frescura prometida por una vista se afloja";
+    Oos5031 = "OOS5031", Compatibility, "la fuente de una vista admite menos";
+    Oos5032 = "OOS5032", Compatibility, "lo que la fuente emite deja de sostener la copia";
+
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
 
@@ -394,6 +412,9 @@ mod tests {
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,
+            Code::Oos5030,
+            Code::Oos5031,
+            Code::Oos5032,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

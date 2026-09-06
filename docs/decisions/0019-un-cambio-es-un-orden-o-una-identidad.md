@@ -145,8 +145,9 @@ no ruido: a esas vistas les pasa. El precio es que un informe crece con la profu
 lo que ya se hacía con el `Binding`. La consecuencia aceptada es que **dos escrituras equivalentes
 del mismo recorte deben converger por la forma canónica**, no por el álgebra.
 
-**Y queda deuda dicha, no escondida.** Aflojar `freshness` y estrechar `reads`/`changes` **siguen
-sin verse**: son órdenes de una sola dirección y piden códigos propios que este peldaño no escribe.
+**Y quedó deuda dicha, no escondida** —aflojar `freshness` y estrechar `reads`/`changes`—, **saldada
+en el peldaño siguiente** con `OOS5030`, `OOS5031` y `OOS5032`. Con ellos las mutaciones mudas
+pasan de 13 a **cero**.
 Perder un campo de una vista **ya no**: la vista tiene `moved` desde
 [`02-view` §4.2](../../vendor/oos/spec/v1alpha8/02-view.md), y con la válvula puesta `OOS5001` ganó
 el sujeto. Era la única de las tres que esperaba a otra cosa.
@@ -159,6 +160,13 @@ el sujeto. Era la única de las tres que esperaba a otra cosa.
   contrato excluía es *«conceder más en silencio»*, pero **el retículo no ve filas**: ninguna
   etiqueta se mueve. Es el primer sitio del modelo donde *relajar* ocurre fuera del plano que el
   gobierno sabe mirar, y merece su propia medida.
-- **Cuántos códigos piden `freshness` y las capacidades.** Por la Decisión A son órdenes de una sola
-  dirección, así que uno cada uno; por el criterio del síntoma podrían ser **uno**: *«la fuente
-  admite menos»*. Sin medir.
+- ~~**Cuántos códigos piden `freshness` y las capacidades.**~~ **Medido, y la pregunta estaba mal
+  planteada**: presuponía que son la misma clase de cambio, y no lo son. `ore discover` emite
+  `reads` y `changes` desde el catálogo y **no** emite `freshness` —*«sería exactamente
+  inventar»*—, así que aquello es un **hecho** y esto una **promesa**.
+
+  Son **tres**: `OOS5030` la promesa que se afloja —`CONSUMER`, bloquea—, `OOS5031` lo que la
+  fuente admite y `OOS5032` lo que emite —`INDEX`, informan—. El primero se separa por **público**,
+  y los otros dos entre sí por **remedio**: replanificar frente a rehacer la copia. Los dos
+  criterios ya estaban en este documento; lo que faltaba era no meter un hecho y una promesa en la
+  misma bolsa.
