@@ -76,10 +76,23 @@ print("   %-46s %3d" % ("entidades con `backedBy`", len(entidades)))
 print("   %-46s %3d" % ("vistas materializadas", mats))
 print("   %-46s %3d" % ("copias POR ENCIMA de la vista de una entidad", len(riesgo)))
 print()
-print("   -> CERO. El agujero es LATENTE, no una fuga: hoy nadie materializa")
-print("      una vista derivada de la que respalda a una entidad. Y por eso no")
-print("      se habia visto — no porque algo lo impida, sino porque el corpus")
-print("      no lo hace. Lo que no hay es nada que lo impida.")
+if not riesgo:
+    print("   -> CERO. El agujero es LATENTE, no una fuga: nadie materializa una")
+    print("      vista derivada de la que respalda a una entidad. Y por eso no se")
+    print("      habia visto — no porque algo lo impida, sino porque el corpus no")
+    print("      lo hace. Lo que no hay es nada que lo impida.")
+else:
+    # La cuenta se calcula en vivo, asi que la conclusion tambien. Cuando se
+    # escribio esto daba cero; los casos que la correccion trajo lo cambiaron,
+    # y una medida que narrara «cero» mientras cuenta dos seria justo lo que
+    # estas medidas existen para no ser.
+    print("   -> %d. Cuando se midio el defecto eran CERO, y esa era la mitad de" % len(riesgo))
+    print("      la historia: el agujero era latente porque el corpus nunca")
+    print("      materializaba por encima. Las que hay ahora son los casos que la")
+    print("      correccion trajo consigo — o sea que lo que antes no se ejercia,")
+    print("      ahora se ejerce:")
+    for e, bb, v in riesgo:
+        print("        %s -> %s <- copia en %s" % (e, bb, v))
 
 # -- B - LAS DOS DIRECCIONES -------------------------------------------------
 print()

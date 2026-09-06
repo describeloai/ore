@@ -205,3 +205,95 @@ fn un_binding_sin_eje_declarado_sigue_compilando() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **El sello no depende de la dirección de la cadena.**
+///
+/// Los dos casos de conformidad afirman los dos extremos por separado. Lo que
+/// no pueden afirmar es la propiedad que los une: **la misma copia, con los
+/// mismos campos, sella igual esté la vista de la entidad arriba o abajo**.
+///
+/// Se construye el mismo paquete dos veces, moviendo únicamente de dónde
+/// cuelga la copia, y se exige que la respuesta sea la misma. Sin esto, la
+/// corrección podría haber arreglado una dirección y roto la otra, y los dos
+/// casos habrían pasado igualmente — cada uno mira su lado.
+///
+/// Vive aquí y no en `conformance` porque afirmar «dos árboles distintos dan la
+/// misma respuesta» no cabe en la forma de un caso, que es un árbol y una
+/// salida esperada.
+#[test]
+fn el_sello_da_lo_mismo_suba_o_baje_la_cadena() {
+    const RETICULO: &str = "apiVersion: oos.dev/v1alpha3\nkind: Lattice\n\
+         metadata: { name: sensitivity, namespace: gdpr }\n\
+         spec:\n  levels: [none, low, high]\n";
+    const CONDUCTOS: &str = "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\n\
+         metadata: { name: p }\nspec:\n  owner: team:security\n  conduits:\n    \
+         materialization.payload: { gdpr.sensitivity: low }\n";
+    const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+         metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+         object: public.employees\n  columns:\n    employee_id: {}\n    \
+         national_id: {}\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
+         changes: { mode: retract, witness: log }\n";
+
+    /// Una vista con el `from` y el `materialized` que se le pasen.
+    fn vista(nombre: &str, de: &str, materializada: bool) -> String {
+        let mat = if materializada {
+            "  materialized: { datasource: erp, table: \"cache.c\", key: [employeeId] }\n"
+        } else {
+            ""
+        };
+        format!(
+            "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+             metadata: {{ name: {nombre}, namespace: hr }}\nspec:\n  owner: team:hr\n  \
+             from: {de}\n  fields:\n    employeeId: {}\n    nationalId: {}\n{mat}",
+            if de.contains("table") { "employee_id" } else { "employeeId" },
+            if de.contains("table") { "national_id" } else { "nationalId" },
+        )
+    }
+
+    /// La entidad respalda a `respalda`, y clasifica `nationalId`.
+    fn entidad(respalda: &str) -> String {
+        format!(
+            "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+             metadata: {{ name: Employee, namespace: hr }}\nspec:\n  nature: entity\n  \
+             primaryKey: [employeeId]\n  backedBy: {respalda}\n  properties:\n    \
+             employeeId: {{ type: String }}\n    nationalId:\n      type: String\n      \
+             labels: {{ gdpr.sensitivity: high }}\n"
+        )
+    }
+
+    // Dos árboles con la MISMA cadena `copia → base → tabla`. Lo único que
+    // cambia es a cuál de las dos respalda la entidad: en el primero la copia
+    // queda ARRIBA de ella, y en el segundo ABAJO.
+    let arbol = |etiqueta: &str, respalda: &str| {
+        let dir = paquete(
+            etiqueta,
+            &[
+                ("ontology.config.yaml", CONFIG),
+                ("package.yaml", PAQUETE),
+                ("lattices/s.yaml", RETICULO),
+                ("conduits.yaml", CONDUCTOS),
+                ("tables/employees.yaml", TABLA),
+                ("views/base.yaml", &vista("base", "{ table: erp.employees }", false)),
+                ("views/copia.yaml", &vista("copia", "{ view: base }", true)),
+                ("entities/Employee.yaml", &entidad(respalda)),
+            ],
+        );
+        let out = validar(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    };
+
+    // La entidad respalda a `base`: la copia está POR ENCIMA. Es la dirección
+    // que estuvo ciega, y la que dejaba salir un `high` por un conducto `low`.
+    let arriba = arbol("cadena-arriba", "base");
+    // La entidad respalda a `copia`: la vista de la entidad ES la copia.
+    let abajo = arbol("cadena-abajo", "copia");
+
+    for (donde, out) in [("por encima", &arriba), ("en la copia", &abajo)] {
+        assert!(
+            out.contains("OOS4002") && out.contains("nationalId"),
+            "con la vista de la entidad {donde}, `nationalId: high` va a un \
+             conducto `low` y el sello tiene que verlo:\n{out}"
+        );
+    }
+}

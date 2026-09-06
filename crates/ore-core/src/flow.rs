@@ -621,14 +621,53 @@ fn vistas_materializadas(
             }
         }
 
-        // Vía 2 · cada entidad cuya cadena pasa por aquí.
+        // Vía 2 · cada entidad **de la misma cadena**, esté arriba o abajo.
+        //
+        // # Las dos direcciones, y por qué las dos
+        //
+        // La copia y la vista de la entidad están en la misma cadena, y da
+        // igual quién derive de quién: **se copia el mismo dato**. Hacia abajo,
+        // porque un eslabón inferior contiene las mismas columnas; hacia
+        // arriba, porque una vista derivada es una proyección de esas mismas
+        // columnas. La etiqueta es del dato, no del eslabón.
+        //
+        // Esto **solo miraba hacia abajo**, y el agujero se midió: `nationalId`
+        // declarada `critical` se copiaba por un conducto de `high` y
+        // compilaba — exactamente lo que el comentario de esta función dice que
+        // no puede pasar. Y en silencio, porque el `else { continue }` de una
+        // entidad que no toca esta vista es indistinguible del de una que sí la
+        // toca por el otro lado. `pruebas-de-fuego/medida-el-sello-no-sube.py`.
+        //
+        // # Por qué no hace falta invertir nada
+        //
+        // `proyectar` resuelve **hacia abajo desde donde se le pida**, así que
+        // para una copia por encima basta llamarla al revés: da campo de la
+        // copia → campo de la vista de la entidad. Se recorren los campos de la
+        // copia buscando su origen, en vez de las propiedades buscando su
+        // destino. Un mapa invertido no haría falta ni sería seguro — dos
+        // campos pueden venir del mismo, y entonces **los dos** llevan lo suyo,
+        // que es lo que sale solo al recorrer en esta dirección.
         for e in pkg.entities() {
             let Some(suya) = crate::vistas::respaldo(pkg, e) else {
                 continue;
             };
-            let Some(mapa) = crate::vistas::proyectar(pkg, suya, &vqn) else {
-                continue;
-            };
+            let sqn = suya.qname().unwrap_or_default();
+            // `prop -> campo de la copia`, resuelto por el lado que exista.
+            let mapa: BTreeMap<String, String> =
+                if let Some(abajo) = crate::vistas::proyectar(pkg, suya, &vqn) {
+                    abajo
+                } else if let Some(arriba) = crate::vistas::proyectar(pkg, v, &sqn) {
+                    // Al revés: `campo de la copia -> campo de la vista`, que es
+                    // el nombre de la propiedad. Se da la vuelta al leerlo, y un
+                    // origen repetido reparte la etiqueta a sus dos campos.
+                    let mut m: BTreeMap<String, String> = BTreeMap::new();
+                    for (campo, propiedad) in arriba {
+                        m.insert(propiedad, campo);
+                    }
+                    m
+                } else {
+                    continue;
+                };
             let eqn = e.qname().unwrap_or_default();
             let Some(props) = efectivas.get(&eqn) else {
                 continue;
