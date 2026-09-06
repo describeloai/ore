@@ -90,6 +90,31 @@ pub struct Peticion {
     pub cursor: Option<String>,
 }
 
+/// **El cuarto verbo: ¿responde esta fuente?**
+///
+/// Los otros tres piden algo —un catálogo, unas filas, un ordinal— y por eso
+/// los tres fallan por el mismo sitio cuando la fuente no está: al primer
+/// intento de usarla, y con el error del trabajo que se estaba haciendo. Una
+/// credencial caducada se descubría diciendo *«el catálogo no analiza»*.
+///
+/// Esto separa las dos preguntas, que es lo mismo que `source add` hace con el
+/// secreto y `discover` con leer y proponer: **fallan por separado, así que se
+/// piden por separado.** Airbyte tiene `check` por la misma razón.
+///
+/// La petición es la coordenada de [`leer_coordenada`] —basta `url`— y la
+/// respuesta es esto: `{"ok": true}` o `{"ok": false, "porque": "…"}`. El
+/// motivo va **literal**, porque el mensaje del servidor es lo único accionable
+/// que existe: «password authentication failed» se arregla solo en cuanto se
+/// lee, y resumirlo convierte cinco minutos en una tarde.
+pub fn comprobacion(ok: bool, porque: Option<&str>) -> String {
+    let mut o = std::collections::BTreeMap::new();
+    o.insert("ok".to_string(), ore_core::json::Json::Bool(ok));
+    if let Some(p) = porque {
+        o.insert("porque".to_string(), ore_core::json::Json::s(p));
+    }
+    ore_core::json::Json::Obj(o).jcs()
+}
+
 /// **Los operadores que una petición sabe expresar.** Uno solo.
 ///
 /// Es la lista que decide tres cosas que hasta ahora se decidían por separado y

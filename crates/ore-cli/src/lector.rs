@@ -695,6 +695,70 @@ pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Resul
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
 
+/// `ore source check` — **¿responde esta fuente?**
+///
+/// Delega igual que todo lo demás: el verbo `check` del lector, la URL por
+/// stdin. Y para `bigquery` no hay atajo interno aunque el catálogo lo tenga:
+/// la receta contesta *qué hay*, y esto contesta *si contesta*, que es
+/// justamente la pregunta que la receta no separaba.
+pub fn comprobar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
+    let (tipo, env) = match declaracion(raiz, fuente) {
+        Ok(x) => x,
+        Err(f) => return imprimir(f),
+    };
+    let url = match url(raiz, &env, fuente) {
+        Ok(u) => u,
+        Err(f) => return imprimir(f),
+    };
+    let programa = format!("ore-read-{tipo}");
+    // La coordenada, no la URL pelada: `catalogo` recibe la URL a secas porque
+    // es lo unico que necesita, y `check` usa la forma de `leer_coordenada`
+    // —`{"url": ...}`— que es la que el protocolo fija para preguntar por un
+    // origen. Dos formas para dos preguntas, cada una con su validacion.
+    let coordenada = Json::obj([("url", Json::s(&url))]).jcs();
+    let salida = match ejecutar(&programa, &["check".to_string()], Some(&coordenada)) {
+        Ok(s) => s,
+        // Que el lector no esté o no arranque **también** es una respuesta a la
+        // pregunta, y la más común: se dice como tal y no como un fallo de otra
+        // cosa.
+        Err(f) => {
+            println!("{fuente} · no · no se pudo preguntar");
+            for l in std::iter::once(f.mensaje).chain(f.ayuda) {
+                println!("  {l}");
+            }
+            return std::process::ExitCode::from(f.codigo);
+        }
+    };
+    let n = match parse::parse(&salida) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("{fuente} · no · `{programa}` contestó algo que no analiza: {e:?}");
+            return std::process::ExitCode::from(65);
+        }
+    };
+    let ok = n.get("ok").and_then(|(_, v)| v.as_str()) == Some("true");
+    let porque = n.get("porque").and_then(|(_, v)| v.as_str()).unwrap_or("");
+    if ok {
+        println!("{fuente} · sí · `{tipo}` responde");
+        return std::process::ExitCode::SUCCESS;
+    }
+    println!("{fuente} · no · `{tipo}` no responde");
+    // El motivo, **literal**: el mensaje del servidor es lo único accionable que
+    // existe, y resumirlo convierte cinco minutos en una tarde.
+    for l in porque.lines().filter(|l| !l.trim().is_empty()) {
+        println!("  {l}");
+    }
+    std::process::ExitCode::from(69) // EX_UNAVAILABLE
+}
+
+fn imprimir(f: Fallo) -> std::process::ExitCode {
+    eprintln!("error: {}", f.mensaje);
+    for l in f.ayuda {
+        eprintln!("{l}");
+    }
+    std::process::ExitCode::from(f.codigo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -204,6 +204,20 @@ fn intentar() -> Result<String, String> {
     if verbo == "testigo" {
         return testigo(&entrada);
     }
+    // **¿Responde esta fuente?** Conectar y nada mas. Contesta a la vez por la
+    // red, por TLS, por la credencial y por `pg_hba.conf`, que son los cuatro
+    // sitios donde esto se rompe — y hasta ahora los cuatro se descubrian
+    // diciendo «el catalogo no analiza».
+    if verbo == "check" {
+        let (url, _) = ore_driver::leer_coordenada(&entrada)?;
+        let tls = postgres_native_tls::MakeTlsConnector::new(
+            native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
+        );
+        return Ok(match postgres::Client::connect(&url, tls) {
+            Ok(_) => ore_driver::comprobacion(true, None),
+            Err(e) => ore_driver::comprobacion(false, Some(&e.to_string())),
+        });
+    }
     let url = entrada.trim();
 
     let tls = postgres_native_tls::MakeTlsConnector::new(

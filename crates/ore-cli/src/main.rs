@@ -96,6 +96,21 @@ enum AccionFuente {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **¿Responde esta fuente?** Y nada más: no lee el catálogo, no propone
+    /// nada y no toca un fichero.
+    ///
+    /// Los otros mandos preguntan por la fuente **haciendo un trabajo**, así
+    /// que una credencial caducada se descubría diciendo «el catálogo no
+    /// analiza». Son dos preguntas y fallan por separado, así que se piden por
+    /// separado — la misma figura que `source add` con el secreto y `discover`
+    /// con leer y proponer.
+    Check {
+        /// La fuente, tal como la declara el manifiesto.
+        name: String,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
@@ -456,6 +471,9 @@ fn main() -> std::process::ExitCode {
                 },
                 &pkg,
             );
+        }
+        Command::Source(AccionFuente::Check { name, path }) => {
+            return lector::comprobar(path, name);
         }
         Command::Source(AccionFuente::Add {
             name,

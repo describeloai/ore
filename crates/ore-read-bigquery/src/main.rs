@@ -75,6 +75,25 @@ fn main() -> ExitCode {
     let resultado = match verbo {
         "leer" => filas(&entrada),
         "testigo" => testigo(&entrada),
+        // **¿Responde esta fuente?** Se le pide a `bq` lo mas barato que hay:
+        // `SELECT 1`. Contesta a la vez por la autenticacion, por el proyecto y
+        // por que el propio `bq` arranca — que en esta maquina fue justo el
+        // fallo que se disfrazo de otra cosa.
+        "check" => match ore_driver::leer_coordenada(&entrada) {
+            Err(e) => Err(e),
+            Ok((url, _)) => Ok(match proyecto(&url).and_then(|p| {
+                bq(
+                    &p,
+                    &consultas::Invocacion {
+                        consulta: "SELECT 1 AS ok".to_string(),
+                        parametros: Vec::new(),
+                    },
+                )
+            }) {
+                Ok(_) => ore_driver::comprobacion(true, None),
+                Err(e) => ore_driver::comprobacion(false, Some(&e)),
+            }),
+        },
         "catalogo" => Err("`ore` trae la receta del catálogo de BigQuery dentro y es la que \
                            corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
                            aquí. Lo que implementa este programa es `leer`, que es el verbo de \

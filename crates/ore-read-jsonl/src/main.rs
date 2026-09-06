@@ -67,6 +67,18 @@ fn main() -> ExitCode {
             &mut avisos,
         ),
         "testigo" => testigo(&entrada),
+        // **¿Responde esta fuente?** Aquí es barato: la URL es una ruta, así
+        // que responder es existir y dejarse listar.
+        "check" => match ore_driver::leer_coordenada(&entrada) {
+            Err(e) => Err(e),
+            Ok((url, _)) => Ok(match std::fs::read_dir(std::path::Path::new(&url)) {
+                Ok(_) => ore_driver::comprobacion(true, None),
+                Err(e) => ore_driver::comprobacion(
+                    false,
+                    Some(&format!("no se pudo listar `{url}`: {e}")),
+                ),
+            }),
+        },
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
     for a in &avisos {

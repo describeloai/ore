@@ -183,6 +183,22 @@ codes! {
     // existe», y existe — esta en el paquete de al lado. El diagnostico
     // correcto es otro y hasta aqui no habia codigo que lo dijera.
     Oos2028 = "OOS2028", Reference, "una referencia cruza a un paquete que no la exporta";
+    // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
+    //
+    // `reads` sabia decir que un origen no empuja NINGUN filtro
+    // —`predicatePushdown: []`— y no sabia decir que tampoco empuja LA
+    // PROYECCION: que lee la fila entera y descarta columnas despues.
+    //
+    // La diferencia no es de rendimiento. La mascara de este arbol es
+    // ESTRUCTURAL —«no esta en el plan, luego no esta en la peticion, luego no
+    // puede estar en el SQL: no hay ningun punto donde alguien pueda olvidarse
+    // de aplicarla, porque no hay nada que aplicar»— y con un origen asi deja
+    // de serlo: la columna enmascarada SALE, y alguien la tira. Es otra
+    // garantia, no la misma mas lenta.
+    //
+    // Y sin la palabra, una fuente de esas entra al arbol indistinguible de una
+    // que si empuja.
+    Oos2029 = "OOS2029", Reference, "una tabla que no empuja la proyeccion no sostiene una copia";
 
     // ── OOS3xxx · sistema de tipos ──────────────────────────────────────────
     Oos3001 = "OOS3001", Type, "tipo fuera del conjunto";
@@ -407,6 +423,7 @@ mod tests {
             // de v1alpha1 y la version no.
             Code::Oos2027,
             Code::Oos2028,
+            Code::Oos2029,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

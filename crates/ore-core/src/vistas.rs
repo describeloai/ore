@@ -1064,6 +1064,80 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         out.push(d);
     }
 
+    // ── OOS2029 · lo que no se proyecta en el origen no se copia ────────────
+    //
+    // **La palabra que le faltaba a `reads`.** Sabía decir que un origen no
+    // empuja ningún filtro —`predicatePushdown: []`— y no sabía decir que
+    // tampoco empuja **la proyección**: que lee la fila entera y descarta
+    // columnas después de tenerlas.
+    //
+    // La diferencia no es de rendimiento. La máscara de este árbol es
+    // **estructural**, y `ore-driver` lo dice con estas palabras:
+    //
+    // > *«una propiedad `redact` no está en el plan, luego no está en la
+    // > petición, luego NO PUEDE ESTAR EN EL SQL. La salvaguarda es estructural
+    // > — no hay ningún punto donde alguien pueda olvidarse de aplicarla,
+    // > porque no hay nada que aplicar.»*
+    //
+    // Con `projectionPushdown: false` eso deja de ser cierto: la columna
+    // enmascarada **sale del origen** y alguien la tira. Es otra garantía —una
+    // que se aplica en vez de no existir— y hasta hoy el árbol no tenía
+    // vocabulario para distinguirlas.
+    //
+    // # Por qué se prohíbe la COPIA y no la lectura
+    //
+    // Porque una lectura virtual mueve la fila entera al proceso del lector y
+    // ahí se acaba: no queda artefacto. Una copia sí queda, **sellada con una
+    // clasificación calculada sobre los campos de la vista** — y esa cuenta es
+    // falsa si lo que cruzó fue el objeto entero. El sello no mentiría sobre lo
+    // que contiene la copia; mentiría sobre lo que se movió para hacerla.
+    //
+    // # El valor por defecto es `true`, y no es P4
+    //
+    // P4 dice que omitir es cerrar, y aquí cerrar sería `false`. No se aplica:
+    // el protocolo del driver **exige** empujar la proyección —lo afirma su
+    // cabecera y lo prueba `ore-sql`—, así que un lector que no lo haga está
+    // incumpliendo el contrato, no ejerciendo una opción. `false` es una
+    // **confesión**, y por eso hay que escribirla.
+    for v in pkg.of(Kind::View) {
+        if v.section("materialized").is_none() {
+            continue;
+        }
+        let Ok(r) = raiz(pkg, v) else { continue };
+        let Some(tabla) = r.tabla.as_deref().and_then(|qn| pkg.table(qn)) else {
+            continue;
+        };
+        let proyecta = tabla
+            .section("reads")
+            .and_then(|x| x.get("projectionPushdown"))
+            .and_then(|(_, b)| b.as_str())
+            .is_none_or(|b| b != "false");
+        if proyecta {
+            continue;
+        }
+        let qn = v.qname().unwrap_or_default();
+        let tqn = r.tabla.as_deref().unwrap_or_default();
+        let mut d = Diagnostic::new(
+            Code::Oos2029,
+            &v.path,
+            format!(
+                "`{qn}` se copia de `{tqn}`, que declara `projectionPushdown: false`: la fila \
+                 entera sale del origen y las columnas se descartan después"
+            ),
+        )
+        .help(
+            "la máscara de este modelo es estructural —lo que no está en el plan no está en la \
+             petición y no puede estar en la consulta—, y con un origen que no proyecta deja de \
+             serlo: lo enmascarado sale y alguien lo tira. La copia se sellaría con la \
+             clasificación de los campos de la vista, que no es lo que se movió. Léela virtual, o \
+             cópiala desde un objeto que sí proyecte",
+        );
+        if let Some(p) = v.section("materialized").map(|m| m.pos()) {
+            d = d.at(p);
+        }
+        out.push(d);
+    }
+
     // ── OOS2023 · la pareja decide la garantía ──────────────────────────────
     //
     // `witness: field` fecha por una columna, y eso es **at-least-once por
@@ -1731,6 +1805,64 @@ mod tests {
              materialized: { datasource: erp, table: cache.pedidos }\n",
         );
         let pkg = paquete(vec![config(), topico("upsert"), v]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    // ── OOS2029 · la palabra que le faltaba a `reads` ──────────────────────
+
+    /// Una tabla que **confiesa** que no empuja la proyección.
+    fn sin_proyeccion() -> Loaded {
+        tabla(
+            "orders",
+            "  datasource: erp\n  object: public.orders\n  \
+             columns:\n    order_id: {}\n    dni: {}\n  \
+             reads: { fullScan: cheap, projectionPushdown: false }\n  \
+             changes: { mode: none, witness: none }\n",
+        )
+    }
+
+    /// **La copia no compila.** Lo que se sellaría con la clasificación de los
+    /// campos de la vista no es lo que se movió: sale la fila entera.
+    #[test]
+    fn una_copia_desde_algo_que_no_proyecta_no_compila() {
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n  \
+             materialized: { datasource: erp, table: cache.pedidos }\n",
+        );
+        let pkg = paquete(vec![config(), sin_proyeccion(), v]);
+        assert_eq!(codigos(&pkg), vec![Code::Oos2029]);
+    }
+
+    /// **Y la misma vista, virtual, sí.** Una lectura mueve la fila al proceso
+    /// del lector y ahí se acaba; no queda artefacto que clasificar.
+    #[test]
+    fn la_misma_vista_virtual_si_compila() {
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n",
+        );
+        let pkg = paquete(vec![config(), sin_proyeccion(), v]);
+        assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
+    }
+
+    /// Y omitir la palabra **no** la cierra: el protocolo exige empujar la
+    /// proyección, así que `false` es una confesión y no una opción. Una tabla
+    /// que no dice nada la empuja.
+    #[test]
+    fn omitir_la_palabra_no_es_confesarla() {
+        let t = tabla(
+            "orders",
+            "  datasource: erp\n  object: public.orders\n  \
+             columns:\n    order_id: {}\n  \
+             reads: { fullScan: cheap }\n  changes: { mode: none, witness: none }\n",
+        );
+        let v = vista8(
+            "pedidos",
+            "  from: { table: erp.orders }\n  fields:\n    id: order_id\n  \
+             materialized: { datasource: erp, table: cache.pedidos }\n",
+        );
+        let pkg = paquete(vec![config(), t, v]);
         assert!(codigos(&pkg).is_empty(), "{:?}", codigos(&pkg));
     }
 
