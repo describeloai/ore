@@ -79,7 +79,8 @@ con tres razones y solo una ha caducado.
 | **el formato `ORETOPO1`** | ya se fue con `ore-exec`. Aquí se retira su **hueco**: deja de ser algo que falta |
 
 Y una que **no** se retira y conviene decirlo: `ore_core::aristas` **se queda**. Sigue siendo la
-derivación de qué aristas declara un paquete, y es lo que `B0` necesita para saber qué se atraviesa.
+derivación de qué aristas declara un paquete, y es lo que hace falta para saber qué se atraviesa —y, con
+el sello, por qué conducto pasa.
 
 ---
 
@@ -89,38 +90,60 @@ derivación de qué aristas declara un paquete, y es lo que `B0` necesita para s
 
 | | qué | cuesta |
 |---|---|---|
-| **B0** | la regla: *lo que se atraviesa se debe materializar* | gramática · un código |
+| **B0** | ~~la regla: *lo que se atraviesa se debe materializar*~~ | **medido y descartado** · lo que queda es el sello del conducto derivado |
 | **B1** | la arista deja de ser una copia aparte | solo retirar |
 | **B2** | el salto | un verbo en el almacén |
 | **B3** | la cadena | nada nuevo |
 | **B4** | **la definición de listo** | es la prueba |
 
-### B0 · `OOS2026` — lo que se atraviesa se debe materializar
+### B0 — lo que se atraviesa se materializa, y no es el autor quien lo declara
 
-**Qué.** El **tercer gemelo** de una familia que ya tiene dos:
+> **Este peldaño se midió y no se escribe.** La regla que decía era cierta; su consecuencia era
+> falsa. La medida está en `pruebas-de-fuego/medida-b0-impagable.py`, y se reproduce sola.
 
-| | |
-|---|---|
-| `OOS2020` | lo que **no se puede leer** se debe materializar |
-| `OOS2025` | lo que **se escribe** se debe materializar |
-| **`OOS2026`** | lo que **se atraviesa** se debe materializar |
+**Lo que decía.** El tercer gemelo de `OOS2020` (*lo que no se puede leer*) y `OOS2025` (*lo que se
+escribe*): **`OOS2026`**, lo que se atraviesa se debe materializar. Sujeto, la vista que respalda a
+la entidad; precio contado, *«una entidad —`supply.Shipment`— tendría que declarar `materialized`»*.
 
-*«Se atraviesa»* es derivable y no se declara: la entidad tiene una `relations` con `via`. El sujeto
-de la regla es **la vista que la respalda**, igual que en `OOS2025`, y por eso vive con ella en
-`02-view` §5 y en `vistas::comprobar`.
+**Qué salió al implementarlo.** El código se escribió, y encendió en **dos** vistas del ejemplo
+—`hr.empleados` y `supply.envios`—, no en una: la cuenta era de un árbol anterior, en el que
+`hr.empleados` estaba materializada. Hoy abre con *«Sin materializar»* y explica por qué. Y al
+pagar el precio de verdad —declarar `materialized` en las dos— el ejemplo insignia **deja de
+compilar**:
 
-**Su precio, contado antes de escribirla:** una entidad del corpus —`supply.Shipment`— tendría que
-declarar `materialized`. Una. Las otras tres que no pasarían no es por esto: **no están migradas**,
-y para ellas la travesía murió con `ore-exec` y no vuelve.
+```text
+error[OOS4011]: el conducto `materialization.payload` no tiene autorización declarada
+```
 
-> **Y esto es lo que hay que aceptar de frente:** hoy una entidad se puede atravesar sin
-> materializar nada, y esta regla lo prohíbe. Es exactamente la misma clase de decisión que
-> `OOS2020` —obligar a materializar lo que no se puede servir de otra manera— y se toma con el
-> mismo criterio.
+Y el autor **no puede arreglarlo**. Si declara el conducto, `OOS4002` cae sobre once campos
+`critical` —`nationalId`, `baseSalary`—. `B0` obligaba a elegir entre el sello y el grafo, y el
+sello gana: la entidad quedaría sin compilar sin que nadie pudiera hacer nada.
 
-**Listo cuando.** Una entidad con `via` respaldada por una vista **virtual** no compila, y el
-mensaje **nombra la relación** que lo impide; la misma con la vista materializada compila; y una
-entidad **sin** relaciones no ve la regla, ni para bien ni para mal.
+**Por qué, y es estructural.** `spec.materialized` es **un** conducto —`materialization.payload`,
+la carga entera—. La travesía no copia eso: copia **dos columnas**, la clave y la `via`. Son dos
+decisiones distintas y la política **ya las separa**, cada una con su autorización:
+
+| conducto | `gdpr.sensitivity` que admite | quién lo usa hoy |
+|---|---|---|
+| `materialization.index` | `medium` | **nadie** |
+| `materialization.cache` | `low` | — |
+| `materialization.payload` | *no declarado* → ⊥ (P4) | `spec.materialized` de la vista |
+
+`managerId` y `departmentId` heredan el suelo `medium` de `hr_workday`, que es exactamente lo que
+`materialization.index` admite. **Las aristas de `hr.empleados` sí se pueden copiar.** Lo que no se
+puede copiar es su carga. `B0` confundía las dos.
+
+**Y deja al descubierto un agujero, que es lo que sí hay que cerrar.** El único código que sella el
+eje del índice es `flow::materializaciones`, y su bucle `for eje in ["topology", "payload"]` itera
+sobre `Kind::Binding` — **un kind retirado**. Así que hoy la travesía copia aristas **sin sello
+ninguno**: `hr.empleados` no puede copiar `nationalId`, y sus aristas se copian sin que nadie mire.
+
+> **Lo que sobrevive.** *Lo que se atraviesa se materializa* es cierto — se materializa el índice, y
+> eso es derivable y no se declara (P2). Lo que falta no es un `OOS2026` que prohíbe: es el **sello
+> sobre el conducto derivado**. La clave y las `via` de una vista atravesada pasan por
+> `materialization.topology`, y ese conducto tiene que estar autorizado (`OOS4011`) y admitir sus
+> etiquetas (`OOS4002`). Mismo sujeto, misma familia, y en vez de obligar a copiar lo que el sello
+> prohíbe, sella lo que hoy se copia a escondidas.
 
 ### B1 · La arista deja de ser una copia aparte
 
@@ -153,7 +176,7 @@ así que el verbo es una puerta, no una pieza.
 > entera por un salto. Lo contrario es más simple y se puede medir después.
 
 **Listo cuando.** Un salto devuelve los vecinos correctos, **no abre ninguna conexión al origen**,
-y una relación cuya entidad no está materializada **no llega aquí**: la paró `B0` al compilar.
+y una relación cuyas aristas el sello no autoriza **no llega aquí**: la paró `OOS4002` al compilar.
 
 ### B3 · La cadena
 
@@ -182,9 +205,9 @@ relations:                        fields:
 ```
 
 La relación es **reflexiva** —un jefe es un empleado—, la vista **ya expone la clave y el enlace**
-sin que nadie lo pretendiera, y **no se materializa**. O sea que *tal cual está* es la negativa
-`a`: hoy tendría que fallar con `OOS2026`. Añadirle `materialized` —una línea— lo convierte en el
-positivo.
+sin que nadie lo pretendiera, y **no se materializa**. Eso *era* la negativa `a` de `B0`; con `B0`
+descartado, lo que este caso enseña es lo contrario y es mejor: **una vista virtual sí se
+atraviesa**, y el índice de sus aristas es la muleta que hace falta exactamente aquí.
 
 **Eso es la prueba entera en un paquete que ya existe**, y es lo que hace que `B4` no tenga que
 inventar terreno. Los actos, con la vista materializada:
@@ -200,8 +223,8 @@ Y las negativas, que valen igual:
 
 | | se provoca | tiene que pasar |
 |---|---|---|
-| a | una entidad con `via` y vista **virtual** | **no compila** · `OOS2026`, nombrando la relación |
-| b | una entidad **sin** relaciones y vista virtual | **compila** — la regla no tiene sujeto |
+| a | una entidad con `via` cuyas aristas el conducto **no admite** | **no compila** · `OOS4002`, nombrando la relación y la etiqueta |
+| b | una entidad **sin** relaciones | **compila** — no hay aristas que sellar |
 | c | un salto por una relación que no existe | se rechaza nombrándola, **sin leer nada** |
 | d | una `via` **compuesta** | se descarta como hoy, y se **dice**: `aristas` la salta a propósito |
 
@@ -290,8 +313,8 @@ lo que `ore-maintain` hace incrementalmente y está medido.
 |---|---|
 | `OOS2020` | lo que **no se puede leer** se debe materializar |
 | `OOS2025` | lo que **se escribe** se debe materializar |
-| `OOS2026` | lo que **se atraviesa** se debe materializar |
-| **↳ el cuarto** | lo que **se une** se debe materializar — **los dos lados** |
+| ~~lo que se atraviesa~~ | **no es de esta familia** — se materializa el índice, y eso no lo declara nadie (P2) |
+| **↳ el que faltaría** | lo que **se une** se debe materializar — **los dos lados** |
 
 **Sigue sin entrar aquí**, y ahora con un motivo mejor que *«son tres razones»*: entra el día que
 alguien la mida, y la mide `B4` produciendo el primer número de una travesía sobre copia. Lo que
@@ -385,6 +408,7 @@ hace, y decidir si son una o dos es trabajo aparte.
 
 Este documento se borra en `B4`. Lo que **no** se borra es
 [`sustrato.md`](sustrato.md) **M4**, que es donde vive la tesis y donde están las medidas que la
-sostienen. Y el registro de decisiones, si `OOS2026` acaba mereciendo un ADR: hoy no lo parece
-—es una regla más de la familia de `OOS2020`, no una decisión de arquitectura— pero si al
-construirlo aparece que sí, se escribe.
+sostienen —con **M4 releído**: su tabla de precio es de un árbol anterior, y su *«la regla que eso
+escribe sola»* no se sostiene—. Y el registro de decisiones, para lo que sí queda: **sellar el
+conducto derivado del índice** sí parece una decisión de arquitectura, porque decide que una copia
+que nadie declara tenga dueño y autorización igual que las declaradas.
