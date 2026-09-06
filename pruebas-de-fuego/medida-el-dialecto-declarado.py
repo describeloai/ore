@@ -1,191 +1,264 @@
 # -*- coding: utf-8 -*-
-"""El espectro del dialecto declarado: ¿cabe una familia SQL en un fichero?
+"""El dialecto declarado: cuanto de un driver SQL cabe en un fichero.
 
-La forma que el sector converge —Airbyte con su CDK declarativo, Openflow con
-flujos de NiFi versionados, Cognite con trabajos de configuracion— es la misma:
-**el conector es una DECLARACION que interpreta un runtime compartido**, no un
-programa. Airbyte lo dice con la frase que importa: el contrato fuerte permite
-implementar una funcion UNA VEZ en vez de repetirla por conector.
+La pregunta es la de Airbyte aplicada a la figura de ORE. Su CDK de bajo codigo
+dice por que vale la pena: **el contrato fuerte permite implementar una funcion
+UNA VEZ —paginacion, incremental, resumable full refresh— en vez de repetirla
+por conector**. Un fallo se arregla una vez.
 
-Aqui hay dos traductores escritos a mano —Postgres y BigQuery— y esto mide si
-la distancia entre ellos es un dialecto o es un programa.
+Aqui hay dos traductores escritos por separado —Postgres y BigQuery— y esto
+mide cuanto de ellos es LA MISMA FORMA y cuanto es dialecto. Si el dialecto son
+unos pocos ejes, una familia SQL nueva deja de ser una crate de Rust y pasa a
+ser un fichero.
 
-  A. EL ESQUELETO  que hace cada traductor, paso a paso, y si coinciden
-  B. LOS EJES      en cuantas cosas difieren de verdad
-  C. LO QUE SE VA  lo que hoy se reescribe por driver y se escribiria una vez
-  D. LO QUE RESISTE lo que NO cabe en un manifiesto, y por que
-  E. LA COLA LARGA por que la respuesta no es Airflow, medido contra el
-                   protocolo de aqui
+  A. LA FORMA COMPARTIDA  el esqueleto que los dos construyen
+  B. LOS EJES             lo que de verdad difiere, extraido de los dos
+  C. LO QUE SE RESISTE    lo que no cabe en un manifiesto, y por que
+  D. EL PRESUPUESTO       cuanto se movería y cuanto se queda
+  E. AIRBYTE              hasta donde encaja, y donde rompe algo que aqui
+                          no es una optimizacion sino la salvaguarda
 """
 import pathlib
 import re
 
 RAIZ = pathlib.Path(r"C:\ORE")
-CRATES = RAIZ / "crates"
-
-PG = (CRATES / "ore-read-postgres/src/sql.rs").read_text(encoding="utf-8")
-BQ = (CRATES / "ore-read-bigquery/src/sql.rs").read_text(encoding="utf-8")
+PG = RAIZ / "crates/ore-read-postgres/src/sql.rs"
+BQ = RAIZ / "crates/ore-read-bigquery/src/sql.rs"
 
 
-def sin_pruebas(t):
-    return t.split("#[cfg(test)]")[0]
+def codigo(f):
+    """El fichero sin pruebas, sin comentarios y sin lineas en blanco."""
+    t = f.read_text(encoding="utf-8", errors="replace")
+    t = t.split("#[cfg(test)]")[0]
+    return [l for l in t.split("\n")
+            if l.strip() and not l.strip().startswith(("//", "///", "//!"))]
 
 
-def utiles(t):
-    return [l for l in sin_pruebas(t).split("\n")
-            if l.strip() and not l.strip().startswith("//")]
+def fn(f, nombre):
+    t = f.read_text(encoding="utf-8", errors="replace").split("#[cfg(test)]")[0]
+    m = re.search(r"^(?:pub )?fn %s\b.*?\{" % nombre, t, re.M | re.S)
+    if not m:
+        return ""
+    i, prof = m.end(), 1
+    while i < len(t) and prof:
+        prof += (t[i] == "{") - (t[i] == "}")
+        i += 1
+    return t[m.start():i]
 
 
-print("== el espectro del dialecto declarado ==")
+print("== el dialecto declarado ==")
 
-# -- A - EL ESQUELETO --------------------------------------------------------
+# -- A - LA FORMA COMPARTIDA -------------------------------------------------
 print()
-print("A - EL ESQUELETO: los mismos pasos, en el mismo orden")
-# Se buscan los HITOS de la construccion, no las lineas: si los dos traductores
-# emiten las mismas piezas en el mismo orden, lo que los separa es como se
-# escribe cada pieza, que es la definicion de dialecto.
+print("A - LA FORMA COMPARTIDA: el esqueleto que los dos construyen")
+print()
+print("   SELECT <proyeccion> FROM <objeto>")
+print("   WHERE  <recorte por clave>  AND  <filtros>  AND  <rango del cursor>")
+print()
+# Se comprueba que los dos lo construyen igual, en vez de afirmarlo.
 HITOS = [
-    ("la proyeccion", r"SELECT \{\}"),
-    ("el objeto", r"FROM \{\}"),
-    ("el recorte por clave", r"claves\.is_empty\(\)"),
-    ("los filtros", r"for \(col, op, valor\) in &p\.filtros"),
-    ("el operador `gt`", r'"gt" => ">"'),
-    ("el rango, start exclusivo", r"start.*?>"),
-    ("el rango, end inclusivo", r"end.*?<="),
-    ("el WHERE, si hay algo", r'push_str\(" WHERE "\)'),
+    # `format!(` y su cadena pueden ir en lineas distintas: BigQuery lo parte
+    # porque la linea no cabia. Exigirlos pegados dio «no» a un fichero que lo
+    # tiene, que es el arnes contando la ENVOLTURA en vez del hito.
+    ("SELECT ... FROM", r'format!\(\s*"SELECT \{\} FROM \{\}"'),
+    ("condiciones unidas por AND", r'condiciones\.join\(" AND "\)'),
+    ("WHERE solo si hay condiciones", r'q\.push_str\(" WHERE "\)'),
+    ("`gt` -> `>`, resto `=`", r'"gt" => ">"'),
+    ("start exclusivo, end inclusivo", r'" > "|\{\} > \{\}|> \$\{\}|> \{\}'),
 ]
-print("   %-28s %-10s %s" % ("paso", "postgres", "bigquery"))
-print("   " + "-" * 52)
-iguales = 0
+print("   %-34s %-10s %s" % ("hito de la forma", "postgres", "bigquery"))
+print("   " + "-" * 60)
 for nombre, patron in HITOS:
-    a = bool(re.search(patron, sin_pruebas(PG), re.S))
-    b = bool(re.search(patron, sin_pruebas(BQ), re.S))
-    iguales += a and b
-    print("   %-28s %-10s %s" % (nombre, "si" if a else "no", "si" if b else "no"))
-print()
-print("   %d de %d pasos, en los dos y en el mismo orden." % (iguales, len(HITOS)))
-print("   %-32s %3d lineas" % ("postgres, sin comentarios ni pruebas", len(utiles(PG))))
-print("   %-32s %3d lineas" % ("bigquery, idem", len(utiles(BQ))))
+    hay = []
+    for f in (PG, BQ):
+        t = f.read_text(encoding="utf-8", errors="replace").split("#[cfg(test)]")[0]
+        hay.append("si" if re.search(patron, t) else "no")
+    print("   %-34s %-10s %s" % (nombre, hay[0], hay[1]))
 
 # -- B - LOS EJES ------------------------------------------------------------
 print()
-print("B - LOS EJES: en que difieren de verdad")
+print("B - LOS EJES QUE VARIAN, extraidos de los dos ficheros")
+print()
+
+
+def cita(f):
+    """Como cita un identificador cada dialecto."""
+    c = fn(f, "ident")
+    # La cadena de formato lleva comillas escapadas en Postgres —`"\"{}\""`—
+    # asi que el literal hay que leerlo respetando el escape, no cortando en la
+    # primera comilla: la primera version devolvio una barra suelta.
+    m = re.search(r'format!\(\s*"((?:[^"\\]|\\.)*)"', c)
+    escapa = re.search(r'\.replace\(([^)]*)\)', c)
+    rechaza = "Err(" in c
+    return (m.group(1) if m else "?",
+            "escapa: %s" % escapa.group(1) if escapa else
+            ("RECHAZA si aparece" if rechaza else "-"))
+
+
+def marca(f):
+    c = fn(f, "sql") or fn(f, "consulta")
+    m = re.findall(r'format!\("(@?\$?\{?p?\}?\{?\}?)"', c)
+    posicional = "${}" in c or "${" in c
+    con_tipo = "{n}:{t}:" in c or ":{t}:" in c
+    return ("$N posicional" if posicional else "@pN con nombre",
+            "lleva TIPO" if con_tipo else "sin tipo")
+
+
+def clave(f):
+    c = fn(f, "sql") or fn(f, "consulta")
+    if "IN (" in c:
+        return "(cols) IN (tuplas)"
+    if " OR " in c:
+        return "disyuncion de conjunciones"
+    return "?"
+
+
+def catalogo_de(f):
+    """Quien hace la consulta del catalogo de esta familia, y donde."""
+    main = (f.parent / "main.rs").read_text(encoding="utf-8", errors="replace")
+    # No vale buscar `INFORMATION_SCHEMA` en el fichero: el driver de BigQuery
+    # lo nombra para pedir TIPOS, no el catalogo, y con eso el arnes dijo que
+    # los dos lo tienen. Lo que decide es si el verbo `catalogo` HACE algo.
+    arm = re.search(r'"catalogo" =>\s*(.{0,80})', main, re.S)
+    if arm and "Err(" not in arm.group(1):
+        return "en el driver (`main.rs`)"
+    if re.search(r'Some\("catalogo"\)', main):
+        return "en el driver (`main.rs`)"
+    return "en `ore` (receta); el driver solo tipa"
+
+
 EJES = [
-    ("citar un identificador",
-     'formato por partes: `"x"."y"`, doblando la comilla',
-     'entero y con acento grave: `` `x.y` ``, SIN escape -> se rechaza'),
-    ("la marca del parametro",
-     "posicional: `$1`, `$2`...",
-     "con nombre: `@p0`, `@p1`..."),
-    ("el tipo del parametro",
-     "no hace falta: el servidor coacciona el texto",
-     "OBLIGATORIO: GoogleSQL no coacciona STRING a INT64"),
-    ("el recorte por clave",
-     "`(cols) IN ((a,b),(c,d))`",
-     "disyuncion de conjunciones"),
-    ("de donde salen los tipos",
-     "no se piden",
-     "una consulta mas a `INFORMATION_SCHEMA.COLUMNS`"),
+    ("1 · cita del identificador", lambda f: " · ".join(cita(f))),
+    ("2 · marca del parametro", lambda f: " · ".join(marca(f))),
+    ("3 · recorte por clave", clave),
+    # Se mira el CRATE entero, no solo `sql.rs`: la consulta del catalogo de
+    # Postgres vive en su `main.rs`, asi que preguntarselo a `sql.rs` decia que
+    # no la tiene.
+    ("4 · consulta del catalogo", lambda f: catalogo_de(f)),
 ]
-for i, (eje, a, b) in enumerate(EJES, 1):
-    print()
-    print("   %d · %s" % (i, eje))
-    print("       postgres : %s" % a)
-    print("       bigquery : %s" % b)
+print("   %-30s %-32s %s" % ("eje", "postgres", "bigquery"))
+print("   " + "-" * 88)
+for nombre, g in EJES:
+    print("   %-30s %-32s %s" % (nombre, g(PG)[:32], g(BQ)[:40]))
 print()
-print("   Cinco ejes. Los cuatro primeros son DATOS —un formato, un simbolo, un")
-print("   booleano, una forma de entre dos—. El quinto no lo es, y por eso esta")
-print("   en (D).")
+print("   Cuatro ejes, y los cuatro son DATOS: una cadena de formato, un patron")
+print("   de marca, una plantilla de recorte y una consulta. Ninguno es una")
+print("   decision que haya que tomar mirando el plan.")
 
-# -- C - LO QUE SE VA --------------------------------------------------------
+# -- C - LO QUE SE RESISTE ---------------------------------------------------
 print()
-print("C - LO QUE SE ESCRIBIRIA UNA VEZ")
-COMPARTIDO = [
-    ("rango_servible", "ya esta compartido en `ore-driver`, y es el precedente"),
-    ("nunca `SELECT *`", "el aserto de la mascara, hoy probado DOS veces"),
-    ("valores siempre como parametro", "hoy escrito dos veces"),
-    ("start exclusivo / end inclusivo", "la convencion de Iceberg, dos veces"),
-    ("`gt` y `eq`, y nada mas", "el vocabulario cerrado, dos veces"),
-    ("la tupla de clave no se concatena", "dos veces"),
+print("C - LO QUE SE RESISTE, y por que")
+print()
+print("   1 · LOS TIPOS DE COLUMNA · BigQuery obliga a una consulta MAS antes de")
+print("       traducir, porque no coacciona `STRING` a `INT64`; Postgres no la")
+print("       necesita. Eso no es una plantilla: es un PASO del procedimiento,")
+print("       y un manifiesto que lo declarara tendria que declarar tambien")
+print("       cuando se ejecuta. Cabe, pero como bandera —«este dialecto exige")
+print("       tipar los parametros»— no como texto.")
+print()
+print("   2 · EL JUICIO SOBRE LAS CARAS · `fullScan: expensive` en BigQuery no")
+print("       sale del catalogo: sale de saber que BigQuery FACTURA POR BYTES.")
+print("       Postgres dice `cheap`. Es un juicio sobre el modelo de precios de")
+print("       un producto, y ningun `INFORMATION_SCHEMA` lo contesta.")
+print()
+print("   3 · EL SONDEO DE LA CARA D · en Postgres es `wal_level` del CLUSTER;")
+print("       en BigQuery, `enable_change_history` de la TABLA. No es la misma")
+print("       consulta con otro nombre: el hecho no vive en el mismo sitio.")
+print()
+print("   -> los tres se resisten a ser TEXTO y ninguno se resiste a ser DATO:")
+print("      una bandera, un valor por defecto y una consulta con su nivel.")
+
+# -- D - EL PRESUPUESTO ------------------------------------------------------
+print()
+print("D - EL PRESUPUESTO")
+lpg, lbq = len(codigo(PG)), len(codigo(BQ))
+print("   %-40s %4d lineas" % ("`ore-read-postgres/sql.rs`", lpg))
+print("   %-40s %4d lineas" % ("`ore-read-bigquery/sql.rs`", lbq))
+print("   %-40s %4d" % ("juntos", lpg + lbq))
+print()
+print("   De esas, lo que es FORMA —recorrer la peticion, montar condiciones,")
+print("   unir con AND, decidir si hay WHERE— esta escrito DOS VECES. Lo que es")
+print("   dialecto son los cuatro ejes de (B), y en texto no llegan a diez")
+print("   lineas por familia.")
+print()
+print("   El presupuesto de la migracion, entonces:")
+print("     se queda   un `ore-read-sql` con la forma, el rango, la negativa")
+print("                ante un rango no servible y el `INFORMATION_SCHEMA`")
+print("     se mueve   cuatro ejes por familia, a un fichero")
+print("     desaparece la segunda copia de la forma — que es donde divergen dos")
+print("                derivaciones de lo mismo, que es el fallo que este arbol")
+print("                lleva toda la semana persiguiendo")
+print()
+print("   Y una familia SQL nueva pasa de ser una crate a ser un fichero. Los")
+print("   binarios a mano se reservan para donde el protocolo no llega: la")
+print("   decodificacion logica de un CDC, OPC-UA, una API nativa.")
+
+# -- E - AIRBYTE -------------------------------------------------------------
+print()
+print("E - AIRBYTE: hasta donde encaja")
+print()
+print("   Su protocolo son cuatro verbos:")
+print("     spec()                                  -> ConnectorSpecification")
+print("     check(config)                           -> estado de la conexion")
+print("     discover(config)                        -> AirbyteCatalog")
+print("     read(config, configuredCatalog, state)  -> Stream<AirbyteMessage>")
+print()
+print("   Y el de ORE son tres. La correspondencia NO es uno a uno:")
+print()
+print("   %-26s %-30s %s" % ("ORE pide", "Airbyte da", "veredicto"))
+print("   " + "-" * 88)
+FILAS = [
+    ("catalogo · columnas/tipos", "discover -> streams + JSON Schema", "encaja"),
+    ("catalogo · primaryKey", "source_defined_primary_key", "encaja"),
+    ("catalogo · `reads`", "(nada)", "HAY QUE INVENTARLO"),
+    ("catalogo · `changes`", "sync modes: full_refresh/incremental", "parcial"),
+    ("leer · proyeccion", "el stream ENTERO", "NO ENCAJA"),
+    ("leer · recorte por clave", "(nada)", "NO ENCAJA"),
+    ("leer · filtros", "(nada)", "NO ENCAJA"),
+    ("leer · rango", "incremental por cursor_field", "encaja"),
+    ("testigo ANTES de leer", "el `state` sale CON las filas", "NO ENCAJA"),
 ]
-for q, d in COMPARTIDO:
-    print("   %-34s %s" % (q, d))
+for a, b, c in FILAS:
+    print("   %-26s %-30s %s" % (a, b, c))
 print()
-print("   Y el precedente ya existe y esta escrito: `rango_servible` vive en")
-print("   `ore-driver` con su motivo —«la que se repite en tres sitios es la que")
-print("   falta en el cuarto»—. El manifiesto es esa misma frase aplicada al")
-print("   resto del traductor.")
-
-# -- D - LO QUE RESISTE ------------------------------------------------------
+print("   LA FILA QUE DECIDE es «leer · proyeccion», y no por rendimiento.")
 print()
-print("D - LO QUE NO CABE EN UN MANIFIESTO")
+print("   La seleccion de columnas de Airbyte no baja al conector: «la")
+print("   infraestructura de Airbyte ELIMINA los campos no seleccionados")
+print("   durante la sincronizacion». Lo eligieron a proposito —una API REST no")
+print("   se beneficiaria, y habria que tocar todos los conectores—, y para")
+print("   ellos es correcto.")
 print()
-print("   1 · PEDIR LOS TIPOS. BigQuery necesita una consulta previa y Postgres")
-print("       no. Eso no es un formato: es un PASO CONDICIONAL del que depende")
-print("       si la consulta principal se puede construir. Un manifiesto puede")
-print("       declarar «necesito tipos, y esta es la consulta que los trae» —")
-print("       pero el runtime tiene que saber ejecutar dos consultas en orden.")
+print("   Para esto no, y esta escrito en `ore-driver`:")
 print()
-print("   2 · EL CATALOGO. Es la mitad mas grande y la mas particular: la de")
-print("       BigQuery son cuatro CTEs sobre siete vistas mas `__TABLES__`, y la")
-print("       de Postgres son tres consultas incluyendo `current_setting`. Cabe")
-print("       como TEXTO en el manifiesto; lo que no cabe es la derivacion de")
-print("       las dos caras, que es juicio: `require_partition_filter` ->")
-print("       `fullScan: forbidden` no se lee de ninguna tabla.")
-print()
-print("   3 · EL SONDEO QUE NO ES UNA CONSULTA. `wal_level` es del cluster y")
-print("       `relreplident` de la tabla; que uno apague al otro es una regla,")
-print("       no un mapeo. Y el aviso por stderr cuando no es `logical` tampoco.")
-print()
-print("   -> asi que el manifiesto no cubre una familia entera: cubre LA")
-print("      TRADUCCION, que es lo que se repite. El catalogo y la derivacion de")
-print("      caras siguen siendo codigo — y son, justamente, lo que distingue a")
-print("      una familia de otra de verdad.")
-
-# -- E - LA COLA LARGA -------------------------------------------------------
-print()
-print("E - LA COLA LARGA, y por que Airflow no es la respuesta")
-print()
-print("   Airflow es un ORQUESTADOR: 98 proveedores y 1.600+ modulos —848")
-print("   operadores, 298 ganchos—. Lo que un operador sabe hacer es EJECUTAR un")
-print("   paso; lo que aqui hace falta es contestar dos preguntas que un")
-print("   operador no contesta:")
-print("     - «que objetos hay, con que columnas y QUE SE LES PUEDE PEDIR»")
-print("     - «dame estas columnas de estas filas»")
-print("   Un `PostgresOperator` no declara `predicatePushdown` ni `changes.mode`.")
-print("   Airflow encajaria como el que LLAMA a `ore materialize`, no como el que")
-print("   provee fuentes.")
-print()
-print("   El candidato de verdad es Airbyte, porque sus verbos son los de aqui:")
-print("     airbyte  spec · check · discover · read")
-print("     ore      —      · —     · catalogo · leer")
-print("   550+ conectores hablando ese protocolo. Y aun asi hay un problema, y")
-print("   no es de comodidad. El protocolo de Airbyte:")
-print("     - NO admite seleccionar columnas — «el destino recibe todos los")
-print("       campos que emite la fuente y filtra el»;")
-print("     - NO admite ningun predicado de fila;")
-print("     - solo tiene el incremental por cursor.")
-print()
-# Lo que la peticion de aqui lleva y el `read` de Airbyte no.
-campos = ["proyeccion", "clave_columnas", "claves", "filtros", "start", "end", "cursor"]
-drv = (CRATES / "ore-driver/src/lib.rs").read_text(encoding="utf-8")
-presentes = [c for c in campos if re.search(r"pub %s:" % c, drv)]
-print("   La peticion de aqui lleva %d campos: %s" % (len(presentes), ", ".join(presentes)))
-print("   De esos, el `read` de Airbyte solo tiene el equivalente de `cursor` y")
-print("   `start` (su `state`). Los otros %d se caerian." % (len(presentes) - 2))
-print()
-print("   Y uno de los que se caen es el que sostiene la mascara. Hoy:")
 print("     «una propiedad `redact` no esta en el plan, luego no esta en la")
 print("      peticion, luego NO PUEDE ESTAR EN EL SQL. La salvaguarda es")
 print("      estructural — no hay ningun punto donde alguien pueda olvidarse de")
 print("      aplicarla, porque no hay nada que aplicar.»")
 print()
-print("   Por un adaptador de Airbyte, la columna redactada VIAJA y se tira")
-print("   aqui. La salvaguarda pasa de estructural a procedimental, que es")
-print("   exactamente la clase de cambio que este proyecto existe para impedir.")
+print("   Con Airbyte debajo, la columna enmascarada SALE del origen y alguien")
+print("   la tira despues. Eso no es la misma garantia mas lenta: es OTRA")
+print("   garantia —una que se aplica en vez de no existir— y el arbol no tiene")
+print("   hoy vocabulario para decir cual de las dos tiene una fuente.")
 print()
-print("   -> la cola larga por Airbyte es posible y tiene precio, y el precio")
-print("      hay que declararlo: seria una familia con OTRAS capacidades")
-print("      —`reads: {}`, sin empuje— y habria que decir en el sustrato que lo")
-print("      que llega por ahi no se puede enmascarar en origen. Eso es")
-print("      `reads`/`changes` haciendo su trabajo, no una excepcion.")
+print("   Y el testigo es el segundo desencuentro, con su motivo ya escrito:")
+print("     «Meterlo en `leer` seria peor que en `catalogo`: llegaria CON las")
+print("      filas, y quien pregunta lo hace para decidir SI hace falta")
+print("      leerlas.»")
+print("   El `state` de Airbyte es exactamente eso que el protocolo rechaza.")
+print()
+print("   -> DONDE SI: la cola larga de APIs SaaS —Salesforce, Stripe, Jira—,")
+print("      que ORE no va a escribir nunca y donde leer el stream entero es la")
+print("      norma de todos modos, porque esas APIs no aceptan un predicado")
+print("      arbitrario. Ahi Airbyte no quita nada: no habia nada que empujar.")
+print()
+print("   -> DONDE NO: bases de datos y almacenes. Son justo las familias que")
+print("      este arbol ya tiene, y meterlas por Airbyte seria cambiar")
+print("      proyeccion, recorte por clave y filtros por un stream entero.")
+print()
+print("   -> LO QUE FALTA ANTES DE PODER DECIDIRLO: `reads` sabe decir que un")
+print("      origen no empuja nada —`predicatePushdown: []`— y NO sabe decir")
+print("      que la proyeccion se respeta despues de leer. Sin esa palabra, una")
+print("      fuente de Airbyte entra al arbol indistinguible de una que si")
+print("      empuja, y el sello no cambia. Es la misma forma de todos los")
+print("      hallazgos de esta semana: lo que falta se parece a lo que esta bien.")
