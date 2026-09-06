@@ -1288,3 +1288,113 @@ fn el_submodulo_trae_la_suite_completa() {
     assert_eq!(por_grupo.get("emit"), Some(&5));
     assert_eq!(por_grupo.get("valid"), Some(&4));
 }
+
+/// **Los otros tres campos del caso, que hasta hoy no leía nadie.**
+///
+/// Un caso declara `expects`, `rule`, `level` y `summary`, y el ejecutor solo
+/// consumía el primero. Los otros tres eran documentación con forma de
+/// contrato: 259 ficheros afirmando algo que nada comprobaba — y lo que no se
+/// comprueba se tuerce en silencio, que es la tesis de esta suite entera.
+///
+/// # Qué se afirma aquí, y por qué son estas dos cosas
+///
+/// **`level` pertenece al conjunto certificable.** Desde que la tabla de
+/// [`00-overview`](../../../vendor/oos/spec/v1alpha1/00-overview.md) §3.2 se
+/// partió en dos, los niveles son `L0` y `L1` — lo que se comprueba con una
+/// suite de ficheros— y lo demás son **capacidades**, que se anuncian y se
+/// demuestran. Escribir `level: L2` en un caso es prometer una certificación
+/// que la especificación no da, y ahora falla en vez de pasar inadvertido.
+///
+/// **`rule` resuelve.** Fichero y ancla de sección, los dos. Hoy los 259
+/// resuelven, así que esto no arregla nada: **impide que deje de ser cierto**.
+/// Una regla renumerada deja el caso apuntando a una sección que ya no existe,
+/// y un caso que cita una regla equivocada sigue pasando —comprueba lo que
+/// comprueba— mientras miente sobre qué demuestra.
+#[test]
+fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
+    const CERTIFICABLES: &[&str] = &["L0", "L1"];
+
+    let conformance = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../vendor/oos/conformance")
+        .canonicalize()
+        .expect("no se encuentra vendor/oos/conformance");
+    let oos = conformance.parent().unwrap().to_path_buf();
+
+    // Recorrido propio y no [`buscar`]: aquel **salta los borradores a
+    // propósito** —cada uno tiene su árbol y su marcador, y mezclarlos daría un
+    // número que ya no se sabe qué mide—. Este censo es lo contrario: quiere
+    // todos, porque un caso de v1alpha8 puede citar mal igual que uno de
+    // v1alpha1. Reutilizarlo daba 90 de 259, y solo se vio porque hay un
+    // guardia abajo que exige que el recorrido llegue.
+    fn todos(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entradas) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entradas.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todos(&p, out);
+            } else if p.file_name().is_some_and(|n| n == "case.yaml") {
+                out.push(p);
+            }
+        }
+    }
+    let mut ficheros = Vec::new();
+    todos(&conformance, &mut ficheros);
+
+    let mut fallos: Vec<String> = Vec::new();
+    let mut vistos = 0usize;
+    for f in &ficheros {
+        let texto = std::fs::read_to_string(f).expect("case.yaml ilegible");
+        let caso = f.parent().unwrap().strip_prefix(&conformance).unwrap();
+        let caso = caso.display().to_string();
+        vistos += 1;
+
+        match campo(&texto, "level") {
+            None => fallos.push(format!("{caso}: falta `level`")),
+            Some(l) if !CERTIFICABLES.contains(&l.as_str()) => fallos.push(format!(
+                "{caso}: `level: {l}` no es certificable — los niveles son {} y \
+                 lo demás son capacidades (`00-overview` §3.2)",
+                CERTIFICABLES.join(" y ")
+            )),
+            Some(_) => {}
+        }
+
+        let Some(regla) = campo(&texto, "rule") else {
+            fallos.push(format!("{caso}: falta `rule`"));
+            continue;
+        };
+        let (rel, seccion) = regla.split_once('#').unwrap_or((regla.as_str(), ""));
+        let doc = oos.join(rel);
+        if !doc.exists() {
+            fallos.push(format!("{caso}: `rule: {regla}` — no existe `{rel}`"));
+            continue;
+        }
+        if seccion.is_empty() {
+            continue;
+        }
+        // `## 4.2 · Título` o `### 3.3 · Título`: la sección es el número, y lo
+        // que sigue separa para que `4.1` no case con `4.12`.
+        let texto_doc = std::fs::read_to_string(&doc).expect("documento ilegible");
+        let encontrada = texto_doc.lines().any(|l| {
+            l.starts_with('#')
+                && l.trim_start_matches('#')
+                    .trim_start()
+                    .strip_prefix(seccion)
+                    .is_some_and(|r| r.starts_with([' ', '.', '\u{b7}']) || r.is_empty())
+        });
+        if !encontrada {
+            fallos.push(format!(
+                "{caso}: `rule: {regla}` — `{rel}` no tiene la sección §{seccion}"
+            ));
+        }
+    }
+
+    assert!(vistos > 200, "solo {vistos} casos: el recorrido no llegó");
+    assert!(
+        fallos.is_empty(),
+        "{} caso(s) citan mal:\n  {}",
+        fallos.len(),
+        fallos.join("\n  ")
+    );
+}
