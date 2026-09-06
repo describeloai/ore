@@ -17,5 +17,15 @@ ore-core = { path = "../ore-core" }
 # Se enlaza aqui y no en `ore-core` porque la dependencia va al reves: el motor
 # usa la forma canonica y el reticulo del nucleo, y el nucleo no sabe de algebra.
 ore-view = { path = "../ore-view" }
+
+# El PROTOCOLO del driver. `ore-cli` ya construia sus peticiones a mano —
+# `materializar.rs` monta el JSON— asi que ya estaba acoplado a el sin
+# nombrarlo. Lo que se gana al nombrarlo es que `OPERADORES` sea UNA lista: la
+# receta del catalogo de BigQuery declaraba seis y una peticion solo expresa
+# dos, y esa diferencia no fallaba — devolvia mas filas de las pedidas.
+#
+# No cuesta una sola crate de fuera: el cierre de `ore-driver` son las 25 de
+# `ore-core`, que ya estaban.
+ore-driver = { path = "../ore-driver" }
 anyhow.workspace = true
 clap.workspace   = true

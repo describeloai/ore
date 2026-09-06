@@ -130,15 +130,18 @@ fn filas(peticion: &str) -> Result<String, String> {
     }
 
     let proyecto = proyecto(&p.url)?;
-    let tipos = tipos_de(&proyecto, &p.objeto)?;
     // La forma es de `ore-sql` y el dialecto una constante suya. Lo que este
     // fichero pone es el objeto YA CUALIFICADO —BigQuery antepone el proyecto y
     // PostgreSQL no tiene nada que anteponer— y el transporte.
-    let c = ore_sql::consulta(
+    //
+    // Y la consulta de tipos va DENTRO de `preparar`: quien decide si hace
+    // falta es el dialecto, no este fichero. Antes lo sabia de memoria, que es
+    // lo que el tercer driver tendria que recordar.
+    let c = ore_sql::preparar(
         &p,
         &ore_sql::dialectos::BIGQUERY,
         &consultas::cualificado(&proyecto, &p.objeto),
-        &tipos,
+        || tipos_de(&proyecto, &p.objeto),
     )?;
     let salida = bq(&proyecto, &consultas::Invocacion {
         consulta: c.texto,

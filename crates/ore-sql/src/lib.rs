@@ -33,9 +33,27 @@
 //! vive donde tiene que vivir. Meterla aquí sería juntar dos cosas que solo
 //! comparten el nombre «SQL».
 //!
-//! **El juicio sobre las caras.** Que BigQuery declare `fullScan: expensive` no
-//! sale de ninguna consulta: sale de saber que factura por bytes leídos. Es un
-//! juicio sobre el modelo de precios de un producto, y no cabe en una plantilla.
+//! **El juicio sobre las caras**, y no por descuido: se midió y **no son del
+//! dialecto**.
+//!
+//! El espectro de la migración las llamaba «banderas del dialecto», y al ir a
+//! moverlas se ve que no lo son:
+//!
+//! - `fullScan: expensive` frente a `cheap` sale de saber que BigQuery **factura
+//!   por bytes leídos**. Es un hecho del producto, no de su gramática: dos
+//!   sistemas que hablan el mismo dialecto pueden cobrar distinto, y uno
+//!   compatible con el protocolo de PostgreSQL que facturara por escaneo diría
+//!   `expensive` con la cita y la marca de PostgreSQL.
+//! - **De dónde sale la cara `D`** es un sondeo, y sondea sitios distintos:
+//!   `wal_level` es del **clúster** y `enable_change_history` es de la **tabla**.
+//!   No es la misma consulta con otro nombre; el hecho no vive en el mismo
+//!   sitio.
+//!
+//! Las dos son de la **familia** —del driver— y ya viven ahí. Meterlas aquí
+//! habría hecho del dialecto un cajón: un sitio donde cabe todo lo que varía,
+//! que es otra forma de no decir nada.
+//!
+//! La tercera bandera **sí** era del dialecto, y está: [`Dialecto::exige_tipos`].
 
 use std::collections::BTreeMap;
 
@@ -132,6 +150,44 @@ impl Cita {
             }
         }
     }
+}
+
+impl Dialecto {
+    /// **Si este dialecto necesita saber el tipo de cada columna** antes de
+    /// traducir.
+    ///
+    /// No es una preferencia: GoogleSQL no coacciona un `STRING` a un `INT64`,
+    /// así que su parámetro tiene que decir de qué tipo es; el de PostgreSQL
+    /// llega como texto y lo coacciona el servidor.
+    ///
+    /// Se pregunta en vez de saberse de memoria. Los dos drivers lo sabían cada
+    /// uno por su cuenta —uno pasaba un mapa vacío y el otro hacía una consulta
+    /// de más— y el tercero tendría que acordarse.
+    pub const fn exige_tipos(&self) -> bool {
+        matches!(self.marca, Marca::ConNombre(_))
+    }
+}
+
+/// **La preparación entera**, para que ningún driver tenga que acordarse.
+///
+/// `traer_tipos` se invoca **solo si el dialecto lo exige**, así que un driver
+/// posicional puede pasar una consulta cara sin pagarla, y uno tipado no puede
+/// olvidarse de ella.
+pub fn preparar<F>(
+    p: &Peticion,
+    d: &Dialecto,
+    objeto: &str,
+    traer_tipos: F,
+) -> Result<Consulta, String>
+where
+    F: FnOnce() -> Result<BTreeMap<String, String>, String>,
+{
+    let tipos = if d.exige_tipos() {
+        traer_tipos()?
+    } else {
+        BTreeMap::new()
+    };
+    consulta(p, d, objeto, &tipos)
 }
 
 /// El nombre base de un tipo: `NUMERIC(10, 2)` es `NUMERIC`.
@@ -479,6 +535,44 @@ mod tests {
         );
         let e = Cita::Entero('`').ident("ma`la").expect_err("se niega");
         assert!(e.contains("no tiene forma de escaparlo"), "{e}");
+    }
+
+    /// **La forma traduce exactamente los operadores que una petición admite.**
+    ///
+    /// Son dos listas en dos crates —`ore-driver` no puede depender de este,
+    /// que depende de él— y esta prueba es la que impide que se separen. Si
+    /// divergieran, la que sobra sería la peligrosa: un operador que la
+    /// petición admite y la forma no traduce se caería del `WHERE` y la
+    /// consulta devolvería más filas de las pedidas.
+    #[test]
+    fn la_forma_traduce_los_mismos_operadores_que_la_peticion_admite() {
+        let mut p = peticion();
+        p.claves.clear();
+        for op in ore_driver::OPERADORES {
+            p.filtros = vec![("cost_center".into(), (*op).into(), "x".into())];
+            let c = consulta(&p, &POSTGRES, "t", &tipos()).expect("traduce");
+            let simbolo = if *op == "gt" { " > " } else { " = " };
+            assert!(
+                c.texto.contains(&format!("\"cost_center\"{simbolo}$1")),
+                "`{op}` no se traduce: {}",
+                c.texto
+            );
+        }
+    }
+
+    /// Y quién necesita los tipos se **pregunta**, no se sabe de memoria.
+    #[test]
+    fn solo_el_dialecto_que_marca_con_nombre_exige_tipos() {
+        assert!(!POSTGRES.exige_tipos());
+        assert!(BIGQUERY.exige_tipos());
+
+        // `preparar` no invoca la consulta cara si el dialecto no la necesita.
+        let mut llamado = false;
+        let c = preparar(&peticion(), &POSTGRES, "t", || {
+            llamado = true;
+            Ok(BTreeMap::new())
+        });
+        assert!(c.is_ok() && !llamado, "el dialecto posicional no pide tipos");
     }
 
     /// Sin condiciones no hay `WHERE`. Es la mitad de la forma que ninguno de

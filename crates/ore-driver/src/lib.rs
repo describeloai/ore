@@ -90,6 +90,19 @@ pub struct Peticion {
     pub cursor: Option<String>,
 }
 
+/// **Los operadores que una petición sabe expresar.** Uno solo.
+///
+/// Es la lista que decide tres cosas que hasta ahora se decidían por separado y
+/// podían discrepar: qué puede llevar una petición, qué traduce
+/// [`ore_sql`](https://docs.rs/ore-sql) —que tiene su propia copia y una prueba
+/// que la coteja contra esta, porque depende de este crate y no al revés— y qué
+/// puede declarar un catálogo en `reads.predicatePushdown`.
+///
+/// Declarar de más en el catálogo no es optimismo: el planificador cuenta con
+/// que el origen recorta, calcula menos residuo, y lo que llega es más de lo
+/// pedido.
+pub const OPERADORES: &[&str] = &["eq", "gt"];
+
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
     let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     let cadena = |k: &str| {
@@ -134,32 +147,37 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         })
         .unwrap_or_default();
 
-    let filtros: Vec<(String, String, String)> = n
-        .get("filtros")
-        .map(|(_, v)| {
-            v.items()
-                .iter()
-                .filter_map(|f| {
-                    // Vocabulario cerrado. Un operador que el driver no sabe
-                    // traducir NO se ignora: se descarta la petición entera, y
-                    // arriba se convierte en error. Ignorarlo devolvería más
-                    // filas de las pedidas, que es la dirección insegura.
-                    let op = f
-                        .get("operador")
-                        .and_then(|(_, o)| o.as_str())
-                        .unwrap_or("eq");
-                    if !["eq", "gt"].contains(&op) {
-                        return None;
-                    }
-                    Some((
-                        f.get("columna")?.1.as_str()?.to_string(),
-                        op.to_string(),
-                        f.get("valor")?.1.as_str()?.to_string(),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Vocabulario cerrado. Un operador que no está aquí **no se ignora: se
+    // descarta la petición entera**, y esto devuelve un error.
+    //
+    // Y hasta hoy no era verdad. Estaba escrito así y el código hacía un
+    // `filter_map` con `return None`, que **descarta ese filtro y se queda con
+    // los demás** — exactamente la dirección insegura que el comentario decía
+    // evitar: la consulta devuelve más filas de las que se pidieron y nadie ve
+    // un error. Lo destapó juntar la traducción de los dos drivers y preguntar
+    // quién manda sobre lo que se puede empujar.
+    let mut filtros: Vec<(String, String, String)> = Vec::new();
+    for f in n.get("filtros").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let op = f
+            .get("operador")
+            .and_then(|(_, o)| o.as_str())
+            .unwrap_or("eq");
+        if !OPERADORES.contains(&op) {
+            return Err(format!(
+                "`{op}` no es un operador que esta petición sepa expresar. Los que hay son {}. \
+                 Servir la petición sin ese filtro devolvería más filas de las pedidas y no \
+                 fallaría, así que no se sirve",
+                OPERADORES.join(", ")
+            ));
+        }
+        let (Some(col), Some(val)) = (
+            f.get("columna").and_then(|(_, c)| c.as_str()),
+            f.get("valor").and_then(|(_, v)| v.as_str()),
+        ) else {
+            return Err("un filtro sin `columna` o sin `valor` no dice qué recortar".into());
+        };
+        filtros.push((col.to_string(), op.to_string(), val.to_string()));
+    }
 
     let opcional = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     let p = Peticion {
@@ -317,6 +335,32 @@ mod tests {
             filtros: vec![("cost_center".into(), "eq".into(), "finanzas".into())],
             ..Default::default()
         }
+    }
+
+    /// **Un operador que no está en el vocabulario descarta la petición
+    /// entera**, y no solo ese filtro.
+    ///
+    /// La diferencia es la que separa un error de una fuga: quedarse con los
+    /// demás filtros devuelve más filas de las pedidas, la consulta responde,
+    /// los números salen y nadie ve nada.
+    #[test]
+    fn un_operador_desconocido_descarta_la_peticion_y_no_solo_su_filtro() {
+        let texto = r#"{"objeto":"t","url":"x://y","proyeccion":{"a":"c"},
+            "filtros":[{"columna":"pais","operador":"in","valor":"ES"},
+                       {"columna":"cc","operador":"eq","valor":"finanzas"}]}"#;
+        let e = leer_peticion(texto).expect_err("se niega");
+        assert!(e.contains("`in`"), "{e}");
+        assert!(e.contains("mas filas") || e.contains("más filas"), "{e}");
+    }
+
+    /// Y uno que sí está pasa, con los suyos.
+    #[test]
+    fn los_operadores_del_vocabulario_pasan() {
+        let texto = r#"{"objeto":"t","url":"x://y","proyeccion":{"a":"c"},
+            "filtros":[{"columna":"m","operador":"gt","valor":"7"},
+                       {"columna":"cc","operador":"eq","valor":"f"}]}"#;
+        let p = leer_peticion(texto).expect("analiza");
+        assert_eq!(p.filtros.len(), 2, "{:?}", p.filtros);
     }
 
     /// La petición es JSON, y la lee el mismo analizador que los documentos.

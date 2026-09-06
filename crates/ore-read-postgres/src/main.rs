@@ -653,12 +653,13 @@ fn filas(peticion: &str) -> Result<String, String> {
     // **La forma es de `ore-sql`; el dialecto, una constante.** Lo que este
     // fichero aporta a partir de aquí es lo único que de verdad es suyo: el
     // transporte.
-    let c = ore_sql::consulta(
-        &p,
-        &ore_sql::dialectos::POSTGRES,
-        &p.objeto,
-        &std::collections::BTreeMap::new(),
-    )?;
+    let c = ore_sql::preparar(&p, &ore_sql::dialectos::POSTGRES, &p.objeto, || {
+        // No se llega aqui: un dialecto posicional no necesita tipos, y el
+        // servidor coacciona el texto. Se escribe la rama igualmente para que
+        // el dia que este dialecto cambie de marca, el compilador pida esto y
+        // no lo pida una fuga.
+        unreachable!("`POSTGRES` no exige tipos")
+    })?;
 
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,

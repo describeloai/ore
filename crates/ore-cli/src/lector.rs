@@ -330,10 +330,24 @@ fn clase(table_type: &str) -> &'static str {
 
 /// **La cara `I`**: qué se le puede pedir a este objeto.
 ///
-/// Los operadores son los de GoogleSQL, y se declaran enteros porque `reads`
-/// describe **el objeto**, no a quien lo consulta: BigQuery es un motor SQL
-/// completo y los contesta todos. Es la misma frase que `01-table` insiste en
-/// que la tabla existe para poder decir.
+/// # Los operadores, corregidos: lo que se EMPUJA, no lo que el motor sabe
+///
+/// Esto declaraba los seis de GoogleSQL con el argumento de que *«`reads`
+/// describe el objeto, no a quien lo consulta: BigQuery es un motor SQL
+/// completo y los contesta todos»*. La frase es cierta de BigQuery y **falsa
+/// del camino**: entre el planificador y el dataset está el driver, y una
+/// petición solo sabe expresar los de `ore_driver::OPERADORES`.
+///
+/// `ore-read-postgres` ya lo tenía escrito al revés y bien: *«`reads` es lo que
+/// este driver sabe empujar, no lo que PostgreSQL sabe […] un filtro que el
+/// driver no sabe poner **se cae de la petición**, y una consulta devuelve más
+/// filas de las que pidió sin que nadie vea un error»*. Los dos lectores decían
+/// cosas distintas sobre lo mismo, y el que se pasaba era este.
+///
+/// Declarar de más no es optimismo: el planificador cuenta con que el origen
+/// recorta, calcula menos residuo, y lo que llega es más de lo pedido. Se
+/// declara lo que hay, y ensanchar esto es un cambio en `ore-sql` y en
+/// `ore-driver` primero, y en esta lista después — en ese orden.
 ///
 /// Lo que **sí** se sondea es lo que cambia de tabla a tabla, y son dos hechos
 /// que el servidor afirma:
@@ -347,7 +361,7 @@ fn clase(table_type: &str) -> &'static str {
 /// BigQuery, que es un hecho publicado del producto y no una conjetura sobre
 /// este dataset.
 fn reads(particion: Option<&str>, exige_filtro: bool) -> Json {
-    let operadores = ["eq", "neq", "in", "range", "like", "isNull"];
+    let operadores = ore_driver::OPERADORES;
     let mut o: BTreeMap<String, Json> = BTreeMap::new();
     o.insert(
         "predicatePushdown".to_string(),
@@ -718,7 +732,7 @@ mod tests {
 {y}"
             );
             assert!(
-                y.contains("predicatePushdown: [eq, neq, in, range, like, isNull]"),
+                y.contains("predicatePushdown: [eq, gt]"),
                 "{y}"
             );
         }
