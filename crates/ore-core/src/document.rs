@@ -309,6 +309,14 @@ impl Kind {
     pub const fn spec_keys(self) -> &'static [&'static str] {
         match self {
             Kind::OntologyConfig => &[
+                // v1alpha8. Quien responde del SUELO.
+                //
+                // `datasources[].labels` fija la clasificacion minima de todo
+                // lo que sale de una fuente, y bajarla desclasifica en cascada
+                // — medido: una palabra lleva el ejemplo de 11 propiedades
+                // gobernadas a 7, compilando. El techo llevaba dueno y el suelo
+                // no, que es la asimetria al reves de donde importa.
+                "owner",
                 "workspace",
                 "dependencies",
                 "datasources",
@@ -405,6 +413,18 @@ impl Kind {
                 "join",
                 "axis",
                 "requiresGovernance",
+                // v1alpha8. Quien responde de esta ESCALA.
+                //
+                // `requiresGovernance` decide desde que nivel la cobertura es
+                // obligatoria, o sea que subir ese piso desactiva `OOS8001`
+                // para un nivel entero. Es la misma clase de decision que
+                // elevar la autorizacion de un conducto, y aquella lleva dueno
+                // desde que se midio que un techo sin el es un hueco.
+                //
+                // Y en un reticulo importado el dueno no es de quien lo usa: la
+                // autoridad sobre `gdpr.sensitivity` la tiene un regulador. Por
+                // eso es un campo del documento y no del paquete que lo lee.
+                "owner",
             ],
             Kind::ConduitPolicy => &["owner", "conduits"],
             Kind::Function => &[

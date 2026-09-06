@@ -350,6 +350,85 @@ fn package_metadata(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
     }
 
+    // ── El SUELO, que es lo que faltaba ────────────────────────────────────
+    //
+    // Un techo del que nadie responde era el hueco que `owner` cerró en
+    // `ConduitPolicy`. Estos dos documentos deciden lo mismo por abajo, y hasta
+    // ahora no tenían ni el campo:
+    //
+    // - `datasources[].labels` fija la clasificación MÍNIMA de todo lo que sale
+    //   de una fuente. Bajarla desclasifica en cascada: medido, una palabra
+    //   lleva el ejemplo de 11 propiedades gobernadas a 7, y compila.
+    // - `Lattice.requiresGovernance` decide desde qué nivel la cobertura es
+    //   obligatoria. Subir ese piso apaga `OOS8001` para un nivel entero.
+    //
+    // **Se exige solo donde se puede bajar el gobierno**, igual que `OOS2026`
+    // solo mira las entidades que se atraviesan: un retículo sin
+    // `requiresGovernance` no exige nada de nadie, y una configuración sin
+    // suelos no clasifica nada. Sin sujeto no hay regla.
+    //
+    // Y solo a partir de v1alpha8, que es lo que deja intacto un resultado de
+    // v1alpha1 a v1alpha7 — donde el campo ni existía.
+    for d in pkg
+        .docs
+        .iter()
+        .filter(|d| matches!(d.kind, Kind::Lattice | Kind::OntologyConfig))
+    {
+        let fija_el_minimo = match d.kind {
+            Kind::Lattice => d.section("requiresGovernance").is_some(),
+            _ => d
+                .section("datasources")
+                .map(|n| n.items().iter().any(|ds| ds.get("labels").is_some()))
+                .unwrap_or(false),
+        };
+        match d.section("owner") {
+            None if fija_el_minimo
+                && d.version()
+                    .is_some_and(|v| v >= crate::document::ApiVersion::V1Alpha8) =>
+            {
+                let (que, por_que) = match d.kind {
+                    Kind::Lattice => (
+                        "`requiresGovernance` decide desde qué nivel la cobertura es obligatoria",
+                        "subir ese piso apaga la exigencia para un nivel entero",
+                    ),
+                    _ => (
+                        "un `labels` de datasource fija la clasificación mínima de todo lo que \
+                         sale de esa fuente",
+                        "bajarlo desclasifica en cascada, y no da ningún síntoma",
+                    ),
+                };
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2009,
+                        &d.path,
+                        format!("falta `owner`, y {que}"),
+                    )
+                    .at(d.root.pos())
+                    .help(format!(
+                        "{por_que}. Es la misma decisión que elevar la autorización de un \
+                         conducto, y de aquella responde alguien: usa `team:<handle>` o \
+                         `user:<handle>`, que es lo que se alinea con CODEOWNERS"
+                    )),
+                );
+            }
+            Some(v) if !es_handle(v.as_str().unwrap_or("")) => {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2009,
+                        &d.path,
+                        format!("`owner: {}` no es un handle", v.as_str().unwrap_or("")),
+                    )
+                    .at(v.pos())
+                    .help(
+                        "usa `team:<handle>` o `user:<handle>`: es lo que se alinea con \
+                         CODEOWNERS, que es quien hace cumplir la revisión",
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
     for p in pkg.of(Kind::Package) {
         if let Some(v) = p.meta("version")
             && !es_semver(v.as_str().unwrap_or(""))
