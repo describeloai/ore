@@ -242,17 +242,56 @@ fn una(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
-    let filas = leer(
+    // **Si el testigo del origen ordena.** Se toma del que el origen ACABA DE
+    // contestar y no del que la tabla declara: cuando discrepan manda el origen
+    // —`testigo()` ya lo avisa— y pedir un rango sobre un orden que el servidor
+    // dice no tener sería pedirlo contra el documento en vez de contra el
+    // mundo.
+    let ordena = testigo.0 == "log";
+    let filas = match leer(
         raiz_pkg,
         &r,
         cursor.as_deref(),
         desde.as_deref(),
         testigo.1.as_deref(),
-    )?;
-    // **Cuántas filas se le pidieron al origen.** Hoy coincide siempre con las
-    // que van a la copia, porque la lectura es entera. Cuando la petición sepa
-    // llevar un rango, las dos cifras se separan — y **esa diferencia es la
-    // medida** de si el refresco es proporcional al cambio o al tamaño.
+        ordena,
+    ) {
+        Ok(f) => f,
+        // **Y si el driver no sabe servir ese rango, se copia entera y se
+        // dice.** No es tragarse un error: para una COPIA, leer de más es leer
+        // el objeto entero, que es exactamente lo que esto hacía hasta ahora y
+        // sigue siendo correcto —lo que cambia es el trabajo, no el resultado—.
+        //
+        // Lo que no se hace es callarlo. Un origen que declara un testigo
+        // ordenado y un lector que no sabe recorrerlo es un hueco real, y hasta
+        // hoy era invisible porque la petición ni siquiera llevaba el rango.
+        Err(e) if ordena && desde.is_some() && e.contains("changelog") => {
+            eprintln!(
+                "  aviso · el origen se fecha con `log` y `ore-read-{}` no sabe leer su \
+                 changelog, así que esta copia se rehace entera:\n         {e}",
+                lector::declaracion(raiz_pkg, &r.datasource)
+                    .map(|(t, _)| t)
+                    .unwrap_or_default()
+            );
+            leer(
+                raiz_pkg,
+                &r,
+                cursor.as_deref(),
+                desde.as_deref(),
+                testigo.1.as_deref(),
+                false,
+            )?
+        }
+        Err(e) => return Err(e),
+    };
+    // **Cuántas filas se le pidieron al origen.** Coincide con las que van a la
+    // copia mientras la lectura sea entera; en cuanto un driver sirva el rango,
+    // las dos cifras se separan — y **esa diferencia es la medida** de si el
+    // refresco es proporcional al cambio o al tamaño.
+    //
+    // La petición ya sabe llevarlo, por columna y por posición. Lo que queda es
+    // que alguien lo sirva, y hoy no lo hace nadie: `pruebas-de-fuego/
+    // medida-el-rango-por-posicion.py` §D dice por qué, familia por familia.
     //
     // Se cuenta aquí y no en el banco de pruebas porque es la unidad que
     // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
@@ -429,6 +468,43 @@ fn leer(
     cursor: Option<&str>,
     desde: Option<&str>,
     hasta: Option<&str>,
+    // Si el testigo del origen ORDENA. Decide si un rango sin columna tiene
+    // sentido: `log` si, `snapshot` no.
+    ordena: bool,
+) -> Result<String, String> {
+    let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource)
+        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
+    let url = lector::url(raiz_pkg, &env, &r.datasource)
+        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
+    let peticion = peticion(&url, r, cursor, desde, hasta, ordena)?;
+
+    lector::ejecutar(
+        &format!("ore-read-{tipo}"),
+        &["leer".to_string()],
+        Some(&peticion),
+    )
+    .map_err(|f| {
+        let mut s = f.mensaje;
+        for l in f.ayuda {
+            s.push('\n');
+            s.push_str(&l);
+        }
+        s
+    })
+}
+
+/// **La petición, armada aparte y sin tocar nada.**
+///
+/// Se separa de [`leer`] por lo mismo que `ore-sql` separa la traducción del
+/// transporte: que el rango salga bien tiene que ser un **aserto**, y un aserto
+/// que exigiera lanzar un proceso ajeno no se ejecutaría nunca en la suite.
+fn peticion(
+    url: &str,
+    r: &vistas::Raiz,
+    cursor: Option<&str>,
+    desde: Option<&str>,
+    hasta: Option<&str>,
+    ordena: bool,
 ) -> Result<String, String> {
     let mut filtros = Vec::new();
     for (columna, valores) in &r.filtros {
@@ -449,19 +525,31 @@ fn leer(
         }
     }
 
-    let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource)
-        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
-    let url = lector::url(raiz_pkg, &env, &r.datasource)
-        .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
-
     use ore_core::json::Json;
     let mut campos: Vec<(&'static str, Json)> =
-        vec![("url", Json::s(&url)), ("objeto", Json::s(&r.objeto))];
-    // El rango, **solo si hay de dónde partir**. Sin `desde` esto es una lectura
-    // entera, que es lo que la primera materialización necesita — y lo que un
-    // testigo que no ordena permite y nada más.
-    if let (Some(c), Some(d)) = (cursor, desde) {
-        campos.push(("cursor", Json::s(c)));
+        vec![("url", Json::s(url)), ("objeto", Json::s(&r.objeto))];
+    // **El rango, solo si hay de dónde partir.** Sin `desde` esto es una lectura
+    // entera, que es lo que la primera materialización necesita.
+    //
+    // Y va **sobre una columna o sobre la posición del origen**, que son los dos
+    // casos que el protocolo define y hasta ahora solo se ponía el primero:
+    // `cursor` es `None` cuando el testigo no es por columna, y con la guarda
+    // vieja —`(Some(cursor), Some(desde))`— `desde` y `hasta` se calculaban, se
+    // pasaban aquí y **se tiraban**. La lectura era entera siempre, y este mismo
+    // fichero lo tenía anotado tres líneas más abajo.
+    //
+    // Lo que decide cuál de los dos es **si el testigo ordena**:
+    //
+    // - `log` es una posición en un flujo de cambios: ordena, así que «lo que
+    //   hay entre A y B» significa algo y el rango va sin `cursor`.
+    // - `snapshot` es una **identidad** de versión y no ordena —dos digests no
+    //   se comparan—, así que no admite rango. Lo que sí admite es un pin, y ese
+    //   ya está explotado: el testigo entra en la cabecera, y una cabecera igual
+    //   da el recibo que corta el ciclo en el paso ④ sin leer nada.
+    if let Some(d) = desde.filter(|_| cursor.is_some() || ordena) {
+        if let Some(c) = cursor {
+            campos.push(("cursor", Json::s(c)));
+        }
         campos.push(("start", Json::s(d)));
         // Y `end` acota por arriba con el testigo que el origen acaba de dar,
         // para que lo copiado y su marca sean el mismo instante.
@@ -479,21 +567,7 @@ fn leer(
         ),
     ));
     campos.push(("filtros", Json::Arr(filtros)));
-    let peticion = Json::obj(campos).jcs();
-
-    lector::ejecutar(
-        &format!("ore-read-{tipo}"),
-        &["leer".to_string()],
-        Some(&peticion),
-    )
-    .map_err(|f| {
-        let mut s = f.mensaje;
-        for l in f.ayuda {
-            s.push('\n');
-            s.push_str(&l);
-        }
-        s
-    })
+    Ok(Json::obj(campos).jcs())
 }
 
 use crate::lector;
@@ -514,4 +588,66 @@ fn almacen(
         .map_err(|f| f.mensaje)?;
     ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió `ore-store-r2` no analiza: {e:?}\n{salida}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raiz() -> vistas::Raiz {
+        vistas::Raiz {
+            datasource: "erp".into(),
+            objeto: "public.employees".into(),
+            columnas: [("id".to_string(), "employee_id".to_string())]
+                .into_iter()
+                .collect(),
+            filtros: Vec::new(),
+            tabla: None,
+        }
+    }
+
+    /// **El rango sobre una columna**: lleva `cursor`, y `start` es exclusivo.
+    #[test]
+    fn con_cursor_el_rango_va_sobre_la_columna() {
+        let p = peticion("x://y", &raiz(), Some("actualizado"), Some("7"), Some("9"), false)
+            .expect("petición");
+        assert!(p.contains("\"cursor\":\"actualizado\""), "{p}");
+        assert!(p.contains("\"start\":\"7\""), "{p}");
+        assert!(p.contains("\"end\":\"9\""), "{p}");
+    }
+
+    /// **El rango sobre la posición del origen**: sin `cursor`, y solo cuando el
+    /// testigo ordena.
+    ///
+    /// Es lo que faltaba: con la guarda vieja —`(Some(cursor), Some(desde))`—
+    /// `desde` y `hasta` llegaban aquí y se tiraban, así que un origen con
+    /// `witness: log` se releía entero en cada refresco y nadie lo veía.
+    #[test]
+    fn sin_cursor_y_con_testigo_que_ordena_el_rango_va_sobre_la_posicion() {
+        let p = peticion("x://y", &raiz(), None, Some("7"), Some("9"), true).expect("petición");
+        assert!(!p.contains("\"cursor\""), "{p}");
+        assert!(p.contains("\"start\":\"7\""), "{p}");
+        assert!(p.contains("\"end\":\"9\""), "{p}");
+    }
+
+    /// Y un testigo que **no ordena** no lleva rango, aunque haya de dónde
+    /// partir: dos `snapshot` no se comparan, así que «lo que hay entre A y B»
+    /// no significa nada. Lo que ese testigo permite es un pin, y ese ya lo
+    /// explota el recibo del paso ④.
+    #[test]
+    fn un_testigo_que_no_ordena_no_lleva_rango() {
+        let p = peticion("x://y", &raiz(), None, Some("sha256:abc"), Some("sha256:def"), false)
+            .expect("petición");
+        assert!(!p.contains("\"start\""), "{p}");
+        assert!(!p.contains("\"end\""), "{p}");
+    }
+
+    /// Sin `desde` no hay rango en ningún caso: es la primera copia, y una
+    /// primera copia es entera por definición.
+    #[test]
+    fn la_primera_copia_no_lleva_rango() {
+        let p = peticion("x://y", &raiz(), Some("actualizado"), None, Some("9"), true)
+            .expect("petición");
+        assert!(!p.contains("\"start\""), "{p}");
+    }
 }
