@@ -144,12 +144,24 @@ eje del índice es `flow::materializaciones`, y su bucle `for eje in ["topology"
 sobre `Kind::Binding` — **un kind retirado**. Así que hoy la travesía copia aristas **sin sello
 ninguno**: `hr.empleados` no puede copiar `nationalId`, y sus aristas se copian sin que nadie mire.
 
-> **Lo que sobrevive.** *Lo que se atraviesa se materializa* es cierto — se materializa el índice, y
-> eso es derivable y no se declara (P2). Lo que falta no es un `OOS2026` que prohíbe: es el **sello
-> sobre el conducto derivado**. La clave y las `via` de una vista atravesada pasan por
-> `materialization.topology`, y ese conducto tiene que estar autorizado (`OOS4011`) y admitir sus
-> etiquetas (`OOS4002`). Mismo sujeto, misma familia, y en vez de obligar a copiar lo que el sello
-> prohíbe, sella lo que hoy se copia a escondidas.
+> **Lo que sobrevive, y ya está hecho.** *Lo que se atraviesa se materializa* es cierto — se
+> materializa el índice, y eso es derivable y no se declara (P2). Lo que faltaba no era un
+> `OOS2026` que prohíbe: era el **sello sobre el conducto derivado**, y está encendido.
+
+**`04-flow` §4.2**, normativo: una relación con `via` sobre una entidad de clave simple es un flujo
+hacia `materialization.topology`, se declare o no. Sin autorización, `OOS4011`; con la etiqueta de
+la clave o del enlace por encima, `OOS4002`. Y lo que fluye **es** exactamente esas dos
+propiedades: ninguna otra, ni aunque la vista las exponga.
+
+Vive en `flow::indices_de_topologia`, junto a sus dos hermanos, y solo mira las aristas
+**derivadas** —`Arista::derivada`—: las que salen de un binding las sella su propia declaración
+desde v1alpha1, y contarlas dos veces habría cambiado un resultado viejo.
+
+| | |
+|---|---|
+| conformidad | 3 casos · el marcador de v1alpha8 pasa de 47 a **50** |
+| el ejemplo | `materialization.index` era una errata —nadie conocía ese nombre—; ahora declara `materialization.topology` y lo eleva a `high`, porque las dos columnas de RRHH heredan ese suelo |
+| lo que NO cambió | ni un resultado de v1alpha1 a v1alpha7 |
 
 ### B1 · La arista deja de ser una copia aparte
 

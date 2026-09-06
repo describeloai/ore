@@ -60,6 +60,17 @@ const PAQUETE: &str = "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
      metadata: { name: hr, version: 1.0.0, status: active, domain: people }\n\
      spec: { owner: team:data }\n";
 
+/// Lo que hace falta para **atravesar**: recorrer una `via` copia la clave y el
+/// enlace, y esa copia instancia un conducto. Sin autorización declarada es ⊥ y
+/// no admite nada, así que los paquetes con relaciones lo llevan.
+///
+/// Va vacío a propósito: aquí ninguna propiedad está clasificada, y lo que se
+/// ejercita es que el conducto EXISTA. Que una autorización vacía baste cuando
+/// no viaja nada etiquetado es parte de lo que se afirma.
+const CONDUCTOS: &str = "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\n\
+     metadata: { name: p }\nspec:\n  owner: team:sec\n  conduits:\n    \
+     materialization.topology: {}\n";
+
 fn ver(dir: &Path) -> (bool, String) {
     let s = Command::new(env!("CARGO_BIN_EXE_ore"))
         .arg("view")
@@ -265,6 +276,7 @@ fn una_candidata_que_no_expone_la_columna_dice_cual() {
                  salario: { type: String }\n  relations:\n    department:\n      \
                  target: hr.Employee\n      cardinality: many_to_one\n      via: [departmentId]\n",
             ),
+            ("conduits.yaml", CONDUCTOS),
         ],
     );
     let (ok, out) = ver(&dir);
@@ -371,6 +383,7 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
              primaryKey: [departmentId]\n  backedBy: departamentos\n  properties:\n    \
              departmentId: { type: String }\n    nombre: { type: String }\n",
         ),
+        ("conduits.yaml", CONDUCTOS),
     ];
     let dir = paquete("referencial", ficheros);
     let (ok, out) = ver(&dir);

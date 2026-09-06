@@ -677,12 +677,15 @@ juntaba. Que la respuesta a esa segunda pregunta sea hoy también que no
 del índice admite `medium`— no salva a `B0`, que seguía pidiendo el conducto de la carga. Lo que
 hace es dar el motivo para encender el sello.
 
-> **Lo que sí queda por hacer, y es un agujero abierto.** El único código que sella el eje del
-> índice es `flow::materializaciones`, cuyo bucle `for eje in ["topology", "payload"]` itera sobre
-> `Kind::Binding` —**retirado**—. Así que hoy la travesía copia aristas **sin sello ninguno**. Lo
-> que falta no es prohibir la travesía: es que la clave y las `via` de una vista atravesada pasen
-> por `materialization.topology` **con autorización** (`OOS4011`) y **dentro de la etiqueta**
-> (`OOS4002`), como cualquier otra copia.
+> **Y lo que quedaba abierto ya está cerrado.** El único código que sellaba el eje del índice era
+> `flow::materializaciones`, cuyo bucle `for eje in ["topology", "payload"]` itera sobre
+> `Kind::Binding` — vivo en el paradigma viejo y **ciego en el nuevo**, la misma forma exacta que
+> tenían `OOS5019`/`OOS5020` antes del paso 3. La travesía copiaba aristas sin sello ninguno.
+>
+> `flow::indices_de_topologia` le devuelve el sujeto: la clave y la `via` de una entidad
+> respaldada por una vista pasan por `materialization.topology` **con autorización** (`OOS4011`) y
+> **dentro de la etiqueta** (`OOS4002`), como cualquier otra copia. Normativo en `04-flow` §4.2,
+> con tres casos de conformidad y sin cambiar un resultado de v1alpha1 a v1alpha7.
 
 Con eso el artefacto de topología desaparece igual —el índice sigue siendo dos columnas derivadas
 (P2), sin formato propio ni marca de agua propia—, y además deja de ser la única copia del sistema

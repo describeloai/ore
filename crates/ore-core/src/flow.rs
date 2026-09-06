@@ -254,6 +254,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let conductos = clearances(pkg, &lat);
     materializaciones(pkg, &lat, &efectivas, &conductos, &mut out);
     vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
+    indices_de_topologia(pkg, &lat, &efectivas, &conductos, &mut out);
 
     // 4 · Desclasificadores y valores de ejemplo.
     desclasificadores(pkg, &mut out);
@@ -682,6 +683,134 @@ fn vistas_materializadas(
                         "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
                     ),
                 );
+            }
+        }
+    }
+}
+
+// ── OOS4001 · OOS4002 · OOS4011 · el índice de topología ────────────────────
+
+/// Una relación con `via` **se atraviesa**, y atravesar es una búsqueda por
+/// clave sobre una copia de dos columnas: la clave de la entidad y el enlace.
+/// Esa copia instancia `materialization.topology`, igual que la declaraba el
+/// eje del binding — porque es la misma cosa con otro dueño.
+///
+/// # Por qué esto no es un `OOS2026` que prohíbe
+///
+/// Se midió la regla contraria —*lo que se atraviesa se debe materializar*,
+/// entendida como «declara `materialized`»— y no se puede pagar: `materialized`
+/// es el conducto de **la carga**, y una vista cuya carga no puede salir del
+/// origen tiene aristas que sí pueden. Son dos decisiones, y la política ya las
+/// separa con dos autorizaciones. `pruebas-de-fuego/medida-b0-impagable.py`.
+///
+/// Lo que faltaba no era prohibir la travesía: era mirar la copia que ya se
+/// hace. `registro::topologia` la construye —plan, destino y refresco propios—
+/// y hasta aquí no pasaba por ningún conducto.
+///
+/// # Por qué solo las derivadas
+///
+/// Un binding **declara** su `materialization.topology`, y [`materializaciones`]
+/// ya sella esa declaración. Una vista no declara nada —lo derivable no se
+/// declara (P2)— así que la única forma de sellar su copia es derivarla. Sellar
+/// las dos aquí sería contar dos veces el mismo camino viejo, y **cambiaría un
+/// resultado de v1alpha1**: un binding sin eje declarado no copia aristas hoy, y
+/// pasaría a fallar. Por eso `Arista::derivada`, y por eso no hace falta acotar
+/// por versión — el sujeto nuevo solo existe donde hay `backedBy`.
+///
+/// # De dónde salen las etiquetas
+///
+/// De la entidad, y directamente: lo que viaja son **dos propiedades suyas**,
+/// no campos de una vista tres eslabones más abajo. Así que no hay que
+/// proyectar nada — `efectivas` ya las tiene, con su herencia resuelta.
+fn indices_de_topologia(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    conductos: &BTreeMap<String, Labels>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let conducto = "materialization.topology";
+    // Una misma arista sale una vez por fuente física, y la copia es una. Se
+    // sella por NOMBRE, que es como el registro la identifica.
+    let mut vistas: BTreeSet<String> = BTreeSet::new();
+    for a in crate::aristas::aristas(pkg).into_iter().filter(|a| a.derivada) {
+        if !vistas.insert(a.nombre.clone()) {
+            continue;
+        }
+        let Some(e) = pkg.entity(&a.entidad) else {
+            continue;
+        };
+        // Se ancla en la relación, que es lo que hay que quitar o repensar.
+        let pos = e
+            .section("relations")
+            .and_then(|r| r.get(&a.relacion))
+            .map(|(_, n)| n.pos())
+            .or_else(|| e.section("relations").map(|r| r.pos()));
+
+        // OOS4011 · omitir un conducto no es dejarlo abierto: es cerrarlo.
+        let Some(autorizacion) = conductos.get(conducto) else {
+            let mut d = Diagnostic::new(
+                Code::Oos4011,
+                &e.path,
+                format!(
+                    "`{}` se atraviesa por `{}`, y eso copia dos columnas por `{conducto}`, que no tiene autorización declarada",
+                    a.entidad, a.relacion
+                ),
+            )
+            .help(
+                "recorrer una relación es una búsqueda por clave sobre una copia de la clave y el enlace: se materializa, aunque no lo declare nadie. Un conducto sin autorización es ⊥ y no admite nada, así que declara `materialization.topology` en la política de conductos, o quita la `via` de la relación",
+            );
+            if let Some(p) = pos {
+                d = d.at(p);
+            }
+            out.push(d);
+            continue;
+        };
+
+        // Y lo que viaja: exactamente dos propiedades, ni una más. Que sean dos
+        // y no doce es toda la tesis — por eso una entidad con campos críticos
+        // puede atravesarse sin que salga nada crítico.
+        let Some(props) = efectivas.get(&a.entidad) else {
+            continue;
+        };
+        for prop in [&a.clave, &a.via] {
+            let Some(labels) = props.get(prop) else {
+                continue;
+            };
+            for (ret, (nivel, origen)) in labels {
+                let Some(l) = lat.get(ret) else { continue };
+                let permitido = autorizacion
+                    .get(ret)
+                    .and_then(|(n, _)| l.index(n))
+                    .unwrap_or(0);
+                let Some(tiene) = l.index(nivel) else { continue };
+                if tiene <= permitido {
+                    continue;
+                }
+                let (code, como) = match origen {
+                    Origin::Computed => (Code::Oos4001, "computada por join"),
+                    Origin::Declared => (Code::Oos4002, "declarada"),
+                    Origin::Inherited => (Code::Oos4002, "heredada"),
+                };
+                let permitido_txt = autorizacion
+                    .get(ret)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| l.levels[0].clone());
+                let mut d = Diagnostic::new(
+                    code,
+                    &e.path,
+                    format!(
+                        "atravesar `{}` copia `{}.{prop}`, que lleva `{ret}:{nivel}` ({como}), y `{conducto}` solo admite `{ret}:{permitido_txt}`",
+                        a.relacion, a.entidad
+                    ),
+                )
+                .help(
+                    "el índice de topología copia la clave y el enlace, y nada más: por eso una entidad con campos críticos se puede atravesar. Pero estas dos columnas también llevan lo suyo. Eleva la autorización del conducto donde se decide eso, quita la `via`, o relaja el suelo del datasource si la etiqueta es heredada",
+                );
+                if let Some(p) = pos {
+                    d = d.at(p);
+                }
+                out.push(d);
             }
         }
     }

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""B0 no se puede escribir: el precio no es caro, es IMPAGABLE.
+"""NOTA: `B0` no se escribio, y lo que salio de aqui —que copiar la carga y
+copiar las aristas son dos decisiones— se convirtio en el sello del indice.
+
+B0 no se puede escribir: el precio no es caro, es IMPAGABLE.
 
 `handoff-topologia.md` §B0 pide un tercer gemelo:
 

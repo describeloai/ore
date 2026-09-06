@@ -47,7 +47,9 @@ use crate::vistas;
 /// índice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arista {
-    /// `<entidad>.<relación>`, cualificado.
+    /// `<entidad>.<relación>`, cualificado. Es `entidad` y `relacion` unidos, y
+    /// se guarda igualmente porque es **la identidad de la copia** en el
+    /// registro: `oretopo·hr.Employee.manager`.
     pub nombre: String,
     /// Quién declaró la fuente física: un binding, o la vista que respalda.
     pub declara: String,
@@ -57,6 +59,34 @@ pub struct Arista {
     pub desde: String,
     /// La columna que sostiene el enlace.
     pub hasta: String,
+
+    // ── Lo que el SELLO necesita, y el driver no ────────────────────────────
+    //
+    // Arriba todo son nombres físicos, porque el driver no conoce el modelo.
+    // El sello es al revés: las etiquetas las pone la ENTIDAD sobre sus
+    // propiedades, así que para preguntar «¿qué lleva puesto lo que se copia?»
+    // hacen falta los nombres de arriba.
+    //
+    // Podrían derivarse fuera —partir `nombre`, releer `primaryKey`— y eso
+    // sería la segunda derivación de lo mismo, que es exactamente lo que este
+    // módulo existe para impedir.
+    /// La entidad, cualificada.
+    pub entidad: String,
+    /// La relación, sin cualificar: lo que el diagnóstico tiene que nombrar.
+    pub relacion: String,
+    /// La **propiedad** de la clave primaria — `desde` es su columna.
+    pub clave: String,
+    /// La **propiedad** del enlace — `hasta` es su columna.
+    pub via: String,
+    /// Si la fuente la declara una **vista**, y no un binding.
+    ///
+    /// Decide de quién es la copia. Un binding **declara** su
+    /// `materialization.topology` y el sello corre sobre la declaración; una
+    /// vista no declara nada —lo derivable no se declara (P2)— y por eso el
+    /// sello tiene que correr sobre esta derivación. Los dos caminos llegan al
+    /// mismo conducto por sitios distintos, y confundirlos sellaría dos veces
+    /// lo mismo o ninguna.
+    pub derivada: bool,
 }
 
 /// Las fuentes físicas de una entidad: sus bindings, y la raíz de la vista que
@@ -66,7 +96,9 @@ pub struct Arista {
 /// compilando mientras v1alpha1 sea normativo, así que un paquete con bindings
 /// tiene que seguir dando sus aristas. Es la misma pareja que
 /// [`crate::vistas::datasources_de`] ya recorre.
-fn fisicas(pkg: &Package, e: &Loaded) -> Vec<(String, String, String, BTreeMap<String, String>)> {
+type Fisica = (String, String, String, BTreeMap<String, String>, bool);
+
+fn fisicas(pkg: &Package, e: &Loaded) -> Vec<Fisica> {
     let qn = e.qname().unwrap_or_default();
     let mut out = Vec::new();
     for b in pkg.of(Kind::Binding) {
@@ -84,6 +116,7 @@ fn fisicas(pkg: &Package, e: &Loaded) -> Vec<(String, String, String, BTreeMap<S
                 .unwrap_or("")
                 .to_string(),
             columnas_de_binding(b),
+            false,
         ));
     }
     if let Some(v) = vistas::respaldo(pkg, e)
@@ -94,6 +127,7 @@ fn fisicas(pkg: &Package, e: &Loaded) -> Vec<(String, String, String, BTreeMap<S
             r.datasource,
             r.objeto,
             r.columnas,
+            true,
         ));
     }
     out
@@ -138,7 +172,7 @@ pub fn aristas(pkg: &Package) -> Vec<Arista> {
             if via.len() != 1 {
                 continue;
             }
-            for (declara, datasource, objeto, columnas) in &fuentes {
+            for (declara, datasource, objeto, columnas, derivada) in &fuentes {
                 let (Some(desde), Some(hasta)) = (columnas.get(&clave[0]), columnas.get(&via[0]))
                 else {
                     continue;
@@ -150,6 +184,11 @@ pub fn aristas(pkg: &Package) -> Vec<Arista> {
                     objeto: objeto.clone(),
                     desde: desde.clone(),
                     hasta: hasta.clone(),
+                    entidad: qn.clone(),
+                    relacion: rel.to_string(),
+                    clave: clave[0].clone(),
+                    via: via[0].clone(),
+                    derivada: *derivada,
                 });
             }
         }

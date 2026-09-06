@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""El sello del indice: no hay que inventarlo, hay que devolverle el sujeto.
+"""NOTA: el sello YA ESTA ENCENDIDO —`flow::indices_de_topologia`,
+`04-flow` §4.2, tres casos de conformidad—. Lo de abajo es el terreno tal
+como estaba antes, que es lo que decidio encenderlo. Se deja intacto: si se
+vuelve a correr hoy, C y D salen distintos, y eso es la prueba de que sirvio.
+
+El sello del indice: no hay que inventarlo, hay que devolverle el sujeto.
 
 `B0` murio porque confundia dos conductos. Lo que quedo abierto es su reverso:
 la travesia copia dos columnas, y esa copia no la mira nadie. Seis frentes:
