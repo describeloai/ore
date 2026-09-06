@@ -349,6 +349,24 @@ fn clase(table_type: &str) -> &'static str {
 /// declara lo que hay, y ensanchar esto es un cambio en `ore-sql` y en
 /// `ore-driver` primero, y en esta lista después — en ese orden.
 ///
+/// # Y `OPERADORES` **no** es esta lista, aunque se parezca
+///
+/// La primera versión de esta corrección puso aquí `ore_driver::OPERADORES` tal
+/// cual, y eso emitía `[eq, gt]`. Son **dos vocabularios distintos con la misma
+/// forma**, que es exactamente la confusión que este árbol persigue:
+///
+/// - `OPERADORES` es lo que una **petición** sabe llevar. Incluye `gt` porque
+///   la marca de agua lo necesita, y una marca de agua no la pide nadie: la
+///   pone el motor al refrescar.
+/// - `predicatePushdown` es lo que un **plan** puede empujar, y su vocabulario
+///   lo fija el esquema publicado —`eq, neq, in, range, like, isNull,
+///   fullText`—. **`gt` no está**, porque el orden se declara con `range`.
+///
+/// Así que emitir `gt` producía un catálogo que el esquema rechaza y que el
+/// planificador ignora en silencio (`de_oos` descarta lo que no conoce). Lo que
+/// se declara es la intersección honesta: **`eq`**, que es lo que la petición
+/// lleva, lo que la forma traduce y lo que el esquema admite.
+///
 /// Lo que **sí** se sondea es lo que cambia de tabla a tabla, y son dos hechos
 /// que el servidor afirma:
 ///
@@ -361,7 +379,7 @@ fn clase(table_type: &str) -> &'static str {
 /// BigQuery, que es un hecho publicado del producto y no una conjetura sobre
 /// este dataset.
 fn reads(particion: Option<&str>, exige_filtro: bool) -> Json {
-    let operadores = ore_driver::OPERADORES;
+    let operadores = ["eq"];
     let mut o: BTreeMap<String, Json> = BTreeMap::new();
     o.insert(
         "predicatePushdown".to_string(),
@@ -732,7 +750,7 @@ mod tests {
 {y}"
             );
             assert!(
-                y.contains("predicatePushdown: [eq, gt]"),
+                y.contains("predicatePushdown: [eq]"),
                 "{y}"
             );
         }
