@@ -640,39 +640,51 @@ ejercita esto en absoluto. Donde sí es medible es en el único ejemplo completo
 | entidad | `via` | su vista | ¿la vista expone la `via`? |
 |---|---|---|---|
 | `supply.Shipment` | `supplierId`, `skuCode` | `supply.envios` · **virtual** | **sí** |
-| `hr.Employee` | `managerId`, `departmentId` | `hr.empleados` · **materializada** | **sí** |
+| `hr.Employee` | `managerId`, `departmentId` | `hr.empleados` · **virtual** | **sí** |
 | `hr.Department`, `customers.Customer`, `customers.Order` | — | **sin `backedBy`** | camino viejo |
 
 **Dos de dos: la propiedad de `via` es campo de su vista.** Y no es suerte — `OOS2022` lo obliga,
 así que **no puede no serlo**: una propiedad de una entidad es campo de su vista o declara
 `derivedFrom`. La cadena se sostiene por una regla que ya existe, no por costumbre.
 
-De las dos, **una ya está materializada**: `hr.Employee` tiene sus aristas dentro de su copia hoy
-mismo, sin que nadie lo haya pretendido.
+> ⚠️ **Aquí decía «de las dos, una ya está materializada» y contaba el precio en una entidad.**
+> Las dos son virtuales, y `hr.empleados` abre diciendo *«Sin materializar»* y explicando por qué:
+> su carga no puede salir del origen. La cuenta era de un árbol anterior.
 
-> **El precio del tercer gemelo, contado:** una entidad —`supply.Shipment`— tendría que declarar
-> `materialized` para poder atravesarse. Una, en todo el corpus. Y las tres que no encajan no lo
-> hacen por esto: no están migradas.
+#### La regla que eso parecía escribir sola, y que se midió
 
-#### La regla que eso escribe sola
+Parecía el tercer gemelo de `OOS2020` (*lo que no se puede leer*) y `OOS2025` (*lo que se
+escribe*): **lo que se atraviesa se debe materializar**. Y decía este documento que no se decidía
+aquí, que había que medirla contra el corpus antes de escribirla. Se midió
+—`pruebas-de-fuego/medida-b0-impagable.py`, que se reproduce sola— y **no se escribe**.
 
-Es el tercer gemelo de una familia que ya tiene dos:
+La regla es cierta y su consecuencia era falsa. Atravesar sí exige copia, pero **la copia no es la
+vista: son dos columnas suyas**, la clave y la `via`. Y esas dos cosas van por conductos distintos,
+que la política ya declara por separado:
 
-| | |
-|---|---|
-| `OOS2020` | lo que **no se puede leer** se debe materializar |
-| `OOS2025` | lo que **se escribe** se debe materializar |
-| **↳ el tercero** | lo que **se atraviesa** se debe materializar |
+| conducto | admite | quién lo usa |
+|---|---|---|
+| `materialization.index` | `gdpr.sensitivity: medium` | **nadie, hoy** |
+| `materialization.payload` | *sin declarar* → ⊥ (P4) | `spec.materialized` de la vista |
 
-Con él, el artefacto de topología desaparece en vez de mudarse: atravesar exige copia, y en la
-copia las aristas son columnas. La travesía pasa a ser una consulta sobre la copia —una búsqueda
-por clave, que es lo que el índice compraba— y deja de necesitar formato propio, marca de agua
-propia y refresco propio.
+Exigir `materialized` exigía el **segundo**. Y `hr.empleados` no puede pagarlo: declararlo deja el
+ejemplo insignia sin compilar con `OOS4011`, y declarar el conducto lo deja sin compilar con
+`OOS4002` sobre once campos `critical`. La regla obligaba a elegir entre el sello y el grafo.
 
-**Y no se decide aquí**, porque tiene un precio que hay que mirar de frente: hoy una entidad se
-puede atravesar sin materializar nada, y esta regla lo prohibiría. Es la misma forma de decisión
-que `OOS2020` —obligar a materializar lo que no se puede servir de otra manera— y merece el mismo
-trato: medirla contra el corpus antes de escribirla.
+Mientras que sus aristas —`managerId`, `departmentId`, con el suelo `medium` de `hr_workday`— caben
+exactamente en lo que `materialization.index` admite. **Se pueden copiar.** Lo que no se puede
+copiar es la carga, y `B0` confundía las dos.
+
+> **Lo que sí queda por hacer, y es un agujero abierto.** El único código que sella el eje del
+> índice es `flow::materializaciones`, cuyo bucle `for eje in ["topology", "payload"]` itera sobre
+> `Kind::Binding` —**retirado**—. Así que hoy la travesía copia aristas **sin sello ninguno**. Lo
+> que falta no es prohibir la travesía: es que la clave y las `via` de una vista atravesada pasen
+> por `materialization.topology` **con autorización** (`OOS4011`) y **dentro de la etiqueta**
+> (`OOS4002`), como cualquier otra copia.
+
+Con eso el artefacto de topología desaparece igual —el índice sigue siendo dos columnas derivadas
+(P2), sin formato propio ni marca de agua propia—, y además deja de ser la única copia del sistema
+que nadie mira.
 
 #### Y el formato, que casi se disuelve con lo anterior
 
@@ -715,8 +727,9 @@ después.
 
 #### Lo que esto deja abierto, en una frase cada uno
 
-1. **¿Se escribe el tercer gemelo?** *Lo que se atraviesa se debe materializar.* Prohíbe algo que
-   hoy se puede, así que se mide antes.
+1. **~~¿Se escribe el tercer gemelo?~~** Medido y **no**: exigía el conducto de la carga para
+   copiar dos columnas. Lo que queda abierto es su reverso — **sellar el conducto del índice**,
+   que hoy nadie mira.
 2. **¿Cuánto cuesta N saltos sobre Parquet?** Filas miradas, no segundos.
 3. **¿Y `many_to_many`?** No lo tenemos, y las otras dos casillas de esa pantalla son justamente
    eso. El día que haga falta, el *join table dataset* de Foundry **es una vista de dos columnas**
