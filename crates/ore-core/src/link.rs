@@ -200,8 +200,106 @@ fn properties(e: &Loaded) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// Los nombres que un documento declara retirados, con su posición.
+fn reservados(d: &Loaded) -> BTreeMap<String, crate::diag::Pos> {
+    d.section("reserved")
+        .map(|r| {
+            r.items()
+                .iter()
+                .filter_map(|it| {
+                    it.get("name")
+                        .map(|(_, v)| (v.as_str().unwrap_or("").to_string(), v.pos()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `OOS2006` en sus otros dos alcances — el campo de una vista y el nombre de
+/// un documento.
+///
+/// # La regla que elige la casa, y no es una convención
+///
+/// **Lo dice el que sobrevive; si no sobrevive nadie, lo dice el paquete.**
+/// Renombrar una propiedad deja viva a la entidad, renombrar un campo deja viva
+/// a la vista, y renombrar un documento no deja vivo a nadie con ese nombre —
+/// así que sube al único que sigue existiendo.
+///
+/// Es la misma regla que explica por qué `Entity.spec.moved` estaba bien donde
+/// estaba desde v1alpha1: no era media importación por descuido, era la casa
+/// correcta **para su alcance**. Lo que faltaba eran los otros dos.
+///
+/// # Y no sube el rigor de paso
+///
+/// Se midió qué comprueba el motor hoy: **una sola cosa**, que no se reutilice
+/// un nombre reservado. `moved` no se comprueba en el enlazado —ni que su
+/// `from` haya dejado de existir, ni que su `to` exista— y solo alimenta a
+/// `diff`. Esto iguala ese rigor y no lo sube: subirlo aquí cambiaría la regla
+/// de la entidad de paso, y eso es otra decisión.
+fn nombres_retirados(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    // El campo de una vista, contra el `reserved` de esa misma vista.
+    for v in pkg.of(Kind::View) {
+        let ret = reservados(v);
+        if ret.is_empty() {
+            continue;
+        }
+        for (k, _) in v.section("fields").map(|f| f.entries()).unwrap_or(&[]) {
+            let Some(n) = k.as_str() else { continue };
+            if let Some(pos) = ret.get(n) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2006,
+                        &v.path,
+                        format!("el campo `{n}` está reservado y no puede reutilizarse"),
+                    )
+                    .at(k.pos())
+                    .help(format!(
+                        "declarado en `reserved` en la línea {}. Un consumidor que siga                          pidiendo ese nombre recibiría otra cosa sin enterarse",
+                        pos.line
+                    )),
+                );
+            }
+        }
+    }
+
+    // Y el nombre de un DOCUMENTO, contra el `reserved` de su manifiesto. El
+    // manifiesto de un miembro solo reserva para su miembro: un nombre retirado
+    // es del espacio de nombres de quien lo retiró.
+    let miembros = miembros(pkg);
+    for p in pkg.of(Kind::Package) {
+        let ret = reservados(p);
+        if ret.is_empty() {
+            continue;
+        }
+        let Some(sitio) = p.path.parent() else {
+            continue;
+        };
+        for d in &pkg.docs {
+            if d.kind == Kind::Package || miembro_de(&miembros, &d.path) != Some(sitio) {
+                continue;
+            }
+            let Some(qn) = d.qname() else { continue };
+            if let Some(pos) = ret.get(&qn) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2006,
+                        &d.path,
+                        format!("`{qn}` está reservado y no puede reutilizarse"),
+                    )
+                    .at(d.root.pos())
+                    .help(format!(
+                        "lo retiró el manifiesto del paquete, en la línea {}. Reutilizar el                          nombre de un documento retirado hace que una consulta antigua                          devuelva una cifra correcta para la pregunta equivocada",
+                        pos.line
+                    )),
+                );
+            }
+        }
+    }
+}
+
 pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     let mut d = Vec::new();
+    nombres_retirados(pkg, &mut d);
     package_metadata(pkg, &mut d);
     dependencies(pkg, &mut d);
     datasources(pkg, &mut d);

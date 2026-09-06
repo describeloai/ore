@@ -351,7 +351,13 @@ pub enum NoInvertible {
 
 /// Las claves de una `View` que **no cambian qué filas ni qué columnas salen**,
 /// y por eso no afectan a la invertibilidad.
-const NEUTRAS: &[&str] = &["owner", "freshness", "materialized"];
+///
+/// `moved` y `reserved` son neutras y merecen decirse: hablan de **nombres a
+/// través del tiempo**, no del conjunto que se responde. Un campo anunciado
+/// sigue saliendo de la columna que `fields` diga mientras exista, y uno
+/// retirado ya no está en `fields` — así que no hay nada que deshacer que no
+/// dijera ya la proyección.
+const NEUTRAS: &[&str] = &["owner", "freshness", "materialized", "moved", "reserved"];
 
 /// Las que sí, y son invertibles las tres.
 ///

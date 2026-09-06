@@ -18,6 +18,13 @@ Esto mide ese hueco. Seis frentes:
   E. DONDE VIVIRIA       dos candidatos, cada uno con su precedente, y la
                          pregunta que los separa
   F. EL PRECIO           que cuesta la fusion sin esto
+
+CERRADO. `Package.spec.moved`/`reserved` existen desde `01-package` §3.4, y con
+ellos un renombrado anunciado deja de contar como supresion —el caso
+`v1alpha8/diff/a-renamed-view-is-not-a-deletion` lo afirma con el informe
+VACIO—. Lo que este guion mide sigue valiendo como la fotografia del antes, y
+vuelto a correr enseña el despues: la fila del renombrado ANUNCIADO ya no da
+`OOS5007`.
 """
 import collections
 import pathlib

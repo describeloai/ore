@@ -21,7 +21,7 @@ Ese encargo lo cumple, y hay cuatro cosas que hace bien y que **nadie más en el
 | **Tipa con significado** | `Money<EUR, 2>` | una columna dice `numeric(12,2)`. La moneda y la escala son una **afirmación**, no un hecho físico |
 | **Clasifica** | `labels`, el retículo | vista y tabla lo tienen **estructuralmente prohibido** sobre el DATO — y de ahí cuelga el análisis de flujo entero. (La vista admite `oos.maturity` desde `02-view` §4.1: es su propio estado, no el del dato) |
 | **Acuña** | `is` → `Concept`, `implements` → `Interface` | es significado contra significado. Ningún objeto físico participa |
-| **Versiona el nombre** | `moved`, `reserved` | ⟶ §4 |
+| **Versiona el nombre** | `moved`, `reserved` | ⟶ §4. *Y ya no es solo suyo: el mismo mecanismo llegó a la vista y al manifiesto — `01-package` §3.4* |
 
 La cuarta merece pararse, porque es la que decide este documento. La propia spec dice de dónde las
 copió:
@@ -31,8 +31,17 @@ copió:
 > antigua que devuelve una cifra correcta para la pregunta equivocada»*.
 
 **Las dos son disciplinas de repositorio**, importadas de dos herramientas que gobiernan cambio en
-código. No son metadatos de dato: son **metadatos de versión**. Y en el paquete realista se usan en
-**7 de 7** entidades — es la parte de `Entity` que más viva está.
+código. No son metadatos de dato: son **metadatos de versión**.
+
+> **⚠️ Aquí decía «se usan en 7 de 7 entidades — es la parte de `Entity` que más viva está», y era
+> una cifra prestada.** Contado sobre `examples/acme-retail`: `temporal` está en 7 de 7, `moved` en
+> **2** y `reserved` en **1**; en las 292 del corpus, 3 y 4. El 7/7 es de la parte «Historia», y
+> quien la sostiene es la bitemporalidad, que no es una disciplina de repositorio.
+>
+> Lo que las hace irreductibles no es cuánto se usan: **es que son las únicas que hay.** Y desde
+> [`01-package` §3.4](../vendor/oos/spec/v1alpha1/01-package.md) ya no son solo de la entidad — el
+> mismo mecanismo cubre el nombre de un campo y el de un documento, con la regla que elige la casa:
+> *lo dice el que sobrevive, y si no sobrevive nadie lo dice el paquete*.
 
 ---
 
@@ -192,7 +201,7 @@ Y por debajo:
 - **v1alpha6 entera** es distribución, firma, transparencia y registro. Su regla es
   `usar(P) ⟹ digest(P) ∈ lock`, y su tesis de diseño es *«el registro no es de confianza»* — que es
   literalmente el modelo de contenido direccionable de git;
-- **`moved` y `reserved`** son Terraform y Protobuf dentro de la entidad;
+- **`moved` y `reserved`** son Terraform y Protobuf, y desde v1alpha8 en sus tres alcances — la propiedad, el campo y el documento. La importación de Terraform estaba a medias: su `moved` renombra **direcciones de recurso**, y el nuestro solo llegaba a los miembros;
 - y hay cuatro crates enteros —`ore-registry`, `ore-log`, `ore-sign`, `ore-fetch`— que no tocan un
   dato en su vida.
 

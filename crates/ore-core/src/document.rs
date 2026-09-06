@@ -345,6 +345,24 @@ impl Kind {
                 // omitir no es dejar abierto, es cerrar. Es el mismo defecto
                 // que un conducto no listado y que `reads` ausente.
                 "exports",
+                // El alcance ANCHO de la disciplina de renombrado: un nombre de
+                // DOCUMENTO. Vive aqui por la misma regla que lo pone en la
+                // entidad y en la vista, leida al reves: **lo dice el que
+                // sobrevive, y si no sobrevive nadie lo dice el paquete**.
+                //
+                // Un `moved` de documento tendria superviviente —el que se
+                // queda con el nombre nuevo, que es la forma de los `aliases`
+                // de Avro— pero `reserved` NO: un nombre retirado para siempre
+                // no deja documento donde vivir. Y los dos son un mecanismo:
+                // `diff` los une en `anunciados` y `OOS5001` no distingue de
+                // cual vino un nombre. Partirlos en dos casas seria peor que
+                // cualquiera de las dos.
+                //
+                // Y de paso resuelve lo que la forma de Avro no: que un nombre
+                // se mude DE PAQUETE. El que lo pierde puede decir a donde fue;
+                // el que lo recibe no le sirve a quien solo tiene al primero.
+                "moved",
+                "reserved",
             ],
             Kind::Entity => &[
                 "nature",
@@ -448,6 +466,11 @@ impl Kind {
                 "where",
                 "capabilities",
                 "materialized",
+                // El alcance ESTRECHO de la disciplina de renombrado: un
+                // nombre de CAMPO. La casa la elige una sola regla —lo dice el
+                // que sobrevive— y aqui sobrevive la vista.
+                "moved",
+                "reserved",
             ],
             // v1alpha8. Las dos caras y lo que hay entre ellas: `columns`, que
             // es lo unico nuevo de verdad — hasta aqui ningun documento decia
@@ -488,6 +511,11 @@ impl Kind {
                 "fields",
                 "where",
                 "materialized",
+                // La disciplina de renombrado, en su alcance estrecho: un
+                // nombre de CAMPO. Es la lista que manda para una vista
+                // v1alpha8, y sin esto la de arriba no la alcanza.
+                "moved",
+                "reserved",
             ],
             _ => self.spec_keys(),
         }

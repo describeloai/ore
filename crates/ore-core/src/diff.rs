@@ -245,6 +245,10 @@ struct Shape {
     conduits: BTreeMap<String, BTreeMap<String, String>>,
     /// entidad destino → binding
     bindings: BTreeMap<String, Bind>,
+    /// v1alpha8 · lo que el MANIFIESTO anuncia: nombres de documento que se
+    /// movieron o se retiraron. Es el alcance ancho de la misma disciplina, y
+    /// vive ahí porque un nombre retirado no deja documento donde vivir.
+    anunciados_doc: BTreeSet<String>,
     /// v1alpha8 · el sustrato, por su EFECTO sobre cada vista.
     ///
     /// No se guarda lo que la vista declara: se guarda lo que responde. La raíz
@@ -368,6 +372,13 @@ struct Vista {
     /// ausente no está restringida, que es distinto de estar restringida a
     /// nada.
     recorte: BTreeMap<String, BTreeSet<String>>,
+    /// Los campos que expone, por su nombre. Aquí sí es lo declarado y no el
+    /// efecto: un campo es lo que el consumidor escribe.
+    campos: BTreeSet<String>,
+    /// Lo que esta vista anuncia sobre sus propios campos — `moved.from` y
+    /// `reserved`. Un nombre anunciado no desaparece en silencio: desaparece
+    /// con instrucciones.
+    anunciados: BTreeSet<String>,
 }
 
 fn shape(pkg: &Package) -> Shape {
@@ -512,6 +523,7 @@ fn shape(pkg: &Package) -> Shape {
                 }
             }
             crate::document::Kind::Package => {
+                s.anunciados_doc.extend(anunciados(d));
                 if let Some(v) = d.meta("version").and_then(|n| n.as_str())
                     && let Some(v) = Version::parse(v)
                 {
@@ -582,12 +594,23 @@ fn shape(pkg: &Package) -> Shape {
                         .unwrap_or_default(),
                     None => format!("{}·{}", r.datasource, r.objeto),
                 };
+                let campos = d
+                    .section("fields")
+                    .map(|f| {
+                        f.entries()
+                            .iter()
+                            .filter_map(|(k, _)| k.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 s.vistas.insert(
                     qn,
                     Vista {
                         raiz: format!("{}·{}", r.datasource, r.objeto),
                         lectura,
                         recorte,
+                        campos,
+                        anunciados: anunciados(d),
                     },
                 );
             }
@@ -675,14 +698,26 @@ fn entidad(d: &Loaded) -> Ent {
         );
     }
 
-    for m in d.section("moved").map(|n| n.items()).unwrap_or(&[]) {
-        if let Some(f) = cadena(m, "from") {
-            e.anunciados.insert(f);
-        }
-    }
-    e.anunciados
-        .extend(d.section("reserved").map(lista).unwrap_or_default());
+    e.anunciados = anunciados(d);
     e
+}
+
+/// Lo que un documento anuncia de sus nombres: `moved.from` y `reserved`.
+///
+/// **Una función y tres llamantes** —la entidad para sus propiedades, la vista
+/// para sus campos, el manifiesto para los nombres de documento—. Los tres
+/// alcances son el mismo mecanismo, y `OOS5001` no distingue de cuál vino un
+/// nombre: solo si estaba anunciado.
+fn anunciados(d: &Loaded) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = d
+        .section("moved")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|m| cadena(m, "from"))
+        .collect();
+    out.extend(d.section("reserved").map(lista).unwrap_or_default());
+    out
 }
 
 // ── La comparación ──────────────────────────────────────────────────────────
@@ -992,8 +1027,12 @@ fn significado(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
 fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
     for (qn, antes) in &a.entities {
         let Some(despues) = b.entities.get(qn) else {
-            // OOS5007 · la entidad ya no está.
-            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            // OOS5007 · la entidad ya no está. Salvo que el manifiesto lo
+            // anuncie: un renombrado declarado no es un borrado, y decir que lo
+            // es manda a buscar un documento que sí existe con otro nombre.
+            if !b.anunciados_doc.contains(qn) {
+                out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            }
             continue;
         };
 
@@ -1225,10 +1264,24 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
     for (qn, antes) in &a.vistas {
         let Some(despues) = b.vistas.get(qn) else {
             // Una vista que desaparece es lo mismo que una entidad que
-            // desaparece, un piso más abajo: el consumidor la nombraba.
-            out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            // desaparece, un piso más abajo: el consumidor la nombraba. Y con
+            // la misma salida: si el manifiesto lo anuncia, se movió.
+            if !b.anunciados_doc.contains(qn) {
+                out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            }
             continue;
         };
+
+        // OOS5001 · un campo que desaparece sin anuncio. Es la mutación que el
+        // paso 3 dejó muda a propósito: sin `moved` en la vista, la regla no
+        // habría tenido válvula y todo renombrado sería rompedor para siempre.
+        for campo in antes.campos.difference(&despues.campos) {
+            if !despues.anunciados.contains(campo) {
+                out.push(
+                    Change::new(Code::Oos5001, Axis::Consumer).sujeto(format!("{qn}.{campo}")),
+                );
+            }
+        }
 
         // OOS5019 · el binding físico, con el sujeto devuelto. La raíz sale
         // RESUELTA por la cadena, así que esto salta tanto si la vista repunta

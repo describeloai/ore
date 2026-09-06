@@ -147,8 +147,9 @@ del mismo recorte deben converger por la forma canónica**, no por el álgebra.
 
 **Y queda deuda dicha, no escondida.** Aflojar `freshness` y estrechar `reads`/`changes` **siguen
 sin verse**: son órdenes de una sola dirección y piden códigos propios que este peldaño no escribe.
-Perder un campo de una vista tampoco, y ese espera por una razón distinta: `OOS5001` es *«sin `moved`
-ni `reserved`»*, y **la vista todavía no tiene `moved`**.
+Perder un campo de una vista **ya no**: la vista tiene `moved` desde
+[`02-view` §4.2](../../vendor/oos/spec/v1alpha8/02-view.md), y con la válvula puesta `OOS5001` ganó
+el sujeto. Era la única de las tres que esperaba a otra cosa.
 
 ---
 
