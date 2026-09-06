@@ -147,8 +147,21 @@ propiedad sea campo de su vista o declare `derivedFrom`. **La arista está en la
 construcción**, que es lo que M4 dedujo y esto confirma sobre todo el corpus en vez de sobre
 acme-retail.
 
-Es la única de las seis partes donde la entidad declara algo que el sustrato ya contiene, y el
-peldaño que lo cobra —`B0`/`OOS2026`— está medido y en cola.
+Es la única de las seis partes donde la entidad declara algo que el sustrato ya contiene.
+
+> **⚠️ Aquí decía «y el peldaño que lo cobra —`B0`/`OOS2026`— está medido y en cola».** Ni cobraba
+> esto, ni sigue en cola. `B0` era una **regla sobre la vista** —*lo que se atraviesa se debe
+> materializar*—, no una supresión en la entidad; y se midió y **no se escribe**.
+>
+> Que no cobre esto no podría ser de otro modo: `via` es **de donde sale** la arista
+> —[`sustrato.md` M4](sustrato.md): *«una proyección de dos columnas… por cada relación con
+> `via`»*—. Quitarlo no cobraría una redundancia: **borraría el dato**.
+>
+> Y lo que mató a `B0` es de la misma familia. La arista que el sustrato contiene son **dos
+> columnas**, y exigir `materialized` exigía copiar **la carga entera** —otro conducto, otra
+> autorización—. En el ejemplo insignia eso no se puede pagar:
+> `pruebas-de-fuego/medida-b0-impagable.py`. Así que `relations` no se retira, y tampoco se le
+> cobra nada: se queda **exactamente como está**.
 
 ---
 
@@ -185,13 +198,13 @@ era media vista:
 Y es el problema espejo del que medimos en Cognite: **su view hace dos trabajos** —mapear y ser
 tipo lógico con `implements`— y la nuestra hace uno. Aquí es la **entidad** la que hace dos.
 
-Adelgazarla no es sustituirla. Es el camino que M2 y `B0` ya abrieron por separado, y ahora se ve
+Adelgazarla no es sustituirla. Es el camino que M2 abrió, y ahora se ve
 que son el mismo:
 
-| | qué quita | precio medido |
+| | qué hace | precio medido |
 |---|---|---|
-| **M2** | los 38 nombres que solo repiten; `properties` pasa a **anotar** | 38 de 71, y 25 anotaciones que se quedan |
-| **B0** · `OOS2026` | la arista, que ya está en la copia | 2 entidades |
+| **M2** | los nombres que solo repiten; `properties` pasa a **anotar** | 38 de 71 entonces, 67 de 121 hoy — y las anotaciones se quedan |
+| ~~**B0** · `OOS2026`~~ | **medido y descartado.** No quitaba y tampoco obligaba: exigía el conducto de la **carga** para copiar **dos columnas** | **cero** — deja la entidad como estaba |
 
 ---
 
@@ -217,7 +230,7 @@ que son el mismo:
 > Esta sección contesta una pregunta que §9 no se hacía, y la contesta con un recuento en vez de
 > con una opinión.
 
-El §8 dijo que la entidad es *«dos cosas con un nombre»* y que adelgazarla —M2 y `B0`— la deja en
+El §8 dijo que la entidad es *«dos cosas con un nombre»* y que adelgazarla —M2— la deja en
 las cuatro irreductibles. Lo que no se preguntó es lo siguiente:
 
 > **Adelgazada, ¿queda algo que exija un documento aparte?**
@@ -235,7 +248,7 @@ primaryKey           286   │
 uniqueKeys · timeKey   19  │  anotan la UNIDAD
 temporal · moved · reserved 15
 implements · principal 19  │
-relations             25   ┘  o se retira —`B0`/`OOS2026`
+relations             25   ┘  y NO se retira: de ahí sale la arista
 properties           291   se funde con `fields`: cada campo, anotado
 
 dentro de cada propiedad, todo anota UN CAMPO de la vista:
@@ -305,7 +318,7 @@ unidad fusionada usaría esa misma partición.
 
 ### 10.6 · El veredicto, y la escalera que ya estaba
 
-> **`Entity` no es una abstracción: es un fichero de anotaciones.** Después de M2 y `B0` no queda
+> **`Entity` no es una abstracción: es un fichero de anotaciones.** Después de M2 no queda
 > en ella nada que necesite un documento propio, y `backedBy` es el precio de tenerlo.
 
 Lo que impide fusionar hoy **no es el modelo: es que la vista todavía no es ciudadana del
@@ -318,5 +331,5 @@ fusión, no en un rodeo:
 | **2** | la declaración ✅ — `exports`, [`01-package` §3.2](../vendor/oos/spec/v1alpha1/01-package.md) | el paquete dice qué deja usar a otro. Resultó ser **visibilidad**, no membresía: lo segundo lo dice el directorio |
 | **3** | `ore diff` ve el sustrato ✅ **entero** — 13 mutaciones mudas → 0 | sin esto, fusionar esconde el cambio donde nadie lo mira. Hecho en el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md): `OOS5019`, `OOS5020` y `OOS5007` con el sujeto devuelto, y `OOS5028`/`OOS5029` para el recorte |
 | **4** | `moved` en la vista y en el manifiesto ✅ | sin esto, los renombrados de la fusión eran roturas mudas. Y al medirlo salió que `moved` renombraba **miembros**, no documentos: hacía falta el alcance ancho, que es la semántica original de Terraform — `01-package` §3.4 |
-| **5** | M2 · `B0` | la entidad se queda en anotaciones puras |
+| **5** | ~~`B0`~~ · M2 | `B0` **se midió y no se escribe**: exigía el conducto de la carga para copiar dos columnas, y dejaba el ejemplo insignia sin compilar sin que el autor pudiera arreglarlo — `pruebas-de-fuego/medida-b0-impagable.py`. **M2** sigue en pie, y arrastra una pieza que no existe: el mapeo `physicalType` → tipo OOS **en el núcleo** — hoy vive una vez por driver y solo en el descubrimiento |
 | **6** | la fusión | ya no es un rediseño: es borrar `backedBy` y mover un fichero |
