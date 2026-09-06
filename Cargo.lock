@@ -1109,6 +1109,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-bigquery"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-driver",
+]
+
+[[package]]
 name = "ore-read-jsonl"
 version = "0.1.0"
 dependencies = [

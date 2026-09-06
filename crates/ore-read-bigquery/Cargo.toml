@@ -1,0 +1,23 @@
+# La tercera familia, y la que cierra un circuito que estaba abierto por un
+# lado. `ore` trae dentro la receta del CATALOGO de BigQuery —ejecuta `bq`— y
+# no traia nada para la fase ③: `ore materialize` llama a `ore-read-<tipo> leer`
+# sin receta interna de ninguna clase, asi que BigQuery entraba y no salia.
+#
+# Y no trae dependencias: delega en `bq`, igual que la receta, por la razon que
+# esa ya midio —la credencial nunca entra en el espacio de direcciones de ORE—.
+# Lo que justifica que esto sea un binario aparte y no otra receta dentro de
+# `ore` es que `materializar` no tiene ningun sitio donde meter una: el reparto
+# de la fase ③ es «un programa por familia», y respetarlo es mas barato que
+# abrirle una excepcion a la primera fuente que la pida.
+[package]
+name        = "ore-read-bigquery"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de filas de BigQuery para la fase ③"
+
+[dependencies]
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }

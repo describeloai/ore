@@ -32,7 +32,27 @@ ORE = RAIZ / "target/debug/ore"
 
 
 def hay(programa):
-    return shutil.which(programa) is not None
+    """En el PATH **y arranca**.
+
+    Que este en el PATH no basta, y este arnes lo daba por bueno hasta que se
+    fue a usar `bq` de verdad. Y el sondeo hay que hacerlo COMO LO HACE `ore`:
+    lanzando el programa. Desde Git Bash, `bq version` aqui contesta «ERROR:
+    (bq) python3.14: command not found» y desde un lanzamiento directo contesta
+    «This is BigQuery CLI 2.1.36». La primera lectura dio por roto lo que
+    funciona, asi que el sondeo se hace por el mismo camino que la herramienta.
+    """
+    ruta = shutil.which(programa)
+    if ruta is None:
+        return "no esta"
+    try:
+        p = subprocess.run([ruta, "version"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", shell=False)
+    except OSError:
+        # En Windows `bq` es un `.cmd`, y `CreateProcess` no lo lanza directo.
+        # Es la misma piedra que `lector::resolver` documenta del lado de Rust.
+        p = subprocess.run("%s version" % ruta, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", shell=True)
+    return "funciona" if p.returncode == 0 else "esta y NO ARRANCA"
 
 
 print("== el arsenal de fuentes ==")
@@ -80,8 +100,13 @@ def verbos_de(crate):
     return out
 
 
+# BigQuery tiene DOS proveedores, y por eso la fila no cabia en el modelo de
+# la primera version: el catalogo lo da la receta de dentro de `ore` y las
+# filas un binario de fuera. `lector::catalogo` despacha `bigquery` a la receta
+# y no llega nunca al binario, asi que el binario se NIEGA a `catalogo` en vez
+# de escribir una segunda version de lo mismo.
 FAMILIAS = [
-    ("bigquery", None, "receta interna · ejecuta `bq`"),
+    ("bigquery", "ore-read-bigquery", "receta (catalogo) + binario (filas)"),
     ("postgres", "ore-read-postgres", "binario, FFI nativo"),
     ("jsonl", "ore-read-jsonl", "binario, cero dependencias"),
 ]
@@ -90,15 +115,13 @@ print("   %-10s %-14s %-9s %-9s %-9s %s"
 print("   " + "-" * 74)
 matriz = {}
 for fam, crate, como in FAMILIAS:
-    if crate:
-        v = verbos_de(crate)
-        binario = RAIZ / ("target/debug/%s.exe" % crate)
-        listo = "construye" if binario.is_file() else "sin construir"
-    else:
-        # La receta de BigQuery solo cubre el catalogo: `materializar` llama a
-        # `ore-read-bigquery` y no existe.
-        v = {"catalogo": True}
-        listo = "`bq` en PATH" if hay("bq") else "falta `bq`"
+    v = verbos_de(crate)
+    binario = RAIZ / ("target/debug/%s.exe" % crate)
+    listo = "construye" if binario.is_file() else "sin construir"
+    if fam == "bigquery":
+        # El catalogo NO lo da este binario: lo da la receta de dentro de `ore`.
+        v["catalogo"] = True
+        listo = "%s · `bq` %s" % (listo, hay("bq"))
     matriz[fam] = v
     def c(x):
         return "si" if v.get(x) else ("declarado" if x in v else "no")
@@ -109,29 +132,36 @@ print("   «declarado» = el verbo existe en el `match` y contesta que no sabe."
 
 # -- C - EL AGUJERO ----------------------------------------------------------
 print()
-print("C - EL AGUJERO: ninguna familia cubre el circuito entero")
+print("C - EL AGUJERO: queda UNA familia sin cerrar")
 for fam, v in matriz.items():
     tiene = [k for k in ("catalogo", "leer") if v.get(k)]
     falta = [k for k in ("catalogo", "leer") if not v.get(k)]
     print("   %-10s tiene: %-18s falta: %s"
           % (fam, ", ".join(tiene) or "-", ", ".join(falta) or "NADA"))
 print()
-print("   -> `bigquery` ENTRA Y NO SALE: espeja tablas y no puede poblar una")
-print("      copia, porque `materialize` no tiene receta y no hay")
-print("      `ore-read-bigquery`.")
+print("   -> `bigquery` ENTRABA Y NO SALIA, y ese era el agujero que abrio esta")
+print("      medida. Ya sale: `ore-read-bigquery` implementa `leer` y `testigo`,")
+print("      y se NIEGA a `catalogo` porque esa mitad vive dentro de `ore` y es")
+print("      la que corre — escribir la segunda seria la derivacion que diverge.")
 print("   -> `jsonl` SALE Y NO ENTRA: lee filas y no sabe decir que hay en un")
 print("      directorio. Esta dicho en su codigo, no deducido.")
-print("   -> `postgres` es la unica completa, y ademas la unica que SONDEA:")
-print("      `wal_level` y `relreplident` deciden `changes.mode`, y eso no es")
-print("      metadato de catalogo — es un hecho de la instalacion.")
+print("   -> lo que separa a las familias YA NO es «sondea o no». Es DE DONDE")
+print("      salen las dos caras:")
+print("        postgres  pregunta al servidor — `wal_level`, `relreplident`")
+print("        bigquery  las deriva de hechos del catalogo — particion,")
+print("                  `require_partition_filter`, `table_type`,")
+print("                  `enable_change_history` («la deuda de T3, saldada»)")
+print("      La primera version de este arnes dijo que BigQuery no las emite, y")
+print("      era falso: lo dedujo de mirar un tramo corto de `lector.rs`.")
 
 # -- D - EL EXPERIMENTO ------------------------------------------------------
 print()
-print("D - EL EXPERIMENTO: que cambia entre sondear y no sondear")
+print("D - EL EXPERIMENTO: que cuesta un catalogo SIN caras")
 print()
-print("   El catalogo de Postgres trae `reads` y `changes`; el de BigQuery no")
-print("   —`INFORMATION_SCHEMA` no dice si se puede empujar un predicado ni si")
-print("   la tabla retracta—. Se induce el MISMO catalogo con y sin ellos.")
+print("   Corregido: las dos familias con catalogo emiten `reads` y `changes`.")
+print("   Asi que esto ya no compara Postgres con BigQuery — compara un")
+print("   catalogo con caras contra uno sin ellas, que es lo que traeria una")
+print("   familia nueva escrita a medias. Se induce el MISMO catalogo dos veces.")
 
 CON = {
     "source": "crm",
@@ -148,7 +178,7 @@ SIN = json.loads(json.dumps(CON))
 del SIN["tables"][0]["reads"]
 del SIN["tables"][0]["changes"]
 
-for etiqueta, cat in (("CON sondeo (postgres)", CON), ("SIN sondeo (bigquery)", SIN)):
+for etiqueta, cat in (("CON caras", CON), ("SIN caras", SIN)):
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="arsenal-"))
     (tmp / "cat.json").write_text(json.dumps(cat), encoding="utf-8")
     salida = tmp / "out"
@@ -182,20 +212,22 @@ print("   Y conviene recordar que lo inducido NO COMPILA a proposito:")
 print("   «una entidad sin clave primaria falla con `OOS2010`, y esta bien que")
 print("   falle — inventar la clave seria lo unico peor». Los diagnosticos SON")
 print("   la cola de revision. Lo que se compara arriba no es «cual funciona»,")
-print("   es QUE se pierde cuando el catalogo no sondea.")
+print("   es QUE se pierde cuando el catalogo no trae caras.")
 
 # -- E - EL SALTO ------------------------------------------------------------
 print()
 print("E - EL SALTO: que construir, por lo que desbloquea cada cosa")
 print()
-print("   1 · `ore-read-bigquery leer` — el mas barato y el que mas abre.")
-print("       El catalogo YA entra por la receta; lo que falta es la fase (3).")
-print("       Sin el, BigQuery da tablas y vistas que no se pueden poblar.")
+print("   1 · ~~`ore-read-bigquery leer`~~ HECHO. Y con el `testigo`, porque el")
+print("       paso (3) de `materialize` es el testigo y el (5) las filas: un")
+print("       driver con solo `leer` no completa una copia.")
+print("       Sin medir contra un dataset real: en esta maquina `bq` esta y no")
+print("       arranca. La traduccion se prueba entera y sin servidor.")
 print()
-print("   2 · el SONDEO de BigQuery — sin `reads`, el planificador no empuja")
-print("       nada y el residuo es el plan entero; sin `changes`, toda tabla")
-print("       nace `mode: none`, y una vista sobre ella no se puede mantener.")
-print("       Es la diferencia medida en (D), y no es cosmetica.")
+print("   2 · el rango por HISTORIAL de BigQuery — hoy el driver se niega a un")
+print("       rango sobre la posicion del origen, y la receta del catalogo emite")
+print("       `witness: log` para una tabla con `enable_change_history`. Esa")
+print("       pareja no se puede servir todavia: haria falta leer por `CHANGES`.")
 print()
 print("   3 · `ore-read-jsonl catalogo` — barato y cierra la segunda familia.")
 print("       Exige inferir columnas y tipos de los datos, que es justo lo que")
