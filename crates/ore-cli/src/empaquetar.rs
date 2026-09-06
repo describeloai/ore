@@ -178,7 +178,6 @@ fn sobre_de(
     firmar: Option<&str>,
     anotar: Option<&str>,
 ) -> Result<(String, String), Fallo> {
-    sin_fuentes_ajenas(publicables)?;
     let canonica = ore_core::normalize::package(publicables);
     if canonica.is_empty() {
         return Err(fallo(
@@ -551,33 +550,6 @@ fn identidad(pkg: &Package) -> Result<(String, String), Fallo> {
             &["  Son la coordenada con la que otro lo importa: `01-package` §2.1."],
         )),
     }
-}
-
-/// §5 · un `Binding` dice dónde está el dato **de quien publica**, y viaja hacia
-/// alguien que no tiene esa fuente. No es un error de forma: es publicar la
-/// infraestructura de otro.
-fn sin_fuentes_ajenas(pkg: &Package) -> Result<(), Fallo> {
-    let culpables: Vec<String> = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == Kind::Binding)
-        .filter_map(|d| d.qname())
-        .collect();
-    if culpables.is_empty() {
-        return Ok(());
-    }
-    Err(fallo(
-        65,
-        format!(
-            "hay {} binding(s) en lo que se iba a publicar",
-            culpables.len()
-        ),
-        &[
-            "  Un binding dice dónde está el dato DE QUIEN PUBLICA, y viaja hacia alguien",
-            "  que no tiene esa fuente. Un paquete publicable dice qué significan las cosas;",
-            "  dónde están es de cada uno.",
-        ],
-    ))
 }
 
 /// La mayor `apiVersion` que use alguno de sus documentos, **derivada**. Es lo

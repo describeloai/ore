@@ -92,7 +92,10 @@ fn el_informe_no_puede_tener_filas_rojas_y_lo_dice() {
 /// exigencias tienen el mismo aspecto.
 #[test]
 fn sin_exigencias_lo_dice_en_vez_de_no_decir_nada() {
-    let out = informe("casos/dos-familias");
+    // El vehiculo era `casos/dos-familias`, que se retiro con `Binding`. Lo
+    // que esta prueba necesita es UN paquete sin exigencias, y `con-vista` lo
+    // es —y ademas esta en el paradigma que hoy se escribe.
+    let out = informe("casos/con-vista");
     assert!(
         out.contains("Ninguna propiedad de este paquete exige gobierno"),
         "una tabla vacía y un modelo sin exigencias no pueden tener el mismo \

@@ -118,8 +118,6 @@ codes! {
     Oos2011 = "OOS2011", Reference, "el mapeo no cubre la primaryKey de la entidad destino";
     Oos2012 = "OOS2012", Reference, "secreto de conexión presente en un documento";
     Oos2013 = "OOS2013", Reference, "artefacto generado desincronizado con su fuente";
-    Oos2014 = "OOS2014", Reference, "dos bindings del mismo objeto reclaman la misma fila";
-    Oos2015 = "OOS2015", Reference, "un filtro exigido nombra una propiedad sin mapear";
     Oos2016 = "OOS2016", Reference, "la firma de un paquete importado no verifica";
     Oos2017 = "OOS2017", Reference, "la prueba de transparencia de un paquete no verifica";
     // Los introduce v1alpha7 con la vista. Hablan de referencias —una vista que
@@ -430,9 +428,15 @@ mod tests {
             })
             .filter(|c| !POSTERIORES.contains(c))
             .count();
-        // 58 desde que `OOS4005` se reabre: se retiro delegando en el validador
-        // de Cedar una comprobacion que Cedar no puede hacer (`06-request` §4).
-        assert_eq!(cerrados, 58, "v1alpha1");
+        // 56 desde que `Binding` se retira: `OOS2014` —dos bindings del mismo
+        // objeto reclaman la misma fila— y `OOS2015` —un filtro exigido nombra
+        // una propiedad sin mapear— se van con su sujeto. El segundo tiene
+        // gemelo vivo, `OOS2018`, que dice lo mismo sobre columnas.
+        //
+        // Es la unica vez que este numero BAJA, y por eso se dice aqui: un
+        // catalogo que encoge sin motivo escrito es un codigo que alguien
+        // borro por comodidad.
+        assert_eq!(cerrados, 56, "v1alpha1");
         assert_eq!(
             Code::ALL
                 .iter()

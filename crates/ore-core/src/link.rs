@@ -304,7 +304,6 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     dependencies(pkg, &mut d);
     datasources(pkg, &mut d);
     entities(pkg, &mut d);
-    bindings(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
     // una operacion —componer renombres— que `flow` y el ejecutor tambien
@@ -315,9 +314,6 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     // pregunta de que miembro es un documento — el resto del enlazado resuelve
     // plano sobre el arbol entero y no lo necesita.
     d.extend(crate::exporta::comprobar(pkg));
-    // OOS2014 vive aparte porque no mira UN binding: mira los que comparten
-    // objeto y decide si reparten las filas o se pisan.
-    crate::selector::comprobar(pkg, &mut d);
     secrets(pkg, &mut d);
     d
 }
@@ -860,185 +856,6 @@ fn referencia_rota(path: &Path, nodo: &Node, referencia: &str, campo: &str) -> D
         ))
 }
 
-// ── OOS2011 ─────────────────────────────────────────────────────────────────
-
-fn bindings(pkg: &Package, out: &mut Vec<Diagnostic>) {
-    for b in pkg.of(Kind::Binding) {
-        let Some(t) = b.section("targetEntity") else {
-            continue;
-        };
-        let target = t.as_str().unwrap_or("");
-        let Some(e) = pkg.resolve_entity(target, b) else {
-            out.push(referencia_rota(&b.path, t, target, "targetEntity"));
-            continue;
-        };
-
-        let mapeadas: BTreeSet<String> = b
-            .section("properties")
-            .map(|p| {
-                p.entries()
-                    .iter()
-                    .filter_map(|(k, _)| k.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut exigidas: Vec<String> = e
-            .section("primaryKey")
-            .map(|k| {
-                k.items()
-                    .iter()
-                    .filter_map(|i| i.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Y las propiedades de cada `via`. El esquema del binding ya lo decia
-        // —*«las relaciones no se mapean: el enlace fisico sale de mapear la
-        // propiedad `via`»*— y nadie lo comprobaba: un binding que mapeaba la
-        // clave y ninguna propiedad del enlace validaba limpio, dejando una
-        // relacion sin columna fisica por ningun lado. Tiene exactamente el
-        // mismo aspecto que una relacion enlazable.
-        if let Some(rels) = e.section("relations") {
-            for (_, rv) in rels.entries() {
-                if let Some((_, v)) = rv.get("via") {
-                    exigidas.extend(
-                        v.items()
-                            .iter()
-                            .filter_map(|i| i.as_str().map(String::from)),
-                    );
-                }
-            }
-        }
-
-        // Y lo que se REPLICA. Una copia necesita una columna de la que copiar,
-        // igual que una clave o un enlace: `payload.properties` fuera del mapeo
-        // es una replica sin origen. Validaba limpio, incluso nombrando una
-        // propiedad que la entidad no tiene.
-        if let Some(pl) = b
-            .section("materialization")
-            .and_then(|m| m.get("payload").map(|(_, v)| v))
-            .and_then(|pl| pl.get("properties").map(|(_, v)| v))
-        {
-            exigidas.extend(
-                pl.items()
-                    .iter()
-                    .filter_map(|i| i.as_str().map(String::from)),
-            );
-        }
-        exigidas.sort();
-        exigidas.dedup();
-
-        // OOS2015 · un filtro que el origen EXIGE y el binding no mapea deja la fuente
-        // inconsultable: el motor no tiene con que construirlo. Compila y no sirve.
-        for f in b
-            .section("capabilities")
-            .and_then(|c| c.get("requiredFilters").map(|(_, v)| v.items()))
-            .unwrap_or(&[])
-        {
-            let Some(prop) = f.as_str() else { continue };
-            if !mapeadas.contains(prop) {
-                out.push(
-                    Diagnostic::new(
-                        Code::Oos2015,
-                        &b.path,
-                        format!("`{target}` exige filtrar por `{prop}`, que el mapeo no cubre"),
-                    )
-                    .at(f.pos())
-                    .help(
-                        "`requiredFilters` dice que el origen NO acepta una consulta sin ese \
-                         filtro. Sin la propiedad en el mapeo el motor no tiene con qué \
-                         construirlo, así que este binding compila y no se puede consultar \
-                         nunca",
-                    ),
-                );
-            }
-        }
-
-        // OOS2015 · y el otro origen del MISMO defecto. Un ambito de fila
-        // (`v1alpha3/02-ruleset` §4.2) recorta por una columna, y si el binding
-        // no la mapea el motor tampoco tiene con que construir ese filtro.
-        //
-        // Que un requisito de la FUENTE y un requisito de la POLITICA produzcan
-        // el mismo estado no es una coincidencia: son el mismo defecto. Y este
-        // pesa mas, porque `05-ejecutor` §3 obliga a rechazar el plan antes que
-        // servirlo sin recorte — un binding asi deja la entidad inconsultable
-        // para toda politica que nombre ese ambito.
-        let qn = e.qname().unwrap_or_default();
-        for r in pkg.of(Kind::Ruleset) {
-            for s in r.section("scopes").map(|n| n.items()).unwrap_or(&[]) {
-                let Some((_, v)) = s.get("property") else {
-                    continue;
-                };
-                let Some(prop) = v.as_str() else { continue };
-                let Some(corta) = prop.strip_prefix(&format!("{qn}.")) else {
-                    continue;
-                };
-                // Si la propiedad NO EXISTE, el defecto es la referencia rota y
-                // lo dice `OOS2005` desde `governance`. Decir aqui «el mapeo no
-                // la cubre» seria adelantar la consecuencia al error real, y
-                // `99-errors` §2.1 es explicito: gana el codigo especifico.
-                //
-                // Es la segunda vez que esta figura aparece —`politica::check`
-                // se adelantaba a `OOS2001` por lo mismo—, y las dos veces la
-                // encontro un caso, no una lectura.
-                let existe = e
-                    .section("properties")
-                    .map(|p| p.get(corta).is_some())
-                    .unwrap_or(false);
-                if existe && !mapeadas.contains(corta) {
-                    out.push(
-                        Diagnostic::new(
-                            Code::Oos2015,
-                            &b.path,
-                            format!(
-                                "un ámbito de fila recorta `{target}` por `{corta}`, que el \
-                                 mapeo no cubre"
-                            ),
-                        )
-                        .help(
-                            "el recorte por filas se empuja al origen como filtro, y sin la \
-                             propiedad en el mapeo no hay con qué construirlo. El ejecutor no \
-                             puede servir sin el recorte —serían filas que nadie autorizó—, así \
-                             que rechazaría el plan: este binding compila y no se puede \
-                             consultar",
-                        ),
-                    );
-                }
-            }
-        }
-
-        let faltan: Vec<&String> = exigidas.iter().filter(|k| !mapeadas.contains(*k)).collect();
-        if !faltan.is_empty() {
-            out.push(
-                Diagnostic::new(
-                    Code::Oos2011,
-                    &b.path,
-                    format!(
-                        "el mapeo de `{target}` no cubre lo que necesita columna: falta{} {}",
-                        if faltan.len() == 1 { "" } else { "n" },
-                        faltan
-                            .iter()
-                            .map(|s| format!("`{s}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                )
-                .at(b
-                    .section("properties")
-                    .map(|p| p.pos())
-                    .unwrap_or(b.root.pos()))
-                .help(
-                    "un binding sin clave produce filas, no instancias: no hay índice de \
-                     topología, ni recurso identificable, ni forma de volver a unirlo con \
-                     los demás bindings de la misma entidad. Y una propiedad de `via` sin \
-                     mapear deja la relacion sin columna fisica: el enlace se \
-                     declara y no se puede recorrer. Y una replica sin columna no tiene de donde copiar",
-                ),
-            );
-        }
-    }
-}
 
 // ── OOS2012 ─────────────────────────────────────────────────────────────────
 

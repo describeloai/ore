@@ -1280,13 +1280,21 @@ fn el_submodulo_trae_la_suite_completa() {
         *por_grupo.entry(c.grupo.as_str()).or_default() += 1;
     }
 
-    assert_eq!(casos.len(), 90, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&42));
-    assert_eq!(por_grupo.get("diff"), Some(&22));
+    // ⚠️ Estas cifras BAJARON, y es la unica vez. Al retirar `Binding` se
+    // fueron 17 casos de v1alpha1 —los que declaraban uno— y este censo es
+    // justo el que tenia que enterarse.
+    //
+    // El marcador de conformidad solo sube, y por buenos motivos. Este contador
+    // es otra cosa: cuenta lo que el submodulo TRAE, no lo que se cumple, y
+    // baja cuando el vocabulario se retira. Que sean dos numeros distintos es
+    // lo que permite decir «se retiro un kind» sin que parezca una regresion.
+    assert_eq!(casos.len(), 73, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&30));
+    assert_eq!(por_grupo.get("diff"), Some(&20));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
-    assert_eq!(por_grupo.get("emit"), Some(&5));
-    assert_eq!(por_grupo.get("valid"), Some(&4));
+    assert_eq!(por_grupo.get("emit"), Some(&4));
+    assert_eq!(por_grupo.get("valid"), Some(&2));
 }
 
 /// **Los otros tres campos del caso, que hasta hoy no leía nadie.**

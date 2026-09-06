@@ -1007,7 +1007,7 @@ fn exportar(path: &std::path::Path, formato: &str) -> std::process::ExitCode {
         // obligatorios, y produciría un documento que valida contra el esquema
         // de Ossie y miente sobre dónde vive el dato.
         "ossie" => {
-            let huerfanas: Vec<String> = ore_core::normalize::sin_binding(&pkg);
+            let huerfanas: Vec<String> = ore_core::normalize::sin_respaldo(&pkg);
             if !huerfanas.is_empty() {
                 eprintln!(
                     "error: no se puede emitir a Ossie: {} sin fuente física (ni binding ni `backedBy`)",

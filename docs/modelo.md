@@ -163,6 +163,19 @@ dueño del suelo— esa garantía crece.
 
 Detalle normativo en [`00-overview` §3.2](../vendor/oos/spec/v1alpha1/00-overview.md).
 
+### Lo que este modelo todavía no sabe escribir
+
+Una entidad servida desde **dos fuentes distintas**. El binding lo expresaba sin esfuerzo
+—una entidad admitía N bindings— y lo que lo sustituye no puede: una entidad tiene **un**
+`backedBy`, una vista sale de **un** sitio, y el vocabulario **no tiene junta**
+([`v1alpha8/00-scope`](../vendor/oos/spec/v1alpha8/00-scope.md) §6 la deja fuera a propósito,
+porque una junta trae dos raíces y su precio en la regla de flujo se decide antes de admitir
+la operación).
+
+Esto lo atestiguaba un paquete —`casos/dos-familias`— que se retiró con `Binding`. Su README
+avisaba de que borrarlo *«habría convertido una limitación real en un hueco invisible»*, así
+que el testigo se queda aquí: **no es que falte migrarlo, es que no hay a qué migrarlo.**
+
 ---
 
 ## 7. Lo que este modelo **no** dice

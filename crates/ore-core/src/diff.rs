@@ -227,14 +227,6 @@ struct Ent {
     anunciados: BTreeSet<String>,
 }
 
-#[derive(Default)]
-struct Bind {
-    source: String,
-    /// Los ejes de materializacion declarados, en orden canonico. Antes era
-    /// un enum de tres valores; ahora son dos independientes, asi que lo que
-    /// se compara es el CONJUNTO.
-    ejes: Vec<String>,
-}
 
 #[derive(Default)]
 struct Shape {
@@ -244,7 +236,6 @@ struct Shape {
     /// conducto → retículo → nivel
     conduits: BTreeMap<String, BTreeMap<String, String>>,
     /// entidad destino → binding
-    bindings: BTreeMap<String, Bind>,
     /// v1alpha8 · lo que el MANIFIESTO anuncia: nombres de documento que se
     /// movieron o se retiraron. Es el alcance ancho de la misma disciplina, y
     /// vive ahí porque un nombre retirado no deja documento donde vivir.
@@ -572,31 +563,6 @@ fn shape(pkg: &Package) -> Shape {
                 let Some(qn) = d.qname() else { continue };
                 s.entities.insert(qn, entidad(d));
             }
-            crate::document::Kind::Binding => {
-                let Some(t) = d.section("targetEntity").and_then(|n| n.as_str()) else {
-                    continue;
-                };
-                s.bindings.insert(
-                    t.to_string(),
-                    Bind {
-                        source: d
-                            .section("source")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        ejes: d
-                            .section("materialization")
-                            .map(|m| {
-                                ["topology", "payload"]
-                                    .iter()
-                                    .filter(|e| m.get(e).is_some())
-                                    .map(|e| (*e).to_string())
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                    },
-                );
-            }
             crate::document::Kind::View => {
                 let Some(qn) = d.qname() else { continue };
                 let Ok(r) = crate::vistas::raiz(pkg, d) else {
@@ -789,7 +755,6 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
     significado(&a, &b, &mut changes);
     efectos_y_reglas(&a, &b, &mut changes);
     conductos(&a, &b, &mut changes);
-    materializacion(&a, &b, &mut changes);
     sustrato(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
     gobierno(&a, &b, &mut changes);
@@ -1456,38 +1421,6 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
     }
 }
 
-fn materializacion(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
-    for (entidad, antes) in &a.bindings {
-        let Some(despues) = b.bindings.get(entidad) else {
-            continue;
-        };
-        // OOS5020 · cambiar qué se materializa. No rompe a nadie, pero decide si
-        // el índice existe: callarlo dejaría un índice fantasma sirviendo
-        // lecturas. Y con dos ejes hay más que decir — quitar `topology` deja la
-        // travesía federada, quitar `payload` deja la búsqueda en el origen.
-        if antes.ejes != despues.ejes {
-            let txt = |e: &[String]| {
-                if e.is_empty() {
-                    "nada".to_string()
-                } else {
-                    e.join("+")
-                }
-            };
-            out.push(
-                Change::new(Code::Oos5020, Axis::Index)
-                    .sujeto(entidad)
-                    .de_a(txt(&antes.ejes), txt(&despues.ejes)),
-            );
-        }
-        if antes.source != despues.source {
-            out.push(
-                Change::new(Code::Oos5019, Axis::Index)
-                    .sujeto(entidad)
-                    .de_a(&antes.source, &despues.source),
-            );
-        }
-    }
-}
 
 /// El eje `POLICY` sobre el plano de gobierno.
 ///

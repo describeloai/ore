@@ -160,13 +160,6 @@ fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                 }
             }
         }
-        Kind::Binding => {
-            if let Some(v) = d.section("targetEntity")
-                && let Some(s) = v.as_str()
-            {
-                push(s, Kind::Entity, "targetEntity", v.pos());
-            }
-        }
         Kind::Function => {
             for e in d.section("effects").map(|e| e.items()).unwrap_or(&[]) {
                 if let Some((_, v)) = e.get("writes")

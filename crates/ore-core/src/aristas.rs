@@ -35,7 +35,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::document::Kind;
 use crate::link::{Loaded, Package};
 use crate::vistas;
 
@@ -89,69 +88,19 @@ pub struct Arista {
     pub derivada: bool,
 }
 
-/// Las fuentes físicas de una entidad: sus bindings, y la raíz de la vista que
-/// la respalda.
+/// La fuente física de una entidad: la raíz de la vista que la respalda.
 ///
-/// Los dos caminos, y no solo el segundo: un documento v1alpha7 sigue
-/// compilando mientras v1alpha1 sea normativo, así que un paquete con bindings
-/// tiene que seguir dando sus aristas. Es la misma pareja que
-/// [`crate::vistas::datasources_de`] ya recorre.
-type Fisica = (String, String, String, BTreeMap<String, String>, bool);
+/// Devolvía una lista porque había dos caminos —los bindings de la entidad y su
+/// vista—. Con `Binding` retirado hay uno, y una entidad sale de una vista o de
+/// ninguna: la lista era la forma de decir «puede haber varios», y ya no puede.
+type Fisica = (String, String, String, BTreeMap<String, String>);
 
-fn fisicas(pkg: &Package, e: &Loaded) -> Vec<Fisica> {
-    let qn = e.qname().unwrap_or_default();
-    let mut out = Vec::new();
-    for b in pkg.of(Kind::Binding) {
-        if b.section("targetEntity").and_then(|t| t.as_str()) != Some(qn.as_str()) {
-            continue;
-        }
-        let Some(ds) = b.section("datasourceRef").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        out.push((
-            b.qname().unwrap_or_default(),
-            ds.to_string(),
-            b.section("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            columnas_de_binding(b),
-            false,
-        ));
-    }
-    if let Some(v) = vistas::respaldo(pkg, e)
-        && let Ok(r) = vistas::raiz(pkg, v)
-    {
-        out.push((
-            v.qname().unwrap_or_default(),
-            r.datasource,
-            r.objeto,
-            r.columnas,
-            true,
-        ));
-    }
-    out
+fn fisicas(pkg: &Package, e: &Loaded) -> Option<Fisica> {
+    let v = vistas::respaldo(pkg, e)?;
+    let r = vistas::raiz(pkg, v).ok()?;
+    Some((v.qname().unwrap_or_default(), r.datasource, r.objeto, r.columnas))
 }
 
-/// Propiedad → columna de un binding. Admite la forma breve y la expandida.
-fn columnas_de_binding(b: &Loaded) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    let Some(ps) = b.section("properties") else {
-        return out;
-    };
-    for (k, v) in ps.entries() {
-        let Some(nombre) = k.as_str() else { continue };
-        let col = v.as_str().map(str::to_string).or_else(|| {
-            v.get("column")
-                .and_then(|(_, c)| c.as_str())
-                .map(str::to_string)
-        });
-        if let Some(col) = col {
-            out.insert(nombre.to_string(), col);
-        }
-    }
-    out
-}
 
 /// **La derivación.** Determinista: recorre en el orden en que el paquete lo
 /// declara, que es el mismo que la forma canónica fija.
@@ -165,32 +114,32 @@ pub fn aristas(pkg: &Package) -> Vec<Arista> {
         if clave.len() != 1 {
             continue;
         }
-        let fuentes = fisicas(pkg, e);
+        let Some((declara, datasource, objeto, columnas)) = fisicas(pkg, e) else {
+            continue;
+        };
         for (rk, rv) in rels.entries() {
             let Some(rel) = rk.as_str() else { continue };
             let via = lista(rv.get("via").map(|(_, v)| v));
             if via.len() != 1 {
                 continue;
             }
-            for (declara, datasource, objeto, columnas, derivada) in &fuentes {
-                let (Some(desde), Some(hasta)) = (columnas.get(&clave[0]), columnas.get(&via[0]))
-                else {
-                    continue;
-                };
-                out.push(Arista {
-                    nombre: format!("{qn}.{rel}"),
-                    declara: declara.clone(),
-                    datasource: datasource.clone(),
-                    objeto: objeto.clone(),
-                    desde: desde.clone(),
-                    hasta: hasta.clone(),
-                    entidad: qn.clone(),
-                    relacion: rel.to_string(),
-                    clave: clave[0].clone(),
-                    via: via[0].clone(),
-                    derivada: *derivada,
-                });
-            }
+            let (Some(desde), Some(hasta)) = (columnas.get(&clave[0]), columnas.get(&via[0]))
+            else {
+                continue;
+            };
+            out.push(Arista {
+                nombre: format!("{qn}.{rel}"),
+                declara: declara.clone(),
+                datasource: datasource.clone(),
+                objeto: objeto.clone(),
+                desde: desde.clone(),
+                hasta: hasta.clone(),
+                entidad: qn.clone(),
+                relacion: rel.to_string(),
+                clave: clave[0].clone(),
+                via: via[0].clone(),
+                derivada: true,
+            });
         }
     }
     out
@@ -209,6 +158,7 @@ fn lista(n: Option<&crate::parse::Node>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Kind;
     use crate::parse::parse;
     use std::path::PathBuf;
 
@@ -245,30 +195,49 @@ mod tests {
     const RELACION: &str = "  relations:\n    manager:\n      target: hr.Employee\n      \
          cardinality: many_to_one\n      via: [managerId]\n";
 
-    /// **El camino del binding, que no ejerce ningún otro fichero del árbol.**
+    /// La tabla y la vista que dan las columnas.
     ///
-    /// Ninguno de los paquetes de `casos/` tiene bindings *y* relaciones a la
-    /// vez, y `acme-retail` ya no tiene bindings. Así que si esta rama se cayera,
-    /// nadie se enteraría — y un paquete v1alpha7 con bindings dejaría de tener
-    /// topología en silencio. Sigue siendo legal mientras v1alpha1 lo sea.
+    /// Se escriben aquí porque la arista sale de la **raíz** de la vista y no
+    /// de la vista: si esa resolución se rompiera, una entidad con `backedBy`
+    /// dejaría de tener topología en silencio.
+    fn sustrato() -> Vec<Loaded> {
+        vec![
+            doc(
+                Kind::Table,
+                "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+                 metadata: { name: workers, namespace: erp }\nspec:\n  datasource: erp\n  \
+                 object: public.workers\n  columns:\n    worker_id: {}\n    mgr_ref: {}\n    \
+                 country: {}\n  reads: { fullScan: cheap }\n  changes: { mode: none }\n",
+            ),
+            doc(
+                Kind::View,
+                "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+                 metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
+                 from: { table: erp.workers }\n  fields:\n    employeeId: worker_id\n    \
+                 managerId: mgr_ref\n    pais: country\n",
+            ),
+        ]
+    }
+
+    /// La arista sale de la raíz de la vista, con sus **columnas físicas** y no
+    /// con los nombres de los campos.
+    ///
+    /// Sustituye a una pareja de pruebas que afirmaba lo mismo por los dos
+    /// caminos —binding y vista—. Con `Binding` retirado queda uno, y la
+    /// afirmación no pierde nada: lo que se comprobaba era que la proyección
+    /// baja hasta la columna, y eso es de la vista.
     #[test]
-    fn un_binding_da_sus_aristas_igual_que_una_vista() {
-        let b = doc(
-            Kind::Binding,
-            "apiVersion: oos.dev/v1alpha1\nkind: Binding\n\
-             metadata: { name: workday, namespace: hr }\nspec:\n  \
-             targetEntity: hr.Employee\n  datasourceRef: erp\n  source: public.workers\n  \
-             properties:\n    employeeId: worker_id\n    managerId: { column: mgr_ref }\n",
-        );
-        let a = aristas(&paquete(vec![entidad(RELACION), b]));
+    fn la_arista_sale_de_las_columnas_de_la_raiz() {
+        let mut docs = sustrato();
+        docs.push(entidad(&format!("  backedBy: empleados\n{RELACION}")));
+        let a = aristas(&paquete(docs));
         assert_eq!(a.len(), 1, "{a:?}");
         assert_eq!(a[0].nombre, "hr.Employee.manager");
-        assert_eq!(a[0].declara, "hr.workday");
+        assert_eq!(a[0].declara, "hr.empleados");
         assert_eq!(
             (a[0].datasource.as_str(), a[0].objeto.as_str()),
             ("erp", "public.workers")
         );
-        // La forma breve y la expandida, las dos.
         assert_eq!(
             (a[0].desde.as_str(), a[0].hasta.as_str()),
             ("worker_id", "mgr_ref")
@@ -276,8 +245,7 @@ mod tests {
     }
 
     /// Sin fuente física no hay columnas contra las que proyectar, y una arista
-    /// sin columnas no es media arista: no es ninguna. Es el caso de cinco de
-    /// las siete entidades de `acme-retail`, que no declaran `backedBy`.
+    /// sin columnas no es media arista: no es ninguna.
     #[test]
     fn una_entidad_sin_fuente_fisica_no_da_aristas() {
         assert!(aristas(&paquete(vec![entidad(RELACION)])).is_empty());
@@ -288,15 +256,11 @@ mod tests {
     /// se descarta **entera**, no a medias.
     #[test]
     fn una_via_compuesta_se_descarta_en_vez_de_aplanarse() {
-        let b = doc(
-            Kind::Binding,
-            "apiVersion: oos.dev/v1alpha1\nkind: Binding\n\
-             metadata: { name: workday, namespace: hr }\nspec:\n  \
-             targetEntity: hr.Employee\n  datasourceRef: erp\n  source: public.workers\n  \
-             properties:\n    employeeId: worker_id\n    managerId: mgr_ref\n    pais: country\n",
-        );
-        let compuesta = "  relations:\n    manager:\n      target: hr.Employee\n      \
-             cardinality: many_to_one\n      via: [managerId, pais]\n";
-        assert!(aristas(&paquete(vec![entidad(compuesta), b])).is_empty());
+        let compuesta = "  backedBy: empleados\n  relations:\n    manager:\n      \
+             target: hr.Employee\n      cardinality: many_to_one\n      \
+             via: [managerId, pais]\n";
+        let mut docs = sustrato();
+        docs.push(entidad(compuesta));
+        assert!(aristas(&paquete(docs)).is_empty());
     }
 }

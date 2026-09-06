@@ -53,7 +53,6 @@ pub mod odcs;
 pub mod parse;
 pub mod politica;
 pub mod propuesta;
-pub mod selector;
 pub mod significado;
 pub mod sync;
 pub mod transparencia;

@@ -272,6 +272,21 @@ const REFERENCIAS_POR_MAPA: &[(&str, &str)] = &[("from", "table")];
 /// regla**. Si `link` exigiera el nombre largo y `normalize` aceptara el corto,
 /// habría documentos que compilan y no resuelven, o peor: que resuelven a una
 /// cosa y cuyo digest describe otra.
+/// Entidades **sin fuente fisica**: las que no nombran una vista con `backedBy`.
+///
+/// Se llamaba `sin_binding` y devolvia las que no tenian NI binding NI
+/// `backedBy` — dos caminos, y la respuesta era la interseccion. Con `Binding`
+/// retirado queda uno, y la funcion se encoge a lo que siempre quiso decir:
+/// **una entidad promete filas, y sin vista no hay quien las conteste.**
+pub fn sin_respaldo(pkg: &Package) -> Vec<String> {
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind == crate::document::Kind::Entity)
+        .filter(|e| e.section("backedBy").is_none())
+        .filter_map(|e| e.qname())
+        .collect()
+}
+
 pub fn qualify(nombre: &str, namespace: Option<&str>) -> String {
     match namespace {
         Some(ns) if !nombre.contains('.') => format!("{ns}.{nombre}"),
@@ -455,26 +470,6 @@ pub fn foreign(root: &Node) -> Json {
 ///
 /// El nombre es el de antes de la vista y se queda: quien lo llama pregunta lo
 /// mismo que preguntaba —si la entidad tiene de donde leerse— y la respuesta
-/// hoy tiene dos caminos.
-pub fn sin_binding(pkg: &Package) -> Vec<String> {
-    let enlazadas: std::collections::BTreeSet<String> = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == crate::document::Kind::Binding)
-        .filter_map(|b| {
-            let t = b.section("targetEntity")?.as_str()?;
-            Some(qualify(t, b.meta("namespace").and_then(|n| n.as_str())))
-        })
-        .collect();
-    pkg.docs
-        .iter()
-        .filter(|d| d.kind == crate::document::Kind::Entity)
-        .filter(|e| e.section("backedBy").is_none())
-        .filter_map(|e| e.qname())
-        .filter(|qn| !enlazadas.contains(qn))
-        .collect()
-}
-
 /// ¿Es este documento el lock? Es un artefacto generado, no fuente: entra en el
 /// digest del **bundle**, no en el del paquete (§5.3).
 pub fn es_lock(d: &Loaded) -> bool {

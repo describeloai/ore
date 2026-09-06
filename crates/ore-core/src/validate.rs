@@ -103,9 +103,10 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
             )),
         ];
     }
-    // Y uno que EXISTIO y ya no: tampoco es desconocido. `Binding` se retira en
-    // v1alpha8 —no se borra— y el mensaje tiene que decir en qué se convirtió,
-    // porque la respuesta no es «quítalo»: son dos documentos.
+    // Y uno que EXISTIO y ya no: tampoco es desconocido. `Binding` se retira
+    // —no se borra— y el mensaje tiene que decir en qué se convirtió, porque la
+    // respuesta no es «quítalo»: son dos documentos. El nombre se queda en el
+    // enum solo para poder decirlo.
     if let Some(k) = kv.as_str().and_then(Kind::parse)
         && let Some(h) = k.hasta()
         && version >= h
@@ -121,8 +122,8 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
                 "en v1alpha8 esto son una `Table` —el objeto, con sus dos caras— y una `View` \
                  —qué sale de él y cómo se llama—, y la entidad nombra a la vista con \
                  `backedBy`. Decirlo en dos documentos es lo que permite que dos vistas \
-                 compartan un objeto sin repetir su contrato. Un documento que declare \
-                 `apiVersion: oos.dev/v1alpha1` sigue compilando tal cual",
+                 compartan un objeto sin repetir su contrato. Y no hay versión en la que \
+                 siga compilando: se retira entera, no solo de los borradores nuevos",
             ),
         ];
     }

@@ -212,9 +212,22 @@ impl Kind {
     /// `Binding` en v1alpha8 son una `Table` y una `View`, y decirlo en dos
     /// documentos es lo que permite que dos vistas compartan un objeto sin
     /// repetir su contrato.
+    /// `Binding` se retira **desde v1alpha1**, o sea desde siempre.
+    ///
+    /// Retiraba desde v1alpha8, y eso queria decir que un documento que
+    /// declarara v1alpha1 seguia compilando — la promesa de que un fichero no
+    /// caduca por haber sido escrito antes. Esa promesa costaba mantener dos
+    /// paradigmas vivos en el motor, y se midio a quien beneficiaba: a nadie.
+    /// No hay un solo artefacto firmado cuya verificacion dependa de leer un
+    /// `Binding` (`pruebas-de-fuego/medida-retirar-binding.py`).
+    ///
+    /// Lo que NO se retira es el nombre. `Kind::Binding` sigue en el enum
+    /// precisamente para que el mensaje pueda decir en que se convirtio: sin
+    /// el, un fichero viejo daria «kind desconocido» y perderiamos lo unico
+    /// que le dice a alguien que hacer con lo que tiene.
     pub const fn hasta(self) -> Option<ApiVersion> {
         match self {
-            Kind::Binding => Some(ApiVersion::V1Alpha8),
+            Kind::Binding => Some(ApiVersion::V1Alpha1),
             _ => None,
         }
     }
@@ -308,6 +321,11 @@ impl Kind {
     /// Claves admitidas bajo `spec`.
     pub const fn spec_keys(self) -> &'static [&'static str] {
         match self {
+            // `Binding` se rechaza en el despacho —[`Kind::hasta`]— asi que
+            // nadie llega a preguntar por sus claves. Esta la lista vacia y no
+            // la lista de antes: describir la forma de algo que no se puede
+            // escribir es mantener una gramatica muerta.
+            Kind::Binding => &[],
             Kind::OntologyConfig => &[
                 // v1alpha8. Quien responde del SUELO.
                 //
@@ -389,16 +407,6 @@ impl Kind {
                 // con la flecha al reves: lo fisico existe antes y no sabe de
                 // esto; la entidad elige de que vista salir.
                 "backedBy",
-            ],
-            Kind::Binding => &[
-                "targetEntity",
-                "datasourceRef",
-                "profile",
-                "source",
-                "selector",
-                "properties",
-                "capabilities",
-                "materialization",
             ],
             // `axis` es lo único que v1alpha2 añade al retículo, y de él sale
             // el combinador. `join` queda obsoleto: derivable, luego no
