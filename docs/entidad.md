@@ -390,7 +390,7 @@ fusión, no en un rodeo:
 | **3** | `ore diff` ve el sustrato ✅ **entero** — 13 mutaciones mudas → 0 | sin esto, fusionar esconde el cambio donde nadie lo mira. Hecho en el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md): `OOS5019`, `OOS5020` y `OOS5007` con el sujeto devuelto, y `OOS5028`/`OOS5029` para el recorte |
 | **4** | `moved` en la vista y en el manifiesto ✅ | sin esto, los renombrados de la fusión eran roturas mudas. Y al medirlo salió que `moved` renombraba **miembros**, no documentos: hacía falta el alcance ancho, que es la semántica original de Terraform — `01-package` §3.4 |
 | **5** | ~~`B0`~~ · ~~M2~~ | Los dos medidos, y ninguno adelgaza la entidad. `B0` pedía el conducto de la **carga** para copiar **dos columnas**, y de ahí salió lo que sí faltaba: el **sello del índice**, encendido en `04-flow` §4.2 con tres casos. **M2** es 22 nombres, no 38: el resto sostiene la clave, una `via` o una derivada, y el tipo no lo repite nadie. Lo que queda de M2 es `OOS2022` con los papeles cambiados, sin pieza nueva |
-| **6** | la fusión — **medida** | **No es borrar `backedBy` y mover un fichero.** `pruebas-de-fuego/medida-la-fusion.py` |
+| **6** | ~~la fusión~~ — **cerrada** | No estaba bloqueada: era un **error de categoría**. La vista es π∘σ —un renombre y un recorte— y un renombre no puede crear significado. §10.8 |
 
 ### 10.7 · El peldaño 6, medido — y el criterio no había que inventarlo
 
@@ -425,3 +425,82 @@ cualquiera. Adoptar su forma sin tener su premisa es lo que este peldaño estaba
 **Y una tercera, que no era de la fusión y valía por sí sola.** Nadie direcciona una vista —Cedar,
 los rulesets y GraphQL nombran entidades— y **lo que fija el mínimo no respondía ante nadie**. Eso
 se midió aparte y se cerró: `04-flow` §3.3, `owner` en `OntologyConfig` y en `Lattice`.
+
+### 10.8 · El peldaño 6, cerrado — no por una decisión, por una categoría
+
+El bloqueo de §10.7 describía un **mecanismo**: *«la de abajo, que es la que se materializa, no lo
+sabe»*. Y ese mecanismo estaba roto, no era una propiedad del modelo — `flow::vistas_materializadas`
+solo resolvía la cadena hacia abajo. Se arregló y se probó en las dos direcciones
+(`el_sello_da_lo_mismo_suba_o_baje_la_cadena`), así que el peldaño volvió a estar abierto y hubo
+que volver a preguntar.
+
+La respuesta que vino no fue *«ahora sí se puede»*. Fue que la pregunta estaba mal hecha.
+
+**La vista es π y σ, y nada más.** Su vocabulario en v1alpha8 es `from`, `fields`, `where` —
+restringir filas y renombrar columnas—, y eso **no se buscó: se descubrió al migrar**
+([`00-scope` §6.1](../vendor/oos/spec/v1alpha8/00-scope.md)). Tres razones independientes cierran
+la misma frontera: el precio en la regla de flujo, la invertibilidad de `Q⁻¹` para poder escribir
+a través, y la mantenibilidad incremental —que es por donde Snowflake llegó al mismo fragmento.
+
+Y de ahí sale el cierre, que no es una preferencia:
+
+> **Un renombre no puede crear significado.** Si `fields: {employeeId: worker_id}` es una
+> biyección, entonces `employeeId` significa exactamente lo que signifique `worker_id`. La vista
+> es **transparente por construcción**. Un significado colgado ahí cuelga de un alias.
+
+Mirado desde el repositorio entero, lo que hay es una **escalera de cuatro peldaños**, y ninguno
+sobra porque cada uno contesta otra pregunta:
+
+| | contesta | lo que declara |
+|---|---|---|
+| `datasources[].labels` | **dónde vive** | fija el **suelo** de todo lo que salga de esa fuente |
+| `Table` | **qué se puede hacer** | `columns`, `reads`, `changes` — capacidad, no significado |
+| `View` | **qué parte, y cómo se llama** | π y σ, el fragmento invertible |
+| `Entity` | **qué es** | etiquetas, clave, relaciones, el retículo |
+
+Los tres primeros están ocupados por algo que **no es significado**: una ubicación, una capacidad
+y un renombre. Así que:
+
+> **La fusión no es una decisión bloqueada: es un error de categoría.** Si se retira `Entity`, el
+> significado no tiene dónde caer.
+
+Con eso caen los tramos 0 a 3 del espectro medido en `pruebas-de-fuego/medida-espectro-fusion.py`.
+El tramo 0 —*«DECIDIR que la vista puede llevar significado»*— tiene respuesta, y es que no.
+
+**Y el criterio de §10.7 sigue siendo cierto, y ahora es subordinado.** *«Un documento existe
+aparte cuando responde otra persona»*, y `Entity` no admite `owner` mientras `View` lo exige. Eso
+sigue diciendo que la entidad no merece **documento** propio. No dice que quepa dentro de una
+pregunta: quién responde y dónde cabe el significado son dos cosas distintas, y la segunda es la
+que decide si la fusión es posible.
+
+**Lo que sobrevive del peldaño 6** es lo único que siempre fue real: `backedBy` es una flecha de
+la entidad a la vista y podría ser la contraria. Eso es mover un puntero, no fundir dos documentos.
+
+#### Y el tramo 4, que además era falso
+
+El espectro decía: *«218 entidades llegan por `Binding`, que no caduca, así que `Entity` tendría
+que convivir para siempre»*. Se derivó de «no tienen `backedBy`» y se **leyó** como «llegan por
+binding». Contando los bindings de verdad
+(`pruebas-de-fuego/medida-lo-que-se-simplifica.py` §D):
+
+- quedan **tres** ficheros `kind: Binding` en todo el corpus, los tres en `docs/vision/`, que
+  `examples.rs` excluye a propósito **porque no valida**;
+- **213 de 218** de esas entidades no tienen binding en su paquete: no llegan por el camino viejo,
+  no llegan por ninguno;
+- **218 de 218 son `<a8`** — la única excepción es la fixture de `unsupported-apiversion`, cuyo
+  objeto es que la versión se rechace;
+- en `acme-retail` son **5 de 7** —`Customer`, `Order`, `Department`, `Sku`, `Supplier`— sin
+  sustrato ninguno, y `ore validate` dice `ok · sin errores`. `normalize::sin_respaldo` existe y
+  **solo la leen los emisores**.
+
+O sea que `Entity` no sobrevive porque una versión vieja no caduque. Sobrevive porque es el único
+sitio de la escalera donde cabe un significado. Y queda un hueco nombrado, que es de otro peldaño:
+**ninguna versión, incluida v1alpha8, exige que una entidad tenga vista.**
+
+#### Lo que no cierra esto
+
+El argumento de la política —*Cedar nombra `hr.Employee.nationalId`, y con el significado en la
+vista una segunda vista sobre la misma tabla quedaría sin gobernar*— es **estructural y hoy no
+tiene sujeto**: el corpus tiene **127 bases con exactamente una vista cada una**, cero abanico. Se
+deja escrito para que nadie lo cite como si estuviera ejercido. Lo que cierra el peldaño es la
+transparencia de π∘σ, que no depende de cuántas rutas haya.

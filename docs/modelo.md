@@ -187,7 +187,7 @@ Cuatro lecturas que se midieron y no se sostienen. Están aquí para que no vuel
 | *«la entidad redeclara el sustrato»* | Se midió tres veces. Lo redundante son **nombres, y solo nombres**: de las propiedades que solo declaran tipo, dos tercios sostienen la clave primaria, una `via` o una derivada. El tipo, la etiqueta, la clave y la arista no los dice nadie más |
 | *«la arista ya está en la copia, así que `via` sobra»* | `via` es **de donde** el índice deriva la arista. Quitarla borra el dato |
 | *«lo que se atraviesa se debe materializar»* | Pedía el conducto de **la carga** para copiar **dos columnas**. Lo que faltaba era sellar el índice, no prohibir la travesía |
-| *«fusionar entidad y vista es mover un fichero»* | El significado es de la cadena y la vista es un eslabón. La fusión sigue siendo una decisión abierta, no una mudanza |
+| *«fusionar entidad y vista es mover un fichero»* | No es una decisión abierta: es un **error de categoría**. La vista es π∘σ sobre una tabla —restringir filas y renombrar columnas—, y un renombre no puede crear significado: `employeeId` significa lo que signifique `worker_id`. Los otros tres peldaños de la escalera ya están ocupados por algo que no es significado —una ubicación fija el suelo, una tabla declara capacidad, una vista renombra—, así que retirar `Entity` deja el significado sin dónde caer. `entidad.md` §10.8 |
 
 ---
 
