@@ -1310,6 +1310,14 @@ fn el_submodulo_trae_la_suite_completa() {
 /// Una regla renumerada deja el caso apuntando a una sección que ya no existe,
 /// y un caso que cita una regla equivocada sigue pasando —comprueba lo que
 /// comprueba— mientras miente sobre qué demuestra.
+///
+/// **`summary` existe y no se repite.** Es lo que hace auditable la suite: 259
+/// directorios con nombres crípticos no explican nada y 259 frases sí. Y su
+/// modo de fallo es el del copiar y pegar — se duplica un caso, se edita el
+/// `input`, y la frase sigue describiendo el original. Dos casos que demuestran
+/// cosas distintas no pueden decir lo mismo, así que la repetición **es** el
+/// síntoma. Hoy no hay ninguna; esto la convierte en un fallo en vez de en algo
+/// que alguien note leyendo.
 #[test]
 fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
     const CERTIFICABLES: &[&str] = &["L0", "L1"];
@@ -1344,6 +1352,8 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 
     let mut fallos: Vec<String> = Vec::new();
     let mut vistos = 0usize;
+    let mut resumenes: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for f in &ficheros {
         let texto = std::fs::read_to_string(f).expect("case.yaml ilegible");
         let caso = f.parent().unwrap().strip_prefix(&conformance).unwrap();
@@ -1358,6 +1368,26 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
                 CERTIFICABLES.join(" y ")
             )),
             Some(_) => {}
+        }
+
+        // `summary: >` y su bloque indentado, aplanado a una línea: es como se
+        // escribe en los 259, y comparar el texto plano evita que un salto de
+        // línea distinto haga pasar por distintas dos frases iguales.
+        let resumen: String = texto
+            .lines()
+            .skip_while(|l| !l.starts_with("summary:"))
+            .skip(1)
+            .take_while(|l| l.starts_with(' ') || l.trim().is_empty())
+            .flat_map(|l| l.split_whitespace())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if resumen.is_empty() {
+            fallos.push(format!("{caso}: falta `summary`, o está vacío"));
+        } else if let Some(otro) = resumenes.insert(resumen.clone(), caso.clone()) {
+            fallos.push(format!(
+                "{caso}: su `summary` es idéntico al de {otro} — dos casos que \
+                 demuestran cosas distintas no pueden decir lo mismo"
+            ));
         }
 
         let Some(regla) = campo(&texto, "rule") else {
