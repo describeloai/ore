@@ -85,10 +85,15 @@ for prop in ("managerId", "departmentId"):
     trozo = ent.split(prop + ":", 1)[1][:200] if prop + ":" in ent else ""
     tiene = "labels" in trozo.split("\n\n")[0]
     print("     %-14s labels propias: %s" % (prop, "si" if tiene else "no -> suelo del datasource"))
-print("   -> el suelo de `hr_workday` es `medium`, y `materialization.index`")
-print("      admite `medium`. LAS ARISTAS SI SE PUEDEN COPIAR. Lo que no se")
-print("      puede copiar es la carga. Son dos decisiones y la politica ya las")
-print("      separa: por eso hay dos conductos con dos autorizaciones.")
+print("   -> son DOS DECISIONES y la politica ya las separa: por eso hay dos")
+print("      conductos con dos autorizaciones distintas. Copiar la carga y")
+print("      copiar las aristas se deciden por separado, y `B0` las juntaba.")
+print()
+print("      (Cual sea la respuesta de la SEGUNDA decision aqui, la mide")
+print("       `medida-sello-del-indice`: el suelo de `hr_workday` es `high` y")
+print("       el indice admite `medium`, asi que estas aristas tampoco caben")
+print("       hoy. Eso no salva a `B0` —seguiria pidiendo el otro conducto—;")
+print("       lo que hace es dar el motivo para encender el sello del indice.)")
 
 # ── D · EL AGUJERO ──────────────────────────────────────────────────────────
 print()

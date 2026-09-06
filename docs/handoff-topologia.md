@@ -125,13 +125,19 @@ decisiones distintas y la política **ya las separa**, cada una con su autorizac
 
 | conducto | `gdpr.sensitivity` que admite | quién lo usa hoy |
 |---|---|---|
-| `materialization.index` | `medium` | **nadie** |
+| `materialization.index` | `medium` | **nadie** — la spec y el motor llaman `materialization.topology` al conducto de las aristas |
 | `materialization.cache` | `low` | — |
 | `materialization.payload` | *no declarado* → ⊥ (P4) | `spec.materialized` de la vista |
 
-`managerId` y `departmentId` heredan el suelo `medium` de `hr_workday`, que es exactamente lo que
-`materialization.index` admite. **Las aristas de `hr.empleados` sí se pueden copiar.** Lo que no se
-puede copiar es su carga. `B0` confundía las dos.
+Son **dos decisiones**, y la política ya las separa con dos autorizaciones. `B0` pedía la primera
+para hacer la segunda, y por eso no se puede pagar: la carga de `hr.empleados` no puede salir del
+origen, y sus **aristas** son otra pregunta con otra respuesta.
+
+> **Cuál sea esa otra respuesta lo mide `medida-sello-del-indice.py`, y hoy también es que no:** el
+> suelo de `hr_workday` es `gdpr.sensitivity: high` —no `medium`, como dijo la primera versión de
+> esta nota— y el conducto del índice admite `medium`. Eso no salva a `B0`, que seguiría pidiendo
+> el conducto equivocado; lo que hace es dar el motivo para **encender el sello del índice**, que
+> hoy nadie mira.
 
 **Y deja al descubierto un agujero, que es lo que sí hay que cerrar.** El único código que sella el
 eje del índice es `flow::materializaciones`, y su bucle `for eje in ["topology", "payload"]` itera

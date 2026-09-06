@@ -664,16 +664,18 @@ que la política ya declara por separado:
 
 | conducto | admite | quién lo usa |
 |---|---|---|
-| `materialization.index` | `gdpr.sensitivity: medium` | **nadie, hoy** |
+| `materialization.index` | `gdpr.sensitivity: medium` | **nadie** — el de las aristas se llama `materialization.topology` |
 | `materialization.payload` | *sin declarar* → ⊥ (P4) | `spec.materialized` de la vista |
 
 Exigir `materialized` exigía el **segundo**. Y `hr.empleados` no puede pagarlo: declararlo deja el
 ejemplo insignia sin compilar con `OOS4011`, y declarar el conducto lo deja sin compilar con
 `OOS4002` sobre once campos `critical`. La regla obligaba a elegir entre el sello y el grafo.
 
-Mientras que sus aristas —`managerId`, `departmentId`, con el suelo `medium` de `hr_workday`— caben
-exactamente en lo que `materialization.index` admite. **Se pueden copiar.** Lo que no se puede
-copiar es la carga, y `B0` confundía las dos.
+Sus **aristas** son otra pregunta, con su propio conducto y su propia autorización — y `B0` las
+juntaba. Que la respuesta a esa segunda pregunta sea hoy también que no
+—`pruebas-de-fuego/medida-sello-del-indice.py`: el suelo de `hr_workday` es `high` y el conducto
+del índice admite `medium`— no salva a `B0`, que seguía pidiendo el conducto de la carga. Lo que
+hace es dar el motivo para encender el sello.
 
 > **Lo que sí queda por hacer, y es un agujero abierto.** El único código que sella el eje del
 > índice es `flow::materializaciones`, cuyo bucle `for eje in ["topology", "payload"]` itera sobre
