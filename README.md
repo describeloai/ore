@@ -551,5 +551,9 @@ Que sean dos cosas es deliberado: **otro proveedor podría construir una experie
 autoría mejor que esta y seguir produciendo paquetes conformes.** Eso es exactamente lo que
 un estándar hace posible, y la razón de que el motor no se guarde nada.
 
+Qué es cada pieza del modelo —la tabla, la vista, la copia, la entidad—, de quién responde y
+qué se sella al compilar está en **[`docs/modelo.md`](docs/modelo.md)**, que es el sitio
+canónico: los demás documentos cuentan **cómo se llegó**, y ese cuenta **qué hay**.
+
 Las decisiones que cerraron puertas —y lo que se aceptó a cambio de cada una— están en
 [`docs/decisions/`](docs/decisions/README.md).

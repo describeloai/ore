@@ -1,5 +1,9 @@
 # El sustrato, y lo que reposa encima
 
+> **Las definiciones del modelo viven en [`modelo.md`](modelo.md).** Este documento cuenta **cómo se llegó**;
+> aquel, **qué hay**. Si los dos dicen algo distinto, manda `modelo.md` — y es un fallo que hay que
+> cerrar, no una diferencia de matiz.
+
 > **Este documento NO es desechable.** Los `handoff-*.md` describen una migración y se borran
 > cuando termina. Este describe **una dirección**, y se queda: es el sitio donde se retoma el
 > hilo el día que se abra la capa de abstracción.

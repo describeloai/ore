@@ -1,5 +1,9 @@
 # La entidad, medida
 
+> **Las definiciones del modelo viven en [`modelo.md`](modelo.md).** Este documento cuenta **cómo se llegó**;
+> aquel, **qué hay**. Si los dos dicen algo distinto, manda `modelo.md` — y es un fallo que hay que
+> cerrar, no una diferencia de matiz.
+
 > **Estado: medida, no decisión.** Este documento no retira nada ni propone un peldaño. Contesta
 > una sola pregunta —*¿qué partes de `Entity` siguen siendo suyas en el paradigma de vistas, y
 > cuáles las sabe ya el sustrato?*— con números del corpus, para que la decisión se tome después
@@ -49,7 +53,7 @@ conformidad/canonical    21      backedBy   0
 ejemplo (acme-retail)     7      backedBy   2
 ```
 
-**232 de 290 entidades no tienen respaldo físico de ninguna clase** —ni `Binding` ni `backedBy`—, y
+**216 de 323 entidades no tienen respaldo físico de ninguna clase** —ni `Binding` ni `backedBy`—, y
 eso no es deuda: son casos que prueban reglas puramente semánticas. Es, en sí, un hecho sobre la
 naturaleza de la entidad: **se puede validar sola**, y el corpus lo aprovecha en el 80 % de sus
 casos.
@@ -82,7 +86,7 @@ propiedad derivada sigue sin tener columna. Componen.
 
 ---
 
-## 4. La duplicación real, con número: 38 de 71
+## 4. La duplicación que se creyó real: ~~38 de 71~~
 
 M2 de [`sustrato.md`](sustrato.md) ya lo había dicho —*«los nueve nombres duplicados
 desaparecen»*—. Contado sobre las **23** entidades que ya tienen `backedBy`:
@@ -97,6 +101,20 @@ nombres de propiedad                       71
 
 > **38 de 71 propiedades no dicen nada que la vista no diga ya.** Nombre y tipo, y el tipo es lo
 > único que añaden — un `String` frente a un `varchar(16)`.
+
+> ⚠️ **Esa conclusión se midió después y no se sostiene.** El error está en la última frase: *«el
+> tipo es lo único que añaden»* es cierto, y por eso mismo **no sobra** — la vista es física y no
+> tipa, así que la propiedad es la única fuente del tipo. Quitarla no cobra una repetición: deja el
+> campo en `String` **sin un solo error**.
+>
+> Recontado: **82** propiedades solo declaran su tipo, y **57 de ellas sostienen** la clave
+> primaria (49), una `via` (5) o el origen de una derivada (3). Lo que sobra son **25 nombres**
+> —no 25 propiedades— y quitarlos es `OOS2022` con los papeles cambiados.
+>
+> La cifra se mueve con el corpus: subió de 76 a 82 al añadir seis casos de conformidad en un solo
+> día. Lo que no se mueve es la proporción —**dos tercios sostienen algo**— y por eso es la
+> proporción, y no el número, lo que está en [`modelo.md`](modelo.md).
+> `pruebas-de-fuego/medida-m2.py`.
 
 Las otras **25 sí anotan**: llevan `labels`, `is`, `description`, `derivedFrom`. Esas son
 irreductibles, y son exactamente la forma que M2 propone para todas: **anotar un campo en vez de

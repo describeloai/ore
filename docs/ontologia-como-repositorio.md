@@ -1,5 +1,9 @@
 # La ontología como repositorio
 
+> **Las definiciones del modelo viven en [`modelo.md`](modelo.md).** Este documento cuenta **cómo se llegó**;
+> aquel, **qué hay**. Si los dos dicen algo distinto, manda `modelo.md` — y es un fallo que hay que
+> cerrar, no una diferencia de matiz.
+
 > **Estado: formulación de producto.** No es una decisión de esquema ni un peldaño. Es la
 > abstracción de superficie que faltaba: **para qué nació `Entity`, qué hace ya la vista mejor que
 > ella, y qué naturaleza tiene la capa que se proyecta de nuestro sustrato.** Los números vienen de
@@ -216,10 +220,13 @@ Deja de ser *un mapeo con significado colgado* y pasa a ser **la capa de anotaci
 versionado de vistas**. Que es, exactamente, la suma de dos peldaños que ya existían por separado y
 que ahora se ve que son el mismo camino:
 
-| | qué quita | precio medido |
+| | qué hace | resultado, ya medido |
 |---|---|---|
-| **M2** | los 38 nombres que solo repiten — `properties` **anota** en vez de redeclarar | 38 de 71 |
-| **B0** · `OOS2026` | la arista, que ya está en la copia | 2 entidades |
+| ~~**M2**~~ | ~~los nombres que solo repiten~~ | **22 nombres**, no 38: el resto sostiene la clave, una `via` o una derivada, y el tipo no lo dice nadie más |
+| ~~**B0**~~ | ~~la arista, que ya está en la copia~~ | **descartado.** `via` es de donde el índice deriva la arista. De ahí salió lo que sí faltaba: sellar el índice |
+
+> Las dos filas están tachadas y no borradas porque el §1 se apoyaba en ellas. Lo que queda de la
+> entidad después de medirlas está en [`modelo.md`](modelo.md) §1.
 
 Y lo que queda es lo del §1: tipar, clasificar, acuñar, versionar el nombre. **Cuatro verbos, todos
 irreductibles, todos de significado.** Una entidad más pequeña y más difícil de confundir con otra
@@ -302,8 +309,8 @@ estética:
 > lecturas sobre la misma vista, porque el que la tiene la exporta y los dos la nombran. Lo que
 > cambia es que ahora **está declarado quién lo permite** en vez de ocurrir por resolución plana.
 
-**2 · Hoy un paquete no es, de hecho, un conjunto de vistas.** 41 de 301 tienen alguna vista; **232
-tienen entidades y ninguna vista.** Es sesgo de corpus —casi todo es anterior a v1alpha7— pero
+**2 · Hoy un paquete no es, de hecho, un conjunto de vistas.** 73 de 337 tienen alguna vista; **216
+entidades no tienen respaldo físico de ninguna clase.** Es sesgo de corpus —casi todo es anterior a v1alpha7— pero
 mientras dure, la frase describe una intención y no el árbol.
 
 **3 · El ejemplo realista no demuestra la unidad.** `acme-retail` tiene **tres** directorios con
