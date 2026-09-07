@@ -780,3 +780,84 @@ fn contar_una_columna_se_niega_porque_daria_otro_numero() {
     assert!(!ok, "{out}");
     assert!(format!("{out}{err}").contains("count()"), "{out}{err}");
 }
+
+// ── La entidad sobre una vista agrupada, y su etiqueta ───────────────────────
+
+const TABLA_SUELDO: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+     metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
+     object: public.employees\n  columns:\n    employee_id: {}\n    country: {}\n    \
+     salary: {}\n  reads:\n    predicatePushdown: [eq]\n    fullScan: cheap\n  \
+     changes: { mode: retract, witness: log }\n";
+
+const NOMINA: &str = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+     metadata: { name: nomina, namespace: hr }\nspec:\n  owner: team:rrhh\n  \
+     from: { table: hr.employees }\n  fields:\n    pais: country\n    \
+     masa: \"sum(salary)\"\n  groupBy: [country]\n  \
+     materialized: { datasource: lago, table: \"cache.nomina\" }\n";
+
+/// La entidad que declara `masa` y la etiqueta. `alta` decide si la copia cabe.
+fn entidad_nomina(nivel: &str) -> String {
+    format!(
+        "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+         metadata: {{ name: Nomina, namespace: hr }}\nspec:\n  nature: entity\n  \
+         primaryKey: [pais]\n  backedBy: nomina\n  properties:\n    \
+           pais: {{ type: String }}\n    \
+           masa:\n      type: Integer\n      labels: {{ gdpr.sensitivity: {nivel} }}\n"
+    )
+}
+
+fn arbol_nomina(etiqueta: &str, nivel_dato: &str, nivel_conducto: &str) -> PathBuf {
+    paquete(
+        etiqueta,
+        &[
+            ("ontology.yaml", CONFIG),
+            ("packages/hr/package.yaml", PAQUETE),
+            ("packages/hr/lattices/s.yaml", RETICULO),
+            ("packages/hr/conduits.yaml", &conducto(nivel_conducto)),
+            ("packages/hr/tables/employees.yaml", TABLA_SUELDO),
+            ("packages/hr/views/nomina.yaml", NOMINA),
+            (
+                "packages/hr/entities/Nomina.yaml",
+                &entidad_nomina(nivel_dato),
+            ),
+        ],
+    )
+}
+
+/// **Una entidad puede salir de una vista que agrupa.**
+///
+/// No compilaba: `OOS2022` decía que la vista no expone `masa` sobre una vista
+/// que **sí** la expone. `campos` contesta *de qué columna sale un campo* y de
+/// un agregado la respuesta es que de ninguna; quien pregunta *qué expone* es
+/// otra función, y hasta `groupBy` las dos daban lo mismo.
+#[test]
+fn una_entidad_sale_de_una_vista_que_agrupa() {
+    let dir = arbol_nomina("entidad-agrupada", "low", "low");
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    // Y el tipo baja por el agregado: la entidad dice que `masa` es `Integer`,
+    // luego `salary` lo es, luego su suma también. `count` y `avg` no tipan su
+    // columna —uno cuenta filas y el otro devuelve otra cosa— pero `sum` sí.
+    assert!(
+        out.contains("esquema   masa: Integer · pais: String"),
+        "{out}"
+    );
+}
+
+/// **Y la etiqueta atraviesa el agregado.**
+///
+/// La suma de un sueldo clasificado sigue clasificada mientras nadie
+/// desclasifique. Sin esto la copia de `sum(salary)` viajaba sin sello, y lo
+/// único que la tapaba era el `OOS2022` de arriba: arreglar uno sin el otro
+/// habría abierto la fuga en vez de cerrar el hueco.
+#[test]
+fn la_etiqueta_de_una_columna_sobrevive_a_sumarla() {
+    let dir = arbol_nomina("etiqueta-agregada", "high", "low");
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    let todo = format!("{out}{err}");
+    assert!(todo.contains("NO compila"), "{todo}");
+    // Y dice por dónde: la derivación, no una columna copiada.
+    assert!(todo.contains("por derivación (Agregacion)"), "{todo}");
+    assert!(todo.contains("employees.salary"), "{todo}");
+}

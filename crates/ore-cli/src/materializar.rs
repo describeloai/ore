@@ -613,6 +613,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             filtros: Vec::new(),
+            agrega: Default::default(),
             tabla: None,
         }
     }

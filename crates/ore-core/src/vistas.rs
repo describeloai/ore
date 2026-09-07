@@ -132,6 +132,20 @@ pub struct Raiz {
     /// `(columna, valores)`. Una vista sobre otra hereda las filas que la de
     /// abajo ya recortó — lo que no está en la de abajo no está en ninguna.
     pub filtros: Vec<(String, Vec<String>)>,
+    /// Campo agregado → **qué agregado es**, con su columna ya bajada a física.
+    /// `sobre: None` es exactamente `count()`, que no lee ninguna.
+    ///
+    /// **Va aparte de `columnas` y no dentro**, y la diferencia no es de
+    /// estilo: `masa` no *es* `salary`, es su suma. Media docena de sitios
+    /// leen `columnas` como una identidad —el destino de la copia, el tipo de
+    /// un eslabón, la reescritura del registro— y meter ahí un agregado los
+    /// haría afirmar que la copia guarda `salary`.
+    ///
+    /// Lo que sí necesita saberlo es **la etiqueta**: la suma de un sueldo
+    /// clasificado sigue estando clasificada mientras nadie desclasifique, y
+    /// sin este mapa la etiqueta de `salary` no llega a `masa`. Es la misma
+    /// figura que `filtros` — columnas que se leen sin exponerse.
+    pub agrega: BTreeMap<String, Agregado>,
     /// El nombre cualificado de la `Table` de la que sale, si sale de una.
     ///
     /// `None` en una cadena v1alpha7, donde el objeto no es un documento y no
@@ -335,6 +349,36 @@ pub fn agregados(v: &Loaded) -> BTreeMap<String, Agregado> {
         };
         if let Some(Ok(a)) = agregado(txt) {
             out.insert(nombre.to_string(), a);
+        }
+    }
+    out
+}
+
+/// **Qué campos expone una vista**, y de dónde sale cada uno *tal como está
+/// escrito* — una columna, o la llamada que lo agrega.
+///
+/// Es la otra mitad de [`campos`], y son dos porque son dos preguntas:
+///
+/// | | contesta | quién pregunta |
+/// |---|---|---|
+/// | [`campos`] | *de qué **columna** sale este campo* | el plan, el linaje, `OOS2018` sobre la tabla, las etiquetas de raíz |
+/// | `expone` | *qué campos **da** esta vista* | la entidad —`OOS2011`, `OOS2022`—, la vista de encima, `version.field` |
+///
+/// Antes de `groupBy` las dos daban lo mismo y bastaba una. Con un agregado
+/// dejan de coincidir, y confundirlas tiene un síntoma muy concreto: una
+/// entidad respaldada por una vista que agrupa recibía *«`hr.por_pais` no
+/// expone `n`»* sobre una vista que **sí** lo expone.
+pub fn expone(v: &Loaded) -> BTreeMap<String, String> {
+    let mut out = campos(v);
+    let Some(fs) = v.section("fields") else {
+        return out;
+    };
+    for (k, val) in fs.entries() {
+        let (Some(nombre), Some(txt)) = (k.as_str(), val.as_str()) else {
+            continue;
+        };
+        if agregado(txt).is_some() {
+            out.insert(nombre.to_string(), txt.trim().to_string());
         }
     }
     out
@@ -704,13 +748,35 @@ pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
     // De abajo arriba: la hoja nombra columnas físicas; cada eslabón de encima
     // nombra campos del de abajo, y se sustituyen.
     let mut columnas: BTreeMap<String, String> = campos(hoja);
+    let mut agrega: BTreeMap<String, Agregado> = agregados(hoja);
     let mut filtros_fisicos: Vec<(String, Vec<String>)> = filtros(hoja);
     for eslabon in fila.iter().rev().skip(1) {
         let de_abajo = columnas;
-        columnas = campos(eslabon)
-            .into_iter()
-            .filter_map(|(campo, en_fuente)| de_abajo.get(&en_fuente).map(|c| (campo, c.clone())))
-            .collect();
+        let agrega_abajo = agrega;
+        // Un eslabón de encima nombra campos del de abajo. Si el que nombra era
+        // un agregado allí, **sigue siéndolo aquí**: renombrar una suma no la
+        // convierte en una columna.
+        columnas = BTreeMap::new();
+        agrega = BTreeMap::new();
+        for (campo, en_fuente) in campos(eslabon) {
+            if let Some(c) = de_abajo.get(&en_fuente) {
+                columnas.insert(campo, c.clone());
+            } else if let Some(sobre) = agrega_abajo.get(&en_fuente) {
+                agrega.insert(campo, sobre.clone());
+            }
+        }
+        // Y lo que este eslabón agrega de nuevo: agrega un campo del de abajo,
+        // así que lo que lee de verdad es la columna de ese campo.
+        for (campo, a) in agregados(eslabon) {
+            let sobre = a.sobre.and_then(|s| de_abajo.get(&s).cloned());
+            agrega.insert(
+                campo,
+                Agregado {
+                    funcion: a.funcion,
+                    sobre,
+                },
+            );
+        }
         for (campo, valores) in filtros(eslabon) {
             if let Some(c) = de_abajo.get(&campo) {
                 filtros_fisicos.push((c.clone(), valores));
@@ -722,6 +788,7 @@ pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
         objeto,
         columnas,
         filtros: filtros_fisicos,
+        agrega,
         tabla,
     })
 }
@@ -1219,7 +1286,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 Err(_) => continue,
                 Ok(_) => {}
             }
-            let expone = campos(abajo);
+            let expone = expone(abajo);
             let abajo_qn = abajo.qname().unwrap_or_default();
             if let Some(fs) = v.section("fields") {
                 for (k, val) in fs.entries() {
@@ -1257,7 +1324,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             && let Some((_, f)) = ver.get("field")
         {
             let campo = f.as_str().unwrap_or("");
-            let expone = campos(v);
+            let expone = expone(v);
             if !expone.contains_key(campo) {
                 out.push(no_expone(
                     &v.path,
@@ -1463,7 +1530,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             );
             continue;
         };
-        let expone = campos(v);
+        let expone = expone(v);
         let vista_qn = v.qname().unwrap_or_default();
 
         // OOS2011 · lo que necesita columna: la clave y los `via`. La misma

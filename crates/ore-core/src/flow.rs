@@ -607,7 +607,11 @@ fn vistas_materializadas(
                         continue;
                     }
                     for (r, n, _) in read_labels(ds) {
-                        for campo in raiz.columnas.keys() {
+                        // Los agregados también: lo que sale de una fuente sale
+                        // de ella lo hayan contado o no. Sin `agrega`, un
+                        // `count()` se escaparía de la etiqueta del datasource
+                        // por no ser ninguna de sus columnas.
+                        for campo in raiz.columnas.keys().chain(raiz.agrega.keys()) {
                             subir(
                                 por_campo.entry(campo.clone()).or_default(),
                                 &r,

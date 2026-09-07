@@ -569,7 +569,20 @@ pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String),
         };
         for (k, p) in props.entries() {
             let Some(nombre) = k.as_str() else { continue };
-            let Some(col) = raiz.columnas.get(nombre) else {
+            // Una propiedad tipa su columna. Y **algunos agregados también**:
+            // `sum`, `min` y `max` devuelven el tipo de lo que agregan, así que
+            // decir que `masa` es `Money<EUR,2>` es decir que `salary` lo es.
+            //
+            // `count` no —cuenta filas, y su `Integer` no habla de ninguna
+            // columna— y `avg` tampoco: devuelve `Decimal` sobre una entrada
+            // que puede ser `Integer`, así que de la salida no se deduce la
+            // entrada. Los dos se callan en vez de tipar mal.
+            let Some(col) = raiz.columnas.get(nombre).or_else(|| {
+                raiz.agrega
+                    .get(nombre)
+                    .filter(|a| matches!(a.funcion.as_str(), "sum" | "min" | "max"))
+                    .and_then(|a| a.sobre.as_ref())
+            }) else {
                 continue;
             };
             let Some(t) = p
@@ -882,7 +895,17 @@ pub(crate) fn etiquetas_de_raiz(
             continue;
         };
         let eqn = e.qname().unwrap_or_default();
-        for (prop, col) in &raiz.columnas {
+        // Las columnas de las que sale un campo, y las que un agregado LEE. La
+        // suma de un sueldo clasificado sigue clasificada mientras nadie
+        // desclasifique, así que la etiqueta que la entidad pone sobre `masa`
+        // tiene que llegar a `salary` — si no, la copia de `sum(salary)` viaja
+        // sin sello y `OOS4002` no se dispara.
+        let de_agregados: BTreeMap<String, String> = raiz
+            .agrega
+            .iter()
+            .filter_map(|(campo, a)| Some((campo.clone(), a.sobre.clone()?)))
+            .collect();
+        for (prop, col) in raiz.columnas.iter().chain(de_agregados.iter()) {
             let Some(ls) = efectivas.get(&format!("{eqn}.{prop}")) else {
                 continue;
             };
