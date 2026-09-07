@@ -1,0 +1,78 @@
+# `ore discover`, y la frontera del sustrato hecha dos contenedores.
+#
+# Es un solo Job y dos imágenes distintas a propósito, porque las dos mitades
+# de este trabajo no son la misma cosa:
+#
+#   initContainer  `ore-drivers`  lee el ORIGEN. Necesita red, identidad y el
+#                                 SDK de Google. ~110 MB.
+#   container      `ore`          induce la ONTOLOGÍA desde el catálogo. No
+#                                 abre nada. 7,4 MB sobre `scratch`, sin
+#                                 certificados ni cliente TLS.
+#
+# El segundo **no puede salir a la red aunque quiera**, y esa es la afirmación:
+# la inducción es hermética. Lee un fichero JSON y escribe documentos. Lo que
+# tocó el mundo se quedó en el primer contenedor.
+#
+# La `NetworkPolicy` alcanza al POD entero, así que técnicamente el segundo
+# contenedor hereda la excepción del primero. Se dice para no vender lo que no
+# es: la garantía aquí la da la IMAGEN, no la política.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: discover
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: repo
+          emptyDir: {}
+      initContainers:
+        - name: catalogo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: BQ_URL, value: "bigquery://project-8853a180-450d-47be-b83/ventas" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cd /repo
+              ore init . >/dev/null 2>&1
+              cat > ontology.config.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: OntologyConfig
+              metadata: { name: bikeshare, version: 0.1.0 }
+              datasources:
+                - { name: bq, type: bigquery, connectionEnv: BQ_URL }
+              YAML
+              echo "### catalogo · con la imagen que SI habla con el mundo"
+              ore source catalog bq --out catalogo.json 2>&1 | tail -3
+              wc -c catalogo.json
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+      containers:
+        - name: discover
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          command: ["/bin/ore"]
+          args: ["discover", "--from", "catalogo.json", "--out", "packages/ventas", "--name", "ventas"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
