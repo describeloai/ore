@@ -45,9 +45,11 @@
 //! contener contenido gobernado (`OOS2030`), así que este mando **se niega antes
 //! de crearlo** en vez de dejar un paquete donde no se puede poner nada.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use ore_core::link::{Loaded, Package};
 
 /// Lo que un `namespace` admite: `^[a-zA-Z][a-zA-Z0-9_]*$`, el `identifier` del
 /// esquema publicado. Se comprueba aquí porque el nombre del paquete **es** el
@@ -127,39 +129,198 @@ pub fn nuevo(raiz: &Path, nombre: &str, owner: Option<&str>, dominio: Option<&st
     ExitCode::SUCCESS
 }
 
+// ── El taller ───────────────────────────────────────────────────────────────
+
+/// Los cambios en memoria hasta que se escriben todos.
+///
+/// Existe por lo que la medida del corte pedía: `move` es atómico por
+/// documento, y **un bucle de `move` no lo es**. Si el tercero falla queda medio
+/// partido, y medio partido no es un estado que nadie quiera revisar.
+///
+/// Y hace falta algo más que juntar escrituras: **cada movimiento tiene que ver
+/// lo que hicieron los anteriores**. El manifiesto ya lleva un `moved` cuando se
+/// añade el segundo; un documento que se movió y luego resulta que nombraba a
+/// otro que también se mueve hay que reapuntarlo **en su ruta nueva**. Por eso
+/// el taller lleva las dos cosas: el contenido y a dónde se fue cada fichero.
+#[derive(Default)]
+struct Taller {
+    ficheros: BTreeMap<PathBuf, String>,
+    /// ruta original → ruta actual, para los que ya se mudaron.
+    mudados: BTreeMap<PathBuf, PathBuf>,
+}
+
+impl Taller {
+    /// Dónde está ahora un fichero que originalmente estaba en `p`.
+    fn ruta(&self, p: &Path) -> PathBuf {
+        self.mudados
+            .get(p)
+            .cloned()
+            .unwrap_or_else(|| p.to_path_buf())
+    }
+
+    /// El contenido actual: lo del taller si ya se tocó, y si no el del disco.
+    fn leer(&self, p: &Path) -> Result<String, String> {
+        let r = self.ruta(p);
+        if let Some(t) = self.ficheros.get(&r) {
+            return Ok(t.clone());
+        }
+        std::fs::read_to_string(&r).map_err(|e| format!("no se pudo leer `{}`: {e}", r.display()))
+    }
+
+    fn escribir(&mut self, original: &Path, texto: String) {
+        let r = self.ruta(original);
+        self.ficheros.insert(r, texto);
+    }
+
+    fn mudar(&mut self, de: &Path, a: PathBuf, texto: String) {
+        self.ficheros.remove(&self.ruta(de));
+        self.mudados.insert(de.to_path_buf(), a.clone());
+        self.ficheros.insert(a, texto);
+    }
+
+    /// Y ahora sí. Se crean los directorios, se escribe todo y **al final** se
+    /// retira lo que se mudó: si algo fallara antes, no se ha perdido nada.
+    fn aplicar(&self) -> Result<(), String> {
+        for (ruta, contenido) in &self.ficheros {
+            if let Some(d) = ruta.parent() {
+                std::fs::create_dir_all(d)
+                    .map_err(|e| format!("no se pudo crear `{}`: {e}", d.display()))?;
+            }
+            std::fs::write(ruta, contenido)
+                .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))?;
+        }
+        for de in self.mudados.keys() {
+            std::fs::remove_file(de)
+                .map_err(|e| format!("no se pudo retirar `{}`: {e}", de.display()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Lo que un movimiento produjo, para contarlo.
+#[derive(Default)]
+struct Rastro {
+    reapuntados: Vec<String>,
+    cruzan: Vec<String>,
+}
+
+// ── El plan de un movimiento ────────────────────────────────────────────────
+
+/// Planifica mover **un** documento: no escribe nada, deja el taller listo.
+///
+/// Son cuatro cosas y hay que hacer las cuatro:
+///
+/// 1. el fichero, al mismo subdirectorio del destino —el reparto en carpetas lo
+///    decide el árbol que ya hay, no este mando—;
+/// 2. su `namespace`, que **con `OOS2030` es una sola cosa con lo anterior**;
+/// 3. el `moved` en el manifiesto de **origen**, sin el cual el nombre que
+///    desaparece es un `OOS5007`;
+/// 4. y lo que lo nombraba, reapuntado **por posición** — ver [`sustituir_en`].
+#[allow(clippy::too_many_arguments)]
+fn planificar(
+    pkg: &Package,
+    miembros: &[PathBuf],
+    taller: &mut Taller,
+    doc: &Loaded,
+    dir_origen: &Path,
+    dir_destino: &Path,
+    destino: &str,
+    since: Option<&str>,
+    tambien_se_mueven: &[String],
+) -> Result<(String, Rastro), String> {
+    let qname = doc.qname().unwrap_or_default();
+    let nombre = doc
+        .meta("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or_default();
+    let nuevo_qname = format!("{destino}.{nombre}");
+    let mut rastro = Rastro::default();
+
+    // ① y ② el fichero, con su espacio de nombres nuevo
+    let relativa = doc
+        .path
+        .strip_prefix(dir_origen)
+        .map_err(|_| format!("`{}` no cuelga de su paquete", doc.path.display()))?;
+    let destino_path = dir_destino.join(relativa);
+    let texto = taller.leer(&doc.path)?;
+    let viejo_ns = doc
+        .meta("namespace")
+        .and_then(|n| n.as_str())
+        .unwrap_or_default();
+    let nuevo_texto = texto.replace(
+        &format!("namespace: {viejo_ns}"),
+        &format!("namespace: {destino}"),
+    );
+    taller.mudar(&doc.path, destino_path, nuevo_texto);
+
+    // ④ quien lo nombraba
+    for d in &pkg.docs {
+        if d.path == doc.path {
+            continue;
+        }
+        let refs: Vec<_> = ore_core::exporta::referencias(d)
+            .into_iter()
+            .filter(|r| r.destino == qname && r.kind == doc.kind)
+            .collect();
+        if refs.is_empty() {
+            continue;
+        }
+        let t = taller.leer(&d.path)?;
+        let acaba_en_salto = t.ends_with('\n');
+        let mut lineas: Vec<String> = t.lines().map(String::from).collect();
+        for r in &refs {
+            let (i, l) = sustituir_en(&lineas, r.pos, &nuevo_qname).ok_or_else(|| {
+                format!(
+                    "no se pudo reapuntar `{}` en `{}`",
+                    r.clase,
+                    d.path.display()
+                )
+            })?;
+            lineas[i] = l;
+            rastro
+                .reapuntados
+                .push(format!("{}  ·  {}", d.qname().unwrap_or_default(), r.clase));
+        }
+        // ¿Pasa a cruzar el límite? Lo que también se mueve, no.
+        let suyo = ore_core::link::miembro_de(miembros, &d.path);
+        if suyo != Some(dir_destino) && !tambien_se_mueven.contains(&d.qname().unwrap_or_default())
+        {
+            rastro.cruzan.push(d.qname().unwrap_or_default());
+        }
+        let mut nuevo = lineas.join("\n");
+        if acaba_en_salto {
+            nuevo.push('\n');
+        }
+        taller.escribir(&d.path, nuevo);
+    }
+
+    // ③ el anuncio, en el manifiesto de ORIGEN
+    let manifiesto = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::Package)
+        .find(|d| d.path.parent() == Some(dir_origen))
+        .ok_or_else(|| format!("`{qname}` no está dentro de ningún paquete"))?;
+    let version = manifiesto
+        .meta("version")
+        .and_then(|n| n.as_str())
+        .unwrap_or("0.1.0")
+        .to_string();
+    let desde = since.unwrap_or(&version).to_string();
+    let t = taller.leer(&manifiesto.path)?;
+    let anuncio = anunciar(&t, &qname, &nuevo_qname, &desde)?;
+    taller.escribir(&manifiesto.path, anuncio);
+
+    Ok((nuevo_qname, rastro))
+}
+
 // ── `ore package move` ──────────────────────────────────────────────────────
 
-/// **Mover un documento a otro paquete**, que son tres cosas y hay que hacer
-/// las tres.
+/// **Mover un documento a otro paquete.**
 ///
-/// # Por qué es un mando y no tres pasos a mano
-///
-/// De los cinco pasos que un movimiento exige, cuatro los caza alguien
-/// —`OOS5007` al hacer `diff`, `OOS2028` al compilar, `OOS2018` al validar— y
-/// **cambiar el `namespace` no lo cazaba nadie**. Con `OOS2030` puesto ya sí,
-/// pero queda lo otro que una persona no puede garantizar: **el orden**. Si se
-/// anuncia el `moved` antes de mover, hay una ventana en la que el manifiesto
-/// habla de algo que sigue donde estaba; si se hace al revés, una en la que el
-/// nombre viejo vive en dos sitios. Aquí se calcula todo y se escribe al final.
-///
-/// # Qué hace, exactamente
-///
-/// 1. mueve el fichero al mismo subdirectorio del paquete destino;
-/// 2. reescribe su `namespace`, que **con `OOS2030` es una sola cosa con la
-///    anterior** — antes eran dos que se movían por separado;
-/// 3. anuncia el `moved` en el manifiesto de **origen**, que es lo que impide
-///    que el nombre que desaparece sea un `OOS5007`;
-/// 4. y **reapunta lo que lo nombraba**, incluida la forma corta: un documento
-///    que compartía espacio con él lo llamaba por su nombre a secas, y tras el
-///    movimiento eso ya no resuelve.
-///
-/// # Y por qué NO toca `exports`
-///
-/// Porque `exports` es *«esto lo expongo a propósito»* —`01-package` §3.3— y un
-/// mando que ensancha la superficie pública por su cuenta contradice la frase
-/// para la que esa lista existe. Lo que hace es **decir** qué referencias pasan
-/// a cruzar el límite de un paquete y qué línea haría falta; `OOS2028` lo
-/// confirma al compilar, y ahí la decisión es de quien publica.
+/// Es [`planificar`] una vez y aplicar. Lo que hace y lo que no —incluido por
+/// qué **no toca `exports`**— está en la cabecera de [`dividir`], que comparte
+/// con él todo salvo el número de documentos.
 pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> ExitCode {
     // **Sin exigir validez**: mover es justo lo que se hace para arreglar un
     // árbol, y exigir que compilase primero lo haría inútil en su caso típico.
@@ -174,6 +335,302 @@ pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> Ex
         eprintln!("error: no hay ningún documento que se llame `{qname}`");
         return ExitCode::from(65); // EX_DATAERR
     };
+    let (dir_origen, dir_destino) = match sitios(&pkg, &miembros, doc, destino) {
+        Ok(x) => x,
+        Err(c) => return c,
+    };
+    if pkg
+        .docs
+        .iter()
+        .any(|d| d.qname().as_deref() == Some(&format!("{destino}.{}", nombre_de(doc))))
+    {
+        eprintln!(
+            "error: `{destino}` ya tiene un documento llamado `{}`",
+            nombre_de(doc)
+        );
+        eprintln!("  Mover este encima perdería el que hay, y eso no lo decide este mando.");
+        return ExitCode::from(65);
+    }
+
+    let mut taller = Taller::default();
+    let (nuevo, rastro) = match planificar(
+        &pkg,
+        &miembros,
+        &mut taller,
+        doc,
+        &dir_origen,
+        &dir_destino,
+        destino,
+        since,
+        &[],
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("error: {e}");
+            eprintln!("  Nada se ha movido: o se hacen las cuatro cosas o ninguna.");
+            return ExitCode::from(70); // EX_SOFTWARE
+        }
+    };
+    if let Err(e) = taller.aplicar() {
+        eprintln!("error: {e}");
+        return ExitCode::from(73); // EX_CANTCREAT
+    }
+
+    println!("  ✓ {qname} → {nuevo}");
+    contar(&rastro, destino, std::slice::from_ref(&nuevo));
+    if since.is_none() {
+        aviso_de_version(&pkg, &dir_origen);
+    }
+    diagnosticos(raiz)
+}
+
+// ── `ore package split` ─────────────────────────────────────────────────────
+
+/// **Partir un paquete**, que son dos preguntas y no una.
+///
+/// # Sin `--to` no mueve nada
+///
+/// Enumera las **componentes**: los grupos de documentos que se nombran entre
+/// sí. Es el mismo reparto que `drift-detect` —enseñar y parar es un acto, mover
+/// es otro, y fallan por separado—.
+///
+/// # Y la respuesta tiene dos mitades, medidas
+///
+/// Sobre un paquete **recién descubierto** la clausura es exacta y sale gratis:
+/// 30 documentos en **10 componentes de exactamente 3** —`Table` + `View` +
+/// `Entity` por objeto—, y mover una componente entera deja **cero** referencias
+/// cruzando. Ahí esto calcula algo que una persona no calcula bien.
+///
+/// Sobre uno **modelado** no hay corte gratis: los tres paquetes de
+/// `acme-retail` son **una sola componente** y su corte más barato cuesta
+/// exactamente un cruce. Eso no lo convierte en un mal corte —puede ser justo el
+/// límite que se quería trazar— pero cambia lo que este mando hace: **decir el
+/// precio, no buscarlo**.
+///
+/// # La arista se cuenta sin dirección
+///
+/// Y costó verlo: mover un documento no rompe solo a quien lo nombra, también
+/// hace cruzar **lo que él nombra**. Para el corte da igual el sentido.
+///
+/// # Lo que no decide
+///
+/// El **dueño** del paquete nuevo —es un acto de gobierno, y por eso
+/// `package new` es un verbo aparte—, si el cruce es **aceptable**, y `exports`:
+/// es *«esto lo expongo a propósito»*, así que se dice la línea y no se escribe.
+pub fn dividir(
+    raiz: &Path,
+    paquete: &str,
+    con: &[String],
+    destino: Option<&str>,
+    since: Option<&str>,
+) -> ExitCode {
+    let pkg = ore_core::validate::cargar_paquete(raiz).0;
+    let miembros = ore_core::link::miembros(&pkg);
+    let Some(manifiesto) = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::Package)
+        .find(|d| d.meta("name").and_then(|n| n.as_str()) == Some(paquete))
+    else {
+        eprintln!("error: no hay ningún paquete que se llame `{paquete}`");
+        return ExitCode::from(65);
+    };
+    let Some(dir_origen) = manifiesto.path.parent().map(Path::to_path_buf) else {
+        eprintln!("error: no se pudo situar `{paquete}`");
+        return ExitCode::from(70);
+    };
+
+    let dentro: Vec<&Loaded> = pkg
+        .docs
+        .iter()
+        .filter(|d| ore_core::pertenencia::DEL_PAQUETE.contains(&d.kind))
+        .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(&dir_origen))
+        .collect();
+    let grafo = grafo_de(&pkg, &dentro);
+
+    let Some(destino) = destino else {
+        // Sin destino: se enseña y se para.
+        let comps = componentes(&dentro, &grafo);
+        println!(
+            "{paquete} · {} documento(s), {} componente(s)",
+            dentro.len(),
+            comps.len()
+        );
+        for (i, c) in comps.iter().enumerate() {
+            println!();
+            println!("  ── {} · {} documento(s)", i + 1, c.len());
+            for q in c {
+                println!("     {q}");
+            }
+        }
+        println!();
+        if comps.len() > 1 {
+            println!("  · cada componente sale entera SIN una sola referencia cruzando.");
+        } else {
+            println!("  · una sola componente: no hay corte gratis. Elige uno con `--con`");
+            println!("    y este mando dirá lo que cuesta antes de moverlo.");
+        }
+        println!("  ore package split {paquete} --con <qname> --to <paquete>");
+        return ExitCode::SUCCESS;
+    };
+
+    if con.is_empty() {
+        eprintln!("error: con `--to` hace falta `--con <qname>`, al menos uno");
+        eprintln!("  Cuál es el corte no lo decide este mando: partir un paquete por la");
+        eprintln!("  mitad sin que nadie lo haya dicho sería inventar un límite.");
+        return ExitCode::from(64); // EX_USAGE
+    }
+
+    // Los que se mueven, resueltos y comprobados ANTES de tocar nada.
+    let mut mueven: Vec<&Loaded> = Vec::new();
+    for q in con {
+        let Some(d) = dentro.iter().find(|d| d.qname().as_deref() == Some(q)) else {
+            eprintln!("error: `{q}` no es un documento gobernado de `{paquete}`");
+            return ExitCode::from(65);
+        };
+        mueven.push(d);
+    }
+    let nombres: Vec<String> = mueven.iter().filter_map(|d| d.qname()).collect();
+
+    let dir_destino = match sitios(&pkg, &miembros, mueven[0], destino) {
+        Ok((_, d)) => d,
+        Err(c) => return c,
+    };
+
+    // **Lo que arrastra**, que es el aviso que importa: si el conjunto pedido no
+    // es una componente entera, se dice qué falta para que el corte salga a cero.
+    let cierre = clausura(&nombres, &grafo);
+    let falta: Vec<&String> = cierre.iter().filter(|q| !nombres.contains(q)).collect();
+
+    let mut taller = Taller::default();
+    let mut rastro = Rastro::default();
+    let mut nuevos = Vec::new();
+    for d in &mueven {
+        match planificar(
+            &pkg,
+            &miembros,
+            &mut taller,
+            d,
+            &dir_origen,
+            &dir_destino,
+            destino,
+            since,
+            &nombres,
+        ) {
+            Ok((n, r)) => {
+                nuevos.push(n);
+                rastro.reapuntados.extend(r.reapuntados);
+                for c in r.cruzan {
+                    if !rastro.cruzan.contains(&c) {
+                        rastro.cruzan.push(c);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                eprintln!("  Nada se ha movido: o van los {} o ninguno.", mueven.len());
+                return ExitCode::from(70);
+            }
+        }
+    }
+    if let Err(e) = taller.aplicar() {
+        eprintln!("error: {e}");
+        return ExitCode::from(73);
+    }
+
+    println!("  ✓ {} documento(s) → `{destino}`", nuevos.len());
+    for n in &nuevos {
+        println!("     {n}");
+    }
+    contar(&rastro, destino, &nuevos);
+    if !falta.is_empty() {
+        println!();
+        println!(
+            "  · el corte no es una componente entera. Con {} más saldría a cero:",
+            falta.len()
+        );
+        for f in &falta {
+            println!("      {f}");
+        }
+    }
+    if since.is_none() {
+        aviso_de_version(&pkg, &dir_origen);
+    }
+    diagnosticos(raiz)
+}
+
+// ── El grafo del paquete ────────────────────────────────────────────────────
+
+/// Quién nombra a quién, **sin dirección**.
+///
+/// Sin dirección porque para el corte da igual el sentido: una arista que cruza
+/// el límite es una arista que cruza, la escriba quien la escriba.
+fn grafo_de(pkg: &Package, dentro: &[&Loaded]) -> BTreeMap<String, BTreeSet<String>> {
+    let suyos: BTreeSet<String> = dentro.iter().filter_map(|d| d.qname()).collect();
+    let mut g: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for d in &pkg.docs {
+        let Some(mio) = d.qname() else { continue };
+        for r in ore_core::exporta::referencias(d) {
+            if !suyos.contains(&r.destino) || !suyos.contains(&mio) || r.destino == mio {
+                continue;
+            }
+            g.entry(mio.clone()).or_default().insert(r.destino.clone());
+            g.entry(r.destino).or_default().insert(mio.clone());
+        }
+    }
+    for q in &suyos {
+        g.entry(q.clone()).or_default();
+    }
+    g
+}
+
+fn componentes(dentro: &[&Loaded], g: &BTreeMap<String, BTreeSet<String>>) -> Vec<Vec<String>> {
+    let mut visto: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for d in dentro {
+        let Some(q) = d.qname() else { continue };
+        if visto.contains(&q) {
+            continue;
+        }
+        let comp = clausura(&[q], g);
+        visto.extend(comp.iter().cloned());
+        out.push(comp);
+    }
+    out.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    out
+}
+
+/// Todo lo que se alcanza desde `semillas`. Es la clausura del corte.
+fn clausura(semillas: &[String], g: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    let mut visto: BTreeSet<String> = BTreeSet::new();
+    let mut pila: Vec<String> = semillas.to_vec();
+    while let Some(x) = pila.pop() {
+        if !visto.insert(x.clone()) {
+            continue;
+        }
+        if let Some(vs) = g.get(&x) {
+            pila.extend(vs.iter().cloned());
+        }
+    }
+    visto.into_iter().collect()
+}
+
+// ── Lo compartido ───────────────────────────────────────────────────────────
+
+fn nombre_de(d: &Loaded) -> String {
+    d.meta("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// El directorio del paquete de origen y el del destino, con sus negativas.
+fn sitios(
+    pkg: &Package,
+    miembros: &[PathBuf],
+    doc: &Loaded,
+    destino: &str,
+) -> Result<(PathBuf, PathBuf), ExitCode> {
     if !ore_core::pertenencia::DEL_PAQUETE.contains(&doc.kind) {
         eprintln!(
             "error: un `{}` no es de un paquete: su nombre es el de un vocabulario compartido",
@@ -181,12 +638,15 @@ pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> Ex
         );
         eprintln!("  Tiene que significar lo mismo desde todos los paquetes, así que moverlo");
         eprintln!("  entre ellos no querría decir nada. Vive en la raíz del workspace.");
-        return ExitCode::from(65);
+        return Err(ExitCode::from(65));
     }
-
-    // El destino, por su manifiesto y no por su ruta: un paquete puede estar
-    // donde quiera, y `miembros()` ya sabe dónde.
-    let Some(manifiesto_destino) = pkg
+    if !usable_como_namespace(destino) {
+        eprintln!("error: `{destino}` no puede ser un espacio de nombres");
+        eprintln!("  Un paquete así puede contener vocabulario compartido, no contenido");
+        eprintln!("  gobernado — `OOS2030`.");
+        return Err(ExitCode::from(65));
+    }
+    let Some(m) = pkg
         .docs
         .iter()
         .filter(|d| d.kind == ore_core::document::Kind::Package)
@@ -194,201 +654,71 @@ pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> Ex
     else {
         eprintln!("error: no hay ningún paquete que se llame `{destino}`");
         eprintln!("  ore package new {destino} --owner <handle>");
-        return ExitCode::from(65);
+        return Err(ExitCode::from(65));
     };
-    if !usable_como_namespace(destino) {
-        eprintln!("error: `{destino}` no puede ser un espacio de nombres");
-        eprintln!("  Un paquete así puede contener vocabulario compartido, no contenido");
-        eprintln!("  gobernado — `OOS2030`.");
-        return ExitCode::from(65);
-    }
-
     let (Some(dir_destino), Some(dir_origen)) = (
-        manifiesto_destino.path.parent(),
-        ore_core::link::miembro_de(&miembros, &doc.path),
+        m.path.parent(),
+        ore_core::link::miembro_de(miembros, &doc.path),
     ) else {
         eprintln!("error: no se pudo situar el documento o el paquete destino");
-        return ExitCode::from(70); // EX_SOFTWARE
+        return Err(ExitCode::from(70));
     };
     if dir_origen == dir_destino {
-        eprintln!("error: `{qname}` ya está en `{destino}`");
-        return ExitCode::from(65);
+        eprintln!(
+            "error: `{}` ya está en `{destino}`",
+            doc.qname().unwrap_or_default()
+        );
+        return Err(ExitCode::from(65));
     }
+    Ok((dir_origen.to_path_buf(), dir_destino.to_path_buf()))
+}
 
-    let nombre = doc
-        .meta("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let nuevo_qname = format!("{destino}.{nombre}");
-    if pkg
-        .docs
-        .iter()
-        .any(|d| d.qname().as_deref() == Some(&nuevo_qname))
-    {
-        eprintln!("error: `{destino}` ya tiene un documento llamado `{nombre}`");
-        eprintln!("  Mover este encima perdería el que hay, y eso no lo decide este mando.");
-        return ExitCode::from(65);
+fn contar(rastro: &Rastro, destino: &str, nuevos: &[String]) {
+    if !rastro.reapuntados.is_empty() {
+        println!();
+        println!(
+            "  {} referencia(s) reapuntada(s):",
+            rastro.reapuntados.len()
+        );
+        for r in &rastro.reapuntados {
+            println!("    {r}");
+        }
     }
-
-    // El mismo subdirectorio: el reparto en carpetas lo decide el árbol que ya
-    // hay, no este mando.
-    let Ok(relativa) = doc.path.strip_prefix(dir_origen) else {
-        eprintln!("error: `{}` no cuelga de su paquete", doc.path.display());
-        return ExitCode::from(70);
-    };
-    let destino_path = dir_destino.join(relativa);
-
-    // ── Todo se calcula antes de escribir nada ──────────────────────────────
-    let mut ediciones: BTreeMap<PathBuf, String> = BTreeMap::new();
-
-    // ① el documento, con su espacio de nombres nuevo
-    let Ok(texto) = std::fs::read_to_string(&doc.path) else {
-        eprintln!("error: no se pudo leer `{}`", doc.path.display());
-        return ExitCode::from(66); // EX_NOINPUT
-    };
-    let viejo_ns = doc
-        .meta("namespace")
-        .and_then(|n| n.as_str())
-        .unwrap_or_default()
-        .to_string();
-    ediciones.insert(
-        destino_path.clone(),
-        texto.replace(
-            &format!("namespace: {viejo_ns}"),
-            &format!("namespace: {destino}"),
-        ),
+    if rastro.cruzan.is_empty() {
+        println!();
+        println!("  · ni una sola referencia cruza: el corte sale a cero.");
+        return;
+    }
+    println!();
+    println!(
+        "  · ahora {} referencia(s) cruzan a `{destino}`:",
+        rastro.cruzan.len()
     );
-
-    // ② quien lo nombraba, reapuntado — incluida la forma corta
-    let mut reapuntados: Vec<String> = Vec::new();
-    let mut cruzan: Vec<String> = Vec::new();
-    for d in &pkg.docs {
-        if d.path == doc.path {
-            continue;
-        }
-        let refs: Vec<_> = ore_core::exporta::referencias(d)
-            .into_iter()
-            .filter(|r| r.destino == qname && r.kind == doc.kind)
-            .collect();
-        if refs.is_empty() {
-            continue;
-        }
-        let Ok(t) = std::fs::read_to_string(&d.path) else {
-            continue;
-        };
-        let mut lineas: Vec<String> = t.lines().map(String::from).collect();
-        for r in &refs {
-            match sustituir_en(&lineas, r.pos, &nuevo_qname) {
-                Some((i, l)) => {
-                    lineas[i] = l;
-                    reapuntados.push(format!("{}  ·  {}", d.qname().unwrap_or_default(), r.clase));
-                }
-                None => {
-                    eprintln!(
-                        "error: no se pudo reapuntar `{}` en `{}`",
-                        r.clase,
-                        d.path.display()
-                    );
-                    eprintln!("  Nada se ha movido: o se hacen los tres pasos o ninguno.");
-                    return ExitCode::from(70);
-                }
-            }
-        }
-        // ¿Pasa a cruzar el límite del paquete? Entonces hace falta un
-        // `exports`, y esa decisión no es de aquí.
-        if ore_core::link::miembro_de(&miembros, &d.path) != Some(dir_destino) {
-            cruzan.push(d.qname().unwrap_or_default());
-        }
-        let mut nuevo = lineas.join("\n");
-        if t.ends_with('\n') {
-            nuevo.push('\n');
-        }
-        ediciones.insert(d.path.clone(), nuevo);
+    for c in &rastro.cruzan {
+        println!("      {c}");
     }
+    println!("    `exports` es «esto lo expongo a propósito», así que este mando no lo");
+    println!("    toca. En el manifiesto de `{destino}`:");
+    println!("      spec: {{ …, exports: [{}] }}", nuevos.join(", "));
+}
 
-    // ③ el anuncio en el manifiesto de ORIGEN
-    let Some(manifiesto_origen) = pkg
+fn aviso_de_version(pkg: &Package, dir_origen: &Path) {
+    let v = pkg
         .docs
         .iter()
         .filter(|d| d.kind == ore_core::document::Kind::Package)
         .find(|d| d.path.parent() == Some(dir_origen))
-    else {
-        eprintln!("error: `{qname}` no está dentro de ningún paquete");
-        return ExitCode::from(65);
-    };
-    let version = manifiesto_origen
-        .meta("version")
+        .and_then(|d| d.meta("version"))
         .and_then(|n| n.as_str())
         .unwrap_or("0.1.0")
         .to_string();
-    let desde = since.unwrap_or(&version);
-    let Ok(t) = std::fs::read_to_string(&manifiesto_origen.path) else {
-        eprintln!("error: no se pudo leer el manifiesto de origen");
-        return ExitCode::from(66);
-    };
-    let anuncio = match anunciar(&t, qname, &nuevo_qname, desde) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("error: no se pudo anunciar el movimiento: {e}");
-            eprintln!("  Nada se ha movido. Sin el anuncio, el nombre que desaparece es un");
-            eprintln!("  `OOS5007` y el movimiento se cobra como una supresión.");
-            return ExitCode::from(70);
-        }
-    };
-    ediciones.insert(manifiesto_origen.path.clone(), anuncio);
+    println!();
+    println!("  · `since: {v}` es la versión que el paquete declara HOY");
+    println!("    `ore diff` calcula el salto que este cambio exige. Si publicas con");
+    println!("    uno mayor, ajústala: `--since` la fija.");
+}
 
-    // ── Y ahora sí, se escribe ──────────────────────────────────────────────
-    if let Some(d) = destino_path.parent()
-        && let Err(e) = std::fs::create_dir_all(d)
-    {
-        eprintln!("error: no se pudo crear `{}`: {e}", d.display());
-        return ExitCode::from(73);
-    }
-    for (ruta, contenido) in &ediciones {
-        if let Err(e) = std::fs::write(ruta, contenido) {
-            eprintln!("error: no se pudo escribir `{}`: {e}", ruta.display());
-            return ExitCode::from(73);
-        }
-    }
-    if let Err(e) = std::fs::remove_file(&doc.path) {
-        eprintln!("error: no se pudo retirar `{}`: {e}", doc.path.display());
-        return ExitCode::from(73);
-    }
-
-    println!("  ✓ {qname} → {nuevo_qname}");
-    println!("  ✓ {}", destino_path.display());
-    println!(
-        "  ✓ anunciado en `{}` · since {desde}",
-        manifiesto_origen.path.display()
-    );
-    if !reapuntados.is_empty() {
-        println!();
-        println!("  {} referencia(s) reapuntada(s):", reapuntados.len());
-        for r in &reapuntados {
-            println!("    {r}");
-        }
-    }
-    if since.is_none() {
-        println!();
-        println!("  · `since: {desde}` es la versión que el paquete declara HOY");
-        println!("    `ore diff` calcula el salto que este cambio exige. Si publicas con");
-        println!("    uno mayor, ajústala: `--since` la fija.");
-    }
-    if !cruzan.is_empty() {
-        println!();
-        println!(
-            "  · ahora {} referencia(s) cruzan a `{destino}`:",
-            cruzan.len()
-        );
-        for c in &cruzan {
-            println!("      {c}");
-        }
-        println!("    `exports` es «esto lo expongo a propósito», así que este mando no lo");
-        println!("    toca. En el manifiesto de `{destino}`:");
-        println!("      spec: {{ …, exports: [{nuevo_qname}] }}");
-    }
-
+fn diagnosticos(raiz: &Path) -> ExitCode {
     let diags = ore_core::validate_package(raiz);
     if diags.is_empty() {
         println!();

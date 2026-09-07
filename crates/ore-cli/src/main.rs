@@ -242,6 +242,34 @@ enum AccionPaquete {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **¿En que piezas se parte este paquete?** Y, con `--to`, las mueve.
+    ///
+    /// SIN `--to` no mueve nada: enumera las COMPONENTES —los grupos de
+    /// documentos que se nombran entre si— y dice si el corte sale gratis. Es
+    /// el mismo reparto que `drift-detect`: ensenar y parar es un acto, mover
+    /// es otro, y fallan por separado.
+    ///
+    /// Y la respuesta tiene dos mitades, medidas. Sobre un paquete RECIEN
+    /// DESCUBIERTO la clausura es exacta y sale gratis —30 documentos en 10
+    /// componentes de 3, y mover una entera deja CERO referencias cruzando—.
+    /// Sobre uno MODELADO no hay corte gratis: el mas barato cuesta un cruce,
+    /// y entonces esto dice el precio en vez de buscarlo.
+    Split {
+        /// El paquete que se parte.
+        paquete: String,
+        /// Que documento se lleva. Repetible.
+        #[arg(long = "con", value_name = "QNAME")]
+        con: Vec<String>,
+        /// A donde. Sin esto, solo enumera.
+        #[arg(long = "to", value_name = "PAQUETE")]
+        a: Option<String>,
+        /// La version desde la que los nombres viejos dejan de estar.
+        #[arg(long)]
+        since: Option<String>,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
@@ -662,6 +690,15 @@ fn main() -> std::process::ExitCode {
         }
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);
+        }
+        Command::Package(AccionPaquete::Split {
+            paquete,
+            con,
+            a,
+            since,
+            path,
+        }) => {
+            return paquete::dividir(path, paquete, con, a.as_deref(), since.as_deref());
         }
         Command::Package(AccionPaquete::Move {
             qname,

@@ -336,3 +336,138 @@ fn las_negativas_no_mueven_nada() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── `ore package split` ─────────────────────────────────────────────────────
+
+/// **Sin `--to` no mueve nada**, y lo que enumera es lo que la medida encontró:
+/// un paquete recién descubierto son 30 documentos en **10 componentes de 3**
+/// —`Table` + `View` + `Entity` por objeto—.
+#[test]
+fn enumera_las_componentes_y_no_toca_nada() {
+    let dir = dos_paquetes("enumera");
+    let antes = codigos(&dir);
+
+    let (c, dicho) = ore(&dir, &["package", "split", "ventas"]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(
+        dicho.contains("30 documento(s), 10 componente(s)"),
+        "{dicho}"
+    );
+    assert!(dicho.contains("── 1 · 3 documento(s)"), "{dicho}");
+    assert!(
+        dicho.contains("sale entera SIN una sola referencia cruzando"),
+        "{dicho}"
+    );
+    assert_eq!(codigos(&dir), antes, "enumerar movió algo");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **El aserto que decide el verbo**: mover una componente entera deja el árbol
+/// EXACTAMENTE como estaba. Cero referencias cruzando, cero diagnósticos nuevos.
+///
+/// Es lo que una persona no calcula bien: moviendo la tabla sola quedaría un
+/// `OOS2028`, y la componente son tres documentos que hay que ver a la vez.
+#[test]
+fn una_componente_entera_sale_a_cero() {
+    let dir = dos_paquetes("componente");
+    let antes = codigos(&dir);
+
+    let (c, dicho) = ore(
+        &dir,
+        &[
+            "package",
+            "split",
+            "ventas",
+            "--to",
+            "eu",
+            "--con",
+            "ventas.Clientes",
+            "--con",
+            "ventas.clientes",
+            "--con",
+            "ventas.rubix_demo_ventas_clientes",
+        ],
+    );
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(dicho.contains("3 documento(s) → `eu`"), "{dicho}");
+    assert!(dicho.contains("el corte sale a cero"), "{dicho}");
+    assert_eq!(codigos(&dir), antes, "el corte dejó algo suyo:\n{dicho}");
+
+    // Y los tres están donde tienen que estar, con su espacio de nombres nuevo.
+    for f in [
+        "packages/eu/entities/Clientes.yaml",
+        "packages/eu/views/Clientes__rubix_demo_ventas_clientes.yaml",
+        "packages/eu/tables/Clientes__rubix_demo_ventas_clientes.yaml",
+    ] {
+        let t = std::fs::read_to_string(dir.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
+        assert!(t.contains("namespace: eu"), "{f}:\n{t}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Y un corte PARCIAL cuesta, y dice **qué falta para que salga a cero** — que
+/// es el aviso por el que este verbo existe.
+#[test]
+fn un_corte_parcial_dice_lo_que_cuesta_y_lo_que_falta() {
+    let dir = dos_paquetes("parcial");
+    let (c, dicho) = ore(
+        &dir,
+        &[
+            "package",
+            "split",
+            "ventas",
+            "--to",
+            "eu",
+            "--con",
+            "ventas.rubix_demo_ventas_mov_bak",
+        ],
+    );
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(dicho.contains("1 referencia(s) cruzan"), "{dicho}");
+    assert!(
+        dicho.contains("no es una componente entera") && dicho.contains("Con 2 más"),
+        "tiene que decir qué arrastra:\n{dicho}"
+    );
+    assert!(dicho.contains("ventas.Mov_bak"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un paquete **modelado** es una sola componente: no hay corte gratis, y esto
+/// lo dice en vez de fingir que sí.
+#[test]
+fn un_paquete_conectado_dice_que_no_hay_corte_gratis() {
+    let dir = std::env::temp_dir().join(format!("ore-split-conectado-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let origen =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/oos/examples/acme-retail");
+    copiar(&origen, &dir);
+
+    let (c, dicho) = ore(&dir, &["package", "split", "hr"]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(dicho.contains("1 componente(s)"), "{dicho}");
+    assert!(dicho.contains("no hay corte gratis"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn copiar(de: &Path, a: &Path) {
+    std::fs::create_dir_all(a).unwrap();
+    for e in std::fs::read_dir(de).unwrap().flatten() {
+        let d = a.join(e.file_name());
+        if e.path().is_dir() {
+            copiar(&e.path(), &d);
+        } else {
+            std::fs::copy(e.path(), d).unwrap();
+        }
+    }
+}
+
+/// Con `--to` y sin `--con` **no se parte por la mitad**: cuál es el corte no lo
+/// decide este mando.
+#[test]
+fn con_destino_y_sin_corte_se_niega() {
+    let dir = dos_paquetes("sin-corte");
+    let (c, dicho) = ore(&dir, &["package", "split", "ventas", "--to", "eu"]);
+    assert_eq!(c, Some(64), "{dicho}");
+    assert!(dicho.contains("sería inventar un límite"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
