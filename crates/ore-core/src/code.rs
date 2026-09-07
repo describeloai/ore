@@ -198,6 +198,19 @@ codes! {
     // piedra con un nombre. `dependencies` solo miraba duplicados y la forma
     // de la referencia.
     Oos2031 = "OOS2031", Reference, "se depende de un paquete retirado";
+    // LA AGRUPACION, y las dos formas de escribirla mal.
+    //
+    // `groupBy` parte el vocabulario de la vista en dos por primera vez: hasta
+    // aqui todo campo salia de UNA columna, y con una agrupacion sale de un
+    // conjunto de filas. Las dos reglas son las de SQL, y tienen remedios
+    // distintos: una se arregla en `groupBy`, la otra en `fields`.
+    Oos2032 = "OOS2032", Reference, "un campo que no se agrupa ni se agrega";
+    // Y esta NO es de SQL, que admite `SELECT count(*) FROM t` sin agrupar.
+    // Se midio: el linaje de un agregado global sale VACIO —no viene de
+    // ninguna columna raiz— asi que la comprobacion de flujo no tiene nada que
+    // mirar y la cardinalidad de la tabla sale sin gobierno. Agrupar le da al
+    // agregado una arista indirecta por cada clave.
+    Oos2033 = "OOS2033", Reference, "un agregado sin agrupacion no tiene linaje";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -327,6 +340,19 @@ codes! {
     Oos5030 = "OOS5030", Compatibility, "la frescura prometida por una vista se afloja";
     Oos5031 = "OOS5031", Compatibility, "la fuente de una vista admite menos";
     Oos5032 = "OOS5032", Compatibility, "lo que la fuente emite deja de sostener la copia";
+    // LA AGRUPACION, que cambia TODOS los numeros a la vez.
+    //
+    // Se midio antes de escribirlo: anadir una clave a `groupBy` salia
+    // «CONSUMER compatible · patch», y no lo es. Refinar la agrupacion parte
+    // cada grupo, asi que un `count()` que valia 400 pasa a valer 250 y 150 sin
+    // que ningun campo aparezca ni desaparezca — el consumidor lee la misma
+    // columna y recibe otra respuesta.
+    //
+    // Por eso NO se parte en «estrecha» y «ensancha» como el recorte: alli las
+    // dos direcciones tienen consecuencias distintas —una rompe al lector, la
+    // otra a la politica—; aqui las dos rompen lo mismo, porque lo que cambia
+    // no es que filas salen sino que PREGUNTA se contesta.
+    Oos5033 = "OOS5033", Compatibility, "la agrupacion de una vista cambia";
 
     // ── OOS6xxx · forma canónica ────────────────────────────────────────────
     Oos6003 = "OOS6003", Canonical, "pérdida de precisión: decimal sin representación en cadena";
@@ -441,12 +467,15 @@ mod tests {
             Code::Oos2029,
             Code::Oos2030,
             Code::Oos2031,
+            Code::Oos2032,
+            Code::Oos2033,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,
             Code::Oos5030,
             Code::Oos5031,
             Code::Oos5032,
+            Code::Oos5033,
             Code::Oos4015,
             Code::Oos5023,
             Code::Oos5024,

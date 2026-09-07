@@ -244,8 +244,119 @@ pub fn modo(t: &Loaded) -> Modo {
         .unwrap_or(Modo::Ninguno)
 }
 
+/// **Los cinco agregados de OOS.** Vocabulario cerrado, y lo es por lo mismo
+/// que `changes.mode`: si un documento pudiera inventar una función, el motor
+/// no sabría qué estado hace falta por grupo para mantenerla, y una copia se
+/// quedaría desactualizada sin que nadie lo notase.
+///
+/// Son exactamente los cinco que el IR sabe incrementalizar o rechazar con un
+/// motivo — `count` y `sum` con un acumulador, `min` y `max` guardando el
+/// multiconjunto porque no son invertibles bajo baja, y `avg` **rechazado**.
+pub const AGREGADOS: &[&str] = &["count", "sum", "min", "max", "avg"];
+
+/// Un agregado escrito en `fields`: la función y sobre qué columna.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agregado {
+    pub funcion: String,
+    /// `None` solo para `count`: contar filas no necesita columna.
+    pub sobre: Option<String>,
+}
+
+/// **¿Este valor de `fields` es un agregado?**
+///
+/// El discriminante es que termine en `)`, y no es una heurística: un nombre de
+/// columna no lleva paréntesis —lo dice [`es_nombre_de_columna`], que ya
+/// existía—. Así que `sum(importe)` no puede ser una columna llamada así, y una
+/// llamada mal escrita **no se degrada a columna**: es un error de forma.
+///
+/// Devuelve `None` si no es una llamada; `Some(Err)` si lo es y está mal.
+pub fn agregado(valor: &str) -> Option<Result<Agregado, String>> {
+    let t = valor.trim();
+    if !t.ends_with(')') {
+        return None;
+    }
+    let Some((nombre, resto)) = t.split_once('(') else {
+        return Some(Err(format!("`{t}` cierra un paréntesis que no abre")));
+    };
+    let nombre = nombre.trim();
+    let arg = resto[..resto.len() - 1].trim();
+    if !AGREGADOS.contains(&nombre) {
+        return Some(Err(format!(
+            "`{nombre}` no es un agregado de OOS: {}",
+            AGREGADOS.join(" · ")
+        )));
+    }
+    // `count(x)` se niega en vez de admitirse. En SQL cuenta los no nulos, y
+    // este motor no distingue: lo trataría como `count()` y daría OTRO NÚMERO
+    // sin decirlo. Un agregado que contesta de más en silencio es peor que uno
+    // que no está.
+    if nombre == "count" {
+        return Some(if arg.is_empty() {
+            Ok(Agregado {
+                funcion: nombre.to_string(),
+                sobre: None,
+            })
+        } else {
+            Err(format!(
+                "`count({arg})` no: en SQL cuenta los no nulos y aquí no se distingue, \
+                 así que daría otro número sin decirlo. Escribe `count()`"
+            ))
+        });
+    }
+    Some(if arg.is_empty() {
+        Err(format!(
+            "`{nombre}()` sin columna: solo `count` cuenta filas"
+        ))
+    } else if !es_nombre_de_columna(arg) {
+        Err(format!("`{arg}` no es un nombre de columna"))
+    } else {
+        Ok(Agregado {
+            funcion: nombre.to_string(),
+            sobre: Some(arg.to_string()),
+        })
+    })
+}
+
+/// Los agregados de una vista: **nombre de salida → qué agrega**.
+///
+/// Van en `fields` y no en una clave aparte porque **la salida de una vista es
+/// una sola lista de columnas**: repartirla en dos mapas obligaría a juntarlos
+/// mentalmente para saber qué sale, dejaría a `moved` y `reserved` sin decir a
+/// cuál alcanzan, y admitiría que los dos reclamasen el mismo nombre. En el IR
+/// tampoco hay dos: `Proyecta.campos` es uno.
+pub fn agregados(v: &Loaded) -> BTreeMap<String, Agregado> {
+    let mut out = BTreeMap::new();
+    let Some(fs) = v.section("fields") else {
+        return out;
+    };
+    for (k, val) in fs.entries() {
+        let (Some(nombre), Some(txt)) = (k.as_str(), val.as_str()) else {
+            continue;
+        };
+        if let Some(Ok(a)) = agregado(txt) {
+            out.insert(nombre.to_string(), a);
+        }
+    }
+    out
+}
+
+/// Las columnas por las que agrupa una vista, en el orden en que las declara.
+pub fn agrupacion(v: &Loaded) -> Vec<String> {
+    v.section("groupBy")
+        .map(|n| n.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|i| i.as_str().map(str::to_string))
+        .collect()
+}
+
 /// Campo → nombre en la fuente. Admite la forma breve y la expandida, como el
 /// mapeo del binding: la canónica es la expandida.
+///
+/// **Un agregado no sale por aquí.** Los cinco lectores de `fields` preguntan
+/// «de qué columna sale este campo», y de un agregado la respuesta es que de
+/// ninguna: sale de un conjunto de filas. Devolver `count()` como si fuera un
+/// nombre de columna los haría buscarla en la tabla y no encontrarla.
 ///
 /// La forma expandida se retira en v1alpha8 —existía para llevar
 /// `physicalType`, y el tipo físico lo dice ahora `columns`— y **esta función
@@ -263,7 +374,9 @@ pub fn campos(v: &Loaded) -> BTreeMap<String, String> {
                 .and_then(|(_, c)| c.as_str())
                 .map(str::to_string)
         });
-        if let Some(col) = col {
+        if let Some(col) = col
+            && agregado(&col).is_none()
+        {
             out.insert(nombre.to_string(), col);
         }
     }
@@ -347,6 +460,12 @@ pub enum NoInvertible {
     /// nadie clasifique llega aquí, en vez de colarse como invertible por no
     /// haberla mirado.
     ConstruccionDesconocida { vista: String, clave: String },
+    /// La clave está clasificada, y su respuesta es que no.
+    ///
+    /// Es la que faltaba: antes de `groupBy` el vocabulario entero se repartía
+    /// entre neutras e invertibles, así que un «no» solo podía llegar como
+    /// *desconocida* — y eso confunde una decisión tomada con un descuido.
+    NoSeDeshace { vista: String, clave: String },
 }
 
 /// Las claves de una `View` que **no cambian qué filas ni qué columnas salen**,
@@ -367,6 +486,16 @@ const NEUTRAS: &[&str] = &["owner", "freshness", "materialized", "moved", "reser
 /// | `fields` | renombrar es una biyección; proyectar pierde columnas, así que la escritura es **parcial**, no ambigua |
 /// | `where` | recortar es invertible: la fila escrita cumple el predicado, o se cae de la vista |
 const INVERTIBLES: &[&str] = &["from", "fields", "where"];
+
+/// Las que **no**, y esta lista nace con `groupBy`.
+///
+/// | | por qué |
+/// |---|---|
+/// | `groupBy` | de una agregación no se vuelve: la fila de salida es un conjunto de filas de entrada, y saber el total no dice cuáles eran |
+///
+/// Es, término a término, la primera de las condiciones que PostgreSQL exige
+/// para que una vista sea auto-actualizable y que esta ya no cumple.
+const NO_INVERTIBLES: &[&str] = &["groupBy"];
 
 /// **Por qué vistas escribe la ontología.** Derivado, nunca declarado.
 ///
@@ -437,6 +566,12 @@ pub fn invertible(v: &Loaded) -> Result<(), NoInvertible> {
     let qn = v.qname().unwrap_or_default();
     for (k, _) in v.root.get("spec").map(|(_, s)| s.entries()).unwrap_or(&[]) {
         let Some(clave) = k.as_str() else { continue };
+        if NO_INVERTIBLES.contains(&clave) {
+            return Err(NoInvertible::NoSeDeshace {
+                vista: qn,
+                clave: clave.to_string(),
+            });
+        }
         if NEUTRAS.contains(&clave)
             || INVERTIBLES.contains(&clave)
             || crate::document::is_extension(clave)
@@ -448,9 +583,13 @@ pub fn invertible(v: &Loaded) -> Result<(), NoInvertible> {
             clave: clave.to_string(),
         });
     }
-    // Un campo tiene que salir de UNA columna, nombrada. Hoy `OOS2018` ya exige
-    // que sea columna de la raíz, así que esto tampoco puede fallar; el día que
-    // `fields` admita una expresión, falla aquí antes que en ningún sitio.
+    // Un campo tiene que salir de UNA columna, nombrada. Esto dejó de ser
+    // inalcanzable el día que `fields` admitió un agregado: un `total:
+    // sum(importe)` llega aquí y se niega, que es exactamente lo que la cabecera
+    // anunciaba que pasaría cuando la gramática creciera.
+    if let Some((campo, _)) = agregados(v).into_iter().next() {
+        return Err(NoInvertible::CampoCalculado { vista: qn, campo });
+    }
     for (campo, origen) in campos(v) {
         if !es_nombre_de_columna(&origen) {
             return Err(NoInvertible::CampoCalculado { vista: qn, campo });
@@ -481,7 +620,9 @@ mod censo {
             .spec_keys_en(ApiVersion::V1Alpha8)
             .iter()
             .copied()
-            .filter(|k| !NEUTRAS.contains(k) && !INVERTIBLES.contains(k))
+            .filter(|k| {
+                !NEUTRAS.contains(k) && !INVERTIBLES.contains(k) && !NO_INVERTIBLES.contains(k)
+            })
             .collect();
         sin_clasificar.sort_unstable();
         assert!(
@@ -499,6 +640,7 @@ mod censo {
         let huerfanas: Vec<&&str> = NEUTRAS
             .iter()
             .chain(INVERTIBLES)
+            .chain(NO_INVERTIBLES)
             .filter(|k| !vocabulario.contains(k))
             .collect();
         assert!(
@@ -814,6 +956,60 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for v in pkg.of(Kind::View) {
         let qn = v.qname().unwrap_or_default();
 
+        // ── OOS2032 y OOS2033 · la agrupación cuadra consigo misma ──────────
+        //
+        // Las dos se contestan sin salir de la vista, así que van antes de
+        // resolver la raíz: valen igual sobre una tabla y sobre otra vista.
+        let ags = agregados(v);
+        let por = agrupacion(v);
+        if por.is_empty() {
+            // OOS2033 · y esta NO es la regla de SQL, que admite un `count(*)`
+            // sin agrupar. Se midió: el linaje de un agregado global sale
+            // VACÍO —no viene de ninguna columna raíz—, así que la
+            // comprobación de flujo no tiene nada que mirar y la cardinalidad
+            // de la tabla sale sin gobierno. Con `groupBy`, el mismo agregado
+            // gana una arista INDIRECTA por cada clave.
+            if let Some((campo, _)) = ags.iter().next() {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2033,
+                        &v.path,
+                        format!("`{qn}.{campo}` agrega sobre toda la tabla"),
+                    )
+                    .at(v.section("fields").map(Node::pos).unwrap_or(v.root.pos()))
+                    .help(
+                        "un agregado global no sale de ninguna columna, así que su linaje es \
+                         vacío y la regla de flujo no tiene nada que comprobar: el número de \
+                         filas se publicaría sin gobierno. Declara `groupBy` con las columnas \
+                         que parten el conjunto — cada una le da al agregado una arista",
+                    ),
+                );
+            }
+        } else {
+            // OOS2032 · la regla de SQL, y por la misma razón: una columna que
+            // no agrupa ni se agrega no tiene UN valor por grupo, tiene varios,
+            // y elegir uno sería inventárselo.
+            for (campo, col) in campos(v) {
+                if por.contains(&col) {
+                    continue;
+                }
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2032,
+                        &v.path,
+                        format!("`{qn}.{campo}` sale de `{col}`, que no se agrupa"),
+                    )
+                    .at(v.section("fields").map(Node::pos).unwrap_or(v.root.pos()))
+                    .help(format!(
+                        "en un grupo `{col}` tiene varios valores y esta vista pide uno: o entra \
+                         en `groupBy` —hoy agrupa por {}— o sale agregada, `{campo}: \
+                         max({col})`",
+                        por.join(" · ")
+                    )),
+                );
+            }
+        }
+
         // ── OOS2025 · lo que se escribe se debe materializar ────────────────
         //
         // El gemelo exacto de `OOS2020` leído por el otro lado. Una vista
@@ -913,9 +1109,29 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     let cols = columnas(tabla);
                     let tqn = tabla.qname().unwrap_or_default();
                     let mios = campos(v);
+                    // OOS2018 · lo que agrega, y por lo que agrupa, también son
+                    // columnas de la tabla. Es el mismo código porque es el
+                    // mismo defecto: un nombre que no existe.
+                    let ags = agregados(v);
                     if let Some(fs) = v.section("fields") {
                         for (k, val) in fs.entries() {
                             let Some(campo) = k.as_str() else { continue };
+                            if let Some(a) = ags.get(campo) {
+                                if let Some(sobre) = &a.sobre
+                                    && !cols.contains(sobre)
+                                {
+                                    out.push(no_es_columna(
+                                        &v.path,
+                                        val,
+                                        format!(
+                                            "`{qn}.{campo}` agrega `{sobre}`, que `{tqn}` no tiene"
+                                        ),
+                                        &tqn,
+                                        &cols,
+                                    ));
+                                }
+                                continue;
+                            }
                             let col = mios.get(campo).cloned().unwrap_or_default();
                             if !cols.contains(&col) {
                                 out.push(no_es_columna(
@@ -936,6 +1152,20 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                                     &v.path,
                                     k,
                                     format!("`{qn}` filtra por `{col}`, que `{tqn}` no tiene"),
+                                    &tqn,
+                                    &cols,
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(g) = v.section("groupBy") {
+                        for i in g.items() {
+                            let Some(col) = i.as_str() else { continue };
+                            if !cols.contains(col) {
+                                out.push(no_es_columna(
+                                    &v.path,
+                                    i,
+                                    format!("`{qn}` agrupa por `{col}`, que `{tqn}` no tiene"),
                                     &tqn,
                                     &cols,
                                 ));
@@ -1392,20 +1622,22 @@ mod tests {
         }
     }
 
-    /// **La guarda de invertibilidad, ejercida por las dos ramas.**
+    /// **La guarda de invertibilidad, ejercida por las tres ramas.**
     ///
-    /// Ningún documento OOS puede disparar esto hoy: el vocabulario de `View`
-    /// en v1alpha8 es exactamente el fragmento invertible, así que un
-    /// `groupBy` ni siquiera pasa de `OOS1005`. Se construye a mano, aquí,
-    /// **por el mismo motivo por el que el IR de `ore-view` tiene `Agrupa`
-    /// probado sin que ningún documento lo produzca**: la máquina se deja
-    /// lista antes que el vocabulario, y una máquina que nadie ejerce no está
-    /// lista, está escrita.
+    /// Hasta `groupBy` esto no lo podía disparar ningún documento: el
+    /// vocabulario de `View` era exactamente el fragmento invertible y una
+    /// agrupación ni pasaba de `OOS1005`. **Ya no.** Las dos primeras ramas de
+    /// abajo salen ahora de documentos conformes, y esa es la diferencia entre
+    /// una máquina escrita y una ejercida.
     ///
-    /// La rama que importa es la segunda: el defecto es **«no invertible»**.
-    /// Si algún día alguien amplía el vocabulario y se olvida de clasificar lo
-    /// nuevo, esto niega la escritura en vez de concederla por descuido — y el
-    /// censo de arriba hace que además no compile.
+    /// Y las tres respuestas son distintas a propósito:
+    ///
+    /// - `NoSeDeshace` — clasificado, y la respuesta es no;
+    /// - `CampoCalculado` — el campo no sale de una columna;
+    /// - `ConstruccionDesconocida` — **el defecto**, para lo que nadie
+    ///   clasificó. Si alguien amplía el vocabulario y se olvida, esto niega
+    ///   la escritura en vez de concederla por descuido, y el censo de arriba
+    ///   hace que además la suite se caiga.
     #[test]
     fn la_guarda_de_invertibilidad_niega_lo_que_no_sabe_clasificar() {
         // Lo que hoy se puede escribir: renombra, recorta y proyecta. Invertible.
@@ -1423,8 +1655,9 @@ mod tests {
         );
         assert_eq!(invertible(&buena), Ok(()));
 
-        // Un constructor que la gramática todavía no tiene. El defecto es «no».
-        let futura = doc(
+        // Una agrupación. Clasificada, y la respuesta es que de una agregación
+        // no se vuelve. Este documento SÍ es conforme.
+        let agrupada = doc(
             Kind::View,
             "apiVersion: oos.dev/v1alpha8\n\
              kind: View\n\
@@ -1436,15 +1669,35 @@ mod tests {
                groupBy: [country]\n",
         );
         assert_eq!(
-            invertible(&futura),
-            Err(NoInvertible::ConstruccionDesconocida {
+            invertible(&agrupada),
+            Err(NoInvertible::NoSeDeshace {
                 vista: "hr.por_pais".to_string(),
                 clave: "groupBy".to_string(),
             })
         );
 
-        // Y un campo que sale de calcularlo, que es lo primero que aparecería
-        // el día que `fields` admita algo más que un nombre.
+        // Un agregado, que es el otro camino y llega al otro motivo: el campo
+        // no sale de una columna, sale de un conjunto de filas.
+        let agregada = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha8\n\
+             kind: View\n\
+             metadata: { name: cuentas, namespace: hr }\n\
+             spec:\n  \
+               owner: team:rrhh\n  \
+               from: { table: erp.employees }\n  \
+               fields: { n: \"count()\" }\n",
+        );
+        assert_eq!(
+            invertible(&agregada),
+            Err(NoInvertible::CampoCalculado {
+                vista: "hr.cuentas".to_string(),
+                campo: "n".to_string(),
+            })
+        );
+
+        // Y un campo que sale de calcularlo por otra vía: una expresión que la
+        // gramática no admite, y que por eso no llega a ser un agregado.
         let calculada = doc(
             Kind::View,
             "apiVersion: oos.dev/v1alpha8\n\

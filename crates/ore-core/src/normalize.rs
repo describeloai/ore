@@ -152,6 +152,16 @@ const CONJUNTOS: &[&str] = &[
     "logged",
     "logs",
     "trustedLogs",
+    // `groupBy` es un CONJUNTO, y no hay que creerselo: el IR lo guarda como
+    // `BTreeSet` desde antes de que el vocabulario existiera. Agrupar por
+    // `[pais, ciudad]` y por `[ciudad, pais]` produce los mismos grupos con las
+    // mismas filas, asi que dos documentos que solo difieran en el orden son la
+    // misma pregunta y deben tener el mismo digest.
+    //
+    // Es el contraste exacto con `key`, dos listas mas abajo: aquella es una
+    // clave compuesta y se codifica POSICION A POSICION. La diferencia no es de
+    // estilo — es si el orden cambia la respuesta.
+    "groupBy",
 ];
 
 /// Lo que **no** es un conjunto, y por qué.

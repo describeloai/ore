@@ -365,6 +365,11 @@ struct Vista {
     /// Los campos que expone, por su nombre. Aquí sí es lo declarado y no el
     /// efecto: un campo es lo que el consumidor escribe.
     campos: BTreeSet<String>,
+    /// Por qué columnas agrupa. **De esta vista y no de la cadena**, al revés
+    /// que el recorte: agrupar no se acumula hacia abajo —una vista sobre otra
+    /// agrupa lo que la de abajo ya devolvió— así que componerlo sería inventar
+    /// una agrupación que nadie escribió.
+    agrupacion: BTreeSet<String>,
     /// Lo que esta vista anuncia sobre sus propios campos — `moved.from` y
     /// `reserved`. Un nombre anunciado no desaparece en silencio: desaparece
     /// con instrucciones.
@@ -625,6 +630,7 @@ fn shape(pkg: &Package) -> Shape {
                         lectura,
                         recorte,
                         campos,
+                        agrupacion: crate::vistas::agrupacion(d).into_iter().collect(),
                         anunciados: anunciados(d),
                         frescura: d
                             .section("freshness")
@@ -1390,6 +1396,24 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                 format!("{}·{}", antes.modo, antes.testigo),
                 format!("{}·{}", despues.modo, despues.testigo),
             ));
+        }
+
+        // OOS5033 · la agrupación, entera y no columna a columna: cambiar
+        // cualquier clave cambia TODOS los agregados a la vez, así que enseñar
+        // la diferencia por columnas sugeriría que se puede arreglar una.
+        if antes.agrupacion != despues.agrupacion {
+            let txt = |v: &BTreeSet<String>| {
+                if v.is_empty() {
+                    "sin agrupar".to_string()
+                } else {
+                    v.iter().cloned().collect::<Vec<_>>().join(",")
+                }
+            };
+            out.push(
+                Change::new(Code::Oos5033, Axis::Consumer)
+                    .sujeto(qn.clone())
+                    .de_a(txt(&antes.agrupacion), txt(&despues.agrupacion)),
+            );
         }
 
         // OOS5028 · OOS5029 · el recorte, columna a columna.

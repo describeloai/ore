@@ -139,10 +139,20 @@ decisiones que nadie puede computar por ti: `owner`, `from`, `where`, `materiali
 **El álgebra ancha del motor no es una segunda clase de vista.** `plan.rs` tiene `Une`, `Agrupa`
 y `Limita`; el Delta Compiler los incrementaliza y `tests/medidas.rs` los mide —y medirlos
 destapó un defecto real: los integradores de la junta y del agregado eran multiconjuntos planos,
-así que la incrementalización estaba escrita y no ocurría—. **Ningún documento OOS los produce**,
-y eso no es un hueco: el motor no decide qué se puede preguntar. La máquina se deja lista antes
-que el vocabulario, a propósito, y la puerta por la que se cruzaría es
-`ore_core::vistas::invertible`, cuyo defecto es «no».
+así que la incrementalización estaba escrita y no ocurría—. La máquina se deja lista antes que el
+vocabulario, a propósito, y la puerta por la que se cruza es `ore_core::vistas::invertible`, cuyo
+defecto es «no».
+
+**Y `Agrupa` ya se cruzó.** v1alpha8 añade `groupBy` y el agregado en `fields`, así que de los
+tres el agregado deja de ser inalcanzable: veintiséis funciones de producción de este motor —el
+tipo de salida, las dos aristas de linaje, el Check 4 del matcher, diez de mantenimiento
+incremental— pasan de estar probadas a mano a alcanzarse desde un documento. `Une` y `Limita`
+siguen sin producirse, y eso no es un hueco: el motor no decide qué se puede preguntar.
+
+Lo que se midió al cruzar, y conviene no perder: agrupar **sin** agregados es un `SELECT DISTINCT`
+y su linaje sale **directo**, así que no ejerce el flujo implícito; la arista indirecta aparece con
+el primer agregado. Un agregado **global** —sin `groupBy`— sale con linaje **vacío**, y por eso
+`OOS2033` lo niega: no es la regla de SQL, es la consecuencia de gobernar por linaje.
 
 Y «clase» ya significa otra cosa aquí, que además es **derivada**:
 [`02-view`](../vendor/oos/spec/v1alpha8/02-view.md) §5.5 llama **espejo** a la vista sin

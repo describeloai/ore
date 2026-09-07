@@ -635,3 +635,148 @@ fn una_pregunta_en_borrador_lo_dice_y_se_ve() {
     assert!(err.contains("OOS4003"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── La agrupación ───────────────────────────────────────────────────────────
+
+/// La vista que agrupa, escrita entera y pasada por la CLI.
+fn agrupada(campos: &str, group_by: &str) -> String {
+    format!(
+        "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+         metadata: {{ name: por_pais, namespace: hr }}\nspec:\n  \
+           owner: team:rrhh\n  from: {{ table: hr.employees }}\n  \
+           fields:\n{campos}{group_by}"
+    )
+}
+
+fn arbol(etiqueta: &str, vista: String) -> PathBuf {
+    paquete(
+        etiqueta,
+        &[
+            ("ontology.yaml", CONFIG),
+            ("packages/hr/package.yaml", PAQUETE),
+            ("packages/hr/tables/employees.yaml", TABLA),
+            ("packages/hr/views/por_pais.yaml", &vista),
+        ],
+    )
+}
+
+/// **Lo que enciende `groupBy`, visto desde fuera.**
+///
+/// No es una prueba de que el nodo se construya: es la afirmación de que el
+/// motor entero contesta sobre él. Tipo de salida, linaje con las dos aristas
+/// que ningún documento podía producir, y el modo de refresco.
+#[test]
+fn una_vista_que_agrupa_tipa_su_salida_y_deja_linaje_indirecto() {
+    let dir = arbol(
+        "agrupa",
+        agrupada(
+            "    pais: country\n    n: \"count()\"\n",
+            "  groupBy: [country]\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+
+    // `count()` sale entero sin declararlo en ninguna parte: lo dice el motor.
+    assert!(out.contains("esquema   n: Integer · pais: String"), "{out}");
+
+    // Y aquí está lo que esto vino a encender: la arista INDIRECT del grupo.
+    // `n` no sale de ninguna columna —cuenta filas— y aun así el linaje la ata
+    // a `country`, porque la clave de grupo decide qué filas se cuentan juntas.
+    assert!(
+        out.contains("linaje    n ← erp·public.employees.country  INDIRECT · Agrupacion"),
+        "{out}"
+    );
+    // Y el estado que un almacén necesitaría para mantenerlo, dicho antes de
+    // escribir nada: contar es un acumulador por grupo.
+    assert!(out.contains("agrupa · n: un acumulador por grupo"), "{out}");
+    // La clave de grupo, en cambio, sale directa: es ella misma.
+    assert!(
+        out.contains("linaje    pais ← erp·public.employees.country  DIRECT · Identidad"),
+        "{out}"
+    );
+
+    // Contar se mantiene con un acumulador por grupo.
+    assert!(out.contains("REFRESH_MODE = INCREMENTAL"), "{out}");
+}
+
+/// **`avg` no se incrementaliza, y el motor lo dice en vez de mantenerlo mal.**
+#[test]
+fn la_media_no_se_mantiene_incrementalmente_y_se_dice_por_que() {
+    let dir = arbol(
+        "media",
+        agrupada(
+            "    pais: country\n    media: \"avg(employee_id)\"\n",
+            "  groupBy: [country]\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    // El promedio de enteros no es un entero. Es el primer sitio por donde se
+    // perdería un decimal, y no se pierde.
+    assert!(out.contains("media: Decimal"), "{out}");
+    assert!(!out.contains("REFRESH_MODE = INCREMENTAL"), "{out}");
+}
+
+/// **`OOS2032`** — una columna que ni se agrupa ni se agrega.
+#[test]
+fn un_campo_que_no_se_agrupa_ni_se_agrega_se_niega() {
+    let dir = arbol(
+        "sin-agrupar",
+        agrupada(
+            "    pais: country\n    dni: national_id\n    n: \"count()\"\n",
+            "  groupBy: [country]\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    let todo = format!("{out}{err}");
+    assert!(todo.contains("OOS2032"), "{todo}");
+    assert!(todo.contains("national_id"), "{todo}");
+}
+
+/// **`OOS2033`** — un agregado sin agrupación, que SQL sí admite.
+#[test]
+fn un_agregado_global_se_niega_porque_su_linaje_es_vacio() {
+    let dir = arbol("global", agrupada("    n: \"count()\"\n", ""));
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    let todo = format!("{out}{err}");
+    assert!(todo.contains("OOS2033"), "{todo}");
+}
+
+/// **Una llamada mal escrita no se degrada a columna.**
+///
+/// Es la afirmación que sostiene todo el discriminante: si `sim(x)` se leyera
+/// como un nombre de columna, el error sería «la tabla no tiene `sim(x)`», que
+/// manda a mirar la tabla en vez de la palabra que no existe.
+#[test]
+fn un_agregado_que_no_existe_falla_en_la_forma_y_no_como_columna() {
+    let dir = arbol(
+        "inventado",
+        agrupada(
+            "    pais: country\n    x: \"sim(country)\"\n",
+            "  groupBy: [country]\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    let todo = format!("{out}{err}");
+    assert!(todo.contains("`sim` no es un agregado"), "{todo}");
+    assert!(!todo.contains("OOS2018"), "{todo}");
+}
+
+/// **`count(x)` se niega en vez de contestar otro número.**
+#[test]
+fn contar_una_columna_se_niega_porque_daria_otro_numero() {
+    let dir = arbol(
+        "cuenta-columna",
+        agrupada(
+            "    pais: country\n    n: \"count(national_id)\"\n",
+            "  groupBy: [country]\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    assert!(format!("{out}{err}").contains("count()"), "{out}{err}");
+}

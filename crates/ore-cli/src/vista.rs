@@ -32,11 +32,17 @@
 //! plan se fabrica aquí en cada invocación, **no se persiste**, y el mismo
 //! documento da el mismo plan con la misma identidad. De ahí sale lo que a
 //! primera vista parece un cabo suelto: el IR de `ore-view` tiene `Une`,
-//! `Agrupa` y `Limita`, y ningún documento OOS los produce. No es un hueco —el
-//! motor no decide qué se puede preguntar, y esta es su única entrada—, ni es
-//! una segunda clase de vista: «clase» ya nombra otra cosa, y derivada
-//! (`02-view` §5.5, **espejo** o **registro**). Está en
+//! `Agrupa` y `Limita`, y no todos se producen. No es un hueco —el motor no
+//! decide qué se puede preguntar, y esta es su única entrada—, ni es una
+//! segunda clase de vista: «clase» ya nombra otra cosa, y derivada (`02-view`
+//! §5.5, **espejo** o **registro**). Está en
 //! [`docs/view-engine.md`](../../../docs/view-engine.md) §5.
+//!
+//! **`Agrupa` ya se produce**, desde que v1alpha8 tiene `groupBy` y el agregado
+//! en `fields`. Se fabrica entre el filtro y la proyección, que es donde el
+//! álgebra lo pone: se recorta antes de agrupar —si no, los grupos llevarían
+//! filas que la vista no responde— y se renombra después. `Une` y `Limita`
+//! siguen esperando su vocabulario.
 //!
 //! # Lo que no hace
 //!
@@ -53,8 +59,8 @@ use ore_core::types::{Type, parse_type};
 use ore_core::vistas;
 use ore_view::refresh_analyzer::analizar_con;
 use ore_view::{
-    Capacidades, Catalogo, Clase, Clasificacion, Comparador, Emite, Expr, Lectura, Nodo, Raiz,
-    Valor, Vista, comprobar, esquema, linaje, repartir,
+    Agregacion, Agregado, Capacidades, Catalogo, Clase, Clasificacion, Comparador, Emite, Expr,
+    Lectura, Nodo, Raiz, Valor, Vista, comprobar, esquema, linaje, repartir,
 };
 
 /// El conducto que una vista materializada instancia. El mismo que el eje
@@ -741,12 +747,60 @@ pub(crate) fn cuerpo(
         }
     };
 
+    // El agregado, entre el filtro y la proyección, que es donde el álgebra lo
+    // pone: se recorta ANTES de agrupar —si no, los grupos incluirían filas que
+    // la vista no responde— y se renombra DESPUÉS.
+    //
+    // Después de `Agrupa` lo que hay arriba son las columnas de grupo con su
+    // nombre de origen más los agregados con su nombre de salida, así que la
+    // proyección de abajo sigue valiendo tal cual: un agregado se proyecta
+    // sobre sí mismo.
+    let ags = vistas::agregados(v);
+    let por = vistas::agrupacion(v);
+    let agrupada = if por.is_empty() && ags.is_empty() {
+        filtrada
+    } else {
+        Nodo::Agrupa {
+            entrada: Box::new(filtrada),
+            por: por.iter().cloned().collect(),
+            agregados: ags
+                .iter()
+                .map(|(nombre, a)| {
+                    (
+                        nombre.clone(),
+                        Agregacion {
+                            funcion: agregado_del_motor(&a.funcion),
+                            sobre: a.sobre.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    };
+
     Nodo::Proyecta {
-        entrada: Box::new(filtrada),
+        entrada: Box::new(agrupada),
         campos: campos
             .iter()
             .map(|(campo, en_fuente)| (campo.clone(), Expr::campo(en_fuente)))
+            .chain(ags.keys().map(|n| (n.clone(), Expr::campo(n))))
             .collect(),
+    }
+}
+
+/// El nombre del documento → el del IR. Son dos vocabularios y no uno: el del
+/// documento es de OOS y está publicado; el del IR es interno y ya existía.
+/// Traducir aquí es lo mismo que hace el resto de esta costura.
+///
+/// El `_` no puede ocurrir: la forma ya rechazó todo lo que no está en
+/// `vistas::AGREGADOS`, y esas dos listas las ata un censo.
+fn agregado_del_motor(f: &str) -> Agregado {
+    match f {
+        "sum" => Agregado::Suma,
+        "min" => Agregado::Minimo,
+        "max" => Agregado::Maximo,
+        "avg" => Agregado::Promedio,
+        _ => Agregado::Cuenta,
     }
 }
 
@@ -964,4 +1018,54 @@ fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
         out.insert(datasource, c);
     }
     out
+}
+
+#[cfg(test)]
+mod censo {
+    use super::*;
+
+    /// **Los dos vocabularios de agregados dicen lo mismo.**
+    ///
+    /// `vistas::AGREGADOS` es lo que un documento puede escribir y está
+    /// publicado en el esquema; `ore_view::Agregado` es lo que el motor sabe
+    /// mantener. Que coincidan no es una casualidad afortunada: es la
+    /// condición para que el `_` de [`agregado_del_motor`] sea inalcanzable, y
+    /// sin esto ese `_` convertiría cualquier nombre nuevo en un `count`
+    /// silencioso.
+    ///
+    /// Añadir una función a una de las dos listas sin añadirla a la otra
+    /// **cae aquí**, que es antes de que un documento cuente lo que no debía.
+    #[test]
+    fn los_dos_vocabularios_de_agregados_se_cubren() {
+        const DEL_MOTOR: &[Agregado] = &[
+            Agregado::Cuenta,
+            Agregado::Suma,
+            Agregado::Minimo,
+            Agregado::Maximo,
+            Agregado::Promedio,
+        ];
+
+        let traducidos: Vec<Agregado> = vistas::AGREGADOS
+            .iter()
+            .map(|f| agregado_del_motor(f))
+            .collect();
+
+        for esperado in DEL_MOTOR {
+            assert!(
+                traducidos.contains(esperado),
+                "ningun nombre de OOS produce {esperado:?}: el motor sabe mantenerlo y \
+                 ningun documento puede pedirlo"
+            );
+        }
+        for (i, a) in traducidos.iter().enumerate() {
+            for (j, b) in traducidos.iter().enumerate() {
+                assert!(
+                    i == j || a != b,
+                    "`{}` y `{}` traducen al mismo agregado: uno de los dos cuenta lo que no es",
+                    vistas::AGREGADOS[i],
+                    vistas::AGREGADOS[j]
+                );
+            }
+        }
+    }
 }

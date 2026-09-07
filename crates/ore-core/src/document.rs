@@ -544,6 +544,14 @@ impl Kind {
                 // v1alpha8, y sin esto la de arriba no la alcanza.
                 "moved",
                 "reserved",
+                // LA PRIMERA CLAVE QUE SACA A LA VISTA DEL FRAGMENTO
+                // INVERTIBLE. Hasta aqui el vocabulario de `View` era
+                // exactamente lo que PostgreSQL admite como vista
+                // auto-actualizable, y eso no se busco: se descubrio al migrar
+                // (`00-scope` §6.1). Con `groupBy` deja de serlo, a proposito,
+                // y por eso `vistas::invertible` gana una tercera lista en vez
+                // de heredar un «si» que nadie escribio.
+                "groupBy",
             ],
             _ => self.spec_keys(),
         }
@@ -1135,6 +1143,35 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                                 .into(),
                         ),
                     ));
+                }
+                None
+            },
+        },
+        // Un agregado mal escrito NO se degrada a columna. El discriminante es
+        // el parentesis de cierre, asi que `sim(importe)` no es una columna con
+        // un nombre raro: es una llamada a algo que no existe, y decirlo aqui
+        // —en la forma— es lo que impide que llegue a `OOS2018` disfrazada de
+        // «la tabla no tiene esa columna», que es el mensaje equivocado.
+        ShapeRule {
+            kind: Kind::View,
+            path: &["spec", "fields"],
+            check: |n| {
+                for (k, v) in n.entries() {
+                    let (Some(campo), Some(txt)) = (k.as_str(), v.as_str()) else {
+                        continue;
+                    };
+                    if let Some(Err(e)) = crate::vistas::agregado(txt) {
+                        return Some((
+                            format!("`{campo}`: {e}"),
+                            Some(format!(
+                                "el vocabulario de agregados es cerrado —{}— por lo mismo que \
+                                 `changes.mode`: si un documento pudiera inventar una funcion, \
+                                 el motor no sabria que estado hace falta por grupo para \
+                                 mantenerla",
+                                crate::vistas::AGREGADOS.join(" · ")
+                            )),
+                        ));
+                    }
                 }
                 None
             },
