@@ -33,6 +33,23 @@
 //! alcanzar — y dos derivaciones de la misma cosa divergen en la que ninguna
 //! prueba ejerce.
 //!
+//! # La truncación que no avisa
+//!
+//! `bq` imprime como mucho `--max_rows` filas y **no dice que cortó**. Una copia
+//! poblada con menos filas de las que hay responde, sus números salen, y son de
+//! menos: es la categoría de fallo que este árbol persigue, el que no tiene
+//! síntoma. Y **no se arregla subiendo el tope**, porque cualquier tope se
+//! alcanza algún día y el día que se alcance tampoco lo dirá.
+//!
+//! Se pide **una fila más de las que se admiten**. Si llega, había más de las
+//! que caben y esto se niega. Es exacto, y esa es la gracia: distingue «hay
+//! justo el tope» —que es correcto y se sirve— de «hay más» —que no se puede
+//! servir—. `bq ls` tiene la misma trampa con `--max_results`, y lleva la misma
+//! cuenta.
+//!
+//! De los dos errores posibles se comete el reversible: negarse deja al operador
+//! recortando la vista, y truncar deja una copia que nadie va a sospechar.
+//!
 //! # Lo que NO está medido contra un dataset real, y se dice
 //!
 //! La traducción está probada entera y **sin servidor**, que es lo que hace que
@@ -54,6 +71,41 @@ use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
+
+/// Las filas que este driver admite servir de una vez.
+///
+/// El número no lo dicta nada del mundo: es el que ya estaba, y lo que cambia
+/// no es cuál sea sino que **se sepa cuándo se pasa**.
+const TOPE: usize = 1_000_000;
+
+/// Los datasets que admite enumerar `explorar`. Mismo criterio.
+const TOPE_DATASETS: usize = 1_000;
+
+/// Si lo que llegó cabía.
+///
+/// Se le pide a `bq` `tope + 1`, así que `tope + 1` respuestas significan **al
+/// menos** una de más: no se sabe cuántas hay, y por eso el mensaje no lo dice.
+/// Justo `tope` es correcto y se sirve.
+fn dentro_del_tope(llegaron: usize, tope: usize, que: &str, salida: &str) -> Result<(), String> {
+    if llegaron <= tope {
+        return Ok(());
+    }
+    Err(format!(
+        "el origen tiene más de {tope} {que} y `bq` los habría cortado sin decirlo.\n  \
+         Una copia poblada con menos filas de las que hay responde, y sus números son de \
+         menos.\n  {salida}"
+    ))
+}
+
+/// Analiza lo que dijo `bq` **y comprueba que no se corte**. Una sola puerta:
+/// tres sitios lo parseaban por su cuenta, y la comprobación en dos de tres es
+/// la que no se nota.
+fn analizar(salida: &str, tope: usize, que: &str, remedio: &str) -> Result<ore_core::parse::Node, String> {
+    let arbol = ore_core::parse::parse(salida)
+        .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
+    dentro_del_tope(arbol.items().len(), tope, que, remedio)?;
+    Ok(arbol)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -175,8 +227,12 @@ fn filas(peticion: &str) -> Result<String, String> {
         parametros: c.parametros,
     })?;
 
-    let arbol = ore_core::parse::parse(&salida)
-        .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
+    let arbol = analizar(
+        &salida,
+        TOPE,
+        "filas",
+        "Recorta la vista con un `where`, o materialízala por tramos.",
+    )?;
 
     let mut out = String::new();
     for fila in arbol.items() {
@@ -208,8 +264,7 @@ fn filas(peticion: &str) -> Result<String, String> {
 /// está en [`ore_sql`].
 fn tipos_de(proyecto: &str, objeto: &str) -> Result<BTreeMap<String, String>, String> {
     let salida = bq(proyecto, &consultas::tipos(proyecto, objeto)?)?;
-    let arbol = ore_core::parse::parse(&salida)
-        .map_err(|e| format!("lo que devolvió `bq` para los tipos no analiza: {e:?}"))?;
+    let arbol = analizar(&salida, TOPE, "columnas", "")?;
     let mut out = BTreeMap::new();
     for f in arbol.items() {
         let campo = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
@@ -264,8 +319,7 @@ fn testigo(peticion: &str) -> Result<String, String> {
     };
     let proyecto = proyecto(&url)?;
     let salida = bq(&proyecto, &consultas::maximo(&proyecto, &objeto, &c)?)?;
-    let arbol = ore_core::parse::parse(&salida)
-        .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
+    let arbol = analizar(&salida, TOPE, "filas", "")?;
     let maximo = arbol
         .items()
         .first()
@@ -300,7 +354,8 @@ fn explorar(url: &str) -> Result<String, String> {
             "ls".to_string(),
             "--format=prettyjson".to_string(),
             "--datasets=true".to_string(),
-            "--max_results=1000".to_string(),
+            // Uno más de los que se admiten: ver la cabecera.
+            format!("--max_results={}", TOPE_DATASETS + 1),
             format!("--project_id={proyecto}"),
         ])
         .stdin(Stdio::null())
@@ -316,8 +371,13 @@ fn explorar(url: &str) -> Result<String, String> {
         ));
     }
     let texto = String::from_utf8_lossy(&salida.stdout).into_owned();
-    let arbol = ore_core::parse::parse(&texto)
-        .map_err(|e| format!("lo que devolvio `bq ls` no analiza: {e:?}"))?;
+    let arbol = analizar(
+        &texto,
+        TOPE_DATASETS,
+        "datasets",
+        "Un sondeo parcial con el aspecto de uno completo es peor que ninguno: \
+         declara por su URL el dataset que buscas.",
+    )?;
     let mut fuera: Vec<ore_core::json::Json> = Vec::new();
     for d in arbol.items() {
         // `datasetReference.datasetId` es lo documentado; `id` —`proyecto:ds`—
@@ -396,7 +456,9 @@ fn bq(proyecto: &str, i: &consultas::Invocacion) -> Result<String, String> {
         "query".into(),
         "--format=prettyjson".into(),
         "--use_legacy_sql=false".into(),
-        "--max_rows=1000000".into(),
+        // Una más de las que se admiten, para poder distinguir «justo el tope»
+        // de «más de las que caben». Ver la cabecera.
+        format!("--max_rows={}", TOPE + 1),
         "--quiet".into(),
         format!("--project_id={proyecto}"),
     ];
@@ -438,5 +500,31 @@ mod tests {
         assert_eq!(proyecto("bigquery://acme").as_deref(), Ok("acme"));
         assert!(proyecto("postgres://x").is_err());
         assert!(proyecto("bigquery:///hr").is_err());
+    }
+
+    /// **Justo el tope se sirve; una más se niega.**
+    ///
+    /// La frontera es el test entero: pedir `tope + 1` solo sirve de algo si
+    /// `tope` exacto sigue pasando. Con la comparación mal puesta —`>=`— una
+    /// tabla de justo un millón de filas dejaría de poder materializarse, que
+    /// es el error simétrico y tampoco avisa de nada.
+    #[test]
+    fn el_tope_se_alcanza_y_no_se_pasa() {
+        assert!(dentro_del_tope(0, 2, "filas", "").is_ok());
+        assert!(dentro_del_tope(2, 2, "filas", "").is_ok());
+        let e = dentro_del_tope(3, 2, "filas", "recorta").unwrap_err();
+        assert!(e.contains("más de 2 filas"), "{e}");
+        assert!(e.contains("sin decirlo"), "{e}");
+        assert!(e.contains("recorta"), "{e}");
+    }
+
+    /// Y lo que de verdad se quiere sujetar: que `bq` cortando en seco lo
+    /// **parezca**. Se le da a `analizar` una respuesta con una fila de más y
+    /// tiene que negarse, no devolver las que caben.
+    #[test]
+    fn una_respuesta_cortada_no_pasa_por_analizar() {
+        let tres = r#"[{"a":"1"},{"a":"2"},{"a":"3"}]"#;
+        assert!(analizar(tres, 3, "filas", "").is_ok());
+        assert!(analizar(tres, 2, "filas", "").is_err());
     }
 }
