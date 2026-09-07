@@ -407,6 +407,17 @@ fn testigo(
     // logica esta apagada: el documento no miente, esta desactualizado. Callarlo
     // dejaria una copia con un testigo vacio y nadie sabria por que no se
     // refresca.
+    // **Y aquí NO se comprueba la deriva entera, a propósito.** Atlas aborta un
+    // `migrate apply` si el esquema derivó, y el argumento vale: una copia viaja
+    // sellada con la clasificación de los campos de la vista, y si el origen
+    // dejó de empujar la proyección el sello miente (`OOS2029`). Pero un chequeo
+    // completo es una consulta facturada en el camino caliente, y `migrate
+    // apply` es raro y deliberado mientras esto corre en un horario.
+    //
+    // La regla que sale de ahí y vale para todo el árbol: **lo que el driver ya
+    // contesta se comprueba gratis; lo que hay que ir a preguntar es otro acto**
+    // —`ore drift-detect`—. Esto es la mitad gratis: el testigo viene en la
+    // respuesta que ya se pide.
     if modo != declarado {
         eprintln!(
             "aviso · `{}` declara `witness: {declarado}` y el origen contesta `{modo}`: manda el \

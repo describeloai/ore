@@ -805,7 +805,7 @@ pub fn comprobar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
     std::process::ExitCode::from(69) // EX_UNAVAILABLE
 }
 
-fn imprimir(f: Fallo) -> std::process::ExitCode {
+pub fn imprimir(f: Fallo) -> std::process::ExitCode {
     eprintln!("error: {}", f.mensaje);
     for l in f.ayuda {
         eprintln!("{l}");

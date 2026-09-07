@@ -10,6 +10,7 @@
 mod autoria;
 mod cache;
 mod candado;
+mod deriva;
 mod empaquetar;
 mod fuente;
 mod inductor;
@@ -332,9 +333,38 @@ enum Command {
         #[arg(long, value_name = "FICHERO")]
         answers: Option<PathBuf>,
     },
-    /// Compara la declaración con el esquema físico real y abre un pull request.
+    /// **¿Qué se movió en el origen desde que se declaró?** Enseña y para.
+    ///
+    /// `ore diff` contesta «¿quién se rompe?» —una relación entre dos
+    /// versiones— y esto contesta «¿qué se movió?» —una relación entre el mundo
+    /// y lo dicho—. Una columna nueva que ninguna vista proyecta es invisible
+    /// para `diff`, y está bien que lo sea: es justo la mitad que esto cuenta.
+    ///
+    /// Compara el catálogo del origen contra las `kind: Table` del paquete, que
+    /// son la declaración del plano físico. Lo de gobierno —quién responde, la
+    /// madurez, la frescura, las etiquetas— no se mira: compararlo daría deriva
+    /// en todos los paquetes gobernados, siempre.
+    ///
+    /// **Sale con `2` si hay deriva y con `0` si no.** No es un `sysexit`, y es
+    /// a propósito: es la convención de `terraform plan -detailed-exitcode`, y
+    /// existe para que esto entre en un pipeline sin parsear su salida. Los
+    /// errores usan los `sysexits` del resto, para que «no pude preguntar» y
+    /// «el origen cambió» no se confundan nunca.
+    ///
+    /// Y no corrige nada. Escribir la corrección es otro acto.
     #[command(name = "drift-detect")]
-    DriftDetect,
+    DriftDetect {
+        /// La fuente declarada a la que preguntar.
+        #[arg(long, conflicts_with = "from")]
+        source: Option<String>,
+        /// Un catálogo ya leído. **Es el que hace esto probable**: un aserto
+        /// que exigiera un servidor no se ejecutaría nunca en la suite.
+        #[arg(long, value_name = "FICHERO")]
+        from: Option<PathBuf>,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 
     // ── Compilador ──────── CI · hermético: sin red, sin credenciales, sin reloj
     /// Comprueba consistencia de reglas, tipados y políticas.
@@ -574,6 +604,19 @@ fn main() -> std::process::ExitCode {
         Command::Source(AccionFuente::Catalog { name, out, path }) => {
             return lector::emitir_catalogo(path, name, out.as_deref());
         }
+        Command::DriftDetect { source, from, path } => {
+            let origen = match (source, from) {
+                (_, Some(f)) => deriva::Origen::Fichero(f),
+                (Some(s), None) => deriva::Origen::Fuente(s),
+                (None, None) => {
+                    eprintln!("error: hace falta `--source <fuente>` o `--from <fichero>`");
+                    eprintln!("  Son dos actos y fallan por separado: preguntarle al origen");
+                    eprintln!("  necesita una credencial, y comparar no necesita nada.");
+                    return std::process::ExitCode::from(64); // EX_USAGE
+                }
+            };
+            return deriva::detectar(path, origen);
+        }
         Command::Source(AccionFuente::Add {
             name,
             url,
@@ -612,12 +655,12 @@ fn main() -> std::process::ExitCode {
         | Command::Lock { .. }
         | Command::Pack { .. }
         | Command::Source(_)
+        | Command::DriftDetect { .. }
         | Command::Cache(_) => unreachable!(),
         Command::Lint { .. } => ("lint", "posterior"),
         Command::Test { .. } => ("test", "posterior"),
         Command::Plan { .. } => ("plan", "posterior"),
         Command::Promote { .. } => ("promote", "posterior"),
-        Command::DriftDetect => ("drift-detect", "posterior"),
         Command::Serve { .. } => ("serve", "posterior"),
     };
 
@@ -646,7 +689,7 @@ fn implementados() -> Vec<String> {
 
 /// Lo que está declarado y todavía no hace nada. Es la lista corta, y es la que
 /// encoge: un comando desaparece de aquí el día que existe.
-const SIN_IMPLEMENTAR: [&str; 6] = ["lint", "test", "plan", "promote", "drift-detect", "serve"];
+const SIN_IMPLEMENTAR: [&str; 5] = ["lint", "test", "plan", "promote", "serve"];
 
 /// `ore validate` — nivel L0. Hermético: no abre un socket ni lee una credencial.
 fn validar(path: &std::path::Path) -> std::process::ExitCode {
