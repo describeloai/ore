@@ -49,7 +49,7 @@ const CONFIG: &str = "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\n\
      - { name: erp, type: postgres, connectionEnv: ERP_URL }\n";
 
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-     metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+     metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
      object: public.employees\n  columns:\n    employee_id: {}\n    country: {}\n  \
      reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
      changes: { mode: retract, witness: log }\n";
@@ -66,7 +66,7 @@ fn vista(campos: &str, extra: &str) -> String {
     format!(
         "apiVersion: oos.dev/v1alpha8\nkind: View\n\
          metadata: {{ name: empleados, namespace: hr }}\nspec:\n  owner: team:hr\n  \
-         from: {{ table: erp.employees }}\n  fields:\n{campos}{extra}"
+         from: {{ table: hr.employees }}\n  fields:\n{campos}{extra}"
     )
 }
 

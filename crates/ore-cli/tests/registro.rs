@@ -255,7 +255,7 @@ fn una_candidata_que_no_expone_la_columna_dice_cual() {
             (
                 "tables/employees.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-                 metadata: { name: employees, namespace: erp }\nspec:\n  \
+                 metadata: { name: employees, namespace: hr }\nspec:\n  \
                  datasource: erp\n  object: \"public.employees\"\n  \
                  columns: { employee_id: {}, dept_id: {}, salario: {} }\n  \
                  reads: { fullScan: cheap }\n  changes: { mode: retract, witness: log }\n",
@@ -264,7 +264,7 @@ fn una_candidata_que_no_expone_la_columna_dice_cual() {
                 "views/empleados.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: View\n\
                  metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-                 from: { table: erp.employees }\n  \
+                 from: { table: hr.employees }\n  \
                  fields: { employeeId: employee_id, departmentId: dept_id, salario: salario }\n",
             ),
             (
@@ -340,7 +340,7 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
         (
             "tables/employees.yaml",
             "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-             metadata: { name: employees, namespace: erp }\nspec:\n  \
+             metadata: { name: employees, namespace: hr }\nspec:\n  \
              datasource: erp\n  object: \"public.employees\"\n  columns:\n    \
              employee_id: {}\n    dept_id: {}\n  reads:\n    fullScan: cheap\n  \
              changes: { mode: retract, witness: log }\n",
@@ -348,7 +348,7 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
         (
             "tables/departments.yaml",
             "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-             metadata: { name: departments, namespace: erp }\nspec:\n  \
+             metadata: { name: departments, namespace: hr }\nspec:\n  \
              datasource: erp\n  object: \"public.departments\"\n  columns:\n    \
              dept_pk: {}\n    nombre: {}\n  reads:\n    fullScan: cheap\n  \
              changes: { mode: retract, witness: log }\n",
@@ -357,14 +357,14 @@ fn una_relacion_obligatoria_entre_entidades_con_respaldo_da_una_referencial() {
             "views/empleados.yaml",
             "apiVersion: oos.dev/v1alpha8\nkind: View\n\
              metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-             from: { table: erp.employees }\n  fields:\n    \
+             from: { table: hr.employees }\n  fields:\n    \
              employeeId: employee_id\n    departmentId: dept_id\n",
         ),
         (
             "views/departamentos.yaml",
             "apiVersion: oos.dev/v1alpha8\nkind: View\n\
              metadata: { name: departamentos, namespace: hr }\nspec:\n  owner: team:hr\n  \
-             from: { table: erp.departments }\n  fields:\n    \
+             from: { table: hr.departments }\n  fields:\n    \
              departmentId: dept_pk\n    nombre: nombre\n",
         ),
         (
@@ -455,7 +455,7 @@ fn una_copia_que_no_puede_fecharse_declara_el_estado_degradado() {
             (
                 "tables/employees.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-                 metadata: { name: employees, namespace: erp }\nspec:\n  \
+                 metadata: { name: employees, namespace: hr }\nspec:\n  \
                  datasource: erp\n  object: \"public.employees\"\n  \
                  columns: { employee_id: {}, country: {} }\n  \
                  reads: { fullScan: cheap }\n  \
@@ -465,7 +465,7 @@ fn una_copia_que_no_puede_fecharse_declara_el_estado_degradado() {
                 "views/empleados.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: View\n\
                  metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-                 from: { table: erp.employees }\n  freshness: 10m\n  \
+                 from: { table: hr.employees }\n  freshness: 10m\n  \
                  fields: { employeeId: employee_id, pais: country }\n  \
                  where: { country: ES }\n  \
                  materialized: { datasource: lago, table: \"cache.empleados\" }\n",

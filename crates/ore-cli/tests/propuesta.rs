@@ -58,7 +58,7 @@ fn runner(dir: &Path, funcion: &str, escribe: &str, clave: (&str, &str), valor: 
         "{{\n  \"funcion\": \"{funcion}\",\n  \"bajo\": {{\n    \
          \"bundle\": \"{bundle}\",\n    \
          \"plan\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\n    \
-         \"testigos\": {{ \"erp.employees\": \"42\" }},\n    \
+         \"testigos\": {{ \"hr.employees\": \"42\" }},\n    \
          \"topologia\": \"1\",\n    \
          \"vista\": \"{vista}\"\n  }},\n  \
          \"edits\": [\n    {{ \"escribe\": \"{escribe}\", \
@@ -94,7 +94,7 @@ const PAQUETE: &str = "apiVersion: oos.dev/v1alpha1\n\
 
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\n\
                      kind: Table\n\
-                     metadata: { name: employees, namespace: erp }\n\
+                     metadata: { name: employees, namespace: hr }\n\
                      spec:\n  \
                        datasource: erp\n  \
                        object: 'public.employees'\n  \
@@ -150,7 +150,7 @@ fn vista(campos: &str) -> String {
          metadata: {{ name: empleados, namespace: hr }}\n\
          spec:\n  \
            owner: team:rrhh\n  \
-           from: {{ table: erp.employees }}\n  \
+           from: {{ table: hr.employees }}\n  \
            fields:\n{campos}  \
            materialized: {{ datasource: lago, table: 'cache.hr_empleados' }}\n"
     )
@@ -218,7 +218,7 @@ fn un_edit_fuera_de_los_effects_declarados_no_se_aplica() {
     // Y las tres delegadas se dicen sin verificar, en vez de callarse.
     assert!(out.contains("topologia 1 · sin verificar aquí"), "{out}");
     assert!(
-        out.contains("testigo   erp.employees = 42 · sin verificar aquí"),
+        out.contains("testigo   hr.employees = 42 · sin verificar aquí"),
         "{out}"
     );
 

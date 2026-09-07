@@ -51,6 +51,7 @@ pub mod link;
 pub mod normalize;
 pub mod odcs;
 pub mod parse;
+pub mod pertenencia;
 pub mod politica;
 pub mod propuesta;
 pub mod significado;

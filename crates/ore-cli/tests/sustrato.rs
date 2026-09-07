@@ -56,7 +56,7 @@ fn manifiesto(v: &str) -> String {
 }
 
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-     metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+     metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
      object: public.employees\n  columns:\n    employee_id: {}\n    country: {}\n    \
      deleted: {}\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
      changes: { mode: retract, witness: log }\n";
@@ -67,7 +67,7 @@ fn vista(campo_pais: &str, borrado: &str) -> String {
     format!(
         "apiVersion: oos.dev/v1alpha8\nkind: View\n\
          metadata: {{ name: empleados, namespace: hr }}\nspec:\n  owner: team:hr\n  \
-         from: {{ table: erp.employees }}\n  fields:\n    employeeId: employee_id\n    \
+         from: {{ table: hr.employees }}\n  fields:\n    employeeId: employee_id\n    \
          {campo_pais}: country\n  where:\n    deleted: \"{borrado}\"\n"
     )
 }
@@ -163,7 +163,7 @@ fn upsert_y_retract_empatan_y_snapshot_y_log_tambien() {
     let tabla = |modo: &str, testigo: &str| {
         format!(
             "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-             metadata: {{ name: employees, namespace: erp }}\nspec:\n  datasource: erp\n  \
+             metadata: {{ name: employees, namespace: hr }}\nspec:\n  datasource: erp\n  \
              object: public.employees\n  columns:\n    employee_id: {{}}\n    country: {{}}\n  \
              reads: {{ predicatePushdown: [eq], fullScan: cheap }}\n  \
              changes: {{ mode: {modo}, witness: {testigo}, key: [employee_id] }}\n"
@@ -171,7 +171,7 @@ fn upsert_y_retract_empatan_y_snapshot_y_log_tambien() {
     };
     let vista = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
          metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-         from: { table: erp.employees }\n  fields:\n    id: employee_id\n";
+         from: { table: hr.employees }\n  fields:\n    id: employee_id\n";
     let manifiesto = |v: &str| {
         format!(
             "apiVersion: oos.dev/v1alpha1\nkind: Package\n\

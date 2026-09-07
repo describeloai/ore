@@ -50,14 +50,14 @@ const RETICULO: &str = "apiVersion: oos.dev/v1alpha3\nkind: Lattice\n\
      spec:\n  levels: [none, low, high]\n";
 
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-     metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+     metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
      object: public.employees\n  columns:\n    employee_id: {}\n    manager_id: {}\n    \
      national_id: {}\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
      changes: { mode: retract, witness: log }\n";
 
 const VISTA: &str = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
      metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-     from: { table: erp.employees }\n  fields:\n    employeeId: employee_id\n    \
+     from: { table: hr.employees }\n  fields:\n    employeeId: employee_id\n    \
      managerId: manager_id\n    nationalId: national_id\n";
 
 /// Autoriza el conducto del índice hasta `low`.
@@ -229,7 +229,7 @@ fn el_sello_da_lo_mismo_suba_o_baje_la_cadena() {
          metadata: { name: p }\nspec:\n  owner: team:security\n  conduits:\n    \
          materialization.payload: { gdpr.sensitivity: low }\n";
     const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-         metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+         metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
          object: public.employees\n  columns:\n    employee_id: {}\n    \
          national_id: {}\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
          changes: { mode: retract, witness: log }\n";
@@ -283,7 +283,7 @@ fn el_sello_da_lo_mismo_suba_o_baje_la_cadena() {
                 ("tables/employees.yaml", TABLA),
                 (
                     "views/base.yaml",
-                    &vista("base", "{ table: erp.employees }", false),
+                    &vista("base", "{ table: hr.employees }", false),
                 ),
                 ("views/copia.yaml", &vista("copia", "{ view: base }", true)),
                 ("entities/Employee.yaml", &entidad(respalda)),

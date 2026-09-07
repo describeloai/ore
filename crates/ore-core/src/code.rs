@@ -183,6 +183,13 @@ codes! {
     // existe», y existe — esta en el paquete de al lado. El diagnostico
     // correcto es otro y hasta aqui no habia codigo que lo dijera.
     Oos2028 = "OOS2028", Reference, "una referencia cruza a un paquete que no la exporta";
+    // LA PERTENENCIA, que nadie ataba. La dice el DIRECTORIO —`01-package` §3.3
+    // no lista los documentos porque «eso ya lo dice el directorio»— y la
+    // identidad la dice `namespace`. Un documento en `packages/ventas` llamado
+    // `otro.E` validaba limpio, y ese mismo paquete exportandolo fallaba con
+    // `OOS2027`: las dos mitades de la pinza. De los cinco pasos que exige
+    // mover un documento, este era el unico que no cazaba nadie.
+    Oos2030 = "OOS2030", Reference, "el `namespace` no es el del paquete que contiene al documento";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -424,6 +431,7 @@ mod tests {
             Code::Oos2027,
             Code::Oos2028,
             Code::Oos2029,
+            Code::Oos2030,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

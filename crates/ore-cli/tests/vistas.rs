@@ -64,7 +64,7 @@ fn conducto(nivel: &str) -> String {
 /// La tabla de v1alpha8 que las pruebas de abajo comparten: las mismas columnas
 /// y las mismas capacidades que la vista de v1alpha7 declaraba dentro.
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-     metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+     metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
      object: public.employees\n  columns:\n    employee_id: {}\n    national_id: {}\n    \
      country: {}\n  reads:\n    predicatePushdown: [eq, in]\n    fullScan: cheap\n  \
      changes: { mode: retract, witness: log }\n";
@@ -155,7 +155,7 @@ fn la_cadena_sobre_una_tabla_da_el_mismo_linaje_y_ensena_las_dos_caras() {
                 "views/empleados.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: View\n\
                  metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-                 from: { table: erp.employees }\n  fields:\n    employeeId: employee_id\n    \
+                 from: { table: hr.employees }\n  fields:\n    employeeId: employee_id\n    \
                  nationalId: national_id\n    pais: country\n",
             ),
             (
@@ -237,7 +237,7 @@ fn una_copia_sobre_una_tabla_que_cabe_en_su_conducto_viaja_sellada() {
                 "views/empleados.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: View\n\
                  metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-                 from: { table: erp.employees }\n  fields:\n    employeeId: employee_id\n    \
+                 from: { table: hr.employees }\n  fields:\n    employeeId: employee_id\n    \
                  nationalId: national_id\n  \
                  materialized: { datasource: lago, table: cache.hr_employees }\n",
             ),
@@ -288,7 +288,7 @@ fn recortar_por_una_columna_clasificada_de_una_tabla_tambien_se_niega() {
                 "views/empleados.yaml",
                 "apiVersion: oos.dev/v1alpha8\nkind: View\n\
                  metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-                 from: { table: erp.employees }\n  fields:\n    employeeId: employee_id\n    \
+                 from: { table: hr.employees }\n  fields:\n    employeeId: employee_id\n    \
                  nationalId: national_id\n",
             ),
             (
@@ -435,7 +435,7 @@ fn espejo_o_registro_se_decide_por_vista() {
         format!(
             "apiVersion: oos.dev/v1alpha8\n\
              kind: Table\n\
-             metadata: {{ name: employees, namespace: erp }}\n\
+             metadata: {{ name: employees, namespace: hr }}\n\
              spec:\n  \
                datasource: erp\n  \
                object: 'public.employees'\n  \
@@ -454,7 +454,7 @@ fn espejo_o_registro_se_decide_por_vista() {
              metadata: {{ name: empleados, namespace: hr }}\n\
              spec:\n  \
                owner: team:rrhh\n  \
-               from: {{ table: erp.employees }}\n  \
+               from: {{ table: hr.employees }}\n  \
                fields:\n    \
                  id: employee_id\n    \
                  estado: status\n{}",
@@ -590,7 +590,7 @@ fn una_pregunta_en_borrador_lo_dice_y_se_ve() {
         format!(
             "apiVersion: oos.dev/v1alpha8\nkind: View\n\
              metadata: {{ name: empleados, namespace: hr{labels} }}\nspec:\n  \
-             owner: team:hr\n  from: {{ table: erp.employees }}\n  fields:\n    \
+             owner: team:hr\n  from: {{ table: hr.employees }}\n  fields:\n    \
              employeeId: employee_id\n"
         )
     };

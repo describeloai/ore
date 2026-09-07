@@ -319,6 +319,14 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
         return diags;
     }
 
+    // **La pertenencia, antes que el enlazado.** Si un documento esta en el
+    // espacio de nombres equivocado, todo lo que lo nombra falla —`OOS2018`,
+    // `OOS2005`— y esos diagnosticos son la CONSECUENCIA: mandarian a mirar el
+    // fichero equivocado. `99-errors` §2.1 dice que gana el codigo especifico.
+    let pertenencia = crate::pertenencia::check(&pkg);
+    if !pertenencia.is_empty() {
+        return pertenencia;
+    }
     // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
     // que no resuelve. Es la misma disciplina de fases que impide enlazar un
     // paquete que no analiza.

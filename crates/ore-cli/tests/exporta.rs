@@ -52,26 +52,26 @@ fn manifiesto(nombre: &str, exports: Option<&str>) -> String {
 }
 
 const TABLA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
-     metadata: { name: employees, namespace: erp }\nspec:\n  datasource: erp\n  \
+     metadata: { name: employees, namespace: infra }\nspec:\n  datasource: erp\n  \
      object: public.employees\n  columns:\n    employee_id: {}\n    country: {}\n  \
      reads: { predicatePushdown: [eq], fullScan: cheap }\n  \
      changes: { mode: retract, witness: log }\n";
 
 /// `empleados` es el peldaño; `iberia` se apoya en él y es lo que se expone.
 const PELDANO: &str = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
-     metadata: { name: empleados, namespace: hr }\nspec:\n  owner: team:hr\n  \
-     from: { table: erp.employees }\n  fields:\n    employeeId: employee_id\n    \
+     metadata: { name: empleados, namespace: infra }\nspec:\n  owner: team:hr\n  \
+     from: { table: infra.employees }\n  fields:\n    employeeId: employee_id\n    \
      pais: country\n";
 
 const EXPUESTA: &str = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
-     metadata: { name: iberia, namespace: hr }\nspec:\n  owner: team:hr\n  \
+     metadata: { name: iberia, namespace: infra }\nspec:\n  owner: team:hr\n  \
      from: { view: empleados }\n  fields:\n    id: employeeId\n  \
      where:\n    pais: [ES, PT]\n";
 
 fn entidad(nombre: &str, vista: &str, campo: &str, version: &str) -> String {
     format!(
         "apiVersion: oos.dev/{version}\nkind: Entity\n\
-         metadata: {{ name: {nombre}, namespace: hr }}\nspec:\n  nature: entity\n  \
+         metadata: {{ name: {nombre}, namespace: rrhh }}\nspec:\n  nature: entity\n  \
          primaryKey: [{campo}]\n  backedBy: {vista}\n  properties:\n    \
          {campo}: {{ type: String }}\n"
     )
@@ -101,7 +101,7 @@ fn un_documento_anterior_a_v1alpha8_cruza_sin_permiso() {
                 ("packages/rrhh/package.yaml", &manifiesto("rrhh", None)),
                 (
                     "packages/rrhh/entities/Employee.yaml",
-                    &entidad("Employee", "empleados", "employeeId", version),
+                    &entidad("Employee", "infra.empleados", "employeeId", version),
                 ),
             ],
         )
@@ -136,7 +136,7 @@ fn exportar_la_de_arriba_no_arrastra_el_peldano() {
             ("ontology.config.yaml", CONFIG),
             (
                 "packages/infra/package.yaml",
-                &manifiesto("infra", Some("hr.iberia")),
+                &manifiesto("infra", Some("infra.iberia")),
             ),
             ("packages/infra/tables/employees.yaml", TABLA),
             ("packages/infra/views/empleados.yaml", PELDANO),
@@ -144,7 +144,7 @@ fn exportar_la_de_arriba_no_arrastra_el_peldano() {
             ("packages/rrhh/package.yaml", &manifiesto("rrhh", None)),
             (
                 "packages/rrhh/entities/Iberico.yaml",
-                &entidad("Iberico", "iberia", "id", "v1alpha8"),
+                &entidad("Iberico", "infra.iberia", "id", "v1alpha8"),
             ),
         ],
     );
@@ -154,14 +154,14 @@ fn exportar_la_de_arriba_no_arrastra_el_peldano() {
     // Y ahora una segunda entidad que se apoya en el PELDAÑO, que no se exporta.
     std::fs::write(
         dir.join("packages/rrhh/entities/Otra.yaml"),
-        entidad("Otra", "empleados", "employeeId", "v1alpha8"),
+        entidad("Otra", "infra.empleados", "employeeId", "v1alpha8"),
     )
     .unwrap();
     let (ok, out) = validar(&dir);
     assert!(!ok, "tenía que negarse:\n{out}");
     assert!(out.contains("OOS2028"), "{out}");
     assert!(
-        out.contains("hr.empleados") && !out.contains("`backedBy: hr.iberia` cruza"),
+        out.contains("infra.empleados") && !out.contains("`backedBy: infra.iberia` cruza"),
         "solo el peldaño se rechaza, y la expuesta sigue valiendo:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
