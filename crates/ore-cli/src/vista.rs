@@ -26,6 +26,18 @@
 //! linaje por columna. El día que lo tenga, esta comprobación se moverá allí;
 //! hasta entonces vive aquí y **se niega igual**.
 //!
+//! # La dirección, que es de un solo sentido
+//!
+//! **El documento es el artefacto y el IR es lo derivado**, nunca al revés. El
+//! plan se fabrica aquí en cada invocación, **no se persiste**, y el mismo
+//! documento da el mismo plan con la misma identidad. De ahí sale lo que a
+//! primera vista parece un cabo suelto: el IR de `ore-view` tiene `Une`,
+//! `Agrupa` y `Limita`, y ningún documento OOS los produce. No es un hueco —el
+//! motor no decide qué se puede preguntar, y esta es su única entrada—, ni es
+//! una segunda clase de vista: «clase» ya nombra otra cosa, y derivada
+//! (`02-view` §5.5, **espejo** o **registro**). Está en
+//! [`docs/view-engine.md`](../../../docs/view-engine.md) §5.
+//!
 //! # Lo que no hace
 //!
 //! No ejecuta, no mide y no abre nada. Contesta desde el árbol de ficheros, que

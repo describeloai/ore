@@ -93,19 +93,91 @@ pub struct Capacidades {
     pub filtros_obligatorios: Vec<String>,
 }
 
+/// Qué hace **este** planificador con una clave de la cara `reads`.
+///
+/// # Por qué «sin lector» no es una deuda
+///
+/// Una clave de `Table` registra un **hecho del origen**: Workday declara
+/// `joinPushdown: false` porque no sabe juntar, y no sabrá aunque nadie se lo
+/// pregunte nunca. Un hecho del mundo es cierto exista o no quien lo consuma, y
+/// por eso **puede preceder a su lector**.
+///
+/// Un campo del planificador es lo contrario: **promete un comportamiento**, y
+/// solo es cierto cuando alguien lo ejerce. Leer `joinPushdown` sin saber bajar
+/// una junta no sería adelantarse — sería anunciar un empuje que no ocurre.
+///
+/// Así que la asimetría es correcta, y lo único que faltaba era **escribirla**.
+/// Lo que hay debajo no es una lista de pendientes: es el reparto declarado, y
+/// el censo de [`censo`] hace que el esquema no pueda crecer sin pasar por él.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lectura {
+    /// Se convierte en un campo de [`Capacidades`].
+    Traduce,
+    /// No es del planificador. La lee otro, y dónde.
+    DeOtro(&'static str),
+    /// Un hecho del origen que hoy **no consume nadie**, y por qué está bien.
+    HechoSinLector(&'static str),
+}
+
+/// La cara `reads` de una `Table`, clasificada entera.
+///
+/// Medido, no recordado: la primera versión de este reparto decía que
+/// `aggregatePushdown` no lo leía nadie, y sí lo lee —`normalize.rs` lo trata
+/// como conjunto para la forma canónica, sin saber qué significa—. Sin lector
+/// de verdad quedan **dos**.
+pub const CARA_DE_LECTURA: &[(&str, Lectura)] = &[
+    ("predicatePushdown", Lectura::Traduce),
+    (
+        "projectionPushdown",
+        Lectura::DeOtro("ore-core/vistas.rs · OOS2029, y es del núcleo porque decide si una copia compila"),
+    ),
+    ("joinPushdown", Lectura::HechoSinLector("este planificador no baja juntas")),
+    (
+        "aggregatePushdown",
+        Lectura::DeOtro("ore-core/normalize.rs · como conjunto, para la forma canónica"),
+    ),
+    ("fullScan", Lectura::Traduce),
+    ("requiredFilters", Lectura::Traduce),
+    (
+        "maxRowsPerRequest",
+        Lectura::HechoSinLector("nadie corta por número de filas: `ore view` no ejecuta"),
+    ),
+];
+
+/// El vocabulario **cerrado** de `predicatePushdown`, clasificado entero.
+///
+/// Existe por un fallo concreto y reciente: `ore_driver::leer_peticion`
+/// descartaba en silencio un operador que no conocía mientras su comentario
+/// decía que descartaba la petición entera. La forma de aquí es la misma —un
+/// `match` con `_ => {}`— y lo único que la salva es que este enum no ha
+/// crecido. El censo hace que crecer cueste una decisión.
+pub const OPERADORES_DE_OOS: &[(&str, Lectura)] = &[
+    ("eq", Lectura::Traduce),
+    ("neq", Lectura::Traduce),
+    ("in", Lectura::Traduce),
+    ("range", Lectura::Traduce),
+    (
+        "like",
+        Lectura::HechoSinLector("no hay comparador de patrón: inventarlo prometería un empuje que no se comprueba"),
+    ),
+    ("isNull", Lectura::Traduce),
+    (
+        "fullText",
+        Lectura::HechoSinLector("ídem, y además su semántica es del origen"),
+    ),
+];
+
 impl Capacidades {
     /// Lee un `capabilities:` de OOS —el del `Binding` de v1alpha1, el mismo de
     /// la `View` de v1alpha7— y lo traduce a lo que este crate entiende.
     ///
-    /// Tres cosas **no** se traducen, y la ausencia es la respuesta:
+    /// **Qué se traduce y qué no lo dice [`CARA_DE_LECTURA`]**, con su censo, en
+    /// vez de este párrafo: una lista que el esquema puede dejar atrás sin que
+    /// se rompa nada no es un reparto, es una nota.
     ///
-    /// - `like` y `fullText` no tienen comparador aquí. Inventarles uno sería
-    ///   prometer un empuje que el planificador no sabe comprobar.
-    /// - `joinPushdown`, `aggregatePushdown` y `maxRowsPerRequest` los declara
-    ///   OOS y este planificador todavía no baja juntas ni agregados: leerlos
-    ///   sin usarlos daría un campo que promete algo.
-    /// - `disyuncion`, `negacion` y `dialecto` no existen en OOS, así que
-    ///   quedan en su valor por defecto, que es **no** (P4).
+    /// Lo que sí se dice aquí porque no está en el esquema: `disyuncion`,
+    /// `negacion` y `dialecto` **no existen en OOS**, así que quedan en su valor
+    /// por defecto, que es **no** (P4).
     ///
     /// `requiredFilters` viene en nombres de OOS —propiedades o campos de la
     /// vista—; **traducirlos a columnas físicas es de quien llama**, que es el
@@ -955,5 +1027,143 @@ mod tests {
             crate::esquema(&r.residuo).expect("el residuo cuadra"),
             crate::esquema(&p).expect("el original cuadra")
         );
+    }
+}
+
+/// **El censo de la cara `reads`.** Lo que le da dientes a [`CARA_DE_LECTURA`].
+///
+/// Sin esto el reparto sería una nota: alguien añade una clave al esquema
+/// publicado, `de_oos` la ignora en silencio —su `match` termina en `_ => {}`—
+/// y nadie se entera hasta que un plan baje de menos. Es la misma máquina que
+/// el censo de `ore_core::vistas`, y por la misma razón: una lista que se puede
+/// ampliar sin mirar deja de significar algo.
+///
+/// Lee el **esquema publicado**, no una copia. Es la única parte de este crate
+/// que toca `vendor/oos`, y solo en pruebas: el planificador sigue sin saber
+/// qué es un paquete.
+#[cfg(test)]
+mod censo {
+    use super::*;
+    use std::path::Path;
+
+    fn esquema() -> String {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/schemas/v1alpha8/table.schema.json");
+        std::fs::read_to_string(&p).expect("submódulo `vendor/oos` sin inicializar")
+    }
+
+    /// Las claves de primer nivel del `properties` que sigue al ancla.
+    ///
+    /// El estado de cadena se lleva de verdad y no por atajo: una descripción
+    /// con una llave dentro descuadraría la profundidad, y el censo pasaría a
+    /// medir otro objeto sin decirlo.
+    fn claves_tras(texto: &str, ancla: &str) -> Vec<String> {
+        let i = texto.find(ancla).expect("ancla ausente en el esquema");
+        let j = i + texto[i..].find("\"properties\"").expect("sin `properties`");
+        let k = j + texto[j..].find('{').expect("sin objeto");
+        let cs: Vec<char> = texto[k..].chars().collect();
+        let (mut prof, mut p, mut out) = (0i32, 0usize, Vec::new());
+        while p < cs.len() {
+            match cs[p] {
+                '{' => prof += 1,
+                '}' => {
+                    prof -= 1;
+                    if prof == 0 {
+                        break;
+                    }
+                }
+                '"' => {
+                    let inicio = p + 1;
+                    p += 1;
+                    while p < cs.len() && cs[p] != '"' {
+                        if cs[p] == '\\' {
+                            p += 1;
+                        }
+                        p += 1;
+                    }
+                    if prof == 1 {
+                        let mut q = p + 1;
+                        while cs.get(q).is_some_and(|c| c.is_whitespace()) {
+                            q += 1;
+                        }
+                        if cs.get(q) == Some(&':') {
+                            out.push(cs[inicio..p].iter().collect());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            p += 1;
+        }
+        out
+    }
+
+    fn cotejar(publicadas: &[String], censadas: &[(&str, Lectura)], que: &str) {
+        let faltan: Vec<&String> = publicadas
+            .iter()
+            .filter(|k| !censadas.iter().any(|(c, _)| *c == k.as_str()))
+            .collect();
+        assert!(
+            faltan.is_empty(),
+            "{que}: el esquema declara {faltan:?} y nadie dice qué hace este \
+             planificador con ello.\n\
+             Clasifícalo —`Traduce`, `DeOtro` o `HechoSinLector` con su motivo— \
+             antes de que un plan baje de menos en silencio."
+        );
+        let sobran: Vec<&&str> = censadas
+            .iter()
+            .map(|(c, _)| c)
+            .filter(|c| !publicadas.iter().any(|k| k == *c))
+            .collect();
+        assert!(
+            sobran.is_empty(),
+            "{que}: se clasifica {sobran:?}, que ya no está en el esquema"
+        );
+    }
+
+    #[test]
+    fn la_cara_de_lectura_esta_clasificada_entera() {
+        cotejar(
+            &claves_tras(&esquema(), "\"reads\": {"),
+            CARA_DE_LECTURA,
+            "la cara `reads`",
+        );
+    }
+
+    #[test]
+    fn el_vocabulario_de_predicados_esta_clasificado_entero() {
+        let t = esquema();
+        let i = t.find("\"predicatePushdown\"").expect("sin `predicatePushdown`");
+        let j = i + t[i..].find("\"enum\"").expect("sin enum");
+        let k = j + t[j..].find('[').expect("sin lista");
+        let fin = k + t[k..].find(']').expect("lista sin cerrar");
+        let ops: Vec<String> = t[k..fin]
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect();
+        assert_eq!(ops.len(), 7, "el enum cambió de tamaño: {ops:?}");
+        cotejar(&ops, OPERADORES_DE_OOS, "`predicatePushdown`");
+    }
+
+    /// **Y la clasificación tiene que ser verdad.**
+    ///
+    /// Las dos de arriba comprueban que nadie se olvide de clasificar; esta,
+    /// que lo clasificado se corresponda con lo que `de_oos` hace. Sin ella
+    /// bastaría con escribir `Traduce` al lado de un operador que el `match`
+    /// no toca, y el censo quedaría verde diciendo una mentira.
+    #[test]
+    fn lo_que_dice_traducirse_se_traduce_y_lo_demas_no() {
+        for (op, l) in OPERADORES_DE_OOS {
+            let n = ore_core::parse::parse(&format!("predicatePushdown: [{op}]\n"))
+                .expect("YAML de una línea");
+            let c = Capacidades::de_oos(&n);
+            let algo = !c.predicados.is_empty() || c.en_conjunto || c.es_nulo;
+            match l {
+                Lectura::Traduce => assert!(algo, "`{op}` dice traducirse y `de_oos` lo descarta"),
+                _ => assert!(!algo, "`{op}` dice no traducirse y `de_oos` lo empuja"),
+            }
+        }
     }
 }

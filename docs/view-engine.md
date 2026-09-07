@@ -124,7 +124,41 @@ sobre los mismos datos, que es la pregunta del Cost Model, y no para prometer la
 la máquina de referencia; un ejecutor sobre otro almacén tendría otros números, y el método para
 volver a sacarlos está escrito.
 
-## 5. Dónde está la diferencia
+## 5. El documento y el IR
+
+Esta sección existe porque las dos cosas se confunden en la dirección equivocada, y de ahí sale
+una lectura falsa del vocabulario entero.
+
+**El documento es el artefacto. El IR es lo derivado.** Una `View` en YAML no es el registro de
+algo que vive en otra parte: es la cosa. El plan de `plan.rs` se fabrica desde el árbol de
+ficheros en cada invocación de `ore view`, **no se persiste en ningún sitio**, y volver a
+fabricarlo desde el mismo documento da el mismo plan con la misma identidad. Es P2 llevado hasta
+el final —*lo derivable no se declara*—, y por eso un documento OOS es exactamente el residuo de
+decisiones que nadie puede computar por ti: `owner`, `from`, `where`, `materialized`.
+
+**El álgebra ancha del motor no es una segunda clase de vista.** `plan.rs` tiene `Une`, `Agrupa`
+y `Limita`; el Delta Compiler los incrementaliza y `tests/medidas.rs` los mide —y medirlos
+destapó un defecto real: los integradores de la junta y del agregado eran multiconjuntos planos,
+así que la incrementalización estaba escrita y no ocurría—. **Ningún documento OOS los produce**,
+y eso no es un hueco: el motor no decide qué se puede preguntar. La máquina se deja lista antes
+que el vocabulario, a propósito, y la puerta por la que se cruzaría es
+`ore_core::vistas::invertible`, cuyo defecto es «no».
+
+Y «clase» ya significa otra cosa aquí, que además es **derivada**:
+[`02-view`](../vendor/oos/spec/v1alpha8/02-view.md) §5.5 llama **espejo** a la vista sin
+escrituras —puede quedarse virtual— y **registro** a la que las tiene —se materializa, y la copia
+es el estado—. Lo decide el compilador por vista, no el producto, y las dos conviven en un
+paquete.
+
+**Y la asimetría que explica lo que parece un cabo suelto.** Una tabla puede declarar
+`joinPushdown: true` y este planificador no lo lee. No es deuda: una clave de `Table` registra un
+**hecho del origen** —Workday no sabe juntar, y no sabrá aunque nadie se lo pregunte—, así que
+puede preceder a su lector; un campo del planificador **promete un comportamiento**, y leer una
+capacidad que no se sabe ejercer sería anunciar un empuje que no ocurre. Lo que faltaba no era el
+lector: era escribir el reparto. Está en `CARA_DE_LECTURA` y `OPERADORES_DE_OOS`, con un censo
+contra el esquema publicado que impide que crezca sin que alguien decida.
+
+## 6. Dónde está la diferencia
 
 Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cruce:
 
@@ -134,7 +168,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
 - **el modo de refresco se sabe antes de escribir la vista**, con todos los motivos, no al
   refrescarla y por la factura.
 
-## 6. Lo que sigue
+## 7. Lo que sigue
 
 - **La absorción, terminada.** Esta pieza sigue sin saber qué es un paquete OOS, y la única
   costura es `crates/ore-cli/src/vista.rs`: lee las `View`, el retículo, las etiquetas efectivas

@@ -405,6 +405,19 @@ pub fn escritas(pkg: &Package) -> BTreeSet<String> {
 ///
 /// # Por qué hoy no puede fallar, y aun así está
 ///
+/// **Son dos motivos independientes, y confundirlos lleva a leer mal el
+/// vocabulario entero.** El primero es que nadie llama a esto: `OOS7013` está
+/// **reservado** —ADR 0018— porque escribir desde la ontología aterriza en la
+/// copia, la copia guarda el vocabulario de la vista, y entonces un edit cae
+/// *dentro* de `Q` y no hay nada que invertir. La invertibilidad es la primera
+/// regla del producto que escribe **de vuelta en los orígenes**, que es otro.
+///
+/// El segundo es el de abajo. Y el corolario que hay que tener presente antes
+/// de proponer ampliar la gramática: **lo que sostiene hoy el fragmento
+/// estrecho no es esto**, que está aparcado, sino el precio en la regla de
+/// flujo y la mantenibilidad incremental. Esta guarda no defiende una frontera
+/// viva: guarda la **puerta** por la que se cruzaría.
+///
 /// El vocabulario de `View` en v1alpha8 es exactamente el fragmento invertible
 /// —`00-scope` §6.1 lo dice, y no se buscó: se descubrió al migrar—. No hay
 /// junta, ni agregado, ni `distinct`, ni límite, así que **ningún documento OOS
