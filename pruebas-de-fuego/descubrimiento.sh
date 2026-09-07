@@ -117,13 +117,36 @@ spec:
     contextSurface:
       gdpr.sensitivity: medium
       oos.maturity: DRAFT
+    # Recorrer una relacion COPIA la clave y el enlace, aunque nadie declare la
+    # copia: es `materialization.topology` y sale de las `via` que el inductor
+    # escribe al leer las foraneas del servidor. Un conducto sin autorizacion es
+    # bottom y no admite nada, asi que sin esta linea `OOS4011` niega el arbol
+    # entero — y tiene razon: dos columnas se estaban copiando sin que ninguna
+    # politica dijera hasta donde.
+    #
+    # `medium` es la misma postura que `contextSurface`, no una excepcion. Aqui
+    # las dos columnas que viajan son `id` y la foranea, que nadie clasifico.
+    materialization.topology:
+      gdpr.sensitivity: medium
+      oos.maturity: DRAFT
 YAML
 mkdir -p packages/gdpr/concepts
+
+# `exports` NO estaba, y el fixture llevaba meses pasando sin el. Lo que
+# cambio no es la regla: es quien la dispara. `OOS2028` mira la version del
+# documento que ESCRIBE la referencia —"quien se acoplo lo hizo bajo unas
+# reglas, y son las suyas las que valen"— y las entidades de entonces no eran
+# v1alpha8. Desde que `ore discover` las induce en v1alpha8, la puerta de
+# version ya no cubre este cruce.
+#
+# Y la regla tiene razon: un paquete de vocabulario del que otros toman
+# autoridad es el caso PARADIGMATICO de algo que debe declarar su superficie
+# publica. Un `exports` ausente no significa "todo": significa nada.
 cat > packages/gdpr/package.yaml <<'YAML'
 apiVersion: oos.dev/v1alpha1
 kind: Package
 metadata: { name: gdpr, version: 1.0.0, status: active, domain: compliance }
-spec: { owner: "team:compliance" }
+spec: { owner: "team:compliance", exports: [gdpr.personalEmail] }
 YAML
 cat > packages/gdpr/concepts/personalEmail.yaml <<'YAML'
 apiVersion: oos.dev/v1alpha4
