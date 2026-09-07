@@ -211,6 +211,13 @@ codes! {
     // mirar y la cardinalidad de la tabla sale sin gobierno. Agrupar le da al
     // agregado una arista indirecta por cada clave.
     Oos2033 = "OOS2033", Reference, "un agregado sin agrupacion no tiene linaje";
+    // `having` FILTRA POR LO QUE SOLO SE SABE DESPUES DE AGRUPAR, y por eso su
+    // sujeto tiene que ser un agregado. Nombrar una clave de grupo no esta
+    // prohibido por gusto: ese predicado es un `where`, y un `where` BAJA AL
+    // ORIGEN mientras que un `having` no puede — se aplica encima del grupo.
+    // Escribirlo en el sitio equivocado no da un resultado distinto, da el
+    // mismo mas caro, y en silencio.
+    Oos2034 = "OOS2034", Reference, "`having` sobre algo que no es un agregado";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -469,6 +476,7 @@ mod tests {
             Code::Oos2031,
             Code::Oos2032,
             Code::Oos2033,
+            Code::Oos2034,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

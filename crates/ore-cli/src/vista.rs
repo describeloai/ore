@@ -791,8 +791,52 @@ pub(crate) fn cuerpo(
         }
     };
 
+    // Y el `having`, ENCIMA del grupo. Es la misma operación que el `where` con
+    // la entrada cambiada, y por eso el nodo es el mismo: lo que la separa no es
+    // qué hace sino cuándo se sabe. Un `where` se cumple fila a fila y baja al
+    // origen; esto sólo se sabe del grupo entero y se queda aquí.
+    let teniendo = vistas::teniendo(v);
+    let cribada = if teniendo.is_empty() {
+        agrupada
+    } else {
+        let mut cond: Vec<Expr> = Vec::new();
+        for (campo, txt) in &teniendo {
+            let Some((op, valor)) = vistas::condicion(txt) else {
+                continue;
+            };
+            // El tipo del agregado, no el de la columna: `count()` es `Integer`
+            // aunque cuente filas de cualquier cosa.
+            let t = match ags.get(campo).map(|a| a.funcion.as_str()) {
+                Some("count") => Type::Scalar("Integer".into()),
+                Some("avg") => Type::Scalar("Decimal".into()),
+                _ => ags
+                    .get(campo)
+                    .and_then(|a| a.sobre.as_deref())
+                    .map(&tipo_de)
+                    .unwrap_or_else(|| Type::Scalar("String".into())),
+            };
+            cond.push(Expr::Compara {
+                op: comparador_del_motor(op),
+                izquierda: Box::new(Expr::campo(campo)),
+                derecha: Box::new(Expr::Literal(literal(&valor, &t))),
+            });
+        }
+        if cond.is_empty() {
+            agrupada
+        } else {
+            Nodo::Filtra {
+                entrada: Box::new(agrupada),
+                predicado: if cond.len() == 1 {
+                    cond.remove(0)
+                } else {
+                    Expr::Y(cond)
+                },
+            }
+        }
+    };
+
     Nodo::Proyecta {
-        entrada: Box::new(agrupada),
+        entrada: Box::new(cribada),
         campos: campos
             .iter()
             .map(|(campo, en_fuente)| (campo.clone(), Expr::campo(en_fuente)))
@@ -807,6 +851,20 @@ pub(crate) fn cuerpo(
 ///
 /// El `_` no puede ocurrir: la forma ya rechazó todo lo que no está en
 /// `vistas::AGREGADOS`, y esas dos listas las ata un censo.
+/// El comparador de OOS → el del IR. El `_` no puede ocurrir: la forma ya
+/// rechazó todo lo que no está en `vistas::COMPARADORES`, y un censo ata las dos
+/// listas.
+fn comparador_del_motor(op: &str) -> Comparador {
+    match op {
+        "!=" => Comparador::Distinto,
+        ">=" => Comparador::MayorIgual,
+        "<=" => Comparador::MenorIgual,
+        ">" => Comparador::Mayor,
+        "<" => Comparador::Menor,
+        _ => Comparador::Igual,
+    }
+}
+
 fn agregado_del_motor(f: &str) -> Agregado {
     match f {
         "sum" => Agregado::Suma,
@@ -1056,6 +1114,47 @@ mod censo {
     /// sin esto ese `_` convertiría cualquier nombre nuevo en un `count`
     /// silencioso.
     ///
+    /// **Y lo mismo con los comparadores de `having`.**
+    ///
+    /// El `_` de [`comparador_del_motor`] cae en `Igual`, así que un operador
+    /// nuevo sin traducir no daría un error: **filtraría por igualdad**. Un
+    /// `having: { n: ">= 8" }` que se leyera como `n == 8` publicaría
+    /// exactamente los grupos de ocho y ninguno mayor, y el informe seguiría
+    /// diciendo que todo compila.
+    #[test]
+    fn los_dos_vocabularios_de_comparadores_se_cubren() {
+        const DEL_MOTOR: &[Comparador] = &[
+            Comparador::Igual,
+            Comparador::Distinto,
+            Comparador::Menor,
+            Comparador::MenorIgual,
+            Comparador::Mayor,
+            Comparador::MayorIgual,
+        ];
+
+        let traducidos: Vec<Comparador> = vistas::COMPARADORES
+            .iter()
+            .map(|op| comparador_del_motor(op))
+            .collect();
+
+        for esperado in DEL_MOTOR {
+            assert!(
+                traducidos.contains(esperado),
+                "ningun comparador de OOS produce {esperado:?}"
+            );
+        }
+        for (i, a) in traducidos.iter().enumerate() {
+            for (j, b) in traducidos.iter().enumerate() {
+                assert!(
+                    i == j || a != b,
+                    "`{}` y `{}` traducen al mismo comparador: uno de los dos filtra por otra cosa",
+                    vistas::COMPARADORES[i],
+                    vistas::COMPARADORES[j]
+                );
+            }
+        }
+    }
+
     /// Añadir una función a una de las dos listas sin añadirla a la otra
     /// **cae aquí**, que es antes de que un documento cuente lo que no debía.
     #[test]

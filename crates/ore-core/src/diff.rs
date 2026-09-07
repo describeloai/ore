@@ -365,6 +365,9 @@ struct Vista {
     /// Los campos que expone, por su nombre. Aquí sí es lo declarado y no el
     /// efecto: un campo es lo que el consumidor escribe.
     campos: BTreeSet<String>,
+    /// El `having`: campo agregado → condición, tal como se escribió. **De esta
+    /// vista y no de la cadena**, por lo mismo que la agrupación.
+    teniendo: BTreeMap<String, String>,
     /// Por qué columnas agrupa. **De esta vista y no de la cadena**, al revés
     /// que el recorte: agrupar no se acumula hacia abajo —una vista sobre otra
     /// agrupa lo que la de abajo ya devolvió— así que componerlo sería inventar
@@ -631,6 +634,7 @@ fn shape(pkg: &Package) -> Shape {
                         recorte,
                         campos,
                         agrupacion: crate::vistas::agrupacion(d).into_iter().collect(),
+                        teniendo: crate::vistas::teniendo(d),
                         anunciados: anunciados(d),
                         frescura: d
                             .section("freshness")
@@ -1416,6 +1420,47 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
             );
         }
 
+        // OOS5028 · OOS5029 · el `having`, condición a condición. **Los mismos
+        // dos códigos que el recorte**, y con el sujeto cambiado a propósito:
+        // un `having` es un recorte, sólo que después de agrupar, y las dos
+        // direcciones duelen a los mismos que allí — estrechar deja sin grupos
+        // a quien leía, ensanchar publica grupos que el contrato excluía.
+        //
+        // Y ensanchar aquí tiene un nombre: **bajar un umbral de
+        // k-anonimidad**. `having: { n: ">= 8" }` es lo que `OOS4007` exige a
+        // una política, escrito en la vista; relajarlo a `>= 2` publica grupos
+        // de dos, y eso no puede salir en `patch`.
+        let condiciones: BTreeSet<&String> = antes
+            .teniendo
+            .keys()
+            .chain(despues.teniendo.keys())
+            .collect();
+        for campo in condiciones {
+            let (x, y) = (antes.teniendo.get(campo), despues.teniendo.get(campo));
+            if x == y {
+                continue;
+            }
+            let (estrecha, ensancha) = direccion(x, y);
+            let txt = |v: Option<&String>| match v {
+                Some(c) => c.clone(),
+                None => "sin condición".to_string(),
+            };
+            if estrecha {
+                out.push(
+                    Change::new(Code::Oos5028, Axis::Consumer)
+                        .sujeto(format!("{qn}.{campo}"))
+                        .de_a(txt(x), txt(y)),
+                );
+            }
+            if ensancha {
+                out.push(
+                    Change::new(Code::Oos5029, Axis::Policy)
+                        .sujeto(format!("{qn}.{campo}"))
+                        .de_a(txt(x), txt(y)),
+                );
+            }
+        }
+
         // OOS5028 · OOS5029 · el recorte, columna a columna.
         let columnas: BTreeSet<&String> =
             antes.recorte.keys().chain(despues.recorte.keys()).collect();
@@ -1455,6 +1500,40 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
                 );
             }
         }
+    }
+}
+
+/// **Hacia dónde se movió un `having`**: `(estrecha, ensancha)`.
+///
+/// Se puede probar cuando las dos condiciones comparan lo mismo en el mismo
+/// sentido con dos números: subir el suelo de un `>=` deja fuera grupos, bajarlo
+/// los mete. En cualquier otro caso —quitar la condición, cambiar de operador,
+/// comparar contra algo que no es un número— **se afirman las dos**.
+///
+/// Y esa es la decisión que importa: no poder demostrar que un cambio es seguro
+/// no es lo mismo que poder demostrar que lo es. Un `(false, false)` de
+/// consolación diría que no pasa nada, y lo que pasa es que no se sabe.
+fn direccion(antes: Option<&String>, despues: Option<&String>) -> (bool, bool) {
+    let (Some(a), Some(b)) = (antes, despues) else {
+        return (true, true);
+    };
+    let (Some((op_a, va)), Some((op_b, vb))) =
+        (crate::vistas::condicion(a), crate::vistas::condicion(b))
+    else {
+        return (true, true);
+    };
+    if op_a != op_b {
+        return (true, true);
+    }
+    let (Ok(na), Ok(nb)) = (va.parse::<f64>(), vb.parse::<f64>()) else {
+        return (true, true);
+    };
+    match op_a {
+        ">=" | ">" => (nb > na, nb < na),
+        "<=" | "<" => (nb < na, nb > na),
+        // Igualdad y desigualdad no ordenan: mover el valor cambia el conjunto
+        // en las dos direcciones a la vez.
+        _ => (true, true),
     }
 }
 

@@ -861,3 +861,72 @@ fn la_etiqueta_de_una_columna_sobrevive_a_sumarla() {
     assert!(todo.contains("por derivación (Agregacion)"), "{todo}");
     assert!(todo.contains("employees.salary"), "{todo}");
 }
+
+// ── `having` ────────────────────────────────────────────────────────────────
+
+/// **El umbral de k-anonimidad, dentro del plan.**
+///
+/// `OOS4007` exige un `minGroupSize` al desclasificador `aggregate` desde
+/// v1alpha3, y hasta ahora ese umbral sólo podía vivir en una política. Aquí
+/// entra en la vista, y el linaje lo demuestra: filtrar por el conteo deja una
+/// arista INDIRECT sobre la clave de grupo, porque **qué países salen** depende
+/// de cuántos empleados tienen.
+#[test]
+fn un_having_recorta_por_el_agregado_y_deja_arista_indirecta() {
+    let dir = arbol(
+        "having",
+        agrupada(
+            "    pais: country\n    n: \"count()\"\n",
+            "  groupBy: [country]\n  having:\n    n: \">= 8\"\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    assert!(
+        out.contains("linaje    n ← erp·public.employees.country  INDIRECT · Filtro"),
+        "{out}"
+    );
+    assert!(
+        out.contains("linaje    pais ← erp·public.employees.country  INDIRECT · Filtro"),
+        "{out}"
+    );
+    // Y se sigue manteniendo: recortar encima de un grupo no lo impide.
+    assert!(out.contains("REFRESH_MODE = INCREMENTAL"), "{out}");
+}
+
+/// **`OOS2034`** — el predicado sobre una clave de grupo es un `where`.
+#[test]
+fn un_having_sobre_una_clave_de_grupo_dice_donde_va() {
+    let dir = arbol(
+        "having-columna",
+        agrupada(
+            "    pais: country\n    n: \"count()\"\n",
+            "  groupBy: [country]\n  having:\n    pais: \"== ES\"\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    let todo = format!("{out}{err}");
+    assert!(todo.contains("OOS2034"), "{todo}");
+    // Lo que importa del diagnóstico no es que niegue: es que diga a dónde
+    // mover el predicado, y por qué el sitio equivocado cuesta más.
+    assert!(todo.contains("es un `where`"), "{todo}");
+}
+
+/// **El comparador va delante, y su ausencia no se sobreentiende.**
+#[test]
+fn un_having_sin_comparador_no_se_lee_como_igualdad() {
+    let dir = arbol(
+        "having-desnudo",
+        agrupada(
+            "    pais: country\n    n: \"count()\"\n",
+            "  groupBy: [country]\n  having:\n    n: \"8\"\n",
+        ),
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(!ok, "{out}");
+    assert!(
+        format!("{out}{err}").contains("no empieza por un comparador"),
+        "{out}{err}"
+    );
+}

@@ -384,6 +384,44 @@ pub fn expone(v: &Loaded) -> BTreeMap<String, String> {
     out
 }
 
+/// **Los seis comparadores de `having`.** Vocabulario cerrado, y el orden
+/// importa al leerlo: los de dos caracteres van primero, o `>=` se leería como
+/// `>` con un `=` colgando.
+///
+/// Aquí sí hay rangos, y en `where` no. No es una incoherencia: el `where`
+/// recorta por una **columna**, y un rango sobre una columna clasificada ordena
+/// en vez de particionar — ahí empieza la fuga, y por eso su gramática es
+/// igualdad, pertenencia y ausencia. `having` recorta por un **agregado**, y
+/// entonces el rango es justo lo que hace falta: `count() >= 8` es un umbral de
+/// k-anonimidad, no un canal lateral. Y lo que el agregado lea sigue gobernado:
+/// el linaje deja una arista `INDIRECT` desde la clave de grupo, así que un
+/// `having` sobre `sum(salary)` arrastra la etiqueta de `salary` igual que la
+/// arrastraba la suma.
+pub const COMPARADORES: &[&str] = &[">=", "<=", "!=", "==", ">", "<"];
+
+/// `">= 8"` → `(">=", "8")`. `None` si no empieza por un comparador.
+pub fn condicion(txt: &str) -> Option<(&'static str, String)> {
+    let t = txt.trim();
+    COMPARADORES
+        .iter()
+        .find_map(|op| t.strip_prefix(*op).map(|resto| (*op, resto)))
+        .map(|(op, resto)| (op, resto.trim().to_string()))
+}
+
+/// El `having` de una vista: **campo agregado → condición**, sin analizar.
+pub fn teniendo(v: &Loaded) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(h) = v.section("having") else {
+        return out;
+    };
+    for (k, val) in h.entries() {
+        if let (Some(campo), Some(txt)) = (k.as_str(), val.as_str()) {
+            out.insert(campo.to_string(), txt.trim().to_string());
+        }
+    }
+    out
+}
+
 /// Las columnas por las que agrupa una vista, en el orden en que las declara.
 pub fn agrupacion(v: &Loaded) -> Vec<String> {
     v.section("groupBy")
@@ -536,10 +574,11 @@ const INVERTIBLES: &[&str] = &["from", "fields", "where"];
 /// | | por qué |
 /// |---|---|
 /// | `groupBy` | de una agregación no se vuelve: la fila de salida es un conjunto de filas de entrada, y saber el total no dice cuáles eran |
+/// | `having` | recorta por el agregado, así que deshacerlo exigiría deshacerlo primero. Y no es un `where`: aquel se cumple fila a fila, éste sólo se sabe del grupo entero |
 ///
-/// Es, término a término, la primera de las condiciones que PostgreSQL exige
-/// para que una vista sea auto-actualizable y que esta ya no cumple.
-const NO_INVERTIBLES: &[&str] = &["groupBy"];
+/// Son, término a término, las dos primeras condiciones que PostgreSQL exige
+/// para que una vista sea auto-actualizable y que ésta ya no cumple.
+const NO_INVERTIBLES: &[&str] = &["groupBy", "having"];
 
 /// **Por qué vistas escribe la ontología.** Derivado, nunca declarado.
 ///
@@ -1075,6 +1114,43 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )),
                 );
             }
+        }
+
+        // ── OOS2034 · `having` filtra por lo que sólo se sabe agrupando ─────
+        //
+        // Nombrar una clave de grupo no está prohibido por gusto: ese predicado
+        // es un `where`, y un `where` BAJA AL ORIGEN mientras que un `having`
+        // no puede. Escribirlo aquí no da otro resultado, da el mismo más caro.
+        for (campo, _) in teniendo(v) {
+            if ags.contains_key(&campo) {
+                continue;
+            }
+            let de_columna = campos(v).contains_key(&campo);
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2034,
+                    &v.path,
+                    format!("`{qn}` tiene `having` sobre `{campo}`, que no es un agregado"),
+                )
+                .at(v.section("having").map(Node::pos).unwrap_or(v.root.pos()))
+                .help(if de_columna {
+                    format!(
+                        "`{campo}` sale de una columna, así que su predicado es un `where`: \
+                         allí recorta ANTES de agrupar y el origen puede aplicarlo. Aquí \
+                         recortaría después, con el mismo resultado y leyendo la tabla entera"
+                    )
+                } else {
+                    format!(
+                        "`having` nombra campos de esta vista, y `{campo}` no es ninguno. Los \
+                         agregados que hay son: {}",
+                        if ags.is_empty() {
+                            "ninguno — esta vista no agrega nada".to_string()
+                        } else {
+                            ags.keys().cloned().collect::<Vec<_>>().join(" · ")
+                        }
+                    )
+                }),
+            );
         }
 
         // ── OOS2025 · lo que se escribe se debe materializar ────────────────

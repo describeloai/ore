@@ -552,6 +552,11 @@ impl Kind {
                 // y por eso `vistas::invertible` gana una tercera lista en vez
                 // de heredar un «si» que nadie escribio.
                 "groupBy",
+                // Y su compañero, que filtra por lo que solo se sabe DESPUES de
+                // agrupar. Es la segunda condicion de PostgreSQL que esta vista
+                // deja de cumplir, y la que cierra el umbral que `OOS4007` ya
+                // exigia a una politica sin que la vista pudiera decirlo.
+                "having",
             ],
             _ => self.spec_keys(),
         }
@@ -1171,6 +1176,46 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                                 crate::vistas::AGREGADOS.join(" · ")
                             )),
                         ));
+                    }
+                }
+                None
+            },
+        },
+        // El predicado de `having` lleva SU COMPARADOR DELANTE, y eso no es
+        // adorno: sin el, `n: 8` se leeria como igualdad y el umbral de
+        // k-anonimidad —que es un `>=`— se escribiria igual que su caso
+        // degenerado. Un valor desnudo aqui es un error, no un `==` implicito.
+        ShapeRule {
+            kind: Kind::View,
+            path: &["spec", "having"],
+            check: |n| {
+                for (k, v) in n.entries() {
+                    let (Some(campo), Some(txt)) = (k.as_str(), v.as_str()) else {
+                        return Some((
+                            "`having` es un mapa de campo a condicion, y su condicion es texto"
+                                .to_string(),
+                            Some("por ejemplo `n: \">= 8\"`".to_string()),
+                        ));
+                    };
+                    match crate::vistas::condicion(txt) {
+                        None => {
+                            return Some((
+                                format!("`having.{campo}: {txt}` no empieza por un comparador"),
+                                Some(format!(
+                                    "el vocabulario es cerrado —{}— y el comparador va delante \
+                                     porque sin el un umbral `>= 8` se escribiria igual que la \
+                                     igualdad `== 8`, que es otra pregunta",
+                                    crate::vistas::COMPARADORES.join(" · ")
+                                )),
+                            ));
+                        }
+                        Some((op, valor)) if valor.is_empty() => {
+                            return Some((
+                                format!("`having.{campo}: {op}` sin nada con que comparar"),
+                                None,
+                            ));
+                        }
+                        Some(_) => {}
                     }
                 }
                 None
