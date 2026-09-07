@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prueba-de-fuego
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true          # Kueue lo despierta cuando hay cuota. Es su contrato.
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: prueba
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'el job corre en'; hostname; nproc; sleep 20; echo hecho"]
+          resources:
+            requests: {cpu: "2", memory: 4Gi}
+            limits:   {cpu: "2", memory: 4Gi}

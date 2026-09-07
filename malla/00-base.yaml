@@ -1,0 +1,60 @@
+# El namespace del plano de control de la plataforma. El `tenant` va como
+# etiqueta DESDE EL PRIMER MANIFIESTO: hoy es un namespace y manana puede ser
+# un plano de control virtual, y nada de lo que se escriba encima lo asume.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ore-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: control
+---
+# Deny-all de ENTRADA, y se abre despues. Es la recomendacion de GKE para
+# multi-tenancy y la practica de Rubix: la politica se escribe contra la
+# ETIQUETA, no contra la IP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: ore-system
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Y la salida tambien se niega por defecto. Lo que PLANIFICA no necesita
+# internet —12 de 14 crates de `ore` son hermeticos—; solo el driver que lee
+# un origen lo necesita, y eso sera una politica propia contra su etiqueta.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: ore-system
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    # El DNS del cluster es la unica excepcion: sin el nada resuelve.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Cuanto puede consumir este tenant. «Cuanto cuesta» tiene que ser contestable
+# ANTES de que haya tenants, no despues.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cuota
+  namespace: ore-system
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    count/jobs.batch: "20"
