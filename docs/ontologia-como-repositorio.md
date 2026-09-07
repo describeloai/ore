@@ -178,23 +178,44 @@ por qué su camino no está disponible.
 Lo que hace este documento no es proponer una dirección nueva. Es **nombrar la que ya tomamos sin
 decirla**. La prueba está en la superficie del producto:
 
-**16 de los 22 verbos de la CLI son verbos de repositorio.**
+**17 de los 23 verbos de la CLI son verbos de repositorio.**
 
 ```text
-paquete      init · lock · pack
+paquete      init · lock · pack · package
 verificación lint · validate · test · verify
 cambio       diff · review · plan · report · drift-detect
 entrega      compile · export · promote
 bucle        dev
---------------------------------------------------  16
+--------------------------------------------------  17
 dato         source · discover · view · materialize · cache · serve   6
 ```
 
 > **Recontado, y la versión anterior tenía dos erratas y una omisión.** Decía `add` y `check`, que
 > **no existen**, y no nombraba `source` ni `cache`, que sí. Y hay que decir lo que el recuento no
-> dice: **seis de los veintidós están declarados y no hacen nada** —`lint`, `test`, `plan`,
-> `promote`, `drift-detect` y `serve`, en `SIN_IMPLEMENTAR`—, y cinco de esos seis son de
-> repositorio.
+> dice: **cinco de los veintitrés están declarados y no hacen nada** —`lint`, `test`, `plan`,
+> `promote` y `serve`, en `SIN_IMPLEMENTAR`—, y cuatro de esos cinco son de repositorio.
+>
+> **Y el recuento se movió dos veces desde entonces, las dos en la misma dirección.** `package`
+> entra —con cuatro subverbos, [`packages.md`](packages.md)— y `drift-detect` **sale de la lista
+> corta**: estaba declarado sin hacer nada y ya no. La lista de lo que no hace nada es la que
+> encoge, que es la afirmación entera de esta sección.
+
+### Los cuatro subverbos del paquete, que son de este documento
+
+Hasta hace nada **un paquete solo nacía descubriendo una fuente**: `ore init` deja `packages/`
+vacío y el único que escribía un `package.yaml` era el inductor. Un repositorio en el que no se
+puede crear una unidad de propiedad no es un repositorio.
+
+| | qué es del repositorio |
+|---|---|
+| `package new` | crear una unidad de **propiedad y versión** — dueño, estado, dominio |
+| `package move` | mover un documento **con su nombre**, y anunciar el viejo: el `moved` es lo que hace que renombrar no sea borrar |
+| `package split` | enseñar las **componentes** y decir el **precio** de un corte antes de moverlo |
+| `package merge` | fundir dejando **lápida** —`retired`, sin documentos, con sus `moved`— para que ningún nombre publicado se rompa |
+
+Los cuatro son la misma figura que `git mv` frente a `rm` + `add`: lo que los separa no es el
+resultado en disco, es que **uno deja rastro de dónde estaba** y el otro no. Y aquí ese rastro es
+comprobable — `ore diff` lo lee, y depender de una lápida se dice (`OOS2031`).
 
 Y por debajo:
 

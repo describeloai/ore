@@ -126,6 +126,31 @@ para escribir tiene una propiedad; uno que promete no hacerlo tiene una polític
 código de escritura existe —lo trae el driver de PostgreSQL— así que la propiedad hay que
 comprarla, y se compra pidiéndosela al servidor.
 
+#### Enmienda · la forma del catálogo sube a `ore-driver`
+
+El verbo `catalogo` existía desde el principio y **su forma no estaba declarada en ninguna
+parte**: cada driver la escribía a mano y el inductor la leía a mano, así que eran tres
+descripciones del mismo objeto que sólo coincidían mientras nadie las tocase. Un productor podía
+emitir una clave que ningún lector recogiese, y eso **no producía ningún síntoma**.
+
+Ahora vive en `crates/ore-driver/src/catalogo.rs`, y no es un tipo: es **una forma declarada con
+censo**. `FORMA` enumera las 18 claves con su nivel —2 de raíz, 9 de tabla, 5 de columna, 2 de
+foránea— y una prueba las coteja contra el propio código, así que añadir una sin declararla no
+compila la suite.
+
+Lo que la forma **no** interpreta: `reads` y `changes` viajan opacas. Las dos caras son del
+documento `Table`, no del catálogo, y traducirlas aquí sería que esta pieza opinara sobre lo que
+sólo el inductor decide.
+
+Y lleva una clave que **nadie lee**: `enum` — los valores declarados de una columna. La emite
+`ore-read-postgres` y el inductor no tiene campo para ella. Está declarada por las dos razones que
+hacen útil el censo: que capturar un catálogo no pierda lo que un productor dijo, y que la falta de
+su lector sea **visible** en vez de caerse en silencio.
+
+Del otro lado, `ore source catalog` lo emite a un fichero, que es lo que permite tener un catálogo
+**con procedencia real** en el árbol —el primero es un BigQuery de verdad— en vez de un YAML
+sintético. Y es lo que `ore drift-detect` compara contra el paquete.
+
 ## Lo que se acepta a cambio
 
 - **Tres verbos que compartir.** Cada driver nuevo implementa los tres o declara cuál no sabe —

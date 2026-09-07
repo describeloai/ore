@@ -166,7 +166,14 @@ corroboración que no venía de aquí:
 | renombrar | sí — es una biyección |
 | recortar por partición | sí — la fila escrita cumple el predicado o se cae de la vista |
 | proyectar | **parcialmente** — faltan columnas, así que la escritura es *parcial*, no ambigua |
-| juntar, agregar, deduplicar, limitar | **no**, y por eso no están en el vocabulario |
+| juntar, agregar, deduplicar, limitar | **no** |
+
+> **La última fila decía «y por eso no están en el vocabulario», y eso caducó.** v1alpha8 añade
+> `groupBy`, el agregado en `fields` y `having`, así que agregar y deduplicar **sí** se escriben y
+> la vista sale del fragmento invertible **a propósito**. La tabla sigue valiendo entera —lo que
+> cambia no es qué se invierte, sino que ahora hay documentos conformes que caen en la última
+> fila—. El asiento está en [§F0](#f0--la-cara-w-retirada-y-el-efecto-pierde-su-fuente) y el detalle en
+> [`view-engine.md`](view-engine.md) §5.
 
 Y **la pregunta ya es computable con lo que hay**. `linaje` da, por cada campo de salida, de qué
 columna raíz sale y **por qué arista**:
@@ -320,6 +327,35 @@ por vista, **si se puede escribir a través de ella**.
 > La medida que lo destapó: la costura solo construye cuatro nodos del IR —`Referencia`, `Lee`,
 > `Filtra`, `Proyecta`—, cada campo es siempre `Expr::campo`, y `Une`/`Agrupa`/`Limita` no
 > aparecen en ningún camino que salga de un documento.
+>
+> ### 🔁 Y en v1alpha8 la gramática creció, que es lo que aquello esperaba
+>
+> **Las tres frases de arriba dejaron de ser ciertas**, y se dicen aquí en vez de tacharse:
+> un asiento nuevo no borra el anterior.
+>
+> | lo que decía | lo que pasó |
+> |---|---|
+> | *no se puede declarar una vista que agregue: el vocabulario de `View` es exactamente el fragmento invertible* | `groupBy`, el agregado en `fields` y `having` **son** vocabulario de v1alpha8. El fragmento invertible y el vocabulario dejaron de coincidir |
+> | *falsificado añadiendo `groupBy` y viéndolo saltar* | `groupBy` ya no es el contraejemplo hipotético: está clasificado en `NO_INVERTIBLES`, la **tercera** lista, que entonces no existía |
+> | *`Une`/`Agrupa`/`Limita` no aparecen en ningún camino que salga de un documento* | `Agrupa` sí. Quedan `Une` y `Limita` |
+>
+> Y lo que eso le hace a **esta** fila del plan es lo único que importa aquí: *«un efecto sobre
+> una vista que agrega no compila»* **ya se puede probar con un documento**. La guarda dejó de ser
+> un laboratorio —`invertible` recibe hoy vistas conformes y les dice que no— aunque `OOS7013`
+> siga **reservado**, y no por falta de sujetos: por lo de siempre, que escribir desde la
+> ontología aterriza en la copia y una edición cae *dentro* de `Q`.
+>
+> La guarda gana además una respuesta que no tenía. Antes el vocabulario se repartía entre neutras
+> e invertibles, así que un «no» sólo podía llegar como `ConstruccionDesconocida` — y eso confunde
+> **una decisión tomada** con **un descuido**:
+>
+> | | cuándo |
+> |---|---|
+> | `NoSeDeshace` | está clasificado y la respuesta es no — `groupBy`, `having` |
+> | `CampoCalculado` | el campo no sale de una columna: sale de un conjunto de filas |
+> | `ConstruccionDesconocida` | **el defecto**, para lo que nadie clasificó |
+>
+> El detalle está en [`view-engine.md`](view-engine.md) §5 y en `02-view` §5.6 y §5.8.
 
 ### F1 · La `Propuesta` como artefacto
 
@@ -394,7 +430,7 @@ comprobación.
 
 **Qué.** La propuesta se aplica **sobre la copia**, produciendo una copia sucesora. No hay
 delegado nuevo: es `ore-store-r2` sellando, y la carrera entre dos escritores la arbitra el recibo
-de sucesión del [ADR 0017](0017-la-escritura-sobre-el-sustrato.md) §A, que deja de ser una
+de sucesión del [ADR 0017](decisions/0017-la-escritura-sobre-el-sustrato.md) §A, que deja de ser una
 precaución y pasa a ser el mecanismo.
 
 **Y una escritura parcial es lo normal, no la excepción.** Un edit toca una columna de la copia y

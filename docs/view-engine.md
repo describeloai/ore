@@ -149,10 +149,89 @@ tipo de salida, las dos aristas de linaje, el Check 4 del matcher, diez de mante
 incremental— pasan de estar probadas a mano a alcanzarse desde un documento. `Une` y `Limita`
 siguen sin producirse, y eso no es un hueco: el motor no decide qué se puede preguntar.
 
-Lo que se midió al cruzar, y conviene no perder: agrupar **sin** agregados es un `SELECT DISTINCT`
-y su linaje sale **directo**, así que no ejerce el flujo implícito; la arista indirecta aparece con
-el primer agregado. Un agregado **global** —sin `groupBy`— sale con linaje **vacío**, y por eso
-`OOS2033` lo niega: no es la regla de SQL, es la consecuencia de gobernar por linaje.
+Lo que se midió al cruzar, y conviene no perder — cuatro planes contra `esquema`, `linaje` y
+`motivos`:
+
+| lo que se escribe | tipo | linaje de la salida | ¿se mantiene? |
+|---|---|---|---|
+| `groupBy` sin agregados | — | `Directo(Identidad)` | sí |
+| `count()` | `Integer` | `Indirecto(Agrupacion)` | sí |
+| `sum(c)` · `min(c)` · `max(c)` | el de `c` | `Indirecto(Agrupacion)` + `Directo(Agregacion)` | sí |
+| `avg(c)` | `Decimal` | `Indirecto(Agrupacion)` + `Directo(Agregacion)` | **no** |
+
+Tres cosas que esa tabla dice y no se deducen:
+
+- **agrupar sin agregados no ejerce el gobierno.** Es un `SELECT DISTINCT` y su linaje sale
+  **directo**; la arista indirecta —la que mira el flujo implícito— aparece con el primer agregado.
+  El paso barato es real y no es el que importa;
+- **`avg` no se incrementaliza**, y el motor lo dice en vez de mantenerlo mal. Lo de *«suma y cuenta
+  aparte»* describe el estado que un almacén necesitaría, **no** una reescritura que el compilador
+  haga;
+- y **la etiqueta sobrevive a agregar**: `AGGREGATION` es una arista `DIRECT`, no una frontera, así
+  que una copia de `sum(salary)` en un conducto que sólo admite `low` no compila y el motivo nombra
+  la derivación y la columna. Desclasificar agregando es lo que el desclasificador `aggregate`
+  existe para decir, y exige `minGroupSize`.
+
+### El agregado global, y por qué cuesta más de lo que parece
+
+`OOS2033` niega un agregado **sin** `groupBy`, y eso rechaza algo que SQL acepta. El motivo es
+medido: el linaje de un agregado global sale **vacío** —no viene de ninguna columna raíz— así que la
+regla de flujo no tiene nada que comprobar y el número de filas de la tabla se publicaría sin
+gobierno. Saber cuántos empleados hay en una tabla de nóminas no es una pregunta sin etiqueta.
+
+Y la razón está en una **estructura**, no en una regla:
+
+```rust
+lineage::Raiz { datasource, objeto, campo }   // `campo` es obligatorio
+```
+
+No existe «la tabla entera» como raíz. Devolverlo no es levantar el código: es dar a la tabla
+estatuto de raíz y contestar **qué etiqueta lleva la cardinalidad de un objeto**, que es una
+pregunta que este proyecto no ha contestado. Cuesta modelo de linaje para ganar un número en un
+panel, y por eso espera.
+
+### `having`, que es el mismo `Filtra` un piso más arriba
+
+El nodo no es nuevo: es el del `where` con la entrada cambiada. Lo que separa a los dos no es qué
+hacen sino **cuándo se sabe** — un `where` se cumple fila a fila y **baja al origen**; un `having`
+sólo se sabe del grupo entero y se queda arriba. De ahí sale `OOS2034`: su sujeto debe ser un
+agregado, porque un predicado sobre una clave de grupo es un `where` y escribirlo aquí da el mismo
+resultado leyendo la tabla entera.
+
+Y de ahí sale también la única asimetría de gramática del vocabulario: **aquí hay rangos y en
+`where` no**. El `where` recorta por una *columna*, y un rango sobre una columna clasificada ordena
+en vez de particionar — ahí empieza la fuga. `having` recorta por un *agregado*, y entonces el rango
+es justo lo que hace falta: `count() >= 8` es un umbral de k-anonimidad. Lo que el agregado lea sigue
+gobernado, porque la arista indirecta desde la clave de grupo no se va.
+
+Eso es lo que este constructor cierra de verdad: `OOS4007` exige un `minGroupSize` al desclasificador
+`aggregate` desde v1alpha3, y hasta ahora ese umbral sólo podía vivir en una política y comprobarse
+en ejecución. Ahora entra en el **plan** — la diferencia entre una promesa y una consulta. Sin él,
+`groupBy: [pais, enfermedad]` con `count()` puede devolver grupos de uno, que no son una estadística
+sino una reidentificación.
+
+### Dos cosas que agrupar movió fuera del motor
+
+**Una entidad puede salir de una vista que agrupa**, y una de sus propiedades puede salir de un
+agregado. No compilaba, y el diagnóstico estaba **equivocado**: `OOS2022` decía que la vista no
+exponía un campo que sí expone. `vistas::campos` contesta *«¿de qué **columna** sale este campo?»* y
+dejó de devolver los agregados —bien: de un agregado la respuesta es que de ninguna—, pero tres de
+sus llamadas preguntaban otra cosa, *«¿qué campos **expone** esta vista?»*. Hasta `groupBy` las dos
+daban lo mismo y bastaba una función; ahora son dos, y la segunda es `vistas::expone`.
+
+Arreglar sólo eso habría **abierto una fuga**: la etiqueta de una columna tiene que llegar hasta el
+agregado que la lee, y `Raiz` tampoco la llevaba. Gana `agrega` —campo agregado → el agregado, con
+su columna ya bajada a física— **aparte de `columnas` y no dentro**, porque `masa` no *es* `salary`,
+es su suma, y media docena de sitios leen `columnas` como una identidad. Es la misma figura que
+`filtros`: columnas que se leen sin exponerse. Por eso las dos mitades van juntas o ninguna —
+`OOS2022` estaba haciendo de escudo por accidente.
+
+Y **cambiar la agrupación rompe** — `OOS5033`, `CONSUMER`. Se midió antes de escribirlo y el
+resultado fue el equivocado: añadir una clave salía *compatible · patch*. Refinar la agrupación parte
+cada grupo, así que un `count()` que valía 400 pasa a valer 250 y 150 **sin que ningún campo aparezca
+ni desaparezca**. Cambiar un `having` reusa en cambio los dos códigos del recorte, `OOS5028` y
+`OOS5029`, porque allí las dos direcciones sí duelen a distintos — y ensanchar tiene nombre propio:
+bajar un umbral de k-anonimidad no puede salir en `patch`.
 
 Y «clase» ya significa otra cosa aquí, que además es **derivada**:
 [`02-view`](../vendor/oos/spec/v1alpha8/02-view.md) §5.5 llama **espejo** a la vista sin
