@@ -270,6 +270,27 @@ enum AccionPaquete {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **Funde un paquete en otro**, dejando una LAPIDA.
+    ///
+    /// El paquete de origen NO desaparece: se queda `status: retired`, sin
+    /// documentos, y con un `moved` por cada uno de los que se fueron. Se midio:
+    /// asi `ore diff` lo llama compatible, y sin el anuncio da `OOS5007`.
+    ///
+    /// Las colisiones de nombre SE NIEGAN: fundir encima perderia uno de los
+    /// dos, y cual se pierde no lo decide una herramienta.
+    Merge {
+        /// El paquete que se funde y queda como lapida.
+        origen: String,
+        /// En cual.
+        #[arg(long = "into", value_name = "PAQUETE")]
+        a: String,
+        /// La version desde la que los nombres viejos dejan de estar.
+        #[arg(long)]
+        since: Option<String>,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
@@ -690,6 +711,14 @@ fn main() -> std::process::ExitCode {
         }
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);
+        }
+        Command::Package(AccionPaquete::Merge {
+            origen,
+            a,
+            since,
+            path,
+        }) => {
+            return paquete::fundir(path, origen, a, since.as_deref());
         }
         Command::Package(AccionPaquete::Split {
             paquete,

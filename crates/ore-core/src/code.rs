@@ -190,6 +190,14 @@ codes! {
     // `OOS2027`: las dos mitades de la pinza. De los cinco pasos que exige
     // mover un documento, este era el unico que no cazaba nadie.
     Oos2030 = "OOS2030", Reference, "el `namespace` no es el del paquete que contiene al documento";
+    // DEPENDER DE UNA LAPIDA. Un paquete que se funde en otro no desaparece:
+    // se queda `retired`, sin documentos, con un `moved` por cada uno de los
+    // que se fueron. Eso lo entiende `diff`, que compara DOS VERSIONES DEL
+    // MISMO paquete — y no decia nada a quien lo importa desde fuera:
+    // resolvia, compilaba, y nadie le contaba que lo que importaba era una
+    // piedra con un nombre. `dependencies` solo miraba duplicados y la forma
+    // de la referencia.
+    Oos2031 = "OOS2031", Reference, "se depende de un paquete retirado";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -432,6 +440,7 @@ mod tests {
             Code::Oos2028,
             Code::Oos2029,
             Code::Oos2030,
+            Code::Oos2031,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

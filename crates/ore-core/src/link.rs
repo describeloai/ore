@@ -548,6 +548,67 @@ fn dependencies(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
     }
 
+    // OOS2031 · depender de una LAPIDA.
+    //
+    // Un paquete que se funde en otro no desaparece: se queda `retired`, sin
+    // documentos, y con un `moved` por cada uno de los que se fueron —eso es lo
+    // que hace que `ore diff` lo llame compatible en vez de `OOS5007`—. Pero
+    // `diff` compara DOS VERSIONES DEL MISMO paquete, así que quien lo importa
+    // desde fuera resolvía, compilaba, y nadie le contaba que lo que importaba
+    // era una piedra con un nombre.
+    //
+    // Solo alcanza a lo que está EN EL ÁRBOL: una dependencia de otro artefacto
+    // se resuelve por el lock, y su estado es del registro. Aquí se dice lo que
+    // se puede ver sin abrir nada, que es la disciplina del compilador entero.
+    let estados: BTreeMap<&str, &Loaded> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter_map(|d| Some((d.meta("name")?.as_str()?, d)))
+        .collect();
+    for d in &pkg.docs {
+        for (nodo, nombre) in dependencias_de(d) {
+            let Some(suyo) = estados.get(nombre.as_str()) else {
+                continue; // no está en el árbol: lo dirá el lock
+            };
+            if suyo.meta("status").and_then(|s| s.as_str()) != Some("retired") {
+                continue;
+            }
+            // La lápida dice a dónde se fue todo, así que la ayuda lo nombra:
+            // un diagnóstico que solo dice «no» obliga a ir a buscarlo.
+            let destinos: BTreeSet<String> = suyo
+                .section("moved")
+                .map(|m| m.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|i| i.get("to").and_then(|(_, v)| v.as_str()))
+                .filter_map(|q| q.split_once('.').map(|(ns, _)| ns.to_string()))
+                .collect();
+            let ayuda = if destinos.is_empty() {
+                "un paquete `retired` no recibe cambios y no debería recibir consumidores \
+                 nuevos. Si algo suyo sigue haciendo falta, tiene que vivir en un paquete \
+                 que alguien mantenga"
+                    .to_string()
+            } else {
+                format!(
+                    "sus documentos están en {}, y su `moved` lo dice uno a uno. Depende de \
+                     ahí: la lápida solo existe para que el nombre viejo no se rompa en \
+                     silencio, no para que se siga construyendo sobre ella",
+                    destinos
+                        .iter()
+                        .map(|x| format!("`{x}`"))
+                        .collect::<Vec<_>>()
+                        .join(" y ")
+                )
+            };
+            out.push(
+                Diagnostic::new(Code::Oos2031, &d.path, format!("`{nombre}` está retirado"))
+                    .at(nodo.pos())
+                    .help(ayuda),
+            );
+        }
+    }
+
     // OOS2002 · ciclo. El grafo transitivo vive en el lock: sin él, detectarlo
     // exigiría red y la compilación dejaría de ser hermética.
     let Some(lock) = pkg

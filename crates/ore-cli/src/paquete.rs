@@ -559,6 +559,197 @@ pub fn dividir(
     diagnosticos(raiz)
 }
 
+// ── `ore package merge` ─────────────────────────────────────────────────────
+
+/// **Fundir un paquete en otro**, dejando una lápida.
+///
+/// # El paquete no desaparece, y eso es lo que hace que funcione
+///
+/// El razonamiento que casi bloquea esto era estructural y sonaba bien: los tres
+/// alcances de `moved` anuncian **dentro de un artefacto que sobrevive**, y un
+/// paquete que desaparece se lleva su manifiesto, así que no habría dónde poner
+/// el anuncio. Hacía falta un cuarto alcance.
+///
+/// **No hacía falta.** Un paquete no tiene que desaparecer: se queda como
+/// **lápida** —`status: retired`, cero documentos, y un `moved` por cada uno de
+/// los que se fueron— y `moved.to` ya cruza de paquete. Se midió con tres
+/// experimentos y su control:
+///
+/// | cómo se deja el origen | qué dice `ore diff` |
+/// |---|---|
+/// | lápida | `changes: []` · **compatible** · minor |
+/// | sin el anuncio | `OOS5007` · **breaking** · major |
+/// | el manifiesto borrado | `OOS5007` + `OOS5021` |
+///
+/// Y el estado tampoco hubo que inventarlo: `01-package` §2.3 adopta el enum de
+/// ODCS **verbatim**, y `retired` es uno de los cinco.
+///
+/// # Las colisiones se niegan, y no se resuelven
+///
+/// Si los dos paquetes tienen un documento con el mismo nombre, la fusión **no
+/// es mecánica**: es una decisión por colisión, y este mando no la toma. La
+/// misma elección que `move` al no sobrescribir — perder un documento no lo
+/// decide una herramienta.
+///
+/// # Y lo que la lápida no cuenta
+///
+/// `diff` compara **dos versiones del mismo paquete**, así que la lápida le
+/// vale; a quien importe el origen desde fuera no le decía nada. Eso lo cierra
+/// `OOS2031` —depender de un paquete retirado—, que sale de la misma medida.
+pub fn fundir(raiz: &Path, origen: &str, destino: &str, since: Option<&str>) -> ExitCode {
+    let pkg = ore_core::validate::cargar_paquete(raiz).0;
+    let miembros = ore_core::link::miembros(&pkg);
+
+    let manifiesto = |n: &str| {
+        pkg.docs
+            .iter()
+            .filter(|d| d.kind == ore_core::document::Kind::Package)
+            .find(|d| d.meta("name").and_then(|x| x.as_str()) == Some(n))
+    };
+    let (Some(m_origen), Some(m_destino)) = (manifiesto(origen), manifiesto(destino)) else {
+        eprintln!("error: hacen falta los dos paquetes, y alguno no está");
+        eprintln!("  ore package new <nombre> --owner <handle>");
+        return ExitCode::from(65);
+    };
+    if m_origen.path == m_destino.path {
+        eprintln!("error: `{origen}` y `{destino}` son el mismo paquete");
+        return ExitCode::from(65);
+    }
+    let (Some(dir_origen), Some(dir_destino)) = (m_origen.path.parent(), m_destino.path.parent())
+    else {
+        eprintln!("error: no se pudo situar alguno de los dos");
+        return ExitCode::from(70);
+    };
+    if !usable_como_namespace(destino) {
+        eprintln!("error: `{destino}` no puede ser un espacio de nombres — `OOS2030`");
+        return ExitCode::from(65);
+    }
+
+    let mueven: Vec<&Loaded> = pkg
+        .docs
+        .iter()
+        .filter(|d| ore_core::pertenencia::DEL_PAQUETE.contains(&d.kind))
+        .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(dir_origen))
+        .collect();
+    if mueven.is_empty() {
+        eprintln!("error: `{origen}` no tiene contenido gobernado que fundir");
+        eprintln!("  Si ya está vacío, lo que queda es retirarlo: `status: retired`.");
+        return ExitCode::from(65);
+    }
+
+    // Las colisiones, ANTES de tocar nada. No se resuelven: se dicen.
+    let alli: Vec<String> = pkg
+        .docs
+        .iter()
+        .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(dir_destino))
+        .map(nombre_de)
+        .collect();
+    let choques: Vec<String> = mueven
+        .iter()
+        .map(|d| nombre_de(d))
+        .filter(|n| alli.contains(n))
+        .collect();
+    if !choques.is_empty() {
+        eprintln!(
+            "error: {} nombre(s) existen en los dos paquetes",
+            choques.len()
+        );
+        for c in &choques {
+            eprintln!("    {c}");
+        }
+        eprintln!("  Fundir encima perdería uno de los dos, y cuál se pierde no lo decide");
+        eprintln!("  una herramienta. Renómbralo con `moved`, o muévelo aparte.");
+        return ExitCode::from(65);
+    }
+
+    // El `status` de la lápida se localiza ahora, porque sin él no hay fusión
+    // que valga: un paquete vacío y `active` es peor que no haber empezado.
+    let Some(estado) = m_origen.meta("status") else {
+        eprintln!("error: `{origen}` no declara `status`, y la lápida lo necesita");
+        return ExitCode::from(65);
+    };
+    let pos_estado = estado.pos();
+
+    let nombres: Vec<String> = mueven.iter().filter_map(|d| d.qname()).collect();
+    let mut taller = Taller::default();
+    let mut rastro = Rastro::default();
+    let mut nuevos = Vec::new();
+    for d in &mueven {
+        match planificar(
+            &pkg,
+            &miembros,
+            &mut taller,
+            d,
+            dir_origen,
+            dir_destino,
+            destino,
+            since,
+            &nombres,
+        ) {
+            Ok((n, r)) => {
+                nuevos.push(n);
+                rastro.reapuntados.extend(r.reapuntados);
+                for c in r.cruzan {
+                    if !rastro.cruzan.contains(&c) {
+                        rastro.cruzan.push(c);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                eprintln!("  Nada se ha movido: o va el paquete entero o ninguno.");
+                return ExitCode::from(70);
+            }
+        }
+    }
+
+    // Y la lápida. Va DESPUÉS de los movimientos porque cada uno anadió su
+    // `moved` al mismo manifiesto: se lee del taller, no del disco.
+    let t = match taller.leer(&m_origen.path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(70);
+        }
+    };
+    let acaba_en_salto = t.ends_with('\n');
+    let mut lineas: Vec<String> = t.lines().map(String::from).collect();
+    let Some((i, l)) = sustituir_en(&lineas, pos_estado, "retired") else {
+        eprintln!("error: no se pudo retirar `{origen}`");
+        eprintln!("  Nada se ha movido: sin la lápida, los nombres viejos se rompen.");
+        return ExitCode::from(70);
+    };
+    lineas[i] = l;
+    let mut lapida = lineas.join("\n");
+    if acaba_en_salto {
+        lapida.push('\n');
+    }
+    taller.escribir(&m_origen.path, lapida);
+
+    if let Err(e) = taller.aplicar() {
+        eprintln!("error: {e}");
+        return ExitCode::from(73);
+    }
+
+    println!(
+        "  ✓ `{origen}` → `{destino}` · {} documento(s)",
+        nuevos.len()
+    );
+    for n in &nuevos {
+        println!("     {n}");
+    }
+    println!();
+    println!("  ✓ `{origen}` queda como LÁPIDA: `status: retired`, sin documentos,");
+    println!("    y con un `moved` por cada uno. Su nombre no se rompe.");
+    contar(&rastro, destino, &nuevos);
+    if since.is_none() {
+        aviso_de_version(&pkg, dir_origen);
+    }
+    println!();
+    println!("  · quien dependa de `{origen}` lo verá: `OOS2031`.");
+    diagnosticos(raiz)
+}
+
 // ── El grafo del paquete ────────────────────────────────────────────────────
 
 /// Quién nombra a quién, **sin dirección**.

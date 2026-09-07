@@ -471,3 +471,122 @@ fn con_destino_y_sin_corte_se_niega() {
     assert!(dicho.contains("sería inventar un límite"), "{dicho}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── `ore package merge` ─────────────────────────────────────────────────────
+
+/// **El viaje de ida y vuelta**: partir y volver a fundir deja el árbol como
+/// estaba, y el origen queda como LÁPIDA en vez de desaparecer.
+///
+/// Que la lápida valga se midió con `ore diff` y su control: con el anuncio sale
+/// `changes: []`; sin él, `OOS5007` y salto mayor.
+#[test]
+fn fundir_deshace_el_corte_y_deja_una_lapida() {
+    let dir = dos_paquetes("fundir");
+    let antes = codigos(&dir);
+    ore(
+        &dir,
+        &[
+            "package",
+            "split",
+            "ventas",
+            "--to",
+            "eu",
+            "--con",
+            "ventas.Clientes",
+            "--con",
+            "ventas.clientes",
+            "--con",
+            "ventas.rubix_demo_ventas_clientes",
+        ],
+    );
+
+    let (c, dicho) = ore(&dir, &["package", "merge", "eu", "--into", "ventas"]);
+    assert_eq!(c, Some(0), "{dicho}");
+    assert!(dicho.contains("3 documento(s)"), "{dicho}");
+    assert!(dicho.contains("LÁPIDA"), "{dicho}");
+    assert_eq!(codigos(&dir), antes, "el ida y vuelta dejó algo:\n{dicho}");
+
+    // La lápida: retirada, sin documentos, y con un `moved` por cada uno.
+    let m = std::fs::read_to_string(dir.join("packages/eu/package.yaml")).unwrap();
+    assert!(m.contains("status: retired"), "{m}");
+    assert_eq!(m.matches("from: eu.").count(), 3, "{m}");
+    assert!(
+        !dir.join("packages/eu/entities").exists()
+            || std::fs::read_dir(dir.join("packages/eu/entities"))
+                .map(|d| d.flatten().count())
+                .unwrap_or(0)
+                == 0,
+        "quedó contenido en el paquete fundido"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Las colisiones **se niegan y no se resuelven**: perder un documento no lo
+/// decide una herramienta. Es la misma elección que `move` al no sobrescribir.
+#[test]
+fn las_colisiones_se_niegan_sin_mover_nada() {
+    let dir = taller("choque");
+    for p in ["a", "b"] {
+        ore(&dir, &["package", "new", p, "--owner", "team:datos"]);
+        let e = dir.join(format!("packages/{p}/entities"));
+        std::fs::create_dir_all(&e).unwrap();
+        std::fs::write(
+            e.join("C.yaml"),
+            format!(
+                "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+                 metadata: {{ name: C, namespace: {p} }}\nspec:\n  nature: entity\n  \
+                 primaryKey: [id]\n  properties:\n    id: {{ type: String }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let (c, dicho) = ore(&dir, &["package", "merge", "b", "--into", "a"]);
+    assert_eq!(c, Some(65), "{dicho}");
+    assert!(dicho.contains("existen en los dos paquetes"), "{dicho}");
+    assert!(
+        dir.join("packages/b/entities/C.yaml").is_file(),
+        "una negativa movió algo"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **`OOS2031`**: la lápida le vale a `diff` —que compara dos versiones del
+/// mismo paquete— y no le decía nada a quien la importa desde fuera.
+#[test]
+fn depender_de_una_lapida_se_dice() {
+    let dir = taller("lapida");
+    ore(&dir, &["package", "new", "a", "--owner", "team:datos"]);
+    ore(&dir, &["package", "new", "b", "--owner", "team:datos"]);
+
+    // `b` retirado, con su `moved` hacia `a`.
+    let m = dir.join("packages/b/package.yaml");
+    let t = std::fs::read_to_string(&m)
+        .unwrap()
+        .replace("status: draft", "status: retired");
+    std::fs::write(
+        &m,
+        t.replace(
+            "spec: { owner: \"team:datos\" }",
+            "spec: { owner: \"team:datos\", moved: [{ from: b.C, to: a.C, since: 0.1.0 }] }",
+        ),
+    )
+    .unwrap();
+
+    // Y `a` dependiendo de él.
+    let ma = dir.join("packages/a/package.yaml");
+    let t = std::fs::read_to_string(&ma).unwrap().replace(
+        "spec: { owner: \"team:datos\" }",
+        "spec: { owner: \"team:datos\", dependencies: [{ package: b, version: \"^0.1\" }] }",
+    );
+    std::fs::write(&ma, t).unwrap();
+
+    let (_, dicho) = ore(&dir, &["validate", "."]);
+    assert!(dicho.contains("OOS2031"), "{dicho}");
+    // Y la ayuda dice A DÓNDE se fue, que es la mitad del valor.
+    assert!(
+        dicho.contains("`a`"),
+        "tiene que nombrar el destino:\n{dicho}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
