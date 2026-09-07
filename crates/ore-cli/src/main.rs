@@ -7,11 +7,11 @@
 //! delegan son `discover --source`, `lock` y `pack --sign/--log` — y ninguno de
 //! los tres abre el socket: lo abre el programa que llaman.
 
+mod autoria;
 mod cache;
 mod candado;
 mod empaquetar;
 mod fuente;
-mod autoria;
 mod inductor;
 mod inicio;
 mod lector;
@@ -464,7 +464,15 @@ fn main() -> std::process::ExitCode {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
         Command::View {
-            accion: Some(AccionVista::Add { nombre, de, campos, recorte, owner, path }),
+            accion:
+                Some(AccionVista::Add {
+                    nombre,
+                    de,
+                    campos,
+                    recorte,
+                    owner,
+                    path,
+                }),
             ..
         } => {
             return autoria::anadir(path, nombre, de, campos, recorte, owner.as_deref());

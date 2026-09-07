@@ -393,17 +393,13 @@ fn package_metadata(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     ),
                 };
                 out.push(
-                    Diagnostic::new(
-                        Code::Oos2009,
-                        &d.path,
-                        format!("falta `owner`, y {que}"),
-                    )
-                    .at(d.root.pos())
-                    .help(format!(
-                        "{por_que}. Es la misma decisión que elevar la autorización de un \
+                    Diagnostic::new(Code::Oos2009, &d.path, format!("falta `owner`, y {que}"))
+                        .at(d.root.pos())
+                        .help(format!(
+                            "{por_que}. Es la misma decisión que elevar la autorización de un \
                          conducto, y de aquella responde alguien: usa `team:<handle>` o \
                          `user:<handle>`, que es lo que se alinea con CODEOWNERS"
-                    )),
+                        )),
                 );
             }
             Some(v) if !es_handle(v.as_str().unwrap_or("")) => {
@@ -814,7 +810,6 @@ fn referencia_rota(path: &Path, nodo: &Node, referencia: &str, campo: &str) -> D
              exige el paquete entero, no el documento: es lo que un esquema JSON no alcanza"
         ))
 }
-
 
 // ── OOS2012 ─────────────────────────────────────────────────────────────────
 

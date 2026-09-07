@@ -771,7 +771,10 @@ fn indices_de_topologia(
     // Una misma arista sale una vez por fuente física, y la copia es una. Se
     // sella por NOMBRE, que es como el registro la identifica.
     let mut vistas: BTreeSet<String> = BTreeSet::new();
-    for a in crate::aristas::aristas(pkg).into_iter().filter(|a| a.derivada) {
+    for a in crate::aristas::aristas(pkg)
+        .into_iter()
+        .filter(|a| a.derivada)
+    {
         if !vistas.insert(a.nombre.clone()) {
             continue;
         }
@@ -821,7 +824,9 @@ fn indices_de_topologia(
                     .get(ret)
                     .and_then(|(n, _)| l.index(n))
                     .unwrap_or(0);
-                let Some(tiene) = l.index(nivel) else { continue };
+                let Some(tiene) = l.index(nivel) else {
+                    continue;
+                };
                 if tiene <= permitido {
                     continue;
                 }
@@ -891,7 +896,6 @@ pub fn clearances(pkg: &Package, lat: &BTreeMap<String, Lattice>) -> BTreeMap<St
     }
     out
 }
-
 
 // ── OOS4006 · OOS4007 ───────────────────────────────────────────────────────
 

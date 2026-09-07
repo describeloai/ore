@@ -62,13 +62,11 @@ const FUERA: &[(&str, &str)] = &[
 ];
 
 /// Lo que sigue en la forma vieja **dentro** de lo recorrido, con su motivo.
-const TESTIGOS: &[(&str, &str)] = &[
-    (
-        "casos/con-vista",
-        "el testigo v1alpha7 del ejecutor: su gemelo `con-tabla` mide el camino \
+const TESTIGOS: &[(&str, &str)] = &[(
+    "casos/con-vista",
+    "el testigo v1alpha7 del ejecutor: su gemelo `con-tabla` mide el camino \
          nuevo, y este mide que el viejo sigue sirviéndose",
-    ),
-];
+)];
 
 fn documentos(dir: &Path, raiz: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {

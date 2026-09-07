@@ -245,8 +245,16 @@ fn el_sello_da_lo_mismo_suba_o_baje_la_cadena() {
             "apiVersion: oos.dev/v1alpha8\nkind: View\n\
              metadata: {{ name: {nombre}, namespace: hr }}\nspec:\n  owner: team:hr\n  \
              from: {de}\n  fields:\n    employeeId: {}\n    nationalId: {}\n{mat}",
-            if de.contains("table") { "employee_id" } else { "employeeId" },
-            if de.contains("table") { "national_id" } else { "nationalId" },
+            if de.contains("table") {
+                "employee_id"
+            } else {
+                "employeeId"
+            },
+            if de.contains("table") {
+                "national_id"
+            } else {
+                "nationalId"
+            },
         )
     }
 
@@ -273,7 +281,10 @@ fn el_sello_da_lo_mismo_suba_o_baje_la_cadena() {
                 ("lattices/s.yaml", RETICULO),
                 ("conduits.yaml", CONDUCTOS),
                 ("tables/employees.yaml", TABLA),
-                ("views/base.yaml", &vista("base", "{ table: erp.employees }", false)),
+                (
+                    "views/base.yaml",
+                    &vista("base", "{ table: erp.employees }", false),
+                ),
                 ("views/copia.yaml", &vista("copia", "{ view: base }", true)),
                 ("entities/Employee.yaml", &entidad(respalda)),
             ],

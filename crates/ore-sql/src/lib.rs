@@ -490,8 +490,14 @@ mod tests {
     #[test]
     fn ningun_dialecto_pide_una_columna_fuera_de_la_proyeccion() {
         for (d, esperado) in [
-            (POSTGRES, "SELECT \"base_pay\", \"employee_id\" FROM \"public\".\"employees\""),
-            (BIGQUERY, "SELECT `base_pay`, `employee_id` FROM `public.employees`"),
+            (
+                POSTGRES,
+                "SELECT \"base_pay\", \"employee_id\" FROM \"public\".\"employees\"",
+            ),
+            (
+                BIGQUERY,
+                "SELECT `base_pay`, `employee_id` FROM `public.employees`",
+            ),
         ] {
             let c = consulta(&peticion(), &d, "public.employees", &tipos()).expect("traduce");
             assert!(c.texto.starts_with(esperado), "{}", c.texto);
@@ -676,7 +682,10 @@ mod tests {
             llamado = true;
             Ok(BTreeMap::new())
         });
-        assert!(c.is_ok() && !llamado, "el dialecto posicional no pide tipos");
+        assert!(
+            c.is_ok() && !llamado,
+            "el dialecto posicional no pide tipos"
+        );
     }
 
     /// Sin condiciones no hay `WHERE`. Es la mitad de la forma que ninguno de
@@ -714,7 +723,8 @@ mod tests {
         p.filtros.clear();
         let c = consulta(&p, &POSTGRES, "t", &tipos()).expect("traduce");
         assert!(
-            c.texto.starts_with("SELECT \"base_pay\", \"cost_center\" FROM"),
+            c.texto
+                .starts_with("SELECT \"base_pay\", \"cost_center\" FROM"),
             "{}",
             c.texto
         );

@@ -609,8 +609,15 @@ mod tests {
     /// **El rango sobre una columna**: lleva `cursor`, y `start` es exclusivo.
     #[test]
     fn con_cursor_el_rango_va_sobre_la_columna() {
-        let p = peticion("x://y", &raiz(), Some("actualizado"), Some("7"), Some("9"), false)
-            .expect("petición");
+        let p = peticion(
+            "x://y",
+            &raiz(),
+            Some("actualizado"),
+            Some("7"),
+            Some("9"),
+            false,
+        )
+        .expect("petición");
         assert!(p.contains("\"cursor\":\"actualizado\""), "{p}");
         assert!(p.contains("\"start\":\"7\""), "{p}");
         assert!(p.contains("\"end\":\"9\""), "{p}");
@@ -636,8 +643,15 @@ mod tests {
     /// explota el recibo del paso ④.
     #[test]
     fn un_testigo_que_no_ordena_no_lleva_rango() {
-        let p = peticion("x://y", &raiz(), None, Some("sha256:abc"), Some("sha256:def"), false)
-            .expect("petición");
+        let p = peticion(
+            "x://y",
+            &raiz(),
+            None,
+            Some("sha256:abc"),
+            Some("sha256:def"),
+            false,
+        )
+        .expect("petición");
         assert!(!p.contains("\"start\""), "{p}");
         assert!(!p.contains("\"end\""), "{p}");
     }

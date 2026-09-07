@@ -100,7 +100,12 @@ fn dentro_del_tope(llegaron: usize, tope: usize, que: &str, salida: &str) -> Res
 /// Analiza lo que dijo `bq` **y comprueba que no se corte**. Una sola puerta:
 /// tres sitios lo parseaban por su cuenta, y la comprobación en dos de tres es
 /// la que no se nota.
-fn analizar(salida: &str, tope: usize, que: &str, remedio: &str) -> Result<ore_core::parse::Node, String> {
+fn analizar(
+    salida: &str,
+    tope: usize,
+    que: &str,
+    remedio: &str,
+) -> Result<ore_core::parse::Node, String> {
     let arbol = ore_core::parse::parse(salida)
         .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
     dentro_del_tope(arbol.items().len(), tope, que, remedio)?;
@@ -133,18 +138,20 @@ fn main() -> ExitCode {
         // fallo que se disfrazo de otra cosa.
         "check" => match ore_driver::leer_coordenada(&entrada) {
             Err(e) => Err(e),
-            Ok((url, _)) => Ok(match proyecto(&url).and_then(|p| {
-                bq(
-                    &p,
-                    &consultas::Invocacion {
-                        consulta: "SELECT 1 AS ok".to_string(),
-                        parametros: Vec::new(),
-                    },
-                )
-            }) {
-                Ok(_) => ore_driver::comprobacion(true, None),
-                Err(e) => ore_driver::comprobacion(false, Some(&e)),
-            }),
+            Ok((url, _)) => Ok(
+                match proyecto(&url).and_then(|p| {
+                    bq(
+                        &p,
+                        &consultas::Invocacion {
+                            consulta: "SELECT 1 AS ok".to_string(),
+                            parametros: Vec::new(),
+                        },
+                    )
+                }) {
+                    Ok(_) => ore_driver::comprobacion(true, None),
+                    Err(e) => ore_driver::comprobacion(false, Some(&e)),
+                },
+            ),
         },
         // **El quinto verbo: que contiene esta fuente.** Y existe por una
         // asimetria real, no por simetria: una URL de BigQuery nombra UN
@@ -154,11 +161,13 @@ fn main() -> ExitCode {
             Err(e) => Err(e),
             Ok((url, _)) => explorar(&url),
         },
-        "catalogo" => Err("`ore` trae la receta del catálogo de BigQuery dentro y es la que \
+        "catalogo" => Err(
+            "`ore` trae la receta del catálogo de BigQuery dentro y es la que \
                            corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
                            aquí. Lo que implementa este programa es `leer`, que es el verbo de \
                            la fase ③"
-            .to_string()),
+                .to_string(),
+        ),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
 
@@ -222,10 +231,13 @@ fn filas(peticion: &str) -> Result<String, String> {
         &consultas::cualificado(&proyecto, &p.objeto),
         || tipos_de(&proyecto, &p.objeto),
     )?;
-    let salida = bq(&proyecto, &consultas::Invocacion {
-        consulta: c.texto,
-        parametros: c.parametros,
-    })?;
+    let salida = bq(
+        &proyecto,
+        &consultas::Invocacion {
+            consulta: c.texto,
+            parametros: c.parametros,
+        },
+    )?;
 
     let arbol = analizar(
         &salida,
@@ -407,11 +419,7 @@ fn explorar(url: &str) -> Result<String, String> {
             "`{proyecto}` no tiene ningun dataset visible con esta credencial. Una lista vacia              tendria el mismo aspecto que un proyecto al que no se llega, asi que se dice"
         ));
     }
-    Ok(ore_core::json::Json::obj([(
-        "contiene",
-        ore_core::json::Json::Arr(fuera),
-    )])
-    .pretty())
+    Ok(ore_core::json::Json::obj([("contiene", ore_core::json::Json::Arr(fuera))]).pretty())
 }
 
 // ── Ejecutar `bq` ───────────────────────────────────────────────────────────

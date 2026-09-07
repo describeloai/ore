@@ -98,9 +98,13 @@ type Fisica = (String, String, String, BTreeMap<String, String>);
 fn fisicas(pkg: &Package, e: &Loaded) -> Option<Fisica> {
     let v = vistas::respaldo(pkg, e)?;
     let r = vistas::raiz(pkg, v).ok()?;
-    Some((v.qname().unwrap_or_default(), r.datasource, r.objeto, r.columnas))
+    Some((
+        v.qname().unwrap_or_default(),
+        r.datasource,
+        r.objeto,
+        r.columnas,
+    ))
 }
-
 
 /// **La derivación.** Determinista: recorre en el orden en que el paquete lo
 /// declara, que es el mismo que la forma canónica fija.

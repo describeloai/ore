@@ -84,16 +84,11 @@ pub fn anadir(
     };
 
     let (fuente, disponibles) = match origen.kind {
-        Kind::Table => (
-            Origen::Tabla(corto(origen)),
-            columnas_de(origen, "columns"),
-        ),
+        Kind::Table => (Origen::Tabla(corto(origen)), columnas_de(origen, "columns")),
         _ => (Origen::Vista(corto(origen)), campos_de(origen)),
     };
     if disponibles.is_empty() {
-        eprintln!(
-            "error: `{de}` no expone ninguna columna, así que no hay nada que preguntarle"
-        );
+        eprintln!("error: `{de}` no expone ninguna columna, así que no hay nada que preguntarle");
         return ExitCode::from(65);
     }
 

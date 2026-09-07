@@ -227,7 +227,6 @@ struct Ent {
     anunciados: BTreeSet<String>,
 }
 
-
 #[derive(Default)]
 struct Shape {
     version: Version,
@@ -1420,7 +1419,6 @@ fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
         }
     }
 }
-
 
 /// El eje `POLICY` sobre el plano de gobierno.
 ///

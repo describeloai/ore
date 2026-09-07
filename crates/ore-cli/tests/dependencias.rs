@@ -200,14 +200,13 @@ fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
     .expect("Cargo.lock");
     let locales = locales(&lock);
 
-    let en_disco: BTreeSet<String> = std::fs::read_dir(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."),
-    )
-    .expect("crates/")
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().join("Cargo.toml").is_file())
-    .map(|e| e.file_name().to_string_lossy().into_owned())
-    .collect();
+    let en_disco: BTreeSet<String> =
+        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+            .expect("crates/")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().join("Cargo.toml").is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
 
     let sin_derivar: Vec<&String> = en_disco.iter().filter(|n| !locales.contains(*n)).collect();
     assert!(
@@ -284,9 +283,7 @@ fn locales(lock: &str) -> BTreeSet<String> {
             .lines()
             .find_map(|l| l.trim().strip_prefix("name = "))
             .map(|v| v.trim_matches('"').to_string());
-        let de_fuera = bloque
-            .lines()
-            .any(|l| l.trim().starts_with("source = "));
+        let de_fuera = bloque.lines().any(|l| l.trim().starts_with("source = "));
         if let Some(n) = nombre
             && !de_fuera
         {

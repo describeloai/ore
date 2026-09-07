@@ -129,9 +129,14 @@ pub const CARA_DE_LECTURA: &[(&str, Lectura)] = &[
     ("predicatePushdown", Lectura::Traduce),
     (
         "projectionPushdown",
-        Lectura::DeOtro("ore-core/vistas.rs · OOS2029, y es del núcleo porque decide si una copia compila"),
+        Lectura::DeOtro(
+            "ore-core/vistas.rs · OOS2029, y es del núcleo porque decide si una copia compila",
+        ),
     ),
-    ("joinPushdown", Lectura::HechoSinLector("este planificador no baja juntas")),
+    (
+        "joinPushdown",
+        Lectura::HechoSinLector("este planificador no baja juntas"),
+    ),
     (
         "aggregatePushdown",
         Lectura::DeOtro("ore-core/normalize.rs · como conjunto, para la forma canónica"),
@@ -158,7 +163,9 @@ pub const OPERADORES_DE_OOS: &[(&str, Lectura)] = &[
     ("range", Lectura::Traduce),
     (
         "like",
-        Lectura::HechoSinLector("no hay comparador de patrón: inventarlo prometería un empuje que no se comprueba"),
+        Lectura::HechoSinLector(
+            "no hay comparador de patrón: inventarlo prometería un empuje que no se comprueba",
+        ),
     ),
     ("isNull", Lectura::Traduce),
     (
@@ -1133,7 +1140,9 @@ mod censo {
     #[test]
     fn el_vocabulario_de_predicados_esta_clasificado_entero() {
         let t = esquema();
-        let i = t.find("\"predicatePushdown\"").expect("sin `predicatePushdown`");
+        let i = t
+            .find("\"predicatePushdown\"")
+            .expect("sin `predicatePushdown`");
         let j = i + t[i..].find("\"enum\"").expect("sin enum");
         let k = j + t[j..].find('[').expect("sin lista");
         let fin = k + t[k..].find(']').expect("lista sin cerrar");

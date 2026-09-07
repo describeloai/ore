@@ -108,7 +108,10 @@ fn sin_nada_que_bajar_no_se_pide_dueno() {
         &reticulo(false),
     );
     let out = validar(&dir);
-    assert!(out.contains("OOS2009") && out.contains("datasource"), "{out}");
+    assert!(
+        out.contains("OOS2009") && out.contains("datasource"),
+        "{out}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 
     let dir = arbol(
