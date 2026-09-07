@@ -35,6 +35,11 @@
 //! `ore_core::parse` que lee los documentos. Añadir un analizador de JSON para
 //! esto habría sido la segunda gramática para la misma forma.
 
+/// La forma del **catálogo**: lo que un lector emite y lo que `discover`
+/// acepta. Vivía dentro del consumidor, que es la manera de tener un contrato
+/// sin tenerlo — ver su cabecera.
+pub mod catalogo;
+
 /// Lo que el motor pide. Nombres físicos ya resueltos: el driver no conoce el
 /// modelo, solo el objeto y sus columnas.
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -56,197 +56,41 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-// ── El catálogo ─────────────────────────────────────────────────────────────
+// ── El catálogo ────────────────────────────────────────────────
+//
+// **La forma ya no vive aquí.** Subía a `ore_driver::catalogo`, con su censo y
+// su emisor, porque tenerla aquí significaba que la única definición del
+// contrato era el consumidor: los cuatro productores escriben JSON a pelo, y lo
+// que compartían no era un tipo —era haber leído este fichero—.
 
-/// Una columna, ya traducida al sistema de tipos de OOS por el lector.
-#[derive(Clone)]
-struct Columna {
-    nombre: String,
-    /// `None` cuando el lector **no supo** traducir el tipo del origen. No es un
-    /// hueco a rellenar: es la conjetura que este modulo no toma.
-    tipo: Option<String>,
-    /// Lo que dijo el origen cuando `tipo` es `None`. Se **cita**, nunca se
-    /// interpreta: interpretarlo seria saber de BigQuery, y la costura existe
-    /// justo para no saberlo.
-    origen: Option<String>,
-    obligatoria: bool,
-    /// Escrita en el origen por quien conoce el dato. Es un hecho, y de los
-    /// buenos: `pedidos.fecha` es un `String` cuya descripcion dice «Formato
-    /// DDMMAAAA, viene del AS/400». Perderla seria perder lo mejor del catalogo.
-    descripcion: Option<String>,
-}
-
-/// Una clave foranea, tal y como la declara el origen.
-#[derive(Clone)]
-struct Foranea {
-    /// Las columnas locales, en el orden del origen.
-    columnas: Vec<String>,
-    /// La tabla referenciada.
-    destino: String,
-    /// Las columnas del DESTINO, emparejadas en orden con `columnas`. SQL no
-    /// obliga a referenciar la clave primaria, y saber cuales son es lo unico
-    /// que permite no emitir una relacion verde y equivocada.
-    destino_columnas: Vec<String>,
-}
-
-/// Una tabla del origen. `nombre` es **opaco**: sus reglas son del sistema de
-/// origen y por eso viaja tal cual al `Binding`.
-#[derive(Clone)]
-struct Tabla {
-    nombre: String,
-    columnas: Vec<Columna>,
-    clave: Vec<String>,
-    /// Claves alternativas declaradas por el origen. No son adorno: son lo que
-    /// permite enlazar contra otra identidad —`toKey`— y lo que hace posible la
-    /// resolucion determinista entre fuentes.
-    unicas: Vec<Vec<String>>,
-    /// `(columnas locales, tabla destino)` — solo lo que el catálogo DECLARA.
-    foraneas: Vec<Foranea>,
-    filas: Option<u64>,
-    /// `table`, `view` o `materializedView`, tal y como lo dijo el origen.
-    clase: String,
-    /// Los objetos FÍSICOS que sostienen esta entidad. **Uno**, desde que el
-    /// binding se retiró: unir una familia fechada era N bindings, y una vista
-    /// sale de un sitio. Ver `familias`.
-    objetos: Vec<Objeto>,
-    /// La cara `I` del objeto, **tal como la declaró el driver**.
-    ///
-    /// Se guarda el nodo del catálogo y se transcribe: no se interpreta, no se
-    /// completa y no se corrige. Qué se le puede pedir a un origen lo sabe
-    /// quien traduce las consultas, y el inductor no es esa pieza. Si lo
-    /// supiera, el vocabulario viviría en dos sitios.
-    lee: Option<Node>,
-    /// La cara `D`, igual: la sondeó el driver preguntándole al servidor.
-    cambia: Option<Node>,
-}
+pub use ore_driver::catalogo::Catalogo;
+use ore_driver::catalogo::Tabla;
 
 /// Un objeto del origen y las columnas que tiene **dentro**.
 ///
 /// Casi siempre son las de su tabla. Cuando una respuesta une una familia
 /// fechada no lo son: la hermana de 2019 puede no tener la columna que se añadió
 /// en 2024, y un binding que se la atribuyera sería un mapeo verde y falso.
-#[derive(Clone)]
 struct Objeto {
     nombre: String,
     columnas: Vec<String>,
 }
 
-/// Lo que el lector entrega.
-pub struct Catalogo {
-    fuente: String,
-    tablas: Vec<Tabla>,
-}
-
-impl Catalogo {
-    /// De qué fuente vino. Lo necesita quien tenga que comprobar que el
-    /// repositorio la declara: un binding la referencia por nombre.
-    pub fn fuente(&self) -> &str {
-        &self.fuente
+/// **Derivado, y por eso ya no es un campo.**
+///
+/// El catálogo traía `objetos`, y desde que el binding se retiró siempre tenía
+/// exactamente UNO, cuyo nombre y columnas eran los de la tabla. Un campo que se
+/// puede computar y aun así se declara es una oportunidad de escribirlo mal
+/// —P2—, así que se computa.
+fn objeto_de(t: &Tabla) -> Objeto {
+    Objeto {
+        nombre: t.nombre.clone(),
+        columnas: t.columnas.iter().map(|c| c.nombre.clone()).collect(),
     }
-
-    /// Lee un catálogo en JSON. Se analiza con el analizador de YAML porque
-    /// **JSON es un subconjunto de YAML** y `ore-core` no lleva uno de JSON
-    /// (ADR 0002).
-    pub fn leer(texto: &str) -> Result<Self, String> {
-        let raiz = parse::parse(texto).map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
-        let fuente = raiz
-            .get("source")
-            .and_then(|(_, v)| v.as_str())
-            .ok_or("el catálogo no dice de qué `source` viene")?
-            .to_string();
-
-        let mut tablas = Vec::new();
-        for t in raiz.get("tables").map(|(_, v)| v.items()).unwrap_or(&[]) {
-            let Some(nombre) = t.get("name").and_then(|(_, v)| v.as_str()) else {
-                continue;
-            };
-            let columnas: Vec<Columna> = t
-                .get("columns")
-                .map(|(_, v)| v.items())
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|c| {
-                    let cadena = |k: &str| {
-                        c.get(k)
-                            .and_then(|(_, v)| v.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(String::from)
-                    };
-                    Some(Columna {
-                        nombre: c.get("name")?.1.as_str()?.to_string(),
-                        tipo: cadena("type"),
-                        origen: cadena("sourceType"),
-                        obligatoria: c
-                            .get("required")
-                            .and_then(|(_, v)| v.as_str())
-                            .is_some_and(|r| r == "true"),
-                        descripcion: cadena("description"),
-                    })
-                })
-                .collect();
-            let objetos = vec![Objeto {
-                nombre: nombre.to_string(),
-                columnas: columnas_de(&columnas),
-            }];
-            tablas.push(Tabla {
-                nombre: nombre.to_string(),
-                columnas,
-                clave: lista(t, "primaryKey"),
-                unicas: t
-                    .get("uniqueKeys")
-                    .map(|(_, v)| v.items())
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(lista_de)
-                    .filter(|k: &Vec<String>| !k.is_empty())
-                    .collect(),
-                foraneas: t
-                    .get("foreignKeys")
-                    .map(|(_, v)| v.items())
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter_map(|f| {
-                        Some(Foranea {
-                            columnas: lista(f, "columns"),
-                            destino: f.get("references")?.1.as_str()?.to_string(),
-                            destino_columnas: lista(f, "toColumns"),
-                        })
-                    })
-                    .collect(),
-                filas: t
-                    .get("rows")
-                    .and_then(|(_, v)| v.as_str())
-                    .and_then(|s| s.parse().ok()),
-                clase: t
-                    .get("kind")
-                    .and_then(|(_, v)| v.as_str())
-                    .unwrap_or("table")
-                    .to_string(),
-                objetos,
-                lee: t.get("reads").map(|(_, v)| v.clone()),
-                cambia: t.get("changes").map(|(_, v)| v.clone()),
-            });
-        }
-        Ok(Catalogo { fuente, tablas })
-    }
-}
-
-fn columnas_de(columnas: &[Columna]) -> Vec<String> {
-    columnas.iter().map(|c| c.nombre.clone()).collect()
 }
 
 fn lista_de(n: &Node) -> Vec<String> {
     n.items()
-        .iter()
-        .filter_map(|i| i.as_str())
-        .map(String::from)
-        .collect()
-}
-
-fn lista(n: &Node, clave: &str) -> Vec<String> {
-    n.get(clave)
-        .map(|(_, v)| v.items())
-        .unwrap_or(&[])
         .iter()
         .filter_map(|i| i.as_str())
         .map(String::from)
@@ -682,33 +526,33 @@ pub fn inducir_con(
             format!("entities/{nombre}.yaml"),
             entidad_yaml(nombre, paquete, &vista, t, &claves, &mapeo, &extra),
         );
-        for objeto in &t.objetos {
-            // El nombre del fichero lleva **la entidad delante**, y no solo la
-            // tabla. Se midio perdiendo un documento: `rubix_demo_ventas.Pedidos`
-            // y `rubix_demo_ventas.pedidos` son dos tablas y daban dos ficheros
-            // que en Windows —y en macOS— SON EL MISMO. El segundo piso al
-            // primero, quedo el nombre de uno con el contenido del otro, y
-            // `PedidosLegacy` se quedo sin puntero fisico. `ore validate` salio
-            // verde, porque una entidad sin fuente es legal en DRAFT.
-            //
-            // La entidad delante lo cierra sin inventar nada: los nombres de
-            // entidad ya son unicos porque **eso es lo que la decision de
-            // colision resolvio**, asi que el fichero hereda esa unicidad en vez
-            // de pedir una segunda respuesta.
-            let sufijo = format!(
-                "{}__{}.yaml",
-                identificador(nombre),
-                identificador(&objeto.nombre)
-            );
-            ficheros.insert(
-                format!("tables/{sufijo}"),
-                tabla_yaml(paquete, &cat.fuente, t, objeto),
-            );
-            ficheros.insert(
-                format!("views/{sufijo}"),
-                vista_yaml(&vista, paquete, &owner, t, objeto),
-            );
-        }
+        // **Uno**, y por eso ya no es un bucle: una vista sale de UN sitio.
+        let objeto = &objeto_de(t);
+        // El nombre del fichero lleva **la entidad delante**, y no solo la
+        // tabla. Se midio perdiendo un documento: `rubix_demo_ventas.Pedidos`
+        // y `rubix_demo_ventas.pedidos` son dos tablas y daban dos ficheros
+        // que en Windows —y en macOS— SON EL MISMO. El segundo piso al
+        // primero, quedo el nombre de uno con el contenido del otro, y
+        // `PedidosLegacy` se quedo sin puntero fisico. `ore validate` salio
+        // verde, porque una entidad sin fuente es legal en DRAFT.
+        //
+        // La entidad delante lo cierra sin inventar nada: los nombres de
+        // entidad ya son unicos porque **eso es lo que la decision de
+        // colision resolvio**, asi que el fichero hereda esa unicidad en vez
+        // de pedir una segunda respuesta.
+        let sufijo = format!(
+            "{}__{}.yaml",
+            identificador(nombre),
+            identificador(&objeto.nombre)
+        );
+        ficheros.insert(
+            format!("tables/{sufijo}"),
+            tabla_yaml(paquete, &cat.fuente, t, objeto),
+        );
+        ficheros.insert(
+            format!("views/{sufijo}"),
+            vista_yaml(&vista, paquete, &owner, t, objeto),
+        );
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
             pendientes.push(pendiente(
@@ -1774,6 +1618,18 @@ fn escalar_yaml(s: &str) -> String {
 /// dos sitios diciéndolo, y el día que discrepen ninguno diría cuál manda. Lo
 /// que llega del driver se copia; lo que no encaje lo dirá `ore validate`,
 /// que es quien tiene el esquema.
+/// Una de las dos caras, a YAML.
+///
+/// Viaja **opaca** —el catálogo la guarda como `Json` y esta pieza no la
+/// interpreta— y vuelve a nodo por el camino por el que llegó: **JSON es un
+/// subconjunto de YAML** (ADR 0002), así que releerla es total y no hace falta
+/// una segunda gramática para la misma forma.
+fn cara_yaml(j: &Json, sangria: usize) -> String {
+    parse::parse(&j.jcs())
+        .map(|n| transcribir(&n, sangria))
+        .unwrap_or_default()
+}
+
 fn transcribir(n: &Node, sangria: usize) -> String {
     let ind = " ".repeat(sangria);
     match n {
@@ -1855,7 +1711,7 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
     match &t.lee {
         Some(n) => {
             let _ = writeln!(s, "  reads:");
-            s.push_str(&transcribir(n, 4));
+            s.push_str(&cara_yaml(n, 4));
         }
         // Un catálogo que no declara la cara `I` no dice que no se pueda leer:
         // dice que su driver no declaró nada. `none` afirmaría lo primero, y
@@ -1867,7 +1723,7 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
     match &t.cambia {
         Some(n) => {
             let _ = writeln!(s, "  changes:");
-            s.push_str(&transcribir(n, 4));
+            s.push_str(&cara_yaml(n, 4));
         }
         None => s.push_str(
             "  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n  \
@@ -3110,7 +2966,10 @@ mod emisor {
             "ventas",
             "team:ventas",
             &Origen::Tabla("clientes".into()),
-            &[("id".into(), "id".into()), ("pais".into(), "cod_pais".into())],
+            &[
+                ("id".into(), "id".into()),
+                ("pais".into(), "cod_pais".into()),
+            ],
             &[],
         );
         assert!(s.contains("kind: View"), "{s}");

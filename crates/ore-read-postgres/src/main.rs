@@ -57,6 +57,7 @@
 //! es opcional justamente para esto.
 
 use ore_core::json::Json;
+use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::process::ExitCode;
@@ -286,7 +287,7 @@ fn intentar() -> Result<String, String> {
         );
     }
 
-    Ok(armar(&fuente, &filas, &unicas, &wal_level).pretty())
+    Ok(armar(&fuente, &filas, &unicas, &wal_level))
 }
 
 // ── La costura de tipos ─────────────────────────────────────────────────────
@@ -372,15 +373,20 @@ struct Acc {
     identidad: String,
     /// Las columnas del índice de identidad de replicación, si lo hay.
     identidad_columnas: Vec<Json>,
-    columnas: Vec<Json>,
-    clave: Vec<Json>,
+    columnas: Vec<Columna>,
+    clave: Vec<String>,
     /// destino -> pares (columna local, columna del destino), en orden.
     foraneas: BTreeMap<String, Vec<(String, String)>>,
 }
 
-fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_level: &str) -> Json {
+fn armar(
+    fuente: &str,
+    filas: &[postgres::Row],
+    unicas: &[postgres::Row],
+    wal_level: &str,
+) -> String {
     // Indice tabla -> claves alternativas, antes del bucle principal.
-    let mut alternativas: BTreeMap<String, Vec<Json>> = BTreeMap::new();
+    let mut alternativas: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
     for u in unicas {
         let (Some(e), Some(t)) = (
             u.get::<_, Option<String>>("esquema"),
@@ -393,7 +399,7 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_le
             alternativas
                 .entry(format!("{e}.{t}"))
                 .or_default()
-                .push(Json::Arr(cols.iter().map(Json::s).collect()));
+                .push(cols);
         }
     }
 
@@ -431,36 +437,25 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_le
 
         let familia = cadena("familia").unwrap_or_default();
         let base = cadena("base");
-        let mut c: BTreeMap<String, Json> = BTreeMap::new();
-        c.insert("name".into(), Json::s(&columna));
-        match traducir(&tipo, &familia, base.as_deref()) {
-            Some(t) => {
-                c.insert("type".into(), Json::s(t));
-            }
-            // Sin `type`. `sourceType` se cita aguas abajo, nunca se interpreta.
-            None => {
-                c.insert("sourceType".into(), Json::s(&tipo));
-            }
-        }
-        if f.get::<_, Option<bool>>("obligatoria") == Some(true) {
-            c.insert("required".into(), Json::Bool(true));
-        }
-        let valores: Vec<String> = f.get("valores");
-        if !valores.is_empty() {
+        // El tipo o su cita, nunca los dos: `sourceType` se cita aguas abajo y
+        // nunca se interpreta.
+        let (tipo_oos, origen) = match traducir(&tipo, &familia, base.as_deref()) {
+            Some(t) => (Some(t.to_string()), None),
+            None => (None, Some(tipo.clone())),
+        };
+        acc.columnas.push(Columna {
+            nombre: columna.clone(),
+            tipo: tipo_oos,
+            origen,
+            obligatoria: f.get::<_, Option<bool>>("obligatoria") == Some(true),
             // El orden es el de declaración (`enumsortorder`), y se conserva:
             // el esquema dice que reordenarlos es un cambio observable.
-            c.insert(
-                "enum".into(),
-                Json::Arr(valores.iter().map(Json::s).collect()),
-            );
-        }
-        if let Some(d) = cadena("descripcion") {
-            c.insert("description".into(), Json::s(d));
-        }
-        acc.columnas.push(Json::Obj(c));
+            valores: f.get("valores"),
+            descripcion: cadena("descripcion"),
+        });
 
         if f.get::<_, Option<bool>>("clave") == Some(true) {
-            acc.clave.push(Json::s(&columna));
+            acc.clave.push(columna.clone());
         }
         if let Some(r) = cadena("referencia") {
             // Una foránea compuesta llega como una fila por columna, todas
@@ -475,59 +470,51 @@ fn armar(fuente: &str, filas: &[postgres::Row], unicas: &[postgres::Row], wal_le
         .into_iter()
         .filter_map(|t| {
             let a = tablas.remove(&t)?;
-            let mut o: BTreeMap<String, Json> = BTreeMap::new();
-            o.insert("name".into(), Json::s(&t));
-            o.insert("kind".into(), Json::s(a.clase));
-            o.insert("columns".into(), Json::Arr(a.columnas));
-            // Las dos caras del objeto. Van EN EL CATALOGO y no en el inductor
-            // porque solo el driver las sabe: qué se puede empujar es de quien
-            // traduce, y qué cambios salen es de quien preguntó al servidor.
-            o.insert("reads".into(), reads());
             // La clave del upsert: la primaria si la identidad es la de por
             // defecto, y las columnas del índice si alguien eligió otro.
             let identidad_clave = if a.identidad == "i" {
                 a.identidad_columnas.clone()
             } else {
-                a.clave.clone()
+                a.clave.iter().map(Json::s).collect()
             };
-            o.insert(
-                "changes".into(),
-                changes(wal_level, &a.relkind, &a.identidad, &identidad_clave),
-            );
-            if !a.clave.is_empty() {
-                o.insert("primaryKey".into(), Json::Arr(a.clave));
-            }
-            if let Some(u) = alternativas.remove(&t) {
-                o.insert("uniqueKeys".into(), Json::Arr(u));
-            }
-            if !a.foraneas.is_empty() {
-                o.insert(
-                    "foreignKeys".into(),
-                    Json::Arr(
-                        a.foraneas
-                            .into_iter()
-                            .map(|(destino, pares)| {
-                                Json::obj([
-                                    (
-                                        "columns",
-                                        Json::Arr(pares.iter().map(|(l, _)| Json::s(l)).collect()),
-                                    ),
-                                    ("references", Json::s(destino)),
-                                    (
-                                        "toColumns",
-                                        Json::Arr(pares.iter().map(|(_, r)| Json::s(r)).collect()),
-                                    ),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                );
-            }
-            Some(Json::Obj(o))
+            Some(Tabla {
+                nombre: t.clone(),
+                columnas: a.columnas,
+                clave: a.clave,
+                unicas: alternativas.remove(&t).unwrap_or_default(),
+                foraneas: a
+                    .foraneas
+                    .into_iter()
+                    .map(|(destino, pares)| Foranea {
+                        columnas: pares.iter().map(|(l, _)| l.clone()).collect(),
+                        destino,
+                        destino_columnas: pares.iter().map(|(_, r)| r.clone()).collect(),
+                    })
+                    .collect(),
+                // PostgreSQL no da un conteo fiable sin contar: la ausencia es
+                // una respuesta.
+                filas: None,
+                clase: a.clase.to_string(),
+                // Las dos caras del objeto. Van EN EL CATALOGO y no en el
+                // inductor porque solo el driver las sabe: qué se puede empujar
+                // es de quien traduce, y qué cambios salen es de quien preguntó
+                // al servidor.
+                lee: Some(reads()),
+                cambia: Some(changes(
+                    wal_level,
+                    &a.relkind,
+                    &a.identidad,
+                    &identidad_clave,
+                )),
+            })
         })
         .collect();
 
-    Json::obj([("source", Json::s(fuente)), ("tables", Json::Arr(tablas))])
+    // **El emisor es el del protocolo**, no uno de aqui.
+    escribir(&Catalogo {
+        fuente: fuente.to_string(),
+        tablas,
+    })
 }
 
 // ── Las dos caras ───────────────────────────────────────────────────────────

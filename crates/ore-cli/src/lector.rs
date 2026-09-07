@@ -61,6 +61,7 @@
 
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
+use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -282,7 +283,7 @@ fn bigquery(fuente: &str, url: &str) -> Result<String, Fallo> {
             &["  Se esperaba el JSON de `bq query --format=prettyjson`."],
         )
     })?;
-    Ok(armar(fuente, &dataset, filas.items()).pretty())
+    Ok(armar(fuente, &dataset, filas.items()))
 }
 
 // ── La costura de tipos ─────────────────────────────────────────────────────
@@ -427,12 +428,12 @@ fn changes(table_type: &str, historial: bool) -> Json {
 /// Agrupa las filas planas de la consulta en tablas. Llegan ordenadas por
 /// `(table_name, ordinal_position)`, y ese orden se conserva: el orden de las
 /// columnas es del origen y no nos toca reordenarlo.
-fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
+fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> String {
     struct Acc {
         clase: &'static str,
-        filas: Option<i64>,
-        columnas: Vec<Json>,
-        clave: Vec<Json>,
+        filas: Option<u64>,
+        columnas: Vec<Columna>,
+        clave: Vec<String>,
         foraneas: BTreeMap<String, Vec<String>>,
         /// Las dos caras, de los hechos que el servidor afirma sobre el objeto.
         tipo: String,
@@ -475,30 +476,28 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
             }
         });
 
-        let mut c: BTreeMap<String, Json> = BTreeMap::new();
-        c.insert("name".to_string(), Json::s(&columna));
-        match traducir(&tipo_bruto) {
-            Some(t) => {
-                c.insert("type".to_string(), Json::s(t));
-            }
-            // Sin `type`. `sourceType` no se interpreta aguas abajo: se cita.
-            None => {
-                c.insert("sourceType".to_string(), Json::s(&tipo_bruto));
-            }
-        }
-        if campo(f, "is_nullable").as_deref() == Some("NO") {
-            c.insert("required".to_string(), Json::Bool(true));
-        }
-        if let Some(d) = campo(f, "column_description").filter(|d| !d.trim().is_empty()) {
-            c.insert("description".to_string(), Json::s(d));
-        }
-        acc.columnas.push(Json::Obj(c));
+        // El tipo o su cita, nunca los dos: `sourceType` no se interpreta aguas
+        // abajo, y por eso solo se pone cuando no hubo traduccion.
+        let (tipo, origen) = match traducir(&tipo_bruto) {
+            Some(t) => (Some(t.to_string()), None),
+            None => (None, Some(tipo_bruto.clone())),
+        };
+        acc.columnas.push(Columna {
+            nombre: columna.clone(),
+            tipo,
+            origen,
+            obligatoria: campo(f, "is_nullable").as_deref() == Some("NO"),
+            // GoogleSQL no tiene tipos enumerados: no hay nada que emitir, y la
+            // ausencia es la respuesta.
+            valores: Vec::new(),
+            descripcion: campo(f, "column_description").filter(|d| !d.trim().is_empty()),
+        });
 
         if campo(f, "is_partitioning_column").as_deref() == Some("YES") {
             acc.particion = Some(columna.clone());
         }
         if campo(f, "is_key").as_deref() == Some("true") {
-            acc.clave.push(Json::s(&columna));
+            acc.clave.push(columna.clone());
         }
         if let Some(r) = campo(f, "ref_table") {
             acc.foraneas
@@ -512,45 +511,39 @@ fn armar(fuente: &str, dataset: &str, filas: &[Node]) -> Json {
         .into_iter()
         .filter_map(|t| {
             let a = tablas.remove(&t)?;
-            let mut o: BTreeMap<String, Json> = BTreeMap::new();
-            o.insert("name".to_string(), Json::s(format!("{dataset}.{t}")));
-            o.insert("kind".to_string(), Json::s(a.clase));
-            o.insert("columns".to_string(), Json::Arr(a.columnas));
-            // Las dos caras, del objeto y no de quien lo consulta. Van aqui y no
-            // en la vista por lo mismo que `01-table` §3: el contrato es del
-            // objeto, y dos vistas sobre el mismo no lo repiten.
-            o.insert(
-                "reads".to_string(),
-                reads(a.particion.as_deref(), a.exige_filtro),
-            );
-            o.insert("changes".to_string(), changes(&a.tipo, a.historial));
-            if !a.clave.is_empty() {
-                o.insert("primaryKey".to_string(), Json::Arr(a.clave));
-            }
-            if !a.foraneas.is_empty() {
-                o.insert(
-                    "foreignKeys".to_string(),
-                    Json::Arr(
-                        a.foraneas
-                            .into_iter()
-                            .map(|(destino, cols)| {
-                                Json::obj([
-                                    ("columns", Json::Arr(cols.iter().map(Json::s).collect())),
-                                    ("references", Json::s(destino)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                );
-            }
-            if let Some(n) = a.filas {
-                o.insert("rows".to_string(), Json::Int(n));
-            }
-            Some(Json::Obj(o))
+            Some(Tabla {
+                nombre: format!("{dataset}.{t}"),
+                columnas: a.columnas,
+                clave: a.clave,
+                // BigQuery no publica claves alternativas: la ausencia es una
+                // respuesta, y el emisor no escribe lo que no se dijo.
+                unicas: Vec::new(),
+                foraneas: a
+                    .foraneas
+                    .into_iter()
+                    .map(|(destino, columnas)| Foranea {
+                        columnas,
+                        destino,
+                        destino_columnas: Vec::new(),
+                    })
+                    .collect(),
+                filas: a.filas,
+                clase: a.clase.to_string(),
+                // Las dos caras, del objeto y no de quien lo consulta. Van aqui y
+                // no en la vista por lo mismo que `01-table` §3: el contrato es
+                // del objeto, y dos vistas sobre el mismo no lo repiten.
+                lee: Some(reads(a.particion.as_deref(), a.exige_filtro)),
+                cambia: Some(changes(&a.tipo, a.historial)),
+            })
         })
         .collect();
 
-    Json::obj([("source", Json::s(fuente)), ("tables", Json::Arr(tablas))])
+    // **El emisor es el del protocolo**, no uno de aqui: un catalogo escrito por
+    // esta receta y uno escrito por un driver tienen que ser el mismo texto.
+    escribir(&Catalogo {
+        fuente: fuente.to_string(),
+        tablas,
+    })
 }
 
 // ── La costura de extensión ─────────────────────────────────────────────────
@@ -742,8 +735,10 @@ pub fn explorar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
         match it.get("url").and_then(|(_, v)| v.as_str()) {
             // La URL sale **hecha**, y eso no es comodidad: es lo que evita que
             // alguien la componga a mano y se equivoque en el separador.
-            Some(u) => println!("  {nombre}
-      ore source add --name {nombre} {u}"),
+            Some(u) => println!(
+                "  {nombre}
+      ore source add --name {nombre} {u}"
+            ),
             None => println!("  {nombre}"),
         }
     }
@@ -838,7 +833,7 @@ mod tests {
 
     fn catalogo() -> String {
         let n = parse::parse(FILAS).unwrap();
-        armar("bq_ventas", "rubix_demo_ventas", n.items()).pretty()
+        armar("bq_ventas", "rubix_demo_ventas", n.items())
     }
 
     /// **La deuda de T3, saldada.** La receta emitia `reads: {}` y
@@ -872,10 +867,7 @@ mod tests {
                 "`{n}` sigue sin las dos caras:
 {y}"
             );
-            assert!(
-                y.contains("predicatePushdown: [eq]"),
-                "{y}"
-            );
+            assert!(y.contains("predicatePushdown: [eq]"), "{y}");
         }
         // Se factura por bytes leidos, asi que un recorrido completo es caro
         // aunque no este prohibido. `cheap` empujaria al planificador a hacerlo.

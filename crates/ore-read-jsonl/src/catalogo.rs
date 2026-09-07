@@ -43,6 +43,7 @@ use std::collections::BTreeMap;
 
 use ore_core::json::Json;
 use ore_core::parse::{Node, Style};
+use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 
 /// Las extensiones que se toman por NDJSON. Se dice cuál se mira en vez de
 /// abrir todo y adivinar: un `.json` suele ser **un** documento y no una línea
@@ -111,8 +112,8 @@ pub fn fichero(url: &str, objeto: &str) -> Result<std::path::PathBuf, String> {
 pub fn explorar(url: &str) -> Result<String, String> {
     let mut avisos = Vec::new();
     let catalogo = de_directorio("explorar", url, &mut avisos)?;
-    let arbol = ore_core::parse::parse(&catalogo)
-        .map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
+    let arbol =
+        ore_core::parse::parse(&catalogo).map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
     let contiene: Vec<Json> = arbol
         .get("tables")
         .map(|(_, v)| v.items())
@@ -215,7 +216,7 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
     // que no es un hecho del origen, y por eso se dice.
     entradas.sort();
 
-    let mut tablas: Vec<Json> = Vec::new();
+    let mut tablas: Vec<Tabla> = Vec::new();
     let mut troncos: std::collections::BTreeSet<String> = Default::default();
     for f in &entradas {
         // El nombre del OBJETO es el tronco, sin extension: el punto es un
@@ -238,9 +239,8 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
         let mut visto: BTreeMap<String, Observado> = BTreeMap::new();
         let mut lineas = 0usize;
         for linea in texto.lines().filter(|l| !l.trim().is_empty()) {
-            let n = ore_core::parse::parse(linea).map_err(|e| {
-                format!("una línea de `{nombre}` no analiza: {e:?}")
-            })?;
+            let n = ore_core::parse::parse(linea)
+                .map_err(|e| format!("una línea de `{nombre}` no analiza: {e:?}"))?;
             lineas += 1;
             for (k, v) in n.entries() {
                 let Some(col) = k.as_str() else { continue };
@@ -268,18 +268,13 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
             continue;
         }
 
-        let mut columnas: Vec<Json> = Vec::new();
+        let mut columnas: Vec<Columna> = Vec::new();
         for col in &orden {
             let o = &visto[col];
-            let mut c: BTreeMap<String, Json> = BTreeMap::new();
-            c.insert("name".to_string(), Json::s(col));
-            match o.clases.as_slice() {
-                [uno] if es_escalar_oos(uno) => {
-                    c.insert("type".to_string(), Json::s(*uno));
-                }
-                [uno] => {
-                    c.insert("sourceType".to_string(), Json::s(*uno));
-                }
+            // El tipo o su cita, nunca los dos.
+            let (tipo, origen) = match o.clases.as_slice() {
+                [uno] if es_escalar_oos(uno) => (Some(uno.to_string()), None),
+                [uno] => (None, Some(uno.to_string())),
                 varias => {
                     let union = varias.join("|");
                     avisos.push(format!(
@@ -287,33 +282,34 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
                          tipo, son varios, y se cita sin traducir",
                         varias.len()
                     ));
-                    c.insert("sourceType".to_string(), Json::s(&union));
+                    (None, Some(union))
                 }
-            }
-            // Obligatoria si apareció con valor en TODAS las líneas. Es un
-            // hecho de este fichero y se emite como tal.
-            if o.con_valor == lineas {
-                c.insert("required".to_string(), Json::Bool(true));
-            }
-            columnas.push(Json::Obj(c));
+            };
+            columnas.push(Columna {
+                nombre: col.clone(),
+                tipo,
+                origen,
+                // Obligatoria si apareció con valor en TODAS las líneas. Es un
+                // hecho de este fichero y se emite como tal.
+                obligatoria: o.con_valor == lineas,
+                ..Columna::default()
+            });
         }
 
-        tablas.push(Json::obj([
-            ("name", Json::s(&nombre)),
-            ("kind", Json::s("table")),
-            ("columns", Json::Arr(columnas)),
-            (
-                "reads",
-                Json::obj([
-                    ("predicatePushdown", Json::Arr(vec![Json::s("eq")])),
-                    ("fullScan", Json::s("cheap")),
-                ]),
-            ),
-            (
-                "changes",
-                Json::obj([("mode", Json::s("none")), ("witness", Json::s("snapshot"))]),
-            ),
-        ]));
+        tablas.push(Tabla {
+            nombre: nombre.clone(),
+            columnas,
+            clase: "table".to_string(),
+            lee: Some(Json::obj([
+                ("predicatePushdown", Json::Arr(vec![Json::s("eq")])),
+                ("fullScan", Json::s("cheap")),
+            ])),
+            cambia: Some(Json::obj([
+                ("mode", Json::s("none")),
+                ("witness", Json::s("snapshot")),
+            ])),
+            ..Tabla::default()
+        });
     }
 
     if tablas.is_empty() {
@@ -333,11 +329,11 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
          este fichero y una conjetura sobre la tabla"
             .to_string(),
     );
-    Ok(Json::obj([
-        ("source", Json::s(fuente)),
-        ("tables", Json::Arr(tablas)),
-    ])
-    .pretty())
+    // **El emisor es el del protocolo**, no uno de aqui.
+    Ok(escribir(&Catalogo {
+        fuente: fuente.to_string(),
+        tablas,
+    }))
 }
 
 #[cfg(test)]
@@ -383,14 +379,13 @@ mod tests {
     /// sin traducir, y se avisa.
     #[test]
     fn una_columna_con_dos_clases_no_se_traduce_a_una() {
-        let (c, avisos) = catalogo(
-            "mezcla",
-            &[("x.ndjson", "{\"v\": 1}\n{\"v\": \"uno\"}\n")],
-        );
+        let (c, avisos) = catalogo("mezcla", &[("x.ndjson", "{\"v\": 1}\n{\"v\": \"uno\"}\n")]);
         assert!(c.contains("\"sourceType\": \"Integer|String\""), "{c}");
         assert!(!c.contains("\"type\":"), "{c}");
         assert!(
-            avisos.iter().any(|a| a.contains("no es un tipo, son varios")),
+            avisos
+                .iter()
+                .any(|a| a.contains("no es un tipo, son varios")),
             "{avisos:?}"
         );
     }
@@ -401,7 +396,10 @@ mod tests {
     fn un_objeto_anidado_se_cita_y_no_se_traduce() {
         let (c, _) = catalogo(
             "anidado",
-            &[("x.ndjson", "{\"dir\": {\"cp\": \"08001\"}, \"tags\": [1, 2]}\n")],
+            &[(
+                "x.ndjson",
+                "{\"dir\": {\"cp\": \"08001\"}, \"tags\": [1, 2]}\n",
+            )],
         );
         assert!(c.contains("\"sourceType\": \"object\""), "{c}");
         assert!(c.contains("\"sourceType\": \"array\""), "{c}");
@@ -430,7 +428,9 @@ mod tests {
         let (c, avisos) = catalogo("clave", &[("x.ndjson", "{\"id\": 1}\n{\"id\": 2}\n")]);
         assert!(!c.contains("primaryKey"), "{c}");
         assert!(
-            avisos.iter().any(|a| a.contains("conjetura sobre la tabla")),
+            avisos
+                .iter()
+                .any(|a| a.contains("conjetura sobre la tabla")),
             "{avisos:?}"
         );
     }
