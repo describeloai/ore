@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ore-version
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ore
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:7e8d224
+          args: ["--version"]
+          resources:
+            requests: {cpu: "1", memory: 1Gi}
+            limits:   {cpu: "1", memory: 1Gi}
