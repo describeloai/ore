@@ -19,10 +19,24 @@ VPC ore-mesh (custom)
   Private Google Access · on
 
 clúster ore-mesh    ZONAL · canal REGULAR · Dataplane V2 · Workload Identity
-  pool default      e2-standard-2   1 fijo    ore.dev/pool=system
-  pool jobs         e2-standard-4   0 → 3     ore.dev/pool=jobs
+  pool default      e2-standard-2   1 fijo    ore.dev/pool=system   IP pública
+  pool jobs-p       e2-standard-4   0 → 3     ore.dev/pool=jobs     PRIVADO
                                               taint ore.dev/jobs=true:NoSchedule
 ```
+
+**El pool de jobs es privado, y eso quitó un techo que nadie había contado.** Cada nodo con
+IP pública consume una dirección de `IN_USE_ADDRESSES`, que está en 4: un nodo de sistema
+más tres de jobs eran exactamente cuatro, y el clúster no podía crecer más **aunque hubiera
+32 vCPU libres**. Sin IP pública, el mismo par de nodos usa **1 de 4**.
+
+No hizo falta Cloud NAT ni esperar a la cuota. **Private Google Access —ya encendido en la
+subred— deja que una VM sin IP pública alcance las APIs de Google**, y eso cubre lo que la
+malla necesita sacar: Artifact Registry, BigQuery, las credenciales y los logs. NAT hará
+falta el día que haya que salir a algo que *no* sea de Google — un Postgres de un cliente.
+
+Y la migración no tocó nada de encima: el `ResourceFlavor` de Kueue selecciona por la
+**etiqueta** `ore.dev/pool=jobs`, no por el nombre del pool. Se creó `jobs-p`, se borró
+`jobs`, y ni la cola ni los Jobs se enteraron. Es lo que la etiqueta compró.
 
 **Zonal y no regional, y es una decisión de dinero medida.** El fijo del plano de control
 es `$0.10/h` para cualquier clúster, y el crédito de free tier —`$74.40/mes`— cubre **uno
@@ -32,7 +46,8 @@ pasar a regional es recrear el clúster, no rediseñarlo.
 
 **El pool de jobs es on-demand porque `PREEMPTIBLE_CPUS` está a 0.** La petición de cuota
 está presentada. El día que entre, se sustituye el pool por uno Spot y **nada más cambia**:
-la misma etiqueta, el mismo taint, el mismo sabor de Kueue encima.
+la misma etiqueta, el mismo taint, el mismo sabor de Kueue encima — que es exactamente lo
+que acaba de comprobarse al hacerlo privado.
 
 ## 2. Las tres reglas que no hay que deshacer
 
@@ -142,9 +157,23 @@ Kueue se instala aparte, desde su release:
 kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/v0.19.3/manifests.yaml
 ```
 
-## 7. Lo que falta
+## 7. Un falso positivo, dicho para que nadie lo repita
+
+Durante un rato pareció que **`kubectl logs` estaba roto** en el pool de jobs: `dial tcp
+10.10.0.x:10250: i/o timeout`, repetido. Se persiguió como un agujero de la VPC custom y se
+llegó a añadir una regla de cortafuegos del plano de control a los nodos.
+
+**No había tal cosa.** `optimize-utilization` retira los nodos ociosos deprisa, y lo que se
+estaba leyendo era la salida de pods cuyo nodo ya estaba drenado. Leyendo *inmediatamente*
+después de que el Job termina, sale a la primera. La regla se retiró, y se comprobó que sin
+ella los logs siguen — dejar un `allow` «por si acaso» es lo que se pudre.
+
+## 8. Lo que falta
 
 - **El pool Spot**, cuando entre la cuota.
-- **Cloud NAT**, cuando un driver necesite salir a un origen de verdad.
-- **La política de salida del driver** — la excepción con nombre a la regla de §2.
+- **La política de salida del driver** con los 145 prefijos públicos de Google: fea, y
+  cierra la salida hoy sin montar DNS.
+- **Zona privada de Cloud DNS + `restricted.googleapis.com` (199.36.153.4/30)**, que
+  sustituye la lista por cuatro direcciones y trae la frontera de VPC-SC.
+- **Cloud NAT**, el día que haya que salir a algo que NO sea de Google.
 - **Kueue con `AdmissionCheck`** para exigir cuota de origen antes de admitir un `discover`.
