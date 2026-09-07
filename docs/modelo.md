@@ -200,5 +200,7 @@ Este documento no cuenta cómo se llegó a nada. Eso vive en:
 | [`sustrato.md`](sustrato.md) | la tesis del sustrato y sus medidas |
 | [`entidad.md`](entidad.md) | qué persiste de `Entity`, peldaño a peldaño |
 | [`ontologia-como-repositorio.md`](ontologia-como-repositorio.md) | la formulación de producto, y el cotejo con Cognite, Foundry y Dremio |
+| [`packages.md`](packages.md) | la pertenencia, los cuatro verbos y la lápida |
+| [`view-engine.md`](view-engine.md) | las doce piezas del motor, y lo que un documento puede pedirle |
 | `pruebas-de-fuego/medida-*.py` | cada número afirmado arriba, reproducible |
 | `vendor/oos/spec/` | lo normativo. **Manda sobre esto** |
