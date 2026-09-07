@@ -813,6 +813,104 @@ fn imprimir(f: Fallo) -> std::process::ExitCode {
     std::process::ExitCode::from(f.codigo)
 }
 
+// ── El catálogo, como artefacto ─────────────────────────────────────────────
+
+/// **`ore source catalog`** — leer el catálogo de una fuente **y parar**.
+///
+/// # El hueco que cierra
+///
+/// `discover --from` acepta *«un catálogo ya leído, venga de donde venga»*, y
+/// hasta hoy **ningún mando emitía uno**. Ni por arriba —`ore source` tenía
+/// `add`, `explore` y `check`— ni por abajo, porque para BigQuery el driver
+/// `catalogo` se niega a propósito: esa receta vive dentro de `ore`.
+///
+/// Así que el artefacto de la frontera, el que la mitad de la suite escribe a
+/// mano para probar lo que pasa después del driver, no se podía obtener con
+/// ninguna orden.
+///
+/// # Por qué es un verbo de `source` y no una bandera de `discover`
+///
+/// Porque es la misma clase de pregunta que sus vecinos: `check` pregunta si
+/// responde, `explore` qué contiene, y esto qué tiene dentro. Ninguno de los
+/// tres escribe un documento OOS.
+///
+/// Y `discover` ya tenía la separación por dentro —`--source` y `--from` existen
+/// porque *«son dos actos, y se piden por separado porque fallan por
+/// separado»*—; lo único que faltaba era poder quedarse con lo de en medio.
+///
+/// # Lo que dice al escribirlo, y por qué eso no es adorno
+///
+/// **Qué claves de la forma trae este catálogo y cuáles no.** Es la respuesta
+/// directa a lo que la medida encontró: una tabla sin `primaryKey` y una tabla
+/// cuyo driver se olvidó de emitirlo **se ven exactamente igual**. Enseñar la
+/// lista no lo arregla, pero lo hace mirable — y quien conoce el origen sabe
+/// cuál de las dos cosas es.
+///
+/// Sin `--out` va a stdout **y nada más va a stdout**, para que se pueda
+/// redirigir a un fichero y dárselo a `--from` tal cual.
+pub fn emitir_catalogo(
+    raiz: &Path,
+    fuente: &str,
+    destino: Option<&Path>,
+) -> std::process::ExitCode {
+    let texto = match catalogo(raiz, fuente) {
+        Ok(t) => t,
+        Err(f) => return imprimir(f),
+    };
+    let Some(out) = destino else {
+        println!("{texto}");
+        return std::process::ExitCode::SUCCESS;
+    };
+    if let Some(d) = out.parent()
+        && !d.as_os_str().is_empty()
+        && let Err(e) = std::fs::create_dir_all(d)
+    {
+        eprintln!("error: no se pudo crear `{}`: {e}", d.display());
+        return std::process::ExitCode::from(73); // EX_CANTCREAT
+    }
+    if let Err(e) = std::fs::write(out, &texto) {
+        eprintln!("error: no se pudo escribir `{}`: {e}", out.display());
+        return std::process::ExitCode::from(73);
+    }
+
+    let cat = match Catalogo::leer(&texto) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: el catálogo recién escrito no se relee: {e}");
+            return std::process::ExitCode::from(70); // EX_SOFTWARE
+        }
+    };
+    println!("  ✓ {}", out.display());
+    println!(
+        "  ✓ {} objeto(s), {} columna(s)",
+        cat.tablas.len(),
+        cat.tablas.iter().map(|t| t.columnas.len()).sum::<usize>()
+    );
+    let ausentes = ausentes_de(&texto);
+    if !ausentes.is_empty() {
+        println!();
+        println!("  · este origen no dice: {}", ausentes.join(", "));
+        println!("    No es un fallo —la ausencia es una respuesta— pero conviene");
+        println!("    mirarlo: una tabla sin clave y una tabla cuyo driver se");
+        println!("    olvidó de emitirla se ven igual.");
+    }
+    println!();
+    println!("  ore discover --from {} --out <paquete>", out.display());
+    std::process::ExitCode::SUCCESS
+}
+
+/// Las claves de [`ore_driver::catalogo::FORMA`] que este catálogo **no** trae.
+///
+/// Se busca la literal entrecomillada sobre el texto emitido, que es exacto
+/// porque el emisor es uno y escribe JSON: una clave está o no está.
+fn ausentes_de(texto: &str) -> Vec<&'static str> {
+    ore_driver::catalogo::FORMA
+        .iter()
+        .map(|(k, _, _)| *k)
+        .filter(|k| !texto.contains(&format!("\"{k}\"")))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

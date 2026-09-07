@@ -1,0 +1,370 @@
+{
+  "source": "bq_ventas",
+  "tables": [
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "Id",
+          "type": "Integer"
+        },
+        {
+          "name": "Total",
+          "type": "Decimal"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.Pedidos",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 120
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "Integer"
+        },
+        {
+          "name": "cod_pais",
+          "required": true,
+          "type": "String"
+        },
+        {
+          "name": "nom",
+          "type": "String"
+        },
+        {
+          "description": "Puede venir con letra o sin ella.",
+          "name": "nif",
+          "type": "String"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.clientes",
+      "primaryKey": [
+        "id",
+        "cod_pais"
+      ],
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 5000
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer"
+        },
+        {
+          "name": "tipo",
+          "type": "String"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.evento_20190101",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 8000
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer"
+        },
+        {
+          "name": "tipo",
+          "type": "String"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.evento_20190102",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 8000
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "type": "Integer"
+        },
+        {
+          "name": "tipo",
+          "type": "String"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.evento_20190103",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 8000
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "f1",
+          "type": "String"
+        },
+        {
+          "name": "f2",
+          "type": "Decimal"
+        },
+        {
+          "name": "f3",
+          "type": "Date"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.mov_bak",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 0
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "cod_pais",
+          "type": "String"
+        },
+        {
+          "name": "n",
+          "type": "Integer"
+        }
+      ],
+      "kind": "materializedView",
+      "name": "rubix_demo_ventas.mv_pedidos_por_pais",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 7
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id_pedido",
+          "required": true,
+          "type": "Integer"
+        },
+        {
+          "name": "id_cliente",
+          "required": true,
+          "type": "Integer"
+        },
+        {
+          "name": "cod_pais",
+          "type": "String"
+        },
+        {
+          "name": "total",
+          "type": "Decimal"
+        },
+        {
+          "description": "Formato DDMMAAAA. NO tocar, viene del AS/400.",
+          "name": "fecha",
+          "type": "String"
+        },
+        {
+          "name": "creado_en",
+          "required": true,
+          "type": "DateTimeTz"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.pedidos",
+      "primaryKey": [
+        "id_pedido"
+      ],
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 50000
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id_pedido",
+          "required": true,
+          "type": "Integer"
+        },
+        {
+          "name": "cliente",
+          "sourceType": "STRUCT<nom STRING, direccion STRUCT<calle STRING, cp STRING, pais STRING>>"
+        },
+        {
+          "name": "lineas",
+          "required": true,
+          "sourceType": "ARRAY<STRUCT<sku STRING, uds INT64, precio NUMERIC>>"
+        },
+        {
+          "name": "etiquetas",
+          "required": true,
+          "type": "list<String>"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.pedidos_anidados",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 0
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "campo1",
+          "type": "String"
+        },
+        {
+          "name": "campo2",
+          "type": "String"
+        },
+        {
+          "name": "campo3",
+          "type": "String"
+        },
+        {
+          "name": "campo4",
+          "type": "String"
+        },
+        {
+          "name": "campo5",
+          "type": "String"
+        }
+      ],
+      "kind": "table",
+      "name": "rubix_demo_ventas.tmp_carga_2019",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 0
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "id_pedido",
+          "type": "Integer"
+        },
+        {
+          "name": "total",
+          "type": "Decimal"
+        }
+      ],
+      "kind": "view",
+      "name": "rubix_demo_ventas.v_pedidos_2019",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 0
+    },
+    {
+      "changes": {
+        "mode": "none",
+        "witness": "none"
+      },
+      "columns": [
+        {
+          "name": "n",
+          "type": "Integer"
+        },
+        {
+          "name": "suma",
+          "type": "Decimal"
+        }
+      ],
+      "kind": "view",
+      "name": "rubix_demo_ventas.v_pedidos_2019_resumen",
+      "reads": {
+        "fullScan": "expensive",
+        "predicatePushdown": [
+          "eq"
+        ]
+      },
+      "rows": 0
+    }
+  ]
+}

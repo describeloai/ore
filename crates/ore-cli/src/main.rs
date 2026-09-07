@@ -163,6 +163,25 @@ enum AccionFuente {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **¿Qué tiene dentro esta fuente?** El catálogo, y para.
+    ///
+    /// Es el primer acto de `discover` sin el segundo. `discover --from` acepta
+    /// «un catálogo ya leído, venga de donde venga» y hasta ahora ningún mando
+    /// emitía uno, así que el artefacto de la frontera no se podía tener en la
+    /// mano.
+    ///
+    /// Sin `--out` sale por stdout y nada más sale por stdout, para poder
+    /// redirigirlo y dárselo a `--from` tal cual.
+    Catalog {
+        /// La fuente, tal como la declara el manifiesto.
+        name: String,
+        /// Dónde escribirlo. Sin esto, a stdout.
+        #[arg(long, value_name = "FICHERO")]
+        out: Option<PathBuf>,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
@@ -551,6 +570,9 @@ fn main() -> std::process::ExitCode {
         }
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);
+        }
+        Command::Source(AccionFuente::Catalog { name, out, path }) => {
+            return lector::emitir_catalogo(path, name, out.as_deref());
         }
         Command::Source(AccionFuente::Add {
             name,
