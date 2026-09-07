@@ -1,0 +1,16 @@
+# El contexto de construcción es lo que se sube al demonio antes de compilar
+# nada. Sin esto, `target/` —varios gigas de artefactos de depuración— viaja
+# entero en cada `docker build`.
+target/
+.git/
+.github/
+
+# Lo que no compila ni se necesita dentro
+docs/
+malla/
+pruebas-de-fuego/
+*.md
+
+# El submódulo sí entra: `ore-cli` lo lee en tiempo de COMPILACIÓN con
+# `include_str!` para sus censos contra el esquema publicado. Sin él no compila.
+!vendor/oos/
