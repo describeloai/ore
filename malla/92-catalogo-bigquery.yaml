@@ -1,0 +1,83 @@
+# El primer Job de verdad: `ore source catalog` contra un BigQuery real.
+#
+# Lee el dataset `ventas` de BigQuery. Corre en el clúster, sobre un nodo
+# privado sin IP pública, con la identidad del driver por Workload Identity y
+# sin un secreto en ninguna parte.
+#
+# Los cuatro pasos que hace, y por qué cada uno:
+#
+#   1. `ore init`             el esqueleto del repositorio ontológico
+#   2. escribir el manifiesto  la fuente se DECLARA; el secreto no entra en el
+#                              documento, sólo el nombre de la variable
+#   3. `ore source check`      ¿contesta el origen? Es la puerta antes de leer
+#   4. `ore source catalog`    la forma del origen, ya en el vocabulario de OOS
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: catalogo-bigquery
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        # Lo que le abre la salida. Sin esta etiqueta, `deny-all` gana.
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      containers:
+        - name: ore
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            # El SDK de Google escribe su configuracion al arrancar, y el
+            # contenedor corre como 65532 sin un HOME escribible. Sin esto,
+            #  muere con «Could not create directory [/.config/gcloud]»
+            # ANTES de intentar hablar con nadie.
+            - name: HOME
+              value: /tmp
+            - name: CLOUDSDK_CONFIG
+              value: /tmp/.gcloud
+            - name: BQ_URL
+              value: "bigquery://project-8853a180-450d-47be-b83/ventas"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cd /tmp && mkdir -p repo && cd repo
+
+              echo "### 1 · ore init"
+              ore init . 2>&1 | tail -3
+
+              echo
+              echo "### 2 · el manifiesto declara la fuente"
+              cat > ontology.config.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: OntologyConfig
+              metadata: { name: bikeshare, version: 0.1.0 }
+              datasources:
+                - { name: bq, type: bigquery, connectionEnv: BQ_URL }
+              YAML
+              cat ontology.config.yaml
+
+              echo
+              echo "### 3 · ore source check bq"
+              ore source check bq 2>&1 | tail -8 || echo "(check devolvio $?)"
+
+              echo
+              echo "### 4 · ore source catalog bq"
+              ore source catalog bq --out catalogo.json 2>&1 | tail -6
+
+              echo
+              echo "### el catalogo"
+              wc -c catalogo.json
+              head -c 1200 catalogo.json
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}

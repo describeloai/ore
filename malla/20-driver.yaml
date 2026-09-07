@@ -1,0 +1,69 @@
+# La identidad del driver, y su excepción a la regla de salida.
+#
+# `00-base.yaml` y `10-kueue.yaml` niegan toda salida salvo DNS. Esto es la
+# **excepción con nombre**: el pod que lee un origen la necesita, y el que
+# planifica no. Se escribe contra la ETIQUETA del pod y no contra su nombre,
+# que es la práctica de Rubix y aquí compra algo concreto — la excepción
+# alcanza a un ROL, no a un Job.
+
+# ── Quién es el driver ──────────────────────────────────────────────────────
+#
+# Sin claves. La anotación ata esta cuenta de Kubernetes a una de Google por
+# Workload Identity Federation, y el token lo emite el servidor de metadatos
+# del nodo. No hay ningún secreto en el clúster que robar.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: driver
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+  annotations:
+    iam.gke.io/gcp-service-account: ore-driver@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+# ── Por dónde puede salir ───────────────────────────────────────────────────
+#
+# ESTO ES EL PASO 1 Y HAY QUE DECIR LO QUE ES: abre el mundo menos las redes
+# privadas. Es más flojo de lo que queremos y más fuerte que lo que había,
+# porque **alcanza sólo a los pods con `ore.dev/rol: driver`** — el que
+# planifica sigue sin poder salir, y su imagen ni siquiera lleva cliente TLS.
+#
+# Lo estrecho de verdad es `restricted.googleapis.com` —199.36.153.4/30, cuatro
+# direcciones, sólo las APIs que soportan Controles de Servicio de VPC— pero
+# exige una zona privada de Cloud DNS que resuelva `*.googleapis.com` ahí. Ese
+# es el paso 2, y hasta entonces esto es una promesa a medias dicha en voz alta.
+#
+# El servidor de metadatos va aparte y es OBLIGATORIO: sin él no hay token de
+# Workload Identity y el driver no se autentica contra nada.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-driver
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: driver
+  policyTypes: [Egress]
+  egress:
+    # El DNS del clúster, que la regla de deny-all ya concedía a todos.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # El servidor de metadatos: el token de Workload Identity sale de ahí.
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    # Y el mundo, menos lo privado. El paso 2 lo estrecha a un /30.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
