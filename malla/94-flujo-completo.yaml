@@ -1,0 +1,141 @@
+# El flujo de punta a punta en el clúster, y cada paso con su imagen.
+#
+# Los `initContainers` corren en orden, así que la cadena de `ore` se expresa
+# como lo que es: cuatro actos, y **sólo el primero toca el mundo**.
+#
+#   1  catalogo   ore-drivers   red · identidad · SDK      ~110 MB
+#   2  discover   ore           induce la ontología         7,4 MB · scratch
+#   3  review     ore           aplica las decisiones       7,4 MB · scratch
+#   4  validate   ore           el veredicto                7,4 MB · scratch
+#
+# Tres de los cuatro corren sobre una imagen **sin certificados ni cliente
+# TLS**. No es que no salgan: es que no saben.
+#
+# Y las respuestas llegan en un `ConfigMap`, que es la forma que tendrá cuando
+# las produzca una consola: la cola sale con `options` por pregunta, alguien
+# elige, y lo elegido vuelve como datos. `ore review` no sabe si al otro lado
+# había un formulario o un `cat`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: respuestas
+  namespace: t-demo
+  labels: { ore.dev/tenant: demo }
+data:
+  a.yaml: |
+    answers:
+      # Las claves: el origen no las declara y NO DEBEN inferirse. `options`
+      # traía las cuatro columnas de cada tabla; esto elige.
+      clave/ventas.clientes: [id]
+      clave/ventas.pedidos: [id]
+      # Cero filas: `mantener` u `omitir`. Son tablas recién creadas, no restos.
+      filas/ventas.clientes: mantener
+      filas/ventas.pedidos: mantener
+      # El dueño, que el inductor escribe como `cambiame` y NO valida.
+      dueno/ventas: team:datos
+      # Y la relación que el origen no declara: `cliente_id` PARECE apuntar a
+      # `Clientes`. Decir que sí convierte un parecido de nombres en una
+      # afirmación sobre el grafo, y por eso lo decide una persona.
+      relacion/ventas.pedidos.cliente_id: si
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flujo
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: respuestas
+          configMap: { name: respuestas }
+      initContainers:
+        # ── 1 · el único que habla con el mundo ─────────────────────────────
+        - name: catalogo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: BQ_URL, value: "bigquery://project-8853a180-450d-47be-b83/ventas" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cd /repo
+              ore init . >/dev/null 2>&1
+              cat > ontology.config.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: OntologyConfig
+              metadata: { name: ventas, version: 0.1.0 }
+              datasources:
+                - { name: bq, type: bigquery, connectionEnv: BQ_URL }
+              YAML
+              # `ore init` NO escribe un `ConduitPolicy`, y es deliberado:
+              # "omitirlo no deja nada abierto, lo CIERRA". Un conducto sin
+              # autorizacion es bottom y no admite nada.
+              #
+              # Aceptar la relacion en el paso 3 crea una `via`, y recorrerla
+              # COPIA la clave y el enlace por `materialization.topology`. Sin
+              # esta linea, `OOS4011` niega el arbol — y tiene razon: dos
+              # columnas viajarian sin que ninguna politica dijera hasta donde.
+              # Declararlo es un acto del operador, y por eso esta aqui y no
+              # dentro de `ore init`.
+              cat > conduits.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: ConduitPolicy
+              metadata: { name: default }
+              spec:
+                owner: team:security
+                conduits:
+                  materialization.topology:
+                    oos.maturity: DRAFT
+              YAML
+              ore source catalog bq --out catalogo.json 2>&1 | tail -2
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+        # ── 2 · inducir, sin red ────────────────────────────────────────────
+        - name: discover
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          args: ["discover", "--from", "catalogo.json", "--out", "packages/ventas", "--name", "ventas"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+        # ── 3 · las decisiones, que vienen de fuera ─────────────────────────
+        - name: review
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+            - {name: respuestas, mountPath: /respuestas}
+          workingDir: /repo
+          args: ["review", "packages/ventas", "--answers", "/respuestas/a.yaml"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+      containers:
+        # ── 4 · el veredicto ────────────────────────────────────────────────
+        - name: validate
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          args: ["validate", "."]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
