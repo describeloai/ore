@@ -49,9 +49,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Una referencia salida de un documento: a qué apunta y dónde se escribió.
-struct Ref<'a> {
+pub struct Ref<'a> {
     /// El nombre tal como lo escribió el autor, ya cualificado.
-    destino: String,
+    pub destino: String,
     /// Qué clase de documento espera encontrar. Sirve para dar con **el dueño**
     /// —dos documentos de kinds distintos pueden llamarse igual y vivir en
     /// miembros distintos, y sin el kind se preguntaría por el permiso del
@@ -62,11 +62,11 @@ struct Ref<'a> {
     /// así. Es deliberado: pedir `View:hr.cosa` en el manifiesto sería un
     /// vocabulario nuevo para un choque que ningún documento del corpus
     /// provoca.
-    kind: Kind,
+    pub kind: Kind,
     /// Cómo se llama esta clase de referencia, para el diagnóstico.
-    clase: &'static str,
-    pos: crate::diag::Pos,
-    desde: &'a Loaded,
+    pub clase: &'static str,
+    pub pos: crate::diag::Pos,
+    pub desde: &'a Loaded,
 }
 
 /// El namespace del documento que escribe, para resolver la forma corta (N1).
@@ -88,7 +88,7 @@ fn sin_propiedad(r: &str) -> &str {
 /// Una sola función, y esa es la mitad del valor: hoy cada regla resuelve sus
 /// propios nombres en su propio módulo, así que no había un sitio donde
 /// preguntar *«¿a qué apunta este documento?»*. Ahora lo hay.
-fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
+pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
     let mut out = Vec::new();
     let n = ns(d);
     let mut push = |r: &str, kind: Kind, clase: &'static str, pos| {

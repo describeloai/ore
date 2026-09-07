@@ -95,7 +95,7 @@ fn el_manifiesto_lo_escribe_el_mismo_emisor_que_la_induccion() {
 
 #[test]
 fn no_sobrescribe_y_no_acepta_un_nombre_imposible() {
-    let dir = taller("negativas");
+    let dir = taller("nuevo-negativas");
     ore(&dir, &["package", "new", "ventas", "--owner", "team:datos"]);
 
     let (c, dicho) = ore(&dir, &["package", "new", "ventas", "--owner", "team:otro"]);
@@ -165,5 +165,174 @@ fn lo_que_crea_puede_contener_contenido_gobernado() {
     std::fs::write(tablas.join("t.yaml"), tabla("otro")).unwrap();
     let (_, dicho) = ore(&dir, &["validate", "."]);
     assert!(dicho.contains("OOS2030"), "y uno de fuera sí:\n{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── `ore package move` ──────────────────────────────────────────────────────
+
+/// Un taller con dos paquetes: uno inducido de un catálogo real y otro vacío.
+fn dos_paquetes(nombre: &str) -> PathBuf {
+    let dir = taller(nombre);
+    let cat = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/catalogos/bigquery-rubix-demo-ventas.json");
+    std::fs::copy(&cat, dir.join("cat.json")).unwrap();
+    ore(
+        &dir,
+        &["discover", "--from", "cat.json", "--out", "packages/ventas"],
+    );
+    let (_, d) = ore(&dir, &["package", "new", "eu", "--owner", "team:datos"]);
+    assert!(
+        dir.join("packages/ventas/tables").is_dir(),
+        "el taller no tiene tablas:
+{d}"
+    );
+    dir
+}
+
+fn codigos(dir: &Path) -> Vec<String> {
+    let (_, dicho) = ore(dir, &["validate", "."]);
+    dicho
+        .lines()
+        .filter_map(|l| l.strip_prefix("error[").and_then(|r| r.split(']').next()))
+        .map(String::from)
+        .collect()
+}
+
+/// **Las tres cosas a la vez**, sobre un árbol de verdad.
+#[test]
+fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
+    let dir = dos_paquetes("mueve");
+    let antes = codigos(&dir);
+
+    let (c, dicho) = ore(
+        &dir,
+        &[
+            "package",
+            "move",
+            "ventas.rubix_demo_ventas_clientes",
+            "--to",
+            "eu",
+        ],
+    );
+    assert_eq!(c, Some(0), "{dicho}");
+
+    // ① el fichero, en el mismo subdirectorio del destino
+    let nuevo = dir.join("packages/eu/tables/Clientes__rubix_demo_ventas_clientes.yaml");
+    assert!(nuevo.is_file(), "no está en el destino:\n{dicho}");
+    assert!(
+        !dir.join("packages/ventas/tables/Clientes__rubix_demo_ventas_clientes.yaml")
+            .exists(),
+        "sigue en el origen"
+    );
+
+    // ② el `namespace`, que con `OOS2030` es una sola cosa con lo anterior
+    let t = std::fs::read_to_string(&nuevo).unwrap();
+    assert!(t.contains("namespace: eu"), "{t}");
+
+    // ③ el anuncio en el manifiesto de ORIGEN
+    let m = std::fs::read_to_string(dir.join("packages/ventas/package.yaml")).unwrap();
+    assert!(
+        m.contains("from: ventas.rubix_demo_ventas_clientes")
+            && m.contains("to: eu.rubix_demo_ventas_clientes"),
+        "{m}"
+    );
+
+    // ④ y lo que lo nombraba, reapuntado
+    let v = std::fs::read_to_string(
+        dir.join("packages/ventas/views/Clientes__rubix_demo_ventas_clientes.yaml"),
+    )
+    .unwrap();
+    assert!(v.contains("table: eu.rubix_demo_ventas_clientes"), "{v}");
+
+    // Y lo que el movimiento deja: EXACTAMENTE el `OOS2028` que el mando
+    // anunció, porque `exports` no lo decide él.
+    let despues = codigos(&dir);
+    // Lo que sobra respecto de antes, contando repeticiones.
+    let mut nuevos = despues.clone();
+    for c in &antes {
+        if let Some(i) = nuevos.iter().position(|x| x == c) {
+            nuevos.remove(i);
+        }
+    }
+    assert_eq!(
+        nuevos,
+        vec!["OOS2028".to_string()],
+        "{despues:?} vs {antes:?}"
+    );
+    assert!(dicho.contains("cruzan a `eu`"), "y lo dice:\n{dicho}");
+    assert!(dicho.contains("exports"), "{dicho}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Y añadiendo el `exports` que el mando dijo, el árbol queda como estaba.
+#[test]
+fn con_el_export_que_dice_el_arbol_queda_igual() {
+    let dir = dos_paquetes("export");
+    let antes = codigos(&dir);
+    ore(
+        &dir,
+        &[
+            "package",
+            "move",
+            "ventas.rubix_demo_ventas_clientes",
+            "--to",
+            "eu",
+        ],
+    );
+    let m = dir.join("packages/eu/package.yaml");
+    let t = std::fs::read_to_string(&m).unwrap().replace(
+        "spec: { owner: \"team:datos\" }",
+        "spec: { owner: \"team:datos\", exports: [eu.rubix_demo_ventas_clientes] }",
+    );
+    std::fs::write(&m, t).unwrap();
+
+    assert_eq!(codigos(&dir), antes, "el movimiento no deja nada suyo");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Lo que se niega, y **sin tocar un fichero**: o se hacen los tres pasos o
+/// ninguno.
+#[test]
+fn las_negativas_no_mueven_nada() {
+    let dir = dos_paquetes("mover-negativas");
+    let sitio = dir.join("packages/ventas/tables/Clientes__rubix_demo_ventas_clientes.yaml");
+    let original = std::fs::read_to_string(&sitio).unwrap();
+
+    for (args, porque) in [
+        (
+            vec!["package", "move", "ventas.no_existe", "--to", "eu"],
+            "no hay ningún documento",
+        ),
+        (
+            vec![
+                "package",
+                "move",
+                "ventas.rubix_demo_ventas_clientes",
+                "--to",
+                "no_existe",
+            ],
+            "no hay ningún paquete",
+        ),
+        (
+            vec![
+                "package",
+                "move",
+                "ventas.rubix_demo_ventas_clientes",
+                "--to",
+                "ventas",
+            ],
+            "ya está en",
+        ),
+    ] {
+        let (c, dicho) = ore(&dir, &args);
+        assert_eq!(c, Some(65), "{args:?}:\n{dicho}");
+        assert!(dicho.contains(porque), "{dicho}");
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&sitio).unwrap(),
+        original,
+        "una negativa movió algo"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

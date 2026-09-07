@@ -218,6 +218,30 @@ enum AccionPaquete {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **Mueve un documento a otro paquete**: las tres cosas a la vez.
+    ///
+    /// Mueve el fichero, reescribe su `namespace` y ANUNCIA el movimiento en el
+    /// manifiesto de origen —sin ese anuncio, el nombre que desaparece es un
+    /// `OOS5007`—. Y reapunta lo que lo nombraba, incluida la forma corta: un
+    /// documento que compartia espacio con el lo llamaba a secas.
+    ///
+    /// Lo que NO toca es `exports`. Es «esto lo expongo a proposito», y un
+    /// mando que ensancha la superficie publica por su cuenta contradice la
+    /// frase para la que esa lista existe: dice que hace falta y no lo decide.
+    Move {
+        /// El nombre cualificado del documento: `<paquete>.<nombre>`.
+        qname: String,
+        /// El paquete al que va. Tiene que existir — `ore package new`.
+        #[arg(long = "to", value_name = "PAQUETE")]
+        a: String,
+        /// La version desde la que el nombre viejo deja de estar. Por defecto,
+        /// la que el paquete de origen declara hoy.
+        #[arg(long)]
+        since: Option<String>,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
@@ -638,6 +662,14 @@ fn main() -> std::process::ExitCode {
         }
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);
+        }
+        Command::Package(AccionPaquete::Move {
+            qname,
+            a,
+            since,
+            path,
+        }) => {
+            return paquete::mover(path, qname, a, since.as_deref());
         }
         Command::Package(AccionPaquete::New {
             name,
