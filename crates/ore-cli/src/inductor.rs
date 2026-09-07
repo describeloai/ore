@@ -1311,18 +1311,42 @@ fn estructural(nombre: &str) -> bool {
 /// bien: un dueño inventado sería lo único peor que ninguno, porque `team:datos`
 /// se resuelve contra CODEOWNERS y un handle que no existe deja el paquete sin
 /// nadie que responda mientras aparenta lo contrario.
+/// **El manifiesto de un paquete.** El único emisor, y lo usan los dos que
+/// escriben uno: la inducción y `ore package new`.
+///
+/// Los cuatro campos de `metadata` son OBLIGATORIOS en el esquema publicado
+/// —`name`, `version`, `status`, `domain`— y `spec.owner` también, así que no
+/// hay nada opcional que omitir: lo que se decide es **qué valor**, y esa
+/// decisión es de quien llama.
+///
+/// # `status`, que es la única donde los dos no coinciden
+///
+/// La inducción escribe `active` y `ore package new` escribe `draft`, y el
+/// segundo es el que se puede defender: `01-package` §2.3 deriva de `status` la
+/// `oos.maturity` **por defecto** de lo que el paquete contenga, y un paquete
+/// recién creado no contiene nada — llamarlo `active` sería afirmar `STABLE`
+/// sobre lo que no existe. Que la inducción escriba `active` viene de antes y se
+/// deja como está: cambiarlo mueve la madurez efectiva de todo lo inducido, que
+/// es otra medida.
+pub fn documento_paquete(nombre: &str, owner: &str, estado: &str, dominio: &str) -> String {
+    format!(
+        "apiVersion: oos.dev/v1alpha1\n\
+         kind: Package\n\
+         metadata: {{ name: {nombre}, version: 0.1.0, status: {estado}, domain: {dominio} }}\n\
+         spec: {{ owner: \"{owner}\" }}\n"
+    )
+}
+
 fn paquete_yaml(paquete: &str, dec: &Decisiones) -> (String, Vec<Pendiente>) {
     let respuesta = dec
         .de(&id(Clase::Dueno, paquete))
         .and_then(Respuesta::palabra)
         .filter(|h| handle(h));
     let owner = respuesta.unwrap_or("cambiame");
-    let doc = format!(
-        "apiVersion: oos.dev/v1alpha1\n\
-         kind: Package\n\
-         metadata: {{ name: {paquete}, version: 0.1.0, status: active, domain: {paquete} }}\n\
-         spec: {{ owner: \"{owner}\" }}\n"
-    );
+    // El emisor es UNO, y lo comparte con `ore package new`: un manifiesto
+    // escrito por la inducción y uno escrito a mano tienen que ser el mismo
+    // texto, o hay dos emisores y divergen en el caso que ninguna prueba ejerce.
+    let doc = documento_paquete(paquete, owner, "active", paquete);
     if respuesta.is_some() {
         return (doc, Vec::new());
     }

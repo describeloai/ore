@@ -93,6 +93,25 @@ pub const COMPARTIDO: &[Kind] = &[
 /// espacio de nombres — sus secciones cuelgan de la raiz.
 pub const ESTRUCTURAL: &[Kind] = &[Kind::Package, Kind::OntologyConfig];
 
+/// Si un nombre puede ser un `namespace`.
+///
+/// **Los dos vocabularios no coinciden, y eso lo destapó construir el paso 2.**
+/// El esquema publicado deja que un paquete se llame `oos.dev` o `mi-paquete`
+/// —`packageName` admite puntos, guiones y barras, porque el nombre de un
+/// paquete es también la coordenada con la que otro lo importa— y un
+/// `namespace` es un `identifier`, que no admite ninguno de los tres.
+///
+/// Así que hay nombres de paquete para los que esta regla es **insatisfacible**,
+/// y hay uno en el corpus: el paquete `oos.dev`. No se puede arreglar
+/// aflojándola —el `namespace` es lo que es— así que se dice: un paquete cuyo
+/// nombre no sea un identificador **no puede contener contenido gobernado**, y
+/// el diagnóstico lo explica en vez de pedir lo imposible.
+fn puede_ser_namespace(n: &str) -> bool {
+    let mut c = n.chars();
+    c.next().is_some_and(|p| p.is_ascii_alphabetic())
+        && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
+}
+
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let miembros = crate::link::miembros(pkg);
     if miembros.is_empty() {
@@ -124,7 +143,12 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
             continue;
         };
         let declarado = d.meta("namespace").and_then(|n| n.as_str());
-        if declarado == Some(*suyo) {
+        // El caso IMPOSIBLE se mira antes que la igualdad: si el nombre del
+        // paquete no puede ser un espacio de nombres, no hay valor de
+        // `namespace` que satisfaga la regla, y uno que «casara» ni siquiera
+        // pasaria el esquema.
+        let posible = puede_ser_namespace(suyo);
+        if posible && declarado == Some(*suyo) {
             continue;
         }
         let pos = d
@@ -133,6 +157,26 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
             .and_then(|(_, m)| m.get("namespace"))
             .map(|(k, _)| k.pos())
             .unwrap_or_else(|| d.root.pos());
+        if !posible {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2030,
+                    &d.path,
+                    format!(
+                        "`{suyo}` no puede ser un espacio de nombres, así que este documento \
+                         no puede vivir ahí"
+                    ),
+                )
+                .at(pos)
+                .help(
+                    "un nombre de paquete admite puntos, guiones y barras —es también la \
+                     coordenada con la que otro lo importa— y un `namespace` no admite \
+                     ninguno. Un paquete así puede contener vocabulario compartido, pero no \
+                     contenido gobernado: o se renombra el paquete, o el documento se mueve",
+                ),
+            );
+            continue;
+        }
         let dicho = match declarado {
             Some(n) => format!("dice `{n}`"),
             None => "no lo dice".to_string(),
@@ -220,6 +264,35 @@ mod tests {
                 .count();
             assert_eq!(n, 1, "`{}` esta en {n} poblaciones", k.as_str());
         }
+    }
+
+    /// **El caso insatisfacible**, que salió al construir `ore package new`: el
+    /// esquema deja llamar `oos.dev` a un paquete y un `namespace` no admite el
+    /// punto. Pedir `namespace: oos.dev` sería pedir lo que el esquema rechaza,
+    /// así que el diagnóstico dice otra cosa.
+    #[test]
+    fn un_paquete_que_no_puede_ser_espacio_de_nombres_lo_dice() {
+        let p = paquete(vec![
+            doc(
+                "packages/oos.dev/package.yaml",
+                Kind::Package,
+                "apiVersion: oos.dev/v1alpha1\nkind: Package\n\
+                 metadata: { name: oos.dev, version: 0.1.0 }\n\
+                 spec: { owner: team:x }\n",
+            ),
+            doc(
+                "packages/oos.dev/views/v.yaml",
+                Kind::View,
+                &vista(Some("dev"), "v1alpha8"),
+            ),
+        ]);
+        let d = check(&p);
+        assert_eq!(d.len(), 1);
+        assert!(
+            d[0].message.contains("no puede ser un espacio de nombres"),
+            "{:?}",
+            d[0].message
+        );
     }
 
     /// **La regla, en sus dos direcciones.**

@@ -18,6 +18,7 @@ mod inicio;
 mod lector;
 mod materializar;
 mod mcp;
+mod paquete;
 mod registro;
 mod revision;
 mod verificar;
@@ -185,6 +186,40 @@ enum AccionFuente {
     },
 }
 
+/// Lo que se puede hacer con un paquete.
+///
+/// Hasta hoy un paquete **solo nacia descubriendo una fuente**: `ore init` deja
+/// `packages/` vacio y el unico que escribia un `package.yaml` era el inductor.
+#[derive(Subcommand)]
+enum AccionPaquete {
+    /// **Crea un paquete**: el manifiesto, y nada mas.
+    ///
+    /// Es un acto de gobierno —necesita dueno, version y estado— y por eso es un
+    /// verbo aparte de mover documentos entre paquetes, que no lo es.
+    ///
+    /// Escribe `status: draft` y no `active`: `01-package` §2.3 deriva de ahi la
+    /// madurez POR DEFECTO de lo que el paquete contenga, y uno recien creado no
+    /// contiene nada. Llamarlo `active` seria afirmar STABLE sobre lo que no
+    /// existe.
+    ///
+    /// Y no crea `views/` ni `tables/`: un directorio vacio no viaja en git.
+    New {
+        /// El nombre, que **es el espacio de nombres** de todo lo que contenga.
+        /// Un nombre con puntos o guiones es legal como coordenada de
+        /// importacion y no puede ser un `namespace`: se rechaza.
+        name: String,
+        /// Quien responde. Sin el se escribe `cambiame`, que NO valida.
+        #[arg(long)]
+        owner: Option<String>,
+        /// El dominio de negocio. Por defecto, el nombre.
+        #[arg(long)]
+        domain: Option<String>,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
 /// Lo que se puede hacer con la cache. Hoy solo preguntarle si sirve:
 /// **escribirla no es nuestro**, porque las filas viven en una tabla del lago
 /// del cliente y quien las escribe es quien tiene el driver (ADR 0006).
@@ -256,6 +291,9 @@ enum Command {
     /// Registra una fuente física, separando la credencial de la conexión.
     #[command(name = "source", subcommand)]
     Source(AccionFuente),
+    /// Crea y organiza paquetes: el manifiesto, y lo que contiene.
+    #[command(name = "package", subcommand)]
+    Package(AccionPaquete),
     /// Espeja una fuente en tablas y propone entidades y vistas en DRAFT.
     ///
     /// Son dos actos: **leer** un catálogo y **proponer** una ontología, y se
@@ -601,6 +639,14 @@ fn main() -> std::process::ExitCode {
         Command::Source(AccionFuente::Check { name, path }) => {
             return lector::comprobar(path, name);
         }
+        Command::Package(AccionPaquete::New {
+            name,
+            owner,
+            domain,
+            path,
+        }) => {
+            return paquete::nuevo(path, name, owner.as_deref(), domain.as_deref());
+        }
         Command::Source(AccionFuente::Catalog { name, out, path }) => {
             return lector::emitir_catalogo(path, name, out.as_deref());
         }
@@ -655,6 +701,7 @@ fn main() -> std::process::ExitCode {
         | Command::Lock { .. }
         | Command::Pack { .. }
         | Command::Source(_)
+        | Command::Package(_)
         | Command::DriftDetect { .. }
         | Command::Cache(_) => unreachable!(),
         Command::Lint { .. } => ("lint", "posterior"),
