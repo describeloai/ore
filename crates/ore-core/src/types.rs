@@ -35,6 +35,45 @@ const ESCALARES: &[&str] = &[
     "Opaque",
 ];
 
+/// **Si pasar de `de` a `a` ENSANCHA el conjunto de valores aceptados.**
+///
+/// # Por qué existe, y por qué es normativa
+///
+/// `diff` trataba cualquier cambio de tipo como `OOS5002`, cuyo texto es *«tipo
+/// **estrechado**»*. El veredicto no siempre era falso, pero **la atribución
+/// sí**: `Integer → Decimal` no estrecha nada, y un código que dice algo que no
+/// pasó es lo que este árbol persigue.
+///
+/// Y la dirección ya estaba decidida un piso más abajo: la rama de los `enum`
+/// dice *«retirar valores de un enum. **Añadirlos no rompe a quien lee**»*.
+/// Esto es la misma frase sobre el escalar, y por eso ensanchar **no emite**.
+///
+/// # El único par, y eso es el hallazgo
+///
+/// Normativa: `02-entity` §3.4.
+///
+/// Sobre los diez escalares del conjunto cerrado la relación tiene **un
+/// elemento**: `Integer → Decimal`. Todo entero cabe exacto en un decimal, y
+/// aquí el decimal es exacto porque no hay coma flotante en ninguna parte.
+///
+/// Lo que vale de esta función es **lo que deja fuera**, porque son los pares
+/// que alguien va a querer añadir «obviamente» algún día:
+///
+/// | par | por qué NO ensancha |
+/// |---|---|
+/// | `Integer`/`Decimal` → `Float` | pierde exactitud. `68400.50` no tiene representación exacta en binario, y es la regla más dura de este árbol |
+/// | `Date` → `DateTime` | una fecha no es un instante. Ponerle una hora es **inventarla** |
+/// | `DateTime` → `DateTimeTz` | ídem con la zona |
+/// | cualquiera → `String` | una cadena **representa** el valor, no lo contiene: el contrato de lectura cambia entero |
+/// | cualquiera → `Opaque` | `Opaque` es *«no lo modelamos»*. Ir ahí no ensancha el dominio: **retira el gobierno** |
+/// | `Boolean` → `Integer` | eso es elegir una codificación, no ampliar un dominio |
+///
+/// Solo mira escalares. Un paramétrico —`Money<EUR,2>`— lo clasifica
+/// `OOS5010`, que es más específico y va antes.
+pub fn ensancha(de: &str, a: &str) -> bool {
+    matches!((de, a), ("Integer", "Decimal"))
+}
+
 /// El conjunto cerrado, para quien tenga que OFRECERLO.
 ///
 /// `ore review` pregunta por el tipo de una columna que el lector no supo
@@ -426,6 +465,54 @@ fn cardinalidades(e: &Loaded, out: &mut Vec<Diagnostic>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **El ensanche, y sobre todo lo que deja fuera.**
+    ///
+    /// La mitad de arriba es una linea; la que vale es la de abajo, porque son
+    /// los pares que alguien va a querer meter «obviamente». Que `Decimal` a
+    /// `Float` NO ensanche es la regla mas dura de este arbol dicha en el
+    /// sistema de tipos: convertir es perder, y `68400.50` no tiene
+    /// representacion exacta en binario.
+    #[test]
+    fn el_ensanche_tiene_un_par_y_el_resto_esta_argumentado() {
+        assert!(ensancha("Integer", "Decimal"));
+
+        // La contraria estrecha, y por eso sigue siendo `OOS5002`.
+        assert!(!ensancha("Decimal", "Integer"));
+        // Exactitud.
+        assert!(!ensancha("Integer", "Float"));
+        assert!(!ensancha("Decimal", "Float"));
+        // Inventar la hora, e inventar la zona.
+        assert!(!ensancha("Date", "DateTime"));
+        assert!(!ensancha("DateTime", "DateTimeTz"));
+        // Representar no es contener.
+        assert!(!ensancha("Integer", "String"));
+        // `Opaque` no amplia el dominio: retira el gobierno.
+        assert!(!ensancha("Integer", "Opaque"));
+        assert!(!ensancha("String", "Opaque"));
+        // Una codificacion no es un ensanche.
+        assert!(!ensancha("Boolean", "Integer"));
+        // Y nada ensancha a si mismo: un cambio que no cambia no es un cambio.
+        for e in escalares() {
+            assert!(!ensancha(e, e), "{e} ensancha a si mismo");
+        }
+    }
+
+    /// El censo: la relación solo habla del vocabulario cerrado. Si alguien
+    /// añade un escalar y cree que ensancha a otro, tiene que decirlo aquí —y
+    /// esta prueba le recuerda que la lista de pares es exhaustiva.
+    #[test]
+    fn el_ensanche_no_nombra_nada_que_no_sea_un_escalar() {
+        let pares: usize = escalares()
+            .iter()
+            .flat_map(|a| escalares().iter().map(move |b| (a, b)))
+            .filter(|(a, b)| ensancha(a, b))
+            .count();
+        assert_eq!(
+            pares, 1,
+            "la relación de ensanche cambió de tamaño: dilo en `91-versioning` §5.1 antes"
+        );
+    }
 
     /// **`parse_type(t.to_string()) == t`**, sobre el conjunto cerrado entero y
     /// las tres formas compuestas.

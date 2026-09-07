@@ -1125,6 +1125,20 @@ fn entidades(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
 fn tipos(sujeto: &str, p: &Prop, q: &Prop, out: &mut Vec<Change>) {
     if p.ty != q.ty {
         let base = |t: &str| t.split('<').next().unwrap_or(t).trim().to_string();
+        // **Un ensanche no es un estrechamiento.** `OOS5002` dice literalmente
+        // «tipo ESTRECHADO», y esto lo disparaba sobre cualquier cambio: pasar
+        // de `Integer` a `Decimal` salía como estrechamiento y forzaba un
+        // `major`. El veredicto no siempre era falso; la atribución sí, y un
+        // código que dice algo que no pasó es lo que este árbol persigue.
+        //
+        // Y la dirección ya estaba decidida diez líneas más abajo, sobre los
+        // `enum`: «añadirlos no rompe a quien lee». Esta es la misma frase
+        // sobre el escalar, así que ensanchar tampoco emite. Cuál ensancha lo
+        // dice `ore_core::types`, que es donde vive el vocabulario — y su
+        // relación tiene UN par, con el motivo de cada exclusión escrito.
+        if crate::types::ensancha(&p.ty, &q.ty) {
+            return;
+        }
         // OOS5010 · misma base, distintos parámetros: `Money<EUR,2> →
         // Money<USD,2>` no es un tipo nuevo, es el mismo tipo mintiendo. El
         // valor 68400.50 sigue cabiendo y significa otra cosa.
