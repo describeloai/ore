@@ -78,25 +78,41 @@ una espera en un pod que no arranca nunca.
 De cero a nodo corriendo en **47 segundos**. El pod llevaba la tolerancia inyectada y
 aterrizó en el pool correcto.
 
-## 5. La imagen, y por qué son tres
+## 5. Las dos imágenes, y por qué dos
 
 ```
-europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore
-  :main  ·  :7e8d224          7,4 MB      base: scratch
+europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/
+  ore          :main · :d77cb7b     7,4 MB     scratch
+  ore-drivers  :main · :d77cb7b     721 MB en disco, ~110 MB de descarga
 ```
 
-Lleva `ore` y `ore-read-jsonl` — **los dos binarios que no salen a la red**. Compilados
-contra musl no arrastran ni una dependencia dinámica, así que la imagen final no necesita
-nada debajo: ni `libc`, ni certificados, ni un shell.
+**La razón no es el tamaño.** Los drivers son binarios separados por decisión —ADR 0008:
+`ore` los busca en el `PATH` y habla con ellos por stdin/stdout, así que el motor no
+enlaza un cliente de nube y un driver lo puede escribir cualquiera en cualquier lenguaje—,
+pero **eso no obliga a imágenes separadas**: los diez caben en una, y la diferencia de
+arranque en frío son segundos.
 
-`ore-read-postgres` y `ore-read-bigquery` **no están, a propósito**. El primero enlaza TLS
-del sistema; el segundo delega en el `bq` del SDK de Google Cloud, que son ~1 GB. Meterlo
-todo junto haría que un `ore validate` —que no abre nada— arrastrase un gigabyte en cada
-arranque en frío de un nodo que viene de cero, y ahí el tiempo de descarga **es tiempo
-facturado**.
+Lo que sí justifica separarlas:
 
-**La frontera de las imágenes es la misma que la del sustrato**, y la misma que usa la
-`NetworkPolicy` de §2 para decidir quién sale a la red. No es una decisión de empaquetado.
+> **`ore` no puede salir a la red aunque quiera.** No lleva certificados ni cliente TLS. Un
+> `validate` que corre desde ahí no habla con nadie, y eso es una garantía **estructural** —
+> más fuerte que una política que se lo prohíba, porque no hay nada que aplicar.
+
+`ore-drivers` lleva **todo lo que `ore` puede ejecutar**: `ore-read-jsonl`,
+`ore-read-postgres`, `ore-read-bigquery`, `ore-fetch`, `ore-log`, `ore-sign` y
+`ore-store-r2`. La lista salió de leer el árbol, no de la memoria.
+
+Va sobre el SDK de Google Cloud por una sola razón: **`ore-read-bigquery` no habla con
+BigQuery** — delega en `bq`. Fue una decisión deliberada, y `ore-sql` la explica en su
+cabecera: no meter un cliente de nube dentro del árbol. El precio es que esa imagen
+necesita el SDK, y el precio se paga **sólo cuando se consulta BigQuery**.
+
+### Comprobado en el clúster
+
+```
+ore           13 s     nodo caliente
+ore-drivers   95 s     nodo desde CERO (≈50 s levantarlo, ≈30 s descargar)
+```
 
 ### Lo que hizo falta además del `push`
 
@@ -110,16 +126,6 @@ Registry: el primer intento dio `403 Forbidden` en el `pull`. Se concedió
 Todo lo demás había funcionado ya en ese primer intento —Kueue admitió, el autoscaler
 levantó el nodo, el pod se programó con su tolerancia— así que el fallo aisló exactamente
 una cosa. Es lo que se quiere de una malla.
-
-### Comprobado
-
-```
-19:56:03   ContainerCreating
-19:56:16   Completed          ← 13 s
-
-ore 0.1.0 (sin sellar)
-OOS: v1alpha1 · v1alpha2 · v1alpha3 · v1alpha4 · v1alpha7 · v1alpha8
-```
 
 ## 6. Los ficheros
 
@@ -138,8 +144,6 @@ kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases
 
 ## 7. Lo que falta
 
-- **`ore-postgres` y `ore-bigquery`**, las otras dos imágenes, cuando haga falta un origen
-  de verdad desde el clúster.
 - **El pool Spot**, cuando entre la cuota.
 - **Cloud NAT**, cuando un driver necesite salir a un origen de verdad.
 - **La política de salida del driver** — la excepción con nombre a la regla de §2.

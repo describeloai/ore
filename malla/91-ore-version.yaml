@@ -15,7 +15,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: ore
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:7e8d224
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
           args: ["--version"]
           resources:
             requests: {cpu: "1", memory: 1Gi}
