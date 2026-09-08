@@ -34,6 +34,35 @@ pub struct Tx<'a> {
     anotado: bool,
 }
 
+/// ⛔⛔ EL MENSAJE DE POSTGRES, ENTERO.
+///
+/// `Display` de `postgres::Error` dice **`db error`** y nada mas. Literalmente
+/// eso: un 422 con tres palabras que no sirven para nada. Todo lo util —el
+/// mensaje, la restriccion que salto, la columna, la pista del propio motor—
+/// vive en `as_db_error()`, y hay que ir a buscarlo.
+///
+/// ⭐ Medido: `invitar` sin rol devolvia `{"error":"db error"}` y hubo que
+/// deducir a mano que `invitacion.rol` seguia siendo `not null`. Con esto lo
+/// habria dicho la primera vez.
+///
+/// ⚠️ Y esto sale hacia fuera, asi que no lleva el SQL: la consulta es nuestra
+/// y su forma no es asunto de quien pregunta.
+fn mal(e: postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(d) => {
+            let mut s = d.message().to_string();
+            if let Some(c) = d.constraint() {
+                s.push_str(&format!(" (restriccion `{c}`)"));
+            }
+            if let Some(p) = d.detail() {
+                s.push_str(&format!(" · {p}"));
+            }
+            s
+        }
+        None => format!("{e}"),
+    }
+}
+
 impl<'a> Tx<'a> {
     pub fn abrir(c: &'a mut Client, sujeto: &Identidad) -> Result<Tx<'a>, String> {
         Ok(Tx {
@@ -50,7 +79,7 @@ impl<'a> Tx<'a> {
         sql: &str,
         args: &[&(dyn postgres::types::ToSql + Sync)],
     ) -> Result<u64, String> {
-        self.tx.execute(sql, args).map_err(|e| format!("{e}"))
+        self.tx.execute(sql, args).map_err(mal)
     }
 
     pub fn uno(
@@ -58,7 +87,7 @@ impl<'a> Tx<'a> {
         sql: &str,
         args: &[&(dyn postgres::types::ToSql + Sync)],
     ) -> Result<Option<postgres::Row>, String> {
-        self.tx.query_opt(sql, args).map_err(|e| format!("{e}"))
+        self.tx.query_opt(sql, args).map_err(mal)
     }
 
     pub fn filas(
@@ -66,7 +95,7 @@ impl<'a> Tx<'a> {
         sql: &str,
         args: &[&(dyn postgres::types::ToSql + Sync)],
     ) -> Result<Vec<postgres::Row>, String> {
-        self.tx.query(sql, args).map_err(|e| format!("{e}"))
+        self.tx.query(sql, args).map_err(mal)
     }
 
     /// La huella. `quien` y `agente` van **por separado** —`sub` y `act` de
