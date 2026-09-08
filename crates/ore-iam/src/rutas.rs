@@ -116,11 +116,18 @@ impl Servidor {
             // ⛔ Sólo las SUYAS. Un listado que devolviera todas sería una fuga
             //   con forma de comodidad, y la consola no sabría que la tuvo.
             let filas = tx.filas(
-                "select o.id, o.nombre, o.estado, pe.rol
+                // ⭐ `roles` en plural desde la `016`. Una persona puede tener
+                //   varios cargos en la misma organizacion.
+                "select o.id, o.nombre, o.estado,
+                        coalesce(array_agg(pr.rol order by pr.rol)
+                                 filter (where pr.rol is not null), '{}')
                    from iam.organizacion o
                    join iam.pertenencia pe on pe.organizacion = o.id
                    join iam.persona     p  on p.id = pe.persona
+                   left join iam.pertenencia_rol pr
+                     on pr.persona = pe.persona and pr.organizacion = pe.organizacion
                   where p.emisor = $1 and p.sub = $2
+                  group by o.id, o.nombre, o.estado
                   order by o.nombre",
                 &[&emisor, &s.persona],
             )?;
