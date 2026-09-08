@@ -71,6 +71,13 @@ spec:
       serviceAccountName: ore-serve
       nodeSelector:
         cloud.google.com/gke-nodepool: default-pool
+      volumes:
+        # El juego de llaves, montado de sólo lectura. Que sea un ConfigMap y
+        # no un Secret es correcto: son llaves PÚBLICAS —lo contrario de un
+        # secreto— y guardarlas como si lo fueran confundiría a quien las mire.
+        - name: llaves
+          configMap:
+            name: jwks
       containers:
         - name: ore-serve
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-serve:main
@@ -94,22 +101,36 @@ spec:
             - /usr/local/bin/ore
             - --forja
             - http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git
-            # ⚠️ EL MODO DE BANCO, y los dos interruptores están puestos a
-            # sabiendas: **el sujeto lo escribe quien llama**. Vale para
-            # ejercitar el camino entero mientras el plano de identidad no está
-            # enchufado, y NO vale para nada más.
+            # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
+            # llama: se demuestra con un token del realm, y el autor de cada
+            # commit deja de ser una afirmación.
             #
-            # Lo que hay que quitar el día que `ore-serve` valide un token del
-            # realm son estas dos líneas, y entonces el autor de cada commit
-            # deja de ser una afirmación de quien pregunta.
+            # Las tres piezas no tienen defecto, y cada una falta por su cuenta:
+            # un emisor por defecto sería confiar en quien nadie eligió, y una
+            # audiencia por defecto sería aceptar cualquier token del realm.
             - --identidad
-            - cabecera
-            - --no-es-produccion
+            - oidc
+            # ⭐ Y lleva el realm dentro: el `hostname` del CR es el host, pero
+            # el `iss` que Keycloak firma es `<hostname>/realms/<realm>`.
+            - --emisor
+            - https://login.paladio.io/realms/rubix
+            # LA NUESTRA. Un token de `rubix-consola` llega aquí perfectamente
+            # firmado y no vale, porque no es para nosotros.
+            - --audiencia
+            - ore-serve
+            # Un FICHERO, no una URL: este proceso no va a buscar las llaves.
+            # Las trae `50-jwks.yaml`, que es quien puede salir. ADR 0020.
+            - --jwks
+            - /llaves/jwks.json
           env:
             - { name: HOME, value: /tmp }
             - name: FORJA_TOKEN
               valueFrom:
                 secretKeyRef: { name: forja-token, key: token }
+          volumeMounts:
+            - name: llaves
+              mountPath: /llaves
+              readOnly: true
           ports:
             - containerPort: 8080
           readinessProbe:

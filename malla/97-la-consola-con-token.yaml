@@ -1,0 +1,113 @@
+# La cadena entera con un token de VERDAD, y sin una sola afirmación.
+#
+# Hasta aquí el sujeto lo escribía quien llamaba: una cabecera `x-ore-sujeto`
+# con lo que quisiera poner. Esto es lo mismo hecho como toca —pedir un token al
+# realm y presentarlo— y lo que fija es que **el plano de control ya no se cree
+# a nadie**:
+#
+#   1. sin token                      401
+#   2. con un token del realm         pasa, y el sujeto sale del `sub`
+#   3. una escritura                  el AUTOR del commit es ese `sub`
+#
+# El 3 es el que cierra el círculo que empezó hace tres commits: la historia de
+# la forja deja de decir «lo hizo quien dijo ser» y pasa a decir «lo hizo quien
+# el realm firmó que era».
+#
+# ⚠️ El `sub` de una cuenta de servicio es un UUID, no un IRI bonito. Se deja
+# como está a propósito: `ore-serve` toma el `sub` VERBATIM y no lo interpreta —
+# cómo se nombra un sujeto es del plano de identidad, no del plano de control, y
+# meterle forma aquí sería la primera grieta de esa frontera.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consola-con-token
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: cliente
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: consola
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: BASE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
+            - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix" }
+            - name: CLIENTE
+              valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
+            - name: SECRETO
+              valueFrom: { secretKeyRef: { name: idp-agente, key: secreto } }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "### 0 · pedir un token al realm"
+              curl -sSf -X POST "$IDP/realms/$REALM/protocol/openid-connect/token" \
+                -d grant_type=client_credentials -d "client_id=$CLIENTE" \
+                -d "client_secret=$SECRETO" -o /tmp/t.json
+              TOKEN=$(python3 -c 'import json;print(json.load(open("/tmp/t.json"))["access_token"])')
+              # Lo que el token dice de si mismo. Se imprime el `sub` y el `aud`
+              # y NO el token: un registro con un token dentro es una credencial
+              # publicada.
+              python3 - "$TOKEN" <<'PY'
+              import base64, json, sys
+              c = sys.argv[1].split(".")[1]
+              c += "=" * (-len(c) % 4)
+              d = json.loads(base64.urlsafe_b64decode(c))
+              print("  iss  ", d.get("iss"))
+              print("  aud  ", d.get("aud"))
+              print("  sub  ", d.get("sub"))
+              print("  tipo ", d.get("rubix_tipo"))
+              open("/tmp/sub", "w").write(d.get("sub", ""))
+              PY
+
+              echo
+              echo "### 1 · sin token"
+              curl -s -o /dev/null -w '  http %{http_code}\n' "$BASE/fuentes"
+
+              echo
+              echo "### 2 · con el token"
+              curl -sSf -H "Authorization: Bearer $TOKEN" "$BASE/fuentes" \
+                | head -c 200; echo
+
+              echo
+              echo "### 3 · una escritura, y quien la firma"
+              curl -s -o /tmp/alta.json -w '  http %{http_code}\n' -X POST \
+                -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+                -d '{"name":"rio","url":"bigquery://project-8853a180-450d-47be-b83/rio"}' \
+                "$BASE/fuentes"
+              python3 -c 'import json;d=json.load(open("/tmp/alta.json"));print("  commit ", d.get("commit") or d.get("error"))'
+              echo "  sub del token: $(cat /tmp/sub)"
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+---
+# Pedir un token es una cosa normal, y por eso esto alcanza a TODO el
+# inquilino y no a un rol: cualquiera que vaya a hablar con el plano de control
+# necesita antes hablar con el emisor. Lo que sigue sin poder es salir a
+# internet — eso lo decide `salida-del-driver`, y esta regla no lo toca.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-emisor
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: identidad
+      ports:
+        - protocol: TCP
+          port: 8080

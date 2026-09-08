@@ -185,11 +185,38 @@ aquí sin nada malo salvo que no es para nosotros.
 firmas dejen de verificar, hace que verifiquen firmas inválidas. Es la misma
 frase que `ore-core` ya tiene escrita para Ed25519.
 
-### Lo que NO está encendido
+### ✏️ Y está encendido — el mismo día
 
-El IdP vive en el otro clúster y está suspendido: `login.paladio.io` contesta
-`503`. El código está construido y probado —34 pruebas en el crate y
-`pruebas-de-fuego/servidor-oidc.sh` acuñando tokens de verdad contra un socket
-de verdad—, y encenderlo necesita dos cosas que no son código: **levantar el
-IdP** y **crear el cliente `ore-serve` en el realm**, que es una audiencia con
-todos los flujos apagados, igual que `rubix-api`.
+El IdP se levantó **en el clúster nuevo**, que es donde están los créditos, y no
+fue una migración de datos: el registro de la propia plataforma dice *«usuarios
+0 · sesiones 0 · grupos 0»*, y su realm no se copia, se genera. Keycloak 26.0.7
+con la imagen cocida de ellos, sobre Postgres en el clúster.
+
+El emisor **no se renombró**. Su CR dice *«no es configuración: es una identidad
+publicada»* y *«se renombra una vez, y es la última»*, así que se levantó con
+`https://login.paladio.io/realms/rubix` desde el primer minuto, aunque ese
+nombre todavía apunte fuera al clúster viejo. La dirección por la que se le
+alcanza y el nombre que afirma son dos cosas, y el refresco de llaves
+**comprueba la segunda antes de creerse la primera**: pide el descubrimiento
+por dentro y se niega si no declara el emisor esperado.
+
+Esa comprobación cazó un error al primer intento — el `iss` lleva el realm
+dentro, `<hostname>/realms/<realm>` y no el host a secas.
+
+Y la cadena cierra sin una sola afirmación:
+
+```text
+token del realm    iss  https://login.paladio.io/realms/rubix
+                   aud  [ore-serve, account]
+                   sub  a0b37436-…
+sin token          401
+con token          200
+una escritura      201 · commit 7e2ab5b
+en la forja        author  a0b37436-…      ← el `sub` que el realm firmó
+                   committer  ore-serve
+```
+
+**Lo que falta es la mitad del navegador**, que su propio reconocimiento ya
+tenía separada: una IP, un certificado y un registro A en el registrador —
+`paladio.io` no lo sirve Google—. Hasta entonces entran las máquinas y no las
+personas.

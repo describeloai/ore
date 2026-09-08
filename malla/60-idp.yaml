@@ -1,0 +1,237 @@
+# El plano de identidad, en el clúster que tiene los créditos.
+#
+# ── Qué clase de mudanza es esto ────────────────────────────────────────────
+#
+# `pruebas-de-fuego/medida-la-mudanza-del-idp.py`, leyendo el registro de la
+# propia plataforma:
+#
+#   usuarios 0 · sesiones 0 · grupos 0 · IdP federados 0     (su censo)
+#   «el momento más barato que va a existir: 0 usuarios,
+#    0 sesiones, 0 tokens emitidos»                          (su CR, 2026-08-26)
+#
+# ⇒ **No hay datos que mover.** La configuración no se copia: se GENERA con
+# `deploy/identidad/realm.mjs`. Esto es volver a poner en pie un despliegue
+# declarativo, no restaurar una base.
+#
+# ⚠️ Con una condición que no se ha podido comprobar y que hay que comprobar:
+# que no se hayan creado personas desde entonces. Si las hay, el camino es un
+# `pg_dump` de la instancia vieja y esto cambia de clase.
+#
+# ── ⛔⛔ EL EMISOR NO SE RENOMBRA ────────────────────────────────────────────
+#
+# `hostname` es el `iss` de todos los tokens. Su propio CR lo dice: *«no es
+# configuración: es una identidad publicada»* y *«se renombra una vez, y es la
+# última»* — lo hicieron el 2026-08-26 con cero usuarios, que era el momento
+# barato.
+#
+# Levantarlo aquí con un nombre interno para cambiarlo cuando el DNS apunte
+# sería repetir ese cambio **habiendo ya tokens vivos**. Así que se levanta con
+# `https://login.paladio.io` DESDE HOY, aunque hoy ese nombre resuelva al
+# clúster viejo desde fuera.
+#
+# ── Y por qué aquí NO hace falta TLS por dentro ─────────────────────────────
+#
+# Su `api/` se baja el JWKS del emisor declarado, y su guarda anti-SSRF exige
+# que el `jwks_uri` cuelgue del mismo origen ⇒ el pod tenía que alcanzar
+# `https://login.paladio.io` de verdad, y de ahí su `nombre.yaml` con IP fija y
+# certificado propio.
+#
+# **`ore-serve` no baja nada.** Comparar `iss` es una igualdad de cadenas, y el
+# JWKS lo trae otro (ADR 0020, enmienda). ⇒ la ruta por la que se alcanza al
+# IdP y el nombre que el IdP afirma son dos cosas independientes, y esa
+# independencia es lo que quita el certificado interno del camino.
+#
+# El refresco lo comprueba en vez de suponerlo: pide el descubrimiento por la
+# dirección interna y **verifica que declara `login.paladio.io` como emisor**
+# antes de quedarse con las llaves. Llegar por otra carretera está bien;
+# hablar con otro emisor, no.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+---
+# ── La base ─────────────────────────────────────────────────────────────────
+#
+# Postgres en el clúster y no Cloud SQL, medido: g1-small son ~24 EUR/mes
+# —cifra suya, contra la Billing API— y esto es el disco de la clase `retiene`,
+# ~1 EUR/mes. Sobre un colchón finito y un clúster que ya consume, la
+# diferencia paga el resto del año.
+#
+# ⚠️ Y lo que se compra con esa diferencia, dicho: **no hay copias
+# automáticas ni PITR.** El disco sobrevive al pod y al claim —la clase
+# retiene— pero un `DROP` no lo deshace nadie. La copia hay que escribirla, y
+# hasta que exista esto es un IdP sin marcha atrás. Queda nombrado, no resuelto.
+#
+# Es además la única opción reversible barata: pasar de aquí a Cloud SQL es un
+# `pg_dump | psql`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: idp-datos
+  namespace: identidad
+spec:
+  storageClassName: retiene
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: idp-db
+  namespace: identidad
+spec:
+  selector:
+    ore.dev/rol: idp-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: idp-db
+  namespace: identidad
+spec:
+  serviceName: idp-db
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: idp-db
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: idp-db
+        ore.dev/tenant: system
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+          env:
+            # La contraseña NO está en este fichero y no la ha visto nadie: se
+            # generó dentro del clúster con `/dev/urandom` y vive sólo en el
+            # `Secret`. Es la misma frontera que `source add` traza con
+            # `connectionEnv` — se dice dónde está, no qué es.
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: idp-db, key: usuario } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: idp-db, key: clave } }
+            - { name: POSTGRES_DB, value: keycloak }
+            # El directorio de datos va en un SUBDIRECTORIO del volumen: un
+            # disco recién formateado trae `lost+found`, y Postgres se niega a
+            # inicializar sobre un directorio que no está vacío.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d keycloak"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+      volumes:
+        - name: datos
+          persistentVolumeClaim:
+            claimName: idp-datos
+---
+# ── El IdP ──────────────────────────────────────────────────────────────────
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: idp
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+spec:
+  # UNA, y allá eran dos. Su motivo era el nivel de servicio de `rubix-api`;
+  # aquí el nodo estable tiene ~560m de CPU libres y esto se está levantando.
+  # Decir «dos» y no caber sería peor que decir «una» y que arranque.
+  instances: 1
+
+  # La imagen COCIDA, la suya, construida aquí desde `C:\Rubix\idp\Dockerfile`.
+  # La etiqueta lleva las dos versiones: de qué Keycloak está hecha y cuántas
+  # veces se ha cocido.
+  image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/idp:26.0.7-1
+
+  # ⛔ Obligatorio con una imagen cocida: sin esto el operador ASUME que no lo
+  # está y vuelve a construir al arrancar — 40 s por reinicio y un sistema de
+  # ficheros que deja de poder ser de sólo lectura.
+  #
+  # ⚠️ Y acopla: cambiar `db.vendor`, el caché o las métricas aquí sin recocer
+  # la imagen deja las dos mitades diciendo cosas distintas, y Keycloak arranca
+  # igual avisando en una línea de log. Es fallar EN VERDE.
+  startOptimized: true
+
+  db:
+    vendor: postgres
+    host: idp-db.identidad.svc.cluster.local
+    port: 5432
+    database: keycloak
+    usernameSecret: { name: idp-db, key: usuario }
+    passwordSecret: { name: idp-db, key: clave }
+    poolMaxSize: 8
+    poolInitialSize: 2
+    poolMinSize: 2
+
+  hostname:
+    # ⛔⛔ EL `iss` DE TODOS LOS TOKENS. Ver la cabecera.
+    hostname: https://login.paladio.io
+    # `strict: false` porque hoy se llega por la dirección interna y el nombre
+    # de fuera todavía apunta a otro sitio. Es la única concesión que hace la
+    # etapa 1, y desaparece cuando el DNS apunte aquí.
+    strict: false
+  http:
+    # TLS lo terminaría una entrada pública, que en la etapa 1 no existe. Ver
+    # la cabecera: aquí nadie sigue una URL sacada de un token.
+    httpEnabled: true
+  ingress:
+    enabled: false
+
+  additionalOptions:
+    - name: proxy-headers
+      value: xforwarded
+    - name: metrics-enabled
+      value: "true"
+
+  resources:
+    requests: { cpu: "200m", memory: "768Mi" }
+    limits:   { cpu: "800m", memory: "1536Mi" }
+---
+# ── Quién puede hablar con el IdP ───────────────────────────────────────────
+#
+# Nadie de fuera, y de dentro sólo quien tiene que: el refresco de llaves. El
+# plano de control **no** habla con el IdP —no baja nada— y eso se ve aquí.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-idp
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/tenant: demo
+      ports:
+        - protocol: TCP
+          port: 8080
