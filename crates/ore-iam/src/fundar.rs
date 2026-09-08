@@ -55,6 +55,7 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         // Un operador no tiene correo aqui: no es una persona de `iam`, es
         // quien opera el cluster. La huella lo dice con su nombre.
         correo: None,
+        nombre: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
 

@@ -30,7 +30,22 @@ SALIDA = pathlib.Path(r"C:\ORE\malla\61-realms.yaml")
 # `ore-serve` está configurado con `--emisor …/realms/rubix`. Meter sus clientes
 # en los otros dos sería declarar una audiencia que nadie va a pedir y que nadie
 # va a aceptar — ruido con forma de configuración.
-SOLO_EN = "rubix"
+# ⛔⛔ ESTO DECIA `SOLO_EN = "rubix"`, Y COSTABA UN 401 QUE NO SE ENTIENDE.
+#
+#   El argumento era bueno: *«meter sus clientes en los otros dos seria declarar
+#   una audiencia que nadie va a pedir y que nadie va a aceptar»*. Dejo de ser
+#   cierto el dia que la consola local —que entra por `rubix-dev`— tuvo que
+#   hablar con `ore-iam`: su token salia SIN `ore-serve` en el `aud` y se
+#   rechazaba con «no es para nosotros».
+#
+#   ⭐ Y el sintoma mandaba al sitio equivocado: se mira la ruta, que esta bien.
+#     Una audiencia de mas es ruido; una de menos es una hora buscando.
+#
+#   ⚠️ `rubix-interno` tambien la lleva, y a proposito: el dia que algo interno
+#     hable con este plano, que no vuelva a pasar lo mismo. Si un realm no la
+#     necesita, la audiencia sobrante no autoriza nada — sin token no hay nada,
+#     y con token de otro sujeto tampoco.
+REALMS_CON_ORE = ("rubix", "rubix-dev", "rubix-interno")
 
 AUDIENCIA = {
     "clientId": "ore-serve",
@@ -107,7 +122,7 @@ CABECERA = """# LOS REALMS — GENERADOS. No se editan aqui.
 # realm ausente el descubrimiento daba `404`, que `lib/auth/oidc.ts` convierte en
 # una excepcion y Next en un 500 sin mas texto.
 #
-# ── Lo que ORE anade, y SOLO en `rubix` ─────────────────────────────────────
+# ── Lo que ORE anade, en LOS TRES ───────────────────────────────────────────
 #
 #   ore-serve    una AUDIENCIA. Todos los flujos apagados: no inicia sesion de
 #                nadie. Existe para poder decir que un token es PARA nosotros
@@ -160,7 +175,7 @@ documentos = []
 for f in PLANTILLAS:
     realm = json.loads(pathlib.Path(f).read_text(encoding="utf-8"))
     nombre = realm["realm"]
-    if nombre == SOLO_EN:
+    if nombre in REALMS_CON_ORE:
         realm = con_ore(realm)
     documentos.append({
         "apiVersion": "k8s.keycloak.org/v2alpha1",

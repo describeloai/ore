@@ -213,6 +213,8 @@ impl Emisor {
             persona,
             agente,
             correo: cadena(&cuerpo, "email"),
+            // `name` es el claim estandar de OIDC para el nombre completo.
+            nombre: cadena(&cuerpo, "name"),
         })
     }
 }

@@ -173,6 +173,32 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
     ]))
 }
 
+// ── el nombre, que se refresca solo ─────────────────────────────────────────
+
+/// Pone al dia el nombre que el emisor afirma, **solo si cambio**.
+///
+/// Es la figura de `subjectResolver`, con su nota entera: *«esto corre en cada
+/// peticion, y escribir lo mismo un millon de veces al dia es carga inutil y
+/// ruido en la replicacion»*.
+///
+/// ⛔ Y NO deja huella. La huella es de los ACTOS; que alguien se cambie el
+/// nombre en el IdP no es un acto de este plano, y anotarlo llenaria el
+/// registro de ruido justo donde hay que poder leer.
+pub fn refrescar_nombre(tx: &mut Tx, emisor: &str, sujeto: &Identidad) -> Result<(), String> {
+    let Some(nombre) = sujeto.nombre.as_deref() else {
+        // ⭐ Si el token no lo dice, NO se borra el que hubiera. «No lo dijo» y
+        //   «ya no se llama asi» son cosas distintas, y un token sin el claim
+        //   —otro cliente, otro ambito— no puede vaciar un dato.
+        return Ok(());
+    };
+    tx.ejecutar(
+        "update iam.persona set nombre = $3
+          where emisor = $1 and sub = $2 and nombre is distinct from $3",
+        &[&emisor, &quien(sujeto), &nombre],
+    )?;
+    Ok(())
+}
+
 // ── conceder ────────────────────────────────────────────────────────────────
 
 /// Concede un rol **de recurso** sobre un recurso.

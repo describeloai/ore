@@ -207,6 +207,11 @@ titulo("⑥", "LA AUDIENCIA — y esto para el trabajo antes de empezarlo")
 print("  La consola manda `Authorization: Bearer ${sesion.acceso}` — el token")
 print("  del realm. `ore-iam servir` valida emisor Y AUDIENCIA.\n")
 
+# Los realms por donde entra una consola: si a uno le falta el mapeador, el
+# token de esa consola no vale para este plano.
+CON_CONSOLA = ("rubix", "rubix-dev")
+falta_audiencia = []
+
 crudo = leer(ORE / "malla" / "61-realms.yaml")
 trozos = crudo.split("\n---\n")
 trozos[0] = trozos[0][trozos[0].index("{"):]
@@ -224,16 +229,22 @@ for t in trozos:
     print("  %-14s clientes: %-42s mapeador ore-serve en `rubix-consola`: %s"
           % (realm["realm"], ", ".join(sorted(clientes)) or "—",
              "SI" if mapea else "NO"))
+    if realm["realm"] in CON_CONSOLA and not mapea:
+        falta_audiencia.append(realm["realm"])
 
 print("""
-  ⛔⛔ `gen-realm.py` añade la audiencia SOLO_EN = "rubix". El emisor con el que
-    corre `ore-iam` hoy —y contra el que entra la consola local— es
-    **`rubix-dev`**, que NO lleva el mapeador.
+  ✅ ARREGLADO el 2026-09-08. Esto decia `SOLO_EN = "rubix"`, y el emisor con el
+    que corre `ore-iam` —y contra el que entra la consola local— es `rubix-dev`.
+    El token que la consola ya tenia se rechazaba con 401 «no es para nosotros»,
+    y el sintoma mandaba a mirar las rutas, que estaban bien.
 
-  ⇒ El token que la consola ya tiene se rechazaria con 401 «no es para
-    nosotros», y el sintoma mandaria a mirar a las rutas, que estarian bien.
-    Esto se arregla antes de escribir un solo verbo.""")
-hallazgos.append("⭐ el token de `rubix-dev` NO lleva la audiencia: 401 antes de empezar")
+  ⚠️ Y el artefacto NO basta: un `KeycloakRealmImport` se salta un realm que ya
+    existe. El realm vivo hubo que cambiarlo con `kcadm`. Esta comprobacion se
+    queda viva para que la proxima vez no se olvide la mitad.""")
+if falta_audiencia:
+    hallazgos.append("⛔ AUDIENCIA AUSENTE en %s: todo dara 401" % ", ".join(falta_audiencia))
+else:
+    hallazgos.append("✅ la audiencia esta en los realms por donde entra una consola")
 
 # ═══ ⑦ LA RED ══════════════════════════════════════════════════════════════
 titulo("⑦", "POR DONDE SE LLEGA")

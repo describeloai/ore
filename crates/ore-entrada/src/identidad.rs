@@ -51,6 +51,14 @@ pub struct Identidad {
     /// un vale de invitación es para quien lo presenta. Una invitación a `a@x`
     /// redimida por `b@y` es un traspaso que nadie autorizó.
     pub correo: Option<String>,
+    /// Cómo dice el emisor que se llama, si lo dice.
+    ///
+    /// ⚠️ Igual que `correo`: es una COPIA de lo que afirmó el emisor, no una
+    /// verdad nuestra. Sirve para que una pantalla pueda decir QUIÉN en vez de
+    /// un identificador opaco, y para nada más — no se autoriza por él.
+    ///
+    /// ⭐ `None` es «el token no lo dijo», que NO es «no tiene».
+    pub nombre: Option<String>,
 }
 
 /// Por qué no hay sujeto.
@@ -107,8 +115,10 @@ pub fn por_cabecera() -> Proveedor {
             persona: persona.to_string(),
             agente,
             // El modo de banco no trae correo: es lo que hace que `admitir` no
-            // se pueda ejercitar con el, y eso es correcto.
+            // se pueda ejercitar con el, y eso es correcto. El nombre, igual:
+            // una cabecera dice de QUIEN es la peticion, no como se llama.
             correo: None,
+            nombre: None,
         })
     })
 }

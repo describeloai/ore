@@ -67,6 +67,7 @@ impl Servidor {
     fn con_sujeto(&self, p: &Peticion, s: &Identidad, seg: &[&str]) -> Respuesta {
         match (p.metodo.as_str(), seg) {
             ("GET", ["organizaciones"]) => self.organizaciones(s),
+            ("GET", ["organizaciones", o, "miembros"]) => self.miembros(s, o),
             ("GET", ["organizaciones", o, "invitaciones"]) => self.invitaciones(s, o),
             ("POST", ["organizaciones", o, "invitaciones"]) => self.invitar(s, o, &p.cuerpo),
             ("POST", ["organizaciones", o, "concesiones"]) => self.conceder(s, o, &p.cuerpo),
@@ -92,6 +93,12 @@ impl Servidor {
             Ok(t) => t,
             Err(e) => return Respuesta::error(502, e),
         };
+        // ⭐ Antes de nada: el nombre que trae el token. Va aqui y no en cada
+        //   verbo porque es de la SESION, no del acto — y asi no hay un camino
+        //   por el que alguien entre y su nombre se quede viejo.
+        if let Err(e) = crate::verbos::refrescar_nombre(&mut tx, &self.emisor, s) {
+            return Respuesta::error(500, e);
+        }
         match f(&mut tx, &self.emisor) {
             Err(e) => Respuesta::error(422, e),
             Ok(j) => match tx.confirmar() {
@@ -133,6 +140,52 @@ impl Servidor {
                 Json::obj([("cuantas", Json::Int(lista.len() as i64))]),
             )?;
             Ok(Json::obj([("organizaciones", Json::Arr(lista))]))
+        })
+    }
+
+    /// Quien esta dentro, y con que rol.
+    ///
+    /// ⭐ Basta con PERTENECER. Su `76` §2 lo argumenta y se toma entero:
+    /// esconder quien manda es seguridad por oscuridad — y la pantalla que lo
+    /// pinta existe para que alguien pueda preguntarle a la persona correcta.
+    ///
+    /// ⚠️ Y no hay `tipo`. `iam` no modela agentes todavia: `concesion.sujeto`
+    /// es texto para que quepa uno, pero aqui no hay ninguno que listar.
+    /// Devolver `"persona"` en todas las filas seria afirmar una distincion que
+    /// este plano no sabe hacer.
+    fn miembros(&self, s: &Identidad, org: &str) -> Respuesta {
+        let org = org.to_string();
+        self.en_transaccion(s, move |tx, emisor| {
+            crate::potestad::exige(tx, emisor, &s.persona, &org, "lector")?;
+            let filas = tx.filas(
+                "select p.id, p.nombre, coalesce(p.correo, \'\'), pe.rol, pe.desde
+                   from iam.pertenencia pe
+                   join iam.persona p on p.id = pe.persona
+                  where pe.organizacion = $1
+                  order by pe.desde",
+                &[&org],
+            )?;
+            let lista: Vec<Json> = filas
+                .iter()
+                .map(|f| {
+                    let nombre: Option<String> = f.get(1);
+                    Json::obj([
+                        ("persona", Json::s(f.get::<_, String>(0))),
+                        // ⭐ `conocido` false NO significa inactivo: significa que
+                        //   el emisor nunca nos dijo como se llama.
+                        ("conocido", Json::Bool(nombre.is_some())),
+                        ("nombre", Json::s(nombre.unwrap_or_default())),
+                        ("correo", Json::s(f.get::<_, String>(2))),
+                        ("rol", Json::s(f.get::<_, String>(3))),
+                    ])
+                })
+                .collect();
+            tx.anotar(
+                "miembro:listar",
+                &org,
+                Json::obj([("cuantos", Json::Int(lista.len() as i64))]),
+            )?;
+            Ok(Json::obj([("miembros", Json::Arr(lista))]))
         })
     }
 
@@ -224,6 +277,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
     vec![
         ("GET", "/salud", true),
         ("GET", "/organizaciones", con),
+        ("GET", "/organizaciones/{org}/miembros", con),
         ("GET", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/concesiones", con),

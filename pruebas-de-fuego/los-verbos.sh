@@ -18,6 +18,7 @@
 #   3  invitar                          el vale, UNA vez, y no vuelve a salir
 #   4  invitar a `dueno`                SE NIEGA  ← un vale que nadie canjearia
 #   5  ⭐ otorgar POR ENCIMA de uno mismo  SE NIEGA  ← el rodeo
+#  5b  los MIEMBROS · con su nombre del token · y una extraña NO los ve
 #   6  conceder `lector` · revocar · revocar otra vez
 #  6b  ⭐ sondear una concesion AJENA   mismo error que una inventada
 #   7  conceder `owner`                 SE NIEGA  ← falta la travesia del arbol
@@ -108,7 +109,10 @@ if sys.argv[1] == "jwks":
 
 sub, correo, emisor, audiencia, ahora = sys.argv[1:6]
 cabeza = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
+# `name` es el claim estandar de OIDC. Va aqui porque sin el no se puede
+# ejercitar el refresco del nombre, que corre en cada peticion.
 cuerpo = {"iss": emisor, "aud": audiencia, "sub": sub, "email": correo,
+          "name": sub.split(":")[-1].capitalize() + " (prueba)",
           "exp": int(ahora) + 300, "iat": int(ahora)}
 f = (b64(json.dumps(cabeza).encode()) + "." + b64(json.dumps(cuerpo).encode())).encode()
 print(f.decode() + "." + b64(firmar(f)))
@@ -202,6 +206,28 @@ BEA=$(acunar "persona:bea" "bea@paladio.io")
       '{"correo":"complice@paladio.io","rol":"dueno"}')" = "422" ] \
   || falla "5 · ⛔ UN ADMINISTRADOR OTORGA POR ENCIMA DE SI MISMO. Eso es escalada de privilegio con forma de cortesia"
 dice '5 · la guarda del rodeo muerde: un administrador no otorga `dueno`'
+
+# ── 5b · los MIEMBROS, y el nombre que se refresca solo ────────────────────
+#
+# ⭐ Basta con pertenecer para verlos: `76` §2 — esconder quien manda es
+#   seguridad por oscuridad. Y el nombre NO se pidio a nadie: llego en el token
+#   y se guardo al entrar, que es lo que evita necesitar `manage-realm`.
+[ "$(pide GET "/organizaciones/$ORG/miembros" "$ADA")" = "200" ] || falla "5b · no listo miembros"
+CUANTOS=$("$PY" -c "import json;print(len(json.load(open('$TMP/r.json'))['miembros']))")
+[ "$CUANTOS" = "2" ] || falla "5b · esperaba 2 miembros y hay $CUANTOS"
+grep -q '"rol":"dueno"' "$TMP/r.json"         || falla "5b · falta el dueño"
+grep -q '"rol":"administrador"' "$TMP/r.json" || falla "5b · falta la administradora"
+grep -q '"nombre":"Ada (prueba)"' "$TMP/r.json" \
+  || falla "5b · ⛔ EL NOMBRE NO SE REFRESCO. Venia en el token y la pantalla enseñaria un id opaco"
+grep -q '"conocido":true' "$TMP/r.json" || falla "5b · `conocido` no distingue"
+dice "5b · $CUANTOS miembros, con su rol y su nombre del token"
+
+# ⛔ Y una extraña no los ve. Es la misma acotacion de 6b, en una ruta de leer:
+#   la lista de quien trabaja en un cliente es de ese cliente.
+ZOE0=$(acunar "persona:zoe" "zoe@paladio.io")
+[ "$(pide GET "/organizaciones/$ORG/miembros" "$ZOE0")" = "422" ] \
+  || falla "5b · ⛔ UNA EXTRAÑA VE LOS MIEMBROS DE OTRA ORGANIZACION"
+dice "5b · y una extraña no los ve"
 
 # ── 6 · conceder y revocar ──────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
