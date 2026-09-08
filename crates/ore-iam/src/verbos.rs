@@ -239,6 +239,10 @@ pub fn conceder(
 
 // ── revocar ─────────────────────────────────────────────────────────────────
 
+/// ⛔ Un solo mensaje para «no existe» y «no es de tu organizacion». Dos
+/// mensajes distintos son un directorio de lo ajeno, consultable id a id.
+const AJENA: &str = "no hay tal concesion en una organizacion tuya";
+
 /// Revoca una concesión. **No la borra.**
 ///
 /// La fila se queda con `revocada_en` y `revoco`, y la vista `concesion_viva`
@@ -251,12 +255,27 @@ pub fn revocar(tx: &mut Tx, sujeto: &Identidad, emisor: &str, id: &str) -> Resul
             "select organizacion, (revocada_en is not null) from iam.concesion where id = $1",
             &[&id],
         )?
-        .ok_or("no hay tal concesion")?;
+        // ⛔ El MISMO mensaje que «no es de tu organizacion», abajo. Ver `0021`.
+        .ok_or(AJENA)?;
     let org: String = f.get(0);
+
+    // ⛔⛔ EL ORDEN, y es la primera consecuencia de `0021`.
+    //
+    //   Antes esto distinguia «no hay tal concesion» de «ya estaba revocada»
+    //   ANTES de exigir nada. Con una organizacion por persona era inofensivo.
+    //   Con varias es una SONDA ENTRE INQUILINOS: un administrador de A
+    //   averigua, id a id, que concesiones existen en B y cuales siguen vivas.
+    //
+    //   Su propia frase estaba en `exige` y no la habiamos extendido al orden:
+    //   decir «no eres administrador de esa organizacion» le confirma a quien
+    //   pregunta que esa organizacion existe.
+    potestad::exige(tx, emisor, quien(sujeto), &org, "administrador").map_err(|_| AJENA)?;
+
+    // Y esto SOLO despues de saber que es suya: a partir de aqui, contar la
+    // verdad no le dice a nadie nada que no pudiera ver de todas formas.
     if f.get::<_, bool>(1) {
         return Err("esa concesion ya estaba revocada".into());
     }
-    potestad::exige(tx, emisor, quien(sujeto), &org, "administrador")?;
 
     let quien_id = persona_id(tx, emisor, quien(sujeto))?;
     tx.ejecutar(

@@ -19,6 +19,7 @@
 #   4  invitar a `dueno`                SE NIEGA  ← un vale que nadie canjearia
 #   5  ⭐ otorgar POR ENCIMA de uno mismo  SE NIEGA  ← el rodeo
 #   6  conceder `lector` · revocar · revocar otra vez
+#  6b  ⭐ sondear una concesion AJENA   mismo error que una inventada
 #   7  conceder `owner`                 SE NIEGA  ← falta la travesia del arbol
 #   8  admitir con otro correo          SE NIEGA
 #   9  y MIRAR tambien deja huella
@@ -214,6 +215,31 @@ TODAS=$(psql "$URL" -qtAc "select count(*) from iam.concesion")
 [ "$VIVAS" = "0" ] && [ "$TODAS" = "1" ] \
   || falla "6 · revocar BORRO la fila ($TODAS en la tabla). Sin ella, «nunca tuvo permiso» y «se lo quitamos» son indistinguibles"
 dice "6 · concedida, revocada, y la fila sigue: $TODAS en la tabla · $VIVAS vivas"
+
+# ── 6b · ⭐ LA SONDA ENTRE INQUILINOS ───────────────────────────────────────
+#
+# Zoe es dueña de `otra` y no pinta nada en `acme`. Si al intentar revocar una
+# concesion de `acme` recibiera un mensaje DISTINTO del que da un id inventado,
+# tendria un directorio de lo ajeno consultable id a id: existe / no existe /
+# ya revocada. Es la primera consecuencia de `0021` y solo aparece cuando una
+# persona puede estar en varias organizaciones.
+ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
+[ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
+      '{"sujeto":"per_y","recurso":"ventas.Pedidos","rol":"lector"}')" = "200" ] \
+  || falla "6b · no se pudo conceder la segunda"
+VIVA=$(campo concesion)
+
+pide POST "/concesiones/$VIVA/revocar" "$ZOE" >/dev/null
+AJENA=$(campo error)
+pide POST "/concesiones/con_no_existe_00000000000000000000/revocar" "$ZOE" >/dev/null
+INVENTADA=$(campo error)
+[ -n "$AJENA" ] && [ "$AJENA" = "$INVENTADA" ] \
+  || falla "6b · ⛔ SONDA: una concesion ajena da «$AJENA» y una inventada «$INVENTADA». Distinguirlas es un directorio de lo ajeno"
+
+# Y no la ha tocado: sigue viva.
+SIGUE=$(psql "$URL" -qtAc "select count(*) from iam.concesion_viva where id = '$VIVA'")
+[ "$SIGUE" = "1" ] || falla "6b · ⛔ UNA EXTRAÑA REVOCO UNA CONCESION AJENA"
+dice "6b · la sonda entre inquilinos no distingue, y la concesion sigue viva"
 
 # ── 7 · conceder `owner` ────────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
