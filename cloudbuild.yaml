@@ -1,0 +1,60 @@
+# Las cuatro imágenes que salen de este árbol, en una construcción.
+#
+# ── ⭐ Por qué las cuatro juntas y no una por invocación ────────────────────
+#
+# Comparten la etapa `build`: un `cargo build --release` sobre el mismo `musl`.
+# En una sola construcción el demonio de Docker la reutiliza —es la misma capa—
+# y las tres siguientes son copiar un binario. En cuatro invocaciones se
+# compilaría Rust cuatro veces.
+#
+# ── ⭐⭐ DOS ETIQUETAS, Y LA SEGUNDA ES LA QUE IMPORTA ─────────────────────
+#
+#   :main    la que los manifiestos nombran. Se mueve.
+#   :<sha>   inmutable, y **es la única forma de mirar un pod y saber qué código
+#            lleva**. Hasta hoy no la había: entre un `git push` verde y lo que
+#            estaba corriendo podía haber cualquier cosa, y el 2026-09-08 hubo
+#            un pánico desplegado veinte minutos.
+#
+# ⚠️ Y el despliegue NO cambia la etiqueta del manifiesto: sigue siendo `:main`
+#   con `imagePullPolicy: Always`, para que `kubectl apply -f malla/…` a mano
+#   siga diciendo la verdad. La trazabilidad va en una anotación con el commit,
+#   que además es lo que provoca el relevo.
+
+substitutions:
+  # La pone CI con los doce primeros del commit. `SHORT_SHA` es reservada y
+  # sin disparador no llega: una propia no depende de como se invoque esto.
+  _SHA: sin-commit
+  _REGISTRO: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+
+steps:
+  - id: ore
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, ore, -t, '${_REGISTRO}/ore:main', -t, '${_REGISTRO}/ore:${_SHA}', .]
+
+  - id: drivers
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, drivers, -t, '${_REGISTRO}/ore-drivers:main', -t, '${_REGISTRO}/ore-drivers:${_SHA}', .]
+
+  - id: serve
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, serve, -t, '${_REGISTRO}/ore-serve:main', -t, '${_REGISTRO}/ore-serve:${_SHA}', .]
+
+  - id: iam
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, iam, -t, '${_REGISTRO}/ore-iam:main', -t, '${_REGISTRO}/ore-iam:${_SHA}', .]
+
+images:
+  - '${_REGISTRO}/ore:main'
+  - '${_REGISTRO}/ore:${_SHA}'
+  - '${_REGISTRO}/ore-drivers:main'
+  - '${_REGISTRO}/ore-drivers:${_SHA}'
+  - '${_REGISTRO}/ore-serve:main'
+  - '${_REGISTRO}/ore-serve:${_SHA}'
+  - '${_REGISTRO}/ore-iam:main'
+  - '${_REGISTRO}/ore-iam:${_SHA}'
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 3600s

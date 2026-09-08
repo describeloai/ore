@@ -245,3 +245,91 @@ jobs:
           cargo build --quiet -p ore-read-postgres -p ore-read-jsonl
           export PATH="$PWD/target/debug:$PATH"
           bash pruebas-de-fuego/fuentes-reales.sh
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # LA IMAGEN — construir y desplegar deja de ser una costumbre
+  #
+  # ── ⛔ Qué pasaba antes ────────────────────────────────────────────────────
+  #
+  #   CI no construía imágenes. Cada `:main` la subía alguien a mano, así que
+  #   entre un `git push` verde y lo que estaba corriendo podía haber
+  #   cualquier cosa — y el 2026-09-08 hubo **un pánico desplegado veinte
+  #   minutos**, construido de un árbol que aún no había pasado por aquí.
+  #
+  # ── ⭐⭐ Y el orden es la mitad del arreglo ───────────────────────────────
+  #
+  #   `needs` con TODOS los trabajos de prueba. Construir antes de que pasen
+  #   sería exactamente lo de antes con más pasos: lo que hace que esto sirva
+  #   no es que CI construya, es que **no pueda construir algo rojo**.
+  #
+  # ── ⛔ Sin llaves de larga vida ───────────────────────────────────────────
+  #
+  #   Federación con el OIDC de GitHub: `google-github-actions/auth` cambia el
+  #   token del `job` por uno de Google. El proveedor tiene una condición
+  #   —`assertion.repository == 'describeloai/ore'`— y la cuenta de servicio
+  #   está atada al `principalSet` de ESE repositorio. No hay ningún JSON de
+  #   credenciales en ningún secreto, y por eso no hay nada que rotar ni que
+  #   se pueda filtrar en un log.
+  #
+  # ⚠️ `id-token: write` es lo que permite pedir ese token. Sin ese permiso el
+  #   paso falla con un mensaje que no menciona OIDC.
+  # ══════════════════════════════════════════════════════════════════════════
+  imagen:
+    # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
+    needs: [suite, graphql, descubrimiento, plano-de-control, los-verbos, fuentes-reales]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: project-8853a180-450d-47be-b83
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Las cuatro, en una sola construcción: comparten la etapa `build`.
+      - name: construir las cuatro imagenes
+        run: |
+          gcloud builds submit --config cloudbuild.yaml \
+            --substitutions _SHA=${GITHUB_SHA::12} .
+
+      # ⭐⭐ Y el DESPLIEGUE no cambia la etiqueta del manifiesto. Sigue siendo
+      #   `:main` con `imagePullPolicy: Always`, para que `kubectl apply -f
+      #   malla/…` a mano siga diciendo la verdad. Lo que se escribe es una
+      #   ANOTACIÓN con el commit: provoca el relevo **y** deja escrito de qué
+      #   árbol salió lo que está corriendo, que es lo que hoy no se podía
+      #   averiguar mirando un pod.
+      - name: desplegar, y dejar dicho de que commit
+        run: |
+          gcloud container clusters get-credentials ore-mesh \
+            --zone europe-west1-b --project project-8853a180-450d-47be-b83
+          for D in identidad/ore-iam t-demo/ore-serve; do
+            NS="${D%%/*}"; NOMBRE="${D##*/}"
+            kubectl -n "$NS" patch deployment "$NOMBRE" --type=merge -p \
+              "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"ore.dev/commit\":\"$GITHUB_SHA\"}}}}}"
+            kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s
+          done
+
+      # ⛔ Y se COMPRUEBA que lo que quedó arriba es lo que se acaba de empujar.
+      #   Un `rollout status` verde dice que hay pods listos, no que sean los
+      #   nuestros: si el `patch` no hubiera cambiado nada —porque la anotación
+      #   ya estuviera— no habría relevo y esto pasaría igual.
+      - name: y comprobar que corre ESTE commit
+        run: |
+          for D in identidad/ore-iam t-demo/ore-serve; do
+            NS="${D%%/*}"; NOMBRE="${D##*/}"
+            VISTO=$(kubectl -n "$NS" get deployment "$NOMBRE" \
+              -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/commit}')
+            [ "$VISTO" = "$GITHUB_SHA" ] \
+              || { echo "✗ $NOMBRE corre «$VISTO» y esperabamos «$GITHUB_SHA»"; exit 1; }
+            echo "  · $NOMBRE · $VISTO"
+          done
