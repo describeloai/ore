@@ -282,10 +282,20 @@ grep -q '"SECURITYADMIN"' "$TMP/r.json"   || falla "5c · ⛔ SECURITYADMIN NO S
 "$PY" - "$TMP/r.json" <<'PYCODE' || falla "5c · el catalogo no dice que SECURITYADMIN es una carcasa"
 import json, sys
 d = json.load(open(sys.argv[1]))
-s = d["catalogo"]["porRol"]["SECURITYADMIN"]
-assert s["anade"] == [], "SECURITYADMIN deberia estar vacio hoy y trae %r" % s["anade"]
+cat = d["catalogo"]
+s = cat["porRol"]["SECURITYADMIN"]
+
+# ⭐ NO esta vacio: tiene UNA potestad, y lo que la hace una carcasa es que esa
+#   potestad no se ejerce todavia. Afirmar «cero» habria sido afirmar algo
+#   distinto de lo que pasa, y ademas mas debil.
+assert s["anade"] == ["actividad:leer-toda"],     "SECURITYADMIN deberia tener solo `actividad:leer-toda` y trae %r" % s["anade"]
+assert cat["potestades"]["actividad:leer-toda"]["ejercida"] is False,     "esa potestad no tiene ruta todavia, y el catalogo tiene que decirlo"
 assert "CARCASA" in s["nota"].upper(), "y su nota tiene que decirlo: %r" % s["nota"]
-o = d["catalogo"]["porRol"]["ORGADMIN"]
+
+# Y las que SI se ejercen, dichas como tales.
+assert cat["potestades"]["invitacion:emitir"]["ejercida"] is True
+
+o = cat["porRol"]["ORGADMIN"]
 assert "org:traspasar" in o["anade"], "ORGADMIN sin `org:traspasar`: %r" % o["anade"]
 PYCODE
 dice '5c · el catalogo sale entero, y `SECURITYADMIN` dice que hoy es una carcasa'

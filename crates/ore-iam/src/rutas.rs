@@ -244,6 +244,30 @@ impl Servidor {
                 .map(|f| Json::s(f.get::<_, String>(0)))
                 .collect();
 
+            // ⭐⭐ EL CATALOGO DE POTESTADES, CON `ejercida`.
+            //
+            //   La columna existe para que la pantalla pueda decir «todavia
+            //   no» en vez de ofrecer algo que devuelve 404, y sin devolverla
+            //   no servia de nada. Es lo que hace que `SECURITYADMIN` se lea
+            //   como lo que es: un rol con UNA potestad que aun no se ejerce,
+            //   no un rol vacio.
+            let potestades: std::collections::BTreeMap<String, Json> = tx
+                .filas(
+                    "select nombre, que_hace, ejercida from iam.potestad order by nombre",
+                    &[],
+                )?
+                .iter()
+                .map(|f| {
+                    (
+                        f.get::<_, String>(0),
+                        Json::obj([
+                            ("que_hace", Json::s(f.get::<_, String>(1))),
+                            ("ejercida", Json::Bool(f.get::<_, bool>(2))),
+                        ]),
+                    )
+                })
+                .collect();
+
             // ⚠️ TODOS los roles, tengan o no a alguien: la pantalla explica el
             //   catalogo, y un rol que nadie tiene sigue siendo parte de el.
             //   `SECURITYADMIN` sale con su lista y con su nota.
@@ -321,6 +345,7 @@ impl Servidor {
                 (
                     "catalogo",
                     Json::obj([
+                        ("potestades", Json::Obj(potestades)),
                         ("porDefecto", Json::Arr(por_defecto)),
                         // ⛔ `Json::obj` exige claves `&'static str`, y estas son nombres de
                         //   rol que salen de la base. Se construye la variante.
