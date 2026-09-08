@@ -29,6 +29,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0017](0017-la-escritura-sobre-el-sustrato.md) · la escritura sobre el sustrato | una copia nueva **reserva a su base**, y se reescribe entera hasta que una medida diga lo contrario | **propuesto** |
 | [0018](0018-la-ontologia-es-el-sistema-de-registro.md) · la ontología es el sistema de registro | una escritura de la ontología aterriza **en la copia**, nunca en el origen; y escribir obliga a materializar | **aceptado** |
 | [0019](0019-un-cambio-es-un-orden-o-una-identidad.md) · un cambio es un orden o una identidad | de dónde sale un código de compatibilidad: un movimiento en un **orden** —con dirección, y por eso con espejo— o una **sustitución** de identidad, que no la tiene. Y el eje es **un público**, no una categoría | **aceptado** |
+| [0020](0020-el-plano-de-control.md) · el plano de control | atender a un cliente es de un **programa delegado**, con una lista de verbos **permitidos** y sin identidad no hay superficie | **aceptado** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -87,3 +88,9 @@ tienen espejo y otros no —lo tienen los órdenes cuyas dos direcciones se obse
 seis de sustitución son justo los del plano físico. Se escribió al meter el sustrato en `ore diff`,
 y lo primero que dijo es que eso **no era extender `diff` sino repararlo**: el eje `INDEX` existe
 desde v1alpha1 y v1alpha8 le movió el sujeto de debajo.
+
+**0008, 0013, 0015 y 0020 son la misma frontera cuatro veces**: `ore` no puede abrir un socket, así
+que leer un origen, correr el circuito Δ, subir un artefacto y atender a un cliente viven fuera. Las
+tres primeras sacaban del compilador algo que tenía que salir; la cuarta lo saca **para que el
+proceso que mira a internet no sea el que decide qué significan las cosas**, que es la propiedad y
+no el efecto secundario.

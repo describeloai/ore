@@ -1,0 +1,22 @@
+[package]
+name    = "ore-serve"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "El plano de control de ORE: atiende a un cliente y delega lo que toca el mundo"
+
+[dependencies]
+# La forma canónica y el analizador, y nada más.
+#
+# **Ni una crate ajena.** No es ascetismo: es que este proceso es el que un día
+# mirará una petición de internet, y `ore-cli/tests/dependencias.rs` explica por
+# qué la superficie de ataque de un binario es una propiedad del artefacto y no
+# una promesa del código. HTTP/1.1 es una línea de petición, unas cabeceras y un
+# cuerpo; `std::net` ya trae el socket.
+#
+# Y JSON no necesita analizador: es un subconjunto de YAML, así que lo lee el
+# mismo que lee un documento OOS. La misma economía que `ore dev`
+# (ADR 0002 · `ore-cli/src/mcp.rs`).
+ore-core = { path = "../ore-core" }

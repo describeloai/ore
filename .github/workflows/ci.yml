@@ -122,6 +122,28 @@ jobs:
           export PATH="$PWD/target/debug:$PATH"
           bash pruebas-de-fuego/descubrimiento.sh
 
+  # El plano de control, contra un servidor de VERDAD. Las 14 pruebas del crate
+  # miran funciones; ninguna puede decir si la puerta es una puerta, porque una
+  # puerta se comprueba empujandola. Esto levanta `ore-serve` en un puerto y le
+  # habla con `curl`.
+  #
+  # Y hay un hecho que solo se puede afirmar aqui: que SIN proveedor de identidad
+  # las rutas de datos no estan. Un defecto permisivo en ese punto no rompe
+  # ninguna prueba unitaria — sirve de mas, en silencio.
+  plano-de-control:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: el servidor atiende, y lo que toca el mundo sigue fuera
+        run: |
+          cargo build --quiet -p ore-cli -p ore-serve
+          bash pruebas-de-fuego/servidor.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:
