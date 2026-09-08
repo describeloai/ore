@@ -114,8 +114,24 @@ CABECERA = """# LOS REALMS — GENERADOS. No se editan aqui.
 #   ore-agente   una cuenta de servicio que pide tokens para esa audiencia
 #   y en `rubix-consola`, el mapeador que mete `ore-serve` en el `aud`
 #
-# Todo lo demas viaja tal cual: AAL2 contra NIST SP 800-63B-4, la politica de
-# clave, los cinco flujos propios, las passkeys y las organizaciones.
+# Todo lo demas viaja tal cual: la politica de clave, los cinco flujos propios,
+# las passkeys y las organizaciones.
+#
+# ── ⛔⛔ Y LO QUE VIAJA RELAJADO, QUE ANTES DECIA AQUI LO CONTRARIO ──────────
+#
+# Esta cabecera afirmaba «AAL2 contra NIST SP 800-63B-4». **No es cierto hoy.**
+# El generador de la plataforma lleva `EXIGIR_SEGUNDO_FACTOR = false` desde el
+# 2026-08-26 —para poder levantar el primer login del prototipo— con fecha de
+# muerte `2026-09-30`, y su propia nota dice la consecuencia entera:
+#
+#   > CONDITIONAL significa exactamente esto: la entrada vuelve a ser de UN
+#   > factor. No es «MFA opcional»: es que el realm ya no opera a AAL2, aunque
+#   > sus atributos lo sigan diciendo.
+#
+# Su repositorio pone `check-entrada` en rojo mientras eso valga `false`. Esa
+# alarma NO viajaba con el artefacto — la deuda cruzo de cluster y perdio su
+# despertador. Ahora la lleva `pruebas-de-fuego/el-segundo-factor.sh`, que avisa
+# mientras quede plazo y se pone ROJO el 2026-09-30.
 #
 # ── ⚠️ Lo que un `KeycloakRealmImport` NO hace ──────────────────────────────
 #

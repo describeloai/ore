@@ -50,12 +50,33 @@ contestan *sus* preguntas (celdas, outbox, facetas).
 | la correspondencia `(emisor, sub) → sujeto opaco`: el sujeto **no es** el `sub` del IdP, está atado a él | `014-sujeto.sql` |
 | la pertenencia sale de la **invitación**, no del IdP: así el plano de control no necesita una credencial de administración del emisor | `021-la-invitacion.sql` |
 | cada acto privilegiado deja **huella**, incluido *mirar* — *«un acto privilegiado sin rastro no es un control»* | `020`, `022` |
-| el papel es sobre un **recurso**, no un rol del realm | `005`, `006`, `019` |
+| el rol es sobre un **recurso**, no un rol del realm | `005`, `006`, `019` |
 | **una migración aplicada es inmutable** — *«lo que corrió y lo que dice el fichero dejan de ser lo mismo»* | `006-dueno.sql` |
 
 Y una que **no** se toma: su `celda` / `ambito_de`. Su ámbito es
 `origen \| contenedor \| dataset`, que es la forma de una AMP. El nuestro es el
 paquete y la vista, y ésos ya viven en la ontología.
+
+## ⭐ Los dos planos, y sus dos vocabularios
+
+`011` y `012` parten en dos lo que era una sola tabla de roles:
+
+| | `iam.rol` · la organización | `iam.rol_de_recurso` · el árbol |
+|---|---|---|
+| sobre qué | personas y permisos | un ámbito de la ontología |
+| quién manda | `dueno` — **UNO**, se traspasa | `owner` — **muchos**, se nombra |
+| qué da | invitar, conceder, traspasar | la **firma** de la certificación |
+| ¿ordenado? | sí: la guarda del rodeo compara alturas | ⛔ **no**, y a propósito |
+
+⛔ La tabla de abajo **no tiene `ordinal`**. `owner` no implica `lector`, y
+escribirlo sería herencia de roles: *«la travesía deja de ser un `JOIN` sobre un
+árbol y empieza a ser un motor de políticas»*. Un ordinal ahí sería esa regla
+implícita escrita en una columna.
+
+⚠️ Y falta la guarda de verdad de `conceder`: *para nombrar owner de un ámbito
+hay que ser owner de ese ámbito, o de uno que lo contenga*. Es una travesía de
+`paquete → vista`, que vive en la forja. Hasta que exista, **`conceder` niega
+`owner`**.
 
 ## La frontera con el gobierno del flujo
 

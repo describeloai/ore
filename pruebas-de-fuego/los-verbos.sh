@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# LOS CUATRO VERBOS, contra un Postgres de verdad y con tokens de verdad.
+#
+# ── ⛔ Por qué esto existe y no bastaba el Job del clúster ──────────────────
+#
+# `malla/98-los-cuatro-verbos.yaml` fija lo mismo, y muy bien — pero se corre A
+# MANO, contra un clúster que hay que tener en pie. ⇒ el día que alguien rompa
+# la guarda del rodeo, **nada se pone rojo**. Un control que sólo se ejerce
+# cuando alguien se acuerda no es un control: es una costumbre.
+#
+# Aquí no hay clúster, ni Keycloak, ni red: un Postgres, el binario, y tokens
+# acuñados en el sitio con la misma llave fija que `servidor-oidc.sh`.
+#
+# ── Lo que fija ────────────────────────────────────────────────────────────
+#
+#   1  sin token                        401
+#   2  con token                        solo SUS organizaciones
+#   3  invitar                          el vale, UNA vez, y no vuelve a salir
+#   4  invitar a `dueno`                SE NIEGA  ← un vale que nadie canjearia
+#   5  ⭐ otorgar POR ENCIMA de uno mismo  SE NIEGA  ← el rodeo
+#   6  conceder `lector` · revocar · revocar otra vez
+#   7  conceder `owner`                 SE NIEGA  ← falta la travesia del arbol
+#   8  admitir con otro correo          SE NIEGA
+#   9  y MIRAR tambien deja huella
+#
+# El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es `dueno`,
+# el papel mas alto, asi que la guarda del rodeo **nunca llega a morder**. Aqui
+# se funda una segunda organizacion con un administrador de verdad para que
+# muerda.
+#
+# ⚠️ Dos formas de nombrar la misma base, y hacen falta las dos: `PG_URL` la usa
+#   `psql` aqui, y `iam/migrar.sh` lee las `PG*` de siempre. Unificarlas seria
+#   parsear una URL en bash, que es mas facil de romper que de escribir.
+#
+#   PG_URL=postgres://postgres:x@localhost:5432 #   PGHOST=localhost PGUSER=postgres PGPASSWORD=x #     bash pruebas-de-fuego/los-verbos.sh
+set -u
+
+RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
+PUERTO="${PUERTO:-8903}"
+BASE="http://127.0.0.1:$PUERTO"
+PG_URL="${PG_URL:-postgres://postgres:x@localhost:5432}"
+TMP="$(mktemp -d)"
+SRV=""
+
+falla() { echo "✗ $*" >&2; [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; exit 1; }
+dice()  { echo "  · $*"; }
+limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
+trap limpiar EXIT
+
+buscar() {
+  local n
+  for n in "$RAIZ/target/release/$1" "$RAIZ/target/debug/$1"; do
+    [ -x "$n" ] && { echo "$n"; return 0; }
+  done
+  return 1
+}
+IAM="$(buscar ore-iam)" || falla "no hay binario de \`ore-iam\`"
+PY=$(command -v python3 || command -v python) || falla "hace falta python"
+command -v psql >/dev/null || falla "hace falta psql"
+
+EMISOR="https://login.paladio.io/realms/rubix"
+AUDIENCIA="ore-serve"
+
+# ── La base ─────────────────────────────────────────────────────────────────
+# Se tira y se rehace: una prueba que depende de lo que dejo la anterior no fija
+# nada, fija el orden en que se corrieron.
+psql "$PG_URL/postgres" -qtAc "drop database if exists iam_prueba" >/dev/null 2>&1
+psql "$PG_URL/postgres" -qtAc "create database iam_prueba" >/dev/null 2>&1 \
+  || falla "no se pudo crear la base de prueba"
+URL="$PG_URL/iam_prueba"
+
+PGDATABASE=iam_prueba bash "$RAIZ/iam/migrar.sh" > "$TMP/migrar.txt" 2>&1 \
+  || falla "las migraciones fallaron: $(tail -5 "$TMP/migrar.txt")"
+dice "$(grep -c '^·' "$TMP/migrar.txt" || echo 0) migraciones aplicadas"
+
+# ── La casa de la moneda ────────────────────────────────────────────────────
+# La misma llave y el mismo argumento que `servidor-oidc.sh`: firmar
+# RSA-PKCS1v15 es rellenar un bloque y elevar a `d`, y no traer una biblioteca
+# es lo que hace que esto corra donde corra el runner.
+cat > "$TMP/acunar.py" <<'PYCODE'
+# -*- coding: utf-8 -*-
+import base64, hashlib, json, sys
+
+N = 98108802788390257451427544537569571344186445898290802556306202303563898746153694624427727358963513671154354914513738651625770608698713459103692963416659567693829394560290454767975140775489577446428399646018299491037316206274830556376268979724700474004190230381644330590836431547957441542425447960647896094871
+D = 58486241606109815346595400118075370902635461720864906313568320457114881061285666040279031389708798321838495691825034032384259760307155288367215166817606418492512751565372832090822858982082061256407746822196621146620704044182961301819536667603341097088576106781350305670874531525425729267744540582701760709001
+E = 65537
+K = (N.bit_length() + 7) // 8
+PREFIJO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def b64(b):
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def firmar(m):
+    t = PREFIJO + hashlib.sha256(m).digest()
+    em = b"\x00\x01" + b"\xff" * (K - len(t) - 3) + b"\x00" + t
+    return pow(int.from_bytes(em, "big"), D, N).to_bytes(K, "big")
+
+
+if sys.argv[1] == "jwks":
+    print(json.dumps({"keys": [{
+        "kty": "RSA", "use": "sig", "kid": "k1", "alg": "RS256",
+        "n": b64(N.to_bytes(K, "big")), "e": b64(E.to_bytes(3, "big")),
+    }]}))
+    raise SystemExit(0)
+
+sub, correo, emisor, audiencia, ahora = sys.argv[1:6]
+cabeza = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
+cuerpo = {"iss": emisor, "aud": audiencia, "sub": sub, "email": correo,
+          "exp": int(ahora) + 300, "iat": int(ahora)}
+f = (b64(json.dumps(cabeza).encode()) + "." + b64(json.dumps(cuerpo).encode())).encode()
+print(f.decode() + "." + b64(firmar(f)))
+PYCODE
+
+"$PY" "$TMP/acunar.py" jwks > "$TMP/jwks.json" || falla "no se pudo escribir el JWKS"
+AHORA=$(date +%s)
+acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
+
+# ── Dos organizaciones, y la segunda con un ADMINISTRADOR ───────────────────
+#
+# ⭐ La segunda existe sólo para que el rodeo se pueda medir: `fundar` deja
+#   `dueno`, y un dueño no puede otorgar por encima de sí mismo porque no hay
+#   encima. Sin un administrador de verdad, la guarda es código que nadie ha
+#   visto correr.
+export IAM_URL="$URL"
+"$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
+  --correo "ada@paladio.io" >/dev/null 2>&1 || falla "\`fundar acme\` fallo"
+"$IAM" fundar --organizacion otra --emisor "$EMISOR" --sub "persona:zoe" \
+  --correo "zoe@paladio.io" >/dev/null 2>&1 || falla "\`fundar otra\` fallo"
+dice "dos organizaciones fundadas"
+
+ORG=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='acme'")
+[ -n "$ORG" ] || falla "no se encontro la organizacion"
+
+# Ada funda; Bea entrara despues por la puerta de siempre: un vale.
+ADA=$(acunar "persona:ada" "ada@paladio.io")
+
+"$IAM" servir --bind "127.0.0.1:$PUERTO" --identidad oidc \
+  --emisor "$EMISOR" --audiencia "$AUDIENCIA" --jwks "$TMP/jwks.json" \
+  > "$TMP/arranque.txt" 2>&1 &
+SRV=$!
+for _ in $(seq 1 60); do
+  curl -s -o /dev/null "$BASE/salud" && break
+  sleep 0.25
+done
+curl -sf "$BASE/salud" >/dev/null || falla "el servidor no arranco: $(cat "$TMP/arranque.txt")"
+
+pide() { # metodo ruta token [cuerpo]
+  if [ $# -ge 4 ]; then
+    curl -s -o "$TMP/r.json" -w '%{http_code}' -X "$1" \
+      -H "Authorization: Bearer $3" -H 'Content-Type: application/json' \
+      -d "$4" "$BASE$2"
+  else
+    curl -s -o "$TMP/r.json" -w '%{http_code}' -X "$1" \
+      -H "Authorization: Bearer $3" "$BASE$2"
+  fi
+}
+sin_token() { curl -s -o /dev/null -w '%{http_code}' "$BASE$1"; }
+campo() { "$PY" -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "$TMP/r.json" "$1"; }
+
+# ── 1 · sin token ───────────────────────────────────────────────────────────
+[ "$(sin_token /organizaciones)" = "401" ] || falla "1 · sin token no dio 401"
+dice "1 · sin token · 401"
+
+# ── 2 · sólo SUS organizaciones ─────────────────────────────────────────────
+[ "$(pide GET /organizaciones "$ADA")" = "200" ] || falla "2 · no pudo listar"
+grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
+grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
+dice '2 · ve `acme` y NO ve `otra`'
+
+# ── 3 · invitar, y el vale sale UNA vez ─────────────────────────────────────
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
+      '{"correo":"Bea@Paladio.IO","rol":"administrador"}')" = "200" ] \
+  || falla "3 · invitar fallo: $(cat "$TMP/r.json")"
+VALE_BEA=$(campo vale)
+[ -n "$VALE_BEA" ] || falla "3 · no devolvio vale"
+dice "3 · invitada, y el vale salio una vez"
+
+[ "$(pide GET "/organizaciones/$ORG/invitaciones" "$ADA")" = "200" ] || falla "3 · no listo"
+grep -q "$VALE_BEA" "$TMP/r.json" && falla "3 · ⛔ EL LISTADO DEVUELVE EL VALE. Listar seria una forma de conseguirlos"
+grep -q '"correo":"bea@paladio.io"' "$TMP/r.json" || falla "3 · el correo no se plego"
+dice "3 · el listado no lleva el vale, y el correo se guardo plegado"
+
+# ── 4 · invitar a `dueno` ───────────────────────────────────────────────────
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
+      '{"correo":"c@paladio.io","rol":"dueno"}')" = "422" ] \
+  || falla "4 · ⛔ SE PUEDE INVITAR A UN DUEÑO. Ese vale no lo podria canjear nadie"
+grep -q "traspasarla" "$TMP/r.json" || falla "4 · se niega sin decir por que"
+dice '4 · a `dueno` no se invita, y lo dice'
+
+# ── 5 · ⭐ EL RODEO ─────────────────────────────────────────────────────────
+# Bea redime su vale y queda como `administrador`. Desde ahi intenta lo que la
+# plataforma escribio con la cicatriz al lado.
+BEA=$(acunar "persona:bea" "bea@paladio.io")
+[ "$(pide POST /invitaciones/admitir "$BEA" "{\"vale\":\"$VALE_BEA\"}")" = "200" ] \
+  || falla "5 · Bea no pudo entrar: $(cat "$TMP/r.json")"
+[ "$(campo rol)" = "administrador" ] || falla "5 · entro con otro rol"
+
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$BEA" \
+      '{"correo":"complice@paladio.io","rol":"dueno"}')" = "422" ] \
+  || falla "5 · ⛔ UN ADMINISTRADOR OTORGA POR ENCIMA DE SI MISMO. Eso es escalada de privilegio con forma de cortesia"
+dice '5 · la guarda del rodeo muerde: un administrador no otorga `dueno`'
+
+# ── 6 · conceder y revocar ──────────────────────────────────────────────────
+[ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
+      '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"lector"}')" = "200" ] \
+  || falla "6 · conceder fallo: $(cat "$TMP/r.json")"
+CON=$(campo concesion)
+[ "$(pide POST "/concesiones/$CON/revocar" "$ADA")" = "200" ] || falla "6 · revocar fallo"
+[ "$(pide POST "/concesiones/$CON/revocar" "$ADA")" = "422" ] || falla "6 · se revoco dos veces"
+VIVAS=$(psql "$URL" -qtAc "select count(*) from iam.concesion_viva")
+TODAS=$(psql "$URL" -qtAc "select count(*) from iam.concesion")
+[ "$VIVAS" = "0" ] && [ "$TODAS" = "1" ] \
+  || falla "6 · revocar BORRO la fila ($TODAS en la tabla). Sin ella, «nunca tuvo permiso» y «se lo quitamos» son indistinguibles"
+dice "6 · concedida, revocada, y la fila sigue: $TODAS en la tabla · $VIVAS vivas"
+
+# ── 7 · conceder `owner` ────────────────────────────────────────────────────
+[ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
+      '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"owner"}')" = "422" ] \
+  || falla '7 · ⛔ SE CONCEDIO `owner` SIN LA TRAVESIA. Nombrar owner exige ser owner del ambito'
+grep -q "travesia" "$TMP/r.json" || falla "7 · se niega sin decir por que"
+dice '7 · `owner` se niega mientras falte la travesia del arbol'
+
+# ── 8 · admitir con otro correo ─────────────────────────────────────────────
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
+      '{"correo":"dani@paladio.io","rol":"miembro"}')" = "200" ] || falla "8 · no se pudo invitar"
+VALE_D=$(campo vale)
+[ "$(pide POST /invitaciones/admitir "$BEA" "{\"vale\":\"$VALE_D\"}")" = "422" ] \
+  || falla "8 · ⛔ UN VALE AJENO SE REDIMIO. Eso es un traspaso que nadie autorizo"
+dice "8 · un vale de otro no sirve"
+
+# ── 9 · y mirar deja huella ─────────────────────────────────────────────────
+# La idea de su `022`: la potestad mas barata del catalogo es tambien la mas
+# intima. Un verbo de lectura sin rastro es un agujero con forma de optimizacion.
+MIRO=$(psql "$URL" -qtAc "select count(*) from iam.huella where accion = 'organizacion:listar'")
+[ "${MIRO:-0}" -ge 1 ] || falla "9 · ⛔ LISTAR NO DEJO HUELLA"
+TOTAL=$(psql "$URL" -qtAc "select count(*) from iam.huella")
+dice "9 · $TOTAL huellas, $MIRO de ellas por MIRAR"
+
+echo "✓ los cuatro verbos, sus dos negativas y el rodeo."

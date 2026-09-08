@@ -139,6 +139,12 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
 
+      # ⛔ La deuda del segundo factor, con su despertador. Hoy AVISA: el realm
+      # opera a UN factor a proposito y con fecha. El 2026-09-30 este paso se
+      # pone rojo solo, que es la diferencia entre una deuda y un olvido.
+      - name: y el segundo factor sigue teniendo plazo
+        run: bash pruebas-de-fuego/el-segundo-factor.sh
+
       - name: el servidor atiende, y lo que toca el mundo sigue fuera
         run: |
           cargo build --quiet -p ore-cli -p ore-serve
@@ -167,6 +173,45 @@ jobs:
       # antes de que nadie lo note en produccion.
       - name: y el cliente puede irse
         run: bash pruebas-de-fuego/la-mudanza.sh
+
+  # ⭐ LOS VERBOS DEL PLANO DE IDENTIDAD. Lo mismo que fija
+  # `malla/98-los-cuatro-verbos.yaml`, pero SIN un cluster que alguien tenga que
+  # tener en pie: un control que solo se ejerce cuando alguien se acuerda no es
+  # un control, es una costumbre.
+  #
+  # Y fija una cosa que el Job del cluster NO puede: alli el sujeto es `dueno`,
+  # asi que la guarda del rodeo nunca llega a morder. Aqui hay un administrador
+  # de verdad intentando otorgar por encima de si mismo.
+  los-verbos:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: los cuatro verbos, sus negativas y el rodeo
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: x
+        run: |
+          cargo build --quiet -p ore-iam
+          bash pruebas-de-fuego/los-verbos.sh
 
   fuentes-reales:
     runs-on: ubuntu-24.04

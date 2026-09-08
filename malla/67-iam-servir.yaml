@@ -8,15 +8,20 @@
 #
 #   invitar    emite un vale · exige `administrador` · no por encima de uno mismo
 #   admitir    redime un vale · el correo del token tiene que ser el del vale
-#   conceder   un papel sobre un recurso · misma guarda
+#   conceder   un rol DE RECURSO · `lector` si; `owner` todavia no
 #   revocar    y NO borra
 #
 # ── ⭐ La guarda que no es obvia ────────────────────────────────────────────
 #
-# **Nadie puede otorgar un papel más alto que el suyo.** Sin ella, `invitar` es
+# **Nadie puede otorgar un rol más alto que el suyo.** Sin ella, `invitar` es
 # una escalada de privilegio con forma de cortesía: un administrador invita a un
 # cómplice como dueño y tiene por un rodeo lo que no se le da de frente. El
 # motivo es suyo —`021-la-invitacion.sql`— y la cicatriz también.
+#
+# ⛔ Y desde la `011` esa guarda es SÓLO del plano de arriba. Abajo no hay
+# altura que comparar —`owner` no implica `lector`— y lo que gobierna es ser
+# owner del ámbito: una travesía del árbol que todavía no existe, así que
+# `conceder` niega `owner` y dice por qué.
 apiVersion: v1
 kind: Service
 metadata:

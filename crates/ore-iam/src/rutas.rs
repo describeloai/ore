@@ -108,7 +108,7 @@ impl Servidor {
             // ⛔ Sólo las SUYAS. Un listado que devolviera todas sería una fuga
             //   con forma de comodidad, y la consola no sabría que la tuvo.
             let filas = tx.filas(
-                "select o.id, o.nombre, o.estado, pe.papel
+                "select o.id, o.nombre, o.estado, pe.rol
                    from iam.organizacion o
                    join iam.pertenencia pe on pe.organizacion = o.id
                    join iam.persona     p  on p.id = pe.persona
@@ -123,7 +123,7 @@ impl Servidor {
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("estado", Json::s(f.get::<_, String>(2))),
-                        ("papel", Json::s(f.get::<_, String>(3))),
+                        ("rol", Json::s(f.get::<_, String>(3))),
                     ])
                 })
                 .collect();
@@ -144,7 +144,7 @@ impl Servidor {
             //   forma de conseguir vales — es justo la propiedad que la `010`
             //   compró al separar el `id` del vale.
             let filas = tx.filas(
-                "select id, correo, papel, estado, emitida_en, caduca_en
+                "select id, correo, rol, estado, emitida_en, caduca_en
                    from iam.invitacion_estado
                   where organizacion = $1 order by emitida_en desc",
                 &[&org],
@@ -155,7 +155,7 @@ impl Servidor {
                     Json::obj([
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("correo", Json::s(f.get::<_, String>(1))),
-                        ("papel", Json::s(f.get::<_, String>(2))),
+                        ("rol", Json::s(f.get::<_, String>(2))),
                         ("estado", Json::s(f.get::<_, String>(3))),
                     ])
                 })
@@ -176,8 +176,8 @@ impl Servidor {
         self.en_transaccion(s, move |tx, emisor| {
             let c = analizar(&cuerpo)?;
             let correo = campo(&c, "correo").ok_or("falta `correo`")?;
-            let papel = campo(&c, "papel").ok_or("falta `papel`")?;
-            verbos::invitar(tx, s, emisor, &org, &correo, &papel, DIAS_DE_LA_INVITACION)
+            let rol = campo(&c, "rol").ok_or("falta `rol`")?;
+            verbos::invitar(tx, s, emisor, &org, &correo, &rol, DIAS_DE_LA_INVITACION)
         })
     }
 
@@ -196,7 +196,7 @@ impl Servidor {
             let c = analizar(&cuerpo)?;
             let a = campo(&c, "sujeto").ok_or("falta `sujeto`")?;
             let r = campo(&c, "recurso").ok_or("falta `recurso`")?;
-            let p = campo(&c, "papel").ok_or("falta `papel`")?;
+            let p = campo(&c, "rol").ok_or("falta `rol`")?;
             verbos::conceder(tx, s, emisor, &org, &a, &r, &p)
         })
     }

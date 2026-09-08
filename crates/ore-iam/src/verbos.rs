@@ -41,12 +41,12 @@ pub fn invitar(
     emisor: &str,
     org: &str,
     correo: &str,
-    papel: &str,
+    rol: &str,
     dias: i64,
 ) -> Result<Json, String> {
     let mio = potestad::exige(tx, emisor, quien(sujeto), org, "administrador")?;
-    let ord = potestad::ordinal_de(tx, papel)?;
-    potestad::no_por_encima(&mio, papel, ord)?;
+    let ord = potestad::ordinal_de(tx, rol)?;
+    potestad::no_por_encima(&mio, rol, ord)?;
 
     // ⛔⛔ Y a `dueno` NO se invita. Lo descubrio la prueba: la guarda del
     //   rodeo deja pasar «un dueño invita a otro dueño» —no es por encima de
@@ -59,9 +59,12 @@ pub fn invitar(
     //   invitar. `002-el-papel.sql` ya lo dice — «dueno: ademas TRASPASA» —, y
     //   traspasar es un verbo que todavia no existe. Mejor negarlo con su
     //   motivo que emitir algo que no sirve.
-    if papel == "dueno" {
-        return Err("no se invita a `dueno`: una organizacion tiene UNO, y cambiarlo                     es traspasarla, no invitar. Ese verbo todavia no existe"
-            .into());
+    if rol == "dueno" {
+        return Err(concat!(
+            "no se invita a `dueno`: una organizacion tiene UNO, y cambiarlo ",
+            "es traspasarla, no invitar. Ese verbo todavia no existe"
+        )
+        .into());
     }
 
     // El correo es una CITA, no una identidad: se pliega. El `sub` NO se
@@ -78,17 +81,9 @@ pub fn invitar(
     let quien_id = persona_id(tx, emisor, quien(sujeto))?;
     tx.ejecutar(
         "insert into iam.invitacion
-           (id, organizacion, correo, papel, invito, caduca_en, vale_resumen)
+           (id, organizacion, correo, rol, invito, caduca_en, vale_resumen)
          values ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval, $7)",
-        &[
-            &id,
-            &org,
-            &correo,
-            &papel,
-            &quien_id,
-            &dias.to_string(),
-            &res,
-        ],
+        &[&id, &org, &correo, &rol, &quien_id, &dias.to_string(), &res],
     )?;
     tx.anotar(
         "invitacion:emitir",
@@ -96,13 +91,13 @@ pub fn invitar(
         Json::obj([
             ("organizacion", Json::s(org)),
             ("correo", Json::s(&correo)),
-            ("papel", Json::s(papel)),
+            ("rol", Json::s(rol)),
         ]),
     )?;
 
     Ok(Json::obj([
         ("invitacion", Json::s(id)),
-        ("papel", Json::s(papel)),
+        ("rol", Json::s(rol)),
         // ⚠️ La UNICA vez que este valor existe fuera de un correo.
         ("vale", Json::s(vale)),
         (
@@ -123,7 +118,7 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
     let res = resumen(vale);
     let f = tx
         .uno(
-            "select id, organizacion, correo, papel,
+            "select id, organizacion, correo, rol,
                     (revocada_en is not null) as revocada,
                     (redimida_en is not null) as redimida,
                     (caduca_en < now())       as caducada
@@ -134,7 +129,7 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
         // confirma a quien prueba vales cuáles sí.
         .ok_or("ese vale no sirve")?;
 
-    let (id, org, correo, papel): (String, String, String, String) =
+    let (id, org, correo, rol): (String, String, String, String) =
         (f.get(0), f.get(1), f.get(2), f.get(3));
     if f.get::<_, bool>(4) || f.get::<_, bool>(5) || f.get::<_, bool>(6) {
         return Err("ese vale no sirve".into());
@@ -153,9 +148,9 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
     let persona = crear_o_hallar(tx, emisor, quien(sujeto), Some(&correo))?;
 
     tx.ejecutar(
-        "insert into iam.pertenencia (persona, organizacion, papel) values ($1, $2, $3)
+        "insert into iam.pertenencia (persona, organizacion, rol) values ($1, $2, $3)
          on conflict (persona, organizacion) do nothing",
-        &[&persona, &org, &papel],
+        &[&persona, &org, &rol],
     )?;
     tx.ejecutar(
         "update iam.invitacion set redimida_en = now(), redimio = $2 where id = $1",
@@ -167,25 +162,38 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
         Json::obj([
             ("organizacion", Json::s(&org)),
             ("persona", Json::s(&persona)),
-            ("papel", Json::s(&papel)),
+            ("rol", Json::s(&rol)),
         ]),
     )?;
 
     Ok(Json::obj([
         ("organizacion", Json::s(org)),
         ("persona", Json::s(persona)),
-        ("papel", Json::s(papel)),
+        ("rol", Json::s(rol)),
     ]))
 }
 
 // ── conceder ────────────────────────────────────────────────────────────────
 
-/// Concede un papel sobre un recurso.
+/// Concede un rol **de recurso** sobre un recurso.
 ///
 /// ⛔⛔ Y aquí va escrito lo que quien implemente el decisor no puede olvidar:
 /// **la concesión puede NEGAR, no puede conceder por encima del conducto.** Una
 /// fila de esta tabla que ensanchara lo que el retículo de la ontología cerró
 /// convertiría el gobierno del flujo en una sugerencia.
+///
+/// # ⛔ Y por qué `owner` se niega hoy
+///
+/// La guarda de verdad es de `modelo/puerta/dueno.mjs`: *«para nombrar dueño de
+/// un ámbito hay que ser dueño de ese ámbito — y por el cierre reflexivo, serlo
+/// de cualquiera que lo contenga sirve»*. Eso es **una travesía del árbol**, y
+/// nuestro árbol es `paquete → vista` y vive en la forja: `ore-iam` todavía no
+/// habla con él.
+///
+/// Mientras no exista esa travesía, la única guarda posible sería «eres
+/// administrador», que es más ancha que la correcta — un administrador podría
+/// nombrar owner de cualquier cosa. ⇒ se niega. **Omitir es cerrar, no abrir**,
+/// y es la misma respuesta que `invitar` le da a `dueno`.
 #[allow(clippy::too_many_arguments)]
 pub fn conceder(
     tx: &mut Tx,
@@ -194,18 +202,27 @@ pub fn conceder(
     org: &str,
     a_quien: &str,
     recurso: &str,
-    papel: &str,
+    rol: &str,
 ) -> Result<Json, String> {
-    let mio = potestad::exige(tx, emisor, quien(sujeto), org, "administrador")?;
-    let ord = potestad::ordinal_de(tx, papel)?;
-    potestad::no_por_encima(&mio, papel, ord)?;
+    potestad::exige(tx, emisor, quien(sujeto), org, "administrador")?;
+    // ⛔ Contra la tabla del plano de ABAJO, que no tiene ordinal: `owner` no
+    //   implica `lector`, asi que no hay altura que comparar. Ver la `011`.
+    potestad::rol_de_recurso(tx, rol)?;
+    if rol == "owner" {
+        return Err(
+            "todavia no se concede `owner`: nombrarlo exige ser owner de ese \
+                    ambito o de uno que lo contenga, y esa travesia del arbol no \
+                    existe aun. Omitir es cerrar, no abrir"
+                .into(),
+        );
+    }
 
     let id = nuevo_id("con");
     let quien_id = persona_id(tx, emisor, quien(sujeto))?;
     tx.ejecutar(
-        "insert into iam.concesion (id, sujeto, recurso, papel, concedio, organizacion)
+        "insert into iam.concesion (id, sujeto, recurso, rol, concedio, organizacion)
          values ($1, $2, $3, $4, $5, $6)",
-        &[&id, &a_quien, &recurso, &papel, &quien_id, &org],
+        &[&id, &a_quien, &recurso, &rol, &quien_id, &org],
     )?;
     tx.anotar(
         "concesion:conceder",
@@ -214,7 +231,7 @@ pub fn conceder(
             ("organizacion", Json::s(org)),
             ("sujeto", Json::s(a_quien)),
             ("recurso", Json::s(recurso)),
-            ("papel", Json::s(papel)),
+            ("rol", Json::s(rol)),
         ]),
     )?;
     Ok(Json::obj([("concesion", Json::s(id))]))
@@ -304,7 +321,7 @@ mod pruebas {
     /// La guarda del rodeo, que es la razon de que `potestad` exista.
     #[test]
     fn nadie_otorga_por_encima_de_si_mismo() {
-        let admin = potestad::Papel {
+        let admin = potestad::Rol {
             nombre: "administrador".into(),
             ordinal: 3,
         };

@@ -7,6 +7,7 @@
 #   3  invitar                            emite un vale, y lo devuelve UNA vez
 #   4  invitar por encima de uno mismo    SE NIEGA  ← el rodeo
 #   5  conceder y revocar                 y revocar NO borra
+#  5b  conceder `owner`                  SE NIEGA  ← falta la travesia del arbol
 #   6  admitir con otro correo            SE NIEGA
 #   7  y todo dejó huella, incluido MIRAR
 #
@@ -62,28 +63,35 @@ spec:
               echo
               echo "### 3 · invitar a un miembro"
               curl -s -o /tmp/inv.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
-                -d '{"correo":"Nuevo@Paladio.IO","papel":"miembro"}' \
+                -d '{"correo":"Nuevo@Paladio.IO","rol":"miembro"}' \
                 "$IAM/organizaciones/$ORG/invitaciones"
               VALE=$(python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print(d.get("vale",""))')
-              python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print("  invitacion",d.get("invitacion"),"· papel",d.get("papel"))'
+              python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print("  invitacion",d.get("invitacion"),"· rol",d.get("rol"))'
 
               echo
               echo "### 4 · invitar a un DUENO: se niega"
               curl -s -o /tmp/mal.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
-                -d '{"correo":"complice@paladio.io","papel":"dueno"}' \
+                -d '{"correo":"complice@paladio.io","rol":"dueno"}' \
                 "$IAM/organizaciones/$ORG/invitaciones"
               head -c 220 /tmp/mal.json; echo
 
               echo
               echo "### 5 · conceder y revocar"
               curl -s -o /tmp/con.json -w '  conceder http %{http_code}\n' -X POST -H "$A" -H "$J" \
-                -d '{"sujeto":"per_x","recurso":"ventas.Clientes","papel":"lector"}' \
+                -d '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"lector"}' \
                 "$IAM/organizaciones/$ORG/concesiones"
               C=$(python3 -c 'import json;print(json.load(open("/tmp/con.json")).get("concesion",""))')
               curl -s -o /dev/null -w '  revocar  http %{http_code}\n' -X POST -H "$A" \
                 "$IAM/concesiones/$C/revocar"
               curl -s -o /dev/null -w '  revocar otra vez http %{http_code}\n' -X POST -H "$A" \
                 "$IAM/concesiones/$C/revocar"
+
+              echo
+              echo "### 5b · conceder OWNER: se niega, y dice por que"
+              curl -s -o /tmp/own.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
+                -d '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"owner"}' \
+                "$IAM/organizaciones/$ORG/concesiones"
+              head -c 240 /tmp/own.json; echo
 
               echo
               echo "### 6 · admitir con un token que no lleva ese correo"
