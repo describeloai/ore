@@ -1,0 +1,287 @@
+# La forja: **donde vive el árbol**, y por qué es esto y no un volumen.
+#
+# ── Lo que la medida dijo ────────────────────────────────────────────────────
+#
+# `pruebas-de-fuego/medida-donde-vive-el-arbol.py`, contra un árbol inducido de
+# verdad —200 tablas × 12 columnas—:
+#
+#   603 documentos · 467 KB el árbol · 280 KB el `.git` con dos commits
+#
+# La historia entera cuesta MENOS que el árbol. Cien inquilinos de mil tablas
+# caben en 228 MB, y el disco más pequeño que se puede pedir son 10 GiB.
+#
+# ⇒ **La capacidad no decide nada.** Deciden los mínimos y lo que hay que poder
+# DECIR del árbol, y cada hecho medido tacha una opción:
+#
+#   el árbol no llega al MB        → Filestore, con su mínimo de 1 TiB
+#   `jobs-p` escala de 0 a 3       → el PVC `ReadWriteOnce`, que monta un nodo
+#   ninguna clase tiene `Retain`   → cualquier PVC sin una clase escrita a mano
+#   faltan los CSI de Filestore    → las dos opciones de fichero compartido
+#   «quién cambió qué» falta       → todo lo que obligue a un registro aparte
+#   `ore diff` necesita DOS        → todo lo que guarde sólo el estado de ahora
+#
+# Y git no gana por eliminación: gana porque **no necesita un sistema de
+# ficheros compartido**. Cada Job clona y empuja, así que `ReadWriteOnce` contra
+# `ReadWriteMany` deja de ser una pregunta. Lo único compartido es esto, que
+# tiene un escritor por diseño: una referencia se actualiza de forma atómica y
+# un empujón que no avanza se RECHAZA.
+#
+# ── Por qué una FORJA y no repositorios pelados ──────────────────────────────
+#
+# Un `git init --bare` por inquilino serviría para guardar. No sirve para
+# **gestionar**: no hay API para crear el repositorio del inquilino que acaba de
+# darse de alta, no hay organizaciones, no hay tokens con alcance, no hay
+# webhooks —que son el disparo del reconciliador que hoy falta— y no hay quién
+# diga qué persona hizo qué sin que alguien lo escriba aparte.
+#
+# Forgejo, y las tres razones son medidas:
+#
+#   1. CABE. GitLab CE pide 4-8 GB de RAM y ocho vCPU; el nodo estable de este
+#      clúster tiene 1930m de CPU con el 71% ya pedido. Forgejo corre en 512 MB.
+#   2. HABLA OIDC, así que el plano de identidad que ya existe —Keycloak, realm
+#      `rubix`, `login.paladio.io`— no se bifurca. **Hoy no está enchufado**, y
+#      eso se dice: es el paso siguiente, no una promesa de este fichero.
+#   3. Es AGPL y de una fundación sin ánimo de lucro. La plataforma entera se
+#      apoya en esto; que no se pueda relicenciar por debajo importa.
+#
+# ── ⚠️ La imagen viene de codeberg, y NO debería ─────────────────────────────
+#
+# `jobs-p` tiene `enablePrivateNodes: true` y **no hay Cloud NAT**. Un pod ahí
+# sólo alcanza las APIs de Google por Private Google Access, así que una imagen
+# de `codeberg.org` no se puede bajar. Esto arranca hoy porque el `nodeSelector`
+# lo ancla al `default-pool`, que sí tiene IP pública.
+#
+# **Eso es una atadura, no una solución.** Mientras la imagen venga de fuera:
+#
+#   · la forja no puede correr en el pool privado, y el ancla es lo único que
+#     lo impide — no una propiedad, una etiqueta;
+#   · si codeberg no responde el día de un reinicio, la forja no vuelve.
+#
+# Lo correcto es espejarla en Artifact Registry, como `ore` y `ore-drivers`. Se
+# intentó con Cloud Build y el API, recién habilitada, todavía contesta
+# `SERVICE_DISABLED` — es propagación del agente de servicio, no un permiso.
+# Queda pendiente y con nombre:
+#
+#     gcloud builds submit --tag \
+#       europe-west1-docker.pkg.dev/<proyecto>/ore/forgejo:15 .   # FROM codeberg…
+#
+# y entonces esta línea cambia y el `nodeSelector` deja de ser lo que sostiene
+# el arranque.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forja
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: forja
+---
+# ── El disco que NO se borra ────────────────────────────────────────────────
+#
+# Ninguna de las cuatro clases del clúster retiene: `standard`, `standard-rwo`,
+# `premium-rwo` y `dynamic-rwo` **borran el disco al borrar el claim**. Para el
+# árbol de un cliente eso significa que un `kubectl delete pvc` se lleva su
+# ontología, y no hace falta tocar el disco.
+#
+# La plataforma ya se encontró con esta trampa en su grafo, y lo dejó escrito:
+# *«este script NUNCA borra nada… si algún día metes un `delete` aquí, estás a
+# un typo de perder el grafo»*. Aquí se arregla antes: la clase RETIENE, así que
+# borrar el claim deja el `PersistentVolume` huérfano y **el disco vivo**.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: retiene
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: forja-datos
+  namespace: forja
+spec:
+  storageClassName: retiene
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      # El mínimo que se puede pedir. Y sobra por cuatro órdenes de magnitud:
+      # el árbol de 200 tablas con su historia son 750 KB.
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forja
+  namespace: forja
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forja
+  namespace: forja
+spec:
+  selector:
+    ore.dev/rol: forja
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+# ── El servidor ─────────────────────────────────────────────────────────────
+#
+# Un `StatefulSet` y no un `Deployment`, y no por el nombre estable: porque el
+# volumen es `ReadWriteOnce` y un `Deployment` con la estrategia por defecto
+# arranca el pod nuevo ANTES de matar al viejo — los dos quieren el mismo disco
+# y el despliegue se queda colgado. `StatefulSet` con `replicas: 1` mata primero.
+#
+# Y una réplica **es correcto, no una limitación aceptada**: un servidor de git
+# con dos escritores sobre el mismo disco no es más disponible, es dos.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forja
+  namespace: forja
+spec:
+  serviceName: forja
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: forja
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: forja
+        ore.dev/tenant: system
+    spec:
+      serviceAccountName: forja
+      # En el pool estable. `jobs-p` escala a cero, y una forja que desaparece
+      # cuando no hay trabajos no es donde vive nada.
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: forgejo
+          image: codeberg.org/forgejo/forgejo:15.0.7
+          ports:
+            - containerPort: 3000
+          env:
+            # SQLite sobre el disco. Es lo correcto AHORA y se dice por qué: un
+            # árbol son kilobytes y los escritores son uno. El día que la
+            # plataforma tenga su Cloud SQL —donde ya viven las concesiones— la
+            # base de la forja se muda ahí, y es un cambio de tres variables.
+            - { name: FORGEJO__database__DB_TYPE, value: sqlite3 }
+            - { name: FORGEJO__server__ROOT_URL, value: "http://forja.forja.svc.cluster.local:3000/" }
+            - { name: FORGEJO__server__DOMAIN, value: forja.forja.svc.cluster.local }
+            - { name: FORGEJO__server__HTTP_PORT, value: "3000" }
+            # SSH apagado: se habla por HTTP con un token de alcance, que es lo
+            # que un Job puede recibir sin que nadie gestione claves.
+            - { name: FORGEJO__server__DISABLE_SSH, value: "true" }
+            # NADIE se registra solo. Esto no es un servicio público: los
+            # sujetos los pone el plano de identidad, y hasta que OIDC esté
+            # enchufado los pone un administrador a mano.
+            - { name: FORGEJO__service__DISABLE_REGISTRATION, value: "true" }
+            - { name: FORGEJO__service__REQUIRE_SIGNIN_VIEW, value: "true" }
+            - { name: FORGEJO__security__INSTALL_LOCK, value: "true" }
+            # Sin correo saliente: no hay a quién escribirle todavía, y un
+            # servidor que intenta mandar correo y no puede llena los registros
+            # de un error que no significa nada.
+            - { name: FORGEJO__mailer__ENABLED, value: "false" }
+          volumeMounts:
+            - name: datos
+              mountPath: /data
+          resources:
+            requests: {cpu: "100m", memory: 512Mi}
+            limits:   {cpu: "500m", memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: 3000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: datos
+          persistentVolumeClaim:
+            claimName: forja-datos
+---
+# ── Quién puede hablar con la forja ─────────────────────────────────────────
+#
+# Entrada: sólo los pods de ORE, por su etiqueta de rol. Y **no** desde
+# internet: esto no tiene Ingress a propósito. El árbol de un cliente no
+# necesita estar publicado para que la plataforma funcione, y publicarlo es una
+# decisión aparte con su certificado y su puerta.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-la-forja
+  namespace: forja
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: forja
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/tenant: demo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-system
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# Salida de la forja: DNS y nada más.
+#
+# No tiene por qué llamar a nadie. Un servidor de git que sólo recibe es un
+# servidor de git que no puede exfiltrar lo que guarda, y eso es lo que hace
+# aceptable que guarde la ontología de un cliente.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-la-forja
+  namespace: forja
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: forja
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# ── Y la puerta por el otro lado ────────────────────────────────────────────
+#
+# Sin esto la forja está viva y **nadie llega**: `salida-del-driver` abre el
+# mundo MENOS las redes privadas —`10.0.0.0/8` entre ellas— y la forja vive
+# justo ahí. Es la consecuencia correcta de una política escrita en negativo, y
+# la que hay que abrir a mano, con nombre.
+#
+# Alcanza a los pods de `t-demo` con rol `driver` o `ore`, y sólo al puerto de
+# la forja. No es «que salgan a la red interna»: es que puedan hablar con UNA
+# cosa.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-a-la-forja
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: forja
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports:
+        - protocol: TCP
+          port: 3000

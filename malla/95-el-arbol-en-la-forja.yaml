@@ -1,0 +1,220 @@
+# El árbol deja de morir con el pod.
+#
+# `94-flujo-completo.yaml` hacía los cuatro actos sobre un `emptyDir`: cuando el
+# Job terminaba, la ontología que acababa de decidirse **desaparecía**. Esto es
+# el mismo flujo con un quinto acto —publicar— y un segundo Job que **clona lo
+# publicado y lo valida**, que es la única forma de afirmar que quedó algo.
+#
+#   1  catalogo    ore-drivers   lee BigQuery
+#   2  discover    ore           induce
+#   3  review      ore           cierra las decisiones
+#   4  validate    ore           el veredicto
+#   5  publicar    ore-drivers   **git push**
+#   ─────────────────────────────────────────────
+#   y otro Job:   clona y valida lo que hay en la forja
+#
+# ── Quién firma el commit, y por qué importa aquí ───────────────────────────
+#
+# `GIT_AUTHOR_*` no es decoración: es el guardarrail de auditoría que la medida
+# dio por FALTANTE. Hoy lo firma el **agente** —el Job—, porque la persona
+# todavía no llega: cuando `ore-serve` valide un token del realm, el `sub` será
+# el autor y el Job el `committer`. Es exactamente la forma de RFC 8693 que
+# `identidad.rs` ya tiene tallada: `sub` más `act`.
+#
+# ── El token no viaja en la línea de órdenes ────────────────────────────────
+#
+# Un `git push http://usuario:token@host/...` deja la credencial en `argv`, que
+# lee cualquier proceso de la máquina. Va por un `credential.helper` que la lee
+# del entorno, y el entorno sale de un `Secret`. Es la misma frontera que
+# `source add` traza con `connectionEnv`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: publicar
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: repo
+          emptyDir: {}
+        - name: respuestas
+          configMap: { name: respuestas }
+      initContainers:
+        - name: catalogo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: BQ_URL, value: "bigquery://project-8853a180-450d-47be-b83/ventas" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cd /repo
+              ore init . >/dev/null 2>&1
+              cat > ontology.config.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: OntologyConfig
+              metadata: { name: ventas, version: 0.1.0 }
+              datasources:
+                - { name: bq, type: bigquery, connectionEnv: BQ_URL }
+              YAML
+              cat > conduits.yaml <<'YAML'
+              apiVersion: oos.dev/v1alpha1
+              kind: ConduitPolicy
+              metadata: { name: default }
+              spec:
+                owner: team:security
+                conduits:
+                  materialization.topology:
+                    oos.maturity: DRAFT
+              YAML
+              ore source catalog bq --out catalogo.json 2>&1 | tail -2
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+        - name: discover
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          args: ["discover", "--from", "catalogo.json", "--out", "packages/ventas", "--name", "ventas"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+        - name: review
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts:
+            - {name: repo, mountPath: /repo}
+            - {name: respuestas, mountPath: /respuestas}
+          workingDir: /repo
+          args: ["review", "packages/ventas", "--answers", "/respuestas/a.yaml"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+        - name: validate
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          args: ["validate", "."]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+      containers:
+        # ── 5 · publicar ────────────────────────────────────────────────────
+        - name: publicar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          env:
+            - { name: HOME, value: /tmp }
+            - name: FORJA_TOKEN
+              valueFrom:
+                secretKeyRef: { name: forja-token, key: token }
+            - { name: FORJA, value: "http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git" }
+            - { name: GIT_AUTHOR_NAME, value: "agente:discover" }
+            - { name: GIT_AUTHOR_EMAIL, value: "agente@ore.dev" }
+            - { name: GIT_COMMITTER_NAME, value: "agente:discover" }
+            - { name: GIT_COMMITTER_EMAIL, value: "agente@ore.dev" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # El catalogo NO se publica: es la lectura de un origen, no una
+              # decision. El arbol es lo que alguien decidio.
+              rm -f catalogo.json
+              # El volumen lo crea kubelet y es de `root`; este contenedor corre
+              # como 65532. Git 2.52 mira el DUEÑO del directorio y se niega:
+              # «detected dubious ownership». No es un permiso —escribir se
+              # puede— es la defensa de git contra un repositorio ajeno puesto
+              # en tu camino. Aqui el ajeno es el volumen, y se declara.
+              git config --global --add safe.directory /repo
+              git init -q -b main .
+              git config --global credential.helper '!f() { echo username=ore-admin; echo password=$FORJA_TOKEN; }; f'
+              git add -A
+              git commit -q -m "descubrimiento de \`ventas\`, con sus seis decisiones cerradas"
+              git remote add origin "$FORJA"
+              git push -q origin main
+              echo "### publicado"
+              git log --oneline -1
+              git ls-files | wc -l
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+---
+# ── Y la unica prueba que vale: traerlo de vuelta ───────────────────────────
+#
+# Un `push` que devuelve cero no demuestra que haya nada al otro lado. Este Job
+# **no comparte ni un byte** con el anterior: empieza vacio, clona, y le pide a
+# `ore validate` que diga si lo que llego es un arbol.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: recoger
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: repo
+          emptyDir: {}
+      initContainers:
+        - name: clonar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          env:
+            - { name: HOME, value: /tmp }
+            - name: FORJA_TOKEN
+              valueFrom:
+                secretKeyRef: { name: forja-token, key: token }
+            - { name: FORJA, value: "http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              git config --global --add safe.directory /repo
+              git config --global credential.helper '!f() { echo username=ore-admin; echo password=$FORJA_TOKEN; }; f'
+              # Se clona DIRECTAMENTE sobre el volumen. Copiar desde un
+              # temporal parecia mas seguro y era al reves: `cp -a` intenta
+              # conservar dueño y fechas del directorio destino, que es de
+              # root, y deja la copia a medias sin fallar.
+              git clone -q "$FORJA" /repo
+              echo "### clonado desde la forja"
+              cd /repo && git log --oneline -1 && git ls-files | wc -l
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "1", memory: 2Gi}
+      containers:
+        - name: validate
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore:main
+          volumeMounts: [{name: repo, mountPath: /repo}]
+          workingDir: /repo
+          args: ["validate", "."]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "1", memory: 2Gi}
