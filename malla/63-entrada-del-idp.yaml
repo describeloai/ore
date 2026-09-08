@@ -1,0 +1,152 @@
+# La entrada pública del IdP.
+#
+# ── ⛔⛔ Esto es una decisión de seguridad, no de infraestructura ────────────
+#
+# El IdP es **la única superficie de toda la casa que ve una contraseña**. Su
+# propia plataforma lo escribió al hacer esto mismo, y añadió por qué es
+# inevitable: *«un emisor al que el navegador de quien entra no puede llegar no
+# es un emisor. La alternativa no era más seguro: era que cada persona editara
+# su fichero `hosts` como administrador para poder entrar»*.
+#
+# ── Lo que se publica, y lo que NO ──────────────────────────────────────────
+#
+# Sólo `login.paladio.io`, que es el emisor. **La consola de administración no
+# sale**: se llega a ella por `kubectl port-forward`, que es un camino que exige
+# credenciales del clúster y no deja una puerta en internet. El día que haga
+# falta publicarla será otro fichero y otra decisión.
+#
+# ── El orden, que no es negociable ──────────────────────────────────────────
+#
+#   1  se reserva la IP                    `gcloud compute addresses create ore-idp --global`
+#   2  se crea esto                        el balanceador nace sin certificado
+#   3  el DNS apunta la IP                 un registro A en el registrador
+#   4  el certificado se emite SOLO        10-30 min
+#
+# Un `ManagedCertificate` **no se puede emitir antes del 3**: Google valida el
+# dominio pidiéndoselo al balanceador al que el nombre resuelve. Si el DNS
+# apunta a otro sitio, la validación no falla — se queda `Provisioning` para
+# siempre, que es peor.
+
+# ── Nuestro Service, no el del operador ─────────────────────────────────────
+#
+# `idp-service` lo genera y lo reconcilia el operador de Keycloak: anotarlo
+# funciona hasta que el operador decide que no. Éste es nuestro, selecciona los
+# mismos pods, y lleva la anotación de NEG.
+#
+# ⭐ `neg` es lo que hace que el balanceador hable **con el pod** y no con el
+# nodo. Sin ella el tráfico entra por un `NodePort` y da un salto de más, y —lo
+# que importa— la comprobación de salud mira al nodo en vez de a la réplica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: idp-publico
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "idp-publico"}'
+spec:
+  type: ClusterIP
+  selector:
+    app: keycloak
+    app.kubernetes.io/instance: idp
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# ── Cómo se pregunta si está viva ───────────────────────────────────────────
+#
+# ⛔ La comprobación por defecto pide `/`, y `/` en Keycloak es una redirección.
+# Se apunta a `/realms/rubix`, que devuelve `200` y además **comprueba algo que
+# importa**: que el realm está ahí. Un Keycloak arrancado con la base vacía
+# contestaría `200` en `/` y `404` aquí, y eso es exactamente la diferencia
+# entre «el proceso vive» y «el emisor sirve».
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: idp-publico
+  namespace: identidad
+spec:
+  healthCheck:
+    type: HTTP
+    port: 8080
+    requestPath: /realms/rubix
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: idp-cert
+  namespace: identidad
+spec:
+  domains:
+    - login.paladio.io
+---
+# El 80 no sirve nada: redirige. Un emisor que atienda en claro es un emisor al
+# que se le puede leer una contraseña por el camino.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: idp-frontend
+  namespace: identidad
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: idp
+  namespace: identidad
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: ore-idp
+    networking.gke.io/managed-certificates: idp-cert
+    networking.gke.io/v1beta1.FrontendConfig: idp-frontend
+spec:
+  rules:
+    - host: login.paladio.io
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: idp-publico
+                port:
+                  number: 8080
+---
+# ── Y la puerta, otra vez ───────────────────────────────────────────────────
+#
+# `entrada-al-idp` abría sólo desde el inquilino. Con el balanceador delante hay
+# un segundo origen que no es un pod: **los comprobadores de salud y el tráfico
+# de Google**, que llegan desde dos rangos fijos y documentados.
+#
+#   130.211.0.0/22 y 35.191.0.0/16
+#
+# Sin esto el backend se queda `UNHEALTHY` para siempre y el síntoma es un `502`
+# que no menciona ninguna política.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-del-balanceador
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 130.211.0.0/22 }
+        - ipBlock: { cidr: 35.191.0.0/16 }
+      ports:
+        - protocol: TCP
+          port: 8080
