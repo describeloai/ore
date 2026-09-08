@@ -131,7 +131,6 @@ impl Servidor {
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("estado", Json::s(f.get::<_, String>(2))),
                         ("rol", Json::s(f.get::<_, String>(3))),
-                        ("desde", Json::s(f.get::<_, String>(4))),
                     ])
                 })
                 .collect();
@@ -182,6 +181,7 @@ impl Servidor {
                         ("nombre", Json::s(nombre.unwrap_or_default())),
                         ("correo", Json::s(f.get::<_, String>(2))),
                         ("rol", Json::s(f.get::<_, String>(3))),
+                        ("desde", Json::s(f.get::<_, String>(4))),
                     ])
                 })
                 .collect();

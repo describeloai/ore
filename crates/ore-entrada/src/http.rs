@@ -144,11 +144,36 @@ where
         let _ = std::thread::Builder::new()
             .name("ore-serve".into())
             .spawn(move || {
+                // ⛔⛔ EL DESCUENTO VA EN UN `Drop`, Y NO ES ESTILO.
+                //
+                //   Estaba escrito como una línea DESPUÉS de atender, y esa línea
+                //   **no corre si el manejador entra en pánico**. Un pánico mata
+                //   sólo su hilo —el proceso sigue— pero deja el contador inflado,
+                //   y `CONEXIONES` es un techo: **64 pánicos y este servidor deja
+                //   de aceptar nada, para siempre, sin decir por qué**.
+                //
+                //   Medido el 2026-09-08 con un pánico de verdad: un `f.get(4)`
+                //   sobre una consulta de cuatro columnas. Un fallo de programación
+                //   se habría convertido en una denegación de servicio en el plano
+                //   que administra personas.
+                //
+                // ⭐ Es la misma figura que `ore-serve/git.rs` usa para el préstamo
+                //   del repositorio: lo que hay que deshacer pase lo que pase se
+                //   deshace en `Drop`, no en la última línea del camino feliz.
+                let _viva = Viva(vivas_hilo);
                 atender(flujo, manejador.as_ref());
-                vivas_hilo.fetch_sub(1, Ordering::Relaxed);
             });
     }
     Ok(())
+}
+
+/// Descuenta una conexión viva al salir, **también si el hilo entra en pánico**.
+struct Viva(Arc<AtomicUsize>);
+
+impl Drop for Viva {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 fn atender<F>(mut flujo: TcpStream, manejador: &F)
