@@ -40,11 +40,10 @@
 //! abierto, lo CIERRA*.
 
 mod git;
-mod http;
-mod identidad;
 mod mando;
-mod oidc;
 mod rutas;
+
+use ore_entrada::{http, identidad};
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -145,6 +144,13 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // `resolver` devuelve el proveedor **y una linea que lo describe**. La
+    // imprime aqui y no alli: una biblioteca que escribe en `stderr` decide por
+    // su consumidor donde va su salida, y eso no es suyo.
+    let (proveedor, dicho) = match proveedor {
+        Some((p, d)) => (Some(p), d),
+        None => (None, "sin configurar".to_string()),
+    };
     let con_identidad = proveedor.is_some();
 
     // El árbol: o un directorio, o la forja. **Nunca los dos** — un servidor
@@ -189,21 +195,7 @@ fn main() -> ExitCode {
         }
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
-    eprintln!(
-        "  identidad    {}",
-        match (o.identidad.as_deref(), o.no_es_produccion) {
-            (Some("cabecera"), true) => {
-                "cabecera  ⚠️  MODO DE BANCO: el sujeto lo escribe quien llama".to_string()
-            }
-            (Some("oidc"), _) => format!(
-                "oidc · emisor {} · audiencia {}",
-                o.emisor.as_deref().unwrap_or("?"),
-                o.audiencia.as_deref().unwrap_or("?")
-            ),
-            (Some(m), _) => m.to_string(),
-            (None, _) => "sin configurar".into(),
-        }
-    );
+    eprintln!("  identidad    {dicho}");
     eprintln!();
     for (metodo, ruta, montada) in rutas::mapa(con_identidad) {
         eprintln!(

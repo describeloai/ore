@@ -149,10 +149,17 @@ pub struct Ajustes<'a> {
 /// falta una. **Ninguna tiene defecto**: un emisor por defecto sería confiar en
 /// alguien que nadie eligió, y una audiencia por defecto sería aceptar
 /// cualquier token del realm.
-pub fn resolver(a: &Ajustes) -> Result<Option<Proveedor>, String> {
+///
+/// Devuelve el proveedor **y una línea que lo describe**. La línea la imprime
+/// quien llama: una biblioteca que escribe en `stderr` decide por su
+/// consumidor dónde va su salida, y eso no es suyo.
+pub fn resolver(a: &Ajustes) -> Result<Option<(Proveedor, String)>, String> {
     match a.modo {
         None => Ok(None),
-        Some("cabecera") if a.no_es_produccion => Ok(Some(por_cabecera())),
+        Some("cabecera") if a.no_es_produccion => Ok(Some((
+            por_cabecera(),
+            "cabecera  ⚠️  MODO DE BANCO: el sujeto lo escribe quien llama".to_string(),
+        ))),
         Some("cabecera") => Err(
             "`--identidad cabecera` es el modo de banco: el sujeto lo escribe quien llama.\n\
              Para usarlo hay que declararlo además con `--no-es-produccion`."
@@ -169,8 +176,8 @@ pub fn resolver(a: &Ajustes) -> Result<Option<Proveedor>, String> {
             let texto = std::fs::read_to_string(jwks)
                 .map_err(|e| format!("no se pudo leer `{}`: {e}", jwks.display()))?;
             let llaves = crate::oidc::Llaves::leer(&texto)?;
-            eprintln!(
-                "  llaves       {} en `{}`",
+            let dicho = format!(
+                "oidc · emisor {emisor} · audiencia {audiencia} · {} llaves de `{}`",
                 llaves.cuantas(),
                 jwks.display()
             );
@@ -179,12 +186,13 @@ pub fn resolver(a: &Ajustes) -> Result<Option<Proveedor>, String> {
                 aud: audiencia.to_string(),
                 llaves,
             };
-            Ok(Some(Box::new(move |cabeceras| {
+            let proveedor: Proveedor = Box::new(move |cabeceras| {
                 let cabecera = cabeceras
                     .get("authorization")
                     .ok_or(SinIdentidad::Ausente)?;
                 emisor.verificar(cabecera, ahora())
-            })))
+            });
+            Ok(Some((proveedor, dicho)))
         }
         Some(otro) => Err(format!(
             "modo de identidad `{otro}` desconocido; los que hay: {}",

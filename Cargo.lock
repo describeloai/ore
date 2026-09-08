@@ -1135,6 +1135,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-entrada"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "rsa",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "ore-fetch"
 version = "0.1.0"
 dependencies = [
@@ -1199,8 +1208,7 @@ name = "ore-serve"
 version = "0.1.0"
 dependencies = [
  "ore-core",
- "rsa",
- "sha2 0.10.9",
+ "ore-entrada",
 ]
 
 [[package]]

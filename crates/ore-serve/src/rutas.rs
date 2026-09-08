@@ -44,11 +44,11 @@
 //!   alfabeto ya no admite.
 
 use crate::git;
-use crate::http::{Peticion, Respuesta};
-use crate::identidad::{Identidad, Proveedor, SinIdentidad};
 use crate::mando;
 use ore_core::json::Json;
 use ore_core::parse::{self, Node, Style};
+use ore_entrada::http::{Peticion, Respuesta};
+use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 

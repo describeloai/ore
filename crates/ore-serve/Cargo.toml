@@ -8,33 +8,13 @@ authors.workspace    = true
 description = "El plano de control de ORE: atiende a un cliente y delega lo que toca el mundo"
 
 [dependencies]
-# La forma canónica y el analizador, y nada más.
-#
-# **Ni una crate ajena.** No es ascetismo: es que este proceso es el que un día
-# mirará una petición de internet, y `ore-cli/tests/dependencias.rs` explica por
-# qué la superficie de ataque de un binario es una propiedad del artefacto y no
-# una promesa del código. HTTP/1.1 es una línea de petición, unas cabeceras y un
-# cuerpo; `std::net` ya trae el socket.
-#
-# Y JSON no necesita analizador: es un subconjunto de YAML, así que lo lee el
-# mismo que lee un documento OOS. La misma economía que `ore dev`
-# (ADR 0002 · `ore-cli/src/mcp.rs`).
+# El nucleo, para la forma canonica y el analizador.
 ore-core = { path = "../ore-core" }
 
-# ── Lo único que se trae de fuera, y por qué ────────────────────────────────
+# ── Y la entrada, que dejo de vivir aqui ────────────────────────────────────
 #
-# Verificar un token del realm. Medido contra el generador de realms de la
-# plataforma —`deploy/identidad/realm.mjs`, dos veces—: **`RS256`**. Así que
-# `ed25519-compact`, que ya está en el árbol, no sirve: es otra curva y otra
-# aritmética.
-#
-# Y no se escribe a mano. La verificación RSA es `s^e mod n` más comparar el
-# relleno, y suena asequible — pero el modo de fallo de equivocarse en el
-# relleno **no es que las firmas dejen de verificar: es que verifiquen firmas
-# inválidas**, en silencio y en la dirección insegura. Es la misma frase que
-# `ore-core` ya tiene escrita para Ed25519, y aquí vale igual.
-#
-# `rsa` y `sha2` son Rust puro, sin FFI y sin red. Sólo se usa la mitad de
-# verificar; firmar necesita una clave privada y aquí no hay ninguna.
-rsa = { version = "0.9", default-features = false, features = ["sha2"] }
-sha2.workspace = true
+# `http`, `identidad` y `oidc` eran modulos privados de este binario. En cuanto
+# hubo un segundo servidor —`ore-iam`— habia dos opciones: copiar la definicion
+# de que es un sujeto, o sacarla. Copiarla es tener dos descripciones del mismo
+# contrato, y **la que se quede vieja no dara error: dara permiso.**
+ore-entrada = { path = "../ore-entrada" }

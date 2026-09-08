@@ -29,7 +29,7 @@
 //! git lee del **entorno** del hijo. Es la misma frontera que `source add`
 //! traza con `connectionEnv`: el secreto se dice dónde está, no se escribe.
 
-use crate::identidad::Identidad;
+use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
