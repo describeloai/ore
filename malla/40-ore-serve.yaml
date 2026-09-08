@@ -1,0 +1,182 @@
+# `ore-serve` en el clúster, y hablando con la forja.
+#
+# ── Lo que cambia respecto a una máquina ────────────────────────────────────
+#
+# `--repo` desaparece. El árbol ya no es un directorio: es `--forja`, y **cada
+# petición clona**. Suena caro y está medido que no lo es —el árbol de 200
+# tablas con su historia entera son 750 KB, y la forja está a un salto—.
+#
+# Lo que compra es que este Deployment **no tiene estado**. No hay volumen, no
+# hay `emptyDir` que sobreviva a nada, y matar el pod no pierde nada porque no
+# había nada que perder: el sistema de registro es la forja.
+#
+# ── Y la carrera se resuelve sola ───────────────────────────────────────────
+#
+# Dos personas contestan la misma cola a la vez: las dos clonan el mismo commit,
+# las dos deciden, **la segunda en empujar es rechazada** y el cliente recibe un
+# `409` con el motivo escrito. No lo hemos programado nosotros: lo hace git.
+# Sobre un volumen compartido las dos escrituras habrían entrado y ninguna
+# prueba lo habría notado.
+#
+# ── Lo que este pod NO puede hacer ──────────────────────────────────────────
+#
+# Leer un origen. Y hay tres cerraduras sobre esa misma puerta:
+#
+#   1. el `ore` que ejecuta es el binario SIN certificados ni cliente TLS;
+#   2. `mando::HERMETICOS` es una lista de PERMITIDOS —P4: omitir es cerrar—,
+#      así que `source catalog` se niega antes de intentarlo;
+#   3. la `NetworkPolicy` de abajo sólo le abre la forja y el DNS.
+#
+# ⚠️ La 1 se debilitó al construir la imagen: `serve` sale de `alpine` y no de
+# `scratch`, porque este proceso necesita `git`. La imagen ya no lo impide;
+# quedan las otras dos, y por eso la tercera está escrita aquí y es estrecha.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-serve
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: control
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-serve
+  namespace: t-demo
+spec:
+  selector:
+    ore.dev/rol: control
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-serve
+  namespace: t-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: control
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: control
+        ore.dev/tenant: demo
+    spec:
+      serviceAccountName: ore-serve
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+        - name: ore-serve
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-serve:main
+          # `:main` es una etiqueta MOVIL, y el defecto de Kubernetes para una
+          # etiqueta que no es `:latest` es `IfNotPresent`: el nodo reusa la
+          # imagen que ya tiene. Un `rollout restart` entonces reinicia el pod
+          # **con el codigo viejo**, y no lo dice.
+          #
+          # Costo un despliegue: la version nueva contaba las decisiones y la
+          # que corria seguia mirando si el fichero estaba. Con `Always` el
+          # nodo pregunta por el digest antes de arrancar.
+          imagePullPolicy: Always
+          args:
+            # `0.0.0.0` **hay que pedirlo**: el defecto es `127.0.0.1`, porque
+            # un servidor que se ata al mundo por omisión es un servidor que se
+            # expuso sin que nadie lo decidiera. Aquí se decide, y lo que hay
+            # delante no es internet — es un `Service` sin Ingress.
+            - --bind
+            - 0.0.0.0:8080
+            - --ore
+            - /usr/local/bin/ore
+            - --forja
+            - http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git
+            # ⚠️ EL MODO DE BANCO, y los dos interruptores están puestos a
+            # sabiendas: **el sujeto lo escribe quien llama**. Vale para
+            # ejercitar el camino entero mientras el plano de identidad no está
+            # enchufado, y NO vale para nada más.
+            #
+            # Lo que hay que quitar el día que `ore-serve` valide un token del
+            # realm son estas dos líneas, y entonces el autor de cada commit
+            # deja de ser una afirmación de quien pregunta.
+            - --identidad
+            - cabecera
+            - --no-es-produccion
+          env:
+            - { name: HOME, value: /tmp }
+            - name: FORJA_TOKEN
+              valueFrom:
+                secretKeyRef: { name: forja-token, key: token }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /salud, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+---
+# ── Por dónde puede salir el plano de control ───────────────────────────────
+#
+# La forja y el DNS. **No el mundo**, y tampoco los orígenes: si un día el
+# binario intentara leer un BigQuery desde aquí, no llegaría.
+#
+# Es la tercera cerradura, y la única que no depende de qué lleve la imagen.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-control
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: forja
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports: [{protocol: TCP, port: 3000}]
+---
+# Y quién puede entrar: sólo desde dentro del inquilino.
+#
+# Sin Ingress, igual que la forja. Publicar el plano de control es una decisión
+# aparte —con su certificado, su puerta y su identidad de verdad— y hacerlo
+# ahora, con el modo de banco encendido, sería publicar un formulario donde
+# cualquiera escribe quién es.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-control
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/tenant: demo
+      ports:
+        - protocol: TCP
+          port: 8080

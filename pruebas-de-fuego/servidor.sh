@@ -130,7 +130,7 @@ dice "4 · GET /fuentes la ve, y no devuelve ningun secreto"
 ( cd "$REPO" && "$ORE" discover --from catalogo.json --out packages/ventas --name ventas >/dev/null 2>&1 ) \
   || falla "4 · \`ore discover\` fallo"
 
-curl -sf -H "$SUJ" "$BASE/paquetes" | grep -q '"decisionesPendientes":true' \
+curl -sf -H "$SUJ" "$BASE/paquetes" | grep -qE '"decisionesPendientes":[1-9]' \
   || falla "4 · /paquetes no dice que hay decisiones abiertas"
 dice "4 · GET /paquetes ve el paquete y dice que tiene decisiones abiertas"
 
@@ -150,6 +150,14 @@ curl -s -X POST -H "$SUJ" "$BASE/paquetes/ventas/decisiones" -o "$TMP/resp.json"
 grep -q '"informe"' "$TMP/resp.json" || falla "4 · responder no devolvio informe: $(cat "$TMP/resp.json")"
 grep -q "cerrada" "$TMP/resp.json" || dice "  (el informe no dijo «cerradas»; se mira abajo si quedan)"
 dice "4 · POST /decisiones aplica las respuestas: $(head -c 200 "$TMP/resp.json")"
+
+# El fallo que destapo la forja: `ore review` deja la cola escrita CON LA LISTA
+# VACIA cuando las cierra todas. Mirar si el fichero esta decia «hay decisiones
+# pendientes» para siempre, y una consola con una alarma que nadie puede apagar
+# es peor que una consola sin alarma.
+grep -q '"quedan":0' "$TMP/resp.json"   || falla "5 · tras cerrarlas todas, \`quedan\` no es 0: $(cat "$TMP/resp.json")"
+curl -sf -H "$SUJ" "$BASE/paquetes" | grep -q '"decisionesPendientes":0'   || falla "5 · /paquetes sigue diciendo que hay decisiones abiertas"
+dice "5 · y vuelven a 0: se CUENTAN las decisiones, no se mira si el fichero esta"
 
 echo
 echo "ok · el plano de control atiende, y lo que toca el mundo sigue fuera"

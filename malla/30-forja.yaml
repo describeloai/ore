@@ -44,29 +44,24 @@
 #   3. Es AGPL y de una fundación sin ánimo de lucro. La plataforma entera se
 #      apoya en esto; que no se pueda relicenciar por debajo importa.
 #
-# ── ⚠️ La imagen viene de codeberg, y NO debería ─────────────────────────────
+# ── La imagen viene de Artifact Registry, y no es comodidad ──────────────────
 #
 # `jobs-p` tiene `enablePrivateNodes: true` y **no hay Cloud NAT**. Un pod ahí
 # sólo alcanza las APIs de Google por Private Google Access, así que una imagen
-# de `codeberg.org` no se puede bajar. Esto arranca hoy porque el `nodeSelector`
-# lo ancla al `default-pool`, que sí tiene IP pública.
+# de `codeberg.org` no se puede bajar. El `default-pool` sí tiene IP pública y
+# arrancaría — pero entonces lo único que impediría que la forja se programase
+# donde no puede arrancar sería una etiqueta, y una etiqueta no es una
+# propiedad.
 #
-# **Eso es una atadura, no una solución.** Mientras la imagen venga de fuera:
+# Se espeja, como `ore` y `ore-drivers`, con la versión clavada en el origen:
 #
-#   · la forja no puede correr en el pool privado, y el ancla es lo único que
-#     lo impide — no una propiedad, una etiqueta;
-#   · si codeberg no responde el día de un reinicio, la forja no vuelve.
+#     echo 'FROM codeberg.org/forgejo/forgejo:15.0.7' > Dockerfile
+#     gcloud builds submit --tag #       europe-west1-docker.pkg.dev/<proyecto>/ore/forgejo:15 .
 #
-# Lo correcto es espejarla en Artifact Registry, como `ore` y `ore-drivers`. Se
-# intentó con Cloud Build y el API, recién habilitada, todavía contesta
-# `SERVICE_DISABLED` — es propagación del agente de servicio, no un permiso.
-# Queda pendiente y con nombre:
-#
-#     gcloud builds submit --tag \
-#       europe-west1-docker.pkg.dev/<proyecto>/ore/forgejo:15 .   # FROM codeberg…
-#
-# y entonces esta línea cambia y el `nodeSelector` deja de ser lo que sostiene
-# el arranque.
+# ⚠️ Y hubo que abrirle el paso a Cloud Build: recién habilitada la API, su
+# cuenta de servicio por defecto no podía leer su propio bucket de puesta en
+# escena. El error dice `INVALID_ARGUMENT: could not resolve source`, que suena
+# a un problema del origen y es de permisos.
 
 apiVersion: v1
 kind: Namespace
@@ -166,7 +161,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: forgejo
-          image: codeberg.org/forgejo/forgejo:15.0.7
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/forgejo:15
           ports:
             - containerPort: 3000
           env:

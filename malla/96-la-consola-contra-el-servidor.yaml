@@ -1,0 +1,101 @@
+# Lo que hará la consola, hecho con `wget` para que no haya magia.
+#
+# Este Job no es una prueba de `ore-serve`: eso ya lo hacen 18 pruebas dentro
+# del crate y `pruebas-de-fuego/servidor.sh` contra un servidor de verdad. Es la
+# prueba de la CADENA — consola → servidor → forja — que sólo se puede afirmar
+# con las tres piezas corriendo y hablándose por la red del clúster.
+#
+# Lo que fija, y ninguno se puede afirmar sin el clúster:
+#
+#   1. sin sujeto, `401`; con sujeto, pasa
+#   2. una URL con la credencial dentro se NIEGA
+#   3. un alta devuelve `201` **y un `commit`** — el árbol se escribió en la
+#      forja, no en el disco de un pod
+#   4. una segunda lectura ve la fuente: el servidor volvió a clonar y ahí está
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consola
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: cliente
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: consola
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: BASE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              S='x-ore-sujeto: persona:ana'
+              echo "### 1 · salud, sin sujeto"
+              wget -qO- "$BASE/salud"; echo
+              wget -qO- "$BASE/version"; echo
+
+              echo
+              echo "### 2 · sin sujeto, las rutas de datos NIEGAN"
+              wget -qO- "$BASE/fuentes" 2>&1 | head -1 || echo "(negado, como debe)"
+
+              echo
+              echo "### 3 · con sujeto, contesta"
+              wget -qO- --header="$S" "$BASE/fuentes"; echo
+
+              echo
+              echo "### 4 · una URL con la credencial dentro"
+              wget -qO- --header="$S" --header='Content-Type: application/json' \
+                --post-data='{"name":"malo","url":"postgres://ana:clave@host/db"}' \
+                "$BASE/fuentes" 2>&1 | head -c 200 || true
+              echo
+
+              echo
+              # ⚠️ Correr esto DOS veces da un 409 en este paso, y es correcto:
+              # la fuente ya existe y `ore source add` se niega a pisarla. Para
+              # volver a ver el camino bueno hay que cambiar el nombre.
+              echo "### 5 · el alta de verdad, y el commit que deja"
+              wget -qO- --header="$S" --header='Content-Type: application/json' \
+                --post-data='{"name":"mar","url":"bigquery://project-8853a180-450d-47be-b83/otro","description":"el segundo origen"}' \
+                "$BASE/fuentes"; echo
+
+              echo
+              echo "### 6 · y otra lectura lo ve: el servidor volvio a clonar"
+              wget -qO- --header="$S" "$BASE/fuentes"; echo
+
+              echo
+              echo "### 7 · los paquetes que hay en el arbol"
+              wget -qO- --header="$S" "$BASE/paquetes"; echo
+          resources:
+            requests: {cpu: "200m", memory: 256Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+---
+# Y la puerta para que un pod del inquilino pueda hablar con el plano de
+# control. Sin esto, `deny-all-egress` gana y la consola no llega: es la misma
+# consecuencia de escribir la red en negativo que ya obligó a abrir la forja.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-control
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8080

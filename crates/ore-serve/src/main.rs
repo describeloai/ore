@@ -39,6 +39,7 @@
 //! Los dos son la misma frase que el resto del proyecto: *omitir no deja nada
 //! abierto, lo CIERRA*.
 
+mod git;
 mod http;
 mod identidad;
 mod mando;
@@ -51,10 +52,12 @@ use std::process::ExitCode;
 const USO: &str = "\
 ore-serve — el plano de control de ORE
 
-  ore-serve [--repo DIR] [--bind DIRECCION] [--ore RUTA]
+  ore-serve [--repo DIR | --forja URL] [--bind DIRECCION] [--ore RUTA]
             [--identidad MODO] [--no-es-produccion]
 
   --repo DIR             la raíz del repositorio ontológico (por defecto, `.`)
+  --forja URL            el repositorio en la forja. Cada petición CLONA, y la
+                         que escribe empuja. El testigo sale de `FORJA_TOKEN`
   --bind DIRECCION       dónde escuchar (por defecto, 127.0.0.1:8080)
   --ore RUTA             el binario `ore` (por defecto, `ore` del PATH)
   --identidad MODO       de dónde sale el sujeto. Sin esto, las rutas de datos
@@ -65,6 +68,7 @@ ore-serve — el plano de control de ORE
 
 struct Opciones {
     repo: PathBuf,
+    forja: Option<String>,
     bind: String,
     ore: PathBuf,
     identidad: Option<String>,
@@ -74,6 +78,7 @@ struct Opciones {
 fn leer_opciones() -> Result<Option<Opciones>, String> {
     let mut o = Opciones {
         repo: PathBuf::from("."),
+        forja: None,
         bind: "127.0.0.1:8080".into(),
         ore: PathBuf::from("ore"),
         identidad: None,
@@ -88,6 +93,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         match a.as_str() {
             "-h" | "--help" => return Ok(None),
             "--repo" => o.repo = PathBuf::from(valor("--repo")?),
+            "--forja" => o.forja = Some(valor("--forja")?),
             "--bind" => o.bind = valor("--bind")?,
             "--ore" => o.ore = PathBuf::from(valor("--ore")?),
             "--identidad" => o.identidad = Some(valor("--identidad")?),
@@ -120,10 +126,30 @@ fn main() -> ExitCode {
     };
     let con_identidad = proveedor.is_some();
 
-    if !o.repo.is_dir() {
-        eprintln!("✗ `{}` no es un directorio", o.repo.display());
-        return ExitCode::from(66); // EX_NOINPUT
-    }
+    // El árbol: o un directorio, o la forja. **Nunca los dos** — un servidor
+    // que tuviera dos sitios donde vive el árbol tendría dos verdades.
+    let arbol = match &o.forja {
+        Some(url) => match std::env::var("FORJA_TOKEN") {
+            Ok(t) if !t.is_empty() => rutas::Arbol::Forja(git::Forja {
+                url: url.clone(),
+                testigo: t,
+            }),
+            _ => {
+                eprintln!(
+                    "✗ `--forja` necesita el testigo en `FORJA_TOKEN`.
+                       No se acepta por la línea de órdenes: `argv` lo lee cualquier proceso."
+                );
+                return ExitCode::from(64);
+            }
+        },
+        None => {
+            if !o.repo.is_dir() {
+                eprintln!("✗ `{}` no es un directorio", o.repo.display());
+                return ExitCode::from(66); // EX_NOINPUT
+            }
+            rutas::Arbol::Directorio(o.repo.clone())
+        }
+    };
 
     let escucha = match TcpListener::bind(&o.bind) {
         Ok(e) => e,
@@ -134,7 +160,13 @@ fn main() -> ExitCode {
     };
 
     eprintln!("ore-serve · {}", o.bind);
-    eprintln!("  repositorio  {}", rutas::ruta_de(&o.repo));
+    eprintln!(
+        "  arbol        {}",
+        match &o.forja {
+            Some(u) => format!("forja · {u}"),
+            None => rutas::ruta_de(&o.repo),
+        }
+    );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
     eprintln!(
         "  identidad    {}",
@@ -162,7 +194,7 @@ fn main() -> ExitCode {
 
     let servidor = rutas::Servidor {
         binario: o.ore,
-        raiz: o.repo,
+        arbol,
         identidad: proveedor,
     };
 

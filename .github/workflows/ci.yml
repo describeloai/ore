@@ -144,6 +144,13 @@ jobs:
           cargo build --quiet -p ore-cli -p ore-serve
           bash pruebas-de-fuego/servidor.sh
 
+      # Y el modo forja, contra una forja de verdad puesta aqui mismo. Lo que
+      # cambia no es una bandera: el arbol deja de ser un directorio y pasa a
+      # ser un repositorio, y con el llegan el autor de cada commit y el
+      # rechazo del segundo que empuja.
+      - name: y con el arbol en una forja
+        run: bash pruebas-de-fuego/servidor-forja.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:

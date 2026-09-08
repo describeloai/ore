@@ -1,4 +1,4 @@
-# Las dos imágenes de `ore`.
+# Las tres imágenes de `ore`.
 #
 # Los drivers son binarios SEPARADOS por decisión —ADR 0008: `ore` los busca en
 # el `PATH` y habla con ellos por stdin/stdout, así que el motor no enlaza un
@@ -13,6 +13,11 @@
 #                       corre desde aquí no habla con nadie, y eso es una
 #                       garantía estructural — más fuerte que una política que
 #                       se lo prohíba, porque no hay nada que aplicar.
+#
+#   ore-serve           el plano de control. Lleva `ore` y `git`, y NADA
+#                       más: no puede leer un origen —el `ore` que ejecuta es
+#                       el mismo binario sin TLS— y sí puede hablar con la
+#                       forja, que es donde vive el árbol.
 #
 #   ore-drivers         todo lo que `ore` puede ejecutar: los tres `ore-read-*`,
 #                       `ore-fetch`, `ore-log`, `ore-sign` y `ore-store-r2`,
@@ -36,9 +41,9 @@ COPY . .
 # `--locked`: se construye con el `Cargo.lock` del árbol y no con lo que
 # hubiera hoy en el índice.
 RUN cargo build --release --locked \
-      -p ore-cli -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
+      -p ore-cli -p ore-serve -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
       -p ore-fetch -p ore-log -p ore-sign -p ore-store-r2 \
- && for b in ore ore-read-jsonl ore-read-postgres ore-read-bigquery \
+ && for b in ore ore-serve ore-read-jsonl ore-read-postgres ore-read-bigquery \
              ore-fetch ore-log ore-sign ore-store-r2; do \
       strip "target/release/$b"; \
     done
@@ -74,3 +79,30 @@ COPY --from=build /src/target/release/ore-store-r2       /usr/local/bin/ore-stor
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore"]
+
+# ── 3 · El plano de control ─────────────────────────────────────────────────
+#
+# Sobre `alpine` y no sobre `scratch`, y hay que decir por qué se pierde la
+# garantía estructural de la primera: **este proceso necesita `git`**, porque el
+# árbol vive en la forja y cada petición clona.
+#
+# Lo que NO se pierde:
+#
+#   · el `ore` que ejecuta es el MISMO binario sin certificados ni TLS, así que
+#     un `discover` desde aquí sigue sin poder hablar con un origen;
+#   · `mando::HERMETICOS` es una lista de PERMITIDOS, así que un verbo que
+#     toque el mundo se niega antes de intentarlo;
+#   · y la `NetworkPolicy` de la malla decide a dónde puede ir `git`.
+#
+# Tres cerraduras sobre la misma puerta, y ninguna es la imagen. Se dice porque
+# la de `ore` SÍ lo era, y perder una garantía sin nombrarla es como se pierden.
+FROM alpine:3.22 AS serve
+
+RUN apk add --no-cache git ca-certificates
+
+COPY --from=build /src/target/release/ore       /usr/local/bin/ore
+COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/usr/local/bin/ore-serve"]
