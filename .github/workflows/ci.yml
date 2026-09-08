@@ -158,6 +158,16 @@ jobs:
       - name: y la puerta pide un token de verdad
         run: bash pruebas-de-fuego/servidor-oidc.sh
 
+      # ⭐ LA MUDANZA. Corremos una plataforma gestionada, y esto convierte
+      # «el cliente puede irse» de promesa en puerta: un arbol producido como
+      # lo produce la plataforma tiene que compilar con `env -i` — ni una
+      # variable— y sin nombrar nuestra infraestructura ni llevar un secreto.
+      #
+      # El dia que `ore validate` necesite nuestra base, este paso se pone rojo
+      # antes de que nadie lo note en produccion.
+      - name: y el cliente puede irse
+        run: bash pruebas-de-fuego/la-mudanza.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:
