@@ -131,12 +131,16 @@ impl Servidor {
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("estado", Json::s(f.get::<_, String>(2))),
-                        // ⛔ `Option`: desde la `014` `rol` es nulable —`null` es
-                        //   «pertenece y nada mas»— y leerlo como `String` panicaria
-                        //   en la primera fila sin cargo.
+                        // ⭐ `roles` en plural desde la `016`: la lista vacia es
+                        //   «pertenece y nada mas», sin necesitar un nulo.
                         (
-                            "rol",
-                            Json::s(f.get::<_, Option<String>>(3).unwrap_or_default()),
+                            "roles",
+                            Json::Arr(
+                                f.get::<_, Vec<String>>(3)
+                                    .into_iter()
+                                    .map(Json::s)
+                                    .collect(),
+                            ),
                         ),
                     ])
                 })
