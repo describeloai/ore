@@ -1,0 +1,84 @@
+# El plano de identidad y acceso, en el clúster.
+#
+# ── ⭐ UNA SOLA POSTGRES, DOS BASES ──────────────────────────────────────────
+#
+# `60-idp.yaml` ya levantó un Postgres para Keycloak. Esto **no levanta otro**:
+# usa el mismo servidor con una base aparte, `iam`.
+#
+#   keycloak   quién eres y tu credencial      la escribe Keycloak
+#   iam        quién existe y qué puede        la escribimos nosotros
+#
+# ⚠️ Y lo que se acepta a cambio, dicho: **comparten destino**. Si ese Postgres
+# se cae, se caen las dos. Se acepta porque el acoplamiento de disponibilidad ya
+# existía —sin IdP nadie entra, y sin `iam` nadie pertenece a nada, así que una
+# sin la otra no sirve— y separarlas cuesta 100m de CPU en un nodo con 309m
+# libres y un PVC más.
+#
+# ⇒ El día que haya nodo de sobra, separarlas es mover un `PGHOST`. Juntarlas
+#   después habría sido una migración.
+#
+# ── Lo que este Job hace, y lo que NO ───────────────────────────────────────
+#
+# Crea la base si no está y aplica las migraciones. **No siembra datos**: ni una
+# organización, ni una persona. La primera organización es un acto de gobierno y
+# tiene que dejar su huella como cualquier otro — sembrarla desde un manifiesto
+# sería la única fila del sistema sin autor.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: migrar-iam
+  namespace: identidad
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrar-iam
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: mantenimiento
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: mantenimiento
+        ore.dev/tenant: system
+    spec:
+      restartPolicy: Never
+      serviceAccountName: migrar-iam
+      volumes:
+        - name: migraciones
+          configMap:
+            name: iam-migraciones
+            defaultMode: 0755
+      containers:
+        - name: migrar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+          volumeMounts:
+            - name: migraciones
+              mountPath: /iam/migraciones
+          env:
+            - { name: PGHOST, value: idp-db.identidad.svc.cluster.local }
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: idp-db, key: usuario } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: idp-db, key: clave } }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # La base, si no esta. `createdb` falla si ya existe, y eso no es
+              # un error aqui: es el segundo despliegue.
+              PGDATABASE=postgres psql -tAc "select 1 from pg_database where datname='iam'" \
+                | grep -q 1 || PGDATABASE=postgres createdb iam
+              echo "base iam lista"
+              echo
+              # `IAM_MIGRACIONES` porque un ConfigMap no tiene subdirectorios:
+              # el script y los `.sql` caen en el MISMO sitio, y el `dirname`
+              # del script no sirve para encontrarlos.
+              IAM_MIGRACIONES=/iam/migraciones PGDATABASE=iam                 sh /iam/migraciones/migrar.sh
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}

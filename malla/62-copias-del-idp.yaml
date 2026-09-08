@@ -1,4 +1,4 @@
-# Las copias de la base del IdP — el agujero que `60-idp.yaml` dejó nombrado.
+# Las copias de las DOS bases — el agujero que `60-idp.yaml` dejó nombrado.
 #
 # ── Qué protege, y qué NO ───────────────────────────────────────────────────
 #
@@ -92,14 +92,20 @@ spec:
               args:
                 - |
                   set -e
-                  # `-Fc`: el formato propio de Postgres. Comprime, y permite
-                  # restaurar una tabla suelta sin tragarse el fichero entero.
-                  pg_dump -d keycloak -Fc -f /volcado/keycloak.dump
-                  # Y se comprueba que se puede LEER lo que se acaba de
-                  # escribir. Un volcado corrupto pesa igual que uno bueno, y
-                  # descubrirlo el dia de restaurar es descubrirlo tarde.
-                  pg_restore --list /volcado/keycloak.dump > /dev/null
-                  echo "volcado ok · $(wc -c < /volcado/keycloak.dump) bytes"
+                  # LAS DOS. `65-iam.yaml` puso una segunda base en el mismo
+                  # servidor —`iam`, junto a `keycloak`— y una copia que sólo
+                  # cubriera una de ellas seria peor que ninguna: pareceria que
+                  # hay copia.
+                  for B in keycloak iam; do
+                    # `-Fc`: el formato propio de Postgres. Comprime, y permite
+                    # restaurar una tabla suelta sin tragarse el fichero entero.
+                    pg_dump -d "$B" -Fc -f "/volcado/$B.dump"
+                    # Y se comprueba que se puede LEER lo que se acaba de
+                    # escribir. Un volcado corrupto pesa igual que uno bueno, y
+                    # descubrirlo el dia de restaurar es descubrirlo tarde.
+                    pg_restore --list "/volcado/$B.dump" > /dev/null
+                    echo "volcado $B ok · $(wc -c < /volcado/$B.dump) bytes"
+                  done
               resources:
                 requests: {cpu: "50m", memory: 128Mi}
                 limits:   {cpu: "500m", memory: 512Mi}
@@ -118,11 +124,13 @@ spec:
                   # El nombre lleva la fecha, y el bucket tiene una regla de
                   # ciclo de vida que borra a los 30 dias. Guardar para siempre
                   # es pagar para siempre por algo que nadie va a mirar.
-                  N="idp/keycloak-$(date -u +%Y%m%dT%H%M%SZ).dump"
-                  gcloud storage cp /volcado/keycloak.dump "$BUCKET/$N"
-                  echo "subido $BUCKET/$N"
+                  F="$(date -u +%Y%m%dT%H%M%SZ)"
+                  for B in keycloak iam; do
+                    gcloud storage cp "/volcado/$B.dump" "$BUCKET/idp/$B-$F.dump"
+                    echo "subido $BUCKET/idp/$B-$F.dump"
+                  done
                   echo "--- lo que hay guardado ---"
-                  gcloud storage ls "$BUCKET/idp/" | tail -5
+                  gcloud storage ls "$BUCKET/idp/" | tail -6
               resources:
                 requests: {cpu: "100m", memory: 256Mi}
                 limits:   {cpu: "500m", memory: 512Mi}

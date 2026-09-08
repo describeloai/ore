@@ -1,0 +1,76 @@
+# `iam` — el plano de identidad y acceso
+
+> **Lo que aquí se guarda no tiene otra casa.** Todo lo demás la tiene.
+
+## Qué hay, y qué NO
+
+```
+el árbol ontológico          git, en la forja
+quién eres y tu contraseña   Keycloak
+el artefacto sellado         Artifact Registry
+quién cambió la ontología    el commit de la forja
+─────────────────────────────────────────────────
+lo que no tiene casa:        esto
+```
+
+Y de ahí la regla, que es comprobable y por eso se escribe antes que el DDL:
+
+> ### ⛔ Aquí no entra ni un dato del cliente ni un documento de la ontología. Personas y permisos. Nada más.
+
+El día que alguien quiera meter un catálogo aquí, esa frase es la que lo para.
+
+## Por qué se llama `iam`
+
+Porque es como lo llaman los cuatro, y como ya lo llamaba la plataforma. De su
+propia investigación —`docs/iam/01-las-plataformas.md`, comprobada el
+2026-08-25— sale la frase que ordena todo esto:
+
+> *«La identidad no es una funcionalidad de un producto: es **un plano con su
+> propia consola, su propio ciclo de vida y sus propios estándares**, y en las
+> cuatro plataformas vive **por encima** del recurso que protege.»*
+
+| | cómo lo llaman |
+|---|---|
+| Databricks | la **cuenta** — y los grupos son de cuenta, no del espacio de trabajo |
+| AWS | **IAM Identity Center**, un servicio aparte |
+| Snowflake | la **cuenta** → roles (`ORGADMIN`, `SECURITYADMIN`) |
+| Palantir | **Control Panel** / Multipass, sobre *Organizations* |
+
+Y la plataforma ya tenía `docs/iam/` con cinco documentos y un `rubixiam.md`
+vigente. El esquema y la documentación se llaman igual a propósito.
+
+## Las cinco ideas que se toman de `modelo/`, con su procedencia
+
+De las 22 migraciones de la plataforma se toman **ideas, no DDL** — copiar el
+esquema renombrando se lleva sus decisiones sin sus motivos, y sus motivos
+contestan *sus* preguntas (celdas, outbox, facetas).
+
+| idea | de dónde |
+|---|---|
+| la correspondencia `(emisor, sub) → sujeto opaco`: el sujeto **no es** el `sub` del IdP, está atado a él | `014-sujeto.sql` |
+| la pertenencia sale de la **invitación**, no del IdP: así el plano de control no necesita una credencial de administración del emisor | `021-la-invitacion.sql` |
+| cada acto privilegiado deja **huella**, incluido *mirar* — *«un acto privilegiado sin rastro no es un control»* | `020`, `022` |
+| el papel es sobre un **recurso**, no un rol del realm | `005`, `006`, `019` |
+| **una migración aplicada es inmutable** — *«lo que corrió y lo que dice el fichero dejan de ser lo mismo»* | `006-dueno.sql` |
+
+Y una que **no** se toma: su `celda` / `ambito_de`. Su ámbito es
+`origen \| contenedor \| dataset`, que es la forma de una AMP. El nuestro es el
+paquete y la vista, y ésos ya viven en la ontología.
+
+## La frontera con el gobierno del flujo
+
+ORE ya gobierna **qué puede fluir hasta dónde** — retículo, conductos,
+`OOS4xxx`. Esto gobierna **quién alcanza qué superficie**. No son lo mismo, y el
+orden entre ellos está decidido:
+
+> ### La concesión puede NEGAR. No puede conceder por encima del conducto.
+
+Un `grant` que ensanchara lo que el retículo cerró convertiría el gobierno del
+flujo en una sugerencia.
+
+## Correr las migraciones
+
+```bash
+bash iam/migrar.sh                      # contra $PGHOST/$PGDATABASE
+kubectl apply -f malla/65-iam.yaml      # y en el clúster, como Job
+```
