@@ -164,10 +164,22 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
     let persona = crear_o_hallar(tx, emisor, quien(sujeto), Some(&correo))?;
 
     tx.ejecutar(
-        "insert into iam.pertenencia (persona, organizacion, rol) values ($1, $2, $3)
+        "insert into iam.pertenencia (persona, organizacion) values ($1, $2)
          on conflict (persona, organizacion) do nothing",
-        &[&persona, &org, &rol],
+        &[&persona, &org],
     )?;
+    // ⭐⭐ Y el cargo, SI la invitacion llevaba uno — y con `otorgo` puesto a
+    //   quien invito. Aqui NO es null: hubo alguien dentro que lo dio, y
+    //   confundir eso con el aprovisionamiento borraria la unica distincion
+    //   que esa columna existe para hacer.
+    if let Some(rol) = rol.as_deref() {
+        tx.ejecutar(
+            "insert into iam.pertenencia_rol (persona, organizacion, rol, otorgo)
+             select $1, $2, $3, i.invito from iam.invitacion i where i.id = $4
+             on conflict do nothing",
+            &[&persona, &org, &rol, &id],
+        )?;
+    }
     tx.ejecutar(
         "update iam.invitacion set redimida_en = now(), redimio = $2 where id = $1",
         &[&id, &persona],

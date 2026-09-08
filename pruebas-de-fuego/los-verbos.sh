@@ -20,6 +20,7 @@
 #   5  ⭐ otorgar lo que NO SE TIENE       SE NIEGA  ← el rodeo, por contencion
 #  5a  invitar SIN rol                   pertenecer no es un cargo
 #  5b  los MIEMBROS · con su nombre del token · y una extraña NO los ve
+#  5c  el CATALOGO · y `SECURITYADMIN` sale vacio, con su nota
 #   6  conceder `lector` · revocar · revocar otra vez
 #  6b  ⭐ sondear una concesion AJENA   mismo error que una inventada
 #   7  conceder `owner`                 SE NIEGA  ← falta la travesia del arbol
@@ -251,8 +252,8 @@ dice '5a · se invita sin rol: pertenecer no es un cargo'
 [ "$(pide GET "/organizaciones/$ORG/miembros" "$ADA")" = "200" ] || falla "5b · no listo miembros"
 CUANTOS=$("$PY" -c "import json;print(len(json.load(open('$TMP/r.json'))['miembros']))")
 [ "$CUANTOS" = "2" ] || falla "5b · esperaba 2 miembros y hay $CUANTOS"
-grep -q '"rol":"ORGADMIN"' "$TMP/r.json"      || falla "5b · falta el dueño"
-grep -q '"rol":"USERADMIN"' "$TMP/r.json"     || falla "5b · falta la administradora"
+grep -q '"roles":\["ORGADMIN"\]' "$TMP/r.json" || falla "5b · falta el dueño"
+grep -q '"roles":\["USERADMIN"\]' "$TMP/r.json" || falla "5b · falta la administradora"
 grep -q '"nombre":"Ada (prueba)"' "$TMP/r.json" \
   || falla "5b · ⛔ EL NOMBRE NO SE REFRESCO. Venia en el token y la pantalla enseñaria un id opaco"
 grep -q '"conocido":true' "$TMP/r.json" || falla "5b · `conocido` no distingue"
@@ -264,6 +265,41 @@ ZOE0=$(acunar "persona:zoe" "zoe@paladio.io")
 [ "$(pide GET "/organizaciones/$ORG/miembros" "$ZOE0")" = "422" ] \
   || falla "5b · ⛔ UNA EXTRAÑA VE LOS MIEMBROS DE OTRA ORGANIZACION"
 dice "5b · y una extraña no los ve"
+
+# ── 5c · EL CATALOGO, y el rol que esta VACIO a proposito ──────────────────
+#
+# ⭐ La pantalla de roles pinta dos listas: lo que da pertenecer, y lo que AÑADE
+#   cada cargo. Las dos salen de la base, no de una copia en la interfaz — que
+#   es el motivo por el que su `admin/` las devolvia juntas.
+[ "$(pide GET "/organizaciones/$ORG/roles" "$ADA")" = "200" ]   || falla "5c · no listo el catalogo: $(cat "$TMP/r.json")"
+grep -q '"porDefecto"' "$TMP/r.json"   || falla "5c · sin estado por defecto"
+grep -q '"ORGADMIN"' "$TMP/r.json"     || falla "5c · falta ORGADMIN en el catalogo"
+grep -q '"SECURITYADMIN"' "$TMP/r.json"   || falla "5c · ⛔ SECURITYADMIN NO SALE. Un rol que existe y no se ve es peor que no tenerlo"
+
+# ⛔⛔ Y sale con CERO potestades y con su nota. Es lo que lo hace honesto: un
+#   rol vacio no significa nada **y ademas parece que si**, asi que la nota
+#   tiene que viajar con el.
+"$PY" - "$TMP/r.json" <<'PYCODE' || falla "5c · el catalogo no dice que SECURITYADMIN es una carcasa"
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d["catalogo"]["porRol"]["SECURITYADMIN"]
+assert s["anade"] == [], "SECURITYADMIN deberia estar vacio hoy y trae %r" % s["anade"]
+assert "CARCASA" in s["nota"].upper(), "y su nota tiene que decirlo: %r" % s["nota"]
+o = d["catalogo"]["porRol"]["ORGADMIN"]
+assert "org:traspasar" in o["anade"], "ORGADMIN sin `org:traspasar`: %r" % o["anade"]
+PYCODE
+dice '5c · el catalogo sale entero, y `SECURITYADMIN` dice que hoy es una carcasa'
+
+# ⭐ Y las asignaciones distinguen quien lo dio. Ada es ORGADMIN por el
+#   APROVISIONAMIENTO —no habia nadie dentro que pudiera concederselo— y eso es
+#   `concedido_por` vacio. Bea lo tiene porque Ada la invito.
+"$PY" - "$TMP/r.json" <<'PYCODE' || falla "5c · las asignaciones no distinguen el aprovisionamiento"
+import json, sys
+a = {x["rol"]: x for x in json.load(open(sys.argv[1]))["asignaciones"]}
+assert a["ORGADMIN"]["concedido_por"] == "",     "el fundador NO lo recibio de nadie: %r" % a["ORGADMIN"]["concedido_por"]
+assert a["USERADMIN"]["concedido_por"] != "",     "a Bea se lo dio alguien, y tiene que constar quien"
+PYCODE
+dice '5c · y `concedido_por` separa el aprovisionamiento de una concesion'
 
 # ── 6 · conceder y revocar ──────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \

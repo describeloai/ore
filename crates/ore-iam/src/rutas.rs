@@ -68,6 +68,7 @@ impl Servidor {
         match (p.metodo.as_str(), seg) {
             ("GET", ["organizaciones"]) => self.organizaciones(s),
             ("GET", ["organizaciones", o, "miembros"]) => self.miembros(s, o),
+            ("GET", ["organizaciones", o, "roles"]) => self.roles(s, o),
             ("GET", ["organizaciones", o, "invitaciones"]) => self.invitaciones(s, o),
             ("POST", ["organizaciones", o, "invitaciones"]) => self.invitar(s, o, &p.cuerpo),
             ("POST", ["organizaciones", o, "concesiones"]) => self.conceder(s, o, &p.cuerpo),
@@ -163,15 +164,20 @@ impl Servidor {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
             crate::potestad::exige(tx, emisor, &s.persona, &org, "miembro:listar")?;
-            // ⭐ `desde` se formatea en SQL: traerlo como `timestamptz` obligaria
-            //   a una crate de fechas para volver a texto, y este binario no tiene
-            //   ninguna. `to_char` ya sabe hacerlo.
+            // ⭐ `roles` en plural desde la `016`: una persona puede tener
+            //   varios cargos, y `array_agg` sobre el `left join` devuelve una
+            //   lista vacia para quien solo pertenece — que es lo que
+            //   «pertenece y nada mas» significa, sin necesitar un nulo.
             let filas = tx.filas(
-                "select p.id, p.nombre, coalesce(p.correo, \'\'), pe.rol,
+                "select p.id, p.nombre, coalesce(p.correo, ''),
+                        coalesce(array_agg(pr.rol) filter (where pr.rol is not null), '{}'),
                         to_char(pe.desde at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
                    from iam.pertenencia pe
                    join iam.persona p on p.id = pe.persona
+                   left join iam.pertenencia_rol pr
+                     on pr.persona = pe.persona and pr.organizacion = pe.organizacion
                   where pe.organizacion = $1
+                  group by p.id, p.nombre, p.correo, pe.desde
                   order by pe.desde",
                 &[&org],
             )?;
@@ -179,6 +185,7 @@ impl Servidor {
                 .iter()
                 .map(|f| {
                     let nombre: Option<String> = f.get(1);
+                    let roles: Vec<String> = f.get(3);
                     Json::obj([
                         ("persona", Json::s(f.get::<_, String>(0))),
                         // ⭐ `conocido` false NO significa inactivo: significa que
@@ -186,13 +193,7 @@ impl Servidor {
                         ("conocido", Json::Bool(nombre.is_some())),
                         ("nombre", Json::s(nombre.unwrap_or_default())),
                         ("correo", Json::s(f.get::<_, String>(2))),
-                        // ⛔ `Option`: desde la `014` `rol` es nulable —`null` es
-                        //   «pertenece y nada mas»— y leerlo como `String` panicaria
-                        //   en la primera fila sin cargo.
-                        (
-                            "rol",
-                            Json::s(f.get::<_, Option<String>>(3).unwrap_or_default()),
-                        ),
+                        ("roles", Json::Arr(roles.into_iter().map(Json::s).collect())),
                         ("desde", Json::s(f.get::<_, String>(4))),
                     ])
                 })
@@ -203,6 +204,120 @@ impl Servidor {
                 Json::obj([("cuantos", Json::Int(lista.len() as i64))]),
             )?;
             Ok(Json::obj([("miembros", Json::Arr(lista))]))
+        })
+    }
+
+    /// El catálogo Y las asignaciones, en una respuesta.
+    ///
+    /// ⭐ Las dos juntas por su motivo, que sigue siendo bueno: *«si la interfaz
+    /// tuviera su propia copia de las potestades habría dos descripciones de lo
+    /// mismo, y divergirían el día que se añada una»*.
+    ///
+    /// ⚠️ Y `porRol` es lo que cada cargo **AÑADE** sobre el estado por defecto,
+    /// no todo lo que da. Es la forma que pinta la pantalla —*«qué añade sobre
+    /// el estado por defecto»*— y la que contesta la pregunta de quien va a
+    /// conceder.
+    fn roles(&self, s: &Identidad, org: &str) -> Respuesta {
+        let org = org.to_string();
+        self.en_transaccion(s, move |tx, emisor| {
+            // ⭐ Basta con pertenecer: `rol:listar` es del estado por defecto.
+            //   Esconder quien manda seria seguridad por oscuridad (`76` §2).
+            crate::potestad::exige(tx, emisor, &s.persona, &org, "rol:listar")?;
+
+            let por_defecto: Vec<Json> = tx
+                .filas(
+                    "select potestad from iam.por_defecto order by potestad",
+                    &[],
+                )?
+                .iter()
+                .map(|f| Json::s(f.get::<_, String>(0)))
+                .collect();
+
+            // ⚠️ TODOS los roles, tengan o no a alguien: la pantalla explica el
+            //   catalogo, y un rol que nadie tiene sigue siendo parte de el.
+            //   `SECURITYADMIN` sale con su lista y con su nota.
+            let filas = tx.filas(
+                "select r.nombre, coalesce(r.que_puede, ''), coalesce(r.nota, ''),
+                        coalesce(array_agg(rp.potestad order by rp.potestad)
+                                 filter (where rp.potestad is not null), '{}')
+                   from iam.rol r
+                   left join iam.rol_potestad rp on rp.rol = r.nombre
+                  group by r.nombre, r.que_puede, r.nota
+                  order by r.nombre",
+                &[],
+            )?;
+            // ⭐ Un `BTreeMap`: `Json::Obj` lo es, y ademas deja las claves
+            //   ordenadas —que es lo que la forma canonica (JCS) pide.
+            let roles: std::collections::BTreeMap<String, Json> = filas
+                .iter()
+                .map(|f| {
+                    let anade: Vec<String> = f.get(3);
+                    (
+                        f.get::<_, String>(0),
+                        Json::obj([
+                            ("que_puede", Json::s(f.get::<_, String>(1))),
+                            // ⭐ La nota va a la pantalla. `SECURITYADMIN` dice
+                            //   ahi que hoy es una carcasa, y que se vea es la
+                            //   unica forma de que un rol vacio no parezca lleno.
+                            ("nota", Json::s(f.get::<_, String>(2))),
+                            ("anade", Json::Arr(anade.into_iter().map(Json::s).collect())),
+                        ]),
+                    )
+                })
+                .collect();
+
+            let asignaciones: Vec<Json> = tx
+                .filas(
+                    "select p.id, pr.rol,
+                            to_char(pr.desde at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
+                            pr.otorgo, p.nombre, p.correo
+                       from iam.pertenencia_rol pr
+                       join iam.persona p on p.id = pr.persona
+                      where pr.organizacion = $1
+                      order by pr.desde",
+                    &[&org],
+                )?
+                .iter()
+                .map(|f| {
+                    Json::obj([
+                        ("sujeto", Json::s(f.get::<_, String>(0))),
+                        ("rol", Json::s(f.get::<_, String>(1))),
+                        ("desde", Json::s(f.get::<_, String>(2))),
+                        // ⭐ Vacio = EL PROVEEDOR, en el aprovisionamiento. Es el
+                        //   unico caso legitimo, y la pantalla lo distingue.
+                        (
+                            "concedido_por",
+                            Json::s(f.get::<_, Option<String>>(3).unwrap_or_default()),
+                        ),
+                        (
+                            "nombre",
+                            Json::s(f.get::<_, Option<String>>(4).unwrap_or_default()),
+                        ),
+                        (
+                            "correo",
+                            Json::s(f.get::<_, Option<String>>(5).unwrap_or_default()),
+                        ),
+                    ])
+                })
+                .collect();
+
+            tx.anotar(
+                "rol:listar",
+                &org,
+                Json::obj([("cuantas", Json::Int(asignaciones.len() as i64))]),
+            )?;
+            Ok(Json::obj([
+                (
+                    "catalogo",
+                    Json::obj([
+                        ("porDefecto", Json::Arr(por_defecto)),
+                        // ⛔ `Json::obj` exige claves `&'static str`, y estas son nombres de
+                        //   rol que salen de la base. Se construye la variante.
+                        ("porRol", Json::Obj(roles)),
+                    ]),
+                ),
+                ("asignaciones", Json::Arr(asignaciones)),
+            ]))
         })
     }
 
@@ -311,6 +426,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/salud", true),
         ("GET", "/organizaciones", con),
         ("GET", "/organizaciones/{org}/miembros", con),
+        ("GET", "/organizaciones/{org}/roles", con),
         ("GET", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/concesiones", con),

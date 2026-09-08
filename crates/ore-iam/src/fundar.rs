@@ -103,7 +103,16 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
     //    unico parcial: si algun dia esto se llamara dos veces con dos personas
     //    distintas, la base lo niega en vez de dejar dos dueños.
     tx.ejecutar(
-        "insert into iam.pertenencia (persona, organizacion, rol) values ($1, $2, 'ORGADMIN')",
+        "insert into iam.pertenencia (persona, organizacion) values ($1, $2)",
+        &[&persona, &org],
+    )?;
+    // ⭐⭐ Y el cargo aparte, con `otorgo` NULL: en una organizacion recien
+    //   fundada NO HAY NADIE DENTRO que pueda conceder. Es el unico caso
+    //   legitimo de la columna, y es el arranque de su `76` §5.
+    tx.ejecutar(
+        "insert into iam.pertenencia_rol (persona, organizacion, rol, otorgo)
+         values ($1, $2, 'ORGADMIN', null)
+         on conflict do nothing",
         &[&persona, &org],
     )?;
 

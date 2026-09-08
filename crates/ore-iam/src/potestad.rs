@@ -42,18 +42,14 @@ pub fn potestades_de(
     sub: &str,
     org: &str,
 ) -> Result<Potestades, String> {
+    // ⭐ Desde la `016` la union vive en `iam.potestades_de_persona`: el estado
+    //   por defecto por pertenecer, mas lo que añada CADA cargo. Que sean
+    //   varios no cambia nada aqui — la union de conjuntos no necesita orden.
     let filas = tx.filas(
-        "select pd.potestad
-           from iam.pertenencia pe
-           join iam.persona p on p.id = pe.persona
-           cross join iam.por_defecto pd
-          where p.emisor = $1 and p.sub = $2 and pe.organizacion = $3
-          union
-         select rp.potestad
-           from iam.pertenencia pe
-           join iam.persona p on p.id = pe.persona
-           join iam.rol_potestad rp on rp.rol = pe.rol
-          where p.emisor = $1 and p.sub = $2 and pe.organizacion = $3",
+        "select pp.potestad
+           from iam.potestades_de_persona pp
+           join iam.persona p on p.id = pp.persona
+          where p.emisor = $1 and p.sub = $2 and pp.organizacion = $3",
         &[&emisor, &sub, &org],
     )?;
     Ok(filas.iter().map(|f| f.get::<_, String>(0)).collect())
