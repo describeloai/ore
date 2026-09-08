@@ -40,7 +40,9 @@
 mod base;
 mod fundar;
 mod id;
+mod potestad;
 mod rutas;
+mod verbos;
 
 use ore_entrada::{http, identidad};
 use std::net::TcpListener;
@@ -192,6 +194,9 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
 
     let servidor = rutas::Servidor {
         base: Mutex::new(base),
+        // El emisor va al servidor porque la identidad de una persona es
+        // `(emisor, sub)`. Sin `--emisor` no hay contra que resolverla.
+        emisor: valor(args, "--emisor").unwrap_or_default(),
         identidad: proveedor,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {

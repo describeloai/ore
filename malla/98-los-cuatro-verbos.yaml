@@ -1,0 +1,99 @@
+# Los cuatro verbos de `ore-iam`, con un token de verdad.
+#
+# Lo que fija, y ninguno se puede afirmar sin el clúster entero en pie:
+#
+#   1  sin token                          401
+#   2  con token, sólo SUS organizaciones
+#   3  invitar                            emite un vale, y lo devuelve UNA vez
+#   4  invitar por encima de uno mismo    SE NIEGA  ← el rodeo
+#   5  conceder y revocar                 y revocar NO borra
+#   6  admitir con otro correo            SE NIEGA
+#   7  y todo dejó huella, incluido MIRAR
+#
+# El 4 es el que más importa. Su motivo lo escribió la plataforma:
+# *«sin esa segunda potestad, un USERADMIN invitaría a un cómplice como
+# ACCOUNTADMIN y tendría por un rodeo el poder que se le niega»*.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verbos
+  namespace: identidad
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: mantenimiento
+        ore.dev/tenant: system
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verbos
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: IAM, value: "http://ore-iam.identidad.svc.cluster.local:8090" }
+            - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: rubix-dev }
+            - { name: ORG, value: "org_1058fd2e40086d21955351f78b04febd" }
+            - name: CLIENTE
+              valueFrom: { secretKeyRef: { name: iam-agente, key: cliente } }
+            - name: SECRETO
+              valueFrom: { secretKeyRef: { name: iam-agente, key: secreto } }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              J='Content-Type: application/json'
+
+              echo "### 1 · sin token"
+              curl -s -o /dev/null -w '  http %{http_code}\n' "$IAM/organizaciones"
+
+              T=$(curl -sSf -X POST "$IDP/realms/$REALM/protocol/openid-connect/token" \
+                    -d grant_type=client_credentials -d "client_id=$CLIENTE" \
+                    -d "client_secret=$SECRETO" \
+                  | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+              A="Authorization: Bearer $T"
+
+              echo
+              echo "### 2 · con token: solo SUS organizaciones"
+              curl -sSf -H "$A" "$IAM/organizaciones"; echo
+
+              echo
+              echo "### 3 · invitar a un miembro"
+              curl -s -o /tmp/inv.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
+                -d '{"correo":"Nuevo@Paladio.IO","papel":"miembro"}' \
+                "$IAM/organizaciones/$ORG/invitaciones"
+              VALE=$(python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print(d.get("vale",""))')
+              python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print("  invitacion",d.get("invitacion"),"· papel",d.get("papel"))'
+
+              echo
+              echo "### 4 · invitar a un DUENO: se niega"
+              curl -s -o /tmp/mal.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
+                -d '{"correo":"complice@paladio.io","papel":"dueno"}' \
+                "$IAM/organizaciones/$ORG/invitaciones"
+              head -c 220 /tmp/mal.json; echo
+
+              echo
+              echo "### 5 · conceder y revocar"
+              curl -s -o /tmp/con.json -w '  conceder http %{http_code}\n' -X POST -H "$A" -H "$J" \
+                -d '{"sujeto":"per_x","recurso":"ventas.Clientes","papel":"lector"}' \
+                "$IAM/organizaciones/$ORG/concesiones"
+              C=$(python3 -c 'import json;print(json.load(open("/tmp/con.json")).get("concesion",""))')
+              curl -s -o /dev/null -w '  revocar  http %{http_code}\n' -X POST -H "$A" \
+                "$IAM/concesiones/$C/revocar"
+              curl -s -o /dev/null -w '  revocar otra vez http %{http_code}\n' -X POST -H "$A" \
+                "$IAM/concesiones/$C/revocar"
+
+              echo
+              echo "### 6 · admitir con un token que no lleva ese correo"
+              curl -s -o /tmp/adm.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
+                -d "{\"vale\":\"$VALE\"}" "$IAM/invitaciones/admitir"
+              head -c 200 /tmp/adm.json; echo
+
+              echo
+              echo "### 7 · y las invitaciones NO devuelven el vale"
+              curl -sSf -H "$A" "$IAM/organizaciones/$ORG/invitaciones" | head -c 240; echo
+          resources:
+            requests: {cpu: "100m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}

@@ -229,9 +229,16 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
+        # El inquilino, para pedir un token.
         - namespaceSelector:
             matchLabels:
               ore.dev/tenant: demo
+        # Y el propio plano de identidad: `ore-iam` y el mantenimiento viven
+        # aqui, y tienen que poder hablar con su emisor. Faltaba, y el sintoma
+        # fue un tiempo de espera de 135 s pidiendo un token desde dos metros.
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: identidad
       ports:
         - protocol: TCP
           port: 8080

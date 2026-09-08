@@ -1157,6 +1157,7 @@ dependencies = [
  "ore-core",
  "ore-entrada",
  "postgres",
+ "sha2 0.10.9",
 ]
 
 [[package]]

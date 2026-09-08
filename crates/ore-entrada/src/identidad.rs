@@ -44,6 +44,13 @@ use std::collections::BTreeMap;
 pub struct Identidad {
     pub persona: String,
     pub agente: Option<String>,
+    /// El correo que el emisor afirma, si lo afirma.
+    ///
+    /// ⚠️ Es una COPIA de lo que dijo el emisor, no una verdad nuestra — igual
+    /// que `iam.persona.correo`. Sirve para una cosa concreta: comprobar que
+    /// un vale de invitación es para quien lo presenta. Una invitación a `a@x`
+    /// redimida por `b@y` es un traspaso que nadie autorizó.
+    pub correo: Option<String>,
 }
 
 /// Por qué no hay sujeto.
@@ -99,6 +106,9 @@ pub fn por_cabecera() -> Proveedor {
         Ok(Identidad {
             persona: persona.to_string(),
             agente,
+            // El modo de banco no trae correo: es lo que hace que `admitir` no
+            // se pueda ejercitar con el, y eso es correcto.
+            correo: None,
         })
     })
 }

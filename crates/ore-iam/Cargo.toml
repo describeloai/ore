@@ -36,3 +36,6 @@ ore-entrada = { path = "../ore-entrada" }
 # del clúster, que es la misma elección que ya hace Keycloak contra esta misma
 # base. Y sin TLS no entra ni una crate de FFI.
 postgres = { version = "0.19", default-features = false }
+
+# El resumen de un vale de invitacion. El vale nunca se guarda.
+sha2.workspace = true

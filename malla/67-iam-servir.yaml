@@ -1,0 +1,123 @@
+# `ore-iam servir` — la cara HTTP del plano de identidad.
+#
+# ── Lo que esta cara puede y la de línea de órdenes no ──────────────────────
+#
+# Todo menos `fundar`. Y al revés: `fundar` no está aquí porque no habría con
+# qué autenticarlo — la primera organización se crea cuando aún no existe
+# ninguna persona con potestad.
+#
+#   invitar    emite un vale · exige `administrador` · no por encima de uno mismo
+#   admitir    redime un vale · el correo del token tiene que ser el del vale
+#   conceder   un papel sobre un recurso · misma guarda
+#   revocar    y NO borra
+#
+# ── ⭐ La guarda que no es obvia ────────────────────────────────────────────
+#
+# **Nadie puede otorgar un papel más alto que el suyo.** Sin ella, `invitar` es
+# una escalada de privilegio con forma de cortesía: un administrador invita a un
+# cómplice como dueño y tiene por un rodeo lo que no se le da de frente. El
+# motivo es suyo —`021-la-invitacion.sql`— y la cicatriz también.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-iam
+  namespace: identidad
+spec:
+  selector:
+    ore.dev/rol: iam-servidor
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-iam
+  namespace: identidad
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: iam-servidor
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: iam-servidor
+        ore.dev/tenant: system
+    spec:
+      serviceAccountName: ore-iam
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      volumes:
+        # Las llaves del realm, del mismo ConfigMap que refresca el CronJob.
+        # ⚠️ Vive en `t-demo` y esto en `identidad`: un ConfigMap no cruza
+        #   namespaces, así que hay una copia. Se dice porque una copia que
+        #   nadie refresca es una llave vieja esperando a caducar — el refresco
+        #   tiene que escribir en los dos, y hoy escribe en uno.
+        - name: llaves
+          configMap:
+            name: jwks
+      containers:
+        - name: ore-iam
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-iam:main
+          imagePullPolicy: Always
+          args:
+            - servir
+            - --bind
+            - 0.0.0.0:8090
+            - --identidad
+            - oidc
+            # El emisor de DESARROLLO: es contra el que entra la consola local,
+            # y es donde vive `luna`.
+            - --emisor
+            - https://login.paladio.io/realms/rubix-dev
+            - --audiencia
+            - ore-serve
+            - --jwks
+            - /llaves/jwks.json
+          env:
+            - name: IAM_URL
+              valueFrom: { secretKeyRef: { name: iam-url, key: url } }
+          volumeMounts:
+            - name: llaves
+              mountPath: /llaves
+              readOnly: true
+          ports:
+            - containerPort: 8090
+          readinessProbe:
+            httpGet: { path: /salud, port: 8090 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: 64Mi}
+            limits:   {cpu: "300m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+# Quién puede hablar con él: de momento, sólo desde dentro de `identidad`.
+# Publicarlo es otra decisión — administra personas.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-ore-iam
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: iam-servidor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: identidad
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/tenant: demo
+      ports:
+        - protocol: TCP
+          port: 8090

@@ -209,7 +209,11 @@ impl Emisor {
             .and_then(|(_, v)| v.as_str())
             .map(str::to_string);
 
-        Ok(Identidad { persona, agente })
+        Ok(Identidad {
+            persona,
+            agente,
+            correo: cadena(&cuerpo, "email"),
+        })
     }
 }
 
