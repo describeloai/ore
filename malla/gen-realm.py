@@ -155,6 +155,38 @@ CABECERA = """# LOS REALMS — GENERADOS. No se editan aqui.
 """
 
 
+# ── ⛔⛔ EL AMBITO `basic`, Y COSTO UN TOKEN ANONIMO ────────────────────────
+#
+#   Desde Keycloak 24 el `sub` **dejo de estar cableado** en el constructor del
+#   access token y vive en el ambito `basic`. Su plantilla le fija a
+#   `rubix-consola` la lista entera de ambitos a mano —
+#
+#       ['organization', 'profile', 'email', 'roles', 'web-origins']
+#
+#   — y `basic` no esta. Fijar una lista completa es exactamente lo que hace que
+#   un valor por defecto NUEVO no llegue nunca.
+#
+#   ⭐ El sintoma, medido el 2026-09-08: la consola entraba bien, el token venia
+#     bien firmado, con el emisor correcto y con nuestra audiencia dentro… y
+#     `ore-iam` lo rechazaba con **«el token no dice de quien es»**. Un token
+#     valido y ANONIMO, que es de las cosas que mas cuestan de creer.
+#
+#   ⚠️ Y afecta solo a `rubix-consola`: los demas clientes no fijan la lista, asi
+#     que heredan el defecto del realm y `basic` les llega solo.
+AMBITO_DEL_SUJETO = "basic"
+
+
+def con_sujeto(realm):
+    """Se asegura de que el token lleve `sub`. Idempotente."""
+    for c in realm.get("clients", []):
+        ambitos = c.get("defaultClientScopes")
+        # ⛔ Solo si la lista esta FIJADA. Si el cliente no la declara, hereda la
+        #   del realm y meter mano seria empezar a fijarla nosotros.
+        if ambitos is not None and AMBITO_DEL_SUJETO not in ambitos:
+            ambitos.append(AMBITO_DEL_SUJETO)
+    return realm
+
+
 def con_ore(realm):
     """Anade la audiencia de ORE. Idempotente: si ya esta, no duplica."""
     clientes = realm.setdefault("clients", [])
@@ -175,6 +207,9 @@ documentos = []
 for f in PLANTILLAS:
     realm = json.loads(pathlib.Path(f).read_text(encoding="utf-8"))
     nombre = realm["realm"]
+    # ⭐ A los tres y sin condicion: un token sin `sub` no sirve para nada, sea
+    #   cual sea el realm.
+    realm = con_sujeto(realm)
     if nombre in REALMS_CON_ORE:
         realm = con_ore(realm)
     documentos.append({

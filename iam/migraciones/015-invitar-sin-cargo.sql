@@ -17,6 +17,9 @@
 --   El síntoma, medido en CI: `{"error":"db error"}` — un 422 sin una sola
 --   pista, que es su propio hallazgo aparte.
 
+-- ⚠️ Desde que la `014` se corrigio, esto ya lo hace ella. Se queda porque es
+--   idempotente y porque su cabecera es el registro de POR QUE hizo falta: la
+--   mitad nulable que no servia de nada. Borrarlo dejaria la historia coja.
 alter table iam.invitacion alter column rol drop not null;
 
 comment on column iam.invitacion.rol is

@@ -203,6 +203,18 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
 
+      # ⛔ ANTES que los verbos: si una migracion no sobrevive a una base con
+      #   filas, lo que hagan los verbos encima da igual. Y es el unico paso
+      #   que corre las migraciones sobre datos — el resto nace de una base
+      #   vacia, que es como se colaron dos fallos de orden el 2026-09-08.
+      - name: y las migraciones aguantan una base con datos
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: x
+        run: bash pruebas-de-fuego/las-migraciones.sh
+
       - name: los cuatro verbos, sus negativas y el rodeo
         env:
           PG_URL: postgres://postgres:x@localhost:5432

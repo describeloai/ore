@@ -111,17 +111,30 @@ on conflict (nombre) do nothing;
 alter table iam.rol drop column if exists ordinal;
 alter table iam.rol add column if not exists nota text;
 
--- ⛔ Antes de tocar el censo hay que soltar lo que apunta a él.
+-- ⛔ Antes de tocar el censo hay que soltar lo que apunta a él. LAS DOS
+--   columnas: `pertenencia` e `invitacion`.
+--
+-- ⚠️⚠️ CORREGIDO EL 2026-09-08, Y LA INMUTABILIDAD SE SUSPENDE UNA VEZ.
+--
+--   Esto sólo soltaba `pertenencia`, y los `update … set rol = null` de abajo
+--   tocaban ADEMÁS `invitacion`, cuyo `not null` no se quitaba hasta la `015`.
+--   Contra una base con filas eso revienta:
+--
+--       ERROR: null value in column "rol" of relation "invitacion"
+--
+--   ⭐ Y CI no podía verlo: su base nace vacía en cada vuelta, asi que el
+--     `update` no tocaba ni una fila. **Una suite de migraciones que sólo corre
+--     contra una base vacía no prueba migraciones: prueba sintaxis.** Lo
+--     descubrió el clúster, que sí tenía invitaciones de las pruebas.
+--
+--   ⇒ Se edita en vez de escribir una `016` porque la `016` no llegaría a
+--     correr nunca: la `014` falla antes. Y se puede: el libro del clúster se
+--     queda en la `013` —comprobado— así que **ninguna base que sobreviva ha
+--     corrido ésta**. La regla protege a las que ya la corrieron, y no hay
+--     ninguna. La próxima vez que alguien quiera editar una aplicada, la
+--     respuesta es NO.
 alter table iam.pertenencia alter column rol drop not null;
-
--- `null` = pertenece y nada mas. Los dos roles que no aportaban potestades de
--- este plano se convierten en eso, que es lo que siempre significaron.
-update iam.pertenencia set rol = null where rol in ('lector', 'miembro');
-update iam.invitacion  set rol = null where rol in ('lector', 'miembro');
-update iam.pertenencia set rol = 'ACCOUNTADMIN' where rol = 'administrador';
-update iam.invitacion  set rol = 'ACCOUNTADMIN' where rol = 'administrador';
-update iam.pertenencia set rol = 'ORGADMIN'     where rol = 'dueno';
-update iam.invitacion  set rol = 'ORGADMIN'     where rol = 'dueno';
+alter table iam.invitacion  alter column rol drop not null;
 
 insert into iam.rol (nombre, que_puede, nota) values
   ('ORGADMIN', 'ademas traspasa la organizacion. Es UNO',
@@ -133,6 +146,27 @@ insert into iam.rol (nombre, que_puede, nota) values
   ('SECURITYADMIN', 'vigila y corta',
    'CARCASA HOY: ninguna de sus potestades se ejerce todavia. Entra igual porque la separacion que representa —cortar sin poder nombrar— es una decision que no queremos redescubrir a las 3 de la mañana.')
 on conflict (nombre) do update set que_puede = excluded.que_puede, nota = excluded.nota;
+
+-- ⚠️⚠️ Y EL REMAPEO VA AQUI, DESPUES DEL `insert` Y ANTES DEL `delete`.
+--
+--   Estaba ARRIBA, antes de crear los roles nuevos, y contra una base con filas
+--   eso revienta:
+--
+--       ERROR: Key (rol)=(ORGADMIN) is not present in table "rol"
+--
+--   Es el SEGUNDO fallo de orden de esta migracion y de la misma familia que el
+--   primero: los dos invisibles para CI, porque durante las migraciones su base
+--   esta vacia y ningun `update` toca una fila. El orden correcto lo dicta la
+--   clave ajena — crear, remapear, borrar — y no se puede saltar ninguno.
+--
+-- `null` = pertenece y nada mas. Los dos roles que no aportaban potestades de
+-- este plano se convierten en eso, que es lo que siempre significaron.
+update iam.pertenencia set rol = null where rol in ('lector', 'miembro');
+update iam.invitacion  set rol = null where rol in ('lector', 'miembro');
+update iam.pertenencia set rol = 'ACCOUNTADMIN' where rol = 'administrador';
+update iam.invitacion  set rol = 'ACCOUNTADMIN' where rol = 'administrador';
+update iam.pertenencia set rol = 'ORGADMIN'     where rol = 'dueno';
+update iam.invitacion  set rol = 'ORGADMIN'     where rol = 'dueno';
 
 delete from iam.rol where nombre in ('lector', 'miembro', 'administrador', 'dueno');
 
