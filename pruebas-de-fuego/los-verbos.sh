@@ -233,9 +233,13 @@ dice "8 · un vale de otro no sirve"
 # ── 9 · y mirar deja huella ─────────────────────────────────────────────────
 # La idea de su `022`: la potestad mas barata del catalogo es tambien la mas
 # intima. Un verbo de lectura sin rastro es un agujero con forma de optimizacion.
-MIRO=$(psql "$URL" -qtAc "select count(*) from iam.huella where accion = 'organizacion:listar'")
+# ⚠️ La columna es `operacion`. Lo primero que escribi fue `accion`, psql erro,
+#   la cuenta salio vacia y el paso fallo — CERRADO, que es como tiene que
+#   fallar una guarda que no puede leer lo que vigila.
+MIRO=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'organizacion:listar'")   || falla "9 · no se pudo leer la huella"
 [ "${MIRO:-0}" -ge 1 ] || falla "9 · ⛔ LISTAR NO DEJO HUELLA"
 TOTAL=$(psql "$URL" -qtAc "select count(*) from iam.huella")
+[ "${TOTAL:-0}" -ge "$MIRO" ] || falla "9 · la cuenta de huellas no cuadra"
 dice "9 · $TOTAL huellas, $MIRO de ellas por MIRAR"
 
 echo "✓ los cuatro verbos, sus dos negativas y el rodeo."
