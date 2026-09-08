@@ -139,3 +139,57 @@ Cuatro hechos que no se pueden afirmar sin un socket:
 Y 14 pruebas dentro del crate, de las que tres son el diseño y no un detalle: que un verbo que
 existe y no se listó **no pasa**, que `package` a secas no pasa y `package new` sí, y que
 `Ausente` e `Invalida` no se colapsan.
+
+---
+
+## ✏️ Enmienda del 2026-09-08 — la identidad, y de dónde sale la llave
+
+`--identidad oidc` verifica un token del realm. Lo que este ADR añade es **una
+decisión que no era obvia y que da forma al despliegue**:
+
+> **El juego de llaves llega como un fichero. Este proceso no va a buscarlo.**
+
+Es la cuarta vez que el árbol reparte lo mismo: leer un origen es de
+`ore-read-<tipo>`, subir un artefacto de `ore-store-<tipo>`, atender a un
+cliente de `ore-serve`, y **traer el JWKS de un Job con la imagen que tiene
+TLS**. Compra tres cosas concretas: el plano de control no necesita una pila
+TLS de salida —su `NetworkPolicy` sigue abriendo sólo la forja y el DNS—, su
+arranque no depende de que el IdP esté vivo, y la rotación de llaves es un
+despliegue visible en vez de un temporizador que un día falla en silencio.
+
+**El precio, dicho:** si nadie refresca el fichero, una rotación del realm deja
+fuera a todo el mundo. Quien lo refresca es `malla/50-jwks.yaml`.
+
+### Lo que se comprueba de un token, y en qué orden
+
+```text
+1  la forma        tres partes
+2  el algoritmo    contra una LISTA de permitidos — `none` no es un algoritmo
+3  la llave        la del `kid`
+4  la FIRMA        antes de creerse un solo campo del cuerpo
+5  el emisor       `iss` exacto
+6  la audiencia    la NUESTRA — un token del mismo realm para otro servicio no vale
+7  el reloj        `exp` y `nbf`, con 60s de holgura
+```
+
+El orden no es de estilo: **leer `iss` de un token sin verificar es leerle un
+dato a quien lo escribió**. Y el paso 6 es el que la gente olvida — el realm es
+compartido, así que un token perfectamente firmado de `rubix-consola` llegaría
+aquí sin nada malo salvo que no es para nosotros.
+
+### Y la dependencia que entra
+
+`RS256`, medido contra el generador de realms de la plataforma. `ed25519-compact`
+—que ya estaba— no sirve: es otra curva. Entra `rsa`, Rust puro y sin FFI, y
+**no se escribe a mano**: equivocarse en el relleno de PKCS#1 no hace que las
+firmas dejen de verificar, hace que verifiquen firmas inválidas. Es la misma
+frase que `ore-core` ya tiene escrita para Ed25519.
+
+### Lo que NO está encendido
+
+El IdP vive en el otro clúster y está suspendido: `login.paladio.io` contesta
+`503`. El código está construido y probado —34 pruebas en el crate y
+`pruebas-de-fuego/servidor-oidc.sh` acuñando tokens de verdad contra un socket
+de verdad—, y encenderlo necesita dos cosas que no son código: **levantar el
+IdP** y **crear el cliente `ore-serve` en el realm**, que es una audiencia con
+todos los flujos apagados, igual que `rubix-api`.

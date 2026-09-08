@@ -20,3 +20,21 @@ description = "El plano de control de ORE: atiende a un cliente y delega lo que 
 # mismo que lee un documento OOS. La misma economía que `ore dev`
 # (ADR 0002 · `ore-cli/src/mcp.rs`).
 ore-core = { path = "../ore-core" }
+
+# ── Lo único que se trae de fuera, y por qué ────────────────────────────────
+#
+# Verificar un token del realm. Medido contra el generador de realms de la
+# plataforma —`deploy/identidad/realm.mjs`, dos veces—: **`RS256`**. Así que
+# `ed25519-compact`, que ya está en el árbol, no sirve: es otra curva y otra
+# aritmética.
+#
+# Y no se escribe a mano. La verificación RSA es `s^e mod n` más comparar el
+# relleno, y suena asequible — pero el modo de fallo de equivocarse en el
+# relleno **no es que las firmas dejen de verificar: es que verifiquen firmas
+# inválidas**, en silencio y en la dirección insegura. Es la misma frase que
+# `ore-core` ya tiene escrita para Ed25519, y aquí vale igual.
+#
+# `rsa` y `sha2` son Rust puro, sin FFI y sin red. Sólo se usa la mitad de
+# verificar; firmar necesita una clave privada y aquí no hay ninguna.
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
+sha2.workspace = true

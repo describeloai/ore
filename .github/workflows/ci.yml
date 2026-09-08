@@ -151,6 +151,13 @@ jobs:
       - name: y con el arbol en una forja
         run: bash pruebas-de-fuego/servidor-forja.sh
 
+      # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
+      # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
+      # cabecera `Authorization` y que un token bien firmado del MISMO realm
+      # para otro servicio no entra.
+      - name: y la puerta pide un token de verdad
+        run: bash pruebas-de-fuego/servidor-oidc.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:

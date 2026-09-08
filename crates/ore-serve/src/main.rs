@@ -43,6 +43,7 @@ mod git;
 mod http;
 mod identidad;
 mod mando;
+mod oidc;
 mod rutas;
 
 use std::net::TcpListener;
@@ -61,8 +62,13 @@ ore-serve — el plano de control de ORE
   --bind DIRECCION       dónde escuchar (por defecto, 127.0.0.1:8080)
   --ore RUTA             el binario `ore` (por defecto, `ore` del PATH)
   --identidad MODO       de dónde sale el sujeto. Sin esto, las rutas de datos
-                         NO SE MONTAN. Modos: cabecera
+                         NO SE MONTAN. Modos: cabecera, oidc
   --no-es-produccion     segundo interruptor del modo de banco
+  --emisor URL           `oidc`: el emisor esperado, `https://…/realms/<realm>`
+  --audiencia NOMBRE     `oidc`: NUESTRA audiencia. Un token del mismo realm
+                         para otro servicio no vale aquí
+  --jwks FICHERO         `oidc`: el juego de llaves. Un FICHERO, no una URL:
+                         este proceso no va a buscarlas — ver `oidc.rs`
   -h, --help             esto
 ";
 
@@ -73,6 +79,9 @@ struct Opciones {
     ore: PathBuf,
     identidad: Option<String>,
     no_es_produccion: bool,
+    emisor: Option<String>,
+    audiencia: Option<String>,
+    jwks: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -83,6 +92,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         ore: PathBuf::from("ore"),
         identidad: None,
         no_es_produccion: false,
+        emisor: None,
+        audiencia: None,
+        jwks: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -98,6 +110,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--ore" => o.ore = PathBuf::from(valor("--ore")?),
             "--identidad" => o.identidad = Some(valor("--identidad")?),
             "--no-es-produccion" => o.no_es_produccion = true,
+            "--emisor" => o.emisor = Some(valor("--emisor")?),
+            "--audiencia" => o.audiencia = Some(valor("--audiencia")?),
+            "--jwks" => o.jwks = Some(PathBuf::from(valor("--jwks")?)),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -117,7 +132,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let proveedor = match identidad::resolver(o.identidad.as_deref(), o.no_es_produccion) {
+    let proveedor = match identidad::resolver(&identidad::Ajustes {
+        modo: o.identidad.as_deref(),
+        no_es_produccion: o.no_es_produccion,
+        emisor: o.emisor.as_deref(),
+        audiencia: o.audiencia.as_deref(),
+        jwks: o.jwks.as_deref(),
+    }) {
         Ok(p) => p,
         Err(m) => {
             eprintln!("✗ {m}");
@@ -170,9 +191,16 @@ fn main() -> ExitCode {
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
     eprintln!(
         "  identidad    {}",
-        match (&o.identidad, o.no_es_produccion) {
-            (Some(m), true) => format!("{m}  ⚠️  MODO DE BANCO: el sujeto lo escribe quien llama"),
-            (Some(m), false) => m.clone(),
+        match (o.identidad.as_deref(), o.no_es_produccion) {
+            (Some("cabecera"), true) => {
+                "cabecera  ⚠️  MODO DE BANCO: el sujeto lo escribe quien llama".to_string()
+            }
+            (Some("oidc"), _) => format!(
+                "oidc · emisor {} · audiencia {}",
+                o.emisor.as_deref().unwrap_or("?"),
+                o.audiencia.as_deref().unwrap_or("?")
+            ),
+            (Some(m), _) => m.to_string(),
             (None, _) => "sin configurar".into(),
         }
     );

@@ -1,0 +1,224 @@
+# El juego de llaves del realm, traído por quien SÍ puede salir.
+#
+# ── ⛔⛔ ESTO NO ESTÁ APLICADO, Y HAY QUE DECIR POR QUÉ ───────────────────────
+#
+# `https://login.paladio.io/realms/rubix/.well-known/openid-configuration`
+# devuelve **503**. El IdP vive en el otro clúster —`trino-k8s` /
+# `trino-compute-clone`, namespace `rubix`— y está suspendido: el pool a cero y
+# las dos Cloud SQL en `activation-policy NEVER`. Aplicar esto hoy dejaría un
+# `CronJob` fallando cada hora contra un servidor apagado, que es ruido con
+# forma de alarma.
+#
+# Lo que falta para encenderlo son **dos cosas, y ninguna es código**:
+#
+#   1. levantar el IdP:  bash infra/gke/rubix-suspend.sh on   (en el otro repo,
+#      con la cuenta `help@node-web.com`)
+#   2. crear el cliente `ore-serve` en el realm. Es una AUDIENCIA y nada más
+#      —todos los flujos apagados—, con la misma forma que `rubix-api` ya tiene:
+#
+#        {"clientId":"ore-serve","publicClient":false,"standardFlowEnabled":false,
+#         "serviceAccountsEnabled":false,"directAccessGrantsEnabled":false,
+#         "implicitFlowEnabled":false}
+#
+#      Y que la consola pida ese `aud` al pedir su token. Un cliente que no es
+#      audiencia de nadie no sirve para nada.
+#
+# ── Por qué el servidor no se las baja él ───────────────────────────────────
+#
+# Es la cuarta vez que este árbol reparte lo mismo:
+#
+#   leer un origen        `ore-read-<tipo>`, no `ore`
+#   subir un artefacto    `ore-store-<tipo>`, no `ore`
+#   atender a un cliente  `ore-serve`, no `ore`
+#   **traer el JWKS**     **esto, no `ore-serve`**
+#
+# Y compra tres cosas: el plano de control no necesita una pila TLS de salida
+# —su `NetworkPolicy` sigue abriendo sólo la forja y el DNS—, su arranque no
+# depende de que el IdP esté vivo, y la rotación de llaves es un despliegue
+# visible en vez de un temporizador que un día falla en silencio.
+#
+# ⚠️ El precio: **si esto no corre, una rotación del realm deja fuera a todo el
+# mundo.** Por eso el `CronJob` existe y por eso su fallo tiene que verse.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwks
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+data:
+  # La semilla: un juego vacío. `ore-serve` se NIEGA a arrancar con esto —
+  # `Llaves::leer` exige al menos una llave RSA de firma utilizable— y eso es
+  # correcto: un plano de control que arrancara con un juego vacío aceptaría
+  # cero tokens y lo diría como si fuera un problema de quien llama.
+  jwks.json: |
+    {"keys":[]}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: refresco-jwks
+  namespace: t-demo
+---
+# Lo MÍNIMO: escribir un ConfigMap, y sólo ése.
+#
+# `resourceNames` no es adorno. Sin él, este `Role` deja escribir cualquier
+# ConfigMap del namespace, incluido el de las respuestas de `review` — y un
+# trabajo que trae una llave de fuera no tiene por qué poder tocar decisiones
+# de gobierno.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: escribe-jwks
+  namespace: t-demo
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [jwks]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: escribe-jwks
+  namespace: t-demo
+subjects:
+  - kind: ServiceAccount
+    name: refresco-jwks
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: escribe-jwks
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: refresco-jwks
+  namespace: t-demo
+spec:
+  # Cada seis horas. Keycloak no rota sus llaves a menudo y lo anuncia
+  # publicando las dos durante un tiempo, así que la ventana sobra. Lo que NO
+  # sobra es que falle en silencio: `backoffLimit: 0` y sin reintentos, para
+  # que un fallo quede como un Job fallido y no como un reintento eterno.
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            # Un rol PROPIO, y no `driver`. Un driver lee el origen de un
+            # cliente; esto trae una llave pública de un IdP. Compartir la
+            # etiqueta habría compartido la política, y entonces «quién puede
+            # salir» dejaría de contestarse mirando el rol.
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: demo
+        spec:
+          restartPolicy: Never
+          # ⭐ MEDIDO, y no es una preferencia: un pod en `jobs-p` **no alcanza
+          # internet**. Ese pool tiene `enablePrivateNodes: true` y no hay Cloud
+          # NAT, así que sólo llega a las APIs de Google por Private Google
+          # Access. Comprobado: `login.paladio.io` da tiempo de espera desde
+          # ahí y contesta `503` —el IdP, suspendido— desde `default-pool`.
+          #
+          # El IdP es el PRIMER origen no-Google que aparece en esta malla. El
+          # día que haya un segundo, la respuesta deja de ser un `nodeSelector`
+          # y pasa a ser Cloud NAT.
+          nodeSelector:
+            cloud.google.com/gke-nodepool: default-pool
+          serviceAccountName: refresco-jwks
+          containers:
+            - name: refresco
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: EMISOR, value: "https://login.paladio.io/realms/rubix" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  API=https://kubernetes.default.svc
+                  SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+                  # 1 · el descubrimiento dice DÓNDE están las llaves. No se
+                  #     compone la URL a mano: un emisor puede servirlas donde
+                  #     quiera, y el que decide es él.
+                  URL=$(curl -sSf "$EMISOR/.well-known/openid-configuration" \
+                        | tr ',' '\n' | grep '"jwks_uri"' | cut -d'"' -f4)
+                  [ -n "$URL" ] || { echo "el emisor no publica jwks_uri"; exit 1; }
+                  echo "jwks_uri: $URL"
+
+                  # 2 · y se traen.
+                  curl -sSf "$URL" -o /tmp/jwks.json
+                  grep -q '"kty"' /tmp/jwks.json || { echo "lo que llego no es un JWKS"; exit 1; }
+                  echo "llaves: $(tr ',' '\n' < /tmp/jwks.json | grep -c '"kid"')"
+
+                  # 3 · al ConfigMap, por la API y con el token del pod.
+                  #     `strategic-merge` sobre `data` y nada mas: no se toca
+                  #     ninguna otra clave del objeto.
+                  python3 - <<'PY' > /tmp/parche.json
+                  import json
+                  print(json.dumps({"data": {"jwks.json": open("/tmp/jwks.json").read()}}))
+                  PY
+                  curl -sSf -X PATCH \
+                    -H "Authorization: Bearer $(cat $SA/token)" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    --cacert "$SA/ca.crt" \
+                    --data-binary @/tmp/parche.json \
+                    "$API/api/v1/namespaces/t-demo/configmaps/jwks" > /dev/null
+                  echo "ok · el juego de llaves esta al dia"
+              resources:
+                requests: {cpu: "100m", memory: 128Mi}
+                limits:   {cpu: "500m", memory: 256Mi}
+---
+# ── Por dónde sale el mantenimiento ─────────────────────────────────────────
+#
+# Tres destinos, y ni uno más.
+#
+# ⭐ El de la API costó tres sondas y merece quedar escrito: **no basta con
+# permitir la ClusterIP del servicio `kubernetes`**. Con Dataplane V2 la
+# petición sale del pod hacia el NODO, que es quien la lleva al maestro — así
+# que permitir `10.30.0.1/32` sola da tiempo de espera, y lo que la desbloquea
+# es la subred de nodos, `10.10.0.0/20`.
+#
+# Medido con `egress: - {}` para separar «no llega por política» de «no llega
+# por ruta»: con todo abierto contestaba `200`, así que era la política.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-mantenimiento
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: mantenimiento
+  policyTypes: [Egress]
+  egress:
+    # El DNS del clúster.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # La API de Kubernetes, para escribir el ConfigMap.
+    - to:
+        - ipBlock: { cidr: 10.30.0.1/32 }
+        - ipBlock: { cidr: 10.10.0.0/20 }
+      ports: [{protocol: TCP, port: 443}]
+    # Y el emisor. Es lo mismo que la política del driver concede —el mundo
+    # menos lo privado— y se repite aquí en vez de reusarla porque este pod no
+    # es un driver: cuando el paso 2 estreche la salida del driver a
+    # `restricted.googleapis.com`, ésta NO tiene que estrecharse con él.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]

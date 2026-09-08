@@ -117,9 +117,26 @@ fn comprobar(v: &str) -> Result<(), SinIdentidad> {
     Ok(())
 }
 
-/// Los modos que se pueden pedir por su nombre. Hoy hay uno, y el día que haya
-/// un `oidc` esta lista es donde se ve que son dos cosas distintas.
-pub const MODOS: &[&str] = &["cabecera"];
+/// Los dos modos, y la lista es donde se ve que son cosas distintas.
+///
+/// `cabecera` **afirma** quién pide; `oidc` lo **demuestra**. Que compartan un
+/// puerto no los hace equivalentes, y por eso uno pide dos interruptores para
+/// encenderse y el otro no pide ninguno.
+pub const MODOS: &[&str] = &["cabecera", "oidc"];
+
+/// Lo que hace falta para resolver un modo.
+pub struct Ajustes<'a> {
+    pub modo: Option<&'a str>,
+    pub no_es_produccion: bool,
+    /// El emisor esperado: `https://…/realms/<realm>`.
+    pub emisor: Option<&'a str>,
+    /// **Nuestra** audiencia. Un token del mismo realm para otro servicio no
+    /// vale aquí, y sin esto no habría forma de decirlo.
+    pub audiencia: Option<&'a str>,
+    /// El fichero con el juego de llaves. **No una URL**: este proceso no va a
+    /// buscarlas. Ver la cabecera de `oidc.rs`.
+    pub jwks: Option<&'a std::path::Path>,
+}
 
 /// Resuelve el modo pedido. `None` **no es un error**: es el estado por defecto,
 /// y quien lo reciba tiene que dejar las rutas de datos sin montar.
@@ -127,20 +144,66 @@ pub const MODOS: &[&str] = &["cabecera"];
 /// `cabecera` exige el segundo interruptor, y se niega sin él con el motivo
 /// escrito: no es una comprobación de higiene, es la que impide que el modo de
 /// prueba llegue a producción por omisión.
-pub fn resolver(modo: Option<&str>, no_es_produccion: bool) -> Result<Option<Proveedor>, String> {
-    match modo {
+///
+/// `oidc` exige las tres piezas —emisor, audiencia y llaves— y se niega si
+/// falta una. **Ninguna tiene defecto**: un emisor por defecto sería confiar en
+/// alguien que nadie eligió, y una audiencia por defecto sería aceptar
+/// cualquier token del realm.
+pub fn resolver(a: &Ajustes) -> Result<Option<Proveedor>, String> {
+    match a.modo {
         None => Ok(None),
-        Some("cabecera") if no_es_produccion => Ok(Some(por_cabecera())),
+        Some("cabecera") if a.no_es_produccion => Ok(Some(por_cabecera())),
         Some("cabecera") => Err(
             "`--identidad cabecera` es el modo de banco: el sujeto lo escribe quien llama.\n\
              Para usarlo hay que declararlo además con `--no-es-produccion`."
                 .into(),
         ),
+        Some("oidc") => {
+            let emisor = a.emisor.ok_or("`--identidad oidc` necesita `--emisor`")?;
+            let audiencia = a.audiencia.ok_or(
+                "`--identidad oidc` necesita `--audiencia`: sin ella valdría cualquier token del realm",
+            )?;
+            let jwks = a
+                .jwks
+                .ok_or("`--identidad oidc` necesita `--jwks <fichero>`")?;
+            let texto = std::fs::read_to_string(jwks)
+                .map_err(|e| format!("no se pudo leer `{}`: {e}", jwks.display()))?;
+            let llaves = crate::oidc::Llaves::leer(&texto)?;
+            eprintln!(
+                "  llaves       {} en `{}`",
+                llaves.cuantas(),
+                jwks.display()
+            );
+            let emisor = crate::oidc::Emisor {
+                iss: emisor.to_string(),
+                aud: audiencia.to_string(),
+                llaves,
+            };
+            Ok(Some(Box::new(move |cabeceras| {
+                let cabecera = cabeceras
+                    .get("authorization")
+                    .ok_or(SinIdentidad::Ausente)?;
+                emisor.verificar(cabecera, ahora())
+            })))
+        }
         Some(otro) => Err(format!(
             "modo de identidad `{otro}` desconocido; los que hay: {}",
             MODOS.join(", ")
         )),
     }
+}
+
+/// El instante, en segundos desde la época.
+///
+/// Aquí SÍ se lee el reloj, y conviene decir por qué eso no contradice la
+/// invariante del compilador: `ore-core` es puro porque compilar el mismo
+/// documento dos veces tiene que dar lo mismo. Comprobar si un token caducó es
+/// justo lo contrario — la respuesta correcta **depende de cuándo se pregunta**.
+fn ahora() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -154,22 +217,93 @@ mod pruebas {
             .collect()
     }
 
+    fn ajustes(modo: Option<&'static str>, no_es_produccion: bool) -> Ajustes<'static> {
+        Ajustes {
+            modo,
+            no_es_produccion,
+            emisor: None,
+            audiencia: None,
+            jwks: None,
+        }
+    }
+
     #[test]
     fn sin_modo_no_hay_proveedor() {
-        assert!(resolver(None, true).unwrap().is_none());
-        assert!(resolver(None, false).unwrap().is_none());
+        assert!(resolver(&ajustes(None, true)).unwrap().is_none());
+        assert!(resolver(&ajustes(None, false)).unwrap().is_none());
     }
 
     /// El segundo interruptor no es decorativo.
     #[test]
     fn el_modo_de_banco_exige_los_dos_interruptores() {
-        assert!(resolver(Some("cabecera"), false).is_err());
-        assert!(resolver(Some("cabecera"), true).unwrap().is_some());
+        assert!(resolver(&ajustes(Some("cabecera"), false)).is_err());
+        assert!(
+            resolver(&ajustes(Some("cabecera"), true))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
     fn un_modo_que_no_existe_se_niega() {
-        assert!(resolver(Some("oidc"), true).is_err());
+        assert!(resolver(&ajustes(Some("inventado"), true)).is_err());
+    }
+
+    /// Las tres piezas de `oidc` no tienen defecto, y cada una falta por su
+    /// cuenta: un emisor por defecto sería confiar en quien nadie eligió, y una
+    /// audiencia por defecto sería aceptar cualquier token del realm.
+    #[test]
+    fn oidc_exige_sus_tres_piezas() {
+        let sin_nada = Ajustes {
+            modo: Some("oidc"),
+            no_es_produccion: false,
+            emisor: None,
+            audiencia: None,
+            jwks: None,
+        };
+        assert!(resolver(&sin_nada).is_err());
+
+        let solo_emisor = Ajustes {
+            emisor: Some("https://x/realms/y"),
+            ..sin_nada
+        };
+        assert!(resolver(&solo_emisor).is_err());
+
+        let sin_llaves = Ajustes {
+            audiencia: Some("ore-serve"),
+            ..solo_emisor
+        };
+        assert!(
+            resolver(&sin_llaves).is_err(),
+            "sin `--jwks` no puede haber proveedor"
+        );
+    }
+
+    /// Y `oidc` NO pide `--no-es-produccion`: es el modo que se sostiene solo.
+    #[test]
+    fn oidc_no_es_el_modo_de_banco() {
+        let d = std::env::temp_dir().join(format!("ore-serve-jwks-{}.json", std::process::id()));
+        std::fs::write(
+            &d,
+            // Una llave de verdad —la misma de las pruebas de `oidc`—, porque
+            // `Llaves::leer` se niega si el módulo no es utilizable, y con
+            // razón: un juego de llaves que no sirve no debe dejar arrancar.
+            concat!(
+                r#"{"keys":[{"kty":"RSA","use":"sig","kid":"k1","e":"AQAB","n":""#,
+                "i7YpoTYP_5CNa4i2r4ESwFtZiXv3tRa8PLqNX7M-cdxWE5dWNA9HHsWtq2_V6NbbfnDLj8jeVT2CBssrH-Fr4yr2Huc9ang_ZdPMpdOa7QKDDRWOzUGD8dAaoMvcJwogBt-heJmBTJ2eFcg-BbStNgzgxasI9uyvXnvwqpf3WJc",
+                r#""}]}"#
+            ),
+        )
+        .unwrap();
+        let r = resolver(&Ajustes {
+            modo: Some("oidc"),
+            no_es_produccion: false,
+            emisor: Some("https://login.paladio.io/realms/rubix"),
+            audiencia: Some("ore-serve"),
+            jwks: Some(&d),
+        });
+        let _ = std::fs::remove_file(&d);
+        assert!(r.unwrap().is_some());
     }
 
     #[test]
