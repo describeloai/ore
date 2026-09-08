@@ -169,7 +169,10 @@ campo() { "$PY" -c "import json,sys;print(json.load(open(sys.argv[1])).get(sys.a
 dice "1 · sin token · 401"
 
 # ── 2 · sólo SUS organizaciones ─────────────────────────────────────────────
-[ "$(pide GET /organizaciones "$ADA")" = "200" ] || falla "2 · no pudo listar"
+# ⚠️ El codigo Y el cuerpo. Un `falla` que solo dice «no pudo» obliga a otra
+#   vuelta de CI para averiguar que contesto, y esa vuelta la paga quien depura.
+CODIGO=$(pide GET /organizaciones "$ADA")
+[ "$CODIGO" = "200" ] || falla "2 · no pudo listar · http $CODIGO · $(cat "$TMP/r.json")"
 grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
 grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
 dice '2 · ve `acme` y NO ve `otra`'
