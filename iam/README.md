@@ -64,9 +64,30 @@ paquete y la vista, y ésos ya viven en la ontología.
 | | `iam.rol` · la organización | `iam.rol_de_recurso` · el árbol |
 |---|---|---|
 | sobre qué | personas y permisos | un ámbito de la ontología |
-| quién manda | `dueno` — **UNO**, se traspasa | `owner` — **muchos**, se nombra |
+| quién manda | `ORGADMIN` — **UNO**, se traspasa | `owner` — **muchos**, se nombra |
 | qué da | invitar, conceder, traspasar | la **firma** de la certificación |
-| ¿ordenado? | sí: la guarda del rodeo compara alturas | ⛔ **no**, y a propósito |
+| ¿ordenado? | ⛔ **no** desde la `014`: son CONJUNTOS de potestades | ⛔ **no**, y a propósito |
+
+⭐ Y arriba tampoco hay escalera. `014` cambió los roles de peldaños a
+**conjuntos de potestades**, y con eso la guarda del rodeo dejó de ser una resta:
+
+> **Puedes otorgar un rol si sus potestades están contenidas en las tuyas.**
+
+Un ordinal sólo sabe decir «más» y «menos», y hay una separación que importa y no
+es de altura — *¿es el que corta más o menos que el que da de alta?*. La pregunta
+no tiene respuesta y un ordinal obliga a inventarla.
+
+Los cuatro: `ORGADMIN` (uno, traspasa), `ACCOUNTADMIN` (todo, y el único que
+concede roles), `USERADMIN` (quién está) y `SECURITYADMIN` — que hoy **es una
+carcasa y lo dice en su propia fila**: de sus potestades, dos son de Keycloak,
+una necesita agentes que no existen y `actividad:leer-toda` no tiene ruta. Entra
+igual porque la separación que representa —cortar sin poder nombrar— es una
+decisión que no queremos redescubrir a las 3 de la mañana.
+
+⚠️ Y **pertenecer no es un rol**: `pertenencia.rol` es nulable y `null` significa
+*pertenece y nada más*. Es su frase — *«pertenecer ya da lectura; leer no es un
+rol»*— y con ella se fueron `lector` y `miembro`, que no aportaban ni una
+potestad de este plano.
 
 ⛔ La tabla de abajo **no tiene `ordinal`**. `owner` no implica `lector`, y
 escribirlo sería herencia de roles: *«la travesía deja de ser un `JOIN` sobre un

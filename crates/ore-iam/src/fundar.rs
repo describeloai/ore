@@ -20,7 +20,7 @@
 //! ```text
 //!   iam.organizacion    la organización
 //!   iam.persona         su dueño, atado a `(emisor, sub)`
-//!   iam.pertenencia     con rol `dueno`
+//!   iam.pertenencia     con rol `ORGADMIN`
 //!   iam.huella          y el rastro de haberlo hecho
 //! ```
 //!
@@ -99,11 +99,11 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         &[&org, &p.organizacion, &persona],
     )?;
 
-    // ── y el rol. `dueno` es UNO por organizacion, y lo sostiene un indice
+    // ── y el rol. `ORGADMIN` es UNO por organizacion, y lo sostiene un indice
     //    unico parcial: si algun dia esto se llamara dos veces con dos personas
     //    distintas, la base lo niega en vez de dejar dos dueños.
     tx.ejecutar(
-        "insert into iam.pertenencia (persona, organizacion, rol) values ($1, $2, 'dueno')",
+        "insert into iam.pertenencia (persona, organizacion, rol) values ($1, $2, 'ORGADMIN')",
         &[&persona, &org],
     )?;
 

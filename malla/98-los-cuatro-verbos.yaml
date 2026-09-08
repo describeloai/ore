@@ -61,17 +61,17 @@ spec:
               curl -sSf -H "$A" "$IAM/organizaciones"; echo
 
               echo
-              echo "### 3 · invitar a un miembro"
+              echo "### 3 · invitar con rol"
               curl -s -o /tmp/inv.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
-                -d '{"correo":"Nuevo@Paladio.IO","rol":"miembro"}' \
+                -d '{"correo":"Nuevo@Paladio.IO","rol":"USERADMIN"}' \
                 "$IAM/organizaciones/$ORG/invitaciones"
               VALE=$(python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print(d.get("vale",""))')
               python3 -c 'import json;d=json.load(open("/tmp/inv.json"));print("  invitacion",d.get("invitacion"),"· rol",d.get("rol"))'
 
               echo
-              echo "### 4 · invitar a un DUENO: se niega"
+              echo "### 4 · invitar a un ORGADMIN: se niega"
               curl -s -o /tmp/mal.json -w '  http %{http_code}\n' -X POST -H "$A" -H "$J" \
-                -d '{"correo":"complice@paladio.io","rol":"dueno"}' \
+                -d '{"correo":"complice@paladio.io","rol":"ORGADMIN"}' \
                 "$IAM/organizaciones/$ORG/invitaciones"
               head -c 220 /tmp/mal.json; echo
 

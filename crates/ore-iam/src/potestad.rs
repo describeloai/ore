@@ -1,66 +1,85 @@
 //! Quién puede qué — y **el rodeo que esto existe para cerrar**.
 //!
-//! # La guarda que no es obvia
+//! # La guarda, y por qué dejó de ser una resta
 //!
-//! La escalera de roles de la organización es evidente: un administrador puede
-//! más que un miembro. Lo que no es evidente es que hace falta una segunda
-//! comprobación, y su motivo lo escribió la plataforma con la cicatriz al lado:
+//! Su motivo lo escribió la plataforma con la cicatriz al lado:
 //!
 //! > *«sin esa segunda potestad, un USERADMIN invitaría a un cómplice como
 //! > ACCOUNTADMIN y tendría **por un rodeo** el poder que se le niega.»*
 //!
-//! ⇒ **Nadie puede otorgar un rol más alto que el suyo.** Sin eso, `invitar` es
-//! una escalada de privilegio con forma de cortesía.
+//! Hasta la `014` eso se comprobaba con un ordinal: los roles eran una escalera
+//! y otorgar por encima era un `>`. Un ordinal sólo sabe decir «más» y «menos»,
+//! y hay una separación que importa y no es de altura — *¿es el que corta más o
+//! menos que el que da de alta?*.
 //!
-//! # ⛔ Y esa guarda es SÓLO del plano de arriba
+//! ⇒ **Puedes otorgar un rol si sus potestades están CONTENIDAS en las tuyas.**
+//! Igual de comprobable, más expresivo, y admite un rol que corta sin nombrar.
 //!
-//! Hasta la `011` también se aplicaba a `conceder`, comparando mi altura en la
-//! pertenencia contra la del rol que doy sobre un recurso. Son dos escalas
-//! distintas sobre la misma recta numérica: parecía funcionar porque los números
-//! existían, no porque significaran lo mismo.
+//! # Y pertenecer no es un rol
 //!
-//! Abajo **no hay altura**: `owner` no implica `lector`, así que no hay nada que
-//! comparar. Lo que gobierna allí es ser owner del ámbito — y eso es una
-//! travesía del árbol, no una resta.
+//! Quien pertenece tiene el estado por defecto —`iam.por_defecto`— aunque su
+//! `rol` sea `null`. Es la frase de su `76` §2: *«pertenecer ya da lectura.
+//! Leer no es un rol»*, y esconder quién manda sería seguridad por oscuridad.
 //!
-//! # Y el sujeto se busca por `(emisor, sub)`, nunca por `sub` a secas
+//! # El sujeto se busca por `(emisor, sub)`, nunca por `sub` a secas
 //!
 //! Un `sub` sin su emisor no identifica a nadie — es el mismo error que aceptar
-//! un token sin mirar el `iss`. Dos emisores pueden traer el mismo `sub` y
-//! serían dos personas distintas viendo la misma organización.
+//! un token sin mirar el `iss`.
 
 use crate::base::Tx;
+use std::collections::BTreeSet;
 
-/// El rol de alguien **en una organización**, con su altura.
-pub struct Rol {
-    pub nombre: String,
-    pub ordinal: i16,
-}
+/// Lo que alguien puede hacer **en una organización**.
+pub type Potestades = BTreeSet<String>;
 
-/// `None` si esa persona no pertenece a esa organización.
-pub fn rol_de(tx: &mut Tx, emisor: &str, sub: &str, org: &str) -> Result<Option<Rol>, String> {
-    let f = tx.uno(
-        "select pe.rol, r.ordinal
+/// Las suyas, ya con el estado por defecto dentro.
+///
+/// ⭐ Vacío significa **no pertenece**. No hay forma de pertenecer sin
+/// potestades: `iam.por_defecto` nunca está vacía.
+pub fn potestades_de(
+    tx: &mut Tx,
+    emisor: &str,
+    sub: &str,
+    org: &str,
+) -> Result<Potestades, String> {
+    let filas = tx.filas(
+        "select pd.potestad
            from iam.pertenencia pe
            join iam.persona p on p.id = pe.persona
-           join iam.rol     r on r.nombre = pe.rol
+           cross join iam.por_defecto pd
+          where p.emisor = $1 and p.sub = $2 and pe.organizacion = $3
+          union
+         select rp.potestad
+           from iam.pertenencia pe
+           join iam.persona p on p.id = pe.persona
+           join iam.rol_potestad rp on rp.rol = pe.rol
           where p.emisor = $1 and p.sub = $2 and pe.organizacion = $3",
         &[&emisor, &sub, &org],
     )?;
-    Ok(f.map(|f| Rol {
-        nombre: f.get(0),
-        ordinal: f.get(1),
-    }))
+    Ok(filas.iter().map(|f| f.get::<_, String>(0)).collect())
 }
 
-pub fn ordinal_de(tx: &mut Tx, rol: &str) -> Result<i16, String> {
-    tx.uno("select ordinal from iam.rol where nombre = $1", &[&rol])?
-        .map(|f| f.get(0))
-        .ok_or_else(|| format!("`{rol}` no es un rol de organizacion"))
+/// Las que da un rol, para poder compararlas con las de quien lo otorga.
+pub fn potestades_del_rol(tx: &mut Tx, rol: &str) -> Result<Potestades, String> {
+    let filas = tx.filas(
+        "select potestad from iam.potestades_de_rol where rol = $1",
+        &[&rol],
+    )?;
+    let ps: Potestades = filas.iter().map(|f| f.get::<_, String>(0)).collect();
+    if ps.is_empty() {
+        // ⛔ Un rol sin potestades no existe o esta vacio, y las dos cosas se
+        //   niegan igual: otorgar algo que no da nada es una promesa falsa.
+        return Err(format!("`{rol}` no es un rol que se pueda otorgar"));
+    }
+    Ok(ps)
 }
 
-/// ⛔ Sin ordinal, y por eso esto sólo comprueba que **existe**. Ver la `011`:
-/// una altura aquí sería `owner ⇒ lector` escrito en una columna.
+/// ⛔⛔ EL PLANO DE ABAJO, y no se mezcla con lo de arriba.
+///
+/// `iam.rol_de_recurso` —`lector` y `owner`— gobierna el ARBOL, no la
+/// organizacion, y **no tiene ordinal**: `owner` no implica `lector`, asi que
+/// aqui no hay nada que contener ni que comparar. Solo se comprueba que exista.
+/// Ver la `011`.
 pub fn rol_de_recurso(tx: &mut Tx, rol: &str) -> Result<(), String> {
     tx.uno(
         "select 1 from iam.rol_de_recurso where nombre = $1",
@@ -70,28 +89,41 @@ pub fn rol_de_recurso(tx: &mut Tx, rol: &str) -> Result<(), String> {
     .ok_or_else(|| format!("`{rol}` no es un rol de recurso. Son `lector` y `owner`"))
 }
 
-/// Exige al menos `minimo`, y devuelve lo que tiene.
+/// Exige una potestad, y devuelve todas las que tiene quien pregunta.
 ///
-/// ⛔ «No perteneces» y «no llegas» dan **el mismo mensaje** a propósito: decir
-/// «no eres administrador de esa organización» le confirma a quien pregunta que
-/// esa organización existe.
-pub fn exige(tx: &mut Tx, emisor: &str, sub: &str, org: &str, minimo: &str) -> Result<Rol, String> {
-    let suelo = ordinal_de(tx, minimo)?;
-    match rol_de(tx, emisor, sub, org)? {
-        Some(r) if r.ordinal >= suelo => Ok(r),
-        _ => Err("no puedes hacer eso en esa organizacion".into()),
+/// ⛔ «No perteneces» y «no puedes» dan **el mismo mensaje** a propósito: decir
+/// «no tienes esa potestad en esa organización» le confirma a quien pregunta
+/// que esa organización existe.
+pub fn exige(
+    tx: &mut Tx,
+    emisor: &str,
+    sub: &str,
+    org: &str,
+    potestad: &str,
+) -> Result<Potestades, String> {
+    let mias = potestades_de(tx, emisor, sub, org)?;
+    if mias.contains(potestad) {
+        Ok(mias)
+    } else {
+        Err("no puedes hacer eso en esa organizacion".into())
     }
 }
 
-/// **La guarda del rodeo.** Otorgar por encima del propio rol se niega.
-pub fn no_por_encima(mio: &Rol, doy: &str, ordinal_doy: i16) -> Result<(), String> {
-    if ordinal_doy > mio.ordinal {
-        return Err(format!(
-            "no puedes otorgar `{doy}`: es mas alto que tu propio rol, `{}`. \
-             Otorgar por encima de uno mismo es tener por un rodeo lo que no se \
-             tiene de frente",
-            mio.nombre
-        ));
+/// **La guarda del rodeo**, ahora por contención.
+///
+/// ⚠️ Y no basta con llamarla: otorgar un rol exige ADEMÁS la potestad
+/// `rol:conceder`. Son dos preguntas distintas —*¿puedes otorgar?* y *¿puedes
+/// otorgar ESO?*— y su `021` lo dice entero: **conceder aplazado sigue siendo
+/// conceder**.
+pub fn contenidas_en(doy: &Potestades, mias: &Potestades, rol: &str) -> Result<(), String> {
+    let de_mas: Vec<&str> = doy.difference(mias).map(String::as_str).collect();
+    if de_mas.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    Err(format!(
+        "no puedes otorgar `{rol}`: da potestades que tu no tienes ({}). \
+         Otorgar por encima de uno mismo es tener por un rodeo lo que no se \
+         tiene de frente",
+        de_mas.join(", ")
+    ))
 }

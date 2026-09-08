@@ -16,8 +16,9 @@
 #   1  sin token                        401
 #   2  con token                        solo SUS organizaciones
 #   3  invitar                          el vale, UNA vez, y no vuelve a salir
-#   4  invitar a `dueno`                SE NIEGA  ← un vale que nadie canjearia
-#   5  ⭐ otorgar POR ENCIMA de uno mismo  SE NIEGA  ← el rodeo
+#   4  invitar a `ORGADMIN`             SE NIEGA  ← un vale que nadie canjearia
+#   5  ⭐ otorgar lo que NO SE TIENE       SE NIEGA  ← el rodeo, por contencion
+#  5a  invitar SIN rol                   pertenecer no es un cargo
 #  5b  los MIEMBROS · con su nombre del token · y una extraña NO los ve
 #   6  conceder `lector` · revocar · revocar otra vez
 #  6b  ⭐ sondear una concesion AJENA   mismo error que una inventada
@@ -25,10 +26,10 @@
 #   8  admitir con otro correo          SE NIEGA
 #   9  y MIRAR tambien deja huella
 #
-# El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es `dueno`,
-# el papel mas alto, asi que la guarda del rodeo **nunca llega a morder**. Aqui
-# se funda una segunda organizacion con un administrador de verdad para que
-# muerda.
+# El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es
+# `ORGADMIN`, que lo tiene TODO, asi que la guarda del rodeo **nunca llega a
+# morder** — nada queda fuera de lo suyo. Aqui entra una USERADMIN de verdad,
+# por su vale, para que muerda.
 #
 # ⚠️ Dos formas de nombrar la misma base, y hacen falta las dos: `PG_URL` la usa
 #   `psql` aqui, y `iam/migrar.sh` lee las `PG*` de siempre. Unificarlas seria
@@ -136,9 +137,9 @@ acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
 # ── Dos organizaciones, y la segunda con un ADMINISTRADOR ───────────────────
 #
 # ⭐ La segunda existe sólo para que el rodeo se pueda medir: `fundar` deja
-#   `dueno`, y un dueño no puede otorgar por encima de sí mismo porque no hay
-#   encima. Sin un administrador de verdad, la guarda es código que nadie ha
-#   visto correr.
+#   `ORGADMIN`, que tiene TODAS las potestades: nada queda fuera de lo suyo, asi
+#   que la contencion siempre se cumple. Sin alguien con menos, la guarda es
+#   codigo que nadie ha visto correr.
 export IAM_URL="$URL"
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
   --correo "ada@paladio.io" >/dev/null 2>&1 || falla "\`fundar acme\` fallo"
@@ -190,7 +191,7 @@ dice '2 · ve `acme` y NO ve `otra`'
 
 # ── 3 · invitar, y el vale sale UNA vez ─────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
-      '{"correo":"Bea@Paladio.IO","rol":"administrador"}')" = "200" ] \
+      '{"correo":"Bea@Paladio.IO","rol":"USERADMIN"}')" = "200" ] \
   || falla "3 · invitar fallo: $(cat "$TMP/r.json")"
 VALE_BEA=$(campo vale)
 [ -n "$VALE_BEA" ] || falla "3 · no devolvio vale"
@@ -201,25 +202,46 @@ grep -q "$VALE_BEA" "$TMP/r.json" && falla "3 · ⛔ EL LISTADO DEVUELVE EL VALE
 grep -q '"correo":"bea@paladio.io"' "$TMP/r.json" || falla "3 · el correo no se plego"
 dice "3 · el listado no lleva el vale, y el correo se guardo plegado"
 
-# ── 4 · invitar a `dueno` ───────────────────────────────────────────────────
+# ── 4 · invitar a `ORGADMIN` ────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
-      '{"correo":"c@paladio.io","rol":"dueno"}')" = "422" ] \
-  || falla "4 · ⛔ SE PUEDE INVITAR A UN DUEÑO. Ese vale no lo podria canjear nadie"
+      '{"correo":"c@paladio.io","rol":"ORGADMIN"}')" = "422" ] \
+  || falla "4 · ⛔ SE PUEDE INVITAR A UN ORGADMIN. Ese vale no lo podria canjear nadie"
 grep -q "traspasarla" "$TMP/r.json" || falla "4 · se niega sin decir por que"
-dice '4 · a `dueno` no se invita, y lo dice'
+dice '4 · a `ORGADMIN` no se invita, y lo dice'
 
 # ── 5 · ⭐ EL RODEO ─────────────────────────────────────────────────────────
-# Bea redime su vale y queda como `administrador`. Desde ahi intenta lo que la
+# Bea redime su vale y queda como `USERADMIN`. Desde ahi intenta lo que la
 # plataforma escribio con la cicatriz al lado.
 BEA=$(acunar "persona:bea" "bea@paladio.io")
 [ "$(pide POST /invitaciones/admitir "$BEA" "{\"vale\":\"$VALE_BEA\"}")" = "200" ] \
   || falla "5 · Bea no pudo entrar: $(cat "$TMP/r.json")"
-[ "$(campo rol)" = "administrador" ] || falla "5 · entro con otro rol"
+[ "$(campo rol)" = "USERADMIN" ] || falla "5 · entro con otro rol"
 
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$BEA" \
-      '{"correo":"complice@paladio.io","rol":"dueno"}')" = "422" ] \
-  || falla "5 · ⛔ UN ADMINISTRADOR OTORGA POR ENCIMA DE SI MISMO. Eso es escalada de privilegio con forma de cortesia"
-dice '5 · la guarda del rodeo muerde: un administrador no otorga `dueno`'
+      '{"correo":"complice@paladio.io","rol":"ACCOUNTADMIN"}')" = "422" ] \
+  || falla "5 · ⛔ UN USERADMIN OTORGA ACCOUNTADMIN. Eso es escalada de privilegio con forma de cortesia"
+dice '5 · el rodeo muerde: un USERADMIN no otorga `ACCOUNTADMIN`'
+
+# ⭐⭐ Y LO QUE UN ORDINAL NO SABIA DECIR: dos roles INCOMPARABLES.
+#
+#   `SECURITYADMIN` no es «mas» ni «menos» que `USERADMIN` — uno corta y el otro
+#   da de alta—. Con una escalera habia que inventar cual va encima; con
+#   contencion la respuesta sale sola: ninguno contiene al otro, asi que Bea
+#   tampoco puede otorgar ESE, y por un motivo distinto al de arriba.
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$BEA" \
+      '{"correo":"vigilante@paladio.io","rol":"SECURITYADMIN"}')" = "422" ] \
+  || falla "5 · ⛔ UN USERADMIN OTORGA SECURITYADMIN, que no contiene"
+dice '5 · y tampoco `SECURITYADMIN`, que no es mas alto: es incomparable'
+
+# ── 5a · invitar SIN rol: pertenecer y nada mas ────────────────────────────
+#
+# ⭐ Antes esto no se podia decir —la columna era `not null`— y hubo que
+#   inventar un rol `miembro` para taparlo. Desde la `014`, `null` significa
+#   pertenecer, que es lo que siempre quiso decir.
+[ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
+      '{"correo":"solo@paladio.io"}')" = "200" ] \
+  || falla "5a · no se pudo invitar sin rol: $(cat "$TMP/r.json")"
+dice '5a · se invita sin rol: pertenecer no es un cargo'
 
 # ── 5b · los MIEMBROS, y el nombre que se refresca solo ────────────────────
 #
@@ -229,8 +251,8 @@ dice '5 · la guarda del rodeo muerde: un administrador no otorga `dueno`'
 [ "$(pide GET "/organizaciones/$ORG/miembros" "$ADA")" = "200" ] || falla "5b · no listo miembros"
 CUANTOS=$("$PY" -c "import json;print(len(json.load(open('$TMP/r.json'))['miembros']))")
 [ "$CUANTOS" = "2" ] || falla "5b · esperaba 2 miembros y hay $CUANTOS"
-grep -q '"rol":"dueno"' "$TMP/r.json"         || falla "5b · falta el dueño"
-grep -q '"rol":"administrador"' "$TMP/r.json" || falla "5b · falta la administradora"
+grep -q '"rol":"ORGADMIN"' "$TMP/r.json"      || falla "5b · falta el dueño"
+grep -q '"rol":"USERADMIN"' "$TMP/r.json"     || falla "5b · falta la administradora"
 grep -q '"nombre":"Ada (prueba)"' "$TMP/r.json" \
   || falla "5b · ⛔ EL NOMBRE NO SE REFRESCO. Venia en el token y la pantalla enseñaria un id opaco"
 grep -q '"conocido":true' "$TMP/r.json" || falla "5b · `conocido` no distingue"
@@ -290,7 +312,7 @@ dice '7 · `owner` se niega mientras falte la travesia del arbol'
 
 # ── 8 · admitir con otro correo ─────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
-      '{"correo":"dani@paladio.io","rol":"miembro"}')" = "200" ] || falla "8 · no se pudo invitar"
+      '{"correo":"dani@paladio.io"}')" = "200" ] || falla "8 · no se pudo invitar"
 VALE_D=$(campo vale)
 [ "$(pide POST /invitaciones/admitir "$BEA" "{\"vale\":\"$VALE_D\"}")" = "422" ] \
   || falla "8 · ⛔ UN VALE AJENO SE REDIMIO. Eso es un traspaso que nadie autorizo"

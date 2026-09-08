@@ -41,12 +41,27 @@ pub fn invitar(
     emisor: &str,
     org: &str,
     correo: &str,
-    rol: &str,
+    // ⭐ `None` = *pertenece y nada mas*. Desde la `014` la columna es nulable,
+    //   asi que ya no hay que inventar un rol para decir «sin cargo».
+    rol: Option<&str>,
     dias: i64,
 ) -> Result<Json, String> {
-    let mio = potestad::exige(tx, emisor, quien(sujeto), org, "administrador")?;
-    let ord = potestad::ordinal_de(tx, rol)?;
-    potestad::no_por_encima(&mio, rol, ord)?;
+    let mias = potestad::exige(tx, emisor, quien(sujeto), org, "invitacion:emitir")?;
+
+    // ⛔⛔ INVITAR CON ROL EXIGE UNA SEGUNDA POTESTAD, y no es redundante.
+    //
+    //   `invitacion:emitir` contesta *¿puedes invitar?*. `rol:conceder`
+    //   contesta *¿puedes repartir poder?*. Sin la segunda, un USERADMIN
+    //   invitaria a un complice como ACCOUNTADMIN y tendria, con un rodeo de
+    //   dos pasos y unos dias de espera, el poder que se le niega de frente.
+    //
+    //   Su `021` lo dice en una linea: **conceder aplazado sigue siendo
+    //   conceder**.
+    if let Some(rol) = rol {
+        potestad::exige(tx, emisor, quien(sujeto), org, "rol:conceder")?;
+        let da = potestad::potestades_del_rol(tx, rol)?;
+        potestad::contenidas_en(&da, &mias, rol)?;
+    }
 
     // ⛔⛔ Y a `dueno` NO se invita. Lo descubrio la prueba: la guarda del
     //   rodeo deja pasar «un dueño invita a otro dueño» —no es por encima de
@@ -59,9 +74,9 @@ pub fn invitar(
     //   invitar. `002-el-papel.sql` ya lo dice — «dueno: ademas TRASPASA» —, y
     //   traspasar es un verbo que todavia no existe. Mejor negarlo con su
     //   motivo que emitir algo que no sirve.
-    if rol == "dueno" {
+    if rol == Some("ORGADMIN") {
         return Err(concat!(
-            "no se invita a `dueno`: una organizacion tiene UNO, y cambiarlo ",
+            "no se invita a `ORGADMIN`: una organizacion tiene UNO, y cambiarlo ",
             "es traspasarla, no invitar. Ese verbo todavia no existe"
         )
         .into());
@@ -91,13 +106,13 @@ pub fn invitar(
         Json::obj([
             ("organizacion", Json::s(org)),
             ("correo", Json::s(&correo)),
-            ("rol", Json::s(rol)),
+            ("rol", Json::s(rol.unwrap_or(""))),
         ]),
     )?;
 
     Ok(Json::obj([
         ("invitacion", Json::s(id)),
-        ("rol", Json::s(rol)),
+        ("rol", Json::s(rol.unwrap_or(""))),
         // ⚠️ La UNICA vez que este valor existe fuera de un correo.
         ("vale", Json::s(vale)),
         (
@@ -129,7 +144,8 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
         // confirma a quien prueba vales cuáles sí.
         .ok_or("ese vale no sirve")?;
 
-    let (id, org, correo, rol): (String, String, String, String) =
+    // ⛔ `rol` nulable: una invitacion a pertenecer y nada mas.
+    let (id, org, correo, rol): (String, String, String, Option<String>) =
         (f.get(0), f.get(1), f.get(2), f.get(3));
     if f.get::<_, bool>(4) || f.get::<_, bool>(5) || f.get::<_, bool>(6) {
         return Err("ese vale no sirve".into());
@@ -162,14 +178,14 @@ pub fn admitir(tx: &mut Tx, sujeto: &Identidad, emisor: &str, vale: &str) -> Res
         Json::obj([
             ("organizacion", Json::s(&org)),
             ("persona", Json::s(&persona)),
-            ("rol", Json::s(&rol)),
+            ("rol", Json::s(rol.clone().unwrap_or_default())),
         ]),
     )?;
 
     Ok(Json::obj([
         ("organizacion", Json::s(org)),
         ("persona", Json::s(persona)),
-        ("rol", Json::s(rol)),
+        ("rol", Json::s(rol.unwrap_or_default())),
     ]))
 }
 
@@ -230,7 +246,7 @@ pub fn conceder(
     recurso: &str,
     rol: &str,
 ) -> Result<Json, String> {
-    potestad::exige(tx, emisor, quien(sujeto), org, "administrador")?;
+    potestad::exige(tx, emisor, quien(sujeto), org, "concesion:conceder")?;
     // ⛔ Contra la tabla del plano de ABAJO, que no tiene ordinal: `owner` no
     //   implica `lector`, asi que no hay altura que comparar. Ver la `011`.
     potestad::rol_de_recurso(tx, rol)?;
@@ -295,7 +311,7 @@ pub fn revocar(tx: &mut Tx, sujeto: &Identidad, emisor: &str, id: &str) -> Resul
     //   Su propia frase estaba en `exige` y no la habiamos extendido al orden:
     //   decir «no eres administrador de esa organizacion» le confirma a quien
     //   pregunta que esa organizacion existe.
-    potestad::exige(tx, emisor, quien(sujeto), &org, "administrador").map_err(|_| AJENA)?;
+    potestad::exige(tx, emisor, quien(sujeto), &org, "concesion:revocar").map_err(|_| AJENA)?;
 
     // Y esto SOLO despues de saber que es suya: a partir de aqui, contar la
     // verdad no le dice a nadie nada que no pudiera ver de todas formas.
@@ -363,15 +379,43 @@ mod pruebas {
         assert_ne!(resumen("hola "), r);
     }
 
+    fn ps(xs: &[&str]) -> potestad::Potestades {
+        xs.iter().map(|s| (*s).to_string()).collect()
+    }
+
     /// La guarda del rodeo, que es la razon de que `potestad` exista.
+    ///
+    /// ⭐ Desde la `014` es CONTENCION y no una resta, y por eso esta prueba
+    /// puede afirmar algo que con un ordinal no se podia ni escribir: que dos
+    /// roles incomparables —uno corta, otro da de alta— no se otorgan el uno al
+    /// otro en NINGUNA direccion.
     #[test]
     fn nadie_otorga_por_encima_de_si_mismo() {
-        let admin = potestad::Rol {
-            nombre: "administrador".into(),
-            ordinal: 3,
-        };
-        assert!(potestad::no_por_encima(&admin, "miembro", 2).is_ok());
-        assert!(potestad::no_por_encima(&admin, "administrador", 3).is_ok());
-        assert!(potestad::no_por_encima(&admin, "dueno", 4).is_err());
+        let user = ps(&["invitacion:emitir", "invitacion:revocar"]);
+        let security = ps(&["actividad:leer-toda"]);
+        let cuenta = ps(&[
+            "invitacion:emitir",
+            "invitacion:revocar",
+            "actividad:leer-toda",
+            "rol:conceder",
+        ]);
+
+        // Lo suyo, si.
+        assert!(potestad::contenidas_en(&user, &user, "USERADMIN").is_ok());
+        // Y quien lo tiene todo, cualquiera de los dos.
+        assert!(potestad::contenidas_en(&user, &cuenta, "USERADMIN").is_ok());
+        assert!(potestad::contenidas_en(&security, &cuenta, "SECURITYADMIN").is_ok());
+
+        // ⛔ Y el rodeo, en las DOS direcciones: no es que uno sea mas alto que
+        //   el otro — es que ninguno contiene al otro.
+        assert!(potestad::contenidas_en(&security, &user, "SECURITYADMIN").is_err());
+        assert!(potestad::contenidas_en(&user, &security, "USERADMIN").is_err());
+
+        // ⭐ Y el mensaje NOMBRA lo que sobra, que es lo que dice como arreglarlo.
+        let e = potestad::contenidas_en(&cuenta, &user, "ACCOUNTADMIN").unwrap_err();
+        assert!(
+            e.contains("rol:conceder"),
+            "el error no dice que falta: {e}"
+        );
     }
 }

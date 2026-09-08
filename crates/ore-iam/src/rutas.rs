@@ -130,7 +130,13 @@ impl Servidor {
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("estado", Json::s(f.get::<_, String>(2))),
-                        ("rol", Json::s(f.get::<_, String>(3))),
+                        // ⛔ `Option`: desde la `014` `rol` es nulable —`null` es
+                        //   «pertenece y nada mas»— y leerlo como `String` panicaria
+                        //   en la primera fila sin cargo.
+                        (
+                            "rol",
+                            Json::s(f.get::<_, Option<String>>(3).unwrap_or_default()),
+                        ),
                     ])
                 })
                 .collect();
@@ -156,7 +162,7 @@ impl Servidor {
     fn miembros(&self, s: &Identidad, org: &str) -> Respuesta {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
-            crate::potestad::exige(tx, emisor, &s.persona, &org, "lector")?;
+            crate::potestad::exige(tx, emisor, &s.persona, &org, "miembro:listar")?;
             // ⭐ `desde` se formatea en SQL: traerlo como `timestamptz` obligaria
             //   a una crate de fechas para volver a texto, y este binario no tiene
             //   ninguna. `to_char` ya sabe hacerlo.
@@ -180,7 +186,13 @@ impl Servidor {
                         ("conocido", Json::Bool(nombre.is_some())),
                         ("nombre", Json::s(nombre.unwrap_or_default())),
                         ("correo", Json::s(f.get::<_, String>(2))),
-                        ("rol", Json::s(f.get::<_, String>(3))),
+                        // ⛔ `Option`: desde la `014` `rol` es nulable —`null` es
+                        //   «pertenece y nada mas»— y leerlo como `String` panicaria
+                        //   en la primera fila sin cargo.
+                        (
+                            "rol",
+                            Json::s(f.get::<_, Option<String>>(3).unwrap_or_default()),
+                        ),
                         ("desde", Json::s(f.get::<_, String>(4))),
                     ])
                 })
@@ -197,7 +209,7 @@ impl Servidor {
     fn invitaciones(&self, s: &Identidad, org: &str) -> Respuesta {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
-            crate::potestad::exige(tx, emisor, &s.persona, &org, "administrador")?;
+            crate::potestad::exige(tx, emisor, &s.persona, &org, "invitacion:listar")?;
             // ⚠️ `vale_resumen` NO sale. Listar invitaciones no puede ser una
             //   forma de conseguir vales — es justo la propiedad que la `010`
             //   compró al separar el `id` del vale.
@@ -213,7 +225,13 @@ impl Servidor {
                     Json::obj([
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("correo", Json::s(f.get::<_, String>(1))),
-                        ("rol", Json::s(f.get::<_, String>(2))),
+                        // ⛔ `Option`: desde la `014` `rol` es nulable —`null` es
+                        //   «pertenece y nada mas»— y leerlo como `String` panicaria
+                        //   en la primera fila sin cargo.
+                        (
+                            "rol",
+                            Json::s(f.get::<_, Option<String>>(2).unwrap_or_default()),
+                        ),
                         ("estado", Json::s(f.get::<_, String>(3))),
                     ])
                 })
@@ -234,8 +252,18 @@ impl Servidor {
         self.en_transaccion(s, move |tx, emisor| {
             let c = analizar(&cuerpo)?;
             let correo = campo(&c, "correo").ok_or("falta `correo`")?;
-            let rol = campo(&c, "rol").ok_or("falta `rol`")?;
-            verbos::invitar(tx, s, emisor, &org, &correo, &rol, DIAS_DE_LA_INVITACION)
+            // ⭐ Sin `rol` es legitimo: invitar a pertenecer y nada mas. Antes
+            //   era obligatorio porque la columna no admitia vacio.
+            let rol = campo(&c, "rol");
+            verbos::invitar(
+                tx,
+                s,
+                emisor,
+                &org,
+                &correo,
+                rol.as_deref(),
+                DIAS_DE_LA_INVITACION,
+            )
         })
     }
 
