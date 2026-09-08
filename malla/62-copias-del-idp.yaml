@@ -1,0 +1,128 @@
+# Las copias de la base del IdP — el agujero que `60-idp.yaml` dejó nombrado.
+#
+# ── Qué protege, y qué NO ───────────────────────────────────────────────────
+#
+# Poner Postgres en el clúster en vez de en Cloud SQL ahorró ~23 EUR/mes, y lo
+# que se dejó de comprar con esa diferencia son **las copias automáticas**. El
+# disco ya sobrevive al pod y al claim —la clase `retiene`— y eso cubre un
+# accidente de Kubernetes. No cubre nada de lo demás:
+#
+#   un `kubectl delete pvc`        cubierto — el disco queda huérfano, no borrado
+#   el pod se muere                cubierto — el disco no es del pod
+#   la zona se cae                 NO: el disco es zonal
+#   un `DROP`, o una corrupción    NO: el disco guardaría fielmente el destrozo
+#   una migración de Keycloak
+#   que sale mal                   NO, y es el caso REAL más probable
+#
+# ⇒ Lo que hace falta no es más disco: es **un volcado, fuera del clúster, con
+# fecha**. Eso es esto.
+#
+# ── Y por qué dos contenedores ──────────────────────────────────────────────
+#
+# `pg_dump` vive en la imagen de Postgres y `gcloud` en la de los drivers, y
+# ninguna de las dos lleva la otra. Se podría cocer una tercera con las dos
+# cosas; no se hace, por lo mismo que el flujo de la ontología corre en cuatro
+# contenedores: **cada paso con la imagen que necesita, y ninguna imagen con
+# más de lo que su paso pide.**
+#
+#   volcar    postgres:16    habla con la base y con nadie más
+#   subir     ore-drivers    habla con Google y no sabe qué es Postgres
+#
+# ── ⚠️ Lo que esto todavía no es ────────────────────────────────────────────
+#
+# **Una copia que nadie ha restaurado nunca no es una copia: es un fichero.**
+# Restaurar es `gcloud storage cat … | psql`, y hasta que se haya hecho una vez
+# esto es una promesa razonable y no un hecho comprobado. Queda dicho.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copias
+  namespace: identidad
+  annotations:
+    # Workload Identity: sin llave que rotar y sin un secreto que robar. La
+    # cuenta de Google sólo puede escribir en SU bucket — `objectAdmin` sobre
+    # el bucket, no sobre el proyecto.
+    iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: copia-del-idp
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: mantenimiento
+spec:
+  # A las 12:00, a mediodía y a propósito.
+  #
+  # ⭐ La lección es suya y costó descubrirla allá: con la ventana por defecto
+  #   —las 03:00— apagar el clúster de noche para ahorrar dejaría la base **sin
+  #   una sola copia**. Una copia programada a la hora en la que el sistema
+  #   suele estar apagado es una copia que no existe.
+  schedule: "0 12 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: copias
+          volumes:
+            - name: volcado
+              emptyDir: {}
+          initContainers:
+            - name: volcar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+              volumeMounts: [{name: volcado, mountPath: /volcado}]
+              env:
+                - { name: PGHOST, value: idp-db.identidad.svc.cluster.local }
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: idp-db, key: usuario } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: idp-db, key: clave } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # `-Fc`: el formato propio de Postgres. Comprime, y permite
+                  # restaurar una tabla suelta sin tragarse el fichero entero.
+                  pg_dump -d keycloak -Fc -f /volcado/keycloak.dump
+                  # Y se comprueba que se puede LEER lo que se acaba de
+                  # escribir. Un volcado corrupto pesa igual que uno bueno, y
+                  # descubrirlo el dia de restaurar es descubrirlo tarde.
+                  pg_restore --list /volcado/keycloak.dump > /dev/null
+                  echo "volcado ok · $(wc -c < /volcado/keycloak.dump) bytes"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "500m", memory: 512Mi}
+          containers:
+            - name: subir
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              volumeMounts: [{name: volcado, mountPath: /volcado}]
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: BUCKET, value: "gs://project-8853a180-450d-47be-b83-copias" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # El nombre lleva la fecha, y el bucket tiene una regla de
+                  # ciclo de vida que borra a los 30 dias. Guardar para siempre
+                  # es pagar para siempre por algo que nadie va a mirar.
+                  N="idp/keycloak-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  gcloud storage cp /volcado/keycloak.dump "$BUCKET/$N"
+                  echo "subido $BUCKET/$N"
+                  echo "--- lo que hay guardado ---"
+                  gcloud storage ls "$BUCKET/idp/" | tail -5
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits:   {cpu: "500m", memory: 512Mi}
