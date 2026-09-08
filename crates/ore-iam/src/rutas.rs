@@ -131,6 +131,7 @@ impl Servidor {
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("estado", Json::s(f.get::<_, String>(2))),
                         ("rol", Json::s(f.get::<_, String>(3))),
+                        ("desde", Json::s(f.get::<_, String>(4))),
                     ])
                 })
                 .collect();
@@ -157,8 +158,12 @@ impl Servidor {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
             crate::potestad::exige(tx, emisor, &s.persona, &org, "lector")?;
+            // ⭐ `desde` se formatea en SQL: traerlo como `timestamptz` obligaria
+            //   a una crate de fechas para volver a texto, y este binario no tiene
+            //   ninguna. `to_char` ya sabe hacerlo.
             let filas = tx.filas(
-                "select p.id, p.nombre, coalesce(p.correo, \'\'), pe.rol, pe.desde
+                "select p.id, p.nombre, coalesce(p.correo, \'\'), pe.rol,
+                        to_char(pe.desde at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
                    from iam.pertenencia pe
                    join iam.persona p on p.id = pe.persona
                   where pe.organizacion = $1
