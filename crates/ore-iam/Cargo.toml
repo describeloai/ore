@@ -1,0 +1,38 @@
+[package]
+name = "ore-iam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "El plano de identidad y acceso de la plataforma"
+
+# ⚠️ Este binario NO ENLAZA en Windows sin MinGW: `postgres` trae `tokio`, que
+# trae `windows-sys`, que necesita `dlltool`. `cargo check` y `cargo clippy` sí
+# pasan —no enlazan—, así que el bucle local sirve para escribir y el enlace de
+# verdad ocurre en Linux: CI y la imagen.
+#
+# Es la misma propiedad que el árbol ya tenía escrita en su `Cargo.toml`: «una
+# maquina sin MinGW ni MSVC compila `ore` entero y no puede compilar el driver,
+# porque `ore` no enlaza NADA nativo. La herramienta lo demuestra sin que nadie
+# se lo pida.»
+
+[dependencies]
+ore-core = { path = "../ore-core" }
+
+# La entrada: HTTP, el puerto de identidad y la verificacion del token. La
+# misma que enlaza `ore-serve`, para que haya UNA definicion de que es un
+# sujeto y no dos.
+ore-entrada = { path = "../ore-entrada" }
+
+# ── El cliente de Postgres, y lo que arrastra ───────────────────────────────
+#
+# 43 crates, medido. Entre ellas `tokio`, que `ore-cli/tests/dependencias.rs`
+# VETA — y su motivo es justamente el que aquí no aplica: «un planificador
+# asíncrono sólo hace falta para hablar con algo». Aquí **se habla con algo**.
+# Es el caso que el veto recorta, no una excepción a él.
+#
+# `default-features = false` quita el TLS: la conexión es de pod a pod dentro
+# del clúster, que es la misma elección que ya hace Keycloak contra esta misma
+# base. Y sin TLS no entra ni una crate de FFI.
+postgres = { version = "0.19", default-features = false }

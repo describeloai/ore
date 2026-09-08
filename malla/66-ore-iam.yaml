@@ -1,0 +1,79 @@
+# `ore-iam` — el plano de identidad y acceso.
+#
+# ── Por qué vive AQUÍ y no en el namespace de un inquilino ──────────────────
+#
+# `ore-serve` se despliega **por inquilino**: vive en `t-demo`, con la forja de
+# `t-demo`. Y `iam.organizacion` es el censo de **todos**.
+#
+# ⇒ Un pod de un inquilino dueño del censo de los demás no es una capa mal
+#   puesta: es la pertenencia de otras organizaciones escribible desde el plano
+#   de un cliente. Por eso esto vive en `identidad`, junto al emisor y la base.
+#
+# ── Y sobre `scratch` ───────────────────────────────────────────────────────
+#
+# Este binario **no sabe hablar TLS**. La base es Postgres en claro de pod a
+# pod, las llaves llegan en un fichero, y hacia fuera no habla con nadie. Un
+# proceso que administra personas y concesiones y no lleva el código para abrir
+# una conexión cifrada a ningún sitio.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-iam
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: iam
+---
+# ── `fundar` — un Job, no una ruta ──────────────────────────────────────────
+#
+# La primera organización se crea cuando todavía no existe ninguna persona con
+# potestad, así que no puede ser una petición autenticada: no habría con qué
+# autenticarla. Es la misma figura que `ore init` — un acto de OPERADOR, con las
+# credenciales del clúster.
+#
+# ⭐ Y es idempotente: un `Job` se reintenta, y si `fundar` creara una segunda
+#   organización al repetirse un reintento silencioso duplicaría el inquilino.
+#   La segunda vez no cambia nada y lo dice.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fundar-demo
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: iam
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: iam
+        ore.dev/tenant: system
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ore-iam
+      containers:
+        - name: fundar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-iam:main
+          imagePullPolicy: Always
+          env:
+            # ⛔ Sin defecto. Una cadena de conexión por defecto es apuntar a
+            #   una base que nadie eligió.
+            - name: IAM_URL
+              valueFrom: { secretKeyRef: { name: iam-url, key: url } }
+          args:
+            - fundar
+            - --organizacion
+            - demo
+            # El emisor y el `sub` juntos: un `sub` sin su emisor no identifica
+            # a nadie. Es el mismo error que aceptar un token sin mirar el `iss`.
+            - --emisor
+            - https://login.paladio.io/realms/rubix-dev
+            - --sub
+            - "0304d602-ea01-49c4-aedd-d4d02e8b9401"
+            - --correo
+            - lunacorunaspain@gmail.com
+          resources:
+            requests: {cpu: "50m", memory: 64Mi}
+            limits:   {cpu: "300m", memory: 128Mi}

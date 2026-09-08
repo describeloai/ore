@@ -1151,6 +1151,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-iam"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-entrada",
+ "postgres",
+]
+
+[[package]]
 name = "ore-log"
 version = "0.1.0"
 dependencies = [

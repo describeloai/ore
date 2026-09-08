@@ -1,4 +1,4 @@
-# Las tres imágenes de `ore`.
+# Las cuatro imágenes de `ore`.
 #
 # Los drivers son binarios SEPARADOS por decisión —ADR 0008: `ore` los busca en
 # el `PATH` y habla con ellos por stdin/stdout, así que el motor no enlaza un
@@ -41,9 +41,9 @@ COPY . .
 # `--locked`: se construye con el `Cargo.lock` del árbol y no con lo que
 # hubiera hoy en el índice.
 RUN cargo build --release --locked \
-      -p ore-cli -p ore-serve -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
+      -p ore-cli -p ore-serve -p ore-iam -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
       -p ore-fetch -p ore-log -p ore-sign -p ore-store-r2 \
- && for b in ore ore-serve ore-read-jsonl ore-read-postgres ore-read-bigquery \
+ && for b in ore ore-serve ore-iam ore-read-jsonl ore-read-postgres ore-read-bigquery \
              ore-fetch ore-log ore-sign ore-store-r2; do \
       strip "target/release/$b"; \
     done
@@ -106,3 +106,23 @@ COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-serve"]
+
+# ── 4 · El plano de identidad y acceso ──────────────────────────────────────
+#
+# Sobre `scratch`, como `ore` y a diferencia de `ore-serve`. Y no es una
+# casualidad: **este proceso tampoco sabe hablar TLS**.
+#
+#   la base        Postgres en claro, de pod a pod dentro del clúster — la
+#                  misma elección que ya hace Keycloak con esa misma base
+#   las llaves     un FICHERO. No se va a buscar el JWKS (ADR 0020, enmienda)
+#   hacia fuera    nada
+#
+# ⇒ Un binario que administra personas y concesiones y **no puede abrir una
+#   conexión TLS a ningún sitio**. No es una promesa: no lleva el código.
+FROM scratch AS iam
+
+COPY --from=build /src/target/release/ore-iam /bin/ore-iam
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/bin/ore-iam"]
