@@ -299,7 +299,16 @@ jobs:
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
       - name: construir las cuatro imagenes
         run: |
+          # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
+          #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla
+          #   — y esa cuenta tiene medio proyecto. Corriendo como si misma, la
+          #   construccion tiene los cinco permisos que se le dieron y ni uno mas.
+          #
+          # ⚠️ Y con cuenta propia, Cloud Build EXIGE decir donde van los logs.
+          #   `logging: CLOUD_LOGGING_ONLY` ya esta en `cloudbuild.yaml`; sin el
+          #   falla con un mensaje que no menciona la cuenta.
           gcloud builds submit --config cloudbuild.yaml \
+            --service-account=projects/project-8853a180-450d-47be-b83/serviceAccounts/ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com \
             --substitutions _SHA=${GITHUB_SHA::12} .
 
       # ⭐⭐ Y el DESPLIEGUE no cambia la etiqueta del manifiesto. Sigue siendo
