@@ -294,7 +294,12 @@ jobs:
           workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
           service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 
+      # ⚠️ `kubectl` contra GKE necesita un plugin de credenciales que el runner NO
+      #   trae. Sin el, la construccion pasa y el relevo falla con un mensaje que
+      #   habla de client-go y no de que falta instalar algo.
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
 
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
       - name: construir las cuatro imagenes
