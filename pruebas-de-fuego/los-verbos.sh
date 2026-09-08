@@ -44,7 +44,18 @@ PG_URL="${PG_URL:-postgres://postgres:x@localhost:5432}"
 TMP="$(mktemp -d)"
 SRV=""
 
-falla() { echo "✗ $*" >&2; [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; exit 1; }
+# ⛔ Y al fallar, EL LOG DEL SERVIDOR. Un `http 000` significa que no contesto
+#   —se murio, o nunca escucho— y esa respuesta no esta en curl: esta en su
+#   salida de error, que llevabamos capturando y tirando.
+falla() {
+  echo "✗ $*" >&2
+  if [ -s "$TMP/arranque.txt" ]; then
+    echo "── lo que dijo el servidor ──────────────────────────────" >&2
+    tail -20 "$TMP/arranque.txt" >&2
+  fi
+  [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
+  exit 1
+}
 dice()  { echo "  · $*"; }
 limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$TMP"; }
 trap limpiar EXIT
