@@ -40,6 +40,17 @@ kind: Job
 metadata:
   name: fundar-demo
   namespace: identidad
+  # ⛔ El `spec.template` de un Job es INMUTABLE. Sin esta anotacion, cualquier
+  #   cambio en el cuerpo de abajo haria fallar la reconciliacion de TODA la
+  #   malla — no solo de este Job.
+  #
+  # ⭐ Y `IfNotPresent` da justo el comportamiento que este Job ya tenia: Flux lo
+  #   crea si no esta y no lo toca si esta. Para volver a correrlo se BORRA
+  #   —`kubectl delete job -n identidad fundar-demo`— y el agente lo vuelve a crear
+  #   en el siguiente pase. Antes eso era «borrar y aplicar a mano»; ahora la
+  #   segunda mitad la hace el.
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
   labels:
     ore.dev/tenant: system
     ore.dev/rol: iam

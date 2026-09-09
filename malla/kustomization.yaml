@@ -1,0 +1,79 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LO QUE ES LA PLATAFORMA — y por eso esta lista es EXPLICITA y no un comodin
+#
+# `malla/` mezcla tres cosas que se parecen porque son YAML y no lo son:
+#
+#   LA PLATAFORMA     lo de aqui abajo. Uno de cada, compartido por todos los
+#                     inquilinos: el IdP, la forja, Kueue, Flux, la puerta.
+#   LAS PLANTILLAS    `11`, `20`, `40`, `41`, `42`, `43`, `50`. Llevan `demo`
+#                     dentro y son la ENTRADA de `gen-inquilino.py`. Lo que
+#                     corre de verdad son sus copias rendidas, que viven en
+#                     `inquilino-<org>` y las aplica OTRO `Kustomization`.
+#   LAS PRUEBAS       los `9x-` y los guiones. Se corren a mano, contra un
+#                     inquilino, cuando alguien quiere comprobar algo.
+#
+# ── ⛔⛔ Y POR ESO UN `resources: ["."]` HABRIA SIDO UN DESASTRE ───────────
+#
+# No un fallo: un DESASTRE silencioso. `malla/40-ore-serve.yaml` declara el
+# `Deployment` de `t-demo` con `demo` dentro, y ese mismo objeto ya lo gobierna
+# el `Kustomization` de `inquilino-demo`. Dos duenos sobre un objeto no dan un
+# error — dan dos controladores escribiendolo por turnos, y una plantilla que
+# alguien edite pensando que edita una plantilla se aplicaria a un cliente.
+#
+# ⇒ La lista se escribe a mano, y anadir un manifiesto de plataforma exige
+#   anadirlo aqui. Es el mismo trato que `PLANTILLAS` en `gen-inquilino.py`, y
+#   alli hay una comprobacion —la ⑤— que caza al que se olvide. Aqui todavia no.
+#
+# ── ⚠️ Los `9x-` fuera, y no por ser pruebas ──────────────────────────────
+#
+# Por ser JOBS QUE HACEN COSAS. `99-el-cerrojo-de-la-llave.yaml` intenta abrir
+# con la clave de otro para demostrar que no puede; `93-discover.yaml` lee un
+# origen de verdad. Reconciliarlos seria correrlos cada vez que Flux mire.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # ── El suelo ────────────────────────────────────────────────────────────
+  - 00-base.yaml
+  - 10-kueue.yaml
+  # ⚠️ Flux se gobierna a si mismo, y es lo que hace `flux bootstrap`. Lo que
+  #   compra es que la pieza que detecta la deriva no pueda derivar en silencio.
+  #   Lo que cuesta es que un commit malo aqui rompa al que tendria que
+  #   arreglarlo — por eso el `Kustomization` de la malla lleva `prune: false`:
+  #   un fichero que desaparezca no se lleva por delante al controlador.
+  - 12-flux.yaml
+  # El enganche del inquilino. Vive aqui A PROPOSITO: es la parte que decide QUE
+  # SE OBEDECE, y si viviera dentro de lo que se obedece, quien escribiera alli
+  # cambiaria a que apunta el agente.
+  - 13-el-inquilino-reconciliado.yaml
+  # Y el de la malla, que es este mismo arbol. Se incluye para que tampoco EL
+  # pueda derivar: si alguien cambia a mano a que rama apunta, Flux lo devuelve.
+  - 15-la-malla-reconciliada.yaml
+  # ── La puerta compartida ────────────────────────────────────────────────
+  - 14-la-puerta.yaml
+  # ── La forja ────────────────────────────────────────────────────────────
+  - 30-forja.yaml
+  - 31-copias-de-la-forja.yaml
+  # ── La identidad ────────────────────────────────────────────────────────
+  - 60-idp.yaml
+  # ⛔⛔ `61-realms.yaml` NO ESTÁ, y esto lo destapó `kubectl diff -k` antes de
+  #   dejar que Flux tocara nada. Los tres `KeycloakRealmImport` vivos difieren
+  #   del fichero, así que aplicarlos les sube la `generation` — y eso hace que
+  #   el operador **reimporte los realms**.
+  #
+  # ⚠️ Reimportar no es aplicar un YAML: es que el operador rehaga el realm a
+  #   partir de la representación del fichero. Y el realm vivo lleva cosas que
+  #   el fichero no describe — `ore-agente` en `rubix-dev` se creó A MANO con
+  #   `kcadm` porque el operador sólo importa un realm AL CREARLO. Su secreto de
+  #   cliente es el que hay dentro del `Secret` `idp-agente`.
+  #
+  # ⇒ Poner la malla bajo GitOps no puede tener como efecto colateral rehacer la
+  #   identidad de la plataforma. Entra cuando el fichero y los tres realms digan
+  #   lo mismo, y eso es un trabajo con su propia medida — no una línea de esta
+  #   lista.
+  - 62-copias-del-idp.yaml
+  - 63-entrada-del-idp.yaml
+  - 65-iam.yaml
+  - 66-ore-iam.yaml
+  - 67-iam-servir.yaml

@@ -1,0 +1,70 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA MALLA SE OBEDECE A SI MISMA — la otra mitad de la E3
+#
+# La E3 puso el inquilino bajo Flux y dio por hecho el resto. Medido después:
+#
+#     lo que Flux gobierna:  inquilino-demo
+#
+# ⇒ **La plataforma entera se aplicaba a mano.** Y eso no era un descuido de
+#   operación: era la causa de dos cosas que se le achacaban al aprovisionador.
+#   Dar de alta a un inquilino pedía «aplicar el enganche a mano» no porque el
+#   aprovisionador no pudiera, sino porque NADA de `malla/` estaba reconciliado.
+#
+# ⭐ Con esto, añadir un inquilino deja de ser un paso y pasa a ser **un diff**:
+#   se escribe su `GitRepository` y su `Kustomization` en `13-…`, se confirma, y
+#   el agente hace el resto. Lo que nadie aplicó deja de distinguirse de lo que
+#   nadie escribió.
+#
+# ── ⭐ Sin clave de despliegue, y no es un atajo ──────────────────────────
+#
+# `describeloai/ore` es PÚBLICO, así que aquí no hay `secretRef`. Es la
+# diferencia con `13-…`, donde los compartimentos son privados y cada uno
+# necesita su clave — que es justo el permiso de clúster que el aprovisionador
+# no se puede quitar.
+#
+# ⇒ Un paso menos, y gratis: lo que está escrito para que se vea no necesita
+#   credencial para leerse.
+#
+# ── ⛔⛔ `prune: false`, Y ESTO NO ES COBARDÍA ────────────────────────────
+#
+# `13-…` lleva `prune: true` porque nació con su repositorio: todo lo que hay en
+# `t-demo` lo puso él, así que borrar de git puede borrar del clúster sin
+# sorpresas.
+#
+# **Aquí no.** Este árbol lleva meses aplicándose a mano, y hay objetos vivos
+# que NO están en la lista de `kustomization.yaml` —los `9x-` que dejaron un
+# Job, cosas de una prueba, lo que sea—. Con `prune: true` la primera
+# reconciliación los borraría **todos a la vez**, y la lista de lo que se
+# perdería no la tiene nadie.
+#
+# ⇒ Se entra sin podar, se mira lo que Flux dice que sobra, y se decide objeto a
+#   objeto. Cambiarlo a `true` es un commit de una línea el día que la lista
+#   esté limpia — y ese día hay que escribir aquí por qué ya se puede.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: malla
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://github.com/describeloai/ore.git
+  ref:
+    branch: main
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: malla
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./malla
+  prune: false
+  wait: false
+  sourceRef:
+    kind: GitRepository
+    name: malla
+  # ⚠️ El mismo `cluster-admin` que ya tenía el `kustomize-controller`, y sigue
+  # sin acotarse. La diferencia es que ahora al menos se ve qué aplica: antes
+  # aplicaba lo de un inquilino y lo demás lo ponía una persona sin registro.
