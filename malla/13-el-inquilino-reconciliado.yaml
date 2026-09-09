@@ -66,11 +66,33 @@ spec:
   # Cinco minutos. No es una carrera: lo que esto persigue no es aplicar rápido
   # un commit —eso se puede forzar— sino que la deriva no viva mucho tiempo.
   interval: 5m
-  url: ssh://git@github.com/describeloai/inquilino-demo.git
+  # ── ⭐⭐ UNA CREDENCIAL PARA TODOS LOS COMPARTIMENTOS, Y ES LA ⑦ ────────
+  #
+  # Antes: `ssh://` y una clave de despliegue POR INQUILINO. Y esa clave era el
+  # ultimo permiso de cluster que el aprovisionador no se podia quitar —
+  # `source-controller` la lee de etcd, asi que crearla exige `create secret` en
+  # `flux-system`, y eso convertia cada alta en una sesion de operador.
+  #
+  # ⇒ Ahora `https://` con `inquilino-llave`: UN testigo de alcance fino, de
+  #   solo lectura de contenidos, sobre los repositorios `inquilino-*`. Se acuña
+  #   una vez y sirve para todos, asi que dar de alta a un inquilino deja de
+  #   tocar el cluster.
+  #
+  # ⛔ Y no empeora el aislamiento, que es lo que hay que justificar: los
+  #   compartimentos son NUESTROS —la `0022` ② lo decide— y Flux ya era
+  #   `cluster-admin` sobre todos ellos. Una clave por repositorio protegia de
+  #   algo que ya no estaba protegido.
+  #
+  # ⚠️ Lo que SI cambia: si ese testigo se filtra, se leen los manifiestos de
+  #   todos los inquilinos en vez de los de uno. No hay ni un valor secreto
+  #   dentro —para eso esta el almacen— pero si la forma de la infraestructura
+  #   de cada cliente. Por eso es de LECTURA y sobre repositorios elegidos a
+  #   mano, no un testigo de cuenta.
+  url: https://github.com/describeloai/inquilino-demo.git
   ref:
     branch: main
   secretRef:
-    name: inquilino-demo-llave
+    name: inquilino-llave
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
