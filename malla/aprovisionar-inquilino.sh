@@ -197,26 +197,47 @@ if [ -z "${FORJA_ADMIN:-}" ] && [ -z "$SECO" ]; then
      sacarlo de ahi, necesitaria permisos de cluster — y eso es lo que la \`0022\`
      quito. Se pasa por el entorno, y en su forma final lo inyecta el Job."
 fi
-forja_api() { # <metodo> <camino> [cuerpo]
-  local m="$1" c="$2" d="${3:-}"
-  kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /tmp/r -w '%{http_code}' \
+# ── ⚠️⚠️ LO QUE LA PRUEBA EN SECO NO PODIA DESTAPAR ────────────────────────
+#
+# La primera corrida de verdad lo destapo en esta misma linea. Escribia el
+# cuerpo en `-o /tmp/r`, DENTRO del pod de la forja — y ese sistema de ficheros
+# es de solo lectura. `curl` salio con **23** en las tres llamadas.
+#
+# ⇒ Y la salida dijo «✓ organizacion y repositorio» igual, porque el llamante
+#   redirigia a `/dev/null` y no miraba nada. La peticion habia funcionado —lo
+#   que fallo fue guardar la respuesta— pero eso es suerte: con este codigo, una
+#   forja caida habria dado exactamente la misma linea verde.
+#
+# ⭐ Dos arreglos, y el segundo es el que importa: el cuerpo no nos interesa y va
+#   a `/dev/null`, y **el codigo HTTP se comprueba aqui dentro**. Un
+#   aprovisionador que afirma haber creado lo que no creo es peor que uno que
+#   falla.
+#
+# ⚠️ `409` y `422` son exito: son «ya existia», que es justo lo que la
+#   idempotencia del guion pide en una segunda pasada.
+forja_api() { # <metodo> <camino> [cuerpo] — imprime el codigo, o corta el guion
+  local m="$1" c="$2" d="${3:-}" cod
+  cod=$(kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
     -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
-    ${d:+--data "$d"} "http://localhost:3000/api/v1$c"
+    ${d:+--data "$d"} "http://localhost:3000/api/v1$c" 2>/dev/null | tr -d '\r')
+  case "$cod" in
+    2??|409|422) echo "$cod" ;;
+    *) falla "la forja contesto '$cod' a $m $c" ;;
+  esac
 }
 
 if [ -n "$SECO" ]; then
   haria "crear la organizacion $PROPIETARIO y el repositorio $ARBOL en la forja"
   haria "crear el usuario serve-$NOMBRE, hacerlo colaborador con escritura, y acunar su testigo"
 else
-  forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}" >/dev/null
-  forja_api POST "/orgs/$PROPIETARIO/repos" "{\"name\":\"$REPO\",\"private\":true}" >/dev/null
-  hecho "organizacion y repositorio $ARBOL"
+  hecho "organizacion $PROPIETARIO · $(forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}")"
+  hecho "repositorio $ARBOL · $(forja_api POST "/orgs/$PROPIETARIO/repos" "{\"name\":\"$REPO\",\"private\":true}")"
   kubectl exec -n "$FORJA_NS" forja-0 -- su git -c \
     "forgejo admin user create --username serve-$NOMBRE --email serve-$NOMBRE@invalido.paladio.io --random-password --must-change-password=false" \
     >/dev/null 2>&1 || true
   hecho "usuario serve-$NOMBRE"
-  forja_api PUT "/repos/$ARBOL/collaborators/serve-$NOMBRE" '{"permission":"write"}' >/dev/null
-  hecho "colaborador de SU arbol, y de ninguno mas"
+  hecho "colaborador de SU arbol, y de ninguno mas · $(forja_api PUT \
+    "/repos/$ARBOL/collaborators/serve-$NOMBRE" '{"permission":"write"}')"
   TESTIGO=$(kubectl exec -n "$FORJA_NS" forja-0 -- su git -c \
     "forgejo admin user generate-access-token --username serve-$NOMBRE --token-name ore-serve --scopes write:repository" \
     2>/dev/null | tr -d '\r' | sed 's/.*: //')
@@ -236,7 +257,6 @@ if "$GCLOUD" secrets describe "$NS-forja-token" --format="value(name)" >/dev/nul
 elif [ -n "$SECO" ]; then
   haria "crear el secreto $NS-forja-token con el testigo del paso ④"
 else
-  correr "el secreto $NS-forja-token" -- true
   "$GCLOUD" secrets create "$NS-forja-token" --replication-policy=user-managed     --locations="$LUGAR" >/dev/null 2>&1 || true
   # ⛔ Por FICHERO y no por `--data-file=-`: el valor no pasa por `argv`, que lo
   #   lee cualquier proceso de la maquina. Y el fichero se borra a continuacion.
@@ -264,15 +284,46 @@ fi
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 
+# ── ⚠️ Y ESTE PASO NO ERA IDEMPOTENTE, que es lo que destapo la SEGUNDA pasada
+#
+# Hacia `git init` sobre lo recien rendido y empujaba. La primera vez funciona.
+# La segunda, el remoto ya tiene una historia que este arbol nuevo no conoce, y
+# `push` sale con «rejected — fetch first».
+#
+# ⇒ Se CLONA lo que hay, se escribe encima lo rendido, y se hace commit **solo
+#   si algo cambio**. Asi la segunda pasada dice «ya estaba» en vez de fallar, y
+#   una tercera con la plantilla cambiada empuja exactamente la diferencia.
+#
+# ⭐ Y esto es lo que un aprovisionador tiene que ser: no un acto que ocurre una
+#   vez, sino una funcion que converge. La `017` ya lo dijo de la fila y el
+#   arbol; aqui vale igual.
 if [ -n "$SECO" ]; then
   haria "empujar esos manifiestos a $REPO_INST"
 else
-  ( cd "$TMP/rendido" && git init -q -b main \
-    && git add -A \
-    && git -c user.name=aprovisionador -c user.email=aprovisionador@invalido \
-         commit -q -m "El compartimento del inquilino $NOMBRE" \
-    && git remote add origin "https://github.com/$REPO_INST.git" \
-    && git push -q -u origin main ) && hecho "empujado a $REPO_INST"
+  ( set -e
+    cd "$TMP"
+    git clone -q "https://github.com/$REPO_INST.git" clon 2>/dev/null \
+      || { mkdir -p clon && cd clon && git init -q -b main \
+           && git remote add origin "https://github.com/$REPO_INST.git" && cd ..; }
+    # ⛔ Se borra lo que hubiera y se copia lo rendido: la plantilla es la
+    #   verdad. Un fichero que el renderizador ya no emite tiene que
+    #   DESAPARECER del compartimento — si se quedase, Flux seguiria
+    #   obedeciendolo.
+    find clon -maxdepth 1 -name '*.yaml' -delete
+    cp "$TMP"/rendido/*.yaml clon/
+    cd clon
+    git add -A
+    if git diff --cached --quiet; then
+      cd "$TMP"; exit 3
+    fi
+    git -c user.name=aprovisionador -c user.email=aprovisionador@invalido \
+      commit -q -m "El compartimento del inquilino $NOMBRE"
+    git push -q -u origin HEAD:main )
+  case $? in
+    0) hecho "empujado a $REPO_INST" ;;
+    3) ya "los manifiestos de $REPO_INST" ;;
+    *) falla "no se pudo empujar a $REPO_INST" ;;
+  esac
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -298,9 +349,21 @@ cat <<FIN
   ⛔ 3 · EL ARBOL. \`ore init --name $NOMBRE\`, primer commit y push. Es la E5,
        y necesita la imagen de \`serve\` — la unica con \`git\`.
 
-  ⚠️ 4 · Y LA CUOTA. Un \`ore-serve\` y un cofre mas piden ~150m de CPU. El nodo
-       estaba al 96% con un solo inquilino: **aprovisionar tiene que contar
-       cuota, no solo escribir manifiestos**, y hoy no la cuenta.
+  ⚠️ 4 · Y LA CUOTA. Un \`ore-serve\` y un cofre mas piden ~150m de CPU, y este
+       guion sigue sin contarla: escribe manifiestos sin mirar si caben.
+
+       ⭐ Pero la cuenta que habia aqui escrita estaba MAL leida. Decia «el nodo
+         estaba al 96% con un solo inquilino», que se lee como «cada inquilino
+         cuesta un nodo». Medido por pod, en un \`e2-standard-2\`:
+
+           los agentes de GKE      865m   46%   ← kube-dns, anetd, fluentbit…
+           la plataforma           850m   45%   ← idp, flux, kueue, forja, iam
+           EL INQUILINO            150m    8%   ← ore-serve + cofre
+
+       ⇒ El 96% era un SUELO FIJO, y un suelo no se multiplica: es el mismo con
+         uno que con cincuenta. Lo que faltaba no era un nodo por cliente, era
+         un nodo mas grande para la plataforma. Con \`e2-standard-4\` el conjunto
+         queda al 54% y sobran ~1770m: once inquilinos mas, no uno.
 FIN
 echo
 echo "✓ \`$NOMBRE\`${SECO:+ (en seco)}"

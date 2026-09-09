@@ -188,15 +188,49 @@ manifiesto del inquilino CREA su propio `Namespace`, que es un recurso de clúst
 ⭐ Y esto ya paga por sí mismo aunque no haya un segundo cliente nunca: hoy `kubectl apply -f
 malla/` lo hace una persona, y **lo que nadie aplicó no se distingue de lo que nadie escribió**.
 
-**E4 · El aprovisionador escribe.** Crea el repositorio del inquilino, empuja sus manifiestos, y
-hace las tres llamadas que ningún YAML puede hacer: crear el repositorio en la forja, crear su
-usuario, hacerlo colaborador y acuñar su testigo.
+**E4 · El aprovisionador escribe.** ✔ 2026-09-09 · `malla/aprovisionar-inquilino.sh`, corrido de
+verdad contra `prueba` y desmontado a continuación.
 
-⛔ Y aquí hay que contestar lo que esta decisión **no** contesta: **los secretos no van en un
-repositorio.** Dos por inquilino —el testigo de la forja y el del agente— y ninguno se puede
-escribir en claro. O el aprovisionador los pone directamente contra el clúster —y entonces vuelve
-a tener una credencial, aunque mucho más estrecha que la de ①—, o se sellan (`SealedSecret`) o se
-referencian (`External Secrets`). **Es la primera pregunta de E4**, y no tiene respuesta todavía.
+⛔ La pregunta que esta decisión dejaba abierta —**los secretos no van en un repositorio**— tiene
+respuesta, y es la `0023`: el valor va al **almacén de la plataforma** y el manifiesto sólo lo
+referencia; un contenedor de inicio lo trae a un `emptyDir` de memoria. Ni `SealedSecret` ni
+`External Secrets`: **el aprovisionador sigue sin una sola credencial de clúster.**
+
+⇒ Queda **una** excepción, dicha en el paso ⑦ del guion y no escondida: la clave de despliegue que
+Flux necesita para leer el repositorio del inquilino. `source-controller` la lee de etcd, así que
+se emite y se aplica a mano — una línea con nombre en vez de un permiso general.
+
+### ⭐⭐ Y lo que la corrida de verdad enseñó, que la prueba en seco no podía
+
+El guion vivió una iteración entera probado **en seco** y parecía bueno. La primera corrida real
+destapó **tres** defectos en diez minutos, y los tres tienen la misma forma: *una línea verde
+encima de algo que no pasó*.
+
+| | qué | por qué en seco era invisible |
+|---|---|---|
+| ① | `curl -o /tmp/r` dentro de la forja, cuyo sistema de ficheros es de solo lectura: salía con **23** en las tres llamadas | el llamante redirigía a `/dev/null` y no miraba el código |
+| ② | `correr "el secreto …" -- true`, que no es una orden | `command not found`, y la salida siguió |
+| ③ | `git init` sobre lo recién rendido: la segunda pasada muere con «rejected — fetch first» | en seco no hay primera pasada, así que no hay segunda |
+
+⇒ El defecto de fondo no es ninguno de los tres: es que **el guion no comprobaba**, y en seco eso
+es invisible por construcción. Arreglado: `forja_api` distingue el éxito del fallo aquí dentro
+—`409` y `422` son éxito, porque son «ya existía»—, y ⑥ **clona y converge** en vez de ocurrir una
+vez.
+
+⭐ Y de ahí sale la pieza que faltaba: **`malla/desaprovisionar-inquilino.sh`**. Un aprovisionador
+sin su inverso sólo se corre en serio una vez —y por eso se prueba en seco, y por eso esos tres
+defectos vivieron una iteración entera—. Con el inverso se corre, se mira, se desmonta y se
+repite, que es la única forma de que esto sea una propiedad y no una anécdota.
+`pruebas-de-fuego/medida-la-corrida-de-verdad.py` fija las cuatro propiedades.
+
+**Lo medido en la corrida** (`prueba`, luego borrado): dos claves de KMS con una cuenta cada una y
+disjuntas; `serve-prueba` colaborador de `t-prueba/ontologia` con **204** y de `t-demo/ontologia`
+con **404**; el secreto del almacén alcanzable por una sola cuenta; y **ni un rastro del nombre
+`demo` en los cinco manifiestos rendidos**.
+
+⚠️ Lo que sigue sin hacer de la E4: esto es todavía **un guion que se corre a mano**, y su forma
+final es un **Job** —con su testigo de forja y su identidad de Google, y **sin ni un permiso de
+RBAC**—, porque la forja sólo se alcanza desde dentro del clúster.
 
 **E5 · El árbol.** `ore init --name <org>`, primer commit y push, con la imagen de `serve` —la
 única con `git`—. El nombre del manifiesto sale de la organización, y no es cosmético: se propaga

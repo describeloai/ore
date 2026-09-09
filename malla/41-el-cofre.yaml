@@ -85,9 +85,22 @@ spec:
   #   quedo `Pending` con «Insufficient cpu». El sintoma de un cluster lleno no es
   #   un error que diga que no cabe: es un `rollout status` que se agota.
   #
-  # ⇒ Y eso deja una deuda dicha: con un `ore-serve` y un cofre POR INQUILINO,
-  #   el `default-pool` de un nodo no da para el segundo cliente. Aprovisionar un
-  #   inquilino tendra que contar cuota, no solo escribir manifiestos.
+  # ⇒ Y la deuda que esto dejaba escrita estaba MAL LEIDA. Decia que el
+  #   `default-pool` no daba para el segundo cliente, que se lee como «cada
+  #   inquilino cuesta un nodo». Medido por pod, en aquel `e2-standard-2`:
+  #
+  #       los agentes de GKE   865m   46%   kube-dns, anetd, fluentbit...
+  #       la plataforma        850m   45%   idp, flux, kueue, forja, iam
+  #       ESTE INQUILINO       150m    8%   ore-serve + cofre
+  #
+  #   El 96% era un SUELO FIJO, y un suelo no se multiplica: es el mismo con un
+  #   inquilino que con cincuenta. Lo que faltaba no era un nodo por cliente,
+  #   era un nodo mas grande para la plataforma. Con `e2-standard-4` el
+  #   conjunto queda al 54% y sobran ~1770m: once inquilinos, no uno.
+  #
+  # ⚠️ Lo que SI sigue en pie de aquella deuda: aprovisionar no cuenta cuota, y
+  #   tendra que contarla — un dia el suelo mas los inquilinos llegara al techo,
+  #   y el sintoma seguira siendo un `rollout` que caduca.
   strategy:
     type: Recreate
   selector:
