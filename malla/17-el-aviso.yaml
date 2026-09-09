@@ -977,3 +977,63 @@ spec:
       app: notification-controller
   policyTypes:
   - Ingress
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# UN RECEPTOR PARA TODOS — el sustrato, no una pieza por inquilino
+#
+# La primera versión de esto era un `Receiver` por inquilino en `13-…` y un
+# webhook por REPOSITORIO en la forja. Funcionaba y estaba mal, por dos razones
+# que sólo se ven al preguntarse quién lo instala:
+#
+#   ① un webhook por repositorio es contabilidad. Un inquilino tiene su árbol y
+#      su compartimento hoy, y mañana lo que haga falta — cada repositorio nuevo
+#      sería un webhook que alguien tiene que acordarse de poner;
+#   ② y un `Receiver` por inquilino hace que la URL del webhook DEPENDA del
+#      inquilino: Flux publica el camino en `.status.webhookPath`, así que el
+#      aprovisionador tendría que LEERLO del clúster. Y el aprovisionador no
+#      tiene ni un permiso de RBAC — eso es la E4 entera.
+#
+# ⇒ Con UNO solo, la URL es una CONSTANTE. El aprovisionador escribe siempre la
+#   misma y no consulta nada. Y la forja admite el webhook a nivel de
+#   ORGANIZACIÓN —`/orgs/{org}/hooks`—, así que un inquilino se cubre con UNA
+#   llamada y queda cubierto para todos sus repositorios, incluidos los que
+#   todavía no existen.
+#
+# ── ⭐ `name: '*'` con `matchLabels`, y eso es lo que lo hace sustrato ─────
+#
+# El receptor no nombra objetos: nombra una CLASE. Cualquier `GitRepository` con
+# `ore.dev/rol: agente` entra — el compartimento de cada inquilino hoy, y el
+# árbol el día que el reconciliador exista. Dar de alta a un cliente no añade
+# nada aquí.
+#
+# ── ⚠️ Y lo que cuesta, dicho antes de que se note ────────────────────────
+#
+# Un empujón en el inquilino A reconcilia también el `GitRepository` de B. Es un
+# `git fetch` que no encuentra nada — barato con los inquilinos que hay, y
+# desperdicio con cien. **Y es un acoplamiento**: no se filtra ningún dato, pero
+# la fuente de B se toca cuando A escribe.
+#
+# ⇒ El día que eso importe, la salida está a mano y no cambia el sustrato: un
+#   `filter` —una expresión CEL sobre el cuerpo del webhook— deja pasar sólo lo
+#   del inquilino que empujó. Se escribe aquí y no toca ni el aprovisionador ni
+#   la forja.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata:
+  name: inquilinos
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: agente
+spec:
+  type: generic
+  secretRef:
+    name: receptor-token
+  resources:
+    - apiVersion: source.toolkit.fluxcd.io/v1
+      kind: GitRepository
+      name: '*'
+      namespace: flux-system
+      matchLabels:
+        ore.dev/rol: agente

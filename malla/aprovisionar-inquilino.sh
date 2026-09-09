@@ -217,6 +217,10 @@ REPO="${ARBOL#*/}"
 # ⭐ DENTRO sale del almacen, puesto por el contenedor de inicio en un tmpfs.
 #   FUERA lo pone quien corre esto. En los dos casos NO viaja por `argv`.
 [ -n "${DENTRO:-}" ] && [ -f /puesto/forja-admin ] && FORJA_ADMIN="$(cat /puesto/forja-admin)"
+# ⭐ Y la URL del receptor, por lo mismo: su CAMINO es el secreto, asi que no
+#   se escribe aqui. Dentro sale del almacen; fuera, del entorno.
+[ -n "${DENTRO:-}" ] && [ -f /puesto/receptor-url ] && RECEPTOR="$(cat /puesto/receptor-url)"
+: "${RECEPTOR:=}"
 if [ -z "${FORJA_ADMIN:-}" ] && [ -z "$SECO" ]; then
   falla "falta \`FORJA_ADMIN\`, el testigo con el que se crean usuarios y repositorios.
      No se lee de ningun \`Secret\` del cluster a proposito: si este guion supiera
@@ -285,6 +289,31 @@ if [ -n "$SECO" ]; then
   haria "crear el usuario serve-$NOMBRE, hacerlo colaborador con escritura, y acunar su testigo"
 else
   hecho "organizacion $PROPIETARIO · $(forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}")"
+  # ── ⭐⭐ EL AVISO, Y A NIVEL DE ORGANIZACION ─────────────────────────────
+  #
+  # Va AQUI y no junto a un repositorio, y esa es toda la diferencia entre un
+  # sustrato y contabilidad:
+  #
+  #   por repositorio    hay que acordarse por cada uno. El arbol hoy, el
+  #                      compartimento despues, y lo que venga manana
+  #   por ORGANIZACION   UNA llamada, y quedan cubiertos todos los
+  #                      repositorios del inquilino — incluidos los que
+  #                      todavia no existen
+  #
+  # ⇒ Y por eso esta antes de crear el arbol: asi el primer commit del arbol ya
+  #   avisa. Al reves, el unico empujon que nadie oiria seria justo el primero.
+  #
+  # ⛔ La URL es una CONSTANTE, y eso no es comodidad: es lo que permite que este
+  #   guion no tenga permisos de cluster. Con un `Receiver` por inquilino, Flux
+  #   publicaria un camino distinto por cada uno en `.status.webhookPath` y
+  #   habria que LEERLO del servidor de la API. Con uno solo para todos, se
+  #   escribe siempre lo mismo. Ver `17-el-aviso.yaml`.
+  #
+  # ⚠️ El camino ES el secreto —`generic` no verifica firma— asi que la URL
+  #   entera viene del almacen, no de aqui.
+  hecho "avisara a Flux en cada empujon · $(forja_api POST "/orgs/$PROPIETARIO/hooks" \
+    "{\"type\":\"gitea\",\"active\":true,\"events\":[\"push\"],\
+\"config\":{\"url\":\"$RECEPTOR\",\"content_type\":\"json\"}}")"
   hecho "repositorio $ARBOL · $(forja_api POST "/orgs/$PROPIETARIO/repos" "{\"name\":\"$REPO\",\"private\":true}")"
   # ── ⭐⭐ POR API, Y ESTO ES LO QUE PERMITE QUE SEA UN JOB ────────────────
   #
