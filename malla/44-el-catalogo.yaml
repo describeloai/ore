@@ -1,0 +1,168 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL CATÁLOGO DE UNA FUENTE — lo único de este sistema que toca un origen
+#
+# ⭐⭐ Y la plantilla se rinde UNA VEZ POR FUENTE PENDIENTE, no una por
+#   inquilino. Es la primera del renderizador que se multiplica dentro de un
+#   compartimento, y ésa es la forma que el ciclo de vida del producto necesita:
+#   el árbol declara una fuente, el reconciliador ve que no tiene paquete, y
+#   escribe este Job en el compartimento. Flux lo crea. Nadie despacha nada.
+#
+# ── ⭐ Las tres mitades, y la frontera está entre la primera y la segunda ──
+#
+#   traer-el-testigo  `ore-drivers`  el testigo de la forja, del almacén
+#   catalogo          `ore-drivers`  LEE EL ORIGEN. Red, identidad, SDK
+#   publicar          `ore-drivers`  induce y empuja el resultado al árbol
+#
+# ⛔ El de en medio es el único proceso de toda la plataforma que habla con los
+#   datos de un cliente. Corre en `jobs-p` —nodos privados SIN Cloud NAT— así
+#   que **no puede salir a internet aunque su `NetworkPolicy` se lo permita**.
+#   Y ahí lo pone Kueue: la `ClusterQueue` del inquilino conoce una sola
+#   `ResourceFlavor`, y esa flavor es el pool privado. No es una etiqueta que
+#   alguien recuerde poner.
+#
+# ⚠️ Y `discover` va con el tercero y no aparte, aunque sea hermético. Podría
+#   correr en `ore-serve`; se queda aquí porque el catálogo vive en un `emptyDir`
+#   que muere con el pod, y sacarlo de aquí exigiría un canal para un fichero
+#   temporal. Lo que sí se conserva es la afirmación: el binario `ore` no lleva
+#   cliente TLS, así que la inducción sigue sin poder abrir nada.
+#
+# ── ⛔⛔ LA CUENTA, Y POR QUÉ TUVO QUE CAMBIAR ────────────────────────────
+#
+# Este pod necesita DOS cosas a la vez: la identidad de Google que alcanza el
+# origen, y el testigo de la forja de SU inquilino para empujar el resultado. Un
+# pod tiene una sola cuenta, así que las dos tienen que caer en la misma.
+#
+# ⇒ Y por eso el driver dejó de compartir cuenta. Con `ore-driver@` —una para
+#   todos— darle el testigo de un inquilino se lo habría dado a los drivers de
+#   todos, que es el patrón que el cofre ya había rechazado con su llave.
+#
+# ── ⚠️ Y lo que este Job NO decide ────────────────────────────────────────
+#
+# Qué fuentes catalogar. Eso lo decide el reconciliador comparando `datasources`
+# con `packages/`, y se nota en que este fichero nombra UNA fuente: la que le
+# tocó. Un Job que mirase el árbol y eligiera sería una segunda opinión sobre lo
+# que hay que hacer, y ya hay quien la tiene.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: catalogo-bq
+  namespace: t-demo
+  labels:
+    # ⛔ La cola de Kueue, y no es opcional: es lo que hace que este pod aterrice
+    #   en el pool privado. Sin esta etiqueta el Job no pasa por Kueue —
+    #   `manageJobsWithoutQueueName` está en falso— y aterriza donde caiga, con
+    #   una `NetworkPolicy` que abre el 443 a todo internet.
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+  annotations:
+    # Un Job es inmutable. Para volver a catalogar se borra y Flux lo recrea.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      # `Never`, y por lo que costó averiguarlo en el aprovisionador: con
+      # `OnFailure` el pod se borra al agotar los reintentos, con su registro
+      # dentro. Un catálogo que falla y no dice por qué obliga a repetirlo.
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: trabajo
+          emptyDir: {}
+      initContainers:
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=t-demo-forja-token --out-file=/puesto/forja
+              chmod 0400 /puesto/forja
+              echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: catalogar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            # ⚠️ LA FUENTE. Es lo único que distingue un Job de otro, y viene del
+            #   `datasources` del árbol — no de aquí.
+            - { name: FUENTE, value: "bq" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # ⛔ El testigo por `GIT_CONFIG_*` y no en la URL: un
+              #   `http://usuario:token@host/…` lo lee cualquier proceso de la
+              #   máquina. Misma disciplina que `ore-serve/git.rs`.
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              cd /trabajo
+              git clone --quiet \
+                http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              cd arbol
+
+              # ── ⭐ Y AQUÍ SE MIRA ANTES DE TRABAJAR ────────────────────
+              #
+              # El reconciliador decidió que esta fuente no tenía paquete
+              # CUANDO rindió este Job. Entre eso y ahora pudo pasar cualquier
+              # cosa — otra corrida, alguien a mano. Un catálogo que reescribe
+              # un paquete ya inducido pierde decisiones ya contestadas.
+              if [ -d "packages/$FUENTE" ]; then
+                echo "· \`$FUENTE\` ya tiene paquete — no se toca"
+                exit 0
+              fi
+
+              echo "### leyendo el origen \`$FUENTE\`"
+              ore source catalog "$FUENTE" --out /trabajo/catalogo.json
+
+              # ⭐ La inducción no abre nada: lee un fichero y escribe
+              #   documentos. Lo que tocó el mundo se quedó en la línea de
+              #   arriba.
+              echo "### induciendo"
+              ore discover --from /trabajo/catalogo.json \
+                --out "packages/$FUENTE" --name "$FUENTE"
+
+              git add -A
+              if git diff --cached --quiet; then
+                echo "· nada que empujar"
+                exit 0
+              fi
+              git -c user.name=catalogo -c user.email=catalogo@invalido \
+                commit -q -m "Catalogo de \`$FUENTE\`, con sus decisiones abiertas"
+              git push -q origin HEAD:main
+              echo "✓ \`$FUENTE\` catalogada · $(git rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "200m", memory: 512Mi}
+            limits:   {cpu: "2000m", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

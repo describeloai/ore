@@ -5,7 +5,7 @@
 #
 #   LA PLATAFORMA     lo de aqui abajo. Uno de cada, compartido por todos los
 #                     inquilinos: el IdP, la forja, Kueue, Flux, la puerta.
-#   LAS PLANTILLAS    `11`, `20`, `40`, `41`, `42`, `43`, `50`. Llevan `demo`
+#   LAS PLANTILLAS    `11`, `20`, `40`…`44`, `50`. Llevan `demo`
 #                     dentro y son la ENTRADA de `gen-inquilino.py`. Lo que
 #                     corre de verdad son sus copias rendidas, que viven en
 #                     `inquilino-<org>` y las aplica OTRO `Kustomization`.

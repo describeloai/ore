@@ -59,16 +59,16 @@ MALLA = pathlib.Path(__file__).resolve().parent
 #   del driver y por dónde puede salir—, viviendo en un fichero que parecía de
 #   sistema por el número. Lo encontró la comprobación ⑤.
 #
-# ⛔ Y arrastra una llamada que ningún YAML hace: esa cuenta lleva la anotación
-#   de Workload Identity a `ore-driver@…`, y ese permiso se concede al PAR
-#   `(namespace, cuenta)`. Un inquilino nuevo necesita su propio enlace —
+# ✓ Y arrastraba una llamada que ningún YAML hace: el enlace de Workload
+#   Identity, que se concede al PAR `(namespace, cuenta)`. Lo hace el
+#   aprovisionador, y desde hoy sobre `ore-driver-<inquilino>@` — una cuenta POR
+#   INQUILINO, no la compartida de antes.
 #
-#     gcloud iam service-accounts add-iam-policy-binding ore-driver@… \
-#       --role=roles/iam.workloadIdentityUser \
-#       --member="serviceAccount:<proyecto>.svc.id.goog[t-<nombre>/driver]"
-#
-#   — o su driver no podrá autenticarse contra Google, y el síntoma será un
-#   permiso denegado que manda a mirar los roles y no el enlace. Va a la E4.
+# ⛔ Lo forzó el catálogo: el Job que lee un origen tiene que EMPUJAR el
+#   resultado al árbol de su inquilino, o sea leer el testigo de la forja de ese
+#   inquilino. Con una cuenta compartida, dárselo a uno se lo daba a todos — que
+#   es exactamente el patrón que el cofre rechazó con su llave. El driver era la
+#   última excepción viva.
 PLANTILLAS = [
     "11-el-inquilino.yaml",
     "20-driver.yaml",
@@ -123,7 +123,25 @@ NOMBRAN_INQUILINOS = {
         "es el enganche: un par por inquilino, escrito a mano y no renderizado.",
 }
 
+# ⛔⛔ LA QUE SE RINDE N VECES, Y ES UNA CATEGORIA NUEVA.
+#
+# Las de `PLANTILLAS` salen UNA por inquilino. Esta sale una POR FUENTE PENDIENTE
+# — la primera del renderizador que se multiplica dentro de un compartimento.
+#
+# ⇒ Y es lo que convierte esto en el ciclo de vida del producto y no solo en su
+#   montaje: el arbol declara una fuente, el reconciliador ve que no tiene
+#   paquete, y escribe aqui un Job. Flux lo crea. Nadie despacha nada.
+#
+# ⚠️ El nombre del fichero lleva la fuente dentro, asi que dos fuentes no se
+#   pisan y quitar una del arbol hace desaparecer SU Job — que con `prune: true`
+#   en el compartimento es exactamente lo que debe pasar.
+POR_FUENTE = "44-el-catalogo.yaml"
+
 MODELO = "demo"
+
+# La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
+# `bq` tiene que devolver la plantilla byte a byte.
+FUENTE_MODELO = "bq"
 
 # ⛔ Como PALABRA, no como subcadena. La primera version buscaba `demo` en
 #   crudo y salto con «de**mo**strado» en un comentario — un aviso que se
@@ -136,7 +154,7 @@ MODELO = "demo"
 SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 
 
-def render(nombre, arbol=None, entrada=None):
+def render(nombre, arbol=None, entrada=None, fuentes=()):
     """La plantilla con las sustituciones hechas. `arbol` es `<propietario>/<repo>`
     tal como lo guarda `iam.organizacion.arbol`; por defecto, lo que deriva
     `fundar`.
@@ -188,6 +206,21 @@ def render(nombre, arbol=None, entrada=None):
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % nombre)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
         salida[f] = t
+
+    # ── Y una por cada fuente pendiente ───────────────────────────────────
+    #
+    # ⚠️ Las mismas sustituciones del inquilino y ADEMAS la fuente. El orden
+    #   importa por lo de siempre: `catalogo-bq` contiene `bq`, asi que el
+    #   nombre del Job se sustituye con la cadena entera y no por partes.
+    plantilla = (MALLA / POR_FUENTE).read_text(encoding="utf-8")
+    for fuente in fuentes:
+        t = plantilla
+        t = t.replace("catalogo-%s" % FUENTE_MODELO, "catalogo-%s" % fuente)
+        t = t.replace('value: "%s"' % FUENTE_MODELO, 'value: "%s"' % fuente)
+        t = t.replace("t-%s/ontologia" % MODELO, arbol)
+        t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
+        t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
+        salida["44-el-catalogo-%s.yaml" % fuente] = t
     return salida
 
 
@@ -203,8 +236,11 @@ def comprobar():
     fallos = []
 
     # ── ① La plantilla es una instancia: renderizar `demo` es la identidad ──
-    for f, t in render(MODELO).items():
-        if t != (MALLA / f).read_text(encoding="utf-8"):
+    # ⭐ Y con la fuente modelo, para que la que se rinde N veces entre tambien
+    #   en la identidad. Sin esto podria derivar sin que nadie lo notara.
+    for f, t in render(MODELO, fuentes=[FUENTE_MODELO]).items():
+        origen = MALLA / (POR_FUENTE if f.startswith("44-") else f)
+        if t != origen.read_text(encoding="utf-8"):
             fallos.append("`%s`: renderizar `demo` NO devuelve el fichero" % f)
     print("  ① renderizar `%s` devuelve la plantilla, byte a byte" % MODELO)
 
@@ -255,7 +291,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9":
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name == POR_FUENTE:
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -307,7 +343,9 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS, f.name in listados, f.name[0] == "9",
+                f.name in PLANTILLAS or f.name == POR_FUENTE,
+                f.name in listados,
+                f.name[0] == "9",
             )
             if f.name in FUERA:
                 # Fuera a proposito. Se dice, y con su motivo: una exclusion
@@ -350,7 +388,7 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--entrada", "--a")
+    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a")
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -379,7 +417,11 @@ def main(argv):
     def valor(que):
         return argv[argv.index(que) + 1] if que in argv and argv.index(que) + 1 < len(argv) else None
 
-    hecho = render(nombre, valor("--arbol"), valor("--entrada"))
+    # ⚠️ Separadas por coma y no repetidas: quien llama es un guion de shell,
+    #   y una lista en una variable es mas facil de pasar bien que un bucle de
+    #   banderas. Vacio significa «ninguna pendiente», que es el caso normal.
+    fuentes = [f for f in (valor("--fuentes") or "").split(",") if f]
+    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes)
     destino = valor("--a")
     if destino:
         d = pathlib.Path(destino)

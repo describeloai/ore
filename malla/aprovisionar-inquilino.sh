@@ -408,7 +408,64 @@ else
     "/repos/$COMPARTIMENTO/collaborators/flux" '{"permission":"read"}')"
 fi
 
-"$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --arbol "$ARBOL" --a "$(ruta "$TMP/rendido")" \
+# ── ⭐⭐ LO QUE HACE DE ESTO UN RECONCILIADOR Y NO UN INSTALADOR ──────────
+#
+# Hasta aquí el compartimento salía de la plantilla y nada más: siempre los
+# mismos siete manifiestos. Esto lee EL ÁRBOL —la verdad del inquilino— y emite
+# además un Job de catálogo por cada fuente que todavía no tiene paquete.
+#
+# ⇒ Y con eso el ciclo de vida del producto pasa por la plataforma sin que nadie
+#   despache nada: alguien da de alta un origen con `ore source add`, `ore-serve`
+#   lo empuja al árbol, la forja avisa, esto renderiza, y Flux crea el Job.
+#
+# ⛔ Se lee por API y no clonando. El testigo de administrador ya alcanza
+#   cualquier repositorio, y clonar el árbol entero para mirar dos listas sería
+#   traerse la ontología de un cliente a un disco temporal sin necesidad.
+#
+# ⚠️ Y si algo de esto falla —el árbol no existe todavía, el manifiesto no
+#   analiza— se sigue con la lista VACÍA y se dice. Un aprovisionador que se
+#   niega a montar el compartimento porque no supo leer una lista deja al
+#   inquilino sin nada; uno que monta lo de siempre deja al inquilino en pie y
+#   el catálogo llega en la siguiente pasada.
+FUENTES=""
+if [ -z "$SECO" ]; then
+  crudo() { # <camino dentro del repositorio>
+    if [ -n "${DENTRO:-}" ]; then
+      curl -sS -H "Authorization: token $FORJA_ADMIN" "$FORJA_URL/api/v1/repos/$ARBOL/$1" 2>/dev/null
+    else
+      kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS \
+        -H "Authorization: token $FORJA_ADMIN" "http://localhost:3000/api/v1/repos/$ARBOL/$1" 2>/dev/null
+    fi
+  }
+  FUENTES=$( { crudo "raw/ontology.config.yaml"; printf '\n\036\n'; crudo "contents/packages"; } \
+    | "$PY" -c '
+import json, re, sys
+manifiesto, _, paquetes = sys.stdin.read().partition("\n\x1e\n")
+# Las dos formas que `ore source add` puede haber dejado: el bloque de una
+# linea que `ore init` documenta, y el de varias que escribe el propio verbo.
+dentro, fuentes = False, []
+for l in manifiesto.splitlines():
+    if re.match(r"^datasources:", l):
+        dentro = True; continue
+    if dentro and l and not l[0].isspace():
+        break
+    if not dentro:
+        continue
+    m = re.search(r"^\s*-\s*(?:\{\s*)?name:\s*([A-Za-z0-9_]+)", l)
+    if m:
+        fuentes.append(m.group(1))
+try:
+    # Solo DIRECTORIOS: `packages/.gitkeep` es un fichero, no un paquete.
+    hechos = {e["name"] for e in json.loads(paquetes) if e.get("type") == "dir"}
+except Exception:
+    hechos = set()
+print(",".join(f for f in fuentes if f not in hechos))
+' 2>/dev/null)
+fi
+[ -n "$FUENTES" ] && hecho "fuentes sin paquete: $FUENTES"
+
+"$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --arbol "$ARBOL" \
+  ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 
