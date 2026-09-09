@@ -43,7 +43,7 @@
 //! decisión lleva su `id` y sus `options`, que son la izquierda y la derecha de
 //! una línea del fichero.
 
-use crate::inductor::{self, Clase, Decisiones, Induccion, Pendiente, Respuesta};
+use crate::inductor::{self, Clase, Decisiones, Forma, Induccion, Pendiente, Respuesta};
 use crate::vocabulario::Vocabulario;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -299,38 +299,6 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
 // ── Los formularios ─────────────────────────────────────────────────────────
 
 /// La forma de una respuesta. Tres, y son las tres de `Respuesta`: preguntar es
-/// rellenar una de ellas.
-enum Forma {
-    /// Una palabra: un tipo, un concepto, `si`, `no`, `omitir`.
-    Palabra,
-    /// Varias columnas: una clave primaria.
-    Columnas,
-    /// Un nombre por cada sujeto: una colisión.
-    Nombres,
-    /// `eje: nivel`, una o varias: la clasificación de un concepto.
-    Etiquetas,
-}
-
-/// El formulario de cada clase.
-///
-/// El `match` es exhaustivo a propósito: una clase de pregunta nueva **no
-/// compila** hasta que alguien decide cómo se contesta. Es la única forma de que
-/// el inductor no pueda estrenar una pregunta que nadie sabe responder.
-fn forma(clase: Clase) -> Forma {
-    match clase {
-        Clase::Colision => Forma::Nombres,
-        Clase::Clasificacion => Forma::Etiquetas,
-        Clase::Clave => Forma::Columnas,
-        Clase::Tipo
-        | Clase::Vacio
-        | Clase::Vista
-        | Clase::Filas
-        | Clase::Concepto
-        | Clase::Relacion
-        | Clase::Familia
-        | Clase::Dueno => Forma::Palabra,
-    }
-}
 
 /// Lo que se pide, dicho en la voz de cada clase. Un `¿Cuál?` genérico haría que
 /// las nueve preguntas se parecieran, y no se parecen en nada.
@@ -371,10 +339,10 @@ fn preguntar(pendientes: &[Pendiente]) -> Result<Decisiones, Fallo> {
         );
         println!("  {}", p.porque);
         println!("  {}", p.id);
-        if !p.opciones.is_empty() && !matches!(forma(p.clase), Forma::Nombres) {
+        if !p.opciones.is_empty() && !matches!(p.clase.forma(), Forma::Nombres) {
             println!("  · {}", p.opciones.join("  · "));
         }
-        match forma(p.clase) {
+        match p.clase.forma() {
             Forma::Nombres => {
                 let mut m = std::collections::BTreeMap::new();
                 for sujeto in &p.opciones {

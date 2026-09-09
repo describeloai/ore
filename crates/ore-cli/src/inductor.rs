@@ -144,12 +144,64 @@ pub enum Clase {
     Clasificacion,
 }
 
+/// **Cómo se contesta** una clase de pregunta. Vive aquí, junto a `Clase`, y no
+/// junto al formulario que la pinta: es una propiedad de la PREGUNTA, no de
+/// quien la hace. `ore review` la usa para leer una línea; `informe_json` la
+/// sirve para que un cliente sepa qué control dibujar.
+///
+/// ⛔ Y el `match` de [`Clase::forma`] es exhaustivo a propósito: **una clase
+/// nueva no compila** hasta que alguien decide cómo se contesta. Es la única
+/// forma de que el inductor no pueda estrenar una pregunta que nadie sabe
+/// responder — y desde que se sirve por JSON, eso alcanza también a una
+/// interfaz que todavía no existe.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Forma {
+    /// Una palabra: un tipo, un concepto, `si`, `no`, `omitir`.
+    Palabra,
+    /// Varias columnas: una clave primaria.
+    Columnas,
+    /// Un nombre por cada sujeto: una colisión.
+    Nombres,
+    /// `eje: nivel`, una o varias: la clasificación de un concepto.
+    Etiquetas,
+}
+
+impl Forma {
+    /// El nombre que viaja por el cable. En minúsculas y sin acentos porque lo
+    /// lee un cliente, no una persona.
+    pub const fn nombre(self) -> &'static str {
+        match self {
+            Forma::Palabra => "palabra",
+            Forma::Columnas => "columnas",
+            Forma::Nombres => "nombres",
+            Forma::Etiquetas => "etiquetas",
+        }
+    }
+}
+
 impl Clase {
     /// El prefijo del identificador de una decisión de esta clase.
     ///
     /// **Es interfaz.** La izquierda de cada línea de un fichero de respuestas
     /// sale de aquí, así que cambiarla invalida los ficheros ya escritos —
     /// igual que cambiar el nombre de una opción de la línea de órdenes.
+    /// Cómo se contesta esta clase. Ver [`Forma`].
+    pub const fn forma(self) -> Forma {
+        match self {
+            Clase::Colision => Forma::Nombres,
+            Clase::Clasificacion => Forma::Etiquetas,
+            Clase::Clave => Forma::Columnas,
+            Clase::Tipo
+            | Clase::Vacio
+            | Clase::Vista
+            | Clase::Filas
+            | Clase::Concepto
+            | Clase::Relacion
+            | Clase::Familia
+            | Clase::Dueno => Forma::Palabra,
+        }
+    }
+
     pub const fn prefijo(self) -> &'static str {
         match self {
             Clase::Colision => "colision",
@@ -2001,6 +2053,27 @@ pub fn informe(ind: &Induccion, destino: &Path) -> String {
 /// falta para contestarla sin haber visto la pantalla: el identificador es la
 /// izquierda de una línea de un fichero de respuestas, y las opciones son la
 /// derecha. Una cola serializada sin ellos se puede leer y no se puede contestar.
+///
+/// ── ⛔⛔ Y `form`, QUE FALTABA Y NO SE VEÍA ────────────────────────────────
+///
+/// `options` es una lista en todas las clases, y la respuesta NO siempre lo es:
+///
+/// ```text
+///   clave/ventas.clientes   ["id"]         una lista
+///   dueno/ventas            "team:datos"   una cadena
+/// ```
+///
+/// ⇒ Sin decirlo, un cliente que pinte esta cola **tiene que saberse las once
+///   clases** y cuáles admiten varias — o sea, tener una segunda copia de algo
+///   que ya vive aquí. Y esta misma ruta se prohíbe eso: *«reordenar u omitir
+///   aquí sería una segunda opinión sobre lo que hay que preguntar»*.
+///
+/// ⭐ Se sirve [`Forma`], que es la palabra que el motor ya usaba, y son CUATRO
+///   casos y no dos. Así la interfaz no elige el control: lo lee.
+///
+/// ⚠️ Y hereda la propiedad de su `match`: **una clase nueva no compila** hasta
+///   que alguien decide cómo se contesta. Desde hoy eso alcanza también a una
+///   pantalla que todavía no existe.
 pub fn informe_json(ind: &Induccion) -> Json {
     Json::obj([(
         "pending",
@@ -2011,6 +2084,7 @@ pub fn informe_json(ind: &Induccion) -> Json {
                     Json::obj([
                         ("id", Json::s(&p.id)),
                         ("class", Json::s(p.clase.prefijo())),
+                        ("form", Json::s(p.clase.forma().nombre())),
                         ("subject", Json::s(&p.sujeto)),
                         ("decision", Json::s(&p.que)),
                         ("because", Json::s(&p.porque)),
