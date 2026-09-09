@@ -345,7 +345,7 @@ jobs:
           install_components: gke-gcloud-auth-plugin
 
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
-      - name: construir las cuatro imagenes
+      - name: construir las cinco imagenes
         run: |
           # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
           #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla
@@ -369,7 +369,7 @@ jobs:
         run: |
           gcloud container clusters get-credentials ore-mesh \
             --zone europe-west1-b --project project-8853a180-450d-47be-b83
-          for D in identidad/ore-iam t-demo/ore-serve; do
+          for D in identidad/ore-iam t-demo/ore-serve t-demo/ore-cofre; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
             kubectl -n "$NS" patch deployment "$NOMBRE" --type=merge -p \
               "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"ore.dev/commit\":\"$GITHUB_SHA\"}}}}}"
@@ -382,7 +382,7 @@ jobs:
       #   ya estuviera— no habría relevo y esto pasaría igual.
       - name: y comprobar que corre ESTE commit
         run: |
-          for D in identidad/ore-iam t-demo/ore-serve; do
+          for D in identidad/ore-iam t-demo/ore-serve t-demo/ore-cofre; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
             VISTO=$(kubectl -n "$NS" get deployment "$NOMBRE" \
               -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/commit}')

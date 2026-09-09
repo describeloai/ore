@@ -217,7 +217,11 @@ impl Servidor {
             potestad::exige(tx, emisor, &s.persona, &org, "secreto:listar")?;
             let filas = tx.filas(
                 "select s.nombre, s.clase, s.en, (s.retirado_en is not null) as retirado,
-                        coalesce(max(m.version), 0) as versiones
+                        -- ⛔ `::bigint` a proposito: `version` es `integer`, y `max`
+                        --   devuelve `integer`. Leerlo como `i64` desde el driver es un
+                        --   error de tipo en tiempo de ejecucion, no de compilacion —
+                        --   la clase de fallo que solo aparece con la base delante.
+                        coalesce(max(m.version), 0)::bigint as versiones
                    from cofre.secreto s
                    left join cofre.material m on m.secreto = s.id
                   where s.organizacion = $1

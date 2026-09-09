@@ -41,9 +41,10 @@ COPY . .
 # `--locked`: se construye con el `Cargo.lock` del árbol y no con lo que
 # hubiera hoy en el índice.
 RUN cargo build --release --locked \
-      -p ore-cli -p ore-serve -p ore-iam -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
+      -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
+      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
       -p ore-fetch -p ore-log -p ore-sign -p ore-store-r2 \
- && for b in ore ore-serve ore-iam ore-read-jsonl ore-read-postgres ore-read-bigquery \
+ && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery \
              ore-fetch ore-log ore-sign ore-store-r2; do \
       strip "target/release/$b"; \
     done
@@ -126,3 +127,37 @@ COPY --from=build /src/target/release/ore-iam /bin/ore-iam
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/bin/ore-iam"]
+
+# ── 5 · El custodio ─────────────────────────────────────────────────────────
+#
+# ⛔⛔ Y AQUÍ SE PIERDE LA GARANTÍA DE `scratch` A PROPÓSITO, otra vez. Igual que
+# `ore-serve` la perdió para tener `git`, éste la pierde para tener `gcloud`:
+# **es lo único con lo que habla con el KMS**, y no habla con el KMS — habla con
+# él. Es el patrón de `ore-read-bigquery` con `bq`.
+#
+# Lo que se compra cediéndola:
+#
+#   · ni TLS, ni OAuth, ni criptografía en Rust. Tres cosas cuyo modo de fallo
+#     es silencioso y en la dirección insegura, que es la frase que este árbol
+#     ya tiene escrita para las firmas;
+#   · la autenticación es Workload Identity y la resuelve `gcloud` sola. **No
+#     hay una sola llave en el clúster.**
+#
+# Y lo que NO se pierde, que es lo que hace aceptable la cesión:
+#
+#   · este binario no puede abrir la llave de otro inquilino — su cuenta de
+#     Google alcanza UNA clave, y eso lo demuestra `99-el-cerrojo-de-la-llave`;
+#   · su usuario de base de datos no alcanza `iam` más allá de lo que necesita
+#     para autorizar (`020`);
+#   · y su NetworkPolicy sólo le abre el DNS, el servidor de metadatos y Google.
+#
+# ⇒ Tres cerraduras sobre la misma puerta, y ninguna es la imagen. Se dice
+#   porque la de `ore` SÍ lo era, y perder una garantía sin nombrarla es como se
+#   pierden.
+FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS cofre
+
+COPY --from=build /src/target/release/ore-cofre /usr/local/bin/ore-cofre
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/usr/local/bin/ore-cofre"]

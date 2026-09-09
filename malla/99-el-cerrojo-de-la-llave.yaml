@@ -35,50 +35,13 @@
 # ⚠️ Y la rotación va puesta desde el primer día —90 días— porque una clave sin
 # rotación programada es una clave que nadie va a rotar. Rotar la maestra no
 # descifra nada: las versiones viejas siguen abriendo lo que envolvieron.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cofre
-  namespace: t-demo
-  labels:
-    ore.dev/tenant: demo
-    ore.dev/rol: cofre
-  annotations:
-    iam.gke.io/gcp-service-account: ore-cofre-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
----
-# Por dónde puede salir: el DNS, el servidor de metadatos —de donde sale el
-# token de Workload Identity— y Google por TLS. Nada más. Es la misma forma que
-# `salida-del-driver`, y el día que el custodio exista de verdad esta política
-# viaja con él a la plantilla del inquilino.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-del-cofre
-  namespace: t-demo
-spec:
-  podSelector:
-    matchLabels:
-      ore.dev/rol: cofre
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
-    - to:
-        - ipBlock: { cidr: 169.254.169.254/32 }
-      ports: [{protocol: TCP, port: 80}]
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 10.0.0.0/8
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 169.254.0.0/16
-      ports: [{protocol: TCP, port: 443}]
----
+# ✏️ 2026-09-09 · la cuenta `cofre` y su `NetworkPolicy` se fueron a
+# `41-el-cofre.yaml`, que es la PLANTILLA del inquilino. Aqui quedaba una copia,
+# y un objeto declarado en dos ficheros es un objeto que diverge: el dia que uno
+# cambie, cual gana lo decide quien aplico el ultimo.
+#
+# ⇒ Esto se queda con lo suyo: el Job que demuestra el cerrojo.
+
 apiVersion: batch/v1
 kind: Job
 metadata:

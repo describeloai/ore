@@ -251,8 +251,8 @@ grep -q "postgres://u:p@db/x" "$TMP/r.json" \
 dice "3 · emitido · con su concesion $(campo concesion) · y sin devolver el valor"
 
 # ── 4 · listar ──────────────────────────────────────────────────────────────
-[ "$(pide GET "/organizaciones/$ORG/secretos" "$ADA")" = "200" ] || falla "4 · no listo"
-grep -q '"pg-produccion"' "$TMP/r.json" || falla "4 · no sale el que acaba de emitir"
+[ "$(pide GET "/organizaciones/$ORG/secretos" "$ADA")" = "200" ] || falla "4 · no listo: $(cat "$TMP/r.json")"
+grep -q '"pg-produccion"' "$TMP/r.json" || falla "4 · no sale el que acaba de emitir: $(cat "$TMP/r.json")"
 grep -q "postgres://u:p@db/x" "$TMP/r.json" \
   && falla "4 · ⛔ LISTAR DEVUELVE VALORES. Listar es ver que hay, no que dice"
 dice "4 · listado · nombres y ni un valor"

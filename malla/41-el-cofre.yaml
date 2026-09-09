@@ -1,0 +1,209 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL CUSTODIO DEL INQUILINO — guarda el material cifrado y lo abre a quien puede
+#
+# C4 de la iteración del custodio. Va **por inquilino**, como `ore-serve`, y no
+# por comodidad: si una sola pieza tuviera a la vez el material y el uso de la
+# llave, abriría todo lo que alcanzase — autorizara quien autorizara.
+#
+# ⇒ La separación no es de responsabilidades, es de **alcance**: una KEK por
+#   organización (`019`) y un custodio por inquilino, con su cuenta de Google
+#   atada a SU clave. Así la tabla del material puede ser compartida: éste puede
+#   LEER el cifrado de otro inquilino y **no puede abrirlo**.
+#
+# ⭐ Y ese segundo cerrojo no lo ponemos nosotros: lo pone el IAM de la nube
+#   sobre una llave, y está demostrado en `99-el-cerrojo-de-la-llave.yaml` —
+#   `PERMISSION_DENIED` con la clave de otro, contra Google de verdad.
+#
+# ── Las tres cerraduras, y ninguna es la imagen ────────────────────────────
+#
+#   la LLAVE    su cuenta de Google alcanza una clave y ni una más
+#   la BASE     `ore_cofre` no toca `iam` más allá de lo justo para autorizar
+#               (`020`), y no puede escribir una concesión que no sea de
+#               secreto — para eso hay una función y no un permiso (`021`)
+#   la RED      abajo: el DNS, el servidor de metadatos y Google. Nada más
+#
+# ⚠️ La imagen SÍ es una cesión, y está dicha en el `Dockerfile`: sale de la del
+# SDK de Google porque **`gcloud` es lo único con lo que habla con el KMS**. Se
+# pierde la garantía estructural de `scratch` a cambio de no escribir ni TLS ni
+# criptografía, que es el peor sitio donde equivocarse.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cofre
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cofre
+  annotations:
+    # ⛔ UNA CUENTA POR INQUILINO, y esto es lo que la medida no había visto:
+    # `ore-driver@` es UNA cuenta compartida por los `driver` de todos los
+    # inquilinos. Con ese patrón, dar permiso sobre la llave de uno lo habría
+    # dado sobre la de todos — porque suplantan a la misma cuenta de Google.
+    #
+    # ⇒ Aquí no. `ore-cofre-<inquilino>@`, con `cryptoKeyEncrypterDecrypter`
+    #   sobre UNA clave. Es trabajo del aprovisionador, no una constante de la
+    #   plantilla: tres llamadas por inquilino nuevo.
+    iam.gke.io/gcp-service-account: ore-cofre-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-cofre
+  namespace: t-demo
+spec:
+  selector:
+    ore.dev/rol: cofre
+  ports:
+    - name: http
+      port: 8095
+      targetPort: 8095
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-cofre
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cofre
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: cofre
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: cofre
+        ore.dev/tenant: demo
+    spec:
+      serviceAccountName: cofre
+      containers:
+        - name: cofre
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-cofre:main
+          imagePullPolicy: Always
+          args:
+            - servir
+            - --bind
+            - 0.0.0.0:8095
+            # El mismo realm y la misma audiencia que `ore-serve`: una persona es
+            # la misma persona en los dos planos, y `(emisor, sub)` es su nombre.
+            - --identidad
+            - oidc
+            - --emisor
+            - https://login.paladio.io/realms/rubix-dev
+            - --audiencia
+            - ore-serve
+            # Un FICHERO, no una URL. Las llaves las trae `50-jwks.yaml`, que es
+            # quien puede salir a buscarlas — y este proceso, aunque ahora pueda
+            # salir, no tiene por qué depender de que el IdP esté vivo al
+            # arrancar. ADR 0020.
+            - --jwks
+            - /llaves/jwks.json
+            # ⭐ EL CLIENTE, por ruta y no por nombre: un despliegue no depende
+            #   del `PATH` del contenedor. Misma razón que el `--ore` de
+            #   `ore-serve`.
+            - --kms
+            - /usr/bin/gcloud
+            # La CARRETERA. `iam.organizacion.kek` guarda el nombre de la llave;
+            # dónde se alcanza es configuración y cambia sin que nadie mienta.
+            - --lugar
+            - europe-west1
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            # ⛔ Y este usuario NO es el de `ore-iam`. La `020` reparte los
+            #   permisos entre dos papeles: quien dice quién puede no alcanza el
+            #   material, y quien lo abre sólo lee de `iam` lo justo para
+            #   autorizar. Con una sola credencial esa frontera no existiría.
+            - name: COFRE_URL
+              valueFrom:
+                secretKeyRef: { name: cofre-url, key: url }
+          volumeMounts:
+            - name: llaves
+              mountPath: /llaves
+              readOnly: true
+          ports:
+            - containerPort: 8095
+          readinessProbe:
+            httpGet: { path: /salud, port: 8095 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: llaves
+          configMap:
+            name: jwks
+---
+# ── Por dónde puede salir ───────────────────────────────────────────────────
+#
+# El DNS, el servidor de metadatos —de donde sale el testigo de Workload
+# Identity— y Google por TLS. **No la forja, no los orígenes, no el mundo.**
+#
+# ⚠️ El servidor de metadatos va explícito. Es de donde `gcloud` saca el testigo,
+# y una política que lo olvide no da un error de red: da un `gcloud` que no puede
+# autenticarse, que se lee como un problema de permisos y manda a mirar el sitio
+# equivocado. Costó descubrirlo una vez en las copias de la forja.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-cofre
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: cofre
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    # La base, que vive en `identidad`. Sin esto el custodio arranca y no
+    # encuentra dónde guardar nada.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: identidad
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
+---
+# ── Y quién puede entrar ────────────────────────────────────────────────────
+#
+# ⛔ Nadie de fuera del inquilino, todavía. La consola tendrá que llegar, y eso
+# es la misma pregunta que la E6 de la `0022` —la entrada por inquilino— sin
+# contestar. Mientras tanto, sólo desde este namespace: lo que hay dentro es lo
+# único que puede pedirle que abra algo.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-cofre
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: cofre
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports: [{protocol: TCP, port: 8095}]

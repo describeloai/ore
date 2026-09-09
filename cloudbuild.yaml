@@ -43,6 +43,10 @@ steps:
     name: gcr.io/cloud-builders/docker
     args: [build, --target, iam, -t, '${_REGISTRO}/ore-iam:main', -t, '${_REGISTRO}/ore-iam:${_SHA}', .]
 
+  - id: cofre
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, cofre, -t, '${_REGISTRO}/ore-cofre:main', -t, '${_REGISTRO}/ore-cofre:${_SHA}', .]
+
 images:
   - '${_REGISTRO}/ore:main'
   - '${_REGISTRO}/ore:${_SHA}'
@@ -52,6 +56,8 @@ images:
   - '${_REGISTRO}/ore-serve:${_SHA}'
   - '${_REGISTRO}/ore-iam:main'
   - '${_REGISTRO}/ore-iam:${_SHA}'
+  - '${_REGISTRO}/ore-cofre:main'
+  - '${_REGISTRO}/ore-cofre:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8

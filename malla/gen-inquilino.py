@@ -73,10 +73,21 @@ PLANTILLAS = [
     "11-el-inquilino.yaml",
     "20-driver.yaml",
     "40-ore-serve.yaml",
+    "41-el-cofre.yaml",
     "50-jwks.yaml",
 ]
 
 MODELO = "demo"
+
+# ⛔ Como PALABRA, no como subcadena. La primera version buscaba `demo` en
+#   crudo y salto con «de**mo**strado» en un comentario — un aviso que se
+#   dispara por una palabra de la prosa ensena a ignorarlo, y entonces deja de
+#   avisar del `t-demo` que si importa.
+#
+# ⭐ Las lindes son «no una letra», asi que `t-demo`, `cq-demo`, `cofre-demo@`
+#   y `tenant: demo` siguen cazandose — todos los sitios donde el nombre es un
+#   VALOR y no una silaba.
+SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 
 
 def render(nombre, arbol=None):
@@ -96,6 +107,11 @@ def render(nombre, arbol=None):
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("cq-%s" % MODELO, "cq-%s" % nombre)
         t = t.replace("serve-%s" % MODELO, "serve-%s" % nombre)
+        # ⛔ Y la cuenta de Google del custodio, que lleva el inquilino dentro
+        #   por necesidad: es UNA por inquilino, porque su permiso alcanza UNA
+        #   clave. Compartirla —como hace `ore-driver@`— seria dar la llave de
+        #   uno a los demas.
+        t = t.replace("cofre-%s" % MODELO, "cofre-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         salida[f] = t
     return salida
@@ -122,7 +138,8 @@ def comprobar():
     otro = "acme"
     hecho = render(otro)
     for f, t in hecho.items():
-        quedan = [(i + 1, l.strip()) for i, l in enumerate(t.splitlines()) if MODELO in l]
+        quedan = [(i + 1, l.strip())
+                  for i, l in enumerate(t.splitlines()) if SUELTO.search(l)]
         if quedan:
             fallos.append(
                 "`%s`: quedan %d menciones de `%s` — la primera en la linea %d: %s"
