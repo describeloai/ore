@@ -171,28 +171,19 @@ spec:
               #   shell— y su terminador tiene que ir en la columna cero. Este
               #   árbol ya ha pagado ese peaje varias veces; aquí no hay
               #   columnas de las que fiarse.
-              VAR=$(ore source list --json 2>/dev/null | python3 -c "
-import json,sys
-n=sys.argv[1]
-try: d=json.load(sys.stdin)
-except Exception: sys.exit(0)
-for f in d.get('datasources', d.get('sources', [])):
-    if f.get('name')==n: print(f.get('connectionEnv','')); break
-" "$FUENTE")
-              # Y si `ore` no sabe listarlas en JSON, del manifiesto — que es de
-              # donde salen de todos modos.
-              [ -n "$VAR" ] || VAR=$(python3 -c "
-import re,sys
-n=sys.argv[1]; dentro=None
-for l in open('ontology.config.yaml', encoding='utf-8'):
-    if re.match(r'^datasources:', l): dentro=''; continue
-    if dentro is None: continue
-    if l and not l[0].isspace(): break
-    m=re.search(r'name:\s*([A-Za-z0-9_]+)', l)
-    if m: dentro=m.group(1)
-    e=re.search(r'connectionEnv:\s*([A-Za-z0-9_]+)', l)
-    if e and dentro==n: print(e.group(1)); break
-" "$FUENTE")
+              # ⚠️ Y con `awk`, no con python. Un `python3 -c "` con saltos
+              #   dentro rompe el bloque literal de YAML: sus lineas quedan sin
+              #   indentar y el documento deja de analizar. Costo un
+              #   `ScannerError` y un commit empujado con el fichero roto — la
+              #   MISMA leccion que el heredoc, y en el mismo fichero.
+              #
+              # ⇒ Dentro de un bloque `|` no hay columnas de las que fiarse. Lo
+              #   que cabe en una linea no puede romperse.
+              #
+              # ⭐ Y aguanta las DOS formas que el manifiesto puede tener: la de
+              #   una linea que `ore init` documenta, y la de varias que escribe
+              #   `ore source add`.
+              VAR=$(awk -v n="$FUENTE" '/^datasources:/{d=1;next} d&&/^[^ ]/{exit} d{if(match($0,/name: *[A-Za-z0-9_]+/)){s=substr($0,RSTART,RLENGTH);sub(/name: */,"",s);c=s} if(match($0,/connectionEnv: *[A-Za-z0-9_]+/)&&c==n){v=substr($0,RSTART,RLENGTH);sub(/connectionEnv: */,"",v);print v;exit}}' ontology.config.yaml)
               [ -n "$VAR" ] || { echo "✗ el manifiesto no dice el \`connectionEnv\` de \`$FUENTE\`"; exit 1; }
               echo "### pidiendo \`fuente-$FUENTE\` al custodio, para \`$VAR\`"
 
