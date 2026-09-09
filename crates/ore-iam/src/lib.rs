@@ -131,6 +131,10 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     // ⭐ Y la llave, con el mismo criterio: por defecto `ore/<organizacion>`, y
     //   `--kek` para el dia que un cliente traiga la suya.
     let kek = valor(args, "--kek");
+    // ⭐ Y la puerta. Por defecto `<organizacion>.ore.paladio.io`, que es lo que
+    //   el `Gateway` compartido sirve sin coste por cliente; `--entrada` para el
+    //   que traiga su dominio. ⛔ No es el alta: es el host, ver la `022`.
+    let entrada = valor(args, "--entrada");
 
     let mut c = match base::conectar(url) {
         Ok(c) => c,
@@ -148,6 +152,7 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             correo: correo.as_deref(),
             arbol: arbol.as_deref(),
             kek: kek.as_deref(),
+            entrada: entrada.as_deref(),
         },
     ) {
         Ok(j) => {

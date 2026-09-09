@@ -1,0 +1,94 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA ENTRADA DEL INQUILINO — su hostname colgado de la puerta compartida
+#
+# E6 de la `0022`, la mitad que vive en el compartimento del inquilino. La otra
+# —`14-la-puerta.yaml`— es de la plataforma y dice QUIÉN puede colgarse.
+#
+# ⛔ Y esto no es el alta. La entrada es LA PUERTA: el host por el que se llega
+#   a este inquilino desde fuera. Lo guarda `iam.organizacion.entrada` con un
+#   `unique` encima (`022`), así que dos inquilinos reclamando el mismo host es
+#   una violación de clave en la base **antes** de que nadie escriba esto.
+#
+# ── ⭐ Dos objetos, y ninguno sobra ────────────────────────────────────────
+#
+#   la HTTPRoute       dice qué host es mío y a qué `Service` va
+#   la NetworkPolicy   deja entrar al balanceador, que hoy NO puede
+#
+# El segundo es el que se olvida. `entrada-al-control` (`40-ore-serve.yaml`)
+# sólo admite tráfico del propio namespace del inquilino, así que sin esto la
+# ruta queda `Accepted` y programada, el balanceador marca el backend como
+# `UNHEALTHY`, y quien llame recibe un **502 sin una sola línea en ningún
+# registro**. Es el mismo precio que ya se pagó con `semilla` y la forja: una
+# `NetworkPolicy` no rechaza, tira el paquete.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: entrada
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  parentRefs:
+    # ⭐ La puerta está en OTRO namespace, y no hace falta un `ReferenceGrant`:
+    #   quien autoriza colgarse es la puerta con su `allowedRoutes`, no el
+    #   inquilino. Un `ReferenceGrant` haría falta para apuntar a un `Service`
+    #   de otro namespace — y eso no pasa aquí, ni debe.
+    - name: puerta
+      namespace: ore-system
+      sectionName: https
+  # ⛔ UN hostname, y es el de la fila. Si esto y `iam.organizacion.entrada` se
+  #   separaran, la consola mandaría a la gente a una puerta que no existe.
+  hostnames:
+    - demo.ore.paladio.io
+  rules:
+    - backendRefs:
+        - name: ore-serve
+          port: 8080
+      # ⚠️ Y NO hay regla para el custodio. Está medido que hoy no lo alcanza
+      #   nadie —ni desde dentro del propio inquilino—, y publicarlo sería la
+      #   decisión contraria tomada por descuido: quien abre un secreto no tiene
+      #   por qué estar en internet. El día que la consola necesite pedirle algo,
+      #   pasa por `ore-serve` o se decide aparte, y se escribe por qué.
+---
+# ── Dejar entrar al balanceador, y sólo a él ────────────────────────────────
+#
+# ⚠️ Esos dos rangos no son «internet»: son los que Google usa para las
+# comprobaciones de salud y para el tráfico de sus balanceadores L7. Están
+# publicados y son fijos, y **nadie más puede originar tráfico desde ellos**.
+#
+#   130.211.0.0/22   comprobaciones de salud
+#   35.191.0.0/16    balanceadores y comprobaciones
+#
+# ⇒ Así que esto abre el plano de control del inquilino a internet EN LA PRACTICA
+#   —cualquiera puede llamar al balanceador— y hay que decirlo sin adornos. Lo
+#   que sostiene la puerta a partir de aquí NO es la red:
+#
+#     · sin testigo válido del emisor, `ore-serve` no monta ni una ruta de datos
+#       —es su defecto, no una regla— y contesta 401;
+#     · con testigo de otra organización, `concesion_viva` no encuentra nada y
+#       contesta 403;
+#     · y el `ore` que ejecuta no lleva cliente TLS, así que ninguna petición
+#       puede hacerle salir a un origen.
+#
+# ⛔ La frontera pasa de ser topológica a ser de identidad, y eso es exactamente
+#   lo que la E6 decide. Mientras el modo de banco (`--identidad cabecera`) esté
+#   encendido en algún inquilino, ESTO NO SE APLICA a ese inquilino: publicaría
+#   un formulario donde cualquiera escribe quién es.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-del-balanceador
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 130.211.0.0/22 }
+        - ipBlock: { cidr: 35.191.0.0/16 }
+      ports:
+        - protocol: TCP
+          port: 8080

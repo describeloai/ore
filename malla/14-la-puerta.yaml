@@ -1,0 +1,152 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA PUERTA — un balanceador para todos los inquilinos, y quién puede colgarse
+#
+# E6 de la `0022`, opción **b**. La alternativa era un `Ingress` por inquilino,
+# y el argumento que la descarta es de dinero y no de diseño:
+#
+#   · el `Ingress` de GKE NO fusiona objetos ni cruza namespaces, así que un
+#     `Ingress` por inquilino es **un balanceador L7 por inquilino** — con su
+#     IP, su certificado y su factura;
+#   · una `Gateway` sí: un balanceador, y una `HTTPRoute` por inquilino que se
+#     cuelga de él desde SU namespace.
+#
+# ⇒ Lo que se compra es que dar de alta a un cliente deje de costar
+#   infraestructura. Lo que se paga está abajo, y es real.
+#
+# ── ⭐⭐ QUIÉN PUEDE COLGARSE, QUE ES LA PROPIEDAD ENTERA ──────────────────
+#
+# Un balanceador compartido suena a frontera derribada: si cualquiera pudiera
+# apuntarle una `HTTPRoute`, un inquilino se quedaría con el hostname de otro.
+#
+# **No puede.** `allowedRoutes` está aquí, en la puerta, y no en la ruta: sólo
+# los namespaces con `ore.dev/rol: cargas` —los de los inquilinos, y ninguno
+# más— pueden colgar nada. Un namespace nuevo que no lleve esa etiqueta no se
+# cuelga, y lo dice el estado de su `HTTPRoute`, no un silencio.
+#
+# ⛔ Y el reparto de hostnames NO lo guarda esto: lo guarda
+# `iam.organizacion.entrada` con un `unique` encima (`022`). Dos inquilinos
+# reclamando el mismo host es una violación de clave en la base **antes** de que
+# nadie escriba un manifiesto. La puerta es la carretera; la fila es la verdad.
+#
+# ── ⚠️ LO QUE ESTO NO PUEDE HACER, Y HAY QUE IR A PEDIRLO ─────────────────
+#
+# Dos cosas, y son las mismas dos que ya tenía el `Ingress` del IdP —medido:
+# de sus cuatro piezas, dos no eran YAML—:
+#
+#   1. LA IP. `spec.addresses` la nombra; reservarla es una llamada. ✔ hecha:
+#
+#        gcloud compute addresses create ore-puerta --global
+#        → 136.69.102.80
+#
+#   2. EL CERTIFICADO. Un comodín `*.ore.paladio.io` que emite Google, y para
+#      emitirlo hace falta **probar que el dominio es nuestro** con un registro
+#      DNS. ✔ pedido, y está esperando:
+#
+#        gcloud certificate-manager dns-authorizations create ore-comodin \
+#          --domain=ore.paladio.io
+#        gcloud certificate-manager certificates create ore-comodin \
+#          --domains="*.ore.paladio.io" --dns-authorizations=ore-comodin
+#        gcloud certificate-manager maps create ore-puerta
+#        gcloud certificate-manager maps entries create comodin \
+#          --map=ore-puerta --certificates=ore-comodin --hostname="*.ore.paladio.io"
+#
+# ── ⛔⛔ Y AQUÍ SE PARA, Y NO ES UNA LLAMADA A LA NUBE ─────────────────────
+#
+# El certificado está en `PROVISIONING` / `AUTHORIZING`, y sigue así hasta que
+# exista este registro en el DNS de `paladio.io` — que **no está en el Cloud DNS
+# de este proyecto**, así que la orden no existe: es un cambio en el registrador.
+#
+#   _acme-challenge.ore.paladio.io.  CNAME
+#     b40b812e-b7ce-4f34-856b-648cd8214a96.18.authorize.certificatemanager.goog.
+#
+# Y el otro, el que manda el tráfico:
+#
+#   *.ore.paladio.io.                A      136.69.102.80
+#
+# ⇒ Por eso este `Gateway` **todavía no se aplica**. Aplicarlo levanta un
+#   balanceador que cobra desde el primer minuto y no puede servir TLS: pagar
+#   por una puerta que contesta un error de certificado no es tener la puerta.
+#   En cuanto el CNAME esté, el certificado converge solo —Google reintenta— y
+#   esto se aplica sin tocar una línea.
+#
+# ⭐ Es la misma figura que la `017` y la `019`: **lo declarado es la verdad y
+#   el mundo converge hacia ello**. Lo nuevo es quién tiene que mover ficha.
+#
+# ⚠️ Y de ahí la frase incómoda de la E6: para el cliente que traiga SU dominio,
+#   **el alta deja de ser un acto y pasa a ser una espera**, porque el registro
+#   lo mueve él. Con el comodín nuestro no: `acme.ore.paladio.io` queda cubierto
+#   el día que se funda, sin una llamada más.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: puerta
+  namespace: ore-system
+  labels:
+    ore.dev/rol: puerta
+  annotations:
+    # El mapa de certificados de Certificate Manager. Sin esto la puerta sube
+    # sin TLS y el 443 no sirve nada.
+    networking.gke.io/certmap: ore-puerta
+spec:
+  # El balanceador global externo de Google. Es el mismo aparato que ya sirve
+  # `login.paladio.io`; lo que cambia es que aquí lo comparten todos.
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - type: NamedAddress
+      value: ore-puerta
+  listeners:
+    # ── ⛔ SOLO 443, y el 80 no está ─────────────────────────────────────
+    #
+    # El `Ingress` del IdP lleva un `FrontendConfig` que redirige http a https
+    # (medido: 301 → 200). Aquí el puerto 80 simplemente NO EXISTE: omitir es
+    # cerrar, y un redirigir es una cortesía que sólo tiene sentido donde
+    # alguien teclea la URL. A esta puerta le habla una consola, y una consola
+    # que llegara por http ya habría mandado el testigo en claro.
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.ore.paladio.io"
+      tls:
+        # ⭐ Ni `certificateRefs` ni un `Secret`. El certificado sale del
+        #   `certmap` de la anotación, y eso es deliberado — un comodín
+        #   `*.ore.paladio.io` metido en un `Secret` de Kubernetes sería **la
+        #   llave privada de TODOS los inquilinos a la vez viviendo en etcd**, al
+        #   alcance de quien pueda leer `Secret` en este namespace. Es el mismo
+        #   argumento que sacó el testigo de la forja de etcd, y aquí pesa más
+        #   porque la llave es una y sirve para todos.
+        mode: Terminate
+        # ── ⚠️ Y ESTE VALOR VACÍO NO CONFIGURA NADA ────────────────────────
+        #
+        # Gateway API valida que con `Terminate` haya `certificateRefs` **o**
+        # `options`, y no conoce el `certmap` de Google — que va en una
+        # anotación, fuera del esquema. Sin esto el servidor rechaza el objeto:
+        #
+        #   «certificateRefs or options must be specified when mode is Terminate»
+        #
+        # ⇒ Un mapa vacío satisface la regla y **no dice que haya certificados
+        #   pre-compartidos**: dice que no hay ninguno, que es la verdad. Queda
+        #   escrito porque un valor vacío sin explicación se lee como un olvido,
+        #   y el primero que lo vea lo borrará.
+        options:
+          networking.gke.io/pre-shared-certs: ""
+      # ⭐⭐ AQUI ESTA LA FRONTERA, y por eso vive en la puerta y no en la ruta.
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              ore.dev/rol: cargas
+        kinds:
+          - kind: HTTPRoute
+---
+# ── Y por dónde sale la puerta ──────────────────────────────────────────────
+#
+# ⚠️ Nada. Un `Gateway` de GKE no es un pod: el balanceador vive fuera del
+# clúster y habla con los `Service` de cada inquilino a través de grupos de
+# extremos de red, no atravesando este namespace.
+#
+# ⇒ Lo que SI hace falta es que cada inquilino deje entrar al balanceador, y eso
+#   va en su compartimento —`43-la-entrada.yaml`— y no aquí. La puerta no puede
+#   abrirle la puerta a nadie: **cada inquilino decide si se deja alcanzar**, y
+#   ese reparto es el mismo que el de `allowedRoutes` visto del otro lado.

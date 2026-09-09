@@ -75,6 +75,7 @@ PLANTILLAS = [
     "40-ore-serve.yaml",
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
+    "43-la-entrada.yaml",
     "50-jwks.yaml",
 ]
 
@@ -91,7 +92,7 @@ MODELO = "demo"
 SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 
 
-def render(nombre, arbol=None):
+def render(nombre, arbol=None, entrada=None):
     """La plantilla con las sustituciones hechas. `arbol` es `<propietario>/<repo>`
     tal como lo guarda `iam.organizacion.arbol`; por defecto, lo que deriva
     `fundar`.
@@ -101,10 +102,19 @@ def render(nombre, arbol=None):
     revés, un árbol propio —`acme-corp/ontologia`— nunca llegaría a escribirse.
     """
     arbol = arbol or "t-%s/ontologia" % nombre
+    # La puerta. Por defecto el subdominio nuestro, que es lo que el `Gateway`
+    # compartido sirve sin coste por cliente (E6, opcion `b`). El que traiga su
+    # dominio lo dice, y entonces el certificado depende de SU DNS.
+    entrada = entrada or "%s.ore.paladio.io" % nombre
     salida = {}
     for f in PLANTILLAS:
         t = (MALLA / f).read_text(encoding="utf-8")
         t = t.replace("t-%s/ontologia" % MODELO, arbol)
+        # ⛔ Y LA ENTRADA TAMBIEN ANTES, por el mismo argumento: es un valor
+        #   ENTERO que lleva el nombre dentro. Una entrada propia
+        #   —`ontologia.acme.com`— no comparte ni una letra con el derivado, asi
+        #   que tiene que sustituirse la cadena completa o no se escribe nunca.
+        t = t.replace("%s.ore.paladio.io" % MODELO, entrada)
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("cq-%s" % MODELO, "cq-%s" % nombre)
         t = t.replace("serve-%s" % MODELO, "serve-%s" % nombre)
@@ -228,7 +238,7 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--a")
+    CON_VALOR = ("--arbol", "--entrada", "--a")
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -257,7 +267,7 @@ def main(argv):
     def valor(que):
         return argv[argv.index(que) + 1] if que in argv and argv.index(que) + 1 < len(argv) else None
 
-    hecho = render(nombre, valor("--arbol"))
+    hecho = render(nombre, valor("--arbol"), valor("--entrada"))
     destino = valor("--a")
     if destino:
         d = pathlib.Path(destino)

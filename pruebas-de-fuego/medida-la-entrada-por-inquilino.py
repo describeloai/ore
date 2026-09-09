@@ -12,7 +12,8 @@ Esta medida mira el cluster de verdad —no el YAML— y contesta cuatro cosas:
     ① cuantas puertas hay al mundo, y como esta hecha la que hay
     ② quien alcanza hoy a `ore-serve` y al custodio, disparado y no leido
     ③ que sabe la consola de todo esto
-    ④ que le falta a `iam.organizacion` para poder resolver `org → URL`
+    ④ que guarda `iam.organizacion` para resolver `org → URL`
+    ⑤ la puerta compartida, y por que todavia no esta aplicada
 
 ⚠️ Sin `kubectl` contra el cluster no falla: dice que no midio esa parte.
 """
@@ -187,27 +188,99 @@ def main():
     texto = "\n".join(m.read_text(encoding="utf-8") for m in migs)
     columnas = set(re.findall(r"add column (?:if not exists )?(\w+)", texto, re.I))
     columnas |= set(re.findall(r"^\s*(\w+)\s+text not null", texto, re.M | re.I))
-    print("     lo que `iam.organizacion` guarda hoy: arbol, kek")
-    if not ({"entrada", "url", "host", "dominio"} & columnas):
-        hueco(
-            "no hay columna donde guardar la entrada del inquilino",
-            "La `0022` dice «desde `iam.organizacion`, que es para lo que existe esa\n"
-            "columna» — y no existe. No es un descuido: la columna se escribe cuando\n"
-            "se decide QUE se guarda, y eso es lo que la E6 tiene que decidir.\n"
-            "⇒ Seria la CUARTA vez de la misma forma: `EMISOR`/`DIRECCION`, `arbol`\n"
-            "  (`017`), `kek` (`019`). El NOMBRE va en la fila y es unico; DONDE se\n"
-            "  alcanza es configuracion y cambia sin que nadie mienta.",
-        )
     mide(
-        "y las dos que si estan siguen esa forma",
-        "arbol" in texto and "kek" in texto,
+        "existe la columna `entrada` (`022`)",
+        "entrada" in columnas,
+        "la `0022` la daba por hecha y no estaba: la escribe la `022`",
     )
+    mide(
+        "es unica — dos inquilinos no comparten puerta",
+        "organizacion_entrada_unica" in texto,
+        "sin esto el segundo se queda con el trafico del primero",
+    )
+    mide(
+        "y guarda un HOST, no una URL",
+        "organizacion_entrada_forma" in texto,
+        "un esquema aqui seria carretera metida dentro de la identidad",
+    )
+    # ⚠️ La `019` puso `kek` `not null` y `fundar` no la escribia: fundar una
+    #   organizacion de cero reventaba, y en el cluster no se veia porque las
+    #   que habia se rellenaron en la migracion. Se mira aqui para que la misma
+    #   forma no vuelva a costar lo mismo.
+    mide(
+        "y `fundar` la escribe, como escribe `arbol` y `kek`",
+        "entrada" in (RAIZ / "crates" / "ore-iam" / "src" / "fundar.rs").read_text(
+            encoding="utf-8"
+        ),
+        "la `019` puso `kek` not null sin que `fundar` la escribiera, y lo cazo CI",
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    print("\n⑤ la puerta compartida, que es la opcion `b`")
+    # ══════════════════════════════════════════════════════════════════════
+    puerta = RAIZ / "malla" / "14-la-puerta.yaml"
+    ruta = RAIZ / "malla" / "43-la-entrada.yaml"
+    mide("existe `malla/14-la-puerta.yaml`", puerta.exists())
+    mide("existe `malla/43-la-entrada.yaml`", ruta.exists())
+    # ⛔ Los VALORES, no la prosa. La primera version miraba el fichero entero y
+    #   fallo por el comentario que explica POR QUE no hay `certificateRefs` —
+    #   una comprobacion que salta por su propia explicacion ensena a
+    #   ignorarla. Es la misma leccion que la ⑤ de `gen-inquilino.py`.
+    def valores(p):
+        return "\n".join(
+            l for l in p.read_text(encoding="utf-8").splitlines()
+            if not l.lstrip().startswith("#")
+        )
+
+    if puerta.exists() and ruta.exists():
+        g = valores(puerta)
+        r = valores(ruta)
+        # ⭐ La propiedad entera de un balanceador compartido: quien puede
+        #   colgarse lo dice LA PUERTA, no la ruta.
+        mide(
+            "solo los namespaces de inquilino pueden colgarse",
+            "from: Selector" in g and "ore.dev/rol: cargas" in g,
+            "sin esto, cualquier namespace se queda con el hostname de otro",
+        )
+        mide("un solo balanceador, no uno por cliente", g.count("kind: Gateway") == 1)
+        mide("y el puerto 80 no existe", "port: 80" not in g)
+        mide(
+            "el certificado NO vive en un `Secret`",
+            "certificateRefs" not in g and "certmap" in g,
+            "un comodin en etcd es la llave privada de todos los inquilinos",
+        )
+        mide(
+            "la ruta abre `ore-serve` y NO el custodio",
+            "name: ore-serve" in r and "ore-cofre" not in r,
+        )
+        mide(
+            "y el inquilino deja entrar al balanceador",
+            "130.211.0.0/22" in r and "35.191.0.0/16" in r,
+            "sin esto la ruta queda `Accepted` y el balanceador da 502 sin registro",
+        )
+    if vivo:
+        clases = kubectl("get", "gatewayclass", "-o", "name") or ""
+        mide(
+            "y el cluster tiene la clase que la puerta nombra",
+            "gke-l7-global-external-managed" in clases,
+            "Gateway API no esta habilitado: `--gateway-api=standard`",
+        )
+        if "puerta" not in (kubectl("get", "gateway", "-A", "-o", "name") or ""):
+            hueco(
+                "la puerta todavia NO esta aplicada, y es a proposito",
+                "El certificado comodin esta en `AUTHORIZING`: espera un CNAME en el DNS\n"
+                "de `paladio.io`, que no esta en el Cloud DNS de este proyecto. Aplicarla\n"
+                "ahora levanta un balanceador que cobra desde el primer minuto y contesta\n"
+                "un error de certificado.\n"
+                "⇒ Lo declarado es la verdad y el mundo converge; lo nuevo es que quien\n"
+                "  tiene que mover ficha no somos nosotros.",
+            )
 
     print()
     if fallos:
         print(f"✗ {len(fallos)} afirmaciones no se sostienen")
         return 1
-    print("✓ medido: la E6 no esta empezada, y su forma ya la dicta lo que hay")
+    print("✓ medido: la E6 esta escrita entera, y espera UN registro DNS")
     print(f"⚠️ {len(huecos)} huecos, y los tres son la misma pregunta sin contestar")
     return 0
 

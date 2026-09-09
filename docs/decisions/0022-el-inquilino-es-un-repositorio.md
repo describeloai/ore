@@ -272,10 +272,66 @@ defecto**. Hoy Forgejo la pone en `main` y coincide con la del empujón. Medido 
 no coinciden, el síntoma es «este directorio no es un repositorio ontológico» — que manda a mirar
 el árbol, no la rama.
 
-**E6 · La entrada por inquilino.** Hoy hay **un** Ingress en toda la malla y es el del IdP. Con
-`ore-serve` por organización hay que decidir cómo llega la consola a cada uno, y en este mercado
-cada cliente suele querer su propio nombre DNS. La consola resolverá `organización → URL` desde
-`iam.organizacion`, que es para lo que existe esa columna.
+**E6 · La entrada por inquilino.** ◑ 2026-09-09 · escrita entera y **esperando un registro DNS**.
+
+⛔ Y lo primero, porque esta decisión se equivocaba: *«desde `iam.organizacion`, que es para lo que
+existe esa columna»* — **esa columna no existía**. La escribe la `022`, y es la **cuarta vez** de la
+misma figura:
+
+| | el nombre, que va en la fila | la carretera, que no |
+|---|---|---|
+| `50-jwks.yaml` | `EMISOR` — quién firma | `DIRECCION` — dónde se le busca |
+| `017` | el árbol, `<propietario>/<repositorio>` | dónde vive la forja |
+| `019` | la llave, `<llavero>/<clave>` | de qué nube es |
+| **`022`** | **la entrada, `demo.ore.paladio.io`** | **qué IP hay detrás** |
+
+⚠️ Y «entrada» **no es el alta**: es *la puerta*. El alta ya tiene nombre y proceso (E4, E5). Esto
+es el host por el que se llega, y existe porque la consola tiene que poder contestar *«¿a qué URL le
+pregunto por el árbol de `acme`?»* — hoy lee una constante, y por eso apunta a `127.0.0.1`.
+
+### La decisión: un balanceador para todos
+
+El `Ingress` de GKE no fusiona objetos ni cruza namespaces, así que **un `Ingress` por inquilino es
+un balanceador L7 por inquilino**, con su IP, su certificado y su factura. Una `Gateway` sí: uno
+solo, y una `HTTPRoute` por inquilino colgada desde su propio namespace.
+
+⇒ **Dar de alta a un cliente deja de costar infraestructura.** Y el subdominio `<org>.ore.paladio.io`
+queda cubierto por un comodín el día que se funda, sin una llamada más.
+
+⭐ **Quién puede colgarse lo dice la puerta, no la ruta.** `allowedRoutes` sólo admite namespaces
+con `ore.dev/rol: cargas`; y el reparto de hostnames no lo guarda el YAML sino
+`iam.organizacion.entrada` con un `unique` encima — dos inquilinos reclamando el mismo host es una
+violación de clave **antes** de que nadie escriba un manifiesto.
+
+⭐ Y el certificado **no vive en un `Secret`**: sale de un `certmap` de Certificate Manager. Un
+comodín en etcd sería la llave privada de todos los inquilinos a la vez, al alcance de quien pueda
+leer `Secret` en ese namespace. Es el argumento que ya sacó el testigo de la forja de etcd, y aquí
+pesa más porque la llave es una y sirve para todos.
+
+### ⚠️ Dónde se para, y por qué no es una llamada a la nube
+
+Hecho: Gateway API habilitado (`gke-l7-global-external-managed`), IP reservada
+(`ore-puerta` → `136.69.102.80`), certificado comodín y su mapa pedidos.
+
+**Falta un registro en el DNS de `paladio.io`, que no está en el Cloud DNS de este proyecto** — así
+que no hay orden que darle: es un cambio en el registrador.
+
+```
+_acme-challenge.ore.paladio.io.  CNAME  b40b812e-…-648cd8214a96.18.authorize.certificatemanager.goog.
+*.ore.paladio.io.                A      136.69.102.80
+```
+
+⇒ Por eso el `Gateway` **todavía no se aplica**: levantarlo cobra un balanceador desde el primer
+minuto y contesta un error de certificado. En cuanto el CNAME esté, el certificado converge solo.
+
+⛔ Y la consecuencia que hay que decir: para el cliente que traiga **su** dominio, el alta deja de
+ser un acto y pasa a ser **una espera**, porque el registro lo mueve él.
+
+⚠️ Lo que la `43-la-entrada.yaml` cambia de naturaleza: abrir el balanceador al `ore-serve` de un
+inquilino **lo pone en internet en la práctica**. Lo que lo sostiene a partir de ahí no es la red
+sino la identidad —sin testigo válido no se monta ni una ruta de datos, con testigo de otra
+organización `concesion_viva` no encuentra nada—, así que **esto no se aplica a ningún inquilino con
+el modo de banco encendido**: sería publicar un formulario donde cualquiera escribe quién es.
 
 **E7 · Lectura para el cliente, y revisión donde se pida.** Lo último a propósito: es un ajuste
 del repositorio, no trabajo de plataforma. Que sea barato es la mitad del valor de ③.
