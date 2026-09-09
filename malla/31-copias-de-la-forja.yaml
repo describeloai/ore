@@ -1,0 +1,303 @@
+# La copia de la forja — y una restauración que se prueba EN CADA VUELTA.
+#
+# ── ⛔⛔ El agujero que esto cierra ──────────────────────────────────────────
+#
+# `62-copias-del-idp.yaml` puso copia a las dos bases del IdP. La forja se quedó
+# sin ninguna — y la forja guarda **el árbol de cada inquilino**, que es el
+# sistema de registro de este producto. El IdP se puede reconstruir: los realms
+# están en `61-realms.yaml` y salen de un generador. Una ontología decidida, no.
+#
+# Lo que el disco ya cubre y lo que no, igual que allí:
+#
+#   `kubectl delete pvc`      cubierto — la clase `retiene` deja el disco huérfano
+#   el pod se muere           cubierto — el disco no es del pod
+#   la zona se cae            NO: el disco es zonal
+#   un `push --force`, un
+#   borrado de repositorio    NO: el disco guardaría fielmente el destrozo
+#
+# ── ⭐⭐ Y ESTA COPIA SE RESTAURA SOLA, QUE ES LA DIFERENCIA ────────────────
+#
+# La del IdP lo dice de sí misma: *«una copia que nadie ha restaurado nunca no es
+# una copia: es un fichero»*. Y sigue siendo verdad allí. Aquí no, porque
+# restaurar un repositorio de git es barato y **se hace antes de subir**:
+#
+#   1  `git clone --mirror`            se trae todas las referencias
+#   2  `git bundle create --all`       un fichero, con todo dentro
+#   3  `git bundle verify`             el fichero es íntegro
+#   4  **se CLONA desde el bundle**    y su `HEAD` tiene que ser el mismo
+#   5  y sólo entonces se sube
+#
+# ⇒ El paso 4 es el que convierte esto de una promesa en un hecho. Si un día el
+#   bundle deja de servir para reconstruir el repositorio, **la copia falla**, y
+#   falla el día que pasa y no el día que hace falta.
+#
+# ── Por qué se pregunta a la FORJA y no a `iam` ─────────────────────────────
+#
+# `iam.organizacion.arbol` dice qué árboles DEBERÍA haber. Una copia tiene que
+# guardar los que HAY: un repositorio que existiera sin fila que lo nombre es
+# justo el que nadie echaría de menos hasta que fuera tarde.
+#
+# ── Y un testigo que no puede escribir ──────────────────────────────────────
+#
+# `forja-copias` es un token con alcance `read:repository,read:user`. Comprobado
+# al crearlo: leer da 200 y crear un repositorio da **403**. Una copia no
+# necesita poder escribir, y el día que este token se filtre, no escribe.
+#
+#   Se acuñó desde dentro del servidor, que es lo único que no necesita la
+#   contraseña del administrador:
+#
+#     kubectl exec -n forja forja-0 -- su git -c \
+#       'forgejo admin user generate-access-token --username ore-admin \
+#          --token-name copias-de-la-forja --scopes read:repository,read:user'
+#
+# ── ⭐ CÓMO SE RESTAURA, escrito aquí y no en la cabeza de nadie ────────────
+#
+# Un `.bundle` es un repositorio entero en un fichero. Para devolver un árbol:
+#
+#   gcloud storage cp gs://…-copias/forja/t-demo_ontologia-<fecha>.bundle .
+#   git clone --mirror t-demo_ontologia-<fecha>.bundle recuperado.git
+#   # se crea el repositorio vacío en la forja (o se vacía el que hay), y:
+#   git -C recuperado.git push --mirror http://forja…/t-demo/ontologia.git
+#
+# ⚠️ `--mirror` en el push BORRA en destino lo que no esté en el bundle. Es lo
+# que se quiere al restaurar y es lo último que se quiere por error, así que se
+# hace contra un repositorio recién creado, no contra el que aún tiene algo.
+#
+# El bucket borra a los 30 días —comprobado: la regla de ciclo de vida es
+# `Delete` a los 30—. Guardar para siempre es pagar para siempre por algo que
+# nadie va a mirar; treinta días es lo que se tarda en notar un destrozo.
+#
+# ⚠️ Lo que esto NO guarda, dicho para que nadie lo descubra restaurando: los
+# usuarios, los equipos, los permisos y los tokens de la forja. Eso vive en el
+# SQLite de `/data` y no en los repositorios. Se puede reconstruir —como los
+# realms— y los árboles no, que es el criterio con el que se eligió qué cubrir
+# primero. Cubrirlo entero pide `forgejo dump`, y eso exige el PVC, que es
+# `ReadWriteOnce` y lo tiene cogido `forja-0`.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copias
+  namespace: forja
+  annotations:
+    # La MISMA cuenta de Google que las copias del IdP: sólo puede escribir en
+    # su bucket. Sin llave que rotar y sin secreto que robar — el permiso se
+    # concedió al par (namespace, cuenta) con
+    #   gcloud iam service-accounts add-iam-policy-binding … \
+    #     --role=roles/iam.workloadIdentityUser \
+    #     --member="serviceAccount:<proyecto>.svc.id.goog[forja/copias]"
+    iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+# ── Por dónde puede salir la copia ──────────────────────────────────────────
+#
+# El namespace `forja` no tiene un `deny-all`, así que sin esto el pod saldría a
+# donde quisiera. Con esto sale a cuatro sitios y a ninguno más.
+#
+# ⚠️ El servidor de metadatos —`169.254.169.254`— va EXPLÍCITO. Es de donde
+# Workload Identity saca el testigo de Google, y una política que lo olvide no
+# da un error de red: da un `gcloud` que no puede autenticarse, que se lee como
+# un problema de permisos y manda a mirar el sitio equivocado.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-las-copias
+  namespace: forja
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: copias
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # La forja, que está aquí al lado.
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports: [{protocol: TCP, port: 3000}]
+    # El servidor de metadatos de GKE.
+    - to: [{ipBlock: {cidr: 169.254.169.254/32}}]
+      ports: [{protocol: TCP, port: 80}, {protocol: TCP, port: 988}]
+    # Y Google, por TLS. `gcloud storage` no tiene una dirección fija.
+    - to: [{ipBlock: {cidr: 0.0.0.0/0}}]
+      ports: [{protocol: TCP, port: 443}]
+---
+# ── Y por dónde puede ENTRAR, que es la mitad que faltaba ───────────────────
+#
+# `30-forja.yaml` sólo deja entrar a los namespaces con `ore.dev/tenant: demo` y
+# a `ore-system`. La copia vive en `forja` mismo, así que la primera vuelta se
+# quedó 134 segundos intentando conectar y murió con «Could not connect» — DNS
+# resolvía, el TCP no pasaba. El síntoma señalaba a la salida y el problema
+# estaba en la ENTRADA del otro lado.
+#
+# Las políticas se suman, así que esto abre una puerta más sin tocar aquélla.
+#
+# ⚠️ Y de paso queda visto: `entrada-a-la-forja` nombra `tenant: demo`. Con un
+#   `ore-serve` por organización habrá que cambiar ese selector por uno que valga
+#   para cualquier inquilino —`ore.dev/rol: control`, por ejemplo—, o el segundo
+#   cliente no podrá clonar su propio árbol.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-de-las-copias
+  namespace: forja
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: forja
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: copias
+      ports: [{protocol: TCP, port: 3000}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: copia-de-la-forja
+  namespace: forja
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: copias
+spec:
+  # A las 12:30. Media hora después de la del IdP, y por el mismo motivo por el
+  # que aquélla es a mediodía: una copia programada a la hora en la que el
+  # clúster suele estar apagado es una copia que no existe.
+  schedule: "30 12 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  # ⛔ Y los fallos se quedan a la vista. `backoffLimit: 0`: sin reintentos, para
+  #   que quede un Job fallido y no un bucle callado.
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: copias
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: copias
+          volumes:
+            - name: trabajo
+              emptyDir: {}
+          containers:
+            # Un solo contenedor, y no dos como en las copias del IdP. Allí eran
+            # dos porque `pg_dump` y `gcloud` viven en imágenes distintas; aquí
+            # `ore-drivers` lleva `git` Y `gcloud` —es la que publica el árbol en
+            # `95`—, así que partirlo sería ceremonia.
+            - name: copiar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              volumeMounts: [{name: trabajo, mountPath: /trabajo}]
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: FORJA, value: "http://forja.forja.svc.cluster.local:3000" }
+                - { name: BUCKET, value: "gs://project-8853a180-450d-47be-b83-copias" }
+                - name: TESTIGO
+                  valueFrom: { secretKeyRef: { name: forja-copias, key: token } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  cd /trabajo
+                  F="$(date -u +%Y%m%dT%H%M%SZ)"
+
+                  # El testigo NO va en la URL: `argv` y `/proc` los lee
+                  # cualquiera. Va por cabecera para la API y por
+                  # `credential.helper` para `git`, que es la misma frontera que
+                  # traza `ore-serve`.
+                  export GIT_CONFIG_COUNT=1
+                  export GIT_CONFIG_KEY_0=credential.helper
+                  export GIT_CONFIG_VALUE_0='!f(){ echo username=x; echo password=$TESTIGO; }; f'
+
+                  curl -sSf -H "Authorization: token $TESTIGO" \
+                    "$FORJA/api/v1/repos/search?limit=200" -o /trabajo/repos.json
+                  python3 -c '
+                  import json
+                  d = json.load(open("/trabajo/repos.json"))
+                  for r in d.get("data", []):
+                      print(r["full_name"])
+                  ' > /trabajo/lista.txt
+
+                  N=0; VACIOS=0
+                  echo "--- $(wc -l < /trabajo/lista.txt) repositorios ---"
+                  while read -r R; do
+                    [ -n "$R" ] || continue
+                    D="/trabajo/$(echo "$R" | tr / _)"
+                    git clone --quiet --mirror "$FORJA/$R.git" "$D.git"
+
+                    # ⛔ Un repositorio sin commits no se puede empaquetar, y
+                    #   `git bundle` lo dice con un error. No es un fallo de la
+                    #   copia: es una carcasa a la que todavia no se le ha
+                    #   corrido `ore init`. Se cuenta y se sigue.
+                    if [ -z "$(git -C "$D.git" for-each-ref)" ]; then
+                      echo "· $R — VACIO, sin 'ore init'. No se empaqueta"
+                      VACIOS=$((VACIOS+1))
+                      continue
+                    fi
+
+                    git -C "$D.git" bundle create "$D.bundle" --all
+                    git -C "$D.git" bundle verify "$D.bundle" > /dev/null
+
+                    # ⭐⭐ LA RESTAURACION, aqui y ahora. Se clona DESDE el
+                    #   bundle y se comparan TODAS las referencias. Es lo que
+                    #   separa una copia de un fichero que pesa lo mismo.
+                    #
+                    # ⛔ Y se comparan las referencias, no `HEAD`: un clon hecho
+                    #   desde un bundle puede quedarse sin `HEAD` resuelto, y
+                    #   entonces `rev-parse HEAD` falla por la forma del clon —no
+                    #   porque falte nada—. Una prueba que se rompe por su propio
+                    #   montaje enseña a ignorarla.
+                    git clone --quiet --mirror "$D.bundle" "$D.vuelta.git"
+                    huella() {
+                      git -C "$1" for-each-ref --format='%(refname) %(objectname)' \
+                        | sort | sha256sum | cut -d' ' -f1
+                    }
+                    A=$(huella "$D.git")
+                    B=$(huella "$D.vuelta.git")
+                    [ "$A" = "$B" ] || { echo "✗ $R · lo restaurado NO es lo copiado ($A != $B)"; exit 1; }
+
+                    # Y se dice si dentro hay un arbol de verdad. No falla si no
+                    # lo hay —un repositorio puede ser otra cosa— pero se ve.
+                    RAMA=$(git -C "$D.vuelta.git" for-each-ref --format='%(refname)' refs/heads | head -1)
+                    if [ -n "$RAMA" ] && git -C "$D.vuelta.git" cat-file -e "$RAMA:ontology.config.yaml" 2>/dev/null; then
+                      MANIFIESTO="con manifiesto"
+                    else
+                      MANIFIESTO="⚠ SIN ontology.config.yaml"
+                    fi
+
+                    gcloud storage cp "$D.bundle" "$BUCKET/forja/$(basename "$D")-$F.bundle" -q
+                    echo "· $R · $(wc -c < "$D.bundle") bytes · restaurado y verificado · $MANIFIESTO"
+                    N=$((N+1))
+                    rm -rf "$D.git" "$D.vuelta.git" "$D.bundle"
+                  done < /trabajo/lista.txt
+
+                  # ⛔ Cero copias no es un exito silencioso. Si la forja tiene
+                  #   repositorios y no se copio ninguno, algo esta mal aunque
+                  #   ningun comando haya fallado.
+                  if [ "$N" = "0" ] && [ "$VACIOS" = "0" ]; then
+                    echo "✗ no se copio NADA, y la forja no estaba vacia"
+                    exit 1
+                  fi
+
+                  echo
+                  echo "--- lo que hay guardado ---"
+                  gcloud storage ls "$BUCKET/forja/" | tail -6
+                  echo
+                  echo "ok · $N copiados y restaurados · $VACIOS vacios"
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits:   {cpu: "500m", memory: 512Mi}

@@ -157,7 +157,12 @@ forja = leer("30-forja.yaml")
 base = leer("00-base.yaml")
 
 copia_idp = "CronJob" in leer("62-copias-del-idp.yaml")
-copia_forja = bool(re.search(r"kind: CronJob", forja))
+# ✏️ 2026-09-09 · la copia de la forja ya existe, y en su propio fichero.
+copias_forja = leer("31-copias-de-la-forja.yaml")
+copia_forja = "kind: CronJob" in copias_forja
+# ⭐ Y esta SÍ se restaura: clona desde el bundle y compara las referencias
+#   ANTES de subir. La del IdP sigue sin restaurarse nunca.
+restaura = "bundle verify" in copias_forja and "vuelta.git" in copias_forja
 psa = any("pod-security.kubernetes.io" in leer(f.name) for f in MALLA.glob("*.yaml"))
 no_root = "runAsNonRoot" in serve
 seccomp = "seccompProfile" in serve
@@ -172,9 +177,13 @@ def fila(bien, que, nota):
 print("\n  LO QUE SE GUARDA")
 fila(copia_idp, "copia del IdP", "CronJob diario a las 12:00")
 fila(copia_forja, "copia de LA FORJA",
-     "NO HAY. Un PVC de 10Gi con el arbol de cada inquilino dentro")
-fila(False, "restauracion probada",
-     "ninguna copia se ha restaurado nunca — una copia sin restaurar es una esperanza")
+     "CronJob diario a las 12:30, un bundle por repositorio" if copia_forja
+     else "NO HAY. Un PVC de 10Gi con el arbol de cada inquilino dentro")
+fila(restaura, "restauracion de la forja",
+     "se clona DESDE el bundle y se comparan las referencias, en cada vuelta"
+     if restaura else "no se prueba")
+fila(False, "restauracion del IdP",
+     "nunca se ha hecho — y una copia sin restaurar es una esperanza")
 fila(retencion, "retencion de `iam.huella`",
      "sin politica: ni se purga ni se exporta. Para gobierno la auditoria tiene que SALIR")
 
@@ -206,7 +215,9 @@ fila(False, "cifrado con clave del cliente",
 fila(False, "salida de la auditoria",
      "no hay exportacion de `iam.huella` ni al SIEM del cliente ni a un fichero")
 
-hallazgos.append("⛔ LA FORJA NO TIENE COPIA, y guarda el arbol de cada inquilino")
+hallazgos.append(("✓ la forja ya tiene copia, Y SE RESTAURA en cada vuelta"
+                  if copia_forja and restaura else
+                  "⛔ LA FORJA NO TIENE COPIA, y guarda el arbol de cada inquilino"))
 hallazgos.append("⛔ ningun namespace declara Pod Security Admission")
 hallazgos.append("⛔ `ore-serve` es una replica sin PodDisruptionBudget")
 hallazgos.append("⛔ no hay entrada por inquilino: 1 Ingress, y es del IdP")
@@ -223,9 +234,10 @@ print("""
     arte para enterprise no es el aprovisionador — son cuatro cosas que hoy no
     existen y que ningun cliente de ese tamaño va a dejar pasar:
 
-      1  LA FORJA SIN COPIA. Es el sistema de registro del producto y no tiene
-         respaldo, mientras el IdP si lo tiene. Y ninguna copia se ha restaurado
-         jamas, asi que tampoco sabemos si la del IdP sirve.
+      1  ✓ HECHO el 2026-09-09: `31-copias-de-la-forja.yaml`. Un bundle por
+         repositorio, y **se clona desde el bundle y se comparan las referencias
+         antes de subirlo** — asi que restaurar no es una promesa. Queda que la
+         copia del IdP no se ha restaurado NUNCA, y esa sigue siendo un fichero.
       2  EL TESTIGO ADMINISTRADOR. Hoy un pod de inquilino tiene una credencial
          que alcanza a TODA la forja. Aislar por namespace y dejar eso dentro
          es poner una puerta blindada con la llave pegada.
@@ -242,7 +254,7 @@ print("""
 
   ⇒ El orden que propongo, y el primero no es codigo nuestro:
 
-      1  copia de la forja, Y UNA RESTAURACION QUE SE PRUEBE
+      1  ✓ copia de la forja, con su restauracion probada
       2  estrechar el testigo (ya esta en la cola)
       3  separar el namespace del inquilino de `10-kueue.yaml`
       4  el aprovisionador que ESCRIBE, no que aplica
