@@ -1,0 +1,96 @@
+# El alta de una fuente, con el CUERPO EXACTO que compone el asistente.
+#
+# ── Por qué esto no lo cubría `97` ──────────────────────────────────────────
+#
+# `97-la-consola-con-token.yaml` prueba la CADENA: que un token del realm pasa, que sin él
+# es 401, que la escritura deja un commit. Lo que no prueba es el CONTRATO — la forma
+# concreta del cuerpo que manda la consola.
+#
+# Y ahí hay dos cosas que sólo se ven con el cuerpo de verdad:
+#
+#   1. el `name` es un IDENTIFICADOR. `datasourceRef` lo referencia, así que el alfabeto es
+#      cerrado. El asistente proponía `PostgreSQL - 2026-09-09T12:00:00Z` como valor por
+#      defecto, y eso habría dado 422 en el ÚLTIMO paso, después de tres pantallas;
+#   2. la URL se compone `<esquema>://host:puerto/base`, **sin usuario ni contraseña**. Que
+#      la variante con credencial siga dando 422 es la mitad interesante de esta prueba: el
+#      día que alguien "arregle" el asistente devolviendo los dos campos, esto se pone rojo.
+#
+# ⛔ La segunda llamada NO es un caso de error: es una afirmación. Una prueba que sólo mira
+#   el camino bueno no nota el día que la guarda desaparece.
+#
+# ⚠️ `requests` de CPU y memoria no son adorno: el namespace tiene cuota, y sin ellos el
+#   Job no llega ni a crear el pod — falla en el controlador, no en el contenedor, y sin
+#   registro que mirar.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: alta-como-la-consola
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  completions: 1
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: cliente
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: consola
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: BASE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
+            - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            # El realm de DESARROLLO, el mismo que valida `ore-serve`.
+            - { name: REALM, value: "rubix-dev" }
+            - name: CLIENTE
+              valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
+            - name: SECRETO
+              valueFrom: { secretKeyRef: { name: idp-agente, key: secreto } }
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              curl -sSf -X POST "$IDP/realms/$REALM/protocol/openid-connect/token" \
+                -d grant_type=client_credentials -d "client_id=$CLIENTE" \
+                -d "client_secret=$SECRETO" -o /tmp/t.json
+              TOKEN=$(python3 -c 'import json;print(json.load(open("/tmp/t.json"))["access_token"])')
+              # El nombre lleva la hora para que el Job se pueda repetir: `source add` se
+              # niega a declarar dos veces la misma fuente, y esa negativa es correcta.
+              N="postgresql_$(date +%Y%m%d_%H%M%S)"
+
+              echo "### 1 · el cuerpo que compone el asistente"
+              python3 - "$N" > /tmp/cuerpo.json <<'PY'
+              import json, sys
+              print(json.dumps({
+                  "name": sys.argv[1],
+                  "url": "postgresql://db.acme.com:5432/production",
+                  "description": "PostgreSQL · dado de alta desde la consola",
+              }))
+              PY
+              cat /tmp/cuerpo.json; echo
+              C=$(curl -s -o /tmp/r.json -w '%{http_code}' -X POST "$BASE/fuentes" \
+                -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+                --data @/tmp/cuerpo.json)
+              echo "  http $C"
+              cat /tmp/r.json; echo
+              test "$C" = "201" || { echo "se esperaba 201"; exit 1; }
+
+              echo "### 2 · y con la clave dentro, que es lo que el paso 3 ya no pide"
+              python3 -c 'import json;print(json.dumps({"name":"con_clave","url":"postgresql://u:p@db.acme.com:5432/production"}))' > /tmp/malo.json
+              C=$(curl -s -o /tmp/m.json -w '%{http_code}' -X POST "$BASE/fuentes" \
+                -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+                --data @/tmp/malo.json)
+              echo "  http $C"
+              head -c 240 /tmp/m.json; echo
+              test "$C" = "422" || { echo "se esperaba 422 — la guarda de la credencial no esta"; exit 1; }
+
+              echo
+              echo "ok · el contrato del asistente, contra el servidor de verdad"
