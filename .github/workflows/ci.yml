@@ -371,8 +371,34 @@ jobs:
             --zone europe-west1-b --project project-8853a180-450d-47be-b83
           for D in identidad/ore-iam t-demo/ore-serve t-demo/ore-cofre; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
-            kubectl -n "$NS" patch deployment "$NOMBRE" --type=merge -p \
-              "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"ore.dev/commit\":\"$GITHUB_SHA\"}}}}}"
+            # ── ⛔⛔ APPLY DEL LADO DEL SERVIDOR, Y NO UN `patch` ──────────
+            #
+            # Con `patch` esta anotacion NO SOBREVIVIA. Flux gobierna ahora
+            # estos tres `Deployment` —el inquilino desde la E3, la malla desde
+            # hoy— y su apply del lado del servidor se lleva por delante los
+            # campos que ningun gestor reclama.
+            #
+            # ⇒ Y el fallo era del peor tipo: CI parcheaba, comprobaba acto
+            #   seguido y PASABA; minutos despues Flux borraba la anotacion. Un
+            #   aviso en verde que no se sostenia. Medido: `ore-serve` llevaba
+            #   dias sin ella y nadie lo vio.
+            #
+            # ⭐ Con `--server-side --field-manager=ore-ci`, este campo pasa a
+            #   tener DUEÑO, y el apply de otro gestor ya no lo toca: Kubernetes
+            #   solo quita lo que el propio gestor dejo de declarar. Probado
+            #   forzando una reconciliacion con la anotacion puesta.
+            #
+            # ⚠️ El manifiesto va PARCIAL a proposito: el resto del
+            #   `Deployment` lo pone el estado vivo. Reclamar aqui mas campos
+            #   seria disputarselos a Flux, que es justo lo que no se quiere.
+            # ⚠️ Y por `printf`, no por heredoc. Un heredoc dentro de un bloque
+            #   `run: |` depende de que la indentacion sobreviva a dos capas
+            #   —YAML y el shell— y este arbol ya ha pagado ese peaje varias
+            #   veces. Aqui no hay columnas de las que fiarse.
+            printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  template:\n    metadata:\n      annotations:\n        ore.dev/commit: "%s"\n' \
+              "$NOMBRE" "$NS" "$GITHUB_SHA" \
+              | kubectl -n "$NS" apply --server-side --field-manager=ore-ci \
+                  --force-conflicts -f -
             kubectl -n "$NS" rollout status "deployment/$NOMBRE" --timeout=300s
           done
 
