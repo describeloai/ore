@@ -63,6 +63,15 @@ pub struct Peticion<'a> {
     pub emisor: &'a str,
     pub sub: &'a str,
     pub correo: Option<&'a str>,
+    /// Cómo se llama su llave maestra. `None` ⇒ se deriva de `organizacion`.
+    ///
+    /// ⚠️ La `019` la puso `not null`, y este verbo no la escribía: fundar una
+    /// organización nueva reventaba con una violación de `not null`. En el
+    /// clúster no se vio —las dos que había se rellenaron en la migración— y lo
+    /// cazó CI al fundar una de cero. Es exactamente el agujero que
+    /// `las-migraciones.sh` existe para tapar, un piso más allá: **una migración
+    /// puede sobrevivir a los datos que hay y romper lo que viene después**.
+    pub kek: Option<&'a str>,
     /// Cómo se llama su árbol. `None` ⇒ se deriva de `organizacion`.
     ///
     /// ⭐ Derivar el valor por defecto es P2 —lo derivable no se pregunta—, y
@@ -112,16 +121,18 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
 
     // ── ¿ya estaba? ─────────────────────────────────────────────────────────
     if let Some(f) = tx.uno(
-        "select id, arbol from iam.organizacion where nombre = $1",
+        "select id, arbol, kek from iam.organizacion where nombre = $1",
         &[&p.organizacion],
     )? {
         let id: String = f.get(0);
         // ⭐ Y se devuelve su árbol. Un reintento que sólo dijera «ya existia»
         //   obligaría a ir a buscar a la base el dato por el que se llamó.
         let arbol: String = f.get(1);
+        let kek: String = f.get(2);
         return Ok(Json::obj([
             ("organizacion", Json::s(id)),
             ("arbol", Json::s(arbol)),
+            ("kek", Json::s(kek)),
             ("nota", Json::s("ya existia: no se toco nada")),
         ]));
     }
@@ -131,6 +142,19 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         Some(a) => a.to_string(),
         None => format!("t-{}/ontologia", p.organizacion),
     };
+    // ⭐ La llave, con la misma forma y el mismo argumento: `<llavero>/<clave>`,
+    //   el NOMBRE y no la carretera. El llavero por defecto es el nuestro; el
+    //   día que un cliente traiga el suyo, `--kek` lo dice.
+    let kek = match p.kek {
+        Some(k) => k.to_string(),
+        None => format!("ore/{}", p.organizacion),
+    };
+    if !arbol_valido(&kek) {
+        return Err(format!(
+            "`{kek}` no sirve como nombre de llave. Es `<llavero>/<clave>`, con el \
+             mismo alfabeto que el arbol: acaba dentro del nombre de un recurso de la nube."
+        ));
+    }
     if !arbol_valido(&arbol) {
         return Err(format!(
             "`{arbol}` no sirve como nombre de arbol.\n  \
@@ -165,8 +189,9 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
     };
 
     tx.ejecutar(
-        "insert into iam.organizacion (id, nombre, arbol, creada_por) values ($1, $2, $3, $4)",
-        &[&org, &p.organizacion, &arbol, &persona],
+        "insert into iam.organizacion (id, nombre, arbol, kek, creada_por)
+         values ($1, $2, $3, $4, $5)",
+        &[&org, &p.organizacion, &arbol, &kek, &persona],
     )?;
 
     // ── y el rol. `ORGADMIN` es UNO por organizacion, y lo sostiene un indice
@@ -194,6 +219,7 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
             ("dueno", Json::s(&persona)),
             ("emisor", Json::s(p.emisor)),
             ("arbol", Json::s(&arbol)),
+            ("kek", Json::s(&kek)),
         ]),
     )?;
     tx.confirmar()?;
@@ -205,6 +231,7 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         // ⚠️ Y se dice que TODAVIA NO EXISTE. Devolver el nombre a secas se
         //   leeria como «hecho», y lo que se ha hecho es apuntarlo.
         ("arbol", Json::s(&arbol)),
+        ("kek", Json::s(&kek)),
         (
             "arbol_nota",
             Json::s(

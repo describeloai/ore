@@ -186,10 +186,16 @@ acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
 #   sigue yendo con el de las migraciones, porque comprueba cosas —como que
 #   una fila revocada siga en la tabla— que el servidor no expone.
 export IAM_URL="$URL_APP"
+# ⛔ Y su salida NO se tira. La `019` puso `kek not null` y `fundar` no la
+#   escribia: esto reventaba con «✗ `fundar acme` fallo» y NADA mas, y hubo que
+#   gastar una vuelta de CI para saber por que. Es la misma leccion que ya esta
+#   arriba para el log del servidor, aplicada donde faltaba.
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
-  --correo "ada@paladio.io" >/dev/null 2>&1 || falla "\`fundar acme\` fallo"
+  --correo "ada@paladio.io" > "$TMP/fundar.txt" 2>&1 \
+  || falla "\`fundar acme\` fallo: $(tail -3 "$TMP/fundar.txt")"
 "$IAM" fundar --organizacion otra --emisor "$EMISOR" --sub "persona:zoe" \
-  --correo "zoe@paladio.io" >/dev/null 2>&1 || falla "\`fundar otra\` fallo"
+  --correo "zoe@paladio.io" > "$TMP/fundar.txt" 2>&1 \
+  || falla "\`fundar otra\` fallo: $(tail -3 "$TMP/fundar.txt")"
 dice "dos organizaciones fundadas"
 
 ORG=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='acme'")

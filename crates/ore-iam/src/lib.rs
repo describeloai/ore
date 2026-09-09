@@ -64,7 +64,8 @@ use std::sync::Mutex;
 const USO: &str = "\
 ore-iam — el plano de identidad y acceso
 
-  ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB [--correo C] [--arbol P/R]
+  ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB
+                 [--correo C] [--arbol P/R] [--kek LLAVERO/CLAVE]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
 
   `--arbol` es COMO SE LLAMA su arbol —`<propietario>/<repositorio>`—, no donde
@@ -127,6 +128,9 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     //   dia que una organizacion traiga SU repositorio — la derivacion no tendria
     //   donde ponerlo, y un valor por defecto no es una imposicion.
     let arbol = valor(args, "--arbol");
+    // ⭐ Y la llave, con el mismo criterio: por defecto `ore/<organizacion>`, y
+    //   `--kek` para el dia que un cliente traiga la suya.
+    let kek = valor(args, "--kek");
 
     let mut c = match base::conectar(url) {
         Ok(c) => c,
@@ -143,6 +147,7 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             sub: &sub,
             correo: correo.as_deref(),
             arbol: arbol.as_deref(),
+            kek: kek.as_deref(),
         },
     ) {
         Ok(j) => {

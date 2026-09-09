@@ -188,9 +188,11 @@ chmod +x "$TMP/kms-de-mentira"
 # ── Dos organizaciones: la de Ada, y la de Zoe para el 6 ────────────────────
 export IAM_URL="$URL_IAM"
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
-  --correo "ada@paladio.io" >/dev/null 2>&1 || falla "\`fundar acme\` fallo"
+  --correo "ada@paladio.io" > "$TMP/fundar.txt" 2>&1 \
+  || falla "\`fundar acme\` fallo: $(tail -3 "$TMP/fundar.txt")"
 "$IAM" fundar --organizacion otra --emisor "$EMISOR" --sub "persona:zoe" \
-  --correo "zoe@paladio.io" >/dev/null 2>&1 || falla "\`fundar otra\` fallo"
+  --correo "zoe@paladio.io" > "$TMP/fundar.txt" 2>&1 \
+  || falla "\`fundar otra\` fallo: $(tail -3 "$TMP/fundar.txt")"
 ORG=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='acme'")
 [ -n "$ORG" ] || falla "no se encontro la organizacion"
 dice "dos organizaciones, con su llave: $(psql "$URL" -qtAc "select string_agg(kek, ' ') from iam.organizacion")"
