@@ -30,6 +30,8 @@ favor no es un registro: es una colección de justificaciones.
 | [0018](0018-la-ontologia-es-el-sistema-de-registro.md) · la ontología es el sistema de registro | una escritura de la ontología aterriza **en la copia**, nunca en el origen; y escribir obliga a materializar | **aceptado** |
 | [0019](0019-un-cambio-es-un-orden-o-una-identidad.md) · un cambio es un orden o una identidad | de dónde sale un código de compatibilidad: un movimiento en un **orden** —con dirección, y por eso con espejo— o una **sustitución** de identidad, que no la tiene. Y el eje es **un público**, no una categoría | **aceptado** |
 | [0020](0020-el-plano-de-control.md) · el plano de control | atender a un cliente es de un **programa delegado**, con una lista de verbos **permitidos** y sin identidad no hay superficie | **aceptado** |
+| [0021](0021-una-persona-en-varias-organizaciones.md) · una persona en varias organizaciones | la identidad no lleva dentro a qué cliente sirve; la organización viaja **en el camino**, nunca en el token | **aceptado** |
+| [0022](0022-el-inquilino-es-un-repositorio.md) · el inquilino es un repositorio | aprovisionar **se escribe, no se aplica**; la unidad es el inquilino y no el clúster; y quién aprueba el alta es un **ajuste de cada cliente** | **aceptado** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -94,3 +96,5 @@ que leer un origen, correr el circuito Δ, subir un artefacto y atender a un cli
 tres primeras sacaban del compilador algo que tenía que salir; la cuarta lo saca **para que el
 proceso que mira a internet no sea el que decide qué significan las cosas**, que es la propiedad y
 no el efecto secundario.
+
+**0018 y 0022 son el mismo argumento en dos planos**: la ontología es el sistema de registro de lo que los datos significan, y el repositorio del inquilino lo es de la forma de su compartimento. Los dos compran lo mismo — historia, firma, revisión y `revert`— y los dos lo compran **no programándolo**. La segunda añade el motivo que la primera no necesitaba: quien pudiera aplicar el compartimento de un inquilino podría leer el de todos.

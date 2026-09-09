@@ -273,8 +273,14 @@ print("""
       2  ✓ estrechar el testigo
       3  ✓ el inquilino en su propio fichero, y `entrada-a-la-forja` deja de
          nombrar a `demo`: nombra el ROL del namespace
-      4  el aprovisionador que ESCRIBE, no que aplica
-      5  la entrada por inquilino""")
+      4  el aprovisionador que ESCRIBE, no que aplica   ← decidido en `0022`
+      5  la entrada por inquilino
+
+  ⭐ Y el 4 ya tiene forma: `docs/decisions/0022-el-inquilino-es-un-repositorio.md`.
+    Un repositorio POR INQUILINO, nuestro, con lectura para el cliente — y la
+    revision como ajuste de cada uno, no de la plataforma. Con sus etapas, y la
+    primera no necesita ninguna credencial: renderizar `demo` y comprobar que sale
+    lo que ya esta aplicado.""")
 
 if rojo:
     print("\n⛔ LA MEDIDA NO CUADRA CON EL ARBOL:")

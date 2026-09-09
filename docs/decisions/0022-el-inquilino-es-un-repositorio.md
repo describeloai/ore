@@ -1,0 +1,170 @@
+# 0022 · El inquilino es un repositorio
+
+**Estado:** aceptado · **Fecha:** 2026-09-09 · **Decide:** que aprovisionar un inquilino **se
+escribe, no se aplica**; que la unidad de ese repositorio es **el inquilino y no el clúster**; y
+que quién aprueba el alta es **un ajuste de cada cliente**, no una decisión de la plataforma
+
+---
+
+## El problema
+
+`ore-serve` va **por organización** — decidido, y no por gusto: los clientes son enterprise y
+administración pública, y ahí el aislamiento no se cuenta, se enseña. Cada inquilino con su
+namespace, su cuota, su política de red y su credencial es lo que un auditor quiere ver.
+
+⇒ Y eso convierte fundar en algo mucho mayor que escribir una fila. Un inquilino es esto:
+
+```
+Namespace · ResourceQuota · NetworkPolicy x7 · ServiceAccount x3
+Deployment ore-serve + Service · ConfigMap de llaves + CronJob que las refresca
+LocalQueue + ClusterQueue
+Secret con el testigo de la forja · Secret del agente
+y en la forja: el repositorio, con su `ore init` hecho
+```
+
+**¿Quién aplica eso?** La respuesta obvia es un proceso con permisos de ámbito de clúster sobre
+`Namespace`, `Deployment`, `Secret` y `NetworkPolicy`. Y esa respuesta es la mala:
+
+> ⛔ **Quien puede crear el Secret de un inquilino puede leer el de todos.**
+
+Ese proceso sería la pieza más peligrosa del sistema — más que cualquier `ore-serve`—, y es
+exactamente la figura que este árbol ya rechazó una vez: en CI se hizo que la construcción
+corriera **como** `ore-ci` en vez de concederle suplantar a la cuenta de cómputo, *«que tiene medio
+proyecto»*.
+
+---
+
+## Lo que se miró antes de decidir
+
+[`pruebas-de-fuego/medida-el-aprovisionador-de-inquilinos.py`](../../pruebas-de-fuego/medida-el-aprovisionador-de-inquilinos.py).
+
+- **Parametrizar es lo barato.** 27 menciones de `demo` en tres ficheros. Lo que separa esto de un
+  estado del arte no es el aprovisionador.
+- **El namespace del inquilino nacía dentro del manifiesto de la cola** (`10-kueue.yaml`). Con uno
+  daba igual; con dos, dar de alta a un cliente no puede significar reaplicar Kueue. Ya está
+  separado en `11-el-inquilino.yaml`, que dice arriba las tres sustituciones que lo definen.
+- **Y midiendo salió una credencial que nadie había mirado:** el testigo que usaba `ore-serve`
+  para empujar era de `ore-admin`, **administrador de la forja entera**. Un pod de inquilino con
+  una llave que alcanzaba los árboles de todos. Ya está estrechado — un usuario por inquilino,
+  colaborador de su árbol y de nada más: un repositorio ajeno le da **404**, no 403.
+
+---
+
+## La decisión
+
+> ### El aprovisionador NO aplica: **escribe**. Y escribe en un repositorio **por inquilino**, nuestro, con lectura para el cliente.
+
+**① No hay credenciales de clúster en el camino del alta.** El aprovisionador emite los
+manifiestos del inquilino y **empuja** — que es lo único que este sistema ya sabe hacer—, y un
+agente de GitOps, que tiene esos permisos una vez y auditado, los aplica. De ahí salen cuatro
+cosas que no hay que programar:
+
+- el alta queda en un **commit**, con quien la pidió dentro. Para gobierno eso no es un lujo: es
+  la prueba;
+- revisar antes de aplicar es un **pull request**, no un procedimiento escrito en un documento;
+- deshacer es un `revert`;
+- y la deriva deja de ser invisible: lo que hay y lo que se declaró se comparan solos.
+
+⭐ Es el argumento de [`0018`](0018-la-ontologia-es-el-sistema-de-registro.md) aplicado un piso
+más arriba. **Un inquilino también es un documento.**
+
+**② La unidad es el INQUILINO, no el clúster.** Un repositorio por clúster llevaría dentro los
+nombres de todos los clientes ⇒ no se le podría enseñar a ninguno, y la propiedad que justifica
+todo esto —que el aislamiento se vea— se perdería en la primera pregunta.
+
+Y así la unidad vuelve a ser la misma que arriba: **una unidad de gobierno, un repositorio**. El
+árbol de la ontología ya lo era.
+
+**③ Es nuestro, con lectura para el cliente — y la revisión es un ajuste POR INQUILINO.**
+
+Esto es lo que hace que la decisión no haya que tomarla dos veces:
+
+```
+sin revisión      fundar → commit → aplicado. Minutos, sin humanos.
+con revisión      fundar → pull request → lo aprueba SU gente → aplicado.
+```
+
+Lo segundo se activa poniendo revisión obligatoria en **ese** repositorio. No cambia el
+aprovisionador, no cambia el formato, no cambia el agente. ⇒ **No hay que decidir hoy quién
+aprueba en 2028**, ni elegir lo mismo para el cliente que quiere ir rápido y para el que tiene un
+pliego.
+
+⭐ Y si un cliente exige la propiedad, se le **transfiere** el repositorio. Mismo formato, mismo
+contenido: es un `transfer`, no un rediseño.
+
+---
+
+## Lo que se acepta a cambio
+
+- ⛔ **N repositorios en vez de uno.** Un cambio transversal —subir `enforce` a `restricted`, una
+  CVE en la imagen base— pasa de ser un commit a ser N. Se automatiza porque son **nuestros**, que
+  es justo la diferencia con dárselos al cliente: allí serían N pull requests que hay que
+  perseguir, y acabarías con inquilinos en versiones distintas sin poder forzar.
+- ⛔ **El cliente no escribe.** Ve su compartimento y, si se le da, lo aprueba. Cambiar su cuota
+  pasa por nosotros. Esto **no es autoservicio**, y decirlo así evita venderlo como lo que no es.
+- ⚠️ **La plantilla y la instancia se separan, y hay que sostener el corte.**
+  `ore/malla/` dice qué **es** un inquilino y se versiona con el producto; el repositorio del
+  inquilino dice qué **hay** y se versiona con la operación. Mezclarlos haría que dar de alta a un
+  cliente fuera un commit en el árbol del producto.
+- ⛔ **Y el repositorio de instancia NO puede vivir sólo en la forja que él mismo define.** Es
+  circular: si la forja se cae, no se pueden leer los manifiestos que reconstruyen la forja.
+
+---
+
+## El abordaje, por etapas
+
+La propiedad que se ha buscado al ordenarlas: **cada una deja el sistema mejor aunque la
+siguiente no llegue nunca.** Ninguna es un andamio que sólo sirva para la de después.
+
+**E0 · lo que ya está.** [`017`](file) declara cómo se llama el árbol de cada organización;
+`11-el-inquilino.yaml` es la plantilla con sus tres sustituciones dichas; el testigo de la forja
+alcanza un repositorio; y la forja tiene copia **que se restaura en cada vuelta**.
+
+**E1 · Renderizar, sin aplicar nada.** Un mando que emite los manifiestos de un inquilino a la
+salida estándar, desde la plantilla y las tres sustituciones.
+
+⭐ No necesita **ninguna** credencial: es texto. Y trae su propia prueba — renderizar `demo` tiene
+que dar lo que ya está aplicado en el clúster. Si no coincide, el renderizador miente, y se sabe
+antes de que nadie dependa de él.
+
+**E2 · El repositorio de instancia de `demo`, a mano.** Se crea, se mete lo renderizado, y se
+comprueba que lo que hay en el clúster y lo que dice el repositorio son lo mismo. Todavía sin
+aprovisionador y sin agente.
+
+**E3 · El agente de GitOps.** Apuntado a ese repositorio. Desde aquí el clúster converge solo.
+
+⭐ Y esto ya paga por sí mismo aunque no haya un segundo cliente nunca: hoy `kubectl apply -f
+malla/` lo hace una persona, y **lo que nadie aplicó no se distingue de lo que nadie escribió**.
+
+**E4 · El aprovisionador escribe.** Crea el repositorio del inquilino, empuja sus manifiestos, y
+hace las tres llamadas que ningún YAML puede hacer: crear el repositorio en la forja, crear su
+usuario, hacerlo colaborador y acuñar su testigo.
+
+⛔ Y aquí hay que contestar lo que esta decisión **no** contesta: **los secretos no van en un
+repositorio.** Dos por inquilino —el testigo de la forja y el del agente— y ninguno se puede
+escribir en claro. O el aprovisionador los pone directamente contra el clúster —y entonces vuelve
+a tener una credencial, aunque mucho más estrecha que la de ①—, o se sellan (`SealedSecret`) o se
+referencian (`External Secrets`). **Es la primera pregunta de E4**, y no tiene respuesta todavía.
+
+**E5 · El árbol.** `ore init --name <org>`, primer commit y push, con la imagen de `serve` —la
+única con `git`—. El nombre del manifiesto sale de la organización, y no es cosmético: se propaga
+a cada `connectionEnv`.
+
+**E6 · La entrada por inquilino.** Hoy hay **un** Ingress en toda la malla y es el del IdP. Con
+`ore-serve` por organización hay que decidir cómo llega la consola a cada uno, y en este mercado
+cada cliente suele querer su propio nombre DNS. La consola resolverá `organización → URL` desde
+`iam.organizacion`, que es para lo que existe esa columna.
+
+**E7 · Lectura para el cliente, y revisión donde se pida.** Lo último a propósito: es un ajuste
+del repositorio, no trabajo de plataforma. Que sea barato es la mitad del valor de ③.
+
+---
+
+## Lo que esto NO decide
+
+- **Qué agente de GitOps.** Flux o Argo; la decisión de arriba no depende de cuál.
+- **Cómo viajan los secretos.** Nombrado en E4 y sin respuesta.
+- **Si un cliente tiene su propio clúster.** Esta forma lo admite —el repositorio se transfiere—
+  pero cuándo se ofrece es comercial, no técnico.
+- **Quién aprueba en cada cliente.** Por diseño: es un ajuste, y esa es la propiedad que se
+  compró en ③.
