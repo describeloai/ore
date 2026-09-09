@@ -166,11 +166,20 @@ enlace() { # <cuenta corta> <ksa>
 }
 cuenta "ore-cofre-$NOMBRE"
 cuenta "ore-serve-$NOMBRE"
+# ✓ EL DRIVER, POR FIN CON CUENTA PROPIA.
+#
+# Aquí ponía: *«el driver sigue compartiendo cuenta, y por eso NO se le da nada
+# del inquilino»*. Era una limitación aceptada, y la rompió el catálogo: el Job
+# que lee un origen tiene que EMPUJAR el resultado al árbol, así que necesita el
+# testigo de la forja de SU inquilino.
+#
+# ⛔ Y con una cuenta compartida, dárselo a uno se lo daba a TODOS — que es
+#   exactamente el patrón que estas mismas líneas rechazan arriba para el cofre.
+#   El driver era la excepción que quedaba viva.
+cuenta "ore-driver-$NOMBRE"
 enlace "ore-cofre-$NOMBRE" cofre
 enlace "ore-serve-$NOMBRE" ore-serve
-# El driver sigue compartiendo cuenta, y por eso NO se le da nada del inquilino:
-# sólo el enlace, para que pueda autenticarse contra Google como hasta ahora.
-enlace "ore-driver" driver
+enlace "ore-driver-$NOMBRE" driver
 
 correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \

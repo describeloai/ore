@@ -141,3 +141,55 @@ spec:
   # porque este manifiesto CREA su propio `Namespace`, que es un recurso de
   # clúster y no cabe en una cuenta acotada al namespace. Va con la E7, y está
   # dicho aquí para que no se descubra tarde.
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# EL INQUILINO `prueba` — el primero que nació entero por el conducto
+#
+# `demo` es de antes: se fundó a mano, su árbol se sembró a mano desde un demo
+# ajeno —por eso se llama `ventas` y arrastra once fuentes de prueba— y su
+# compartimento se escribió a mano.
+#
+# ⇒ `prueba` no. Su fila la escribió `fundar`, y TODO lo demás —la llave, las
+#   tres cuentas de Google, el repositorio, su usuario, su testigo, el secreto
+#   del almacén, el compartimento y el árbol— salió del aprovisionador corriendo
+#   como un Job sin ni un permiso de RBAC.
+#
+# ⛔ Y esto sigue siendo un COMMIT NUESTRO, que es lo único que un alta no puede
+#   hacer sola. Es la parte que decide QUÉ SE OBEDECE: si viviera dentro de lo
+#   que se obedece, quien escribiera ahí cambiaría a qué apunta el agente.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: inquilino-prueba
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: prueba
+    # ⭐ Esta etiqueta es la que lo mete en el receptor compartido. No hay que
+    #   tocar `17-el-aviso.yaml`: nombra una CLASE, no objetos.
+    ore.dev/rol: agente
+spec:
+  interval: 5m
+  url: http://forja.forja.svc.cluster.local:3000/t-prueba/compartimento.git
+  ref:
+    branch: main
+  secretRef:
+    name: compartimento-llave
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: inquilino-prueba
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: prueba
+    ore.dev/rol: agente
+spec:
+  interval: 10m
+  path: ./
+  prune: true
+  wait: true
+  timeout: 3m
+  sourceRef:
+    kind: GitRepository
+    name: inquilino-prueba
