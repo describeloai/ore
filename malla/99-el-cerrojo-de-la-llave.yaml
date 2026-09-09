@@ -1,0 +1,156 @@
+# EL SEGUNDO CERROJO, DEMOSTRADO ANTES DE QUE HAYA NADA QUE PROTEGER.
+#
+# C1 de la iteración del custodio. La `0023` decidió cifrado de sobre y la `019`
+# escribió cómo se llama la llave de cada organización. Lo que esto prueba es lo
+# único que hace de eso una separación y no un adorno:
+#
+#   ⭐⭐ UN INQUILINO PUEDE USAR SU LLAVE Y **NO PUEDE USAR LA DE OTRO**.
+#
+# Con eso, la tabla del material podrá ser compartida sin peligro: el custodio de
+# un inquilino podrá LEER el cifrado de otro y no podrá abrirlo. Sin eso, todo lo
+# demás —esquemas, columnas, roles— es cosmética.
+#
+# ── ⛔⛔ Y midiéndolo salió que la cuenta de Google TENÍA que ser por inquilino
+#
+# `ore-driver@` es UNA cuenta compartida por los `t-<inquilino>/driver` de todos.
+# Darle a ésa permiso sobre la llave de `demo` habría dejado que el driver de
+# cualquier otro inquilino abriera lo de `demo` — porque suplanta a la misma
+# cuenta de Google.
+#
+# ⇒ Por eso hay `ore-cofre-demo@`, con permiso sobre UNA clave. La medida decía
+#   «una cuenta más y un enlace más»: es una cuenta más **por inquilino**, y eso
+#   es trabajo del aprovisionador, no una constante de la plantilla.
+#
+#     gcloud kms keyrings create ore --location=europe-west1
+#     gcloud kms keys create demo --keyring=ore --location=europe-west1 \
+#       --purpose=encryption --rotation-period=90d --next-rotation-time="+P90D"
+#     gcloud iam service-accounts create ore-cofre-demo
+#     gcloud kms keys add-iam-policy-binding demo --keyring=ore … \
+#       --member="serviceAccount:ore-cofre-demo@…" \
+#       --role=roles/cloudkms.cryptoKeyEncrypterDecrypter
+#     gcloud iam service-accounts add-iam-policy-binding ore-cofre-demo@… \
+#       --role=roles/iam.workloadIdentityUser \
+#       --member="serviceAccount:<proyecto>.svc.id.goog[t-demo/cofre]"
+#
+# ⚠️ Y la rotación va puesta desde el primer día —90 días— porque una clave sin
+# rotación programada es una clave que nadie va a rotar. Rotar la maestra no
+# descifra nada: las versiones viejas siguen abriendo lo que envolvieron.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cofre
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cofre
+  annotations:
+    iam.gke.io/gcp-service-account: ore-cofre-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+# Por dónde puede salir: el DNS, el servidor de metadatos —de donde sale el
+# token de Workload Identity— y Google por TLS. Nada más. Es la misma forma que
+# `salida-del-driver`, y el día que el custodio exista de verdad esta política
+# viaja con él a la plantilla del inquilino.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-cofre
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: cofre
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: el-cerrojo-de-la-llave
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cofre
+spec:
+  completions: 1
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: cofre
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: cofre
+      containers:
+        - name: cofre
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: LUGAR, value: europe-west1 }
+            - { name: LLAVERO, value: ore }
+            # ⭐ La suya, y la de otro. Los dos nombres salen de
+            #   `iam.organizacion.kek`, que es donde vive esa correspondencia.
+            - { name: MIA, value: demo }
+            - { name: AJENA, value: prueba }
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits:   {cpu: "500m", memory: "512Mi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "quien soy:  $(gcloud config get-value account 2>/dev/null)"
+              echo
+
+              echo "### 1 · con MI llave: envolver y abrir"
+              printf 'la-clave-de-la-base-de-datos' > /tmp/claro
+              gcloud kms encrypt --location="$LUGAR" --keyring="$LLAVERO" \
+                --key="$MIA" --plaintext-file=/tmp/claro --ciphertext-file=/tmp/sobre
+              echo "  envuelto · $(wc -c < /tmp/sobre) bytes"
+              gcloud kms decrypt --location="$LUGAR" --keyring="$LLAVERO" \
+                --key="$MIA" --ciphertext-file=/tmp/sobre --plaintext-file=/tmp/vuelta
+              # ⛔ Y se COMPARA. Que el comando salga con 0 no dice que lo que
+              #   volvio sea lo que entro, y esa es la unica pregunta.
+              cmp -s /tmp/claro /tmp/vuelta \
+                || { echo "✗ lo que volvio NO es lo que entro"; exit 1; }
+              echo "  abierto  · y es lo mismo que entro"
+              echo
+
+              echo "### 2 · ⭐ con la llave AJENA: tiene que NEGARSE"
+              if gcloud kms encrypt --location="$LUGAR" --keyring="$LLAVERO" \
+                   --key="$AJENA" --plaintext-file=/tmp/claro \
+                   --ciphertext-file=/tmp/ajeno 2> /tmp/error; then
+                echo "✗ ⛔⛔ CIFRO CON LA LLAVE DE OTRO INQUILINO."
+                echo "   El segundo cerrojo no existe, y sin el la tabla del material"
+                echo "   compartida es un almacen con una sola cerradura."
+                exit 1
+              fi
+              head -c 300 /tmp/error
+              echo
+              grep -qi "permission\|denied\|PERMISSION_DENIED" /tmp/error \
+                || { echo "✗ fallo, pero no por permisos — mira el motivo"; exit 1; }
+              echo "  negado por PERMISOS, que es lo que tenia que pasar"
+              echo
+
+              echo "ok · un inquilino usa SU llave y no puede usar la de otro"
