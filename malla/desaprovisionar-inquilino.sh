@@ -41,7 +41,6 @@ PROYECTO="project-8853a180-450d-47be-b83"
 LUGAR="europe-west1"
 LLAVERO="ore"
 FORJA_NS="forja"
-DUENNO_GIT="describeloai"
 NS="t-$NOMBRE"
 
 falla() { echo "✗ $*" >&2; exit 1; }
@@ -67,7 +66,6 @@ ARBOL=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
   "select arbol from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r')
 [ -n "$ARBOL" ] || falla "\`$NOMBRE\` no esta fundada: no hay de donde leer que borrar"
 PROPIETARIO="${ARBOL%%/*}"
-REPO_INST="$DUENNO_GIT/inquilino-$NOMBRE"
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "① EL PERMISO SOBRE LA LLAVE — lo primero, y a proposito"
@@ -104,13 +102,13 @@ correr "$GCLOUD" secrets delete "$NS-forja-token" --quiet \
   && hecho "secreto $NS-forja-token" || ya "el secreto $NS-forja-token"
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "④ LA FORJA — el repositorio, la organizacion y el usuario"
+paso "④ LA FORJA — el arbol, el compartimento, la organizacion y el usuario"
 # ══════════════════════════════════════════════════════════════════════════
 #
 # ⚠️ En este orden y no en otro: una organizacion con repositorios dentro no se
 #   borra, y un usuario que es dueno de algo tampoco.
 if [ -n "$SECO" ]; then
-  haria "borrar $ARBOL, la organizacion $PROPIETARIO y el usuario serve-$NOMBRE"
+  haria "borrar $ARBOL, $PROPIETARIO/compartimento, la organizacion y serve-$NOMBRE"
 elif [ -z "${FORJA_ADMIN:-}" ]; then
   falla "falta \`FORJA_ADMIN\`. Se acuna sin contrasena, desde dentro:
      kubectl exec -n forja forja-0 -- su git -c \\
@@ -120,7 +118,15 @@ else
   api() { kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
     -X "$1" -H "Authorization: token $FORJA_ADMIN" "http://localhost:3000/api/v1$2" \
     2>/dev/null | tr -d '\r'; }
-  hecho "repositorio $ARBOL · $(api DELETE "/repos/$ARBOL")"
+  hecho "arbol $ARBOL · $(api DELETE "/repos/$ARBOL")"
+  # ⭐ El compartimento, y ANTES que la organizacion. Al mudarlo a la forja entro
+  #   en el mismo sitio que el arbol, asi que borrarlo dejo de pedir el alcance
+  #   `delete_repo` de GitHub — el desmontaje se volvio simetrico.
+  #
+  # ⚠️ Y el orden no es estetico: una organizacion con repositorios dentro NO se
+  #   borra. Con el compartimento despues, el `DELETE /orgs` habria fallado con
+  #   un codigo que no dice nada de repositorios.
+  hecho "compartimento $PROPIETARIO/compartimento · $(api DELETE "/repos/$PROPIETARIO/compartimento")"
   hecho "organizacion $PROPIETARIO · $(api DELETE "/orgs/$PROPIETARIO")"
   kubectl exec -n "$FORJA_NS" forja-0 -- su git -c \
     "forgejo admin user delete --username serve-$NOMBRE --purge" >/dev/null 2>&1 \
@@ -128,20 +134,5 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "⑤ EL REPOSITORIO DE INSTANCIA"
-# ══════════════════════════════════════════════════════════════════════════
-#
-# ⚠️ Esto pide `delete_repo` en el testigo de GitHub, que NO es un permiso que
-#   convenga tener puesto todo el rato. Si falta, se dice y se sigue: un
-#   repositorio privado de mas no es un agujero, y borrarlo a mano es un clic.
-if correr gh repo delete "$REPO_INST" --yes; then
-  hecho "$REPO_INST"
-elif [ -n "$SECO" ]; then
-  :
-else
-  echo "  ⚠️ $REPO_INST NO borrado — hace falta el alcance \`delete_repo\`:"
-  echo "       gh auth refresh -h github.com -s delete_repo"
-fi
-
 echo
 echo "✓ \`$NOMBRE\` desmontado${SECO:+ (en seco)} — menos la fila, la clave y lo del cluster"

@@ -16,11 +16,11 @@
 #
 # ── ⛔ Lo que NO puede hacer, y son dos ─────────────────────────────────────
 #
-#   1. el `Secret` de la clave de despliegue que Flux necesita para LEER el
-#      repositorio del inquilino. Es el único que no puede venir del almacén:
-#      `source-controller` lo lee de etcd, y cambiar eso es otro componente.
-#      ⇒ Se emite aquí y se deja escrito qué hay que aplicar. Una línea, con
-#        nombre, en vez de un permiso general;
+#   1. ✓ YA NO. La clave de despliegue que Flux necesitaba para leer el
+#      compartimento era el último permiso de clúster del que este guion no
+#      podía librarse — y desapareció al mudar el compartimento a la forja: Flux
+#      lee con UN testigo de sólo lectura acuñado una vez, y dar de alta un
+#      inquilino es crear un repositorio y añadir un colaborador, por API;
 #   2. aplicar `malla/13-…`, el enganche que dice QUÉ SE OBEDECE. Vive en
 #      nuestro árbol a propósito —si viviera dentro de lo que se obedece, quien
 #      escribiera ahí cambiaría a qué apunta el agente— y lo revisamos nosotros.
@@ -45,7 +45,6 @@ PROYECTO="project-8853a180-450d-47be-b83"
 LUGAR="europe-west1"
 LLAVERO="ore"
 FORJA_NS="forja"
-DUENNO_GIT="describeloai"
 NS="t-$NOMBRE"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -77,7 +76,6 @@ correr() {
 
 ruta() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else echo "$1"; fi; }
 GCLOUD="$(command -v gcloud.cmd || command -v gcloud)" || falla "hace falta gcloud"
-command -v gh >/dev/null || falla "hace falta gh"
 PY=$(command -v python3 || command -v python) || falla "hace falta python"
 
 echo "APROVISIONAR \`$NOMBRE\`${SECO:+   (EN SECO: no se escribe nada)}"
@@ -272,12 +270,35 @@ correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-token" \
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"
 # ══════════════════════════════════════════════════════════════════════════
-REPO_INST="$DUENNO_GIT/inquilino-$NOMBRE"
-if gh repo view "$REPO_INST" >/dev/null 2>&1; then
-  ya "el repositorio $REPO_INST"
+# ── ⭐⭐ EN LA FORJA, Y ESO QUITÓ LAS DOS CREDENCIALES QUE QUEDABAN ────────
+#
+# El compartimento vivía en GitHub. Costaba dos cosas que ya no cuesta:
+#
+#   · una clave de despliegue POR INQUILINO, que `source-controller` lee de
+#     etcd ⇒ `create secret` en `flux-system`, o sea una sesión de operador
+#     por cada alta;
+#   · y un testigo de GitHub **con escritura** dentro del aprovisionador, para
+#     poder crear el repositorio. Ése era el que impedía que esto fuera un Job.
+#
+# ⇒ Aquí las dos desaparecen: crear el repositorio y añadir un colaborador son
+#   llamadas a la API que este guion ya sabe hacer, y Flux lee con UN testigo de
+#   sólo lectura acuñado una vez.
+#
+# ⛔ Lo que se pierde está dicho en `13-…`: transferirle el repositorio a un
+#   cliente que exija la propiedad deja de significar nada, porque el servidor
+#   sigue siendo nuestro.
+COMPARTIMENTO="$PROPIETARIO/compartimento"
+if [ -n "$SECO" ]; then
+  haria "crear $COMPARTIMENTO y hacer a \`flux\` colaborador de solo lectura"
 else
-  correr gh repo create "$REPO_INST" --private \
-    --description "El compartimento del inquilino $NOMBRE" && hecho "$REPO_INST"
+  hecho "compartimento $COMPARTIMENTO · $(forja_api POST "/orgs/$PROPIETARIO/repos" \
+    "{\"name\":\"compartimento\",\"private\":true}")"
+  # ⭐ Y el agente entra como COLABORADOR, uno a uno. Lo que ata a `flux` no es
+  #   el ámbito de su token —`read:repository` a secas— sino de qué es
+  #   colaborador. Es la misma figura que `serve-<inquilino>`, que dio 404 sobre
+  #   el árbol ajeno y no 403.
+  hecho "\`flux\` lo lee, y ningun otro · $(forja_api PUT \
+    "/repos/$COMPARTIMENTO/collaborators/flux" '{"permission":"read"}')"
 fi
 
 "$PY" "$(ruta "$RAIZ/malla/gen-inquilino.py")" "$NOMBRE" --arbol "$ARBOL" --a "$(ruta "$TMP/rendido")" \
@@ -297,14 +318,44 @@ hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 # ⭐ Y esto es lo que un aprovisionador tiene que ser: no un acto que ocurre una
 #   vez, sino una funcion que converge. La `017` ya lo dijo de la fila y el
 #   arbol; aqui vale igual.
+# ── ⚠️ Y AQUI HACE FALTA UN TUNEL, que es la señal de que esto quiere ser un Job
+#
+# La forja **sólo se alcanza desde dentro del clúster** — no tiene Ingress, y es
+# a propósito. Así que un guion que corre fuera necesita un `port-forward` para
+# empujar, y eso es una credencial de clúster más.
+#
+# ⇒ No es un defecto de este paso: es la prueba de que este guion tiene que ser
+#   el cuerpo de un **Job**. Dentro del clúster, `forja.forja.svc` se alcanza sin
+#   túnel y sin `kubectl`, y estas cinco líneas desaparecen.
+#
+# ⛔ Lo que NO se hace es evitar el túnel escribiendo los ficheros por la API de
+#   contenidos de la forja. Se podría —siete llamadas— y se perdería lo que hace
+#   que ⑥ converja: `git` es quien sabe si algo cambió, y un `commit` vacío es
+#   ruido en una historia que ES la auditoría.
 if [ -n "$SECO" ]; then
-  haria "empujar esos manifiestos a $REPO_INST"
+  haria "empujar esos manifiestos a $COMPARTIMENTO"
 else
+  PUERTO_FORJA=3129
+  kubectl port-forward -n "$FORJA_NS" svc/forja "$PUERTO_FORJA:3000" >/dev/null 2>&1 &
+  TUNEL=$!
+  trap 'kill "$TUNEL" 2>/dev/null; rm -rf "$TMP"' EXIT
+  for _ in 1 2 3 4 5 6 7 8; do
+    curl -sS -o /dev/null "http://localhost:$PUERTO_FORJA/api/v1/version" 2>/dev/null && break
+    sleep 1
+  done
+  URL_COMP="http://localhost:$PUERTO_FORJA/$COMPARTIMENTO.git"
+  # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
+  #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
+  #   que lee cualquier proceso de la maquina. Es lo mismo que hace
+  #   `ore-serve/git.rs`, y por lo mismo.
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=http.extraheader
+  export GIT_CONFIG_VALUE_0="Authorization: token $FORJA_ADMIN"
   ( set -e
     cd "$TMP"
-    git clone -q "https://github.com/$REPO_INST.git" clon 2>/dev/null \
+    git clone -q "$URL_COMP" clon 2>/dev/null \
       || { mkdir -p clon && cd clon && git init -q -b main \
-           && git remote add origin "https://github.com/$REPO_INST.git" && cd ..; }
+           && git remote add origin "$URL_COMP" && cd ..; }
     # ⛔ Se borra lo que hubiera y se copia lo rendido: la plantilla es la
     #   verdad. Un fichero que el renderizador ya no emite tiene que
     #   DESAPARECER del compartimento — si se quedase, Flux seguiria
@@ -319,10 +370,13 @@ else
     git -c user.name=aprovisionador -c user.email=aprovisionador@invalido \
       commit -q -m "El compartimento del inquilino $NOMBRE"
     git push -q -u origin HEAD:main )
-  case $? in
-    0) hecho "empujado a $REPO_INST" ;;
-    3) ya "los manifiestos de $REPO_INST" ;;
-    *) falla "no se pudo empujar a $REPO_INST" ;;
+  R=$?
+  kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT
+  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+  case $R in
+    0) hecho "empujado a $COMPARTIMENTO" ;;
+    3) ya "los manifiestos de $COMPARTIMENTO" ;;
+    *) falla "no se pudo empujar a $COMPARTIMENTO" ;;
   esac
 fi
 
@@ -331,15 +385,14 @@ paso "⑦ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
 # ══════════════════════════════════════════════════════════════════════════
 cat <<FIN
 
-  ⛔ 1 · LA CLAVE DE DESPLIEGUE de Flux. Es el unico secreto que no puede venir
-       del almacen: \`source-controller\` lo lee de etcd. Se emite y se aplica a
-       mano, que es UNA linea con nombre en vez de un permiso general:
+  ✓ 1 · LA CLAVE DE DESPLIEGUE. **Ya no hay ninguna.** Era el ultimo permiso de
+       cluster del que este guion no podia librarse —\`source-controller\` la lee
+       de etcd, asi que emitirla exigia \`create secret\` en \`flux-system\` y
+       convertia cada alta en una sesion de operador.
 
-         ssh-keygen -t ed25519 -N "" -f llave
-         gh repo deploy-key add llave.pub --repo $REPO_INST --title "flux"
-         kubectl create secret generic inquilino-$NOMBRE-llave -n flux-system \\
-           --from-file=identity=llave --from-file=identity.pub=llave.pub \\
-           --from-file=known_hosts=<(ssh-keyscan github.com)
+       Con el compartimento en la forja, Flux lo lee con UN testigo de solo
+       lectura acuñado una vez, y el paso ⑥ hace a \`flux\` colaborador del
+       repositorio nuevo por API. Nada que aplicar.
 
   ⛔ 2 · EL ENGANCHE. Un \`GitRepository\` y un \`Kustomization\` para
        \`inquilino-$NOMBRE\`, en \`malla/13-…\`. Vive en NUESTRO arbol a
