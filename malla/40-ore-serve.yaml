@@ -231,6 +231,25 @@ spec:
             # Las trae `50-jwks.yaml`, que es quien puede salir. ADR 0020.
             - --jwks
             - /llaves/jwks.json
+            # ── ⭐⭐ DONDE VA LA CREDENCIAL DE UNA FUENTE ─────────────
+            #
+            # Hasta hoy: `ore source add` la escribia en `.env.local`,
+            # `.env.local` esta en el `.gitignore`, y el clon se tiraba al
+            # volver de la peticion. El manifiesto declaraba DONDE buscarla y
+            # no habia donde.
+            #
+            # ⇒ Medido: el Job de catalogo del primer inquilino murio con
+            #   «`PRUEBA_BQ_URL` no esta definida», y el custodio llevaba dias
+            #   desplegado con CERO secretos dentro.
+            #
+            # ⛔ Y sin esquema, porque no hay esquema que elegir: HTTP PLANO
+            #   dentro del cluster. Eso es lo que hace admisible que este
+            #   proceso sea cliente de algo — gana hablar con el custodio y NO
+            #   gana hablar con internet.
+            - --cofre
+            - ore-cofre.t-demo.svc.cluster.local:8095
+            - --organizacion
+            - demo
             # ⭐⭐ Y EL TESTIGO, DE UN FICHERO. Ver el volumen `testigo` y el
             # contenedor de inicio de abajo: el valor NO pasa por etcd.
             - --testigo-fichero
@@ -332,6 +351,14 @@ spec:
     #   estaba al alcance de cualquiera con lectura de `Secret` en este
     #   namespace. El dia que el controlador CSI de secretos entre, esto se
     #   vuelve a cerrar: alli quien sale es el nodo, no el pod.
+    # ⭐ El custodio. Su propio fichero lo habia predicho: «el primer consumidor
+    #   que aparezca necesitara su propia regla de salida, y sin esta nota se
+    #   pasaria media hora mirando este fichero». Aqui esta el primer consumidor.
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: cofre
+      ports: [{protocol: TCP, port: 8095}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]

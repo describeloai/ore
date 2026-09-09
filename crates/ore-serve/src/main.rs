@@ -72,6 +72,10 @@ ore-serve — el plano de control de ORE
                          para otro servicio no vale aquí
   --jwks FICHERO         `oidc`: el juego de llaves. Un FICHERO, no una URL:
                          este proceso no va a buscarlas — ver `oidc.rs`
+  --cofre HOST:PUERTO    el custodio, donde va la credencial de una fuente. Sin
+                         esto el alta funciona y la credencial SE PIERDE
+  --organizacion NOMBRE  de quien es este arbol. El custodio guarda por
+                         organizacion, y este proceso sirve UNA
   -h, --help             esto
 ";
 
@@ -89,6 +93,15 @@ struct Opciones {
     /// misma razón: un valor en `argv` lo lee cualquier proceso, y un valor en
     /// un `Secret` de Kubernetes vive en etcd.
     testigo_fichero: Option<PathBuf>,
+    /// ⭐ Dónde vive el custodio — `host:puerto`, sin esquema, porque no hay
+    /// esquema que elegir: se le habla por HTTP PLANO dentro del clúster.
+    ///
+    /// ⛔ Y eso es lo que hace admisible que este proceso sea cliente de algo:
+    /// gana la capacidad de hablar con el custodio y **no gana la de hablar con
+    /// internet**. La afirmación «el binario no lleva cliente TLS» sigue en pie.
+    cofre: Option<String>,
+    /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN.
+    organizacion: Option<String>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -103,6 +116,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         audiencia: None,
         jwks: None,
         testigo_fichero: None,
+        cofre: None,
+        organizacion: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -124,6 +139,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor" => o.emisor = Some(valor("--emisor")?),
             "--audiencia" => o.audiencia = Some(valor("--audiencia")?),
             "--jwks" => o.jwks = Some(PathBuf::from(valor("--jwks")?)),
+            "--cofre" => o.cofre = Some(valor("--cofre")?),
+            "--organizacion" => o.organizacion = Some(valor("--organizacion")?),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -230,6 +247,8 @@ fn main() -> ExitCode {
         binario: o.ore,
         arbol,
         identidad: proveedor,
+        cofre: o.cofre,
+        organizacion: o.organizacion,
     };
 
     match http::servir(escucha, move |p| servidor.atender(p)) {

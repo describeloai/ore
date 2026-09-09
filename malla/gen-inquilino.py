@@ -202,6 +202,12 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
         #   suelto es justo lo que la comprobacion ② prohibe. Si algun dia esta
         #   linea se cae, ② lo caza: el nombre del modelo no sobrevive.
         t = t.replace("--name %s" % MODELO, "--name %s" % nombre)
+        # ⛔ Y la organizacion que `ore-serve` le dice al custodio. Va en su
+        #   propia linea, asi que se sustituye la PAREJA entera: un `- demo`
+        #   suelto no lo caza ninguna de las reglas de arriba, y la ② lo
+        #   destapo a la primera.
+        pareja = "- --organizacion\n            - %s"
+        t = t.replace(pareja % MODELO, pareja % nombre)
         # Y el mensaje del primer commit, que tambien lo lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % nombre)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
@@ -217,6 +223,7 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
         t = plantilla
         t = t.replace("catalogo-%s" % FUENTE_MODELO, "catalogo-%s" % fuente)
         t = t.replace('value: "%s"' % FUENTE_MODELO, 'value: "%s"' % fuente)
+        t = t.replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
         t = t.replace("t-%s/ontologia" % MODELO, arbol)
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
@@ -246,7 +253,11 @@ def comprobar():
 
     # ── ② Para otro nombre, `demo` no sobrevive en ningún sitio ─────────────
     otro = "acme"
-    hecho = render(otro)
+    # ⛔ CON UNA FUENTE, o la que se rinde N veces no entra en esta
+    #   comprobacion y `demo` puede sobrevivir ahi sin que nadie lo vea. Paso:
+    #   `44-el-catalogo.yaml` llevaba `/organizaciones/demo/` y la ② dijo que
+    #   todo estaba bien, porque con `fuentes=()` ese fichero no se emite.
+    hecho = render(otro, fuentes=[FUENTE_MODELO])
     for f, t in hecho.items():
         quedan = [(i + 1, l.strip())
                   for i, l in enumerate(t.splitlines()) if SUELTO.search(l)]

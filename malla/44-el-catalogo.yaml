@@ -114,6 +114,18 @@ spec:
             # ⚠️ LA FUENTE. Es lo único que distingue un Job de otro, y viene del
             #   `datasources` del árbol — no de aquí.
             - { name: FUENTE, value: "bq" }
+            # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
+            #   sustituye el renderizador con la misma regla que el resto, y la
+            #   comprobacion ② puede cazarla si algun dia se cae.
+            - { name: ORGANIZACION, value: "demo" }
+            # El emisor, para que este Job pueda pedirle un testigo con el que
+            # hablarle al custodio. Mismas variables que usa el alta.
+            - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: REALM, value: "rubix-dev" }
+            - name: CLIENTE
+              valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
+            - name: SECRETO
+              valueFrom: { secretKeyRef: { name: idp-agente, key: secreto } }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -140,6 +152,59 @@ spec:
                 echo "· \`$FUENTE\` ya tiene paquete — no se toca"
                 exit 0
               fi
+
+              # ── ⭐⭐ Y LA CREDENCIAL SE PIDE AL CUSTODIO ────────────────
+              #
+              # El manifiesto declara DÓNDE buscarla —`connectionEnv`— y hasta
+              # hoy no había dónde: `ore source add` la escribía en
+              # `.env.local`, que está en el `.gitignore`, dentro de un clon que
+              # se tiraba. Este Job murió una vez con «`PRUEBA_BQ_URL` no está
+              # definida», y ése fue el fallo que le dio su primer cliente al
+              # cofre.
+              #
+              # ⛔ Se lee `connectionEnv` DEL MANIFIESTO y no se deriva aquí. La
+              #   deriva la hace `ore source add` a partir de `metadata.name`, y
+              #   tener una segunda copia de esa regla es tener dos que
+              #   divergen.
+              # ⚠️ Y NO por heredoc. Un `<<'PY'` dentro de un bloque de YAML
+              #   depende de que la indentación sobreviva a dos capas —YAML y el
+              #   shell— y su terminador tiene que ir en la columna cero. Este
+              #   árbol ya ha pagado ese peaje varias veces; aquí no hay
+              #   columnas de las que fiarse.
+              VAR=$(ore source list --json 2>/dev/null | python3 -c "
+import json,sys
+n=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for f in d.get('datasources', d.get('sources', [])):
+    if f.get('name')==n: print(f.get('connectionEnv','')); break
+" "$FUENTE")
+              # Y si `ore` no sabe listarlas en JSON, del manifiesto — que es de
+              # donde salen de todos modos.
+              [ -n "$VAR" ] || VAR=$(python3 -c "
+import re,sys
+n=sys.argv[1]; dentro=None
+for l in open('ontology.config.yaml', encoding='utf-8'):
+    if re.match(r'^datasources:', l): dentro=''; continue
+    if dentro is None: continue
+    if l and not l[0].isspace(): break
+    m=re.search(r'name:\s*([A-Za-z0-9_]+)', l)
+    if m: dentro=m.group(1)
+    e=re.search(r'connectionEnv:\s*([A-Za-z0-9_]+)', l)
+    if e and dentro==n: print(e.group(1)); break
+" "$FUENTE")
+              [ -n "$VAR" ] || { echo "✗ el manifiesto no dice el \`connectionEnv\` de \`$FUENTE\`"; exit 1; }
+              echo "### pidiendo \`fuente-$FUENTE\` al custodio, para \`$VAR\`"
+
+              # ⛔ Con el testigo de un AGENTE, no del servidor. El custodio
+              #   pregunta a `concesion_viva` si ese sujeto puede USAR este
+              #   secreto — y con una credencial de servicio esa pregunta no se
+              #   haría. La `018` puso `usar` en el modelo de roles para esto.
+              TOK=$(curl -sSf -X POST "$EMISOR/realms/$REALM/protocol/openid-connect/token"                 -d grant_type=client_credentials -d "client_id=$CLIENTE"                 -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+              C=$(curl -s -o /trabajo/s.json -w '%{http_code}'                 -H "authorization: Bearer $TOK"                 "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$FUENTE")
+              [ "$C" = "200" ] || { echo "✗ el custodio contesto $C"; head -c 200 /trabajo/s.json; exit 1; }
+              export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
+              echo "  ✓ credencial puesta en \`$VAR\` — y no toca el disco"
 
               echo "### leyendo el origen \`$FUENTE\`"
               ore source catalog "$FUENTE" --out /trabajo/catalogo.json

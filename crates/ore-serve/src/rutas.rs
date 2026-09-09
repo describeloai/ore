@@ -47,7 +47,7 @@ use crate::git;
 use crate::mando;
 use ore_core::json::Json;
 use ore_core::parse::{self, Node, Style};
-use ore_entrada::http::{Peticion, Respuesta};
+use ore_entrada::http::{self, Peticion, Respuesta};
 use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +65,20 @@ pub struct Servidor {
     pub arbol: Arbol,
     /// El puerto de identidad. `None` ⇒ **las rutas de datos no se montan**.
     pub identidad: Option<Proveedor>,
+    /// ⭐⭐ DÓNDE VIVE LA CREDENCIAL DE UNA FUENTE, y por fin en algún sitio.
+    ///
+    /// `host:puerto` del custodio. `None` ⇒ el alta sigue funcionando y la
+    /// credencial **se pierde**, que es lo que pasaba hasta hoy: `ore source
+    /// add` la escribe en `.env.local`, `.env.local` está en el `.gitignore`, y
+    /// el clon se tira al terminar la petición.
+    ///
+    /// ⇒ Medido: el Job de catálogo del primer inquilino murió con «`PRUEBA_BQ_URL`
+    ///   no está definida», y el cofre llevaba días desplegado con CERO secretos
+    ///   dentro. Tenía cliente desde el principio y nadie se lo había dado.
+    pub cofre: Option<String>,
+    /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN, y este
+    /// proceso sirve UNA — su namespace es el del inquilino.
+    pub organizacion: Option<String>,
 }
 
 impl Servidor {
@@ -106,8 +120,18 @@ impl Servidor {
             ("GET", ["fuentes"]) => self.leyendo(fuentes),
             ("POST", ["fuentes"]) => {
                 let cuerpo = p.cuerpo.clone();
+                // ⛔ EL TESTIGO DE QUIEN PIDIO, y no uno nuestro. El custodio
+                //   decide con `concesion_viva` si esa persona puede emitir, y
+                //   con una credencial de servicio esa pregunta no se haria:
+                //   emitiria siempre el servidor. La `018` puso `secreto:emitir`
+                //   en una PERSONA a proposito.
+                let testigo = p
+                    .cabeceras
+                    .get("authorization")
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .map(str::to_string);
                 self.escribiendo(sujeto, "alta de una fuente", |r| {
-                    self.alta_de_fuente(r, &cuerpo)
+                    self.alta_de_fuente(r, &cuerpo, testigo.as_deref())
                 })
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
@@ -203,7 +227,57 @@ impl Servidor {
 
     // ── Las fuentes ─────────────────────────────────────────────────────────
 
-    fn alta_de_fuente(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
+    /// Manda el valor de la fuente al custodio. Devuelve una frase que dice qué
+    /// pasó — nunca un fallo que tumbe el alta, porque el árbol ya está escrito
+    /// y negar el 201 sería mentir sobre lo que sí ocurrió.
+    ///
+    /// ⛔ El nombre del secreto es `fuente-<nombre>` y NO el de la variable de
+    /// entorno. La variable la deriva `ore source add` de `metadata.name`, así
+    /// que renombrar la organización la cambiaría — y un secreto cuyo nombre
+    /// cambia cuando cambia otra cosa es un secreto que se pierde. Quien lo
+    /// consuma lee `connectionEnv` del manifiesto y sabe bajo qué nombre
+    /// exportarlo.
+    ///
+    /// ⚠️ Y con GUION y no con barra: el nombre viaja como un SEGMENTO de la
+    /// ruta cuando alguien lo lee — `GET /organizaciones/{org}/secretos/{nombre}`
+    /// — y una barra lo partiria en dos. El alfabeto de `concesion.recurso` lo
+    /// admitiria; la ruta no.
+    ///
+    /// ⭐ La clase es `conexion`, que el custodio ya tenia en su lista desde el
+    /// primer dia y nadie habia usado. Es literalmente lo que se pidio cuando se
+    /// diseno: *«credenciales de bases de datos, de sources»*.
+    fn guardar_credencial(&self, nombre: &str, url: &str, testigo: Option<&str>) -> String {
+        let (Some(cofre), Some(org)) = (&self.cofre, &self.organizacion) else {
+            return "NO guardada: este servidor no sabe de ningun custodio                     (`--cofre` y `--organizacion`)"
+                .into();
+        };
+        let Some(t) = testigo else {
+            return "NO guardada: la peticion no traia testigo que reenviar".into();
+        };
+        let cuerpo = Json::obj([
+            ("nombre", Json::s(format!("fuente-{nombre}"))),
+            ("clase", Json::s("conexion")),
+            ("valor", Json::s(url)),
+        ]);
+        match http::pedir(
+            "POST",
+            cofre,
+            &format!("/organizaciones/{org}/secretos"),
+            Some(t),
+            Some(&cuerpo),
+        ) {
+            Err(e) => format!("NO guardada: {e}"),
+            Ok((c, _)) if (200..300).contains(&c) => {
+                format!("guardada en el custodio como `fuente-{nombre}`, clase `conexion`")
+            }
+            Ok((c, b)) => format!(
+                "NO guardada: el custodio contesto {c} · {}",
+                b.trim().chars().take(90).collect::<String>()
+            ),
+        }
+    }
+
+    fn alta_de_fuente(&self, raiz: &Path, cuerpo: &str, testigo: Option<&str>) -> Respuesta {
         let cuerpo = match analizar(cuerpo) {
             Ok(n) => n,
             Err(r) => return r,
@@ -232,7 +306,7 @@ impl Servidor {
             "add".into(),
             "--name".into(),
             nombre.clone(),
-            url,
+            url.clone(),
         ];
         if let Some(t) = campo("type") {
             args.push("--type".into());
@@ -253,20 +327,43 @@ impl Servidor {
                     primera_linea(&s.stdout, &s.stderr)
                 ),
             ),
-            Ok(s) => Respuesta::creado(Json::obj([
-                ("name", Json::s(nombre)),
-                ("informe", Json::s(s.stdout.trim())),
-                // Lo que sigue, dicho en la respuesta y no en la documentación:
-                // leer el origen NO se hace aquí, y quien pintó el botón tiene
-                // que saberlo sin ir a buscarlo.
-                (
-                    "siguiente",
-                    Json::s(
-                        "leer el catálogo del origen no corre en el plano de control: \
-                         necesita un Job con la imagen de drivers",
+            Ok(s) => {
+                // ── ⭐⭐ Y AHORA LA CREDENCIAL, QUE ANTES SE PERDÍA ────────
+                //
+                // `ore source add` la escribe en `.env.local`, que está en el
+                // `.gitignore` — así que vivía dentro de un clon que se tira al
+                // volver de esta función. El manifiesto declaraba dónde
+                // buscarla y **no había dónde**.
+                //
+                // ⇒ Va al custodio, que se construyó para esto y llevaba días
+                //   con cero secretos dentro. Éste es su primer cliente.
+                //
+                // ⛔ Y DESPUÉS del árbol, no antes. Si el custodio falla, queda
+                //   una fuente declarada sin credencial — y eso se nota, porque
+                //   el catálogo dice «`X_URL` no está definida». Al revés
+                //   quedaría un secreto que nombra una fuente que no existe, y
+                //   a eso no lo mira nadie nunca.
+                let guardada = self.guardar_credencial(&nombre, &url, testigo);
+                Respuesta::creado(Json::obj([
+                    ("name", Json::s(nombre)),
+                    ("informe", Json::s(s.stdout.trim())),
+                    // ⚠️ Se dice SIEMPRE, y con lo que pasó. Un alta que
+                    //   contesta 201 y calla que la credencial no se guardó
+                    //   deja el fallo para el Job de catálogo, media hora más
+                    //   tarde y en otro registro.
+                    ("credencial", Json::s(guardada)),
+                    // Lo que sigue, dicho en la respuesta y no en la
+                    // documentación: leer el origen NO se hace aquí, y quien
+                    // pintó el botón tiene que saberlo sin ir a buscarlo.
+                    (
+                        "siguiente",
+                        Json::s(
+                            "leer el catálogo del origen no corre en el plano de control: \
+                             necesita un Job con la imagen de drivers",
+                        ),
                     ),
-                ),
-            ])),
+                ]))
+            }
         }
     }
 

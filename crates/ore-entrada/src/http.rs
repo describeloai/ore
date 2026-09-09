@@ -276,3 +276,87 @@ fn responder(flujo: &mut TcpStream, r: &Respuesta) {
     let _ = flujo.write_all(cuerpo.as_bytes());
     let _ = flujo.flush();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Y EL OTRO LADO: PEDIR, no sólo atender
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⭐⭐ Esto entra el 2026-09-09 y hay que justificarlo, porque la cabecera de
+// este fichero presume de lo contrario: *«catorce crates sin meter nada»*.
+//
+// Lo que lo hace admisible no es que quepa —que cabe, son cuarenta líneas— sino
+// **a dónde puede llamar**: HTTP PLANO, sin TLS y sin resolución de nada que no
+// sea un nombre de servicio del clúster. Así que `ore-serve` gana la capacidad
+// de hablar con el custodio y **no gana la de hablar con internet**.
+//
+// ⇒ La afirmación que sostenía a `ore-serve` —«el binario no lleva cliente
+//   TLS»— sigue en pie palabra por palabra. Un cliente que sí lo llevara habría
+//   abierto la puerta que tres cerraduras estaban cuidando.
+//
+// ⚠️ Y por eso no hay `https` ni redirecciones ni reintentos: no es un cliente
+// HTTP de propósito general y no debe llegar a serlo. Si algún día hace falta
+// hablar con algo de fuera, eso es un proceso aparte — que es la respuesta que
+// este árbol ya dio cuatro veces.
+
+/// Una petición a un servicio del clúster. Devuelve `(código, cuerpo)`.
+///
+/// `destino` es `host:puerto` sin esquema — no hay esquema que elegir.
+pub fn pedir(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    testigo: Option<&str>,
+    cuerpo: Option<&Json>,
+) -> Result<(u16, String), String> {
+    let mut flujo = TcpStream::connect(destino)
+        .map_err(|e| format!("no se pudo conectar con `{destino}`: {e}"))?;
+    // ⛔ Un tiempo límite en las dos direcciones. Sin esto, un servicio que
+    //   acepta la conexión y no contesta deja al plano de control colgado — y
+    //   ése es exactamente el síntoma que una `NetworkPolicy` produce.
+    let plazo = std::time::Duration::from_secs(15);
+    let _ = flujo.set_read_timeout(Some(plazo));
+    let _ = flujo.set_write_timeout(Some(plazo));
+
+    // ⭐ La forma canonica y no la indentada: esto lo lee un programa. Es la
+    //   misma que usa el sellado, asi que dos peticiones identicas producen
+    //   bytes identicos.
+    let serializado = cuerpo.map(|c| c.jcs()).unwrap_or_default();
+    let mut peticion =
+        format!("{metodo} {camino} HTTP/1.1\r\nHost: {destino}\r\nConnection: close\r\n");
+    if let Some(t) = testigo {
+        peticion.push_str(&format!("Authorization: Bearer {t}\r\n"));
+    }
+    if cuerpo.is_some() {
+        peticion.push_str("Content-Type: application/json\r\n");
+        peticion.push_str(&format!("Content-Length: {}\r\n", serializado.len()));
+    }
+    peticion.push_str("\r\n");
+    peticion.push_str(&serializado);
+
+    flujo
+        .write_all(peticion.as_bytes())
+        .map_err(|e| format!("no se pudo escribir a `{destino}`: {e}"))?;
+
+    let mut crudo = Vec::new();
+    // ⚠️ Acotado como el del servidor, y por lo mismo: una respuesta sin límite
+    //   es una forma de quedarse sin memoria a petición de otro proceso.
+    flujo
+        .take(CUERPO_MAXIMO as u64 + 4096)
+        .read_to_end(&mut crudo)
+        .map_err(|e| format!("no se pudo leer de `{destino}`: {e}"))?;
+    let texto = String::from_utf8_lossy(&crudo).into_owned();
+
+    let (cabeza, cuerpo) = texto
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("`{destino}` no contestó un HTTP entero"))?;
+    let codigo = cabeza
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| format!("`{destino}` no dijo un código: {}", primera_linea(cabeza)))?;
+    Ok((codigo, cuerpo.to_string()))
+}
+
+fn primera_linea(s: &str) -> String {
+    s.lines().next().unwrap_or_default().to_string()
+}
