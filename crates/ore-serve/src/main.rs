@@ -57,7 +57,11 @@ ore-serve — el plano de control de ORE
 
   --repo DIR             la raíz del repositorio ontológico (por defecto, `.`)
   --forja URL            el repositorio en la forja. Cada petición CLONA, y la
-                         que escribe empuja. El testigo sale de `FORJA_TOKEN`
+                         que escribe empuja
+  --testigo-fichero R    de dónde leer el testigo de la forja. Un FICHERO, y por
+                         la misma razón que `--jwks`: en un clúster, una variable
+                         de entorno con un secreto viene de un `Secret`, y un
+                         `Secret` vive en etcd. Si no se dice, `FORJA_TOKEN`
   --bind DIRECCION       dónde escuchar (por defecto, 127.0.0.1:8080)
   --ore RUTA             el binario `ore` (por defecto, `ore` del PATH)
   --identidad MODO       de dónde sale el sujeto. Sin esto, las rutas de datos
@@ -81,6 +85,10 @@ struct Opciones {
     emisor: Option<String>,
     audiencia: Option<String>,
     jwks: Option<PathBuf>,
+    /// Dónde leer el testigo de la forja. Un FICHERO, como `--jwks` y por la
+    /// misma razón: un valor en `argv` lo lee cualquier proceso, y un valor en
+    /// un `Secret` de Kubernetes vive en etcd.
+    testigo_fichero: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -94,6 +102,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         emisor: None,
         audiencia: None,
         jwks: None,
+        testigo_fichero: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -105,6 +114,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "-h" | "--help" => return Ok(None),
             "--repo" => o.repo = PathBuf::from(valor("--repo")?),
             "--forja" => o.forja = Some(valor("--forja")?),
+            "--testigo-fichero" => {
+                o.testigo_fichero = Some(PathBuf::from(valor("--testigo-fichero")?))
+            }
             "--bind" => o.bind = valor("--bind")?,
             "--ore" => o.ore = PathBuf::from(valor("--ore")?),
             "--identidad" => o.identidad = Some(valor("--identidad")?),
@@ -156,15 +168,17 @@ fn main() -> ExitCode {
     // El árbol: o un directorio, o la forja. **Nunca los dos** — un servidor
     // que tuviera dos sitios donde vive el árbol tendría dos verdades.
     let arbol = match &o.forja {
-        Some(url) => match std::env::var("FORJA_TOKEN") {
-            Ok(t) if !t.is_empty() => rutas::Arbol::Forja(git::Forja {
+        Some(url) => match testigo(&o) {
+            Some(t) => rutas::Arbol::Forja(git::Forja {
                 url: url.clone(),
                 testigo: t,
             }),
-            _ => {
+            None => {
                 eprintln!(
-                    "✗ `--forja` necesita el testigo en `FORJA_TOKEN`.
-                       No se acepta por la línea de órdenes: `argv` lo lee cualquier proceso."
+                    "✗ `--forja` necesita el testigo, y hay dos formas de darlo:
+                       `--testigo-fichero RUTA`  ← preferida: el valor no pasa por etcd
+                       `FORJA_TOKEN`             ← el entorno, que sigue valiendo
+                     Por `argv` NO se acepta: lo lee cualquier proceso de la maquina."
                 );
                 return ExitCode::from(64);
             }
@@ -224,5 +238,49 @@ fn main() -> ExitCode {
             eprintln!("✗ el servidor terminó: {e}");
             ExitCode::from(70) // EX_SOFTWARE
         }
+    }
+}
+
+/// El testigo de la forja: de un FICHERO si se dijo dónde, y si no del entorno.
+///
+/// ── ⭐⭐ Por qué un fichero, y por qué ganó al entorno ───────────────────────
+///
+/// El entorno ya era mejor que `argv` —que lo lee cualquier proceso de la
+/// máquina— pero en Kubernetes una variable de entorno con un secreto dentro
+/// viene de un `Secret`, y **un `Secret` vive en etcd**: en el disco del plano
+/// de control, en sus copias, y al alcance de cualquiera que pueda leer
+/// `Secret` en ese namespace.
+///
+/// ⇒ Con un fichero, el valor puede venir de un `emptyDir` de MEMORIA que
+/// rellena un contenedor de inicio desde el almacén de la plataforma. No toca
+/// etcd, no toca el disco, y muere con el pod.
+///
+/// ⭐ Y es exactamente la forma que este binario ya eligió para `--jwks`: *«un
+/// FICHERO, no una URL: este proceso no va a buscar las llaves»*. Aquí igual —
+/// no va a buscar el testigo: se lo dejan puesto.
+///
+/// ⚠️ El entorno sigue valiendo, y no por compatibilidad: en una máquina, sin
+/// clúster y sin almacén, es la forma sensata. Lo que NO se acepta sigue siendo
+/// `argv`.
+fn testigo(o: &Opciones) -> Option<String> {
+    if let Some(f) = &o.testigo_fichero {
+        return match std::fs::read_to_string(f) {
+            // ⛔ `trim`: un fichero escrito con `echo` acaba en `\n`, y un
+            //   testigo con un salto de línea al final falla en la forja con un
+            //   401 que no dice nada de saltos de línea.
+            Ok(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Ok(_) => {
+                eprintln!("✗ `{}` está vacío", rutas::ruta_de(f));
+                None
+            }
+            Err(e) => {
+                eprintln!("✗ no se pudo leer `{}`: {e}", rutas::ruta_de(f));
+                None
+            }
+        };
+    }
+    match std::env::var("FORJA_TOKEN") {
+        Ok(t) if !t.is_empty() => Some(t),
+        _ => None,
     }
 }
