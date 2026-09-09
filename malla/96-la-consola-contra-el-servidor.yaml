@@ -80,22 +80,13 @@ spec:
             requests: {cpu: "200m", memory: 256Mi}
             limits:   {cpu: "500m", memory: 512Mi}
 ---
-# Y la puerta para que un pod del inquilino pueda hablar con el plano de
-# control. Sin esto, `deny-all-egress` gana y la consola no llega: es la misma
-# consecuencia de escribir la red en negativo que ya obligó a abrir la forja.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-al-control
-  namespace: t-demo
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              ore.dev/rol: control
-      ports:
-        - protocol: TCP
-          port: 8080
+# ✓ `salida-al-control` SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
+#
+# Vivia aqui, y el inquilino que nacio sin ella no pudo hablar con su PROPIO
+# plano de control: el `curl` del alta se colgo dos minutos y medio y el Job
+# murio sin una linea de error. `t-demo` la tenia solo porque alguien habia
+# corrido esta prueba.
+#
+# ⇒ Es el segundo caso identico en dos ficheros vecinos —`salida-al-emisor`
+#   estaba en `97-…`— y los dos aparecieron el mismo dia, con el segundo
+#   inquilino. Una regla que el inquilino NECESITA no puede vivir en su prueba.

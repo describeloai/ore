@@ -217,3 +217,33 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+---
+# ── Y hablar con su PROPIO plano de control ──────────────────────
+#
+# ✓ 2026-09-09 · Vivia en `96-la-consola-contra-el-servidor.yaml`, otro fichero
+#    de PRUEBAS. El segundo inquilino nacio sin ella y el alta de una fuente se
+#    colgo dos minutos y medio: `deny-all-egress` gana, y un paquete tirado no
+#    da error — da un `curl` que no vuelve.
+#
+# ⇒ Segundo caso identico en dos ficheros vecinos, el mismo dia. Lo que los une
+#   no es el descuido: es que **el primero funcionaba**, y una regla que sobrevive
+#   porque alguien corrio su test no se distingue de una que esta puesta.
+# Y la puerta para que un pod del inquilino pueda hablar con el plano de
+# control. Sin esto, `deny-all-egress` gana y la consola no llega: es la misma
+# consecuencia de escribir la red en negativo que ya obligó a abrir la forja.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-control
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8080
