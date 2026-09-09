@@ -176,6 +176,23 @@ spec:
             # SSH apagado: se habla por HTTP con un token de alcance, que es lo
             # que un Job puede recibir sin que nadie gestione claves.
             - { name: FORGEJO__server__DISABLE_SSH, value: "true" }
+            # ── ⛔⛔ EL WEBHOOK SOLO PUEDE LLAMAR A UN SITIO ─────────────────
+            #
+            # Forgejo prohibe por defecto que un webhook llame a una direccion
+            # PRIVADA, y ese defecto es el correcto: sin el, el dueno de un
+            # repositorio pone un webhook apuntando a un servicio interno y usa
+            # la forja como proxy para alcanzar lo que el no alcanza. Un SSRF
+            # con formulario.
+            #
+            # ⇒ Se abre a UN HOST EXACTO, no a `private`. Con `private` la forja
+            #   podria llamar a la base, al IdP, al `ore-serve` de cualquier
+            #   inquilino — todo lo que viva en una IP interna.
+            #
+            # ⚠️ Lo destapo el registro de la forja y no un fallo visible: el
+            # empujon funciono, el webhook se encolo, y la entrega murio con
+            # «deny 'webhook-receiver…'». Flux siguio tardando cinco minutos y
+            # nada dijo por que.
+            - { name: FORGEJO__webhook__ALLOWED_HOST_LIST, value: "webhook-receiver.flux-system.svc.cluster.local" }
             # NADIE se registra solo. Esto no es un servicio público: los
             # sujetos los pone el plano de identidad, y hasta que OIDC esté
             # enchufado los pone un administrador a mano.
