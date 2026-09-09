@@ -149,22 +149,50 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    print("\n④ Y LO QUE SEPARA A LA CONSOLA DE ESA SUPERFICIE")
+    print("\n④ Y LA CONSOLA, QUE YA RESUELVE POR ORGANIZACION")
     # ══════════════════════════════════════════════════════════════════════
-    env = CONSOLA / ".env.local"
-    if not env.exists():
+    cfg = CONSOLA / "lib" / "server" / "config.ts"
+    org = CONSOLA / "lib" / "server" / "organizacion.ts"
+    q = CONSOLA / "lib" / "server" / "query.ts"
+    if not cfg.exists():
         print("  · no medido: no esta el arbol de la consola")
     else:
-        v = re.search(r"^ORE_SERVE_URL=(\S+)", env.read_text(encoding="utf-8"), re.M)
-        local = bool(v and re.search(r"127\.0\.0\.1|localhost", v.group(1)))
-        if local:
-            hueco(
-                "la consola sigue leyendo UNA constante local: %s" % v.group(1),
-                "La E6 ya le dio la carretera —`iam.organizacion.entrada`, y\n"
-                "`demo.ore.paladio.io` contesta 200 desde internet— pero nadie la ha\n"
-                "cableado. ⇒ Esto, y no la E7, es lo que separa a la plataforma de\n"
-                "  gestionar el producto desde su interfaz.",
-            )
+        # ⛔ Los VALORES, no la prosa: `config.ts` sigue NOMBRANDO la constante
+        #   retirada para explicar por que se fue, y una comprobacion que saltara
+        #   por su propia explicacion enseña a ignorarla.
+        def codigo(p):
+            t = p.read_text(encoding="utf-8")
+            t = re.sub(r"/\*.*?\*/", "", t, flags=re.S)
+            return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("//"))
+
+        mide(
+            "la constante `ORE_SERVE_URL` ya no se lee en ningun sitio",
+            "ORE_SERVE_URL" not in codigo(cfg) + codigo(q),
+            "un destino constante sirve el arbol del primer inquilino al segundo, "
+            "y con un 200 encima",
+        )
+        mide(
+            "la direccion del arbol se resuelve por organizacion",
+            org.exists() and "entradaActual" in codigo(org),
+            "falta `entradaActual` en `organizacion.ts`",
+        )
+        mide(
+            "y sale de la MISMA llamada que dice a que organizacion perteneces",
+            org.exists() and "misOrganizaciones(acceso)" in codigo(org),
+            "resolverla aparte seria un viaje de mas y una segunda verdad",
+        )
+        mide(
+            "el esquema lo pone la consola, no la fila",
+            org.exists() and "https://${org.entrada}" in codigo(org),
+            "la `022` guarda un HOST: un esquema en la fila es carretera en la identidad",
+        )
+        mide(
+            "y `ore-iam` la devuelve",
+            "o.entrada" in (RAIZ / "crates" / "ore-iam" / "src" / "rutas.rs").read_text(
+                encoding="utf-8"
+            ),
+            "sin esto la consola resuelve contra un campo que nadie envia",
+        )
 
     print()
     if fallos:
