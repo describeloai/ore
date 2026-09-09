@@ -72,17 +72,76 @@ pub fn potestades_del_rol(tx: &mut Tx, rol: &str) -> Result<Potestades, String> 
 
 /// ⛔⛔ EL PLANO DE ABAJO, y no se mezcla con lo de arriba.
 ///
-/// `iam.rol_de_recurso` —`lector` y `owner`— gobierna el ARBOL, no la
-/// organizacion, y **no tiene ordinal**: `owner` no implica `lector`, asi que
-/// aqui no hay nada que contener ni que comparar. Solo se comprueba que exista.
-/// Ver la `011`.
+/// `iam.rol_de_recurso` gobierna el RECURSO, no la organizacion, y **no tiene
+/// ordinal**: `owner` no implica `lector`, asi que aqui no hay nada que contener
+/// ni que comparar. Solo se comprueba que exista. Ver la `011`.
+///
+/// ✏️ 2026-09-09 · el mensaje de error decia «Son `lector` y `owner`», y la `018`
+/// añadio `usar`. La lista se lee de la TABLA: una enumeracion escrita a mano en
+/// un mensaje es una copia que envejece sin avisar, y lo hace en el peor sitio —
+/// diciendole a alguien que lo que escribio no existe cuando si existe.
 pub fn rol_de_recurso(tx: &mut Tx, rol: &str) -> Result<(), String> {
-    tx.uno(
-        "select 1 from iam.rol_de_recurso where nombre = $1",
-        &[&rol],
-    )?
-    .map(|_| ())
-    .ok_or_else(|| format!("`{rol}` no es un rol de recurso. Son `lector` y `owner`"))
+    if tx
+        .uno(
+            "select 1 from iam.rol_de_recurso where nombre = $1",
+            &[&rol],
+        )?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let hay: Vec<String> = tx
+        .filas("select nombre from iam.rol_de_recurso order by nombre", &[])?
+        .iter()
+        .map(|f| format!("`{}`", f.get::<_, String>(0)))
+        .collect();
+    Err(format!(
+        "`{rol}` no es un rol de recurso. Son {}",
+        hay.join(", ")
+    ))
+}
+
+/// La forma del asidero: `<clase>/<nombre>`, con la clase de un conjunto cerrado.
+///
+/// ⛔ La guarda de verdad es la restriccion `concesion_recurso_forma` de la
+/// `018`. Esto es la cortesia de contestar con una frase en vez de con una
+/// violacion de `check`: sin ella, escribir `ventas.Clientes` sin clase daria un
+/// error que nombra una restriccion y no dice que falta.
+pub fn recurso(nombre: &str) -> Result<(), String> {
+    let (clase, resto) = nombre.split_once('/').unwrap_or(("", nombre));
+    let ok = match clase {
+        "vista" => match resto.split_once('.') {
+            Some((p, v)) => {
+                !p.is_empty()
+                    && p.starts_with(|c: char| c.is_ascii_lowercase())
+                    && p.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                    && !v.is_empty()
+                    && v.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            None => false,
+        },
+        "secreto" => {
+            !resto.is_empty()
+                && resto.len() <= 63
+                && resto.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && resto
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        }
+        _ => false,
+    };
+    if ok {
+        return Ok(());
+    }
+    Err(format!(
+        "`{nombre}` no tiene forma de recurso. Es `<clase>/<nombre>`, y las clases \
+         son `vista/<paquete>.<Vista>` y `secreto/<nombre>`.\n  \
+         El nombre del recurso es el asidero: lo que se concede, lo que se audita y \
+         lo que un manifiesto referencia. Sin una forma cerrada, dos escrituras del \
+         mismo recurso no son el mismo recurso."
+    ))
 }
 
 /// Exige una potestad, y devuelve todas las que tiene quien pregunta.

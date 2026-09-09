@@ -262,6 +262,9 @@ pub fn conceder(
     // ⛔ Contra la tabla del plano de ABAJO, que no tiene ordinal: `owner` no
     //   implica `lector`, asi que no hay altura que comparar. Ver la `011`.
     potestad::rol_de_recurso(tx, rol)?;
+    // Y la FORMA del asidero, desde la `018`. La guarda es la restriccion de la
+    // base; esto contesta con una frase en vez de con un `check` violado.
+    potestad::recurso(recurso)?;
     if rol == "owner" {
         return Err(
             "todavia no se concede `owner`: nombrarlo exige ser owner de ese \
@@ -270,6 +273,16 @@ pub fn conceder(
                 .into(),
         );
     }
+    // ⚠️ HALLAZGO de la `018`, escrito aqui para que no se pierda: el motivo de
+    //   esa negativa es LA TRAVESIA DEL ARBOL, y un secreto no es un arbol — no
+    //   contiene nada ni esta contenido en nada. Asi que para la clase
+    //   `secreto/` la guarda que falta no es una travesia: es «ser owner de ESE
+    //   recurso», que es una fila.
+    //
+    //   No se abre aqui porque la `0023` dice que el owner de un secreto nace
+    //   con el, en el verbo de EMITIR, y ese verbo no existe todavia. Abrirlo
+    //   antes daria una forma de nombrar owner de un secreto que aun no puede
+    //   tener ninguno.
 
     let id = nuevo_id("con");
     let quien_id = persona_id(tx, emisor, quien(sujeto))?;

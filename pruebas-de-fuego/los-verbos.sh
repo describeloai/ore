@@ -20,10 +20,12 @@
 #   5  ⭐ otorgar lo que NO SE TIENE       SE NIEGA  ← el rodeo, por contencion
 #  5a  invitar SIN rol                   pertenecer no es un cargo
 #  5b  los MIEMBROS · con su nombre del token · y una extraña NO los ve
-#  5c  el CATALOGO · y `SECURITYADMIN` sale vacio, con su nota
+#  5c  el CATALOGO · y `SECURITYADMIN` EMITE y no LEE, con su nota
 #   6  conceder `lector` · revocar · revocar otra vez
 #  6b  ⭐ sondear una concesion AJENA   mismo error que una inventada
 #   7  conceder `owner`                 SE NIEGA  ← falta la travesia del arbol
+#  7b  ⭐ conceder `usar` sobre un `secreto/`  ← la `018`, sin tocar `conceder`
+#  7c  un recurso SIN CLASE             SE NIEGA  ← el asidero tiene forma
 #   8  admitir con otro correo          SE NIEGA
 #   9  y MIRAR tambien deja huella
 #
@@ -282,21 +284,29 @@ grep -q '"porDefecto"' "$TMP/r.json"   || falla "5c · sin estado por defecto"
 grep -q '"ORGADMIN"' "$TMP/r.json"     || falla "5c · falta ORGADMIN en el catalogo"
 grep -q '"SECURITYADMIN"' "$TMP/r.json"   || falla "5c · ⛔ SECURITYADMIN NO SALE. Un rol que existe y no se ve es peor que no tenerlo"
 
-# ⛔⛔ Y sale con CERO potestades y con su nota. Es lo que lo hace honesto: un
-#   rol vacio no significa nada **y ademas parece que si**, asi que la nota
-#   tiene que viajar con el.
-"$PY" - "$TMP/r.json" <<'PYCODE' || falla "5c · el catalogo no dice que SECURITYADMIN es una carcasa"
+# ⛔⛔ Y sale con lo suyo Y CON SU NOTA. Es lo que lo hace honesto: un rol cuyas
+#   potestades no se ejercen no significa nada todavia **y ademas parece que
+#   si**, asi que la nota tiene que viajar con el.
+"$PY" - "$TMP/r.json" <<'PYCODE' || falla "5c · el catalogo no describe bien a SECURITYADMIN"
 import json, sys
 d = json.load(open(sys.argv[1]))
 cat = d["catalogo"]
 s = cat["porRol"]["SECURITYADMIN"]
 
-# ⭐ NO esta vacio: tiene UNA potestad, y lo que la hace una carcasa es que esa
-#   potestad no se ejerce todavia. Afirmar «cero» habria sido afirmar algo
-#   distinto de lo que pasa, y ademas mas debil.
-assert s["anade"] == ["actividad:leer-toda"],     "SECURITYADMIN deberia tener solo `actividad:leer-toda` y trae %r" % s["anade"]
-assert cat["potestades"]["actividad:leer-toda"]["ejercida"] is False,     "esa potestad no tiene ruta todavia, y el catalogo tiene que decirlo"
-assert "CARCASA" in s["nota"].upper(), "y su nota tiene que decirlo: %r" % s["nota"]
+# ✏️ 2026-09-09 · la `018` le dio un motivo propio. Antes esto exigia que trajera
+#   SOLO `actividad:leer-toda` y que su nota dijera «carcasa»: las dos cosas eran
+#   ciertas y las dos dejaron de serlo el mismo dia.
+#
+# ⭐ Lo que se sigue exigiendo es lo que importa: que EMITA y NO LEA. Emitir es
+#   una potestad de la organizacion; leer un secreto es una concesion sobre ESE
+#   secreto. Si algun dia apareciera aqui una potestad que diera acceso a
+#   valores, esta linea se pone roja — y es la unica guarda automatica que tiene
+#   esa asimetria.
+assert sorted(s["anade"]) == ["actividad:leer-toda", "secreto:emitir", "secreto:listar"], "SECURITYADMIN trae %r" % s["anade"]
+assert not [p for p in s["anade"] if p.startswith("secreto") and "leer" in p], "⛔ SECURITYADMIN NO puede tener una potestad de LEER secretos: leer es una concesion"
+assert cat["potestades"]["secreto:emitir"]["ejercida"] is False, "no hay verbo de emitir todavia, y el catalogo tiene que decirlo"
+assert cat["potestades"]["actividad:leer-toda"]["ejercida"] is False, "esa potestad no tiene ruta todavia, y el catalogo tiene que decirlo"
+assert "concesion" in s["nota"].lower(), "su nota tiene que decir por que emitir no da acceso: %r" % s["nota"]
 
 # Y las que SI se ejercen, dichas como tales.
 assert cat["potestades"]["invitacion:emitir"]["ejercida"] is True
@@ -319,7 +329,7 @@ dice '5c · y `concedido_por` separa el aprovisionamiento de una concesion'
 
 # ── 6 · conceder y revocar ──────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
-      '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"lector"}')" = "200" ] \
+      '{"sujeto":"per_x","recurso":"vista/ventas.Clientes","rol":"lector"}')" = "200" ] \
   || falla "6 · conceder fallo: $(cat "$TMP/r.json")"
 CON=$(campo concesion)
 [ "$(pide POST "/concesiones/$CON/revocar" "$ADA")" = "200" ] || falla "6 · revocar fallo"
@@ -339,7 +349,7 @@ dice "6 · concedida, revocada, y la fila sigue: $TODAS en la tabla · $VIVAS vi
 # persona puede estar en varias organizaciones.
 ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
-      '{"sujeto":"per_y","recurso":"ventas.Pedidos","rol":"lector"}')" = "200" ] \
+      '{"sujeto":"per_y","recurso":"vista/ventas.Pedidos","rol":"lector"}')" = "200" ] \
   || falla "6b · no se pudo conceder la segunda"
 VIVA=$(campo concesion)
 
@@ -357,10 +367,29 @@ dice "6b · la sonda entre inquilinos no distingue, y la concesion sigue viva"
 
 # ── 7 · conceder `owner` ────────────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
-      '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"owner"}')" = "422" ] \
+      '{"sujeto":"per_x","recurso":"vista/ventas.Clientes","rol":"owner"}')" = "422" ] \
   || falla '7 · ⛔ SE CONCEDIO `owner` SIN LA TRAVESIA. Nombrar owner exige ser owner del ambito'
 grep -q "travesia" "$TMP/r.json" || falla "7 · se niega sin decir por que"
 dice '7 · `owner` se niega mientras falte la travesia del arbol'
+
+# ── 7b · ⭐ EL SECRETO EN EL MODELO (`018`) ──────────────────────────
+#
+# `usar` —resolver sin ver— es un rol de recurso como los otros dos, y se
+# concede igual. Que esto pase sin tocar `conceder` es lo que se compro al no
+# poner ordinal en `iam.rol_de_recurso`.
+[ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
+      '{"sujeto":"per_x","recurso":"secreto/pg-produccion","rol":"usar"}')" = "200" ] \
+  || falla "7b · no se pudo conceder \`usar\` sobre un secreto: $(cat "$TMP/r.json")"
+dice '7b · `usar` sobre un `secreto/` se concede como cualquier otro rol'
+
+# ⛔ Y el asidero tiene FORMA. Sin clase no es un recurso: dos escrituras del
+# mismo secreto dejarian de ser el mismo recurso, y eso no da error — da acceso
+# donde no lo hay, o al reves.
+[ "$(pide POST "/organizaciones/$ORG/concesiones" "$ADA" \
+      '{"sujeto":"per_x","recurso":"ventas.Clientes","rol":"lector"}')" = "422" ] \
+  || falla "7c · ⛔ SE CONCEDIO SOBRE UN RECURSO SIN CLASE"
+grep -q "asidero" "$TMP/r.json" || falla "7c · se niega sin decir por que: $(cat "$TMP/r.json")"
+dice '7c · un recurso sin clase se niega, y dice que es el asidero'
 
 # ── 8 · admitir con otro correo ─────────────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
