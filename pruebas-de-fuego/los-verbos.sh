@@ -13,6 +13,7 @@
 #
 # ── Lo que fija ────────────────────────────────────────────────────────────
 #
+#   0  ⭐ el servidor entra con el usuario ACOTADO, y NO alcanza `cofre`
 #   1  sin token                        401
 #   2  con token                        solo SUS organizaciones
 #   3  invitar                          el vale, UNA vez, y no vuelve a salir
@@ -90,6 +91,44 @@ PGDATABASE=iam_prueba bash "$RAIZ/iam/migrar.sh" > "$TMP/migrar.txt" 2>&1 \
   || falla "las migraciones fallaron: $(tail -5 "$TMP/migrar.txt")"
 dice "$(grep -c '^·' "$TMP/migrar.txt" || echo 0) migraciones aplicadas"
 
+# ── ⭐⭐ Y EL SERVIDOR SE CONECTA CON EL USUARIO ACOTADO, no con el de las
+#      migraciones ────────────────────────────────────────────────────────────
+#
+# La `020` reparte los permisos entre dos papeles: `ore_iam` toca todo `iam` y
+# **nada** de `cofre`; `ore_cofre` al reves, y de `iam` solo lo que necesita para
+# autorizar. Pero eso solo esta EN VIGOR si quien se conecta no es superusuario.
+#
+# ⛔ Corriendo las pruebas como el usuario de las migraciones —que es
+#   superusuario y se salta todos los `grant`— la separacion estaria escrita y no
+#   probada: el dia que a `ore-iam` le faltara un permiso, se veria en produccion
+#   y no aqui. Es la misma frase de la cabecera de este fichero, un piso mas
+#   abajo: un control que solo se ejerce cuando alguien se acuerda no es un
+#   control.
+#
+# ⚠️ Los papeles son del SERVIDOR y no de la base, asi que sobreviven al
+#   `drop database` de arriba. De ahi el `do $$` en vez de un `create user` seco.
+CLAVE_APP="prueba-no-secreta"
+psql "$URL" -qtAc "do \$\$ begin
+    if not exists (select 1 from pg_roles where rolname='iam_app_prueba') then
+      create user iam_app_prueba login password '$CLAVE_APP';
+    end if;
+  end \$\$" >/dev/null 2>&1 || falla "no se pudo crear el usuario acotado"
+psql "$URL" -qtAc "grant ore_iam to iam_app_prueba" >/dev/null 2>&1 \
+  || falla "no se pudo dar el papel \`ore_iam\`"
+
+# La misma URL, cambiando quien entra. `PG_URL` trae credencial y maquina.
+SERVIDOR="${PG_URL#postgres://}"; SERVIDOR="${SERVIDOR#*@}"
+URL_APP="postgres://iam_app_prueba:$CLAVE_APP@$SERVIDOR/iam_prueba"
+
+# ⭐ Y la propiedad, comprobada aqui y no supuesta: quien autoriza NO alcanza el
+#   material. Si algun dia alguien le diera `ore_iam` permiso sobre `cofre` —o
+#   conectara el servidor como superusuario «para que funcione»— esto se pone
+#   rojo, y es la unica guarda automatica que tiene esa frontera.
+if psql "$URL_APP" -qtAc "select 1 from cofre.material" >/dev/null 2>&1; then
+  falla "⛔ EL USUARIO DE \`ore-iam\` ALCANZA \`cofre\`. Quien dice quien puede no debe poder abrir nada"
+fi
+dice "el servidor entra como \`iam_app_prueba\`, y NO alcanza \`cofre\`"
+
 # ── La casa de la moneda ────────────────────────────────────────────────────
 # La misma llave y el mismo argumento que `servidor-oidc.sh`: firmar
 # RSA-PKCS1v15 es rellenar un bloque y elevar a `d`, y no traer una biblioteca
@@ -143,7 +182,10 @@ acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
 #   `ORGADMIN`, que tiene TODAS las potestades: nada queda fuera de lo suyo, asi
 #   que la contencion siempre se cumple. Sin alguien con menos, la guarda es
 #   codigo que nadie ha visto correr.
-export IAM_URL="$URL"
+# ⛔ El SERVIDOR y `fundar` van con el usuario acotado; `psql` de esta prueba
+#   sigue yendo con el de las migraciones, porque comprueba cosas —como que
+#   una fila revocada siga en la tabla— que el servidor no expone.
+export IAM_URL="$URL_APP"
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
   --correo "ada@paladio.io" >/dev/null 2>&1 || falla "\`fundar acme\` fallo"
 "$IAM" fundar --organizacion otra --emisor "$EMISOR" --sub "persona:zoe" \
