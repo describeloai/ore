@@ -52,8 +52,12 @@ use std::sync::Mutex;
 const USO: &str = "\
 ore-iam — el plano de identidad y acceso
 
-  ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB [--correo C]
+  ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB [--correo C] [--arbol P/R]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
+
+  `--arbol` es COMO SE LLAMA su arbol —`<propietario>/<repositorio>`—, no donde
+  vive ni si existe. Por defecto `t-<organizacion>/ontologia`. Fundar lo declara;
+  crear el repositorio es otro acto y lo hace quien puede salir a la red.
 
   La base sale de `IAM_URL`. No hay valor por defecto: una cadena de conexión
   por defecto es apuntar a una base que nadie eligió.
@@ -108,6 +112,10 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
         return ExitCode::from(64);
     };
     let correo = valor(args, "--correo");
+    // ⭐ Opcional: sin el se deriva `t-<organizacion>/ontologia`. Existe para el
+    //   dia que una organizacion traiga SU repositorio — la derivacion no tendria
+    //   donde ponerlo, y un valor por defecto no es una imposicion.
+    let arbol = valor(args, "--arbol");
 
     let mut c = match base::conectar(url) {
         Ok(c) => c,
@@ -123,6 +131,7 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             emisor: &emisor,
             sub: &sub,
             correo: correo.as_deref(),
+            arbol: arbol.as_deref(),
         },
     ) {
         Ok(j) => {

@@ -188,7 +188,13 @@ CODIGO=$(pide GET /organizaciones "$ADA")
 [ "$CODIGO" = "200" ] || falla "2 · no pudo listar · http $CODIGO · $(cat "$TMP/r.json")"
 grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
 grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
-dice '2 · ve `acme` y NO ve `otra`'
+# ⭐ Y CÓMO SE LLAMA SU ÁRBOL, desde la `017`. Sin esto la columna seria de solo
+#   escritura: `fundar` la rellena y nadie comprueba que se pueda leer. Es el
+#   dato que tiene que sustituir a `ORE_SERVE_URL` en la consola, que hoy es una
+#   constante apuntando a UN inquilino.
+grep -q '"t-acme/ontologia"' "$TMP/r.json" \
+  || falla "2 · no dice como se llama su arbol · $(cat "$TMP/r.json")"
+dice '2 · ve `acme` con su arbol, y NO ve `otra`'
 
 # ── 3 · invitar, y el vale sale UNA vez ─────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
