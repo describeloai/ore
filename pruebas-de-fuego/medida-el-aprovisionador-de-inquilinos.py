@@ -202,8 +202,12 @@ fila(replicas and int(replicas.group(1)) > 1, "alta disponibilidad",
 print("\n  QUIEN ENTRA Y CON QUE")
 fila(ingress > 1, "como llega la consola a N inquilinos",
      "%d Ingress en toda la malla, y es el del IdP. Falta la entrada por inquilino" % ingress)
-fila(False, "el testigo de la forja",
-     "`forja-token` es de `ore-admin`, ADMINISTRADOR de la forja entera")
+# ✏️ 2026-09-09 · estrechado. El ambito no basta: lo que ata el token a un
+#   arbol es de QUIEN es el usuario y de que es colaborador.
+estrecho = "serve-demo" in leer("40-ore-serve.yaml")
+fila(estrecho, "el testigo de la forja",
+     "un usuario por inquilino, colaborador de SU arbol y de nada mas"
+     if estrecho else "`forja-token` es de `ore-admin`, ADMINISTRADOR de la forja entera")
 fila(False, "segundo factor",
      "`EXIGIR_SEGUNDO_FACTOR = false` hasta 2026-09-30. AAL2 lo exige para administrar")
 
@@ -238,9 +242,11 @@ print("""
          repositorio, y **se clona desde el bundle y se comparan las referencias
          antes de subirlo** — asi que restaurar no es una promesa. Queda que la
          copia del IdP no se ha restaurado NUNCA, y esa sigue siendo un fichero.
-      2  EL TESTIGO ADMINISTRADOR. Hoy un pod de inquilino tiene una credencial
-         que alcanza a TODA la forja. Aislar por namespace y dejar eso dentro
-         es poner una puerta blindada con la llave pegada.
+      2  ✓ HECHO el 2026-09-09: un usuario de forja por inquilino, colaborador
+         de su arbol y de nada mas. Un repositorio ajeno le da 404, no 403 —
+         para el no existe. Queda que el token viejo, ya sin uso, sigue vivo en
+         la forja: borrarlo pide la contraseña de `ore-admin`, que se puso a
+         mano y no esta en el cluster.
       3  QUIEN APLICA. Un aprovisionador con permisos de cluster es una pieza
          que puede leer los secretos de todos. Que ESCRIBA manifiestos y los
          aplique GitOps quita el problema y ademas deja el alta en un commit.
@@ -255,7 +261,7 @@ print("""
   ⇒ El orden que propongo, y el primero no es codigo nuestro:
 
       1  ✓ copia de la forja, con su restauracion probada
-      2  estrechar el testigo (ya esta en la cola)
+      2  ✓ estrechar el testigo
       3  separar el namespace del inquilino de `10-kueue.yaml`
       4  el aprovisionador que ESCRIBE, no que aplica
       5  la entrada por inquilino""")

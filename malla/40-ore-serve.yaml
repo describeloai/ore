@@ -132,6 +132,45 @@ spec:
             - /llaves/jwks.json
           env:
             - { name: HOME, value: /tmp }
+            # ── ⭐⭐ EL TESTIGO, Y AHORA ALCANZA A UN SOLO REPOSITORIO ─────
+            #
+            # ✏️ 2026-09-09 · aquí vivía un token de `ore-admin`, ADMINISTRADOR
+            # de la forja entera. Un pod de inquilino tenía una credencial que
+            # podía leer, escribir y borrar los árboles de todos los demás.
+            # Aislar por namespace y dejar eso dentro es una puerta blindada con
+            # la llave pegada — y se descubrió midiendo otra cosa.
+            #
+            # Lo que hay ahora: un usuario de la forja POR INQUILINO,
+            # `serve-demo`, colaborador con permiso de escritura sobre
+            # `t-demo/ontologia` **y sobre nada más**, y un token de alcance
+            # `write:repository`. Medido al cambiarlo:
+            #
+            #     lee su repositorio                    200
+            #     un repositorio ajeno y privado        404  ← ni lo ve
+            #     escribir en ese ajeno                 404
+            #     crear un repositorio                  403
+            #     `ore source add` desde la consola     201, commit `fa9f1eb`
+            #
+            # ⭐ El 404 y no un 403 es lo bueno: no es que se le niegue algo que
+            #   existe, es que para él no existe.
+            #
+            # ⚠️ Y el alcance del ámbito NO es lo que lo estrecha: `write:repository`
+            #   dice QUÉ tipo de cosa puede hacer, no DÓNDE. Lo que lo ata a un
+            #   árbol es de quién es el usuario y de qué es colaborador. Confundir
+            #   las dos cosas daría un token con buen nombre y todo el alcance.
+            #
+            # ⇒ Y esto es lo que el aprovisionador tendrá que hacer por cada
+            #   inquilino nuevo: crear el usuario, hacerlo colaborador de su
+            #   árbol, acuñar su token. Tres llamadas, y son las que sostienen
+            #   que un cliente no pueda tocar el árbol de otro.
+            #
+            # ⛔ QUEDA VIVO EL TOKEN VIEJO. Ya no está en ningún Secret, pero
+            #   sigue existiendo en la forja: borrarlo pide autenticación básica
+            #   —`forgejo admin` no sabe borrar tokens— y la contraseña de
+            #   `ore-admin` se puso a mano y no está en el clúster.
+            #
+            #     curl -u ore-admin:<clave> -X DELETE \
+            #       http://forja…/api/v1/users/ore-admin/tokens/<nombre>
             - name: FORJA_TOKEN
               valueFrom:
                 secretKeyRef: { name: forja-token, key: token }
