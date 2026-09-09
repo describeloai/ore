@@ -141,3 +141,50 @@ spec:
   # porque este manifiesto CREA su propio `Namespace`, que es un recurso de
   # clúster y no cabe en una cuenta acotada al namespace. Va con la E7, y está
   # dicho aquí para que no se descubra tarde.
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# EL AVISO DE ESTE INQUILINO — para que Flux deje de tardar cinco minutos
+#
+# El `GitRepository` de arriba mira cada cinco minutos. Eso está bien para la
+# deriva —lo que persigue es que no viva mucho tiempo— y está mal para un alta:
+# alguien acaba de pulsar un botón y espera.
+#
+# ⇒ Con esto, la forja avisa al empujar y la reconciliación es inmediata. El
+#   intervalo se queda como red de seguridad, que es lo que un intervalo debe
+#   ser cuando hay un disparo.
+#
+# ── ⛔ Lo que este webhook PUEDE decir, y es casi nada ─────────────────────
+#
+# «Mira ahora». Ni qué mirar, ni de dónde, ni qué aplicar — todo eso lo dice el
+# `GitRepository` de este mismo fichero, que vive en NUESTRO árbol. Quien
+# alcanzase el receptor podría forzar reconciliaciones; no podría cambiar ni una
+# de lo que se reconcilia.
+#
+# ⚠️ Y su secreto es el CAMINO. `generic` no verifica firma: Flux publica en
+# `.status.webhookPath` un `sha256` que sale del nombre, el namespace y el
+# testigo, y quien no lo sepa no acierta. Lo que lo sostiene además es la red —
+# `allow-webhooks` acotada a la forja— y por eso las dos cosas van juntas.
+#
+# ⛔ El `Secret` NO está aquí y no puede estarlo. Se crea una vez, a mano, igual
+# que `compartimento-llave`:
+#
+#     kubectl create secret generic receptor-token -n flux-system \
+#       --from-file=token=<fichero>
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata:
+  name: inquilino-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: agente
+spec:
+  type: generic
+  secretRef:
+    name: receptor-token
+  resources:
+    - apiVersion: source.toolkit.fluxcd.io/v1
+      kind: GitRepository
+      name: inquilino-demo
+      namespace: flux-system

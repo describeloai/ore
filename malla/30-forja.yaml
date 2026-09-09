@@ -278,7 +278,14 @@ spec:
         - protocol: TCP
           port: 3000
 ---
-# Salida de la forja: DNS y nada más.
+# Salida de la forja: DNS, y desde hoy el receptor de Flux.
+#
+# ⭐ La forja es quien SABE que algo cambió — el empujón pasa por ella—, así que
+# es quien avisa. Sin esta regla el webhook sale y no llega, y el síntoma es el
+# de siempre: nada falla, sólo que Flux sigue tardando cinco minutos.
+#
+# ⚠️ Y es lo ÚNICO que se le abre además del DNS. No alcanza la base, ni los
+# orígenes, ni internet.
 #
 # No tiene por qué llamar a nadie. Un servidor de git que sólo recibe es un
 # servidor de git que no puede exfiltrar lo que guarda, y eso es lo que hace
@@ -299,6 +306,20 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # ⭐ El receptor de Flux, y sólo él. La forja es quien SABE que algo cambió
+    #   —el empujón pasa por ella— así que es quien avisa.
+    #
+    # ⚠️ Y lo que puede decir es MUY poco: el webhook dispara una reconciliación
+    #   de un objeto que el `Receiver` nombra, y el `Receiver` vive en git. La
+    #   forja no elige qué se aplica; sólo dice «mira ahora».
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: flux-system
+          podSelector:
+            matchLabels:
+              app: notification-controller
+      ports: [{protocol: TCP, port: 9292}]
 ---
 # ⛔ `salida-a-la-forja` SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
 #

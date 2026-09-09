@@ -954,9 +954,21 @@ metadata:
   name: allow-webhooks
   namespace: flux-system
 spec:
+  # ── ⛔ CUARTO RECORTE NUESTRO, y del mismo tipo que los tres de `12-…` ──
+  #
+  # Flux publica esto con `namespaceSelector: {}` — CUALQUIER namespace del
+  # clúster puede llamar al receptor. Es razonable para una instalación
+  # genérica y no para ésta: aquí el único que tiene algo que avisar es la
+  # forja, porque es donde se empuja.
+  #
+  # ⇒ P4 otra vez: omitir es cerrar. Y lo que se cierra no es teórico — con el
+  #   defecto, un pod de un INQUILINO podría disparar reconciliaciones de la
+  #   plataforma. No decir cuáles, pero sí forzarlas.
   ingress:
   - from:
-    - namespaceSelector: {}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: forja
     ports:
     - port: 9292
       protocol: TCP
