@@ -239,12 +239,20 @@ CODIGO=$(pide GET /organizaciones "$ADA")
 grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
 grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
 # ⭐ Y CÓMO SE LLAMA SU ÁRBOL, desde la `017`. Sin esto la columna seria de solo
-#   escritura: `fundar` la rellena y nadie comprueba que se pueda leer. Es el
-#   dato que tiene que sustituir a `ORE_SERVE_URL` en la consola, que hoy es una
-#   constante apuntando a UN inquilino.
+#   escritura: `fundar` la rellena y nadie comprueba que se pueda leer.
 grep -q '"t-acme/ontologia"' "$TMP/r.json" \
   || falla "2 · no dice como se llama su arbol · $(cat "$TMP/r.json")"
-dice '2 · ve `acme` con su arbol, y NO ve `otra`'
+# ⭐⭐ Y SU PUERTA, desde la `022`. Ésta es la que sustituyó a `ORE_SERVE_URL` en
+#   la consola —la nota de aquí decía que era el árbol, y no lo era: el árbol
+#   dice de dónde se lee, la entrada dice A QUIÉN se le pregunta—.
+#
+# ⛔ Y esta comprobación vale por tres, porque la cadena entera pasa por ella:
+#   la migración crea la columna, `fundar` la escribe y esta ruta la devuelve.
+#   Si cualquiera de las tres se cae, la consola manda su petición a un destino
+#   que no existe — o peor, se queda con el de otro inquilino.
+grep -q '"acme.ore.paladio.io"' "$TMP/r.json" \
+  || falla "2 · no dice por donde se entra a su arbol · $(cat "$TMP/r.json")"
+dice '2 · ve `acme` con su arbol y su puerta, y NO ve `otra`'
 
 # ── 3 · invitar, y el vale sale UNA vez ─────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \

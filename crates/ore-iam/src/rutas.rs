@@ -121,14 +121,14 @@ impl Servidor {
                 "select o.id, o.nombre, o.estado,
                         coalesce(array_agg(pr.rol order by pr.rol)
                                  filter (where pr.rol is not null), '{}'),
-                        o.arbol
+                        o.arbol, o.entrada
                    from iam.organizacion o
                    join iam.pertenencia pe on pe.organizacion = o.id
                    join iam.persona     p  on p.id = pe.persona
                    left join iam.pertenencia_rol pr
                      on pr.persona = pe.persona and pr.organizacion = pe.organizacion
                   where p.emisor = $1 and p.sub = $2
-                  group by o.id, o.nombre, o.estado, o.arbol
+                  group by o.id, o.nombre, o.estado, o.arbol, o.entrada
                   order by o.nombre",
                 &[&emisor, &s.persona],
             )?;
@@ -161,6 +161,20 @@ impl Servidor {
                         //   componer la URL con la forja que le toque — igual
                         //   que `EMISOR` y `DIRECCION` son dos cosas.
                         ("arbol", Json::s(f.get::<_, String>(4))),
+                        // ⭐⭐ Y SU PUERTA, desde la `022`. Está aquí por el
+                        //   mismo argumento de arriba —una columna que nadie
+                        //   lee es de sólo escritura— y por uno más fuerte:
+                        //   **es la respuesta a «¿a qué URL le pregunto por el
+                        //   árbol de esta organización?»**, y quien tiene que
+                        //   contestarla es el plano de control, no una
+                        //   constante en la consola.
+                        //
+                        // ⚠️ Es un HOST, no una URL: sin esquema, sin puerto y
+                        //   sin camino. Quien lo consuma compone `https://`,
+                        //   igual que con `arbol` compone la URL de clon. Es la
+                        //   misma distinción que `EMISOR` y `DIRECCION`, y ya
+                        //   van cuatro.
+                        ("entrada", Json::s(f.get::<_, String>(5))),
                     ])
                 })
                 .collect();
