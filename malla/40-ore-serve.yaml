@@ -112,8 +112,16 @@ spec:
             - oidc
             # ⭐ Y lleva el realm dentro: el `hostname` del CR es el host, pero
             # el `iss` que Keycloak firma es `<hostname>/realms/<realm>`.
+            #
+            # ✏️ 2026-09-09 · `rubix` → `rubix-dev`. Esto es de antes de que el
+            # desarrollo tuviera realm propio (27-ago), y quedaba apuntando al de
+            # producción mientras `ore-iam` —y la consola— ya entraban por el otro.
+            # No se veía porque nadie llamaba aquí desde la consola: el primer
+            # `POST /fuentes` habría dado 401, y un 401 manda a mirar la red.
+            # ⚠️ Cuesta lo que dice: un token del realm `rubix` deja de valer contra
+            #   este árbol. Es lo correcto — el de `t-demo` es un árbol de desarrollo.
             - --emisor
-            - https://login.paladio.io/realms/rubix
+            - https://login.paladio.io/realms/rubix-dev
             # LA NUESTRA. Un token de `rubix-consola` llega aquí perfectamente
             # firmado y no vale, porque no es para nosotros.
             - --audiencia

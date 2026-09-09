@@ -33,6 +33,27 @@
 # esperamos**. Llegar por otra carretera está bien; hablar con otro emisor, no.
 # Sin esa comprobación, apuntar `DIRECCION` a cualquier Keycloak metería sus
 # llaves en el fichero y `ore-serve` aceptaría sus tokens sin una queja.
+#
+# ── ⛔⛔ REFRESCAR EL FICHERO NO REFRESCA AL PROCESO ──────────────────
+#
+# `ore-serve` lee `/llaves/jwks.json` **una vez, al arrancar**. Este Job escribe
+# el ConfigMap y el kubelet lo propaga al disco del pod — y el proceso sigue con
+# el juego que cargó. O sea que tras una rotación hace falta un `rollout restart`
+# que hoy no dispara nadie.
+#
+# ⚠️ Y el síntoma manda al sitio equivocado, medido el 2026-09-09:
+#
+#     no hay llave `YUj1sLA0…` en el juego cargado. Si el realm rotó, el
+#     fichero de llaves está viejo — se refresca fuera de este proceso
+#
+#   El mensaje es correcto y el fichero **ya tenía esa llave**: `cat` dentro del
+#   pod la enseñaba. Lo viejo era la copia en memoria. Un mensaje que nombra el
+#   fichero cuando el fichero está bien cuesta la media hora que ahorra el resto.
+#
+# ⇒ Lo que falta: o el proceso relee cuando el `kid` no está —y entonces el
+#   plano de control vuelve a salir a la red, que es justo lo que este fichero
+#   existe para evitar—, o el Job reinicia el Deployment al escribir. La segunda
+#   respeta la frontera; ninguna de las dos está escrita todavía.
 
 apiVersion: v1
 kind: ConfigMap
@@ -124,10 +145,14 @@ spec:
                 # —y el que va en cada token— es `<hostname>/realms/<realm>`.
                 # La comprobacion de abajo lo cazó al primer intento, que es
                 # exactamente para lo que está.
-                - { name: EMISOR, value: "https://login.paladio.io/realms/rubix" }
+                # ✏️ 2026-09-09 · el realm de DESARROLLO, el mismo que `ore-serve`.
+                #   Las llaves que se copian aquí son las que valida él: si los dos
+                #   no nombran el MISMO realm, un token bueno se rechaza por venir
+                #   firmado por otro emisor — y el síntoma es un 401 sin motivo.
+                - { name: EMISOR, value: "https://login.paladio.io/realms/rubix-dev" }
                 # Y por dónde se le alcanza hoy.
                 - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-                - { name: REALM, value: "rubix" }
+                - { name: REALM, value: "rubix-dev" }
               command: ["/bin/sh", "-c"]
               args:
                 - |

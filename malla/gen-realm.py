@@ -27,9 +27,11 @@ SALIDA = pathlib.Path(r"C:\ORE\malla\61-realms.yaml")
 
 # ── Lo que ORE añade, y sólo al realm de producción ─────────────────────────
 #
-# `ore-serve` está configurado con `--emisor …/realms/rubix`. Meter sus clientes
+# `ore-serve` estaba configurado con `--emisor …/realms/rubix`. Meter sus clientes
 # en los otros dos sería declarar una audiencia que nadie va a pedir y que nadie
 # va a aceptar — ruido con forma de configuración.
+# ✏️ 2026-09-09 · y desde hoy tampoco eso es cierto: `ore-serve` valida contra
+#   `rubix-dev`, como `ore-iam`. La frase se deja porque lo que sigue la refuta.
 # ⛔⛔ ESTO DECIA `SOLO_EN = "rubix"`, Y COSTABA UN 401 QUE NO SE ENTIENDE.
 #
 #   El argumento era bueno: *«meter sus clientes en los otros dos seria declarar

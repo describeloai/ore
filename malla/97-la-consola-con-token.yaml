@@ -41,7 +41,13 @@ spec:
             - { name: HOME, value: /tmp }
             - { name: BASE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
             - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-            - { name: REALM, value: "rubix" }
+            # ✏️ 2026-09-09 · sigue a `ore-serve`, que pasó a `rubix-dev`. Una
+            #   prueba de extremo a extremo que pide el token a OTRO realm no
+            #   prueba la cadena: prueba que dos realms distintos no se hablan.
+            #   ⚠️ `ore-agente` no estaba en `rubix-dev` — el operador importa un
+            #   realm al CREARLO, y `61-realms.yaml` ya lo declaraba en los tres.
+            #   Se creó con `kcadm` y su secreto vive en el `Secret` `idp-agente`.
+            - { name: REALM, value: "rubix-dev" }
             - name: CLIENTE
               valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
             - name: SECRETO
