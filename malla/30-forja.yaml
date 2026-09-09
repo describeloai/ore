@@ -271,32 +271,11 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
 ---
-# ── Y la puerta por el otro lado ────────────────────────────────────────────
+# ⛔ `salida-a-la-forja` SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
 #
-# Sin esto la forja está viva y **nadie llega**: `salida-del-driver` abre el
-# mundo MENOS las redes privadas —`10.0.0.0/8` entre ellas— y la forja vive
-# justo ahí. Es la consecuencia correcta de una política escrita en negativo, y
-# la que hay que abrir a mano, con nombre.
+# Era una NetworkPolicy del namespace del inquilino viviendo en el manifiesto de
+# la forja. Con uno no se notaba; renderizar un segundo cliente lo habría dejado
+# fuera, y su `ore-serve` habría arrancado sin poder hablar con la forja — un
+# fallo que no se ve al aplicar, se ve al primer `git clone`.
 #
-# Alcanza a los pods de `t-demo` con rol `driver` o `ore`, y sólo al puerto de
-# la forja. No es «que salgan a la red interna»: es que puedan hablar con UNA
-# cosa.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-a-la-forja
-  namespace: t-demo
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: forja
-          podSelector:
-            matchLabels:
-              ore.dev/rol: forja
-      ports:
-        - protocol: TCP
-          port: 3000
+# Lo cazo la comprobacion ⑤ de `gen-inquilino.py`, que existe justo para esto.

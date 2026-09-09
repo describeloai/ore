@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# UN INQUILINO — y esto es la PLANTILLA, no la configuración de `demo`
+# UN INQUILINO — y esto es la PLANTILLA, no la configuración de un cliente
 #
 # ── ⛔ Por qué esto sale de `10-kueue.yaml` ─────────────────────────────────
 #
@@ -14,12 +14,22 @@
 #
 # ── ⭐⭐ LO QUE CAMBIA POR INQUILINO, Y NO HAY MÁS ─────────────────────────
 #
-#       demo        el nombre de la organización        (`iam.organizacion.nombre`)
-#       t-demo      su namespace                        `t-<nombre>`
-#       cq-demo     su cola de clúster                  `cq-<nombre>`
+#       ore.dev/tenant: demo   el nombre de la organización
+#       t-demo                 su namespace       `t-<nombre>`
+#       cq-demo                su cola de clúster `cq-<nombre>`
 #
 # Tres sustituciones. Es lo que el aprovisionador tendrá que rellenar, y por eso
 # están dichas aquí arriba en vez de descubrirse leyendo.
+#
+# ⭐ Y están escritas con su forma COMPLETA —`t-demo`, `cq-demo`— y nunca con la
+# palabra suelta. `gen-inquilino.py` sustituye también dentro de los comentarios y
+# exige que el nombre del inquilino modelo **no sobreviva en ningún sitio** de lo
+# renderizado; bajar esa comprobación para tolerar la prosa dejaría pasar también
+# un `t-demo` olvidado en un VALOR, que es el `ore-serve` de un cliente clonando
+# el árbol de otro.
+#
+# ⚠️ Y esta sección es la prueba de que muerde: se escribió con la palabra suelta
+# dentro y la comprobación se puso roja señalando la línea.
 #
 # ⚠️ Y lo que NO está aquí, a propósito, porque no se puede escribir de
 # antemano: los dos `Secret` —el testigo de la forja de ESE inquilino y el del
@@ -132,3 +142,33 @@ spec:
     requests.cpu: "10"
     requests.memory: 36Gi
     count/jobs.batch: "50"
+---
+# ── Y la puerta a la forja, por el otro lado ───────────────────────────────────
+#
+# Sin esto la forja está viva y **nadie llega**: `salida-del-driver` abre el
+# mundo MENOS las redes privadas —`10.0.0.0/8` entre ellas— y la forja vive
+# justo ahí. Es la consecuencia correcta de una política escrita en negativo, y
+# la que hay que abrir a mano, con nombre.
+#
+# Alcanza a los pods de `t-demo` con rol `driver` o `ore`, y sólo al puerto de
+# la forja. No es «que salgan a la red interna»: es que puedan hablar con UNA
+# cosa.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-a-la-forja
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: forja
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports:
+        - protocol: TCP
+          port: 3000
