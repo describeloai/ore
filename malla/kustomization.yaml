@@ -52,6 +52,9 @@ resources:
   - 15-la-malla-reconciliada.yaml
   # El aprovisionador: su cuenta, su Job y por donde puede salir.
   - 16-el-aprovisionador.yaml
+  # El tercer controlador de Flux: el que recibe el aviso de la forja en vez de
+  # sondear. Revierte una exclusion de la E3, y el motivo esta en su cabecera.
+  - 17-el-aviso.yaml
   # ── La puerta compartida ────────────────────────────────────────────────
   - 14-la-puerta.yaml
   # ── La forja ────────────────────────────────────────────────────────────

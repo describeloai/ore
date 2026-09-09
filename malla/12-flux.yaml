@@ -21,21 +21,32 @@
 #   source-controller     trae el repositorio y verifica lo que trajo
 #   kustomize-controller  lo aplica y lo reconcilia
 #
-# ⛔ Y NADA MÁS. Sin `helm-controller`, sin `notification-controller`, sin los dos
-# de imágenes. No los necesitamos, y cada uno sería superficie que alguien tiene
-# que mantener y parchear. P4 otra vez: omitir es cerrar.
+# ⛔ Y CASI NADA MÁS. Sin `helm-controller` y sin los dos de imágenes: no los
+# necesitamos, y cada uno sería superficie que alguien tiene que mantener y
+# parchear. P4 otra vez: omitir es cerrar.
 #
-# ⇒ Los dos recortes que sí son nuestros:
+# ✏️ 2026-09-09 · `notification-controller` SÍ ENTRÓ, en `17-el-aviso.yaml`. La
+#    regla no cambió —omitir sigue siendo cerrar— sino que dejó de ser cierto
+#    que no lo necesitábamos: sin él, el ciclo de vida de un origen tarda hasta
+#    siete minutos y **cinco son este agente sondeando cada cinco**. Con él, dos.
+#    El motivo entero está escrito allí.
 #
-#   ① de los `ClusterRoleBinding` se quitan los SUJETOS de los controladores que
-#      no se instalan. Una concesión a una cuenta que no existe no hace daño hoy
-#      y miente mañana — el día que alguien lea el RBAC para saber quién puede
-#      qué, leerá cuatro nombres y sólo dos serán ciertos;
-#   ② se quita la `NetworkPolicy` `allow-webhooks`, que selecciona
-#      `notification-controller`;
-#   ③ y se quita `--events-addr`, que apuntaba a ese mismo controlador. Un
-#      destino que no existe no rompe nada: llena el registro de errores que no
-#      significan nada, y eso ensena a no mirar el registro.
+# ⇒ Los tres recortes que fueron nuestros, y en qué quedaron:
+#
+#   ① de los `ClusterRoleBinding` se quitaban los SUJETOS de los controladores
+#      que no se instalan. Una concesión a una cuenta que no existe no hace daño
+#      hoy y miente mañana. **Sigue en pie** para `helm-controller` y los de
+#      imágenes; `notification-controller` volvió a `crd-controller` — y sólo a
+#      ése: el `cluster-reconciler` sigue nombrando a UN sujeto;
+#   ② se quitaba la `NetworkPolicy` `allow-webhooks`. **Vuelve con su
+#      controlador**, y con ella la superficie de red que era la objeción: el
+#      receptor escucha. Quien lo alcance puede disparar una reconciliación; no
+#      puede decir QUÉ se reconcilia, porque eso lo dice un `Receiver` que vive
+#      en git;
+#   ③ y se quitaba `--events-addr`, que apuntaba a ese mismo controlador.
+#      **Vuelve**, porque el destino ya existe. Se quitó cuando no: un destino
+#      inexistente no rompe nada, llena el registro de errores que no significan
+#      nada, y eso enseña a no mirar el registro.
 #
 # ── ⛔⛔ Y LO QUE HAY QUE MIRAR DE FRENTE: `cluster-admin` ─────────────────
 #
@@ -3320,6 +3331,9 @@ subjects:
   name: source-controller
   namespace: flux-system
 - kind: ServiceAccount
+  name: notification-controller
+  namespace: flux-system
+- kind: ServiceAccount
   name: source-watcher
   namespace: flux-system
 ---
@@ -3368,6 +3382,7 @@ spec:
     spec:
       containers:
       - args:
+        - --events-addr=http://notification-controller.flux-system.svc.cluster.local./
         - --watch-all-namespaces
         - --log-level=info
         - --log-encoding=json
@@ -3456,6 +3471,7 @@ spec:
     spec:
       containers:
       - args:
+        - --events-addr=http://notification-controller.flux-system.svc.cluster.local./
         - --watch-all-namespaces
         - --log-level=info
         - --log-encoding=json
