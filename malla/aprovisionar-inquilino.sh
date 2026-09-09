@@ -363,10 +363,16 @@ else
   "$GCLOUD" secrets versions add "$NS-forja-token" --data-file="$(ruta "$TMP/t")" >/dev/null     && hecho "testigo guardado en el almacen, y NO en un \`Secret\`"
   rm -f "$TMP/t"
 fi
-correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-token" \
-  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/secretmanager.secretAccessor \
-  && hecho "solo \`ore-serve-$NOMBRE\` puede leerlo"
+# ⚠️ DOS cuentas y no una, y las dos son de ESTE inquilino. El servidor lo lee
+#   para clonar el arbol; el driver, para EMPUJAR el catalogo que acaba de leer
+#   del origen. Ninguna otra cuenta del proyecto lo alcanza — y eso es justo lo
+#   que la cuenta compartida del driver hacia imposible.
+for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
+  correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-token" \
+    --member="serviceAccount:$c@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`$c\` puede leerlo, y nadie de fuera del inquilino"
+done
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"

@@ -167,6 +167,12 @@ def render(nombre, arbol=None, entrada=None):
         #   clave. Compartirla —como hace `ore-driver@`— seria dar la llave de
         #   uno a los demas.
         t = t.replace("cofre-%s" % MODELO, "cofre-%s" % nombre)
+        # ✓ Y el driver, que desde hoy TAMBIEN tiene cuenta propia. Era la
+        #   ultima que se compartia entre inquilinos, y la forzo el catalogo:
+        #   el Job que lee un origen tiene que empujar el resultado al arbol de
+        #   SU inquilino, y con una cuenta compartida darselo a uno se lo daba
+        #   a todos.
+        t = t.replace("driver-%s" % MODELO, "driver-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:
         #   `metadata.name` del manifiesto es lo que prefija cada

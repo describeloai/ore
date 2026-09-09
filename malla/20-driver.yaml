@@ -20,7 +20,7 @@ metadata:
     ore.dev/tenant: demo
     ore.dev/rol: driver
   annotations:
-    iam.gke.io/gcp-service-account: ore-driver@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: ore-driver-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 ---
 # ── Por dónde puede salir ───────────────────────────────────────────────────
 #
