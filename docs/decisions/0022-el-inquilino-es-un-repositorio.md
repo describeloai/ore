@@ -127,11 +127,37 @@ salida estándar, desde la plantilla y las tres sustituciones.
 que dar lo que ya está aplicado en el clúster. Si no coincide, el renderizador miente, y se sabe
 antes de que nadie dependa de él.
 
-**E2 · El repositorio de instancia de `demo`, a mano.** Se crea, se mete lo renderizado, y se
-comprueba que lo que hay en el clúster y lo que dice el repositorio son lo mismo. Todavía sin
-aprovisionador y sin agente.
+**E2 · El repositorio de instancia de `demo`, a mano.** ✔ 2026-09-09 ·
+`describeloai/inquilino-demo`, privado. En GitHub y **no en la forja**, por lo circular: la
+forja está descrita en parte por manifiestos como ésos.
+
+La comprobación es `pruebas-de-fuego/la-deriva-del-inquilino.sh`, y usa `kubectl diff` en vez de
+comparar por nuestra cuenta — porque la hace el SERVIDOR: pregunta *«¿qué cambiaría si aplicase
+esto?»*, que es exactamente la pregunta. Comparar un `get` con lo escrito obligaría a ir tachando
+valores por defecto, `status` y `managedFields` hasta que la prueba dejara de decir nada.
+
+**Resultado: ni una diferencia** en el inquilino entero — salvo una, y encontrarla era el motivo
+de esta etapa.
+
+> ### ⛔⛔ El `ConfigMap` `jwks` no lo puede reconciliar un agente
+>
+> El manifiesto declara la semilla —`{"keys":[]}`— y lo vivo lleva las llaves del realm, que
+> escribe el `CronJob` en cada refresco. Un agente de GitOps que reconciliase ese objeto
+> **devolvería el juego a vacío cada pocos minutos**, y `ore-serve` dejaría de validar tokens en
+> su siguiente arranque — sin que nada fallara mientras tanto.
+>
+> ⇒ Es la primera aparición de una clase entera: **objetos que un manifiesto SIEMBRA y un
+> proceso posee en tiempo de ejecución.** Los secretos de la E4 son el mismo animal.
+>
+> Se resuelve en la E3 diciéndoselo al agente (`ignoreDifferences` sobre `.data`). Hasta
+> entonces está exento en la comprobación, **con nombre y sólo ese objeto**: si mañana difiere
+> otro, se pone rojo. Un objeto exento y nombrado es una decisión; una prueba que tolerase
+> «alguna diferencia» no sería una prueba.
 
 **E3 · El agente de GitOps.** Apuntado a ese repositorio. Desde aquí el clúster converge solo.
+
+⚠️ Y con la primera pregunta ya escrita por la E2: qué objetos **no** debe reconciliar, y cómo se
+le dice. Empezando por el `jwks`.
 
 ⭐ Y esto ya paga por sí mismo aunque no haya un segundo cliente nunca: hoy `kubectl apply -f
 malla/` lo hace una persona, y **lo que nadie aplicó no se distingue de lo que nadie escribió**.

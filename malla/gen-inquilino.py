@@ -44,6 +44,9 @@ import sys
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
+    # ⚠️ Y el de errores tambien: los avisos salen por ahi, y en una consola
+    #    cp1252 se imprimian como `⚠` en vez de como un simbolo.
+    sys.stderr.reconfigure(encoding="utf-8")
 except AttributeError:
     pass
 
