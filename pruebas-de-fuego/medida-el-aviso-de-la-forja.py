@@ -87,12 +87,35 @@ def main():
             "ALLOWED_HOST_LIST" in v and "private" not in v.split("ALLOWED_HOST_LIST")[1][:120],
             "con `private` la forja alcanzaria la base, el IdP y cualquier `ore-serve`",
         )
-    if enganche.exists():
-        mide("③ el `Receiver` del inquilino", "kind: Receiver" in valores(enganche))
+    # ⭐⭐ UN receptor para todos, y no uno por inquilino. Con uno por
+    #   inquilino la URL del webhook DEPENDERIA del inquilino — Flux publica un
+    #   camino distinto por cada uno— y el aprovisionador tendria que LEERLO del
+    #   cluster. Y no tiene ni un permiso de RBAC.
+    if aviso.exists():
+        v = valores(aviso)
+        # ⚠️ Al principio de linea. `kind: Receiver` tambien aparece dentro del
+        #   CRD, en `spec.names.kind`, y contarlo daba dos.
+        mide("③ UN receptor para todos",
+             len(re.findall(r"^kind: Receiver$", v, re.M)) == 1,
+             "uno por inquilino haria que la URL dependiera del inquilino")
         mide(
-            "   y dispara el `GitRepository`, no otra cosa",
-            "kind: GitRepository" in valores(enganche),
+            "   y nombra una CLASE, no objetos",
+            "name: '*'" in v and "matchLabels" in v,
+            "sin `matchLabels`, dar de alta un cliente obligaria a tocar esto",
         )
+    # ⭐ Y el webhook a nivel de ORGANIZACION: una llamada cubre todos los
+    #   repositorios del inquilino, incluidos los que no existen todavia.
+    alta = RAIZ / "malla" / "aprovisionar-inquilino.sh"
+    if alta.exists():
+        a = alta.read_text(encoding="utf-8")
+        mide("④ el aprovisionador lo pone por ORGANIZACION",
+             "/orgs/$PROPIETARIO/hooks" in a,
+             "por repositorio seria contabilidad: uno por cada repo, para siempre")
+        # ⛔ Y ANTES de crear el arbol. Al reves, el unico empujon que nadie
+        #   oiria seria justo el primero.
+        mide("   y ANTES de crear el arbol",
+             a.index("/orgs/$PROPIETARIO/hooks") < a.index("/orgs/$PROPIETARIO/repos"),
+             "si va despues, el primer commit del arbol no avisa a nadie")
 
     # ══════════════════════════════════════════════════════════════════════
     print("\n② y vivo, si hay cluster")
@@ -102,7 +125,7 @@ def main():
     else:
         d = kubectl("get", "deploy", "-n", "flux-system", "-o", "name") or ""
         mide("los TRES controladores", d.count("controller") >= 3, d.replace("\n", " "))
-        w = kubectl("get", "receiver", "-n", "flux-system", "inquilino-demo",
+        w = kubectl("get", "receiver", "-n", "flux-system", "inquilinos",
                     "-o", "jsonpath={.status.webhookPath}") or ""
         mide("el receptor publica su camino", w.startswith("/hook/"),
              "sin camino no hay a donde apuntar el webhook")
