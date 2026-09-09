@@ -50,6 +50,8 @@ resources:
   # Y el de la malla, que es este mismo arbol. Se incluye para que tampoco EL
   # pueda derivar: si alguien cambia a mano a que rama apunta, Flux lo devuelve.
   - 15-la-malla-reconciliada.yaml
+  # El aprovisionador: su cuenta, su Job y por donde puede salir.
+  - 16-el-aprovisionador.yaml
   # ── La puerta compartida ────────────────────────────────────────────────
   - 14-la-puerta.yaml
   # ── La forja ────────────────────────────────────────────────────────────

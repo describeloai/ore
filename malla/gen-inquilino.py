@@ -88,6 +88,13 @@ PLANTILLAS = [
 #   haga tiene que decir por que, y el que venga detras lo lee en vez de
 #   deducirlo de una ausencia.
 FUERA = {
+    "papel-del-aprovisionador.yaml": (
+        "NO es un manifiesto de Kubernetes: es la definicion de un papel de IAM "
+        "de Google, y se aplica con `gcloud iam roles create`. Vive aqui porque "
+        "es parte del mismo compartimento que el Job de al lado y separarlos "
+        "haria que uno se moviera sin el otro. ⚠️ Y arrastra que el papel NO "
+        "esta bajo GitOps: cambiarlo es una llamada a mano."
+    ),
     "61-realms.yaml": (
         "Los tres `KeycloakRealmImport` vivos difieren del fichero, asi que "
         "aplicarlos les sube la `generation` y el operador REIMPORTA los realms. "
