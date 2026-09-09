@@ -68,6 +68,27 @@ metadata:
   namespace: t-demo
 spec:
   replicas: 1
+  # ── ⛔ `Recreate`, Y NO ES UNA CONCESION A LA CAPACIDAD ──────────────
+  #
+  # Con la estrategia por defecto —`RollingUpdate`— Kubernetes arranca el pod
+  # nuevo ANTES de matar al viejo, asi que durante el relevo hace falta el DOBLE
+  # de cuota. Y con UNA replica eso no compra disponibilidad: compra un segundo
+  # pod que hace lo mismo durante veinte segundos.
+  #
+  # ⭐ Es el mismo argumento que `30-forja.yaml` ya escribio para su StatefulSet
+  #   —alli por el volumen `ReadWriteOnce`, aqui por la cuota— y la conclusion es
+  #   la misma: **matar primero**.
+  #
+  # ⚠️ Lo destapo un despliegue que CADUCO en vez de fallar. El nodo estaba al
+  #   96% de CPU pedida —Flux y el custodio acababan de entrar— y el pod nuevo se
+  #   quedo `Pending` con «Insufficient cpu». El sintoma de un cluster lleno no es
+  #   un error que diga que no cabe: es un `rollout status` que se agota.
+  #
+  # ⇒ Y eso deja una deuda dicha: con un `ore-serve` y un cofre POR INQUILINO,
+  #   el `default-pool` de un nodo no da para el segundo cliente. Aprovisionar un
+  #   inquilino tendra que contar cuota, no solo escribir manifiestos.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       ore.dev/rol: control
