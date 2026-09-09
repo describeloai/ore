@@ -229,10 +229,24 @@ spec:
     #
     #   control   `ore-serve`, que clona en cada petición y empuja la que escribe
     #   driver    el Job que publica lo que un `discover` decidió (`95`)
+    #   semilla   el Job que CREA el árbol la primera vez (`42`, E5)
     #
     # ⛔ Un rol nuevo que quisiera hablar con la forja NO pasa, y tiene que
     # añadirse aquí. Es P4: omitir es cerrar. Una lista que se abriera sola
     # dejaría de decir nada.
+    #
+    # ── ⚠️ Y esto se cumplió, con `semilla`, exactamente como estaba escrito ──
+    #
+    # La E5 llegó con un rol nuevo, no se añadió aquí, y el Job **se quedó
+    # colgado en `git clone`**. Ese es el síntoma y conviene tenerlo escrito: una
+    # `NetworkPolicy` no rechaza, TIRA EL PAQUETE. No hay «connection refused»
+    # que mande a mirar la red — hay un proceso parado que parece lento.
+    #
+    # ⇒ La nota de arriba predijo el fallo y aun así costó encontrarlo, porque la
+    #   evidencia no se parece a su causa. La regla sigue siendo la correcta: lo
+    #   que hay que recordar es que **cerrar por omisión se paga en el
+    #   diagnóstico**, y por eso el precio se escribe aquí y no se descubre otra
+    #   vez.
     - from:
         - namespaceSelector:
             matchLabels: {ore.dev/rol: cargas}
@@ -242,6 +256,10 @@ spec:
             matchLabels: {ore.dev/rol: cargas}
           podSelector:
             matchLabels: {ore.dev/rol: driver}
+        - namespaceSelector:
+            matchLabels: {ore.dev/rol: cargas}
+          podSelector:
+            matchLabels: {ore.dev/rol: semilla}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ore-system

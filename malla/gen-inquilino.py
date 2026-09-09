@@ -74,6 +74,7 @@ PLANTILLAS = [
     "20-driver.yaml",
     "40-ore-serve.yaml",
     "41-el-cofre.yaml",
+    "42-el-arbol.yaml",
     "50-jwks.yaml",
 ]
 
@@ -113,6 +114,19 @@ def render(nombre, arbol=None):
         #   uno a los demas.
         t = t.replace("cofre-%s" % MODELO, "cofre-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
+        # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:
+        #   `metadata.name` del manifiesto es lo que prefija cada
+        #   `connectionEnv`. Medido — con `--name prueba` sale
+        #   `PRUEBA_CRM_PROD_URL`; sin el, `CRM_PROD_URL` a secas, y dos
+        #   inquilinos pisarian la misma variable.
+        #
+        # ⚠️ Va sustituido EXPLICITAMENTE y no por la via general, porque `demo`
+        #   suelto es justo lo que la comprobacion ② prohibe. Si algun dia esta
+        #   linea se cae, ② lo caza: el nombre del modelo no sobrevive.
+        t = t.replace("--name %s" % MODELO, "--name %s" % nombre)
+        # Y el mensaje del primer commit, que tambien lo lleva.
+        t = t.replace("organizacion %s" % MODELO, "organizacion %s" % nombre)
+        t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
         salida[f] = t
     return salida
 

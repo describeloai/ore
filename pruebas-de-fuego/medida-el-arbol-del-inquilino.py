@@ -224,9 +224,51 @@ def main():
     mide("la etapa `serve` trae `git`", "apk add --no-cache git" in etapa)
     mide("la etapa `serve` trae `ore`", "/ore " in etapa or "/ore\n" in etapa)
 
+    # ── ⭐ Y la pieza que lo corre, que es la E5 construida ────────────────
+    #
+    # Se mide el manifiesto y no una promesa: el que existe, el que el
+    # renderizador emite, y el que la forja deja entrar.
+    job = RAIZ / "malla" / "42-el-arbol.yaml"
+    mide("existe `malla/42-el-arbol.yaml`", job.exists())
+    if job.exists():
+        j = job.read_text(encoding="utf-8")
+        mide("corre `ore init --name`", "ore init --name demo ." in j)
+        mide(
+            "firma `aprovisionador`, y no el dueño de la organizacion",
+            "user.name=aprovisionador" in j,
+            "el arbol nace ANTES que nadie que pueda pedir nada: no hay sujeto",
+        )
+        mide(
+            "es idempotente por la pregunta correcta",
+            "[ -f ontology.config.yaml ]" in j,
+            "mirar si hay commits no es lo mismo que mirar si hay arbol",
+        )
+        mide(
+            "empuja una rama por su nombre, no `HEAD`",
+            "push -q origin main" in j and "checkout -q -B main" in j,
+        )
+        mide(
+            "y NO lleva la etiqueta del servidor",
+            "ore.dev/rol: semilla" in j and "ore.dev/rol: control" not in j,
+            "con `control` entraria en el `selector` del `Service` de ore-serve",
+        )
+    gen = (RAIZ / "malla" / "gen-inquilino.py").read_text(encoding="utf-8")
+    mide('el renderizador lo emite', '"42-el-arbol.yaml"' in gen)
+    mide("y sustituye el `--name`", '"--name %s" % MODELO' in gen)
+
+    # ⛔ La lista de invitados de la forja es CERRADA y esta en otro fichero.
+    #   Un rol nuevo que no se anada aqui no da «rechazado»: da un `git clone`
+    #   colgado, porque una `NetworkPolicy` tira el paquete. Paso exactamente.
+    forja = (RAIZ / "malla" / "30-forja.yaml").read_text(encoding="utf-8")
+    mide(
+        "la forja deja entrar al rol `semilla`",
+        "{ore.dev/rol: semilla}" in forja,
+        "sin esto el Job se cuelga en `git clone` y nada dice que sea la red",
+    )
+
     alta = (RAIZ / "malla" / "aprovisionar-inquilino.sh").read_text(encoding="utf-8")
     mide(
-        "y el aprovisionador declara que esto NO lo hace",
+        "y el aprovisionador sigue sin hacerlo el (es un Job, no un guion)",
         "ore init --name $NOMBRE" in alta,
         "el paso ⑦ no nombra la E5",
     )
@@ -243,7 +285,7 @@ def main():
     if fallos:
         print(f"✗ {len(fallos)} afirmaciones de la E5 no se sostienen")
         return 1
-    print("✓ la E5 es exactamente lo que la `0022` dice, y sigue sin construirse")
+    print("✓ la E5 es lo que la `0022` dice, y ya esta construida")
     if huecos:
         print(f"⚠️ y {len(huecos)} huecos nombrados por el camino")
     return 0

@@ -232,9 +232,45 @@ con **404**; el secreto del almacén alcanzable por una sola cuenta; y **ni un r
 final es un **Job** —con su testigo de forja y su identidad de Google, y **sin ni un permiso de
 RBAC**—, porque la forja sólo se alcanza desde dentro del clúster.
 
-**E5 · El árbol.** `ore init --name <org>`, primer commit y push, con la imagen de `serve` —la
-única con `git`—. El nombre del manifiesto sale de la organización, y no es cosmético: se propaga
-a cada `connectionEnv`.
+**E5 · El árbol.** ✔ 2026-09-09 · `malla/42-el-arbol.yaml`, un **Job** con la imagen de `serve` —la
+única con `git` y `ore` a la vez—. Corrido de verdad contra `t-prueba/ontologia` vacío:
+
+```
+67aebf3 | aprovisionador <aprovisionador@invalido> | El arbol de la organizacion prueba
+metadata: { name: prueba, version: 0.1.0 }
+```
+
+Y la segunda pasada dijo `· el arbol de prueba ya estaba` — idempotente por la pregunta correcta:
+no *«¿hay commits?»* sino **«¿hay `ontology.config.yaml`?»**.
+
+⭐ **El nombre no es cosmético, y ahora está medido.** `metadata.name` es lo que prefija cada
+`connectionEnv`: con `--name prueba`, `ore source add crm_prod` escribe `PRUEBA_CRM_PROD_URL`; sin
+`--name`, `CRM_PROD_URL` a secas, y dos inquilinos pisarían la misma variable.
+
+⛔ **Y no era una hipótesis.** `t-demo/ontologia` se sembró a mano desde el demo de `ventas`, el
+nombre de la organización nunca entró, y **todas sus variables leen `VENTAS_…`**. El único
+inquilino que existía tenía el nombre equivocado en cada una. Queda dicho y sin arreglar: cambiarlo
+ahora renombra cada `connectionEnv` de un árbol con contenido.
+
+**Quién firma el primer commit: `aprovisionador`.** `ore-serve` pone al *sujeto* de la petición
+como autor porque cada escritura suya la pidió alguien — pero aquí **no hay sujeto**: el árbol nace
+antes que nadie que pueda pedir nada. Atribuírselo al dueño de la organización sería firmar en su
+nombre un acto que no hizo.
+
+### ⚠️ Lo que este Job destapó, y no fue en él
+
+El rol `semilla` no estaba en la lista de invitados de la forja (`30-forja.yaml`), y **el Job se
+quedó colgado en `git clone`**. La nota de ese fichero ya lo predecía —*«un rol nuevo que quisiera
+hablar con la forja NO pasa, y tiene que añadirse aquí»*— y aun así costó encontrarlo:
+
+⇒ **Una `NetworkPolicy` no rechaza, tira el paquete.** No hay «connection refused» que mande a
+mirar la red; hay un proceso parado que parece lento. Cerrar por omisión es correcto y **se paga en
+el diagnóstico**, así que el precio queda escrito donde está la regla.
+
+⚠️ Y una más, sin arreglar: el aprovisionador crea el repositorio **sin decir su rama por
+defecto**. Hoy Forgejo la pone en `main` y coincide con la del empujón. Medido con `master`: cuando
+no coinciden, el síntoma es «este directorio no es un repositorio ontológico» — que manda a mirar
+el árbol, no la rama.
 
 **E6 · La entrada por inquilino.** Hoy hay **un** Ingress en toda la malla y es el del IdP. Con
 `ore-serve` por organización hay que decidir cómo llega la consola a cada uno, y en este mercado

@@ -1,0 +1,212 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL ARBOL DEL INQUILINO — E5 de la `0022`, y el unico acto que lo crea
+#
+# El aprovisionador (E4) deja el repositorio de la forja **creado y vacio**, y
+# medido esta que nada de lo que corre puede poner el arbol dentro:
+#
+#     GET  /fuentes    404  «este directorio no es un repositorio ontologico»
+#     POST /fuentes    409  «ore source add devolvio 66: no existe
+#                            ontology.config.yaml»
+#
+# ⇒ Todas las rutas del plano de control LEEN o ESCRIBEN un arbol; ninguna lo
+#   crea. Este Job es lo que faltaba, y su cuerpo cabe en diez lineas:
+#   clonar, mirar si ya hay arbol, y si no `ore init --name <org>` y empujar.
+#
+# ── ⭐⭐ Por que `--name`, y por que no es cosmetico ────────────────────────
+#
+# El `metadata.name` del manifiesto es lo que prefija cada `connectionEnv`.
+# Medido con binarios de verdad: con `--name prueba`, `ore source add crm_prod`
+# escribe `PRUEBA_CRM_PROD_URL`; sin `--name`, `CRM_PROD_URL` a secas.
+#
+# ⛔ Y esto no es una hipotesis. El arbol del PRIMER inquilino se sembro a mano
+#   desde un ejemplo ajeno, el nombre de la organizacion nunca entro, y hoy
+#   TODAS sus variables llevan el prefijo de aquel ejemplo. El unico inquilino
+#   que existia tenia el nombre equivocado en cada una — que es exactamente el
+#   fallo que este Job evita. Ver `medida-el-arbol-del-inquilino.py`.
+#
+# ── ⭐ Quien firma el primer commit ────────────────────────────────────────
+#
+# `aprovisionador`, igual que el ⑥ de la E4. Y es una decision, no un defecto:
+# `ore-serve` pone al SUJETO de la peticion como autor y al servidor como
+# `committer` —porque cada escritura suya la pidio alguien—, pero aqui **no hay
+# sujeto**: el arbol nace ANTES que nadie que pueda pedir nada.
+#
+# ⇒ Atribuirselo al dueno de la organizacion seria firmar en su nombre un acto
+#   que no hizo. Que la primera linea de la historia diga `aprovisionador` es
+#   mas cierto y se lee mejor en una auditoria: hasta ese commit no habia nadie.
+#
+# ── ⚠️ Un Job es inmutable, y por eso lleva `IfNotPresent` ──────────────────
+#
+# `spec.template` de un Job no se puede modificar. Sin la anotacion, cualquier
+# cambio en este fichero haria fallar la reconciliacion de Flux para TODO el
+# inquilino, no solo para el Job.
+#
+# ⇒ Con `IfNotPresent`, Flux lo crea una vez y no lo vuelve a tocar. Lo que se
+#   pierde es poder cambiarlo en caliente, y esta bien perdido: un Job que ya
+#   corrio es HISTORIA. Para volver a correrlo se borra —`kubectl delete job
+#   -n t-demo el-arbol`— y Flux lo crea de nuevo en el siguiente pase.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: el-arbol
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: semilla
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  # ⚠️ Reintentos, no cero. La forja puede no estar lista cuando el inquilino
+  #   entra por primera vez, y eso no es un fallo del arbol: es una carrera.
+  backoffLimit: 6
+  # Se queda una hora para poder mirar su registro, y luego se va solo.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        # ⛔ `semilla` y NO `control`. Con la etiqueta del servidor este pod
+        #   entraria en el `selector` del `Service` de `ore-serve`, y las
+        #   peticiones del inquilino irian a parar a un Job que no escucha.
+        #   Una etiqueta compartida no es un detalle cosmetico: es una ruta.
+        ore.dev/rol: semilla
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: OnFailure
+      # ⭐ La cuenta de `ore-serve`, y no una propia. Necesita exactamente la
+      #   misma credencial —el testigo de la forja de ESTE inquilino— y ni una
+      #   mas. Una cuenta nueva seria un alcance nuevo que justificar.
+      serviceAccountName: ore-serve
+      volumes:
+        - name: testigo
+          emptyDir: { medium: Memory }
+      initContainers:
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts:
+            - name: testigo
+              mountPath: /testigo
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=t-demo-forja-token --out-file=/testigo/forja
+              chmod 0400 /testigo/forja
+              echo "testigo puesto · $(wc -c < /testigo/forja) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: semilla
+          # La imagen de `serve`: la unica con `ore` y `git` a la vez.
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-serve:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            # ⛔ El testigo NO viaja en `argv`: va por `GIT_CONFIG_*`, que git
+            #   lee del entorno. Es exactamente lo que hace `ore-serve/git.rs`,
+            #   y por la misma razon — una linea de ordenes la lee cualquier
+            #   proceso de la maquina.
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+          volumeMounts:
+            - name: testigo
+              mountPath: /testigo
+              readOnly: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /testigo/forja)"
+              cd /tmp
+              git clone --quiet \
+                http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              cd arbol
+              # ── ⭐ Idempotente, y con la condicion correcta ──────────────
+              #
+              # No se mira si el repositorio tiene commits: se mira si hay
+              # ARBOL. Un repositorio con un README y sin manifiesto no es un
+              # arbol ontologico, y `ore init` sobre el tampoco lo romperia
+              # —dice «esto ya es un repositorio» y no toca nada— pero el
+              # mensaje seria confuso. La pregunta es la que importa.
+              if [ -f ontology.config.yaml ]; then
+                echo "· el arbol de \`demo\` ya estaba · $(git rev-parse --short HEAD)"
+                exit 0
+              fi
+              # ⛔ Una rama por su nombre, no `HEAD`. Un repositorio recien
+              #   creado se clona con HEAD sin nacer, y `push origin HEAD`
+              #   sobre eso empuja la rama que git haya elegido por defecto —
+              #   que puede no ser la que la forja mira. Medido: cuando no
+              #   coinciden, el sintoma es «este directorio no es un
+              #   repositorio ontologico», que manda a mirar el arbol.
+              git checkout -q -B main
+              ore init --name demo .
+              git add -A
+              git -c user.name=aprovisionador \
+                  -c user.email=aprovisionador@invalido \
+                  commit -q -m "El arbol de la organizacion demo"
+              git push -q origin main
+              echo "✓ el arbol de \`demo\` · $(git rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+# ── Por donde puede salir ───────────────────────────────────────────────────
+#
+# El DNS, la forja, el servidor de metadatos y Google por TLS — las mismas
+# cuatro que `ore-serve`, porque hace lo mismo que el: traer el testigo del
+# almacen y hablar con la forja. **No los origenes, no el mundo.**
+#
+# ⚠️ Va aparte y no reutiliza `salida-del-control` porque una `NetworkPolicy`
+# selecciona por ETIQUETA, y la etiqueta de este pod tiene que ser distinta
+# para no entrar en el `Service`. La duplicacion es el precio de esa
+# separacion, y es el precio correcto.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-la-semilla
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: semilla
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: forja
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports: [{protocol: TCP, port: 3000}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]
