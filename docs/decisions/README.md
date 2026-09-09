@@ -32,6 +32,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0020](0020-el-plano-de-control.md) · el plano de control | atender a un cliente es de un **programa delegado**, con una lista de verbos **permitidos** y sin identidad no hay superficie | **aceptado** |
 | [0021](0021-una-persona-en-varias-organizaciones.md) · una persona en varias organizaciones | la identidad no lleva dentro a qué cliente sirve; la organización viaja **en el camino**, nunca en el token | **aceptado** |
 | [0022](0022-el-inquilino-es-un-repositorio.md) · el inquilino es un repositorio | aprovisionar **se escribe, no se aplica**; la unidad es el inquilino y no el clúster; y quién aprueba el alta es un **ajuste de cada cliente** | **aceptado** |
+| [0023](0023-donde-vive-un-secreto.md) · dónde vive un secreto | `iam` dice **quién puede** y no guarda nada; el material va **cifrado de sobre** con la llave fuera; quién emite queda `owner`; y **`usar` no es `leer`** | **aceptado** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
@@ -98,3 +99,5 @@ proceso que mira a internet no sea el que decide qué significan las cosas**, qu
 no el efecto secundario.
 
 **0018 y 0022 son el mismo argumento en dos planos**: la ontología es el sistema de registro de lo que los datos significan, y el repositorio del inquilino lo es de la forma de su compartimento. Los dos compran lo mismo — historia, firma, revisión y `revert`— y los dos lo compran **no programándolo**. La segunda añade el motivo que la primera no necesitaba: quien pudiera aplicar el compartimento de un inquilino podría leer el de todos.
+
+**0011, 0018 y 0023 dicen la misma frase en tres sitios**: quién AFIRMA algo y quién lo GUARDA no son la misma pieza. El informe atribuye y el compilador rechaza; la ontología es el sistema de registro y el origen no; `iam` dice quién puede y el material vive en otro sitio con la llave en un tercero. La última añade el corolario que las otras no necesitaban: **un segundo motor de autorización es una segunda respuesta a la misma pregunta**, y por eso Vault entra como custodio o no entra.
