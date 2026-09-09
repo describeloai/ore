@@ -260,6 +260,17 @@ spec:
             matchLabels: {ore.dev/rol: cargas}
           podSelector:
             matchLabels: {ore.dev/rol: semilla}
+        # ⭐⭐ Y EL AGENTE, desde que el compartimento vive AQUI y no en
+        #   GitHub. Es el consumidor mas raro de la lista: no es de un
+        #   inquilino —no lleva `cargas`— y lee los compartimentos de TODOS.
+        #
+        # ⚠️ Sin `podSelector`: `source-controller` y `kustomize-controller`
+        #   son dos, y mañana pueden ser otros. Lo que acota aqui no es la
+        #   etiqueta del pod: es que el testigo que usa —`flux` en la forja— es
+        #   de SOLO LECTURA y colaborador de los repositorios que se le han
+        #   dado, uno a uno.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: flux-system}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ore-system

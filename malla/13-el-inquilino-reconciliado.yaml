@@ -17,26 +17,45 @@
 # ⇒ La plantilla y el enganche son nuestros; el contenido reconciliado es del
 #   inquilino. Es el mismo corte que la `0022` traza entre plantilla e instancia.
 #
-# ── ⛔ Y el testigo es de SOLO LECTURA, y de UN repositorio ────────────────
+# ── ⭐⭐ EL COMPARTIMENTO VIVE EN LA FORJA, Y ESO CAMBIÓ TRES COSAS ────────
 #
-# Una clave de despliegue (`deploy key`) de GitHub, marcada `read_only`, que sólo
-# vale para `describeloai/inquilino-demo`. No es un token de cuenta: si se
-# filtrase, no alcanza a ningún otro repositorio y no puede escribir en éste.
+# Vivía en GitHub, con una clave de despliegue POR INQUILINO. Y esa clave era el
+# último permiso de clúster del que el aprovisionador no podía librarse:
+# `source-controller` la lee de etcd, así que crearla exige `create secret` en
+# `flux-system` — y eso convertía cada alta en una sesión de operador.
 #
-# Es la misma disciplina que se acaba de aplicar al testigo de la forja, donde el
-# ámbito del token NO era lo que ataba —lo que ata es de quién es y de qué es
-# colaborador—. Aquí una clave de despliegue ata por construcción.
+# Con el compartimento aquí dentro:
 #
-#     ssh-keygen -t ed25519 -N "" -f llave
-#     gh repo deploy-key add llave.pub --repo describeloai/inquilino-demo
-#     kubectl create secret generic inquilino-demo-llave -n flux-system \
-#       --from-file=identity=llave --from-file=identity.pub=llave.pub \
-#       --from-file=known_hosts=<(ssh-keyscan github.com)
+#   la identidad   el cliente entra con la que ya tiene. Forgejo habla OIDC
+#                  contra el mismo IdP, así que deja de haber dos censos
+#   la revisión    protección de rama, incluida. En GitHub era
+#                  `403 · Upgrade to GitHub Pro`, y de ahí colgaba el ③ entero
+#                  de la `0022`
+#   el alta        ni un token de GitHub, ni un `create secret`: dar de alta un
+#                  inquilino es crear un repositorio y añadir un colaborador,
+#                  las dos por API
 #
-# ⚠️ El `Secret` NO está en este árbol y no puede estarlo. Es la misma pregunta
-# sin contestar de la E4, asomando aquí por primera vez: **los secretos no van en
-# un repositorio**, así que hay uno que alguien pone a mano hasta que se decida
-# cómo viajan.
+# ── ⛔ Y lo que se PIERDE, que no es poco ─────────────────────────────────
+#
+# La `0022` cerraba su ③ con una salida: *«si un cliente exige la propiedad, se
+# le transfiere el repositorio»*. Aquí eso deja de existir — transferirle un
+# repositorio dentro de NUESTRO servidor no le da la propiedad de nada, porque
+# sigue dependiendo de que le dejemos entrar.
+#
+# ⇒ Se acepta a sabiendas: el cliente que ponga un pliego encima de la mesa
+#   pedirá su repositorio fuera, y ese día habrá que darle uno. Se resuelve
+#   cuando pase, no antes — pero queda escrito para que no sorprenda.
+#
+# ── ⛔ El testigo: de SOLO LECTURA, y colaborador uno a uno ────────────────
+#
+# `flux` es un usuario de la forja con `read:repository` y NADA más, y se le
+# hace colaborador —con permiso `read`— de cada compartimento, uno a uno. Lo que
+# lo ata no es el ámbito del token: es **de quién es y de qué es colaborador**.
+# Misma disciplina que `serve-<inquilino>`, que dio 404 sobre el árbol ajeno.
+#
+# ⚠️ El `Secret` sigue sin poder estar en este árbol, y ahora se crea UNA VEZ en
+# vez de una por cliente. Es la diferencia entre un paso del alta y un paso del
+# montaje.
 #
 # ── ⛔⛔ Y DESDE HOY, `t-demo` NO SE APLICA A MANO ─────────────────────────
 #
@@ -66,33 +85,20 @@ spec:
   # Cinco minutos. No es una carrera: lo que esto persigue no es aplicar rápido
   # un commit —eso se puede forzar— sino que la deriva no viva mucho tiempo.
   interval: 5m
-  # ── ⭐⭐ UNA CREDENCIAL PARA TODOS LOS COMPARTIMENTOS, Y ES LA ⑦ ────────
+  # ⛔ Y no empeora el aislamiento, que es lo que había que justificar: los
+  #   compartimentos son NUESTROS —lo decide la `0022` ②— y Flux ya era
+  #   `cluster-admin` sobre todos ellos. Una credencial por repositorio protegía
+  #   de algo que ya no estaba protegido.
   #
-  # Antes: `ssh://` y una clave de despliegue POR INQUILINO. Y esa clave era el
-  # ultimo permiso de cluster que el aprovisionador no se podia quitar —
-  # `source-controller` la lee de etcd, asi que crearla exige `create secret` en
-  # `flux-system`, y eso convertia cada alta en una sesion de operador.
-  #
-  # ⇒ Ahora `https://` con `inquilino-llave`: UN testigo de alcance fino, de
-  #   solo lectura de contenidos, sobre los repositorios `inquilino-*`. Se acuña
-  #   una vez y sirve para todos, asi que dar de alta a un inquilino deja de
-  #   tocar el cluster.
-  #
-  # ⛔ Y no empeora el aislamiento, que es lo que hay que justificar: los
-  #   compartimentos son NUESTROS —la `0022` ② lo decide— y Flux ya era
-  #   `cluster-admin` sobre todos ellos. Una clave por repositorio protegia de
-  #   algo que ya no estaba protegido.
-  #
-  # ⚠️ Lo que SI cambia: si ese testigo se filtra, se leen los manifiestos de
+  # ⚠️ Lo que SÍ cambia: si ese testigo se filtra, se leen los manifiestos de
   #   todos los inquilinos en vez de los de uno. No hay ni un valor secreto
-  #   dentro —para eso esta el almacen— pero si la forma de la infraestructura
-  #   de cada cliente. Por eso es de LECTURA y sobre repositorios elegidos a
-  #   mano, no un testigo de cuenta.
-  url: https://github.com/describeloai/inquilino-demo.git
+  #   dentro —para eso está el almacén— pero sí la forma de la infraestructura
+  #   de cada cliente.
+  url: http://forja.forja.svc.cluster.local:3000/t-demo/compartimento.git
   ref:
     branch: main
   secretRef:
-    name: inquilino-llave
+    name: compartimento-llave
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

@@ -97,6 +97,25 @@ FUERA = {
     ),
 }
 
+# ⛔ LOS QUE NOMBRAN INQUILINOS A PROPOSITO, Y NO SON PLANTILLAS.
+#
+# La ⑤ existe para cazar un `t-demo` olvidado en un manifiesto que se renderiza
+# para otro cliente. Pero hay un fichero cuyo TRABAJO es nombrar inquilinos:
+#
+#   `13-…` es EL ENGANCHE. Lleva un par `GitRepository`+`Kustomization` por
+#   inquilino, escritos a mano, y vive en `malla/` a proposito — es la parte que
+#   decide QUE SE OBEDECE, y si viviera dentro de lo obedecido, quien escribiera
+#   alli cambiaria a que apunta el agente.
+#
+# ⚠️ Y hasta hoy pasaba la ⑤ POR SUERTE: nombraba al inquilino como
+#   `inquilino-demo`, que no contiene `t-demo`. Al mudar el compartimento a la
+#   forja la URL pasó a ser `…/t-demo/compartimento.git` y salto. La regla no
+#   habia cambiado — lo que habia cambiado era que por fin la tocaba.
+NOMBRAN_INQUILINOS = {
+    "13-el-inquilino-reconciliado.yaml":
+        "es el enganche: un par por inquilino, escrito a mano y no renderizado.",
+}
+
 MODELO = "demo"
 
 # ⛔ Como PALABRA, no como subcadena. La primera version buscaba `demo` en
@@ -224,6 +243,10 @@ def comprobar():
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
         if f.name in PLANTILLAS or f.name[0] == "9":
+            continue
+        if f.name in NOMBRAN_INQUILINOS:
+            print("     ⚠️ `%s` nombra inquilinos — %s"
+                  % (f.name, NOMBRAN_INQUILINOS[f.name]))
             continue
         culpables = [
             (i + 1, l.strip())
