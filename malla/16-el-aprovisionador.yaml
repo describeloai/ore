@@ -1,0 +1,203 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL APROVISIONADOR, COMO JOB — la mitad que le faltaba a la E4
+#
+# `aprovisionar-inquilino.sh` abre diciendo «el aprovisionador NO tiene
+# credenciales de clúster». Medido: usaba DIEZ llamadas a `kubectl`, cinco de
+# ellas `exec`, dos contra la base de identidad. Y con ese mismo acceso se leía
+# `cofre.material`, `iam.persona` e `iam.concesion` enteras — estrictamente más
+# que los permisos sobre `Secret` que la `0022` había rechazado.
+#
+# ⇒ La propiedad no estaba rota en el diseño: estaba rota en **cómo se corría**.
+#   Esto es correrlo en el sitio donde no hace falta nada de eso.
+#
+# ── ⭐⭐ LO QUE ESTE POD PUEDE, Y ES POCO ─────────────────────────────────
+#
+#   la fila       `psql` como `aprovisionador`, que hereda el papel de la `023`:
+#                 cuatro columnas de una tabla y NADA más. Ni escribe, ni ve
+#                 quién es nadie, ni alcanza `cofre`
+#   la forja      HTTP a `forja.forja.svc`. Crear el repositorio, el usuario y
+#                 su testigo son tres llamadas a la API — probadas contra la
+#                 forja de verdad antes de escribir esto
+#   la nube       el papel `ore_aprovisionador` de `papel-del-aprovisionador.yaml`
+#
+# ⛔⛔ Y NI UN PERMISO DE RBAC. No tiene `Role`, no tiene `RoleBinding`, y su
+#   cuenta de Kubernetes existe sólo para colgar de ella la identidad de Google.
+#   Un `kubectl get pods` desde aquí dentro da 403 — no porque se lo prohíba una
+#   regla, sino porque nadie le dio nada.
+#
+# ── ⭐ Y en la nube, «crea y concede, no usa» ─────────────────────────────
+#
+# Su papel puede crear la llave de un inquilino y conceder su uso, y **no puede
+# usarla**. Puede crear el secreto de su testigo y decir quién lo lee, y **no
+# puede leerlo**. Las dos únicas cosas que sí lee —su URL de base y el testigo
+# de administrador de la forja— las lee por un permiso POR SECRETO, no por un
+# papel: `secretAccessor` sobre esos dos y ninguno más.
+#
+# ⇒ Un aprovisionador robado da de alta inquilinos falsos —ruidoso, caro y
+#   visible— y no lee ni un secreto de cliente ni abre ni un cifrado.
+#
+# ── ⚠️ Lo que se concentra, y hay que decirlo ────────────────────────────
+#
+# El testigo de la forja crea USUARIOS, que es un acto de administrador: no hay
+# forma más estrecha en Forgejo. Es la misma concentración que la `0022` aceptó
+# —«el permiso no desaparece, se CONCENTRA»— y vale el mismo argumento: lo tiene
+# UNA pieza, con una entrada, y lo que hace queda escrito en un commit.
+#
+# ── Cómo se corre ────────────────────────────────────────────────────────
+#
+#     kubectl create job -n ore-system aprovisionar-acme \
+#       --from=cronjob/aprovisionador -- acme            (cuando sea CronJob)
+#
+#   Hoy: se copia este Job cambiando `args`, o se lanza con `kubectl create job
+#   --from`. Y **el enganche sigue siendo un commit en `13-…`**, a propósito.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aprovisionador
+  namespace: ore-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: aprovisionador
+  annotations:
+    iam.gke.io/gcp-service-account: ore-aprovisionador@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aprovisionar
+  namespace: ore-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: aprovisionador
+  annotations:
+    # Inmutable, como los otros dos Jobs de arranque. Para correrlo otra vez
+    # —o para otro inquilino— se borra y se vuelve a crear.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: aprovisionador
+        ore.dev/tenant: system
+    spec:
+      # ⛔ `Never` y no `OnFailure`, y no es un detalle. Con `OnFailure` el
+      #   contenedor se reinicia EN SITIO y, al agotar los reintentos, el pod se
+      #   borra — con su registro dentro. La primera corrida de esto fallo y no
+      #   quedo ni una linea de por que.
+      #
+      # ⇒ Con `Never` cada intento es un pod nuevo que SE QUEDA. Un
+      #   aprovisionador que falla y no dice por que obliga a correrlo otra vez
+      #   para averiguarlo, y correrlo otra vez es justo lo que da miedo.
+      restartPolicy: Never
+      serviceAccountName: aprovisionador
+      volumes:
+        # ⛔ De MEMORIA. Lo que se trae del almacén no toca disco y muere con el
+        #   pod. Es la misma forma que `40-ore-serve.yaml` usa para su testigo.
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: guion
+          configMap:
+            name: aprovisionador
+            defaultMode: 0755
+      initContainers:
+        - name: traer-lo-suyo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=aprovisionador-iam-url --out-file=/puesto/iam-url
+              gcloud secrets versions access latest \
+                --secret=forja-admin-token --out-file=/puesto/forja-admin
+              chmod 0400 /puesto/*
+              echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: aprovisionar
+          # La imagen de drivers: trae `gcloud`, `git`, `curl` y `psql`. Es la
+          # única que los tiene a la vez, y este proceso los necesita todos.
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: DENTRO, value: "1" }
+            # ⭐ Donde vive el renderizador DENTRO. El guion lo busca junto a
+            #   si mismo cuando corre de un arbol; aqui los dos vienen del mismo
+            #   `ConfigMap`, con las plantillas al lado.
+            - { name: GEN, value: /guion/gen-inquilino.py }
+            # ⚠️ LO UNICO que cambia entre una corrida y otra.
+            - { name: NOMBRE, value: prueba }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: guion, mountPath: /guion, readOnly: true }
+          command: ["/bin/sh", "-c"]
+          # ⚠️ El nombre del inquilino va aquí, y es lo único que cambia entre
+          #   una corrida y otra.
+          args: ["bash /guion/aprovisionar-inquilino.sh $NOMBRE"]
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "1000m", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+# ── Por dónde puede salir ───────────────────────────────────────────────────
+#
+# El DNS, la forja, la base, el servidor de metadatos y Google. **No los
+# orígenes, no el mundo, y no GitHub** — desde que el compartimento vive en la
+# forja, este pod no tiene nada que hacer fuera salvo hablar con la nube.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-aprovisionador
+  namespace: ore-system
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: aprovisionador
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: forja
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports: [{protocol: TCP, port: 3000}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: identidad
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]

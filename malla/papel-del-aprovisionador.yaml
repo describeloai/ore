@@ -1,0 +1,63 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL PAPEL DEL APROVISIONADOR EN LA NUBE — crea y concede, y NO usa
+#
+# La `023` hizo esto mismo en la base: un papel que lee cuatro columnas y nada
+# más. Éste es su gemelo en Google, y tiene una propiedad que conviene decir en
+# voz alta antes de la lista:
+#
+#   ⭐⭐ Puede CREAR la llave de un inquilino y CONCEDER su uso, y no puede
+#     usarla. Puede CREAR el secreto del testigo y decir quién lo lee, y no
+#     puede leerlo.
+#
+# ⇒ Es la misma figura que atraviesa el sistema entero: **quien emite no abre**.
+#   El custodio (`0023`) la tiene sobre el material; la `020` la tiene entre
+#   `ore_iam` y `ore_cofre`; aquí la tiene quien monta el compartimento.
+#
+# ── ⛔ Lo que NO está, y es lo que hace que esto valga ─────────────────────
+#
+#   secretmanager.versions.access     leer el valor de un secreto
+#   cloudkms.cryptoKeyVersions.*      cifrar o descifrar con una clave
+#
+# Sin esas dos, un aprovisionador robado da de alta inquilinos falsos —ruidoso,
+# caro y visible— pero **no lee ni un secreto ni abre ni un cifrado**. Con
+# `roles/secretmanager.admin`, que es el papel prefabricado que hacía falta para
+# poder crear un secreto, habría leído los testigos de TODOS los inquilinos.
+#
+# ── ⚠️ Y lo que sigue siendo ancho, dicho ────────────────────────────────
+#
+# `iam.serviceAccounts.create` y `.delete` son de PROYECTO: Google no deja
+# acotar la creación de cuentas a un prefijo. Así que este papel puede crear y
+# borrar cuentas que no son de ningún inquilino. Es la concentración que la
+# `0022` ya aceptó para la forja —«el permiso no desaparece, se CONCENTRA»— y
+# vale el mismo argumento: lo tiene UNA pieza, con una entrada, y todo lo que
+# hace queda en un commit.
+#
+#   gcloud iam roles create ore_aprovisionador --project=<proyecto> \
+#     --file=malla/papel-del-aprovisionador.yaml
+# ═══════════════════════════════════════════════════════════════════════════
+title: ORE · el aprovisionador
+description: Crea el compartimento de un inquilino y concede su uso. NO puede leer secretos ni usar claves.
+stage: GA
+includedPermissions:
+  # Las cuentas del inquilino
+  - iam.serviceAccounts.create
+  - iam.serviceAccounts.get
+  - iam.serviceAccounts.list
+  - iam.serviceAccounts.delete
+  - iam.serviceAccounts.getIamPolicy
+  - iam.serviceAccounts.setIamPolicy
+  # Su llave — crear y conceder. Fijate en que NO hay `cryptoKeyVersions`.
+  - cloudkms.keyRings.get
+  - cloudkms.cryptoKeys.create
+  - cloudkms.cryptoKeys.get
+  - cloudkms.cryptoKeys.list
+  - cloudkms.cryptoKeys.getIamPolicy
+  - cloudkms.cryptoKeys.setIamPolicy
+  # El secreto de su testigo — crear, versionar y conceder. NO `versions.access`.
+  - secretmanager.secrets.create
+  - secretmanager.secrets.get
+  - secretmanager.secrets.list
+  - secretmanager.secrets.delete
+  - secretmanager.secrets.getIamPolicy
+  - secretmanager.secrets.setIamPolicy
+  - secretmanager.versions.add

@@ -45,6 +45,9 @@ PROYECTO="project-8853a180-450d-47be-b83"
 LUGAR="europe-west1"
 LLAVERO="ore"
 FORJA_NS="forja"
+# Donde esta la forja DESDE DENTRO. Fuera no se alcanza: no tiene puerta al
+# mundo, y eso es a proposito.
+FORJA_URL="http://forja.forja.svc.cluster.local:3000"
 NS="t-$NOMBRE"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -91,10 +94,32 @@ paso "① LA FILA — y es la verdad de la que todo lo demás converge"
 #
 # ⚠️ Este script LEE esa fila; no la escribe. Fundar es un acto de operador con
 #   un dueño detrás, y quién es el dueño no lo sabe un script.
-ARBOL=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-  "select arbol from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r')
-KEK=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-  "select kek from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r')
+# ── ⭐⭐ DOS FORMAS DE LEER LA MISMA FILA, Y NO SON EQUIVALENTES ───────────
+#
+#   DENTRO   `psql` como `aprovisionador`, que hereda el papel de la `023`:
+#            cuatro columnas de una tabla. Ni escribe, ni ve quien es nadie, ni
+#            alcanza `cofre`. Es lo que este guion deberia haber usado siempre.
+#
+#   FUERA    `kubectl exec` en el pod de la base, que es un `psql` como
+#            SUPERUSUARIO. Se usa para leer dos columnas y con el mismo acceso
+#            se lee `cofre.material`, `iam.persona` e `iam.concesion` enteras.
+#
+# ⇒ La cabecera de este fichero dice «el aprovisionador NO tiene credenciales de
+#   cluster», y con `kubectl exec` eso era FALSO — y de las gordas. El camino de
+#   fuera se conserva porque un operador con el cluster en la mano sigue
+#   necesitando correr esto a mano, pero **el camino bueno es el de dentro**, y
+#   por eso es el primero.
+consulta() { # <columna>
+  if [ -n "${DENTRO:-}" ]; then
+    psql "$(cat /puesto/iam-url)" -tAc \
+      "select $1 from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r'
+  else
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
+      "select $1 from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r'
+  fi
+}
+ARBOL=$(consulta arbol)
+KEK=$(consulta kek)
 [ -n "$ARBOL" ] || falla "\`$NOMBRE\` no esta fundada. Antes de aprovisionar hay que fundar:
     ore-iam fundar --organizacion $NOMBRE --emisor <realm> --sub <sub del dueno>"
 hecho "arbol declarado: $ARBOL"
@@ -189,6 +214,9 @@ paso "④ LA FORJA — el repositorio, su usuario, y un testigo que alcanza UNO"
 PROPIETARIO="${ARBOL%%/*}"
 REPO="${ARBOL#*/}"
 
+# ⭐ DENTRO sale del almacen, puesto por el contenedor de inicio en un tmpfs.
+#   FUERA lo pone quien corre esto. En los dos casos NO viaja por `argv`.
+[ -n "${DENTRO:-}" ] && [ -f /puesto/forja-admin ] && FORJA_ADMIN="$(cat /puesto/forja-admin)"
 if [ -z "${FORJA_ADMIN:-}" ] && [ -z "$SECO" ]; then
   falla "falta \`FORJA_ADMIN\`, el testigo con el que se crean usuarios y repositorios.
      No se lee de ningun \`Secret\` del cluster a proposito: si este guion supiera
@@ -213,11 +241,39 @@ fi
 #
 # ⚠️ `409` y `422` son exito: son «ya existia», que es justo lo que la
 #   idempotencia del guion pide en una segunda pasada.
+# Una llamada con autenticacion BASICA, que es la unica forma de acuñar el
+# testigo de un usuario. Imprime el `sha1` del testigo y nada mas.
+#
+# ⚠️ El `sed` es fragil a proposito: no hay `jq` en la imagen de drivers y meter
+#   un analizador de JSON aqui seria una dependencia por un campo. Si Forgejo
+#   cambiara la forma de esa respuesta, `TESTIGO` saldria vacio — y el paso ⑤ lo
+#   nota, porque no guarda un secreto vacio.
+forja_basica() { # <usuario> <clave> <camino> <cuerpo>
+  local u="$1" p="$2" c="$3" d="$4"
+  if [ -n "${DENTRO:-}" ]; then
+    curl -sS -u "$u:$p" -H 'Content-Type: application/json' --data "$d" \
+      "$FORJA_URL/api/v1$c" 2>/dev/null
+  else
+    kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -u "$u:$p" \
+      -H 'Content-Type: application/json' --data "$d" \
+      "http://localhost:3000/api/v1$c" 2>/dev/null
+  fi | tr -d '\r' | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p'
+}
+
 forja_api() { # <metodo> <camino> [cuerpo] — imprime el codigo, o corta el guion
   local m="$1" c="$2" d="${3:-}" cod
-  cod=$(kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
-    -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
-    ${d:+--data "$d"} "http://localhost:3000/api/v1$c" 2>/dev/null | tr -d '\r')
+  # ⭐ DENTRO se habla con la forja por su `Service`; FUERA hay que entrar en su
+  #   pod, porque no tiene puerta al mundo. Es la misma llamada por dos caminos,
+  #   y el de dentro no necesita ni una credencial de cluster.
+  if [ -n "${DENTRO:-}" ]; then
+    cod=$(curl -sS -o /dev/null -w '%{http_code}' \
+      -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
+      ${d:+--data "$d"} "$FORJA_URL/api/v1$c" 2>/dev/null | tr -d '\r')
+  else
+    cod=$(kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
+      -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
+      ${d:+--data "$d"} "http://localhost:3000/api/v1$c" 2>/dev/null | tr -d '\r')
+  fi
   case "$cod" in
     2??|409|422) echo "$cod" ;;
     *) falla "la forja contesto '$cod' a $m $c" ;;
@@ -230,15 +286,31 @@ if [ -n "$SECO" ]; then
 else
   hecho "organizacion $PROPIETARIO · $(forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}")"
   hecho "repositorio $ARBOL · $(forja_api POST "/orgs/$PROPIETARIO/repos" "{\"name\":\"$REPO\",\"private\":true}")"
-  kubectl exec -n "$FORJA_NS" forja-0 -- su git -c \
-    "forgejo admin user create --username serve-$NOMBRE --email serve-$NOMBRE@invalido.paladio.io --random-password --must-change-password=false" \
-    >/dev/null 2>&1 || true
+  # ── ⭐⭐ POR API, Y ESTO ES LO QUE PERMITE QUE SEA UN JOB ────────────────
+  #
+  # Las dos llamadas de abajo eran `kubectl exec … su git -c "forgejo admin …"`,
+  # y parecian irreductibles: no hay endpoint de ADMIN para acuñar el testigo de
+  # otro usuario.
+  #
+  # ⇒ Pero este guion CREA a ese usuario, asi que la contraseña la pone el — y
+  #   con autenticacion basica puede pedir el testigo en su nombre. El `exec`
+  #   era comodidad, no necesidad. Probado contra la forja de verdad con un
+  #   usuario de usar y tirar: 201, 201, 204.
+  #
+  # ⚠️ La contraseña se genera aqui, se usa una vez y no se guarda en ningun
+  #   sitio. `serve-<inquilino>` NO es una persona: nadie va a iniciar sesion
+  #   con ella. Lo que sale de aqui y sirve es el testigo, y ese va al almacen.
+  CLAVE="s-$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 22)"
+  forja_api POST "/admin/users" "{\"username\":\"serve-$NOMBRE\",\
+\"email\":\"serve-$NOMBRE@invalido.paladio.io\",\"password\":\"$CLAVE\",\
+\"must_change_password\":false}" >/dev/null
   hecho "usuario serve-$NOMBRE"
   hecho "colaborador de SU arbol, y de ninguno mas · $(forja_api PUT \
     "/repos/$ARBOL/collaborators/serve-$NOMBRE" '{"permission":"write"}')"
-  TESTIGO=$(kubectl exec -n "$FORJA_NS" forja-0 -- su git -c \
-    "forgejo admin user generate-access-token --username serve-$NOMBRE --token-name ore-serve --scopes write:repository" \
-    2>/dev/null | tr -d '\r' | sed 's/.*: //')
+  # ⛔ Con BASICA y no con el testigo de administrador: Forgejo exige que quien
+  #   pide un testigo sea su dueño. Es una regla suya y es la correcta.
+  TESTIGO=$(forja_basica "serve-$NOMBRE" "$CLAVE" \
+    "/users/serve-$NOMBRE/tokens" '{"name":"ore-serve","scopes":["write:repository"]}')
   # ⛔ Y no se imprime. Va derecho al almacen en el paso siguiente.
   [ -n "$TESTIGO" ] && hecho "testigo acunado · $(printf %s "$TESTIGO" | wc -c) bytes, y no se enseña"
 fi
@@ -301,7 +373,7 @@ else
     "/repos/$COMPARTIMENTO/collaborators/flux" '{"permission":"read"}')"
 fi
 
-"$PY" "$(ruta "$RAIZ/malla/gen-inquilino.py")" "$NOMBRE" --arbol "$ARBOL" --a "$(ruta "$TMP/rendido")" \
+"$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --arbol "$ARBOL" --a "$(ruta "$TMP/rendido")" \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 
@@ -335,15 +407,22 @@ hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 if [ -n "$SECO" ]; then
   haria "empujar esos manifiestos a $COMPARTIMENTO"
 else
-  PUERTO_FORJA=3129
-  kubectl port-forward -n "$FORJA_NS" svc/forja "$PUERTO_FORJA:3000" >/dev/null 2>&1 &
-  TUNEL=$!
-  trap 'kill "$TUNEL" 2>/dev/null; rm -rf "$TMP"' EXIT
-  for _ in 1 2 3 4 5 6 7 8; do
-    curl -sS -o /dev/null "http://localhost:$PUERTO_FORJA/api/v1/version" 2>/dev/null && break
-    sleep 1
-  done
-  URL_COMP="http://localhost:$PUERTO_FORJA/$COMPARTIMENTO.git"
+  # ⭐ DENTRO no hay tunel que abrir: la forja esta a un salto. Estas seis lineas
+  #   son exactamente lo que el Job se ahorra, y por eso estan aisladas.
+  TUNEL=""
+  if [ -n "${DENTRO:-}" ]; then
+    URL_COMP="$FORJA_URL/$COMPARTIMENTO.git"
+  else
+    PUERTO_FORJA=3129
+    kubectl port-forward -n "$FORJA_NS" svc/forja "$PUERTO_FORJA:3000" >/dev/null 2>&1 &
+    TUNEL=$!
+    trap 'kill "$TUNEL" 2>/dev/null; rm -rf "$TMP"' EXIT
+    for _ in 1 2 3 4 5 6 7 8; do
+      curl -sS -o /dev/null "http://localhost:$PUERTO_FORJA/api/v1/version" 2>/dev/null && break
+      sleep 1
+    done
+    URL_COMP="http://localhost:$PUERTO_FORJA/$COMPARTIMENTO.git"
+  fi
   # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
   #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
   #   que lee cualquier proceso de la maquina. Es lo mismo que hace
@@ -371,7 +450,7 @@ else
       commit -q -m "El compartimento del inquilino $NOMBRE"
     git push -q -u origin HEAD:main )
   R=$?
-  kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT
+  [ -n "$TUNEL" ] && { kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT; }
   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
   case $R in
     0) hecho "empujado a $COMPARTIMENTO" ;;

@@ -68,6 +68,23 @@ ENTRYPOINT ["/bin/ore"]
 # ellas se conecta y no sabe con quién habla.
 FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 
+# ── ⭐ `git` y `psql`, y los dos por el APROVISIONADOR ──────────────────────
+#
+# Esta imagen ya no es sólo la de los drivers: es también la del Job que da de
+# alta un inquilino (`16-el-aprovisionador.yaml`), y ése necesita las cuatro
+# herramientas a la vez —`gcloud` para la nube, `curl` para la forja, `git` para
+# empujar el compartimento y `psql` para leer la fila—.
+#
+# ⚠️ `psql` faltaba, y el síntoma no lo dijo: el guion leía la fila con la salida
+# de error tapada, así que un `psql: not found` salió como «`prueba` no está
+# fundada» — un mensaje que manda a mirar la base de datos cuando lo que falta
+# es un binario. Costó un pod de usar y tirar averiguarlo.
+#
+# ⇒ Y es lo que permite que el Job lea como `aprovisionador`, el papel de la
+#   `023`: cuatro columnas de una tabla, en vez del `kubectl exec` que era un
+#   `psql` como superusuario dentro del pod de la base.
+RUN apk add --no-cache git postgresql-client
+
 COPY --from=build /src/target/release/ore                /usr/local/bin/ore
 COPY --from=build /src/target/release/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
 COPY --from=build /src/target/release/ore-read-postgres  /usr/local/bin/ore-read-postgres
