@@ -75,6 +75,39 @@ spec:
 #   lo que la E6 decide. Mientras el modo de banco (`--identidad cabecera`) esté
 #   encendido en algún inquilino, ESTO NO SE APLICA a ese inquilino: publicaría
 #   un formulario donde cualquiera escribe quién es.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: salud-del-control
+  namespace: t-demo
+spec:
+  # ── ⛔⛔ Y ESTO NO SOBRA, aunque el pod YA diga dónde está su salud ───────
+  #
+  # `ore-serve` lleva una `readinessProbe` a `/salud` desde el primer día. El
+  # `Ingress` clásico la DEDUCE y comprueba ahí. **La `Gateway` no**: se planta
+  # en `GET /`, que `ore-serve` no sirve, y el backend se queda `UNHEALTHY`.
+  #
+  # ⇒ Y el síntoma no dice nada de sondas ni de rutas: el balanceador contesta
+  #   **`503 no healthy upstream`**, que se lee como «tu servicio está caído» y
+  #   manda a mirar el pod — que está perfectamente vivo y contestando `200` a
+  #   quien le pregunta por dentro. Medido: eso es exactamente lo que pasó.
+  #
+  # ⚠️ Es una trampa de MIGRACIÓN, y por eso queda escrita aquí. Quien pase un
+  #   servicio de `Ingress` a `Gateway` pierde en silencio una configuración que
+  #   nunca escribió, porque la escribía el controlador por él.
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: /salud
+        # El puerto del backend, sin repetirlo. Escribir `8080` aquí sería un
+        # segundo sitio donde vive el mismo número.
+        portSpecification: USE_SERVING_PORT
+  targetRef:
+    group: ""
+    kind: Service
+    name: ore-serve
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
