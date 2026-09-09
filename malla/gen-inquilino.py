@@ -79,6 +79,24 @@ PLANTILLAS = [
     "50-jwks.yaml",
 ]
 
+# ⛔⛔ LO QUE SE DEJA FUERA A PROPOSITO, Y CON SU MOTIVO ESCRITO.
+#
+# La comprobacion ⑥ exige que cada YAML de `malla/` tenga dueño. Sin esta tabla
+# habria dos formas de no tenerlo —olvidarlo y decidirlo— y se verian igual.
+#
+# ⭐ Que excluir sea ESCRIBIR AQUI UNA FRASE es la mitad del valor: quien lo
+#   haga tiene que decir por que, y el que venga detras lo lee en vez de
+#   deducirlo de una ausencia.
+FUERA = {
+    "61-realms.yaml": (
+        "Los tres `KeycloakRealmImport` vivos difieren del fichero, asi que "
+        "aplicarlos les sube la `generation` y el operador REIMPORTA los realms. "
+        "Y el realm vivo lleva cosas que el fichero no describe — `ore-agente` en "
+        "`rubix-dev` se creo a mano con `kcadm`, y su secreto vive en el `Secret` "
+        "`idp-agente`. Entra cuando fichero y realms digan lo mismo."
+    ),
+}
+
 MODELO = "demo"
 
 # ⛔ Como PALABRA, no como subcadena. La primera version buscaba `demo` en
@@ -218,6 +236,64 @@ def comprobar():
                 "`PLANTILLAS`: renderizar otro cliente lo dejaria fuera"
                 % (f.name, culpables[0][0]))
     print("  ⑤ ningun otro manifiesto de `malla/` lleva el inquilino en un valor")
+
+    # ── ⑥ Y QUE NINGUN FICHERO SE QUEDE SIN QUIEN LO APLIQUE ──────────────
+    #
+    # ⭐⭐ La hermana de la ⑤, y es la misma caminata con la pregunta al reves.
+    #   Desde que `malla/` esta bajo Flux, cada YAML de aqui pertenece a
+    #   EXACTAMENTE UNA de tres listas:
+    #
+    #     PLANTILLAS            lo del inquilino. Lo aplica `inquilino-<org>`
+    #     kustomization.yaml    lo de la plataforma. Lo aplica `malla`
+    #     `9x-`                 pruebas. Las corre una persona, a mano
+    #
+    #   ⛔ Un fichero en NINGUNA no da un error: no lo aplica nadie, y quien lo
+    #     escriba creera que si. Es el mismo fallo silencioso que la ⑤ caza del
+    #     otro lado, y sin esto la unica forma de notarlo es que algo no exista
+    #     el dia que haga falta.
+    #
+    #   ⛔⛔ Y un fichero en DOS es peor: dos `Kustomization` gobernando el
+    #     mismo objeto no fallan — se lo escriben por turnos. Una plantilla que
+    #     alguien edite pensando que edita una plantilla se aplicaria a un
+    #     cliente.
+    #
+    # ⚠️ Se lee el fichero a mano y no con un analizador de YAML: `pyyaml` no
+    #   esta garantizado aqui, y lo que hace falta es la lista de `resources`,
+    #   que son lineas `  - <fichero>`.
+    kfile = MALLA / "kustomization.yaml"
+    if not kfile.exists():
+        fallos.append("no hay `malla/kustomization.yaml`: Flux no sabria que aplicar")
+    else:
+        listados = set(
+            re.findall(r"^\s*-\s+(\S+\.yaml)\s*$", kfile.read_text(encoding="utf-8"), re.M)
+        )
+        for f in sorted(MALLA.glob("*.yaml")):
+            if f.name == "kustomization.yaml":
+                continue
+            plantilla, plataforma, prueba = (
+                f.name in PLANTILLAS, f.name in listados, f.name[0] == "9",
+            )
+            if f.name in FUERA:
+                # Fuera a proposito. Se dice, y con su motivo: una exclusion
+                # muda no se distingue de un olvido.
+                if plataforma:
+                    fallos.append(
+                        "`%s` esta en `FUERA` y tambien en `kustomization.yaml`"
+                        % f.name)
+                continue
+            if plantilla and plataforma:
+                fallos.append(
+                    "`%s` esta en `PLANTILLAS` **y** en `kustomization.yaml`: dos "
+                    "`Kustomization` gobernarian el mismo objeto" % f.name)
+            elif not (plantilla or plataforma or prueba):
+                fallos.append(
+                    "`%s` no esta en `PLANTILLAS`, ni en `kustomization.yaml`, ni es "
+                    "una prueba `9x-`: NO LO APLICA NADIE" % f.name)
+        for n in sorted(listados - {p.name for p in MALLA.glob("*.yaml")}):
+            fallos.append("`kustomization.yaml` lista `%s`, que no existe" % n)
+    for n, porque in sorted(FUERA.items()):
+        print("     ⚠️ `%s` fuera a proposito — %s" % (n, porque[:58] + "…"))
+    print("  ⑥ cada YAML de `malla/` tiene exactamente un dueño que lo aplica")
 
     if fallos:
         print("\n⛔ EL RENDERIZADOR MIENTE:")
