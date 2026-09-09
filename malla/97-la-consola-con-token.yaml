@@ -97,23 +97,12 @@ spec:
             requests: {cpu: "100m", memory: 256Mi}
             limits:   {cpu: "500m", memory: 512Mi}
 ---
-# Pedir un token es una cosa normal, y por eso esto alcanza a TODO el
-# inquilino y no a un rol: cualquiera que vaya a hablar con el plano de control
-# necesita antes hablar con el emisor. Lo que sigue sin poder es salir a
-# internet — eso lo decide `salida-del-driver`, y esta regla no lo toca.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-al-emisor
-  namespace: t-demo
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              ore.dev/rol: identidad
-      ports:
-        - protocol: TCP
-          port: 8080
+# ✓ `salida-al-emisor` SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
+#
+# Vivia aqui, en un fichero de PRUEBAS, y `t-demo` la tenia solo porque alguien
+# habia corrido este test. El segundo inquilino nacio sin ella y su refresco de
+# JWKS no pudo hablar con el emisor — el sintoma fue un `curl` agotado a los
+# 134 segundos, que manda a mirar el IdP y no una politica que no existe.
+#
+# ⇒ Una regla que un inquilino NECESITA no puede vivir en su prueba. Es el
+#   mismo movimiento que `salida-a-la-forja` ya hizo saliendo de `30-forja.yaml`.
