@@ -218,10 +218,30 @@ spec:
       ore.dev/rol: forja
   policyTypes: [Ingress]
   ingress:
+    # ✏️ 2026-09-09 · esto decía `ore.dev/tenant: demo`, y con un `ore-serve` por
+    # organización el segundo cliente no habría podido clonar su propio árbol.
+    # Ahora nombra el ROL del namespace —`cargas`, que llevan todos los
+    # inquilinos— en vez del nombre de uno.
+    #
+    # ⭐ Y de paso se estrecha: dentro de ese namespace, sólo los dos roles que
+    # de verdad hablan con la forja. `namespaceSelector` y `podSelector` en el
+    # MISMO elemento se cruzan (y); en elementos distintos se suman (o).
+    #
+    #   control   `ore-serve`, que clona en cada petición y empuja la que escribe
+    #   driver    el Job que publica lo que un `discover` decidió (`95`)
+    #
+    # ⛔ Un rol nuevo que quisiera hablar con la forja NO pasa, y tiene que
+    # añadirse aquí. Es P4: omitir es cerrar. Una lista que se abriera sola
+    # dejaría de decir nada.
     - from:
         - namespaceSelector:
-            matchLabels:
-              ore.dev/tenant: demo
+            matchLabels: {ore.dev/rol: cargas}
+          podSelector:
+            matchLabels: {ore.dev/rol: control}
+        - namespaceSelector:
+            matchLabels: {ore.dev/rol: cargas}
+          podSelector:
+            matchLabels: {ore.dev/rol: driver}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ore-system

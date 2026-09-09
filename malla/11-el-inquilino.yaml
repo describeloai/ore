@@ -1,0 +1,134 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# UN INQUILINO — y esto es la PLANTILLA, no la configuración de `demo`
+#
+# ── ⛔ Por qué esto sale de `10-kueue.yaml` ─────────────────────────────────
+#
+# El namespace del inquilino nacía dentro del manifiesto de la COLA. Con uno
+# daba igual. Con `ore-serve` por organización —decidido, porque los clientes
+# son enterprise y administración pública— dar de alta al segundo no puede
+# significar reaplicar la configuración de Kueue: son dos cosas con dos ritmos,
+# y una de ellas la va a escribir una máquina.
+#
+# ⇒ En `10-kueue.yaml` se queda lo que es del CLÚSTER —el sabor, que describe
+#   qué nodos sirven—. Aquí está lo que es de UN inquilino.
+#
+# ── ⭐⭐ LO QUE CAMBIA POR INQUILINO, Y NO HAY MÁS ─────────────────────────
+#
+#       demo        el nombre de la organización        (`iam.organizacion.nombre`)
+#       t-demo      su namespace                        `t-<nombre>`
+#       cq-demo     su cola de clúster                  `cq-<nombre>`
+#
+# Tres sustituciones. Es lo que el aprovisionador tendrá que rellenar, y por eso
+# están dichas aquí arriba en vez de descubrirse leyendo.
+#
+# ⚠️ Y lo que NO está aquí, a propósito, porque no se puede escribir de
+# antemano: los dos `Secret` —el testigo de la forja de ESE inquilino y el del
+# agente— y el repositorio en la forja. Los tres nacen de tres llamadas a la
+# forja y al IdP, no de un YAML.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cargas
+
+    # ── Pod Security Admission ─────────────────────────────────────────────
+    #
+    # ⚠️ `baseline` y no `restricted`, y la diferencia importa: `restricted`
+    # RECHAZA un pod que no declare `runAsNonRoot` y `seccompProfile`, y hoy los
+    # nuestros no los declaran. Ponerlo ahora no endurecería el inquilino: lo
+    # dejaría sin arrancar.
+    #
+    # ⭐ Por eso `warn` y `audit` SÍ van a `restricted`: cada pod que no llegue
+    # lo dice al crearse y queda en el registro de auditoría del clúster. Es la
+    # lista de trabajo para subir el `enforce`, y se escribe sola.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# ── La cola del inquilino, dentro de un COHORTE ────────────────────────────
+#
+# El cohorte es la pieza que hoy no se ve y mañana lo es todo: las colas de un
+# mismo cohorte se PRESTAN la cuota que no usan. Con un inquilino no hace nada;
+# con dos, el segundo se declara y el reparto justo ya existe — no hay que
+# rediseñar la cola, hay que escribir un manifiesto.
+#
+# La cuota nominal sale de lo que el pool puede dar de VERDAD: 3 nodos
+# e2-standard-4 son 12 vCPU y 48 Gi en bruto, y GKE reserva por nodo. Se
+# declara 10 y 36Gi, que es conservador a propósito: una cuota que promete más
+# de lo que hay convierte una espera en un pod que no arranca nunca.
+#
+# ⚠️ Con varios inquilinos esta cifra deja de ser «lo que hay» y pasa a ser «lo
+# que le toca a éste». `borrowingLimit: 0` dice que no se presta; el día que se
+# quiera repartir de verdad, es aquí y no en otro sitio.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-demo
+spec:
+  namespaceSelector: {}
+  cohortName: ore
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: jobs
+          resources:
+            - name: cpu
+              nominalQuota: 10
+              borrowingLimit: 0
+            - name: memory
+              nominalQuota: 36Gi
+              borrowingLimit: 0
+  preemption:
+    reclaimWithinCohort: Any
+    withinClusterQueue: LowerPriority
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: cola
+  namespace: t-demo
+spec:
+  clusterQueue: cq-demo
+---
+# La misma base que `ore-system`: se niega por defecto, se abre después.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# El techo DURO del namespace, por encima de la cola. Kueue decide CUÁNDO
+# arranca un Job; esto decide cuánto puede pedir en total. Son dos preguntas y
+# hacen falta las dos: sin la cuota, un Job mal escrito pide 40 CPU y Kueue lo
+# deja esperando para siempre en vez de rechazarlo.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cuota
+  namespace: t-demo
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 36Gi
+    count/jobs.batch: "50"

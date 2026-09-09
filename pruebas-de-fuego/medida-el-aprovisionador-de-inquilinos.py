@@ -73,21 +73,24 @@ print("""
 
 print("  El namespace del inquilino se declara en:  %s"
       % (", ".join("%s (%s)" % (a, b) for a, b in donde_ns) or "NINGUN SITIO"))
-exige(any(a.startswith("10-kueue") for a, _ in donde_ns),
-      "`t-demo` ya no se declara en `10-kueue.yaml`: ① cambia")
+# ✔ 2026-09-09 · y ahora se exige lo contrario: que NO vuelva a la cola.
+exige(all(not a.startswith("10-kueue") for a, _ in donde_ns),
+      "el namespace del inquilino ha vuelto a `10-kueue.yaml`")
 print("""
-  ⚠️ Y eso es lo primero que estorba: el namespace del INQUILINO nace dentro del
-    manifiesto de la COLA. Mientras hubo uno solo daba igual; para crear el
-    segundo hay que separarlo, porque aprovisionar un inquilino no puede
-    significar reaplicar la configuracion de Kueue.""")
-hallazgos.append("el namespace del inquilino se declara dentro de `10-kueue.yaml`")
+  ✔ 2026-09-09 · ya no. Vive en `11-el-inquilino.yaml`, que dice arriba las TRES
+    sustituciones que lo definen — `demo`, `t-demo`, `cq-demo`— y en `10-kueue`
+    se queda solo lo que es del cluster: el sabor, que describe que nodos sirven.
+    Antes el inquilino entero estaba dentro del manifiesto de la COLA.""")
+hallazgos.append(("✓ el inquilino tiene su propio fichero, con las 3 sustituciones dichas"
+                  if not donde_ns or all(not a.startswith("10-kueue") for a, _ in donde_ns)
+                  else "el namespace del inquilino se declara dentro de `10-kueue.yaml`"))
 
 # ══════════════════════════════════════════════════════════════════════════
 titulo("②", "QUE HAY DE `demo` CLAVADO — el trabajo de parametrizar")
 # ══════════════════════════════════════════════════════════════════════════
 
 # Sólo las plantillas que constituyen al inquilino. Los `9x-` son pruebas.
-PLANTILLAS = ["10-kueue.yaml", "40-ore-serve.yaml", "50-jwks.yaml"]
+PLANTILLAS = ["11-el-inquilino.yaml", "40-ore-serve.yaml", "50-jwks.yaml"]
 total = 0
 print()
 for f in PLANTILLAS:
@@ -189,7 +192,12 @@ fila(retencion, "retencion de `iam.huella`",
 
 print("\n  LO QUE CORRE")
 fila(psa, "Pod Security Admission",
-     "ningun namespace lleva `pod-security.kubernetes.io/enforce`")
+     "el inquilino: enforce=baseline, warn y audit=restricted"
+     if psa else "ningun namespace lleva `pod-security.kubernetes.io/enforce`")
+# ⚠️ `restricted` NO se aplica todavia: rechazaria los pods que no declaran
+#   `runAsNonRoot` ni seccomp, que son los de abajo. El `warn` los enumera.
+fila(no_root and seccomp, "enforce=restricted",
+     "no, y a proposito: rechazaria los pods de abajo. El `warn` es su lista de trabajo")
 fila(no_root, "runAsNonRoot en `ore-serve`", "no declarado")
 fila(seccomp, "seccompProfile", "no declarado")
 fila(True, "capabilities drop ALL", "si, y `allowPrivilegeEscalation: false`")
@@ -222,7 +230,8 @@ fila(False, "salida de la auditoria",
 hallazgos.append(("✓ la forja ya tiene copia, Y SE RESTAURA en cada vuelta"
                   if copia_forja and restaura else
                   "⛔ LA FORJA NO TIENE COPIA, y guarda el arbol de cada inquilino"))
-hallazgos.append("⛔ ningun namespace declara Pod Security Admission")
+hallazgos.append(("✓ el inquilino declara PSA: `baseline` aplicado, `restricted` avisando"
+                  if psa else "⛔ ningun namespace declara Pod Security Admission"))
 hallazgos.append("⛔ `ore-serve` es una replica sin PodDisruptionBudget")
 hallazgos.append("⛔ no hay entrada por inquilino: 1 Ingress, y es del IdP")
 
@@ -262,7 +271,8 @@ print("""
 
       1  ✓ copia de la forja, con su restauracion probada
       2  ✓ estrechar el testigo
-      3  separar el namespace del inquilino de `10-kueue.yaml`
+      3  ✓ el inquilino en su propio fichero, y `entrada-a-la-forja` deja de
+         nombrar a `demo`: nombra el ROL del namespace
       4  el aprovisionador que ESCRIBE, no que aplica
       5  la entrada por inquilino""")
 

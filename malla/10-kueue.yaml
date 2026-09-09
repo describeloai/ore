@@ -21,91 +21,15 @@ spec:
       value: "true"
       effect: NoSchedule
 ---
-# ── La cola del tenant, dentro de un COHORTE ────────────────────────────────
+# ⛔ LO DEMÁS SE FUE A `11-el-inquilino.yaml` el 2026-09-09.
 #
-# El cohorte es la pieza que hoy no se ve y manana lo es todo: las colas de un
-# mismo cohorte se PRESTAN la cuota que no usan. Con un tenant no hace nada;
-# con dos, el segundo se declara y el reparto justo ya existe — no hay que
-# rediseñar la cola, hay que escribir un manifiesto.
+# Aquí vivían el `Namespace` de `t-demo`, su `ClusterQueue`, su `LocalQueue`, sus
+# dos `deny-all` y su `ResourceQuota`. Es decir: **el inquilino entero estaba
+# dentro del manifiesto de la cola**.
 #
-# La cuota nominal sale de lo que el pool puede dar de VERDAD: 3 nodos
-# e2-standard-4 son 12 vCPU y 48 Gi en bruto, y GKE reserva por nodo. Se
-# declara 10 y 36Gi, que es conservador a proposito: una cuota que promete mas
-# de lo que hay convierte una espera en un pod que no arranca nunca.
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: ClusterQueue
-metadata:
-  name: cq-demo
-spec:
-  namespaceSelector: {}
-  cohortName: ore
-  resourceGroups:
-    - coveredResources: ["cpu", "memory"]
-      flavors:
-        - name: jobs
-          resources:
-            - name: cpu
-              nominalQuota: 10
-              borrowingLimit: 0
-            - name: memory
-              nominalQuota: 36Gi
-              borrowingLimit: 0
-  preemption:
-    reclaimWithinCohort: Any
-    withinClusterQueue: LowerPriority
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: t-demo
-  labels:
-    ore.dev/tenant: demo
-    ore.dev/rol: cargas
----
-apiVersion: kueue.x-k8s.io/v1beta2
-kind: LocalQueue
-metadata:
-  name: cola
-  namespace: t-demo
-spec:
-  clusterQueue: cq-demo
----
-# La misma base que `ore-system`: se niega por defecto, se abre despues.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: deny-all-ingress
-  namespace: t-demo
-spec:
-  podSelector: {}
-  policyTypes: [Ingress]
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: deny-all-egress
-  namespace: t-demo
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
----
-# El techo DURO del namespace, por encima de la cola. Kueue decide CUANDO
-# arranca un Job; esto decide cuanto puede pedir en total. Son dos preguntas y
-# hacen falta las dos: sin la cuota, un Job mal escrito pide 40 CPU y Kueue lo
-# deja esperando para siempre en vez de rechazarlo.
-apiVersion: v1
-kind: ResourceQuota
-metadata:
-  name: cuota
-  namespace: t-demo
-spec:
-  hard:
-    requests.cpu: "10"
-    requests.memory: 36Gi
-    count/jobs.batch: "50"
+# Con uno daba igual. Con `ore-serve` por organización, dar de alta al segundo no
+# puede significar reaplicar la configuración de Kueue — son dos cosas con dos
+# ritmos, y una de ellas la va a escribir una máquina.
+#
+# ⇒ Lo que se queda aquí es lo que es del CLÚSTER: el sabor, que describe qué
+#   nodos sirven para un Job. Eso no se multiplica por inquilino.
