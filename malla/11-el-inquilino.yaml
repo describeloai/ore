@@ -85,12 +85,22 @@ spec:
       flavors:
         - name: jobs
           resources:
+            # ⚠️ ENTRECOMILLADAS, y no es estilo. Son `resource.Quantity`, y el API
+            # las guarda como cadenas: escritas como números se aceptan, pero lo
+            # que queda almacenado es `"10"` y `"0"`. Con eso, el manifiesto y lo
+            # vivo dejan de ser el mismo texto aunque signifiquen lo mismo, y
+            # `la-deriva-del-inquilino.sh` lo canta como una diferencia.
+            #
+            # ⭐ Lo destapó Flux: mientras aplicaba `kubectl` no se notaba, y en
+            # cuanto el agente reescribió el objeto con apply del lado del
+            # servidor apareció. Una diferencia que sólo es de forma ensucia la
+            # prueba que tiene que cazar las que no lo son.
             - name: cpu
-              nominalQuota: 10
-              borrowingLimit: 0
+              nominalQuota: "10"
+              borrowingLimit: "0"
             - name: memory
-              nominalQuota: 36Gi
-              borrowingLimit: 0
+              nominalQuota: "36Gi"
+              borrowingLimit: "0"
   preemption:
     reclaimWithinCohort: Any
     withinClusterQueue: LowerPriority

@@ -62,6 +62,24 @@ metadata:
   namespace: t-demo
   labels:
     ore.dev/tenant: demo
+  annotations:
+    # ── ⭐⭐ EL ÚNICO OBJETO QUE FLUX NO PUEDE RECONCILIAR ────────────────
+    #
+    # `IfNotPresent`: Flux lo CREA si no está y **no lo toca nunca más**. Sin
+    # esto, el agente devolvería `{"keys":[]}` cada pocos minutos —es lo que dice
+    # este manifiesto— y `ore-serve` dejaría de validar tokens en su siguiente
+    # arranque, sin que nada fallara mientras tanto.
+    #
+    # ⇒ Lo encontró la E2 de la `0022` comparando lo declarado con lo vivo, antes
+    #   de que hubiera ningún agente que lo rompiera. La documentación de Flux
+    #   nombra este caso con estas palabras: *«Flux crea los recursos con campos
+    #   que otros controladores mutan después»*.
+    #
+    # ⚠️ Y es la primera aparición de una clase entera: **objetos que un
+    #   manifiesto SIEMBRA y un proceso posee en tiempo de ejecución.** La semilla
+    #   sigue teniendo sentido —`ore-serve` se niega a arrancar con un juego
+    #   vacío y lo dice—; lo que no lo tiene es reimponerla.
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 data:
   # La semilla: un juego vacío. `ore-serve` se NIEGA a arrancar con esto —
   # `Llaves::leer` exige al menos una llave RSA de firma utilizable— y eso es

@@ -1,0 +1,115 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL INQUILINO `demo`, RECONCILIADO DESDE SU REPOSITORIO
+#
+# E3 de la `0022`. Estas dos piezas son las que convierten «hay un repositorio
+# que describe el compartimento» en «el clúster ES ese repositorio».
+#
+#   GitRepository   de dónde se trae, y con qué credencial
+#   Kustomization   qué se aplica de lo traído, y qué pasa si algo sobra
+#
+# ── ⭐ Por qué esto vive en `malla/` y no en el repositorio del inquilino ──
+#
+# Porque es la parte que decide QUÉ SE OBEDECE. Si viviera dentro del
+# repositorio que se obedece, quien pudiera escribir ahí podría cambiar a qué
+# apunta el agente — y la revisión que protege el compartimento no protegería la
+# regla que dice de dónde sale el compartimento.
+#
+# ⇒ La plantilla y el enganche son nuestros; el contenido reconciliado es del
+#   inquilino. Es el mismo corte que la `0022` traza entre plantilla e instancia.
+#
+# ── ⛔ Y el testigo es de SOLO LECTURA, y de UN repositorio ────────────────
+#
+# Una clave de despliegue (`deploy key`) de GitHub, marcada `read_only`, que sólo
+# vale para `describeloai/inquilino-demo`. No es un token de cuenta: si se
+# filtrase, no alcanza a ningún otro repositorio y no puede escribir en éste.
+#
+# Es la misma disciplina que se acaba de aplicar al testigo de la forja, donde el
+# ámbito del token NO era lo que ataba —lo que ata es de quién es y de qué es
+# colaborador—. Aquí una clave de despliegue ata por construcción.
+#
+#     ssh-keygen -t ed25519 -N "" -f llave
+#     gh repo deploy-key add llave.pub --repo describeloai/inquilino-demo
+#     kubectl create secret generic inquilino-demo-llave -n flux-system \
+#       --from-file=identity=llave --from-file=identity.pub=llave.pub \
+#       --from-file=known_hosts=<(ssh-keyscan github.com)
+#
+# ⚠️ El `Secret` NO está en este árbol y no puede estarlo. Es la misma pregunta
+# sin contestar de la E4, asomando aquí por primera vez: **los secretos no van en
+# un repositorio**, así que hay uno que alguien pone a mano hasta que se decida
+# cómo viajan.
+#
+# ── ⛔⛔ Y DESDE HOY, `t-demo` NO SE APLICA A MANO ─────────────────────────
+#
+# Los objetos del inquilino los posee `kustomize-controller`. Un
+# `kubectl apply -f malla/11-el-inquilino.yaml` seguiría funcionando —el
+# contenido es el mismo— pero se pelearía por la propiedad de los campos, y lo
+# que valga acabaría dependiendo de quién escribió el último.
+#
+# ⇒ Para cambiar el compartimento de un inquilino: se cambia la PLANTILLA, se
+#   renderiza, y se empuja a su repositorio. El resto de `malla/` —la forja, el
+#   IdP, Kueue, este mismo fichero— se sigue aplicando a mano, porque nadie lo
+#   reconcilia todavía.
+#
+# ⭐ Probado el 2026-09-09: se subió `ore-serve` a 3 réplicas a mano y la primera
+#   reconciliación lo devolvió a 1. La deriva dejó de ser invisible **y dejó de
+#   durar**.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: inquilino-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: agente
+spec:
+  # Cinco minutos. No es una carrera: lo que esto persigue no es aplicar rápido
+  # un commit —eso se puede forzar— sino que la deriva no viva mucho tiempo.
+  interval: 5m
+  url: ssh://git@github.com/describeloai/inquilino-demo.git
+  ref:
+    branch: main
+  secretRef:
+    name: inquilino-demo-llave
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: inquilino-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: agente
+spec:
+  interval: 10m
+  path: ./
+  sourceRef:
+    kind: GitRepository
+    name: inquilino-demo
+
+  # ⭐⭐ `prune: true` ES LO QUE HACE QUE ESTO SEA GITOPS Y NO UN DESPLIEGUE.
+  #
+  # Quitar un objeto del repositorio lo BORRA del clúster. Sin esto, el
+  # repositorio diría lo que hay que crear pero no lo que hay que tener, y un
+  # recurso retirado de la plantilla seguiría vivo para siempre — que es la
+  # deriva que esto viene a matar.
+  #
+  # ⛔ Y hay que mirar el filo: un commit que borre un fichero por error borra
+  # esos objetos. Ésa es exactamente la razón de que la `0022` ponga el
+  # repositorio bajo revisión y de que deshacer sea un `revert` — el peligro no
+  # se quita, se pone donde se ve y se puede revisar.
+  prune: true
+
+  # Espera a que lo aplicado esté LISTO, no sólo aceptado. Sin esto, un
+  # `Deployment` que no arranca deja la reconciliación en verde y el fallo
+  # aparece cuando alguien mira los pods.
+  wait: true
+  timeout: 3m
+
+  # ⚠️ Y NO se le da `serviceAccountName`, todavía. Eso haría que esta
+  # reconciliación se ejecutara con una cuenta acotada al inquilino en vez de con
+  # el `cluster-admin` del controlador — que es lo que convierte «un agente
+  # omnipotente» en «un agente que sólo puede tocar lo suyo». No se hace hoy
+  # porque este manifiesto CREA su propio `Namespace`, que es un recurso de
+  # clúster y no cabe en una cuenta acotada al namespace. Va con la E7, y está
+  # dicho aquí para que no se descubra tarde.

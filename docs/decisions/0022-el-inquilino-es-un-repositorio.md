@@ -154,10 +154,36 @@ de esta etapa.
 > otro, se pone rojo. Un objeto exento y nombrado es una decisión; una prueba que tolerase
 > «alguna diferencia» no sería una prueba.
 
-**E3 · El agente de GitOps.** Apuntado a ese repositorio. Desde aquí el clúster converge solo.
+**E3 · El agente de GitOps.** ✔ 2026-09-09 · **Flux**, y sólo dos de sus controladores —
+`source-controller` y `kustomize-controller`—, vendidos y pinchados en v2.9.5 en `malla/12-flux.yaml`.
+Sin `helm`, sin `notification`, sin los de imágenes: cada uno sería superficie que alguien tiene
+que mantener y parchear.
 
-⚠️ Y con la primera pregunta ya escrita por la E2: qué objetos **no** debe reconciliar, y cómo se
-le dice. Empezando por el `jwks`.
+El enganche está en `malla/13-el-inquilino-reconciliado.yaml`, y vive en `malla/` **y no en el
+repositorio del inquilino** a propósito: es la parte que decide qué se obedece. Si viviera dentro
+de lo que se obedece, quien pudiera escribir ahí cambiaría a qué apunta el agente.
+
+El testigo es una **clave de despliegue de sólo lectura** de ese único repositorio: si se filtrase,
+no alcanza a ningún otro y no puede escribir en éste.
+
+⭐ **Probado:** se subió `ore-serve` a 3 réplicas a mano y la primera reconciliación lo devolvió a 1.
+La deriva dejó de ser invisible **y dejó de durar**.
+
+Y la pregunta que la E2 dejó escrita tiene respuesta exacta: `kustomize.toolkit.fluxcd.io/ssa:
+IfNotPresent` — Flux crea el objeto si no está y no lo toca nunca más. La documentación de Flux
+nombra el caso con estas palabras: *«Flux crea los recursos con campos que otros controladores
+mutan después»*. Comprobado: tras la primera reconciliación, los dueños de ese `ConfigMap` siguen
+siendo `kubectl` y el `curl` del CronJob — Flux no lo tocó.
+
+⛔ **Y lo que E3 cambia en la costumbre:** `t-demo` ya no se aplica a mano. Para cambiar el
+compartimento de un inquilino se cambia la PLANTILLA, se renderiza y se empuja a su repositorio.
+El resto de `malla/` se sigue aplicando a mano, porque nadie lo reconcilia todavía.
+
+⚠️ Y una cosa que sale de frente: `kustomize-controller` recibe **`cluster-admin`**. No es una
+traición a ① — el permiso no desaparece, se CONCENTRA: en vez de repartirlo por cada pieza que
+necesite crear algo, lo tiene un componente con versión pinchada, manifiesto en revisión y una sola
+forma de decirle qué hacer. Acotarlo por inquilino (`spec.serviceAccountName`) choca hoy con que el
+manifiesto del inquilino CREA su propio `Namespace`, que es un recurso de clúster. Va con la E7.
 
 ⭐ Y esto ya paga por sí mismo aunque no haya un segundo cliente nunca: hoy `kubectl apply -f
 malla/` lo hace una persona, y **lo que nadie aplicó no se distingue de lo que nadie escribió**.

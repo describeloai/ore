@@ -26,9 +26,25 @@
 #   minutos, y `ore-serve` dejaría de validar tokens en su siguiente arranque —
 #   sin que nada fallara mientras tanto.
 #
-# Se arregla en la E3 diciéndoselo al agente (`ignoreDifferences` sobre `.data`),
-# y hasta entonces está aquí, con nombre. Un objeto EXENTO y nombrado es una
-# decisión; una prueba que tolerase «alguna diferencia» no sería una prueba.
+# ✔ 2026-09-09 · arreglado en la E3: ese `ConfigMap` lleva la anotación
+# `kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`, que le dice a Flux que lo cree
+# si no está y **no lo toque nunca más**. La documentación de Flux nombra este
+# caso con estas palabras: *«Flux crea los recursos con campos que otros
+# controladores mutan después»*.
+#
+# ⇒ Aquí sigue exento porque el manifiesto declara la semilla y lo vivo lleva las
+#   llaves: son distintos y tienen que serlo. Lo que cambió es que ya no es una
+#   trampa esperando a que llegue un agente — el agente ya sabe.
+#
+# Un objeto EXENTO y nombrado es una decisión; una prueba que tolerase «alguna
+# diferencia» no sería una prueba.
+#
+# ⭐ Y desde que Flux reconcilia, esta prueba cambia de significado: ya no busca
+# a alguien que tocó el clúster a mano —eso lo corrige el agente solo— sino que
+# comprueba que **la plantilla y lo que el agente aplica siguen diciendo lo
+# mismo**. El día que el repositorio del inquilino se quede viejo respecto a la
+# plantilla, esto se pone rojo y el agente no, porque el agente obedece al
+# repositorio y no sabe de qué plantilla salió.
 #
 # ⚠️ Y la exención es sólo para ESE objeto. Si mañana difiere otro, esto se pone
 #    rojo — que es justo lo que tiene que pasar.
