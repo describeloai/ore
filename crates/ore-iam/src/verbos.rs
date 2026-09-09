@@ -362,7 +362,11 @@ pub fn revocar(tx: &mut Tx, sujeto: &Identidad, emisor: &str, id: &str) -> Resul
 
 // ── el sujeto, en la tabla ──────────────────────────────────────────────────
 
-fn persona_id(tx: &mut Tx, emisor: &str, sub: &str) -> Result<String, String> {
+/// ⭐ `pub` desde que existe `ore-cofre`: el custodio necesita saber QUIEN pide,
+/// y resolver `(emisor, sub) → persona` es una pregunta con una sola respuesta
+/// correcta. Que la conteste este modulo y no una copia suya es lo que evita
+/// que dos binarios discrepen sobre quien es alguien.
+pub fn persona_id(tx: &mut Tx, emisor: &str, sub: &str) -> Result<String, String> {
     tx.uno(
         "select id from iam.persona where emisor = $1 and sub = $2",
         &[&emisor, &sub],

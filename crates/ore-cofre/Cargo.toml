@@ -1,0 +1,34 @@
+[package]
+name = "ore-cofre"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "El custodio: guarda el material cifrado y lo abre a quien puede"
+
+# ⚠️ Mismo aviso que `ore-iam`: NO ENLAZA en Windows sin MinGW, porque `postgres`
+# trae `tokio`. `cargo check` y `cargo clippy` sí pasan.
+
+[dependencies]
+# ── ⭐⭐ EL MOTOR DE AUTORIZACIÓN ES EL DE `ore-iam`, NO UNA COPIA ──────────
+#
+# «¿Puede este sujeto abrir este secreto?» ya está contestada allí: `exige`, la
+# unión de conjuntos de la `016`, y la regla de que «no perteneces» y «no
+# puedes» den el MISMO mensaje. Escribir aquí una segunda versión sería tener
+# DOS motores contestando la misma pregunta — que es exactamente lo que la
+# `0023` rechaza de Vault, y peor si lo hacemos nosotros por descuido.
+ore-iam = { path = "../ore-iam" }
+
+# El servidor, el token del realm y la forma canónica. Los mismos que montan
+# `ore-serve` y `ore-iam`, para que haya UNA definición de qué es un sujeto.
+ore-core = { path = "../ore-core" }
+ore-entrada = { path = "../ore-entrada" }
+
+# ⛔ Y NADA para hablar con el KMS. Ni TLS, ni OAuth, ni criptografía.
+#
+# Se le habla al CLIENTE de la nube por un subproceso, que es lo que ya hace
+# `ore-read-bigquery` con `bq` — y su frase vale igual aquí: «este programa no
+# habla con BigQuery, habla con el». Lo que se evita con eso son tres cosas
+# cuyo modo de fallo es silencioso y en la dirección insegura.
+postgres = { version = "0.19", default-features = false }

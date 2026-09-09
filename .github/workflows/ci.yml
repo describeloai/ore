@@ -238,6 +238,24 @@ jobs:
           cargo build --quiet -p ore-iam
           bash pruebas-de-fuego/los-verbos.sh
 
+      # ⭐ EL CUSTODIO. Con un cliente de KMS de mentira, y se dice por que no
+      # debilita nada: el cerrojo de la llave —que un inquilino no pueda usar la
+      # de otro— esta probado contra Google en `malla/99-el-cerrojo-de-la-llave`,
+      # con IAM de verdad. Repetirlo aqui exigiria credenciales de nube en CI.
+      #
+      # Lo que esto fija es TODO LO DEMAS: quien emite, quien resuelve, que «no
+      # existe» y «no es tuyo» den el mismo error, que el valor no salga por
+      # ninguna otra puerta, y que abrir deje huella sin el valor dentro.
+      - name: y el custodio guarda, abre a quien puede, y no filtra el valor
+        env:
+          PG_URL: postgres://postgres:x@localhost:5432
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: x
+        run: |
+          cargo build --quiet -p ore-cofre
+          bash pruebas-de-fuego/el-cofre.sh
+
   fuentes-reales:
     runs-on: ubuntu-24.04
     services:
