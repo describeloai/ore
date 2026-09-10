@@ -146,6 +146,15 @@ impl Servidor {
                 })
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
+            // ⭐⭐ EL ESQUEMA DESCUBIERTO, que hasta hoy no salia por ningun
+            //   sitio. `/paquetes` daba nombre, version y cuantas decisiones
+            //   quedan abiertas — util para una lista, inutil para una ficha.
+            //   La consola pintaba un esquema de mentira porque no habia de
+            //   donde sacar el de verdad.
+            ("GET", ["paquetes", n, "esquema"]) => {
+                let n = n.to_string();
+                self.leyendo(move |r| esquema(r, &n))
+            }
             ("GET", ["paquetes", n, "decisiones"]) => {
                 let n = n.to_string();
                 self.leyendo(move |r| decisiones(r, &n))
@@ -553,6 +562,129 @@ fn paquetes(raiz: &Path) -> Respuesta {
     )]))
 }
 
+/// ⭐⭐ LO QUE `ore discover` ENCONTRO DE VERDAD.
+///
+/// Un paquete guarda una entidad por fichero en `entities/`, y cada una es un
+/// documento OOS: `metadata.name`, `metadata.namespace`, `spec.properties`.
+/// Esto las lee y las devuelve tal cual — sin resumir, sin ordenar por nada que
+/// no sea el nombre, y sin inventar lo que el fichero no dice.
+///
+/// ⛔ Y NO se rellena lo que no consta. Una ficha de catalogo suele querer
+///   «filas estimadas», y aqui no hay: el inductor lee el ESQUEMA, no cuenta
+///   filas. Devolver un cero seria afirmar que la tabla esta vacia, y devolver
+///   un numero inventado es peor. Lo que falta se omite, y quien pinte decide
+///   como se dice «no lo se».
+///
+/// ⚠️ Un fichero que no analiza se SALTA y se cuenta. Un paquete a medias tiene
+///   que poder verse a medias — negarse entero porque una entidad esta rota
+///   esconde las diecinueve que estan bien.
+fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
+    let dir = match paquete_de(raiz, paquete) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let Ok(entradas) = std::fs::read_dir(dir.join("entities")) else {
+        return Respuesta::ok(Json::obj([
+            ("entities", Json::Arr(Vec::new())),
+            (
+                "nota",
+                Json::s("el paquete no tiene `entities/`: o no se indujo, o no encontro nada"),
+            ),
+        ]));
+    };
+
+    let mut rotos = 0usize;
+    let mut lista: Vec<(String, Json)> = Vec::new();
+    for e in entradas.flatten() {
+        let camino = e.path();
+        if camino.extension().and_then(|x| x.to_str()) != Some("yaml") {
+            continue;
+        }
+        let Ok(texto) = std::fs::read_to_string(&camino) else {
+            rotos += 1;
+            continue;
+        };
+        let Ok(doc) = parse::parse(&texto) else {
+            rotos += 1;
+            continue;
+        };
+        let en = |padre: &str, k: &str| {
+            doc.get(padre)
+                .and_then(|(_, m)| m.get(k))
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let nombre = en("metadata", "name");
+        if nombre.is_empty() {
+            rotos += 1;
+            continue;
+        }
+
+        // Las propiedades: `nombre: { type: … }` o `nombre: { type: …, labels: … }`.
+        let mut props: Vec<Json> = Vec::new();
+        if let Some((_, spec)) = doc.get("spec")
+            && let Some((_, p)) = spec.get("properties")
+            && let Node::Mapping { entries, .. } = p
+        {
+            for (k, v) in entries {
+                let Some(k) = k.as_str() else { continue };
+                let tipo = v
+                    .get("type")
+                    .and_then(|(_, t)| t.as_str())
+                    .unwrap_or_default();
+                props.push(Json::obj([("name", Json::s(k)), ("type", Json::s(tipo))]));
+            }
+        }
+
+        // ⚠️ La clave primaria es una LISTA, y se devuelve como tal: decir solo
+        //   la primera columna de una clave compuesta seria una media verdad
+        //   que ademas parece entera.
+        let mut clave: Vec<Json> = Vec::new();
+        if let Some((_, spec)) = doc.get("spec")
+            && let Some((_, pk)) = spec.get("primaryKey")
+            && let Node::Sequence { items, .. } = pk
+        {
+            for it in items {
+                if let Some(c) = it.as_str() {
+                    clave.push(Json::s(c));
+                }
+            }
+        }
+
+        lista.push((
+            format!("{}/{}", en("metadata", "namespace"), nombre),
+            Json::obj([
+                ("name", Json::s(&nombre)),
+                ("namespace", Json::s(en("metadata", "namespace"))),
+                (
+                    "backedBy",
+                    Json::s(
+                        doc.get("spec")
+                            .and_then(|(_, sp)| sp.get("backedBy"))
+                            .and_then(|(_, v)| v.as_str())
+                            .unwrap_or_default(),
+                    ),
+                ),
+                ("primaryKey", Json::Arr(clave)),
+                ("properties", Json::Arr(props)),
+            ]),
+        ));
+    }
+    lista.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut salida = vec![(
+        "entities",
+        Json::Arr(lista.into_iter().map(|(_, j)| j).collect()),
+    )];
+    if rotos > 0 {
+        // ⭐ Se dice cuantas se saltaron. Una lista mas corta de lo que deberia
+        //   y en silencio es la peor forma de contestar.
+        salida.push(("ilegibles", Json::Int(rotos as i64)));
+    }
+    Respuesta::ok(Json::obj(salida))
+}
+
 /// La cola tal como el inductor la dejó: cada decisión con su `id`, su `because`
 /// y sus `options`. **Es un formulario servido en JSON**, y por eso esta ruta no
 /// la reescribe — reordenar u omitir aquí sería una segunda opinión sobre lo que
@@ -728,6 +860,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/fuentes", con_identidad),
         ("POST", "/fuentes", con_identidad),
         ("GET", "/paquetes", con_identidad),
+        ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
     ]

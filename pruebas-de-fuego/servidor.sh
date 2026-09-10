@@ -140,6 +140,30 @@ grep -q '"options"' "$TMP/cola.json" || falla "4 · la cola no trae \`options\`"
 grep -q '"because"' "$TMP/cola.json" || falla "4 · la cola no trae \`because\`"
 dice "4 · la cola sale con \`options\` y \`because\`: es un formulario en JSON"
 
+# ── 4b · ⭐⭐ EL ESQUEMA DESCUBIERTO ────────────────────────────────────────
+#
+# ⛔ Esta ruta no existia, y su ausencia se veia en la consola: la ficha de una
+#   fuente pintaba un esquema DE MENTIRA porque no habia de donde sacar el de
+#   verdad. `/paquetes` daba nombre, version y decisiones abiertas — util para
+#   una lista, inutil para una ficha.
+#
+# ⇒ Lo que se comprueba es que salga lo que el inductor ENCONTRO, no un resumen:
+#   la entidad con su nombre y sus propiedades con su tipo.
+curl -sf -H "$SUJ" "$BASE/paquetes/ventas/esquema" -o "$TMP/esq.json"   || falla "4b · /esquema no contesta"
+grep -q '"entities"' "$TMP/esq.json" || falla "4b · no trae \`entities\`: $(head -c 200 "$TMP/esq.json")"
+grep -q '"properties"' "$TMP/esq.json" || falla "4b · una entidad sin \`properties\` no es un esquema"
+grep -q '"type"' "$TMP/esq.json" || falla "4b · las propiedades no dicen su tipo"
+# ⛔ Y NO se inventa lo que el inductor no cuenta. Una ficha de catalogo suele
+#   querer «filas estimadas»; el inductor lee el ESQUEMA y no cuenta filas, asi
+#   que ese campo no puede aparecer — ni a cero, que afirmaria que esta vacia.
+grep -q 'estimatedRows\|filas' "$TMP/esq.json"   && falla "4b · ⛔ el esquema afirma un recuento de filas que nadie ha contado"
+dice "4b · el esquema sale con sus entidades y tipos, y sin inventar recuentos"
+
+# Un paquete que no existe se niega igual que en `/decisiones`.
+COD=$(curl -s -o /dev/null -w '%{http_code}' -H "$SUJ" "$BASE/paquetes/no-existe/esquema")
+[ "$COD" = "404" ] || falla "4b · un paquete inventado devolvio $COD"
+dice "4b · un paquete que no existe se niega con 404"
+
 # Un camino que no puede existir. El alfabeto de un nombre ya no lo admite.
 COD=$(curl -s -o /dev/null -w '%{http_code}' -H "$SUJ" "$BASE/paquetes/..%2f..%2fetc/decisiones")
 [ "$COD" = "404" ] || [ "$COD" = "422" ] || falla "4 · un nombre con \`..\` devolvio $COD"
