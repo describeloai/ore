@@ -13,3 +13,11 @@ Thumbs.db
 # `graphql.sh` instala el paquete de referencia para enfrentarle lo que emitimos.
 node_modules/
 package-lock.json
+
+# ⚠️ Lo que Python deja al ejecutar un guion de `malla/`. Se colo en `501e989`
+#   con un `git add -A`, y quien lo canto no fue una revision: fue la prueba
+#   `ningun_fichero_gobernado_por_eol_lf_lleva_cr`, porque un `.pyc` es binario
+#   y el arbol declara `eol=lf`. Un fichero generado no se versiona ni aunque
+#   pase desapercibido.
+__pycache__/
+*.pyc
