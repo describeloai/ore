@@ -97,6 +97,25 @@ fn main() -> ExitCode {
         eprintln!("  nombre para que un despliegue no dependa del `PATH` del contenedor.");
         return ExitCode::from(64);
     };
+    // ⛔⛔ Y QUE ESA RUTA EXISTA, que es la mitad que faltaba.
+    //
+    // El comentario de arriba dice «se dice al arrancar y no en la primera peticion», y
+    // solo comprobaba que la BANDERA estuviera puesta. Con `--kms /usr/bin/gcloud` —una
+    // ruta que no existe en esta imagen— el custodio arrancaba, imprimia esa ruta en su
+    // registro, contestaba a `/salud`, y fallaba al guardar el primer secreto de verdad:
+    //
+    //     no se pudo ejecutar `/usr/bin/gcloud`: No such file or directory (os error 2)
+    //
+    // ⇒ Un proceso que acepta conexiones y no puede hacer su trabajo es peor que uno que no
+    //   arranca. Eso ya estaba escrito; ahora tambien esta comprobado.
+    if !programa.exists() {
+        eprintln!("✗ `--kms {}` no existe.", programa.display());
+        eprintln!("  Es la ruta del cliente de la nube, y sin el este proceso no puede");
+        eprintln!("  cerrar ni abrir un secreto. Arrancar seria prometer un custodio.");
+        eprintln!("  En la imagen de este servicio, `gcloud` vive en");
+        eprintln!("  `/google-cloud-sdk/bin/gcloud`.");
+        return ExitCode::from(64);
+    }
     let Some(lugar) = valor(&args, "--lugar") else {
         eprintln!("✗ falta `--lugar`, la región del llavero.");
         eprintln!("  `iam.organizacion.kek` guarda el NOMBRE de la llave; de dónde se");

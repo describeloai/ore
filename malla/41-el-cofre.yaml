@@ -139,7 +139,23 @@ spec:
             #   del `PATH` del contenedor. Misma razón que el `--ore` de
             #   `ore-serve`.
             - --kms
-            - /usr/bin/gcloud
+            # ⛔⛔ LA RUTA DE VERDAD, y aqui ponia `/usr/bin/gcloud`.
+            #
+            # Medido dentro de la imagen el 2026-09-10: `gcloud` esta en
+            # `/google-cloud-sdk/bin/gcloud` y `/usr/bin/gcloud` NO EXISTE. El
+            # custodio arrancaba tan tranquilo, imprimia `cliente
+            # /usr/bin/gcloud` en su registro, y contestaba a `/salud`.
+            #
+            # ⇒ El fallo solo salia al guardar el PRIMER secreto de verdad:
+            #
+            #     no se pudo ejecutar `/usr/bin/gcloud`:
+            #     No such file or directory (os error 2)
+            #
+            # ⚠️ Y CI no lo veia porque `el-cofre.sh` usa un `gcloud` de mentira
+            #   — la prueba sustituia justo la pieza que estaba mal. Es el mismo
+            #   patron que el id contra el nombre de esta manana: lo que el
+            #   guion se ahorra es lo que nadie comprueba.
+            - /google-cloud-sdk/bin/gcloud
             # La CARRETERA. `iam.organizacion.kek` guarda el nombre de la llave;
             # dónde se alcanza es configuración y cambia sin que nadie mienta.
             - --lugar
