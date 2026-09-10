@@ -204,10 +204,7 @@ impl Servidor {
             // ⭐ Si no hay agente registrado no pasa nada y no se avisa: una
             //   organizacion sin Jobs es un caso legitimo, y un aviso que se
             //   dispara en el caso normal enseña a ignorarlo.
-            for f in tx.filas(
-                "select id from iam.agente where organizacion = $1",
-                &[&org],
-            )? {
+            for f in tx.filas("select id from iam.agente where organizacion = $1", &[&org])? {
                 let age: String = f.get(0);
                 tx.ejecutar(
                     "select iam.conceder_de_secreto($1, $2, $3, 'usar', $4, $5)",
