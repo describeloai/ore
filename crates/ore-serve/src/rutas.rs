@@ -154,6 +154,17 @@ impl Servidor {
                     self.alta_de_fuente(r, &cuerpo, testigo.as_deref(), sujeto)
                 })
             }
+            // ⭐⭐ EN QUE ESTADO ESTA UNA FUENTE, que son TRES y no dos.
+            //
+            // La ficha del catalogo decia «todavia no hay catalogo: el Job aun
+            // no ha corrido» tanto cuando nadie lo habia encolado como cuando
+            // se estaba leyendo el origen en ese momento. Son dos situaciones
+            // con arreglos distintos —una espera, la otra no va a pasar sola— y
+            // pintarlas igual manda a mirar el sitio equivocado.
+            ("GET", ["fuentes", n, "estado"]) => {
+                let n = n.to_string();
+                self.estado(&n)
+            }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
             // ⭐⭐ EL ESQUEMA DESCUBIERTO, que hasta hoy no salia por ningun
             //   sitio. `/paquetes` daba nombre, version y cuantas decisiones
@@ -450,6 +461,71 @@ impl Servidor {
                 ]))
             }
         }
+    }
+
+    /// ⭐⭐ LOS TRES ESTADOS DE UNA FUENTE, y por que son tres.
+    ///
+    /// `catalogada`  su paquete esta en el arbol. Hay esquema que enseñar.
+    /// `encolada`    su Job esta escrito en la cola: se esta leyendo el origen
+    ///               AHORA, o esta a punto. Se espera y aparece solo.
+    /// `pendiente`   nadie lo ha encolado. Esperar no sirve de nada.
+    ///
+    /// ⛔ La ficha las pintaba todas igual —«el Job aun no ha corrido»— y esa
+    ///   frase es cierta en dos de los tres casos y engañosa en uno: mientras el
+    ///   Job LEE el origen, decir que no ha corrido manda a buscar un fallo que
+    ///   no existe.
+    ///
+    /// ⚠️ Y saber si esta encolada CUESTA UN CLON de la cola, asi que solo se
+    ///   hace cuando no hay paquete. Quien pregunta esta mirando una ficha sin
+    ///   esquema y deja de preguntar en cuanto aparece — la ventana es la que
+    ///   tarda un catalogo, un par de minutos.
+    fn estado(&self, fuente: &str) -> Respuesta {
+        let cola = self.cola.as_ref();
+        // ⭐ TODO dentro del mismo clon del arbol: preguntar por el paquete y
+        //   por la cola son dos preguntas, pero una sola visita a la forja.
+        self.leyendo(move |raiz| {
+            // ① El paquete, que es lo definitivo.
+            if raiz.join("packages").join(fuente).is_dir() {
+                return Respuesta::ok(Json::obj([
+                    ("estado", Json::s("catalogada")),
+                    ("dice", Json::s("su catalogo esta en el arbol")),
+                ]));
+            }
+            // ② La cola. Sin `--cola` NO se contesta `pendiente`: eso afirmaria
+            //    que nadie lo encolo, y lo cierto es que no se puede saber.
+            let Some(cola) = cola else {
+                return Respuesta::ok(Json::obj([
+                    ("estado", Json::s("desconocido")),
+                    (
+                        "dice",
+                        Json::s(
+                            "este servidor no sabe de ninguna cola, asi que no puede                              decir si hay trabajo encolado",
+                        ),
+                    ),
+                ]));
+            };
+            let prestado = match cola.clonar() {
+                Ok(p) => p,
+                Err(e) => {
+                    return Respuesta::ok(Json::obj([
+                        ("estado", Json::s("desconocido")),
+                        ("dice", Json::s(format!("no se pudo leer la cola: {e}"))),
+                    ]));
+                }
+            };
+            let fichero = format!("44-el-catalogo-{}.yaml", cola::nombre_de_objeto(fuente));
+            if prestado.ruta().join(&fichero).is_file() {
+                Respuesta::ok(Json::obj([
+                    ("estado", Json::s("encolada")),
+                    ("dice", Json::s("se esta leyendo el origen")),
+                ]))
+            } else {
+                Respuesta::ok(Json::obj([
+                    ("estado", Json::s("pendiente")),
+                    ("dice", Json::s("nadie ha encolado su catalogo todavia")),
+                ]))
+            }
+        })
     }
 
     /// ⭐⭐ ENCOLAR EL CATALOGO, EN EL MISMO ACTO DEL ALTA.
@@ -934,6 +1010,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/version", true),
         ("GET", "/fuentes", con_identidad),
         ("POST", "/fuentes", con_identidad),
+        ("GET", "/fuentes/{nombre}/estado", con_identidad),
         ("GET", "/paquetes", con_identidad),
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),

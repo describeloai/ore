@@ -316,7 +316,11 @@ fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String>
 ///   convención y se devuelve en cuanto se encuentra — y porque `add` nunca
 ///   escribe flujo, así que esa forma viene siempre de una mano.
 fn campo_de_entrada(linea: &str, campo: &str) -> Option<String> {
-    let t = linea.trim_start().strip_prefix("- ").unwrap_or(linea).trim();
+    let t = linea
+        .trim_start()
+        .strip_prefix("- ")
+        .unwrap_or(linea)
+        .trim();
     let cuerpo = t
         .strip_prefix('{')
         .map(|x| x.trim_end_matches('}'))
