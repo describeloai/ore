@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LAS MIGRACIONES, BAJO FLUX — y hasta hoy este `ConfigMap` se subia A MANO
+#
+# ⛔⛔ El mismo defecto que el puesto del aprovisionador, encontrado el mismo dia
+# y por el mismo camino: el Job `migrar-iam` de `malla/65-iam.yaml` monta
+# `iam-migraciones`, y nada de este arbol lo creaba. Medido el 2026-09-10:
+#
+#     ConfigMap identidad/iam-migraciones   creado  2026-09-08 15:51 UTC
+#     024-el-agente.sql                     escrito 2026-09-10
+#
+# ⇒ DOS DIAS de retraso, y la `024` no estaba dentro. Borrar el Job para que
+#   Flux lo recree —el camino que su propia cabecera documenta— habria vuelto a
+#   aplicar las mismas 23 de siempre, y nadie habria entendido por que
+#   `iam.agente` no existe.
+#
+# ⭐ Y es peor que en el aprovisionador: alli el retraso rinde un manifiesto
+#   viejo; aqui deja el ESQUEMA de la plataforma sin una tabla que el codigo ya
+#   usa. El sintoma seria un `relation "iam.agente" does not exist` en tiempo de
+#   ejecucion, lejos de aqui y sin nadie delante.
+#
+# ── ⛔ Y POR QUE ESTO VIVE AQUI Y NO EN `malla/kustomization.yaml` ──────────
+#
+# Porque kustomize NO LEE FUERA DE SU RAIZ, a proposito:
+#
+#     error: loading KV pairs: file sources: [../iam/migrar.sh …]
+#
+# Es una guarda buena —un `kustomization.yaml` que alcanza `../..` puede meter
+# en el cluster cualquier fichero del disco de quien lo construya— y no se
+# esquiva: se le da a `iam/` su propia raiz y su propia `Kustomization` de Flux,
+# igual que `malla/` tiene la suya en `15-la-malla-reconciliada.yaml`.
+#
+# ⚠️ La lista es EXPLICITA, como la de `malla/`. Un comodin haria que un `.sql`
+#   de pruebas entrara en el esquema de produccion por estar al lado, y
+#   `migrar.sh` los aplica TODOS por orden de nombre.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: iam-migraciones
+    namespace: identidad
+    files:
+      # El que las aplica: por orden de nombre, y cada una una sola vez.
+      - migrar.sh
+      - migraciones/001-el-libro.sql
+      - migraciones/002-el-papel.sql
+      - migraciones/003-la-persona.sql
+      - migraciones/004-la-organizacion.sql
+      - migraciones/005-la-pertenencia.sql
+      - migraciones/006-la-invitacion.sql
+      - migraciones/007-la-concesion.sql
+      - migraciones/008-la-huella.sql
+      - migraciones/009-el-ambito-de-la-concesion.sql
+      - migraciones/010-el-vale-de-la-invitacion.sql
+      - migraciones/011-el-rol-del-recurso.sql
+      - migraciones/012-el-rol-de-la-organizacion.sql
+      - migraciones/013-el-nombre-de-la-persona.sql
+      - migraciones/014-las-potestades.sql
+      - migraciones/015-invitar-sin-cargo.sql
+      - migraciones/016-varios-roles-y-quien-los-dio.sql
+      - migraciones/017-el-arbol-de-la-organizacion.sql
+      - migraciones/018-el-secreto-en-el-modelo.sql
+      - migraciones/019-la-llave-de-la-organizacion.sql
+      - migraciones/020-el-cofre-y-sus-permisos.sql
+      - migraciones/021-sin-sobre-y-la-concesion-del-secreto.sql
+      - migraciones/022-la-entrada-de-la-organizacion.sql
+      - migraciones/023-el-papel-del-aprovisionador.sql
+      - migraciones/024-el-agente.sql
+
+generatorOptions:
+  # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,
+  #   cada migracion nueva lo dejaria apuntando a un `ConfigMap` que no existe.
+  disableNameSuffixHash: true
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad

@@ -68,3 +68,38 @@ spec:
   # ⚠️ El mismo `cluster-admin` que ya tenía el `kustomize-controller`, y sigue
   # sin acotarse. La diferencia es que ahora al menos se ve qué aplica: antes
   # aplicaba lo de un inquilino y lo demás lo ponía una persona sin registro.
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# Y `iam/`, POR LA MISMA RAZON Y CON SU PROPIA RAIZ
+#
+# El `ConfigMap` de migraciones que monta `65-iam.yaml` se subia a mano y
+# llevaba DOS DIAS de retraso — sin la `024`, que crea `iam.agente`. El motivo
+# entero esta en `iam/kustomization.yaml`, incluida la razon de que no pueda
+# vivir dentro de `malla/`: kustomize no lee fuera de su raiz, a proposito.
+#
+# ⛔ `prune: false`, igual que la malla y por lo mismo: si un dia este camino
+#   dejara de resolver, podar se llevaria por delante el `ConfigMap` con el que
+#   se levanta el esquema de la plataforma.
+#
+# ⚠️ Y aplicar esto NO corre las migraciones. Solo deja el `ConfigMap` al dia.
+#   Quien las corre es el Job `migrar-iam`, que lleva `ssa: IfNotPresent` y por
+#   tanto no se recrea solo: `kubectl delete job -n identidad migrar-iam`.
+#   Son dos actos y esta bien que lo sean — cambiar el esquema de la identidad
+#   de la plataforma no deberia pasar porque alguien empujo un commit.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: migraciones
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+spec:
+  interval: 10m
+  path: ./iam
+  prune: false
+  wait: false
+  sourceRef:
+    kind: GitRepository
+    name: malla
