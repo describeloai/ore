@@ -369,7 +369,40 @@ jobs:
         run: |
           gcloud container clusters get-credentials ore-mesh \
             --zone europe-west1-b --project project-8853a180-450d-47be-b83
-          for D in identidad/ore-iam t-demo/ore-serve t-demo/ore-cofre; do
+          # -- LA LISTA SE PREGUNTA, NO SE ESCRIBE ---------------------------
+          #
+          # 2026-09-10 · esto decia `identidad/ore-iam t-demo/ore-serve
+          # t-demo/ore-cofre`, con `demo` puesto a mano. Y el SEGUNDO inquilino
+          # llevaba medio dia corriendo sin que nadie le diera el relevo:
+          # medido, `t-prueba/ore-serve` tenia la anotacion en `<none>`
+          # mientras `t-demo/ore-serve` iba al dia. Y CI pasaba en VERDE.
+          #
+          # => TERCERA vez el mismo error en dos dias: nombrar a UN inquilino
+          #   donde habia que nombrar una CLASE. Las otras dos fueron la lista
+          #   de invitados de la forja y la `NetworkPolicy` del IdP, y las dos
+          #   se arreglaron igual — preguntando por la etiqueta.
+          #
+          # Y `ore-serve` no lleva ni una etiqueta `ore.dev/*` propia: quien la
+          # lleva es su NAMESPACE, `ore.dev/rol: cargas` — la MISMA por la que
+          # pregunta esa `NetworkPolicy`. Se pregunta por ahi a proposito: asi
+          # esto funciona sobre los compartimentos que YA estan rendidos, sin
+          # tener que volver a rendir ninguno.
+          DESTINOS="identidad/ore-iam"
+          for NS in $(kubectl get ns -l ore.dev/rol=cargas -o jsonpath='{.items[*].metadata.name}'); do
+            DESTINOS="$DESTINOS $NS/ore-serve $NS/ore-cofre"
+          done
+
+          # Y si la pregunta no devuelve NADA, esto NO pasa en verde. Sin esta
+          # linea una etiqueta mal puesta convierte «no releve a nadie» en
+          # «releve a todos los que habia», que son cero — que es exactamente
+          # el fallo que se acaba de arreglar, con otra cara.
+          [ "$DESTINOS" = "identidad/ore-iam" ] && { echo "x ningun namespace con ore.dev/rol=cargas"; exit 1; }
+
+          echo "  relevo para:$(printf ' %s' $DESTINOS)"
+          # Y viaja al paso siguiente, que comprueba EXACTAMENTE esta lista.
+          echo "DESTINOS=$DESTINOS" >> "$GITHUB_ENV"
+
+          for D in $DESTINOS; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
             # ── ⛔⛔ APPLY DEL LADO DEL SERVIDOR, Y NO UN `patch` ──────────
             #
@@ -408,7 +441,7 @@ jobs:
       #   ya estuviera— no habría relevo y esto pasaría igual.
       - name: y comprobar que corre ESTE commit
         run: |
-          for D in identidad/ore-iam t-demo/ore-serve t-demo/ore-cofre; do
+          for D in $DESTINOS; do
             NS="${D%%/*}"; NOMBRE="${D##*/}"
             VISTO=$(kubectl -n "$NS" get deployment "$NOMBRE" \
               -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/commit}')

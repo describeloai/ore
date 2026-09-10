@@ -298,8 +298,6 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
 
 // ── Los formularios ─────────────────────────────────────────────────────────
 
-/// La forma de una respuesta. Tres, y son las tres de `Respuesta`: preguntar es
-
 /// Lo que se pide, dicho en la voz de cada clase. Un `¿Cuál?` genérico haría que
 /// las nueve preguntas se parecieran, y no se parecen en nada.
 fn peticion(clase: Clase) -> &'static str {
