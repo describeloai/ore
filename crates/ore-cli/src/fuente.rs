@@ -273,12 +273,9 @@ fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String>
     let entradas: Vec<usize> = (i + 1..fin)
         .filter(|&j| lineas[j].trim_start().starts_with("- "))
         .collect();
-    let esta = entradas.iter().position(|&j| {
-        let t = lineas[j].trim_start().trim_start_matches("- ").trim();
-        t.strip_prefix("name:")
-            .map(|v| v.trim().trim_matches(['\"', '\'']) == nombre)
-            .unwrap_or(false)
-    });
+    let esta = entradas
+        .iter()
+        .position(|&j| campo_de_entrada(lineas[j], "name").as_deref() == Some(nombre));
     let Some(k) = esta else {
         return Err(format!("`{nombre}` no está declarada en `datasources`"));
     };
@@ -287,11 +284,9 @@ fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String>
     let hasta = entradas.get(k + 1).copied().unwrap_or(fin);
 
     // Su `connectionEnv`, para poder limpiar `.env.local`.
-    let env = lineas[desde..hasta].iter().find_map(|l| {
-        l.trim()
-            .strip_prefix("connectionEnv:")
-            .map(|v| v.trim().trim_matches(['\"', '\'']).to_string())
-    });
+    let env = lineas[desde..hasta]
+        .iter()
+        .find_map(|l| campo_de_entrada(l, "connectionEnv"));
 
     let mut s = String::new();
     for (j, l) in lineas.iter().enumerate() {
@@ -302,6 +297,36 @@ fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String>
         s.push('\n');
     }
     Ok((s, env))
+}
+
+/// Un campo de una entrada de `datasources`, escrita EN CUALQUIERA DE SUS DOS
+/// FORMAS.
+///
+/// ⛔ Y la segunda no es teórica: `demo` tenía su primera fuente escrita así
+///
+///     - { name: bq, type: bigquery, connectionEnv: BQ_URL }
+///
+/// —la forma que usan los casos de prueba de este árbol— y un `remove` que sólo
+/// entendía el bloque se NEGÓ a retirarla. Negarse era lo correcto: mejor eso
+/// que cortar líneas de un fichero que no se ha entendido. Pero el hueco era
+/// real, porque las dos formas son YAML legal y las dos las escribe alguien.
+///
+/// ⚠️ Y el corte por comas tiene un filo: una `description` con una coma dentro,
+///   en forma de flujo, partiría mal. Se acepta porque `name` va primero por
+///   convención y se devuelve en cuanto se encuentra — y porque `add` nunca
+///   escribe flujo, así que esa forma viene siempre de una mano.
+fn campo_de_entrada(linea: &str, campo: &str) -> Option<String> {
+    let t = linea.trim_start().strip_prefix("- ").unwrap_or(linea).trim();
+    let cuerpo = t
+        .strip_prefix('{')
+        .map(|x| x.trim_end_matches('}'))
+        .unwrap_or(t);
+    for trozo in cuerpo.split(',') {
+        if let Some(v) = trozo.trim().strip_prefix(&format!("{campo}:")) {
+            return Some(v.trim().trim_matches(['\"', '\'']).to_string());
+        }
+    }
+    None
 }
 
 /// Quita de `.env.local` la línea de una variable. `true` si había alguna.
@@ -362,6 +387,17 @@ mod prueba_baja {
     #[test]
     fn una_que_no_existe_se_niega() {
         assert!(quitar(M, "noexiste").is_err());
+    }
+
+    /// ⭐ Y la forma de FLUJO, que es la que tenia `demo` y la que usan los
+    ///   casos de este arbol. Un `remove` que solo entendia el bloque se negaba.
+    #[test]
+    fn quita_una_escrita_en_flujo() {
+        let m = "kind: OntologyConfig\ndatasources:\n  - { name: bq, type: bigquery, connectionEnv: BQ_URL }\n  - name: pg\n    type: postgres\n    connectionEnv: V_PG_URL\n";
+        let (t, env) = quitar(m, "bq").unwrap();
+        assert_eq!(env.as_deref(), Some("BQ_URL"));
+        assert!(!t.contains("bigquery"), "{t}");
+        assert!(t.contains("name: pg"), "se llevo a la de al lado: {t}");
     }
 
     /// Sin seccion tampoco: el mensaje tiene que hablar de `datasources`.
