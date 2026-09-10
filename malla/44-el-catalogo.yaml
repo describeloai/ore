@@ -88,6 +88,21 @@ metadata:
 spec:
   backoffLimit: 2
   ttlSecondsAfterFinished: 86400
+  # ── ⛔⛔ Y UN PLAZO, PORQUE ESTO SE CUELGA SIN EL ────────────────────────
+  #
+  # Medido dos veces el 2026-09-10: un origen cuya URL no trae credencial deja a
+  # `ore-read-postgres` esperando, y el Job se quedo OCHO MINUTOS imprimiendo
+  #
+  #     ### leyendo el origen `postgresql_20260910_1305`
+  #
+  # y nada mas. Sin plazo eso no acaba nunca: `backoffLimit` cuenta INTENTOS
+  # FALLIDOS, y un pod que no termina no ha fallado — asi que ni reintenta ni se
+  # rinde, y mantiene vivo un nodo del pool privado indefinidamente.
+  #
+  # ⭐ Diez minutos. Un catalogo tarda segundos contra un origen que contesta;
+  #   lo que pasa de ahi no es lentitud, es que no va a llegar. Y fallar por
+  #   plazo deja el registro y el motivo, que es lo que un cuelgue no deja.
+  activeDeadlineSeconds: 600
   template:
     metadata:
       labels:
