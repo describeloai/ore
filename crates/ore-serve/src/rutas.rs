@@ -53,6 +53,7 @@
 //!   camino; `..` no es un caso especial que haya que recordar, es algo que el
 //!   alfabeto ya no admite.
 
+use crate::cola;
 use crate::git;
 use crate::mando;
 use ore_core::json::Json;
@@ -86,6 +87,14 @@ pub struct Servidor {
     /// ⇒ Medido: el Job de catálogo del primer inquilino murió con «`PRUEBA_BQ_URL`
     ///   no está definida», y el cofre llevaba días desplegado con CERO secretos
     ///   dentro. Tenía cliente desde el principio y nadie se lo había dado.
+    /// ⭐⭐ LA COLA DE TRABAJO de este inquilino. `None` ⇒ el alta funciona y el
+    /// Job de catálogo lo rinde la convergencia, con la latencia del cron.
+    ///
+    /// ⛔ Y es un repositorio DISTINTO del árbol y del compartimento. Del árbol
+    /// porque ahí van las declaraciones del cliente, no manifiestos de
+    /// Kubernetes; del compartimento porque ése contiene el `Deployment` de este
+    /// mismo proceso, y escribir ahí sería el gobernado escribiendo su gobierno.
+    pub cola: Option<git::Forja>,
     pub cofre: Option<String>,
     /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN, y este
     /// proceso sirve UNA — su namespace es el del inquilino.
@@ -142,7 +151,7 @@ impl Servidor {
                     .and_then(|v| v.strip_prefix("Bearer "))
                     .map(str::to_string);
                 self.escribiendo(sujeto, "alta de una fuente", |r| {
-                    self.alta_de_fuente(r, &cuerpo, testigo.as_deref())
+                    self.alta_de_fuente(r, &cuerpo, testigo.as_deref(), sujeto)
                 })
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
@@ -297,7 +306,13 @@ impl Servidor {
         }
     }
 
-    fn alta_de_fuente(&self, raiz: &Path, cuerpo: &str, testigo: Option<&str>) -> Respuesta {
+    fn alta_de_fuente(
+        &self,
+        raiz: &Path,
+        cuerpo: &str,
+        testigo: Option<&str>,
+        sujeto: &Identidad,
+    ) -> Respuesta {
         let cuerpo = match analizar(cuerpo) {
             Ok(n) => n,
             Err(r) => return r,
@@ -384,6 +399,7 @@ impl Servidor {
                 //   quedaría un secreto que nombra una fuente que no existe, y
                 //   a eso no lo mira nadie nunca.
                 let guardada = self.guardar_credencial(&nombre, &url, testigo);
+                let encolado = self.encolar_catalogo(&nombre, sujeto);
 
                 // ⛔⛔ Y SI TRAIA CREDENCIAL Y NO SE GUARDO, ESTO NO ES UN 201.
                 //
@@ -416,6 +432,11 @@ impl Servidor {
                     //   deja el fallo para el Job de catálogo, media hora más
                     //   tarde y en otro registro.
                     ("credencial", Json::s(guardada)),
+                    // ⭐ Y si se encoló o por qué no. Se dice SIEMPRE, por lo
+                    //   mismo que `credencial`: un alta que contesta bien y calla
+                    //   que el trabajo no quedó encolado deja el fallo para una
+                    //   pantalla vacía media hora después.
+                    ("encolado", Json::s(encolado)),
                     // Lo que sigue, dicho en la respuesta y no en la
                     // documentación: leer el origen NO se hace aquí, y quien
                     // pintó el botón tiene que saberlo sin ir a buscarlo.
@@ -428,6 +449,60 @@ impl Servidor {
                     ),
                 ]))
             }
+        }
+    }
+
+    /// ⭐⭐ ENCOLAR EL CATALOGO, EN EL MISMO ACTO DEL ALTA.
+    ///
+    /// Medido el 2026-09-10: un alta a las 19:24 no tenia su Job hasta las 20:17,
+    /// porque quien lo rendia era la convergencia y solo la llamaba el cron.
+    /// Escribir aqui la cola hace que el webhook de la forja dispare, el
+    /// `Receiver` la reconcilie y Flux cree el Job — segundos, y ni un actor
+    /// nuevo.
+    ///
+    /// ⛔ Y NO se deshace el alta si esto falla. La fuente esta en el arbol y el
+    ///   commit existe; ademas la convergencia sigue rindiendo lo que falte, asi
+    ///   que un fallo aqui es LENTITUD, no perdida. Se dice y se sigue.
+    ///
+    /// ⚠️ La plantilla la deja el aprovisionador en la propia cola. Si no esta
+    ///   —un inquilino aprovisionado antes de que esto existiera— se dice con esa
+    ///   frase, que es la que manda a converger.
+    fn encolar_catalogo(&self, fuente: &str, sujeto: &Identidad) -> String {
+        let Some(forja) = &self.cola else {
+            return "NO encolado: este servidor no sabe de ninguna cola (`--cola`);                     lo rendira la convergencia"
+                .into();
+        };
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return format!("NO encolado: {e}"),
+        };
+        let dir = prestado.ruta();
+        let plantilla = match std::fs::read_to_string(dir.join(cola::PLANTILLA)) {
+            Ok(t) => t,
+            Err(_) => {
+                return format!(
+                    "NO encolado: la cola no trae `{}`; hay que converger este inquilino",
+                    cola::PLANTILLA
+                );
+            }
+        };
+        let (fichero, texto) = match cola::rendir(&plantilla, fuente) {
+            Ok(v) => v,
+            Err(e) => return format!("NO encolado: {e}"),
+        };
+        if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
+            return format!("NO encolado: no se pudo escribir `{fichero}`: {e}");
+        }
+        // ⭐ Si el fichero ya estaba igual, no hay commit. El nombre lleva el
+        //   resumen del contenido, asi que encolar dos veces la misma fuente es
+        //   idempotente por construccion — y la historia de la cola no se llena
+        //   de commits que no cambian nada.
+        if !forja.hay_cambios(dir) {
+            return format!("ya encolado como `{fichero}`");
+        }
+        match forja.publicar(dir, sujeto, &format!("Catalogar `{fuente}`")) {
+            Ok(c) => format!("encolado como `{fichero}` · commit {c}"),
+            Err(e) => format!("NO encolado: {e}"),
         }
     }
 

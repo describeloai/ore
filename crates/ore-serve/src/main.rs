@@ -39,6 +39,7 @@
 //! Los dos son la misma frase que el resto del proyecto: *omitir no deja nada
 //! abierto, lo CIERRA*.
 
+mod cola;
 mod git;
 mod mando;
 mod rutas;
@@ -52,7 +53,7 @@ use std::process::ExitCode;
 const USO: &str = "\
 ore-serve — el plano de control de ORE
 
-  ore-serve [--repo DIR | --forja URL] [--bind DIRECCION] [--ore RUTA]
+  ore-serve [--repo DIR | --forja URL] [--cola URL] [--bind DIRECCION] [--ore RUTA]
             [--identidad MODO] [--no-es-produccion]
 
   --repo DIR             la raíz del repositorio ontológico (por defecto, `.`)
@@ -82,6 +83,9 @@ ore-serve — el plano de control de ORE
 struct Opciones {
     repo: PathBuf,
     forja: Option<String>,
+    /// La COLA DE TRABAJO: el repositorio donde el alta encola el catalogo de
+    /// una fuente. Distinto del arbol y del compartimento — ver `cola.rs`.
+    cola: Option<String>,
     bind: String,
     ore: PathBuf,
     identidad: Option<String>,
@@ -108,6 +112,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
     let mut o = Opciones {
         repo: PathBuf::from("."),
         forja: None,
+        cola: None,
         bind: "127.0.0.1:8080".into(),
         ore: PathBuf::from("ore"),
         identidad: None,
@@ -129,6 +134,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "-h" | "--help" => return Ok(None),
             "--repo" => o.repo = PathBuf::from(valor("--repo")?),
             "--forja" => o.forja = Some(valor("--forja")?),
+            "--cola" => o.cola = Some(valor("--cola")?),
             "--testigo-fichero" => {
                 o.testigo_fichero = Some(PathBuf::from(valor("--testigo-fichero")?))
             }
@@ -243,10 +249,28 @@ fn main() -> ExitCode {
     }
     eprintln!();
 
+    // ⭐⭐ LA COLA, y usa EL MISMO testigo que el arbol: es el mismo usuario de
+    //   la forja —`serve-<inquilino>`— al que el aprovisionador hace colaborador
+    //   con escritura de sus dos repositorios y de ningun otro. Lo que lo ata no
+    //   es el ambito del token: es de que es colaborador.
+    //
+    // ⚠️ Sin `--cola` el alta sigue funcionando y el Job lo rinde la
+    //   convergencia. Es mas lento, no esta roto — por eso no se niega a
+    //   arrancar, al reves que `--kms` en el custodio, que sin el no puede hacer
+    //   su trabajo en absoluto.
+    let cola = match (&o.cola, testigo(&o)) {
+        (Some(url), Some(t)) => Some(git::Forja {
+            url: url.clone(),
+            testigo: t,
+        }),
+        _ => None,
+    };
+
     let servidor = rutas::Servidor {
         binario: o.ore,
         arbol,
         identidad: proveedor,
+        cola,
         cofre: o.cofre,
         organizacion: o.organizacion,
     };

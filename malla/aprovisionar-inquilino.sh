@@ -579,7 +579,8 @@ else
       #   verdad. Un fichero que el renderizador ya no emite tiene que
       #   DESAPARECER — si se quedase, Flux seguiria obedeciendolo.
       find clon -maxdepth 1 -name '*.yaml' -delete
-      cp "$DE"/*.yaml clon/ 2>/dev/null || true
+      find clon -maxdepth 1 -name '*.txt' -delete
+      cp "$DE"/* clon/ 2>/dev/null || true
       cd clon
       git add -A
       if git diff --cached --quiet; then cd "$TMP"; exit 3; fi
@@ -597,10 +598,13 @@ else
   # El corte, por el nombre. ⚠️ Y la cola puede quedar VACIA —un inquilino sin
   #   fuentes pendientes— y eso es legitimo: `empujar` lo dice con «ya estaba».
   mkdir -p "$TMP/gobierno" "$TMP/cola"
-  for f in "$TMP"/rendido/*.yaml; do
+  for f in "$TMP"/rendido/*; do
     case "$(basename "$f")" in
-      44-*) cp "$f" "$TMP/cola/" ;;
-      *)    cp "$f" "$TMP/gobierno/" ;;
+      # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
+      # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
+      # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
+      44-*|plantilla-catalogo.txt) cp "$f" "$TMP/cola/" ;;
+      *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done
 

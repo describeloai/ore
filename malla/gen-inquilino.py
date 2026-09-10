@@ -138,6 +138,11 @@ NOMBRAN_INQUILINOS = {
 #   en el compartimento es exactamente lo que debe pasar.
 POR_FUENTE = "44-el-catalogo.yaml"
 
+# ⭐ La misma plantilla, rendida para el inquilino y SIN fuente, que viaja en la
+#   cola de trabajo para que `ore-serve` pueda encolar sin reimplementar esto.
+#   `.txt` y no `.yaml`: `kustomize` aplica los YAML de ese directorio.
+PLANTILLA_COLA = "plantilla-catalogo.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -224,6 +229,29 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
     #   importa por lo de siempre: `catalogo-bq` contiene `bq`, asi que el
     #   nombre del Job se sustituye con la cadena entera y no por partes.
     plantilla = (MALLA / POR_FUENTE).read_text(encoding="utf-8")
+
+    # ── ⭐⭐ LA PLANTILLA, RENDIDA PARA EL INQUILINO Y SIN FUENTE ───────────
+    #
+    # `ore-serve` encola el Job de catalogo en el mismo acto del alta —eso es lo
+    # que hace instantaneo lo que antes esperaba al cron— y para eso necesita la
+    # plantilla. Reimplementar ESTE renderizado en Rust duplicaria una logica que
+    # tiene detras una comprobacion byte a byte, y dos copias divergen.
+    #
+    # ⇒ Aqui se hacen las sustituciones del INQUILINO —namespace, arbol,
+    #   organizacion— y se deja el hueco de la FUENTE tal cual. `ore-serve` solo
+    #   sustituye dos cosas: el nombre de la fuente y el resumen del contenido.
+    #
+    # ⛔ Y sale con extension `.txt` a proposito: viaja en la cola de trabajo, y
+    #   `kustomize` aplica los `.yaml` de ese directorio. Un `.yaml` aqui seria un
+    #   Job con `bq` dentro creandose en cada inquilino.
+    salida["plantilla-catalogo.txt"] = (
+        plantilla
+        .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
+        .replace("t-%s/ontologia" % MODELO, arbol)
+        .replace("t-%s" % MODELO, "t-%s" % nombre)
+        .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
+    )
+
     vistos = {}
     for fuente in fuentes:
         # ⛔⛔ EL NOMBRE DE LA FUENTE LO ESCRIBE EL CLIENTE, Y NO ES UN NOMBRE
@@ -326,7 +354,9 @@ def comprobar_plantillas():
     #   ocho caracteres. Quien los vigila es la ⑨, que exige que el nombre
     #   rendido tenga exactamente la forma `catalogo-<fuente>-<8 hex>`.
     for f, t in render(MODELO, fuentes=[FUENTE_MODELO]).items():
-        origen = MALLA / (POR_FUENTE if f.startswith("44-") else f)
+        origen = MALLA / (POR_FUENTE
+                          if f.startswith("44-") or f == PLANTILLA_COLA
+                          else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-"):
             a, b = (RESUMEN.sub("-00000000", x) for x in (a, b))

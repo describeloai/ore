@@ -202,6 +202,28 @@ spec:
             - /usr/local/bin/ore
             - --forja
             - http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git
+            # ── ⭐⭐ LA COLA DE TRABAJO ──────────────────────────────────────
+            #
+            # El alta de una fuente encola aquí su Job de catálogo, en el mismo
+            # acto. Medido el 2026-09-10: sin esto, un alta a las 19:24 no tenía
+            # su Job hasta las 20:17 — quien lo rendía era la convergencia, y a
+            # la convergencia sólo la llamaba el cron.
+            #
+            # ⇒ Con la cola escrita aquí, el webhook de la forja dispara, el
+            #   `Receiver` la reconcilia y Flux crea el Job. Segundos.
+            #
+            # ⛔ Y es OTRO repositorio, no el compartimento. El compartimento
+            #   contiene el `Deployment` de este mismo proceso, sus
+            #   `NetworkPolicy` y a qué cuenta corre: escribir ahí sería el
+            #   gobernado escribiendo su gobierno. Lo que aplica esta cola es un
+            #   `Kustomization` con una cuenta que SÓLO puede crear `Job`.
+            #
+            # ⚠️ Mismo testigo que el árbol, y eso no ensancha nada: es el mismo
+            #   usuario `serve-<inquilino>`, y lo que lo ata no es el ámbito de
+            #   su token sino de qué repositorios es colaborador — dos, y de
+            #   ningún otro.
+            - --cola
+            - http://forja.forja.svc.cluster.local:3000/t-demo/trabajo.git
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
