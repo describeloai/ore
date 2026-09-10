@@ -134,6 +134,31 @@ enum AccionFuente {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// **Retirar una fuente del árbol.** El inverso de `add`, que hasta hoy no
+    /// existía.
+    ///
+    /// Un día de pruebas dejó veintiuna fuentes declaradas en un árbol y
+    /// dieciocho eran intentos fallidos. Quitarlas era editar a mano el
+    /// manifiesto de un cliente — justo lo que `add` existe para evitar.
+    ///
+    /// ⭐ Y no es simetría por simetría: el reconciliador rinde un Job de
+    /// catálogo por cada fuente SIN paquete, así que una fuente basura no es una
+    /// línea de más — es trabajo que se encola una y otra vez.
+    ///
+    /// ⛔ NO borra la credencial del custodio ni el paquete. La primera porque
+    /// esta CLI no habla con el cofre y dárselo para esto sería pagar con la
+    /// propiedad más cara del binario; el segundo porque es trabajo hecho.
+    Remove {
+        /// La fuente, tal como la declara el manifiesto.
+        name: String,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// No tocar `.env.local`. Para el caso raro de que la variable la
+        /// comparta otra fuente declarada a mano.
+        #[arg(long = "keep-secret")]
+        keep_secret: bool,
+    },
     /// **¿Qué contiene esta fuente?** Lo que habría que declarar, antes de
     /// declararlo.
     ///
@@ -778,6 +803,17 @@ fn main() -> std::process::ExitCode {
                 env: env.as_deref(),
                 etiquetas: label,
                 descripcion: description.as_deref(),
+            });
+        }
+        Command::Source(AccionFuente::Remove {
+            name,
+            path,
+            keep_secret,
+        }) => {
+            return fuente::remove(&fuente::Baja {
+                raiz: path,
+                nombre: name,
+                conservar_secreto: *keep_secret,
             });
         }
         _ => {}

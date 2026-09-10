@@ -148,6 +148,229 @@ fn intentar(a: &Alta) -> Result<String, Fallo> {
     Ok(informe(a, &fuente, &secreto, ignorado))
 }
 
+/// Lo que hace falta para dar de BAJA una fuente.
+pub struct Baja<'a> {
+    pub raiz: &'a Path,
+    pub nombre: &'a str,
+    /// No tocar `.env.local`. Existe para el caso raro de que la variable la
+    /// comparta otra fuente declarada a mano.
+    pub conservar_secreto: bool,
+}
+
+/// **`ore source remove`** — el inverso de `add`, que hasta hoy no existía.
+///
+/// # Por qué hacía falta
+///
+/// Medido el 2026-09-10: un día de pruebas dejó **veintiuna** fuentes declaradas
+/// en un árbol, y dieciocho eran intentos fallidos. Quitarlas era editar a mano
+/// el manifiesto de un cliente — exactamente lo que `add` existe para no tener
+/// que hacer.
+///
+/// ⭐ Y no es simetría por simetría: una fuente declarada tiene consecuencias
+/// vivas. El reconciliador rinde un Job de catálogo por cada una que no tenga
+/// paquete, así que una fuente basura no es una línea de más: es trabajo que se
+/// encola una y otra vez.
+///
+/// # ⛔ Lo que NO borra, y hay que decirlo
+///
+/// **La credencial del custodio.** `remove` es de la CLI y la CLI no habla con
+/// el cofre — no tiene cliente HTTP ni credencial, y dárselos para esto sería
+/// pagar con la propiedad más cara del binario. El secreto `fuente-<n>` sigue
+/// ahí, y retirarlo es un acto del custodio con su propia huella.
+///
+/// **Y el paquete.** Si la fuente llegó a catalogarse, `packages/<n>/` queda.
+/// Ese paquete es trabajo hecho —entidades inducidas, decisiones contestadas— y
+/// borrarlo porque se retira la fuente sería tirar lo que costó leerlo.
+pub fn remove(a: &Baja) -> ExitCode {
+    match intentar_baja(a) {
+        Ok(informe) => {
+            print!("{informe}");
+            ExitCode::SUCCESS
+        }
+        Err(fallo) => {
+            eprintln!("error: {}", fallo.mensaje);
+            for linea in &fallo.ayuda {
+                eprintln!("{linea}");
+            }
+            ExitCode::from(fallo.codigo)
+        }
+    }
+}
+
+fn intentar_baja(a: &Baja) -> Result<String, Fallo> {
+    let config = a.raiz.join(CONFIG);
+    let texto = leer_config(&config)?;
+
+    let (nuevo, env) = quitar(&texto, a.nombre).map_err(|m| Fallo::nueva(65, m))?;
+
+    // ⛔⛔ Se valida ANTES de escribir, igual que el alta — y aquí atrapa algo
+    //   que el alta no puede: una fuente que TODAVÍA SE USA. Si una entidad la
+    //   referencia con `datasourceRef`, quitarla deja el repositorio sin
+    //   compilar, y eso tiene que decirse antes y no después.
+    let diags = ore_core::validate_document(&config, &nuevo);
+    if let Some(d) = diags.first() {
+        return Err(Fallo::nueva(
+            65,
+            format!("quitar `{}` deja el repositorio sin validar", a.nombre),
+        )
+        .ayuda(d.render(a.raiz))
+        .ayuda("  Casi siempre significa que algo la sigue usando.")
+        .ayuda("  No se ha escrito nada."));
+    }
+
+    escribir(&config, &nuevo)?;
+
+    // ⚠️ Y el secreto DESPUÉS, al revés que el alta. Allí la línea inerte de
+    //   `.env.local` es preferible a una fuente declarada sin secreto; aquí la
+    //   fuente ya no existe, así que lo que sobra es la línea.
+    let mut quitado = false;
+    if !a.conservar_secreto
+        && let Some(v) = &env
+    {
+        quitado = quitar_secreto(a.raiz, v)?;
+    }
+
+    let mut s = format!("✓ `{}` ya no está declarada en el árbol.\n", a.nombre);
+    if let Some(v) = &env {
+        s.push_str(&if quitado {
+            format!("  y `{v}` se ha quitado de `{SECRETOS}`.\n")
+        } else {
+            format!("  ⚠️ `{v}` sigue en `{SECRETOS}`: no se ha tocado.\n")
+        });
+    }
+    // ⛔ Se dice lo que NO se ha hecho, y no es cortesía: quien retira una fuente
+    //   suele creer que se lleva todo por delante, y aquí quedan dos cosas vivas.
+    s.push_str("  ⛔ El secreto del custodio y el paquete NO se han tocado.\n");
+    s.push_str("     Son actos aparte, y cada uno con su propia huella.\n");
+    Ok(s)
+}
+
+/// Quita del manifiesto la entrada de `nombre`, y devuelve su `connectionEnv`.
+///
+/// ⚠️ Se edita el TEXTO, no un árbol reserializado, por lo mismo que `insertar`:
+/// reescribir el fichero entero cambiaría comentarios y orden de un documento
+/// que es de otro. Lo que se quita son sus líneas y nada más.
+fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String> {
+    let lineas: Vec<&str> = texto.lines().collect();
+    let Some(i) = lineas.iter().position(|l| {
+        l.starts_with("datasources:") && l["datasources:".len()..].trim_start().is_empty()
+    }) else {
+        return Err(format!(
+            "no hay una sección `datasources:` en forma de bloque, así que `{nombre}`              no está declarada ahí"
+        ));
+    };
+
+    // El final de la sección: la siguiente clave de primer nivel.
+    let mut fin = lineas.len();
+    for (j, l) in lineas.iter().enumerate().skip(i + 1) {
+        if !l.is_empty() && !l.starts_with([' ', '\t']) {
+            fin = j;
+            break;
+        }
+    }
+
+    // Dónde empieza cada entrada, y cuál es la nuestra.
+    let entradas: Vec<usize> = (i + 1..fin)
+        .filter(|&j| lineas[j].trim_start().starts_with("- "))
+        .collect();
+    let esta = entradas.iter().position(|&j| {
+        let t = lineas[j].trim_start().trim_start_matches("- ").trim();
+        t.strip_prefix("name:")
+            .map(|v| v.trim().trim_matches(['\"', '\'']) == nombre)
+            .unwrap_or(false)
+    });
+    let Some(k) = esta else {
+        return Err(format!("`{nombre}` no está declarada en `datasources`"));
+    };
+
+    let desde = entradas[k];
+    let hasta = entradas.get(k + 1).copied().unwrap_or(fin);
+
+    // Su `connectionEnv`, para poder limpiar `.env.local`.
+    let env = lineas[desde..hasta].iter().find_map(|l| {
+        l.trim()
+            .strip_prefix("connectionEnv:")
+            .map(|v| v.trim().trim_matches(['\"', '\'']).to_string())
+    });
+
+    let mut s = String::new();
+    for (j, l) in lineas.iter().enumerate() {
+        if j >= desde && j < hasta {
+            continue;
+        }
+        s.push_str(l);
+        s.push('\n');
+    }
+    Ok((s, env))
+}
+
+/// Quita de `.env.local` la línea de una variable. `true` si había alguna.
+fn quitar_secreto(raiz: &Path, env: &str) -> Result<bool, Fallo> {
+    let ruta = raiz.join(SECRETOS);
+    let Ok(texto) = std::fs::read_to_string(&ruta) else {
+        return Ok(false);
+    };
+    let mut fuera = false;
+    let mut s = String::new();
+    for l in texto.lines() {
+        let t = l.trim().strip_prefix("export ").unwrap_or(l.trim());
+        if !t.starts_with('#')
+            && let Some((k, _)) = t.split_once('=')
+            && k.trim() == env
+        {
+            fuera = true;
+            continue;
+        }
+        s.push_str(l);
+        s.push('\n');
+    }
+    if fuera {
+        escribir(&ruta, &s)?;
+    }
+    Ok(fuera)
+}
+
+#[cfg(test)]
+mod prueba_baja {
+    use super::quitar;
+
+    const M: &str = "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: v }\ndatasources:\n  - name: bq\n    type: bigquery\n    connectionEnv: V_BQ_URL\n  - name: pg\n    type: postgres\n    connectionEnv: V_PG_URL\n    description: \"la de verdad\"\n  - name: otra\n    type: postgres\n    connectionEnv: V_OTRA_URL\n";
+
+    /// La del MEDIO, que es la que se lleva por delante a sus vecinas si el
+    /// corte esta mal: la entrada de `pg` tiene cuatro lineas y no tres.
+    #[test]
+    fn quita_la_del_medio_entera_y_solo_esa() {
+        let (t, env) = quitar(M, "pg").unwrap();
+        assert_eq!(env.as_deref(), Some("V_PG_URL"));
+        assert!(!t.contains("V_PG_URL"), "{t}");
+        assert!(!t.contains("la de verdad"), "se dejo su `description`: {t}");
+        assert!(t.contains("name: bq") && t.contains("name: otra"), "{t}");
+    }
+
+    /// La ULTIMA, que no tiene siguiente entrada donde parar.
+    #[test]
+    fn quita_la_ultima_sin_comerse_el_final() {
+        let (t, env) = quitar(M, "otra").unwrap();
+        assert_eq!(env.as_deref(), Some("V_OTRA_URL"));
+        assert!(!t.contains("otra"), "{t}");
+        assert!(t.contains("name: bq") && t.contains("name: pg"), "{t}");
+    }
+
+    /// ⛔ Y una que no esta NO se inventa un exito. Un `remove` que contesta
+    ///   bien sobre algo que no existe deja a quien lo llama creyendo que lo
+    ///   retiro.
+    #[test]
+    fn una_que_no_existe_se_niega() {
+        assert!(quitar(M, "noexiste").is_err());
+    }
+
+    /// Sin seccion tampoco: el mensaje tiene que hablar de `datasources`.
+    #[test]
+    fn sin_seccion_se_niega() {
+        assert!(quitar("kind: OntologyConfig\n", "bq").is_err());
+    }
+}
+
 // ── Derivación ──────────────────────────────────────────────────────────────
 
 fn derivar(a: &Alta, arbol: &ore_core::parse::Node) -> Result<Fuente, Fallo> {
