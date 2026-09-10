@@ -33,11 +33,21 @@
 //!
 //! # Las dos cosas que este módulo se niega a hacer
 //!
-//! - **No acepta una URL con credencial dentro.** Podría: `ore source add` sabe
-//!   separarla y mandarla a `.env.local`. Pero un fichero en el disco de un pod
-//!   no es un secreto guardado, y aceptarlo hoy sería crear el agujero y
-//!   apuntarlo para luego. Se niega con el motivo escrito, y el día que haya un
-//!   sitio de verdad donde ponerla, esta negativa es lo que hay que quitar.
+//! - **No acepta una URL con credencial dentro SI NO HAY DÓNDE GUARDARLA.**
+//!   Esto se negaba siempre, y la negativa venía con su fecha de caducidad
+//!   escrita: *«el día que haya un sitio de verdad donde ponerla, esta negativa
+//!   es lo que hay que quitar»*. Ese sitio es el custodio, y existe desde el
+//!   2026-09-10.
+//!
+//!   ⇒ Así que ya no se niega: se pregunta **si hay custodio**, que es lo único
+//!   que la negativa quería saber. Con él, la credencial va allí y una fuente
+//!   Postgres se da de alta como cualquier otra. Sin él, sigue el `422` — un
+//!   `ore-serve` sin `--cofre` aceptando la contraseña de producción de alguien
+//!   y perdiéndola en `.env.local` es exactamente el agujero que esto evitaba.
+//!
+//!   ⚠️ Y si el custodio la rechaza, el alta contesta `502` y no `201`: la
+//!   fuente queda declarada —el árbol se escribió antes— pero un tick verde
+//!   encima de un secreto perdido es peor que un error.
 //! - **No deja que un nombre de la URL toque el sistema de ficheros.** Un
 //!   segmento se valida contra un alfabeto cerrado antes de convertirse en un
 //!   camino; `..` no es un caso especial que haya que recordar, es algo que el
@@ -67,10 +77,11 @@ pub struct Servidor {
     pub identidad: Option<Proveedor>,
     /// ⭐⭐ DÓNDE VIVE LA CREDENCIAL DE UNA FUENTE, y por fin en algún sitio.
     ///
-    /// `host:puerto` del custodio. `None` ⇒ el alta sigue funcionando y la
-    /// credencial **se pierde**, que es lo que pasaba hasta hoy: `ore source
-    /// add` la escribe en `.env.local`, `.env.local` está en el `.gitignore`, y
-    /// el clon se tira al terminar la petición.
+    /// `host:puerto` del custodio. `None` ⇒ el alta de una fuente SIN credencial
+    /// en la URL sigue funcionando —y la credencial que no hay no se pierde—,
+    /// pero una que sí la traiga se rechaza con `422`: `ore source add` la
+    /// escribe en `.env.local`, `.env.local` está en el `.gitignore`, y el clon
+    /// se tira al terminar la petición.
     ///
     /// ⇒ Medido: el Job de catálogo del primer inquilino murió con «`PRUEBA_BQ_URL`
     ///   no está definida», y el cofre llevaba días desplegado con CERO secretos
@@ -297,8 +308,28 @@ impl Servidor {
         if let Err(m) = token(&nombre) {
             return Respuesta::error(422, format!("`name`: {m}"));
         }
-        if let Err(m) = sin_credencial(&url) {
-            return Respuesta::error(422, m);
+        // ── LA GUARDA, QUE AHORA DEPENDE DE QUE HAYA DONDE GUARDARLA ──────
+        //
+        // Esto rechazaba SIEMPRE una URL con credencial dentro, y el modulo
+        // dejo escrito por que y hasta cuando: *«el dia que haya un sitio de
+        // verdad donde ponerla, esta negativa es lo que hay que quitar»*.
+        //
+        // Ese sitio existe desde hoy: el custodio. Asi que la negativa deja de
+        // ser incondicional y pasa a preguntar lo unico que importaba —**si hay
+        // donde ponerla**—. Sin custodio configurado sigue diciendo que no, y
+        // con el mismo motivo de siempre: `ore source add` la mandaria a
+        // `.env.local`, que en este servidor vive en un clon que se tira.
+        //
+        // ⛔ Quitarla a secas habria reabierto el agujero exactamente donde
+        //   nadie mira: un `ore-serve` sin `--cofre` aceptando la contraseña de
+        //   produccion de alguien y perdiendola en silencio.
+        let trae_credencial = sin_credencial(&url).is_err();
+        if trae_credencial && self.cofre.is_none() {
+            return Respuesta::error(
+                422,
+                "esta URL trae una credencial dentro y este servidor no sabe de                  ningun custodio (`--cofre` y `--organizacion`).
+                 `ore source add` la mandaria a `.env.local`, y un fichero en el                  disco de un pod no es un secreto guardado.",
+            );
         }
 
         let mut args = vec![
@@ -344,6 +375,30 @@ impl Servidor {
                 //   quedaría un secreto que nombra una fuente que no existe, y
                 //   a eso no lo mira nadie nunca.
                 let guardada = self.guardar_credencial(&nombre, &url, testigo);
+
+                // ⛔⛔ Y SI TRAIA CREDENCIAL Y NO SE GUARDO, ESTO NO ES UN 201.
+                //
+                // Para BigQuery la URL es inocua —la credencial la presta la
+                // nube— y perderla no pierde nada. Para Postgres es la
+                // contraseña de produccion de alguien: contestar 201 pintaria
+                // un tick verde encima de un secreto que ya no existe en ningun
+                // sitio, y el fallo aparecería media hora despues en el
+                // registro de otro Job.
+                //
+                // ⚠️ La fuente SÍ queda declarada — el arbol se escribio antes,
+                //   y deshacer un commit empujado no es una vuelta atras: es
+                //   otro commit. Se dice en el mensaje, que es lo que permite
+                //   reintentar solo la credencial en vez de adivinar el estado.
+                if trae_credencial && !guardada.starts_with("guardada") {
+                    return Respuesta::error(
+                        502,
+                        format!(
+                            "la fuente `{nombre}` quedo declarada en el arbol, pero su                              credencial NO se guardo: {guardada}.
+                             El catalogo no podra leer el origen hasta que exista el                              secreto `fuente-{nombre}`."
+                        ),
+                    );
+                }
+
                 Respuesta::creado(Json::obj([
                     ("name", Json::s(nombre)),
                     ("informe", Json::s(s.stdout.trim())),
@@ -571,6 +626,11 @@ pub fn token(v: &str) -> Result<(), String> {
 
 /// Una URL que **no** trae la credencial dentro.
 ///
+/// ⚠️ Desde el 2026-09-10 esto ya no DECIDE: DETECTA. Quien decide es el alta,
+/// mirando si hay custodio donde poner lo que se detecte. La distinción importa
+/// porque el mensaje de abajo se sigue leyendo como una negativa y ya no lo es
+/// por sí solo.
+///
 /// Lo que se busca es la autoridad con `usuario:clave@`, y de paso las dos
 /// formas de meterla en la consulta. No pretende ser exhaustivo: pretende que
 /// el caso normal no pase inadvertido, y el caso raro que pase no crea un
@@ -692,14 +752,18 @@ mod pruebas {
         assert!(token("ventas-2_b").is_ok());
     }
 
+    /// ⚠️ Se DETECTA, que ya no es lo mismo que negarse. Con custodio
+    /// configurado, una URL de estas se acepta y la credencial va allí; sin él,
+    /// el alta la rechaza. Esta función sólo contesta a «¿la trae?».
     #[test]
-    fn una_url_con_credencial_se_niega() {
+    fn una_url_con_credencial_se_detecta() {
         assert!(sin_credencial("postgres://ana:clave@host/db").is_err());
         assert!(sin_credencial("https://host/x?password=abc").is_err());
         assert!(sin_credencial("https://host/x?token=abc").is_err());
     }
 
-    /// El caso que SÍ pasa, y es el que importa: la credencial la presta la nube.
+    /// Las que no la traen: la credencial la presta la nube (BigQuery por
+    /// Workload Identity) o no hace falta. Éstas nunca dependieron del custodio.
     #[test]
     fn una_url_sin_credencial_pasa() {
         assert!(sin_credencial("bigquery://mi-proyecto/ventas").is_ok());
