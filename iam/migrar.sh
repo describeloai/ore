@@ -47,7 +47,27 @@ psql_ -f "$MIG/001-el-libro.sql" > /dev/null
 
 aplicadas=$(psql_ -At -c "select nombre || ' ' || huella from iam.migracion" || true)
 
-huella_de() { sha256sum "$1" | cut -d' ' -f1; }
+# -- LA HUELLA, SIN LOS FINALES DE LINEA -----------------------------------
+#
+# Esto era `sha256sum "$1"` a secas, y el 2026-09-10 paro el despliegue de una
+# migracion con un mensaje que acusaba de algo que no habia pasado:
+#
+#     x `014-las-potestades.sql` ya se aplico y su contenido HA CAMBIADO.
+#     => una migracion aplicada es inmutable. Corregir es escribir la siguiente.
+#
+# Y no habia cambiado NADA. Dos migraciones se aplicaron desde un arbol de
+# trabajo de Windows —con CRLF— y el `ConfigMap` paso a generarlo Flux desde
+# git, que es LF. Mismo contenido, huella distinta.
+#
+# ⇒ Costo media hora y una acusacion falsa: llegue a escribir que alguien habia
+#   editado una migracion ya aplicada, y era mentira. El arbol declara `eol=lf`
+#   y tiene una prueba que lo vigila; que una huella dependiera de algo que el
+#   arbol considera irrelevante era el fallo.
+#
+# ⚠️ Y esto NO afloja la regla: sigue siendo imposible cambiar una linea de SQL
+#   ya aplicada sin que salte. Lo unico que deja de contar es con que caracter
+#   termina esa linea, que no es contenido — es transporte.
+huella_de() { tr -d '\r' < "$1" | sha256sum | cut -d' ' -f1; }
 
 nuevas=0
 for f in "$MIG"/*.sql; do
