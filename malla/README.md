@@ -66,8 +66,26 @@ reservada gasta de `IN_USE_ADDRESSES` —la MISMA cuota que hizo privado este po
 sirve a los tres nodos**: antes tres nodos públicos gastaban tres. Se recupera la salida por
 un tercio de lo que costaba tenerla, y el motivo por el que el pool es privado sigue en pie.
 
-⚠️ **El dinero NO está medido** contra la Billing API: Cloud NAT cobra por pasarela y hora
-más por GB procesado. Queda pendiente y se dice, en vez de escribir una cifra de memoria.
+**✓ Y el dinero SÍ está medido**, contra la API de facturación y Cloud Monitoring, en
+`pruebas-de-fuego/medida-el-coste-de-la-salida.py` — que lo relee en cada ejecución en vez
+de fiarse de esta línea:
+
+```
+pasarela   0.0014 USD/h        Networking Cloud Nat Gateway Uptime
+IP de NAT  0.0050 USD/h        Networking Cloud NAT IP Usage
+           ─────────────
+fijo       0.0064 USD/h   ⇒    4.67 USD/mes
+datos      0.045 USD/GiB
+```
+
+**Y lo que la medida contesta no es «cuánto cuesta» sino si el precio por dato importa.**
+No importa: un catálogo de 48 entidades contra un Postgres real movió **75 KB** —medido—,
+y harían falta **104 GiB/mes**, o sea ~1,5 millones de catálogos, para que los datos
+igualaran al fijo.
+
+⇒ El coste **es** el fijo. Catalogar no es una decisión económica: se paga tener la puerta,
+no usarla. ⚠️ Y eso deja de valer el día que se MATERIALICEN datos, que sí mueve volumen y
+todavía no pasa por aquí — ese día hay que releer la medida entera.
 
 ── Lo que decía este párrafo cuando se escribió, y sigue siendo verdad ──
 
