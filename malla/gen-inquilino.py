@@ -38,6 +38,7 @@ no es exactamente lo que se midió. Se acepta porque la alternativa —distingui
 prosa de valor— es un analizador que puede equivocarse, y equivocarse aquí es
 justo lo que no se puede.
 """
+import hashlib
 import pathlib
 import re
 import sys
@@ -153,6 +154,10 @@ FUENTE_MODELO = "bq"
 #   VALOR y no una silaba.
 SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 
+# Los ocho digitos que el nombre de un Job de catalogo lleva detras. La ①
+# los normaliza para poder comparar; la ⑨ es quien exige que esten.
+RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
+
 
 def render(nombre, arbol=None, entrada=None, fuentes=()):
     """La plantilla con las sustituciones hechas. `arbol` es `<propietario>/<repo>`
@@ -246,12 +251,25 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
                 "hay que desambiguarlas en el arbol" % (vistos[obj], fuente, obj))
         vistos[obj] = fuente
         t = plantilla
-        t = t.replace("catalogo-%s" % FUENTE_MODELO, "catalogo-%s" % obj)
         t = t.replace('value: "%s"' % FUENTE_MODELO, 'value: "%s"' % fuente)
         t = t.replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
         t = t.replace("t-%s/ontologia" % MODELO, arbol)
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
+        # ── ⭐⭐ Y EL NOMBRE, EL ULTIMO, CON EL RESUMEN DE TODO LO DEMAS ──
+        #
+        # Un Job es inmutable: mismo nombre y distinto contenido es un
+        # «field is immutable» al aplicar. La plantilla llevaba
+        # `ssa: IfNotPresent` para esquivarlo, y esquivarlo costaba que un Job
+        # fallado no se reintentara nunca y que una plantilla nueva no llegara
+        # al que ya existia. Ver la cabecera de `44-el-catalogo.yaml`.
+        #
+        # ⇒ Con el nombre derivado del contenido, «mismo nombre» implica «mismo
+        #   contenido», y el conflicto deja de poder existir. La sustitucion va
+        #   LA ULTIMA porque el resumen se toma de todo lo anterior.
+        h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
+        t = t.replace("catalogo-%s-00000000" % FUENTE_MODELO,
+                      "catalogo-%s-%s" % (obj, h))
         salida["44-el-catalogo-%s.yaml" % obj] = t
     return salida
 
@@ -265,10 +283,11 @@ def nombre_de_objeto(s):
     fuente valido porque a Kubernetes no le gusta seria trasladarle una
     restriccion nuestra.
 
-    ⚠️ Cortado a 40: `catalogo-` delante son 9, y un Job le pone a sus pods un
-      sufijo — el limite duro de 63 se alcanza antes de lo que parece.
+    ⚠️ Cortado a 30, y la cuenta es esta: `catalogo-` son 9, el resumen del
+      contenido anade `-` y 8, y un Job le pone a sus pods otro sufijo de 6.
+      9+30+1+8+6 = 54, con margen bajo el limite duro de 63.
     """
-    n = re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")[:40].strip("-")
+    n = re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")[:30].strip("-")
     return n or "sin-nombre"
 
 
@@ -298,9 +317,20 @@ def comprobar_plantillas():
     # ── ① La plantilla es una instancia: renderizar `demo` es la identidad ──
     # ⭐ Y con la fuente modelo, para que la que se rinde N veces entre tambien
     #   en la identidad. Sin esto podria derivar sin que nadie lo notara.
+    # ⚠️ Con UNA excepcion, y es la unica que tiene esta comprobacion: el
+    #   nombre del Job de catalogo lleva el resumen de su propio contenido, asi
+    #   que no puede coincidir con el `00000000` de la plantilla. Se normalizan
+    #   LOS DOS lados a `00000000` y se compara el resto byte a byte.
+    #
+    # ⛔ Y es una excepcion de VERDAD, no un descuido: la ① deja de vigilar esos
+    #   ocho caracteres. Quien los vigila es la ⑨, que exige que el nombre
+    #   rendido tenga exactamente la forma `catalogo-<fuente>-<8 hex>`.
     for f, t in render(MODELO, fuentes=[FUENTE_MODELO]).items():
         origen = MALLA / (POR_FUENTE if f.startswith("44-") else f)
-        if t != origen.read_text(encoding="utf-8"):
+        a, b = t, origen.read_text(encoding="utf-8")
+        if f.startswith("44-"):
+            a, b = (RESUMEN.sub("-00000000", x) for x in (a, b))
+        if a != b:
             fallos.append("`%s`: renderizar `demo` NO devuelve el fichero" % f)
     print("  ① renderizar `%s` devuelve la plantilla, byte a byte" % MODELO)
 
@@ -420,6 +450,17 @@ def comprobar_plantillas():
                         "`%s`: %s se llama `%s`, y Kubernetes lo rechaza — eso "
                         "tumba el `Kustomization` del inquilino ENTERO"
                         % (f, d.get("kind"), n))
+                # ⭐ Y el Job, ademas, con el resumen detras. La ① dejo de
+                #   vigilar estos ocho caracteres al normalizarlos para poder
+                #   comparar; se vigilan aqui, o no los vigila nadie.
+                if (f.startswith("44-el-catalogo-")
+                        and d.get("kind") == "Job") and not re.match(
+                        r"^catalogo-[a-z0-9][a-z0-9-]*-[0-9a-f]{8}$", str(n)):
+                    fallos.append(
+                        "`%s`: el Job se llama `%s` y no `catalogo-<fuente>-<8 "
+                        "hex>` — sin el resumen, dos contenidos distintos "
+                        "compartirian nombre y volveria el `field is immutable`"
+                        % (f, n))
     print("  ⭐ ⑨ una fuente llamada `%s` sigue dando nombres validos" % SUCIA)
 
     return fallos

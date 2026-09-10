@@ -46,7 +46,36 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: catalogo-bq
+  # ── ⭐⭐ EL NOMBRE LLEVA EL CONTENIDO DENTRO ─────────────────────────────
+  #
+  # Los ocho digitos son el resumen del resto de este fichero ya renderizado, y
+  # el `00000000` de aqui es el de la plantilla — el renderizador lo sustituye.
+  #
+  # ⛔ Esto sustituye a `kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`, que
+  #   estaba aqui porque un Job es inmutable: si el nombre no cambia y el
+  #   contenido si, el apply falla con «field is immutable», y la anotacion lo
+  #   evitaba diciendole a Flux que NO tocara el que ya existe.
+  #
+  # ⇒ Y evitaba el error tapando dos cosas de verdad:
+  #
+  #     · un Job que FALLO se quedaba fallado para siempre. `catalogo-bq` de
+  #       `prueba` llevaba once horas en `Failed`, y converger no podia
+  #       arreglarlo por mucho que la plantilla mejorara;
+  #     · y una plantilla nueva NO llegaba al Job existente — justo lo que
+  #       converger viene a resolver.
+  #
+  # ⭐ Con el nombre derivado del contenido, dos objetos que se llaman igual
+  #   tienen el mismo contenido SIEMPRE, asi que el conflicto de inmutabilidad
+  #   no puede darse. Cambiar la plantilla da un nombre nuevo: Flux crea el Job
+  #   nuevo y `prune: true` se lleva el viejo. La inmutabilidad deja de ser un
+  #   problema que hay que esquivar y pasa a ser gratis.
+  #
+  # ⚠️ Lo que NO se reintenta solo: un fallo con la plantilla IGUAL. Repetir
+  #   trabajo identico de forma identica es un bucle, no un reintento. Para
+  #   volver a intentarlo se borra el Job —`kubectl delete job catalogo-…`— y
+  #   Flux lo recrea en la siguiente reconciliacion, porque sigue en el origen.
+  #   Es un acto de una persona, y esta bien que lo sea.
+  name: catalogo-bq-00000000
   namespace: t-demo
   labels:
     # ⛔ La cola de Kueue, y no es opcional: es lo que hace que este pod aterrice
@@ -56,9 +85,6 @@ metadata:
     kueue.x-k8s.io/queue-name: cola
     ore.dev/tenant: demo
     ore.dev/rol: driver
-  annotations:
-    # Un Job es inmutable. Para volver a catalogar se borra y Flux lo recrea.
-    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 spec:
   backoffLimit: 2
   ttlSecondsAfterFinished: 86400

@@ -55,6 +55,25 @@ metadata:
     ore.dev/tenant: demo
     ore.dev/rol: semilla
   annotations:
+    # ── ⚠️ AQUI SE QUEDA, Y `44-el-catalogo.yaml` LO PERDIO ────────────────
+    #
+    # El 2026-09-10 el Job del catalogo dejo de llevar esta anotacion: le
+    # tapaba dos cosas —un Job fallado no se reintentaba nunca, y una plantilla
+    # nueva no llegaba al que ya existia—. Su nombre pasa a llevar el resumen de
+    # su propio contenido, y asi «mismo nombre» implica «mismo contenido».
+    #
+    # ⛔ Aqui NO, y la linea es esta: **el catalogo describe trabajo por hacer;
+    #   la semilla describe un estado ya alcanzado.** Un Job de catalogo tiene
+    #   que reflejar la plantilla de HOY porque su trabajo esta pendiente. El
+    #   arbol de un inquilino, una vez sembrado, ya existe — y ninguna mejora de
+    #   esta plantilla cambia ese hecho.
+    #
+    # ⇒ Derivarlo del contenido aqui haria que cada edicion de este fichero
+    #   —una coma en un comentario— recreara el Job en TODOS los inquilinos.
+    #   Idempotente y barato, si; y aun asi seria ruido con cero efecto.
+    #
+    # Para volver a sembrar: `kubectl delete job -n t-<org> el-arbol`, y Flux
+    # lo recrea en la siguiente reconciliacion porque sigue en el origen.
     kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 spec:
   # ⚠️ Reintentos, no cero. La forja puede no estar lista cuando el inquilino
