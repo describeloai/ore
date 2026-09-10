@@ -43,6 +43,14 @@ import subprocess
 import sys
 import tempfile
 
+# La consola de Windows es cp1252 y estos mensajes llevan rayas. Sin esto la
+# medida se cae AL IMPRIMIR, que parece que fallo lo medido.
+for f in (sys.stdout, sys.stderr):
+    try:
+        f.reconfigure(errors="replace")
+    except AttributeError:
+        pass
+
 ORE = os.path.join(os.environ.get("ORE_RAIZ", r"C:\ORE"), "target", "release", "ore.exe")
 if not os.path.exists(ORE):
     ORE = shutil.which("ore") or ORE

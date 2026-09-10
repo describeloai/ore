@@ -7,6 +7,7 @@
 //! delegan son `discover --source`, `lock` y `pack --sign/--log` — y ninguno de
 //! los tres abre el socket: lo abre el programa que llaman.
 
+mod alcance;
 mod autoria;
 mod cache;
 mod candado;
@@ -411,6 +412,21 @@ enum Command {
         /// Nombre y espacio de nombres del paquete. Por defecto, el del directorio.
         #[arg(long)]
         name: Option<String>,
+        /// **Solo este objeto del origen.** Repetible. Sin ninguno, entra todo.
+        ///
+        /// El nombre es el que el catalogo le da, cualificado como lo cualifique
+        /// el lector: `public.clientes` en PostgreSQL. No se normaliza —lo que
+        /// se compara es lo que el origen dijo—, y un nombre que el catalogo no
+        /// tiene se dice en vez de tragarse: o es una errata o la tabla ya no
+        /// esta, y las dos piden que alguien mire.
+        #[arg(long = "only", value_name = "OBJETO")]
+        solo: Vec<String>,
+        /// Lo mismo, de un fichero: un objeto por linea, `#` para anotar.
+        ///
+        /// Existe porque **cien tablas no caben en una linea de ordenes**, y
+        /// menos en la de un `Job` que la lleva escrita en un manifiesto.
+        #[arg(long = "only-file", value_name = "FICHERO")]
+        solo_de: Option<PathBuf>,
     },
     /// Escribe el paquete publicable: un `.oob`.
     ///
@@ -695,7 +711,18 @@ fn main() -> std::process::ExitCode {
             source,
             out,
             name,
-        } => return descubrir(from.as_deref(), source.as_ref(), out, name.as_deref()),
+            solo,
+            solo_de,
+        } => {
+            return descubrir(
+                from.as_deref(),
+                source.as_ref(),
+                out,
+                name.as_deref(),
+                solo,
+                solo_de.as_deref(),
+            );
+        }
         Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
         Command::Lock { path, check } => return candado::lock(path, *check),
         Command::Pack {
@@ -955,6 +982,8 @@ fn descubrir(
     fuente: Option<&String>,
     destino: &std::path::Path,
     nombre: Option<&str>,
+    solo: &[String],
+    solo_de: Option<&std::path::Path>,
 ) -> std::process::ExitCode {
     // El catálogo se lee de un fichero o de una fuente viva, y a partir de aquí
     // el resto del comando no distingue cuál: es el mismo texto.
@@ -978,12 +1007,64 @@ fn descubrir(
         },
         (None, None) => unreachable!("clap exige --from o --source"),
     };
-    let catalogo = match inductor::Catalogo::leer(&texto) {
+    let mut catalogo = match inductor::Catalogo::leer(&texto) {
         Ok(c) => c,
         Err(m) => {
             eprintln!("error: {m}");
             return std::process::ExitCode::from(65); // EX_DATAERR
         }
+    };
+
+    // El alcance, si lo hay. Se aplica AQUI —sobre el catalogo, antes de nada—
+    // porque todo lo de abajo cuenta tablas: `costura` compara contra el
+    // manifiesto y avisaria de tablas que nadie pidio.
+    let mut objetos: Vec<String> = solo.to_vec();
+    if let Some(p) = solo_de {
+        match alcance::de_fichero(p) {
+            Ok(v) => objetos.extend(v),
+            Err(m) => {
+                eprintln!("error: {m}");
+                return std::process::ExitCode::from(66); // EX_NOINPUT
+            }
+        }
+    }
+    let el_alcance = if objetos.is_empty() {
+        None
+    } else {
+        let a = alcance::Alcance::nuevo(catalogo.fuente(), objetos);
+        // ⚠️ Los nombres se toman ANTES de recortar. Listarlos despues era el
+        //    error que tenia esto: con una errata, el recorte deja el catalogo
+        //    vacio y la ayuda salia sin una sola linea — justo cuando lo unico
+        //    util que se puede decir es como se llaman de verdad.
+        let habia: Vec<String> = catalogo.tablas.iter().map(|t| t.nombre.clone()).collect();
+        let (recortado, recorte) = a.aplicar(catalogo);
+        // Un nombre que el catalogo no tiene PARA el comando: se acaba de
+        // escribir en la linea de ordenes, asi que una errata es lo mas
+        // probable y seguir produciria un paquete al que le falta una tabla
+        // sin que nada lo diga.
+        if !recorte.sin_respaldo.is_empty() {
+            eprintln!(
+                "error: el origen no tiene {} de los objetos pedidos:",
+                recorte.sin_respaldo.len()
+            );
+            for o in &recorte.sin_respaldo {
+                eprintln!("  · `{o}`");
+            }
+            eprintln!("  El catálogo trae {} objetos:", habia.len());
+            for n in habia.iter().take(20) {
+                eprintln!("  · `{n}`");
+            }
+            if habia.len() > 20 {
+                eprintln!("  · … y {} más", habia.len() - 20);
+            }
+            return std::process::ExitCode::from(65); // EX_DATAERR
+        }
+        if recortado.tablas.is_empty() {
+            eprintln!("error: el alcance deja el paquete sin ninguna tabla");
+            return std::process::ExitCode::from(65);
+        }
+        catalogo = recortado;
+        Some((a, recorte))
     };
 
     let paquete = nombre.map(String::from).unwrap_or_else(|| {
@@ -1018,6 +1099,23 @@ fn descubrir(
         return std::process::ExitCode::from(73);
     }
     let _ = std::fs::write(revision::ruta_cola(destino), revision::cola(&ind));
+
+    // El alcance, al lado del catalogo entero y de las respuestas. Sin esto,
+    // `drift-detect` denunciaria cada tabla no elegida en cada pasada: «no lo
+    // elegi» y «no lo vi» son la misma ausencia hasta que una se escribe.
+    if let Some((a, recorte)) = &el_alcance {
+        let r = alcance::ruta(destino);
+        if let Err(e) = std::fs::write(&r, a.escribir()) {
+            eprintln!("error: no se pudo escribir `{}`: {e}", r.display());
+            return std::process::ExitCode::from(73);
+        }
+        println!(
+            "  \u{2713} alcance: {} objeto(s) · {} del origen se quedan fuera, y {} lo dice",
+            catalogo.tablas.len(),
+            recorte.fuera,
+            alcance::FICHERO
+        );
+    }
 
     print!("{}", inductor::informe(&ind, destino));
     for l in costura(destino, &catalogo) {

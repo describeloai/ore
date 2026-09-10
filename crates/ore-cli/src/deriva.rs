@@ -55,6 +55,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::alcance::{Eleccion, Juicio};
 use ore_core::document::Kind;
 use ore_core::link::{Loaded, Package};
 use ore_core::parse::Node;
@@ -99,10 +100,20 @@ pub struct Deriva {
     pub duele_a: Vec<String>,
 }
 
-/// **La comparación.** Función pura de (catálogo, paquete): ni red ni ficheros,
-/// que es lo que permite que tenga pruebas.
-pub fn comparar(cat: &Catalogo, pkg: &Package) -> Vec<Deriva> {
+/// Lo que sale de comparar: la deriva, y lo que ni siquiera es deriva.
+pub struct Comparacion {
+    pub derivas: Vec<Deriva>,
+    /// Objetos del origen que el alcance declarado deja fuera. **No son deriva**
+    /// y por eso no van en la lista: alguien los miró y dijo que no. Se cuentan
+    /// —no se listan— porque noventa y cinco nombres no son un mensaje.
+    pub fuera_del_alcance: Vec<String>,
+}
+
+/// **La comparación.** Función pura de (catálogo, paquete, alcance): ni red ni
+/// ficheros, que es lo que permite que tenga pruebas.
+pub fn comparar(cat: &Catalogo, pkg: &Package, elegido: Option<&Eleccion>) -> Comparacion {
     let mut out = Vec::new();
+    let mut fuera = Vec::new();
 
     // Solo las de ESTA fuente. Ver la cabecera.
     let tablas: Vec<&Loaded> = pkg
@@ -147,20 +158,48 @@ pub fn comparar(cat: &Catalogo, pkg: &Package) -> Vec<Deriva> {
 
     // Y lo que el origen tiene y nadie declaró. Es la deriva más común, no rompe
     // a nadie, y hoy no la ve ningún `diff` — por eso sale como informe.
+    //
+    // ⛔⛔ Salvo lo que alguien decidió no llevarse. «No lo elegí» y «no lo vi»
+    //   son la misma ausencia y llevan a sitios opuestos: una hay que dejarla en
+    //   paz y la otra hay que mirarla. Sin el alcance escrito, elegir cinco de
+    //   cien producía noventa y cinco derivas en cada pasada, para siempre — y
+    //   una alerta que siempre suena no la lee nadie, incluidas las ciertas.
+    //
+    // ⚠️ Y NO vale mirar `discover.catalog.json` en su lugar, que era la
+    //   simplificación tentadora: un objeto retenido por una colisión sin
+    //   resolver también está ahí, y ese no está decidido — está pendiente.
+    //   `el_catalogo_del_que_salio_un_paquete_no_deriva_de_el` lo fija.
     let declarados: Vec<String> = tablas.iter().filter_map(|t| cadena(t, "object")).collect();
     for c in &cat.tablas {
-        if !declarados.contains(&c.nombre) {
-            out.push(Deriva {
-                sujeto: c.nombre.clone(),
-                que: "el objeto".into(),
-                de: "no declarado".into(),
-                a: "está en el origen".into(),
-                direccion: Direccion::Ensancha,
-                duele_a: Vec::new(),
-            });
+        if declarados.contains(&c.nombre) {
+            continue;
         }
+        // Y aqui las tres filas de la tabla de `Eleccion`. Sin alcance no hay
+        // eleccion que juzgar y todo es deriva, que es lo de siempre.
+        let a = match elegido.map(|e| e.juzgar(&c.nombre)) {
+            Some(Juicio::Descartado) => {
+                fuera.push(c.nombre.clone());
+                continue;
+            }
+            // ⭐ Se DICE que apareció después, y no «no declarado» a secas: es
+            //   la diferencia entre «te falta declarar esto» y «esto no estaba
+            //   cuando elegiste», y llevan a cosas distintas.
+            Some(Juicio::Nuevo) => "apareció en el origen después del alcance",
+            Some(Juicio::Retenido) | None => "está en el origen",
+        };
+        out.push(Deriva {
+            sujeto: c.nombre.clone(),
+            que: "el objeto".into(),
+            de: "no declarado".into(),
+            a: a.into(),
+            direccion: Direccion::Ensancha,
+            duele_a: Vec::new(),
+        });
     }
-    out
+    Comparacion {
+        derivas: out,
+        fuera_del_alcance: fuera,
+    }
 }
 
 fn columnas(
@@ -415,7 +454,26 @@ pub fn detectar(raiz: &Path, origen: Origen<'_>) -> ExitCode {
     // **Sin exigir validez**: la deriva se pregunta sobre lo que hay, y un
     // paquete con la cola de decisiones abierta es el caso típico.
     let pkg = ore_core::validate::cargar_paquete(raiz).0;
-    let derivas = comparar(&cat, &pkg);
+    // El alcance que `discover` escribió, si lo escribió. Un paquete sin él es
+    // uno que se llevó la fuente entera, que es el caso normal y el de antes.
+    let elegido = match Eleccion::del_paquete(raiz) {
+        Ok(a) => a,
+        Err(m) => {
+            eprintln!("error: {m}");
+            return ExitCode::from(65); // EX_DATAERR
+        }
+    };
+    let c = comparar(&cat, &pkg, elegido.as_ref());
+    let derivas = c.derivas;
+
+    // Se dice SIEMPRE que hay alcance, haya deriva o no. Un recorte silencioso
+    // es indistinguible de un origen que menguó.
+    if !c.fuera_del_alcance.is_empty() {
+        println!(
+            "  · {} objeto(s) del origen fuera del alcance declarado — no son deriva",
+            c.fuera_del_alcance.len()
+        );
+    }
 
     if derivas.is_empty() {
         println!(

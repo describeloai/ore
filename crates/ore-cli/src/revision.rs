@@ -126,6 +126,29 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
     let catalogo = inductor::Catalogo::leer(&texto)
         .map_err(|m| fallo(65, format!("`{}` no analiza: {m}", ruta.display()), &[]))?;
 
+    // ⭐ El alcance se aplica AQUI y no en `discover`, aunque `discover` ya lo
+    //   hubiera aplicado: `review` vuelve a inducir DESDE EL CATALOGO ENTERO,
+    //   que es el que se guarda. Sin este paso, revisar devolveria al paquete
+    //   las tablas que alguien dejo fuera — y lo haria en silencio.
+    let catalogo = match crate::alcance::del_paquete(raiz).map_err(|m| fallo(65, m, &[]))? {
+        None => catalogo,
+        Some(a) => {
+            a.comprueba_la_fuente(&catalogo)
+                .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
+            let (c, r) = a.aplicar(catalogo);
+            // ⚠️ Aqui NO se falla, y en `discover` si. La diferencia no es
+            //   caprichosa: alli el nombre se acababa de teclear —una errata es
+            //   lo probable— y aqui viene de un fichero escrito hace tiempo,
+            //   asi que lo probable es que la tabla se fuera del origen.
+            //   Fallar impediria revisar el paquete justo cuando hay algo que
+            //   revisar.
+            for o in &r.sin_respaldo {
+                eprintln!("aviso: el alcance nombra `{o}`, que ya no esta en el catalogo");
+            }
+            c
+        }
+    };
+
     let paquete = nombre_del_paquete(raiz);
 
     // El vocabulario se lee del REPOSITORIO, no del paquete: un vocabulario
