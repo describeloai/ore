@@ -265,6 +265,29 @@ dice "4 · listado · nombres y ni un valor"
 [ "$(campo rol)" = "owner" ] || falla "5 · deberia resolver como \`owner\`: $(campo rol)"
 dice "5 · resuelto · el mismo valor que entro · con rol \`$(campo rol)\`"
 
+# ── 5b · ⭐⭐ Y POR NOMBRE, QUE ES COMO LLAMAN LOS CLIENTES ──────────────────
+#
+# ⛔ Esta comprobacion faltaba, y su ausencia costo el primer secreto que este
+#   custodio tenia que guardar de verdad. Todo el guion resolvia el id con SQL
+#   —`select id from iam.organizacion where nombre='acme'`— asi que el camino
+#   del NOMBRE no se ejercitaba nunca.
+#
+#   Y por ahi llaman los clientes: `ore-serve` arranca con `--organizacion demo`
+#   y pedia `/organizaciones/demo/secretos`. El custodio comparaba `demo` contra
+#   una columna que guarda `org_b7b98fdd…`, no encontraba nada, y contestaba
+#   «no puedes hacer eso en esa organizacion» — un problema de UNIDADES
+#   disfrazado de problema de permisos.
+#
+# ⇒ Las dos formas tienen que dar exactamente lo mismo. Si algun dia dejan de
+#   darlo, se entera aqui y no un Job de catalogo tres horas despues.
+[ "$(pide GET "/organizaciones/acme/secretos/pg-produccion" "$ADA")" = "200" ]   || falla "5b · por NOMBRE no resolvio: $(cat "$TMP/r.json")"
+[ "$(campo valor)" = "postgres://u:p@db/x" ]   || falla "5b · por nombre volvio otra cosa: $(campo valor)"
+[ "$(pide GET "/organizaciones/acme/secretos" "$ADA")" = "200" ]   || falla "5b · por NOMBRE no listo: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/secretos" "$ADA"      '{"nombre":"por-nombre","clase":"contrasena","valor":"x"}')" = "200" ]   || falla "5b · por NOMBRE no emitio: $(cat "$TMP/r.json")"
+# Y una que no existe sigue siendo un no, no un si por descuido.
+[ "$(pide GET "/organizaciones/no-existe/secretos" "$ADA")" != "200" ]   || falla "5b · ⛔ una organizacion inventada contesto 200"
+dice "5b · el nombre y el id llevan al mismo sitio, y lo inventado a ninguno"
+
 # ── 6 · ⭐ EL DIRECTORIO DE LO AJENO ────────────────────────────────────────
 #
 # Si un secreto ajeno diera «no tienes acceso» y uno inventado «no existe»,

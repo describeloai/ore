@@ -120,6 +120,9 @@ impl Servidor {
         let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
         let kms = &self.kms;
         self.en_transaccion(s, move |tx, emisor| {
+            // ⓪ El nombre o el id, a ID. Ver `canonica`: aqui llegaba `demo` y
+            //    todo lo de abajo pregunta por `org_b7b98fdd…`.
+            let org = canonica(tx, &org)?;
             // ① ¿Puede emitir? Es una POTESTAD de la organización: no habla de
             //    ningún secreto concreto porque todavía no existe.
             potestad::exige(tx, emisor, &s.persona, &org, "secreto:emitir")?;
@@ -210,6 +213,8 @@ impl Servidor {
     fn listar(&self, s: &Identidad, org: &str) -> Respuesta {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
+            // ⓪ El nombre o el id, a ID. Ver `canonica`.
+            let org = canonica(tx, &org)?;
             // ⚠️ Ver los nombres de TODOS —incluidos los que no te han
             //   concedido— destapa qué sistemas hay y cómo se llaman. Por eso
             //   cuelga de una potestad y no del estado por defecto, igual que
@@ -256,6 +261,8 @@ impl Servidor {
         let (org, nombre) = (org.to_string(), nombre.to_string());
         let kms = &self.kms;
         self.en_transaccion(s, move |tx, emisor| {
+            // ⓪ El nombre o el id, a ID. Ver `canonica`.
+            let org = canonica(tx, &org)?;
             let quien = verbos::persona_id(tx, emisor, &s.persona)?;
             let recurso = format!("secreto/{nombre}");
 
@@ -343,4 +350,41 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/organizaciones/{org}/secretos", con),
         ("GET", "/organizaciones/{org}/secretos/{nombre}", con),
     ]
+}
+
+/// ⭐⭐ EL ID CANONICO DE UNA ORGANIZACION, VENGA POR NOMBRE O POR ID.
+///
+/// ⛔ Esto faltaba, y costo el primer secreto que este custodio tenia que
+///   guardar. `ore-serve` arranca con `--organizacion demo` —el nombre— y todo
+///   este fichero trataba el segmento de la URL como el ID:
+///
+///     potestad::exige(…, "demo", "secreto:emitir")
+///       → select … where pp.organizacion = 'demo'
+///       → CERO FILAS, porque esa columna guarda `org_b7b98fdd…`
+///
+///   Y el sintoma no decia nada de eso: «no puedes hacer eso en esa
+///   organizacion», o sea un problema de permisos donde habia un problema de
+///   unidades. La persona SI tenia `secreto:emitir`; se le preguntaba por otra
+///   organizacion que no existe.
+///
+/// ⭐ Se resuelve AQUI y no en quien llama, y esa es la decision: el nombre es
+///   unico y esta en la fila —`017`, `019`, `022`—, asi que convertirlo en el
+///   identificador interno es trabajo de quien recibe. Arreglarlo en
+///   `ore-serve` habria dejado al siguiente cliente del custodio tropezando con
+///   lo mismo, y ademas habria metido un identificador opaco de Keycloak en la
+///   plantilla de cada inquilino.
+///
+/// ⚠️ No hay ambiguedad posible: un id es `org_<hex>` y un nombre no admite `_`
+///   —`nombre_valido` lo prohibe—. Aun asi el id gana, escrito y no supuesto.
+fn canonica(tx: &mut Tx, org: &str) -> Result<String, String> {
+    Ok(tx
+        .uno(
+            "select id from iam.organizacion
+              where id = $1 or nombre = $1
+              order by (id = $1) desc
+              limit 1",
+            &[&org],
+        )?
+        .ok_or_else(|| format!("`{org}` no es ninguna organizacion"))?
+        .get(0))
 }
