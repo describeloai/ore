@@ -83,7 +83,16 @@ FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 # ⇒ Y es lo que permite que el Job lea como `aprovisionador`, el papel de la
 #   `023`: cuatro columnas de una tabla, en vez del `kubectl exec` que era un
 #   `psql` como superusuario dentro del pod de la base.
-RUN apk add --no-cache git postgresql-client
+# ⭐ Y `py3-yaml` desde el 2026-09-10, por la comprobacion ⑦: el que converge
+# ANALIZA como YAML todo lo que va a rendir antes de tocar a ningun inquilino.
+# Sin el analizador, `--comprobar-plantillas` **falla** en vez de saltarselo —a
+# proposito: una comprobacion ausente y una que pasa se leen igual en un
+# registro, y esa confusion es la que dejo pasar un `44-el-catalogo.yaml` roto.
+#
+# ⚠️ O sea: hasta que esta imagen se publique, el `CronJob` de convergencia se
+# niega a correr. Es el fallo por el lado bueno, y conviene saber que es ese y
+# no otro.
+RUN apk add --no-cache git postgresql-client py3-yaml
 
 COPY --from=build /src/target/release/ore                /usr/local/bin/ore
 COPY --from=build /src/target/release/ore-read-jsonl     /usr/local/bin/ore-read-jsonl

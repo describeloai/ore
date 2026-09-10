@@ -43,13 +43,46 @@
 # —«el permiso no desaparece, se CONCENTRA»— y vale el mismo argumento: lo tiene
 # UNA pieza, con una entrada, y lo que hace queda escrito en un commit.
 #
+# -- Y DESDE HOY CONVERGE SOLO, QUE ERA LA MITAD QUE FALTABA --------------
+#
+# Esto era un `Job` con `NOMBRE: prueba` escrito a mano y nombre fijo
+# `aprovisionar`. Para dar de alta a otro se editaba el fichero; para volver a
+# correrlo se borraba. Consecuencia medida: cambiar una plantilla **no llegaba
+# a ningun inquilino**, nunca, porque nada volvia a rendir.
+#
+# => Ahora es un `CronJob`, y su corrida normal es `converger-inquilinos.sh`,
+#   que lista el censo y converge a TODOS. El paso ⑥ del guion ya hacia el
+#   trabajo: clona, escribe encima y hace commit solo si algo cambio. Con la
+#   plantilla igual dice «ya estaba»; cambiada, empuja la diferencia.
+#
 # ── Cómo se corre ────────────────────────────────────────────────────────
 #
-#     kubectl create job -n ore-system aprovisionar-acme \
-#       --from=cronjob/aprovisionador -- acme            (cuando sea CronJob)
+#   TODOS, y es la corrida normal. Tambien es como se fuerza una:
 #
-#   Hoy: se copia este Job cambiando `args`, o se lanza con `kubectl create job
-#   --from`. Y **el enganche sigue siendo un commit en `13-…`**, a propósito.
+#     kubectl create job -n ore-system converger-ahora --from=cronjob/aprovisionador
+#
+#   ⛔ Y esa linea decia antes `-- bash /guion/aprovisionar-inquilino.sh acme`,
+#     para correr UNO. Probado antes de escribirlo aqui, y es FALSO:
+#
+#         error: cannot specify --from and command
+#
+#     `--from` te da el pod del `CronJob` tal cual, sin sitio donde meter una
+#     orden distinta. Llevaba en esta cabecera desde el principio como promesa
+#     («cuando sea CronJob») y habria pasado a leerse como instruccion.
+#
+#   ⭐ Y al comprobarlo salio algo mejor: con convergencia, «aprovisionar acme»
+#     deja de ser un acto propio. Converger a todos incluye a `acme`, y a los
+#     demas les cuesta un «ya estaba». No hace falta una linea por inquilino.
+#
+#   UNO, para mirarlo cuando algo va mal: `converger-inquilinos.sh` acepta
+#   nombres sueltos, asi que se hace con un `Job` escrito a mano — o, con el
+#   cluster en la mano, corriendo el guion desde fuera:
+#
+#     bash malla/converger-inquilinos.sh acme --seco
+#
+#   Y **el enganche sigue siendo un commit en `13-…`**, a propósito. Converger
+#   pone al dia a los inquilinos que ya existen; decidir QUE SE OBEDECE es
+#   nuestro, y eso no lo automatiza esto.
 # ═══════════════════════════════════════════════════════════════════════════
 apiVersion: v1
 kind: ServiceAccount
@@ -63,97 +96,117 @@ metadata:
     iam.gke.io/gcp-service-account: ore-aprovisionador@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 ---
 apiVersion: batch/v1
-kind: Job
+kind: CronJob
 metadata:
-  name: aprovisionar
+  name: aprovisionador
   namespace: ore-system
   labels:
     ore.dev/tenant: system
     ore.dev/rol: aprovisionador
-  annotations:
-    # Inmutable, como los otros dos Jobs de arranque. Para correrlo otra vez
-    # —o para otro inquilino— se borra y se vuelve a crear.
-    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
 spec:
-  backoffLimit: 2
-  ttlSecondsAfterFinished: 86400
-  template:
-    metadata:
-      labels:
-        ore.dev/rol: aprovisionador
-        ore.dev/tenant: system
+  # ⭐ Cada hora, y NO es una carrera. Es el mismo argumento que `13-…` escribe
+  #   sobre su `interval: 5m`: «lo que esto persigue no es aplicar rapido un
+  #   commit —eso se puede forzar— sino que la deriva no viva mucho tiempo».
+  #   Un cambio urgente se lanza a mano con la linea de la cabecera.
+  schedule: "17 * * * *"
+  # ⛔ `Forbid`: dos convergencias a la vez empujarian al mismo compartimento
+  #   desde dos clones distintos, y la segunda saldria con «rejected — fetch
+  #   first». No es peligroso; es ruido que se lee como un fallo.
+  concurrencyPolicy: Forbid
+  # ⚠️ Si el cluster estuvo caido y se perdio la hora, no se corre a destiempo:
+  #   converger dos veces seguidas no aporta nada y la siguiente llega en una
+  #   hora.
+  startingDeadlineSeconds: 600
+  # Tres corridas buenas y UNA MALA. La mala se guarda porque su registro es lo
+  # unico que dice por que — la misma razon que el `Never` de mas abajo.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
     spec:
-      # ⛔ `Never` y no `OnFailure`, y no es un detalle. Con `OnFailure` el
-      #   contenedor se reinicia EN SITIO y, al agotar los reintentos, el pod se
-      #   borra — con su registro dentro. La primera corrida de esto fallo y no
-      #   quedo ni una linea de por que.
-      #
-      # ⇒ Con `Never` cada intento es un pod nuevo que SE QUEDA. Un
-      #   aprovisionador que falla y no dice por que obliga a correrlo otra vez
-      #   para averiguarlo, y correrlo otra vez es justo lo que da miedo.
-      restartPolicy: Never
-      serviceAccountName: aprovisionador
-      volumes:
-        # ⛔ De MEMORIA. Lo que se trae del almacén no toca disco y muere con el
-        #   pod. Es la misma forma que `40-ore-serve.yaml` usa para su testigo.
-        - name: puesto
-          emptyDir: { medium: Memory }
-        - name: guion
-          configMap:
-            name: aprovisionador
-            defaultMode: 0755
-      initContainers:
-        - name: traer-lo-suyo
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
-          env:
-            - { name: HOME, value: /tmp }
-            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
-          volumeMounts: [{ name: puesto, mountPath: /puesto }]
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              gcloud secrets versions access latest \
-                --secret=aprovisionador-iam-url --out-file=/puesto/iam-url
-              gcloud secrets versions access latest \
-                --secret=forja-admin-token --out-file=/puesto/forja-admin
-              chmod 0400 /puesto/*
-              echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) bytes"
-          resources:
-            requests: {cpu: "50m", memory: 128Mi}
-            limits:   {cpu: "500m", memory: 256Mi}
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
-      containers:
-        - name: aprovisionar
-          # La imagen de drivers: trae `gcloud`, `git`, `curl` y `psql`. Es la
-          # única que los tiene a la vez, y este proceso los necesita todos.
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
-          imagePullPolicy: Always
-          env:
-            - { name: HOME, value: /tmp }
-            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
-            - { name: DENTRO, value: "1" }
-            # ⭐ Donde vive el renderizador DENTRO. El guion lo busca junto a
-            #   si mismo cuando corre de un arbol; aqui los dos vienen del mismo
-            #   `ConfigMap`, con las plantillas al lado.
-            - { name: GEN, value: /guion/gen-inquilino.py }
-            # ⚠️ LO UNICO que cambia entre una corrida y otra.
-            - { name: NOMBRE, value: prueba }
-          volumeMounts:
-            - { name: puesto, mountPath: /puesto, readOnly: true }
-            - { name: guion, mountPath: /guion, readOnly: true }
-          command: ["/bin/sh", "-c"]
-          # ⚠️ El nombre del inquilino va aquí, y es lo único que cambia entre
-          #   una corrida y otra.
-          args: ["bash /guion/aprovisionar-inquilino.sh $NOMBRE"]
-          resources:
-            requests: {cpu: "100m", memory: 256Mi}
-            limits:   {cpu: "1000m", memory: 1Gi}
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: aprovisionador
+            ore.dev/tenant: system
+        spec:
+          # ⛔ `Never` y no `OnFailure`, y no es un detalle. Con `OnFailure` el
+          #   contenedor se reinicia EN SITIO y, al agotar los reintentos, el pod se
+          #   borra — con su registro dentro. La primera corrida de esto fallo y no
+          #   quedo ni una linea de por que.
+          #
+          # ⇒ Con `Never` cada intento es un pod nuevo que SE QUEDA. Un
+          #   aprovisionador que falla y no dice por que obliga a correrlo otra vez
+          #   para averiguarlo, y correrlo otra vez es justo lo que da miedo.
+          restartPolicy: Never
+          serviceAccountName: aprovisionador
+          volumes:
+            # ⛔ De MEMORIA. Lo que se trae del almacén no toca disco y muere con el
+            #   pod. Es la misma forma que `40-ore-serve.yaml` usa para su testigo.
+            - name: puesto
+              emptyDir: { medium: Memory }
+            - name: guion
+              configMap:
+                name: aprovisionador
+                defaultMode: 0755
+          initContainers:
+            - name: traer-lo-suyo
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+              volumeMounts: [{ name: puesto, mountPath: /puesto }]
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  gcloud secrets versions access latest \
+                    --secret=aprovisionador-iam-url --out-file=/puesto/iam-url
+                  gcloud secrets versions access latest \
+                    --secret=forja-admin-token --out-file=/puesto/forja-admin
+                  chmod 0400 /puesto/*
+                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) bytes"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "500m", memory: 256Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+          containers:
+            - name: aprovisionar
+              # La imagen de drivers: trae `gcloud`, `git`, `curl` y `psql`. Es la
+              # única que los tiene a la vez, y este proceso los necesita todos.
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              imagePullPolicy: Always
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: DENTRO, value: "1" }
+                # ⭐ Donde vive el renderizador DENTRO. El guion lo busca junto a
+                #   si mismo cuando corre de un arbol; aqui los dos vienen del mismo
+                #   `ConfigMap`, con las plantillas al lado.
+                - { name: GEN, value: /guion/gen-inquilino.py }
+              volumeMounts:
+                - { name: puesto, mountPath: /puesto, readOnly: true }
+                - { name: guion, mountPath: /guion, readOnly: true }
+              # ── ⭐⭐ LA CORRIDA NORMAL ES CONVERGER A TODOS ─────────────
+              #
+              # Aqui ponia `bash /guion/aprovisionar-inquilino.sh $NOMBRE` con
+              # un `NOMBRE: prueba` en el entorno. Ese era el motivo entero de
+              # que una plantilla nueva no llegara a nadie: el unico que rendia
+              # era este Job, y este Job hablaba de UN inquilino escrito a mano.
+              #
+              # ⭐ Y en `command` directo, sin el `/bin/sh -c` que habia:
+              #   con un solo guion que llamar no hay nada que interpretar, y
+              #   una lista es mas dificil de leer mal que una cadena.
+              command: ["bash", "/guion/converger-inquilinos.sh"]
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits:   {cpu: "1000m", memory: 1Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
 ---
 # ── Por dónde puede salir ───────────────────────────────────────────────────
 #

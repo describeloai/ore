@@ -239,7 +239,19 @@ def nombre_valido(s):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-def comprobar():
+def comprobar_plantillas():
+    """Las que sólo miran las PLANTILLAS y lo que sale de ellas.
+
+    ⭐⭐ Estan separadas de la ⑤ y la ⑥ porque son las unicas que **puede
+      correr el que converge**. El `CronJob` que rinde los compartimentos monta
+      un `ConfigMap` con los diez ficheros que rinde, no con `malla/` entero, y
+      la ⑤ y la ⑥ caminan el directorio: alli dentro pasarian en verde por no
+      encontrar nada que mirar, que es la peor forma de pasar.
+
+    ⇒ Lo que queda aqui es exactamente lo que protege a un inquilino de una
+      plantilla mala. Lo que queda fuera protege al REPOSITORIO de un
+      despiste, y eso lo comprueba CI, que si tiene el arbol delante.
+    """
     fallos = []
 
     # ── ① La plantilla es una instancia: renderizar `demo` es la identidad ──
@@ -289,6 +301,42 @@ def comprobar():
     if "t-acme/ontologia.git" in propio:
         fallos.append("`--forja` sigue apuntando al arbol derivado, no al propio")
     print("  ④ un arbol propio sustituye al derivado en `--forja`")
+
+    # ── ⑦ Y QUE LO RENDIDO SEA YAML ────────────────────────────────────────
+    #
+    # ⛔⛔ Faltaba, y se pagó: el 2026-09-09 se empujó `44-el-catalogo.yaml`
+    #   roto —un `python3 -c` con saltos deja sus lineas sin indentar y eso
+    #   termina el bloque literal— y las seis comprobaciones dijeron que todo
+    #   estaba bien. La ① compara lo rendido con el fichero byte a byte, asi
+    #   que un fichero roto se compara consigo mismo y pasa.
+    #
+    # ⚠️ Aquello no llego a nadie porque nada rendia automaticamente. Bajo el
+    #   `CronJob` que converge, un fichero asi llega a TODOS los inquilinos en
+    #   una hora, y con `prune: true`. Esta comprobacion es la condicion para
+    #   que ese `CronJob` pueda existir.
+    try:
+        import yaml
+    except ImportError:
+        # ⛔ Y NO se salta en silencio. Una comprobacion ausente y una
+        #   comprobacion que pasa se leen igual en un registro — y esa
+        #   confusion es exactamente la que dejo pasar el fichero roto.
+        fallos.append(
+            "no hay analizador de YAML aqui: la ⑦ NO se ha hecho. "
+            "`apk add py3-yaml` / `pip install pyyaml`")
+    else:
+        for f, t in sorted(hecho.items()):
+            try:
+                list(yaml.safe_load_all(t))
+            except Exception as e:
+                fallos.append("`%s`: lo rendido NO es YAML — %s"
+                              % (f, str(e).replace("\n", " ")[:120]))
+    print("  ⭐ ⑦ cada fichero rendido se analiza como YAML de verdad")
+
+    return fallos
+
+
+def comprobar():
+    fallos = comprobar_plantillas()
 
     # ── ⑤ Y que no haya aparecido un CUARTO fichero del inquilino ──────────
     #
@@ -347,9 +395,29 @@ def comprobar():
     if not kfile.exists():
         fallos.append("no hay `malla/kustomization.yaml`: Flux no sabria que aplicar")
     else:
-        listados = set(
-            re.findall(r"^\s*-\s+(\S+\.yaml)\s*$", kfile.read_text(encoding="utf-8"), re.M)
-        )
+        # ⛔ SOLO el bloque `resources:`, y esto lo destapó el
+        #   `configMapGenerator` que se añadió el 2026-09-10: sus `files:` son
+        #   lineas `  - 11-el-inquilino.yaml`, identicas en forma a las de
+        #   `resources:`. Leyendo el fichero entero, esas plantillas contaban
+        #   como plataforma y esta misma comprobacion gritaba —con razon en la
+        #   forma y sin ella en el hecho— que tenian dos duenos.
+        #
+        # ⇒ Lo que decide de quien es un fichero no es que aparezca en
+        #   `kustomization.yaml`: es de QUE LISTA cuelga. Estar en un generador
+        #   es ser un DATO que se monta, no un objeto que se aplica.
+        texto = kfile.read_text(encoding="utf-8")
+        bloque, dentro = "", False
+        for l in texto.splitlines():
+            if re.match(r"^resources:\s*$", l):
+                dentro = True
+                continue
+            # Otra clave de primer nivel cierra el bloque. Los comentarios a
+            # ras de margen no: `kustomization.yaml` esta lleno de ellos.
+            if dentro and l.strip() and not l[0].isspace() and not l.startswith("#"):
+                break
+            if dentro:
+                bloque += l + "\n"
+        listados = set(re.findall(r"^\s*-\s+(\S+\.yaml)\s*$", bloque, re.M))
         for f in sorted(MALLA.glob("*.yaml")):
             if f.name == "kustomization.yaml":
                 continue
@@ -380,6 +448,47 @@ def comprobar():
         print("     ⚠️ `%s` fuera a proposito — %s" % (n, porque[:58] + "…"))
     print("  ⑥ cada YAML de `malla/` tiene exactamente un dueño que lo aplica")
 
+    # ── ⑧ Y QUE EL PUESTO DEL APROVISIONADOR LLEVE LO QUE RINDE ───────────
+    #
+    # ⭐ El `configMapGenerator` de `kustomization.yaml` es lo que el Job monta
+    #   en `/guion`, y `gen-inquilino.py` lee las plantillas de su propio
+    #   directorio. Una plantilla nueva que se olvide alli no da un error de
+    #   configuracion: da un `FileNotFoundError` dentro de un pod, a mitad de un
+    #   alta, y sin nadie delante.
+    #
+    # ⚠️ Al escribir esa lista dejé dicho «al menos es ruidoso». Ruidoso no es
+    #   suficiente cuando el ruido lo hace un Job a las tres de la manana: se
+    #   comprueba aqui, que es donde hay alguien mirando.
+    if kfile.exists():
+        gen = ""
+        dentro = False
+        for l in texto.splitlines():
+            if re.match(r"^configMapGenerator:\s*$", l):
+                dentro = True
+                continue
+            if dentro and l.strip() and not l[0].isspace() and not l.startswith("#"):
+                break
+            if dentro:
+                gen += l + "\n"
+        montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
+        debidos = set(PLANTILLAS) | {POR_FUENTE, "gen-inquilino.py",
+                                     "aprovisionar-inquilino.sh",
+                                     "converger-inquilinos.sh"}
+        for n in sorted(debidos - montados):
+            fallos.append(
+                "`%s` NO esta en el `configMapGenerator`: el Job no lo tendria "
+                "en `/guion` y fallaria a mitad de un alta" % n)
+        for n in sorted(montados - debidos):
+            fallos.append(
+                "el `configMapGenerator` monta `%s`, que no es ni plantilla ni "
+                "guion: o sobra, o falta en `PLANTILLAS`" % n)
+    print("  ⭐ ⑧ el puesto del aprovisionador lleva las %d plantillas y los 3 guiones"
+          % (len(PLANTILLAS) + 1))
+
+    return veredicto(fallos)
+
+
+def veredicto(fallos):
     if fallos:
         print("\n⛔ EL RENDERIZADOR MIENTE:")
         for x in fallos:
@@ -391,6 +500,11 @@ def comprobar():
 
 # ══════════════════════════════════════════════════════════════════════════
 def main(argv):
+    # ⚠️ El mas largo PRIMERO: `"--comprobar" in argv` es una igualdad de
+    #   elementos, no un prefijo, pero el orden deja dicho que son dos modos y
+    #   no uno con matiz.
+    if "--comprobar-plantillas" in argv:
+        return veredicto(comprobar_plantillas())
     if "--comprobar" in argv:
         return comprobar()
 

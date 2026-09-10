@@ -82,3 +82,85 @@ resources:
   - 65-iam.yaml
   - 66-ore-iam.yaml
   - 67-iam-servir.yaml
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
+#
+# ── ⛔⛔ LO QUE ESTO ARREGLA, Y ESTABA ROTO EN SILENCIO ────────────────────
+#
+# El Job de `16-…` monta un `ConfigMap` llamado `aprovisionador` con el guion y
+# las plantillas dentro, y `gen-inquilino.py` lee las plantillas de SU PROPIO
+# directorio — o sea, de esa copia. Nada de este arbol lo creaba: se subio con
+# un `kubectl create configmap --from-file` y ahi se quedo.
+#
+# Medido el 2026-09-10:
+#
+#     ConfigMap ore-system/aprovisionador   creado  2026-09-09 18:09 UTC
+#     8d4000a  el cliente del cofre                 2026-09-09 21:18 UTC
+#
+# ⇒ Tres horas de retraso, y creciendo. Aprovisionar un inquilino HOY rendiria
+#   el Job de catalogo viejo —el que no sabe pedirle nada al cofre— y nadie se
+#   enteraria: no hay anotacion de commit, no hay comprobacion, no hay sintoma.
+#
+# ⚠️ Y es el mismo fallo que el relevo de CI acababa de destapar en `t-prueba`:
+#   EN VERDE Y DESACTUALIZADO. La copia a mano no es la alternativa prudente a
+#   automatizar; es la que ya estaba fallando.
+#
+# ── ⭐ Por que un GENERADOR y no un fichero mas ───────────────────────────
+#
+# Porque un `ConfigMap` escrito a mano en un YAML seria la MISMA copia, solo que
+# versionada: habria que acordarse de pegar dentro cada cambio de las
+# plantillas. El generador no tiene copia — lee los ficheros de al lado cada vez
+# que `kustomize-controller` construye.
+#
+# ⛔ `disableNameSuffixHash` a proposito. Kustomize le pone por defecto un
+#   sufijo con el hash del contenido, y ese nombre es el que el Job referencia:
+#   con sufijo, cada cambio de plantilla dejaria al Job apuntando a un
+#   `ConfigMap` que ya no existe. El sufijo existe para forzar el relevo de un
+#   `Deployment`, y aqui no hay `Deployment` — hay un Job que se crea entero
+#   cada vez y monta lo que haya en ese momento, que es justo lo que se quiere.
+#
+# ⚠️ Y el primer efecto de este arreglo es que el contenido del `ConfigMap`
+#   CAMBIA de golpe en la proxima reconciliacion, poniendose al dia de tres
+#   horas de una vez. Es lo que se busca, pero conviene no descubrirlo.
+#
+# ⭐ La comprobacion ⑧ de `gen-inquilino.py` exige que esta lista sea
+#   exactamente `PLANTILLAS` + `POR_FUENTE` + los tres guiones. Olvidar una
+#   plantilla aqui daba un `FileNotFoundError` dentro de un pod, a mitad de un
+#   alta y sin nadie delante.
+configMapGenerator:
+  - name: aprovisionador
+    # ⛔⛔ Y EL NAMESPACE, QUE SE ESCAPO POR POCO. Un generador sin `namespace`
+    #   produce el objeto en `default` — no falla, no avisa: crea un
+    #   `ConfigMap` inutil en un sitio donde nadie lo mira y deja vivo al de
+    #   `ore-system`, que es justo la copia vieja que esto viene a matar.
+    #
+    # ⭐ Lo destapo `kubectl diff -k malla/` antes de dejar que Flux tocara
+    #   nada — la misma disciplina que dejo `61-realms.yaml` fuera de la lista.
+    #   Construir en verde no es aplicar bien.
+    #
+    # ⚠️ Y va POR ENTRADA y no como `namespace:` de arriba: un namespace global
+    #   reescribiria los setenta y nueve objetos de esta lista, que viven en
+    #   siete namespaces distintos.
+    namespace: ore-system
+    files:
+      # Los tres guiones: el que da de alta a uno, el que los converge a todos,
+      # y el que rinde.
+      - aprovisionar-inquilino.sh
+      - converger-inquilinos.sh
+      - gen-inquilino.py
+      # Y las plantillas que rinde.
+      - 11-el-inquilino.yaml
+      - 20-driver.yaml
+      - 40-ore-serve.yaml
+      - 41-el-cofre.yaml
+      - 42-el-arbol.yaml
+      - 43-la-entrada.yaml
+      - 44-el-catalogo.yaml
+      - 50-jwks.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: aprovisionador
