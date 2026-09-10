@@ -404,6 +404,7 @@ paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"
 #   cliente que exija la propiedad deja de significar nada, porque el servidor
 #   sigue siendo nuestro.
 COMPARTIMENTO="$PROPIETARIO/compartimento"
+TRABAJO="$PROPIETARIO/trabajo"
 if [ -n "$SECO" ]; then
   haria "crear $COMPARTIMENTO y hacer a \`flux\` colaborador de solo lectura"
 else
@@ -415,6 +416,31 @@ else
   #   el árbol ajeno y no 403.
   hecho "\`flux\` lo lee, y ningun otro · $(forja_api PUT \
     "/repos/$COMPARTIMENTO/collaborators/flux" '{"permission":"read"}')"
+
+  # -- LA COLA DE TRABAJO, Y POR QUE ES OTRO REPOSITORIO -----------------
+  #
+  # El compartimento dice COMO ES el inquilino: su namespace, su servidor, su
+  # cofre, su entrada. La cola dice QUE HAY QUE HACER: un Job de catalogo por
+  # fuente pendiente. `gen-inquilino.py` ya emitia las dos categorias —siete
+  # ficheros y uno— y vivian en el mismo sitio con el mismo escritor.
+  #
+  # Medido el 2026-09-10: el compartimento tiene 14 `NetworkPolicy`, 4
+  # `ServiceAccount`, 2 `Deployment`, un `Role` y un `RoleBinding`. Darle
+  # escritura a `ore-serve` para que encolara trabajo le daria ademas reescribir
+  # su propio `Deployment` y a que cuenta corre — el gobernado escribiendo su
+  # gobierno.
+  #
+  # => Dos repositorios, dos escritores: aqui manda el aprovisionador; alli
+  #   escribe `serve-<inquilino>`, y solo alli.
+  hecho "cola de trabajo $TRABAJO · $(forja_api POST "/orgs/$PROPIETARIO/repos" \
+    "{\"name\":\"trabajo\",\"private\":true}")"
+  hecho "\`flux\` la lee · $(forja_api PUT \
+    "/repos/$TRABAJO/collaborators/flux" '{"permission":"read"}')"
+  # NOTA Y `serve-<inquilino>` ESCRIBE, que es lo unico nuevo que se concede en
+  #   todo esto. Es el mismo usuario que ya empuja al arbol; lo que gana es un
+  #   segundo repositorio donde encolar, y ninguno mas.
+  hecho "\`serve-$NOMBRE\` escribe en ella, y en ningun otro · $(forja_api PUT \
+    "/repos/$TRABAJO/collaborators/serve-$NOMBRE" '{"permission":"write"}')"
 fi
 
 # ── ⭐⭐ LO QUE HACE DE ESTO UN RECONCILIADOR Y NO UN INSTALADOR ──────────
@@ -512,7 +538,7 @@ else
   #   son exactamente lo que el Job se ahorra, y por eso estan aisladas.
   TUNEL=""
   if [ -n "${DENTRO:-}" ]; then
-    URL_COMP="$FORJA_URL/$COMPARTIMENTO.git"
+    :   # la URL la compone `empujar`, que ahora sirve a dos repositorios
   else
     PUERTO_FORJA=3129
     kubectl port-forward -n "$FORJA_NS" svc/forja "$PUERTO_FORJA:3000" >/dev/null 2>&1 &
@@ -522,7 +548,7 @@ else
       curl -sS -o /dev/null "http://localhost:$PUERTO_FORJA/api/v1/version" 2>/dev/null && break
       sleep 1
     done
-    URL_COMP="http://localhost:$PUERTO_FORJA/$COMPARTIMENTO.git"
+    :   # la URL la compone `empujar`, que ahora sirve a dos repositorios
   fi
   # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
   #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
@@ -531,33 +557,58 @@ else
   export GIT_CONFIG_COUNT=1
   export GIT_CONFIG_KEY_0=http.extraheader
   export GIT_CONFIG_VALUE_0="Authorization: token $FORJA_ADMIN"
-  ( set -e
-    cd "$TMP"
-    git clone -q "$URL_COMP" clon 2>/dev/null \
-      || { mkdir -p clon && cd clon && git init -q -b main \
-           && git remote add origin "$URL_COMP" && cd ..; }
-    # ⛔ Se borra lo que hubiera y se copia lo rendido: la plantilla es la
-    #   verdad. Un fichero que el renderizador ya no emite tiene que
-    #   DESAPARECER del compartimento — si se quedase, Flux seguiria
-    #   obedeciendolo.
-    find clon -maxdepth 1 -name '*.yaml' -delete
-    cp "$TMP"/rendido/*.yaml clon/
-    cd clon
-    git add -A
-    if git diff --cached --quiet; then
-      cd "$TMP"; exit 3
-    fi
-    git -c user.name=aprovisionador -c user.email=aprovisionador@invalido \
-      commit -q -m "El compartimento del inquilino $NOMBRE"
-    git push -q -u origin HEAD:main )
-  R=$?
+  # -- ⭐⭐ DOS REPOSITORIOS, Y LA MISMA FUNCION PARA LOS DOS ---------------
+  #
+  # El compartimento dice COMO ES el inquilino; la cola dice QUE HAY QUE HACER.
+  # `gen-inquilino.py` ya emitia las dos categorias —`PLANTILLAS` y `POR_FUENTE`,
+  # siete ficheros y uno por fuente— y hasta hoy caian en el mismo sitio.
+  #
+  # => Se separan por el nombre del fichero, que es donde la categoria ya estaba
+  #   escrita: lo que empieza por `44-` es trabajo; el resto, gobierno.
+  empujar() {   # <repositorio> <directorio con lo rendido> <que es>
+    local REPO="$1" DE="$2" QUE="$3" URL R
+    if [ -n "${DENTRO:-}" ]; then URL="$FORJA_URL/$REPO.git"
+    else URL="http://localhost:$PUERTO_FORJA/$REPO.git"; fi
+    ( set -e
+      rm -rf "$TMP/clon"
+      cd "$TMP"
+      git clone -q "$URL" clon 2>/dev/null \
+        || { mkdir -p clon && cd clon && git init -q -b main \
+             && git remote add origin "$URL" && cd ..; }
+      # ⛔ Se borra lo que hubiera y se copia lo rendido: la plantilla es la
+      #   verdad. Un fichero que el renderizador ya no emite tiene que
+      #   DESAPARECER — si se quedase, Flux seguiria obedeciendolo.
+      find clon -maxdepth 1 -name '*.yaml' -delete
+      cp "$DE"/*.yaml clon/ 2>/dev/null || true
+      cd clon
+      git add -A
+      if git diff --cached --quiet; then cd "$TMP"; exit 3; fi
+      git -c user.name=aprovisionador -c user.email=aprovisionador\invalido \
+        commit -q -m "$QUE del inquilino $NOMBRE"
+      git push -q -u origin HEAD:main )
+    R=$?
+    case $R in
+      0) hecho "empujado a $REPO" ;;
+      3) ya "los manifiestos de $REPO" ;;
+      *) falla "no se pudo empujar a $REPO" ;;
+    esac
+  }
+
+  # El corte, por el nombre. ⚠️ Y la cola puede quedar VACIA —un inquilino sin
+  #   fuentes pendientes— y eso es legitimo: `empujar` lo dice con «ya estaba».
+  mkdir -p "$TMP/gobierno" "$TMP/cola"
+  for f in "$TMP"/rendido/*.yaml; do
+    case "$(basename "$f")" in
+      44-*) cp "$f" "$TMP/cola/" ;;
+      *)    cp "$f" "$TMP/gobierno/" ;;
+    esac
+  done
+
+  empujar "$COMPARTIMENTO" "$TMP/gobierno" "El compartimento"
+  empujar "$TRABAJO"       "$TMP/cola"     "La cola de trabajo"
+
   [ -n "$TUNEL" ] && { kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT; }
   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-  case $R in
-    0) hecho "empujado a $COMPARTIMENTO" ;;
-    3) ya "los manifiestos de $COMPARTIMENTO" ;;
-    *) falla "no se pudo empujar a $COMPARTIMENTO" ;;
-  esac
 fi
 
 # ══════════════════════════════════════════════════════════════════════════

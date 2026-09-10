@@ -193,3 +193,309 @@ spec:
   sourceRef:
     kind: GitRepository
     name: inquilino-prueba
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# LA COLA DE TRABAJO DE `demo` — lo que está POR HACER, y quién puede hacerlo
+#
+# ⭐⭐ POR QUÉ ESTO ES UN SEGUNDO REPOSITORIO Y NO UN DIRECTORIO
+#
+# El compartimento dice CÓMO ES el inquilino. Esto dice QUÉ HAY QUE HACER: un
+# Job de catálogo por fuente pendiente. Y la diferencia no es de orden — es de
+# QUIÉN ESCRIBE.
+#
+# Medido el 2026-09-10: un alta a las 19:24 no tenía su Job hasta las 20:17,
+# porque quien lo rinde es la convergencia y sólo la llama el cron. Lo obvio
+# —que `ore-serve` lo rindiera en el mismo acto— exigía darle escritura sobre el
+# compartimento, que contiene 14 `NetworkPolicy`, 4 `ServiceAccount`, 2
+# `Deployment`, un `Role` y un `RoleBinding`. Entre ellos, el suyo.
+#
+# ⇒ Eso no es un permiso de más: es **el gobernado escribiendo su gobierno**.
+#   Con dos repositorios, `serve-<inquilino>` escribe la cola y nada más.
+#
+# ── ⛔⛔ Y PARTIR EL REPOSITORIO NO BASTA ─────────────────────────────────
+#
+# Un `Kustomization` sin `serviceAccountName` aplica con el **cluster-admin del
+# controlador**. Así que una cola sin acotar dejaría a `ore-serve` escribiendo
+# manifiestos que Flux aplica como cluster-admin: un `Deployment`, un
+# `RoleBinding`, lo que fuera. La escalada volvería por la otra puerta.
+#
+# ⇒ Por eso la cuenta de abajo, y por eso `spec.serviceAccountName`. **Sin eso
+#   esto no es un arreglo de seguridad: es el mismo agujero con dos sitios.**
+#
+# ⚠️ Y el límite lo pone LA CUENTA, no el repositorio. Quitarle el
+#   `serviceAccountName` «para depurar» devuelve la escalada entera y en
+#   silencio — no falla nada, simplemente vuelve a poder todo.
+#
+# ── ⭐⭐ Y ESTE ES EL PRIMER `Kustomization` DE ESTE ÁRBOL QUE PUEDE ACOTARSE
+#
+# El ④ de la `0022` —el `cluster-admin` de Flux— lleva abierto desde el
+# principio, y su motivo escrito es concreto: *«este manifiesto CREA su propio
+# `Namespace`, que es un recurso de clúster y no cabe en una cuenta acotada al
+# namespace»*.
+#
+# Eso vale para el compartimento. **No vale para la cola**, que sólo crea `Job`
+# dentro de un namespace que ya existe. Así que aquí el ④ no se aplaza: se
+# cierra.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # ⛔ En `flux-system` y NO en el namespace del inquilino: Flux impersona
+  #   `system:serviceaccount:<namespace del Kustomization>:<nombre>`, y el
+  #   `Kustomization` vive aquí. Ponerla en `t-demo` no daría un error — daría
+  #   una impersonación que no existe y una reconciliación que falla al aplicar.
+  name: cola-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cola
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: encolar
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cola
+rules:
+  # ⛔⛔ `batch/jobs` Y NADA MÁS. Ni `pods`, ni `secrets`, ni `deployments`.
+  #   Lo que se concede es exactamente «encolar trabajo», y se lee de un vistazo.
+  #
+  # ⚠️ `delete` está porque `prune: true` lo necesita: sin él, un Job retirado de
+  #   la cola quedaría vivo para siempre y la poda fallaría en silencio.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # Y leer el namespace, que es lo que `kustomize-controller` hace antes de
+  # aplicar nada dentro de él.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: encolar
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: cola
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: encolar
+subjects:
+  - kind: ServiceAccount
+    name: cola-demo
+    namespace: flux-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: trabajo-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    # ⭐ La MISMA etiqueta que el compartimento, y eso es lo que hace instantáneo
+    #   el disparo sin tocar nada: el `Receiver` de `17-…` nombra una CLASE
+    #   —`ore.dev/rol: agente`— y este repositorio entra en él por llevarla. El
+    #   webhook de la forja es de ORGANIZACIÓN y ya cubre «los que todavía no
+    #   existen», así que tampoco hay que tocarlo.
+    ore.dev/rol: agente
+spec:
+  # ⚠️ Cinco minutos como el compartimento, y es el RESPALDO, no el camino: lo
+  #   normal es que el webhook llegue en segundos. Esto es lo que queda si el
+  #   aviso se pierde.
+  interval: 5m
+  url: http://forja.forja.svc.cluster.local:3000/t-demo/trabajo.git
+  ref:
+    branch: main
+  secretRef:
+    name: compartimento-llave
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: trabajo-demo
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: agente
+spec:
+  interval: 10m
+  path: ./
+  sourceRef:
+    kind: GitRepository
+    name: trabajo-demo
+  # ⛔⛔ LA PIEZA QUE HACE QUE ESTO NO SEA UNA ESCALADA. Ver la cabecera.
+  serviceAccountName: cola-demo
+
+  # ⚠️ `prune: true`, y hay que saber lo que arrastra: un fichero que desaparece
+  #   de la cola BORRA su Job. Para uno terminado da igual; para uno corriendo,
+  #   lo mata.
+  #
+  # ⇒ Se acepta a sabiendas, porque la alternativa es peor: sin poda, el Job de
+  #   una fuente retirada del árbol seguiría ahí para siempre, y la cola dejaría
+  #   de significar «lo que está por hacer» para significar «lo que alguna vez
+  #   hubo que hacer».
+  prune: true
+
+  # ⛔ Y `wait: false`, al revés que el compartimento. Un Job de catálogo tarda
+  #   lo que tarde el origen del cliente en contestar —minutos, si contesta— y
+  #   esperar a que esté LISTO dejaría la reconciliación colgada en cada alta.
+  #   Lo que importa aquí es que el Job EXISTA, no que haya terminado.
+  wait: false
+---
+# ═══════════════════════════════════════════════════════════════════════════
+# LA COLA DE TRABAJO DE `prueba` — lo que está POR HACER, y quién puede hacerlo
+#
+# ⭐⭐ POR QUÉ ESTO ES UN SEGUNDO REPOSITORIO Y NO UN DIRECTORIO
+#
+# El compartimento dice CÓMO ES el inquilino. Esto dice QUÉ HAY QUE HACER: un
+# Job de catálogo por fuente pendiente. Y la diferencia no es de orden — es de
+# QUIÉN ESCRIBE.
+#
+# Medido el 2026-09-10: un alta a las 19:24 no tenía su Job hasta las 20:17,
+# porque quien lo rinde es la convergencia y sólo la llama el cron. Lo obvio
+# —que `ore-serve` lo rindiera en el mismo acto— exigía darle escritura sobre el
+# compartimento, que contiene 14 `NetworkPolicy`, 4 `ServiceAccount`, 2
+# `Deployment`, un `Role` y un `RoleBinding`. Entre ellos, el suyo.
+#
+# ⇒ Eso no es un permiso de más: es **el gobernado escribiendo su gobierno**.
+#   Con dos repositorios, `serve-<inquilino>` escribe la cola y nada más.
+#
+# ── ⛔⛔ Y PARTIR EL REPOSITORIO NO BASTA ─────────────────────────────────
+#
+# Un `Kustomization` sin `serviceAccountName` aplica con el **cluster-admin del
+# controlador**. Así que una cola sin acotar dejaría a `ore-serve` escribiendo
+# manifiestos que Flux aplica como cluster-admin: un `Deployment`, un
+# `RoleBinding`, lo que fuera. La escalada volvería por la otra puerta.
+#
+# ⇒ Por eso la cuenta de abajo, y por eso `spec.serviceAccountName`. **Sin eso
+#   esto no es un arreglo de seguridad: es el mismo agujero con dos sitios.**
+#
+# ⚠️ Y el límite lo pone LA CUENTA, no el repositorio. Quitarle el
+#   `serviceAccountName` «para depurar» devuelve la escalada entera y en
+#   silencio — no falla nada, simplemente vuelve a poder todo.
+#
+# ── ⭐⭐ Y ESTE ES EL PRIMER `Kustomization` DE ESTE ÁRBOL QUE PUEDE ACOTARSE
+#
+# El ④ de la `0022` —el `cluster-admin` de Flux— lleva abierto desde el
+# principio, y su motivo escrito es concreto: *«este manifiesto CREA su propio
+# `Namespace`, que es un recurso de clúster y no cabe en una cuenta acotada al
+# namespace»*.
+#
+# Eso vale para el compartimento. **No vale para la cola**, que sólo crea `Job`
+# dentro de un namespace que ya existe. Así que aquí el ④ no se aplaza: se
+# cierra.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # ⛔ En `flux-system` y NO en el namespace del inquilino: Flux impersona
+  #   `system:serviceaccount:<namespace del Kustomization>:<nombre>`, y el
+  #   `Kustomization` vive aquí. Ponerla en `t-prueba` no daría un error — daría
+  #   una impersonación que no existe y una reconciliación que falla al aplicar.
+  name: cola-prueba
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: prueba
+    ore.dev/rol: cola
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: encolar
+  namespace: t-prueba
+  labels:
+    ore.dev/tenant: prueba
+    ore.dev/rol: cola
+rules:
+  # ⛔⛔ `batch/jobs` Y NADA MÁS. Ni `pods`, ni `secrets`, ni `deployments`.
+  #   Lo que se concede es exactamente «encolar trabajo», y se lee de un vistazo.
+  #
+  # ⚠️ `delete` está porque `prune: true` lo necesita: sin él, un Job retirado de
+  #   la cola quedaría vivo para siempre y la poda fallaría en silencio.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # Y leer el namespace, que es lo que `kustomize-controller` hace antes de
+  # aplicar nada dentro de él.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: encolar
+  namespace: t-prueba
+  labels:
+    ore.dev/tenant: prueba
+    ore.dev/rol: cola
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: encolar
+subjects:
+  - kind: ServiceAccount
+    name: cola-prueba
+    namespace: flux-system
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: trabajo-prueba
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: prueba
+    # ⭐ La MISMA etiqueta que el compartimento, y eso es lo que hace instantáneo
+    #   el disparo sin tocar nada: el `Receiver` de `17-…` nombra una CLASE
+    #   —`ore.dev/rol: agente`— y este repositorio entra en él por llevarla. El
+    #   webhook de la forja es de ORGANIZACIÓN y ya cubre «los que todavía no
+    #   existen», así que tampoco hay que tocarlo.
+    ore.dev/rol: agente
+spec:
+  # ⚠️ Cinco minutos como el compartimento, y es el RESPALDO, no el camino: lo
+  #   normal es que el webhook llegue en segundos. Esto es lo que queda si el
+  #   aviso se pierde.
+  interval: 5m
+  url: http://forja.forja.svc.cluster.local:3000/t-prueba/trabajo.git
+  ref:
+    branch: main
+  secretRef:
+    name: compartimento-llave
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: trabajo-prueba
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: prueba
+    ore.dev/rol: agente
+spec:
+  interval: 10m
+  path: ./
+  sourceRef:
+    kind: GitRepository
+    name: trabajo-prueba
+  # ⛔⛔ LA PIEZA QUE HACE QUE ESTO NO SEA UNA ESCALADA. Ver la cabecera.
+  serviceAccountName: cola-prueba
+
+  # ⚠️ `prune: true`, y hay que saber lo que arrastra: un fichero que desaparece
+  #   de la cola BORRA su Job. Para uno terminado da igual; para uno corriendo,
+  #   lo mata.
+  #
+  # ⇒ Se acepta a sabiendas, porque la alternativa es peor: sin poda, el Job de
+  #   una fuente retirada del árbol seguiría ahí para siempre, y la cola dejaría
+  #   de significar «lo que está por hacer» para significar «lo que alguna vez
+  #   hubo que hacer».
+  prune: true
+
+  # ⛔ Y `wait: false`, al revés que el compartimento. Un Job de catálogo tarda
+  #   lo que tarde el origen del cliente en contestar —minutos, si contesta— y
+  #   esperar a que esté LISTO dejaría la reconciliación colgada en cada alta.
+  #   Lo que importa aquí es que el Job EXISTA, no que haya terminado.
+  wait: false
