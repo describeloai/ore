@@ -66,4 +66,29 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 169.254.0.0/16
-      ports: [{protocol: TCP, port: 443}]
+      # ── ⭐⭐ 443 Y 5432, Y LA SEGUNDA LA FORZO EL PRIMER POSTGRES ────
+      #
+      # Esto era solo el 443, y era coherente: el unico origen que existia era
+      # BigQuery, que se lee por HTTPS con `bq`. El 2026-09-10 entro el primer
+      # Postgres de verdad y el Job de catalogo se quedo OCHO MINUTOS en
+      #
+      #     ### leyendo el origen `postgresql_20260910_1305`
+      #
+      # sin una linea mas. El cuelgue de siempre: una `NetworkPolicy` no
+      # rechaza, TIRA EL PAQUETE — y Postgres habla por el 5432.
+      #
+      # ⚠️ Y esto ENSANCHA lo que el driver alcanza, asi que se dice: un pod de
+      #   driver comprometido puede ahora abrir conexiones a cualquier Postgres
+      #   de internet, no solo a cualquier HTTPS. Lo que lo acota sigue siendo
+      #   lo de siempre y no esta aqui: el `except` de las redes privadas —no
+      #   puede entrar en la nuestra ni en la de nadie— y que solo corre lo que
+      #   un Job rendido desde la plantilla le manda correr.
+      #
+      # ⛔ Y el dia que entre MySQL seran tres puertos. Cuando esa lista pese,
+      #   la salida NO es abrir todo: es que la fuente declare su puerto y que
+      #   el renderizador emita la politica del Job — una por fuente, con lo
+      #   que esa fuente necesita y nada mas. Queda escrito para que se
+      #   encuentre el dia que haga falta.
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 5432 }
