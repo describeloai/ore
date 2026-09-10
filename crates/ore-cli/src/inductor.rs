@@ -576,7 +576,9 @@ pub fn inducir_con(
         let vista = minuscula_inicial(nombre);
         ficheros.insert(
             format!("entities/{nombre}.yaml"),
-            entidad_yaml(nombre, paquete, &vista, t, &claves, &mapeo, &extra),
+            entidad_yaml(
+                nombre, paquete, &vista, t, &claves, &nombres, &mapeo, &extra,
+            ),
         );
         // **Uno**, y por eso ya no es un bucle: una vista sale de UN sitio.
         let objeto = &objeto_de(t);
@@ -1464,6 +1466,11 @@ fn entidad_yaml(
     vista: &str,
     t: &Tabla,
     claves: &BTreeMap<String, Vec<String>>,
+    // Tabla -> nombre de entidad, **solo de las que se emiten**. Es la unica
+    // fuente del nombre de un destino: derivarlo de la tabla con `entidad()`
+    // da un nombre que puede no existir, y da el EQUIVOCADO cuando una
+    // colision se resolvio con otro.
+    nombres: &BTreeMap<String, String>,
     mapeo: &BTreeMap<String, String>,
     extra: &[(String, String)],
 ) -> String {
@@ -1564,66 +1571,92 @@ fn entidad_yaml(
     // El ORDEN es el que declaro el origen y no se toca: `via` se empareja
     // posicion a posicion con la clave del destino, y reordenarlo por estetica
     // enlazaria por pares distintos.
-    if !t.foraneas.is_empty() || !extra.is_empty() {
-        s.push_str("  relations:\n");
-        for f in &t.foraneas {
-            // `required` es un hecho del origen, no un valor por defecto. Y lo es
-            // solo si TODAS las columnas del enlace son NOT NULL: con una que
-            // admita nulos, la fila puede no enlazar.
-            let obligatoria = f
-                .columnas
-                .iter()
-                .all(|col| t.columnas.iter().any(|c| c.nombre == *col && c.obligatoria));
-            let ident = |cs: &[String]| {
-                cs.iter()
-                    .map(|c| identificador(c))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            // `toKey` solo cuando el origen NO apunta a la clave primaria del
-            // destino. SQL permite referenciar cualquier UNIQUE, y callarlo
-            // emitiria un enlace contra la identidad equivocada que pasa la
-            // comprobacion de aridad y tipos por casualidad.
-            let primaria = claves.get(&f.destino);
-            let a_otra_clave = !f.destino_columnas.is_empty()
-                && primaria.is_none_or(|p| {
-                    let (mut x, mut y) = (f.destino_columnas.clone(), p.clone());
-                    x.sort();
-                    y.sort();
-                    x != y
-                });
-            let to_key = if a_otra_clave {
-                format!("      toKey: [{}]\n", ident(&f.destino_columnas))
-            } else {
-                String::new()
-            };
-            let _ = write!(
-                s,
-                "    {}:\n      target: {paquete}.{}\n      cardinality: many_to_one\n      via: [{}]\n{to_key}      required: {obligatoria}\n",
-                identificador(&entidad(&f.destino)).to_lowercase(),
-                entidad(&f.destino),
+    // El cuerpo se construye ANTES de escribir `relations:`. Una foranea cuyo
+    // destino no se emite no produce arista, asi que las que quedan pueden ser
+    // CERO — y `relations:` sin nada debajo es `null`, que no valida. Titular
+    // despues de contar es lo unico que lo cierra.
+    let mut cuerpo = String::new();
+    let mut aristas = 0usize;
+    // Y lo que se cayo se DICE. Misma regla que la columna sin tipo de aqui
+    // arriba: una relacion que desaparece sin decirlo es peor que una que falta
+    // y lo dice.
+    let mut caidas = String::new();
+    for f in &t.foraneas {
+        // `required` es un hecho del origen, no un valor por defecto. Y lo es
+        // solo si TODAS las columnas del enlace son NOT NULL: con una que
+        // admita nulos, la fila puede no enlazar.
+        let obligatoria = f
+            .columnas
+            .iter()
+            .all(|col| t.columnas.iter().any(|c| c.nombre == *col && c.obligatoria));
+        let ident = |cs: &[String]| {
+            cs.iter()
+                .map(|c| identificador(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        // `toKey` solo cuando el origen NO apunta a la clave primaria del
+        // destino. SQL permite referenciar cualquier UNIQUE, y callarlo
+        // emitiria un enlace contra la identidad equivocada que pasa la
+        // comprobacion de aridad y tipos por casualidad.
+        let primaria = claves.get(&f.destino);
+        let a_otra_clave = !f.destino_columnas.is_empty()
+            && primaria.is_none_or(|p| {
+                let (mut x, mut y) = (f.destino_columnas.clone(), p.clone());
+                x.sort();
+                y.sort();
+                x != y
+            });
+        let to_key = if a_otra_clave {
+            format!("      toKey: [{}]\n", ident(&f.destino_columnas))
+        } else {
+            String::new()
+        };
+        // El nombre del destino sale de `nombres` y de ningun otro sitio.
+        let Some(destino) = nombres.get(&f.destino) else {
+            let _ = writeln!(
+                caidas,
+                "  # Sin relacion hacia `{}`: esa tabla no entra en este paquete.\n  \
+                 # La declara el origen como foranea desde [{}].",
+                f.destino,
                 ident(&f.columnas)
             );
-        }
-        // Las que el origen NO declara y alguien confirmó al revisar. Van
-        // marcadas: quien lea esto dentro de un año tiene que poder distinguir
-        // un hecho del catálogo de una decisión de una persona.
-        for (columna, destino) in extra {
-            let obligatoria = t
-                .columnas
-                .iter()
-                .any(|c| c.nombre == *columna && c.obligatoria);
-            let _ = write!(
-                s,
-                "    # No la declara el origen: la confirmó una persona al revisar.\n    \
-                 {}:\n      target: {paquete}.{destino}\n      \
-                 cardinality: many_to_one\n      via: [{}]\n      \
-                 required: {obligatoria}\n",
-                destino.to_lowercase(),
-                identificador(columna)
-            );
-        }
+            continue;
+        };
+        aristas += 1;
+        let _ = write!(
+            cuerpo,
+            "    {}:\n      target: {paquete}.{destino}\n      cardinality: many_to_one\n      via: [{}]\n{to_key}      required: {obligatoria}\n",
+            identificador(destino).to_lowercase(),
+            ident(&f.columnas)
+        );
     }
+    // Las que el origen NO declara y alguien confirmó al revisar. Van
+    // marcadas: quien lea esto dentro de un año tiene que poder distinguir
+    // un hecho del catálogo de una decisión de una persona.
+    for (columna, destino) in extra {
+        let obligatoria = t
+            .columnas
+            .iter()
+            .any(|c| c.nombre == *columna && c.obligatoria);
+        aristas += 1;
+        let _ = write!(
+            cuerpo,
+            "    # No la declara el origen: la confirmó una persona al revisar.\n    \
+             {}:\n      target: {paquete}.{destino}\n      \
+             cardinality: many_to_one\n      via: [{}]\n      \
+             required: {obligatoria}\n",
+            destino.to_lowercase(),
+            identificador(columna)
+        );
+    }
+    // `aristas` y no `cuerpo.is_empty()`: son lo mismo hoy y dejarian de serlo
+    // en cuanto algo escriba en el cuerpo sin ser una arista.
+    if aristas > 0 {
+        s.push_str("  relations:\n");
+        s.push_str(&cuerpo);
+    }
+    s.push_str(&caidas);
     s
 }
 
