@@ -254,3 +254,43 @@ spec:
     - from:
         - podSelector: {}
       ports: [{protocol: TCP, port: 8095}]
+---
+# ── ⭐⭐ Y LA SALIDA, QUE ES LA OTRA MITAD ──────────────────────────────────
+#
+# El comentario de arriba lo dejo escrito: *«el primer consumidor que aparezca
+# necesitara su propia regla de salida»*. Aparecio el 2026-09-10, y es el Job de
+# catalogo pidiendo la credencial de su fuente.
+#
+# ⛔⛔ Y el sintoma fue el de SIEMPRE: no un error, un CUELGUE. El Job imprimio
+#
+#     ### pidiendo `fuente-bq` al custodio, para `BQ_URL`
+#
+#   y se quedo ahi. Una `NetworkPolicy` no rechaza — TIRA EL PAQUETE. Es la
+#   septima vez que este arbol paga la misma moneda, y la primera en la que el
+#   fichero ya avisaba de que iba a pasar.
+#
+# ── ⚠️ Por que `podSelector: {}` y no solo el driver ──────────────────────
+#
+# Porque la ENTRADA de arriba ya dice `from: podSelector: {}`. Abrir la salida a
+# los mismos que la entrada ya admite no expone nada nuevo: lo que decide quien
+# puede sacar un secreto NO es la red, es el custodio preguntando a
+# `concesion_viva`. Acotar aqui daria la sensacion de una segunda cerradura que
+# en realidad no existe.
+#
+# ⇒ Y son DOS los consumidores, no uno: el Job de catalogo lo PIDE, y `ore-serve`
+#   lo GUARDA cuando se da de alta una fuente. Una regla por consumidor habrian
+#   sido dos reglas identicas y una tercera el dia siguiente.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-cofre
+  namespace: t-demo
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: cofre
+      ports: [{protocol: TCP, port: 8095}]
