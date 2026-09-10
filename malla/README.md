@@ -29,6 +29,48 @@ IP pública consume una dirección de `IN_USE_ADDRESSES`, que está en 4: un nod
 más tres de jobs eran exactamente cuatro, y el clúster no podía crecer más **aunque hubiera
 32 vCPU libres**. Sin IP pública, el mismo par de nodos usa **1 de 4**.
 
+**✓ Y el 2026-09-10 hizo falta, exactamente como estaba escrito abajo.** Un cliente dio de
+alta un Postgres de verdad —Neon, en AWS— y el Job de catálogo murió con «no se pudo
+conectar» mientras el MISMO driver leía esa base sin problema desde un pod del pool público.
+La diferencia no era el driver, ni la credencial, ni la `NetworkPolicy`: era **dónde corre**.
+
+Se crearon tres cosas, con `gcloud` y fuera de GitOps —son recursos de red del proyecto,
+como el papel de IAM del aprovisionador—:
+
+```
+dirección  salida-a-origenes   34.156.87.237   RESERVADA, europe-west1
+router     ore-mesh-salida     sostiene el NAT y no enruta nada más
+NAT        salida-a-origenes   MANUAL_ONLY · LIST_OF_SUBNETWORKS
+                               acotado a 10.10.0.0/20 · PRIMARY_IP_RANGE
+```
+
+**Y no hizo falta acotarlo al pool.** Cloud NAT sólo lo usan las instancias **sin IP
+externa**, y `default-pool` tiene la suya: sale por NAT `jobs-p` y nadie más, sin una regla
+que lo diga. ⚠️ Lo que eso arrastra: un nodo privado **futuro** en esta subred heredaría la
+salida sin que nadie lo decida. Hoy hay dos pools y se ve; con seis no.
+
+**La IP fija es el producto, no un detalle de red.** Es lo que un cliente pone en su lista
+blanca antes de dar acceso a su base: convierte «nuestro clúster puede conectarse» en «sólo
+nuestro clúster puede». Vale para Neon y para cualquier origen en la nube. ⛔ Y **no es
+autenticación**: dice de dónde viene el tráfico, no qué Job lo mandó ni por cuenta de qué
+inquilino — eso lo dice la huella del custodio, y son dos preguntas distintas.
+
+**Lo que se pierde, sin adornarlo.** Hasta hoy un driver comprometido no podía sacar datos a
+internet porque NO HABÍA RUTA. Ahora podría, dentro de 443 y 5432 y sin tocar redes privadas.
+Deja de ser imposible y pasa a ser filtrado — por una regla que alguien puede editar. Y no
+hay forma de tenerlo y no tenerlo: **los datos del cliente viven en la nube**, así que un
+lector de orígenes que no puede salir no es seguro, es inútil.
+
+**La cuenta de la cuota sale, y es la clave de por qué esto no deshace nada.** Una dirección
+reservada gasta de `IN_USE_ADDRESSES` —la MISMA cuota que hizo privado este pool— pero **una
+sirve a los tres nodos**: antes tres nodos públicos gastaban tres. Se recupera la salida por
+un tercio de lo que costaba tenerla, y el motivo por el que el pool es privado sigue en pie.
+
+⚠️ **El dinero NO está medido** contra la Billing API: Cloud NAT cobra por pasarela y hora
+más por GB procesado. Queda pendiente y se dice, en vez de escribir una cifra de memoria.
+
+── Lo que decía este párrafo cuando se escribió, y sigue siendo verdad ──
+
 No hizo falta Cloud NAT ni esperar a la cuota. **Private Google Access —ya encendido en la
 subred— deja que una VM sin IP pública alcance las APIs de Google**, y eso cubre lo que la
 malla necesita sacar: Artifact Registry, BigQuery, las credenciales y los logs. NAT hará
@@ -175,5 +217,4 @@ ella los logs siguen — dejar un `allow` «por si acaso» es lo que se pudre.
   cierra la salida hoy sin montar DNS.
 - **Zona privada de Cloud DNS + `restricted.googleapis.com` (199.36.153.4/30)**, que
   sustituye la lista por cuatro direcciones y trae la frontera de VPC-SC.
-- **Cloud NAT**, el día que haya que salir a algo que NO sea de Google.
 - **Kueue con `AdmissionCheck`** para exigir cuota de origen antes de admitir un `discover`.
