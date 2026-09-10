@@ -144,9 +144,29 @@ spec:
             #   sustituye el renderizador con la misma regla que el resto, y la
             #   comprobacion ② puede cazarla si algun dia se cae.
             - { name: ORGANIZACION, value: "demo" }
-            # El emisor, para que este Job pueda pedirle un testigo con el que
-            # hablarle al custodio. Mismas variables que usa el alta.
+            # ── ⭐⭐ DOS COSAS, Y ES LA QUINTA VEZ QUE HAY QUE SEPARARLAS ──
+            #
+            #   EMISOR     lo que el IdP tiene que AFIRMAR ser
+            #   DIRECCION  por donde se le alcanza HOY
+            #
+            # ⛔ Aqui habia solo `EMISOR`, y se usaba de las dos cosas: se le
+            #   pedia el testigo a `https://login.paladio.io`. Sintoma medido:
+            #
+            #     curl: (28) Failed to connect to login.paladio.io:443
+            #     after 132807 ms
+            #
+            #   Ciento treinta y dos segundos, o sea el cuelgue de siempre: una
+            #   `NetworkPolicy` no rechaza, TIRA EL PAQUETE. Un pod de inquilino
+            #   no sale a internet — es lo que le da su aislamiento— asi que el
+            #   nombre publico de su propio IdP es inalcanzable desde dentro.
+            #
+            # ⭐ `50-jwks.yaml` ya lo tenia resuelto y con estas dos palabras:
+            #   *«la ruta por la que se alcanza al IdP y el nombre que el IdP
+            #   afirma son dos cosas independientes»*. Es la misma figura que
+            #   `arbol` (017), `kek` (019) y `entrada` (022): el nombre va en la
+            #   fila y es unico; por donde se llega es configuracion.
             - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             - { name: REALM, value: "rubix-dev" }
             - name: CLIENTE
               valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
@@ -217,7 +237,15 @@ spec:
               #   pregunta a `concesion_viva` si ese sujeto puede USAR este
               #   secreto — y con una credencial de servicio esa pregunta no se
               #   haría. La `018` puso `usar` en el modelo de roles para esto.
-              TOK=$(curl -sSf -X POST "$EMISOR/realms/$REALM/protocol/openid-connect/token"                 -d grant_type=client_credentials -d "client_id=$CLIENTE"                 -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+              # ⛔ Y ANTES se comprueba que quien contesta en `DIRECCION` dice
+              #   ser `EMISOR`. Sin esto, apuntar la carretera a otro Keycloak
+              #   meteria sus testigos aqui dentro sin que nadie lo notara —
+              #   es la misma guarda, palabra por palabra, que el refresco de
+              #   llaves de `50-jwks.yaml`. Llegar por otra carretera esta bien;
+              #   hablar con otro emisor, no.
+              DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')
+              [ "$DICE" = "$EMISOR/realms/$REALM" ] || { echo "✗ en $DIRECCION contesta \`$DICE\` y esperabamos \`$EMISOR/realms/$REALM\`. No se toca nada."; exit 1; }
+              TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token"                 -d grant_type=client_credentials -d "client_id=$CLIENTE"                 -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
               C=$(curl -s -o /trabajo/s.json -w '%{http_code}'                 -H "authorization: Bearer $TOK"                 "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$FUENTE")
               [ "$C" = "200" ] || { echo "✗ el custodio contesto $C"; head -c 200 /trabajo/s.json; exit 1; }
               export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
