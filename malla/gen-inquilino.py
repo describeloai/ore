@@ -219,16 +219,57 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
     #   importa por lo de siempre: `catalogo-bq` contiene `bq`, asi que el
     #   nombre del Job se sustituye con la cadena entera y no por partes.
     plantilla = (MALLA / POR_FUENTE).read_text(encoding="utf-8")
+    vistos = {}
     for fuente in fuentes:
+        # ⛔⛔ EL NOMBRE DE LA FUENTE LO ESCRIBE EL CLIENTE, Y NO ES UN NOMBRE
+        #   DE KUBERNETES. Esto iba directo a `metadata.name` y rompio a `demo`
+        #   entero: su arbol trae fuentes como `postgresql_20260909_074550`, y
+        #
+        #     Job.batch "catalogo-postgresql_20260909_074550" is invalid:
+        #     metadata.name: a lowercase RFC 1123 subdomain must consist of…
+        #
+        #   dejo su `Kustomization` en `False` — o sea, NADA de ese inquilino se
+        #   aplicaba, ni lo que no tenia que ver con el catalogo. Un nombre
+        #   ajeno tumbando un compartimento entero.
+        #
+        # ⚠️ Y no lo vio venir nadie porque hasta hoy solo se rendia a mano,
+        #   para inquilinos con nombres limpios. Converger a todos es lo que lo
+        #   destapo — que es exactamente para lo que sirve converger a todos.
+        #
+        # ⭐ El VALOR sigue siendo el nombre de verdad: es lo que `ore source
+        #   catalog` recibe y lo que nombra al secreto `fuente-<n>` en el cofre.
+        #   Lo unico que se limpia es el nombre del OBJETO.
+        obj = nombre_de_objeto(fuente)
+        if obj in vistos:
+            raise ValueError(
+                "las fuentes `%s` y `%s` dan el mismo nombre de objeto `%s`: "
+                "hay que desambiguarlas en el arbol" % (vistos[obj], fuente, obj))
+        vistos[obj] = fuente
         t = plantilla
-        t = t.replace("catalogo-%s" % FUENTE_MODELO, "catalogo-%s" % fuente)
+        t = t.replace("catalogo-%s" % FUENTE_MODELO, "catalogo-%s" % obj)
         t = t.replace('value: "%s"' % FUENTE_MODELO, 'value: "%s"' % fuente)
         t = t.replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
         t = t.replace("t-%s/ontologia" % MODELO, arbol)
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
-        salida["44-el-catalogo-%s.yaml" % fuente] = t
+        salida["44-el-catalogo-%s.yaml" % obj] = t
     return salida
+
+
+def nombre_de_objeto(s):
+    """De un nombre de FUENTE al nombre de un objeto de Kubernetes.
+
+    El de la fuente lo escribe el cliente en su arbol y puede traer mayusculas,
+    guiones bajos, puntos y acentos; el del objeto tiene que ser un subdominio
+    RFC 1123. Se limpia, no se rechaza: negarle a un cliente un nombre de
+    fuente valido porque a Kubernetes no le gusta seria trasladarle una
+    restriccion nuestra.
+
+    ⚠️ Cortado a 40: `catalogo-` delante son 9, y un Job le pone a sus pods un
+      sufijo — el limite duro de 63 se alcanza antes de lo que parece.
+    """
+    n = re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")[:40].strip("-")
+    return n or "sin-nombre"
 
 
 def nombre_valido(s):
@@ -314,9 +355,11 @@ def comprobar_plantillas():
     #   `CronJob` que converge, un fichero asi llega a TODOS los inquilinos en
     #   una hora, y con `prune: true`. Esta comprobacion es la condicion para
     #   que ese `CronJob` pueda existir.
+    yaml_hay = True
     try:
         import yaml
     except ImportError:
+        yaml_hay = False
         # ⛔ Y NO se salta en silencio. Una comprobacion ausente y una
         #   comprobacion que pasa se leen igual en un registro — y esa
         #   confusion es exactamente la que dejo pasar el fichero roto.
@@ -331,6 +374,53 @@ def comprobar_plantillas():
                 fallos.append("`%s`: lo rendido NO es YAML — %s"
                               % (f, str(e).replace("\n", " ")[:120]))
     print("  ⭐ ⑦ cada fichero rendido se analiza como YAML de verdad")
+
+    # ── ⑨ Y QUE EL NOMBRE DE UNA FUENTE AJENA NO TUMBE UN COMPARTIMENTO ────
+    #
+    # ⛔⛔ Esto rompio a `demo` de verdad el 2026-09-10. Su arbol trae fuentes
+    #   como `postgresql_20260909_074550`, el nombre iba directo a
+    #   `metadata.name`, y el resultado fue:
+    #
+    #     Job.batch "catalogo-postgresql_20260909_074550" is invalid:
+    #     metadata.name: a lowercase RFC 1123 subdomain must consist of…
+    #
+    #   ⇒ El `Kustomization` de `demo` entero en `False`. No fallo el Job del
+    #     catalogo: fallo el COMPARTIMENTO, porque un `Kustomization` valida
+    #     todo antes de aplicar nada. Un nombre que escribio un cliente en su
+    #     arbol dejando sin reconciliar a su inquilino completo.
+    #
+    # ⚠️ Y la ⑦ no lo veia: aquel YAML era perfectamente valido. Lo invalido no
+    #   era el documento, era el NOMBRE — y la ⑦ solo analizaba.
+    #
+    # ⭐ Se rinde con un nombre hostil A PROPOSITO. Las demas comprobaciones
+    #   usan `bq`, que es limpio, asi que ninguna podia tropezar con esto: hay
+    #   que traer la suciedad de fuera para encontrarla.
+    SUCIA = "PostgreSQL_2026-09-09 (Ventas).v2"
+    RFC1123 = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+    try:
+        sucio = render(otro, fuentes=[SUCIA])
+    except ValueError as e:
+        fallos.append("una fuente con nombre sucio revienta el renderizador: %s" % e)
+        sucio = {}
+    if not yaml_hay:
+        pass          # ya se dijo en la ⑦; no se repite el mismo fallo dos veces
+    else:
+        for f, t in sorted(sucio.items()):
+            # Solo los del catalogo llevan el nombre de la fuente dentro;
+            # los demas se llaman siempre igual.
+            if f.startswith("44-el-catalogo-") and not RFC1123.match(
+                    f[len("44-el-catalogo-"):-len(".yaml")]):
+                fallos.append("`%s`: el nombre del fichero sale sucio" % f)
+            for d in yaml.safe_load_all(t):
+                if not isinstance(d, dict):
+                    continue
+                n = (d.get("metadata") or {}).get("name")
+                if n is not None and not RFC1123.match(str(n)):
+                    fallos.append(
+                        "`%s`: %s se llama `%s`, y Kubernetes lo rechaza — eso "
+                        "tumba el `Kustomization` del inquilino ENTERO"
+                        % (f, d.get("kind"), n))
+    print("  ⭐ ⑨ una fuente llamada `%s` sigue dando nombres validos" % SUCIA)
 
     return fallos
 
