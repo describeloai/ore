@@ -66,6 +66,7 @@ ore-iam — el plano de identidad y acceso
 
   ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB
                  [--correo C] [--arbol P/R] [--kek LLAVERO/CLAVE]
+                 [--agente-sub SUB]   (o `ORE_AGENTE_SUB`)
   ore-iam agente --organizacion NOMBRE --emisor URL --sub SUB [--nombre N]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
 
@@ -150,6 +151,28 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             return ExitCode::from(69); // EX_UNAVAILABLE
         }
     };
+    // ── ⭐⭐ Y SU AGENTE, EN EL MISMO ACTO ──────────────────────────────
+    //
+    // Un inquilino nace con un Job de catalogo esperandole, y ese Job necesita
+    // un sujeto al que conceder `usar`. Registrarlo a mano despues es un paso
+    // que alguien olvida — y el sintoma llega tarde y lejos: un catalogo que
+    // muere con «quien pide no es ni una persona ni un agente».
+    //
+    // ⛔ Y va AQUI y no en el aprovisionador, que seria lo intuitivo. El papel
+    //   de la `023` no puede ESCRIBIR NADA, ni siquiera en `iam.organizacion`,
+    //   y registrar un agente es un `insert`. Meterlo alli habria roto la
+    //   propiedad que costo una migracion conseguir. Fundar ya escribe.
+    //
+    // ⚠️ El `sub` es configuracion de plataforma —hoy `ore-agente` es UNO para
+    //   todos— asi que sale de `ORE_AGENTE_SUB` si no se pasa. Y si no hay
+    //   ninguno, se FUNDA IGUAL y se dice: una organizacion sin agente es
+    //   legitima, y negarse a fundar por eso seria peor.
+    let agente_sub = valor(args, "--agente-sub").or_else(|| {
+        std::env::var("ORE_AGENTE_SUB")
+            .ok()
+            .filter(|s| !s.is_empty())
+    });
+
     match fundar::fundar(
         &mut c,
         &fundar::Peticion {
@@ -164,6 +187,25 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     ) {
         Ok(j) => {
             println!("{}", j.pretty());
+            match agente_sub {
+                None => {
+                    eprintln!("⚠ sin agente: ni `--agente-sub` ni `ORE_AGENTE_SUB`.");
+                    eprintln!("  La organizacion queda fundada. Pero su Job de catalogo no");
+                    eprintln!("  tendra a quien conceder `usar`, y morira diciendo que quien");
+                    eprintln!("  pide no es ni una persona ni un agente. Se arregla con");
+                    eprintln!("  `ore-iam agente --organizacion {org} --emisor {emisor} --sub …`");
+                }
+                Some(sub) => {
+                    match fundar::registrar_agente(&mut c, &org, &emisor, &sub, Some("ore-agente"))
+                    {
+                        Ok(a) => println!("{}", a.pretty()),
+                        // ⛔ No se deshace lo fundado: el commit ya esta. Se dice, y
+                        //   registrar se reintenta solo —es idempotente— sin tener
+                        //   que volver a fundar nada.
+                        Err(e) => eprintln!("⚠ fundada, pero su agente NO se registro: {e}"),
+                    }
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
