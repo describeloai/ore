@@ -185,6 +185,36 @@ impl Servidor {
                 &[&con, &quien, &recurso, &quien, &org],
             )?;
 
+            // ── ⭐⭐ Y AL AGENTE DEL INQUILINO, `usar` ──────────────────
+            //
+            // Un secreto de clase `conexion` existe PARA que lo use un Job. Sin
+            // esta concesion nace inerte: medido el 2026-09-10, el primer
+            // secreto que llego al cofre no lo pudo abrir nadie.
+            //
+            // ⛔ `usar` y no `owner`: el agente saca el valor y no puede
+            //   conceder ni retirar. Es el rol que la `018` metio en
+            //   `rol_de_recurso` pensando exactamente en esto.
+            //
+            // ⚠️ Y SOLO a los agentes de ESTA organizacion. La `024` ata cada
+            //   agente a un inquilino, asi que esta consulta no puede alcanzar
+            //   al de otro aunque compartan el `sub` del IdP — que hoy lo
+            //   comparten, porque `ore-agente` es el mismo cliente en todos los
+            //   namespaces.
+            //
+            // ⭐ Si no hay agente registrado no pasa nada y no se avisa: una
+            //   organizacion sin Jobs es un caso legitimo, y un aviso que se
+            //   dispara en el caso normal enseña a ignorarlo.
+            for f in tx.filas(
+                "select id from iam.agente where organizacion = $1",
+                &[&org],
+            )? {
+                let age: String = f.get(0);
+                tx.ejecutar(
+                    "select iam.conceder_de_secreto($1, $2, $3, 'usar', $4, $5)",
+                    &[&nuevo_id("con"), &age, &recurso, &quien, &org],
+                )?;
+            }
+
             tx.anotar(
                 "secreto:emitir",
                 &id,
@@ -263,7 +293,23 @@ impl Servidor {
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`.
             let org = canonica(tx, &org)?;
-            let quien = verbos::persona_id(tx, emisor, &s.persona)?;
+            // ── ⭐⭐ QUIEN PIDE PUEDE NO SER UNA PERSONA ────────────────────
+            //
+            // Aqui ponia `persona_id`, y el primer Job de catalogo que llego a
+            // pedir de verdad murio con «quien pide no es una persona conocida
+            // aqui». No era un fallo: era el modelo diciendo la verdad. Un Job
+            // no es una persona.
+            //
+            // ⇒ `sujeto_id` acepta las dos puertas de la `024`. Y el agente va
+            //   POR INQUILINO: el mismo `sub` del IdP —`ore-agente` es el mismo
+            //   cliente en todos los namespaces, medido— da un sujeto distinto
+            //   en cada organizacion, asi que conceder `usar` en `demo` no
+            //   concede nada en `prueba`.
+            //
+            // ⛔ Y `emitir` sigue con `persona_id`, sin tocar: la `018` puso
+            //   `secreto:emitir` en una PERSONA a proposito. Un agente saca lo
+            //   que ya existe; no decide que exista.
+            let (quien, clase) = verbos::sujeto_id(tx, emisor, &s.persona, &org)?;
             let recurso = format!("secreto/{nombre}");
 
             // ⛔⛔ UNA SOLA CONSULTA, Y UN SOLO ERROR. Se pregunta por el
@@ -306,6 +352,11 @@ impl Servidor {
                     // ⭐ CON QUÉ ROL. Es lo que separa «se conectó» de «se la
                     //   llevó» el día que alguien pregunte.
                     ("rol", Json::s(&rol)),
+                    // ⭐ Y DE QUE CLASE es quien lo saco. `huella.quien` guarda
+                    //   el `sub` en crudo —no tiene clave ajena— asi que sin
+                    //   esto un Job y una persona se leen igual en la auditoria,
+                    //   y la `008` separa esas dos preguntas a proposito.
+                    ("clase", Json::s(clase)),
                     ("version", Json::Int(version as i64)),
                 ]),
             )?;

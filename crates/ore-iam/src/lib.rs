@@ -66,7 +66,13 @@ ore-iam — el plano de identidad y acceso
 
   ore-iam fundar --organizacion NOMBRE --emisor URL --sub SUB
                  [--correo C] [--arbol P/R] [--kek LLAVERO/CLAVE]
+  ore-iam agente --organizacion NOMBRE --emisor URL --sub SUB [--nombre N]
   ore-iam servir [--bind DIRECCION] [--identidad MODO] …
+
+  `agente` registra un SUJETO QUE NO ES NADIE: un Job que actua dentro de UNA
+  organizacion. Y es POR INQUILINO a proposito — el mismo `sub` del IdP da un
+  agente distinto en cada una, asi que conceder `usar` en una no concede en
+  otra. Ver la `024`.
 
   `--arbol` es COMO SE LLAMA su arbol —`<propietario>/<repositorio>`—, no donde
   vive ni si existe. Por defecto `t-<organizacion>/ontologia`. Fundar lo declara;
@@ -100,6 +106,7 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
 
     match mando {
         "fundar" => fundar_mando(&args, &url),
+        "agente" => agente_mando(&args, &url),
         "servir" => servir_mando(&args, &url),
         "-h" | "--help" => {
             print!("{USO}");
@@ -162,6 +169,42 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
         Err(e) => {
             eprintln!("✗ {e}");
             ExitCode::from(65) // EX_DATAERR
+        }
+    }
+}
+
+/// ⭐ Registrar un agente. Es un acto de OPERADOR y no algo que un custodio haga
+/// al vuelo: quien puede escribir aqui puede crear un sujeto al que despues se
+/// le concede `usar` sobre un secreto.
+fn agente_mando(args: &[String], url: &str) -> ExitCode {
+    let (Some(org), Some(emisor), Some(sub)) = (
+        valor(args, "--organizacion"),
+        valor(args, "--emisor"),
+        valor(args, "--sub"),
+    ) else {
+        eprintln!("✗ `agente` necesita `--organizacion`, `--emisor` y `--sub`.");
+        eprintln!("  El `sub` es el del testigo que el Job presenta —para un cliente de");
+        eprintln!("  credenciales, el de su cuenta de servicio—, y la organizacion es lo");
+        eprintln!("  que hace que ese mismo `sub` sea un sujeto distinto por inquilino.");
+        return ExitCode::from(64);
+    };
+    let nombre = valor(args, "--nombre");
+
+    let mut c = match base::conectar(url) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return ExitCode::from(69);
+        }
+    };
+    match fundar::registrar_agente(&mut c, &org, &emisor, &sub, nombre.as_deref()) {
+        Ok(j) => {
+            println!("{}", j.pretty());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("✗ {e}");
+            ExitCode::from(65)
         }
     }
 }

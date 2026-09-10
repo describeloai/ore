@@ -375,6 +375,49 @@ pub fn persona_id(tx: &mut Tx, emisor: &str, sub: &str) -> Result<String, String
     .ok_or_else(|| "quien pide no es una persona conocida aqui".to_string())
 }
 
+/// ⭐⭐ EL SUJETO, que puede no ser una persona.
+///
+/// `persona_id` de arriba contesta a «¿quién eres?» y sólo sabe decir que no si
+/// no hay fila. Esto contesta a «¿a nombre de qué sujeto se concede?», y esa
+/// pregunta tiene DOS respuestas legítimas desde la `024`:
+///
+///   una PERSONA   la misma en todas sus organizaciones (`021`)
+///   un AGENTE     un Job, y **uno por inquilino** — la misma credencial del IdP
+///                 da un sujeto distinto en cada organización
+///
+/// ⛔ La persona va PRIMERO. Si alguien apareciera en las dos tablas, quien
+///   manda es la persona: un agente es lo que actúa por cuenta de alguien, y
+///   dejar que tapara a una persona invertiría esa relación.
+///
+/// ⚠️ Y el `id` que sale de aquí es lo que se compara con `concesion.sujeto`,
+///   que la `007` dejó como TEXTO justamente para esto.
+pub fn sujeto_id(
+    tx: &mut Tx,
+    emisor: &str,
+    sub: &str,
+    org: &str,
+) -> Result<(String, &'static str), String> {
+    if let Some(f) = tx.uno(
+        "select id from iam.persona where emisor = $1 and sub = $2",
+        &[&emisor, &sub],
+    )? {
+        return Ok((f.get(0), "persona"));
+    }
+    if let Some(f) = tx.uno(
+        "select id from iam.agente
+          where emisor = $1 and sub = $2 and organizacion = $3",
+        &[&emisor, &sub, &org],
+    )? {
+        return Ok((f.get(0), "agente"));
+    }
+    // ⚠️ El mensaje nombra las dos puertas. El de `persona_id` decia solo
+    //   «no es una persona conocida aqui», y con un Job delante eso mandaba a
+    //   buscar el fallo en el censo de personas — donde no estaba.
+    Err(format!(
+        "quien pide no es ni una persona ni un agente de esta organizacion          (emisor `{emisor}`)"
+    ))
+}
+
 fn crear_o_hallar(
     tx: &mut Tx,
     emisor: &str,

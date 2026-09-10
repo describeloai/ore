@@ -133,6 +133,88 @@ fn arbol_valido(s: &str) -> bool {
     }
 }
 
+/// ⭐⭐ REGISTRAR UN AGENTE — un sujeto que no es nadie, y uno POR INQUILINO.
+///
+/// La `024` puso la tabla; esto es la unica puerta de escritura. Lo que hace es
+/// pequeño y lo que decide no lo es: crear un sujeto al que despues alguien
+/// concede `usar` sobre un secreto.
+///
+/// ⛔ NO concede nada. Registrar y conceder son dos actos, y fundirlos haria que
+///   dar de alta un Job le diera acceso — que es exactamente lo que la `007`
+///   evita al separar el sujeto de la concesion.
+///
+/// ⭐ Es idempotente: registrar dos veces devuelve el mismo agente. Un guion que
+///   converge tiene que poder llamarlo sin mirar si ya lo hizo.
+pub fn registrar_agente(
+    c: &mut Client,
+    org: &str,
+    emisor: &str,
+    sub: &str,
+    nombre: Option<&str>,
+) -> Result<Json, String> {
+    // Quien registra es el OPERADOR, igual que en `fundar`. Un agente no se
+    // registra a si mismo: alguien decide que ese `sub` puede ser un sujeto.
+    let operador = Identidad {
+        persona: "operador".into(),
+        agente: Some("ore-iam agente".into()),
+        correo: None,
+        nombre: None,
+    };
+    let mut tx = Tx::abrir(c, &operador)?;
+    // El nombre o el id: la misma cortesia que el custodio, y por lo mismo —
+    // quien llama escribe `demo`, no `org_b7b98fdd…`.
+    let org_id: String = tx
+        .uno(
+            "select id from iam.organizacion
+              where id = $1 or nombre = $1
+              order by (id = $1) desc limit 1",
+            &[&org],
+        )?
+        .ok_or_else(|| format!("`{org}` no es ninguna organizacion"))?
+        .get(0);
+
+    if let Some(f) = tx.uno(
+        "select id from iam.agente where emisor = $1 and sub = $2 and organizacion = $3",
+        &[&emisor, &sub, &org_id],
+    )? {
+        let id: String = f.get(0);
+        // ⛔ NO se confirma: `Tx` se niega a hacerlo si nadie anoto, y aqui no
+        //   hay nada que anotar porque no ha cambiado nada. Leer no es un acto.
+        //   La transaccion se deshace al soltarse, que es lo correcto para una
+        //   lectura.
+        return Ok(Json::obj([
+            ("agente", Json::s(id)),
+            ("organizacion", Json::s(org_id)),
+            ("ya", Json::Bool(true)),
+        ]));
+    }
+
+    let id = nuevo_id("age");
+    tx.ejecutar(
+        "insert into iam.agente (id, emisor, sub, organizacion, nombre)
+         values ($1, $2, $3, $4, $5)",
+        &[&id, &emisor, &sub, &org_id, &nombre],
+    )?;
+    // ⛔ Y queda escrito. `Tx` se niega a confirmar si nadie anoto, y aqui esa
+    //   regla vale doble: registrar un sujeto de maquina sin dejar rastro seria
+    //   crear autoridad en silencio.
+    tx.anotar(
+        "agente:registrar",
+        &id,
+        Json::obj([
+            ("organizacion", Json::s(&org_id)),
+            ("emisor", Json::s(emisor)),
+            ("sub", Json::s(sub)),
+        ]),
+    )?;
+    tx.confirmar()?;
+    Ok(Json::obj([
+        ("agente", Json::s(id)),
+        ("organizacion", Json::s(org_id)),
+        ("ya", Json::Bool(false)),
+    ]))
+}
+
 pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
     // Quien funda es el OPERADOR, no el dueño. Se distingue en la huella: la
     // organización la crea la plataforma; el dueño es a quien se le entrega.
