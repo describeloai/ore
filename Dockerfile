@@ -83,16 +83,40 @@ FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 # ⇒ Y es lo que permite que el Job lea como `aprovisionador`, el papel de la
 #   `023`: cuatro columnas de una tabla, en vez del `kubectl exec` que era un
 #   `psql` como superusuario dentro del pod de la base.
-# ⭐ Y `py3-yaml` desde el 2026-09-10, por la comprobacion ⑦: el que converge
-# ANALIZA como YAML todo lo que va a rendir antes de tocar a ningun inquilino.
-# Sin el analizador, `--comprobar-plantillas` **falla** en vez de saltarselo —a
-# proposito: una comprobacion ausente y una que pasa se leen igual en un
+RUN apk add --no-cache git postgresql-client py3-yaml
+
+# ── ⛔⛔ DOS PYTHON EN ESTA IMAGEN, Y `apk` INSTALA PARA EL QUE NADIE USA ────
+#
+# Esto empezo siendo `apk add py3-yaml`, por la comprobacion ⑦: el que converge
+# ANALIZA como YAML todo lo que va a rendir antes de tocar a ningun inquilino, y
+# sin analizador `--comprobar-plantillas` **falla** en vez de saltarselo — a
+# proposito, porque una comprobacion ausente y una que pasa se leen igual en un
 # registro, y esa confusion es la que dejo pasar un `44-el-catalogo.yaml` roto.
 #
-# ⚠️ O sea: hasta que esta imagen se publique, el `CronJob` de convergencia se
-# niega a correr. Es el fallo por el lado bueno, y conviene saber que es ese y
-# no otro.
-RUN apk add --no-cache git postgresql-client py3-yaml
+# Y el paquete se instalo, y no sirvio de nada. Medido dentro de la imagen:
+#
+#     /usr/local/bin/python3   3.14, el del Cloud SDK  <- lo que resuelve `python3`
+#     /usr/bin/python3         3.12, el de Alpine      <- donde `apk` puso pyyaml
+#
+# ⇒ La convergencia fallo con «no hay analizador de YAML aqui» teniendo el
+#   paquete presente (`apk info -e py3-yaml` lo confirmaba). Un fallo que se lee
+#   como «falta instalar algo» cuando lo que pasa es que se instalo AL LADO.
+#
+# ⭐ Asi que se instala en LOS DOS, y a proposito: `py3-yaml` arriba para el de
+#   Alpine, `pip` aqui para el que `python3` resuelve de verdad. Cuesta unos
+#   cientos de kilobytes y compra que deje de importar cual se use — que es
+#   mejor que acertar con uno y dejar la trampa puesta para el siguiente.
+#
+#   Es la misma leccion que `psql`: lo que importa no es que la herramienta
+#   exista en la imagen, sino que la encuentre quien la llama.
+#
+# ⚠️ Y el `import yaml` de despues no es adorno: si `pip` no llega a pypi desde
+#   Cloud Build, la construccion FALLA aqui en vez de publicar una imagen que
+#   se niega a converger. El fallo se paga donde hay alguien mirando.
+#
+# ⚠️ Y hasta que esta imagen se publique, el `CronJob` de convergencia se niega
+#   a correr. Es el fallo por el lado bueno, y conviene saber que es ese.
+RUN python3 -m pip install --no-cache-dir --break-system-packages pyyaml && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
 COPY --from=build /src/target/release/ore                /usr/local/bin/ore
 COPY --from=build /src/target/release/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
