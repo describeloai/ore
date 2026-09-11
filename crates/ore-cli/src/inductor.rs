@@ -577,7 +577,16 @@ pub fn inducir_con(
         ficheros.insert(
             format!("entities/{nombre}.yaml"),
             entidad_yaml(
-                nombre, paquete, &vista, t, &claves, &nombres, &mapeo, &extra,
+                nombre,
+                paquete,
+                &vista,
+                t,
+                &Resuelto {
+                    claves: &claves,
+                    nombres: &nombres,
+                    mapeo: &mapeo,
+                },
+                &extra,
             ),
         );
         // **Uno**, y por eso ya no es un bucle: una vista sale de UN sitio.
@@ -1460,20 +1469,37 @@ fn entrecomillar(s: &str) -> String {
     out
 }
 
+/// Lo que la inducción resuelve ANTES de emitir, y que cada emisor consulta.
+///
+/// Van juntos porque se calculan juntos y no tiene sentido tener uno sin los
+/// otros: la clave de una tabla, cómo se llama su entidad, y qué concepto habla
+/// cada columna. Un emisor que recibiera dos de los tres estaría emitiendo con
+/// media inducción.
+struct Resuelto<'a> {
+    /// Tabla → su clave primaria: la declarada, o la decidida.
+    claves: &'a BTreeMap<String, Vec<String>>,
+    /// Tabla → nombre de entidad, **solo de las que se emiten**. Es la única
+    /// fuente del nombre de un destino: derivarlo de la tabla con `entidad()`
+    /// da un nombre que puede no existir, y da el EQUIVOCADO cuando una
+    /// colisión se resolvió con otro.
+    nombres: &'a BTreeMap<String, String>,
+    /// `tabla.columna` → el concepto que habla, si alguien lo eligió.
+    mapeo: &'a BTreeMap<String, String>,
+}
+
 fn entidad_yaml(
     nombre: &str,
     paquete: &str,
     vista: &str,
     t: &Tabla,
-    claves: &BTreeMap<String, Vec<String>>,
-    // Tabla -> nombre de entidad, **solo de las que se emiten**. Es la unica
-    // fuente del nombre de un destino: derivarlo de la tabla con `entidad()`
-    // da un nombre que puede no existir, y da el EQUIVOCADO cuando una
-    // colision se resolvio con otro.
-    nombres: &BTreeMap<String, String>,
-    mapeo: &BTreeMap<String, String>,
+    r: &Resuelto<'_>,
     extra: &[(String, String)],
 ) -> String {
+    let Resuelto {
+        claves,
+        nombres,
+        mapeo,
+    } = *r;
     let clave = claves.get(&t.nombre).cloned().unwrap_or_default();
     let mut s = String::new();
     let _ = write!(
