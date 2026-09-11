@@ -166,6 +166,23 @@ impl Servidor {
                 self.estado(&n)
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
+            // ⭐⭐ CREAR UNA BASE ELIGIENDO QUE ENTRA. Es lo que el modal de la
+            //   consola lleva meses pidiendo con casillas: schemas y tablas de
+            //   un origen ya descubierto, marcadas. Hasta hoy la seleccion
+            //   moria en el estado del navegador.
+            //
+            // ⭐ Y va POR AQUI y no por la cola de trabajo, aunque el catalogo
+            //   de una fuente vaya por un Job. La diferencia es que esto es
+            //   HERMETICO: `discover --from` induce desde el catalogo que el Job
+            //   ya dejo en el arbol, sin credencial, sin red y sin driver. Es
+            //   exactamente lo mismo que `review` hace tres rutas mas abajo, y
+            //   por el mismo camino: un clon, `ore`, un commit.
+            ("POST", ["paquetes"]) => {
+                let cuerpo = p.cuerpo.clone();
+                self.escribiendo(sujeto, "alta de una base", |r| {
+                    self.alta_de_paquete(r, &cuerpo)
+                })
+            }
             // ⭐⭐ EL ESQUEMA DESCUBIERTO, que hasta hoy no salia por ningun
             //   sitio. `/paquetes` daba nombre, version y cuantas decisiones
             //   quedan abiertas — util para una lista, inutil para una ficha.
@@ -582,6 +599,116 @@ impl Servidor {
         }
     }
 
+    /// **Una base es un paquete con alcance**, inducido del catalogo de otro.
+    ///
+    /// `source` es el paquete del que sale el catalogo — el que el Job dejo al
+    /// descubrir la fuente entera, con `discover.catalog.json` al lado. `name`
+    /// es el paquete nuevo, y `only` los objetos fisicos que entran, tal como
+    /// el catalogo los nombra: `public.pedidos`.
+    ///
+    /// ⛔ NO se vuelve a leer el origen. Eso lo hizo el Job, con credencial y
+    ///   dentro de su red; esto induce de lo que aquel dejo escrito. Si el
+    ///   origen cambio desde entonces lo dira `drift-detect`, que es su trabajo.
+    fn alta_de_paquete(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
+        let cuerpo = match analizar(cuerpo) {
+            Ok(n) => n,
+            Err(r) => return r,
+        };
+        let campo = |k: &str| {
+            cuerpo
+                .get(k)
+                .and_then(|(_, v)| v.as_str())
+                .map(str::to_string)
+        };
+        let Some(nombre) = campo("name") else {
+            return Respuesta::error(422, "falta `name`");
+        };
+        let Some(fuente) = campo("source") else {
+            return Respuesta::error(422, "falta `source`: el paquete del que sale el catálogo");
+        };
+        if let Err(m) = token(&nombre) {
+            return Respuesta::error(422, format!("`name`: {m}"));
+        }
+        let objetos: Vec<String> = cuerpo
+            .get("only")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|n| n.as_str())
+            .map(str::to_string)
+            .collect();
+        if objetos.is_empty() {
+            // ⛔ Sin `only` no hay base: seria copiar el paquete de la fuente
+            //   con otro nombre, y ya existe.
+            return Respuesta::error(422, "`only` está vacío: una base es lo que se elige");
+        }
+
+        let origen = match paquete_de(raiz, &fuente) {
+            Ok(d) => d,
+            Err(mut r) => {
+                if r.codigo == 404 {
+                    r = Respuesta::error(404, format!("no hay paquete `{fuente}` del que inducir"));
+                }
+                return r;
+            }
+        };
+        let catalogo = origen.join("discover.catalog.json");
+        if !catalogo.is_file() {
+            return Respuesta::error(
+                409,
+                format!("`{fuente}` no tiene `discover.catalog.json`: no salió de un `discover`"),
+            );
+        }
+        if raiz.join("packages").join(&nombre).exists() {
+            return Respuesta::error(409, format!("ya hay un paquete `{nombre}`"));
+        }
+
+        // La lista, FUERA del arbol: es la entrada de una peticion, no un
+        // documento del repositorio. `discover` la copia a `discover.scope.json`,
+        // que si es del repositorio y si va en el commit.
+        let lista = temporal("alcance", "txt");
+        if std::fs::write(&lista, objetos.join("\n")).is_err() {
+            return Respuesta::error(500, "no se pudo escribir la lista de objetos");
+        }
+        let args = vec![
+            "discover".into(),
+            "--from".into(),
+            catalogo.to_string_lossy().into_owned(),
+            "--out".into(),
+            raiz.join("packages")
+                .join(&nombre)
+                .to_string_lossy()
+                .into_owned(),
+            "--name".into(),
+            nombre.clone(),
+            "--only-file".into(),
+            lista.to_string_lossy().into_owned(),
+        ];
+        let salida = mando::correr(&self.binario, raiz, &args);
+        let _ = std::fs::remove_file(&lista);
+
+        match salida {
+            Err(e) => Respuesta::error(500, e.to_string()),
+            Ok(s) if !s.bien() => Respuesta::error(
+                422,
+                format!(
+                    "`ore discover` devolvió {}: {}",
+                    s.codigo,
+                    primera_linea(&s.stdout, &s.stderr)
+                ),
+            ),
+            Ok(s) => {
+                let dir = raiz.join("packages").join(&nombre);
+                Respuesta::ok(Json::obj([
+                    ("name", Json::s(&nombre)),
+                    ("source", Json::s(&fuente)),
+                    ("informe", Json::s(s.stdout.trim())),
+                    ("quedan", Json::Int(pendientes(&dir) as i64)),
+                ]))
+            }
+        }
+    }
+
     fn responder(&self, raiz: &Path, paquete: &str, cuerpo: &str) -> Respuesta {
         let dir = match paquete_de(raiz, paquete) {
             Ok(d) => d,
@@ -641,6 +768,54 @@ impl Servidor {
 
 const COLA: &str = "discover.pending.json";
 
+/// Vista → objeto físico, resolviendo los dos saltos de una vez.
+///
+/// Devuelve un mapa de **nombre de vista** a `spec.object` de su tabla. Lo que
+/// no resuelve —una vista sin `from.table`, una tabla sin `object`— no entra
+/// en el mapa, y quien lo consulte omite el campo.
+fn objetos_fisicos(paquete: &Path) -> std::collections::BTreeMap<String, String> {
+    let documentos = |carpeta: &str| -> Vec<Node> {
+        let Ok(entradas) = std::fs::read_dir(paquete.join(carpeta)) else {
+            return Vec::new();
+        };
+        entradas
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|t| parse::parse(&t).ok())
+            .collect()
+    };
+    let en = |d: &Node, padre: &str, k: &str| -> Option<String> {
+        d.get(padre)
+            .and_then(|(_, m)| m.get(k))
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+    };
+    // tabla → objeto
+    let mut objeto: std::collections::BTreeMap<String, String> = Default::default();
+    for t in documentos("tables") {
+        if let (Some(n), Some(o)) = (en(&t, "metadata", "name"), en(&t, "spec", "object")) {
+            objeto.insert(n, o);
+        }
+    }
+    // vista → objeto, por su tabla
+    let mut salida: std::collections::BTreeMap<String, String> = Default::default();
+    for v in documentos("views") {
+        let Some(nombre) = en(&v, "metadata", "name") else {
+            continue;
+        };
+        let tabla = v
+            .get("spec")
+            .and_then(|(_, s)| s.get("from"))
+            .and_then(|(_, f)| f.get("table"))
+            .and_then(|(_, t)| t.as_str());
+        if let Some(o) = tabla.and_then(|t| objeto.get(t)) {
+            salida.insert(nombre, o.clone());
+        }
+    }
+    salida
+}
+
 /// Lo que el manifiesto declara. **Nunca un secreto**: el manifiesto no tiene
 /// ninguno —`connectionEnv` dice dónde buscarlo, no qué es— y esto no mira el
 /// entorno para completarlo.
@@ -697,20 +872,50 @@ fn paquetes(raiz: &Path) -> Respuesta {
         };
         let nombre = e.file_name().to_string_lossy().into_owned();
         let abiertas = pendientes(&e.path());
-        lista.push((
-            nombre.clone(),
-            Json::obj([
-                ("name", Json::s(nombre)),
-                ("version", Json::s(campo("version"))),
-                ("decisionesPendientes", Json::Int(abiertas as i64)),
-            ]),
-        ));
+        // ⭐ De que fuente sale, y si fue ELEGIDO. Un paquete con
+        //   `discover.scope.json` es una base que alguien creo marcando que
+        //   entra; sin el, es la fuente entera tal como el Job la leyo. La
+        //   consola pinta lo primero bajo su conexion y lo segundo como el
+        //   esquema descubierto de esta — y sin este campo no podria
+        //   distinguirlos.
+        let (fuente, elegido) = origen_de(&e.path());
+        let mut campos = vec![
+            ("name", Json::s(nombre.clone())),
+            ("version", Json::s(campo("version"))),
+            ("decisionesPendientes", Json::Int(abiertas as i64)),
+            ("scoped", Json::Bool(elegido)),
+        ];
+        if let Some(f) = fuente {
+            campos.push(("source", Json::s(f)));
+        }
+        lista.push((nombre, Json::obj(campos)));
     }
     lista.sort_by(|a, b| a.0.cmp(&b.0));
     Respuesta::ok(Json::obj([(
         "packages",
         Json::Arr(lista.into_iter().map(|(_, j)| j).collect()),
     )]))
+}
+
+/// De que fuente salio un paquete, y si se eligio que entraba.
+///
+/// La fuente se lee de `discover.scope.json` si lo hay y de
+/// `discover.catalog.json` si no; los dos la declaran. Un paquete escrito a
+/// mano no tiene ninguno y no tiene fuente que decir.
+fn origen_de(paquete: &Path) -> (Option<String>, bool) {
+    let fuente_en = |f: &str| {
+        std::fs::read_to_string(paquete.join(f))
+            .ok()
+            .and_then(|t| parse::parse(&t).ok())
+            .and_then(|n| {
+                n.get("source")
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            })
+    };
+    if let Some(f) = fuente_en("discover.scope.json") {
+        return (Some(f), true);
+    }
+    (fuente_en("discover.catalog.json"), false)
 }
 
 /// ⭐⭐ LO QUE `ore discover` ENCONTRO DE VERDAD.
@@ -743,6 +948,14 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
             ),
         ]));
     };
+
+    // ⭐⭐ EL NOMBRE FISICO, que es lo que hace falta para ELEGIR. Una entidad
+    //   se llama `Pedidos`; lo que `discover --only` entiende es `public.pedidos`,
+    //   y entre los dos hay dos saltos: la entidad dice `backedBy: pedidos`, la
+    //   vista `pedidos` dice `from: { table: public_pedidos }`, y la tabla
+    //   `public_pedidos` dice `object: public.pedidos`. Se resuelven aqui,
+    //   una vez, en vez de en cada consola.
+    let objeto_de = objetos_fisicos(&dir);
 
     let mut rotos = 0usize;
     let mut lista: Vec<(String, Json)> = Vec::new();
@@ -803,23 +1016,28 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
             }
         }
 
+        let respaldo = doc
+            .get("spec")
+            .and_then(|(_, sp)| sp.get("backedBy"))
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let mut campos = vec![
+            ("name", Json::s(&nombre)),
+            ("namespace", Json::s(en("metadata", "namespace"))),
+            ("backedBy", Json::s(&respaldo)),
+            ("primaryKey", Json::Arr(clave)),
+            ("properties", Json::Arr(props)),
+        ];
+        // Se OMITE si no se pudo resolver, no se pone vacio: una entidad sin
+        // objeto fisico es legal —una vista que agrupa, por ejemplo— y una
+        // cadena vacia diria que lo tiene y se llama asi.
+        if let Some(o) = objeto_de.get(&respaldo) {
+            campos.push(("object", Json::s(o)));
+        }
         lista.push((
             format!("{}/{}", en("metadata", "namespace"), nombre),
-            Json::obj([
-                ("name", Json::s(&nombre)),
-                ("namespace", Json::s(en("metadata", "namespace"))),
-                (
-                    "backedBy",
-                    Json::s(
-                        doc.get("spec")
-                            .and_then(|(_, sp)| sp.get("backedBy"))
-                            .and_then(|(_, v)| v.as_str())
-                            .unwrap_or_default(),
-                    ),
-                ),
-                ("primaryKey", Json::Arr(clave)),
-                ("properties", Json::Arr(props)),
-            ]),
+            Json::obj(campos),
         ));
     }
     lista.sort_by(|a, b| a.0.cmp(&b.0));
