@@ -131,7 +131,13 @@ def maquina(tipo):
 filas = []
 for n in nodos:
     c, g = maquina(n[0])
-    filas.append(("nodo %s on-demand" % n[0], c * vcpu + g * ram))
+    # El nodo se cobra como lo que ES. Desde el 2026-09-12 es spot, y una medida
+    # que siguiera cobrandolo on-demand diria $46/mes de mas.
+    es_spot = len(n) > 1 and n[1] == "true"
+    if es_spot:
+        filas.append(("nodo %s SPOT" % n[0], c * vcpu_spot + g * ram_spot))
+    else:
+        filas.append(("nodo %s on-demand" % n[0], c * vcpu + g * ram))
 filas.append(("GKE gestion (cluster zonal)", gke))
 gb = sum(int(d[0]) for d in discos)
 filas.append(("discos %d GB pd-balanced" % gb, gb * pd / H_MES))
@@ -161,8 +167,12 @@ for horas in (8, 12, 14):
     print("   pool a 0 %2d h/dia:              ahorra $%3.0f/mes" % (horas, nodo * horas * 30))
 c, g = maquina(nodos[0][0])
 spot = c * vcpu_spot + g * ram_spot
-print("   nodo en SPOT, 24/7:             ahorra $%3.0f/mes   (nodo a $%.4f/h; se puede desalojar)" % ((nodo - spot) * H_MES, spot))
-print("   pool a 0 12h + spot:            ahorra $%3.0f/mes" % (nodo * 12 * 30 + (nodo - spot) * 12 * 30))
+demanda = c * vcpu + g * ram
+if nodo == spot:
+    print("   el nodo YA es spot:             ahorra $%3.0f/mes frente a on-demand, 24/7" % ((demanda - spot) * H_MES))
+else:
+    print("   nodo en SPOT, 24/7:             ahorra $%3.0f/mes   (nodo a $%.4f/h; se puede desalojar)" % ((nodo - spot) * H_MES, spot))
+    print("   pool a 0 12h + spot:            ahorra $%3.0f/mes" % (nodo * 12 * 30 + (nodo - spot) * 12 * 30))
 print("   BORRAR el cluster de noche:     ahorra $%3.0f/mes a 12h/dia (todo menos discos e IPs, que se quedan)" % ((total - gb * pd / H_MES - (2 * ip + nat_ip)) * 12 * 30))
 print()
 print("   ⛔ «Suspender» no existe en GKE: o bajas nodos, o borras el cluster. Y borrarlo es")
