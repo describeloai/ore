@@ -46,14 +46,22 @@
 #
 # ── La imagen viene de Artifact Registry, y no es comodidad ──────────────────
 #
-# `jobs-p` tiene `enablePrivateNodes: true` y **no hay Cloud NAT**. Un pod ahí
-# sólo alcanza las APIs de Google por Private Google Access, así que una imagen
-# de `codeberg.org` no se puede bajar. El `default-pool` sí tiene IP pública y
-# arrancaría — pero entonces lo único que impediría que la forja se programase
-# donde no puede arrancar sería una etiqueta, y una etiqueta no es una
-# propiedad.
+# Se espejó porque `jobs-p` tiene `enablePrivateNodes: true` y, cuando se
+# escribió esto, no había Cloud NAT: un pod ahí sólo alcanzaba las APIs de
+# Google por Private Google Access, y una imagen de `codeberg.org` no se
+# podía bajar.
 #
-# Se espeja, como `ore` y `ore-drivers`, con la versión clavada en el origen:
+# ⚠️ Ese motivo YA NO ES CIERTO. Desde el 2026-09-10 hay una Cloud NAT
+#   (`salida-a-origenes`, con IP fija para las listas blancas de los clientes)
+#   y un nodo privado sí sale a internet. Se deja escrito para que nadie lea
+#   el párrafo de arriba y crea que sigue valiendo.
+#
+# El espejo se queda, por el motivo que sí sigue en pie: la plataforma entera
+# se apoya en la forja, y su arranque no puede depender de que una forja
+# AJENA esté disponible ni de que no haya movido una etiqueta. Es lo mismo
+# por lo que `ore` y `ore-drivers` se espejan.
+#
+# Se espeja con la versión clavada en el origen:
 #
 #     echo 'FROM codeberg.org/forgejo/forgejo:15.0.7' > Dockerfile
 #     gcloud builds submit --tag #       europe-west1-docker.pkg.dev/<proyecto>/ore/forgejo:15 .

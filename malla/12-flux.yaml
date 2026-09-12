@@ -69,10 +69,12 @@
 #
 # ── Las imágenes NO se espejan, y aquí sí es correcto ──────────────────────
 #
-# `fluxcd/source-controller:v1.9.5` viene de Docker Hub. La forja hubo que
-# espejarla porque `jobs-p` tiene nodos privados sin NAT; estos pods no caen ahí
-# —ese pool lleva un taint que sólo toleran los Jobs— así que salen por la IP
-# pública del `default-pool`. La versión va pinchada, que es lo que importaba.
+# `fluxcd/source-controller:v1.9.5` viene de Docker Hub. Estos pods corren en
+# el pool del sistema (`ore.dev/pool: system`), que tiene IP pública — y desde
+# el 2026-09-10 hay Cloud NAT, así que hasta un nodo privado saldría. La forja
+# se espeja por otro motivo, que está dicho en `30-forja.yaml`: la plataforma
+# no arranca sin ella. Flux sí arranca sin Docker Hub un rato, y la versión va
+# pinchada, que es lo que importaba.
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # ⚠️ Y EL NAMESPACE VA DENTRO DE CADA OBJETO, que costó una vuelta. Los
