@@ -113,7 +113,7 @@ spec:
     spec:
       serviceAccountName: ore-serve
       nodeSelector:
-        cloud.google.com/gke-nodepool: default-pool
+        ore.dev/pool: system
       volumes:
         # El juego de llaves, montado de sólo lectura. Que sea un ConfigMap y
         # no un Secret es correcto: son llaves PÚBLICAS —lo contrario de un

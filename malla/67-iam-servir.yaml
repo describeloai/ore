@@ -53,7 +53,7 @@ spec:
     spec:
       serviceAccountName: ore-iam
       nodeSelector:
-        cloud.google.com/gke-nodepool: default-pool
+        ore.dev/pool: system
       volumes:
         # Las llaves del realm, del mismo ConfigMap que refresca el CronJob.
         # ⚠️ Vive en `t-demo` y esto en `identidad`: un ConfigMap no cruza

@@ -155,8 +155,14 @@ spec:
       serviceAccountName: forja
       # En el pool estable. `jobs-p` escala a cero, y una forja que desaparece
       # cuando no hay trabajos no es donde vive nada.
+      #
+      # ⛔ Por la CLASE, no por el nombre del pool. Esto decia
+      #   `cloud.google.com/gke-nodepool: default-pool`, y el dia que ese pool
+      #   se sustituyo por uno spot la forja se habria quedado sin donde correr
+      #   — y sin forja no hay `ore-serve`. `10-kueue.yaml` ya lo hacia bien
+      #   para `jobs`; era la cuarta vez que se nombraba una instancia.
       nodeSelector:
-        cloud.google.com/gke-nodepool: default-pool
+        ore.dev/pool: system
       securityContext:
         fsGroup: 1000
       containers:

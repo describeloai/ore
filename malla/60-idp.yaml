@@ -111,7 +111,7 @@ spec:
         ore.dev/tenant: system
     spec:
       nodeSelector:
-        cloud.google.com/gke-nodepool: default-pool
+        ore.dev/pool: system
       securityContext:
         fsGroup: 999
       containers:
