@@ -215,9 +215,9 @@ spec:
           volumeMounts:
             - name: llaves
               mountPath: /llaves
+              readOnly: true
             - name: testigo
               mountPath: /testigo
-              readOnly: true
               readOnly: true
           ports:
             - containerPort: 8095
