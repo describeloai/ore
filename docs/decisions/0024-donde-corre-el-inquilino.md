@@ -4,7 +4,9 @@
 inquilino puede correr en **tres sitios** bajo **un solo plano de control**; que el modelo de IA
 va **con el árbol, en el mismo clúster y en otro pool**; que la ingesta de terceros aterriza
 **en el plano de datos del inquilino y nunca en el de control**; y que **el clúster pasa a ser un
-hecho del plano de control** — la consola lo emite desde ahí, no desde el árbol
+hecho del plano de control** — la consola lo emite desde ahí, no desde el árbol. Y desde la E3:
+que **el material de un secreto vive en la celda** y **la puerta del inquilino también**; el plano
+de control guarda quién puede y tiene **una** puerta, sólo para que tiren de ella
 
 ---
 
@@ -125,6 +127,80 @@ la organización —tier, región, estado administrativo— y **si contesta** se
 camino, al `/salud` de su `ore-serve`, desde el servidor de la consola que ya lo alcanza.
 Identidad de un plano; vida, del otro. **Ninguno de los dos finge saber lo del otro.**
 
+> ### ⑤ El material de un secreto vive en la celda. El plano de control guarda quién puede.
+
+Tomada en la E3 (2026-09-13), después de medir el cofre y de mirar qué hacen los que viven de
+BYOC. La medida (`pruebas-de-fuego/medida-el-cofre-y-su-almacen.py`) dice dónde está hoy cada
+pieza de un secreto de `demo`:
+
+```
+en claro     sólo en memoria del pod del cofre, EN el inquilino (KMS por stdin/stdout)   ✓
+cifrado      en Postgres CENTRAL (`idp-db.identidad`), alcanzado por SQL desde `t-demo`  ✗
+llave        en KMS del proyecto de la PLATAFORMA, una por organización (`ore/demo`)      ✗
+quién puede  en `iam.concesion`, central — y eso es metadato                              ✓
+```
+
+Y lo que hace el sector es unánime y está escrito: Redpanda guarda los secretos estáticos en el
+Secret Manager de la nube donde corre el plano de datos y *«never leave the data plane account
+or network»*; WarpStream, *«only metadata is transferred from your environment»*. El plano de
+control sabe **que** existe y **quién** puede; nunca **qué** es.
+
+⇒ **El material cifrado deja `cofre.material` y pasa al Secret Manager de la celda.** En
+`compartido` la celda es nuestro proyecto y el secreto se llama `t-<n>-…`, con acceso sólo para
+`ore-cofre-<n>` por Workload Identity — el mismo camino que la `0023` ya abrió para el testigo de
+la forja y el agente. En `dedicado` es igual; en `byoc` es **su** proyecto, y la llave (CMEK
+sobre el secreto) es suya sin que escribamos una línea: la KEK por organización que hoy aplica
+`kms.rs` a mano pasa a ser la clave CMEK del secreto, que es la misma llave en el mismo KMS
+puesta donde el Secret Manager la aplica solo.
+
+⛔ **Lo que NO se mueve: `cofre.secreto` e `iam.concesion`.** Nombre, clase, quién lo emitió y
+quién puede usarlo son metadato y se quedan en el plano de control. Así `resolver` conserva su
+invariante —*«no hay un camino en el que el código sepa que el secreto existe antes de saber si
+quien pregunta puede»*—: el `join` de `cofre.secreto` con `iam.concesion_viva` sigue siendo una
+consulta y sigue devolviendo nada si no puedes; **sólo después** el cofre va al almacén de la
+celda a por el valor. La medida lo cobra: es la única invariante que el traslado toca.
+
+⚠️ Lo que cuesta, medido: 2 tablas + 1 vista, 3 funciones (`emitir`, `listar`, `resolver`), 8
+filas de 230 bytes como mucho en `demo`. Y lo que se gana además del principio: el cofre de un
+inquilino **deja de necesitar la base central para leer material** — le basta `iam` para
+preguntar, que en BYOC será por HTTP y no por SQL (la `020` ya separó los papeles; lo que cambia
+es el camino).
+
+⛔ **Lo que yo había propuesto era lo contrario** —«central y cifrado hasta que alguien lo
+pida»— y era exactamente lo que ninguno de ellos hace, porque el material cruza al proveedor
+aunque sea ilegible. Se escribe para que no vuelva.
+
+> ### ⑥ La puerta vive en la celda. El plano de control tiene una, y es para que tiren de ella.
+
+Son **dos tráficos** y la pregunta abierta los mezclaba:
+
+**Plano de control → plano de datos.** Todos los medidos coinciden: *sólo saliente desde el plano
+de datos*. El agente de Redpanda *«pulls its work from the control plane»* con testigos opacos y
+efímeros, y el clúster *«remains available even if the network connection to the control plane is
+lost»*. **Ese agente ya lo tenemos y se llama Flux**: sondea la forja. Luego el plano de control
+necesita **una** puerta pública —la forja, con testigo, como hoy— y la celda **sólo necesita
+salida**. Ahí queda resuelta la mitad «¿alcanza Flux la forja desde BYOC?»: sí, porque es la
+dirección que cualquier cortafuegos deja pasar.
+
+**Consola y clientes → plano de datos.** Redpanda **no** hace de proxy: hospeda la zona DNS
+(`<cluster>.byoc.prd.cloud.redpanda.com`), el registro apunta a un endpoint **en la nube del
+cliente**, TLS por Let's Encrypt, pública o privada (PrivateLink/PSC), y el navegador en
+`cloud.redpanda.com` habla con el plano de datos directamente. La razón es ③: si el proxy pasa
+datos, el proveedor está en el camino del dato **y en el de la disponibilidad**, que es lo que
+`0006` y `0018` prohíben.
+
+⇒ **Cada celda tiene su puerta**: Gateway, certificado y `<n>.ore.paladio.io` apuntando a su IP.
+La zona es nuestra y **el registro DNS lo escribe el plano de control**, que es quien sabe en qué
+celda vive cada organización (`iam.celda`). Y el Gateway por el que hoy llega `demo` **no es «el
+compartido de la plataforma»**: es el Gateway de la celda `ore-mesh`, que además hospeda el plano
+de control. Para `demo` en la E3 eso es cero movimiento de manifiesto; lo que falta es que
+`iam.celda` **diga su puerta** y que la consola construya la dirección de `ore-serve` desde la
+celda y no desde un host fijo.
+
+⛔ **Y lo que había propuesto también era lo contrario** —una sola puerta en el plano de control
+haciendo de proxy— con el argumento de «un certificado, un DNS». El argumento era de comodidad;
+la promesa es de soberanía, y las dos no caben.
+
 ---
 
 ## Lo que se acepta a cambio
@@ -137,11 +213,13 @@ Identidad de un plano; vida, del otro. **Ninguno de los dos finge saber lo del o
   compartimento sigue siendo nuestro y describe qué corre en su casa. **Nunca necesitamos una
   credencial hacia su clúster** — ellos tiran de nosotros. Es el modelo de agente de todo BYOC
   serio, y es `0022`-① sin cambiar una palabra.
-- ⛔ **La consola necesita una puerta por inquilino.** Hoy Vercel llega a `t-demo` por nuestra
-  `ore-puerta`. Con el árbol en su clúster, o hay una puerta allí, o el plano de control hace de
-  proxy. **Es la decisión que queda abierta**, y se toma con la E3, no antes.
-- ⛔ **El cofre habla con Google KMS.** BYOC en otra nube u on-prem exige abstraer la llave de
-  fuera de `0023`. Trabajo real, y no se empieza hasta que haya un cliente que lo pida.
+- ⚠️ **Una puerta por celda es un certificado y un registro DNS por celda.** Decidido en ⑥. El
+  plano de control escribe el registro; el certificado lo emite la celda (cert-manager, como hoy
+  `ore-puerta`). En BYOC privado —sin IP pública— es PSC/PrivateLink, y es E5.
+- ⚠️ **El cofre cambia de almacén, no de llave.** Decidido en ⑤: el material va al Secret
+  Manager de la celda y la KEK por organización pasa a ser la CMEK del secreto. `kms.rs` deja de
+  cifrar a mano. BYOC en otra nube u on-prem sigue exigiendo abstraer el almacén — pero es una
+  interfaz de tres verbos, medida, y no se empieza hasta que haya un cliente que lo pida.
 - ⚠️ **«Serverless dedicado» no es cero.** GKE Autopilot cobra los pods **y** $74/mes de plano
   de control por clúster; el free tier cubre **uno** por cuenta de facturación, no uno por
   cliente. El suelo por inquilino existe y va en el precio, no en la sorpresa.
@@ -167,13 +245,18 @@ sitio donde esté escrito en qué clúster vive `demo`.
 **E2 · El compartido se llama por su nombre.** El tier `compartido` en la consola con la
 promesa de Redpanda —sin nodos, pago por uso— y sus cuotas dichas (`ResourceQuota` ya existe).
 
-**E3 · Nuestro clúster como primer «clúster de cliente».** `t-demo` con **su forja propia** y
-Flux tirando de nuestro repositorio. Si eso funciona aquí, dedicado y BYOC son *el mismo
-manifiesto en otro sitio*. Aquí se toma la decisión de la puerta.
+**E3 · Nuestro clúster como primer «clúster de cliente».** Medido primero
+(`medida-el-acoplamiento-del-inquilino.py`): de 13 acoplamientos, 11 viajan o se parten solos y
+2 había que **decidir** — y son ⑤ y ⑥. Lo que la E3 hace, en este orden: **(a)** `iam.celda`
+dice su puerta y la consola construye la dirección de `ore-serve` desde la celda; **(b)** el
+cofre guarda el material en el Secret Manager de la celda, con `cofre.secreto` e `iam.concesion`
+donde están; **(c)** `t-demo` con **su forja propia** y Flux tirando de la nuestra. Si eso
+funciona aquí, dedicado y BYOC son *el mismo manifiesto en otro sitio*.
 
 **E4 · Dedicado.** Un GKE por inquilino, aprovisionado por el mismo guion, con los tres pools.
 
-**E5 · BYOC.** El agente en su clúster, tirando. Y el cofre con la llave fuera abstraída.
+**E5 · BYOC.** El agente en su clúster, tirando. El almacén del cofre en **su** proyecto con
+**su** CMEK, que tras ⑤ es configuración; y la puerta privada (PSC) si no quieren IP pública.
 
 **E6 · El pool de GPU y el modelo.** Que es lo que todo esto sostiene, y por eso va al final:
 sin E3 el modelo estaría en casa del cliente mirando un árbol en la nuestra.

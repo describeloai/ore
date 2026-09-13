@@ -23,6 +23,11 @@ Y cada acoplamiento se CLASIFICA, que es lo que la E3 necesita saber:
   se parte   hoy compartido, en E3 propio del inquilino (la forja)
   central    se queda con nosotros y hace falta ALCANZARLO desde fuera (puerta)
   decidir    no tiene respuesta escrita todavia; la E3 la toma
+
+Los dos «decidir» que salieron la primera vez (E y F) los decidio la 0024 en sus
+puntos 5 y 6 el 2026-09-13, y desde entonces se clasifican como lo que van a ser
+— «se parte» y «viaja» — con la ADR al lado. La medida sigue viendo el ESTADO,
+que no ha cambiado: lo que cambio es que ya hay respuesta escrita.
 """
 import json
 import subprocess
@@ -36,6 +41,13 @@ for f in (sys.stdout, sys.stderr):
 
 NS = sys.argv[1] if len(sys.argv) > 1 else "t-demo"
 INQ = NS.removeprefix("t-")
+
+# ⛔ Un namespace que no existe medía «5 acoplamientos, 0 por decidir» con todas
+#   las secciones vacías y parecía un resultado. Se pasó `demo` por `t-demo` y
+#   la medida contestó en vez de negarse.
+if subprocess.run(["kubectl", "get", "ns", NS], capture_output=True).returncode:
+    print("el namespace `%s` no existe (¿`t-%s`?)" % (NS, NS))
+    sys.exit(65)
 
 
 def k(*args):
@@ -146,15 +158,15 @@ if u:
     host = u.split("@")[-1].split("/")[0]
     print("   postgres://***@%s" % host)
     if "identidad" in host:
-        anota("decidir", "el cofre guarda su material en la base CENTRAL de `iam` (%s)" % host,
-              "o el almacen del cofre viaja con el inquilino, o se queda central con el material cifrado y la llave en KMS; la 0024 no lo decidio")
+        anota("se parte", "el cofre guarda su material en la base CENTRAL de `iam` (%s)" % host,
+              "0024-5: el material pasa al Secret Manager de la celda; `cofre.secreto` e `iam.concesion` se quedan (metadato). Medido en `medida-el-cofre-y-su-almacen.py`")
 
 # ── F ───────────────────────────────────────────────────────────────────────
 titulo("F - POR DONDE LLEGA LA CONSOLA")
 for r in kj("-n", NS, "get", "httproute", "-o", "json").get("items", []):
     print("   HTTPRoute %-10s hosts=%s  parent=%s" % (r["metadata"]["name"], r["spec"].get("hostnames"), r["spec"]["parentRefs"][0]["name"]))
-    anota("decidir", "la puerta: `%s` por el Gateway compartido `%s`" % (",".join(r["spec"].get("hostnames", [])), r["spec"]["parentRefs"][0]["name"]),
-          "en un cluster propio: o puerta alli (ingress + cert + DNS) o el plano de control hace de proxy. ES la decision abierta de la 0024")
+    anota("viaja", "la puerta: `%s` por el Gateway `%s`, que es el de la CELDA ore-mesh" % (",".join(r["spec"].get("hostnames", [])), r["spec"]["parentRefs"][0]["name"]),
+          "0024-6: cada celda tiene su puerta (Gateway + cert + `<n>.ore.paladio.io`); el plano de control escribe el DNS y no hace de proxy. Falta que `iam.celda` diga la suya")
 
 # ── el listado ──────────────────────────────────────────────────────────────
 titulo("LO QUE ATA A `%s`, CLASIFICADO" % INQ)
@@ -175,4 +187,7 @@ print()
 print("  %d acoplamientos · %d viajan · %d se parten/invierten · %d centrales · %d por decidir" % (
     len(hallazgos), n["viaja"], n["se parte"] + n["se invierte"], n["central"] + n["cambia por nube"], n["decidir"]))
 print()
-print("  => La E3 es resolver los %d «decidir». Lo demas es manifiesto." % n["decidir"])
+if n["decidir"]:
+    print("  => La E3 es resolver los %d «decidir». Lo demas es manifiesto." % n["decidir"])
+else:
+    print("  => Nada por decidir: la 0024 lo tiene escrito. La E3 es manifiesto y tres cambios de codigo.")

@@ -33,7 +33,7 @@ favor no es un registro: es una colección de justificaciones.
 | [0021](0021-una-persona-en-varias-organizaciones.md) · una persona en varias organizaciones | la identidad no lleva dentro a qué cliente sirve; la organización viaja **en el camino**, nunca en el token | **aceptado** |
 | [0022](0022-el-inquilino-es-un-repositorio.md) · el inquilino es un repositorio | aprovisionar **se escribe, no se aplica**; la unidad es el inquilino y no el clúster; y quién aprueba el alta es un **ajuste de cada cliente** | **aceptado** |
 | [0023](0023-donde-vive-un-secreto.md) · dónde vive un secreto | `iam` dice **quién puede** y no guarda nada; el material va **cifrado de sobre** con la llave fuera; quién emite queda `owner`; y **`usar` no es `leer`** | **aceptado** |
-| [0024](0024-donde-corre-el-inquilino.md) · dónde corre el inquilino | un plano de control y el árbol en **uno de tres sitios**; el modelo **con el árbol, en otro pool**; la ingesta aterriza **en el inquilino**; y el clúster es **un hecho del plano de control** | **propuesto** |
+| [0024](0024-donde-corre-el-inquilino.md) · dónde corre el inquilino | un plano de control y el árbol en **uno de tres sitios**; el modelo **con el árbol, en otro pool**; la ingesta aterriza **en el inquilino**; el clúster es **un hecho del plano de control**; y desde la E3, **el material y la puerta viven en la celda** — el plano de control guarda quién puede y tiene una puerta para que tiren de ella | **propuesto** |
 
 **0016 es la única propuesta, y el estado es deliberado**: las quince anteriores se escribieron
 después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
