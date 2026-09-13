@@ -290,6 +290,13 @@ impl Servidor {
                     ])
                 })
                 .collect();
+            // Toda lectura deja huella: es la regla de `confirmar()`, y CI la
+            // hizo valer — sin esto, 500 «no dejó huella. No se confirma».
+            tx.anotar(
+                "celda:listar",
+                &org,
+                Json::obj([("cuantas", Json::Int(lista.len() as i64))]),
+            )?;
             Ok(Json::obj([("celdas", Json::Arr(lista))]))
         })
     }
