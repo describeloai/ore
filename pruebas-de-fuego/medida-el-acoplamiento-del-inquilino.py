@@ -135,10 +135,14 @@ for s in kj("-n", NS, "get", "secret", "-o", "json", "--show-managed-fields").ge
 
 # ── E ───────────────────────────────────────────────────────────────────────
 titulo("E - DONDE GUARDA EL COFRE")
-url = k("-n", NS, "get", "secret", "cofre-url", "-o", "jsonpath={.data.url}")
-if url:
-    import base64
-    u = base64.b64decode(url).decode("utf-8", "replace")
+# ⚠️ Del ALMACEN, no de un `Secret`: el `Secret` `cofre-url` se borro el
+#   2026-09-13 al pasar la base al camino de la 0023, y esta seccion leia de
+#   ahi — el acoplamiento desaparecio del listado sin haberse resuelto. Una
+#   medida que deja de ver algo porque se movio de sitio no mide.
+u = subprocess.run(["gcloud", "secrets", "versions", "access", "latest", "--secret=cofre-url",
+                    "--project=project-8853a180-450d-47be-b83"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", shell=True, timeout=90).stdout.strip()
+if u:
     host = u.split("@")[-1].split("/")[0]
     print("   postgres://***@%s" % host)
     if "identidad" in host:
