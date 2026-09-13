@@ -69,6 +69,10 @@ impl Servidor {
             ("GET", ["organizaciones"]) => self.organizaciones(s),
             ("GET", ["organizaciones", o, "miembros"]) => self.miembros(s, o),
             ("GET", ["organizaciones", o, "roles"]) => self.roles(s, o),
+            // ⭐ DÓNDE CORRE. La 0024 ④: el clúster es un hecho del plano de
+            //   control y se emite desde aquí. Lo que NO dice es si responde —
+            //   eso se pregunta por el camino, al `/salud` de su `ore-serve`.
+            ("GET", ["organizaciones", o, "celdas"]) => self.celdas(s, o),
             ("GET", ["organizaciones", o, "invitaciones"]) => self.invitaciones(s, o),
             ("POST", ["organizaciones", o, "invitaciones"]) => self.invitar(s, o, &p.cuerpo),
             ("POST", ["organizaciones", o, "concesiones"]) => self.conceder(s, o, &p.cuerpo),
@@ -254,6 +258,42 @@ impl Servidor {
     /// no todo lo que da. Es la forma que pinta la pantalla —*«qué añade sobre
     /// el estado por defecto»*— y la que contesta la pregunta de quien va a
     /// conceder.
+    fn celdas(&self, s: &Identidad, org: &str) -> Respuesta {
+        let org = org.to_string();
+        self.en_transaccion(s, move |tx, emisor| {
+            // ⭐ Basta con pertenecer, y se comprueba con la misma unión que
+            //   `organizaciones`: la celda es un atributo de la organización, y
+            //   «pertenecer ya da lectura» (`014`). Sin potestad nueva.
+            let filas = tx.filas(
+                "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text
+                   from iam.celda c
+                   join iam.pertenencia pe on pe.organizacion = c.organizacion
+                   join iam.persona     p  on p.id = pe.persona
+                  where c.organizacion = $1 and p.emisor = $2 and p.sub = $3
+                  order by c.creada_en",
+                &[&org, &emisor, &s.persona],
+            )?;
+            // ⛔ Cero filas puede ser «no perteneces» o «no tiene celda», y se
+            //   contestan igual a propósito: decir cuál revelaría que la
+            //   organización existe a quien no es de ella.
+            let lista: Vec<Json> = filas
+                .iter()
+                .map(|f| {
+                    Json::obj([
+                        ("id", Json::s(f.get::<_, String>(0))),
+                        ("nombre", Json::s(f.get::<_, String>(1))),
+                        ("tier", Json::s(f.get::<_, String>(2))),
+                        ("proveedor", Json::s(f.get::<_, String>(3))),
+                        ("region", Json::s(f.get::<_, String>(4))),
+                        ("estado", Json::s(f.get::<_, String>(5))),
+                        ("creada_en", Json::s(f.get::<_, String>(6))),
+                    ])
+                })
+                .collect();
+            Ok(Json::obj([("celdas", Json::Arr(lista))]))
+        })
+    }
+
     fn roles(&self, s: &Identidad, org: &str) -> Respuesta {
         let org = org.to_string();
         self.en_transaccion(s, move |tx, emisor| {
@@ -489,6 +529,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/organizaciones", con),
         ("GET", "/organizaciones/{org}/miembros", con),
         ("GET", "/organizaciones/{org}/roles", con),
+        ("GET", "/organizaciones/{org}/celdas", con),
         ("GET", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/concesiones", con),

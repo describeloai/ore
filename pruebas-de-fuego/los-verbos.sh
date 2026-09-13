@@ -190,13 +190,24 @@ export IAM_URL="$URL_APP"
 #   escribia: esto reventaba con «✗ `fundar acme` fallo» y NADA mas, y hubo que
 #   gastar una vuelta de CI para saber por que. Es la misma leccion que ya esta
 #   arriba para el log del servidor, aplicada donde faltaba.
+# ⭐ `acme` CON celda y `otra` SIN: las dos ramas de `fundar`, y de paso lo
+#   que la 0024 ④ exige — que la celda de una organizacion no la vea otra.
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
-  --correo "ada@paladio.io" > "$TMP/fundar.txt" 2>&1 \
+  --correo "ada@paladio.io" \
+  --celda ore-prueba --tier compartido --proveedor gcp --region europe-west1-b \
+  > "$TMP/fundar.txt" 2>&1 \
   || falla "\`fundar acme\` fallo: $(tail -3 "$TMP/fundar.txt")"
+grep -q '"celda": "cel_' "$TMP/fundar.txt" || falla "fundar acme no devolvio su celda: $(cat "$TMP/fundar.txt")"
 "$IAM" fundar --organizacion otra --emisor "$EMISOR" --sub "persona:zoe" \
   --correo "zoe@paladio.io" > "$TMP/fundar.txt" 2>&1 \
   || falla "\`fundar otra\` fallo: $(tail -3 "$TMP/fundar.txt")"
-dice "dos organizaciones fundadas"
+grep -q 'ninguna' "$TMP/fundar.txt" || falla "fundar otra sin celda no lo DIJO"
+# ⛔ Y una celda a medias no funda: parece entera y no lo es.
+"$IAM" fundar --organizacion media --emisor "$EMISOR" --sub "persona:eva" \
+  --celda x --tier compartido > "$TMP/fundar.txt" 2>&1 \
+  && falla "fundar con celda a medias no fallo"
+grep -q 'entera o no va' "$TMP/fundar.txt" || falla "la celda a medias no dijo por que"
+dice "dos organizaciones fundadas: una con celda, otra sin, y la de a medias negada"
 
 ORG=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='acme'")
 [ -n "$ORG" ] || falla "no se encontro la organizacion"
@@ -238,6 +249,20 @@ CODIGO=$(pide GET /organizaciones "$ADA")
 [ "$CODIGO" = "200" ] || falla "2 · no pudo listar · http $CODIGO · $(cat "$TMP/r.json")"
 grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
 grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
+
+# ── 2b · la celda: DONDE corre, del plano de control ─────────────────────────
+CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
+[ "$CODIGO" = "200" ] || falla "2b · celdas · http $CODIGO · $(cat "$TMP/r.json")"
+grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
+grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
+grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
+# ⛔ Zoe no es de acme: cero celdas, y el MISMO 200 que «no tiene celda» —
+#   decir cual revelaria que la organizacion existe a quien no es de ella.
+ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
+CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ZOE")
+[ "$CODIGO" = "200" ] || falla "2b · zoe · http $CODIGO"
+grep -q '"celdas":\[\]' "$TMP/r.json" || falla "2b · ⛔ ZOE VE LA CELDA DE ACME: $(cat "$TMP/r.json")"
+dice "2b · la celda, solo a los suyos"
 # ⭐ Y CÓMO SE LLAMA SU ÁRBOL, desde la `017`. Sin esto la columna seria de solo
 #   escritura: `fundar` la rellena y nadie comprueba que se pueda leer.
 grep -q '"t-acme/ontologia"' "$TMP/r.json" \

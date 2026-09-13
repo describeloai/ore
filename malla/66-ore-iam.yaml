@@ -73,6 +73,13 @@ spec:
             #   una base que nadie eligió.
             - name: IAM_URL
               valueFrom: { secretKeyRef: { name: iam-url, key: url } }
+            # La celda: DONDE va a correr lo que se funda. Es configuracion de
+            # este cluster —este manifiesto es la descripcion de este cluster—
+            # y por eso va aqui y no derivada de nada. 0024 ④ y la `025`.
+            - { name: ORE_CELDA,           value: ore-mesh }
+            - { name: ORE_CELDA_TIER,      value: compartido }
+            - { name: ORE_CELDA_PROVEEDOR, value: gcp }
+            - { name: ORE_CELDA_REGION,    value: europe-west1-b }
           args:
             - fundar
             - --organizacion

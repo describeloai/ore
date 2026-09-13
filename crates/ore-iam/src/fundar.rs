@@ -91,6 +91,27 @@ pub struct Peticion<'a> {
     /// que no es nuestro, así que el certificado pasa a depender de que
     /// **ellos** muevan un registro DNS. La `022` lo argumenta.
     pub entrada: Option<&'a str>,
+    /// Dónde va a correr. `None` ⇒ se funda igual, SIN celda, y se dice.
+    ///
+    /// ⭐ Es camino, no identidad — por eso no se deriva de `organizacion` como
+    /// el árbol o la llave: no hay nada en el nombre de un cliente que diga en
+    /// qué clúster vive. Sale de la configuración de la plataforma
+    /// (`ORE_CELDA*`), que es quien sabe dónde está corriendo esto.
+    ///
+    /// ⛔ Y sin ella NO se niega a fundar. Una organización sin celda es una
+    /// fila que la consola no puede pintar como clúster — que es exactamente lo
+    /// que la `025` comprueba al migrar—, pero negarse a fundar sería peor:
+    /// dejaría al cliente sin organización por un ajuste de plataforma.
+    pub celda: Option<Celda<'a>>,
+}
+
+/// Dónde corre el plano del árbol de una organización. Ver la `025` y la 0024.
+pub struct Celda<'a> {
+    pub nombre: &'a str,
+    /// `compartido` · `dedicado` · `byoc`. Lo comprueba la base, no esto.
+    pub tier: &'a str,
+    pub proveedor: &'a str,
+    pub region: &'a str,
 }
 
 /// Un nombre de dominio, y el alfabeto lo fija RFC 1123 y no nosotros.
@@ -338,6 +359,21 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         &[&persona, &org],
     )?;
 
+    // ── y la celda, en el mismo acto. Es la 0024 ④: el clúster es un hecho
+    //    del plano de control, y el momento en que se decide es éste.
+    let celda_id = match &p.celda {
+        Some(c) => {
+            let id = nuevo_id("cel");
+            tx.ejecutar(
+                "insert into iam.celda (id, organizacion, nombre, tier, proveedor, region)
+                 values ($1, $2, $3, $4, $5, $6)",
+                &[&id, &org, &c.nombre, &c.tier, &c.proveedor, &c.region],
+            )?;
+            Some(id)
+        }
+        None => None,
+    };
+
     tx.anotar(
         "organizacion:fundar",
         &org,
@@ -348,6 +384,13 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
             ("arbol", Json::s(&arbol)),
             ("kek", Json::s(&kek)),
             ("entrada", Json::s(&entrada)),
+            (
+                "celda",
+                match &p.celda {
+                    Some(c) => Json::s(format!("{}/{}/{}", c.tier, c.proveedor, c.nombre)),
+                    None => Json::s("ninguna"),
+                },
+            ),
         ]),
     )?;
     tx.confirmar()?;
@@ -366,6 +409,14 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
             Json::s(
                 "declarado, no creado: el repositorio lo aprovisiona quien puede salir a la red",
             ),
+        ),
+        (
+            "celda",
+            match celda_id {
+                Some(id) => Json::s(id),
+                // ⚠️ Y se dice. Una organizacion sin celda no la pinta la consola.
+                None => Json::s("ninguna: ni `--celda` ni `ORE_CELDA`"),
+            },
         ),
     ]))
 }

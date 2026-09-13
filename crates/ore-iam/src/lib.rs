@@ -143,6 +143,33 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     //   el `Gateway` compartido sirve sin coste por cliente; `--entrada` para el
     //   que traiga su dominio. ⛔ No es el alta: es el host, ver la `022`.
     let entrada = valor(args, "--entrada");
+    // ⭐ Y la celda: dónde va a correr. Configuración de plataforma, como el
+    //   `sub` del agente: `--celda` o `ORE_CELDA`, y con ella `ORE_CELDA_TIER`,
+    //   `ORE_CELDA_PROVEEDOR` y `ORE_CELDA_REGION`. Los cuatro o ninguno — una
+    //   celda a medias es peor que ninguna, porque parece entera.
+    let celda = valor(args, "--celda").or_else(|| std::env::var("ORE_CELDA").ok());
+    let celda_tier = valor(args, "--tier").or_else(|| std::env::var("ORE_CELDA_TIER").ok());
+    let celda_proveedor =
+        valor(args, "--proveedor").or_else(|| std::env::var("ORE_CELDA_PROVEEDOR").ok());
+    let celda_region = valor(args, "--region").or_else(|| std::env::var("ORE_CELDA_REGION").ok());
+    let celda = match (&celda, &celda_tier, &celda_proveedor, &celda_region) {
+        (Some(n), Some(t), Some(p), Some(r)) => Some(fundar::Celda {
+            nombre: n,
+            tier: t,
+            proveedor: p,
+            region: r,
+        }),
+        (None, None, None, None) => None,
+        _ => {
+            eprintln!(
+                "✗ la celda va entera o no va: `--celda`, `--tier`, `--proveedor` y `--region`"
+            );
+            eprintln!(
+                "  (o `ORE_CELDA`, `ORE_CELDA_TIER`, `ORE_CELDA_PROVEEDOR`, `ORE_CELDA_REGION`)."
+            );
+            return ExitCode::from(64);
+        }
+    };
 
     let mut c = match base::conectar(url) {
         Ok(c) => c,
@@ -183,6 +210,7 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             arbol: arbol.as_deref(),
             kek: kek.as_deref(),
             entrada: entrada.as_deref(),
+            celda,
         },
     ) {
         Ok(j) => {
