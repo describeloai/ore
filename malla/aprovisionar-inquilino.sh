@@ -636,9 +636,151 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "⑦ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
+paso "⑦ EL AGENTE — un cliente de Keycloak por inquilino, no uno copiado a mano"
+# ══════════════════════════════════════════════════════════════════════════
+# ── ⛔⛔ LO QUE HABIA, MEDIDO ──────────────────────────────────────────────
+#
+# `ore-agente` era UN cliente de Keycloak para todos los inquilinos, creado a
+# mano con `kcadm` el 8 de septiembre, y su secreto vivia en un `Secret`
+# `idp-agente` puesto con `kubectl` en `t-demo` y COPIADO a mano a `t-prueba`.
+# La 024 lo dejo dicho —«un sujeto para todos, a un grant de todas»— y
+# `medida-el-acoplamiento-del-inquilino.py` lo saco como uno de los cuatro
+# acoplamientos sin respuesta. Un inquilino nuevo arrancaba con sus Jobs de
+# catalogo muriendo con 401 hasta que alguien copiara el `Secret`.
+#
+# ── LO QUE HACE ESTE PASO ─────────────────────────────────────────────────
+#
+#   1. un cliente `ore-agente-<n>` en el realm, con LA MISMA receta que el
+#      original —cuenta de servicio, sin flujos, testigo de 300 s, audiencia
+#      `ore-serve`, claim `rubix_tipo=agente`—, medida por la API de admin
+#   2. su secreto al almacen como `t-<n>-agente-secreto` (y el clientId como
+#      `t-<n>-agente-cliente`, al lado, para que el init los traiga juntos)
+#   3. `ore-driver-<n>` puede leerlos, y nadie mas
+#   4. y el `sub` de su cuenta de servicio, que es lo que `ore-iam agente`
+#      necesita — se imprime en ⑧, porque registrarlo es un `insert` en `iam`
+#      y este papel no escribe ahi (la 023)
+#
+# ── LA CREDENCIAL DE ADMIN, por el entorno, como `FORJA_ADMIN` ────────────
+#
+# `IDP_ADMIN_USER` / `IDP_ADMIN_PASS`. Dentro del cluster, de `/puesto/idp-admin`
+# si el Job lo trae; y si no hay ninguna, este paso NO se salta en silencio:
+# lo dice y sigue, porque un inquilino que ya existe no puede dejar de
+# converger por un ajuste que falta en el aprovisionador.
+if [ -n "${DENTRO:-}" ] && [ -f /puesto/idp-admin ]; then
+  IDP_ADMIN_USER="${IDP_ADMIN_USER:-admin}"
+  IDP_ADMIN_PASS="$(cat /puesto/idp-admin)"
+fi
+REALM="${REALM:-rubix-dev}"
+AGENTE="ore-agente-$NOMBRE"
+AGENTE_SUB=""
+if [ -z "${IDP_ADMIN_PASS:-}" ] && [ -z "$SECO" ]; then
+  echo "  ⚠ sin \`IDP_ADMIN_PASS\`: no se crea el agente \`$AGENTE\`. Sin el, los Jobs de"
+  echo "    catalogo de \`$NOMBRE\` no tienen con que pedir un testigo. Se pasa por el entorno."
+else
+  # ⭐ DENTRO se habla con el IdP por su `Service`; FUERA por un tunel, porque
+  #   la API de admin no tiene por que estar en la puerta publica. Es la misma
+  #   figura que la forja.
+  if [ -n "${DENTRO:-}" ]; then
+    IDP_BASE="http://idp-service.identidad.svc.cluster.local:8080"
+  else
+    IDP_BASE="http://localhost:3130"
+    if [ -z "$SECO" ]; then
+      kubectl port-forward -n identidad svc/idp-service 3130:8080 >/dev/null 2>&1 &
+      TUNEL_IDP=$!
+      trap 'kill "$TUNEL_IDP" 2>/dev/null; [ -n "${TUNEL:-}" ] && kill "$TUNEL" 2>/dev/null; rm -rf "$TMP"' EXIT
+      for _ in 1 2 3 4 5 6 7 8; do
+        curl -sS -o /dev/null "$IDP_BASE/realms/master" 2>/dev/null && break
+        sleep 1
+      done
+    fi
+  fi
+  kc() { # <metodo> <camino> [cuerpo] — contra la API de admin, con el testigo en $TMP/kc
+    local m="$1" c="$2" d="${3:-}"
+    curl -sS -X "$m" -H "Authorization: Bearer $(cat "$TMP/kc")" -H 'Content-Type: application/json' \
+      ${d:+--data "$d"} "$IDP_BASE/admin/realms/$REALM$c" 2>/dev/null
+  }
+  if [ -n "$SECO" ]; then
+    haria "crear el cliente \`$AGENTE\` en \`$REALM\` y guardar su secreto en el almacen"
+  else
+    # El testigo de admin, a un fichero de $TMP y nunca a una variable que se
+    # exporte: `curl` lo lee de ahi en cada llamada.
+    curl -sSf -X POST "$IDP_BASE/realms/master/protocol/openid-connect/token" \
+      -d grant_type=password -d client_id=admin-cli \
+      -d "username=$IDP_ADMIN_USER" --data-urlencode "password=$IDP_ADMIN_PASS" 2>/dev/null \
+      | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["access_token"])' > "$TMP/kc" \
+      || falla "el IdP no dio testigo de admin: usuario o clave incorrectos, o el tunel no abrio"
+
+    # 1 · el cliente, idempotente por su `clientId`.
+    ID=$(kc GET "/clients?clientId=$AGENTE" | "$PY" -c 'import json,sys;l=json.load(sys.stdin);print(l[0]["id"] if l else "")')
+    if [ -n "$ID" ]; then
+      ya "el cliente \`$AGENTE\`"
+    else
+      COD=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $(cat "$TMP/kc")" \
+        -H 'Content-Type: application/json' "$IDP_BASE/admin/realms/$REALM/clients" --data @- <<JSON
+{"clientId":"$AGENTE","name":"agente de $NOMBRE","description":"El sujeto de maquina de $NOMBRE: los Jobs de catalogo piden como el. Lo crea el aprovisionador.",
+ "enabled":true,"protocol":"openid-connect","publicClient":false,"serviceAccountsEnabled":true,
+ "standardFlowEnabled":false,"implicitFlowEnabled":false,"directAccessGrantsEnabled":false,
+ "attributes":{"access.token.lifespan":"300"},
+ "protocolMappers":[
+   {"name":"audiencia-ore-serve","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper",
+    "config":{"included.client.audience":"ore-serve","access.token.claim":"true","id.token.claim":"false"}},
+   {"name":"rubix-tipo-agente","protocol":"openid-connect","protocolMapper":"oidc-hardcoded-claim-mapper",
+    "config":{"claim.name":"rubix_tipo","claim.value":"agente","jsonType.label":"String","access.token.claim":"true","id.token.claim":"false"}}
+ ]}
+JSON
+)
+      [ "$COD" = "201" ] || falla "el IdP contesto $COD al crear \`$AGENTE\`"
+      ID=$(kc GET "/clients?clientId=$AGENTE" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
+      hecho "cliente \`$AGENTE\` creado, con la receta de \`ore-agente\`"
+    fi
+
+    # 4 · el `sub`: la cuenta de servicio del cliente.
+    AGENTE_SUB=$(kc GET "/clients/$ID/service-account-user" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+    [ -n "$AGENTE_SUB" ] || falla "el cliente no tiene cuenta de servicio"
+
+    # 2 · el secreto, al almacen. Se compara con lo que hay antes de anadir una
+    #     version: anadir una igual en cada convergencia seria deriva con forma
+    #     de historial.
+    kc GET "/clients/$ID/client-secret" | "$PY" -c 'import json,sys;sys.stdout.write(json.load(sys.stdin)["value"])' > "$TMP/agente-secreto"
+    printf '%s' "$AGENTE" > "$TMP/agente-cliente"
+    for parte in cliente secreto; do
+      S="$NS-agente-$parte"
+      if ! "$GCLOUD" secrets describe "$S" --format="value(name)" >/dev/null 2>&1; then
+        "$GCLOUD" secrets create "$S" --replication-policy=user-managed --locations="$LUGAR" \
+          --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 || true
+      fi
+      if "$GCLOUD" secrets versions access latest --secret="$S" --out-file="$(ruta "$TMP/actual")" >/dev/null 2>&1 \
+         && cmp -s "$TMP/actual" "$TMP/agente-$parte"; then
+        ya "el almacen tiene el $parte del agente"
+      else
+        "$GCLOUD" secrets versions add "$S" --data-file="$(ruta "$TMP/agente-$parte")" >/dev/null \
+          && hecho "$parte del agente guardado en el almacen, y NO en un \`Secret\`"
+      fi
+      # 3 · quien lo lee: el driver de ESTE inquilino.
+      correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
+        --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+        --role=roles/secretmanager.secretAccessor \
+        && hecho "\`ore-driver-$NOMBRE\` puede leer el $parte"
+    done
+    rm -f "$TMP/kc" "$TMP/agente-secreto" "$TMP/actual"
+    hecho "agente \`$AGENTE\` · sub $AGENTE_SUB"
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+paso "⑧ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
 # ══════════════════════════════════════════════════════════════════════════
 cat <<FIN
+
+  ⛔ 0 · EL AGENTE EN \`iam\`. Este guion creo el cliente de Keycloak y guardo su
+       secreto, y NO puede registrarlo: es un \`insert\` en \`iam.agente\`, y el
+       papel de la 023 no escribe ahi. Lo registra un Job de operador, como
+       \`fundar\`, y hereda \`usar\` sobre los secretos que ya haya:
+
+         kubectl -n identidad create job agente-$NOMBRE --image=<ore-iam:main> -- \\
+           ore-iam agente --organizacion $NOMBRE \\
+             --emisor https://login.paladio.io/realms/$REALM \\
+             --sub ${AGENTE_SUB:-<el sub que imprime el paso ⑦>} --nombre $AGENTE
 
   ✓ 1 · LA CLAVE DE DESPLIEGUE. **Ya no hay ninguna.** Era el ultimo permiso de
        cluster del que este guion no podia librarse —\`source-controller\` la lee

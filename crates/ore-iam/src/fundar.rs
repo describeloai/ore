@@ -160,12 +160,16 @@ fn arbol_valido(s: &str) -> bool {
 /// pequeño y lo que decide no lo es: crear un sujeto al que despues alguien
 /// concede `usar` sobre un secreto.
 ///
-/// ⛔ NO concede nada. Registrar y conceder son dos actos, y fundirlos haria que
-///   dar de alta un Job le diera acceso — que es exactamente lo que la `007`
-///   evita al separar el sujeto de la concesion.
+/// ⛔ NO crea autoridad nueva. Registrar y conceder siguen siendo dos actos
+///   —la `007`— y esto no concede nada que una persona tuviera que decidir.
+///   Lo UNICO que hace ademas de registrar es extender al agente lo que el
+///   custodio ya da a TODO agente de la organizacion al emitir un secreto:
+///   `usar`. Un agente que llega despues de emitir recibe lo mismo que habria
+///   recibido de estar antes, y nada mas. Ver el bloque de abajo.
 ///
 /// ⭐ Es idempotente: registrar dos veces devuelve el mismo agente. Un guion que
-///   converge tiene que poder llamarlo sin mirar si ya lo hizo.
+///   converge tiene que poder llamarlo sin mirar si ya lo hizo. Y cada vez
+///   hereda lo que le falte, asi que tambien sirve para ponerse al dia.
 pub fn registrar_agente(
     c: &mut Client,
     org: &str,
@@ -194,47 +198,44 @@ pub fn registrar_agente(
         .ok_or_else(|| format!("`{org}` no es ninguna organizacion"))?
         .get(0);
 
-    if let Some(f) = tx.uno(
+    // ¿Ya estaba? Entonces no se vuelve a escribir — pero SÍ hereda lo que le
+    // falte (abajo): un agente registrado antes de que hubiera secretos, o antes
+    // de que esta regla existiera, tiene que poder usarlos igual.
+    let (id, ya) = match tx.uno(
         "select id from iam.agente where emisor = $1 and sub = $2 and organizacion = $3",
         &[&emisor, &sub, &org_id],
     )? {
-        let id: String = f.get(0);
-        // ⛔ NO se confirma: `Tx` se niega a hacerlo si nadie anoto, y aqui no
-        //   hay nada que anotar porque no ha cambiado nada. Leer no es un acto.
-        //   La transaccion se deshace al soltarse, que es lo correcto para una
-        //   lectura.
-        return Ok(Json::obj([
-            ("agente", Json::s(id)),
-            ("organizacion", Json::s(org_id)),
-            ("ya", Json::Bool(true)),
-        ]));
-    }
+        Some(f) => (f.get::<_, String>(0), true),
+        None => {
+            let id = nuevo_id("age");
+            tx.ejecutar(
+                "insert into iam.agente (id, emisor, sub, organizacion, nombre)
+                 values ($1, $2, $3, $4, $5)",
+                &[&id, &emisor, &sub, &org_id, &nombre],
+            )?;
+            (id, false)
+        }
+    };
 
-    let id = nuevo_id("age");
-    tx.ejecutar(
-        "insert into iam.agente (id, emisor, sub, organizacion, nombre)
-         values ($1, $2, $3, $4, $5)",
-        &[&id, &emisor, &sub, &org_id, &nombre],
-    )?;
-
-    // ── ⭐⭐ Y HEREDA `usar` SOBRE LOS SECRETOS QUE YA HAY ──────────────────
+    // ── ⭐⭐ Y HEREDA `usar` SOBRE LOS SECRETOS QUE LA ORGANIZACION TIENE ─────
     //
-    // El custodio concede `usar` a TODOS los agentes de la organizacion en el
-    // momento de emitir un secreto (`ore-cofre`, al emitir). Un agente que
-    // llega DESPUES no esta en esa lista: los secretos ya emitidos —las
-    // credenciales de cada fuente— no le alcanzan, y su primer Job de catalogo
-    // moriria con un 403 del custodio que nadie entenderia.
+    // El custodio concede `usar` a los agentes de la organizacion AL EMITIR. Un
+    // agente que llega DESPUES no esta en esa lista: los secretos ya emitidos
+    // —las credenciales de cada fuente— no le alcanzan, y su primer Job de
+    // catalogo moriria con un 403 del custodio que nadie entenderia.
     //
-    // ⇒ Al registrarse, copia las concesiones `usar` vivas de sus hermanos —los
-    //   agentes que la organizacion ya tenia— recurso a recurso. Es la misma
-    //   regla que el custodio aplica al emitir, extendida hacia atras: un
-    //   agente de la organizacion puede usar sus secretos, los que hay y los
-    //   que vengan.
+    // ⇒ Los secretos de la organizacion se VEN desde `iam.concesion`: todo
+    //   secreto nace con una concesion `owner` a quien lo emitio, asi que
+    //   «cada `recurso` `secreto/%` con una concesion viva en esta
+    //   organizacion» es exactamente su lista de secretos. Se concede `usar`
+    //   sobre cada uno que le falte, con `concedio` = quien lo emitio.
     //
-    // ⚠️ Se COPIA de `iam.concesion` y no se lee `cofre.secreto`: este papel no
-    //   alcanza el esquema `cofre` (la `020`), y no le hace falta — el recurso
-    //   ya esta escrito en cada concesion. Y `concedio` se hereda tambien: la
-    //   persona que emitio sigue siendo quien concedio.
+    // ⛔ Y no «de los agentes que ya habia», que fue la primera version y CI
+    //   la tumbo: el PRIMER agente de una organizacion con fuentes no tiene
+    //   hermanos, y se quedaba con cero.
+    //
+    // ⚠️ Se lee `iam.concesion` y no `cofre.secreto`: este papel no alcanza el
+    //   esquema `cofre` (la `020`), y no le hace falta.
     //
     // ⛔ Lo que esto NO arregla, y se dice: la concesion sigue nombrando a un
     //   agente y no a «los agentes de la organizacion». Es el patron de nombrar
@@ -243,12 +244,11 @@ pub fn registrar_agente(
     let heredadas = tx.filas(
         "select distinct on (c.recurso) c.recurso, c.concedio
            from iam.concesion_viva c
-           join iam.agente a on a.id = c.sujeto
-          where a.organizacion = $1 and a.id <> $2
-            and c.rol = 'usar' and c.recurso like 'secreto/%'
+          where c.organizacion = $1
+            and c.recurso like 'secreto/%'
             and not exists (select 1 from iam.concesion_viva h
                              where h.sujeto = $2 and h.recurso = c.recurso and h.rol = 'usar')
-          order by c.recurso, c.desde",
+          order by c.recurso, (c.rol = 'owner') desc, c.desde",
         &[&org_id, &id],
     )?;
     for h in &heredadas {
@@ -261,11 +261,27 @@ pub fn registrar_agente(
         )?;
     }
 
+    if ya && heredadas.is_empty() {
+        // ⛔ NO se confirma: `Tx` se niega a hacerlo si nadie anoto, y aqui no
+        //   hay nada que anotar porque no ha cambiado nada. Leer no es un acto.
+        //   La transaccion se deshace al soltarse, que es lo correcto.
+        return Ok(Json::obj([
+            ("agente", Json::s(id)),
+            ("organizacion", Json::s(org_id)),
+            ("ya", Json::Bool(true)),
+            ("secretos_heredados", Json::Int(0)),
+        ]));
+    }
+
     // ⛔ Y queda escrito. `Tx` se niega a confirmar si nadie anoto, y aqui esa
     //   regla vale doble: registrar un sujeto de maquina sin dejar rastro seria
     //   crear autoridad en silencio.
     tx.anotar(
-        "agente:registrar",
+        if ya {
+            "agente:heredar"
+        } else {
+            "agente:registrar"
+        },
         &id,
         Json::obj([
             ("organizacion", Json::s(&org_id)),
@@ -278,10 +294,11 @@ pub fn registrar_agente(
     Ok(Json::obj([
         ("agente", Json::s(id)),
         ("organizacion", Json::s(org_id)),
-        ("ya", Json::Bool(false)),
-        // Cuantos secretos ya emitidos puede usar desde ya. Se dice: un cero
-        // aqui en una organizacion con fuentes es la senal de que algo no
-        // cuadra, y un numero es la prueba de que el Job va a poder pedir.
+        ("ya", Json::Bool(ya)),
+        // Cuantos secretos puede usar desde ya que antes no podia. Un cero en
+        // una organizacion con fuentes y sin haberlo corrido antes es la senal
+        // de que algo no cuadra; un numero es la prueba de que el Job va a
+        // poder pedir.
         ("secretos_heredados", Json::Int(heredadas.len() as i64)),
     ]))
 }

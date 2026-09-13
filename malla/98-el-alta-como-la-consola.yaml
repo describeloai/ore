@@ -38,6 +38,35 @@ spec:
         ore.dev/tenant: demo
     spec:
       restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+      # El agente, del almacen: es el cliente de Keycloak de ESTE inquilino, que
+      # el aprovisionador crea en su paso ⑦. Mismo init que `44-el-catalogo`.
+      initContainers:
+        - name: traer-el-agente
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \\
+                  --secret=t-demo-agente-$p --out-file=/puesto/agente-$p
+                chmod 0400 /puesto/agente-$p
+              done
+              echo "agente puesto · $(cat /puesto/agente-cliente)"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
       containers:
         - name: consola
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -47,10 +76,10 @@ spec:
             - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             # El realm de DESARROLLO, el mismo que valida `ore-serve`.
             - { name: REALM, value: "rubix-dev" }
-            - name: CLIENTE
-              valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
-            - name: SECRETO
-              valueFrom: { secretKeyRef: { name: idp-agente, key: secreto } }
+            # ⛔ Ya no hay `Secret` `idp-agente`: el agente vive en el almacen por
+            #   inquilino (aprovisionador, paso ⑦). Este Job de medida lo lee
+            #   como el de catalogo, con un init. Ver `44-el-catalogo.yaml`.
+          volumeMounts: [{ name: puesto, mountPath: /puesto, readOnly: true }]
           resources:
             requests: { cpu: "50m", memory: "64Mi" }
             limits: { cpu: "500m", memory: "256Mi" }
@@ -58,6 +87,7 @@ spec:
           args:
             - |
               set -e
+              CLIENTE=$(cat /puesto/agente-cliente); SECRETO=$(cat /puesto/agente-secreto)
               curl -sSf -X POST "$IDP/realms/$REALM/protocol/openid-connect/token" \
                 -d grant_type=client_credentials -d "client_id=$CLIENTE" \
                 -d "client_secret=$SECRETO" -o /tmp/t.json

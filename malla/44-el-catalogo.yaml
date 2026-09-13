@@ -134,6 +134,16 @@ spec:
                 --secret=t-demo-forja-token --out-file=/puesto/forja
               chmod 0400 /puesto/forja
               echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+              # ⭐⭐ Y EL AGENTE, por el mismo camino. Hasta el 2026-09-13 venia de
+              #   un `Secret` `idp-agente` puesto a mano y copiado entre
+              #   inquilinos; ahora es el cliente de Keycloak de ESTE inquilino,
+              #   que el aprovisionador crea en su paso ⑦ y deja en el almacen.
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \
+                  --secret=t-demo-agente-$p --out-file=/puesto/agente-$p
+                chmod 0400 /puesto/agente-$p
+              done
+              echo "agente puesto · $(cat /puesto/agente-cliente)"
           resources:
             requests: {cpu: "50m", memory: 128Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -183,10 +193,6 @@ spec:
             - { name: EMISOR, value: "https://login.paladio.io" }
             - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             - { name: REALM, value: "rubix-dev" }
-            - name: CLIENTE
-              valueFrom: { secretKeyRef: { name: idp-agente, key: cliente } }
-            - name: SECRETO
-              valueFrom: { secretKeyRef: { name: idp-agente, key: secreto } }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -260,6 +266,9 @@ spec:
               #   hablar con otro emisor, no.
               DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')
               [ "$DICE" = "$EMISOR/realms/$REALM" ] || { echo "✗ en $DIRECCION contesta \`$DICE\` y esperabamos \`$EMISOR/realms/$REALM\`. No se toca nada."; exit 1; }
+              # El agente, de los ficheros que trajo el init — no de una variable
+              # de entorno, que sale en `kubectl describe pod`.
+              CLIENTE=$(cat /puesto/agente-cliente); SECRETO=$(cat /puesto/agente-secreto)
               TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token"                 -d grant_type=client_credentials -d "client_id=$CLIENTE"                 -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
               C=$(curl -s -o /trabajo/s.json -w '%{http_code}'                 -H "authorization: Bearer $TOK"                 "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$FUENTE")
               [ "$C" = "200" ] || { echo "✗ el custodio contesto $C"; head -c 200 /trabajo/s.json; exit 1; }
