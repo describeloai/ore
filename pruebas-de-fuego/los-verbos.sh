@@ -250,19 +250,6 @@ CODIGO=$(pide GET /organizaciones "$ADA")
 grep -q '"acme"' "$TMP/r.json" || falla "2 · no ve la suya"
 grep -q '"otra"' "$TMP/r.json" && falla "2 · ⛔ VE LA DE OTRO. Eso es una fuga con forma de comodidad"
 
-# ── 2b · la celda: DONDE corre, del plano de control ─────────────────────────
-CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
-[ "$CODIGO" = "200" ] || falla "2b · celdas · http $CODIGO · $(cat "$TMP/r.json")"
-grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
-grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
-grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
-# ⛔ Zoe no es de acme: cero celdas, y el MISMO 200 que «no tiene celda» —
-#   decir cual revelaria que la organizacion existe a quien no es de ella.
-ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
-CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ZOE")
-[ "$CODIGO" = "200" ] || falla "2b · zoe · http $CODIGO"
-grep -q '"celdas":\[\]' "$TMP/r.json" || falla "2b · ⛔ ZOE VE LA CELDA DE ACME: $(cat "$TMP/r.json")"
-dice "2b · la celda, solo a los suyos"
 # ⭐ Y CÓMO SE LLAMA SU ÁRBOL, desde la `017`. Sin esto la columna seria de solo
 #   escritura: `fundar` la rellena y nadie comprueba que se pueda leer.
 grep -q '"t-acme/ontologia"' "$TMP/r.json" \
@@ -278,6 +265,20 @@ grep -q '"t-acme/ontologia"' "$TMP/r.json" \
 grep -q '"acme.ore.paladio.io"' "$TMP/r.json" \
   || falla "2 · no dice por donde se entra a su arbol · $(cat "$TMP/r.json")"
 dice '2 · ve `acme` con su arbol y su puerta, y NO ve `otra`'
+
+# ── 2b · la celda: DONDE corre, del plano de control ─────────────────────────
+CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
+[ "$CODIGO" = "200" ] || falla "2b · celdas · http $CODIGO · $(cat "$TMP/r.json")"
+grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
+grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
+grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
+# ⛔ Zoe no es de acme: cero celdas, y el MISMO 200 que «no tiene celda» —
+#   decir cual revelaria que la organizacion existe a quien no es de ella.
+ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
+CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ZOE")
+[ "$CODIGO" = "200" ] || falla "2b · zoe · http $CODIGO"
+grep -q '"celdas":\[\]' "$TMP/r.json" || falla "2b · ⛔ ZOE VE LA CELDA DE ACME: $(cat "$TMP/r.json")"
+dice "2b · la celda, solo a los suyos"
 
 # ── 3 · invitar, y el vale sale UNA vez ─────────────────────────────────────
 [ "$(pide POST "/organizaciones/$ORG/invitaciones" "$ADA" \
