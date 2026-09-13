@@ -216,6 +216,51 @@ pub fn registrar_agente(
          values ($1, $2, $3, $4, $5)",
         &[&id, &emisor, &sub, &org_id, &nombre],
     )?;
+
+    // ── ⭐⭐ Y HEREDA `usar` SOBRE LOS SECRETOS QUE YA HAY ──────────────────
+    //
+    // El custodio concede `usar` a TODOS los agentes de la organizacion en el
+    // momento de emitir un secreto (`ore-cofre`, al emitir). Un agente que
+    // llega DESPUES no esta en esa lista: los secretos ya emitidos —las
+    // credenciales de cada fuente— no le alcanzan, y su primer Job de catalogo
+    // moriria con un 403 del custodio que nadie entenderia.
+    //
+    // ⇒ Al registrarse, copia las concesiones `usar` vivas de sus hermanos —los
+    //   agentes que la organizacion ya tenia— recurso a recurso. Es la misma
+    //   regla que el custodio aplica al emitir, extendida hacia atras: un
+    //   agente de la organizacion puede usar sus secretos, los que hay y los
+    //   que vengan.
+    //
+    // ⚠️ Se COPIA de `iam.concesion` y no se lee `cofre.secreto`: este papel no
+    //   alcanza el esquema `cofre` (la `020`), y no le hace falta — el recurso
+    //   ya esta escrito en cada concesion. Y `concedio` se hereda tambien: la
+    //   persona que emitio sigue siendo quien concedio.
+    //
+    // ⛔ Lo que esto NO arregla, y se dice: la concesion sigue nombrando a un
+    //   agente y no a «los agentes de la organizacion». Es el patron de nombrar
+    //   la instancia en vez de la clase, y esta copia es el precio de no haber
+    //   cambiado el modelo de concesion aqui.
+    let heredadas = tx.filas(
+        "select distinct on (c.recurso) c.recurso, c.concedio
+           from iam.concesion_viva c
+           join iam.agente a on a.id = c.sujeto
+          where a.organizacion = $1 and a.id <> $2
+            and c.rol = 'usar' and c.recurso like 'secreto/%'
+            and not exists (select 1 from iam.concesion_viva h
+                             where h.sujeto = $2 and h.recurso = c.recurso and h.rol = 'usar')
+          order by c.recurso, c.desde",
+        &[&org_id, &id],
+    )?;
+    for h in &heredadas {
+        let recurso: String = h.get(0);
+        let concedio: String = h.get(1);
+        tx.ejecutar(
+            "insert into iam.concesion (id, sujeto, recurso, rol, concedio, organizacion)
+             values ($1, $2, $3, 'usar', $4, $5)",
+            &[&nuevo_id("con"), &id, &recurso, &concedio, &org_id],
+        )?;
+    }
+
     // ⛔ Y queda escrito. `Tx` se niega a confirmar si nadie anoto, y aqui esa
     //   regla vale doble: registrar un sujeto de maquina sin dejar rastro seria
     //   crear autoridad en silencio.
@@ -226,6 +271,7 @@ pub fn registrar_agente(
             ("organizacion", Json::s(&org_id)),
             ("emisor", Json::s(emisor)),
             ("sub", Json::s(sub)),
+            ("heredadas", Json::Int(heredadas.len() as i64)),
         ]),
     )?;
     tx.confirmar()?;
@@ -233,6 +279,10 @@ pub fn registrar_agente(
         ("agente", Json::s(id)),
         ("organizacion", Json::s(org_id)),
         ("ya", Json::Bool(false)),
+        // Cuantos secretos ya emitidos puede usar desde ya. Se dice: un cero
+        // aqui en una organizacion con fuentes es la senal de que algo no
+        // cuadra, y un numero es la prueba de que el Job va a poder pedir.
+        ("secretos_heredados", Json::Int(heredadas.len() as i64)),
     ]))
 }
 

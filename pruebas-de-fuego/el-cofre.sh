@@ -265,6 +265,41 @@ dice "4 · listado · nombres y ni un valor"
 [ "$(campo rol)" = "owner" ] || falla "5 · deberia resolver como \`owner\`: $(campo rol)"
 dice "5 · resuelto · el mismo valor que entro · con rol \`$(campo rol)\`"
 
+# ── 5c · ⭐⭐ UN AGENTE QUE LLEGA DESPUES HEREDA `usar` ──────────────────────
+#
+# El custodio concede `usar` a los agentes de la organizacion AL EMITIR. Un
+# agente registrado despues —un cliente de Keycloak por inquilino, que es lo
+# que la 024 dejo pedido— no estaba en esa lista, y su primer Job moriria con
+# un 403 sobre `pg-produccion`, que ya existia. `ore-iam agente` copia ahora las
+# concesiones vivas de sus hermanos al registrarse.
+#
+# `maquina:uno` llega DESPUES del secreto; `maquina:dos` llega ANTES del
+# segundo. Los dos tienen que poder resolver los dos.
+"$IAM" agente --organizacion acme --emisor "$EMISOR" --sub "maquina:uno" --nombre "uno" \
+  > "$TMP/agente.txt" 2>&1 || falla "5c · no se registro el agente: $(cat "$TMP/agente.txt")"
+grep -q '"secretos_heredados": 1' "$TMP/agente.txt" \
+  || falla "5c · el agente no heredo el secreto que ya habia: $(cat "$TMP/agente.txt")"
+UNO=$(acunar "maquina:uno" "")
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$UNO")" = "200" ] \
+  || falla "5c · el agente tardio NO resuelve lo emitido antes: $(cat "$TMP/r.json")"
+[ "$(campo rol)" = "usar" ] || falla "5c · deberia resolver como \`usar\`: $(campo rol)"
+
+"$IAM" agente --organizacion acme --emisor "$EMISOR" --sub "maquina:dos" --nombre "dos" \
+  > "$TMP/agente.txt" 2>&1 || falla "5c · no se registro el segundo agente"
+CODIGO=$(pide POST "/organizaciones/$ORG/secretos" "$ADA" \
+  '{"nombre":"pg-lectura","clase":"conexion","valor":"postgres://r:o@db/x"}')
+[ "$CODIGO" = "200" ] || falla "5c · no se pudo emitir el segundo · $CODIGO"
+DOS=$(acunar "maquina:dos" "")
+for A in "$UNO" "$DOS"; do
+  [ "$(pide GET "/organizaciones/$ORG/secretos/pg-lectura" "$A")" = "200" ] \
+    || falla "5c · un agente no resuelve el secreto emitido con los dos registrados: $(cat "$TMP/r.json")"
+done
+# ⛔ Y de otra organizacion, nada: el agente de `acme` no toca lo de `otra`.
+OTRA=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='otra'")
+[ "$(pide GET "/organizaciones/$OTRA/secretos/pg-produccion" "$UNO")" != "200" ] \
+  || falla "5c · ⛔ EL AGENTE DE ACME RESUELVE EN OTRA"
+dice "5c · el agente tardio hereda \`usar\`, el temprano lo recibe al emitir, y ninguno cruza"
+
 # ── 5b · ⭐⭐ Y POR NOMBRE, QUE ES COMO LLAMAN LOS CLIENTES ──────────────────
 #
 # ⛔ Esta comprobacion faltaba, y su ausencia costo el primer secreto que este
