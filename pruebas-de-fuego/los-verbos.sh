@@ -194,7 +194,7 @@ export IAM_URL="$URL_APP"
 #   que la 0024 ④ exige — que la celda de una organizacion no la vea otra.
 "$IAM" fundar --organizacion acme --emisor "$EMISOR" --sub "persona:ada" \
   --correo "ada@paladio.io" \
-  --celda ore-prueba --tier compartido --proveedor gcp --region europe-west1-b \
+  --celda ore-prueba --tier compartido --proveedor gcp --region europe-west1-b --puerta ore-prueba.ore.paladio.io \
   > "$TMP/fundar.txt" 2>&1 \
   || falla "\`fundar acme\` fallo: $(tail -3 "$TMP/fundar.txt")"
 grep -q '"celda": "cel_' "$TMP/fundar.txt" || falla "fundar acme no devolvio su celda: $(cat "$TMP/fundar.txt")"
@@ -270,6 +270,8 @@ dice '2 · ve `acme` con su arbol y su puerta, y NO ve `otra`'
 CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
 [ "$CODIGO" = "200" ] || falla "2b · celdas · http $CODIGO · $(cat "$TMP/r.json")"
 grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
+# ⭐ Y la celda dice su PUERTA (027): es lo que la consola coteja contra el DNS.
+grep -q '"puerta":"ore-prueba.ore.paladio.io"' "$TMP/r.json" || falla "2b · la celda no dice su puerta: $(cat "$TMP/r.json")"
 grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
 grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
 # ⭐ Y el tier DENTRO, desde la `026`: titulo, promesa y la cuota del compartido.

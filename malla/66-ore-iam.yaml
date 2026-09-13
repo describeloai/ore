@@ -80,6 +80,9 @@ spec:
             - { name: ORE_CELDA_TIER,      value: compartido }
             - { name: ORE_CELDA_PROVEEDOR, value: gcp }
             - { name: ORE_CELDA_REGION,    value: europe-west1-b }
+            # El NOMBRE de la puerta de la celda (027): a lo que resuelve toda
+            # entrada `<n>.ore.paladio.io` hoy, por el comodín. La IP no va aquí.
+            - { name: ORE_CELDA_PUERTA,    value: ore-mesh.ore.paladio.io }
           args:
             - fundar
             - --organizacion

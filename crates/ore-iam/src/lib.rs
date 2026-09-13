@@ -145,27 +145,36 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     let entrada = valor(args, "--entrada");
     // ⭐ Y la celda: dónde va a correr. Configuración de plataforma, como el
     //   `sub` del agente: `--celda` o `ORE_CELDA`, y con ella `ORE_CELDA_TIER`,
-    //   `ORE_CELDA_PROVEEDOR` y `ORE_CELDA_REGION`. Los cuatro o ninguno — una
-    //   celda a medias es peor que ninguna, porque parece entera.
+    //   `ORE_CELDA_PROVEEDOR`, `ORE_CELDA_REGION` y, desde la `027`,
+    //   `ORE_CELDA_PUERTA`. Los cinco o ninguno — una celda a medias es peor
+    //   que ninguna, porque parece entera.
     let celda = valor(args, "--celda").or_else(|| std::env::var("ORE_CELDA").ok());
     let celda_tier = valor(args, "--tier").or_else(|| std::env::var("ORE_CELDA_TIER").ok());
     let celda_proveedor =
         valor(args, "--proveedor").or_else(|| std::env::var("ORE_CELDA_PROVEEDOR").ok());
     let celda_region = valor(args, "--region").or_else(|| std::env::var("ORE_CELDA_REGION").ok());
-    let celda = match (&celda, &celda_tier, &celda_proveedor, &celda_region) {
-        (Some(n), Some(t), Some(p), Some(r)) => Some(fundar::Celda {
+    let celda_puerta = valor(args, "--puerta").or_else(|| std::env::var("ORE_CELDA_PUERTA").ok());
+    let celda = match (
+        &celda,
+        &celda_tier,
+        &celda_proveedor,
+        &celda_region,
+        &celda_puerta,
+    ) {
+        (Some(n), Some(t), Some(p), Some(r), Some(pu)) => Some(fundar::Celda {
             nombre: n,
             tier: t,
             proveedor: p,
             region: r,
+            puerta: pu,
         }),
-        (None, None, None, None) => None,
+        (None, None, None, None, None) => None,
         _ => {
             eprintln!(
-                "✗ la celda va entera o no va: `--celda`, `--tier`, `--proveedor` y `--region`"
+                "✗ la celda va entera o no va: `--celda`, `--tier`, `--proveedor`, `--region` y `--puerta`"
             );
             eprintln!(
-                "  (o `ORE_CELDA`, `ORE_CELDA_TIER`, `ORE_CELDA_PROVEEDOR`, `ORE_CELDA_REGION`)."
+                "  (o `ORE_CELDA`, `ORE_CELDA_TIER`, `ORE_CELDA_PROVEEDOR`, `ORE_CELDA_REGION`, `ORE_CELDA_PUERTA`)."
             );
             return ExitCode::from(64);
         }

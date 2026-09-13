@@ -247,8 +247,10 @@ promesa de Redpanda —sin nodos, pago por uso— y sus cuotas dichas (`Resource
 
 **E3 · Nuestro clúster como primer «clúster de cliente».** Medido primero
 (`medida-el-acoplamiento-del-inquilino.py`): de 13 acoplamientos, 11 viajan o se parten solos y
-2 había que **decidir** — y son ⑤ y ⑥. Lo que la E3 hace, en este orden: **(a)** `iam.celda`
-dice su puerta y la consola construye la dirección de `ore-serve` desde la celda; **(b)** el
+2 había que **decidir** — y son ⑤ y ⑥. Lo que la E3 hace, en este orden: **(a) ✓** `iam.celda`
+dice su puerta (`027`), el aprovisionador converge el DNS o dice qué registro falta, y la
+consola coteja que la entrada **llegue** a la celda — la dirección ya salía de la organización
+(`022`), lo que faltaba era la relación con la celda; **(b)** el
 cofre guarda el material en el Secret Manager de la celda, con `cofre.secreto` e `iam.concesion`
 donde están; **(c)** `t-demo` con **su forja propia** y Flux tirando de la nuestra. Si eso
 funciona aquí, dedicado y BYOC son *el mismo manifiesto en otro sitio*.

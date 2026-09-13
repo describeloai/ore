@@ -657,7 +657,7 @@ paso "⑦ EL AGENTE — un cliente de Keycloak por inquilino, no uno copiado a m
 #      `t-<n>-agente-cliente`, al lado, para que el init los traiga juntos)
 #   3. `ore-driver-<n>` puede leerlos, y nadie mas
 #   4. y el `sub` de su cuenta de servicio, que es lo que `ore-iam agente`
-#      necesita — se imprime en ⑧, porque registrarlo es un `insert` en `iam`
+#      necesita — se imprime en ⑨, porque registrarlo es un `insert` en `iam`
 #      y este papel no escribe ahi (la 023)
 #
 # ── LA CREDENCIAL DE ADMIN, por el entorno, como `FORJA_ADMIN` ────────────
@@ -768,7 +768,79 @@ JSON
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "⑧ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
+paso "⑧ LA PUERTA — la entrada resuelve a la celda, o se dice qué registro falta"
+# ══════════════════════════════════════════════════════════════════════════
+#
+# La 0024-⑥, medida antes (`medida-la-puerta-de-la-celda.py`): cada celda tiene
+# su puerta y **el plano de control escribe el DNS**. La fila dice la RELACION
+# —`iam.organizacion.entrada` debe resolver a `iam.celda.puerta`— y este paso
+# converge el mundo hacia ella:
+#
+#   · si ya resuelve igual, no hay nada que hacer (hoy: el comodin
+#     `*.ore.paladio.io` manda toda entrada a la IP de `ore-mesh`, y con UNA
+#     celda eso ES la relacion)
+#   · si la zona es de este proyecto (Cloud DNS), se escribe el `CNAME`
+#   · si no —hoy `ore.paladio.io` vive en el registrador—, se dice el registro
+#     exacto que falta. Es la frase incomoda de la 022: el alta pasa a ser una
+#     espera, y quien mueve ficha no es este guion.
+#
+# ⚠️ Y la trampa del comodin, dicha: la puerta de una celda NUEVA resuelve por
+#   el comodin aunque no tenga registro propio, y todo parece converger. Por eso
+#   se avisa cuando la celda no es la compartida y su puerta resuelve a la misma
+#   IP que cualquier nombre inventado.
+#
+# ⛔ Se lee por la vista `iam.celda_de` (027): por NOMBRES, sin `id`, que es lo
+#   que el papel de la 023 puede ver.
+celda() { # <columna de iam.celda_de>
+  if [ -n "${DENTRO:-}" ]; then
+    psql "$(cat /puesto/iam-url)" -tAc \
+      "select $1 from iam.celda_de where organizacion = '$NOMBRE'" 2>/dev/null | tr -d '\r'
+  else
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
+      "select $1 from iam.celda_de where organizacion = '$NOMBRE'" 2>/dev/null | tr -d '\r'
+  fi
+}
+resuelve() { # <host> → IPs v4 ordenadas, separadas por coma; vacio si no resuelve
+  "$PY" -c 'import socket,sys
+try: print(",".join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)})))
+except OSError: pass' "$1" 2>/dev/null | tr -d '\r'
+}
+ENTRADA=$(consulta entrada)
+PUERTA=$(celda puerta)
+TIER=$(celda tier)
+if [ -z "$PUERTA" ]; then
+  echo "  ⚠ \`$NOMBRE\` no tiene celda, o la base es anterior a la 027: no hay puerta que cotejar"
+else
+  IP_ENTRADA=$(resuelve "$ENTRADA")
+  IP_PUERTA=$(resuelve "$PUERTA")
+  IP_COMODIN=$(resuelve "aprovisionador-$$.ore.paladio.io")
+  if [ -z "$IP_PUERTA" ]; then
+    echo "  ⚠ la puerta \`$PUERTA\` no resuelve. Eso no lo arregla este guion: es el registro A"
+    echo "    del balanceador de la celda, y va antes que cualquier CNAME de inquilino"
+  elif [ "$IP_ENTRADA" = "$IP_PUERTA" ]; then
+    ya "\`$ENTRADA\` → $IP_ENTRADA, que es \`$PUERTA\`"
+    [ "$TIER" != "compartido" ] && [ "$IP_PUERTA" = "$IP_COMODIN" ] \
+      && echo "  ⚠ pero \`$PUERTA\` resuelve por el COMODIN, no por un registro propio: una celda $TIER necesita su A"
+  else
+    ZONA=""
+    while IFS=, read -r z dn; do
+      case "$ENTRADA." in *".$dn") ZONA="$z" ;; esac
+    done < <("$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)" 2>/dev/null | tr -d '\r')
+    if [ -n "$ZONA" ]; then
+      correr "$GCLOUD" dns record-sets create "$ENTRADA." --zone="$ZONA" --type=CNAME --ttl=300 --rrdatas="$PUERTA." \
+        && hecho "escrito en la zona \`$ZONA\`: $ENTRADA CNAME $PUERTA"
+    else
+      echo "  ⚠ \`$ENTRADA\` → ${IP_ENTRADA:-nada} y su celda \`$PUERTA\` está en $IP_PUERTA. La zona no es de"
+      echo "    este proyecto: el registro lo pone una persona en el registrador, y hasta entonces"
+      echo "    la consola dirá que la entrada no lleva a la celda:"
+      echo
+      echo "      $ENTRADA.   CNAME   $PUERTA."
+    fi
+  fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+paso "⑨ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
 # ══════════════════════════════════════════════════════════════════════════
 cat <<FIN
 

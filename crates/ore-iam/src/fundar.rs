@@ -112,6 +112,10 @@ pub struct Celda<'a> {
     pub tier: &'a str,
     pub proveedor: &'a str,
     pub region: &'a str,
+    /// El NOMBRE de su puerta —`ore-mesh.ore.paladio.io`—, al que la entrada
+    /// de la organización tiene que resolver. La IP de detrás es carretera.
+    /// Ver la `027` y la 0024-⑥.
+    pub puerta: &'a str,
 }
 
 /// Un nombre de dominio, y el alfabeto lo fija RFC 1123 y no nosotros.
@@ -430,11 +434,28 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
     //    del plano de control, y el momento en que se decide es éste.
     let celda_id = match &p.celda {
         Some(c) => {
+            // ⛔ La puerta con el mismo alfabeto que la entrada, y dicho con una
+            //   frase antes de que lo diga el `check` de la `027`.
+            if !entrada_valida(c.puerta) {
+                return Err(format!(
+                    "`{}` no sirve como puerta de la celda. Es un HOST —`ore-mesh.ore.paladio.io`—: \
+                     sin esquema, sin puerto, sin camino.",
+                    c.puerta
+                ));
+            }
             let id = nuevo_id("cel");
             tx.ejecutar(
-                "insert into iam.celda (id, organizacion, nombre, tier, proveedor, region)
-                 values ($1, $2, $3, $4, $5, $6)",
-                &[&id, &org, &c.nombre, &c.tier, &c.proveedor, &c.region],
+                "insert into iam.celda (id, organizacion, nombre, tier, proveedor, region, puerta)
+                 values ($1, $2, $3, $4, $5, $6, $7)",
+                &[
+                    &id,
+                    &org,
+                    &c.nombre,
+                    &c.tier,
+                    &c.proveedor,
+                    &c.region,
+                    &c.puerta,
+                ],
             )?;
             Some(id)
         }

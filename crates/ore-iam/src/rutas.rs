@@ -269,7 +269,8 @@ impl Servidor {
             //   aquí es lo que evita una segunda copia de la cuota en la consola.
             let filas = tx.filas(
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
-                        t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs
+                        t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
+                        c.puerta
                    from iam.celda c
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
@@ -294,6 +295,11 @@ impl Servidor {
                         ("creada_en", Json::s(f.get::<_, String>(6))),
                         ("titulo", Json::s(f.get::<_, String>(7))),
                         ("promesa", Json::s(f.get::<_, String>(8))),
+                        // ⭐ La puerta de la celda (027): un NOMBRE al que la
+                        //   entrada de la organización tiene que resolver. La
+                        //   consola coteja que el mundo converja — es la mitad
+                        //   «por el camino» de la 0024-④, aplicada al DNS.
+                        ("puerta", Json::s(f.get::<_, String>(12))),
                     ];
                     // ⚠️ La cuota se OMITE cuando el tier no la tiene —dedicado,
                     //   byoc—. Un objeto con nulos diría «tiene cuota y no sé
