@@ -272,6 +272,10 @@ CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
 grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
 grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
 grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
+# ⭐ Y el tier DENTRO, desde la `026`: titulo, promesa y la cuota del compartido.
+grep -q '"titulo":"Serverless"' "$TMP/r.json" || falla "2b · sin el titulo del tier: $(cat "$TMP/r.json")"
+grep -q '"cuota":{' "$TMP/r.json" || falla "2b · el compartido no trae cuota"
+grep -q '"cpu":"10"' "$TMP/r.json" || falla "2b · la cuota no es la de la plantilla"
 # ⛔ Zoe no es de acme: cero celdas, y el MISMO 200 que «no tiene celda» —
 #   decir cual revelaria que la organizacion existe a quien no es de ella.
 ZOE=$(acunar "persona:zoe" "zoe@paladio.io")

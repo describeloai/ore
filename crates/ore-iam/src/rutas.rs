@@ -264,9 +264,14 @@ impl Servidor {
             // ⭐ Basta con pertenecer, y se comprueba con la misma unión que
             //   `organizaciones`: la celda es un atributo de la organización, y
             //   «pertenecer ya da lectura» (`014`). Sin potestad nueva.
+            // ⭐ Con su tier DENTRO —título, promesa y cuota— desde la `026`: es
+            //   lo que la consola tiene que decir de cada celda, y decirlo desde
+            //   aquí es lo que evita una segunda copia de la cuota en la consola.
             let filas = tx.filas(
-                "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text
+                "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
+                        t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs
                    from iam.celda c
+                   join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
                    join iam.persona     p  on p.id = pe.persona
                   where c.organizacion = $1 and p.emisor = $2 and p.sub = $3
@@ -279,7 +284,7 @@ impl Servidor {
             let lista: Vec<Json> = filas
                 .iter()
                 .map(|f| {
-                    Json::obj([
+                    let mut campos = vec![
                         ("id", Json::s(f.get::<_, String>(0))),
                         ("nombre", Json::s(f.get::<_, String>(1))),
                         ("tier", Json::s(f.get::<_, String>(2))),
@@ -287,7 +292,27 @@ impl Servidor {
                         ("region", Json::s(f.get::<_, String>(4))),
                         ("estado", Json::s(f.get::<_, String>(5))),
                         ("creada_en", Json::s(f.get::<_, String>(6))),
-                    ])
+                        ("titulo", Json::s(f.get::<_, String>(7))),
+                        ("promesa", Json::s(f.get::<_, String>(8))),
+                    ];
+                    // ⚠️ La cuota se OMITE cuando el tier no la tiene —dedicado,
+                    //   byoc—. Un objeto con nulos diría «tiene cuota y no sé
+                    //   cuál»; ausente dice lo cierto: no hay cuota de plataforma.
+                    if let (Some(c), Some(m), Some(j)) = (
+                        f.get::<_, Option<String>>(9),
+                        f.get::<_, Option<String>>(10),
+                        f.get::<_, Option<String>>(11),
+                    ) {
+                        campos.push((
+                            "cuota",
+                            Json::obj([
+                                ("cpu", Json::s(c)),
+                                ("memoria", Json::s(m)),
+                                ("jobs", Json::s(j)),
+                            ]),
+                        ));
+                    }
+                    Json::obj(campos)
                 })
                 .collect();
             // Toda lectura deja huella: es la regla de `confirmar()`, y CI la
