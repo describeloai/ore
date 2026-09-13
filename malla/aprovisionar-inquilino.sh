@@ -383,6 +383,26 @@ for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
     && hecho "\`$c\` puede leerlo, y nadie de fuera del inquilino"
 done
 
+# ── ⭐⭐ Y LA BASE DEL COFRE, que hasta el 2026-09-13 era un `Secret` a mano ──
+#
+# `cofre-url` es un secreto de PLATAFORMA —la misma base para todos los
+# cofres— y por eso no se crea aqui: existe una vez, y aqui solo se le da al
+# cofre de ESTE inquilino permiso para leerlo. Medido en
+# `medida-el-acoplamiento-del-inquilino.py`: el `Secret` lo habia puesto una
+# mano antes de que este guion existiera, y un inquilino nuevo arrancaba con
+# el cofre en `CrashLoop` hasta que alguien se acordara.
+"$GCLOUD" secrets describe cofre-url --format="value(name)" >/dev/null 2>&1 \
+  || falla "no existe el secreto de plataforma \`cofre-url\` en el almacen.
+     Es UNO para todos los inquilinos y lo crea el operador una vez, desde la
+     base que el cofre ya usa:
+       gcloud secrets create cofre-url --replication-policy=user-managed --locations=$LUGAR
+       printf 'postgres://cofre_app:...@idp-db.identidad.svc.cluster.local:5432/iam' \\
+         | gcloud secrets versions add cofre-url --data-file=-"
+correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
+  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor \
+  && hecho "\`ore-cofre-$NOMBRE\` puede leer la base del cofre"
+
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"
 # ══════════════════════════════════════════════════════════════════════════

@@ -56,8 +56,14 @@ ore-cofre — el custodio: guarda el material cifrado y lo abre a quien puede
                    --audiencia AUD --jwks FICHERO
                    --kms PROGRAMA --lugar REGION
 
-  La base sale de `COFRE_URL`. No hay valor por defecto: una cadena de conexión
+  La base sale de `COFRE_URL_FICHERO` —un fichero con la cadena de conexión— o,
+  si no está, de `COFRE_URL`. No hay valor por defecto: una cadena de conexión
   por defecto es apuntar a una base que nadie eligió.
+
+  ⭐ El fichero es el camino de la `0023`: el valor vive en el almacén de la
+  plataforma, un contenedor de inicio lo trae a un `emptyDir` de memoria, y
+  este proceso lo lee de ahí. Es lo mismo que `ore-serve --testigo-fichero`.
+  La variable se queda para correr esto en local, y para nada más.
 
   ⛔ Y ese usuario NO es el de `ore-iam`. La `020` reparte los permisos entre dos
   papeles: quien dice quién puede no alcanza el material, y quien lo abre sólo
@@ -78,14 +84,30 @@ fn main() -> ExitCode {
         return ExitCode::from(64);
     }
 
-    let url = match std::env::var("COFRE_URL") {
-        Ok(u) if !u.is_empty() => u,
-        _ => {
-            eprintln!("✗ falta `COFRE_URL`.");
-            eprintln!("  Sin ella este proceso no sabe de qué base guarda el material, y un");
-            eprintln!("  valor por defecto apuntaría a una que nadie eligió.");
-            return ExitCode::from(64);
-        }
+    // ⭐ Primero el FICHERO, que es el camino de la `0023`; la variable, para
+    //   correr en local. Y el fichero se lee entero y se recorta: un `\n` final
+    //   —que cualquier editor deja— haría que la URL no analizara.
+    let url = match std::env::var("COFRE_URL_FICHERO") {
+        Ok(f) if !f.is_empty() => match std::fs::read_to_string(&f) {
+            Ok(u) if !u.trim().is_empty() => u.trim().to_string(),
+            Ok(_) => {
+                eprintln!("✗ `{f}` está vacío: el contenedor de inicio no trajo la base.");
+                return ExitCode::from(64);
+            }
+            Err(e) => {
+                eprintln!("✗ no se pudo leer `COFRE_URL_FICHERO` = `{f}`: {e}");
+                return ExitCode::from(64);
+            }
+        },
+        _ => match std::env::var("COFRE_URL") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                eprintln!("✗ falta la base: ni `COFRE_URL_FICHERO` ni `COFRE_URL`.");
+                eprintln!("  Sin ella este proceso no sabe de qué base guarda el material, y un");
+                eprintln!("  valor por defecto apuntaría a una que nadie eligió.");
+                return ExitCode::from(64);
+            }
+        },
     };
 
     // ⛔ Sin cliente no hay custodio. Se dice al arrancar y no en la primera

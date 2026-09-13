@@ -113,6 +113,39 @@ spec:
         ore.dev/tenant: demo
     spec:
       serviceAccountName: cofre
+      # ── ⭐⭐ LA BASE, DEL ALMACEN A MEMORIA — el camino de la `0023` ─────────
+      #
+      # Es el mismo contenedor que trae el testigo de la forja en `40-ore-serve`,
+      # y por lo mismo: el valor no esta en ningun `Secret` ni en ningun
+      # repositorio. Vive en Secret Manager como `cofre-url` —un secreto de
+      # plataforma, sin nombre de inquilino, porque es el mismo para todos— y
+      # lo alcanza `ore-cofre-<n>` por Workload Identity, que es la cuenta que
+      # el aprovisionador ya crea en su paso ③ y a la que da acceso en el ⑤.
+      initContainers:
+        - name: traer-la-base
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts:
+            - name: testigo
+              mountPath: /testigo
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # `--out-file` y no una redireccion: el valor no pasa por la salida
+              # estandar, que es lo que acaba en el registro del contenedor.
+              gcloud secrets versions access latest --secret=cofre-url --out-file=/testigo/cofre-url
+              chmod 0400 /testigo/cofre-url
+              # ⛔ Se dice el TAMANO, no el valor.
+              echo "base puesta · $(wc -c < /testigo/cofre-url) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
       containers:
         - name: cofre
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-cofre:main
@@ -167,12 +200,24 @@ spec:
             #   permisos entre dos papeles: quien dice quién puede no alcanza el
             #   material, y quien lo abre sólo lee de `iam` lo justo para
             #   autorizar. Con una sola credencial esa frontera no existiría.
-            - name: COFRE_URL
-              valueFrom:
-                secretKeyRef: { name: cofre-url, key: url }
+            #
+            # ⭐⭐ Y desde el 2026-09-13 viene del ALMACÉN, no de un `Secret`.
+            #   Medido en `medida-el-acoplamiento-del-inquilino.py`: el `Secret`
+            #   `cofre-url` lo había puesto una mano con `kubectl` el 9 de
+            #   septiembre, antes de que existiera el aprovisionador, y nada lo
+            #   reproducía. Un inquilino nuevo arrancaba con el cofre en
+            #   `CrashLoop` hasta que alguien se acordara. Ahora es el camino de
+            #   la `0023`, el mismo que el testigo de la forja: el contenedor de
+            #   inicio de abajo lo trae del almacén a memoria, y esto lo lee de
+            #   ahí. Es un secreto de PLATAFORMA —el mismo para todos los
+            #   inquilinos— y por eso no lleva el nombre del inquilino.
+            - { name: COFRE_URL_FICHERO, value: /testigo/cofre-url }
           volumeMounts:
             - name: llaves
               mountPath: /llaves
+            - name: testigo
+              mountPath: /testigo
+              readOnly: true
               readOnly: true
           ports:
             - containerPort: 8095
@@ -191,6 +236,9 @@ spec:
         - name: llaves
           configMap:
             name: jwks
+        # En memoria y de 1 MiB: el valor no toca el disco del nodo.
+        - name: testigo
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
 ---
 # ── Por dónde puede salir ───────────────────────────────────────────────────
 #
