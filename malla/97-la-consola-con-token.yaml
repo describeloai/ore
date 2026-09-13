@@ -30,7 +30,12 @@ spec:
   template:
     metadata:
       labels:
-        ore.dev/rol: cliente
+        # ⛔ `driver` y no `cliente`: la etiqueta es lo que decide QUE politica de
+        #   egreso se aplica. Con `cliente` no habia ninguna que dejara llegar al
+        #   servidor de metadatos, y `gcloud` no sabia ni el proyecto — el init
+        #   moria con «Failed to find attribute [project]». Una NetworkPolicy no
+        #   rechaza: tira el paquete, y el sintoma es lo que sea que venga despues.
+        ore.dev/rol: driver
         ore.dev/tenant: demo
     spec:
       restartPolicy: Never
