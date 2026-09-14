@@ -248,15 +248,17 @@ spec:
                       if o.startswith("t-"): print(o[2:])
                   ' | sort -u); do
                     S="t-$T-forja-admin"
-                    F="http://forja.t-$T.svc.cluster.local:3000"
+                    # ⛔ `FU` y no `F`: `F` es la FECHA de esta vuelta, y pisarla aquí puso la
+                    #   URL en el nombre de cada copia (medido: `…-http:/forja.t-demo…`).
+                    FU="http://forja.t-$T.svc.cluster.local:3000"
                     K=$(gcloud secrets versions access latest --secret="$S" 2>/dev/null) || { echo "  ~ $S: sin testigo"; continue; }
-                    curl -sSf -H "Authorization: token $K" "$F/api/v1/repos/search?limit=200" -o /trabajo/r.json 2>/dev/null \
+                    curl -sSf -H "Authorization: token $K" "$FU/api/v1/repos/search?limit=200" -o /trabajo/r.json 2>/dev/null \
                       || { echo "  ~ forja de t-$T: no contesta"; continue; }
                     python3 -c '
                   import json, sys
                   for r in json.load(open("/trabajo/r.json")).get("data", []):
                       print(sys.argv[1] + "|" + sys.argv[2] + "|" + r["full_name"])
-                  ' "$F" "$K" >> /trabajo/lista.txt
+                  ' "$FU" "$K" >> /trabajo/lista.txt
                   done
                   N=0; VACIOS=0
                   echo "--- $(wc -l < /trabajo/lista.txt) repositorios, plataforma e inquilinos ---"
