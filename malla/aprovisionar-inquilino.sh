@@ -648,10 +648,26 @@ if [ -z "$SECO" ]; then
   # muerta hasta que alguien lo borre a mano — no se borra nada aqui.
   if [ -n "$INQ" ]; then
     for R in "$REPO" trabajo; do
+      # ⚠️ Y LA CARRERA CON LA SEMILLA, medida en `prueba` el 2026-09-14: Flux
+      #   aplico el compartimento nuevo, el Job de la semilla (42) vio el arbol
+      #   del inquilino VACIO y lo sembro, y la mudanza llego despues a un
+      #   repositorio con UN commit que no era el de la central. Por eso «vacio»
+      #   aqui incluye «solo tiene la semilla»: un commit en el inquilino y mas
+      #   de uno en la central es la semilla ganando la carrera, y se pisa.
+      cuenta_commits() { "$PY" -c 'import json,sys
+try:
+    d = json.load(sys.stdin); print(len(d) if isinstance(d, list) else 0)
+except Exception:
+    print(0)'; }
       en_la_forja inquilino
-      VACIO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("si" if d.get("empty") else "no")' 2>/dev/null || echo "?")
+      COMMITS_INQ=$(forja_json "/repos/$PROPIETARIO/$R/commits?limit=3" | cuenta_commits)
       en_la_forja central
-      LLENO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("no" if d.get("empty", True) else "si")' 2>/dev/null || echo "?")
+      COMMITS_CEN=$(forja_json "/repos/$PROPIETARIO/$R/commits?limit=3" | cuenta_commits)
+      VACIO=no; [ "$COMMITS_INQ" = "0" ] && VACIO=si
+      if [ "$COMMITS_INQ" = "1" ] && [ "$COMMITS_CEN" -gt 1 ]; then
+        VACIO=si; echo "  ⚠ $PROPIETARIO/$R en el inquilino solo tiene la semilla y la central tiene historia: se pisa"
+      fi
+      LLENO=no; [ "$COMMITS_CEN" -gt 0 ] && LLENO=si
       if [ "$VACIO" = "si" ] && [ "$LLENO" = "si" ]; then
         ( set -e; cd "$TMP"; rm -rf espejo.git
           en_la_forja central
@@ -659,7 +675,7 @@ if [ -z "$SECO" ]; then
           GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git clone -q --mirror "$DE" espejo.git
           en_la_forja inquilino
           if [ -n "${DENTRO:-}" ]; then A="$F_URL/$PROPIETARIO/$R.git"; else A="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
-          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git -C espejo.git push -q --mirror "$A" ) \
+          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git -C espejo.git push -q --mirror --force "$A" ) \
           && hecho "mudado $PROPIETARIO/$R: de la forja de la plataforma a la del inquilino, entero" \
           || falla "no se pudo mudar $PROPIETARIO/$R"
       elif [ "$VACIO" = "no" ]; then
