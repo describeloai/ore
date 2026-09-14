@@ -94,6 +94,9 @@ includedPermissions:
   - secretmanager.secrets.get
   - secretmanager.secrets.list
   - secretmanager.secrets.delete
+  # `gcloud secrets delete` lista las versiones antes de borrar (es METADATO: no
+  # es `versions.access`). Sin esto la retirada dejaba los cuatro secretos.
+  - secretmanager.versions.list
   - secretmanager.secrets.getIamPolicy
   - secretmanager.secrets.setIamPolicy
   - secretmanager.versions.add
@@ -108,5 +111,7 @@ includedPermissions:
   - dns.resourceRecordSets.list
   - dns.resourceRecordSets.get
   - dns.resourceRecordSets.create
+  # Y quitarlo al retirar la celda (0025 E6). La primera retirada real lo dijo: 403.
+  - dns.resourceRecordSets.delete
   - dns.changes.create
   - dns.changes.get
