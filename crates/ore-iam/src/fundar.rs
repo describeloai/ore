@@ -444,17 +444,26 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
                 ));
             }
             let id = nuevo_id("cel");
+            // ⭐ Desde la 029 la celda tiene nombre PROPIO y es el de la
+            //   organizacion para la primera —`demo` → celda `demo`—: de el se
+            //   deriva todo lo tecnico (`t-demo`, `demo.ore.paladio.io`). Lo que
+            //   `--celda` trae es el CLUSTER (`ore-mesh`), y va a `cluster`.
+            //   `arbol` y `entrada` se escriben AQUI y en la organizacion (R1
+            //   de la 0025: las dos verdades, hasta que la 030 recorte una).
             tx.ejecutar(
-                "insert into iam.celda (id, organizacion, nombre, tier, proveedor, region, puerta)
-                 values ($1, $2, $3, $4, $5, $6, $7)",
+                "insert into iam.celda (id, organizacion, nombre, cluster, tier, proveedor, region, puerta, arbol, entrada)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 &[
                     &id,
                     &org,
+                    &p.organizacion,
                     &c.nombre,
                     &c.tier,
                     &c.proveedor,
                     &c.region,
                     &c.puerta,
+                    &arbol,
+                    &entrada,
                 ],
             )?;
             Some(id)

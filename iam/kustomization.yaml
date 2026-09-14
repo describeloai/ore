@@ -70,6 +70,7 @@ configMapGenerator:
       - migraciones/026-el-tier.sql
       - migraciones/027-la-puerta-de-la-celda.sql
       - migraciones/028-el-material-se-fue-a-la-celda.sql
+      - migraciones/029-la-celda-con-nombre.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

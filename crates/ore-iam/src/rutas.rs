@@ -270,7 +270,7 @@ impl Servidor {
             let filas = tx.filas(
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
                         t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
-                        c.puerta
+                        c.puerta, c.cluster, c.arbol, c.entrada
                    from iam.celda c
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
@@ -300,6 +300,12 @@ impl Servidor {
                         //   consola coteja que el mundo converja — es la mitad
                         //   «por el camino» de la 0024-④, aplicada al DNS.
                         ("puerta", Json::s(f.get::<_, String>(12))),
+                        // ⭐ Desde la 029 (0025): `nombre` es el de la CELDA; el
+                        //   cluster va aparte, y el arbol y la entrada son suyos.
+                        //   Es lo que la consola necesita para elegir celda (⑤).
+                        ("cluster", Json::s(f.get::<_, String>(13))),
+                        ("arbol", Json::s(f.get::<_, String>(14))),
+                        ("entrada", Json::s(f.get::<_, String>(15))),
                     ];
                     // ⚠️ La cuota se OMITE cuando el tier no la tiene —dedicado,
                     //   byoc—. Un objeto con nulos diría «tiene cuota y no sé

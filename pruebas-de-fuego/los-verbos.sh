@@ -269,9 +269,17 @@ dice '2 · ve `acme` con su arbol y su puerta, y NO ve `otra`'
 # ── 2b · la celda: DONDE corre, del plano de control ─────────────────────────
 CODIGO=$(pide GET "/organizaciones/$ORG/celdas" "$ADA")
 [ "$CODIGO" = "200" ] || falla "2b · celdas · http $CODIGO · $(cat "$TMP/r.json")"
-grep -q '"nombre":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
+grep -q '"cluster":"ore-prueba"' "$TMP/r.json" || falla "2b · no ve su celda: $(cat "$TMP/r.json")"
 # ⭐ Y la celda dice su PUERTA (027): es lo que la consola coteja contra el DNS.
 grep -q '"puerta":"ore-prueba.ore.paladio.io"' "$TMP/r.json" || falla "2b · la celda no dice su puerta: $(cat "$TMP/r.json")"
+# ⭐ Y desde la 029: la celda se llama como su organizacion, el cluster va aparte,
+#   y el arbol y la entrada son SUYOS (y, mientras dure la doble verdad, los mismos
+#   que los de la organizacion — `iam.discrepancias` vacia lo cobra).
+grep -q '"nombre":"acme"' "$TMP/r.json" || falla "2b · la celda no se llama como su organizacion: $(cat "$TMP/r.json")"
+grep -q '"cluster":"ore-prueba"' "$TMP/r.json" || falla "2b · la celda no dice su cluster: $(cat "$TMP/r.json")"
+grep -q '"arbol":"t-acme/ontologia"' "$TMP/r.json" || falla "2b · la celda no dice su arbol: $(cat "$TMP/r.json")"
+grep -q '"entrada":"acme.ore.paladio.io"' "$TMP/r.json" || falla "2b · la celda no dice su entrada: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.discrepancias")" = "0" ] || falla "2b · iam.discrepancias no esta vacia: $(psql "$URL" -qtAc "select * from iam.discrepancias")"
 grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
 grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
 # ⭐ Y el tier DENTRO, desde la `026`: titulo, promesa y la cuota del compartido.
