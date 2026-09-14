@@ -9,8 +9,12 @@
 #
 # ── Los tres, y ninguno sobra ───────────────────────────────────────────────
 #
-#   rubix          produccion. `redirectUris` -> https://app.paladio.io
-#   rubix-dev      desarrollo. `redirectUris` -> http://localhost:3000
+#   rubix          produccion. `redirectUris` -> https://app.paladio.io. Y el
+#                  UNICO con gente: el 2026-09-14 `rubix-dev` (donde vivian
+#                  demo, prueba y sus agentes) se RENOMBRO a `rubix`, y el
+#                  `rubix` vacio de antes se borro. Registro abierto (abajo).
+#   rubix-dev      desarrollo. `redirectUris` -> http://localhost:3000. Vacio:
+#                  el import lo vuelve a crear cuando haga falta
 #   rubix-interno  sin clientes propios
 #
 # ⭐ El de desarrollo NO es un duplicado, y no importarlo costo un `HTTP 500`:
@@ -746,10 +750,10 @@
           ]
         }
       ],
-      "registrationAllowed": false,
+      "registrationAllowed": true,
       "resetPasswordAllowed": true,
       "rememberMe": false,
-      "verifyEmail": true,
+      "verifyEmail": false,
       "loginWithEmailAllowed": true,
       "duplicateEmailsAllowed": false,
       "bruteForceProtected": true,

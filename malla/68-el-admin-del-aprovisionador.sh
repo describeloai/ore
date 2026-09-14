@@ -30,13 +30,13 @@
 # operador de Keycloak acuña al arrancar. Dos razones para no hacerlo:
 #
 #   1. es el admin de TODO: cada realm, cada persona, cada cliente. El paso ⑦
-#      necesita crear clientes en `rubix-dev` y nada mas
+#      necesita crear clientes en `rubix` y nada mas
 #   2. es el admin de ARRANQUE. Keycloak lo llama temporal y avisa en cada
 #      arranque de que hay que sustituirlo; atarle un proceso es atarse a algo
 #      que se va a retirar
 #
 # ⇒ Un usuario propio en el realm maestro, `aprovisionador`, con UN papel de
-#   cliente: `manage-clients` del realm de las personas (`rubix-dev-realm`).
+#   cliente: `manage-clients` del realm de las personas (`rubix-realm`).
 #   Puede crear, leer y configurar clientes de ese realm —que es ⑦ entero— y
 #   no puede ver una persona, ni tocar otro realm, ni el maestro.
 #
@@ -62,7 +62,7 @@ set -eu
 
 NS="${NS:-identidad}"
 POD="${POD:-idp-0}"
-REALM="${REALM:-rubix-dev}"
+REALM="${REALM:-rubix}"
 PROYECTO="project-8853a180-450d-47be-b83"
 LUGAR="europe-west1"
 USUARIO="aprovisionador"

@@ -76,7 +76,7 @@ spec:
             # El emisor de DESARROLLO: es contra el que entra la consola local,
             # y es donde vive `luna`.
             - --emisor
-            - https://login.paladio.io/realms/rubix-dev
+            - https://login.paladio.io/realms/rubix
             - --audiencia
             - ore-serve
             - --jwks

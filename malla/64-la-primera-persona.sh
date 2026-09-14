@@ -42,7 +42,7 @@
 # No es un fallo de configuración: es la configuración.
 set -eu
 
-REALM="${1:-rubix-dev}"
+REALM="${1:-rubix}"
 USUARIO="${2:?falta el usuario}"
 CORREO="${3:?falta el correo}"
 NS="${NS:-identidad}"

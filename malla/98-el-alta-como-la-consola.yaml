@@ -80,7 +80,7 @@ spec:
             - { name: BASE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
             - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             # El realm de DESARROLLO, el mismo que valida `ore-serve`.
-            - { name: REALM, value: "rubix-dev" }
+            - { name: REALM, value: "rubix" }
             # ⛔ Ya no hay `Secret` `idp-agente`: el agente vive en el almacen por
             #   inquilino (aprovisionador, paso ⑦). Este Job de medida lo lee
             #   como el de catalogo, con un init. Ver `44-el-catalogo.yaml`.

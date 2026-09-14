@@ -167,10 +167,10 @@ spec:
                 #   Las llaves que se copian aquí son las que valida él: si los dos
                 #   no nombran el MISMO realm, un token bueno se rechaza por venir
                 #   firmado por otro emisor — y el síntoma es un 401 sin motivo.
-                - { name: EMISOR, value: "https://login.paladio.io/realms/rubix-dev" }
+                - { name: EMISOR, value: "https://login.paladio.io/realms/rubix" }
                 # Y por dónde se le alcanza hoy.
                 - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-                - { name: REALM, value: "rubix-dev" }
+                - { name: REALM, value: "rubix" }
               command: ["/bin/sh", "-c"]
               args:
                 - |
@@ -303,10 +303,10 @@ spec:
             #   Las llaves que se copian aquí son las que valida él: si los dos
             #   no nombran el MISMO realm, un token bueno se rechaza por venir
             #   firmado por otro emisor — y el síntoma es un 401 sin motivo.
-            - { name: EMISOR, value: "https://login.paladio.io/realms/rubix-dev" }
+            - { name: EMISOR, value: "https://login.paladio.io/realms/rubix" }
             # Y por dónde se le alcanza hoy.
             - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-            - { name: REALM, value: "rubix-dev" }
+            - { name: REALM, value: "rubix" }
           command: ["/bin/sh", "-c"]
           args:
             - |

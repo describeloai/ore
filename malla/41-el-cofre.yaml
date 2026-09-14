@@ -159,7 +159,7 @@ spec:
             - --identidad
             - oidc
             - --emisor
-            - https://login.paladio.io/realms/rubix-dev
+            - https://login.paladio.io/realms/rubix
             - --audiencia
             - ore-serve
             # Un FICHERO, no una URL. Las llaves las trae `50-jwks.yaml`, que es

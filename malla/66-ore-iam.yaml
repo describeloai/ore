@@ -90,7 +90,7 @@ spec:
             # El emisor y el `sub` juntos: un `sub` sin su emisor no identifica
             # a nadie. Es el mismo error que aceptar un token sin mirar el `iss`.
             - --emisor
-            - https://login.paladio.io/realms/rubix-dev
+            - https://login.paladio.io/realms/rubix
             - --sub
             - "0304d602-ea01-49c4-aedd-d4d02e8b9401"
             - --correo

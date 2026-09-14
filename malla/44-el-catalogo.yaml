@@ -192,7 +192,7 @@ spec:
             #   fila y es unico; por donde se llega es configuracion.
             - { name: EMISOR, value: "https://login.paladio.io" }
             - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-            - { name: REALM, value: "rubix-dev" }
+            - { name: REALM, value: "rubix" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }

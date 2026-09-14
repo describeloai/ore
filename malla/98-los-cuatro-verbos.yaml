@@ -35,7 +35,7 @@ spec:
             - { name: HOME, value: /tmp }
             - { name: IAM, value: "http://ore-iam.identidad.svc.cluster.local:8090" }
             - { name: IDP, value: "http://idp-service.identidad.svc.cluster.local:8080" }
-            - { name: REALM, value: rubix-dev }
+            - { name: REALM, value: rubix }
             - { name: ORG, value: "org_1058fd2e40086d21955351f78b04febd" }
             - name: CLIENTE
               valueFrom: { secretKeyRef: { name: iam-agente, key: cliente } }

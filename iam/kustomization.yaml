@@ -75,6 +75,7 @@ configMapGenerator:
       - migraciones/031-recortar-la-organizacion.sql
       - migraciones/032-la-celda-aprovisionada.sql
       - migraciones/033-pedir-y-retirar-celdas.sql
+      - migraciones/034-el-realm-es-rubix.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

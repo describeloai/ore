@@ -238,7 +238,7 @@ REPO="${ARBOL#*/}"
 # sin el, los dos verbos se saltan y se dice.
 [ -n "${DENTRO:-}" ] && [ -f /puesto/aprovisionador-secreto ] && APROV_SECRETO="$(cat /puesto/aprovisionador-secreto)"
 : "${APROV_SECRETO:=}"
-REALM="${REALM:-rubix-dev}"
+REALM="${REALM:-rubix}"
 if [ -n "${DENTRO:-}" ]; then
   IAM_BASE="http://ore-iam.identidad.svc.cluster.local:8090"
   IDP_TOKEN="http://idp-service.identidad.svc.cluster.local:8080/realms/$REALM/protocol/openid-connect/token"

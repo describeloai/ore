@@ -115,8 +115,12 @@ CABECERA = """# LOS REALMS — GENERADOS. No se editan aqui.
 #
 # ── Los tres, y ninguno sobra ───────────────────────────────────────────────
 #
-#   rubix          produccion. `redirectUris` -> https://app.paladio.io
-#   rubix-dev      desarrollo. `redirectUris` -> http://localhost:3000
+#   rubix          produccion. `redirectUris` -> https://app.paladio.io. Y el
+#                  UNICO con gente: el 2026-09-14 `rubix-dev` (donde vivian
+#                  demo, prueba y sus agentes) se RENOMBRO a `rubix`, y el
+#                  `rubix` vacio de antes se borro. Registro abierto (abajo).
+#   rubix-dev      desarrollo. `redirectUris` -> http://localhost:3000. Vacio:
+#                  el import lo vuelve a crear cuando haga falta
 #   rubix-interno  sin clientes propios
 #
 # ⭐ El de desarrollo NO es un duplicado, y no importarlo costo un `HTTP 500`:
@@ -205,6 +209,28 @@ def con_ore(realm):
     return realm
 
 
+# ── ⭐⭐ EL REGISTRO ABIERTO EN `rubix` (2026-09-14) ─────────────────────────
+#
+# La cuenta nace en la interfaz de registro de Keycloak y la organizacion en
+# `POST /organizaciones` (0025 E6). El generador de la plataforma trae el
+# registro cerrado; aqui se abre SOLO en produccion, y con `verifyEmail` apagado
+# porque el realm no tiene servidor de correo (`smtpServer: {}`): con los dos
+# encendidos, quien se registra queda encerrado esperando un correo que no llega.
+# El dia que haya correo, `verifyEmail` vuelve a `true` aqui y no en otro sitio.
+#
+# ⚠️ Un realm que YA existe no lo toca el import (se salta y dice Done): estos
+#   dos valores se aplicaron en vivo con `kcadm update realms/rubix` el mismo
+#   dia, y esto es para que el proximo import los lleve.
+REGISTRO_EN_PRODUCCION = {"realm": "rubix", "registrationAllowed": True, "verifyEmail": False}
+
+
+def con_registro(realm):
+    if realm["realm"] == REGISTRO_EN_PRODUCCION["realm"]:
+        realm["registrationAllowed"] = REGISTRO_EN_PRODUCCION["registrationAllowed"]
+        realm["verifyEmail"] = REGISTRO_EN_PRODUCCION["verifyEmail"]
+    return realm
+
+
 documentos = []
 for f in PLANTILLAS:
     realm = json.loads(pathlib.Path(f).read_text(encoding="utf-8"))
@@ -214,6 +240,7 @@ for f in PLANTILLAS:
     realm = con_sujeto(realm)
     if nombre in REALMS_CON_ORE:
         realm = con_ore(realm)
+    realm = con_registro(realm)
     documentos.append({
         "apiVersion": "k8s.keycloak.org/v2alpha1",
         "kind": "KeycloakRealmImport",
