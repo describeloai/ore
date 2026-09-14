@@ -87,7 +87,7 @@ def ahora():
 
 def foto(ns):
     """Los objetos de un namespace con su resourceVersion: si nada cambio, es la misma foto."""
-    return correr("kubectl", "-n", ns, "get", "deploy,sts,svc,networkpolicy,sa,pvc"  # sin ResourceQuota: su resourceVersion cambia con el USO,
+    return correr("kubectl", "-n", ns, "get", "deploy,sts,svc,networkpolicy,sa,pvc",  # sin ResourceQuota: su resourceVersion cambia con el USO
                   "-o", "jsonpath={range .items[*]}{.kind}/{.metadata.name}:{.metadata.resourceVersion} {end}")
 
 
