@@ -613,6 +613,63 @@ fi
 #   niega a montar el compartimento porque no supo leer una lista deja al
 #   inquilino sin nada; uno que monta lo de siempre deja al inquilino en pie y
 #   el catálogo llega en la siguiente pasada.
+# ── ⭐ LOS TUNELES Y LA MUDANZA, ANTES DE LEER EL ARBOL ──────────────────────
+#
+# El arbol se lee de la forja del inquilino para rendir los Jobs de catalogo
+# (`crudo`, abajo). Si la mudanza fuera despues, la primera pasada leeria un
+# repositorio VACIO y rendiria la cola sin Jobs — medido el 2026-09-14: paso.
+# Asi que primero se muda, y luego se lee.
+if [ -z "$SECO" ]; then
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=http.extraheader
+  # ⭐ DENTRO no hay tunel que abrir: la forja esta a un salto. Estas seis lineas
+  #   son exactamente lo que el Job se ahorra, y por eso estan aisladas.
+  TUNEL=""; TUNEL_INQ=""
+  if [ -n "${DENTRO:-}" ]; then
+    :   # la URL la compone `empujar`, que ahora sirve a dos forjas
+  else
+    kubectl port-forward -n "$FORJA_NS" svc/forja "3129:3000" >/dev/null 2>&1 &
+    TUNEL=$!
+    if [ -n "$INQ" ]; then
+      kubectl port-forward -n "$NS" svc/forja "3131:3000" >/dev/null 2>&1 &
+      TUNEL_INQ=$!
+    fi
+    trap 'kill "$TUNEL" "$TUNEL_INQ" 2>/dev/null; rm -rf "$TMP"' EXIT
+    for _ in 1 2 3 4 5 6 7 8; do
+      curl -sS -o /dev/null "http://localhost:3129/api/v1/version" 2>/dev/null \
+        && { [ -z "$INQ" ] || curl -sS -o /dev/null "http://localhost:3131/api/v1/version" 2>/dev/null; } && break
+      sleep 1
+    done
+  fi
+  # ── ④b LA MUDANZA: el arbol y la cola, de la central a la del inquilino ──
+  #
+  # UNA vez: si el repositorio del inquilino esta vacio y el de la central no,
+  # se lleva entero (`--mirror`). Despues, el de la central se queda como copia
+  # muerta hasta que alguien lo borre a mano — no se borra nada aqui.
+  if [ -n "$INQ" ]; then
+    for R in "$REPO" trabajo; do
+      en_la_forja inquilino
+      VACIO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("si" if d.get("empty") else "no")' 2>/dev/null || echo "?")
+      en_la_forja central
+      LLENO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("no" if d.get("empty", True) else "si")' 2>/dev/null || echo "?")
+      if [ "$VACIO" = "si" ] && [ "$LLENO" = "si" ]; then
+        ( set -e; cd "$TMP"; rm -rf espejo.git
+          en_la_forja central
+          if [ -n "${DENTRO:-}" ]; then DE="$F_URL/$PROPIETARIO/$R.git"; else DE="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
+          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git clone -q --mirror "$DE" espejo.git
+          en_la_forja inquilino
+          if [ -n "${DENTRO:-}" ]; then A="$F_URL/$PROPIETARIO/$R.git"; else A="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
+          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git -C espejo.git push -q --mirror "$A" ) \
+          && hecho "mudado $PROPIETARIO/$R: de la forja de la plataforma a la del inquilino, entero" \
+          || falla "no se pudo mudar $PROPIETARIO/$R"
+      elif [ "$VACIO" = "no" ]; then
+        ya "$PROPIETARIO/$R en la forja del inquilino"
+      fi
+    done
+  fi
+
+fi
+
 FUENTES=""
 if [ -z "$SECO" ]; then
   # El arbol se lee de la forja del inquilino si ya esta; si no, de la central,
@@ -683,25 +740,6 @@ hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 if [ -n "$SECO" ]; then
   haria "empujar esos manifiestos a $COMPARTIMENTO"
 else
-  # ⭐ DENTRO no hay tunel que abrir: la forja esta a un salto. Estas seis lineas
-  #   son exactamente lo que el Job se ahorra, y por eso estan aisladas.
-  TUNEL=""; TUNEL_INQ=""
-  if [ -n "${DENTRO:-}" ]; then
-    :   # la URL la compone `empujar`, que ahora sirve a dos forjas
-  else
-    kubectl port-forward -n "$FORJA_NS" svc/forja "3129:3000" >/dev/null 2>&1 &
-    TUNEL=$!
-    if [ -n "$INQ" ]; then
-      kubectl port-forward -n "$NS" svc/forja "3131:3000" >/dev/null 2>&1 &
-      TUNEL_INQ=$!
-    fi
-    trap 'kill "$TUNEL" "$TUNEL_INQ" 2>/dev/null; rm -rf "$TMP"' EXIT
-    for _ in 1 2 3 4 5 6 7 8; do
-      curl -sS -o /dev/null "http://localhost:3129/api/v1/version" 2>/dev/null \
-        && { [ -z "$INQ" ] || curl -sS -o /dev/null "http://localhost:3131/api/v1/version" 2>/dev/null; } && break
-      sleep 1
-    done
-  fi
   # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
   #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
   #   que lee cualquier proceso de la maquina. Es lo mismo que hace
@@ -765,31 +803,7 @@ else
   en_la_forja central
   empujar "$COMPARTIMENTO" "$TMP/gobierno" "El compartimento"
 
-  # ── ④b LA MUDANZA: el arbol y la cola, de la central a la del inquilino ──
-  #
-  # UNA vez: si el repositorio del inquilino esta vacio y el de la central no,
-  # se lleva entero (`--mirror`). Despues, el de la central se queda como copia
-  # muerta hasta que alguien lo borre a mano — no se borra nada aqui.
   if [ -n "$INQ" ]; then
-    for R in "$REPO" trabajo; do
-      en_la_forja inquilino
-      VACIO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("si" if d.get("empty") else "no")' 2>/dev/null || echo "?")
-      en_la_forja central
-      LLENO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("no" if d.get("empty", True) else "si")' 2>/dev/null || echo "?")
-      if [ "$VACIO" = "si" ] && [ "$LLENO" = "si" ]; then
-        ( set -e; cd "$TMP"; rm -rf espejo.git
-          en_la_forja central
-          if [ -n "${DENTRO:-}" ]; then DE="$F_URL/$PROPIETARIO/$R.git"; else DE="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
-          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git clone -q --mirror "$DE" espejo.git
-          en_la_forja inquilino
-          if [ -n "${DENTRO:-}" ]; then A="$F_URL/$PROPIETARIO/$R.git"; else A="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
-          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git -C espejo.git push -q --mirror "$A" ) \
-          && hecho "mudado $PROPIETARIO/$R: de la forja de la plataforma a la del inquilino, entero" \
-          || falla "no se pudo mudar $PROPIETARIO/$R"
-      elif [ "$VACIO" = "no" ]; then
-        ya "$PROPIETARIO/$R en la forja del inquilino"
-      fi
-    done
     en_la_forja inquilino
     empujar "$TRABAJO"       "$TMP/cola"     "La cola de trabajo"
     en_la_forja central
@@ -797,7 +811,7 @@ else
     echo "  ~ sin forja del inquilino: la cola se empuja en la pasada siguiente"
   fi
 
-  [ -n "$TUNEL" ] && { kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT; }
+  [ -n "$TUNEL" ] && { kill "$TUNEL" "$TUNEL_INQ" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT; }
   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
 fi
 
