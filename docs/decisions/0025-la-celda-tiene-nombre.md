@@ -294,6 +294,18 @@ Lo hecho:
 - Dos identidades en el IdP y a propósito (`68-…`): el usuario del realm maestro *administra*
   clientes; el cliente `ore-aprovisionador` *es alguien* ante `ore-iam`. El token que registra un
   agente no tiene por qué poder crear clientes en Keycloak.
+- Medido en vivo (pasada `aprovisionador-29823355`): las dos celdas dan `aprovisionada` por el
+  verbo; los agentes contestan «ya estaba» — los registró el Job de operador antes de esta etapa,
+  así que **el primer `agente:registrar` con la huella del aprovisionador será el de la segunda
+  celda de `prueba`, en E6**, y el Job `ore-iam agente` se queda hasta entonces, tal como esta
+  etapa lo dijo. La consola (`6b02b17`) pinta `Provisioning` cuando la fila no lleva fecha.
+- Y dos cosas que solo la pasada real enseñó: `R=$(f)` es una subshell y una variable puesta en
+  `f` no vuelve (la primera pasada murió con `unbound variable`); y el aprovisionador **no puede
+  leer** el secreto del agente —a propósito—, así que la comparación «¿ya está?» fallaba en
+  silencio y cada pasada añadía una versión idéntica: **34** del mismo `ore-agente-demo`. Ahora se
+  compara por huella (sha256 en una anotación del secreto), sin leer el valor.
+  Confirmado en `aprovisionador-29823375` (2m39s): «el almacén tiene el secreto — ya estaba» × 4,
+  cero versiones nuevas, las dos celdas dadas por aprovisionadas.
 
 ### E6 · Los dos verbos y la consola
 
