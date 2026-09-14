@@ -112,9 +112,80 @@ spec:
             capabilities:
               drop: [ALL]
 ---
-# Quién puede hablar con él: desde dentro de `identidad`, el inquilino modelo, y
+# ── ⭐⭐ LA PUERTA DE `ore-iam`: `iam.ore.paladio.io` (2026-09-14) ─────────────
+#
+# Decia aqui «publicarlo es otra decision — administra personas». La decision
+# llego el dia que alguien entro en la consola de produccion: `RUBIX_ADMIN_URL`
+# apuntaba a `admin.paladio.io`, una IP de OTRO proyecto que contesta 503
+# («unconditional drop overload»), asi que la consola nunca habia hablado con
+# este `ore-iam` — solo la local, por un tunel. Sin puerta no hay organizaciones
+# ni celdas en pantalla, y con la 0025 E6 tampoco habria forma de pedir nada.
+#
+# Lo que la puerta expone es lo mismo que ya expone cada `ore-serve`: verbos
+# que exigen un token del realm y contestan 401 sin el. Lo que administra
+# personas lo hace con potestades (014), no con la red. El nombre va bajo
+# `*.ore.paladio.io` porque es la zona que ES nuestra (Cloud DNS + comodin +
+# certificado): `admin.paladio.io` vive en el registrador y no lo escribe nadie
+# de aqui.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: iam
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: iam-servidor
+spec:
+  parentRefs:
+    - name: puerta
+      namespace: ore-system
+      sectionName: https
+  hostnames:
+    - iam.ore.paladio.io
+  rules:
+    - backendRefs:
+        - name: ore-iam
+          port: 8090
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: salud-de-iam
+  namespace: identidad
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: /salud
+        portSpecification: USE_SERVING_PORT
+  targetRef:
+    group: ""
+    kind: Service
+    name: ore-iam
+---
+# El balanceador entra desde los rangos de Google, como en `43-la-entrada.yaml`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-del-balanceador-a-iam
+  namespace: identidad
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: iam-servidor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: { cidr: 130.211.0.0/22 }
+        - ipBlock: { cidr: 35.191.0.0/16 }
+      ports:
+        - protocol: TCP
+          port: 8090
+---
+# Quién más puede hablar con él por dentro: `identidad`, el inquilino modelo, y
 # el aprovisionador (0025 E5: dos verbos, y `ore-iam` sabe cuáles por el claim
-# del token, no por la red). Publicarlo es otra decisión — administra personas.
+# del token, no por la red).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

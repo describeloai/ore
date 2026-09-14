@@ -135,8 +135,15 @@ spec:
         namespaces:
           from: Selector
           selector:
-            matchLabels:
-              ore.dev/rol: cargas
+            # ⭐ Las celdas (`cargas`) y, desde el 2026-09-14, `identidad`: por
+            #   aqui sale `ore-iam` como `iam.ore.paladio.io` (67). La consola de
+            #   produccion hablaba con un `admin.paladio.io` que vivia en OTRO
+            #   proyecto y ya no contesta (503): el plano de control no tenia
+            #   puerta, y sin ella nadie ve sus organizaciones ni sus celdas.
+            matchExpressions:
+              - key: ore.dev/rol
+                operator: In
+                values: [cargas, identidad]
         kinds:
           - kind: HTTPRoute
 ---
