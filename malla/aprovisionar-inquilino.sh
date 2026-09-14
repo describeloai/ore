@@ -181,6 +181,19 @@ enlace "ore-cofre-$NOMBRE" cofre
 enlace "ore-serve-$NOMBRE" ore-serve
 enlace "ore-driver-$NOMBRE" driver
 
+# ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
+#
+# Desde la 0024-⑤ el material va al Secret Manager de la celda cifrado con ESTA
+# llave — el almacén la aplica solo, en vez de cifrar el cofre a mano. Para eso
+# el agente de servicio del Secret Manager tiene que poder cerrar y abrir con
+# ella. Es una cuenta de Google, una por proyecto; si no existe todavía se crea
+# (`services identity create`), y es de plataforma, no del inquilino.
+AGENTE_ALMACEN="service-$("$GCLOUD" projects describe "$PROYECTO" --format='value(projectNumber)' | tr -d '\r')@gcp-sa-secretmanager.iam.gserviceaccount.com"
+"$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO" >/dev/null 2>&1 || true
+correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
+  --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
+  --member="serviceAccount:$AGENTE_ALMACEN" \
+  && hecho "el almacen puede cifrar con $KEK (CMEK)"
 correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
   --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
@@ -402,6 +415,26 @@ correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
   --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretAccessor \
   && hecho "\`ore-cofre-$NOMBRE\` puede leer la base del cofre"
+
+# ── ⭐⭐ Y SU PREFIJO EN EL ALMACÉN, y NADA MÁS ─────────────────────────────
+#
+# La 0024-⑤: el material de los secretos de este inquilino vive en el Secret
+# Manager como `$NS-cofre-<nombre>`. El cofre los crea y los lee con su cuenta,
+# y lo que le impide tocar los de otro es una CONDICIÓN IAM por prefijo:
+#
+#   roles/secretmanager.admin  si  resource.name.startsWith(".../secrets/$NS-cofre-")
+#
+# Medido desde dentro del pod en `medida-el-almacen-por-inquilino.py`: crea el
+# suyo, NO crea con el prefijo de otro —el `create` también obedece—, NO lee el
+# testigo de otro, NO lista el proyecto. Sin la condición, `admin` sería el
+# proyecto entero: la concentración que la 0023 desmontó, con otro nombre.
+NUMERO=$("$GCLOUD" projects describe "$PROYECTO" --format='value(projectNumber)' | tr -d '\r')
+correr "$GCLOUD" projects add-iam-policy-binding "$PROYECTO" \
+  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/secretmanager.admin \
+  --condition="expression=resource.name.startsWith(\"projects/$NUMERO/secrets/$NS-cofre-\"),title=cofre-$NOMBRE,description=el cofre de $NOMBRE solo bajo su prefijo" \
+  --format=none \
+  && hecho "\`ore-cofre-$NOMBRE\` administra \`$NS-cofre-*\` en el almacen — y ningun otro prefijo"
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"

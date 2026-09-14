@@ -77,6 +77,12 @@ PLANTILLAS = [
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
     "43-la-entrada.yaml",
+    # ⭐ La mudanza del cofre (0024-⑤) es una plantilla y no un acto a mano: se
+    #   rinde con el inquilino, Flux la aplica UNA vez —un `Job` es inmutable y
+    #   sin `ttl` se queda `Complete` como registro—, y para un inquilino nuevo
+    #   muda cero y no confirma nada. Así ningún inquilino se queda sin mudar,
+    #   que es lo que la `028` exige para borrar `cofre.material`.
+    "45-la-mudanza-del-cofre.yaml",
     "50-jwks.yaml",
 ]
 

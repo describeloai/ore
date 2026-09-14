@@ -193,6 +193,14 @@ spec:
             # dónde se alcanza es configuración y cambia sin que nadie mienta.
             - --lugar
             - europe-west1
+            # ⭐ Y el proyecto de la CELDA, donde vive el almacén (0024-⑤). Desde el
+            #   2026-09-14 el material no está en la base central: está en el
+            #   Secret Manager de este proyecto, como `t-demo-cofre-<nombre>`, y
+            #   sólo `ore-cofre-demo` alcanza ese prefijo — condición IAM, medida
+            #   en `medida-el-almacen-por-inquilino.py`. En `byoc` es el proyecto
+            #   del cliente, y esta línea es lo único que cambia.
+            - --proyecto
+            - project-8853a180-450d-47be-b83
           env:
             - { name: HOME, value: /tmp }
             - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }

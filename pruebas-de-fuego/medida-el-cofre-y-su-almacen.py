@@ -166,9 +166,12 @@ for e in pol.get("spec", {}).get("egress", []):
 print()
 print("   ⇒ el proceso vive en el inquilino; el material cifrado vive en `identidad`; la llave")
 print("     vive en KMS del proyecto de la plataforma. Tres sitios para un secreto.")
-if "identidad" in host:
+if "identidad" in host and ("cofre.material" in tablas or "cofre.vigente" in tablas):
     anota("cruza", "el material CIFRADO vive en la base central (`%s`), y el cofre del inquilino la alcanza por 5432" % host,
           "en dedicado/BYOC eso es abrir la base central a otro cluster; ninguno de los medidos lo hace")
+elif "identidad" in host:
+    anota("queda", "el cofre sigue alcanzando la base central por 5432 — por el METADATO (`cofre.secreto`, `iam.concesion`), no por el material",
+          "es lo que la 0024-5 deja central a proposito; en BYOC ese camino pasa a ser HTTP contra ore-iam, y es otra etapa")
 anota("cruza", "la llave (KEK `ore/%s`) vive en el KMS del proyecto de la plataforma" % INQ,
       "en BYOC la llave tiene que ser suya: la 0024 ya lo nombra como E5")
 
@@ -179,16 +182,23 @@ for l in sql("select o.nombre, count(s.id), count(*) filter (where s.retirado_en
     if l.strip():
         n, cnt, ret, clases = l.split("|")
         print("   %-8s %2s secretos · %s retirados · clases: %s" % (n, cnt, ret, clases or "—"))
-vers = sql("select count(*), max(version), max(length(cifrado)), min(length(cifrado)) from cofre.material").strip().split("|")
-print("   material: %s filas · version maxima %s · cifrado entre %s y %s bytes" % (vers[0], vers[1], vers[3], vers[2]))
+# Desde la 0024-5 el material vive en el almacen de la celda; la tabla puede no existir ya.
+hay_material = sql("select to_regclass('cofre.material') is not null").strip() == "t"
+if hay_material:
+    vers = sql("select count(*), max(version), max(length(cifrado)), min(length(cifrado)) from cofre.material").strip().split("|")
+    print("   material: %s filas · version maxima %s · cifrado entre %s y %s bytes" % (vers[0], vers[1], vers[3], vers[2]))
+else:
+    vers = ["0", "-", "-", "-"]
+    print("   material: `cofre.material` ya no existe (028): el material esta en el almacen de la celda")
 con = sql("select rol, count(*) from iam.concesion_viva where recurso like 'secreto/%' group by 1 order by 1")
 print("   concesiones vivas sobre `secreto/*`: %s" % " · ".join("%s=%s" % tuple(l.split("|")) for l in con.splitlines() if l.strip()))
 print()
 print("   quien escribe: `ore-serve` al dar de alta una fuente (POST /secretos, clase `conexion`)")
 print("   quien lee:     el Job de catalogo (GET /secretos/{nombre}) con el agente del inquilino")
-anota("mover", "%s secretos vivos, todos `conexion`, una version cada uno; %s bytes como mucho" % (
-    sql("select count(*) from cofre.secreto where retirado_en is null").strip(), vers[2]),
-      "cabe de sobra en un Secret Manager (64 KiB por version) y la migracion es un bucle")
+if hay_material:
+    anota("mover", "%s secretos vivos, todos `conexion`, una version cada uno; %s bytes como mucho" % (
+        sql("select count(*) from cofre.secreto where retirado_en is null").strip(), vers[2]),
+          "cabe de sobra en un Secret Manager (64 KiB por version) y la migracion es un bucle")
 
 # ── E ───────────────────────────────────────────────────────────────────────
 titulo("E - QUE CRUZA DE PLANO, COTEJADO CON EL SECTOR")
@@ -205,7 +215,7 @@ print("""
      quien puede  en `iam.concesion`, central — y eso es METADATO, que SI va central      ✓
 """)
 
-orden = ["mover", "rompe", "cruza"]
+orden = ["mover", "rompe", "cruza", "queda"]
 for clase in orden:
     los = [h for h in hallazgos if h[0] == clase]
     if not los:
@@ -217,6 +227,10 @@ for clase in orden:
             for l in det.splitlines():
                 print("       %s" % l)
 print()
-print("  => Mover el material a la celda es: 2 tablas + 1 vista, 3 funciones, %s filas, y UNA" % vers[0])
-print("     invariante que pasa de un `join` a un orden en el codigo. La llave es otra etapa (E5).")
-print("     Lo que NO se mueve: `iam.concesion`. Quien puede sigue siendo del plano de control.")
+if ("cofre.material" in tablas or "cofre.vigente" in tablas):
+    print("  => Mover el material a la celda es: 2 tablas + 1 vista, 3 funciones, %s filas, y UNA" % vers[0])
+    print("     invariante que pasa de un `join` a un orden en el codigo. La llave es otra etapa (E5).")
+    print("     Lo que NO se mueve: `iam.concesion`. Quien puede sigue siendo del plano de control.")
+else:
+    print("  => HECHO (0024-5): el cofre no toca `cofre.material`; el material esta en el almacen de la")
+    print("     celda con la KEK como CMEK, y el metadato y la concesion siguen en el plano de control.")

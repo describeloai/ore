@@ -39,7 +39,9 @@
 //! ⇒ Y el segundo cerrojo no lo ponemos nosotros: lo pone el IAM de la nube
 //! sobre una llave. Está probado en `malla/99-el-cerrojo-de-la-llave.yaml`.
 
+mod almacen;
 mod kms;
+mod mudar;
 mod rutas;
 
 use ore_entrada::{http, identidad};
@@ -50,11 +52,19 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 const USO: &str = "\
-ore-cofre — el custodio: guarda el material cifrado y lo abre a quien puede
+ore-cofre — el custodio: guarda el material en el almacén de la celda y lo abre a quien puede
 
   ore-cofre servir [--bind DIRECCION] --identidad MODO --emisor URL
                    --audiencia AUD --jwks FICHERO
-                   --kms PROGRAMA --lugar REGION
+                   --kms PROGRAMA --proyecto PROYECTO --lugar REGION
+  ore-cofre mudar  --organizacion NOMBRE
+                   --kms PROGRAMA --proyecto PROYECTO --lugar REGION
+
+  `servir` es el custodio. `mudar` es de UNA vez por inquilino: lleva lo que
+  `cofre.material` guardaba cifrado en la base central al Secret Manager de la
+  celda (0024-⑤), abriéndolo con la llave con la que se cerró y borrando la
+  fila al terminar. Corre EN el inquilino, con su cuenta: es la única que puede
+  abrir su llave y escribir bajo su prefijo.
 
   La base sale de `COFRE_URL_FICHERO` —un fichero con la cadena de conexión— o,
   si no está, de `COFRE_URL`. No hay valor por defecto: una cadena de conexión
@@ -79,7 +89,8 @@ fn valor(args: &[String], que: &str) -> Option<String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) != Some("servir") {
+    let verbo = args.first().map(String::as_str);
+    if verbo != Some("servir") && verbo != Some("mudar") {
         print!("{USO}");
         return ExitCode::from(64);
     }
@@ -139,11 +150,49 @@ fn main() -> ExitCode {
         return ExitCode::from(64);
     }
     let Some(lugar) = valor(&args, "--lugar") else {
-        eprintln!("✗ falta `--lugar`, la región del llavero.");
+        eprintln!("✗ falta `--lugar`, la región del llavero y del almacén.");
         eprintln!("  `iam.organizacion.kek` guarda el NOMBRE de la llave; de dónde se");
         eprintln!("  alcanza es configuración del despliegue, y cambia sin que nadie mienta.");
         return ExitCode::from(64);
     };
+    // ⭐ El proyecto de la celda: donde vive el almacén (0024-⑤). Hace falta
+    //   ENTERO para nombrar la CMEK del secreto, y es carretera — en `byoc` es el
+    //   proyecto del cliente y esta bandera es lo único que cambia.
+    let Some(proyecto) = valor(&args, "--proyecto") else {
+        eprintln!("✗ falta `--proyecto`, el proyecto de la celda donde vive el almacén.");
+        eprintln!("  Sin él no se puede nombrar la CMEK del secreto, y un valor por defecto");
+        eprintln!("  apuntaría a un almacén que nadie eligió.");
+        return ExitCode::from(64);
+    };
+    let almacen = almacen::Almacen {
+        programa: programa.clone(),
+        proyecto: proyecto.clone(),
+        lugar: lugar.clone(),
+    };
+
+    if verbo == Some("mudar") {
+        let Some(org) = valor(&args, "--organizacion") else {
+            eprintln!("✗ falta `--organizacion`: `mudar` es de UN inquilino, el que corre esto.");
+            return ExitCode::from(64);
+        };
+        let base = match base::conectar(&url) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("✗ {e}");
+                return ExitCode::from(69);
+            }
+        };
+        return match mudar::mudar(base, &org, &kms::Kms { programa, lugar }, &almacen) {
+            Ok(n) => {
+                eprintln!("ok · {n} secretos mudados al almacen de la celda");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("✗ {e}");
+                ExitCode::from(70)
+            }
+        };
+    }
 
     let bind = valor(&args, "--bind").unwrap_or_else(|| "127.0.0.1:8095".into());
     let jwks = valor(&args, "--jwks").map(PathBuf::from);
@@ -183,8 +232,8 @@ fn main() -> ExitCode {
 
     eprintln!("ore-cofre · {bind}");
     eprintln!("  identidad    {dicho}");
-    eprintln!("  cliente      {}", kms::ruta_de(&programa));
-    eprintln!("  lugar        {lugar}");
+    eprintln!("  cliente      {}", almacen::ruta_de(&programa));
+    eprintln!("  almacen      proyecto {proyecto} · {lugar}");
     eprintln!();
     for (metodo, ruta, montada) in rutas::mapa(con_identidad) {
         eprintln!(
@@ -205,7 +254,7 @@ fn main() -> ExitCode {
         base: Mutex::new(base),
         emisor: valor(&args, "--emisor").unwrap_or_default(),
         identidad: proveedor,
-        kms: kms::Kms { programa, lugar },
+        almacen,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

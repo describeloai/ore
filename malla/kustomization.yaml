@@ -157,6 +157,7 @@ configMapGenerator:
       - 42-el-arbol.yaml
       - 43-la-entrada.yaml
       - 44-el-catalogo.yaml
+      - 45-la-mudanza-del-cofre.yaml
       - 50-jwks.yaml
 
 generatorOptions:

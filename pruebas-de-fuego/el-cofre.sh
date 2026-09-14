@@ -27,6 +27,17 @@
 #   6  ⭐ resolver un secreto AJENO            mismo error que uno inventado
 #   7  la huella                              emitir y resolver, SIN el valor
 #   8  ⭐ se abre con la llave con la que se CERRÓ, no con la de ahora
+#   9  ⭐⭐ el material NO está en la base central (0024-⑤): está en el almacén
+#        de la celda, bajo el prefijo del inquilino — y lo viejo se MUDA
+#
+# ── ⭐ Y el almacén también es de mentira, por lo mismo ────────────────────
+#
+#   El aislamiento por prefijo —que el cofre de `demo` no pueda tocar lo de
+#   `prueba`— está probado contra Google en `medida-el-almacen-por-inquilino.py`,
+#   desde dentro del pod y con la condición IAM de verdad. Lo que esto prueba es
+#   que el cofre USA el almacén como debe: el valor entra por la entrada
+#   estándar, el nombre lleva el inquilino delante, la versión es la que el
+#   almacén devuelve, y `cofre.material` se queda vacía.
 #
 #   PG_URL=postgres://postgres:x@localhost:5432 \
 #   PGHOST=localhost PGUSER=postgres PGPASSWORD=x \
@@ -145,16 +156,16 @@ acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
 
 # ── ⭐ EL CLIENTE DE MENTIRA, y distingue llaves ────────────────────────────
 #
-# Recibe los MISMOS argumentos que `gcloud kms` y habla por la entrada y la
-# salida estandar, como el de verdad. Lo que cifra lleva DENTRO el nombre de la
-# llave, asi que descifrar con otra falla — y falla diciendo `PERMISSION_DENIED`,
-# que es lo que diria Google.
+# Recibe los MISMOS argumentos que `gcloud kms` y `gcloud secrets` y habla por
+# la entrada y la salida estandar, como el de verdad. Lo que cifra lleva DENTRO
+# el nombre de la llave, asi que descifrar con otra falla — y falla diciendo
+# `PERMISSION_DENIED`, que es lo que diria Google. Y el almacen es un directorio:
+# un secreto es una carpeta, cada version un fichero numerado.
 cat > "$TMP/kms-de-mentira" <<'KMSCODE'
 #!/usr/bin/env python3
-import base64, sys
+import base64, os, sys
 
 a = sys.argv[1:]
-verbo = a[1]
 def opt(n):
     for i, x in enumerate(a):
         if x == n:
@@ -163,6 +174,50 @@ def opt(n):
             return x.split("=", 1)[1]
     return None
 
+# ── el almacen ──────────────────────────────────────────────────────────────
+if a[0] == "secrets":
+    raiz = os.environ["ALMACEN_DE_MENTIRA"]
+    proyecto = opt("--project") or "?"
+    if a[1] == "create":
+        nombre = a[2]
+        d = os.path.join(raiz, nombre)
+        if os.path.isdir(d):
+            sys.stderr.write("ERROR: (gcloud.secrets.create) ALREADY_EXISTS: Secret [%s] already exists.\n" % nombre)
+            raise SystemExit(1)
+        os.makedirs(d)
+        # la CMEK con la que nace, para poder cotejarla
+        with open(opt("--replication-policy-file")) as f, open(os.path.join(d, "cmek"), "w") as g:
+            g.write(f.read())
+        raise SystemExit(0)
+    if a[1] == "versions" and a[2] == "add":
+        nombre = a[3]
+        d = os.path.join(raiz, nombre)
+        if not os.path.isdir(d):
+            sys.stderr.write("ERROR: NOT_FOUND: Secret [%s] not found.\n" % nombre)
+            raise SystemExit(1)
+        n = 1 + len([x for x in os.listdir(d) if x.isdigit()])
+        with open(os.path.join(d, str(n)), "wb") as f:
+            f.write(sys.stdin.buffer.read())
+        sys.stdout.write("projects/%s/secrets/%s/versions/%d\n" % (proyecto, nombre, n))
+        raise SystemExit(0)
+    if a[1] == "versions" and a[2] in ("access", "describe"):
+        nombre = opt("--secret")
+        d = os.path.join(raiz, nombre or "")
+        vs = sorted(int(x) for x in os.listdir(d) if x.isdigit()) if os.path.isdir(d) else []
+        if not vs:
+            sys.stderr.write("ERROR: NOT_FOUND: Secret [%s] not found or has no versions.\n" % nombre)
+            raise SystemExit(1)
+        v = vs[-1] if a[3] == "latest" else int(a[3])
+        if a[2] == "access":
+            sys.stdout.buffer.write(open(os.path.join(d, str(v)), "rb").read())
+        else:
+            sys.stdout.write("projects/%s/secrets/%s/versions/%d\n" % (proyecto, nombre, v))
+        raise SystemExit(0)
+    sys.stderr.write("ERROR: verbo de secrets desconocido %s\n" % a[1:3])
+    raise SystemExit(2)
+
+# ── el KMS ──────────────────────────────────────────────────────────────────
+verbo = a[1]
 llave = "%s/%s" % (opt("--keyring"), opt("--key"))
 dato = sys.stdin.buffer.read()
 
@@ -201,9 +256,11 @@ ADA=$(acunar "persona:ada" "ada@paladio.io")
 ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
 
 # ── El custodio ─────────────────────────────────────────────────────────────
+mkdir -p "$TMP/almacen"
+export ALMACEN_DE_MENTIRA="$TMP/almacen"
 COFRE_URL="$URL_COFRE" "$COFRE" servir --bind "127.0.0.1:$PUERTO" \
   --identidad oidc --emisor "$EMISOR" --audiencia "$AUDIENCIA" \
-  --jwks "$TMP/jwks.json" --kms "$TMP/kms-de-mentira" --lugar europe-west1 \
+  --jwks "$TMP/jwks.json" --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 \
   > "$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 60); do
@@ -352,14 +409,60 @@ dice "7 · huella de emitir y de resolver · con el rol · y sin el valor"
 # ── 8 · ⭐ se abre con la llave con la que se CERRÓ ─────────────────────────
 #
 # La organizacion cambia de llave maestra. Lo que ya estaba cerrado tiene que
-# seguir abriendose — `cofre.material.kek` guarda con cual se cerro, y por eso
-# rotar no es una caida. Si el codigo usara la llave de AHORA, el cliente de
-# mentira lo cazaria: descifrar con otra falla.
+# seguir abriendose: cada version del almacen quedo cifrada con la CMEK que
+# habia, y rotar la de la organizacion no la toca. Aqui el cliente de mentira
+# no cifra el almacen, asi que lo que esto fija es que el codigo NO necesita la
+# llave de ahora para leer — que es la propiedad.
 psql "$URL" -qtAc "update iam.organizacion set kek = 'ore/acme-nueva' where id = '$ORG'" >/dev/null
 [ "$(pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "200" ] \
   || falla "8 · ⛔ tras cambiar la llave de la organizacion, lo viejo dejo de abrirse: $(cat "$TMP/r.json")"
 [ "$(campo valor)" = "postgres://u:p@db/x" ] || falla "8 · abrio, pero devolvio otra cosa"
 dice "8 · la llave cambio y lo cerrado antes sigue abriendose"
+
+# ── 9 · ⭐⭐ EL MATERIAL NO ESTA EN LA BASE CENTRAL, Y LO VIEJO SE MUDA ─────
+#
+# La 0024-⑤: el metadato (`cofre.secreto`, `iam.concesion`) se queda en el plano
+# de control; el material va al almacen de la celda, bajo el prefijo del
+# inquilino. Lo que se cobra:
+#   · `cofre.material` esta VACIA tras emitir
+#   · el almacen tiene `t-acme-cofre-pg-produccion` con la CMEK de la llave
+#   · la huella de emitir dice donde quedo y que version
+#   · y un secreto viejo —cifrado a mano en `cofre.material`— lo lleva `mudar`
+#     al almacen, abriendolo con la llave con la que se cerro, y borra la fila
+MATERIAL=$(psql "$URL" -qtAc "select count(*) from cofre.material")
+[ "$MATERIAL" = "0" ] || falla "9 · ⛔ EL MATERIAL SIGUE EN LA BASE CENTRAL: $MATERIAL filas en cofre.material"
+[ -f "$TMP/almacen/t-acme-cofre-pg-produccion/1" ] \
+  || falla "9 · el almacen no tiene \`t-acme-cofre-pg-produccion\` v1: $(ls "$TMP/almacen")"
+grep -q "keyRings/ore/cryptoKeys/acme" "$TMP/almacen/t-acme-cofre-pg-produccion/cmek" \
+  || falla "9 · el secreto no nacio con la CMEK de la organizacion: $(cat "$TMP/almacen/t-acme-cofre-pg-produccion/cmek")"
+DONDE=$(psql "$URL" -qtAc "select detalle->>'almacen' from iam.huella where operacion='secreto:emitir' limit 1")
+[ "$DONDE" = "t-acme-cofre-pg-produccion" ] || falla "9 · la huella de emitir no dice donde quedo: «$DONDE»"
+
+# Un secreto VIEJO: como los guardaba el cofre hasta la 0024-⑤, cifrado a mano
+# con la llave de entonces (`ore/acme`, no la de ahora), en `cofre.material`.
+VIEJO=$(printf 'postgres://viejo:v@db/y' | "$TMP/kms-de-mentira" kms encrypt --keyring ore --key acme --plaintext-file=- --ciphertext-file=- | base64 -w0)
+psql "$URL" -qtAc "insert into cofre.secreto (id, organizacion, nombre, clase, emitio)
+  values ('sec_viejo', '$ORG', 'pg-viejo', 'conexion', (select id from iam.persona where sub='persona:ada'))" >/dev/null
+psql "$URL" -qtAc "insert into cofre.material (secreto, version, cifrado, kek)
+  values ('sec_viejo', 1, decode('$VIEJO', 'base64'), 'ore/acme')" >/dev/null
+psql "$URL" -qtAc "select iam.conceder_de_secreto('con_viejo', (select id from iam.persona where sub='persona:ada'), 'secreto/pg-viejo', 'owner', (select id from iam.persona where sub='persona:ada'), '$ORG')" >/dev/null
+# Antes de mudar, resolver falla: el almacen no lo tiene, y el cofre NO mira la base.
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-viejo" "$ADA")" = "422" ] \
+  || falla "9 · un secreto sin mudar deberia fallar al resolver, no contestar: $(cat "$TMP/r.json")"
+COFRE_URL="$URL_COFRE" "$COFRE" mudar --organizacion acme \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/mudar.txt" 2>&1 \
+  || falla "9 · \`mudar\` fallo: $(cat "$TMP/mudar.txt")"
+grep -q "1 secretos mudados" "$TMP/mudar.txt" || falla "9 · mudar no dijo cuantos: $(cat "$TMP/mudar.txt")"
+[ "$(psql "$URL" -qtAc "select count(*) from cofre.material")" = "0" ] || falla "9 · mudar no borro la fila de cofre.material"
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-viejo" "$ADA")" = "200" ] \
+  || falla "9 · tras mudar no resuelve: $(cat "$TMP/r.json")"
+[ "$(campo valor)" = "postgres://viejo:v@db/y" ] || falla "9 · mudo otra cosa: $(campo valor)"
+# Y repetir es seguro: sin material, no hay nada que mudar y no se confirma nada.
+COFRE_URL="$URL_COFRE" "$COFRE" mudar --organizacion acme \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/mudar.txt" 2>&1 \
+  || falla "9 · la segunda pasada de \`mudar\` fallo: $(cat "$TMP/mudar.txt")"
+grep -q "0 secretos mudados" "$TMP/mudar.txt" || falla "9 · la segunda pasada deberia mudar 0: $(cat "$TMP/mudar.txt")"
+dice "9 · el material esta en el almacen y no en la base · con la CMEK de la organizacion · y lo viejo se muda una vez"
 
 echo
 echo "✓ el custodio guarda, abre a quien puede, y no deja el valor en ningun otro sitio"

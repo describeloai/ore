@@ -1,4 +1,9 @@
-//! Cerrar y abrir, hablándole al **cliente** de la nube.
+//! Abrir lo que se cerró a mano, hablándole al **cliente** de la nube.
+//!
+//! ⚠️ Desde la 0024-⑤ esto sólo sirve para la MUDANZA (`ore-cofre mudar`): el
+//!   material nuevo va al Secret Manager de la celda con la KEK como CMEK, y
+//!   nadie cierra nada a mano. Lo que queda aquí es `abrir`, para llevar lo que
+//!   `cofre.material` guardaba al almacén; cuando la `028` la borre, esto sobra.
 //!
 //! # Por qué un subproceso y no una biblioteca
 //!
@@ -31,7 +36,7 @@
 //! DEK nuestra habría significado escribir criptografía.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// A qué cliente se le habla y dónde viven las llaves.
@@ -85,7 +90,7 @@ impl Kms {
                 format!(
                     "no se pudo ejecutar `{}`: {e}. Es el cliente de la nube, y este \
                      programa no habla con el KMS: habla con el",
-                    ruta_de(&self.programa)
+                    self.programa.display()
                 )
             })?;
 
@@ -111,17 +116,9 @@ impl Kms {
         Ok(salida.stdout)
     }
 
-    pub fn cerrar(&self, kek: &str, claro: &[u8]) -> Result<Vec<u8>, String> {
-        self.correr("encrypt", kek, claro)
-    }
-
     pub fn abrir(&self, kek: &str, cifrado: &[u8]) -> Result<Vec<u8>, String> {
         self.correr("decrypt", kek, cifrado)
     }
-}
-
-pub fn ruta_de(p: &Path) -> String {
-    p.display().to_string()
 }
 
 #[cfg(test)]

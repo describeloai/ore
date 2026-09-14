@@ -1,0 +1,87 @@
+# LA MUDANZA DEL COFRE — de UNA vez por inquilino, y se queda como registro.
+#
+# Hasta el 2026-09-14 el cofre guardaba el material cifrado en `cofre.material`,
+# en la base CENTRAL de `iam`. La 0024-⑤ lo lleva al Secret Manager de la celda,
+# y este Job es el que lo lleva: abre cada secreto vivo con la llave con la que
+# se cerró, lo escribe en el almacén bajo `t-demo-cofre-<nombre>` con esa misma
+# llave como CMEK, y borra la fila. Corre EN el inquilino con SU cuenta, porque
+# sólo ella puede abrir su llave y escribir bajo su prefijo.
+#
+# ⭐ Es una PLANTILLA del inquilino, como el cofre mismo: se rinde con él y
+#   Flux la aplica UNA vez. Un `Job` es inmutable y no lleva `ttl` a propósito:
+#   se queda `Complete` como registro de que la mudanza corrió. Para un
+#   inquilino nuevo muda cero secretos y no confirma nada — repetirlo es seguro.
+#   Y la `028` se niega a borrar `cofre.material` mientras quede una fila sin
+#   mudar, así que ningún inquilino puede quedarse atrás sin que se vea.
+#
+#     kubectl -n t-demo logs job/mudar-el-cofre
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mudar-el-cofre
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        # La misma etiqueta que el cofre: mismas políticas de red — la base por
+        # 5432, los metadatos, y 443 para el cliente de la nube.
+        ore.dev/rol: cofre
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: cofre
+      volumes:
+        - name: testigo
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+      # La base, por el mismo camino que el cofre: del almacén a memoria.
+      initContainers:
+        - name: traer-la-base
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: testigo, mountPath: /testigo }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest --secret=cofre-url --out-file=/testigo/cofre-url
+              chmod 0400 /testigo/cofre-url
+              echo "base puesta"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: mudar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-cofre:main
+          imagePullPolicy: Always
+          args:
+            - mudar
+            - --organizacion
+            - demo
+            - --kms
+            - /google-cloud-sdk/bin/gcloud
+            - --lugar
+            - europe-west1
+            - --proyecto
+            - project-8853a180-450d-47be-b83
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: COFRE_URL_FICHERO, value: /testigo/cofre-url }
+          volumeMounts: [{ name: testigo, mountPath: /testigo, readOnly: true }]
+          resources:
+            requests: {cpu: "100m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }

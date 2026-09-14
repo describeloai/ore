@@ -26,7 +26,7 @@
 //! confirma en la misma transacción que la lectura — si anotar falla, no se
 //! contesta.
 
-use crate::kms::Kms;
+use crate::almacen::{Almacen, nombre_en_almacen};
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
 use ore_entrada::http::{Peticion, Respuesta};
@@ -45,7 +45,8 @@ pub struct Servidor {
     pub base: Mutex<Client>,
     pub emisor: String,
     pub identidad: Option<Proveedor>,
-    pub kms: Kms,
+    /// Dónde vive el material desde la 0024-⑤: el Secret Manager de la celda.
+    pub almacen: Almacen,
 }
 
 impl Servidor {
@@ -118,7 +119,7 @@ impl Servidor {
 
     fn emitir(&self, s: &Identidad, org: &str, cuerpo: &str) -> Respuesta {
         let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
-        let kms = &self.kms;
+        let almacen = &self.almacen;
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`: aqui llegaba `demo` y
             //    todo lo de abajo pregunta por `org_b7b98fdd…`.
@@ -146,16 +147,21 @@ impl Servidor {
                 return Err("un secreto vacio no es un secreto".into());
             }
 
-            // ② Con qué llave se cierra. Sale de `iam`, que es quien la nombra.
-            let kek: String = tx
-                .uno("select kek from iam.organizacion where id = $1", &[&org])?
-                .ok_or("esa organizacion no existe")?
-                .get(0);
+            // ② Con qué llave se cierra y cómo se llama el inquilino. Las dos
+            //    salen de `iam`, que es quien las nombra: la llave es la CMEK del
+            //    secreto en el almacén, y el nombre del inquilino va DELANTE del
+            //    nombre del secreto porque es lo que la condición IAM evalúa.
+            let f = tx
+                .uno(
+                    "select kek, nombre from iam.organizacion where id = $1",
+                    &[&org],
+                )?
+                .ok_or("esa organizacion no existe")?;
+            let (kek, inquilino): (String, String) = (f.get(0), f.get(1));
 
-            // ③ Y se cierra ANTES de escribir nada. Si el KMS dice que no, no
-            //    queda una fila de catálogo apuntando a un material que no está.
-            let cifrado = kms.cerrar(&kek, valor.as_bytes())?;
-
+            // ③ El METADATO, en la base del plano de control — y dentro de la
+            //    transacción, así que si el almacén dice que no, no queda una
+            //    fila apuntando a un material que no está.
             let id = nuevo_id("sec");
             let quien = verbos::persona_id(tx, emisor, &s.persona)?;
             tx.ejecutar(
@@ -163,11 +169,22 @@ impl Servidor {
                  values ($1, $2, $3, $4, $5)",
                 &[&id, &org, &nombre, &clase, &quien],
             )?;
-            tx.ejecutar(
-                "insert into cofre.material (secreto, version, cifrado, kek)
-                 values ($1, 1, $2, $3)",
-                &[&id, &cifrado, &kek],
-            )?;
+
+            // ── ⭐⭐ Y EL MATERIAL, EN LA CELDA ──────────────────────────────
+            //
+            // Es la 0024-⑤. El valor va al Secret Manager de la celda por el
+            // cliente de la nube —entrada estándar, sin tocar el disco—, cifrado
+            // con la KEK de la organización como CMEK. `cofre.material` deja de
+            // existir para lo nuevo; lo viejo lo muda `ore-cofre mudar`.
+            //
+            // ⚠️ Lo que NO es atómico, dicho: si el almacén escribe y la
+            //   confirmación de abajo falla, queda un secreto en el almacén sin
+            //   fila. No es una fuga —sólo lo lee `ore-cofre-<inq>`— y `crear` es
+            //   idempotente: el siguiente `emitir` con el mismo nombre lo
+            //   reutiliza y añade otra versión.
+            let en_almacen = nombre_en_almacen(&inquilino, &nombre);
+            almacen.crear(&en_almacen, &kek, &inquilino)?;
+            let version = almacen.anadir(&en_almacen, valor.as_bytes())?;
 
             // ④ ⭐⭐ Y NACE CON SU DUEÑO. La `0023`: quien emite queda `owner`
             //    de lo que emitió y de nada más. Un secreto sin nadie que pueda
@@ -220,6 +237,10 @@ impl Servidor {
                     ("nombre", Json::s(&nombre)),
                     ("clase", Json::s(&clase)),
                     ("kek", Json::s(&kek)),
+                    // Dónde quedó, y qué versión le dio el almacén: es lo que
+                    // permite cotejar la huella contra el almacén sin abrir nada.
+                    ("almacen", Json::s(&en_almacen)),
+                    ("version", Json::Int(version)),
                 ]),
             )?;
 
@@ -229,7 +250,7 @@ impl Servidor {
             Ok(Json::obj([
                 ("secreto", Json::s(id)),
                 ("nombre", Json::s(nombre)),
-                ("version", Json::Int(1)),
+                ("version", Json::Int(version)),
                 ("concesion", Json::s(con)),
             ]))
         })
@@ -247,17 +268,13 @@ impl Servidor {
             //   cuelga de una potestad y no del estado por defecto, igual que
             //   `invitacion:listar` con los correos.
             potestad::exige(tx, emisor, &s.persona, &org, "secreto:listar")?;
+            // ⛔ Ya no dice cuántas versiones hay: eso lo sabe el almacén, y
+            //   preguntárselo serían N llamadas al cliente para contestar una
+            //   lista. Nadie lo leía — medido en la consola y en las pruebas.
             let filas = tx.filas(
-                "select s.nombre, s.clase, s.en, (s.retirado_en is not null) as retirado,
-                        -- ⛔ `::bigint` a proposito: `version` es `integer`, y `max`
-                        --   devuelve `integer`. Leerlo como `i64` desde el driver es un
-                        --   error de tipo en tiempo de ejecucion, no de compilacion —
-                        --   la clase de fallo que solo aparece con la base delante.
-                        coalesce(max(m.version), 0)::bigint as versiones
+                "select s.nombre, s.clase, (s.retirado_en is not null) as retirado
                    from cofre.secreto s
-                   left join cofre.material m on m.secreto = s.id
                   where s.organizacion = $1
-                  group by s.nombre, s.clase, s.en, s.retirado_en
                   order by s.nombre",
                 &[&org],
             )?;
@@ -267,8 +284,7 @@ impl Servidor {
                     Json::obj([
                         ("nombre", Json::s(f.get::<_, String>(0))),
                         ("clase", Json::s(f.get::<_, String>(1))),
-                        ("retirado", Json::Bool(f.get::<_, bool>(3))),
-                        ("versiones", Json::Int(f.get::<_, i64>(4))),
+                        ("retirado", Json::Bool(f.get::<_, bool>(2))),
                     ])
                 })
                 .collect();
@@ -277,7 +293,7 @@ impl Servidor {
                 &org,
                 Json::obj([("cuantos", Json::Int(lista.len() as i64))]),
             )?;
-            // ⛔ Nombres, clases y cuántas versiones. Ni un valor.
+            // ⛔ Nombres y clases. Ni un valor.
             Ok(Json::obj([("secretos", Json::Arr(lista))]))
         })
     }
@@ -286,7 +302,7 @@ impl Servidor {
 
     fn resolver(&self, s: &Identidad, org: &str, nombre: &str) -> Respuesta {
         let (org, nombre) = (org.to_string(), nombre.to_string());
-        let kms = &self.kms;
+        let almacen = &self.almacen;
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`.
             let org = canonica(tx, &org)?;
@@ -310,16 +326,22 @@ impl Servidor {
             let recurso = format!("secreto/{nombre}");
 
             // ⛔⛔ UNA SOLA CONSULTA, Y UN SOLO ERROR. Se pregunta por el
-            //   material Y por la concesión a la vez: así no hay un camino en el
+            //   secreto Y por la concesión a la vez: así no hay un camino en el
             //   que el código sepa que el secreto existe antes de saber si quien
             //   pregunta puede. Y el mensaje es el mismo en los tres casos —no
             //   existe, no es tuyo, no te lo han concedido— porque distinguirlos
             //   convierte esta ruta en un directorio de lo ajeno.
+            //
+            // ⭐ La invariante SOBREVIVE a la mudanza del material (0024-⑤)
+            //   porque el metadato se quedó aquí: el `join` sigue devolviendo
+            //   nada si no puedes, y SÓLO DESPUÉS se va al almacén de la celda a
+            //   por el valor. Era la única invariante que el traslado tocaba,
+            //   medida en `medida-el-cofre-y-su-almacen.py`, y así no se toca.
             let f = tx
                 .uno(
-                    "select v.cifrado, v.kek, v.version, c.rol
+                    "select c.rol, o.nombre
                        from cofre.secreto s
-                       join cofre.vigente v on v.secreto = s.id
+                       join iam.organizacion o on o.id = s.organizacion
                        join iam.concesion_viva c
                          on c.recurso = $3 and c.organizacion = s.organizacion
                         and c.sujeto = $4 and c.rol in ('usar', 'lector', 'owner')
@@ -329,14 +351,14 @@ impl Servidor {
                 )?
                 .ok_or("ese secreto no existe o no es tuyo")?;
 
-            let (cifrado, kek, version, rol): (Vec<u8>, String, i32, String) =
-                (f.get(0), f.get(1), f.get(2), f.get(3));
+            let (rol, inquilino): (String, String) = (f.get(0), f.get(1));
 
-            // ⭐ Se abre con la llave CON LA QUE SE CERRÓ, no con la de ahora. Si
-            //   la organización cambió de KEK, lo viejo sigue abriéndose.
-            let claro = kms.abrir(&kek, &cifrado)?;
+            // ⭐ Del almacén de la celda, la última versión. Con qué llave se
+            //   cerró lo sabe el almacén: cada versión lleva la CMEK que había,
+            //   y rotar la de la organización no cierra lo viejo.
+            let (claro, version) = almacen.leer(&nombre_en_almacen(&inquilino, &nombre))?;
             let claro = String::from_utf8(claro)
-                .map_err(|_| "lo que devolvio el KMS no es texto".to_string())?;
+                .map_err(|_| "lo que devolvio el almacen no es texto".to_string())?;
 
             // ⛔ La huella ANTES de contestar, y en la misma transacción: si
             //   anotar falla, el valor no sale. Un custodio que abriera sin
@@ -354,13 +376,13 @@ impl Servidor {
                     //   esto un Job y una persona se leen igual en la auditoria,
                     //   y la `008` separa esas dos preguntas a proposito.
                     ("clase", Json::s(clase)),
-                    ("version", Json::Int(version as i64)),
+                    ("version", Json::Int(version)),
                 ]),
             )?;
 
             Ok(Json::obj([
                 ("nombre", Json::s(&nombre)),
-                ("version", Json::Int(version as i64)),
+                ("version", Json::Int(version)),
                 ("rol", Json::s(&rol)),
                 ("valor", Json::s(claro)),
                 // ⚠️ Lo que `usar` TODAVÍA no es, dicho en la respuesta y no en

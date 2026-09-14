@@ -250,9 +250,12 @@ promesa de Redpanda —sin nodos, pago por uso— y sus cuotas dichas (`Resource
 2 había que **decidir** — y son ⑤ y ⑥. Lo que la E3 hace, en este orden: **(a) ✓** `iam.celda`
 dice su puerta (`027`), el aprovisionador converge el DNS o dice qué registro falta, y la
 consola coteja que la entrada **llegue** a la celda — la dirección ya salía de la organización
-(`022`), lo que faltaba era la relación con la celda; **(b)** el
-cofre guarda el material en el Secret Manager de la celda, con `cofre.secreto` e `iam.concesion`
-donde están; **(c)** `t-demo` con **su forja propia** y Flux tirando de la nuestra. Si eso
+(`022`), lo que faltaba era la relación con la celda; **(b) ✓** el
+cofre guarda el material en el Secret Manager de la celda como `t-<n>-cofre-<nombre>`, con la KEK
+como CMEK y una **condición IAM por prefijo** medida desde dentro del pod
+(`medida-el-almacen-por-inquilino.py`: el `create` también la obedece); `cofre.secreto` e
+`iam.concesion` se quedan, `ore-cofre mudar` lleva lo viejo y la `028` no borra hasta que esté
+vacío; **(c)** `t-demo` con **su forja propia** y Flux tirando de la nuestra. Si eso
 funciona aquí, dedicado y BYOC son *el mismo manifiesto en otro sitio*.
 
 **E4 · Dedicado.** Un GKE por inquilino, aprovisionado por el mismo guion, con los tres pools.
