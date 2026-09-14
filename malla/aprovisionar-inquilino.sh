@@ -1019,15 +1019,22 @@ JSON
         "$GCLOUD" secrets create "$S" --replication-policy=user-managed --locations="$LUGAR" \
           --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 || true
       fi
-      # ⛔ No `cmp`: la imagen de drivers NO lo trae (es `diffutils`),
-      #   asi que «no es igual» salia siempre y cada pasada añadia una version
-      #   igual a la anterior — 29 versiones del mismo `ore-agente-demo` antes
-      #   de que nadie mirara. Se compara con python, que si esta.
-      if "$GCLOUD" secrets versions access latest --secret="$S" --out-file="$(ruta "$TMP/actual")" >/dev/null 2>&1 \
-         && "$PY" -c 'import sys;sys.exit(0 if open(sys.argv[1],"rb").read()==open(sys.argv[2],"rb").read() else 1)' "$TMP/actual" "$TMP/agente-$parte"; then
+      # ⛔⛔ SIN LEER EL VALOR. Esto comparaba leyendo la version `latest`, y
+      #   desde dentro eso NO PUEDE funcionar: el papel del aprovisionador no
+      #   tiene `versions.access` a proposito («crea y concede, no usa»). La
+      #   lectura fallaba en silencio, «no es igual» salia siempre, y cada
+      #   pasada añadia una version identica: 34 del mismo `ore-agente-demo`
+      #   antes de que nadie mirara.
+      #
+      # ⇒ Se compara por HUELLA: el sha256 del valor va en una anotacion del
+      #   secreto (metadato, que si puede leer), y solo se añade version cuando
+      #   la huella cambia. El valor sigue sin salir del almacen hacia aqui.
+      HUELLA=$("$PY" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TMP/agente-$parte")
+      if [ "$("$GCLOUD" secrets describe "$S" --format='value(annotations.sha256)' 2>/dev/null | tr -d '\r')" = "$HUELLA" ]; then
         ya "el almacen tiene el $parte del agente"
       else
         "$GCLOUD" secrets versions add "$S" --data-file="$(ruta "$TMP/agente-$parte")" >/dev/null \
+          && "$GCLOUD" secrets update "$S" --update-annotations="sha256=$HUELLA" >/dev/null 2>&1 \
           && hecho "$parte del agente guardado en el almacen, y NO en un \`Secret\`"
       fi
       # 3 · quien lo lee: el driver de ESTE inquilino.

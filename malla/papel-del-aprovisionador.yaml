@@ -97,6 +97,9 @@ includedPermissions:
   - secretmanager.secrets.getIamPolicy
   - secretmanager.secrets.setIamPolicy
   - secretmanager.versions.add
+  # Y anotar la HUELLA (sha256) de lo que escribio, para no añadir la misma
+  # version en cada pasada sin tener que leerla — que no puede.
+  - secretmanager.secrets.update
   # La puerta (⑧, 0024-⑥ y 0025 E4): el registro CNAME de la entrada de cada
   # celda en NUESTRA zona. Solo leer zonas y escribir registros; no crear ni
   # borrar zonas.
