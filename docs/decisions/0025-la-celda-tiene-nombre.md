@@ -187,13 +187,13 @@ celda se repite; y que `demo.ore.paladio.io` y `prueba.ore.paladio.io` contestan
 
 ---
 
-### E0 · La guarda, y la copia
+### E0 · La guarda, y la copia — ✓ 2026-09-14
 
 Antes de tocar nada: la medida de invariantes escrita y en verde con el modelo de hoy; una copia
 de la base de `iam` (`pg_dump`) al bucket de copias con fecha, y su restauración **probada** en una
 base vacía — la misma disciplina que la `31` exige a la forja. Sin E0 no hay vuelta atrás de E1.
 
-### E1 · Ensanchar: la celda con nombre, sin quitar nada
+### E1 · Ensanchar: la celda con nombre, sin quitar nada — ✓ 2026-09-14 (029; guarda igual antes y después salvo el modelo; `discrepancias` = 0)
 
 Migración 029, **sólo añade**: `iam.celda` gana `cluster` (rellenado con el `nombre` de hoy),
 `arbol` y `entrada` (rellenados desde la organización), y `nombre` pasa a ser el de la celda
