@@ -103,3 +103,53 @@ spec:
   sourceRef:
     kind: GitRepository
     name: malla
+---
+# ── ⭐⭐ LOS ENGANCHES DE LAS CELDAS QUE SE PIDEN (0025 E6) ───────────────────
+#
+# `13-…` lleva a mano los enganches de `demo` y `prueba`. Los de cualquier celda
+# que se pida desde la consola los RINDE el aprovisionador de ese mismo `13-…`
+# (siete objetos por celda) y los empuja a `plataforma/enganches` en la forja:
+# un fichero por celda, `<celda>.yaml`. Esto es lo que lo obedece.
+#
+# ⛔ Lo que esto concentra, dicho: un repositorio que Flux aplica con los
+#   permisos de `kustomize-controller`, y que escribe el aprovisionador. No es
+#   un permiso nuevo — cada `compartimento` ya es exactamente eso: lo escribe
+#   el, lo aplica Flux. Es el mismo permiso, en un repositorio mas, y ningun
+#   inquilino escribe ahi (es de la organizacion `plataforma` de la forja, con
+#   `flux` de solo lectura).
+#
+# ⭐ Y `prune: true` es lo que hace que RETIRAR una celda sea quitar un fichero:
+#   sin su enganche, Flux borra la `Kustomization` de la celda, y esa —que
+#   tambien poda— se lleva el namespace entero con la forja y sus datos.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: enganches
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: agente
+spec:
+  interval: 5m
+  url: http://forja.forja.svc.cluster.local:3000/plataforma/enganches.git
+  ref:
+    branch: main
+  secretRef:
+    name: compartimento-llave
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: enganches
+  namespace: flux-system
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: agente
+spec:
+  interval: 5m
+  path: ./
+  prune: true
+  wait: false
+  sourceRef:
+    kind: GitRepository
+    name: enganches

@@ -149,6 +149,9 @@ configMapGenerator:
       - aprovisionar-inquilino.sh
       - converger-inquilinos.sh
       - gen-inquilino.py
+      # ⭐ Y el enganche (0025 E6): el renderizador saca de aqui el de cada celda
+      #   nueva. Es un DATO que se monta; como recurso lo aplica `malla` (arriba).
+      - 13-el-inquilino-reconciliado.yaml
       # Y las plantillas que rinde.
       - 11-el-inquilino.yaml
       - 20-driver.yaml

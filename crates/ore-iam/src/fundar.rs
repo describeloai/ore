@@ -134,6 +134,188 @@ fn entrada_valida(s: &str) -> bool {
     s.len() <= 253 && s.contains('.') && s.split('.').all(etiqueta)
 }
 
+/// ⭐ Lo que la plataforma pone en una celda nueva y nadie elige al pedirla (0025
+///   E6): el cluster compartido, su proveedor, su region y su puerta. Es lo que
+///   `ORE_CELDA*` traen al servidor — la misma configuracion que `fundar` lee.
+pub struct CeldaPlataforma {
+    pub cluster: String,
+    pub tier: String,
+    pub proveedor: String,
+    pub region: String,
+    pub puerta: String,
+}
+
+impl CeldaPlataforma {
+    pub fn como_celda(&self) -> Celda<'_> {
+        Celda {
+            nombre: &self.cluster,
+            tier: &self.tier,
+            proveedor: &self.proveedor,
+            region: &self.region,
+            puerta: &self.puerta,
+        }
+    }
+}
+
+/// ⭐⭐ PEDIR UNA CELDA (0025 E6): la segunda serverless de una organizacion.
+///
+/// La fila es la `spec`: nombre propio, cluster, tier y lo que de ellos se
+/// deriva (`t-<nombre>/ontologia`, `<nombre>.ore.paladio.io`). Nace sin
+/// `aprovisionada`: el reconciliador la levanta en su siguiente pasada y lo
+/// dice el. Quien pide necesita `celda:crear` en la organizacion, que hoy solo
+/// tiene `ORGADMIN`.
+///
+/// ⛔ Solo el tier `compartido` hoy. Un `dedicado` o `byoc` no es una fila: es
+///   un cluster que alguien tiene que montar, y eso todavia no lo hace nadie.
+pub fn crear_celda_en(
+    tx: &mut Tx,
+    emisor: &str,
+    sujeto: &Identidad,
+    org: &str,
+    nombre: &str,
+    tier: &str,
+    plataforma: &CeldaPlataforma,
+) -> Result<Json, String> {
+    let org_id: String = tx
+        .uno(
+            "select id from iam.organizacion
+              where id = $1 or nombre = $1
+              order by (id = $1) desc limit 1",
+            &[&org],
+        )?
+        // El mismo mensaje que «no puedes»: no confirmar que existe.
+        .ok_or("no puedes hacer eso en esa organizacion")?
+        .get(0);
+    crate::potestad::exige(tx, emisor, &sujeto.persona, &org_id, "celda:crear")?;
+    if !nombre_de_celda_valido(nombre) {
+        return Err(format!(
+            "`{nombre}` no sirve como nombre de celda: minuscula o digito, luego minusculas, \
+             digitos o `-`, hasta 39. De aqui salen un namespace y un host."
+        ));
+    }
+    if tier != "compartido" {
+        return Err(format!(
+            "el tier `{tier}` todavia no se pide desde aqui: hoy solo `compartido`. \
+             Un cluster dedicado o propio se acuerda con una persona."
+        ));
+    }
+    if tx
+        .uno("select 1 from iam.celda where nombre = $1", &[&nombre])?
+        .is_some()
+    {
+        return Err(format!("ya hay una celda que se llama `{nombre}`"));
+    }
+    let id = nuevo_id("cel");
+    let arbol = format!("t-{nombre}/ontologia");
+    let entrada = format!("{nombre}.ore.paladio.io");
+    tx.ejecutar(
+        "insert into iam.celda (id, organizacion, nombre, cluster, tier, proveedor, region, puerta, arbol, entrada)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        &[
+            &id,
+            &org_id,
+            &nombre,
+            &plataforma.cluster,
+            &tier,
+            &plataforma.proveedor,
+            &plataforma.region,
+            &plataforma.puerta,
+            &arbol,
+            &entrada,
+        ],
+    )?;
+    tx.anotar(
+        "celda:crear",
+        &id,
+        Json::obj([
+            ("organizacion", Json::s(&org_id)),
+            ("celda", Json::s(nombre)),
+            ("tier", Json::s(tier)),
+            ("cluster", Json::s(&plataforma.cluster)),
+        ]),
+    )?;
+    Ok(Json::obj([
+        ("celda", Json::s(id)),
+        ("nombre", Json::s(nombre)),
+        ("organizacion", Json::s(org_id)),
+        ("arbol", Json::s(arbol)),
+        ("entrada", Json::s(entrada)),
+        ("estado", Json::s("activa")),
+    ]))
+}
+
+/// ⭐ RETIRAR UNA CELDA (0025 E6): la fila pasa a `retirada` y el reconciliador
+///   desmonta lo que habia levantado en su siguiente pasada. No se borra: la
+///   fila es historia, y su nombre no se reusa.
+///
+/// ⛔ La celda de casa —la que se llama como la organizacion— NO se retira por
+///   aqui: retirarla es retirar la organizacion, y eso es otro verbo con otro
+///   peso.
+pub fn retirar_celda_en(
+    tx: &mut Tx,
+    emisor: &str,
+    sujeto: &Identidad,
+    celda: &str,
+) -> Result<(Json, bool), String> {
+    let f = tx
+        .uno(
+            "select c.id, c.organizacion, o.nombre, c.estado
+               from iam.celda c join iam.organizacion o on o.id = c.organizacion
+              where c.nombre = $1",
+            &[&celda],
+        )?
+        .ok_or("no puedes hacer eso en esa organizacion")?;
+    let (id, org_id, org_nombre, estado): (String, String, String, String) =
+        (f.get(0), f.get(1), f.get(2), f.get(3));
+    crate::potestad::exige(tx, emisor, &sujeto.persona, &org_id, "celda:retirar")?;
+    if celda == org_nombre {
+        return Err(format!(
+            "`{celda}` es la celda de casa de la organizacion: retirarla es retirar la \
+             organizacion, y eso no se hace desde aqui"
+        ));
+    }
+    if estado == "retirada" {
+        return Ok((
+            Json::obj([
+                ("celda", Json::s(celda)),
+                ("estado", Json::s("retirada")),
+                ("ya", Json::Bool(true)),
+            ]),
+            false,
+        ));
+    }
+    tx.ejecutar(
+        "update iam.celda set estado = 'retirada' where id = $1",
+        &[&id],
+    )?;
+    tx.anotar(
+        "celda:retirar",
+        &id,
+        Json::obj([
+            ("organizacion", Json::s(&org_id)),
+            ("celda", Json::s(celda)),
+        ]),
+    )?;
+    Ok((
+        Json::obj([
+            ("celda", Json::s(celda)),
+            ("estado", Json::s("retirada")),
+            ("ya", Json::Bool(false)),
+        ]),
+        true,
+    ))
+}
+
+/// El nombre de una celda: la etiqueta que la 029 exige (`celda_nombre_es_etiqueta`),
+/// dicha con una frase antes de que la diga el `check`.
+fn nombre_de_celda_valido(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 39
+        && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// `<propietario>/<repositorio>`, el mismo alfabeto que la `017` comprueba.
 ///
 /// ⛔ Se comprueba aquí ADEMÁS de en la base para poder decirlo con una frase.
@@ -345,7 +527,18 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         tipo: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
+    let (j, cambio) = fundar_en(&mut tx, p)?;
+    if cambio {
+        tx.confirmar()?;
+    }
+    Ok(j)
+}
 
+/// ⭐ El nucleo de fundar, sobre una transaccion que trae quien llama (0025
+///   E6): el mando de operador y `POST /organizaciones` hacen lo mismo, y la
+///   huella dice quien — el operador, o la persona que pidio su cuenta.
+///   Devuelve si hubo algo que confirmar («ya estaba» no lo es).
+pub fn fundar_en(tx: &mut Tx, p: &Peticion) -> Result<(Json, bool), String> {
     // ── ¿ya estaba? ─────────────────────────────────────────────────────────
     // ⭐ El arbol y la entrada, DE LA CELDA (029, 0025-2): la primera celda de la
     //   organizacion, que se llama como ella. `kek` sigue siendo de la cuenta.
@@ -364,13 +557,16 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         let arbol: String = f.get(1);
         let kek: String = f.get(2);
         let entrada: String = f.get(3);
-        return Ok(Json::obj([
-            ("organizacion", Json::s(id)),
-            ("arbol", Json::s(arbol)),
-            ("kek", Json::s(kek)),
-            ("entrada", Json::s(entrada)),
-            ("nota", Json::s("ya existia: no se toco nada")),
-        ]));
+        return Ok((
+            Json::obj([
+                ("organizacion", Json::s(id)),
+                ("arbol", Json::s(arbol)),
+                ("kek", Json::s(kek)),
+                ("entrada", Json::s(entrada)),
+                ("nota", Json::s("ya existia: no se toco nada")),
+            ]),
+            false,
+        ));
     }
 
     // ── cómo se llama su árbol ──────────────────────────────────────────────
@@ -525,30 +721,31 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
             ),
         ]),
     )?;
-    tx.confirmar()?;
-
-    Ok(Json::obj([
-        ("organizacion", Json::s(org)),
-        ("nombre", Json::s(p.organizacion)),
-        ("dueno", Json::s(persona)),
-        // ⚠️ Y se dice que TODAVIA NO EXISTE. Devolver el nombre a secas se
-        //   leeria como «hecho», y lo que se ha hecho es apuntarlo.
-        ("arbol", Json::s(&arbol)),
-        ("kek", Json::s(&kek)),
-        ("entrada", Json::s(&entrada)),
-        (
-            "arbol_nota",
-            Json::s(
-                "declarado, no creado: el repositorio lo aprovisiona quien puede salir a la red",
+    Ok((
+        Json::obj([
+            ("organizacion", Json::s(org)),
+            ("nombre", Json::s(p.organizacion)),
+            ("dueno", Json::s(persona)),
+            // ⚠️ Y se dice que TODAVIA NO EXISTE. Devolver el nombre a secas se
+            //   leeria como «hecho», y lo que se ha hecho es apuntarlo.
+            ("arbol", Json::s(&arbol)),
+            ("kek", Json::s(&kek)),
+            ("entrada", Json::s(&entrada)),
+            (
+                "arbol_nota",
+                Json::s(
+                    "declarado, no creado: el repositorio lo aprovisiona quien puede salir a la red",
+                ),
             ),
-        ),
-        (
-            "celda",
-            match celda_id {
-                Some(id) => Json::s(id),
-                // ⚠️ Y se dice. Una organizacion sin celda no la pinta la consola.
-                None => Json::s("ninguna: ni `--celda` ni `ORE_CELDA`"),
-            },
-        ),
-    ]))
+            (
+                "celda",
+                match celda_id {
+                    Some(id) => Json::s(id),
+                    // ⚠️ Y se dice. Una organizacion sin celda no la pinta la consola.
+                    None => Json::s("ninguna: ni `--celda` ni `ORE_CELDA`"),
+                },
+            ),
+        ]),
+        true,
+    ))
 }

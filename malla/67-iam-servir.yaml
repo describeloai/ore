@@ -84,6 +84,15 @@ spec:
           env:
             - name: IAM_URL
               valueFrom: { secretKeyRef: { name: iam-url, key: url } }
+            # ⭐ La celda de plataforma (0025 E6): la misma que el Job de `fundar`
+            #   (66) lleva, porque `POST /organizaciones` y `POST …/celdas` son
+            #   fundar por HTTP. Los cinco o ninguno; sin ellos el servidor no
+            #   da celdas y lo dice al arrancar.
+            - { name: ORE_CELDA,           value: ore-mesh }
+            - { name: ORE_CELDA_TIER,      value: compartido }
+            - { name: ORE_CELDA_PROVEEDOR, value: gcp }
+            - { name: ORE_CELDA_REGION,    value: europe-west1-b }
+            - { name: ORE_CELDA_PUERTA,    value: ore-mesh.ore.paladio.io }
           volumeMounts:
             - name: llaves
               mountPath: /llaves

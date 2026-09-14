@@ -177,121 +177,45 @@ KEK=$(consulta kek)
 [ -n "$ARBOL" ] || falla "la celda \`$NOMBRE\` no tiene arbol: la fila esta a medias"
 [ -n "$KEK" ] || falla "la organizacion \`$ORG\` no tiene llave: la fila esta a medias"
 hecho "organizacion: $ORG"
+# ⭐ Y su ESTADO (033): `retirada` no converge — se DESMONTA, mas abajo.
+ESTADO=$(celda estado)
+[ -n "$ESTADO" ] || ESTADO=activa
+hecho "estado: $ESTADO"
 hecho "arbol declarado: $ARBOL"
 hecho "llave declarada: $KEK"
 LLAVE="${KEK#*/}"
 
-# ══════════════════════════════════════════════════════════════════════════
-paso "② LA LLAVE — el segundo cerrojo, antes de que haya nada que proteger"
-# ══════════════════════════════════════════════════════════════════════════
-if "$GCLOUD" kms keys describe "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
-     --format="value(name)" >/dev/null 2>&1; then
-  ya "la clave $KEK"
-else
-  # ⭐ Con rotación desde el primer día: una clave sin rotación programada es
-  #   una clave que nadie va a rotar.
-  correr "$GCLOUD" kms keys create "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
-    --purpose=encryption --rotation-period=90d --next-rotation-time="+P90D" \
-    && hecho "clave $KEK, con rotacion a 90 dias"
-fi
-
-# ══════════════════════════════════════════════════════════════════════════
-paso "③ LAS TRES CUENTAS DE GOOGLE — una por inquilino, no una compartida"
-# ══════════════════════════════════════════════════════════════════════════
-#
-# ⛔⛔ Y esto es lo que la medida no había visto: `ore-driver@` es UNA cuenta
-#   compartida por los `driver` de TODOS los inquilinos. Con ese patrón, dar
-#   permiso sobre la llave de uno lo habría dado sobre la de todos — porque
-#   suplantan a la misma cuenta.
-#
-# ⇒ Aquí no se comparte ninguna que tenga alcance sobre algo del inquilino.
-cuenta() { # <nombre corto>
-  local c="$1" correo="$1@$PROYECTO.iam.gserviceaccount.com"
-  if "$GCLOUD" iam service-accounts describe "$correo" --format="value(email)" >/dev/null 2>&1; then
-    ya "la cuenta $c"
-  else
-    correr "$GCLOUD" iam service-accounts create "$c" && hecho "cuenta $c"
-  fi
+# ── La forja y la identidad ante ore-iam, ANTES de ②: la retirada (abajo) las
+#   necesita y no debe pasar por ② ni ③, que crearian lo que va a borrar. ──────
+# ⭐ Un fichero de un repositorio, y SOLO ese (0025 E6): `plataforma/enganches`
+#   lleva un fichero por celda, y `empujar` (⑥) borra todo lo que hay antes de
+#   copiar — que es lo correcto para un compartimento y lo contrario aqui.
+#   Con `<origen>` vacio, se QUITA. Devuelve 0 si empujo, 3 si ya estaba.
+empujar_fichero() { # <repositorio> <origen o vacio> <nombre en el repo> <que es>
+  local REPO="$1" DE="$2" F="$3" QUE="$4" URL R
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN"
+  if [ -n "${DENTRO:-}" ]; then URL="$F_URL/$REPO.git"
+  else URL="http://localhost:$F_PUERTO/$REPO.git"; fi
+  ( set -e
+    rm -rf "$TMP/clon-f"
+    cd "$TMP"
+    git clone -q "$URL" clon-f 2>/dev/null \
+      || { mkdir -p clon-f && cd clon-f && git init -q -b main \
+           && git remote add origin "$URL" && cd ..; }
+    cd clon-f
+    if [ -n "$DE" ]; then cp "$DE" "./$F"; else rm -f "./$F"; fi
+    git add -A
+    if git diff --cached --quiet; then exit 3; fi
+    git -c user.name=aprovisionador -c user.email=aprovisionador@invalido \
+      commit -q -m "$QUE de la celda $NOMBRE"
+    git push -q -u origin HEAD:main )
+  R=$?
+  case $R in
+    0) hecho "$QUE: $F empujado a $REPO"; return 0 ;;
+    3) ya "$F en $REPO"; return 3 ;;
+    *) echo "  ⚠ no se pudo empujar $F a $REPO"; return 1 ;;
+  esac
 }
-enlace() { # <cuenta corta> <ksa>
-  correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
-    "$1@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROYECTO.svc.id.goog[$NS/$2]" \
-    && hecho "enlace $1 ← $NS/$2"
-}
-cuenta "ore-cofre-$NOMBRE"
-cuenta "ore-serve-$NOMBRE"
-# ✓ EL DRIVER, POR FIN CON CUENTA PROPIA.
-#
-# Aquí ponía: *«el driver sigue compartiendo cuenta, y por eso NO se le da nada
-# del inquilino»*. Era una limitación aceptada, y la rompió el catálogo: el Job
-# que lee un origen tiene que EMPUJAR el resultado al árbol, así que necesita el
-# testigo de la forja de SU inquilino.
-#
-# ⛔ Y con una cuenta compartida, dárselo a uno se lo daba a TODOS — que es
-#   exactamente el patrón que estas mismas líneas rechazan arriba para el cofre.
-#   El driver era la excepción que quedaba viva.
-cuenta "ore-driver-$NOMBRE"
-# ⭐ Y la cuarta: la de su FORJA (0024 E3-(c)), que solo sabe hacer una cosa —
-#   dejar el testigo de su admin en el almacen al fundarse.
-cuenta "ore-forja-$NOMBRE"
-enlace "ore-cofre-$NOMBRE" cofre
-enlace "ore-serve-$NOMBRE" ore-serve
-enlace "ore-driver-$NOMBRE" driver
-enlace "ore-forja-$NOMBRE" forja
-
-# ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
-#
-# Desde la 0024-⑤ el material va al Secret Manager de la celda cifrado con ESTA
-# llave — el almacén la aplica solo, en vez de cifrar el cofre a mano. Para eso
-# el agente de servicio del Secret Manager tiene que poder cerrar y abrir con
-# ella. Es una cuenta de Google, una por proyecto; si no existe todavía se crea
-# (`services identity create`), y es de plataforma, no del inquilino.
-AGENTE_ALMACEN="service-$NUMERO@gcp-sa-secretmanager.iam.gserviceaccount.com"
-"$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO" >/dev/null 2>&1 || true
-correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
-  --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
-  --member="serviceAccount:$AGENTE_ALMACEN" \
-  && hecho "el almacen puede cifrar con $KEK (CMEK)"
-correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
-  --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
-  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  && hecho "el cofre de \`$NOMBRE\` puede usar $KEK — y ninguna otra"
-
-# ══════════════════════════════════════════════════════════════════════════
-paso "④ LA FORJA — el repositorio, su usuario, y un testigo que alcanza UNO"
-# ══════════════════════════════════════════════════════════════════════════
-#
-# ⚠️ Estas cuatro llamadas son las que ningún YAML puede hacer. Y el testigo
-#   resultante NO se guarda en un fichero ni se enseña: va derecho al almacén.
-#
-# ── ⛔⛔ Y AQUÍ ESTÁ LA CONCENTRACIÓN, dicha y no escondida ────────────────
-#
-# Crear un usuario en Forgejo es un acto de ADMINISTRADOR. No hay forma más
-# estrecha: un propietario de organización puede crear repositorios, pero
-# usuarios no. Así que **el aprovisionador necesita un testigo de la forja que
-# pueda crear usuarios**, y eso es tanto como decir administrador de la forja.
-#
-# ⇒ Y es aceptable por el mismo argumento con el que se aceptó el `cluster-admin`
-#   de Flux: el permiso **no desaparece, se CONCENTRA**. En vez de repartirlo por
-#   cada persona que dé de alta a un cliente, lo tiene UNA pieza, con una entrada
-#   —este guion—, y todo lo que hace queda en un commit.
-#
-# ⚠️ Lo que NO se toca es la propiedad de la `0022`: esto sigue sin tener ni una
-#   credencial de CLÚSTER. Un testigo de forja no crea `Secret` ni namespaces, y
-#   quien lo robe no puede leer lo de otros inquilinos en Kubernetes.
-#
-# ── ⭐ Y de ahí sale lo que este guion tiene que llegar a ser ──────────────
-#
-# La forja sólo se alcanza desde dentro: `forja.forja.svc.cluster.local`, sin
-# Ingress. Así que un aprovisionador que corra fuera necesitaría abrirla al
-# mundo — que es peor.
-#
-# ⇒ Esto no es un script del portátil de alguien: es el cuerpo de un **Job**, con
-#   su `Secret` de testigo de forja y su identidad de Google, y **sin ni un
-#   permiso de RBAC**. Escribe en la forja, en el almacén y en git; nunca en el
-#   servidor de la API. Hoy se corre a mano porque el Job todavía no existe, y
-#   eso es lo único que separa esto de la E4 entera.
 PROPIETARIO="${ARBOL%%/*}"
 REPO="${ARBOL#*/}"
 
@@ -410,6 +334,197 @@ forja_json() { # <camino> — el cuerpo de un GET, o vacio
       -H "Authorization: token $F_ADMIN" "http://localhost:3000/api/v1$1" 2>/dev/null
   fi | tr -d '\r'
 }
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⭐⭐ UNA CELDA RETIRADA SE DESMONTA (0025 E6) — y no pasa por lo demás
+# ══════════════════════════════════════════════════════════════════════════
+#
+# La fila dice `retirada` (`POST /celdas/{c}/retirar`, con potestad y huella) y
+# este reconciliador hace lo simetrico de todo lo de abajo, en el orden que
+# `desaprovisionar-inquilino.sh` argumenta: primero lo que se OBEDECE —el
+# enganche fuera, y Flux poda el namespace entero, forja y datos incluidos—,
+# luego la puerta, el almacen, los permisos sobre la llave, las cuentas, y el
+# compartimento en la forja central. La llave de la ORGANIZACION se queda: es
+# de la cuenta, no de la celda. La fila se queda: es historia, y el nombre no
+# se reusa (es unico en `iam.celda`).
+#
+# ⛔ Idempotente y sin cortar: cada paso dice «ya» si no queda nada, asi que
+#   una pasada a medias se termina en la siguiente. Y `demo`/`prueba` no pueden
+#   llegar aqui: son las celdas de casa, y `retirar` las niega.
+if [ "$ESTADO" = "retirada" ]; then
+  paso "⓪ RETIRADA — la celda \`$NOMBRE\` de \`$ORG\` se desmonta"
+  # el enganche fuera → Flux poda t-$NOMBRE entero
+  if [ -n "$SECO" ]; then
+    haria "quitar $NOMBRE.yaml de plataforma/enganches, para que Flux pode t-$NOMBRE"
+  else
+    en_la_forja central
+    empujar_fichero "plataforma/enganches" "" "$NOMBRE.yaml" "Retirado el enganche" || true
+  fi
+  # la puerta
+  ENTRADA_RET=$(celda entrada)
+  ZONA=""
+  while IFS=, read -r z dn; do
+    case "$ENTRADA_RET." in *".$dn") ZONA="$z" ;; esac
+  done < <("$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)" 2>/dev/null | tr -d '\r')
+  if [ -n "$ZONA" ] && "$GCLOUD" dns record-sets describe "$ENTRADA_RET." --zone="$ZONA" --type=CNAME --format="value(name)" >/dev/null 2>&1; then
+    correr "$GCLOUD" dns record-sets delete "$ENTRADA_RET." --zone="$ZONA" --type=CNAME && hecho "registro $ENTRADA_RET fuera de la zona"
+  else
+    ya "el registro de $ENTRADA_RET"
+  fi
+  # el almacen: todo lo que lleva la celda delante
+  for S in $("$GCLOUD" secrets list --filter="name~^projects/[0-9]+/secrets/$NS-" --format="value(name)" 2>/dev/null | tr -d '\r'); do
+    correr "$GCLOUD" secrets delete "$S" --quiet && hecho "secreto $S borrado"
+  done
+  # la condicion del cofre sobre el proyecto, y los permisos sobre la llave
+  correr "$GCLOUD" projects remove-iam-policy-binding "$PROYECTO" \
+    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.admin --condition="expression=resource.name.startsWith(\"projects/$NUMERO/secrets/$NS-cofre-\"),title=cofre-$NOMBRE,description=el cofre de $NOMBRE solo bajo su prefijo" \
+    --format=none && hecho "\`ore-cofre-$NOMBRE\` ya no administra nada en el almacen" || ya "la condicion del cofre"
+  correr "$GCLOUD" kms keys remove-iam-policy-binding "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
+    --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
+    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    && hecho "\`ore-cofre-$NOMBRE\` ya no puede usar $KEK" || ya "el permiso del cofre sobre la llave"
+  # las cuentas
+  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE"; do
+    if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
+      correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada"
+    else
+      ya "la cuenta $c"
+    fi
+  done
+  # el compartimento en la forja central: el repositorio y la organizacion t-<n>
+  if [ -n "$SECO" ]; then
+    haria "borrar $PROPIETARIO/compartimento y la organizacion $PROPIETARIO de la forja central"
+  else
+    en_la_forja central
+    if [ -n "$(forja_json "/orgs/$PROPIETARIO" | grep -o '"id"' | head -1)" ]; then
+      # en subshell: `forja_api` corta el guion con un 404, y aqui un 404 es «ya no esta»
+      ( forja_api DELETE "/repos/$PROPIETARIO/compartimento" ) >/dev/null 2>&1 || true
+      ( forja_api DELETE "/orgs/$PROPIETARIO" ) >/dev/null 2>&1 || true
+      hecho "la organizacion $PROPIETARIO fuera de la forja central"
+    else
+      ya "la organizacion $PROPIETARIO en la forja central"
+    fi
+  fi
+  # el cliente del agente en el IdP se queda: un cliente sin secreto en el
+  # almacen y sin Jobs que lo pidan no hace nada, y borrarlo exige el admin
+  # del IdP en cada retirada. Queda dicho.
+  echo
+  echo "✓ \`$NOMBRE\` retirada${SECO:+ (en seco)}. El namespace t-$NOMBRE lo poda Flux al ver el enganche fuera."
+  exit 0
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+paso "② LA LLAVE — el segundo cerrojo, antes de que haya nada que proteger"
+# ══════════════════════════════════════════════════════════════════════════
+if "$GCLOUD" kms keys describe "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
+     --format="value(name)" >/dev/null 2>&1; then
+  ya "la clave $KEK"
+else
+  # ⭐ Con rotación desde el primer día: una clave sin rotación programada es
+  #   una clave que nadie va a rotar.
+  correr "$GCLOUD" kms keys create "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
+    --purpose=encryption --rotation-period=90d --next-rotation-time="+P90D" \
+    && hecho "clave $KEK, con rotacion a 90 dias"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+paso "③ LAS TRES CUENTAS DE GOOGLE — una por inquilino, no una compartida"
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ⛔⛔ Y esto es lo que la medida no había visto: `ore-driver@` es UNA cuenta
+#   compartida por los `driver` de TODOS los inquilinos. Con ese patrón, dar
+#   permiso sobre la llave de uno lo habría dado sobre la de todos — porque
+#   suplantan a la misma cuenta.
+#
+# ⇒ Aquí no se comparte ninguna que tenga alcance sobre algo del inquilino.
+cuenta() { # <nombre corto>
+  local c="$1" correo="$1@$PROYECTO.iam.gserviceaccount.com"
+  if "$GCLOUD" iam service-accounts describe "$correo" --format="value(email)" >/dev/null 2>&1; then
+    ya "la cuenta $c"
+  else
+    correr "$GCLOUD" iam service-accounts create "$c" && hecho "cuenta $c"
+  fi
+}
+enlace() { # <cuenta corta> <ksa>
+  correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
+    "$1@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.workloadIdentityUser \
+    --member="serviceAccount:$PROYECTO.svc.id.goog[$NS/$2]" \
+    && hecho "enlace $1 ← $NS/$2"
+}
+cuenta "ore-cofre-$NOMBRE"
+cuenta "ore-serve-$NOMBRE"
+# ✓ EL DRIVER, POR FIN CON CUENTA PROPIA.
+#
+# Aquí ponía: *«el driver sigue compartiendo cuenta, y por eso NO se le da nada
+# del inquilino»*. Era una limitación aceptada, y la rompió el catálogo: el Job
+# que lee un origen tiene que EMPUJAR el resultado al árbol, así que necesita el
+# testigo de la forja de SU inquilino.
+#
+# ⛔ Y con una cuenta compartida, dárselo a uno se lo daba a TODOS — que es
+#   exactamente el patrón que estas mismas líneas rechazan arriba para el cofre.
+#   El driver era la excepción que quedaba viva.
+cuenta "ore-driver-$NOMBRE"
+# ⭐ Y la cuarta: la de su FORJA (0024 E3-(c)), que solo sabe hacer una cosa —
+#   dejar el testigo de su admin en el almacen al fundarse.
+cuenta "ore-forja-$NOMBRE"
+enlace "ore-cofre-$NOMBRE" cofre
+enlace "ore-serve-$NOMBRE" ore-serve
+enlace "ore-driver-$NOMBRE" driver
+enlace "ore-forja-$NOMBRE" forja
+
+# ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
+#
+# Desde la 0024-⑤ el material va al Secret Manager de la celda cifrado con ESTA
+# llave — el almacén la aplica solo, en vez de cifrar el cofre a mano. Para eso
+# el agente de servicio del Secret Manager tiene que poder cerrar y abrir con
+# ella. Es una cuenta de Google, una por proyecto; si no existe todavía se crea
+# (`services identity create`), y es de plataforma, no del inquilino.
+AGENTE_ALMACEN="service-$NUMERO@gcp-sa-secretmanager.iam.gserviceaccount.com"
+"$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO" >/dev/null 2>&1 || true
+correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
+  --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
+  --member="serviceAccount:$AGENTE_ALMACEN" \
+  && hecho "el almacen puede cifrar con $KEK (CMEK)"
+correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
+  --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
+  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  && hecho "el cofre de \`$NOMBRE\` puede usar $KEK — y ninguna otra"
+
+# ══════════════════════════════════════════════════════════════════════════
+paso "④ LA FORJA — el repositorio, su usuario, y un testigo que alcanza UNO"
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ Estas cuatro llamadas son las que ningún YAML puede hacer. Y el testigo
+#   resultante NO se guarda en un fichero ni se enseña: va derecho al almacén.
+#
+# ── ⛔⛔ Y AQUÍ ESTÁ LA CONCENTRACIÓN, dicha y no escondida ────────────────
+#
+# Crear un usuario en Forgejo es un acto de ADMINISTRADOR. No hay forma más
+# estrecha: un propietario de organización puede crear repositorios, pero
+# usuarios no. Así que **el aprovisionador necesita un testigo de la forja que
+# pueda crear usuarios**, y eso es tanto como decir administrador de la forja.
+#
+# ⇒ Y es aceptable por el mismo argumento con el que se aceptó el `cluster-admin`
+#   de Flux: el permiso **no desaparece, se CONCENTRA**. En vez de repartirlo por
+#   cada persona que dé de alta a un cliente, lo tiene UNA pieza, con una entrada
+#   —este guion—, y todo lo que hace queda en un commit.
+#
+# ⚠️ Lo que NO se toca es la propiedad de la `0022`: esto sigue sin tener ni una
+#   credencial de CLÚSTER. Un testigo de forja no crea `Secret` ni namespaces, y
+#   quien lo robe no puede leer lo de otros inquilinos en Kubernetes.
+#
+# ── ⭐ Y de ahí sale lo que este guion tiene que llegar a ser ──────────────
+#
+# La forja sólo se alcanza desde dentro: `forja.forja.svc.cluster.local`, sin
+# Ingress. Así que un aprovisionador que corra fuera necesitaría abrirla al
+# mundo — que es peor.
+#
+# ⇒ Esto no es un script del portátil de alguien: es el cuerpo de un **Job**, con
+#   su `Secret` de testigo de forja y su identidad de Google, y **sin ni un
+#   permiso de RBAC**. Escribe en la forja, en el almacén y en git; nunca en el
+#   servidor de la API. Hoy se corre a mano porque el Job todavía no existe, y
+#   eso es lo único que separa esto de la E4 entera.
 
 # ── ¿Esta ya la forja del inquilino? ─────────────────────────────────────────
 #
@@ -796,9 +911,15 @@ fi
 # ⭐ Se rinde POR CELDA, y la organizacion va aparte: es lo que `ore-serve` le
 #   dice al custodio y lo que `ore init --name` graba en el arbol.
 "$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
-  ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" \
+  ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
+# ⭐ Y el ENGANCHE (0025 E6): lo que dice que el compartimento se obedece. Para
+#   `demo` y `prueba` esta a mano en `13-…` y el renderizador no lo emite; para
+#   cualquier otra celda va a `plataforma/enganches`, que Flux obedece (15).
+ENGANCHE=""
+[ -f "$TMP/enganche/$NOMBRE.yaml" ] && ENGANCHE="$TMP/enganche/$NOMBRE.yaml"
+[ -n "$ENGANCHE" ] && hecho "enganche rendido: $NOMBRE.yaml (7 objetos)" || echo "  · el enganche de \`$NOMBRE\` esta a mano en 13-…"
 
 # ── ⚠️ Y ESTE PASO NO ERA IDEMPOTENTE, que es lo que destapo la SEGUNDA pasada
 #
@@ -892,6 +1013,22 @@ else
 
   en_la_forja central
   empujar "$COMPARTIMENTO" "$TMP/gobierno" "El compartimento"
+  # `plataforma/enganches`: la organizacion y el repositorio, una vez, y en
+  # CADA pasada (idempotente, tres llamadas): asi el `GitRepository` de la 15
+  # tiene rama que leer desde antes de la primera celda pedida. Es de
+  # PLATAFORMA —ningun inquilino escribe ahi— y por eso no lleva el aviso ni un
+  # usuario propio: lo escribe este guion y nadie mas.
+  hecho "organizacion plataforma · $(forja_api POST "/orgs" '{"username":"plataforma"}')"
+  hecho "repositorio plataforma/enganches · $(forja_api POST "/orgs/plataforma/repos" '{"name":"enganches","private":true}')"
+  hecho "\`flux\` lo lee · $(forja_api PUT "/repos/plataforma/enganches/collaborators/flux" '{"permission":"read"}')"
+  printf '%s\n' "# Los enganches de las celdas pedidas (0025 E6)" "" \
+    "Un fichero por celda, \`<celda>.yaml\`, rendido por el aprovisionador de \`malla/13-…\`." \
+    "Lo obedece la \`Kustomization\` \`enganches\` (\`malla/15-…\`) con \`prune: true\`:" \
+    "quitar el fichero es retirar la celda. Nadie escribe aqui a mano." > "$TMP/README.md"
+  empujar_fichero "plataforma/enganches" "$TMP/README.md" "README.md" "El README" || true
+  if [ -n "$ENGANCHE" ]; then
+    empujar_fichero "plataforma/enganches" "$ENGANCHE" "$NOMBRE.yaml" "El enganche" || true
+  fi
 
   if [ -n "$INQ" ]; then
     en_la_forja inquilino

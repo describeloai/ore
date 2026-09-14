@@ -37,6 +37,10 @@ pub struct Servidor {
     /// Sin proveedor, las rutas de datos **no se montan**. La misma regla que
     /// `ore-serve`, y aquí pesa más: esta superficie administra.
     pub identidad: Option<Proveedor>,
+    /// ⭐ La celda que la plataforma da a quien pide (0025 E6): `ORE_CELDA*`.
+    ///   Sin ella, `POST /organizaciones` funda sin celda y `POST …/celdas` se
+    ///   niega diciendolo — que es mejor que inventarse un cluster.
+    pub celda: Option<crate::fundar::CeldaPlataforma>,
 }
 
 impl Servidor {
@@ -107,6 +111,10 @@ impl Servidor {
             ("POST", ["concesiones", c, "revocar"]) => self.revocar(s, c),
             ("POST", ["organizaciones", o, "agentes"]) => self.registrar_agente(s, o, &p.cuerpo),
             ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c),
+            // ⭐⭐ LOS DOS VERBOS DE LA 0025 E6: la cuenta, y una celda mas.
+            ("POST", ["organizaciones"]) => self.fundar(s, &p.cuerpo),
+            ("POST", ["organizaciones", o, "celdas"]) => self.crear_celda(s, o, &p.cuerpo),
+            ("POST", ["celdas", c, "retirar"]) => self.retirar_celda(s, c),
             ("GET" | "POST", _) => Respuesta::error(404, "no hay nada en ese camino"),
             _ => Respuesta::error(405, "método no admitido"),
         }
@@ -594,6 +602,69 @@ impl Servidor {
         self.en_transaccion(s, move |tx, emisor| verbos::revocar(tx, s, emisor, &id))
     }
 
+    // ── los de la 0025 E6 ──────────────────────────────────────────────────
+
+    /// `POST /organizaciones` `{nombre}`: fundar por HTTP. Quien pide es el
+    /// dueño — el argumento «fundar es de operador porque decide el dueño» se
+    /// disolvio al medirlo: el dueño es quien pide, y el token ya trae quien es.
+    ///
+    /// ⚠️ Quien puede pedir: cualquier persona con sesion, UNA organizacion por
+    ///   peticion. Es una decision y no codigo, y esta dicha en la 0025: sin
+    ///   cuota de organizaciones por persona es abrir cuentas gratis.
+    fn fundar(&self, s: &Identidad, cuerpo: &str) -> Respuesta {
+        let cuerpo = cuerpo.to_string();
+        self.en_transaccion_si_cambia(s, move |tx, emisor| {
+            let n = analizar(&cuerpo)?;
+            let nombre = campo(&n, "nombre").ok_or("falta `nombre`: el de la organizacion")?;
+            // ⛔ Por HTTP «ya estaba» no es un «ya»: es OTRA organizacion con ese
+            //   nombre, y quien pide no tiene por que ser de ella. Se niega.
+            if tx
+                .uno(
+                    "select 1 from iam.organizacion where nombre = $1",
+                    &[&nombre],
+                )?
+                .is_some()
+            {
+                return Err(format!("ya hay una organizacion que se llama `{nombre}`"));
+            }
+            let celda = self.celda.as_ref().map(|c| c.como_celda());
+            let p = crate::fundar::Peticion {
+                organizacion: &nombre,
+                emisor,
+                sub: &s.persona,
+                correo: s.correo.as_deref(),
+                kek: None,
+                arbol: None,
+                entrada: None,
+                celda,
+            };
+            crate::fundar::fundar_en(tx, &p)
+        })
+    }
+
+    /// `POST /organizaciones/{org}/celdas` `{nombre, tier}`: una celda mas.
+    fn crear_celda(&self, s: &Identidad, org: &str, cuerpo: &str) -> Respuesta {
+        let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
+        self.en_transaccion(s, move |tx, emisor| {
+            let n = analizar(&cuerpo)?;
+            let nombre = campo(&n, "nombre").ok_or("falta `nombre`: el de la celda")?;
+            let tier = campo(&n, "tier").unwrap_or_else(|| "compartido".into());
+            let plataforma = self.celda.as_ref().ok_or(
+                "este servidor no tiene celda de plataforma configurada (ORE_CELDA*): no puede dar celdas",
+            )?;
+            crate::fundar::crear_celda_en(tx, emisor, s, &org, &nombre, &tier, plataforma)
+        })
+    }
+
+    /// `POST /celdas/{celda}/retirar`: la fila pasa a `retirada`; el
+    /// reconciliador desmonta.
+    fn retirar_celda(&self, s: &Identidad, celda: &str) -> Respuesta {
+        let celda = celda.to_string();
+        self.en_transaccion_si_cambia(s, move |tx, emisor| {
+            crate::fundar::retirar_celda_en(tx, emisor, s, &celda)
+        })
+    }
+
     // ── los del aprovisionador ──────────────────────────────────────────────
 
     /// `POST /organizaciones/{org}/agentes` `{sub, nombre}`: el mismo nucleo
@@ -652,6 +723,9 @@ impl Servidor {
             Ok(t) => t,
             Err(e) => return Respuesta::error(502, e),
         };
+        if let Err(e) = crate::verbos::refrescar_nombre(&mut tx, &self.emisor, s) {
+            return Respuesta::error(500, e);
+        }
         match f(&mut tx, &self.emisor) {
             Err(e) => Respuesta::error(422, e),
             Ok((j, false)) => Respuesta::ok(j),
@@ -690,5 +764,8 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/concesiones/{id}/revocar", con),
         ("POST", "/organizaciones/{org}/agentes", con),
         ("POST", "/celdas/{celda}/aprovisionada", con),
+        ("POST", "/organizaciones", con),
+        ("POST", "/organizaciones/{org}/celdas", con),
+        ("POST", "/celdas/{celda}/retirar", con),
     ]
 }

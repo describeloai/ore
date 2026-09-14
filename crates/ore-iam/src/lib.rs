@@ -344,12 +344,47 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
     }
     eprintln!();
 
+    // ⭐ La celda de plataforma (0025 E6): `ORE_CELDA*`, los cinco o ninguno,
+    //   igual que en `fundar`. Con ella `POST /organizaciones` funda con celda y
+    //   `POST …/celdas` puede dar una; sin ella se dice, no se inventa.
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let celda = match (
+        env("ORE_CELDA"),
+        env("ORE_CELDA_TIER"),
+        env("ORE_CELDA_PROVEEDOR"),
+        env("ORE_CELDA_REGION"),
+        env("ORE_CELDA_PUERTA"),
+    ) {
+        (Some(cluster), Some(tier), Some(proveedor), Some(region), Some(puerta)) => {
+            eprintln!(
+                "  celda de plataforma: {cluster} · {tier} · {proveedor}/{region} · {puerta}"
+            );
+            Some(fundar::CeldaPlataforma {
+                cluster,
+                tier,
+                proveedor,
+                region,
+                puerta,
+            })
+        }
+        (None, None, None, None, None) => {
+            eprintln!("  sin celda de plataforma (ORE_CELDA*): no se dan celdas por HTTP");
+            None
+        }
+        _ => {
+            eprintln!(
+                "✗ la celda de plataforma va entera o no va: ORE_CELDA, ORE_CELDA_TIER, ORE_CELDA_PROVEEDOR, ORE_CELDA_REGION, ORE_CELDA_PUERTA"
+            );
+            return ExitCode::from(64);
+        }
+    };
     let servidor = rutas::Servidor {
         base: Mutex::new(base),
         // El emisor va al servidor porque la identidad de una persona es
         // `(emisor, sub)`. Sin `--emisor` no hay contra que resolverla.
         emisor: valor(args, "--emisor").unwrap_or_default(),
         identidad: proveedor,
+        celda,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

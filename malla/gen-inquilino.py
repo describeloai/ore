@@ -130,8 +130,46 @@ FUERA = {
 #   habia cambiado — lo que habia cambiado era que por fin la tocaba.
 NOMBRAN_INQUILINOS = {
     "13-el-inquilino-reconciliado.yaml":
-        "es el enganche: un par por inquilino, escrito a mano y no renderizado.",
+        "es el enganche: los de `demo` y `prueba` a mano; los demas se RINDEN de el (0025 E6).",
 }
+
+# ── ⭐⭐ EL ENGANCHE, RENDIDO (0025 E6) ─────────────────────────────────────
+#
+# `13-…` es lo que decide QUE SE OBEDECE, y por eso vive en `malla/` y no en el
+# compartimento. Con celdas que se piden desde la consola, alguien tiene que
+# escribir el enganche de cada una sin que una persona edite `13-…`: se rinde
+# de los objetos de `demo` que hay en `13-…` —los siete que llevan
+# `ore.dev/tenant: demo`— y el aprovisionador lo empuja a `plataforma/enganches`
+# en la forja, que Flux obedece con UNA `Kustomization` (15).
+#
+# ⛔ Lo que esto concentra, dicho: un repositorio que Flux aplica con los
+#   permisos de `kustomize-controller`, escrito por el aprovisionador. Es lo
+#   mismo que ya hace con cada `compartimento` —tambien los aplica Flux, tambien
+#   los escribe el— asi que no es un permiso nuevo: es el mismo, en un sitio
+#   mas. Nadie del inquilino escribe ahi.
+#
+# `demo` y `prueba` siguen a mano en `13-…`, a proposito (R2 de la 0025: los
+# canarios no se enteran). El renderizador NO emite enganche para ellos.
+ENGANCHE = "13-el-inquilino-reconciliado.yaml"
+ENGANCHADOS_A_MANO = ("demo", "prueba")
+
+
+def render_enganche(nombre):
+    """Los objetos del enganche de `demo` en `13-…`, con el nombre de la celda
+    puesto y sin los comentarios (que hablan de `demo` como prosa)."""
+    if nombre in ENGANCHADOS_A_MANO:
+        return None
+    texto = (MALLA / ENGANCHE).read_text(encoding="utf-8")
+    docs = []
+    for d in texto.split("\n---\n"):
+        if ("ore.dev/tenant: %s" % MODELO) not in d:
+            continue
+        lineas = [l for l in d.splitlines() if not l.lstrip().startswith("#")]
+        t = "\n".join(lineas).strip("\n") + "\n"
+        for que in ("inquilino-%s", "cola-%s", "trabajo-%s", "t-%s", "ore.dev/tenant: %s"):
+            t = t.replace(que % MODELO, que % nombre)
+        docs.append(t)
+    return "---\n".join(docs)
 
 # ⛔⛔ LA QUE SE RINDE N VECES, Y ES UNA CATEGORIA NUEVA.
 #
@@ -650,7 +688,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
@@ -663,6 +701,26 @@ def comprobar():
                 "guion: o sobra, o falta en `PLANTILLAS`" % n)
     print("  ⭐ ⑧ el puesto del aprovisionador lleva las %d plantillas y los 3 guiones"
           % (len(PLANTILLAS) + 1))
+
+    # ── ⑩ EL ENGANCHE RENDIDO (0025 E6) ─────────────────────────────────────
+    # Siete objetos —dos GitRepository, dos Kustomization, ServiceAccount, Role,
+    # RoleBinding— y ni una letra del modelo. Y los dos a mano siguen a mano.
+    if (MALLA / ENGANCHE).exists():
+        e = render_enganche("acme-eu")
+        kinds = re.findall(r"^kind: (\S+)$", e, re.M)
+        if sorted(kinds) != ["GitRepository", "GitRepository", "Kustomization", "Kustomization", "Role", "RoleBinding", "ServiceAccount"]:
+            fallos.append("el enganche rendido no trae los siete objetos: %s" % kinds)
+        if MODELO in e:
+            fallos.append("el enganche rendido para `acme-eu` todavia dice `%s`" % MODELO)
+        if "t-acme-eu" not in e or "inquilino-acme-eu" not in e or "trabajo-acme-eu" not in e:
+            fallos.append("el enganche rendido no lleva la celda donde toca")
+        for a in ENGANCHADOS_A_MANO:
+            if ("inquilino-%s" % a) not in (MALLA / ENGANCHE).read_text(encoding="utf-8"):
+                fallos.append("`%s` esta en ENGANCHADOS_A_MANO y no en `%s`" % (a, ENGANCHE))
+        print("  ⭐ ⑩ el enganche se rinde de `%s`: %d objetos, sin el modelo; a mano solo %s"
+              % (ENGANCHE, len(kinds), ", ".join(ENGANCHADOS_A_MANO)))
+    else:
+        print("  ⑩ (sin `%s` al lado: el enganche no se comprueba aqui)" % ENGANCHE)
 
     return veredicto(fallos)
 
@@ -692,7 +750,7 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a", "--organizacion")
+    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a", "--organizacion", "--enganche")
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -730,6 +788,18 @@ def main(argv):
         print("✗ `%s` no sirve como nombre de organizacion." % organizacion, file=sys.stderr)
         return 65
     hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes, organizacion)
+    # ⭐ Y el enganche, a OTRO directorio (0025 E6): no es del compartimento, es
+    #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo
+    #   tienen rendido: esta en `13-…` a mano, y se dice.
+    if valor("--enganche"):
+        e = render_enganche(nombre)
+        d = pathlib.Path(valor("--enganche"))
+        d.mkdir(parents=True, exist_ok=True)
+        if e is None:
+            print("  (sin enganche rendido: `%s` esta a mano en `%s`)" % (nombre, ENGANCHE))
+        else:
+            (d / ("%s.yaml" % nombre)).write_text(e, encoding="utf-8", newline="\n")
+            print("  %s" % (d / ("%s.yaml" % nombre)))
     destino = valor("--a")
     if destino:
         d = pathlib.Path(destino)

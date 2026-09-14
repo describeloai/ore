@@ -88,17 +88,25 @@ estado["modelo"] = {
 
 # ── por organizacion, por celda ─────────────────────────────────────────────
 if celda_con_nombre:
-    filas = sql("select o.id, o.nombre, c.nombre, c.cluster, c.tier, c.arbol, c.entrada, c.puerta from iam.organizacion o join iam.celda c on c.organizacion = o.id order by 2, 3")
+    filas = sql("select o.id, o.nombre, c.nombre, c.cluster, c.tier, c.arbol, c.entrada, c.puerta, c.estado from iam.organizacion o join iam.celda c on c.organizacion = o.id order by 2, 3")
 else:
-    filas = sql("select o.id, o.nombre, o.nombre, c.nombre, c.tier, o.arbol, o.entrada, c.puerta from iam.organizacion o join iam.celda c on c.organizacion = o.id order by 2, 3")
+    filas = sql("select o.id, o.nombre, o.nombre, c.nombre, c.tier, o.arbol, o.entrada, c.puerta, c.estado from iam.organizacion o join iam.celda c on c.organizacion = o.id order by 2, 3")
 orgs = {}
 nombres = []
 for l in filas.splitlines():
     if not l.strip():
         continue
-    oid, org, celda, cluster, tier, arbol, entrada, puerta = l.split("|")
+    oid, org, celda, cluster, tier, arbol, entrada, puerta, estado_celda = l.split("|")
     nombres.append(celda)
     ns = "t-" + celda
+    # ⭐ Una celda RETIRADA (0025 E6) tiene que estar AUSENTE: el invariante es el
+    #   contrario. Su fila se queda (es historia, y el nombre no se reusa).
+    if estado_celda == "retirada":
+        ausente = k("get", "namespace", ns, "-o", "name") == ""
+        if not ausente:
+            falla("%s/%s: retirada y el namespace %s sigue ahi (Flux no lo ha podado)" % (org, celda, ns))
+        orgs.setdefault(org, {})[celda] = dict(cluster=cluster, tier=tier, estado="retirada", ausente=ausente)
+        continue
     tecnico = {
         "namespace": existe("", "namespace", ns) if False else k("get", "namespace", ns, "-o", "name") != "",
         "forja": existe(ns, "statefulset", "forja"),
@@ -167,6 +175,9 @@ else:
         m["celda_con_nombre_propio"], m["organizacion_lleva_arbol_y_entrada"], m["secreto_con_celda"], m["indice_una_celda_por_organizacion"]))
     for org, celdas in orgs.items():
         for celda, t in celdas.items():
+            if t.get("estado") == "retirada":
+                print("  %-10s %-10s retirada · %s" % (org, celda, "ausente ✓" if t["ausente"] else "TODAVIA PRESENTE ✗"))
+                continue
             print("%-8s %-10s %s/%s  ns=%s forja=%s cofre=%s serve=%s cola=%s  arbol=%s  %s → %s %s  salud=%s" % (
                 org, celda, t["cluster"], t["tier"], *("✓" if t[x] else "✗" for x in ("namespace", "forja", "cofre", "ore-serve", "cola")),
                 t["arbol"], t["entrada"], t["puerta"], "✓" if t["entrada_resuelve_a_la_puerta"] else "✗", t["salud"]))

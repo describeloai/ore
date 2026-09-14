@@ -74,6 +74,7 @@ configMapGenerator:
       - migraciones/030-recortar-la-celda-es-la-unidad.sql
       - migraciones/031-recortar-la-organizacion.sql
       - migraciones/032-la-celda-aprovisionada.sql
+      - migraciones/033-pedir-y-retirar-celdas.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

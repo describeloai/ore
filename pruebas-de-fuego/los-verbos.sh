@@ -31,6 +31,9 @@
 #   9  y MIRAR tambien deja huella
 #  10  ⭐ el APROVISIONADOR (0025 E5): registra un agente y da la celda por
 #      aprovisionada, con huella; no lista nada; y una persona no hace lo suyo
+#  11  ⭐ LOS DOS VERBOS DE LA 0025 E6: fundar por HTTP (quien pide es el dueño,
+#      con celda de plataforma) y pedir una celda mas (ORGADMIN; nombre unico;
+#      solo compartido); retirarla (no la de casa); y una USERADMIN no puede
 #
 # El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es
 # `ORGADMIN`, que lo tiene TODO, asi que la guarda del rodeo **nunca llega a
@@ -221,6 +224,10 @@ ORG=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='acme'")
 # Ada funda; Bea entrara despues por la puerta de siempre: un vale.
 ADA=$(acunar "persona:ada" "ada@paladio.io")
 
+# ⭐ Con celda de plataforma (0025 E6): es lo que `POST /organizaciones` y
+#   `POST …/celdas` dan a quien pide. Los mismos cinco que `fundar` lee.
+ORE_CELDA=ore-prueba ORE_CELDA_TIER=compartido ORE_CELDA_PROVEEDOR=gcp \
+ORE_CELDA_REGION=europe-west1-b ORE_CELDA_PUERTA=ore-prueba.ore.paladio.io \
 "$IAM" servir --bind "127.0.0.1:$PUERTO" --identidad oidc \
   --emisor "$EMISOR" --audiencia "$AUDIENCIA" --jwks "$TMP/jwks.json" \
   > "$TMP/arranque.txt" 2>&1 &
@@ -552,4 +559,50 @@ grep -q '"aprovisionada"' "$TMP/r.json" && falla "10 · la celda nacio ya aprovi
 grep -q '"aprovisionada"' "$TMP/r.json" || falla "10 · la celda no dice cuando la aprovisionaron: $(cat "$TMP/r.json")"
 dice "10 · el aprovisionador: registra (idempotente, con su huella), da la celda por aprovisionada, y no lee nada"
 
-echo "✓ los cuatro verbos, sus dos negativas, el rodeo, y los dos del aprovisionador."
+# ── 11 · fundar por HTTP, pedir una celda, retirarla ────────────────────────
+# Fundar: quien pide es el dueño, y nace con la celda de plataforma.
+NOE=$(acunar "persona:noe" "noe@paladio.io")
+[ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova"}')" = "200" ] \
+  || falla "11 · noe no pudo fundar `nova`: $(cat "$TMP/r.json")"
+NOVA=$(campo organizacion)
+grep -q '"celda": "cel_' "$TMP/r.json" || falla "11 · la organizacion fundada por HTTP no trae celda: $(cat "$TMP/r.json")"
+[ "$(pide POST /organizaciones "$ADA" '{"nombre":"nova"}')" = "422" ] \
+  || falla "11 · ⛔ SE FUNDO DOS VECES `nova`"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.pertenencia_rol where organizacion='$NOVA' and rol='ORGADMIN'")" = "1" ] \
+  || falla "11 · nova no tiene UN ORGADMIN"
+[ "$(psql "$URL" -qtAc "select quien from iam.huella where operacion='organizacion:fundar' and sobre='$NOVA'")" = "persona:noe" ] \
+  || falla "11 · la huella de fundar no nombra a quien pidio"
+dice "11 · noe funda `nova` por HTTP: dueña, con celda `nova`, y el nombre no se repite"
+# Pedir una celda mas: ORGADMIN si; USERADMIN (bea, en acme) no.
+[ "$(pide POST "/organizaciones/acme/celdas" "$BEA" '{"nombre":"acme-eu"}')" = "422" ] \
+  || falla "11 · ⛔ UNA USERADMIN PIDIO UNA CELDA"
+grep -q "no puedes" "$TMP/r.json" || falla "11 · la negativa no dice «no puedes»: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-eu"}')" = "200" ] \
+  || falla "11 · ada no pudo pedir `acme-eu`: $(cat "$TMP/r.json")"
+[ "$(campo arbol)" = "t-acme-eu/ontologia" ] && [ "$(campo entrada)" = "acme-eu.ore.paladio.io" ] \
+  || falla "11 · la celda nueva no deriva arbol y entrada de SU nombre: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-eu"}')" = "422" ] \
+  || falla "11 · ⛔ DOS CELDAS `acme-eu`"
+[ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"nova"}')" = "422" ] \
+  || falla "11 · ⛔ acme creo una celda con el nombre de OTRA organizacion (el nombre es global)"
+[ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-big","tier":"dedicado"}')" = "422" ] \
+  || falla "11 · ⛔ se pidio un dedicado, y eso todavia no lo monta nadie"
+[ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"Mal Nombre"}')" = "422" ] \
+  || falla "11 · un nombre con espacios paso"
+[ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "11 · no se leen las celdas"
+[ "$("$PY" -c 'import json;print(len(json.load(open("'"$TMP/r.json"'"))["celdas"]))')" = "2" ] \
+  || falla "11 · acme no lista dos celdas: $(cat "$TMP/r.json")"
+grep -q '"nombre": "acme-eu"' "$TMP/r.json" || falla "11 · la celda nueva no sale en la lista"
+dice "11 · ada pide `acme-eu`: nace sin aprovisionar; el nombre es unico en toda la plataforma; solo compartido"
+# Retirar: la de casa no; la otra si, y dos veces es «ya».
+[ "$(pide POST "/celdas/acme/retirar" "$ADA")" = "422" ] || falla "11 · ⛔ SE RETIRO LA CELDA DE CASA"
+[ "$(pide POST "/celdas/acme-eu/retirar" "$BEA")" = "422" ] || falla "11 · ⛔ UNA USERADMIN RETIRO UNA CELDA"
+[ "$(pide POST "/celdas/acme-eu/retirar" "$ADA")" = "200" ] || falla "11 · ada no pudo retirar acme-eu: $(cat "$TMP/r.json")"
+[ "$(campo ya)" = "False" ] || falla "11 · la primera retirada dijo «ya»"
+[ "$(pide POST "/celdas/acme-eu/retirar" "$ADA")" = "200" ] && [ "$(campo ya)" = "True" ] \
+  || falla "11 · retirar dos veces no es idempotente: $(cat "$TMP/r.json")"
+[ "$(psql "$URL" -qtAc "select estado from iam.celda_de where celda='acme-eu'")" = "retirada" ] \
+  || falla "11 · celda_de no enseña `retirada` al aprovisionador"
+dice "11 · retirar: la de casa no, una USERADMIN no, y la segunda vez es «ya»; celda_de lo dice"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, y los de la cuenta."
