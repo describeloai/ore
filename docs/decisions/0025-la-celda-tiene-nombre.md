@@ -153,24 +153,121 @@ excepción del zero-trust». La `023` acertó al no darle SQL; el camino es HTTP
 
 ---
 
-## El abordaje, por etapas
+## El abordaje — y por qué es así y no de golpe
 
-Cada etapa deja el sistema mejor aunque la siguiente no llegue, y **`demo` no se entera de
-ninguna**.
+La visión es una tabla; el camino es lo que puede salir mal. Lo que hace robusto este abordaje
+no es el orden de las etapas sino **cuatro reglas que valen en todas**:
 
-**E1 · La celda con nombre.** Migración 029: `iam.celda` gana `cluster`, `arbol`, `entrada`;
-`nombre` pasa a ser el de la celda (`demo`, `prueba`: sembradas con el nombre de su organización
-y su árbol y entrada de hoy); el índice único fuera; `celda_de` por nombre de celda. `fundar`
-escribe la celda entera; `GET /celdas` la devuelve entera. Los siete lectores leen de la celda.
-`cofre.secreto` gana `celda` (sembrado: la única de su organización) y su unicidad cambia.
+**R1 · Ensanchar y recortar, nunca mover.** Una columna no cambia de tabla: **se duplica** en la
+nueva, se rellena, los lectores cambian **uno a uno con medida**, y sólo cuando la medida dice
+«cero lectores» se recorta la vieja. Entre medias las dos existen y **dicen lo mismo**, y una
+comprobación lo exige. Es el patrón *expand/contract*; su precio es una etapa más, y su ganancia
+es que en ningún momento hay un despliegue a medias que no pueda volver atrás.
 
-**E2 · Por celda.** El aprovisionador y el renderizador toman la celda; el CronJob recorre
-`iam.celda_de`. Y sus dos arreglos: salida a `t-*:3000` e `identidad:8080`, y el admin del IdP en
-el almacén, para que la pasada 2 y el ⑦ corran dentro. Cadencia `*/5`.
+**R2 · `demo` y `prueba` son los canarios, y no se enteran.** Cada etapa se comprueba contra los
+dos inquilinos vivos con la misma frase: *ni un nombre técnico cambia, ni un manifiesto se
+re-rinde, ni una cuenta se crea, ni un DNS se toca*. Lo mide un guion antes y después, y la
+igualdad de los dos resultados es la puerta de la etapa. Y `prueba` va **siempre primero**.
 
-**E3 · La identidad del aprovisionador.** Cliente `ore-aprovisionador`, los dos verbos en
-`ore-iam`, `aprovisionada` informada. El Job de operador `ore-iam agente` deja de hacer falta.
+**R3 · Cada etapa tiene entrada, salida y vuelta atrás escritas antes de empezar.** La entrada es
+una medida que hoy da rojo; la salida es la misma medida en verde y las tres comprobaciones de CI
+en verde; la vuelta atrás es **una** orden que se ha probado en `prueba` antes de tocar `demo`.
+Una etapa sin vuelta atrás probada no empieza.
 
-**E4 · Los dos verbos y la consola.** `POST /organizaciones` y `POST /organizaciones/{org}/celdas`;
-`celdaActual` y el selector en Clusters; el onboarding y el botón de *Nuevo* dejan de ser toasts.
-Aquí `demo` pide su segunda serverless, y es la prueba de todo lo anterior.
+**R4 · Lo que sea acto, es de un reconciliador idempotente; lo que sea verdad, es una fila.**
+Nada del camino se hace «a mano y luego se escribe»: si un paso lo hace una persona con `kubectl`
+o `gcloud`, es un paso que la segunda celda va a necesitar y nadie va a recordar. Se hace por el
+aprovisionador, con «ya estaba», o no se hace.
+
+Y **una medida de invariantes** —`medida-la-celda-tiene-nombre.py`, la guarda— que se corre en
+cada puerta y dice, para cada organización viva: sus celdas; que cada celda tiene *exactamente
+una* de cada cosa técnica (namespace, forja, cofre, árbol, entrada, puerta, cola); que la
+organización y la celda dicen lo mismo mientras las dos columnas existan; que ningún nombre de
+celda se repite; y que `demo.ore.paladio.io` y `prueba.ore.paladio.io` contestan `200`.
+
+---
+
+### E0 · La guarda, y la copia
+
+Antes de tocar nada: la medida de invariantes escrita y en verde con el modelo de hoy; una copia
+de la base de `iam` (`pg_dump`) al bucket de copias con fecha, y su restauración **probada** en una
+base vacía — la misma disciplina que la `31` exige a la forja. Sin E0 no hay vuelta atrás de E1.
+
+### E1 · Ensanchar: la celda con nombre, sin quitar nada
+
+Migración 029, **sólo añade**: `iam.celda` gana `cluster` (rellenado con el `nombre` de hoy),
+`arbol` y `entrada` (rellenados desde la organización), y `nombre` pasa a ser el de la celda
+(rellenado con el nombre de la organización: `demo`, `prueba`). El índice
+`celda_una_por_organizacion` se queda **todavía**. Y una vista `iam.discrepancias`, que la guarda
+lee, dice si alguna organización y su celda **no dicen lo mismo**. `cofre.secreto` gana `celda`,
+rellenada con la única celda de su organización; la unicidad vieja se queda.
+
+- entrada: la guarda dice «la celda no tiene nombre propio»
+- salida: `iam.celda` con las tres columnas, `iam.discrepancias` vacía, `demo`/`prueba` iguales
+  antes y después, `los-verbos.sh` con un caso nuevo: fundar escribe la celda entera
+- vuelta atrás: `alter table … drop column` × 4 y la columna `celda` de `cofre.secreto`. Una orden,
+  probada en la base restaurada de E0.
+
+### E2 · Cambiar los lectores, uno a uno, con la doble verdad en pie
+
+Cada lector pasa de `organizacion.arbol/entrada` a `celda.arbol/entrada` **en su propio commit**
+y con su propia prueba: `fundar` y `GET /organizaciones` (`los-verbos.sh`); el aprovisionador
+(`consulta` lee de `celda_de`, que ya existe: `--seco` contra `demo` da lo mismo que ayer); el
+grant de la `023`; y en la consola `entradaActual` → `celdaActual` con **una** celda todavía, así
+que devuelve lo mismo. La guarda cuenta lectores de la columna vieja en el código, y la etapa acaba
+cuando cuenta **cero**.
+
+- vuelta atrás: `git revert` del commit del lector; la columna vieja sigue ahí y sigue diciendo lo
+  mismo.
+
+### E3 · Recortar
+
+Migración 030: `organizacion.arbol` y `organizacion.entrada` fuera; el índice único fuera;
+`(organizacion, nombre)` único y `nombre` único global en `iam.celda`; `cofre.secreto` único por
+`(celda, nombre)`. **Sólo** cuando la guarda lleve una etapa entera diciendo «cero lectores».
+
+- vuelta atrás: la copia de E0 más las escrituras desde entonces son **pocas y conocidas** (la
+  huella las lista); se re-añaden las columnas desde `iam.celda`. Probada en `prueba`.
+
+### E4 · Por celda: el aprovisionador y el renderizador
+
+`aprovisionar-inquilino.sh <celda>`; la organización se lee de la celda. El CronJob recorre
+`celda_de`. Con `demo` y `prueba` como celdas que se llaman como su organización, **el resultado
+rendido es byte a byte el de hoy** — y eso es la puerta: se rinde con el guion viejo y el nuevo y
+se comparan. Aquí van también los dos arreglos que la medida del verbo destapó (salida a
+`t-*:3000` e `identidad:8080`; el admin del IdP al almacén) y la cadencia `*/5`.
+
+- vuelta atrás: el guion anterior, que sigue en git y sigue aceptando el nombre de la organización.
+
+### E5 · La identidad del aprovisionador
+
+Cliente `ore-aprovisionador` en el IdP; `ore-iam` acepta `rubix_tipo=aprovisionador` en dos
+verbos y en ninguno más; `iam.celda.aprovisionada` informada al final de cada pasada. El Job de
+operador `ore-iam agente` **se queda** hasta que una pasada entera de `prueba` haya registrado su
+agente por el verbo, con huella. Luego se retira.
+
+- vuelta atrás: quitar el cliente del IdP; los verbos contestan 401 y el Job de operador sigue
+  valiendo.
+
+### E6 · Los dos verbos y la consola
+
+`POST /organizaciones` y `POST /organizaciones/{org}/celdas`; `celdaActual` y el selector en
+Clusters. **La prueba de aceptación de toda la ADR**: `prueba` pide su segunda serverless desde la
+consola, y a los diez minutos tiene `t-<nombre>` con su forja, su cofre, su árbol sembrado, su
+puerta en el DNS —escrita por el aprovisionador— y *Running* en Clusters; y `t-prueba` no ha
+cambiado ni un byte. Después la segunda se **borra** por el mismo camino, la guarda vuelve a verde,
+y sólo entonces `demo`.
+
+- vuelta atrás: los verbos se desmontan; la consola vuelve a los toasts. Ninguna fila queda a
+  medias porque cada verbo es una transacción con huella.
+
+---
+
+## Lo que este abordaje NO hace, y por qué
+
+- **No mueve columnas en una migración.** Un `rename` es una etapa sin vuelta atrás con lectores
+  en vuelo. Ensanchar y recortar cuesta una etapa más y no cuesta ningún fin de semana.
+- **No estrena la segunda celda en `demo`.** La estrena `prueba` — E6 — y sólo cuando todo lo
+  anterior lleva una etapa entera en verde.
+- **No hace ningún paso a mano.** Los cuatro que hoy lo son (fundar, el agente, la pasada 2, el
+  ⑦) son exactamente lo que E4–E6 quitan; hacerlos a mano una vez más sería sumar un quinto.
