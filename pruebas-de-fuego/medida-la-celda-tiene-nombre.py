@@ -152,7 +152,9 @@ for rel in ("lib/server/organizacion.ts",):
         if re.search(r"org\.entrada\b", l) and not l.strip().startswith("//") and not l.strip().startswith("*"):
             lectores.append("consola:%s:%d" % (rel, i))
 grant = "arbol" in re.search(r"grant select \(([^)]*)\)\s*on iam\.organizacion", leer("iam/migraciones/023-el-papel-del-aprovisionador.sql")).group(1)
-if grant:
+revocado = any("revoke select (arbol, entrada) on iam.organizacion" in leer("iam/migraciones/" + f)
+               for f in os.listdir(os.path.join(RAIZ, "iam", "migraciones")) if f.endswith(".sql"))
+if grant and not revocado:
     lectores.append("iam/migraciones/023 (grant)")
 estado["lectores_de_organizacion_arbol_entrada"] = lectores
 

@@ -80,6 +80,14 @@ ore-cofre — el custodio: guarda el material en el almacén de la celda y lo ab
   lee de `iam` lo justo para autorizar.
 ";
 
+/// `t-<celda>` → `celda`, del fichero que Kubernetes monta en todo pod. Fuera de
+/// un pod no existe, y entonces `--celda` es obligatorio.
+fn celda_del_namespace() -> Option<String> {
+    std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+        .ok()
+        .and_then(|ns| ns.trim().strip_prefix("t-").map(str::to_string))
+}
+
 fn valor(args: &[String], que: &str) -> Option<String> {
     args.iter()
         .position(|a| a == que)
@@ -172,14 +180,25 @@ fn main() -> ExitCode {
     // ⭐ De que CELDA es este cofre (0025-4): un secreto es de una celda, y el
     //   nombre en el almacen lleva la celda delante. `mudar` no la necesita:
     //   lee la celda de cada secreto.
+    //
+    // ⚠️ Y si no viene, se deduce del NAMESPACE —`t-<celda>`, que Kubernetes deja
+    //   siempre en `/var/run/secrets/kubernetes.io/serviceaccount/namespace`—.
+    //   Medido el 2026-09-14: CI desplego la imagen nueva ANTES de que el
+    //   compartimento llevara `--celda`, y el cofre estuvo cinco minutos en
+    //   CrashLoop por exigir lo que su propio namespace ya decia. Una imagen
+    //   nueva tiene que arrancar con el manifiesto viejo, o el despliegue no es
+    //   un despliegue: es una carrera.
     let celda = if verbo == Some("servir") {
-        let Some(c) = valor(&args, "--celda") else {
-            eprintln!("✗ falta `--celda`, el nombre de la celda de este cofre.");
-            eprintln!("  Un secreto es de una celda (0025); sin saber cual, este proceso no");
-            eprintln!("  puede decir de quien es lo que emite.");
-            return ExitCode::from(64);
-        };
-        c
+        match valor(&args, "--celda").or_else(celda_del_namespace) {
+            Some(c) => c,
+            None => {
+                eprintln!("✗ falta `--celda`, el nombre de la celda de este cofre, y no hay");
+                eprintln!("  namespace `t-<celda>` del que deducirla. Un secreto es de una celda");
+                eprintln!("  (0025); sin saber cual, este proceso no puede decir de quien es lo");
+                eprintln!("  que emite.");
+                return ExitCode::from(64);
+            }
+        }
     } else {
         String::new()
     };

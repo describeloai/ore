@@ -414,10 +414,12 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
             .get::<_, String>(0),
     };
 
+    // ⭐ La CUENTA: nombre, llave, quien la fundo. `arbol` y `entrada` ya no van
+    //   aqui —son de la celda (029/030, 0025-2)— y la 031 borra las columnas.
     tx.ejecutar(
-        "insert into iam.organizacion (id, nombre, arbol, kek, entrada, creada_por)
-         values ($1, $2, $3, $4, $5, $6)",
-        &[&org, &p.organizacion, &arbol, &kek, &entrada, &persona],
+        "insert into iam.organizacion (id, nombre, kek, creada_por)
+         values ($1, $2, $3, $4)",
+        &[&org, &p.organizacion, &kek, &persona],
     )?;
 
     // ── y el rol. `ORGADMIN` es UNO por organizacion, y lo sostiene un indice

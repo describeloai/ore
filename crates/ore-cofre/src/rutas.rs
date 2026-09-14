@@ -271,6 +271,7 @@ impl Servidor {
 
     fn listar(&self, s: &Identidad, org: &str) -> Respuesta {
         let org = org.to_string();
+        let self_celda = self.celda.clone();
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`.
             let org = canonica(tx, &org)?;
@@ -282,12 +283,16 @@ impl Servidor {
             // ⛔ Ya no dice cuántas versiones hay: eso lo sabe el almacén, y
             //   preguntárselo serían N llamadas al cliente para contestar una
             //   lista. Nadie lo leía — medido en la consola y en las pruebas.
+            // ⭐ Los de ESTA celda (0025-④): un cofre lista y abre los suyos. Con
+            //   dos celdas en la organizacion, una fuente `pg` en cada una son
+            //   dos secretos, y cada cofre ve el suyo.
             let filas = tx.filas(
                 "select s.nombre, s.clase, (s.retirado_en is not null) as retirado
                    from cofre.secreto s
-                  where s.organizacion = $1
+                   join iam.celda ce on ce.id = s.celda
+                  where s.organizacion = $1 and ce.nombre = $2
                   order by s.nombre",
-                &[&org],
+                &[&org, &self_celda],
             )?;
             let lista: Vec<Json> = filas
                 .iter()
@@ -314,6 +319,7 @@ impl Servidor {
     fn resolver(&self, s: &Identidad, org: &str, nombre: &str) -> Respuesta {
         let (org, nombre) = (org.to_string(), nombre.to_string());
         let almacen = &self.almacen;
+        let self_celda = self.celda.clone();
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`.
             let org = canonica(tx, &org)?;
@@ -354,13 +360,13 @@ impl Servidor {
                 .uno(
                     "select c.rol, ce.nombre
                        from cofre.secreto s
-                       join iam.celda ce on ce.id = s.celda
+                       join iam.celda ce on ce.id = s.celda and ce.nombre = $5
                        join iam.concesion_viva c
                          on c.recurso = $3 and c.organizacion = s.organizacion
                         and c.sujeto = $4 and c.rol in ('usar', 'lector', 'owner')
                       where s.organizacion = $1 and s.nombre = $2
                         and s.retirado_en is null",
-                    &[&org, &nombre, &recurso, &quien],
+                    &[&org, &nombre, &recurso, &quien, &self_celda],
                 )?
                 .ok_or("ese secreto no existe o no es tuyo")?;
 
