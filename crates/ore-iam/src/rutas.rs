@@ -113,6 +113,7 @@ impl Servidor {
             ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c),
             // ⭐⭐ LOS DOS VERBOS DE LA 0025 E6: la cuenta, y una celda mas.
             ("POST", ["organizaciones"]) => self.fundar(s, &p.cuerpo),
+            ("POST", ["organizaciones", o, "perfil"]) => self.editar_perfil(s, o, &p.cuerpo),
             ("POST", ["organizaciones", o, "celdas"]) => self.crear_celda(s, o, &p.cuerpo),
             ("POST", ["celdas", c, "retirar"]) => self.retirar_celda(s, c),
             ("GET" | "POST", _) => Respuesta::error(404, "no hay nada en ese camino"),
@@ -166,7 +167,8 @@ impl Servidor {
                 "select o.id, o.nombre, o.estado,
                         coalesce(array_agg(pr.rol order by pr.rol)
                                  filter (where pr.rol is not null), '{}'),
-                        coalesce(c.arbol, ''), coalesce(c.entrada, '')
+                        coalesce(c.arbol, ''), coalesce(c.entrada, ''),
+                        o.titulo, o.logo
                    from iam.organizacion o
                    join iam.pertenencia pe on pe.organizacion = o.id
                    join iam.persona     p  on p.id = pe.persona
@@ -174,7 +176,7 @@ impl Servidor {
                      on pr.persona = pe.persona and pr.organizacion = pe.organizacion
                    left join iam.celda c on c.organizacion = o.id and c.nombre = o.nombre
                   where p.emisor = $1 and p.sub = $2
-                  group by o.id, o.nombre, o.estado, c.arbol, c.entrada
+                  group by o.id, o.nombre, o.estado, c.arbol, c.entrada, o.titulo, o.logo
                   order by o.nombre",
                 &[&emisor, &s.persona],
             )?;
@@ -221,6 +223,16 @@ impl Servidor {
                         //   misma distinción que `EMISOR` y `DIRECCION`, y ya
                         //   van cuatro.
                         ("entrada", Json::s(f.get::<_, String>(5))),
+                        // ⭐ El PERFIL (035): titulo y logo, o vacio. `nombre` es el
+                        //   identificador; esto es lo que la gente ve.
+                        (
+                            "titulo",
+                            Json::s(f.get::<_, Option<String>>(6).unwrap_or_default()),
+                        ),
+                        (
+                            "logo",
+                            Json::s(f.get::<_, Option<String>>(7).unwrap_or_default()),
+                        ),
                     ])
                 })
                 .collect();
@@ -628,17 +640,31 @@ impl Servidor {
                 return Err(format!("ya hay una organizacion que se llama `{nombre}`"));
             }
             let celda = self.celda.as_ref().map(|c| c.como_celda());
+            let titulo = campo(&n, "titulo");
             let p = crate::fundar::Peticion {
                 organizacion: &nombre,
                 emisor,
                 sub: &s.persona,
                 correo: s.correo.as_deref(),
                 kek: None,
+                titulo: titulo.as_deref(),
                 arbol: None,
                 entrada: None,
                 celda,
             };
             crate::fundar::fundar_en(tx, &p)
+        })
+    }
+
+    /// `POST /organizaciones/{org}/perfil` `{titulo?, logo?}`: como se llama y
+    /// como se ve. `organizacion:editar` (ORGADMIN).
+    fn editar_perfil(&self, s: &Identidad, org: &str, cuerpo: &str) -> Respuesta {
+        let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
+        self.en_transaccion(s, move |tx, emisor| {
+            let n = analizar(&cuerpo)?;
+            let titulo = campo(&n, "titulo");
+            let logo = campo(&n, "logo");
+            crate::fundar::editar_perfil_en(tx, emisor, s, &org, titulo.as_deref(), logo.as_deref())
         })
     }
 
@@ -765,6 +791,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/organizaciones/{org}/agentes", con),
         ("POST", "/celdas/{celda}/aprovisionada", con),
         ("POST", "/organizaciones", con),
+        ("POST", "/organizaciones/{org}/perfil", con),
         ("POST", "/organizaciones/{org}/celdas", con),
         ("POST", "/celdas/{celda}/retirar", con),
     ]

@@ -143,6 +143,7 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
     //   el `Gateway` compartido sirve sin coste por cliente; `--entrada` para el
     //   que traiga su dominio. ⛔ No es el alta: es el host, ver la `022`.
     let entrada = valor(args, "--entrada");
+    let titulo = valor(args, "--titulo");
     // ⭐ Y la celda: dónde va a correr. Configuración de plataforma, como el
     //   `sub` del agente: `--celda` o `ORE_CELDA`, y con ella `ORE_CELDA_TIER`,
     //   `ORE_CELDA_PROVEEDOR`, `ORE_CELDA_REGION` y, desde la `027`,
@@ -218,6 +219,8 @@ fn fundar_mando(args: &[String], url: &str) -> ExitCode {
             correo: correo.as_deref(),
             arbol: arbol.as_deref(),
             kek: kek.as_deref(),
+            // ⭐ El titulo (035): `--titulo "Acme Corp S.L."`. Por HTTP lo trae el registro.
+            titulo: titulo.as_deref(),
             entrada: entrada.as_deref(),
             celda,
         },

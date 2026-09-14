@@ -34,6 +34,8 @@
 #  11  ⭐ LOS DOS VERBOS DE LA 0025 E6: fundar por HTTP (quien pide es el dueño,
 #      con celda de plataforma) y pedir una celda mas (ORGADMIN; nombre unico;
 #      solo compartido); retirarla (no la de casa); y una USERADMIN no puede
+#  12  ⭐ EL PERFIL (035): fundar con titulo; titulo y logo por el verbo (ORGADMIN);
+#      un logo que no es imagen o pesa de mas se niega; una USERADMIN no edita
 #
 # El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es
 # `ORGADMIN`, que lo tiene TODO, asi que la guarda del rodeo **nunca llega a
@@ -605,4 +607,25 @@ dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en t
   || falla "11 · celda_de no enseña \`retirada\` al aprovisionador"
 dice "11 · retirar: la de casa no, una USERADMIN no, y la segunda vez es «ya»; celda_de lo dice"
 
-echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, y los de la cuenta."
+# ── 12 · el perfil: titulo y logo ───────────────────────────────────────────
+[ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova-corp","titulo":"Nova Corp S.L."}')" = "200" ] \
+  || falla "12 · no se pudo fundar con titulo: $(cat "$TMP/r.json")"
+[ "$(pide GET /organizaciones "$NOE")" = "200" ] || falla "12 · noe no lista"
+grep -q '"titulo":"Nova Corp S.L."' "$TMP/r.json" || falla "12 · el titulo no vuelve en GET /organizaciones: $(cat "$TMP/r.json")"
+LOGO="data:image/svg+xml;base64,$(printf '<svg xmlns="http://www.w3.org/2000/svg"/>' | base64 | tr -d '\n')"
+[ "$(pide POST "/organizaciones/acme/perfil" "$BEA" "{\"titulo\":\"Acme\"}")" = "422" ] \
+  || falla "12 · ⛔ UNA USERADMIN EDITO EL PERFIL"
+[ "$(pide POST "/organizaciones/acme/perfil" "$ADA" "{\"titulo\":\"Acme Corp\",\"logo\":\"$LOGO\"}")" = "200" ] \
+  || falla "12 · ada no pudo poner titulo y logo: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/perfil" "$ADA" '{"logo":"http://otro.sitio/logo.png"}')" = "422" ] \
+  || falla "12 · ⛔ un logo por URL paso: tiene que ir embebido"
+[ "$(pide POST "/organizaciones/acme/perfil" "$ADA" '{}')" = "422" ] || falla "12 · un perfil vacio paso"
+[ "$(pide GET /organizaciones "$ADA")" = "200" ] || falla "12 · ada no lista"
+grep -q '"titulo":"Acme Corp"' "$TMP/r.json" && grep -q '"logo":"data:image/svg+xml;base64,' "$TMP/r.json" \
+  || falla "12 · titulo o logo no vuelven: $(head -c 300 "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/perfil" "$ADA" '{"logo":""}')" = "200" ] || falla "12 · no se pudo quitar el logo"
+[ "$(pide GET /organizaciones "$ADA")" = "200" ] && grep -q '"logo":""' "$TMP/r.json" || falla "12 · el logo no se quito"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='organizacion:editar'")" -ge 2 ] || falla "12 · editar no deja huella"
+dice "12 · el perfil: fundar con titulo; titulo y logo por ORGADMIN, embebido y con huella; una USERADMIN no"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, y el perfil."

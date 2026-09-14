@@ -224,10 +224,66 @@ def con_ore(realm):
 REGISTRO_EN_PRODUCCION = {"realm": "rubix", "registrationAllowed": True, "verifyEmail": False}
 
 
+# ⭐ Y el registro PREGUNTA POR LA ORGANIZACION (035): un atributo del perfil de
+#   usuario, obligatorio, que la consola lee del token (`rubix_organizacion`) al
+#   entrar por primera vez para fundar la cuenta con ese TITULO. El identificador
+#   se deriva. El perfil de usuario viaja en el import como un `component`
+#   `UserProfileProvider` con `kc.user.profile.config`; si el JSON de la
+#   plataforma no lo trae, se construye con los cuatro de siempre mas este.
+ATRIBUTO_ORGANIZACION = {
+    "name": "organizacion",
+    "displayName": "Organización",
+    "validations": {"length": {"min": 2, "max": 80}},
+    "annotations": {"inputHelperTextBefore": "El nombre de tu empresa o equipo. Sera tu cuenta en Rubix; el identificador (minusculas y guiones) se deriva de el."},
+    "required": {"roles": ["user"]},
+    "permissions": {"view": ["admin", "user"], "edit": ["admin", "user"]},
+    "multivalued": False,
+}
+MAPEADOR_ORGANIZACION = {
+    "name": "rubix-organizacion",
+    "protocol": "openid-connect",
+    "protocolMapper": "oidc-usermodel-attribute-mapper",
+    "consentRequired": False,
+    "config": {
+        "user.attribute": "organizacion",
+        "claim.name": "rubix_organizacion",
+        "jsonType.label": "String",
+        "id.token.claim": "true",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "true",
+    },
+}
+PERFIL_BASE = [
+    {"name": "username", "displayName": "${username}", "validations": {"length": {"min": 3, "max": 255}, "username-prohibited-characters": {}, "up-username-not-idn-homograph": {}}, "permissions": {"view": ["admin", "user"], "edit": ["admin", "user"]}, "multivalued": False},
+    {"name": "email", "displayName": "${email}", "validations": {"email": {}, "length": {"max": 255}}, "required": {"roles": ["user"]}, "permissions": {"view": ["admin", "user"], "edit": ["admin", "user"]}, "multivalued": False},
+    {"name": "firstName", "displayName": "${firstName}", "validations": {"length": {"max": 255}, "person-name-prohibited-characters": {}}, "required": {"roles": ["user"]}, "permissions": {"view": ["admin", "user"], "edit": ["admin", "user"]}, "multivalued": False},
+    {"name": "lastName", "displayName": "${lastName}", "validations": {"length": {"max": 255}, "person-name-prohibited-characters": {}}, "required": {"roles": ["user"]}, "permissions": {"view": ["admin", "user"], "edit": ["admin", "user"]}, "multivalued": False},
+]
+
+
+def con_organizacion_en_el_registro(realm):
+    comps = realm.setdefault("components", {})
+    lista = comps.setdefault("org.keycloak.userprofile.UserProfileProvider", [])
+    if not lista:
+        lista.append({"name": "declarative-user-profile", "providerId": "declarative-user-profile", "subComponents": {}, "config": {}})
+    cfg = lista[0].setdefault("config", {})
+    perfil = json.loads(cfg["kc.user.profile.config"][0]) if cfg.get("kc.user.profile.config") else {"attributes": list(PERFIL_BASE), "groups": [{"name": "user-metadata", "displayHeader": "User metadata", "displayDescription": "Attributes, which refer to user metadata"}]}
+    if not any(a["name"] == "organizacion" for a in perfil["attributes"]):
+        perfil["attributes"].append(ATRIBUTO_ORGANIZACION)
+    cfg["kc.user.profile.config"] = [json.dumps(perfil, ensure_ascii=False)]
+    for c in realm.get("clients", []):
+        if c.get("clientId") == "rubix-consola":
+            m = c.setdefault("protocolMappers", [])
+            if not any(x.get("name") == "rubix-organizacion" for x in m):
+                m.append(MAPEADOR_ORGANIZACION)
+    return realm
+
+
 def con_registro(realm):
     if realm["realm"] == REGISTRO_EN_PRODUCCION["realm"]:
         realm["registrationAllowed"] = REGISTRO_EN_PRODUCCION["registrationAllowed"]
         realm["verifyEmail"] = REGISTRO_EN_PRODUCCION["verifyEmail"]
+        realm = con_organizacion_en_el_registro(realm)
     return realm
 
 

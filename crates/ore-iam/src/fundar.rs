@@ -72,6 +72,9 @@ pub struct Peticion<'a> {
     /// `las-migraciones.sh` existe para tapar, un piso más allá: **una migración
     /// puede sobrevivir a los datos que hay y romper lo que viene después**.
     pub kek: Option<&'a str>,
+    /// ⭐ El TÍTULO (035): cómo se llama de cara a la gente. `nombre` es el
+    ///   identificador; esto es «Acme Corp S.L.». `None` ⇒ sin título.
+    pub titulo: Option<&'a str>,
     /// Cómo se llama su árbol. `None` ⇒ se deriva de `organizacion`.
     ///
     /// ⭐ Derivar el valor por defecto es P2 —lo derivable no se pregunta—, y
@@ -304,6 +307,76 @@ pub fn retirar_celda_en(
         ]),
         true,
     ))
+}
+
+/// ⭐ EL PERFIL (035): título y logo. Quien lo cambia necesita `organizacion:editar`.
+///   Se cambia lo que viene; lo que no viene se queda. Un logo vacío (`""`) lo quita.
+pub fn editar_perfil_en(
+    tx: &mut Tx,
+    emisor: &str,
+    sujeto: &Identidad,
+    org: &str,
+    titulo: Option<&str>,
+    logo: Option<&str>,
+) -> Result<Json, String> {
+    let org_id: String = tx
+        .uno(
+            "select id from iam.organizacion
+              where id = $1 or nombre = $1
+              order by (id = $1) desc limit 1",
+            &[&org],
+        )?
+        .ok_or("no puedes hacer eso en esa organizacion")?
+        .get(0);
+    crate::potestad::exige(tx, emisor, &sujeto.persona, &org_id, "organizacion:editar")?;
+    if titulo.is_none() && logo.is_none() {
+        return Err("no viene nada que cambiar: `titulo` y/o `logo`".into());
+    }
+    if let Some(t) = titulo {
+        let t = t.trim();
+        if t.is_empty() || t.chars().count() > 80 {
+            return Err("el titulo va de 1 a 80 caracteres".into());
+        }
+        tx.ejecutar(
+            "update iam.organizacion set titulo = $2 where id = $1",
+            &[&org_id, &t],
+        )?;
+    }
+    if let Some(l) = logo {
+        if l.is_empty() {
+            tx.ejecutar(
+                "update iam.organizacion set logo = null where id = $1",
+                &[&org_id],
+            )?;
+        } else {
+            // La forma se comprueba aqui con una frase; el `check` de la 035 es la guarda.
+            if !l.starts_with("data:image/") || !l.contains(";base64,") {
+                return Err("el logo es una imagen embebida: `data:image/<tipo>;base64,…`".into());
+            }
+            if l.len() > 200_000 {
+                return Err(
+                    "el logo pesa mas de 200 KB: reducelo (un SVG o un PNG pequeño)".into(),
+                );
+            }
+            tx.ejecutar(
+                "update iam.organizacion set logo = $2 where id = $1",
+                &[&org_id, &l],
+            )?;
+        }
+    }
+    tx.anotar(
+        "organizacion:editar",
+        &org_id,
+        Json::obj([
+            ("titulo", Json::Bool(titulo.is_some())),
+            ("logo", Json::Bool(logo.is_some())),
+        ]),
+    )?;
+    Ok(Json::obj([
+        ("organizacion", Json::s(org_id)),
+        ("titulo", Json::Bool(titulo.is_some())),
+        ("logo", Json::Bool(logo.is_some())),
+    ]))
 }
 
 /// El nombre de una celda: la etiqueta que la 029 exige (`celda_nombre_es_etiqueta`),
@@ -638,10 +711,14 @@ pub fn fundar_en(tx: &mut Tx, p: &Peticion) -> Result<(Json, bool), String> {
 
     // ⭐ La CUENTA: nombre, llave, quien la fundo. `arbol` y `entrada` ya no van
     //   aqui —son de la celda (029/030, 0025-2)— y la 031 borra las columnas.
+    let titulo = p.titulo.map(str::trim).filter(|t| !t.is_empty());
+    if titulo.is_some_and(|t| t.chars().count() > 80) {
+        return Err("el titulo no cabe: hasta 80 caracteres".into());
+    }
     tx.ejecutar(
-        "insert into iam.organizacion (id, nombre, kek, creada_por)
-         values ($1, $2, $3, $4)",
-        &[&org, &p.organizacion, &kek, &persona],
+        "insert into iam.organizacion (id, nombre, kek, creada_por, titulo)
+         values ($1, $2, $3, $4, $5)",
+        &[&org, &p.organizacion, &kek, &persona, &titulo],
     )?;
 
     // ── y el rol. `ORGADMIN` es UNO por organizacion, y lo sostiene un indice
