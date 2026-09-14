@@ -209,11 +209,10 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # La forja: la SUYA, en este namespace (46). Hasta el 2026-09-14 era
+    # `forja/`; con la 0024 aceptada ningún pod del inquilino sale allí.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: forja
-          podSelector:
+        - podSelector:
             matchLabels:
               ore.dev/rol: forja
       ports: [{protocol: TCP, port: 3000}]
