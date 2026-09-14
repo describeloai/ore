@@ -157,9 +157,16 @@ u = subprocess.run(["gcloud", "secrets", "versions", "access", "latest", "--secr
 if u:
     host = u.split("@")[-1].split("/")[0]
     print("   postgres://***@%s" % host)
-    if "identidad" in host:
+    # ¿Sigue el MATERIAL ahi, o solo el metadato? Tras la 028 la tabla no existe.
+    hay_material = subprocess.run(["kubectl", "-n", "identidad", "exec", "idp-db-0", "--", "psql", "-U", "keycloak", "-d", "iam",
+                                   "-qtAc", "select to_regclass('cofre.material') is not null"],
+                                  capture_output=True, text=True).stdout.strip() == "t"
+    if "identidad" in host and hay_material:
         anota("se parte", "el cofre guarda su material en la base CENTRAL de `iam` (%s)" % host,
               "0024-5: el material pasa al Secret Manager de la celda; `cofre.secreto` e `iam.concesion` se quedan (metadato). Medido en `medida-el-cofre-y-su-almacen.py`")
+    elif "identidad" in host:
+        anota("central", "el cofre alcanza la base central de `iam` (%s) — por el METADATO, no por el material" % host,
+              "0024-5 hecha el 2026-09-14: el material esta en el Secret Manager de la celda (`t-<n>-cofre-*`). Lo que queda es `cofre.secreto` + `iam.concesion`, que es del plano de control; en BYOC ese camino es HTTP contra ore-iam")
 
 # ── F ───────────────────────────────────────────────────────────────────────
 titulo("F - POR DONDE LLEGA LA CONSOLA")
