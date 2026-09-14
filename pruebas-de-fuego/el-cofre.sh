@@ -467,8 +467,11 @@ grant select, insert, update, delete on cofre.material, cofre.vigente to ore_cof
 # Un secreto VIEJO: como los guardaba el cofre hasta la 0024-⑤, cifrado a mano
 # con la llave de entonces (`ore/acme`, no la de ahora), en `cofre.material`.
 VIEJO=$(printf 'postgres://viejo:v@db/y' | "$TMP/kms-de-mentira" kms encrypt --keyring ore --key acme --plaintext-file=- --ciphertext-file=- | base64 -w0)
-psql "$URL" -qtAc "insert into cofre.secreto (id, organizacion, nombre, clase, emitio)
-  values ('sec_viejo', '$ORG', 'pg-viejo', 'conexion', (select id from iam.persona where sub='persona:ada'))" >/dev/null
+# Con su celda (030: `celda not null`). Un secreto viejo de verdad la tendria desde
+# la 029, que rellenó todos con la unica celda de su organizacion.
+psql "$URL" -qtAc "insert into cofre.secreto (id, organizacion, nombre, clase, emitio, celda)
+  values ('sec_viejo', '$ORG', 'pg-viejo', 'conexion', (select id from iam.persona where sub='persona:ada'),
+          (select id from iam.celda where organizacion = '$ORG'))" >/dev/null
 psql "$URL" -qtAc "insert into cofre.material (secreto, version, cifrado, kek)
   values ('sec_viejo', 1, decode('$VIEJO', 'base64'), 'ore/acme')" >/dev/null
 psql "$URL" -qtAc "select iam.conceder_de_secreto('con_viejo', (select id from iam.persona where sub='persona:ada'), 'secreto/pg-viejo', 'owner', (select id from iam.persona where sub='persona:ada'), '$ORG')" >/dev/null
