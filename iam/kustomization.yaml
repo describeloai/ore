@@ -72,6 +72,7 @@ configMapGenerator:
       - migraciones/028-el-material-se-fue-a-la-celda.sql
       - migraciones/029-la-celda-con-nombre.sql
       - migraciones/030-recortar-la-celda-es-la-unidad.sql
+      - migraciones/031-recortar-la-organizacion.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

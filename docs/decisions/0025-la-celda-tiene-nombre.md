@@ -208,7 +208,7 @@ rellenada con la única celda de su organización; la unicidad vieja se queda.
 - vuelta atrás: `alter table … drop column` × 4 y la columna `celda` de `cofre.secreto`. Una orden,
   probada en la base restaurada de E0.
 
-### E2 · Cambiar los lectores, uno a uno, con la doble verdad en pie
+### E2 · Cambiar los lectores, uno a uno, con la doble verdad en pie — ✓ 2026-09-14 (guarda: 0 lectores)
 
 Cada lector pasa de `organizacion.arbol/entrada` a `celda.arbol/entrada` **en su propio commit**
 y con su propia prueba: `fundar` y `GET /organizaciones` (`los-verbos.sh`); el aprovisionador
@@ -220,7 +220,7 @@ cuando cuenta **cero**.
 - vuelta atrás: `git revert` del commit del lector; la columna vieja sigue ahí y sigue diciendo lo
   mismo.
 
-### E3 · Recortar
+### E3 · Recortar — ✓ 2026-09-14 (030 y 031, en dos: la 030 quita el `not null` y el índice; la 031 borra cuando el `fundar` nuevo ya corre)
 
 Migración 030: `organizacion.arbol` y `organizacion.entrada` fuera; el índice único fuera;
 `(organizacion, nombre)` único y `nombre` único global en `iam.celda`; `cofre.secreto` único por
