@@ -70,11 +70,10 @@ create or replace view iam.discrepancias as
   union all
   select o.nombre, 'entrada: ' || o.entrada || ' vs ' || c.entrada
     from iam.organizacion o join iam.celda c on c.organizacion = o.id
-   where o.entrada is distinct from c.entrada
-  union all
-  select o.nombre, 'sin celda'
-    from iam.organizacion o
-   where not exists (select 1 from iam.celda c where c.organizacion = o.id);
+   where o.entrada is distinct from c.entrada;
+-- ⚠️ «Sin celda» NO es una discrepancia: `fundar` no se niega a fundar sin celda
+--   (025), y `los-verbos.sh` lo ejerce a proposito. Lo que esta vista vigila es
+--   que DOS verdades no se contradigan; una sola verdad no puede.
 comment on view iam.discrepancias is
   'Vacia o la etapa no pasa. Existe mientras arbol/entrada vivan en las dos tablas (029..030).';
 
