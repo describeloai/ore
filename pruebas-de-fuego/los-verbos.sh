@@ -563,26 +563,26 @@ dice "10 · el aprovisionador: registra (idempotente, con su huella), da la celd
 # Fundar: quien pide es el dueño, y nace con la celda de plataforma.
 NOE=$(acunar "persona:noe" "noe@paladio.io")
 [ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova"}')" = "200" ] \
-  || falla "11 · noe no pudo fundar `nova`: $(cat "$TMP/r.json")"
+  || falla "11 · noe no pudo fundar \`nova\`: $(cat "$TMP/r.json")"
 NOVA=$(campo organizacion)
 case "$(campo celda)" in cel_*) ;; *) falla "11 · la organizacion fundada por HTTP no trae celda: $(cat "$TMP/r.json")" ;; esac
 [ "$(pide POST /organizaciones "$ADA" '{"nombre":"nova"}')" = "422" ] \
-  || falla "11 · ⛔ SE FUNDO DOS VECES `nova`"
+  || falla "11 · ⛔ SE FUNDO DOS VECES \`nova\`"
 [ "$(psql "$URL" -qtAc "select count(*) from iam.pertenencia_rol where organizacion='$NOVA' and rol='ORGADMIN'")" = "1" ] \
   || falla "11 · nova no tiene UN ORGADMIN"
 [ "$(psql "$URL" -qtAc "select quien from iam.huella where operacion='organizacion:fundar' and sobre='$NOVA'")" = "persona:noe" ] \
   || falla "11 · la huella de fundar no nombra a quien pidio"
-dice "11 · noe funda `nova` por HTTP: dueña, con celda `nova`, y el nombre no se repite"
+dice "11 · noe funda \`nova\` por HTTP: dueña, con celda \`nova\`, y el nombre no se repite"
 # Pedir una celda mas: ORGADMIN si; USERADMIN (bea, en acme) no.
 [ "$(pide POST "/organizaciones/acme/celdas" "$BEA" '{"nombre":"acme-eu"}')" = "422" ] \
   || falla "11 · ⛔ UNA USERADMIN PIDIO UNA CELDA"
 grep -q "no puedes" "$TMP/r.json" || falla "11 · la negativa no dice «no puedes»: $(cat "$TMP/r.json")"
 [ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-eu"}')" = "200" ] \
-  || falla "11 · ada no pudo pedir `acme-eu`: $(cat "$TMP/r.json")"
+  || falla "11 · ada no pudo pedir \`acme-eu\`: $(cat "$TMP/r.json")"
 [ "$(campo arbol)" = "t-acme-eu/ontologia" ] && [ "$(campo entrada)" = "acme-eu.ore.paladio.io" ] \
   || falla "11 · la celda nueva no deriva arbol y entrada de SU nombre: $(cat "$TMP/r.json")"
 [ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-eu"}')" = "422" ] \
-  || falla "11 · ⛔ DOS CELDAS `acme-eu`"
+  || falla "11 · ⛔ DOS CELDAS \`acme-eu\`"
 [ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"nova"}')" = "422" ] \
   || falla "11 · ⛔ acme creo una celda con el nombre de OTRA organizacion (el nombre es global)"
 [ "$(pide POST "/organizaciones/acme/celdas" "$ADA" '{"nombre":"acme-big","tier":"dedicado"}')" = "422" ] \
@@ -592,8 +592,8 @@ grep -q "no puedes" "$TMP/r.json" || falla "11 · la negativa no dice «no puede
 [ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "11 · no se leen las celdas"
 [ "$("$PY" -c 'import json;print(len(json.load(open("'"$TMP/r.json"'"))["celdas"]))')" = "2" ] \
   || falla "11 · acme no lista dos celdas: $(cat "$TMP/r.json")"
-grep -q '"nombre": "acme-eu"' "$TMP/r.json" || falla "11 · la celda nueva no sale en la lista"
-dice "11 · ada pide `acme-eu`: nace sin aprovisionar; el nombre es unico en toda la plataforma; solo compartido"
+grep -q '"nombre":"acme-eu"' "$TMP/r.json" || falla "11 · la celda nueva no sale en la lista"
+dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en toda la plataforma; solo compartido"
 # Retirar: la de casa no; la otra si, y dos veces es «ya».
 [ "$(pide POST "/celdas/acme/retirar" "$ADA")" = "422" ] || falla "11 · ⛔ SE RETIRO LA CELDA DE CASA"
 [ "$(pide POST "/celdas/acme-eu/retirar" "$BEA")" = "422" ] || falla "11 · ⛔ UNA USERADMIN RETIRO UNA CELDA"
@@ -602,7 +602,7 @@ dice "11 · ada pide `acme-eu`: nace sin aprovisionar; el nombre es unico en tod
 [ "$(pide POST "/celdas/acme-eu/retirar" "$ADA")" = "200" ] && [ "$(campo ya)" = "True" ] \
   || falla "11 · retirar dos veces no es idempotente: $(cat "$TMP/r.json")"
 [ "$(psql "$URL" -qtAc "select estado from iam.celda_de where celda='acme-eu'")" = "retirada" ] \
-  || falla "11 · celda_de no enseña `retirada` al aprovisionador"
+  || falla "11 · celda_de no enseña \`retirada\` al aprovisionador"
 dice "11 · retirar: la de casa no, una USERADMIN no, y la segunda vez es «ya»; celda_de lo dice"
 
 echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, y los de la cuenta."
