@@ -1,6 +1,6 @@
 # 0025 · La celda tiene nombre
 
-**Estado:** propuesto · **Fecha:** 2026-09-14 · **Decide:** que **la organización es la cuenta**
+**Estado:** aceptado (E0–E6 hechas y medidas el 2026-09-14) · **Fecha:** 2026-09-14 · **Decide:** que **la organización es la cuenta**
 —personas, llave, agente, concesiones, factura— y **la celda es donde vive un árbol**; que una
 organización tiene **N celdas** con nombre propio; que `arbol` y `entrada` **se van con la celda**;
 que un secreto del cofre **es de la celda**; y que la consola **elige celda**, no la deduce
@@ -307,7 +307,7 @@ Lo hecho:
   Confirmado en `aprovisionador-29823375` (2m39s): «el almacén tiene el secreto — ya estaba» × 4,
   cero versiones nuevas, las dos celdas dadas por aprovisionadas.
 
-### E6 · Los dos verbos y la consola
+### E6 · Los dos verbos y la consola — ✓ 2026-09-14 (`medida-la-segunda-serverless.py`: `prueba-dos` pedida, entera, retirada; guarda verde)
 
 `POST /organizaciones` y `POST /organizaciones/{org}/celdas`; `celdaActual` y el selector en
 Clusters. **La prueba de aceptación de toda la ADR**: `prueba` pide su segunda serverless desde la
@@ -318,6 +318,39 @@ y sólo entonces `demo`.
 
 - vuelta atrás: los verbos se desmontan; la consola vuelve a los toasts. Ninguna fila queda a
   medias porque cada verbo es una transacción con huella.
+
+Lo hecho, y lo que la primera celda pedida de verdad enseñó (cuatro cosas, ninguna en seco):
+
+- Tres verbos, no dos: `POST /organizaciones {nombre}` (quien pide es el dueño; celda de casa con
+  la configuración de plataforma `ORE_CELDA*`, que el 67 ahora lleva), `POST /organizaciones/{org}/
+  celdas {nombre}` (potestad `celda:crear`, sólo ORGADMIN; nombre único en toda la plataforma; sólo
+  `compartido`) y `POST /celdas/{c}/retirar` (la de casa no; idempotente). Migración 033. Caso 11
+  de `los-verbos.sh`. Consola: `pedir-celda`/`retirar-celda`, *Crear serverless* pide de verdad,
+  la lista marca *actual* y *casa*, ofrece *Usar* y *Retirar*, y sonda **cada celda por su propia
+  entrada**. El onboarding —un toast— se suprimió.
+- **El enganche se rinde** de los objetos de `demo` en `13-…` y va a `plataforma/enganches` en la
+  forja, que la 15 obedece con `prune: true`; retirar es quitar un fichero y Flux poda el namespace
+  entero. `demo` y `prueba` siguen a mano en 13 (R2). Lo que concentra, dicho en 15: el mismo
+  permiso que ya tenía el aprovisionador sobre cada compartimento, en un repositorio más.
+- Lo que sólo la celda real dijo: (1) nadie creaba la organización `t-<celda>` en la forja central
+  —para las dos de casa existía de antes—; (2) el enganche con el `Role` de `t-<celda>` dentro no
+  se aplica **nunca**: Flux ensaya el conjunto entero y el namespace que ese enganche manda crear
+  no existe → sin cola la primera pasada, entero la segunda; (3) el JWKS nace `{"keys":[]}` y nadie
+  lo llenaba hasta seis horas después (cofre y serve en CrashLoop) → un Job al nacer, copia del
+  CronJob, y ⑪ vigila que siga siéndolo; (4) el papel no podía borrar el CNAME ni listar versiones
+  para borrar un secreto → la retirada dejaba cuatro secretos y un registro.
+- Medido: `prueba-dos` pedida 20:32 → agente por el verbo a los 7 s → enganche a los 9,5 min →
+  namespace, cola, forja → **aprovisionada a los 12 min** → serve, `/salud` 200 y cofre a los
+  16 min (con el JWKS lanzado a mano; con el Job del template, ~12). `t-prueba`: sólo cambió la
+  etiqueta `ore.dev/commit` de sus pods, por mis propios pushes. Retirada 20:50 → cuentas fuera a
+  los 3,5 min → enganche fuera a los 7 → namespace podado a los 22 → guarda verde;
+  CNAME y secretos en la pasada siguiente, ya con el papel corregido. **El primer
+  `agente:registrar` con la huella del aprovisionador fue el de `prueba-dos`**, como E5 dijo.
+- Honesto: el dueño de `prueba` es el cliente `iam-agente` de la plataforma, no una persona con
+  consola, así que la petición fue por el verbo con su token, no con un clic. El clic lo da `demo`
+  (Luna) en producción — y ahí la 0025 destapó lo siguiente: la consola de producción entra por el
+  realm `rubix` (vacío) y el backend valida `rubix-dev`; no hay registro abierto en ningún realm.
+  Es la decisión que sigue, y no es de esta ADR.
 
 ---
 
