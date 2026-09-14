@@ -144,7 +144,13 @@ consulta() { # <columna>
 # ⭐ Y la celda, por su NOMBRE (029): hoy se llama como la organizacion; en la
 #   E4 el argumento de este guion sera la celda, y esto ya lo es.
 celda() { # <columna de iam.celda_de>
-  if [ -n "${DENTRO:-}"ARBOL=$(celda arbol)
+  if [ -n "${DENTRO:-}" ]; then
+    psql "$(cat /puesto/iam-url)" -tAc       "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d ''
+  else
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc       "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d ''
+  fi
+}
+ARBOL=$(celda arbol)
 KEK=$(consulta kek)
 [ -n "$ARBOL" ] || falla "\`$NOMBRE\` no esta fundada. Antes de aprovisionar hay que fundar:
     ore-iam fundar --organizacion $NOMBRE --emisor <realm> --sub <sub del dueno>"
@@ -989,15 +995,7 @@ paso "⑧ LA PUERTA — la entrada resuelve a la celda, o se dice qué registro 
 #   IP que cualquier nombre inventado.
 #
 # ⛔ Se lee por la vista `iam.celda_de` (027): por NOMBRES, sin `id`, que es lo
-#   que el papel de la 023 puede ver.
- ]; then
-    psql "$(cat /puesto/iam-url)" -tAc \
-      "select $1 from iam.celda_de where organizacion = '$NOMBRE'" 2>/dev/null | tr -d '\r'
-  else
-    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-      "select $1 from iam.celda_de where organizacion = '$NOMBRE'" 2>/dev/null | tr -d '\r'
-  fi
-}
+#   que el papel de la 023 puede ver. La funcion `celda` esta definida en ①.
 resuelve() { # <host> → IPs v4 ordenadas, separadas por coma; vacio si no resuelve
   "$PY" -c 'import socket,sys
 try: print(",".join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)})))
