@@ -104,19 +104,23 @@ metadata:
     ore.dev/tenant: system
     ore.dev/rol: aprovisionador
 spec:
-  # ⭐ Cada hora, y NO es una carrera. Es el mismo argumento que `13-…` escribe
-  #   sobre su `interval: 5m`: «lo que esto persigue no es aplicar rapido un
-  #   commit —eso se puede forzar— sino que la deriva no viva mucho tiempo».
-  #   Un cambio urgente se lanza a mano con la linea de la cabecera.
-  schedule: "17 * * * *"
+  # ⭐ Cada cinco minutos (0025 E4). Decia «cada hora» con el argumento de
+  #   `13-…` —«que la deriva no viva mucho tiempo»—, y la medida del alta lo
+  #   desmintio: una celda nueva necesita DOS pasadas (la primera funda su
+  #   forja al empujar la 46; la segunda la pobla), asi que «cada hora» era
+  #   «hasta dos horas hasta que existe». Con cinco minutos son diez, que es
+  #   lo que la E6 promete. Una pasada sin cambios cuesta ~6 min de pod
+  #   (~0,1 CPU·h) y `Forbid` impide que se solapen: en la practica es un
+  #   reconciliador que corre casi seguido, que es lo que es.
+  schedule: "*/5 * * * *"
   # ⛔ `Forbid`: dos convergencias a la vez empujarian al mismo compartimento
   #   desde dos clones distintos, y la segunda saldria con «rejected — fetch
   #   first». No es peligroso; es ruido que se lee como un fallo.
   concurrencyPolicy: Forbid
-  # ⚠️ Si el cluster estuvo caido y se perdio la hora, no se corre a destiempo:
-  #   converger dos veces seguidas no aporta nada y la siguiente llega en una
-  #   hora.
-  startingDeadlineSeconds: 600
+  # ⚠️ Si se perdio una hora —el cluster caido, o una pasada de mas de cinco
+  #   minutos ocupando el turno—, no se corre a destiempo: la siguiente llega en
+  #   cinco minutos.
+  startingDeadlineSeconds: 240
   # Tres corridas buenas y UNA MALA. La mala se guarda porque su registro es lo
   # unico que dice por que — la misma razon que el `Never` de mas abajo.
   successfulJobsHistoryLimit: 3
@@ -165,8 +169,16 @@ spec:
                     --secret=aprovisionador-iam-url --out-file=/puesto/iam-url
                   gcloud secrets versions access latest \
                     --secret=forja-admin-token --out-file=/puesto/forja-admin
+                  # ⭐ Y el admin del IdP (0025 E4), para el paso ⑦: el cliente
+                  #   de Keycloak del agente de cada celda. Hasta hoy ⑦ solo habia
+                  #   corrido desde fuera, con la clave en el entorno de un
+                  #   operador. Lo pone `68-el-admin-del-aprovisionador.sh`: un
+                  #   usuario del realm maestro que solo administra CLIENTES del
+                  #   realm de las personas, no el admin de arranque.
+                  gcloud secrets versions access latest \
+                    --secret=idp-admin --out-file=/puesto/idp-admin
                   chmod 0400 /puesto/*
-                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) bytes"
+                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) bytes"
               resources:
                 requests: {cpu: "50m", memory: 128Mi}
                 limits:   {cpu: "500m", memory: 256Mi}
@@ -183,6 +195,9 @@ spec:
                 - { name: HOME, value: /tmp }
                 - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
                 - { name: DENTRO, value: "1" }
+                # El usuario cuya clave es `/puesto/idp-admin` (68-…). No es un
+                # secreto; la clave si, y viaja por el tmpfs, no por el entorno.
+                - { name: IDP_ADMIN_USER, value: aprovisionador }
                 # ⭐ Donde vive el renderizador DENTRO. El guion lo busca junto a
                 #   si mismo cuando corre de un arbol; aqui los dos vienen del mismo
                 #   `ConfigMap`, con las plantillas al lado.
@@ -210,9 +225,16 @@ spec:
 ---
 # ── Por dónde puede salir ───────────────────────────────────────────────────
 #
-# El DNS, la forja, la base, el servidor de metadatos y Google. **No los
-# orígenes, no el mundo, y no GitHub** — desde que el compartimento vive en la
-# forja, este pod no tiene nada que hacer fuera salvo hablar con la nube.
+# El DNS, las forjas —la de la plataforma y la de CADA celda—, la base y la API
+# de admin del IdP, el servidor de metadatos y Google. **No los orígenes, no el
+# mundo, y no GitHub** — desde que el compartimento vive en la forja, este pod
+# no tiene nada que hacer fuera salvo hablar con la nube.
+#
+# ⛔ Las forjas de las celdas y el IdP faltaban, y se midio lo que costaba
+#   (`medida-el-verbo-de-fundar.py`): la pasada desde dentro decia «la forja
+#   del inquilino todavia no esta» de una forja viva, asi que la SEGUNDA
+#   pasada —la que pobla el arbol y la cola— nunca ocurria sola; y el paso ⑦
+#   no podia ni intentarlo. Las dos reglas de abajo son eso.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -237,11 +259,24 @@ spec:
             matchLabels:
               ore.dev/rol: forja
       ports: [{protocol: TCP, port: 3000}]
+    # La forja de cada celda (46): `t-*` lleva `ore.dev/rol: cargas` y su
+    # forja `ore.dev/rol: forja`. Su `entrada-a-la-forja` ya admitia a
+    # `ore-system`; faltaba la salida de aqui.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: cargas
+          podSelector:
+            matchLabels:
+              ore.dev/rol: forja
+      ports: [{protocol: TCP, port: 3000}]
+    # La base de `iam` (5432) y la API de admin del IdP (8080), las dos en
+    # `identidad`. La segunda es para ⑦ y nada mas.
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: identidad
-      ports: [{protocol: TCP, port: 5432}]
+      ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 8080}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]

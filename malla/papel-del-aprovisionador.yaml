@@ -34,6 +34,37 @@
 #
 #   gcloud iam roles create ore_aprovisionador --project=<proyecto> \
 #     --file=malla/papel-del-aprovisionador.yaml
+#   gcloud iam roles update ore_aprovisionador --project=<proyecto> \
+#     --file=malla/papel-del-aprovisionador.yaml        # cuando cambia esta lista
+#
+# ── ⚠️ Y UNA CONCESION QUE NO CABE EN ESTA LISTA (0025 E4) ─────────────────
+#
+# El cofre de cada celda administra `t-<celda>-cofre-*` en el almacen por una
+# CONDICION IAM por prefijo sobre `roles/secretmanager.admin` — y esa concesion
+# es del PROYECTO (los secretos no existen todavia cuando se concede). Medido:
+# desde dentro, el paso ⑤ del aprovisionador fallaba con «Policy modification
+# failed» en cada pasada, y el registro lo decia y nadie lo leia.
+#
+# `resourcemanager.projects.setIamPolicy` a secas es poder darse cualquier
+# papel. Google tiene la forma de acotarlo, y es esta: el papel
+# `projectIamAdmin` CONDICIONADO a que las concesiones que toca sean SOLO de
+# `secretmanager.admin` (`iam.googleapis.com/modifiedGrantsByRole`):
+#
+#   gcloud projects add-iam-policy-binding <proyecto> \
+#     --member=serviceAccount:ore-aprovisionador@<proyecto>.iam.gserviceaccount.com \
+#     --role=roles/resourcemanager.projectIamAdmin \
+#     --condition-from-file=condicion.yaml     # (`--condition=` no admite la coma de la expresion)
+#
+#   con `condicion.yaml`:
+#     expression: api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/secretmanager.admin"])
+#     title: solo-secretmanager-admin
+#     description: el aprovisionador solo concede y retira secretmanager.admin (el prefijo del cofre de cada celda)
+#
+# Lo que se concentra, dicho: puede conceder `secretmanager.admin` A QUIEN SEA,
+# incluido a si mismo sin prefijo. No puede conceder ningun otro papel. Es la
+# misma figura de siempre —UNA pieza, con una entrada, y cada concesion queda en
+# el registro de auditoria de IAM con su condicion— y la alternativa es que el
+# alta de una celda tenga un paso a mano, que es lo que la 0025 prohibe.
 # ═══════════════════════════════════════════════════════════════════════════
 title: ORE · el aprovisionador
 description: Crea el compartimento de un inquilino y concede su uso. NO puede leer secretos ni usar claves.
@@ -61,3 +92,13 @@ includedPermissions:
   - secretmanager.secrets.getIamPolicy
   - secretmanager.secrets.setIamPolicy
   - secretmanager.versions.add
+  # La puerta (⑧, 0024-⑥ y 0025 E4): el registro CNAME de la entrada de cada
+  # celda en NUESTRA zona. Solo leer zonas y escribir registros; no crear ni
+  # borrar zonas.
+  - dns.managedZones.list
+  - dns.managedZones.get
+  - dns.resourceRecordSets.list
+  - dns.resourceRecordSets.get
+  - dns.resourceRecordSets.create
+  - dns.changes.create
+  - dns.changes.get

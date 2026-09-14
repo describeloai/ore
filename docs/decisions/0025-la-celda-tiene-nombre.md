@@ -229,7 +229,7 @@ Migración 030: `organizacion.arbol` y `organizacion.entrada` fuera; el índice 
 - vuelta atrás: la copia de E0 más las escrituras desde entonces son **pocas y conocidas** (la
   huella las lista); se re-añaden las columnas desde `iam.celda`. Probada en `prueba`.
 
-### E4 · Por celda: el aprovisionador y el renderizador
+### E4 · Por celda: el aprovisionador y el renderizador — ✓ 2026-09-14 (`medida-por-celda.py`: byte a byte contra `20017d4`)
 
 `aprovisionar-inquilino.sh <celda>`; la organización se lee de la celda. El CronJob recorre
 `celda_de`. Con `demo` y `prueba` como celdas que se llaman como su organización, **el resultado
@@ -238,6 +238,29 @@ se comparan. Aquí van también los dos arreglos que la medida del verbo destap�
 `t-*:3000` e `identidad:8080`; el admin del IdP al almacén) y la cadencia `*/5`.
 
 - vuelta atrás: el guion anterior, que sigue en git y sigue aceptando el nombre de la organización.
+
+Lo hecho, y lo que la pasada **desde dentro** destapó al leer por fin su registro:
+
+- `gen-inquilino.py <celda> --organizacion <org>`: lo único que es de la cuenta son
+  `ore-serve --organizacion`, `ore init --name` y el mensaje del primer commit; con otra
+  organización cambian esas 8 líneas y ninguna más (medido).
+- El CronJob **no podía hacer tres de sus pasos y lo decía en cada pasada**: `gcloud projects
+  describe` fallaba (el papel no lee el proyecto) y salía un agente del almacén `service-@…`,
+  con lo que la CMEK no se concedía; la condición del cofre sobre el proyecto fallaba con
+  «Policy modification failed»; ⑦ no tenía admin del IdP. Tres pasadas «al día» con tres
+  `ERROR:` cada una. Arreglos: el número del proyecto es una constante; el papel gana
+  `projectIamAdmin` **condicionado** a `modifiedGrantsByRole = [secretmanager.admin]`
+  (`papel-del-aprovisionador.yaml` dice lo que se concentra); y un usuario `aprovisionador` en
+  el realm maestro con **sólo** `manage-clients` de `rubix-dev-realm`, clave en el almacén como
+  `idp-admin` (`68-el-admin-del-aprovisionador.sh`) — no `temp-admin`, que es de arranque y de
+  todo.
+- ⑧ escribe el `CNAME` de cada celda en nuestra zona aunque el comodín ya resolviera: la relación
+  queda escrita donde se lee. El papel gana `dns.*` de registros, no de zonas.
+- La red, en los dos sentidos: `salida-del-aprovisionador` a `cargas/forja:3000` e
+  `identidad:8080`; `entrada-al-idp` admite al pod del aprovisionador. Una regla de salida sin su
+  entrada es la mitad de una regla.
+- Y la guarda de la E4 mira la **última pasada** y cuenta sus `ERROR:`: un reconciliador que
+  acaba en verde con errores dentro es lo que había.
 
 ### E5 · La identidad del aprovisionador
 

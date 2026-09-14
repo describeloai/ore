@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # APROVISIONAR UN INQUILINO — y **escribir, no aplicar**.
 #
-#   bash malla/aprovisionar-inquilino.sh <nombre> [--seco]
+#   bash malla/aprovisionar-inquilino.sh <celda> [--seco]
+#
+# ⭐ El argumento es la CELDA (0025 E4): `t-<celda>` es su namespace, su forja,
+#   su cofre y su compartimento; la ORGANIZACION —la cuenta: la llave, el
+#   dueño— se lee de la celda, no al reves. Hoy `demo` y `prueba` se llaman
+#   como su organizacion y todo sale igual; la segunda celda de `prueba` (E6)
+#   es la que pasa por aqui con otro nombre.
 #
 # E4 de la `0022`. Su decisión, entera, en una frase:
 #
@@ -36,12 +42,18 @@ NOMBRE="${1:-}"
 SECO=""
 for a in "$@"; do [ "$a" = "--seco" ] && SECO="1"; done
 [ -n "$NOMBRE" ] && [ "${NOMBRE#--}" = "$NOMBRE" ] || {
-  echo "uso: bash malla/aprovisionar-inquilino.sh <nombre> [--seco]" >&2
+  echo "uso: bash malla/aprovisionar-inquilino.sh <celda> [--seco]" >&2
   exit 64
 }
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 PROYECTO="project-8853a180-450d-47be-b83"
+# ⛔ El NUMERO del proyecto, escrito, y no `gcloud projects describe`: desde
+#   dentro esa llamada fallaba —el papel no lee el proyecto y la API de Resource
+#   Manager no esta habilitada— y salia un agente del almacen llamado
+#   `service-@…`, con lo que la CMEK no se concedia y la condicion del cofre
+#   llevaba un prefijo roto. Un numero de proyecto es tan constante como su id.
+NUMERO="339497864493"
 LUGAR="europe-west1"
 LLAVERO="ore"
 FORJA_NS="forja"
@@ -132,28 +144,39 @@ paso "① LA FILA — y es la verdad de la que todo lo demás converge"
 #   fuera se conserva porque un operador con el cluster en la mano sigue
 #   necesitando correr esto a mano, pero **el camino bueno es el de dentro**, y
 #   por eso es el primero.
-consulta() { # <columna>
-  if [ -n "${DENTRO:-}" ]; then
-    psql "$(cat /puesto/iam-url)" -tAc \
-      "select $1 from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r'
-  else
-    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-      "select $1 from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r'
-  fi
-}
-# ⭐ Y la celda, por su NOMBRE (029): hoy se llama como la organizacion; en la
-#   E4 el argumento de este guion sera la celda, y esto ya lo es.
+# ⭐⭐ PRIMERO LA CELDA, por su nombre (029, vista `celda_de` de la 027): de ella
+#   salen el arbol, la entrada, la puerta — y la ORGANIZACION. El guion no
+#   recibe la organizacion: la deduce. Es la 0025 entera en dos lineas.
 celda() { # <columna de iam.celda_de>
   if [ -n "${DENTRO:-}" ]; then
-    psql "$(cat /puesto/iam-url)" -tAc       "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d ''
+    psql "$(cat /puesto/iam-url)" -tAc \
+      "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d '\r'
   else
-    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc       "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d ''
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
+      "select $1 from iam.celda_de where celda = '$NOMBRE'" 2>/dev/null | tr -d '\r'
+  fi
+}
+ORG=$(celda organizacion)
+[ -n "$ORG" ] || falla "no hay ninguna celda \`$NOMBRE\`. Una celda nace al fundar su organizacion:
+    ore-iam fundar --organizacion <org> --emisor <realm> --sub <sub del dueno>
+  y desde la E6 de la 0025, al pedirla: POST /organizaciones/{org}/celdas"
+# Y de la organizacion, lo que es de la CUENTA: la llave. Las columnas que el
+# papel de la 023 puede ver son `nombre` y `kek` — `arbol` y `entrada` se
+# fueron a la celda con la 031.
+consulta() { # <columna de iam.organizacion>
+  if [ -n "${DENTRO:-}" ]; then
+    psql "$(cat /puesto/iam-url)" -tAc \
+      "select $1 from iam.organizacion where nombre = '$ORG'" 2>/dev/null | tr -d '\r'
+  else
+    kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
+      "select $1 from iam.organizacion where nombre = '$ORG'" 2>/dev/null | tr -d '\r'
   fi
 }
 ARBOL=$(celda arbol)
 KEK=$(consulta kek)
-[ -n "$ARBOL" ] || falla "\`$NOMBRE\` no esta fundada. Antes de aprovisionar hay que fundar:
-    ore-iam fundar --organizacion $NOMBRE --emisor <realm> --sub <sub del dueno>"
+[ -n "$ARBOL" ] || falla "la celda \`$NOMBRE\` no tiene arbol: la fila esta a medias"
+[ -n "$KEK" ] || falla "la organizacion \`$ORG\` no tiene llave: la fila esta a medias"
+hecho "organizacion: $ORG"
 hecho "arbol declarado: $ARBOL"
 hecho "llave declarada: $KEK"
 LLAVE="${KEK#*/}"
@@ -224,7 +247,7 @@ enlace "ore-forja-$NOMBRE" forja
 # el agente de servicio del Secret Manager tiene que poder cerrar y abrir con
 # ella. Es una cuenta de Google, una por proyecto; si no existe todavía se crea
 # (`services identity create`), y es de plataforma, no del inquilino.
-AGENTE_ALMACEN="service-$("$GCLOUD" projects describe "$PROYECTO" --format='value(projectNumber)' | tr -d '\r')@gcp-sa-secretmanager.iam.gserviceaccount.com"
+AGENTE_ALMACEN="service-$NUMERO@gcp-sa-secretmanager.iam.gserviceaccount.com"
 "$GCLOUD" beta services identity create --service=secretmanager.googleapis.com --project="$PROYECTO" >/dev/null 2>&1 || true
 correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
@@ -531,7 +554,10 @@ done
 # suyo, NO crea con el prefijo de otro —el `create` también obedece—, NO lee el
 # testigo de otro, NO lista el proyecto. Sin la condición, `admin` sería el
 # proyecto entero: la concentración que la 0023 desmontó, con otro nombre.
-NUMERO=$("$GCLOUD" projects describe "$PROYECTO" --format='value(projectNumber)' | tr -d '\r')
+# ⚠️ Esto es un `setIamPolicy` sobre el PROYECTO, y el papel del aprovisionador
+#   lo tiene CONDICIONADO a tocar solo concesiones de `secretmanager.admin`
+#   (`papel-del-aprovisionador.yaml`, «lo que se concentra»). Desde dentro
+#   fallaba con «Policy modification failed» y nadie lo leia.
 correr "$GCLOUD" projects add-iam-policy-binding "$PROYECTO" \
   --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.admin \
@@ -730,7 +756,9 @@ print(",".join(f for f in fuentes if f not in hechos))
 fi
 [ -n "$FUENTES" ] && hecho "fuentes sin paquete: $FUENTES"
 
-"$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --arbol "$ARBOL" \
+# ⭐ Se rinde POR CELDA, y la organizacion va aparte: es lo que `ore-serve` le
+#   dice al custodio y lo que `ore init --name` graba en el arbol.
+"$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
   ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
@@ -922,7 +950,7 @@ else
     else
       COD=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $(cat "$TMP/kc")" \
         -H 'Content-Type: application/json' "$IDP_BASE/admin/realms/$REALM/clients" --data @- <<JSON
-{"clientId":"$AGENTE","name":"agente de $NOMBRE","description":"El sujeto de maquina de $NOMBRE: los Jobs de catalogo piden como el. Lo crea el aprovisionador.",
+{"clientId":"$AGENTE","name":"agente de $NOMBRE","description":"El sujeto de maquina de la celda $NOMBRE, de la organizacion $ORG: los Jobs de catalogo piden como el. Lo crea el aprovisionador.",
  "enabled":true,"protocol":"openid-connect","publicClient":false,"serviceAccountsEnabled":true,
  "standardFlowEnabled":false,"implicitFlowEnabled":false,"directAccessGrantsEnabled":false,
  "attributes":{"access.token.lifespan":"300"},
@@ -1013,18 +1041,27 @@ else
   if [ -z "$IP_PUERTA" ]; then
     echo "  ⚠ la puerta \`$PUERTA\` no resuelve. Eso no lo arregla este guion: es el registro A"
     echo "    del balanceador de la celda, y va antes que cualquier CNAME de inquilino"
-  elif [ "$IP_ENTRADA" = "$IP_PUERTA" ]; then
-    ya "\`$ENTRADA\` → $IP_ENTRADA, que es \`$PUERTA\`"
-    [ "$TIER" != "compartido" ] && [ "$IP_PUERTA" = "$IP_COMODIN" ] \
-      && echo "  ⚠ pero \`$PUERTA\` resuelve por el COMODIN, no por un registro propio: una celda $TIER necesita su A"
   else
+    # ⭐ Si la zona es de este proyecto, la entrada tiene SU registro, aunque el
+    #   comodin ya la resolviera bien: la relacion entrada→puerta queda escrita
+    #   donde se lee, y no depende de que `*.ore.paladio.io` siga apuntando a
+    #   esta celda. Es lo que la E6 de la 0025 promete: «su puerta en el DNS,
+    #   escrita por el aprovisionador».
     ZONA=""
     while IFS=, read -r z dn; do
       case "$ENTRADA." in *".$dn") ZONA="$z" ;; esac
     done < <("$GCLOUD" dns managed-zones list --format="csv[no-heading](name,dnsName)" 2>/dev/null | tr -d '\r')
     if [ -n "$ZONA" ]; then
-      correr "$GCLOUD" dns record-sets create "$ENTRADA." --zone="$ZONA" --type=CNAME --ttl=300 --rrdatas="$PUERTA." \
-        && hecho "escrito en la zona \`$ZONA\`: $ENTRADA CNAME $PUERTA"
+      if "$GCLOUD" dns record-sets describe "$ENTRADA." --zone="$ZONA" --type=CNAME --format="value(rrdatas)" 2>/dev/null | grep -q .; then
+        ya "el registro \`$ENTRADA CNAME $PUERTA\` en la zona \`$ZONA\`"
+      else
+        correr "$GCLOUD" dns record-sets create "$ENTRADA." --zone="$ZONA" --type=CNAME --ttl=300 --rrdatas="$PUERTA." \
+          && hecho "escrito en la zona \`$ZONA\`: $ENTRADA CNAME $PUERTA"
+      fi
+    elif [ "$IP_ENTRADA" = "$IP_PUERTA" ]; then
+      ya "\`$ENTRADA\` → $IP_ENTRADA, que es \`$PUERTA\` (la zona no es nuestra: resuelve por el registrador)"
+      [ "$TIER" != "compartido" ] && [ "$IP_PUERTA" = "$IP_COMODIN" ] \
+        && echo "  ⚠ pero \`$PUERTA\` resuelve por el COMODIN, no por un registro propio: una celda $TIER necesita su A"
     else
       echo "  ⚠ \`$ENTRADA\` → ${IP_ENTRADA:-nada} y su celda \`$PUERTA\` está en $IP_PUERTA. La zona no es de"
       echo "    este proyecto: el registro lo pone una persona en el registrador, y hasta entonces"
@@ -1046,7 +1083,7 @@ cat <<FIN
        \`fundar\`, y hereda \`usar\` sobre los secretos que ya haya:
 
          kubectl -n identidad create job agente-$NOMBRE --image=<ore-iam:main> -- \\
-           ore-iam agente --organizacion $NOMBRE \\
+           ore-iam agente --organizacion $ORG \\
              --emisor https://login.paladio.io/realms/$REALM \\
              --sub ${AGENTE_SUB:-<el sub que imprime el paso ⑦>} --nombre $AGENTE
 
@@ -1064,7 +1101,7 @@ cat <<FIN
        proposito: es la parte que decide QUE SE OBEDECE, y si viviera dentro de
        lo que se obedece, quien escribiera ahi cambiaria a que apunta el agente.
 
-  ⛔ 3 · EL ARBOL. \`ore init --name $NOMBRE\`, primer commit y push. Es la E5,
+  ⛔ 3 · EL ARBOL. \`ore init --name $ORG\`, primer commit y push. Es la E5,
        y necesita la imagen de \`serve\` — la unica con \`git\`.
 
   ⚠️ 4 · Y LA CUOTA. Un \`ore-serve\` y un cofre mas piden ~150m de CPU, y este

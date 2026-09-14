@@ -3,6 +3,7 @@
 
     python malla/gen-inquilino.py acme
     python malla/gen-inquilino.py acme --arbol acme-corp/ontologia --a /tmp/acme
+    python malla/gen-inquilino.py acme-eu --organizacion acme --a /tmp/acme-eu
     python malla/gen-inquilino.py --comprobar
 
 E1 de la `0022`. **No aplica nada y no necesita ninguna credencial**: es texto que
@@ -172,16 +173,20 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
-def render(nombre, arbol=None, entrada=None, fuentes=()):
-    """La plantilla con las sustituciones hechas. `arbol` es `<propietario>/<repo>`
-    tal como lo guarda `iam.organizacion.arbol`; por defecto, lo que deriva
-    `fundar`.
+def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None):
+    """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
+    (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
+    es `<propietario>/<repo>` tal como lo guarda `iam.celda.arbol`; por defecto,
+    lo que deriva `fundar`. `organizacion` es la cuenta —lo que `ore-serve` le
+    dice al custodio y lo que `ore init --name` graba en el arbol—; por defecto,
+    la celda se llama como ella.
 
     ⛔ El orden de las sustituciones no es indiferente: el árbol se sustituye
     ANTES que el namespace, porque `t-demo/ontologia` contiene `t-demo`. Al
     revés, un árbol propio —`acme-corp/ontologia`— nunca llegaría a escribirse.
     """
     arbol = arbol or "t-%s/ontologia" % nombre
+    organizacion = organizacion or nombre
     # La puerta. Por defecto el subdominio nuestro, que es lo que el `Gateway`
     # compartido sirve sin coste por cliente (E6, opcion `b`). El que traiga su
     # dominio lo dice, y entonces el certificado depende de SU DNS.
@@ -222,17 +227,17 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
         # ⚠️ Va sustituido EXPLICITAMENTE y no por la via general, porque `demo`
         #   suelto es justo lo que la comprobacion ② prohibe. Si algun dia esta
         #   linea se cae, ② lo caza: el nombre del modelo no sobrevive.
-        t = t.replace("--name %s" % MODELO, "--name %s" % nombre)
-        # ⭐ La celda del cofre (0025-④): hoy se llama como la organizacion.
+        t = t.replace("--name %s" % MODELO, "--name %s" % organizacion)
+        # ⭐ La celda del cofre (0025-④): ESTA celda.
         t = t.replace("--celda\n            - %s\n" % MODELO, "--celda\n            - %s\n" % nombre)
-        # ⛔ Y la organizacion que `ore-serve` le dice al custodio. Va en su
-        #   propia linea, asi que se sustituye la PAREJA entera: un `- demo`
-        #   suelto no lo caza ninguna de las reglas de arriba, y la ② lo
-        #   destapo a la primera.
+        # ⛔ Y la organizacion que `ore-serve` le dice al custodio — la CUENTA,
+        #   no la celda (0025 E4). Va en su propia linea, asi que se sustituye
+        #   la PAREJA entera: un `- demo` suelto no lo caza ninguna de las
+        #   reglas de arriba, y la ② lo destapo a la primera.
         pareja = "- --organizacion\n            - %s"
-        t = t.replace(pareja % MODELO, pareja % nombre)
-        # Y el mensaje del primer commit, que tambien lo lleva.
-        t = t.replace("organizacion %s" % MODELO, "organizacion %s" % nombre)
+        t = t.replace(pareja % MODELO, pareja % organizacion)
+        # Y el mensaje del primer commit, que tambien la lleva.
+        t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
         salida[f] = t
 
@@ -687,7 +692,7 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a")
+    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a", "--organizacion")
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -699,7 +704,7 @@ def main(argv):
             libres.append(a)
     if len(libres) != 1:
         print(__doc__.split("\n\n")[0])
-        print("\n  python malla/gen-inquilino.py <nombre> [--arbol P/R] [--a DIR]")
+        print("\n  python malla/gen-inquilino.py <celda> [--organizacion ORG] [--arbol P/R] [--a DIR]")
         print("  python malla/gen-inquilino.py --comprobar")
         return 64  # EX_USAGE
 
@@ -720,7 +725,11 @@ def main(argv):
     #   y una lista en una variable es mas facil de pasar bien que un bucle de
     #   banderas. Vacio significa «ninguna pendiente», que es el caso normal.
     fuentes = [f for f in (valor("--fuentes") or "").split(",") if f]
-    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes)
+    organizacion = valor("--organizacion")
+    if organizacion and not nombre_valido(organizacion):
+        print("✗ `%s` no sirve como nombre de organizacion." % organizacion, file=sys.stderr)
+        return 65
+    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes, organizacion)
     destino = valor("--a")
     if destino:
         d = pathlib.Path(destino)

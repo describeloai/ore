@@ -251,6 +251,15 @@ spec:
         - namespaceSelector:
             matchLabels:
               ore.dev/rol: identidad
+        # Y el aprovisionador (16, en `ore-system`), para el paso ⑦ de cada
+        # celda: el cliente de Keycloak de su agente (0025 E4). Solo el pod
+        # con ese rol, no el namespace entero.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-system
+          podSelector:
+            matchLabels:
+              ore.dev/rol: aprovisionador
       ports:
         - protocol: TCP
           port: 8080

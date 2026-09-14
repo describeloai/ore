@@ -33,9 +33,13 @@
 # frase de `16-…` —«NI UN PERMISO DE RBAC»— sigue siendo verdad palabra por
 # palabra.
 #
-# Y listar el censo tampoco cuesta nada: la `023` concede
-# `select (nombre, arbol, kek, entrada) on iam.organizacion` **sin filtro de
-# filas**, asi que el papel que ya se usa para leer una fila puede enumerarlas.
+# Y listar el censo tampoco cuesta nada: la `027` concede `select` sobre la
+# vista `iam.celda_de` **sin filtro de filas**, asi que el papel que ya se usa
+# para leer una fila puede enumerarlas.
+#
+# ⭐ Y el censo son CELDAS, no organizaciones (0025 E4): lo que se converge es
+#   un `t-<celda>` con su forja, su cofre y su compartimento. Una organizacion
+#   con dos celdas son dos entradas en el censo y dos pasadas del guion.
 #
 # ── ⛔⛔ LA GUARDA, Y NO ES OPCIONAL ──────────────────────────────────────
 #
@@ -92,10 +96,10 @@ if [ -n "$PEDIDOS" ]; then
   NOMBRES="$PEDIDOS"
 elif [ -n "${DENTRO:-}" ]; then
   NOMBRES=$(psql "$(cat /puesto/iam-url)" -tAc \
-    "select nombre from iam.organizacion order by nombre" 2>/dev/null | tr -d '\r')
+    "select celda from iam.celda_de order by celda" 2>/dev/null | tr -d '\r')
 else
   NOMBRES=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc \
-    "select nombre from iam.organizacion order by nombre" 2>/dev/null | tr -d '\r')
+    "select celda from iam.celda_de order by celda" 2>/dev/null | tr -d '\r')
 fi
 
 # ⛔ Un censo vacio NO es «nada que hacer»: es que la consulta no funciono. Sin
@@ -103,12 +107,12 @@ fi
 #   tirar, cuando `psql: not found` salio como «no esta fundada»— se leeria como
 #   una convergencia limpia. Es el mismo cierre que el relevo de CI: si la
 #   pregunta no devuelve nada, esto no pasa en verde.
-[ -n "$NOMBRES" ] || falla "el censo salio vacio. O no hay ninguna organizacion
+[ -n "$NOMBRES" ] || falla "el censo salio vacio. O no hay ninguna celda
     fundada, o la consulta no llego a la base — y las dos se ven igual desde
     aqui, asi que se para."
 
 CUANTOS=$(printf '%s\n' "$NOMBRES" | wc -l | tr -d ' ')
-hecho "$CUANTOS inquilinos: $(printf '%s ' $NOMBRES)"
+hecho "$CUANTOS celdas: $(printf '%s ' $NOMBRES)"
 
 # ⚠️ Y se convergen TODOS los fundados, incluidos los suspendidos — porque el
 #   papel de la `023` **no puede leer `estado`**, a proposito: «quien es el
@@ -153,4 +157,4 @@ printf '\n==============================================================\n'
 if [ -n "$MALOS" ]; then
   falla "no convergieron:$MALOS"
 fi
-hecho "los $CUANTOS inquilinos estan al dia con las plantillas de este commit"
+hecho "las $CUANTOS celdas estan al dia con las plantillas de este commit"
