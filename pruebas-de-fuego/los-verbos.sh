@@ -544,7 +544,8 @@ QUIEN=$(psql "$URL" -qtAc "select quien from iam.huella where operacion = 'agent
 # La celda: nace sin `aprovisionada`, y el aprovisionador la da por hecha.
 [ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "10 · no se pudieron leer las celdas"
 grep -q '"aprovisionada"' "$TMP/r.json" && falla "10 · la celda nacio ya aprovisionada, y nadie habia pasado"
-[ "$(pide POST "/celdas/ore-prueba/aprovisionada" "$APROV")" = "200" ] \
+# ⭐ La celda se llama como su organizacion (029): `acme`; `ore-prueba` es su CLUSTER.
+[ "$(pide POST "/celdas/acme/aprovisionada" "$APROV")" = "200" ] \
   || falla "10 · el aprovisionador no pudo dar la celda por aprovisionada: $(cat "$TMP/r.json")"
 [ "$(pide POST "/celdas/no-existe/aprovisionada" "$APROV")" = "422" ] || falla "10 · una celda inventada no dio 422"
 [ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "10 · no se pudieron releer las celdas"
