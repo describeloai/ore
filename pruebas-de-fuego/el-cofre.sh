@@ -437,7 +437,7 @@ dice "8 · la llave cambio y lo cerrado antes sigue abriendose"
   || falla "9 · el almacen no tiene \`t-acme-cofre-pg-produccion\` v1: $(ls "$TMP/almacen")"
 grep -q "keyRings/ore/cryptoKeys/acme" "$TMP/almacen/t-acme-cofre-pg-produccion/cmek" \
   || falla "9 · el secreto no nacio con la CMEK de la organizacion: $(cat "$TMP/almacen/t-acme-cofre-pg-produccion/cmek")"
-DONDE=$(psql "$URL" -qtAc "select detalle->>'almacen' from iam.huella where operacion='secreto:emitir' limit 1")
+DONDE=$(psql "$URL" -qtAc "select detalle->>'almacen' from iam.huella where operacion='secreto:emitir' and detalle->>'nombre'='pg-produccion'")
 [ "$DONDE" = "t-acme-cofre-pg-produccion" ] || falla "9 · la huella de emitir no dice donde quedo: «$DONDE»"
 
 # Sin tabla, `mudar` no muere: dice que no hay nada que mudar.
