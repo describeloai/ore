@@ -250,3 +250,100 @@ spec:
             matchLabels:
               ore.dev/rol: identidad
       ports: [{protocol: TCP, port: 8080}]
+---
+# ── ⭐⭐ Y UNA VEZ AL NACER, sin esperar a las seis horas (0025 E6) ────────────
+#
+# El ConfigMap nace `{"keys":[]}` y lo llena el CronJob de arriba a su hora:
+# `17 */6`. Para las dos celdas de casa la primera vez se lanzo a mano. La primera
+# celda PEDIDA lo destapo: `ore-serve` y el cofre en CrashLoop —«el JWKS no
+# trae ninguna llave RSA»— durante hasta seis horas, esperando un Job que nadie
+# lanza. Esto es el mismo trabajo, UNA vez, al aplicarse el compartimento.
+#
+# ⚠️ El cuerpo es una COPIA del `jobTemplate` del CronJob (un Job no puede
+#   referenciar uno); `gen-inquilino.py --comprobar` (⑪) exige que sigan siendo
+#   iguales. `IfNotPresent`: Flux lo crea si no esta y no lo toca; un Job es
+#   inmutable y sin `ttl` se queda `Complete` como registro.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: refresco-jwks-inicial
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: mantenimiento
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        # Un rol PROPIO, y no `driver`. Un driver lee el origen de un
+        # cliente; esto trae una llave pública de un IdP. Compartir la
+        # etiqueta habría compartido la política, y entonces «quién puede
+        # salir» dejaría de contestarse mirando el rol.
+        ore.dev/rol: mantenimiento
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: refresco-jwks
+      containers:
+        - name: refresco
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            # Lo que tiene que AFIRMAR ser.
+            #
+            # ⭐ Y lleva el realm dentro. El `hostname` del CR es
+            # `https://login.paladio.io`, pero el `iss` que Keycloak emite
+            # —y el que va en cada token— es `<hostname>/realms/<realm>`.
+            # La comprobacion de abajo lo cazó al primer intento, que es
+            # exactamente para lo que está.
+            # ✏️ 2026-09-09 · el realm de DESARROLLO, el mismo que `ore-serve`.
+            #   Las llaves que se copian aquí son las que valida él: si los dos
+            #   no nombran el MISMO realm, un token bueno se rechaza por venir
+            #   firmado por otro emisor — y el síntoma es un 401 sin motivo.
+            - { name: EMISOR, value: "https://login.paladio.io/realms/rubix-dev" }
+            # Y por dónde se le alcanza hoy.
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix-dev" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+              # 1 · ¿con quien estamos hablando? ESTO PRIMERO.
+              curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" \
+                -o /tmp/desc.json
+              DICE=$(tr ',' '\n' < /tmp/desc.json | grep '"issuer"' | cut -d'"' -f4)
+              echo "se alcanza por  $DIRECCION"
+              echo "y dice ser      $DICE"
+              if [ "$DICE" != "$EMISOR" ]; then
+                echo "NO es el emisor que esperabamos ($EMISOR). No se toca nada."
+                exit 1
+              fi
+
+              # 2 · y ahora si, las llaves. Por la direccion interna: el
+              #     `jwks_uri` que el descubrimiento publica es el de FUERA,
+              #     y desde aqui no se alcanza.
+              curl -sSf "$DIRECCION/realms/$REALM/protocol/openid-connect/certs" \
+                -o /tmp/jwks.json
+              grep -q '"kty"' /tmp/jwks.json || { echo "lo que llego no es un JWKS"; exit 1; }
+              echo "llaves          $(tr ',' '\n' < /tmp/jwks.json | grep -c '\"kid\"')"
+
+              # 3 · al ConfigMap, con el token del pod, sobre `data` y nada
+              #     mas: no se toca ninguna otra clave del objeto.
+              python3 -c 'import json;print(json.dumps({"data":{"jwks.json":open("/tmp/jwks.json").read()}}))' \
+                > /tmp/parche.json
+              curl -sSf -X PATCH \
+                -H "Authorization: Bearer $(cat $SA/token)" \
+                -H "Content-Type: application/strategic-merge-patch+json" \
+                --cacert "$SA/ca.crt" \
+                --data-binary @/tmp/parche.json \
+                "$API/api/v1/namespaces/t-demo/configmaps/jwks" > /dev/null
+              echo "ok · el juego de llaves esta al dia"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "300m", memory: 256Mi}

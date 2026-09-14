@@ -738,6 +738,21 @@ def comprobar():
     else:
         print("  ⑩ (sin `%s` al lado: el enganche no se comprueba aqui)" % ENGANCHE)
 
+    # ── ⑪ EL REFRESCO INICIAL DEL JWKS ES EL CRONJOB, letra por letra ─────
+    # `50-jwks.yaml` lleva un Job que copia el `jobTemplate` del CronJob (0025
+    # E6). Una copia que deriva es un Job que hace otra cosa que el CronJob, y
+    # nadie lo notaria hasta la siguiente celda pedida.
+    try:
+        import yaml as _yaml
+        docs = [d for d in _yaml.safe_load_all((MALLA / "50-jwks.yaml").read_text(encoding="utf-8")) if d]
+        cj = next(d for d in docs if d.get("kind") == "CronJob")
+        job = next(d for d in docs if d.get("kind") == "Job" and d["metadata"]["name"] == "refresco-jwks-inicial")
+        if cj["spec"]["jobTemplate"]["spec"] != job["spec"]:
+            fallos.append("`50-jwks.yaml`: el Job `refresco-jwks-inicial` ya no es el `jobTemplate` del CronJob")
+        print("  ⭐ ⑪ el refresco inicial del JWKS es el jobTemplate del CronJob, letra por letra")
+    except ImportError:
+        print("  ⑪ (sin pyyaml: el refresco inicial no se coteja aqui)")
+
     return veredicto(fallos)
 
 
