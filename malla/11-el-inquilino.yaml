@@ -166,9 +166,11 @@ spec:
 #
 # ⭐ Y desde el 2026-09-14 esa cosa está EN CASA: la forja del inquilino
 #   (`46-la-forja-del-inquilino.yaml`) vive en este namespace, y el árbol y la
-#   cola ya no salen de él. La regla hacia `forja/` se queda porque la semilla
-#   y el aprovisionador de la primera vez —y la mudanza— todavía la alcanzan;
-#   la 0024 E3-(c) dice cuándo se cierra.
+#   cola no salen de él. La regla hacia `forja/` se cerró el mismo día, con la
+#   0024 aceptada: la mudanza y el poblado los hace el aprovisionador desde
+#   `ore-system`, y ningún pod del inquilino tiene ya nada que buscar allí.
+#   Medido en `medida-el-acoplamiento-del-inquilino.py`: era «una salida que
+#   ya no usa nadie».
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -180,12 +182,6 @@ spec:
   egress:
     - to:
         - podSelector:
-            matchLabels:
-              ore.dev/rol: forja
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: forja
-          podSelector:
             matchLabels:
               ore.dev/rol: forja
       ports:

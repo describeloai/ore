@@ -1,6 +1,6 @@
 # 0024 · Dónde corre el inquilino
 
-**Estado:** propuesto · **Fecha:** 2026-09-13 · **Decide:** que el plano del árbol de un
+**Estado:** aceptado (2026-09-14, con la E3 hecha y medida) · **Fecha:** 2026-09-13 · **Decide:** que el plano del árbol de un
 inquilino puede correr en **tres sitios** bajo **un solo plano de control**; que el modelo de IA
 va **con el árbol, en el mismo clúster y en otro pool**; que la ingesta de terceros aterriza
 **en el plano de datos del inquilino y nunca en el de control**; y que **el clúster pasa a ser un
