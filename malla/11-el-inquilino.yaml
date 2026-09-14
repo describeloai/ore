@@ -163,6 +163,12 @@ spec:
 # Alcanza a los pods de `t-demo` con rol `driver` o `ore`, y sólo al puerto de
 # la forja. No es «que salgan a la red interna»: es que puedan hablar con UNA
 # cosa.
+#
+# ⭐ Y desde el 2026-09-14 esa cosa está EN CASA: la forja del inquilino
+#   (`46-la-forja-del-inquilino.yaml`) vive en este namespace, y el árbol y la
+#   cola ya no salen de él. La regla hacia `forja/` se queda porque la semilla
+#   y el aprovisionador de la primera vez —y la mudanza— todavía la alcanzan;
+#   la 0024 E3-(c) dice cuándo se cierra.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -173,6 +179,9 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: forja
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: forja

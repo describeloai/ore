@@ -83,6 +83,8 @@ PLANTILLAS = [
     #   muda cero y no confirma nada. Así ningún inquilino se queda sin mudar,
     #   que es lo que la `028` exige para borrar `cofre.material`.
     "45-la-mudanza-del-cofre.yaml",
+    # ⭐ La forja del inquilino (0024 E3-(c)): su árbol y su cola en su celda.
+    "46-la-forja-del-inquilino.yaml",
     "50-jwks.yaml",
 ]
 
@@ -207,6 +209,9 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
         #   SU inquilino, y con una cuenta compartida darselo a uno se lo daba
         #   a todos.
         t = t.replace("driver-%s" % MODELO, "driver-%s" % nombre)
+        # ⭐ Y la forja del inquilino (0024 E3-(c)): su cuenta `ore-forja-<n>`, que
+        #   solo puede añadir versiones a `t-<n>-forja-admin`.
+        t = t.replace("forja-%s" % MODELO, "forja-%s" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:
         #   `metadata.name` del manifiesto es lo que prefija cada

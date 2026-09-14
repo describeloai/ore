@@ -49,6 +49,29 @@ FORJA_NS="forja"
 # mundo, y eso es a proposito.
 FORJA_URL="http://forja.forja.svc.cluster.local:3000"
 NS="t-$NOMBRE"
+
+# ── ⭐⭐ DOS FORJAS, y este guion habla con las dos ──────────────────────────
+#
+# Desde el 2026-09-14 (0024 E3-(c)) el arbol y la cola del inquilino viven en SU
+# forja, en su celda (`46-la-forja-del-inquilino.yaml`); el compartimento —lo
+# que su cluster obedece— sigue en la de la plataforma (0022-①). Cada llamada
+# de abajo va a UNA de las dos, y se dice con `en_la_forja`:
+#
+#   central     forja/forja-0        con `FORJA_ADMIN`      el compartimento
+#   inquilino   $NS/forja-0          con `FORJA_ADMIN_INQ`  ontologia, trabajo, serve-<n>
+#
+# El admin de la forja del inquilino lo acuña ella misma al fundarse y lo deja
+# en el almacen como `$NS-forja-admin`. Si todavia no esta —la primera pasada
+# funda la forja al empujar la 46 en ⑥— los pasos del inquilino se saltan
+# diciendolo, y la pasada siguiente (el CronJob, cada hora) los hace. Es lo
+# que hace de esto un reconciliador y no un instalador.
+F_NS="$FORJA_NS"; F_URL="$FORJA_URL"; F_ADMIN=""; F_PUERTO=3129
+en_la_forja() { # central | inquilino
+  case "$1" in
+    central)   F_NS="$FORJA_NS"; F_URL="$FORJA_URL"; F_ADMIN="${FORJA_ADMIN:-}"; F_PUERTO=3129 ;;
+    inquilino) F_NS="$NS"; F_URL="http://forja.$NS.svc.cluster.local:3000"; F_ADMIN="${FORJA_ADMIN_INQ:-}"; F_PUERTO=3131 ;;
+  esac
+}
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -177,9 +200,13 @@ cuenta "ore-serve-$NOMBRE"
 #   exactamente el patrón que estas mismas líneas rechazan arriba para el cofre.
 #   El driver era la excepción que quedaba viva.
 cuenta "ore-driver-$NOMBRE"
+# ⭐ Y la cuarta: la de su FORJA (0024 E3-(c)), que solo sabe hacer una cosa —
+#   dejar el testigo de su admin en el almacen al fundarse.
+cuenta "ore-forja-$NOMBRE"
 enlace "ore-cofre-$NOMBRE" cofre
 enlace "ore-serve-$NOMBRE" ore-serve
 enlace "ore-driver-$NOMBRE" driver
+enlace "ore-forja-$NOMBRE" forja
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #
@@ -278,9 +305,9 @@ forja_basica() { # <usuario> <clave> <camino> <cuerpo>
   local u="$1" p="$2" c="$3" d="$4"
   if [ -n "${DENTRO:-}" ]; then
     curl -sS -u "$u:$p" -H 'Content-Type: application/json' --data "$d" \
-      "$FORJA_URL/api/v1$c" 2>/dev/null
+      "$F_URL/api/v1$c" 2>/dev/null
   else
-    kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -u "$u:$p" \
+    kubectl exec -n "$F_NS" forja-0 -- curl -sS -u "$u:$p" \
       -H 'Content-Type: application/json' --data "$d" \
       "http://localhost:3000/api/v1$c" 2>/dev/null
   fi | tr -d '\r' | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p'
@@ -291,25 +318,60 @@ forja_api() { # <metodo> <camino> [cuerpo] — imprime el codigo, o corta el gui
   # ⭐ DENTRO se habla con la forja por su `Service`; FUERA hay que entrar en su
   #   pod, porque no tiene puerta al mundo. Es la misma llamada por dos caminos,
   #   y el de dentro no necesita ni una credencial de cluster.
+  #   Y a CUAL forja lo dice `en_la_forja`.
   if [ -n "${DENTRO:-}" ]; then
     cod=$(curl -sS -o /dev/null -w '%{http_code}' \
-      -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
-      ${d:+--data "$d"} "$FORJA_URL/api/v1$c" 2>/dev/null | tr -d '\r')
+      -X "$m" -H "Authorization: token $F_ADMIN" -H 'Content-Type: application/json' \
+      ${d:+--data "$d"} "$F_URL/api/v1$c" 2>/dev/null | tr -d '\r')
   else
-    cod=$(kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
-      -X "$m" -H "Authorization: token $FORJA_ADMIN" -H 'Content-Type: application/json' \
+    cod=$(kubectl exec -n "$F_NS" forja-0 -- curl -sS -o /dev/null -w '%{http_code}' \
+      -X "$m" -H "Authorization: token $F_ADMIN" -H 'Content-Type: application/json' \
       ${d:+--data "$d"} "http://localhost:3000/api/v1$c" 2>/dev/null | tr -d '\r')
   fi
   case "$cod" in
     2??|409|422) echo "$cod" ;;
-    *) falla "la forja contesto '$cod' a $m $c" ;;
+    *) falla "la forja ($F_NS) contesto '$cod' a $m $c" ;;
   esac
 }
+forja_json() { # <camino> — el cuerpo de un GET, o vacio
+  if [ -n "${DENTRO:-}" ]; then
+    curl -sS -H "Authorization: token $F_ADMIN" "$F_URL/api/v1$1" 2>/dev/null
+  else
+    kubectl exec -n "$F_NS" forja-0 -- curl -sS \
+      -H "Authorization: token $F_ADMIN" "http://localhost:3000/api/v1$1" 2>/dev/null
+  fi | tr -d '\r'
+}
 
-if [ -n "$SECO" ]; then
-  haria "crear la organizacion $PROPIETARIO y el repositorio $ARBOL en la forja"
-  haria "crear el usuario serve-$NOMBRE, hacerlo colaborador con escritura, y acunar su testigo"
+# ── ¿Esta ya la forja del inquilino? ─────────────────────────────────────────
+#
+# Su admin vive en el almacen desde que ella misma se funda (46). Sin el, los
+# pasos del inquilino se saltan y se dice; con el, todo lo del inquilino va a
+# su forja. `INQ` es la bandera.
+FORJA_ADMIN_INQ="$("$GCLOUD" secrets versions access latest --secret="$NS-forja-admin" 2>/dev/null | tr -d '\r\n')" || true
+INQ=""
+if [ -n "$FORJA_ADMIN_INQ" ]; then
+  if [ -n "${DENTRO:-}" ]; then
+    curl -sf -o /dev/null "http://forja.$NS.svc.cluster.local:3000/api/healthz" 2>/dev/null && INQ=1
+  else
+    [ "$(kubectl -n "$NS" get statefulset forja -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "1" ] && INQ=1
+  fi
+fi
+en_la_forja central
+if [ -n "$INQ" ]; then
+  hecho "la forja del inquilino esta viva y su admin en el almacen: el arbol y la cola van a ELLA"
 else
+  echo "  ⚠ la forja del inquilino todavia no esta (o su admin no esta en el almacen)."
+  echo "    Esta pasada la funda al empujar la 46; la siguiente pobla sus repositorios."
+fi
+
+TESTIGO=""
+if [ -n "$SECO" ]; then
+  haria "crear la organizacion $PROPIETARIO y el repositorio $ARBOL en la forja del inquilino"
+  haria "crear el usuario serve-$NOMBRE, hacerlo colaborador con escritura, y acunar su testigo"
+elif [ -z "$INQ" ]; then
+  echo "  ~ sin forja del inquilino: la organizacion, el arbol y serve-$NOMBRE, en la pasada siguiente"
+else
+  en_la_forja inquilino
   hecho "organizacion $PROPIETARIO · $(forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}")"
   # ── ⭐⭐ EL AVISO, Y A NIVEL DE ORGANIZACION ─────────────────────────────
   #
@@ -364,6 +426,7 @@ else
     "/users/serve-$NOMBRE/tokens" '{"name":"ore-serve","scopes":["write:repository"]}')
   # ⛔ Y no se imprime. Va derecho al almacen en el paso siguiente.
   [ -n "$TESTIGO" ] && hecho "testigo acunado · $(printf %s "$TESTIGO" | wc -c) bytes, y no se enseña"
+  en_la_forja central
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -373,10 +436,17 @@ paso "⑤ EL ALMACÉN — el valor va aquí, y NO a un \`Secret\`"
 # ⭐ Ésta es la escritura que hace que todo lo demás sea posible sin credenciales
 #   de clúster. El manifiesto referencia `$NS-forja-token`; el contenedor de
 #   inicio lo trae a un tmpfs; el valor no pasa por etcd en ningún momento.
-if "$GCLOUD" secrets describe "$NS-forja-token" --format="value(name)" >/dev/null 2>&1; then
-  ya "el secreto $NS-forja-token"
-elif [ -n "$SECO" ]; then
+# ⭐ Si el paso ④ acuñó un testigo NUEVO —la forja del inquilino recién
+#   fundada, por ejemplo—, se guarda aunque el secreto ya exista: el que había
+#   era de otra forja. Sin testigo nuevo, se deja como esta.
+if [ -n "$SECO" ]; then
   haria "crear el secreto $NS-forja-token con el testigo del paso ④"
+elif [ -z "$TESTIGO" ]; then
+  if "$GCLOUD" secrets describe "$NS-forja-token" --format="value(name)" >/dev/null 2>&1; then
+    ya "el secreto $NS-forja-token"
+  else
+    echo "  ⚠ no hay testigo que guardar y el secreto $NS-forja-token no existe: la pasada siguiente"
+  fi
 else
   "$GCLOUD" secrets create "$NS-forja-token" --replication-policy=user-managed     --locations="$LUGAR" >/dev/null 2>&1 || true
   # ⛔ Por FICHERO y no por `--data-file=-`: el valor no pasa por `argv`, que lo
@@ -415,6 +485,30 @@ correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
   --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretAccessor \
   && hecho "\`ore-cofre-$NOMBRE\` puede leer la base del cofre"
+
+# ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
+#
+# El secreto se crea VACIO aqui; la version la añade la forja del inquilino al
+# fundarse (46, contenedor `guardar`) con su cuenta, que solo puede añadir a
+# ESTE. Lo leen: este guion (para poblarla), y las copias (para copiarla).
+if "$GCLOUD" secrets describe "$NS-forja-admin" --format="value(name)" >/dev/null 2>&1; then
+  ya "el secreto $NS-forja-admin"
+elif [ -n "$SECO" ]; then
+  haria "crear el secreto $NS-forja-admin, vacio, para que la forja del inquilino deje ahi su admin"
+else
+  "$GCLOUD" secrets create "$NS-forja-admin" --replication-policy=user-managed --locations="$LUGAR" \
+    --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 && hecho "secreto $NS-forja-admin, vacio: lo llena la forja al fundarse"
+fi
+correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
+  --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/secretmanager.secretVersionAdder \
+  && hecho "\`ore-forja-$NOMBRE\` puede dejar ahi su admin, y no leer nada"
+for QUIEN in ore-aprovisionador ore-copias; do
+  correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
+    --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`$QUIEN\` puede leerlo"
+done
 
 # ── ⭐⭐ Y SU PREFIJO EN EL ALMACÉN, y NADA MÁS ─────────────────────────────
 #
@@ -485,15 +579,19 @@ else
   #
   # => Dos repositorios, dos escritores: aqui manda el aprovisionador; alli
   #   escribe `serve-<inquilino>`, y solo alli.
-  hecho "cola de trabajo $TRABAJO · $(forja_api POST "/orgs/$PROPIETARIO/repos" \
-    "{\"name\":\"trabajo\",\"private\":true}")"
-  hecho "\`flux\` la lee · $(forja_api PUT \
-    "/repos/$TRABAJO/collaborators/flux" '{"permission":"read"}')"
-  # NOTA Y `serve-<inquilino>` ESCRIBE, que es lo unico nuevo que se concede en
-  #   todo esto. Es el mismo usuario que ya empuja al arbol; lo que gana es un
-  #   segundo repositorio donde encolar, y ninguno mas.
-  hecho "\`serve-$NOMBRE\` escribe en ella, y en ningun otro · $(forja_api PUT \
-    "/repos/$TRABAJO/collaborators/serve-$NOMBRE" '{"permission":"write"}')"
+  # ⭐ La cola, en la forja del INQUILINO, y PUBLICA dentro de ella: Flux la lee
+  #   sin testigo (13-…), porque son Jobs sin secretos y quien llega al puerto
+  #   lo dice la NetworkPolicy. Escribirla sigue exigiendo el de serve-<n>.
+  if [ -n "$INQ" ]; then
+    en_la_forja inquilino
+    hecho "cola de trabajo $TRABAJO, en la forja del inquilino · $(forja_api POST "/orgs/$PROPIETARIO/repos" \
+      "{\"name\":\"trabajo\",\"private\":false}")"
+    hecho "\`serve-$NOMBRE\` escribe en ella, y en ningun otro · $(forja_api PUT \
+      "/repos/$TRABAJO/collaborators/serve-$NOMBRE" '{"permission":"write"}')"
+    en_la_forja central
+  else
+    echo "  ~ sin forja del inquilino: la cola, en la pasada siguiente"
+  fi
 fi
 
 # ── ⭐⭐ LO QUE HACE DE ESTO UN RECONCILIADOR Y NO UN INSTALADOR ──────────
@@ -517,13 +615,11 @@ fi
 #   el catálogo llega en la siguiente pasada.
 FUENTES=""
 if [ -z "$SECO" ]; then
+  # El arbol se lee de la forja del inquilino si ya esta; si no, de la central,
+  # que es donde estuvo hasta la mudanza (④b).
+  [ -n "$INQ" ] && en_la_forja inquilino
   crudo() { # <camino dentro del repositorio>
-    if [ -n "${DENTRO:-}" ]; then
-      curl -sS -H "Authorization: token $FORJA_ADMIN" "$FORJA_URL/api/v1/repos/$ARBOL/$1" 2>/dev/null
-    else
-      kubectl exec -n "$FORJA_NS" forja-0 -- curl -sS \
-        -H "Authorization: token $FORJA_ADMIN" "http://localhost:3000/api/v1/repos/$ARBOL/$1" 2>/dev/null
-    fi
+    forja_json "/repos/$ARBOL/$1"
   }
   FUENTES=$( { crudo "raw/ontology.config.yaml"; printf '\n\036\n'; crudo "contents/packages"; } \
     | "$PY" -c '
@@ -589,19 +685,22 @@ if [ -n "$SECO" ]; then
 else
   # ⭐ DENTRO no hay tunel que abrir: la forja esta a un salto. Estas seis lineas
   #   son exactamente lo que el Job se ahorra, y por eso estan aisladas.
-  TUNEL=""
+  TUNEL=""; TUNEL_INQ=""
   if [ -n "${DENTRO:-}" ]; then
-    :   # la URL la compone `empujar`, que ahora sirve a dos repositorios
+    :   # la URL la compone `empujar`, que ahora sirve a dos forjas
   else
-    PUERTO_FORJA=3129
-    kubectl port-forward -n "$FORJA_NS" svc/forja "$PUERTO_FORJA:3000" >/dev/null 2>&1 &
+    kubectl port-forward -n "$FORJA_NS" svc/forja "3129:3000" >/dev/null 2>&1 &
     TUNEL=$!
-    trap 'kill "$TUNEL" 2>/dev/null; rm -rf "$TMP"' EXIT
+    if [ -n "$INQ" ]; then
+      kubectl port-forward -n "$NS" svc/forja "3131:3000" >/dev/null 2>&1 &
+      TUNEL_INQ=$!
+    fi
+    trap 'kill "$TUNEL" "$TUNEL_INQ" 2>/dev/null; rm -rf "$TMP"' EXIT
     for _ in 1 2 3 4 5 6 7 8; do
-      curl -sS -o /dev/null "http://localhost:$PUERTO_FORJA/api/v1/version" 2>/dev/null && break
+      curl -sS -o /dev/null "http://localhost:3129/api/v1/version" 2>/dev/null \
+        && { [ -z "$INQ" ] || curl -sS -o /dev/null "http://localhost:3131/api/v1/version" 2>/dev/null; } && break
       sleep 1
     done
-    :   # la URL la compone `empujar`, que ahora sirve a dos repositorios
   fi
   # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
   #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
@@ -609,7 +708,6 @@ else
   #   `ore-serve/git.rs`, y por lo mismo.
   export GIT_CONFIG_COUNT=1
   export GIT_CONFIG_KEY_0=http.extraheader
-  export GIT_CONFIG_VALUE_0="Authorization: token $FORJA_ADMIN"
   # -- ⭐⭐ DOS REPOSITORIOS, Y LA MISMA FUNCION PARA LOS DOS ---------------
   #
   # El compartimento dice COMO ES el inquilino; la cola dice QUE HAY QUE HACER.
@@ -618,10 +716,13 @@ else
   #
   # => Se separan por el nombre del fichero, que es donde la categoria ya estaba
   #   escrita: lo que empieza por `44-` es trabajo; el resto, gobierno.
+  # ⭐ Y a CUAL forja, lo dice el conmutador: `en_la_forja` antes de cada
+  #   `empujar`. El testigo va con ella.
   empujar() {   # <repositorio> <directorio con lo rendido> <que es>
     local REPO="$1" DE="$2" QUE="$3" URL R
-    if [ -n "${DENTRO:-}" ]; then URL="$FORJA_URL/$REPO.git"
-    else URL="http://localhost:$PUERTO_FORJA/$REPO.git"; fi
+    export GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN"
+    if [ -n "${DENTRO:-}" ]; then URL="$F_URL/$REPO.git"
+    else URL="http://localhost:$F_PUERTO/$REPO.git"; fi
     ( set -e
       rm -rf "$TMP/clon"
       cd "$TMP"
@@ -661,8 +762,40 @@ else
     esac
   done
 
+  en_la_forja central
   empujar "$COMPARTIMENTO" "$TMP/gobierno" "El compartimento"
-  empujar "$TRABAJO"       "$TMP/cola"     "La cola de trabajo"
+
+  # ── ④b LA MUDANZA: el arbol y la cola, de la central a la del inquilino ──
+  #
+  # UNA vez: si el repositorio del inquilino esta vacio y el de la central no,
+  # se lleva entero (`--mirror`). Despues, el de la central se queda como copia
+  # muerta hasta que alguien lo borre a mano — no se borra nada aqui.
+  if [ -n "$INQ" ]; then
+    for R in "$REPO" trabajo; do
+      en_la_forja inquilino
+      VACIO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("si" if d.get("empty") else "no")' 2>/dev/null || echo "?")
+      en_la_forja central
+      LLENO=$(forja_json "/repos/$PROPIETARIO/$R" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("no" if d.get("empty", True) else "si")' 2>/dev/null || echo "?")
+      if [ "$VACIO" = "si" ] && [ "$LLENO" = "si" ]; then
+        ( set -e; cd "$TMP"; rm -rf espejo.git
+          en_la_forja central
+          if [ -n "${DENTRO:-}" ]; then DE="$F_URL/$PROPIETARIO/$R.git"; else DE="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
+          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git clone -q --mirror "$DE" espejo.git
+          en_la_forja inquilino
+          if [ -n "${DENTRO:-}" ]; then A="$F_URL/$PROPIETARIO/$R.git"; else A="http://localhost:$F_PUERTO/$PROPIETARIO/$R.git"; fi
+          GIT_CONFIG_VALUE_0="Authorization: token $F_ADMIN" git -C espejo.git push -q --mirror "$A" ) \
+          && hecho "mudado $PROPIETARIO/$R: de la forja de la plataforma a la del inquilino, entero" \
+          || falla "no se pudo mudar $PROPIETARIO/$R"
+      elif [ "$VACIO" = "no" ]; then
+        ya "$PROPIETARIO/$R en la forja del inquilino"
+      fi
+    done
+    en_la_forja inquilino
+    empujar "$TRABAJO"       "$TMP/cola"     "La cola de trabajo"
+    en_la_forja central
+  else
+    echo "  ~ sin forja del inquilino: la cola se empuja en la pasada siguiente"
+  fi
 
   [ -n "$TUNEL" ] && { kill "$TUNEL" 2>/dev/null; trap 'rm -rf "$TMP"' EXIT; }
   unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0

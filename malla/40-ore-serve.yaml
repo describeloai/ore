@@ -201,7 +201,7 @@ spec:
             - --ore
             - /usr/local/bin/ore
             - --forja
-            - http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git
+            - http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git
             # ── ⭐⭐ LA COLA DE TRABAJO ──────────────────────────────────────
             #
             # El alta de una fuente encola aquí su Job de catálogo, en el mismo
@@ -223,7 +223,7 @@ spec:
             #   su token sino de qué repositorios es colaborador — dos, y de
             #   ningún otro.
             - --cola
-            - http://forja.forja.svc.cluster.local:3000/t-demo/trabajo.git
+            - http://forja.t-demo.svc.cluster.local:3000/t-demo/trabajo.git
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.

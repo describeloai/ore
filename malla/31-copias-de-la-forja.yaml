@@ -119,6 +119,14 @@ spec:
             matchLabels:
               ore.dev/rol: forja
       ports: [{protocol: TCP, port: 3000}]
+    # ⭐ Y las forjas de los inquilinos (0024 E3-(c)): todo namespace de cargas,
+    #   sólo sus pods `forja`, sólo :3000.
+    - to:
+        - namespaceSelector:
+            matchLabels: {ore.dev/rol: cargas}
+          podSelector:
+            matchLabels: {ore.dev/rol: forja}
+      ports: [{protocol: TCP, port: 3000}]
     # El servidor de metadatos de GKE.
     - to: [{ipBlock: {cidr: 169.254.169.254/32}}]
       ports: [{protocol: TCP, port: 80}, {protocol: TCP, port: 988}]
@@ -222,18 +230,37 @@ spec:
                   curl -sSf -H "Authorization: token $TESTIGO" \
                     "$FORJA/api/v1/repos/search?limit=200" -o /trabajo/repos.json
                   python3 -c '
-                  import json
+                  import json, sys
                   d = json.load(open("/trabajo/repos.json"))
                   for r in d.get("data", []):
-                      print(r["full_name"])
-                  ' > /trabajo/lista.txt
+                      print(sys.argv[1] + "|" + sys.argv[2] + "|" + r["full_name"])
+                  ' "$FORJA" "$TESTIGO" > /trabajo/lista.txt
 
+                  # ⭐ Y LAS FORJAS DE LOS INQUILINOS (0024 E3-(c)): cada una tiene su
+                  #   admin en el almacén como `t-<n>-forja-admin`; se recorren por ahí,
+                  #   y sus repositorios entran en la misma lista con la forja delante.
+                  for S in $(gcloud secrets list --filter="name~^t-.*-forja-admin$" --format="value(name)"); do
+                    T="${S#t-}"; T="${T%-forja-admin}"
+                    F="http://forja.t-$T.svc.cluster.local:3000"
+                    K=$(gcloud secrets versions access latest --secret="$S" 2>/dev/null) || { echo "  ~ $S: sin testigo"; continue; }
+                    curl -sSf -H "Authorization: token $K" "$F/api/v1/repos/search?limit=200" -o /trabajo/r.json 2>/dev/null \
+                      || { echo "  ~ forja de t-$T: no contesta"; continue; }
+                    python3 -c '
+                  import json, sys
+                  for r in json.load(open("/trabajo/r.json")).get("data", []):
+                      print(sys.argv[1] + "|" + sys.argv[2] + "|" + r["full_name"])
+                  ' "$F" "$K" >> /trabajo/lista.txt
+                  done
                   N=0; VACIOS=0
-                  echo "--- $(wc -l < /trabajo/lista.txt) repositorios ---"
-                  while read -r R; do
+                  echo "--- $(wc -l < /trabajo/lista.txt) repositorios, plataforma e inquilinos ---"
+                  while IFS='|' read -r FI KI R; do
                     [ -n "$R" ] || continue
-                    D="/trabajo/$(echo "$R" | tr / _)"
-                    git clone --quiet --mirror "$FORJA/$R.git" "$D.git"
+                    # De que forja: la de la plataforma se llama `forja`; la de un
+                    # inquilino, `t-<n>`. Va delante en el nombre de la copia.
+                    DE="${FI#http://forja.}"; DE="${DE%%.*}"
+                    D="/trabajo/${DE}_$(echo "$R" | tr / _)"
+                    GIT_CONFIG_VALUE_0="!f(){ echo username=x; echo password=$KI; }; f" \
+                      git clone --quiet --mirror "$FI/$R.git" "$D.git"
 
                     # ⛔ Un repositorio sin commits no se puede empaquetar, y
                     #   `git bundle` lo dice con un error. No es un fallo de la
@@ -275,7 +302,7 @@ spec:
                       MANIFIESTO="⚠ SIN ontology.config.yaml"
                     fi
 
-                    gcloud storage cp "$D.bundle" "$BUCKET/forja/$(basename "$D")-$F.bundle" -q
+                    gcloud storage cp "$D.bundle" "$BUCKET/$DE/$(basename "$D")-$F.bundle" -q
                     echo "· $R · $(wc -c < "$D.bundle") bytes · restaurado y verificado · $MANIFIESTO"
                     N=$((N+1))
                     rm -rf "$D.git" "$D.vuelta.git" "$D.bundle"
@@ -291,7 +318,8 @@ spec:
 
                   echo
                   echo "--- lo que hay guardado ---"
-                  gcloud storage ls "$BUCKET/forja/" | tail -6
+                  gcloud storage ls "$BUCKET/forja/" | tail -3
+                  gcloud storage ls "$BUCKET/t-*/" 2>/dev/null | tail -6
                   echo
                   echo "ok · $N copiados y restaurados · $VACIOS vacios"
               securityContext:

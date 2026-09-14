@@ -308,11 +308,16 @@ spec:
   #   normal es que el webhook llegue en segundos. Esto es lo que queda si el
   #   aviso se pierde.
   interval: 5m
-  url: http://forja.forja.svc.cluster.local:3000/t-demo/trabajo.git
+  # ⭐ En la forja del INQUILINO desde el 2026-09-14 (0024 E3-(c)): la cola es
+  #   suya y vive en su celda. Y SIN `secretRef`: `trabajo` se lee sin testigo
+  #   dentro de la celda —son Jobs sin secretos, y quién llega al puerto lo
+  #   dice su NetworkPolicy—, porque un testigo por inquilino en `flux-system`
+  #   sería un `Secret` puesto por alguien con permisos de clúster (0022).
+  #   El compartimento de arriba sigue en la forja de la plataforma, con el
+  #   testigo de siempre.
+  url: http://forja.t-demo.svc.cluster.local:3000/t-demo/trabajo.git
   ref:
     branch: main
-  secretRef:
-    name: compartimento-llave
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -461,11 +466,16 @@ spec:
   #   normal es que el webhook llegue en segundos. Esto es lo que queda si el
   #   aviso se pierde.
   interval: 5m
-  url: http://forja.forja.svc.cluster.local:3000/t-prueba/trabajo.git
+  # ⭐ En la forja del INQUILINO desde el 2026-09-14 (0024 E3-(c)): la cola es
+  #   suya y vive en su celda. Y SIN `secretRef`: `trabajo` se lee sin testigo
+  #   dentro de la celda —son Jobs sin secretos, y quién llega al puerto lo
+  #   dice su NetworkPolicy—, porque un testigo por inquilino en `flux-system`
+  #   sería un `Secret` puesto por alguien con permisos de clúster (0022).
+  #   El compartimento de arriba sigue en la forja de la plataforma, con el
+  #   testigo de siempre.
+  url: http://forja.t-prueba.svc.cluster.local:3000/t-prueba/trabajo.git
   ref:
     branch: main
-  secretRef:
-    name: compartimento-llave
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

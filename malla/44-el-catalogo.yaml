@@ -206,7 +206,7 @@ spec:
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
               cd /trabajo
               git clone --quiet \
-                http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git arbol
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
 
               # ── ⭐ Y AQUÍ SE MIRA ANTES DE TRABAJAR ────────────────────

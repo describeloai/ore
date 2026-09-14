@@ -1,0 +1,305 @@
+# LA FORJA DEL INQUILINO — su árbol y su cola viven EN su celda.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# ⭐⭐ POR QUÉ HAY UNA FORJA AQUÍ, Y NO SÓLO LA DE `forja/`
+#
+# La 0024 (E3-(c), «lo que se acepta a cambio»): *si el árbol es soberano, su
+# forja también*. Hasta el 2026-09-14 `t-demo/ontologia` y `t-demo/trabajo`
+# vivían en la forja de la PLATAFORMA; con el árbol en la casa del cliente
+# (dedicado, BYOC) eso sería el árbol saliendo de su perímetro en cada clon.
+# Medido antes en `medida-la-forja-del-inquilino.py`: 509 KiB que son del
+# inquilino, una forja que pide 100m/512Mi y cabe de sobra en su cuota, y un
+# admin que hasta hoy se creaba A MANO.
+#
+# ⛔ Y lo que NO vive aquí: el `compartimento`. Es lo que este clúster OBEDECE
+#   (0022-①), y quien escribe ahí decide a qué apunta el agente. Se queda en la
+#   forja de la plataforma, y Flux tira de él con su testigo de siempre.
+#
+# ── ⭐ El admin se funda solo, y el testigo va al almacén ─────────────────
+#
+#   Tres contenedores de inicio, en este orden, y cada uno hace UNA cosa:
+#
+#     comprobar   ¿tiene ya el almacén `t-demo-forja-admin`?        → /puesto/ya
+#     fundar      si la forja no existe, la crea con `ore-admin`;
+#                 si no hay testigo en el almacén, acuña uno         → /puesto/forja-admin
+#     guardar     si hay testigo nuevo, lo sube al almacén
+#
+#   Así el primer arranque funda y guarda; los siguientes no tocan nada; y si
+#   alguien borra el testigo del almacén, el siguiente arranque acuña otro. Los
+#   testigos viejos se quedan en la forja —Forgejo 15 no sabe borrarlos por
+#   CLI— y se llaman `aprovisionador-<fecha>` para que se vea cuántos hay.
+#
+#   ⛔ El testigo NO toca el disco de la forja: va de `fundar` a `guardar` por un
+#     `emptyDir` de memoria, como el de `41-el-cofre`.
+#
+# ── ⚠️ Corre como root, igual que `30-forja` ──────────────────────────────
+#
+#   La imagen es la misma que la de la plataforma (`forgejo:15`, raíz): su
+#   `s6` prepara `/data` como root y baja a `git`. El namespace del inquilino
+#   AVISA de PodSecurity `restricted` y no lo impone — se ve en el `apply`, y
+#   se queda escrito aquí. La rootless es otra imagen y otra medida.
+#
+# ── ⭐ `trabajo` se lee sin testigo, y `ontologia` no ─────────────────────
+#
+#   Flux —desde `flux-system`— tira de `trabajo` para rendir los Jobs. Darle un
+#   testigo de ESTA forja exigiría un `Secret` en `flux-system` por inquilino,
+#   puesto por alguien con permisos de clúster: justo lo que el aprovisionador
+#   no tiene (0022). Así que `REQUIRE_SIGNIN_VIEW` va en `false` y `trabajo` es
+#   público DENTRO de la celda: lo que hay en él son Jobs sin secretos —el
+#   material lo traen del almacén—, y quién puede llegar al puerto lo dice la
+#   NetworkPolicy de abajo, no la contraseña. `ontologia` sigue privado.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: forja-datos
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  storageClassName: retiene
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forja
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+  annotations:
+    # El aprovisionador ③ crea la cuenta y el enlace; ⑤ le deja añadir
+    # versiones a `t-demo-forja-admin` y a nada más.
+    iam.gke.io/gcp-service-account: ore-forja-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forja
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  selector:
+    ore.dev/rol: forja
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forja
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+spec:
+  serviceName: forja
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: forja
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: forja
+        ore.dev/tenant: demo
+    spec:
+      serviceAccountName: forja
+      securityContext:
+        fsGroup: 1000
+      volumes:
+        - name: datos
+          persistentVolumeClaim:
+            claimName: forja-datos
+        - name: puesto
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+      initContainers:
+        - name: comprobar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              if gcloud secrets versions access latest --secret=t-demo-forja-admin >/dev/null 2>&1; then
+                touch /puesto/ya; echo "el almacen ya tiene el testigo del admin"
+              else
+                echo "el almacen NO tiene testigo del admin: se acuñara uno"
+              fi
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+        - name: fundar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/forgejo:15
+          env:
+            - { name: FORGEJO__database__DB_TYPE, value: sqlite3 }
+            - { name: FORGEJO__server__ROOT_URL, value: "http://forja.t-demo.svc.cluster.local:3000/" }
+            - { name: FORGEJO__server__DOMAIN, value: forja.t-demo.svc.cluster.local }
+            - { name: FORGEJO__server__HTTP_PORT, value: "3000" }
+            - { name: FORGEJO__server__DISABLE_SSH, value: "true" }
+            - { name: FORGEJO__webhook__ALLOWED_HOST_LIST, value: "webhook-receiver.flux-system.svc.cluster.local" }
+            - { name: FORGEJO__service__DISABLE_REGISTRATION, value: "true" }
+            - { name: FORGEJO__service__REQUIRE_SIGNIN_VIEW, value: "false" }
+            - { name: FORGEJO__security__INSTALL_LOCK, value: "true" }
+            - { name: FORGEJO__mailer__ENABLED, value: "false" }
+          volumeMounts:
+            - { name: datos, mountPath: /data }
+            - { name: puesto, mountPath: /puesto }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              C=/data/gitea/conf/app.ini
+              if [ ! -f "$C" ]; then
+                # El mismo `setup` que corre el entrypoint: directorios, dueño,
+                # y el `app.ini` a partir de las variables de arriba.
+                /etc/s6/gitea/setup
+                su git -c "forgejo migrate -c $C" >/dev/null
+                # La contraseña no se guarda ni se enseña: nadie entra por ella.
+                # Lo que vale es el testigo, y va al almacén.
+                su git -c "forgejo admin user create --admin --username ore-admin \
+                  --password $(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 28) \
+                  --email ore-admin@invalido.paladio.io -c $C" >/dev/null
+                echo "forja fundada · admin ore-admin"
+              else
+                echo "la forja ya estaba fundada"
+              fi
+              if [ ! -f /puesto/ya ]; then
+                su git -c "forgejo admin user generate-access-token --username ore-admin \
+                  --token-name aprovisionador-$(date -u +%Y%m%dT%H%M%SZ) --scopes all --raw -c $C" \
+                  | tr -d '\n' > /puesto/forja-admin
+                echo "testigo acuñado · $(wc -c < /puesto/forja-admin) bytes"
+              fi
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "500m", memory: 1Gi}
+        - name: guardar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -f /puesto/forja-admin ]; then
+                gcloud secrets versions add t-demo-forja-admin --data-file=/puesto/forja-admin >/dev/null
+                echo "testigo del admin guardado en el almacen"
+              else
+                echo "nada que guardar"
+              fi
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: forgejo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/forgejo:15
+          ports:
+            - containerPort: 3000
+          env:
+            - { name: FORGEJO__database__DB_TYPE, value: sqlite3 }
+            - { name: FORGEJO__server__ROOT_URL, value: "http://forja.t-demo.svc.cluster.local:3000/" }
+            - { name: FORGEJO__server__DOMAIN, value: forja.t-demo.svc.cluster.local }
+            - { name: FORGEJO__server__HTTP_PORT, value: "3000" }
+            - { name: FORGEJO__server__DISABLE_SSH, value: "true" }
+            - { name: FORGEJO__webhook__ALLOWED_HOST_LIST, value: "webhook-receiver.flux-system.svc.cluster.local" }
+            - { name: FORGEJO__service__DISABLE_REGISTRATION, value: "true" }
+            - { name: FORGEJO__service__REQUIRE_SIGNIN_VIEW, value: "false" }
+            - { name: FORGEJO__security__INSTALL_LOCK, value: "true" }
+            - { name: FORGEJO__mailer__ENABLED, value: "false" }
+          volumeMounts:
+            - name: datos
+              mountPath: /data
+          resources:
+            requests: {cpu: "100m", memory: 512Mi}
+            limits:   {cpu: "500m", memory: 1Gi}
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: 3000}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+# Quién llega a la forja del inquilino, y desde dónde. La misma lista que
+# `entrada-a-la-forja` de la plataforma, sin `semilla` de otros namespaces:
+# aquí todo lo del inquilino está en casa.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-la-forja
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: forja
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # ore-serve (clona y empuja el árbol, escribe la cola)
+        - podSelector:
+            matchLabels: {ore.dev/rol: control}
+        # los Jobs de catálogo (empujan lo descubierto)
+        - podSelector:
+            matchLabels: {ore.dev/rol: driver}
+        # la semilla (crea el árbol la primera vez)
+        - podSelector:
+            matchLabels: {ore.dev/rol: semilla}
+        # Flux, que tira de `trabajo`
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: flux-system}
+        # el aprovisionador (organización, repositorios, usuario, testigo)
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ore-system}
+        # las copias de la plataforma, que también copian ésta
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: forja}
+          podSelector:
+            matchLabels: {ore.dev/rol: copias}
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-la-forja
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: forja
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # El aviso a Flux en cada empujón (17-el-aviso).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: flux-system
+          podSelector:
+            matchLabels:
+              app: notification-controller
+      ports: [{protocol: TCP, port: 9292}]
+    # Los contenedores de inicio: metadatos (Workload Identity) y el almacén.
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16] }
+      ports: [{protocol: TCP, port: 443}]

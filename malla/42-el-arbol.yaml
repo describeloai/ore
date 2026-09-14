@@ -149,7 +149,7 @@ spec:
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /testigo/forja)"
               cd /tmp
               git clone --quiet \
-                http://forja.forja.svc.cluster.local:3000/t-demo/ontologia.git arbol
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
               # ── ⭐ Idempotente, y con la condicion correcta ──────────────
               #
