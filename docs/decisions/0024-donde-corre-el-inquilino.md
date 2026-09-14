@@ -255,8 +255,13 @@ cofre guarda el material en el Secret Manager de la celda como `t-<n>-cofre-<nom
 como CMEK y una **condición IAM por prefijo** medida desde dentro del pod
 (`medida-el-almacen-por-inquilino.py`: el `create` también la obedece); `cofre.secreto` e
 `iam.concesion` se quedan, `ore-cofre mudar` lleva lo viejo y la `028` no borra hasta que esté
-vacío; **(c)** `t-demo` con **su forja propia** y Flux tirando de la nuestra. Si eso
-funciona aquí, dedicado y BYOC son *el mismo manifiesto en otro sitio*.
+vacío; **(c) ✓** `t-demo` y `t-prueba` con **su forja propia** (`46`: se funda sola y deja su
+admin en el almacén; `ontologia` y `trabajo` mudados `--mirror`; `trabajo` legible sin testigo
+dentro de la celda para que Flux no necesite un `Secret`), y Flux tirando del compartimento
+en la nuestra. **Medido con las tres medidas de acoplamiento, cofre y forja: 0 por decidir.**
+Lo que queda dicho y no hecho: cerrar la salida del inquilino hacia `forja/`, borrar las copias
+muertas de la central, y delegar `ore.paladio.io` a Cloud DNS. Con esto, dedicado y BYOC son
+*el mismo manifiesto en otro sitio*.
 
 **E4 · Dedicado.** Un GKE por inquilino, aprovisionado por el mismo guion, con los tres pools.
 

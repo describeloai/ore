@@ -154,6 +154,19 @@ hace_falta("copias por inquilino", "la CronJob de copias apunta a `forja.forja.s
 hace_falta("mover `ontologia` y `trabajo` de la central a la del inquilino, UNA vez",
            "un `git clone --mirror` + `push --mirror` desde un Job en `%s`; despues los de la central se quedan como copia de solo lectura hasta borrarlos" % NS)
 
+# ── ¿Ya esta hecho? Se mira el ESTADO, no la fecha ────────────────────────────
+hecho = (os.path.exists(os.path.join(RAIZ, "malla", "46-la-forja-del-inquilino.yaml"))
+         and "forja.t-demo.svc" in leer("malla/40-ore-serve.yaml")
+         and bool(kj("-n", NS, "get", "statefulset", "forja").get("metadata")))
+if hecho:
+    titulo("HECHO (0024 E3-(c))")
+    print("   la forja de `%s` corre en su celda; `ontologia` y `trabajo` viven ahi; Flux tira de" % INQ)
+    print("   `trabajo` sin testigo y del compartimento en la nuestra con el de siempre; las copias")
+    print("   recorren las forjas de inquilino por `t-*-forja-admin`.")
+    print("   Lo que queda dicho: la salida del inquilino hacia `forja/` sigue abierta (mudanza y")
+    print("   semilla), y los `ontologia`/`trabajo` de la central son copias muertas hasta borrarlas.")
+    sys.exit(0)
+
 titulo("LO QUE HAY QUE HACER")
 for i, (que, det) in enumerate(falta, 1):
     print("   %d. %s" % (i, que))

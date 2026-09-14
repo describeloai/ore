@@ -91,9 +91,16 @@ for d, ps in sorted(destinos.items()):
     print("   %-52s :%s" % (d, " ".join(sorted(ps))))
 
 anota("viaja", "DNS de kube-system :53", "todo cluster lo tiene")
-if any("forja" in d for d in destinos):
+# La forja: hasta el 2026-09-14 el inquilino salia a `forja/` por su arbol y su
+# cola. Desde la E3-(c) tiene la suya en casa (46), y lo que queda hacia `forja/`
+# es una regla de salida que se dejo para la mudanza y la semilla — y se cierra.
+tiene_forja_propia = bool(kj("-n", NS, "get", "statefulset", "forja", "-o", "json").get("metadata"))
+if any("forja" in d for d in destinos) and not tiene_forja_propia:
     anota("se parte", "la forja :3000 (ontologia, trabajo, compartimento)",
           "una Gitea + 10 GB en el cluster del inquilino; central romperia la soberania por debajo")
+elif any("forja" in d for d in destinos):
+    anota("central", "una salida a `forja/` :3000 que ya no usa nadie del inquilino",
+          "0024 E3-(c) hecha: el arbol y la cola estan en su forja (46). La regla hacia `forja/` se dejo para la mudanza; cerrarla es un cambio de `11-el-inquilino.yaml`")
 if any("identidad" in d for d in destinos):
     anota("central", "el emisor (Keycloak) :8080",
           "ya tiene IP publica; la politica pasa de selector de namespace a host externo")
