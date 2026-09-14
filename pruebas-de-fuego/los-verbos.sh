@@ -565,7 +565,7 @@ NOE=$(acunar "persona:noe" "noe@paladio.io")
 [ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova"}')" = "200" ] \
   || falla "11 · noe no pudo fundar `nova`: $(cat "$TMP/r.json")"
 NOVA=$(campo organizacion)
-grep -q '"celda": "cel_' "$TMP/r.json" || falla "11 · la organizacion fundada por HTTP no trae celda: $(cat "$TMP/r.json")"
+case "$(campo celda)" in cel_*) ;; *) falla "11 · la organizacion fundada por HTTP no trae celda: $(cat "$TMP/r.json")" ;; esac
 [ "$(pide POST /organizaciones "$ADA" '{"nombre":"nova"}')" = "422" ] \
   || falla "11 · ⛔ SE FUNDO DOS VECES `nova`"
 [ "$(psql "$URL" -qtAc "select count(*) from iam.pertenencia_rol where organizacion='$NOVA' and rol='ORGADMIN'")" = "1" ] \
