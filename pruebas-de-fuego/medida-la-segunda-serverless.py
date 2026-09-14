@@ -87,9 +87,27 @@ def ahora():
 
 
 def foto(ns):
-    """Los objetos de un namespace con su resourceVersion: si nada cambio, es la misma foto."""
-    return correr("kubectl", "-n", ns, "get", "deploy,sts,svc,networkpolicy,sa,pvc",  # sin ResourceQuota: su resourceVersion cambia con el USO
-                  "-o", "jsonpath={range .items[*]}{.kind}/{.metadata.name}:{.metadata.generation} {end}")  # generation: cambia con la SPEC, no con el estado
+    """Los objetos de un namespace, por su SPEC: si nada cambio, es la misma foto.
+
+    ⛔ Sin la etiqueta `ore.dev/commit` de los pods: la lleva cada Deployment
+      rendido y cambia con CADA commit de la malla —CI rueda las imagenes—, asi
+      que un push durante la prueba la cambiaria sin que la celda nueva tenga
+      nada que ver. Lo que se coteja es lo demas: contenedores, argumentos,
+      volumenes, politicas, cuotas.
+    """
+    import hashlib
+    s = correr("kubectl", "-n", ns, "get", "deploy,sts,svc,networkpolicy,sa,pvc,resourcequota", "-o", "json")
+    if not s:
+        return ""
+    objs = json.loads(s)["items"]
+    fotos = []
+    for o in objs:
+        spec = o.get("spec", {})
+        tpl = spec.get("template", {}).get("metadata", {}).get("labels", {})
+        tpl.pop("ore.dev/commit", None)
+        fotos.append("%s/%s:%s" % (o["kind"], o["metadata"]["name"],
+                                    hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:12]))
+    return " ".join(sorted(fotos))
 
 
 # ── el tunel ────────────────────────────────────────────────────────────────
