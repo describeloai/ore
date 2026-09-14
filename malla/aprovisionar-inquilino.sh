@@ -742,6 +742,11 @@ TRABAJO="$PROPIETARIO/trabajo"
 if [ -n "$SECO" ]; then
   haria "crear $COMPARTIMENTO y hacer a \`flux\` colaborador de solo lectura"
 else
+  # ⛔ Y la ORGANIZACION `t-<celda>` en la forja CENTRAL, antes que el repositorio.
+  #   Para `demo` y `prueba` existia de antes (la creo el ④ cuando el arbol
+  #   vivia aqui) y nadie la creaba para una celda nueva: la primera celda
+  #   pedida (0025 E6) murio con «404 a POST /orgs/t-prueba-dos/repos».
+  hecho "organizacion $PROPIETARIO en la forja central · $(forja_api POST "/orgs" "{\"username\":\"$PROPIETARIO\"}")"
   hecho "compartimento $COMPARTIMENTO · $(forja_api POST "/orgs/$PROPIETARIO/repos" \
     "{\"name\":\"compartimento\",\"private\":true}")"
   # ⭐ Y el agente entra como COLABORADOR, uno a uno. Lo que ata a `flux` no es
