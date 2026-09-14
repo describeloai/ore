@@ -237,10 +237,17 @@ spec:
                   ' "$FORJA" "$TESTIGO" > /trabajo/lista.txt
 
                   # ⭐ Y LAS FORJAS DE LOS INQUILINOS (0024 E3-(c)): cada una tiene su
-                  #   admin en el almacén como `t-<n>-forja-admin`; se recorren por ahí,
-                  #   y sus repositorios entran en la misma lista con la forja delante.
-                  for S in $(gcloud secrets list --filter="name~^t-.*-forja-admin$" --format="value(name)"); do
-                    T="${S#t-}"; T="${T%-forja-admin}"
+                  #   admin en el almacén como `t-<n>-forja-admin`, y `ore-copias` puede
+                  #   LEER cada uno, no LISTAR el almacén (medido: `secrets.list` es del
+                  #   proyecto entero, y se le negó). Los inquilinos se saben por las
+                  #   organizaciones `t-*` de ESTA forja, que es donde vive su compartimento.
+                  for T in $(python3 -c '
+                  import json
+                  for r in json.load(open("/trabajo/repos.json")).get("data", []):
+                      o = r["full_name"].split("/")[0]
+                      if o.startswith("t-"): print(o[2:])
+                  ' | sort -u); do
+                    S="t-$T-forja-admin"
                     F="http://forja.t-$T.svc.cluster.local:3000"
                     K=$(gcloud secrets versions access latest --secret="$S" 2>/dev/null) || { echo "  ~ $S: sin testigo"; continue; }
                     curl -sSf -H "Authorization: token $K" "$F/api/v1/repos/search?limit=200" -o /trabajo/r.json 2>/dev/null \
