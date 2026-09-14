@@ -429,14 +429,35 @@ dice "8 · la llave cambio y lo cerrado antes sigue abriendose"
 #   · la huella de emitir dice donde quedo y que version
 #   · y un secreto viejo —cifrado a mano en `cofre.material`— lo lleva `mudar`
 #     al almacen, abriendolo con la llave con la que se cerro, y borra la fila
-MATERIAL=$(psql "$URL" -qtAc "select count(*) from cofre.material")
-[ "$MATERIAL" = "0" ] || falla "9 · ⛔ EL MATERIAL SIGUE EN LA BASE CENTRAL: $MATERIAL filas en cofre.material"
+# En una base recien migrada la 028 ya borro `cofre.material`: no existir ES la
+# prueba de que el material no esta aqui.
+[ "$(psql "$URL" -qtAc "select to_regclass('cofre.material') is null")" = "t" ] \
+  || falla "9 · ⛔ \`cofre.material\` sigue existiendo tras la 028"
 [ -f "$TMP/almacen/t-acme-cofre-pg-produccion/1" ] \
   || falla "9 · el almacen no tiene \`t-acme-cofre-pg-produccion\` v1: $(ls "$TMP/almacen")"
 grep -q "keyRings/ore/cryptoKeys/acme" "$TMP/almacen/t-acme-cofre-pg-produccion/cmek" \
   || falla "9 · el secreto no nacio con la CMEK de la organizacion: $(cat "$TMP/almacen/t-acme-cofre-pg-produccion/cmek")"
 DONDE=$(psql "$URL" -qtAc "select detalle->>'almacen' from iam.huella where operacion='secreto:emitir' limit 1")
 [ "$DONDE" = "t-acme-cofre-pg-produccion" ] || falla "9 · la huella de emitir no dice donde quedo: «$DONDE»"
+
+# Sin tabla, `mudar` no muere: dice que no hay nada que mudar.
+COFRE_URL="$URL_COFRE" "$COFRE" mudar --organizacion acme \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/mudar.txt" 2>&1 \
+  || falla "9 · \`mudar\` sin tabla deberia terminar bien: $(cat "$TMP/mudar.txt")"
+grep -q "0 secretos mudados" "$TMP/mudar.txt" || falla "9 · mudar sin tabla no dijo 0: $(cat "$TMP/mudar.txt")"
+
+# ⭐ Y UNA BASE COMO LA DE ANTES: se recrea `cofre.material` y `cofre.vigente` tal
+#   como las dejaron la 020 y la 021, para probar la mudanza de verdad — es la
+#   situacion de todo inquilino que tenia secretos el 2026-09-14.
+psql "$URL" -qtAc "create table cofre.material (
+  secreto text not null references cofre.secreto(id) on delete cascade,
+  version integer not null check (version > 0), cifrado bytea not null,
+  kek text not null, en timestamptz not null default now(), primary key (secreto, version));
+create view cofre.vigente as select m.* from cofre.material m
+  join (select secreto, max(version) as version from cofre.material group by secreto) u
+    on u.secreto = m.secreto and u.version = m.version;
+grant select, insert, update, delete on cofre.material, cofre.vigente to ore_cofre;" >/dev/null \
+  || falla "9 · no se pudo recrear la tabla vieja"
 
 # Un secreto VIEJO: como los guardaba el cofre hasta la 0024-⑤, cifrado a mano
 # con la llave de entonces (`ore/acme`, no la de ahora), en `cofre.material`.

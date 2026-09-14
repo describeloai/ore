@@ -48,6 +48,20 @@ pub fn mudar(mut c: Client, org: &str, kms: &Kms, almacen: &Almacen) -> Result<u
         .ok_or_else(|| format!("no hay ninguna organizacion `{org}`"))?;
     let (org_id, inquilino): (String, String) = (f.get(0), f.get(1));
 
+    // ⭐ Tras la `028` la tabla ya no existe, y este Job sigue rindiéndose con
+    //   cada inquilino nuevo (`45-la-mudanza-del-cofre.yaml`): sin tabla no hay
+    //   nada que mudar, y se dice en vez de morir con «relation does not exist».
+    let hay_tabla: bool = tx
+        .uno("select to_regclass('cofre.material') is not null", &[])?
+        .map(|f| f.get(0))
+        .unwrap_or(false);
+    if !hay_tabla {
+        eprintln!(
+            "  · `cofre.material` ya no existe (028): la mudanza de `{inquilino}` ya se hizo o nunca hizo falta"
+        );
+        return Ok(0);
+    }
+
     let filas = tx.filas(
         "select s.id, s.nombre, v.cifrado, v.kek, v.version
            from cofre.secreto s
