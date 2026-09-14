@@ -329,12 +329,16 @@ iam_token() { # → el testigo del aprovisionador, a $TMP/iam (nunca a una varia
     | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["access_token"])' > "$TMP/iam" 2>/dev/null \
     && [ -s "$TMP/iam" ]
 }
-iam_verbo() { # <metodo> <camino> [cuerpo] → cuerpo de la respuesta; el codigo en $IAM_COD
+iam_verbo() { # <metodo> <camino> [cuerpo] → cuerpo de la respuesta; el codigo, en $TMP/iam-cod
+  # ⛔ El codigo va a un FICHERO y no a una variable: quien llama hace
+  #   `R=$(iam_verbo …)`, que es una subshell, y una variable puesta ahi no
+  #   vuelve. La primera pasada murio con «IAM_COD: unbound variable».
   local m="$1" c="$2" d="${3:-}"
-  IAM_COD=$(curl -sS -o "$TMP/iam-r.json" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $(cat "$TMP/iam")" \
-    -H 'Content-Type: application/json' ${d:+--data "$d"} "$IAM_BASE$c" 2>/dev/null)
+  curl -sS -o "$TMP/iam-r.json" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $(cat "$TMP/iam")" \
+    -H 'Content-Type: application/json' ${d:+--data "$d"} "$IAM_BASE$c" 2>/dev/null > "$TMP/iam-cod"
   cat "$TMP/iam-r.json" 2>/dev/null
 }
+iam_cod() { cat "$TMP/iam-cod" 2>/dev/null; }
 if [ -z "${FORJA_ADMIN:-}" ] && [ -z "$SECO" ]; then
   falla "falta \`FORJA_ADMIN\`, el testigo con el que se crean usuarios y repositorios.
      No se lee de ningun \`Secret\` del cluster a proposito: si este guion supiera
@@ -1015,8 +1019,12 @@ JSON
         "$GCLOUD" secrets create "$S" --replication-policy=user-managed --locations="$LUGAR" \
           --labels=proyecto=ore,inquilino="$NOMBRE" >/dev/null 2>&1 || true
       fi
+      # ⛔ No `cmp`: la imagen de drivers NO lo trae (es `diffutils`),
+      #   asi que «no es igual» salia siempre y cada pasada añadia una version
+      #   igual a la anterior — 29 versiones del mismo `ore-agente-demo` antes
+      #   de que nadie mirara. Se compara con python, que si esta.
       if "$GCLOUD" secrets versions access latest --secret="$S" --out-file="$(ruta "$TMP/actual")" >/dev/null 2>&1 \
-         && cmp -s "$TMP/actual" "$TMP/agente-$parte"; then
+         && "$PY" -c 'import sys;sys.exit(0 if open(sys.argv[1],"rb").read()==open(sys.argv[2],"rb").read() else 1)' "$TMP/actual" "$TMP/agente-$parte"; then
         ya "el almacen tiene el $parte del agente"
       else
         "$GCLOUD" secrets versions add "$S" --data-file="$(ruta "$TMP/agente-$parte")" >/dev/null \
@@ -1043,7 +1051,7 @@ JSON
       echo "  ⚠ el IdP no dio testigo a \`ore-aprovisionador\`: el agente NO se registra en iam."
     else
       R=$(iam_verbo POST "/organizaciones/$ORG/agentes" "{\"sub\":\"$AGENTE_SUB\",\"nombre\":\"$AGENTE\"}")
-      if [ "$IAM_COD" = "200" ]; then
+      if [ "$(iam_cod)" = "200" ]; then
         REGISTRADO=1
         if printf '%s' "$R" | grep -q '"ya": *true'; then
           ya "el agente en iam"
@@ -1051,7 +1059,7 @@ JSON
           hecho "agente registrado en iam: $R"
         fi
       else
-        echo "  ⚠ ore-iam contesto $IAM_COD al registrar el agente: $R"
+        echo "  ⚠ ore-iam contesto $(iam_cod) al registrar el agente: $R"
       fi
     fi
   fi
@@ -1145,7 +1153,7 @@ elif [ -z "$INQ" ] || [ -z "$REGISTRADO" ]; then
   echo "  ~ la celda no se da por aprovisionada: $([ -z "$INQ" ] && printf 'su forja no estaba ' ; [ -z "$REGISTRADO" ] && printf 'su agente no se registro')"
 elif iam_token; then
   R=$(iam_verbo POST "/celdas/$NOMBRE/aprovisionada")
-  [ "$IAM_COD" = "200" ] && hecho "celda \`$NOMBRE\` aprovisionada: $R" || echo "  ⚠ ore-iam contesto $IAM_COD: $R"
+  [ "$(iam_cod)" = "200" ] && hecho "celda \`$NOMBRE\` aprovisionada: $R" || echo "  ⚠ ore-iam contesto $(iam_cod): $R"
 fi
 rm -f "$TMP/iam" "$TMP/iam-r.json"
 
