@@ -265,7 +265,7 @@ mkdir -p "$TMP/almacen"
 export ALMACEN_DE_MENTIRA="$TMP/almacen"
 COFRE_URL="$URL_COFRE" "$COFRE" servir --bind "127.0.0.1:$PUERTO" \
   --identidad oidc --emisor "$EMISOR" --audiencia "$AUDIENCIA" \
-  --jwks "$TMP/jwks.json" --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 \
+  --jwks "$TMP/jwks.json" --celda acme --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 \
   > "$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 60); do

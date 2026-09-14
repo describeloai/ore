@@ -122,17 +122,22 @@ impl Servidor {
             let filas = tx.filas(
                 // ⭐ `roles` en plural desde la `016`. Una persona puede tener
                 //   varios cargos en la misma organizacion.
+                // ⭐ `arbol` y `entrada` salen de la CELDA (029): la que se llama
+                //   como la organizacion, que es la primera. Con N celdas esto es
+                //   «la de casa»; la consola elige celda por `/celdas` (0025-5) y
+                //   estas dos columnas se retiran de aqui con la 030.
                 "select o.id, o.nombre, o.estado,
                         coalesce(array_agg(pr.rol order by pr.rol)
                                  filter (where pr.rol is not null), '{}'),
-                        o.arbol, o.entrada
+                        coalesce(c.arbol, ''), coalesce(c.entrada, '')
                    from iam.organizacion o
                    join iam.pertenencia pe on pe.organizacion = o.id
                    join iam.persona     p  on p.id = pe.persona
                    left join iam.pertenencia_rol pr
                      on pr.persona = pe.persona and pr.organizacion = pe.organizacion
+                   left join iam.celda c on c.organizacion = o.id and c.nombre = o.nombre
                   where p.emisor = $1 and p.sub = $2
-                  group by o.id, o.nombre, o.estado, o.arbol, o.entrada
+                  group by o.id, o.nombre, o.estado, c.arbol, c.entrada
                   order by o.nombre",
                 &[&emisor, &s.persona],
             )?;

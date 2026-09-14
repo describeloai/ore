@@ -63,9 +63,10 @@ pub fn mudar(mut c: Client, org: &str, kms: &Kms, almacen: &Almacen) -> Result<u
     }
 
     let filas = tx.filas(
-        "select s.id, s.nombre, v.cifrado, v.kek, v.version
+        "select s.id, s.nombre, v.cifrado, v.kek, v.version, ce.nombre
            from cofre.secreto s
            join cofre.vigente v on v.secreto = s.id
+           join iam.celda ce on ce.id = s.celda
           where s.organizacion = $1 and s.retirado_en is null
           order by s.nombre",
         &[&org_id],
@@ -78,12 +79,18 @@ pub fn mudar(mut c: Client, org: &str, kms: &Kms, almacen: &Almacen) -> Result<u
 
     let mut cuantos = 0;
     for f in &filas {
-        let (id, nombre, cifrado, kek, version): (String, String, Vec<u8>, String, i32) =
-            (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4));
+        let (id, nombre, cifrado, kek, version, celda): (
+            String,
+            String,
+            Vec<u8>,
+            String,
+            i32,
+            String,
+        ) = (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4), f.get(5));
         // ① con la llave con la que se cerró
         let claro = kms.abrir(&kek, &cifrado)?;
         // ② y ③: al almacén, bajo el prefijo del inquilino, con esa KEK como CMEK
-        let en_almacen = nombre_en_almacen(&inquilino, &nombre);
+        let en_almacen = nombre_en_almacen(&celda, &nombre);
         almacen.crear(&en_almacen, &kek, &inquilino)?;
         let nueva = almacen.anadir(&en_almacen, &claro)?;
         // ④ fuera de la base central

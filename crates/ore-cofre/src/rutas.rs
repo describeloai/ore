@@ -47,6 +47,8 @@ pub struct Servidor {
     pub identidad: Option<Proveedor>,
     /// Dónde vive el material desde la 0024-⑤: el Secret Manager de la celda.
     pub almacen: Almacen,
+    /// De qué celda es este cofre (0025-④). Un secreto nace de ella.
+    pub celda: String,
 }
 
 impl Servidor {
@@ -120,6 +122,7 @@ impl Servidor {
     fn emitir(&self, s: &Identidad, org: &str, cuerpo: &str) -> Respuesta {
         let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
         let almacen = &self.almacen;
+        let self_celda = self.celda.clone();
         self.en_transaccion(s, move |tx, emisor| {
             // ⓪ El nombre o el id, a ID. Ver `canonica`: aqui llegaba `demo` y
             //    todo lo de abajo pregunta por `org_b7b98fdd…`.
@@ -147,27 +150,35 @@ impl Servidor {
                 return Err("un secreto vacio no es un secreto".into());
             }
 
-            // ② Con qué llave se cierra y cómo se llama el inquilino. Las dos
-            //    salen de `iam`, que es quien las nombra: la llave es la CMEK del
-            //    secreto en el almacén, y el nombre del inquilino va DELANTE del
-            //    nombre del secreto porque es lo que la condición IAM evalúa.
+            // ② Con qué llave se cierra —de la ORGANIZACION, que es la cuenta— y
+            //    de qué CELDA es el secreto (0025-④): la de este cofre, que tiene
+            //    que ser de esa organizacion. El nombre de la celda va DELANTE del
+            //    nombre en el almacén porque es lo que la condición IAM evalúa.
             let f = tx
                 .uno(
-                    "select kek, nombre from iam.organizacion where id = $1",
-                    &[&org],
+                    "select o.kek, c.id, c.nombre
+                       from iam.organizacion o
+                       join iam.celda c on c.organizacion = o.id and c.nombre = $2
+                      where o.id = $1",
+                    &[&org, &self_celda],
                 )?
-                .ok_or("esa organizacion no existe")?;
-            let (kek, inquilino): (String, String) = (f.get(0), f.get(1));
+                .ok_or_else(|| {
+                    format!("la celda `{self_celda}` de este cofre no es de esa organizacion")
+                })?;
+            let (kek, celda_id, inquilino): (String, String, String) =
+                (f.get(0), f.get(1), f.get(2));
 
             // ③ El METADATO, en la base del plano de control — y dentro de la
             //    transacción, así que si el almacén dice que no, no queda una
-            //    fila apuntando a un material que no está.
+            //    fila apuntando a un material que no está. Con su celda: desde la
+            //    029 la fila la lleva, y el disparador que la ponía por defecto
+            //    deja de hacer falta.
             let id = nuevo_id("sec");
             let quien = verbos::persona_id(tx, emisor, &s.persona)?;
             tx.ejecutar(
-                "insert into cofre.secreto (id, organizacion, nombre, clase, emitio)
-                 values ($1, $2, $3, $4, $5)",
-                &[&id, &org, &nombre, &clase, &quien],
+                "insert into cofre.secreto (id, organizacion, nombre, clase, emitio, celda)
+                 values ($1, $2, $3, $4, $5, $6)",
+                &[&id, &org, &nombre, &clase, &quien, &celda_id],
             )?;
 
             // ── ⭐⭐ Y EL MATERIAL, EN LA CELDA ──────────────────────────────
@@ -337,11 +348,13 @@ impl Servidor {
             //   nada si no puedes, y SÓLO DESPUÉS se va al almacén de la celda a
             //   por el valor. Era la única invariante que el traslado tocaba,
             //   medida en `medida-el-cofre-y-su-almacen.py`, y así no se toca.
+            // ⭐ Y el nombre de la CELDA del secreto (029), no el de la
+            //   organizacion: es lo que va delante en el almacén.
             let f = tx
                 .uno(
-                    "select c.rol, o.nombre
+                    "select c.rol, ce.nombre
                        from cofre.secreto s
-                       join iam.organizacion o on o.id = s.organizacion
+                       join iam.celda ce on ce.id = s.celda
                        join iam.concesion_viva c
                          on c.recurso = $3 and c.organizacion = s.organizacion
                         and c.sujeto = $4 and c.rol in ('usar', 'lector', 'owner')

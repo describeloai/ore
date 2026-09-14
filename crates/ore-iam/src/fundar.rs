@@ -321,8 +321,15 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
     let mut tx = Tx::abrir(c, &operador)?;
 
     // ── ¿ya estaba? ─────────────────────────────────────────────────────────
+    // ⭐ El arbol y la entrada, DE LA CELDA (029, 0025-2): la primera celda de la
+    //   organizacion, que se llama como ella. `kek` sigue siendo de la cuenta.
+    //   Una organizacion fundada sin celda no tiene arbol que devolver, y se
+    //   dice con un vacio y no con un invento.
     if let Some(f) = tx.uno(
-        "select id, arbol, kek, entrada from iam.organizacion where nombre = $1",
+        "select o.id, coalesce(c.arbol, ''), o.kek, coalesce(c.entrada, '')
+           from iam.organizacion o
+           left join iam.celda c on c.organizacion = o.id and c.nombre = o.nombre
+          where o.nombre = $1",
         &[&p.organizacion],
     )? {
         let id: String = f.get(0);

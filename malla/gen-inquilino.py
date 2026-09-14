@@ -223,6 +223,8 @@ def render(nombre, arbol=None, entrada=None, fuentes=()):
         #   suelto es justo lo que la comprobacion ② prohibe. Si algun dia esta
         #   linea se cae, ② lo caza: el nombre del modelo no sobrevive.
         t = t.replace("--name %s" % MODELO, "--name %s" % nombre)
+        # ⭐ La celda del cofre (0025-④): hoy se llama como la organizacion.
+        t = t.replace("--celda\n            - %s\n" % MODELO, "--celda\n            - %s\n" % nombre)
         # ⛔ Y la organizacion que `ore-serve` le dice al custodio. Va en su
         #   propia linea, asi que se sustituye la PAREJA entera: un `- demo`
         #   suelto no lo caza ninguna de las reglas de arriba, y la ② lo

@@ -55,7 +55,7 @@ const USO: &str = "\
 ore-cofre — el custodio: guarda el material en el almacén de la celda y lo abre a quien puede
 
   ore-cofre servir [--bind DIRECCION] --identidad MODO --emisor URL
-                   --audiencia AUD --jwks FICHERO
+                   --audiencia AUD --jwks FICHERO --celda NOMBRE
                    --kms PROGRAMA --proyecto PROYECTO --lugar REGION
   ore-cofre mudar  --organizacion NOMBRE
                    --kms PROGRAMA --proyecto PROYECTO --lugar REGION
@@ -169,6 +169,20 @@ fn main() -> ExitCode {
         proyecto: proyecto.clone(),
         lugar: lugar.clone(),
     };
+    // ⭐ De que CELDA es este cofre (0025-4): un secreto es de una celda, y el
+    //   nombre en el almacen lleva la celda delante. `mudar` no la necesita:
+    //   lee la celda de cada secreto.
+    let celda = if verbo == Some("servir") {
+        let Some(c) = valor(&args, "--celda") else {
+            eprintln!("✗ falta `--celda`, el nombre de la celda de este cofre.");
+            eprintln!("  Un secreto es de una celda (0025); sin saber cual, este proceso no");
+            eprintln!("  puede decir de quien es lo que emite.");
+            return ExitCode::from(64);
+        };
+        c
+    } else {
+        String::new()
+    };
 
     if verbo == Some("mudar") {
         let Some(org) = valor(&args, "--organizacion") else {
@@ -255,6 +269,7 @@ fn main() -> ExitCode {
         emisor: valor(&args, "--emisor").unwrap_or_default(),
         identidad: proveedor,
         almacen,
+        celda,
     };
     match http::servir(escucha, move |p| servidor.atender(p)) {
         Ok(()) => ExitCode::SUCCESS,

@@ -141,7 +141,10 @@ consulta() { # <columna>
       "select $1 from iam.organizacion where nombre = '$NOMBRE'" 2>/dev/null | tr -d '\r'
   fi
 }
-ARBOL=$(consulta arbol)
+# ⭐ Y la celda, por su NOMBRE (029): hoy se llama como la organizacion; en la
+#   E4 el argumento de este guion sera la celda, y esto ya lo es.
+celda() { # <columna de iam.celda_de>
+  if [ -n "${DENTRO:-}"ARBOL=$(celda arbol)
 KEK=$(consulta kek)
 [ -n "$ARBOL" ] || falla "\`$NOMBRE\` no esta fundada. Antes de aprovisionar hay que fundar:
     ore-iam fundar --organizacion $NOMBRE --emisor <realm> --sub <sub del dueno>"
@@ -987,8 +990,7 @@ paso "⑧ LA PUERTA — la entrada resuelve a la celda, o se dice qué registro 
 #
 # ⛔ Se lee por la vista `iam.celda_de` (027): por NOMBRES, sin `id`, que es lo
 #   que el papel de la 023 puede ver.
-celda() { # <columna de iam.celda_de>
-  if [ -n "${DENTRO:-}" ]; then
+ ]; then
     psql "$(cat /puesto/iam-url)" -tAc \
       "select $1 from iam.celda_de where organizacion = '$NOMBRE'" 2>/dev/null | tr -d '\r'
   else
@@ -1001,7 +1003,7 @@ resuelve() { # <host> → IPs v4 ordenadas, separadas por coma; vacio si no resu
 try: print(",".join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET)})))
 except OSError: pass' "$1" 2>/dev/null | tr -d '\r'
 }
-ENTRADA=$(consulta entrada)
+ENTRADA=$(celda entrada)
 PUERTA=$(celda puerta)
 TIER=$(celda tier)
 if [ -z "$PUERTA" ]; then

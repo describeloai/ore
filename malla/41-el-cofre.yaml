@@ -201,6 +201,10 @@ spec:
             #   del cliente, y esta línea es lo único que cambia.
             - --proyecto
             - project-8853a180-450d-47be-b83
+            # ⭐ De qué CELDA es este cofre (0025-④): un secreto es de una celda, y
+            #   el nombre en el almacén la lleva delante. Se rinde por celda.
+            - --celda
+            - demo
           env:
             - { name: HOME, value: /tmp }
             - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
