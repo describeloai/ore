@@ -60,6 +60,11 @@
 #     title: solo-secretmanager-admin
 #     description: el aprovisionador solo concede y retira secretmanager.admin (el prefijo del cofre de cada celda)
 #
+# Y la API que esa concesion usa —Cloud Resource Manager— no estaba habilitada
+# en el proyecto; la primera pasada con el papel nuevo lo dijo. Una vez:
+#
+#   gcloud services enable cloudresourcemanager.googleapis.com --project=<proyecto>
+#
 # Lo que se concentra, dicho: puede conceder `secretmanager.admin` A QUIEN SEA,
 # incluido a si mismo sin prefijo. No puede conceder ningun otro papel. Es la
 # misma figura de siempre —UNA pieza, con una entrada, y cada concesion queda en

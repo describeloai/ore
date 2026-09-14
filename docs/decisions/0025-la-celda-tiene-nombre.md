@@ -261,6 +261,10 @@ Lo hecho, y lo que la pasada **desde dentro** destapó al leer por fin su regist
   entrada es la mitad de una regla.
 - Y la guarda de la E4 mira la **última pasada** y cuenta sus `ERROR:`: un reconciliador que
   acaba en verde con errores dentro es lo que había.
+- Medido tras el push: la pasada `aprovisionador-29823225` desde dentro, **2m47s** (era 6m34s:
+  el tiempo eran los `gcloud` que fallaban y reintentaban), `0` líneas `ERROR:`, las dos forjas
+  vistas, ⑦ resuelto, ⑤ concedido, los dos `CNAME` en `ore-paladio-io`; `demo` y `prueba` 200.
+  Faltaba una cosa más que sólo la pasada real dijo: la API de Resource Manager estaba deshabilitada.
 
 ### E5 · La identidad del aprovisionador
 
