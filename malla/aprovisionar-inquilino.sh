@@ -915,8 +915,13 @@ fi
 
 # ⭐ Se rinde POR CELDA, y la organizacion va aparte: es lo que `ore-serve` le
 #   dice al custodio y lo que `ore init --name` graba en el arbol.
+# ⛔ El enganche SIN la cola hasta que la forja de la celda viva (`INQ`): la cola
+#   —`Role`/`RoleBinding` en `t-<celda>`— no puede aplicarse antes de que el
+#   compartimento cree el namespace, y Flux no aplica nada si una pieza no pasa
+#   el ensayo. Dos pasadas, como la forja y la cola de trabajo.
 "$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
   ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
+  ${INQ:+} $([ -n "$INQ" ] || printf -- --sin-cola) \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 # ⭐ Y el ENGANCHE (0025 E6): lo que dice que el compartimento se obedece. Para
@@ -924,7 +929,7 @@ hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
 #   cualquier otra celda va a `plataforma/enganches`, que Flux obedece (15).
 ENGANCHE=""
 [ -f "$TMP/enganche/$NOMBRE.yaml" ] && ENGANCHE="$TMP/enganche/$NOMBRE.yaml"
-[ -n "$ENGANCHE" ] && hecho "enganche rendido: $NOMBRE.yaml (7 objetos)" || echo "  · el enganche de \`$NOMBRE\` esta a mano en 13-…"
+[ -n "$ENGANCHE" ] && hecho "enganche rendido: $NOMBRE.yaml ($(grep -c '^kind:' "$ENGANCHE") objetos$([ -n "$INQ" ] || printf ', sin la cola hasta que la forja viva'))" || echo "  · el enganche de \`$NOMBRE\` esta a mano en 13-…"
 
 # ── ⚠️ Y ESTE PASO NO ERA IDEMPOTENTE, que es lo que destapo la SEGUNDA pasada
 #

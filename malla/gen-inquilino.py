@@ -154,15 +154,27 @@ ENGANCHE = "13-el-inquilino-reconciliado.yaml"
 ENGANCHADOS_A_MANO = ("demo", "prueba")
 
 
-def render_enganche(nombre):
+def render_enganche(nombre, sin_cola=False):
     """Los objetos del enganche de `demo` en `13-…`, con el nombre de la celda
-    puesto y sin los comentarios (que hablan de `demo` como prosa)."""
+    puesto y sin los comentarios (que hablan de `demo` como prosa).
+
+    ⛔ `sin_cola`: sin el `Role` y el `RoleBinding` de `encolar`, que viven EN
+      `t-<celda>` — y ese namespace lo crea el compartimento que este mismo
+      enganche manda obedecer. Flux hace un ensayo de TODO el conjunto antes de
+      aplicar, y con el namespace sin existir el ensayo falla y no aplica NADA:
+      la primera celda pedida se quedo asi 30 minutos. Asi que la primera
+      pasada empuja el enganche sin la cola, el namespace nace, y la segunda
+      —cuando la forja de la celda ya vive, que es la misma señal que usa el
+      resto del guion— lo completa. Dos pasadas, como todo lo demas.
+    """
     if nombre in ENGANCHADOS_A_MANO:
         return None
     texto = (MALLA / ENGANCHE).read_text(encoding="utf-8")
     docs = []
     for d in texto.split("\n---\n"):
         if ("ore.dev/tenant: %s" % MODELO) not in d:
+            continue
+        if sin_cola and ("namespace: t-%s" % MODELO) in d:
             continue
         lineas = [l for l in d.splitlines() if not l.lstrip().startswith("#")]
         t = "\n".join(lineas).strip("\n") + "\n"
@@ -714,6 +726,10 @@ def comprobar():
             fallos.append("el enganche rendido para `acme-eu` todavia dice `%s`" % MODELO)
         if "t-acme-eu" not in e or "inquilino-acme-eu" not in e or "trabajo-acme-eu" not in e:
             fallos.append("el enganche rendido no lleva la celda donde toca")
+        sin = render_enganche("acme-eu", sin_cola=True)
+        if sorted(re.findall(r"^kind: (\S+)$", sin, re.M)) != ["GitRepository", "GitRepository", "Kustomization", "Kustomization", "ServiceAccount"] \
+                or "namespace: t-acme-eu" in sin:
+            fallos.append("el enganche SIN cola todavia lleva algo en t-<celda>: la primera pasada no aplicaria nada")
         for a in ENGANCHADOS_A_MANO:
             if ("inquilino-%s" % a) not in (MALLA / ENGANCHE).read_text(encoding="utf-8"):
                 fallos.append("`%s` esta en ENGANCHADOS_A_MANO y no en `%s`" % (a, ENGANCHE))
@@ -751,6 +767,7 @@ def main(argv):
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
     CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a", "--organizacion", "--enganche")
+    SIN_VALOR = ("--sin-cola",)
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -758,6 +775,8 @@ def main(argv):
             continue
         if a in CON_VALOR:
             saltar = True
+        elif a in SIN_VALOR:
+            continue
         elif not a.startswith("--"):
             libres.append(a)
     if len(libres) != 1:
@@ -792,7 +811,7 @@ def main(argv):
     #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo
     #   tienen rendido: esta en `13-…` a mano, y se dice.
     if valor("--enganche"):
-        e = render_enganche(nombre)
+        e = render_enganche(nombre, sin_cola="--sin-cola" in argv)
         d = pathlib.Path(valor("--enganche"))
         d.mkdir(parents=True, exist_ok=True)
         if e is None:

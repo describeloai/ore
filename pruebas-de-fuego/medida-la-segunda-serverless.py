@@ -11,7 +11,7 @@ por el mismo camino, y la guarda vuelve a verde. Y la primera celda no cambia ni
   guarda     medida-la-celda-tiene-nombre.py en verde al final
 
     PYTHONIOENCODING=utf-8 python pruebas-de-fuego/medida-la-segunda-serverless.py \\
-        --org prueba --celda prueba-dos --token <fichero> [--solo-pedir | --solo-retirar] [--minutos 25]
+        --org prueba --celda prueba-dos --token <fichero> [--solo-pedir | --solo-esperar | --solo-retirar] [--minutos 25]
 
 Habla con ore-iam por un tunel (kubectl port-forward 3132 → identidad/ore-iam:8090) que abre
 el mismo.
@@ -38,6 +38,7 @@ TOKEN = open(arg("--token")).read().strip() if arg("--token") else None
 MINUTOS = int(arg("--minutos", "25"))
 SOLO_PEDIR = "--solo-pedir" in sys.argv
 SOLO_RETIRAR = "--solo-retirar" in sys.argv
+SOLO_ESPERAR = "--solo-esperar" in sys.argv  # la fila ya esta pedida: solo mirar como se levanta
 if not CELDA or not TOKEN:
     print(__doc__)
     sys.exit(64)
@@ -88,7 +89,7 @@ def ahora():
 def foto(ns):
     """Los objetos de un namespace con su resourceVersion: si nada cambio, es la misma foto."""
     return correr("kubectl", "-n", ns, "get", "deploy,sts,svc,networkpolicy,sa,pvc",  # sin ResourceQuota: su resourceVersion cambia con el USO
-                  "-o", "jsonpath={range .items[*]}{.kind}/{.metadata.name}:{.metadata.resourceVersion} {end}")
+                  "-o", "jsonpath={range .items[*]}{.kind}/{.metadata.name}:{.metadata.generation} {end}")  # generation: cambia con la SPEC, no con el estado
 
 
 # ── el tunel ────────────────────────────────────────────────────────────────
@@ -118,12 +119,13 @@ try:
     if not SOLO_RETIRAR:
         # ── pedir ───────────────────────────────────────────────────────────
         t0 = time.time()
-        cod, cuerpo = verbo("POST", "/organizaciones/%s/celdas" % ORG, {"nombre": CELDA, "tier": "compartido"})
-        di("POST /organizaciones/%s/celdas {%s} → %s %s" % (ORG, CELDA, cod, cuerpo[:200]))
-        if cod != 200:
-            sys.exit(1)
-        huella = sql("select quien from iam.huella where operacion='celda:crear' order by cuando desc limit 1")
-        di("huella celda:crear por %s" % huella)
+        if not SOLO_ESPERAR:
+            cod, cuerpo = verbo("POST", "/organizaciones/%s/celdas" % ORG, {"nombre": CELDA, "tier": "compartido"})
+            di("POST /organizaciones/%s/celdas {%s} → %s %s" % (ORG, CELDA, cod, cuerpo[:200]))
+            if cod != 200:
+                sys.exit(1)
+            huella = sql("select quien from iam.huella where operacion='celda:crear' order by cuando desc limit 1")
+            di("huella celda:crear por %s" % huella)
         # ── esperar ─────────────────────────────────────────────────────────
         hitos = {}
         fin = t0 + MINUTOS * 60
