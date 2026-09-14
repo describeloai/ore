@@ -302,6 +302,39 @@ REPO="${ARBOL#*/}"
 #   se escribe aqui. Dentro sale del almacen; fuera, del entorno.
 [ -n "${DENTRO:-}" ] && [ -f /puesto/receptor-url ] && RECEPTOR="$(cat /puesto/receptor-url)"
 : "${RECEPTOR:=}"
+
+# ── ⭐⭐ Y SU PROPIA IDENTIDAD ANTE `ore-iam` (0025 E5) ────────────────────
+#
+# El cliente `ore-aprovisionador` del realm (68-…): un sujeto de maquina con el
+# claim `rubix_tipo=aprovisionador`, que `ore-iam` admite en DOS verbos y en
+# ninguno mas — registrar el agente de una celda (⑦) y darla por aprovisionada
+# (al final). Con esto el paso 0 del ⑨ («el agente lo registra un Job de
+# operador») deja de existir: el reconciliador registra lo que acaba de crear,
+# con su huella. Su secreto sale del almacen (dentro) o del entorno (fuera);
+# sin el, los dos verbos se saltan y se dice.
+[ -n "${DENTRO:-}" ] && [ -f /puesto/aprovisionador-secreto ] && APROV_SECRETO="$(cat /puesto/aprovisionador-secreto)"
+: "${APROV_SECRETO:=}"
+REALM="${REALM:-rubix-dev}"
+if [ -n "${DENTRO:-}" ]; then
+  IAM_BASE="http://ore-iam.identidad.svc.cluster.local:8090"
+  IDP_TOKEN="http://idp-service.identidad.svc.cluster.local:8080/realms/$REALM/protocol/openid-connect/token"
+else
+  IAM_BASE="http://localhost:3132"
+  IDP_TOKEN="https://login.paladio.io/realms/$REALM/protocol/openid-connect/token"
+fi
+iam_token() { # → el testigo del aprovisionador, a $TMP/iam (nunca a una variable exportada)
+  [ -s "$TMP/iam" ] && return 0
+  curl -sSf -X POST "$IDP_TOKEN" -d grant_type=client_credentials -d client_id=ore-aprovisionador \
+    --data-urlencode "client_secret=$APROV_SECRETO" 2>/dev/null \
+    | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["access_token"])' > "$TMP/iam" 2>/dev/null \
+    && [ -s "$TMP/iam" ]
+}
+iam_verbo() { # <metodo> <camino> [cuerpo] → cuerpo de la respuesta; el codigo en $IAM_COD
+  local m="$1" c="$2" d="${3:-}"
+  IAM_COD=$(curl -sS -o "$TMP/iam-r.json" -w '%{http_code}' -X "$m" -H "Authorization: Bearer $(cat "$TMP/iam")" \
+    -H 'Content-Type: application/json' ${d:+--data "$d"} "$IAM_BASE$c" 2>/dev/null)
+  cat "$TMP/iam-r.json" 2>/dev/null
+}
 if [ -z "${FORJA_ADMIN:-}" ] && [ -z "$SECO" ]; then
   falla "falta \`FORJA_ADMIN\`, el testigo con el que se crean usuarios y repositorios.
      No se lee de ningun \`Secret\` del cluster a proposito: si este guion supiera
@@ -511,7 +544,7 @@ done
      Es UNO para todos los inquilinos y lo crea el operador una vez, desde la
      base que el cofre ya usa:
        gcloud secrets create cofre-url --replication-policy=user-managed --locations=$LUGAR
-       printf 'postgres://cofre_app:...@idp-db.identidad.svc.cluster.local:5432/iam' \\
+       printf 'postgres://cofre_app:...@idp-db.identidad.svc.cluster.local:5432/iam' \
          | gcloud secrets versions add cofre-url --data-file=-"
 correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
   --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
@@ -903,9 +936,9 @@ if [ -n "${DENTRO:-}" ] && [ -f /puesto/idp-admin ]; then
   IDP_ADMIN_USER="${IDP_ADMIN_USER:-admin}"
   IDP_ADMIN_PASS="$(cat /puesto/idp-admin)"
 fi
-REALM="${REALM:-rubix-dev}"
 AGENTE="ore-agente-$NOMBRE"
 AGENTE_SUB=""
+REGISTRADO=""
 if [ -z "${IDP_ADMIN_PASS:-}" ] && [ -z "$SECO" ]; then
   echo "  ⚠ sin \`IDP_ADMIN_PASS\`: no se crea el agente \`$AGENTE\`. Sin el, los Jobs de"
   echo "    catalogo de \`$NOMBRE\` no tienen con que pedir un testigo. Se pasa por el entorno."
@@ -997,6 +1030,30 @@ JSON
     done
     rm -f "$TMP/kc" "$TMP/agente-secreto" "$TMP/actual"
     hecho "agente \`$AGENTE\` · sub $AGENTE_SUB"
+
+    # 5 · ⭐ Y EN `iam`, POR EL VERBO (0025 E5). Idempotente: la segunda vez dice
+    #     «ya» y no deja huella; la primera registra con la huella del
+    #     aprovisionador y hereda `usar` sobre los secretos que la organizacion
+    #     ya tenga. Es el mismo nucleo que `ore-iam agente`.
+    if [ -z "$APROV_SECRETO" ]; then
+      echo "  ⚠ sin \`APROV_SECRETO\`: el agente NO se registra en iam. Queda el Job de operador (⑨ 0)."
+    elif [ -z "${DENTRO:-}" ] && ! curl -sS -o /dev/null "$IAM_BASE/salud" 2>/dev/null; then
+      echo "  ⚠ \`ore-iam\` no se alcanza en $IAM_BASE (fuera hace falta un tunel: kubectl port-forward -n identidad svc/ore-iam 3132:8090)."
+    elif ! iam_token; then
+      echo "  ⚠ el IdP no dio testigo a \`ore-aprovisionador\`: el agente NO se registra en iam."
+    else
+      R=$(iam_verbo POST "/organizaciones/$ORG/agentes" "{\"sub\":\"$AGENTE_SUB\",\"nombre\":\"$AGENTE\"}")
+      if [ "$IAM_COD" = "200" ]; then
+        REGISTRADO=1
+        if printf '%s' "$R" | grep -q '"ya": *true'; then
+          ya "el agente en iam"
+        else
+          hecho "agente registrado en iam: $R"
+        fi
+      else
+        echo "  ⚠ ore-iam contesto $IAM_COD al registrar el agente: $R"
+      fi
+    fi
   fi
 fi
 
@@ -1073,19 +1130,28 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "⑨ LO QUE ESTE SCRIPT NO HACE, Y HAY QUE HACER"
+paso "⑨ LA CELDA, APROVISIONADA — y lo que este script sigue sin hacer"
 # ══════════════════════════════════════════════════════════════════════════
+#
+# ⭐ El `status` del patron de operador (0025 E5): la pasada acabo ENTERA sobre
+#   esta celda —su forja viva y poblada, su agente registrado— y el
+#   reconciliador lo dice a `iam`, con su identidad. Nulo en la fila significa
+#   «ninguna pasada ha acabado todavia», y la consola lo pinta Provisioning.
+#   No se dice en seco, ni a medias: una celda «aprovisionada» a la que le
+#   falta el agente es una mentira con fecha.
+if [ -n "$SECO" ]; then
+  haria "dar la celda \`$NOMBRE\` por aprovisionada en iam"
+elif [ -z "$INQ" ] || [ -z "$REGISTRADO" ]; then
+  echo "  ~ la celda no se da por aprovisionada: $([ -z "$INQ" ] && printf 'su forja no estaba ' ; [ -z "$REGISTRADO" ] && printf 'su agente no se registro')"
+elif iam_token; then
+  R=$(iam_verbo POST "/celdas/$NOMBRE/aprovisionada")
+  [ "$IAM_COD" = "200" ] && hecho "celda \`$NOMBRE\` aprovisionada: $R" || echo "  ⚠ ore-iam contesto $IAM_COD: $R"
+fi
+rm -f "$TMP/iam" "$TMP/iam-r.json"
+
 cat <<FIN
 
-  ⛔ 0 · EL AGENTE EN \`iam\`. Este guion creo el cliente de Keycloak y guardo su
-       secreto, y NO puede registrarlo: es un \`insert\` en \`iam.agente\`, y el
-       papel de la 023 no escribe ahi. Lo registra un Job de operador, como
-       \`fundar\`, y hereda \`usar\` sobre los secretos que ya haya:
-
-         kubectl -n identidad create job agente-$NOMBRE --image=<ore-iam:main> -- \\
-           ore-iam agente --organizacion $ORG \\
-             --emisor https://login.paladio.io/realms/$REALM \\
-             --sub ${AGENTE_SUB:-<el sub que imprime el paso ⑦>} --nombre $AGENTE
+  $([ -n "$REGISTRADO" ] && printf '✓' || printf '⛔') 0 · EL AGENTE EN \`iam\`. $([ -n "$REGISTRADO" ] && printf 'Registrado por el verbo, con la huella de\n       este aprovisionador (0025 E5). El Job de operador ya no hace falta.' || printf 'Este guion creo el cliente de Keycloak y guardo su\n       secreto, y esta vez NO pudo registrarlo por el verbo (arriba dice por que).\n       Mientras tanto, el Job de operador:\n\n         kubectl -n identidad create job agente-%s --image=<ore-iam:main> -- \\\n           ore-iam agente --organizacion %s \\\n             --emisor https://login.paladio.io/realms/%s \\\n             --sub %s --nombre %s' "$NOMBRE" "$ORG" "$REALM" "${AGENTE_SUB:-<el sub que imprime el paso ⑦>}" "$AGENTE")
 
   ✓ 1 · LA CLAVE DE DESPLIEGUE. **Ya no hay ninguna.** Era el ultimo permiso de
        cluster del que este guion no podia librarse —\`source-controller\` la lee

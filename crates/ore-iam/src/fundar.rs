@@ -188,8 +188,28 @@ pub fn registrar_agente(
         agente: Some("ore-iam agente".into()),
         correo: None,
         nombre: None,
+        tipo: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
+    let (j, cambio) = registrar_agente_en(&mut tx, org, emisor, sub, nombre)?;
+    if cambio {
+        tx.confirmar()?;
+    }
+    // Si no cambio nada, `Tx` se deshace al soltarse: leer no es un acto.
+    Ok(j)
+}
+
+/// ⭐ El nucleo, sobre una transaccion que trae quien llama (0025 E5): el Job
+///   de operador y el verbo `POST /organizaciones/{org}/agentes` hacen
+///   EXACTAMENTE lo mismo, y la huella dice quien fue — el operador, o el
+///   aprovisionador con su `sub`. Devuelve si hubo algo que confirmar.
+pub fn registrar_agente_en(
+    tx: &mut Tx,
+    org: &str,
+    emisor: &str,
+    sub: &str,
+    nombre: Option<&str>,
+) -> Result<(Json, bool), String> {
     // El nombre o el id: la misma cortesia que el custodio, y por lo mismo —
     // quien llama escribe `demo`, no `org_b7b98fdd…`.
     let org_id: String = tx
@@ -266,15 +286,18 @@ pub fn registrar_agente(
     }
 
     if ya && heredadas.is_empty() {
-        // ⛔ NO se confirma: `Tx` se niega a hacerlo si nadie anoto, y aqui no
-        //   hay nada que anotar porque no ha cambiado nada. Leer no es un acto.
-        //   La transaccion se deshace al soltarse, que es lo correcto.
-        return Ok(Json::obj([
-            ("agente", Json::s(id)),
-            ("organizacion", Json::s(org_id)),
-            ("ya", Json::Bool(true)),
-            ("secretos_heredados", Json::Int(0)),
-        ]));
+        // ⛔ NO hay nada que confirmar: `Tx` se niega a hacerlo si nadie anoto,
+        //   y aqui no ha cambiado nada. Leer no es un acto. Quien llama lo sabe
+        //   por el `false`.
+        return Ok((
+            Json::obj([
+                ("agente", Json::s(id)),
+                ("organizacion", Json::s(org_id)),
+                ("ya", Json::Bool(true)),
+                ("secretos_heredados", Json::Int(0)),
+            ]),
+            false,
+        ));
     }
 
     // ⛔ Y queda escrito. `Tx` se niega a confirmar si nadie anoto, y aqui esa
@@ -294,17 +317,19 @@ pub fn registrar_agente(
             ("heredadas", Json::Int(heredadas.len() as i64)),
         ]),
     )?;
-    tx.confirmar()?;
-    Ok(Json::obj([
-        ("agente", Json::s(id)),
-        ("organizacion", Json::s(org_id)),
-        ("ya", Json::Bool(ya)),
-        // Cuantos secretos puede usar desde ya que antes no podia. Un cero en
-        // una organizacion con fuentes y sin haberlo corrido antes es la senal
-        // de que algo no cuadra; un numero es la prueba de que el Job va a
-        // poder pedir.
-        ("secretos_heredados", Json::Int(heredadas.len() as i64)),
-    ]))
+    Ok((
+        Json::obj([
+            ("agente", Json::s(id)),
+            ("organizacion", Json::s(org_id)),
+            ("ya", Json::Bool(ya)),
+            // Cuantos secretos puede usar desde ya que antes no podia. Un cero en
+            // una organizacion con fuentes y sin haberlo corrido antes es la senal
+            // de que algo no cuadra; un numero es la prueba de que el Job va a
+            // poder pedir.
+            ("secretos_heredados", Json::Int(heredadas.len() as i64)),
+        ]),
+        true,
+    ))
 }
 
 pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
@@ -317,6 +342,7 @@ pub fn fundar(c: &mut Client, p: &Peticion) -> Result<Json, String> {
         // quien opera el cluster. La huella lo dice con su nombre.
         correo: None,
         nombre: None,
+        tipo: None,
     };
     let mut tx = Tx::abrir(c, &operador)?;
 

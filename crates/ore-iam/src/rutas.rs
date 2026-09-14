@@ -65,6 +65,33 @@ impl Servidor {
     }
 
     fn con_sujeto(&self, p: &Peticion, s: &Identidad, seg: &[&str]) -> Respuesta {
+        // ── ⭐⭐ EL APROVISIONADOR TIENE DOS VERBOS Y NINGUNO MAS (0025 E5) ──
+        //
+        // Es un sujeto de MAQUINA con el claim `rubix_tipo=aprovisionador`, que
+        // el IdP estampa a su cliente. Registra el agente de una celda y dice
+        // que la celda esta aprovisionada. No lista organizaciones, no invita,
+        // no concede: un aprovisionador robado puede decir «esta celda esta
+        // lista» y registrar un sujeto sin potestad, y nada mas.
+        //
+        // Y al reves: esos dos verbos NO los hace una persona, por muy admin
+        // que sea. Registrar un agente es un acto del reconciliador con lo que
+        // el IdP acaba de crear; hacerlo a mano era el paso 0 del ⑨ del
+        // aprovisionador, que esta etapa retira.
+        let es_aprovisionador = s.tipo.as_deref() == Some("aprovisionador");
+        let de_aprovisionador = matches!(
+            (p.metodo.as_str(), seg),
+            ("POST", ["organizaciones", _, "agentes"]) | ("POST", ["celdas", _, "aprovisionada"])
+        );
+        if es_aprovisionador != de_aprovisionador {
+            return Respuesta::error(
+                403,
+                if es_aprovisionador {
+                    "el aprovisionador solo registra agentes y da celdas por aprovisionadas"
+                } else {
+                    "eso lo hace el aprovisionador, no una persona"
+                },
+            );
+        }
         match (p.metodo.as_str(), seg) {
             ("GET", ["organizaciones"]) => self.organizaciones(s),
             ("GET", ["organizaciones", o, "miembros"]) => self.miembros(s, o),
@@ -78,6 +105,8 @@ impl Servidor {
             ("POST", ["organizaciones", o, "concesiones"]) => self.conceder(s, o, &p.cuerpo),
             ("POST", ["invitaciones", "admitir"]) => self.admitir(s, &p.cuerpo),
             ("POST", ["concesiones", c, "revocar"]) => self.revocar(s, c),
+            ("POST", ["organizaciones", o, "agentes"]) => self.registrar_agente(s, o, &p.cuerpo),
+            ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c),
             ("GET" | "POST", _) => Respuesta::error(404, "no hay nada en ese camino"),
             _ => Respuesta::error(405, "método no admitido"),
         }
@@ -275,7 +304,7 @@ impl Servidor {
             let filas = tx.filas(
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
                         t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
-                        c.puerta, c.cluster, c.arbol, c.entrada
+                        c.puerta, c.cluster, c.arbol, c.entrada, c.aprovisionada::text
                    from iam.celda c
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
@@ -312,6 +341,13 @@ impl Servidor {
                         ("arbol", Json::s(f.get::<_, String>(14))),
                         ("entrada", Json::s(f.get::<_, String>(15))),
                     ];
+                    // ⭐ Cuando el aprovisionador dio la ultima pasada entera
+                    //   (032, 0025 E5). Se OMITE si todavia ninguna —como la
+                    //   cuota—: la consola lo pinta «Provisioning» sin preguntar
+                    //   por el camino.
+                    if let Some(cuando) = f.get::<_, Option<String>>(16) {
+                        campos.push(("aprovisionada", Json::s(cuando)));
+                    }
                     // ⚠️ La cuota se OMITE cuando el tier no la tiene —dedicado,
                     //   byoc—. Un objeto con nulos diría «tiene cuota y no sé
                     //   cuál»; ausente dice lo cierto: no hay cuota de plataforma.
@@ -557,6 +593,74 @@ impl Servidor {
         let id = id.to_string();
         self.en_transaccion(s, move |tx, emisor| verbos::revocar(tx, s, emisor, &id))
     }
+
+    // ── los del aprovisionador ──────────────────────────────────────────────
+
+    /// `POST /organizaciones/{org}/agentes` `{sub, nombre}`: el mismo nucleo
+    /// que `ore-iam agente`, con la huella del aprovisionador. Idempotente.
+    fn registrar_agente(&self, s: &Identidad, org: &str, cuerpo: &str) -> Respuesta {
+        let (org, cuerpo) = (org.to_string(), cuerpo.to_string());
+        self.en_transaccion_si_cambia(s, move |tx, emisor| {
+            let n = analizar(&cuerpo)?;
+            let sub =
+                campo(&n, "sub").ok_or("falta `sub`: el de la cuenta de servicio del cliente")?;
+            let nombre = campo(&n, "nombre");
+            crate::fundar::registrar_agente_en(tx, &org, emisor, &sub, nombre.as_deref())
+        })
+    }
+
+    /// `POST /celdas/{celda}/aprovisionada`: la ultima pasada entera del
+    /// aprovisionador sobre esa celda acabo ahora. Es lo que el patron de
+    /// operador llama `status`: lo escribe quien reconcilia, no quien pide.
+    fn aprovisionada(&self, s: &Identidad, celda: &str) -> Respuesta {
+        let celda = celda.to_string();
+        self.en_transaccion(s, move |tx, _| {
+            let f = tx
+                .uno(
+                    "update iam.celda set aprovisionada = now()
+                      where nombre = $1
+                  returning id, aprovisionada::text",
+                    &[&celda],
+                )?
+                .ok_or_else(|| format!("no hay ninguna celda `{celda}`"))?;
+            let (id, cuando): (String, String) = (f.get(0), f.get(1));
+            tx.anotar(
+                "celda:aprovisionada",
+                &id,
+                Json::obj([("celda", Json::s(&celda))]),
+            )?;
+            Ok(Json::obj([
+                ("celda", Json::s(celda)),
+                ("aprovisionada", Json::s(cuando)),
+            ]))
+        })
+    }
+
+    /// Como `en_transaccion`, para un verbo que puede no cambiar nada: si `f`
+    /// dice `false`, la transaccion se suelta sin confirmar y se contesta igual.
+    /// Es lo que un reconciliador pide: llamar sin mirar, y que «ya estaba» no
+    /// sea ni un error ni una huella.
+    fn en_transaccion_si_cambia(
+        &self,
+        s: &Identidad,
+        f: impl FnOnce(&mut Tx, &str) -> Result<(Json, bool), String>,
+    ) -> Respuesta {
+        let Ok(mut base) = self.base.lock() else {
+            return Respuesta::error(500, "la conexión quedó envenenada");
+        };
+        let mut tx = match Tx::abrir(&mut base, s) {
+            Ok(t) => t,
+            Err(e) => return Respuesta::error(502, e),
+        };
+        match f(&mut tx, &self.emisor) {
+            Err(e) => Respuesta::error(422, e),
+            Ok((j, false)) => Respuesta::ok(j),
+            Ok((j, true)) => match tx.confirmar() {
+                Ok(()) => Respuesta::ok(j),
+                Err(e) => Respuesta::error(500, e),
+            },
+        }
+    }
 }
 
 // ── el cuerpo ───────────────────────────────────────────────────────────────
@@ -584,5 +688,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/organizaciones/{org}/concesiones", con),
         ("POST", "/invitaciones/admitir", con),
         ("POST", "/concesiones/{id}/revocar", con),
+        ("POST", "/organizaciones/{org}/agentes", con),
+        ("POST", "/celdas/{celda}/aprovisionada", con),
     ]
 }

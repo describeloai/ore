@@ -38,6 +38,7 @@ pub fn mudar(mut c: Client, org: &str, kms: &Kms, almacen: &Almacen) -> Result<u
         agente: Some("ore-cofre mudar".into()),
         correo: None,
         nombre: None,
+        tipo: None,
     };
     let mut tx = Tx::abrir(&mut c, &operador)?;
     let f = tx

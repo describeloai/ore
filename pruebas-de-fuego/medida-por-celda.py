@@ -14,6 +14,9 @@ byte a byte lo de antes**.
   D · el almacen: `idp-admin` existe, con version, y solo lo lee el aprovisionador.
   E · en vivo: la ultima pasada del CronJob vio la forja de cada celda y pudo
       hacer ⑦ (o dice por que no).
+  F · la E5: la pasada registro el agente POR EL VERBO y dio la celda por
+      aprovisionada; `iam.celda.aprovisionada` de cada celda; y la huella del
+      registro nombra al aprovisionador (`servicio` del cliente), no a un operador.
 
     PYTHONIOENCODING=utf-8 python pruebas-de-fuego/medida-por-celda.py [--viejo REF] [--sin-seco] [--json]
 """
@@ -236,6 +239,27 @@ else:
     di("   vio la forja de la celda: %d veces · organizacion leida: %s · ⑦ sin admin del IdP: %s · agentes resueltos: %d"
        % (vio, org, sin_idp, agente))
     resultado["E"] = {"job": nombre, "estado": estado, "vio_forjas": vio, "orgs": org, "sin_idp": sin_idp, "agentes": agente, "errores_gcloud": errores}
+
+# ── F ─────────────────────────────────────────────────────────────────────────
+titulo("F · LA E5 — el agente por el verbo, y la celda aprovisionada")
+if jobs:
+    por_verbo = log.count("agente registrado en iam") + log.count("el agente en iam")
+    dadas = re.findall(r"celda `(\S+)` aprovisionada", log)
+    no_dadas = log.count("no se da por aprovisionada")
+    di("   ultima pasada: agentes por el verbo: %d · celdas dadas por aprovisionadas: %s · no dadas: %d" % (por_verbo, dadas or "ninguna", no_dadas))
+else:
+    por_verbo, dadas, no_dadas = 0, [], 0
+filas = [l.split("|") for l in sql("select nombre, coalesce(aprovisionada::text, '') from iam.celda order by nombre").splitlines() if l]
+for n, cuando in filas:
+    di("   %-8s aprovisionada: %s" % (n, cuando or "NUNCA"))
+huellas = [l.split("|") for l in sql("select quien, count(*) from iam.huella where operacion in ('agente:registrar','agente:heredar','celda:aprovisionada') group by quien order by quien").splitlines() if l]
+di("   huellas de agente/celda por quien: %s" % (", ".join("%s=%s" % (q, c) for q, c in huellas) or "ninguna"))
+resultado["F"] = {"por_verbo": por_verbo, "dadas": dadas, "aprovisionada": dict(filas), "huellas": dict(huellas)}
+if any(not c for _, c in filas):
+    di("   ~ alguna celda sin `aprovisionada` todavia: pendiente de una pasada entera con la E5 desplegada")
+    resultado["F"]["vivo"] = False
+else:
+    resultado["F"]["vivo"] = True
 
 shutil.rmtree(TMP, ignore_errors=True)
 resultado["fallos"] = FALLOS

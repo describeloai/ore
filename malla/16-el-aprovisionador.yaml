@@ -177,8 +177,13 @@ spec:
                   #   realm de las personas, no el admin de arranque.
                   gcloud secrets versions access latest \
                     --secret=idp-admin --out-file=/puesto/idp-admin
+                  # ⭐ Y su PROPIA identidad ante `ore-iam` (0025 E5): el secreto
+                  #   del cliente `ore-aprovisionador`, con el que registra el
+                  #   agente de cada celda y la da por aprovisionada. Dos verbos.
+                  gcloud secrets versions access latest \
+                    --secret=aprovisionador-secreto --out-file=/puesto/aprovisionador-secreto
                   chmod 0400 /puesto/*
-                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) bytes"
+                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) + $(wc -c < /puesto/aprovisionador-secreto) bytes"
               resources:
                 requests: {cpu: "50m", memory: 128Mi}
                 limits:   {cpu: "500m", memory: 256Mi}
@@ -270,13 +275,14 @@ spec:
             matchLabels:
               ore.dev/rol: forja
       ports: [{protocol: TCP, port: 3000}]
-    # La base de `iam` (5432) y la API de admin del IdP (8080), las dos en
-    # `identidad`. La segunda es para ⑦ y nada mas.
+    # La base de `iam` (5432), la API de admin del IdP (8080, para ⑦) y
+    # `ore-iam` (8090, los dos verbos del aprovisionador — 0025 E5), los tres
+    # en `identidad`.
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: identidad
-      ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 8080}]
+      ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 8080}, {protocol: TCP, port: 8090}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]

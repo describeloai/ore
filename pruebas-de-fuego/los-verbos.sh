@@ -29,6 +29,8 @@
 #  7c  un recurso SIN CLASE             SE NIEGA  ← el asidero tiene forma
 #   8  admitir con otro correo          SE NIEGA
 #   9  y MIRAR tambien deja huella
+#  10  ⭐ el APROVISIONADOR (0025 E5): registra un agente y da la celda por
+#      aprovisionada, con huella; no lista nada; y una persona no hace lo suyo
 #
 # El 5 es el que ninguna otra prueba cubre: en el clúster el sujeto es
 # `ORGADMIN`, que lo tiene TODO, asi que la guarda del rodeo **nunca llega a
@@ -162,19 +164,23 @@ if sys.argv[1] == "jwks":
     raise SystemExit(0)
 
 sub, correo, emisor, audiencia, ahora = sys.argv[1:6]
+tipo = sys.argv[6] if len(sys.argv) > 6 else None
 cabeza = {"alg": "RS256", "typ": "JWT", "kid": "k1"}
 # `name` es el claim estandar de OIDC. Va aqui porque sin el no se puede
 # ejercitar el refresco del nombre, que corre en cada peticion.
 cuerpo = {"iss": emisor, "aud": audiencia, "sub": sub, "email": correo,
           "name": sub.split(":")[-1].capitalize() + " (prueba)",
           "exp": int(ahora) + 300, "iat": int(ahora)}
+# Y la clase, si se pide: es lo que el IdP estampa a un cliente de maquina.
+if tipo:
+    cuerpo["rubix_tipo"] = tipo
 f = (b64(json.dumps(cabeza).encode()) + "." + b64(json.dumps(cuerpo).encode())).encode()
 print(f.decode() + "." + b64(firmar(f)))
 PYCODE
 
 "$PY" "$TMP/acunar.py" jwks > "$TMP/jwks.json" || falla "no se pudo escribir el JWKS"
 AHORA=$(date +%s)
-acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA"; }
+acunar() { "$PY" "$TMP/acunar.py" "$1" "$2" "$EMISOR" "$AUDIENCIA" "$AHORA" "${3:-}"; }
 
 # ── Dos organizaciones, y la segunda con un ADMINISTRADOR ───────────────────
 #
@@ -510,4 +516,39 @@ TOTAL=$(psql "$URL" -qtAc "select count(*) from iam.huella")
 [ "${TOTAL:-0}" -ge "$MIRO" ] || falla "9 · la cuenta de huellas no cuadra"
 dice "9 · $TOTAL huellas, $MIRO de ellas por MIRAR"
 
-echo "✓ los cuatro verbos, sus dos negativas y el rodeo."
+# ── 10 · el aprovisionador ──────────────────────────────────────────────────
+# La 0025 E5: un sujeto de MAQUINA con `rubix_tipo=aprovisionador`. Dos verbos
+# y ninguno mas; y ninguna persona hace esos dos.
+APROV=$(acunar "servicio:aprovisionador" "" aprovisionador)
+[ "$(pide GET /organizaciones "$APROV")" = "403" ] \
+  || falla "10 · ⛔ EL APROVISIONADOR LISTO ORGANIZACIONES: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/agentes" "$ADA" '{"sub":"maquina:x"}')" = "403" ] \
+  || falla "10 · ⛔ UNA PERSONA REGISTRO UN AGENTE: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/acme/agentes" "$APROV" '{"sub":"maquina:agente-acme","nombre":"ore-agente-acme"}')" = "200" ] \
+  || falla "10 · el aprovisionador no pudo registrar el agente: $(cat "$TMP/r.json")"
+AGE=$(campo agente)
+[ "$(campo ya)" = "False" ] || falla "10 · la primera vez dijo «ya»"
+# El agente hereda `usar` sobre el secreto que 7b concedio: es el mismo nucleo
+# que `ore-iam agente`, y esta es la prueba de que lo es.
+[ "$(campo secretos_heredados)" -ge 1 ] || falla "10 · el agente no heredo el secreto de 7b: $(cat "$TMP/r.json")"
+# Otra vez: idempotente, «ya», y sin huella nueva (no cambio nada).
+H0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion like 'agente:%'")
+[ "$(pide POST "/organizaciones/acme/agentes" "$APROV" '{"sub":"maquina:agente-acme"}')" = "200" ] \
+  || falla "10 · la segunda vez fallo: $(cat "$TMP/r.json")"
+[ "$(campo ya)" = "True" ] && [ "$(campo agente)" = "$AGE" ] || falla "10 · la segunda vez no dijo «ya» con el mismo agente"
+H1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion like 'agente:%'")
+[ "$H1" = "$H0" ] || falla "10 · «ya estaba» dejo huella ($H0 → $H1): un reconciliador que anota cada pasada es ruido"
+# Y la huella del registro dice que fue EL APROVISIONADOR, no un operador.
+QUIEN=$(psql "$URL" -qtAc "select quien from iam.huella where operacion = 'agente:registrar' and sobre = '$AGE'")
+[ "$QUIEN" = "servicio:aprovisionador" ] || falla "10 · la huella del registro no nombra al aprovisionador: «$QUIEN»"
+# La celda: nace sin `aprovisionada`, y el aprovisionador la da por hecha.
+[ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "10 · no se pudieron leer las celdas"
+grep -q '"aprovisionada"' "$TMP/r.json" && falla "10 · la celda nacio ya aprovisionada, y nadie habia pasado"
+[ "$(pide POST "/celdas/ore-prueba/aprovisionada" "$APROV")" = "200" ] \
+  || falla "10 · el aprovisionador no pudo dar la celda por aprovisionada: $(cat "$TMP/r.json")"
+[ "$(pide POST "/celdas/no-existe/aprovisionada" "$APROV")" = "422" ] || falla "10 · una celda inventada no dio 422"
+[ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "10 · no se pudieron releer las celdas"
+grep -q '"aprovisionada"' "$TMP/r.json" || falla "10 · la celda no dice cuando la aprovisionaron: $(cat "$TMP/r.json")"
+dice "10 · el aprovisionador: registra (idempotente, con su huella), da la celda por aprovisionada, y no lee nada"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, y los dos del aprovisionador."

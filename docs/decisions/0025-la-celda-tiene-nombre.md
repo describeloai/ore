@@ -266,7 +266,7 @@ Lo hecho, y lo que la pasada **desde dentro** destapó al leer por fin su regist
   vistas, ⑦ resuelto, ⑤ concedido, los dos `CNAME` en `ore-paladio-io`; `demo` y `prueba` 200.
   Faltaba una cosa más que sólo la pasada real dijo: la API de Resource Manager estaba deshabilitada.
 
-### E5 · La identidad del aprovisionador
+### E5 · La identidad del aprovisionador — ✓ 2026-09-14 (`los-verbos.sh` caso 10; `medida-por-celda.py` F)
 
 Cliente `ore-aprovisionador` en el IdP; `ore-iam` acepta `rubix_tipo=aprovisionador` en dos
 verbos y en ninguno más; `iam.celda.aprovisionada` informada al final de cada pasada. El Job de
@@ -275,6 +275,25 @@ agente por el verbo, con huella. Luego se retira.
 
 - vuelta atrás: quitar el cliente del IdP; los verbos contestan 401 y el Job de operador sigue
   valiendo.
+
+Lo hecho:
+
+- `Identidad.tipo` (claim `rubix_tipo`, que el IdP estampa **por cliente**: nadie lo elige al
+  pedir el token). `ore-iam` lo lee en un solo sitio: si el sujeto es aprovisionador, sólo
+  `POST /organizaciones/{org}/agentes` y `POST /celdas/{celda}/aprovisionada`; si no lo es, esos
+  dos se niegan — **también a una persona**, por muy admin que sea. Registrar lo que el IdP acaba
+  de crear es del reconciliador, no un acto de gobierno.
+- El verbo de registrar es el **mismo núcleo** que `ore-iam agente` (`registrar_agente_en`):
+  idempotente, hereda `usar`, y la huella dice quién — `servicio:aprovisionador` en la prueba, el
+  `sub` de la cuenta de servicio en vivo. La segunda llamada dice `ya` y **no deja huella**: un
+  reconciliador que anota cada pasada es ruido con forma de auditoría.
+- `iam.celda.aprovisionada` (032) es el `status` del patrón de operador: lo escribe quien
+  reconcilia, al final de una pasada **entera** (forja viva, agente registrado); ni en seco ni a
+  medias. Nulo = ninguna pasada; la consola lo pinta `Provisioning` sin preguntar por el camino,
+  y `aprovisionando` como estado administrativo queda sin nadie que lo escriba.
+- Dos identidades en el IdP y a propósito (`68-…`): el usuario del realm maestro *administra*
+  clientes; el cliente `ore-aprovisionador` *es alguien* ante `ore-iam`. El token que registra un
+  agente no tiene por qué poder crear clientes en Keycloak.
 
 ### E6 · Los dos verbos y la consola
 

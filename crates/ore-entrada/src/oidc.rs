@@ -215,6 +215,8 @@ impl Emisor {
             correo: cadena(&cuerpo, "email"),
             // `name` es el claim estandar de OIDC para el nombre completo.
             nombre: cadena(&cuerpo, "name"),
+            // Y la clase, que es nuestra: `rubix_tipo`, un claim fijo por cliente.
+            tipo: cadena(&cuerpo, "rubix_tipo"),
         })
     }
 }

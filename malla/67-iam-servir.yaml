@@ -103,8 +103,9 @@ spec:
             capabilities:
               drop: [ALL]
 ---
-# Quién puede hablar con él: de momento, sólo desde dentro de `identidad`.
-# Publicarlo es otra decisión — administra personas.
+# Quién puede hablar con él: desde dentro de `identidad`, el inquilino modelo, y
+# el aprovisionador (0025 E5: dos verbos, y `ore-iam` sabe cuáles por el claim
+# del token, no por la red). Publicarlo es otra decisión — administra personas.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -123,6 +124,14 @@ spec:
         - namespaceSelector:
             matchLabels:
               ore.dev/tenant: demo
+        # El pod del aprovisionador (16), y solo el: registra el agente de cada
+        # celda y la da por aprovisionada.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ore-system
+          podSelector:
+            matchLabels:
+              ore.dev/rol: aprovisionador
       ports:
         - protocol: TCP
           port: 8090

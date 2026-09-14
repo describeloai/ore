@@ -59,6 +59,15 @@ pub struct Identidad {
     ///
     /// ⭐ `None` es «el token no lo dijo», que NO es «no tiene».
     pub nombre: Option<String>,
+    /// De qué CLASE de sujeto dice el emisor que es: `persona`, `agente`,
+    /// `aprovisionador` (claim `rubix_tipo`, que el IdP estampa por cliente y
+    /// nadie elige al pedir el token).
+    ///
+    /// ⚠️ Es lo que el emisor AFIRMA. Sirve para que un verbo pueda decir «esto
+    /// solo lo hace un aprovisionador» (0025 E5) — y para eso vale, porque el
+    /// claim lo pone el IdP al cliente, no el cliente a sí mismo. `None` es
+    /// «el token no lo dijo», y ningún verbo lo lee como una clase concreta.
+    pub tipo: Option<String>,
 }
 
 /// Por qué no hay sujeto.
@@ -119,6 +128,7 @@ pub fn por_cabecera() -> Proveedor {
             // una cabecera dice de QUIEN es la peticion, no como se llama.
             correo: None,
             nombre: None,
+            tipo: None,
         })
     })
 }

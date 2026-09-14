@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
-# El admin del IdP que usa el aprovisionador — y NO es el admin de arranque.
+# Las DOS identidades del aprovisionador en el IdP — y ninguna es el admin de arranque.
 #
 #     bash malla/68-el-admin-del-aprovisionador.sh [--rotar]
+#
+#   ① el usuario `aprovisionador` del realm maestro: con el ADMINISTRA clientes
+#      del realm de las personas (paso ⑦: el cliente del agente de cada celda)
+#   ② el cliente `ore-aprovisionador` del realm de las personas: con el ES
+#      ALGUIEN ante `ore-iam` (0025 E5) — un sujeto de maquina con el claim
+#      `rubix_tipo=aprovisionador`, que `ore-iam` admite en dos verbos y en
+#      ninguno mas: registrar el agente de una celda y darla por aprovisionada
+#
+# Son dos porque hacen dos cosas distintas: una administra el IdP, la otra se
+# presenta ante nuestro plano de control. Fundirlas —darle al cliente el papel
+# de admin— es posible y no se hace: el token que registra un agente en `iam`
+# no tiene por que poder crear clientes en Keycloak.
 #
 # ── Por qué existe (0025 E4) ────────────────────────────────────────────────
 #
@@ -122,8 +134,74 @@ fi
   --role=roles/secretmanager.secretAccessor >/dev/null
 echo "lector   ore-aprovisionador@ — y nadie mas"
 
-# ③ Y se comprueba que sirve: un testigo del maestro con ese usuario, y con el
-#   una lectura de los clientes del realm — lo que ⑦ hace primero.
+# ③ El cliente `ore-aprovisionador` en el realm de las personas (0025 E5): la
+#   MISMA receta que `ore-agente-<n>` —cuenta de servicio, audiencia `ore-serve`,
+#   claim fijo `rubix_tipo`—, con el valor `aprovisionador`. Su secreto, al
+#   almacen como `aprovisionador-secreto`, con `secretAccessor` para su cuenta.
+CLIENTE="ore-aprovisionador"
+SEC_CLI=$(kubectl -n "$NS" exec -i "$POD" -- env HOME=/tmp \
+  KC_U="$U" KC_P="$P" R="$REALM" CLIENTE="$CLIENTE" sh -c '
+set -e
+K=/opt/keycloak/bin/kcadm.sh
+$K config credentials --server http://127.0.0.1:8080 --realm master \
+  --user "$KC_U" --password "$KC_P" >/dev/null
+ID=$($K get clients -r "$R" -q clientId="$CLIENTE" --fields id --format csv --noquotes)
+if [ -z "$ID" ]; then
+  cat > /tmp/cliente.json <<JSON
+{"clientId":"$CLIENTE","name":"el aprovisionador","description":"El sujeto de maquina del aprovisionador (0025 E5): registra el agente de cada celda y la da por aprovisionada. Dos verbos en ore-iam y ninguno mas.",
+ "enabled":true,"protocol":"openid-connect","publicClient":false,"serviceAccountsEnabled":true,
+ "standardFlowEnabled":false,"implicitFlowEnabled":false,"directAccessGrantsEnabled":false,
+ "attributes":{"access.token.lifespan":"300"},
+ "protocolMappers":[
+   {"name":"audiencia-ore-serve","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper",
+    "config":{"included.client.audience":"ore-serve","access.token.claim":"true","id.token.claim":"false"}},
+   {"name":"rubix-tipo-aprovisionador","protocol":"openid-connect","protocolMapper":"oidc-hardcoded-claim-mapper",
+    "config":{"claim.name":"rubix_tipo","claim.value":"aprovisionador","jsonType.label":"String","access.token.claim":"true","id.token.claim":"false"}}
+ ]}
+JSON
+  $K create clients -r "$R" -f /tmp/cliente.json >/dev/null
+  rm -f /tmp/cliente.json
+  ID=$($K get clients -r "$R" -q clientId="$CLIENTE" --fields id --format csv --noquotes)
+  echo "cliente  $CLIENTE · $ID (nuevo)" >&2
+else
+  echo "cliente  $CLIENTE · $ID (ya estaba)" >&2
+fi
+echo "sub      $($K get clients/$ID/service-account-user -r "$R" --fields id --format csv --noquotes)" >&2
+$K get clients/$ID/client-secret -r "$R" --fields value --format csv --noquotes
+')
+if "$GCLOUD" secrets describe aprovisionador-secreto --format="value(name)" >/dev/null 2>&1; then
+  echo "secreto  aprovisionador-secreto (ya estaba)"
+else
+  "$GCLOUD" secrets create aprovisionador-secreto --replication-policy=user-managed --locations="$LUGAR" \
+    --labels=proyecto=ore >/dev/null
+  echo "secreto  aprovisionador-secreto (nuevo)"
+fi
+# Solo se añade version si la que hay no es esta: añadir la misma en cada
+# corrida seria deriva con forma de historial.
+if [ "$("$GCLOUD" secrets versions access latest --secret=aprovisionador-secreto 2>/dev/null | tr -d '\r\n')" = "$SEC_CLI" ]; then
+  echo "version  la que hay"
+else
+  printf '%s' "$SEC_CLI" | "$GCLOUD" secrets versions add aprovisionador-secreto --data-file=- >/dev/null
+  echo "version  añadida"
+fi
+"$GCLOUD" secrets add-iam-policy-binding aprovisionador-secreto \
+  --member="serviceAccount:ore-aprovisionador@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor >/dev/null
+echo "lector   ore-aprovisionador@ — y nadie mas"
+# Y que el token sale con su clase: es lo unico de lo que `ore-iam` se fia. Por
+# la puerta publica del IdP, que es por donde lo pedira el aprovisionador.
+IDP_PUBLICO="${IDP_PUBLICO:-https://login.paladio.io}"
+TIPO=$(CLIENTE="$CLIENTE" SEC="$SEC_CLI" R="$REALM" IDP="$IDP_PUBLICO" python -c '
+import base64, json, os, urllib.parse, urllib.request
+d = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": os.environ["CLIENTE"], "client_secret": os.environ["SEC"]}).encode()
+tok = json.load(urllib.request.urlopen("%s/realms/%s/protocol/openid-connect/token" % (os.environ["IDP"], os.environ["R"]), d, timeout=20))["access_token"]
+c = tok.split(".")[1]
+print(json.loads(base64.urlsafe_b64decode(c + "=" * (-len(c) % 4))).get("rubix_tipo", ""))')
+[ "$TIPO" = "aprovisionador" ] || { echo "xx el token de $CLIENTE no lleva rubix_tipo=aprovisionador: «$TIPO»" >&2; exit 1; }
+echo "prueba   el token de $CLIENTE lleva rubix_tipo=aprovisionador"
+
+# ④ Y se comprueba que el usuario sirve: un testigo del maestro con ese usuario, y
+#   con el una lectura de los clientes del realm — lo que ⑦ hace primero.
 if [ -n "$CLAVE" ]; then
   kubectl -n "$NS" exec -i "$POD" -- env USUARIO="$USUARIO" CLAVE="$CLAVE" R="$REALM" sh -c '
 set -e
