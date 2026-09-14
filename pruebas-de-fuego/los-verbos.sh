@@ -279,7 +279,10 @@ grep -q '"nombre":"acme"' "$TMP/r.json" || falla "2b · la celda no se llama com
 grep -q '"cluster":"ore-prueba"' "$TMP/r.json" || falla "2b · la celda no dice su cluster: $(cat "$TMP/r.json")"
 grep -q '"arbol":"t-acme/ontologia"' "$TMP/r.json" || falla "2b · la celda no dice su arbol: $(cat "$TMP/r.json")"
 grep -q '"entrada":"acme.ore.paladio.io"' "$TMP/r.json" || falla "2b · la celda no dice su entrada: $(cat "$TMP/r.json")"
-[ "$(psql "$URL" -qtAc "select count(*) from iam.discrepancias")" = "0" ] || falla "2b · iam.discrepancias no esta vacia: $(psql "$URL" -qtAc "select * from iam.discrepancias")"
+# La vista existe solo mientras dura la doble verdad (029..031); despues no hay nada que cotejar.
+if [ "$(psql "$URL" -qtAc "select to_regclass('iam.discrepancias') is not null")" = "t" ]; then
+  [ "$(psql "$URL" -qtAc "select count(*) from iam.discrepancias")" = "0" ] || falla "2b · iam.discrepancias no esta vacia: $(psql "$URL" -qtAc "select * from iam.discrepancias")"
+fi
 grep -q '"tier":"compartido"' "$TMP/r.json" || falla "2b · sin tier"
 grep -q '"estado":"activa"' "$TMP/r.json" || falla "2b · sin estado administrativo"
 # ⭐ Y el tier DENTRO, desde la `026`: titulo, promesa y la cuota del compartido.
