@@ -204,11 +204,11 @@ if "--cotejar" in sys.argv:
     difs = []      # lo que NO puede diferir: el duro de la cuota y la forma
     movio = []     # lo que se mueve entre dos lecturas: usado, jobs, control (un job corrio)
     for k in ("cpu", "memoria", "jobs"):
-        g, a = c.get("cuota", {}).get(k, [None, None]), ahora["cuota"][k]
-        if g[1] != a[1]:
-            difs.append("cuota.%s duro: guardado %s · ahora %s" % (k, g[1], a[1]))
-        elif g[0] != a[0]:
-            movio.append("cuota.%s usado %s → %s" % (k, g[0], a[0]))
+        gu, ac = c.get("cuota", {}).get(k, [None, None]), ahora["cuota"][k]
+        if gu[1] != ac[1]:
+            difs.append("cuota.%s duro: guardado %s · ahora %s" % (k, gu[1], ac[1]))
+        elif gu[0] != ac[0]:
+            movio.append("cuota.%s usado %s → %s" % (k, gu[0], ac[0]))
     for k in ("activos", "ok", "fallidos"):
         if c.get("jobs", {}).get(k) != ahora["jobs"][k]:
             movio.append("jobs.%s %s → %s" % (k, c.get("jobs", {}).get(k), ahora["jobs"][k]))

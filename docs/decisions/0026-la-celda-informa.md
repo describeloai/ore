@@ -1,6 +1,6 @@
 # 0026 · La celda informa
 
-**Estado:** propuesto · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
+**Estado:** en curso (E0–E2 hechas y medidas; E3 en pantalla; E4–E5 pendientes) · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
 usada, jobs, salud del control— **lo observa un informador que vive en la celda y lo empuja al
 plano de control**, con identidad de agente y privilegio acotado a su namespace; que `ore-iam` lo
 guarda como **el último snapshot medido** y `GET /celdas` lo devuelve; que la consola pinta la
@@ -167,21 +167,23 @@ el agente de `nova` → 404; el aprovisionador → 403; 9 KB → 422; `v: 2` →
 token real de `ore-agente-victor` (traído por `gcloud`, desde fuera) un snapshot hecho a mano
 entra y `GET /celdas` lo devuelve con `medido_en`.
 
-### E2 · El informador
+### E2 · El informador — ✓ 2026-09-15 (`--cotejar` en `demo`, `prueba` y `victor`: snapshot fresco —7 a 57 s— y sin diferencias con la referencia; 0 `✗` en los logs de la primera hora; huellas `empieza` ×3 y una `vuelve`; MAESTRO = el API server real)
 
 Etapa `informador` en el Dockerfile (CI la publica como `ore-informador:main`); `informar.sh`
 (el bucle de ①, ~60 líneas, con `set -u` y sin `set -e`: cada paso decide si sigue); en
 `13-el-inquilino-reconciliado.yaml` (bloque `demo`, que es la plantilla): `ServiceAccount`
 `informador`, `Role` + `RoleBinding`, `Deployment` con init `driver` y `NetworkPolicy`
 `salida-del-informador` (API server, IdP, `ore-iam`); `gen-inquilino.py` lo rinde por celda y
-lo comprueba (⑫: los cinco objetos, el `Role` sin verbos de escritura, la IP del maestro);
-`medida-por-celda.py` coteja la IP con `kubectl get endpoints kubernetes`. Flux lo lleva a
-`demo`, `prueba` y `victor`. **Acepta:** `medida-el-estado-de-la-celda.py` gana la sección D:
+lo comprueba (⑫: el `Role` sin verbos de escritura, sin `ClusterRole`, la IP del maestro = MAESTRO);
+`--cotejar` coteja MAESTRO con `kubectl get endpoints kubernetes`. *Lo que la primera pasada real
+enseñó: `.dockerignore` excluía `malla/` y la etapa no encontraba su guion; y la lista de Jobs de
+`demo` (110 KB) no cabía en la línea de órdenes de `jq` — las lecturas van a fichero.* Flux lo lleva a
+`demo`, `prueba` y `victor`. **Acepta:** `medida-el-estado-de-la-celda.py --cotejar` es la sección D:
 `estado_medido` de `GET /celdas` frente al snapshot que la propia medida rinde ahora — mismos
 números, `medido_en` < 90 s, en las tres celdas; y el log del informador de `victor` sin un
 solo `✗` en una hora.
 
-### E3 · La overview lee el plano de control
+### E3 · La overview lee el plano de control — ✓ código 2026-09-15 (consola `b5b23d4`: Capacidad usado/duro, Actividad, control; «medido hace»; regla de 3 min por `recibido_en`); la aceptación con el informador parado, pendiente de mirar en pantalla
 
 `ClusterOverviewView`: Capacidad con usado/duro real, Actividad con los jobs, Salud con el
 control y la regla de los 3 min (④). **Acepta:** los números en pantalla son los de la medida
