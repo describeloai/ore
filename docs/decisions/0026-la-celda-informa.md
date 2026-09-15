@@ -1,6 +1,6 @@
 # 0026 · La celda informa
 
-**Estado:** en curso (E0–E2 hechas y medidas; E3 en pantalla; E4–E5 pendientes) · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
+**Estado:** en curso (E0–E4 hechas y medidas; E5 pendiente) · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
 usada, jobs, salud del control— **lo observa un informador que vive en la celda y lo empuja al
 plano de control**, con identidad de agente y privilegio acotado a su namespace; que `ore-iam` lo
 guarda como **el último snapshot medido** y `GET /celdas` lo devuelve; que la consola pinta la
@@ -191,7 +191,7 @@ control y la regla de los 3 min (④). **Acepta:** los números en pantalla son 
 la overview dice *Needs attention · el informador no informa desde hh:mm* y conserva el último
 estado; al levantarlo, vuelve sola.
 
-### E4 · Salud agregada
+### E4 · Salud agregada — ✓ 2026-09-15 (consola: `lib/cloud/salud.ts` con las reglas y `scripts/salud.mjs` con 15 casos —uno por regla, dos de orden— en cada build)
 
 Un solo veredicto arriba, con las reglas escritas en un sitio (`lib/cloud/salud.ts`): *healthy*
 si el árbol contesta, la entrada lleva a la puerta, el control está listo, el snapshot es
