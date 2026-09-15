@@ -201,16 +201,24 @@ if "--cotejar" in sys.argv:
     ahora = snapshot()
     c = g["cuerpo"]
     print("  guardado   medido_en %s · recibido hace %s s" % (g["medido_en"], g["hace_s"]))
-    difs = []
-    for k in ("cuota", "control"):
-        if c.get(k) != ahora.get(k):
-            difs.append("%s: guardado %s · ahora %s" % (k, json.dumps(c.get(k)), json.dumps(ahora.get(k))))
+    difs = []      # lo que NO puede diferir: el duro de la cuota y la forma
+    movio = []     # lo que se mueve entre dos lecturas: usado, jobs, control (un job corrio)
+    for k in ("cpu", "memoria", "jobs"):
+        g, a = c.get("cuota", {}).get(k, [None, None]), ahora["cuota"][k]
+        if g[1] != a[1]:
+            difs.append("cuota.%s duro: guardado %s · ahora %s" % (k, g[1], a[1]))
+        elif g[0] != a[0]:
+            movio.append("cuota.%s usado %s → %s" % (k, g[0], a[0]))
     for k in ("activos", "ok", "fallidos"):
         if c.get("jobs", {}).get(k) != ahora["jobs"][k]:
-            difs.append("jobs.%s: guardado %s · ahora %s" % (k, c.get("jobs", {}).get(k), ahora["jobs"][k]))
+            movio.append("jobs.%s %s → %s" % (k, c.get("jobs", {}).get(k), ahora["jobs"][k]))
+    if c.get("control") != ahora.get("control"):
+        movio.append("control %s → %s" % (json.dumps(c.get("control")), json.dumps(ahora.get("control"))))
     faltas = validar(c)
     for d in difs:
         print("  ≠ " + d)
+    for m in movio:
+        print("  ~ se movio entre lecturas: " + m)
     if faltas:
         print("  ⛔ lo guardado no cumple la 0026-②: " + "; ".join(faltas))
     # Y la IP del API server que lleva la plantilla del informador frente a la real.
@@ -220,10 +228,11 @@ if "--cotejar" in sys.argv:
     if real and ("cidr: %s/32" % real) not in plantilla:
         difs.append("MAESTRO: la plantilla no lleva %s/32 (el API server real)" % real)
     fresco = g["hace_s"] <= 90
-    print("  %s snapshot %s · %s" % ("✓" if fresco and not faltas else "✗",
+    bien = fresco and not faltas and not difs
+    print("  %s snapshot %s · %s" % ("✓" if bien else "✗",
                                    "fresco (≤ 90 s)" if fresco else "VIEJO (> 90 s)",
                                    "sin diferencias" if not difs else "%d diferencia(s)" % len(difs)))
-    sys.exit(0 if fresco and not faltas else 1)
+    sys.exit(0 if bien else 1)
 
 
 # ── A · el árbol ─────────────────────────────────────────────────────────────

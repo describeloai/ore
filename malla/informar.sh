@@ -38,18 +38,22 @@ token() {
   VENCE=$((ahora + $(printf '%s' "$R" | jq -r '.expires_in // 300')))
 }
 
-# Una lectura del API server, con el token de la ServiceAccount (el kubelet lo rota: se relee).
+# Una lectura del API server a un FICHERO, con el token de la ServiceAccount (el
+# kubelet lo rota: se relee). ⛔ A fichero y no a una variable: la lista de Jobs
+# de una celda con muchas fuentes no cabe en la linea de ordenes de `jq`
+# («Argument list too long», medido en `demo` el 2026-09-15).
 api() {
-  curl -sS -m 10 --cacert "$SA/ca.crt" -H "Authorization: Bearer $(cat "$SA/token")" "$API$1"
+  curl -sS -m 10 --cacert "$SA/ca.crt" -H "Authorization: Bearer $(cat "$SA/token")" -o "$2" "$API$1"
 }
 
 # El snapshot de la 0026-②, por stdout.
 medir() {
-  Q=$(api "/api/v1/namespaces/$NS/resourcequotas") || return 1
-  J=$(api "/apis/batch/v1/namespaces/$NS/jobs") || return 1
-  P=$(api "/api/v1/namespaces/$NS/pods?labelSelector=ore.dev%2Frol%3Dcontrol") || return 1
-  jq -n -c --argjson q "$Q" --argjson j "$J" --argjson p "$P" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-    (($q.items // [])[0].status // {}) as $s
+  api "/api/v1/namespaces/$NS/resourcequotas" /tmp/q.json || return 1
+  api "/apis/batch/v1/namespaces/$NS/jobs" /tmp/j.json || return 1
+  api "/api/v1/namespaces/$NS/pods?labelSelector=ore.dev%2Frol%3Dcontrol" /tmp/p.json || return 1
+  jq -n -c --slurpfile q /tmp/q.json --slurpfile j /tmp/j.json --slurpfile p /tmp/p.json --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    ($q[0]) as $q | ($j[0]) as $j | ($p[0]) as $p
+    | (($q.items // [])[0].status // {}) as $s
     | def par(k): [($s.used[k] // "0"), ($s.hard[k] // "0")];
       def ent(k): [(($s.used[k] // "0") | tonumber), (($s.hard[k] // "0") | tonumber)];
       (($j.items // []) | sort_by(.status.startTime // "") | reverse | .[0]) as $u
