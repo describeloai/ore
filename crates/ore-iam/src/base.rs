@@ -136,6 +136,25 @@ impl<'a> Tx<'a> {
             .commit()
             .map_err(|e| format!("no se pudo confirmar: {e}"))
     }
+
+    /// ⭐ LA ÚNICA EXCEPCIÓN A LA REGLA DE ARRIBA, y con nombre: una OBSERVACIÓN.
+    ///
+    /// La huella es de los ACTOS —alguien invitó, concedió, pidió una celda—.
+    /// Un snapshot que el informador de la celda empuja cada minuto (0026) no
+    /// es un acto: es la misma medida repetida, y su valor es el último. Una
+    /// huella por minuto y celda no sería un registro: sería el ruido que
+    /// entierra el registro (1.440 al día por celda).
+    ///
+    /// ⚠️ Sólo `iam.celda_estado` se confirma por aquí, y el verbo que lo hace
+    ///   SÍ anota —por `confirmar`, la de siempre— cuando la celda EMPIEZA a
+    ///   informar o VUELVE tras un silencio: eso sí le interesa a quien lea la
+    ///   actividad. Cualquier otro uso de esto es saltarse la regla, no
+    ///   aplicarla.
+    pub fn confirmar_observacion(self) -> Result<(), String> {
+        self.tx
+            .commit()
+            .map_err(|e| format!("no se pudo confirmar: {e}"))
+    }
 }
 
 pub use crate::id::nuevo as nuevo_id;

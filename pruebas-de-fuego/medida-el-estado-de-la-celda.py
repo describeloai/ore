@@ -17,14 +17,93 @@ medir qué dato existe hoy, dónde vive y quién puede leerlo. Tres columnas:
 Sale una tabla `campo · fuente · valor hoy`. Es un METRO, no un trinquete.
 
     uso:  python pruebas-de-fuego/medida-el-estado-de-la-celda.py [celda]
+          python pruebas-de-fuego/medida-el-estado-de-la-celda.py [celda] --snapshot
+
+⭐ `--snapshot` (0026 E0): imprime el SNAPSHOT de la 0026-② rendido desde fuera
+   con `kubectl` — byte a byte como lo rendirá el informador de la celda. Es la
+   implementación de referencia: contra esto se coteja lo que `GET /celdas`
+   devuelva en `estado_medido` (E2, sección D). Y `validar()` es el contrato:
+   la misma forma que `ore-iam` exige al recibirlo.
 """
 import json
 import os
 import subprocess
 import sys
 
-CELDA = sys.argv[1] if len(sys.argv) > 1 else "victor"
+CELDA = next((a for a in sys.argv[1:] if not a.startswith("--")), "victor")
 NS = "t-" + CELDA
+SNAPSHOT = "--snapshot" in sys.argv
+
+
+# ── el contrato (0026-②) ─────────────────────────────────────────────────────
+def validar(s):
+    """Devuelve la lista de faltas; vacía si el snapshot cumple la 0026-②."""
+    faltas = []
+    if s.get("v") != 1:
+        faltas.append("v debe ser 1")
+    if not isinstance(s.get("medido_en"), str) or not s["medido_en"].endswith("Z"):
+        faltas.append("medido_en: ISO-8601 en UTC, con Z")
+    cuota = s.get("cuota")
+    if not isinstance(cuota, dict):
+        faltas.append("cuota: objeto")
+    else:
+        for k in ("cpu", "memoria", "jobs"):
+            v = cuota.get(k)
+            if not (isinstance(v, list) and len(v) == 2):
+                faltas.append("cuota.%s: [usado, duro]" % k)
+    jobs = s.get("jobs")
+    if not isinstance(jobs, dict) or any(not isinstance(jobs.get(k), int) for k in ("activos", "ok", "fallidos")):
+        faltas.append("jobs: {activos, ok, fallidos} enteros")
+    control = s.get("control")
+    if not isinstance(control, dict) or not isinstance(control.get("listo"), bool):
+        faltas.append("control: {listo bool, desde, reinicios}")
+    if len(json.dumps(s, separators=(",", ":"))) > 8192:
+        faltas.append("pasa de 8 KB")
+    return faltas
+
+
+def snapshot():
+    """La 0026-②, desde fuera. Mismo orden de claves y mismos valores que el informador."""
+    q = kubectl("get", "resourcequota", "-n", NS)
+    st = (q["items"][0]["status"] if q and q["items"] else {})
+    used, hard = st.get("used", {}), st.get("hard", {})
+
+    def par(k, entero=False):
+        u, h = used.get(k, "0"), hard.get(k, "0")
+        return [int(u), int(h)] if entero else [u, h]
+
+    j = kubectl("get", "jobs", "-n", NS) or {"items": []}
+    activos = sum(x["status"].get("active", 0) for x in j["items"])
+    ok = sum(x["status"].get("succeeded", 0) for x in j["items"])
+    fallidos = sum(x["status"].get("failed", 0) for x in j["items"])
+    ultimo = None
+    for x in sorted(j["items"], key=lambda x: x["status"].get("startTime", ""), reverse=True)[:1]:
+        s = x["status"]
+        ultimo = {
+            "nombre": x["metadata"]["name"],
+            "estado": "activo" if s.get("active") else ("fallido" if s.get("failed") else "ok"),
+            "inicio": s.get("startTime"),
+            "fin": s.get("completionTime"),
+        }
+    p = kubectl("get", "pods", "-n", NS, "-l", "ore.dev/rol=control") or {"items": []}
+    control = {"listo": False, "desde": None, "reinicios": 0}
+    for pod in p["items"]:
+        cs = (pod["status"].get("containerStatuses") or [{}])[0]
+        control = {
+            "listo": bool(cs.get("ready")),
+            "desde": pod["status"].get("startTime"),
+            "reinicios": int(cs.get("restartCount") or 0),
+        }
+    import datetime
+    ahora = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    s = {
+        "v": 1,
+        "medido_en": ahora,
+        "cuota": {"cpu": par("requests.cpu"), "memoria": par("requests.memory"), "jobs": par("count/jobs.batch", True)},
+        "jobs": {"activos": activos, "ok": ok, "fallidos": fallidos, "ultimo": ultimo},
+        "control": control,
+    }
+    return s
 
 
 def kubectl(*args):
@@ -44,6 +123,16 @@ filas = []
 
 def fila(campo, fuente, valor):
     filas.append((campo, fuente, valor))
+
+
+if SNAPSHOT:
+    s = snapshot()
+    faltas = validar(s)
+    print(json.dumps(s, indent=2, ensure_ascii=False))
+    if faltas:
+        print("\n  ⛔ el snapshot no cumple la 0026-②: " + "; ".join(faltas), file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 
 
 # ── A · el árbol ─────────────────────────────────────────────────────────────

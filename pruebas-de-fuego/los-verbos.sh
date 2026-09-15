@@ -633,4 +633,41 @@ grep -q '"titulo":"Acme Corp"' "$TMP/r.json" && grep -q '"logo":"data:image/svg+
 [ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='organizacion:editar'")" -ge 2 ] || falla "12 · editar no deja huella"
 dice "12 · el perfil: fundar con titulo; titulo y logo por ORGADMIN, embebido y con huella; una USERADMIN no"
 
-echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, y el perfil."
+# ── 13 · el estado de la celda: el informador empuja, y solo el (0026 E1) ────
+#
+# Un sujeto de MAQUINA con `rubix_tipo=agente` y el `sub` del agente que el
+# aprovisionador registro en el caso 10. Un verbo y ninguno mas. Es una
+# observacion: una fila por celda que se sobreescribe, sin huella salvo al
+# EMPEZAR (y al volver tras un silencio).
+SNAP='{"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["250m","10"],"memoria":["896Mi","36Gi"],"jobs":[4,50]},"jobs":{"activos":0,"ok":4,"fallidos":0,"ultimo":{"nombre":"el-arbol","estado":"ok","inicio":"2026-09-15T11:14:41Z","fin":"2026-09-15T11:15:02Z"}},"control":{"listo":true,"desde":"2026-09-15T09:23:28Z","reinicios":0}}'
+AGEA=$(acunar "maquina:agente-acme" "" agente)
+[ "$(pide POST "/celdas/acme/estado" "$ADA" "$SNAP")" = "403" ] || falla "13 · ⛔ UNA PERSONA INFORMO EL ESTADO: $(cat "$TMP/r.json")"
+[ "$(pide POST "/celdas/acme/estado" "$APROV" "$SNAP")" = "403" ] || falla "13 · ⛔ EL APROVISIONADOR INFORMO EL ESTADO"
+[ "$(pide GET "/organizaciones" "$AGEA")" = "403" ] || falla "13 · ⛔ EL AGENTE LISTO ORGANIZACIONES"
+H0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:informa'")
+[ "$(pide POST "/celdas/acme/estado" "$AGEA" "$SNAP")" = "200" ] || falla "13 · el agente no pudo informar: $(cat "$TMP/r.json")"
+[ "$(campo medido_en)" != "" ] && [ "$(campo recibido_en)" != "" ] || falla "13 · la respuesta no dice medido_en/recibido_en: $(cat "$TMP/r.json")"
+# El agente de OTRA organizacion: lo mismo que si la celda no existiera.
+[ "$(pide POST "/organizaciones/nova/agentes" "$APROV" '{"sub":"maquina:agente-nova"}')" = "200" ] || falla "13 · no se registro el agente de nova"
+AGEN=$(acunar "maquina:agente-nova" "" agente)
+[ "$(pide POST "/celdas/acme/estado" "$AGEN" "$SNAP")" = "422" ] || falla "13 · ⛔ EL AGENTE DE NOVA INFORMO SOBRE ACME: $(cat "$TMP/r.json")"
+[ "$(pide POST "/celdas/no-existe/estado" "$AGEA" "$SNAP")" = "422" ] || falla "13 · una celda inventada no dio 422"
+grep -q "no hay ninguna celda" "$TMP/r.json" || falla "13 · el mensaje de la inventada no es el de siempre"
+# El contrato: la version, la forma, el tamaño.
+[ "$(pide POST "/celdas/acme/estado" "$AGEA" "${SNAP/\"v\":1/\"v\":2}")" = "422" ] || falla "13 · ⛔ SE ACEPTO v=2"
+[ "$(pide POST "/celdas/acme/estado" "$AGEA" '{"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"]},"jobs":{},"control":{}}')" = "422" ] || falla "13 · ⛔ SE ACEPTO UN SNAPSHOT A MEDIAS"
+GORDO=$("$PY" -c 'import json;print(json.dumps({"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"],"memoria":["1","2"],"jobs":[1,2]},"jobs":{"activos":0,"ok":0,"fallidos":0},"control":{"listo":True},"relleno":"x"*9000}))')
+[ "$(pide POST "/celdas/acme/estado" "$AGEA" "$GORDO")" = "422" ] || falla "13 · ⛔ SE ACEPTARON 9 KB"
+# Dos veces seguidas: una fila, y la segunda sin huella.
+[ "$(pide POST "/celdas/acme/estado" "$AGEA" "${SNAP/11:20:03/11:21:03}")" = "200" ] || falla "13 · el segundo snapshot no entro"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.celda_estado")" = "1" ] || falla "13 · dos snapshots, dos filas: tenia que sobreescribir"
+[ "$(psql "$URL" -qtAc "select medido_en::text from iam.celda_estado")" != "" ] || falla "13 · la fila no tiene medido_en"
+H1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:informa'")
+[ "$H1" = "$((H0 + 1))" ] || falla "13 · huellas celda:informa: $H0 → $H1 (una al empezar, y ninguna mas)"
+# Y la lista lo devuelve, con recibido_en, a quien pertenece.
+[ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "13 · no se leen las celdas"
+grep -q '"estado_medido":{' "$TMP/r.json" && grep -q '"recibido_en":"' "$TMP/r.json" && grep -q '"cpu":\["250m","10"\]' "$TMP/r.json" \
+  || falla "13 · GET /celdas no devuelve el estado medido entero: $(cat "$TMP/r.json")"
+dice "13 · el estado: solo el agente de la organizacion; el contrato se exige; una fila que se sobreescribe; huella al empezar; GET /celdas lo dice"
+
+echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, y el estado que informa el agente."

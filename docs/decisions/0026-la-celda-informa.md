@@ -99,8 +99,12 @@ GET  /organizaciones/{org}/celdas  …, "estado_medido": { …snapshot… }   om
 ```
 
 Migración `036`: `iam.celda_estado (celda references iam.celda, medido_en timestamptz, cuerpo
-jsonb)` — **una fila por celda, upsert**. Es telemetría, no un acto: **sin huella**. Mil
-cuatrocientas huellas al día por celda enterrarían las que importan. La autorización es por clase
+jsonb)` — **una fila por celda, upsert**. Es telemetría, no un acto: **sin huella por
+snapshot** (`Tx::confirmar_observacion`, la única excepción a la regla de `base.rs`, con nombre);
+mil cuatrocientas huellas al día por celda enterrarían las que importan. Lo que **sí** es un
+hecho y se anota (`celda:informa`): que la celda **empieza** a informar, y que **vuelve** tras
+más de tres minutos sin que llegara nada (`recibido_en`, no `medido_en`: el silencio es de
+recepción). La autorización es por clase
 y por pertenencia: `rubix_tipo=agente` **y** `(emisor, sub)` es el `iam.agente` de la organización
 dueña de la celda. Una persona: 403. El agente de otra organización: 404 (no se revela que la
 celda existe). El aprovisionador: 403 —tiene sus dos verbos y ninguno más—.
@@ -143,14 +147,15 @@ Cada etapa deja el sistema entero y medido; ninguna depende de que la siguiente 
 empieza por **quien recibe** y no por quien informa: un informador contra un verbo que no existe
 no se puede medir; un verbo sin informador se mide con `curl`.
 
-### E0 · La medida y el contrato
+### E0 · La medida y el contrato — ✓ 2026-09-15
 
 `medida-el-estado-de-la-celda.py` pasa de tabla a **snapshot**: `--snapshot` imprime el JSON
 de ② rendido con `kubectl`, byte a byte como lo rendirá el informador. Es la referencia.
 **Acepta:** el snapshot de `victor` valida contra el esquema de ② y cuadra con lo que dice
-`kubectl` a mano.
+`kubectl` a mano. *Medido: `victor` a las 12:20Z — cpu 250m/10, memoria 896Mi/36Gi, jobs 4/50,
+0/4/0, control listo desde 09:23 sin reinicios; `validar()` sin faltas.*
 
-### E1 · `ore-iam` recibe (036 y el verbo)
+### E1 · `ore-iam` recibe (036 y el verbo) — ✓ código y prueba 2026-09-15; el despliegue y la medida con el agente real, abajo
 
 `036-el-estado-de-la-celda.sql`; `POST /celdas/{celda}/estado`; `GET …/celdas` con
 `estado_medido`; la puerta de clases de `rutas.rs` pasa de «aprovisionador sí/no» a **una tabla

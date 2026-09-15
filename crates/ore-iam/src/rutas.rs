@@ -81,18 +81,25 @@ impl Servidor {
         // que sea. Registrar un agente es un acto del reconciliador con lo que
         // el IdP acaba de crear; hacerlo a mano era el paso 0 del ⑨ del
         // aprovisionador, que esta etapa retira.
-        let es_aprovisionador = s.tipo.as_deref() == Some("aprovisionador");
-        let de_aprovisionador = matches!(
-            (p.metodo.as_str(), seg),
-            ("POST", ["organizaciones", _, "agentes"]) | ("POST", ["celdas", _, "aprovisionada"])
-        );
-        if es_aprovisionador != de_aprovisionador {
+        // ⭐ Y desde la 0026 son TRES clases, y una tabla clase → verbos: la
+        //   persona (la consola), el aprovisionador (dos verbos) y el AGENTE de
+        //   una celda (uno: informar su estado). Un sujeto de una clase que pide
+        //   un verbo de otra recibe 403 con el motivo — y a quien no es de
+        //   ninguna, la puerta de la clase del verbo se lo dice.
+        let clase = Clase::de(s);
+        let del_verbo = Clase::del_verbo(p.metodo.as_str(), seg);
+        if clase != del_verbo {
             return Respuesta::error(
                 403,
-                if es_aprovisionador {
-                    "el aprovisionador solo registra agentes y da celdas por aprovisionadas"
-                } else {
-                    "eso lo hace el aprovisionador, no una persona"
+                match clase {
+                    Clase::Aprovisionador => {
+                        "el aprovisionador solo registra agentes y da celdas por aprovisionadas"
+                    }
+                    Clase::Agente => "el agente de una celda solo informa su estado",
+                    Clase::Persona => match del_verbo {
+                        Clase::Agente => "eso lo hace el informador de la celda, no una persona",
+                        _ => "eso lo hace el aprovisionador, no una persona",
+                    },
                 },
             );
         }
@@ -111,6 +118,7 @@ impl Servidor {
             ("POST", ["concesiones", c, "revocar"]) => self.revocar(s, c),
             ("POST", ["organizaciones", o, "agentes"]) => self.registrar_agente(s, o, &p.cuerpo),
             ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c),
+            ("POST", ["celdas", c, "estado"]) => self.estado(s, c, &p.cuerpo),
             // ⭐⭐ LOS DOS VERBOS DE LA 0025 E6: la cuenta, y una celda mas.
             ("POST", ["organizaciones"]) => self.fundar(s, &p.cuerpo),
             ("POST", ["organizaciones", o, "perfil"]) => self.editar_perfil(s, o, &p.cuerpo),
@@ -330,11 +338,13 @@ impl Servidor {
             let filas = tx.filas(
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
                         t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
-                        c.puerta, c.cluster, c.arbol, c.entrada, c.aprovisionada::text
+                        c.puerta, c.cluster, c.arbol, c.entrada, c.aprovisionada::text,
+                        ce.cuerpo::text, ce.recibido_en::text
                    from iam.celda c
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
                    join iam.persona     p  on p.id = pe.persona
+                   left join iam.celda_estado ce on ce.celda = c.id
                   where c.organizacion = $1 and c.estado <> 'retirada'
                     and p.emisor = $2 and p.sub = $3
                   order by c.creada_en",
@@ -374,6 +384,19 @@ impl Servidor {
                     //   por el camino.
                     if let Some(cuando) = f.get::<_, Option<String>>(16) {
                         campos.push(("aprovisionada", Json::s(cuando)));
+                    }
+                    // ⭐ EL ESTADO MEDIDO (0026): el ultimo snapshot que empujo el
+                    //   informador de la celda, tal cual, mas `recibido_en`. Se
+                    //   omite si nunca informo: la consola lo distingue de «informo
+                    //   y esta mal».
+                    if let (Some(cuerpo), Some(recibido)) = (
+                        f.get::<_, Option<String>>(17),
+                        f.get::<_, Option<String>>(18),
+                    ) && let Ok(Json::Obj(mut m)) =
+                        analizar(&cuerpo).and_then(|n| nodo_a_json(&n))
+                    {
+                        m.insert("recibido_en".into(), Json::s(recibido));
+                        campos.push(("estado_medido", Json::Obj(m)));
                     }
                     // ⭐ La SALIDA: por que IPs sale la celda hacia las fuentes
                     //   del cliente (lo que abre en su firewall). Es del cluster
@@ -755,6 +778,103 @@ impl Servidor {
         })
     }
 
+    /// `POST /celdas/{celda}/estado` (0026 E1): el informador de la celda empuja
+    /// su snapshot. Solo el AGENTE de la organizacion duena de la celda —la
+    /// clase la comprueba la puerta; la pertenencia, la consulta—. Una celda
+    /// que no existe y una que no es suya contestan LO MISMO: decir cual
+    /// revelaria que existe.
+    ///
+    /// ⭐ Es una observacion, no un acto: la fila se sobreescribe y no deja
+    ///   huella… salvo cuando la celda EMPIEZA a informar o VUELVE tras mas de
+    ///   tres minutos callada, que si se anota (`celda:informa`).
+    fn estado(&self, s: &Identidad, celda: &str, cuerpo: &str) -> Respuesta {
+        let (celda, cuerpo) = (celda.to_string(), cuerpo.to_string());
+        self.en_transaccion_observando(s, move |tx, emisor| {
+            if cuerpo.len() > 8192 {
+                return Err(format!("el snapshot pasa de 8 KB ({} bytes)", cuerpo.len()));
+            }
+            let n = analizar(&cuerpo)?;
+            let snapshot = nodo_a_json(&n)?;
+            validar_snapshot(&snapshot)?;
+            let medido_en = campo(&n, "medido_en").ok_or("falta `medido_en`")?;
+            let f = tx
+                .uno(
+                    "select c.id
+                       from iam.celda  c
+                       join iam.agente a on a.organizacion = c.organizacion
+                      where c.nombre = $1 and c.estado <> 'retirada'
+                        and a.emisor = $2 and a.sub = $3",
+                    &[&celda, &emisor, &s.persona],
+                )?
+                .ok_or_else(|| format!("no hay ninguna celda `{celda}`"))?;
+            let id: String = f.get(0);
+            // ¿Empieza, o vuelve tras un silencio? Eso si es un hecho.
+            let previa = tx.uno(
+                "select (now() - recibido_en) > interval '3 minutes' from iam.celda_estado where celda = $1",
+                &[&id],
+            )?;
+            let hito = match previa {
+                None => Some("empieza"),
+                Some(f) if f.get::<_, bool>(0) => Some("vuelve"),
+                Some(_) => None,
+            };
+            let f = tx
+                .uno(
+                    "insert into iam.celda_estado (celda, medido_en, cuerpo)
+                     values ($1, $2::text::timestamptz, $3::text::jsonb)
+                     on conflict (celda) do update
+                        set medido_en = excluded.medido_en, recibido_en = now(), cuerpo = excluded.cuerpo
+                     returning medido_en::text, recibido_en::text",
+                    &[&id, &medido_en, &snapshot.jcs()],
+                )?
+                .ok_or("no se pudo guardar el estado")?;
+            let (medido, recibido): (String, String) = (f.get(0), f.get(1));
+            if let Some(h) = hito {
+                tx.anotar(
+                    "celda:informa",
+                    &id,
+                    Json::obj([("celda", Json::s(&celda)), ("hito", Json::s(h)), ("medido_en", Json::s(&medido))]),
+                )?;
+            }
+            Ok((
+                Json::obj([
+                    ("celda", Json::s(celda)),
+                    ("medido_en", Json::s(medido)),
+                    ("recibido_en", Json::s(recibido)),
+                ]),
+                hito.is_some(),
+            ))
+        })
+    }
+
+    /// Como `en_transaccion`, para una OBSERVACION (0026): si `f` dice `false`
+    /// no hubo acto y se confirma sin huella (`Tx::confirmar_observacion`); si
+    /// dice `true`, hubo un hito y se confirma como siempre, con su huella.
+    fn en_transaccion_observando(
+        &self,
+        s: &Identidad,
+        f: impl FnOnce(&mut Tx, &str) -> Result<(Json, bool), String>,
+    ) -> Respuesta {
+        let Ok(mut base) = self.base.lock() else {
+            return Respuesta::error(500, "la conexión quedó envenenada");
+        };
+        let mut tx = match Tx::abrir(&mut base, s) {
+            Ok(t) => t,
+            Err(e) => return Respuesta::error(502, e),
+        };
+        match f(&mut tx, &self.emisor) {
+            Err(e) => Respuesta::error(422, e),
+            Ok((j, true)) => match tx.confirmar() {
+                Ok(()) => Respuesta::ok(j),
+                Err(e) => Respuesta::error(500, e),
+            },
+            Ok((j, false)) => match tx.confirmar_observacion() {
+                Ok(()) => Respuesta::ok(j),
+                Err(e) => Respuesta::error(500, e),
+            },
+        }
+    }
+
     /// Como `en_transaccion`, para un verbo que puede no cambiar nada: si `f`
     /// dice `false`, la transaccion se suelta sin confirmar y se contesta igual.
     /// Es lo que un reconciliador pide: llamar sin mirar, y que «ya estaba» no
@@ -785,6 +905,111 @@ impl Servidor {
     }
 }
 
+// ── las clases de sujeto ────────────────────────────────────────────────────
+
+/// ⭐ Quien pide, por CLASE (0025 E5, 0026 E1): la persona de la consola, el
+///   aprovisionador y el agente de una celda. Cada verbo es de una clase y de
+///   ninguna otra; `Clase::del_verbo` es la tabla.
+#[derive(PartialEq, Clone, Copy)]
+enum Clase {
+    Persona,
+    Aprovisionador,
+    Agente,
+}
+
+impl Clase {
+    fn de(s: &Identidad) -> Clase {
+        match s.tipo.as_deref() {
+            Some("aprovisionador") => Clase::Aprovisionador,
+            Some("agente") => Clase::Agente,
+            _ => Clase::Persona,
+        }
+    }
+
+    fn del_verbo(metodo: &str, seg: &[&str]) -> Clase {
+        match (metodo, seg) {
+            ("POST", ["organizaciones", _, "agentes"])
+            | ("POST", ["celdas", _, "aprovisionada"]) => Clase::Aprovisionador,
+            ("POST", ["celdas", _, "estado"]) => Clase::Agente,
+            _ => Clase::Persona,
+        }
+    }
+}
+
+// ── el snapshot (0026-②) ────────────────────────────────────────────────────
+
+/// El JSON del cuerpo como `Json`, para validarlo y guardarlo canonico. Un
+/// escalar con comillas es cadena; sin comillas, `true`/`false`, un entero, o
+/// —si no es ninguna de las dos— una cadena tal cual (no se pierde nada).
+fn nodo_a_json(n: &Node) -> Result<Json, String> {
+    Ok(match n {
+        Node::Scalar { raw, style, .. } => {
+            if matches!(style, parse::Style::Plain) {
+                match raw.as_str() {
+                    "true" => Json::Bool(true),
+                    "false" => Json::Bool(false),
+                    "null" => Json::Str(String::new()),
+                    r => r
+                        .parse::<i64>()
+                        .map(Json::Int)
+                        .unwrap_or_else(|_| Json::Str(r.to_string())),
+                }
+            } else {
+                Json::Str(raw.clone())
+            }
+        }
+        Node::Sequence { items, .. } => {
+            Json::Arr(items.iter().map(nodo_a_json).collect::<Result<_, _>>()?)
+        }
+        Node::Mapping { entries, .. } => {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in entries {
+                let k = k.as_str().ok_or("una clave que no es texto")?.to_string();
+                m.insert(k, nodo_a_json(v)?);
+            }
+            Json::Obj(m)
+        }
+    })
+}
+
+/// La forma de la 0026-②, y nada mas: `v` = 1, `medido_en` en UTC, `cuota` con
+/// sus tres pares `[usado, duro]`, `jobs` con tres enteros, `control` con
+/// `listo`. Lo que sobre viaja; lo que falte se rechaza con su nombre.
+fn validar_snapshot(s: &Json) -> Result<(), String> {
+    let Json::Obj(m) = s else {
+        return Err("el snapshot no es un objeto".into());
+    };
+    if m.get("v") != Some(&Json::Int(1)) {
+        return Err("el snapshot no es de la version 1 (`v`)".into());
+    }
+    match m.get("medido_en") {
+        Some(Json::Str(t)) if t.ends_with('Z') && t.len() >= 20 => {}
+        _ => return Err("`medido_en` tiene que ser ISO-8601 en UTC, con Z".into()),
+    }
+    let Some(Json::Obj(cuota)) = m.get("cuota") else {
+        return Err("falta `cuota`".into());
+    };
+    for k in ["cpu", "memoria", "jobs"] {
+        match cuota.get(k) {
+            Some(Json::Arr(v)) if v.len() == 2 => {}
+            _ => return Err(format!("`cuota.{k}` tiene que ser [usado, duro]")),
+        }
+    }
+    let Some(Json::Obj(jobs)) = m.get("jobs") else {
+        return Err("falta `jobs`".into());
+    };
+    for k in ["activos", "ok", "fallidos"] {
+        if !matches!(jobs.get(k), Some(Json::Int(_))) {
+            return Err(format!("`jobs.{k}` tiene que ser un entero"));
+        }
+    }
+    match m.get("control") {
+        Some(Json::Obj(c)) if matches!(c.get("listo"), Some(Json::Bool(_))) => {}
+        _ => return Err("falta `control.listo`".into()),
+    }
+    Ok(())
+}
+
 // ── el cuerpo ───────────────────────────────────────────────────────────────
 
 fn analizar(cuerpo: &str) -> Result<Node, String> {
@@ -812,6 +1037,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/concesiones/{id}/revocar", con),
         ("POST", "/organizaciones/{org}/agentes", con),
         ("POST", "/celdas/{celda}/aprovisionada", con),
+        ("POST", "/celdas/{celda}/estado", con),
         ("POST", "/organizaciones", con),
         ("POST", "/organizaciones/{org}/perfil", con),
         ("POST", "/organizaciones/{org}/celdas", con),
