@@ -106,8 +106,9 @@ hecho y se anota (`celda:informa`): que la celda **empieza** a informar, y que *
 más de tres minutos sin que llegara nada (`recibido_en`, no `medido_en`: el silencio es de
 recepción). La autorización es por clase
 y por pertenencia: `rubix_tipo=agente` **y** `(emisor, sub)` es el `iam.agente` de la organización
-dueña de la celda. Una persona: 403. El agente de otra organización: 404 (no se revela que la
-celda existe). El aprovisionador: 403 —tiene sus dos verbos y ninguno más—.
+dueña de la celda. Una persona: 403. El agente de otra organización: **lo mismo que una celda
+inexistente** (422, «no hay ninguna celda»: no se revela que existe). El aprovisionador: 403 —tiene
+sus dos verbos y ninguno más—.
 
 > ### ④ La consola pinta desde el plano de control, y compone con el árbol.
 
