@@ -603,9 +603,11 @@ dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en t
 [ "$(campo ya)" = "False" ] || falla "11 · la primera retirada dijo «ya»"
 [ "$(pide POST "/celdas/acme-eu/retirar" "$ADA")" = "200" ] && [ "$(campo ya)" = "True" ] \
   || falla "11 · retirar dos veces no es idempotente: $(cat "$TMP/r.json")"
+[ "$(pide GET "/organizaciones/acme/celdas" "$ADA")" = "200" ] || falla "11 · no se pudo listar tras retirar"
+grep -q '"nombre":"acme-eu"' "$TMP/r.json" && falla "11 · ⛔ LA CELDA RETIRADA SIGUE EN LA LISTA: $(cat "$TMP/r.json")"
 [ "$(psql "$URL" -qtAc "select estado from iam.celda_de where celda='acme-eu'")" = "retirada" ] \
   || falla "11 · celda_de no enseña \`retirada\` al aprovisionador"
-dice "11 · retirar: la de casa no, una USERADMIN no, y la segunda vez es «ya»; celda_de lo dice"
+dice "11 · retirar: la de casa no, una USERADMIN no, la segunda vez es «ya», y deja de listarse; celda_de lo dice"
 
 # ── 12 · el perfil: titulo y logo ───────────────────────────────────────────
 [ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova-corp","titulo":"Nova Corp S.L."}')" = "200" ] \

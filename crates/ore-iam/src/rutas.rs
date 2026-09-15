@@ -321,6 +321,12 @@ impl Servidor {
             // ⭐ Con su tier DENTRO —título, promesa y cuota— desde la `026`: es
             //   lo que la consola tiene que decir de cada celda, y decirlo desde
             //   aquí es lo que evita una segunda copia de la cuota en la consola.
+            // ⭐ Y SIN LAS RETIRADAS (033): retirar es dejar de tenerla. La fila
+            //   se queda —el reconciliador la desmonta por ella, y el nombre sigue
+            //   reservado mientras tanto—, pero ya no es una celda de la
+            //   organización: listarla era enseñar «Abrir» y «Retirar» sobre algo
+            //   que se está desmontando, y como nunca la aprovisionan, la consola
+            //   la pintaba «Provisioning» para siempre.
             let filas = tx.filas(
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
                         t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
@@ -329,7 +335,8 @@ impl Servidor {
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
                    join iam.persona     p  on p.id = pe.persona
-                  where c.organizacion = $1 and p.emisor = $2 and p.sub = $3
+                  where c.organizacion = $1 and c.estado <> 'retirada'
+                    and p.emisor = $2 and p.sub = $3
                   order by c.creada_en",
                 &[&org, &emisor, &s.persona],
             )?;
