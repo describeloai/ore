@@ -38,9 +38,10 @@ favor no es un registro: es una colección de justificaciones.
 | [0026](0026-la-celda-informa.md) · la celda informa | el estado vivo de una celda —cuota usada, jobs, salud del control— **lo observa un informador que vive en la celda** con identidad de agente y `Role` de sólo lectura en su namespace, y **lo empuja a `ore-iam`**, que guarda **el último snapshot** y lo devuelve en `GET /celdas`; la overview del clúster se pinta **desde el plano de control**; `ore-serve` no gana ni red ni privilegios | **aceptado** |
 | [0027](0027-el-modelo-vive-en-el-arbol.md) · el modelo vive en el árbol | un modelo desplegado es **un documento del árbol** (`kind: Model`), no un recurso del plano de control; `ore-serve` rellena **una plantilla del aprovisionador** y la empuja a `modelos.git`, que Flux aplica con **una cuenta que sólo puede desplegar**; los pesos **no pasan por el árbol** (puntero y digest dentro, bytes fuera); el estado lo trae **el informador** (snapshot v2); cierra la E6 de `0024` | **propuesto** |
 
-**0016 y 0027 son las propuestas, y el estado es deliberado**: las quince anteriores se escribieron
-después de construir lo que decidían, y esta se escribe antes porque toca un protocolo con tres
-implementaciones. Es también la única que decide **mirando fuera**: sus cinco preguntas abiertas
+**0016 y 0027 son las propuestas, y el estado es deliberado**: las demás se escribieron después
+de construir lo que decidían. 0016 se escribe antes porque toca un protocolo con tres
+implementaciones; 0027, porque abre una cuenta y un repositorio nuevos por celda y su E0 es una
+medida a mano que puede cambiar la forma. Es también la única que decide **mirando fuera**: sus cinco preguntas abiertas
 se contestaron leyendo lo que Debezium, Iceberg, Delta, Snowflake, BigQuery y Airbyte tienen
 escrito, y los seis coinciden. Una de esas lecturas —que el modo `field` es *at-least-once* por
 construcción— cambió la propuesta en vez de confirmarla.
