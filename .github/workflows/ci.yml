@@ -345,7 +345,7 @@ jobs:
           install_components: gke-gcloud-auth-plugin
 
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
-      - name: construir las cinco imagenes
+      - name: construir las seis imagenes
         run: |
           # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
           #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla
@@ -390,6 +390,8 @@ jobs:
           DESTINOS="identidad/ore-iam"
           for NS in $(kubectl get ns -l ore.dev/rol=cargas -o jsonpath='{.items[*].metadata.name}'); do
             DESTINOS="$DESTINOS $NS/ore-serve $NS/ore-cofre"
+            # El informador (0026 E2) solo en las celdas que ya lo tienen rendido.
+            kubectl -n "$NS" get deployment informador >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/informador"
           done
 
           # Y si la pregunta no devuelve NADA, esto NO pasa en verde. Sin esta

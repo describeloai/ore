@@ -86,8 +86,17 @@ PLANTILLAS = [
     "45-la-mudanza-del-cofre.yaml",
     # ⭐ La forja del inquilino (0024 E3-(c)): su árbol y su cola en su celda.
     "46-la-forja-del-inquilino.yaml",
+    # ⭐ El informador de la celda (0026 E2): mide cuota, jobs y control y lo
+    #   empuja a ore-iam. Otro proceso con otro privilegio; ore-serve no cambia.
+    "47-el-informador.yaml",
     "50-jwks.yaml",
 ]
+
+# ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
+#   lo que dice `kubectl get endpoints kubernetes`; cambia si se recrea el
+#   cluster, y `medida-el-estado-de-la-celda.py --cotejar` lo compara. Vive
+#   aqui, con nombre, y ⑫ exige que la plantilla lleve exactamente este.
+MAESTRO = "10.10.0.2/32"
 
 # ⛔⛔ LO QUE SE DEJA FUERA A PROPOSITO, Y CON SU MOTIVO ESCRITO.
 #
@@ -267,6 +276,8 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None):
         # ⭐ Y la forja del inquilino (0024 E3-(c)): su cuenta `ore-forja-<n>`, que
         #   solo puede añadir versiones a `t-<n>-forja-admin`.
         t = t.replace("forja-%s" % MODELO, "forja-%s" % nombre)
+        t = t.replace("informador-%s" % MODELO, "informador-%s" % nombre)
+        t = t.replace("name: CELDA, value: %s }" % MODELO, "name: CELDA, value: %s }" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:
         #   `metadata.name` del manifiesto es lo que prefija cada
@@ -752,6 +763,22 @@ def comprobar():
         print("  ⭐ ⑪ el refresco inicial del JWKS es el jobTemplate del CronJob, letra por letra")
     except ImportError:
         print("  ⑪ (sin pyyaml: el refresco inicial no se coteja aqui)")
+
+    # ── ⑫ EL INFORMADOR: solo lectura, solo su namespace, solo al maestro ──
+    # (0026 E2). Un `Role` que gane un verbo de escritura, o un `ClusterRole`,
+    # o una IP del API server distinta de MAESTRO, es justo lo que este ADR
+    # promete que no pasa.
+    t47 = (MALLA / "47-el-informador.yaml").read_text(encoding="utf-8")
+    if "kind: ClusterRole" in t47:
+        fallos.append("`47-el-informador.yaml`: un ClusterRole; el informador solo puede leer SU namespace")
+    for verbo in ("create", "update", "patch", "delete", "watch", "*"):
+        if re.search(r"verbs:.*\b%s\b" % re.escape(verbo), t47):
+            fallos.append("`47-el-informador.yaml`: el Role del informador lleva `%s`; solo get y list" % verbo)
+    if "cidr: %s" % MAESTRO not in t47:
+        fallos.append("`47-el-informador.yaml`: la IP del API server no es MAESTRO (%s)" % MAESTRO)
+    if "resources: [resourcequotas, pods]" not in t47 or "resources: [jobs]" not in t47:
+        fallos.append("`47-el-informador.yaml`: el Role no es exactamente resourcequotas, pods y jobs")
+    print("  ⭐ ⑫ el informador: Role de lectura en su namespace, y el API server es %s" % MAESTRO)
 
     return veredicto(fallos)
 

@@ -14,6 +14,9 @@
 #                       garantía estructural — más fuerte que una política que
 #                       se lo prohíba, porque no hay nada que aplicar.
 #
+#   ore-informador      el informador de la celda (0026): `curl` y `jq`, y nada
+#                       mas. Lee el API server con su Role y empuja a ore-iam.
+#
 #   ore-serve           el plano de control. Lleva `ore` y `git`, y NADA
 #                       más: no puede leer un origen —el `ore` que ejecuta es
 #                       el mismo binario sin TLS— y sí puede hablar con la
@@ -157,6 +160,22 @@ COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-serve"]
+
+# ── 3b · El informador de la celda (0026 E2) ────────────────────────────────
+#
+# Alpine, `curl` (con verificacion de certificados: el API server se habla con
+# `--cacert` del pod) y `jq`. Ni `gcloud`, ni `ore`, ni `git`: el agente lo trae
+# un init con la imagen de drivers, y este contenedor solo mide y empuja. Es
+# OTRO proceso con OTRO privilegio, y no puede hacer lo que hace `ore-serve`.
+FROM alpine:3.22 AS informador
+
+RUN apk add --no-cache curl ca-certificates jq
+
+COPY malla/informar.sh /usr/local/bin/informar
+RUN chmod 0755 /usr/local/bin/informar
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/informar"]
 
 # ── 4 · El plano de identidad y acceso ──────────────────────────────────────
 #

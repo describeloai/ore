@@ -213,6 +213,12 @@ if "--cotejar" in sys.argv:
         print("  ≠ " + d)
     if faltas:
         print("  ⛔ lo guardado no cumple la 0026-②: " + "; ".join(faltas))
+    # Y la IP del API server que lleva la plantilla del informador frente a la real.
+    ep = kubectl("get", "endpoints", "kubernetes", "-n", "default")
+    real = (ep or {}).get("subsets", [{}])[0].get("addresses", [{}])[0].get("ip")
+    plantilla = open(os.path.join(os.path.dirname(__file__), "..", "malla", "47-el-informador.yaml"), encoding="utf-8").read()
+    if real and ("cidr: %s/32" % real) not in plantilla:
+        difs.append("MAESTRO: la plantilla no lleva %s/32 (el API server real)" % real)
     fresco = g["hace_s"] <= 90
     print("  %s snapshot %s · %s" % ("✓" if fresco and not faltas else "✗",
                                    "fresco (≤ 90 s)" if fresco else "VIEJO (> 90 s)",

@@ -385,7 +385,7 @@ if [ "$ESTADO" = "retirada" ]; then
     --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
     && hecho "\`ore-cofre-$NOMBRE\` ya no puede usar $KEK" || ya "el permiso del cofre sobre la llave"
   # las cuentas
-  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE"; do
+  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE"; do
     if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
       correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada"
     else
@@ -429,7 +429,7 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-paso "③ LAS TRES CUENTAS DE GOOGLE — una por inquilino, no una compartida"
+paso "③ LAS CUENTAS DE GOOGLE — una por papel y por inquilino, no una compartida"
 # ══════════════════════════════════════════════════════════════════════════
 #
 # ⛔⛔ Y esto es lo que la medida no había visto: `ore-driver@` es UNA cuenta
@@ -468,10 +468,14 @@ cuenta "ore-driver-$NOMBRE"
 # ⭐ Y la cuarta: la de su FORJA (0024 E3-(c)), que solo sabe hacer una cosa —
 #   dejar el testigo de su admin en el almacen al fundarse.
 cuenta "ore-forja-$NOMBRE"
+# ⭐ La del informador (0026 E2): solo para que su init traiga el agente del
+#   almacen. Lee dos secretos y nada mas.
+cuenta "ore-informador-$NOMBRE"
 enlace "ore-cofre-$NOMBRE" cofre
 enlace "ore-serve-$NOMBRE" ore-serve
 enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
+enlace "ore-informador-$NOMBRE" informador
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #
@@ -1185,10 +1189,13 @@ JSON
           && hecho "$parte del agente guardado en el almacen, y NO en un \`Secret\`"
       fi
       # 3 · quien lo lee: el driver de ESTE inquilino.
-      correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
-        --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-        --role=roles/secretmanager.secretAccessor \
-        && hecho "\`ore-driver-$NOMBRE\` puede leer el $parte"
+      # Los Jobs (driver) y el informador (0026 E2) piden como el agente: los dos leen.
+      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE"; do
+        correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
+          --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
+          --role=roles/secretmanager.secretAccessor \
+          && hecho "\`$QUIEN\` puede leer el $parte"
+      done
     done
     rm -f "$TMP/kc" "$TMP/agente-secreto" "$TMP/actual"
     hecho "agente \`$AGENTE\` · sub $AGENTE_SUB"

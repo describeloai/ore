@@ -1,0 +1,206 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL INFORMADOR DE LA CELDA (0026 E2) — otro proceso, con otro privilegio
+#
+# Lo que solo el API server sabe de esta celda —cuota usada, jobs, si el
+# control esta listo— lo observa ESTE pod y lo empuja a `ore-iam` cada minuto.
+# `ore-serve` no cambia: ni red, ni ServiceAccount, ni una regla de egress mas.
+#
+#   ServiceAccount `informador`   con Workload Identity a `ore-informador-<celda>`
+#                                 (el init trae el agente del almacen, como los Jobs)
+#   Role + RoleBinding            SOLO LECTURA, SOLO en este namespace:
+#                                 resourcequotas, pods, jobs (get, list)
+#   Deployment `informador`       init `traer-el-agente` (imagen de drivers, gcloud)
+#                                 + `informador` (alpine + curl + jq: sin gcloud,
+#                                 sin ore, sin git). 10m CPU · 16Mi.
+#   NetworkPolicy                 egress SOLO a DNS, al API server, al IdP y a ore-iam
+#
+# ⛔ El API server va por IP (`10.10.0.2/32`): una NetworkPolicy no sabe de
+#   nombres. Es la de `kubectl get endpoints kubernetes`, y cambia si se recrea
+#   el cluster: `medida-el-estado-de-la-celda.py --cotejar` la compara en cada
+#   pasada. `gen-inquilino.py` la lleva como constante nombrada (MAESTRO).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: informador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: informador
+  annotations:
+    # Para el CONTENEDOR DE INICIO: quien va a buscar el cliente y el secreto
+    # del agente al almacen. Una cuenta por celda con `secretAccessor` sobre
+    # esos dos secretos y nada mas; la crea y la enlaza el aprovisionador (③, ⑦).
+    iam.gke.io/gcp-service-account: ore-informador-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: informador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: informador
+rules:
+  # Solo leer, solo aqui. Ni `watch` (no hace falta: mide cada minuto), ni
+  # `secrets`, ni nada de escritura. Un `Role`, no un `ClusterRole`.
+  - apiGroups: [""]
+    resources: [resourcequotas, pods]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: informador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: informador
+subjects:
+  - kind: ServiceAccount
+    name: informador
+    namespace: t-demo
+roleRef:
+  kind: Role
+  name: informador
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: informador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: informador
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: informador
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: informador
+    spec:
+      serviceAccountName: informador
+      # Este pod SI monta el token de su ServiceAccount: es con lo que lee el
+      # API server. Es el unico de la celda que lo hace, y su Role es de lectura.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: agente
+          emptyDir: { medium: Memory }
+        - name: tmp
+          emptyDir: {}
+      initContainers:
+        - name: traer-el-agente
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts:
+            - name: agente
+              mountPath: /agente
+            - name: tmp
+              mountPath: /tmp
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # El agente de la celda, por el mismo camino que los Jobs de
+              # catalogo (44): del almacen a un fichero, y el tamano al log —
+              # nunca el valor.
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \
+                  --secret=t-demo-agente-$p --out-file=/agente/$p
+                chmod 0400 /agente/$p
+              done
+              echo "agente puesto · $(cat /agente/cliente)"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: informador
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-informador:main
+          imagePullPolicy: Always
+          env:
+            - { name: CELDA, value: demo }
+            - { name: IAM_URL, value: "http://ore-iam.identidad.svc.cluster.local:8090" }
+            - { name: IDP_TOKEN_URL, value: "http://idp-service.identidad.svc.cluster.local:8080/realms/rubix/protocol/openid-connect/token" }
+            - { name: INTERVALO, value: "60" }
+          volumeMounts:
+            - name: agente
+              mountPath: /agente
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: {cpu: "10m", memory: 16Mi}
+            limits:   {cpu: "100m", memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-informador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: informador
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: informador
+  policyTypes: [Egress]
+  egress:
+    # DNS, como todos.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # El API server (MAESTRO): la unica salida a una IP de esta celda.
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.2/32
+      ports:
+        - { protocol: TCP, port: 443 }
+    # El IdP (el token del agente) y ore-iam (el POST), los dos en `identidad`.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: identidad
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8090 }
+    # El init habla con el almacen de Google por el metadata server y por 443,
+    # como el init de `ore-serve` (40): el egress es por pod, y el init es
+    # parte de este pod.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - { protocol: TCP, port: 80 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }

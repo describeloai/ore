@@ -218,6 +218,14 @@ spec:
           podSelector:
             matchLabels:
               ore.dev/rol: aprovisionador
+        # ⭐ El informador de cada celda (0026 E2), y solo el pod con ese rol:
+        #   empuja el estado de su celda. Los demas pods de la celda no llegan.
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: cargas
+          podSelector:
+            matchLabels:
+              ore.dev/rol: informador
       ports:
         - protocol: TCP
           port: 8090

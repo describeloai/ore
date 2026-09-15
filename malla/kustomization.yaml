@@ -162,6 +162,7 @@ configMapGenerator:
       - 44-el-catalogo.yaml
       - 45-la-mudanza-del-cofre.yaml
       - 46-la-forja-del-inquilino.yaml
+      - 47-el-informador.yaml
       - 50-jwks.yaml
 
 generatorOptions:
