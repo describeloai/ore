@@ -339,7 +339,7 @@ impl Servidor {
                 "select c.id, c.nombre, c.tier, c.proveedor, c.region, c.estado, c.creada_en::text,
                         t.titulo, t.promesa, t.cuota_cpu, t.cuota_memoria, t.cuota_jobs,
                         c.puerta, c.cluster, c.arbol, c.entrada, c.aprovisionada::text,
-                        ce.cuerpo::text, ce.recibido_en::text
+                        ce.cuerpo::text, to_char(ce.recibido_en at time zone 'UTC', 'YYYY-MM-DD') || 'T' || to_char(ce.recibido_en at time zone 'UTC', 'HH24:MI:SS') || 'Z'
                    from iam.celda c
                    join iam.tier        t  on t.nombre = c.tier
                    join iam.pertenencia pe on pe.organizacion = c.organizacion
@@ -824,7 +824,8 @@ impl Servidor {
                      values ($1, $2::text::timestamptz, $3::text::jsonb)
                      on conflict (celda) do update
                         set medido_en = excluded.medido_en, recibido_en = now(), cuerpo = excluded.cuerpo
-                     returning medido_en::text, recibido_en::text",
+                     returning to_char(medido_en at time zone 'UTC', 'YYYY-MM-DD') || 'T' || to_char(medido_en at time zone 'UTC', 'HH24:MI:SS') || 'Z',
+                               to_char(recibido_en at time zone 'UTC', 'YYYY-MM-DD') || 'T' || to_char(recibido_en at time zone 'UTC', 'HH24:MI:SS') || 'Z'",
                     &[&id, &medido_en, &snapshot.jcs()],
                 )?
                 .ok_or("no se pudo guardar el estado")?;

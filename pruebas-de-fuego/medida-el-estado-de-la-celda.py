@@ -134,6 +134,91 @@ if SNAPSHOT:
         sys.exit(1)
     sys.exit(0)
 
+PROYECTO = "project-8853a180-450d-47be-b83"
+IDP = "https://login.paladio.io/realms/rubix"
+IAM = "https://iam.ore.paladio.io"
+
+
+def sh(cmd):
+    """`gcloud` en Windows es un .cmd: va como UNA cadena con shell=True."""
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8")
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def token_del_agente():
+    """El token REAL de `ore-agente-<celda>`: cliente y secreto del almacén, `client_credentials` al IdP."""
+    cli = sh("gcloud secrets versions access latest --secret=%s-agente-cliente --project=%s" % (NS, PROYECTO))
+    sec = sh("gcloud secrets versions access latest --secret=%s-agente-secreto --project=%s" % (NS, PROYECTO))
+    if not cli or not sec:
+        return None
+    r = subprocess.run(
+        ["curl", "-s", "-m", "10", "-X", "POST", IDP + "/protocol/openid-connect/token",
+         "-d", "grant_type=client_credentials", "-d", "client_id=" + cli, "--data-urlencode", "client_secret=" + sec],
+        capture_output=True, text=True, encoding="utf-8")
+    try:
+        return json.loads(r.stdout)["access_token"]
+    except (ValueError, KeyError):
+        return None
+
+
+def guardado():
+    """La fila de `iam.celda_estado` de esta celda, leída en la base (kubectl exec)."""
+    sql = ("select json_build_object('medido_en', ce.medido_en, 'recibido_en', ce.recibido_en, "
+           "'hace_s', extract(epoch from now() - ce.recibido_en)::int, 'cuerpo', ce.cuerpo) "
+           "from iam.celda_estado ce join iam.celda c on c.id = ce.celda where c.nombre = '%s'" % CELDA)
+    r = subprocess.run(
+        ["kubectl", "exec", "-n", "identidad", "idp-db-0", "--", "psql", "-U", "keycloak", "-d", "iam", "-tAc", sql],
+        capture_output=True, text=True, encoding="utf-8", env={**os.environ, "MSYS_NO_PATHCONV": "1"})
+    out = (r.stdout or "").strip()
+    return json.loads(out) if out else None
+
+
+if "--empujar" in sys.argv:
+    # E1 (aceptación en producción): el snapshot de referencia entra por la puerta pública con
+    # el token del agente de la celda — exactamente lo que hará el informador.
+    tok = token_del_agente()
+    if not tok:
+        print("  ✗ no se pudo acuñar el token de %s-agente" % NS, file=sys.stderr)
+        sys.exit(1)
+    s = snapshot()
+    r = subprocess.run(
+        ["curl", "-s", "-m", "10", "-o", "-", "-w", "\n%{http_code}", "-X", "POST",
+         "%s/celdas/%s/estado" % (IAM, CELDA), "-H", "authorization: Bearer " + tok,
+         "-H", "content-type: application/json", "-d", json.dumps(s, separators=(",", ":"))],
+        capture_output=True, text=True, encoding="utf-8")
+    cuerpo, _, cod = (r.stdout or "").rpartition("\n")
+    print("  POST /celdas/%s/estado → %s %s" % (CELDA, cod, cuerpo))
+    sys.exit(0 if cod == "200" else 1)
+
+if "--cotejar" in sys.argv:
+    # D (E2): lo que ore-iam guarda frente a lo que kubectl dice ahora. Los contadores pueden
+    # moverse entre una lectura y otra; lo que NO puede es que difiera la forma o que el
+    # snapshot tenga más de 90 s.
+    g = guardado()
+    if not g:
+        print("  ✗ ore-iam no tiene estado de %s: nadie ha informado" % CELDA)
+        sys.exit(1)
+    ahora = snapshot()
+    c = g["cuerpo"]
+    print("  guardado   medido_en %s · recibido hace %s s" % (g["medido_en"], g["hace_s"]))
+    difs = []
+    for k in ("cuota", "control"):
+        if c.get(k) != ahora.get(k):
+            difs.append("%s: guardado %s · ahora %s" % (k, json.dumps(c.get(k)), json.dumps(ahora.get(k))))
+    for k in ("activos", "ok", "fallidos"):
+        if c.get("jobs", {}).get(k) != ahora["jobs"][k]:
+            difs.append("jobs.%s: guardado %s · ahora %s" % (k, c.get("jobs", {}).get(k), ahora["jobs"][k]))
+    faltas = validar(c)
+    for d in difs:
+        print("  ≠ " + d)
+    if faltas:
+        print("  ⛔ lo guardado no cumple la 0026-②: " + "; ".join(faltas))
+    fresco = g["hace_s"] <= 90
+    print("  %s snapshot %s · %s" % ("✓" if fresco and not faltas else "✗",
+                                   "fresco (≤ 90 s)" if fresco else "VIEJO (> 90 s)",
+                                   "sin diferencias" if not difs else "%d diferencia(s)" % len(difs)))
+    sys.exit(0 if fresco and not faltas else 1)
+
 
 # ── A · el árbol ─────────────────────────────────────────────────────────────
 v = curl("https://%s.ore.paladio.io/version" % CELDA)

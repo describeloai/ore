@@ -156,7 +156,7 @@ de ② rendido con `kubectl`, byte a byte como lo rendirá el informador. Es la 
 `kubectl` a mano. *Medido: `victor` a las 12:20Z — cpu 250m/10, memoria 896Mi/36Gi, jobs 4/50,
 0/4/0, control listo desde 09:23 sin reinicios; `validar()` sin faltas.*
 
-### E1 · `ore-iam` recibe (036 y el verbo) — ✓ código y prueba 2026-09-15; el despliegue y la medida con el agente real, abajo
+### E1 · `ore-iam` recibe (036 y el verbo) — ✓ 2026-09-15 (`los-verbos` 13 en local y en CI; en producción, con el token real de `ore-agente-victor`: `POST /celdas/victor/estado → 200`, `--cotejar`: recibido hace 1 s, sin diferencias; huella `celda:informa · empieza`)
 
 `036-el-estado-de-la-celda.sql`; `POST /celdas/{celda}/estado`; `GET …/celdas` con
 `estado_medido`; la puerta de clases de `rutas.rs` pasa de «aprovisionador sí/no» a **una tabla
