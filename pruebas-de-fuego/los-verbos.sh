@@ -230,6 +230,7 @@ ADA=$(acunar "persona:ada" "ada@paladio.io")
 #   `POST …/celdas` dan a quien pide. Los mismos cinco que `fundar` lee.
 ORE_CELDA=ore-prueba ORE_CELDA_TIER=compartido ORE_CELDA_PROVEEDOR=gcp \
 ORE_CELDA_REGION=europe-west1-b ORE_CELDA_PUERTA=ore-prueba.ore.paladio.io \
+ORE_CELDA_SALIDA="203.0.113.7, 203.0.113.8" \
 "$IAM" servir --bind "127.0.0.1:$PUERTO" --identidad oidc \
   --emisor "$EMISOR" --audiencia "$AUDIENCIA" --jwks "$TMP/jwks.json" \
   > "$TMP/arranque.txt" 2>&1 &
@@ -595,7 +596,9 @@ grep -q "no puedes" "$TMP/r.json" || falla "11 · la negativa no dice «no puede
 [ "$("$PY" -c 'import json;print(len(json.load(open("'"$TMP/r.json"'"))["celdas"]))')" = "2" ] \
   || falla "11 · acme no lista dos celdas: $(cat "$TMP/r.json")"
 grep -q '"nombre":"acme-eu"' "$TMP/r.json" || falla "11 · la celda nueva no sale en la lista"
-dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en toda la plataforma; solo compartido"
+[ "$("$PY" -c 'import json;print(sorted({tuple(c.get("salida",[])) for c in json.load(open("'"$TMP/r.json"'"))["celdas"]}))')" = "[('203.0.113.7', '203.0.113.8')]" ] \
+  || falla "11 · las celdas del cluster no dicen su salida (ORE_CELDA_SALIDA): $(cat "$TMP/r.json")"
+dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en toda la plataforma; solo compartido; las dos dicen su salida"
 # Retirar: la de casa no; la otra si, y dos veces es «ya».
 [ "$(pide POST "/celdas/acme/retirar" "$ADA")" = "422" ] || falla "11 · ⛔ SE RETIRO LA CELDA DE CASA"
 [ "$(pide POST "/celdas/acme-eu/retirar" "$BEA")" = "422" ] || falla "11 · ⛔ UNA USERADMIN RETIRO UNA CELDA"

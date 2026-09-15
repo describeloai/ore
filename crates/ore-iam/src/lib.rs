@@ -359,8 +359,26 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
         env("ORE_CELDA_PUERTA"),
     ) {
         (Some(cluster), Some(tier), Some(proveedor), Some(region), Some(puerta)) => {
+            // ⭐ Y la SALIDA, opcional y aparte de «los cinco o ninguno»: las IPs
+            //   fijas por las que el cluster sale hacia las fuentes, separadas
+            //   por comas. Un cluster sin NAT fija no la tiene, y eso no es una
+            //   celda a medias.
+            let salida: Vec<String> = env("ORE_CELDA_SALIDA")
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
             eprintln!(
-                "  celda de plataforma: {cluster} · {tier} · {proveedor}/{region} · {puerta}"
+                "  celda de plataforma: {cluster} · {tier} · {proveedor}/{region} · {puerta}{}",
+                if salida.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · salida {}", salida.join(","))
+                }
             );
             Some(fundar::CeldaPlataforma {
                 cluster,
@@ -368,6 +386,7 @@ fn servir_mando(args: &[String], url: &str) -> ExitCode {
                 proveedor,
                 region,
                 puerta,
+                salida,
             })
         }
         (None, None, None, None, None) => {

@@ -146,6 +146,12 @@ pub struct CeldaPlataforma {
     pub proveedor: String,
     pub region: String,
     pub puerta: String,
+    /// ⭐ Por donde SALE el cluster hacia las fuentes: las IPs fijas de su NAT
+    ///   (`salida-a-origenes` en la malla). Es lo que el cliente abre en el
+    ///   firewall de su base. Propiedad del cluster fisico, no de la celda:
+    ///   no se guarda en la fila, se sirve desde `ORE_CELDA_SALIDA` a las
+    ///   celdas de ESTE cluster. Vacia si no se declaro.
+    pub salida: Vec<String>,
 }
 
 impl CeldaPlataforma {

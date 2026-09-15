@@ -375,6 +375,21 @@ impl Servidor {
                     if let Some(cuando) = f.get::<_, Option<String>>(16) {
                         campos.push(("aprovisionada", Json::s(cuando)));
                     }
+                    // ⭐ La SALIDA: por que IPs sale la celda hacia las fuentes
+                    //   del cliente (lo que abre en su firewall). Es del cluster
+                    //   fisico y la sabe este servidor por `ORE_CELDA_SALIDA`;
+                    //   solo para las celdas de SU cluster, y se omite si no la
+                    //   hay: una lista vacia diria «sale por ninguna».
+                    if let Some(p) = self
+                        .celda
+                        .as_ref()
+                        .filter(|p| !p.salida.is_empty() && f.get::<_, String>(13) == p.cluster)
+                    {
+                        campos.push((
+                            "salida",
+                            Json::Arr(p.salida.iter().cloned().map(Json::s).collect()),
+                        ));
+                    }
                     // ⚠️ La cuota se OMITE cuando el tier no la tiene —dedicado,
                     //   byoc—. Un objeto con nulos diría «tiene cuota y no sé
                     //   cuál»; ausente dice lo cierto: no hay cuota de plataforma.

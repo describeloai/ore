@@ -93,6 +93,12 @@ spec:
             - { name: ORE_CELDA_PROVEEDOR, value: gcp }
             - { name: ORE_CELDA_REGION,    value: europe-west1-b }
             - { name: ORE_CELDA_PUERTA,    value: ore-mesh.ore.paladio.io }
+            # ⭐ Por donde SALE la malla hacia las fuentes de los clientes: la IP
+            #   fija del NAT `salida-a-origenes` (30-forja.yaml). Es lo que el
+            #   cliente abre en el firewall de su base, y la consola la enseña.
+            #   Opcional, separada por comas. Se mide con:
+            #     gcloud compute addresses describe salida-a-origenes --region europe-west1
+            - { name: ORE_CELDA_SALIDA,    value: "34.156.87.237" }
           volumeMounts:
             - name: llaves
               mountPath: /llaves
