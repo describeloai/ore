@@ -1,6 +1,6 @@
 # 0026 · La celda informa
 
-**Estado:** en curso (E0–E4 hechas y medidas; E5 pendiente) · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
+**Estado:** aceptado (E0–E5 hechas y medidas el 2026-09-15) · **Fecha:** 2026-09-15 · **Decide:** que el estado vivo de una celda —cuota
 usada, jobs, salud del control— **lo observa un informador que vive en la celda y lo empuja al
 plano de control**, con identidad de agente y privilegio acotado a su namespace; que `ore-iam` lo
 guarda como **el último snapshot medido** y `GET /celdas` lo devuelve; que la consola pinta la
@@ -199,7 +199,7 @@ reciente y no hay jobs fallidos en la última hora; si no, *needs attention* **c
 primero**. **Acepta:** cada regla tiene su caso en la medida (árbol caído, DNS torcido,
 informador silente, job fallido) y la pantalla dice el motivo correcto en cada uno.
 
-### E5 · Lo que queda fuera, dicho
+### E5 · Lo que queda fuera, dicho — ✓ 2026-09-15 (la overview dice «almacenamiento y coste del periodo: sin medir», la tarjeta de modelos «no habilitado»; y la lista de clústeres pide su píldora a `salud()`: la lista y la ficha no pueden decir dos cosas del mismo clúster — nuevo estado `Needs attention`)
 
 Series temporales (C) → kube-state-metrics por namespace y una pantalla de Observability, **otro
 ADR**. Vistas materializadas → cuando la materialización viva en la celda. Coste → cuando haya
