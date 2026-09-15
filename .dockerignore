@@ -7,7 +7,9 @@ target/
 
 # Lo que no compila ni se necesita dentro
 docs/
-malla/
+malla/*
+# ⭐ Salvo el guion del informador (0026 E2): la etapa `informador` del Dockerfile lo copia.
+!malla/informar.sh
 pruebas-de-fuego/
 *.md
 
