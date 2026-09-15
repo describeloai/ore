@@ -971,14 +971,16 @@
           "implicitFlowEnabled": false,
           "serviceAccountsEnabled": false,
           "redirectUris": [
-            "https://app.paladio.io/auth/callback"
+            "https://app.paladio.io/auth/callback",
+            "http://localhost:3000/auth/callback"
           ],
           "webOrigins": [
-            "https://app.paladio.io"
+            "https://app.paladio.io",
+            "http://localhost:3000"
           ],
           "attributes": {
             "pkce.code.challenge.method": "S256",
-            "post.logout.redirect.uris": "https://app.paladio.io/"
+            "post.logout.redirect.uris": "https://app.paladio.io/##http://localhost:3000/"
           },
           "defaultClientScopes": [
             "organization",

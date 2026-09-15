@@ -16,6 +16,13 @@ rubix-dev`, y con `rubix-dev` sin importar el descubrimiento daba `404` — que
 desarrollo no es un duplicado del de producción: es el que lleva
 `http://localhost:3000/auth/callback` en sus `redirectUris`, y por eso existe.
 
+✏️ 2026-09-15 · Y eso dejó de ser así el 2026-09-14, cuando `rubix-dev` se
+renombró a `rubix` y `ore-iam` pasó a aceptar SÓLO ese emisor (034): un token
+de `rubix-dev` entra en la consola y `ore-iam` lo rechaza. La consola en local
+entra por `rubix`, y por eso `rubix-consola` lleva AHÍ el `localhost:3000`
+(`con_consola_local`). El mismo 500 volvió a costar una mañana: el
+`.env.local` seguía diciendo `rubix-dev`.
+
     uso:  python malla/gen-realm.py
 """
 import glob
@@ -287,6 +294,33 @@ def con_registro(realm):
     return realm
 
 
+# ⭐ LA CONSOLA EN LOCAL ENTRA POR `rubix` (ver la cabecera): `rubix-consola` admite
+#   tambien `http://localhost:3000`. Es un cliente publico con PKCE (S256), asi que
+#   una URI de vuelta a localhost no entrega nada a nadie que no tenga ya el
+#   navegador y el verificador: el codigo solo lo canjea quien lo pidio.
+CONSOLA_LOCAL = "http://localhost:3000"
+
+
+def con_consola_local(realm):
+    if realm["realm"] != REGISTRO_EN_PRODUCCION["realm"]:
+        return realm
+    for c in realm.get("clients", []):
+        if c.get("clientId") != "rubix-consola":
+            continue
+        uris = c.setdefault("redirectUris", [])
+        if CONSOLA_LOCAL + "/auth/callback" not in uris:
+            uris.append(CONSOLA_LOCAL + "/auth/callback")
+        origenes = c.setdefault("webOrigins", [])
+        if CONSOLA_LOCAL not in origenes:
+            origenes.append(CONSOLA_LOCAL)
+        attrs = c.setdefault("attributes", {})
+        salidas = [s for s in attrs.get("post.logout.redirect.uris", "").split("##") if s]
+        if CONSOLA_LOCAL + "/" not in salidas:
+            salidas.append(CONSOLA_LOCAL + "/")
+        attrs["post.logout.redirect.uris"] = "##".join(salidas)
+    return realm
+
+
 documentos = []
 for f in PLANTILLAS:
     realm = json.loads(pathlib.Path(f).read_text(encoding="utf-8"))
@@ -297,6 +331,7 @@ for f in PLANTILLAS:
     if nombre in REALMS_CON_ORE:
         realm = con_ore(realm)
     realm = con_registro(realm)
+    realm = con_consola_local(realm)
     documentos.append({
         "apiVersion": "k8s.keycloak.org/v2alpha1",
         "kind": "KeycloakRealmImport",
