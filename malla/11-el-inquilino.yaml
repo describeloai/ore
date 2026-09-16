@@ -252,3 +252,60 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+---
+# ── Y hablar con el MODELO, por clase ────────────────────────────────────────
+#
+# 0027 ④ (E2, 2026-09-16): «ninguna celda alcanza una máquina de modelo
+# directamente». Lo que la celda alcanza es EL GATEWAY de Bastion (B3), en una
+# máquina de la misma VPC —la figura de 0024 ②—, y por IP: una NetworkPolicy
+# no sabe de nombres, y esa máquina no es un servicio del clúster. Es la misma
+# figura que MAESTRO en `47-el-informador.yaml`: `gen-inquilino.py` la lleva
+# como constante nombrada (MODELOS = la reserva `modelos` de la VPC) y ⑭ exige
+# que estas dos reglas lleven exactamente esa IP y esos dos puertos, y nada más
+# hacia ella.
+#
+# Dos reglas y no una, porque son dos sujetos y dos planos:
+#   · los Jobs (`driver`) hablan con el PLANO DE DATOS, :8000 — es donde una
+#     `Function` con `runtime: model` llama, con el token de agente de la celda
+#   · `ore-serve` (`control`) habla con el PLANO DE CONTROL, :9000 — es donde
+#     `POST /modelos` suscribe a esta celda en el mismo acto que escribe el
+#     documento (E1 I3). Sin esta regla el alta contesta 502 a los 15 s: el
+#     paquete se tira, y una `NetworkPolicy` no rechaza, TIRA.
+#
+# Medido en E0 antes de escribirlo aquí (`medida-la-celda-alcanza-el-modelo.py`):
+# sin la regla, un Job de `victor` NO alcanza :8000 (curl rc 28); con ella, sí.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-modelo
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: driver
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.100/32
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-modelo-del-control
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.10.0.100/32
+      ports:
+        - protocol: TCP
+          port: 9000

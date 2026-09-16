@@ -227,6 +227,14 @@ if "--cotejar" in sys.argv:
     plantilla = open(os.path.join(os.path.dirname(__file__), "..", "malla", "47-el-informador.yaml"), encoding="utf-8").read()
     if real and ("cidr: %s/32" % real) not in plantilla:
         difs.append("MAESTRO: la plantilla no lleva %s/32 (el API server real)" % real)
+    # Y la IP del gateway de modelos que lleva la plantilla de la celda (0027 E2, la regla
+    # de clase) frente a la direccion reservada `modelos` de la VPC.
+    modelos = sh("gcloud compute addresses describe modelos --region europe-west1 --project=%s --format=value(address)" % PROYECTO)
+    p11 = open(os.path.join(os.path.dirname(__file__), "..", "malla", "11-el-inquilino.yaml"), encoding="utf-8").read()
+    if modelos and ("cidr: %s/32" % modelos) not in p11:
+        difs.append("MODELOS: la plantilla de la celda no lleva %s/32 (la reserva `modelos`)" % modelos)
+    elif not modelos:
+        difs.append("MODELOS: no hay reserva `modelos` en la VPC")
     fresco = g["hace_s"] <= 90
     bien = fresco and not faltas and not difs
     print("  %s snapshot %s · %s" % ("✓" if bien else "✗",

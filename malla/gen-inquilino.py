@@ -792,6 +792,25 @@ def comprobar():
         fallos.append("`40-ore-serve.yaml`: `--modelos` no es MODELOS:9000 (%s)" % MODELOS)
     print("  ⭐ ⑬ ore-serve suscribe en el gateway de modelos: %s:9000" % MODELOS)
 
+    # ── ⑭ LA REGLA DE CLASE HACIA EL MODELO (0027 ④, E2): por IP, la de la
+    # reserva, y exactamente dos puertos para dos sujetos — los Jobs al plano
+    # de datos (8000) y `control` al de control (9000). Ninguna otra plantilla
+    # abre esa IP: una regla hacia MODELOS que no sea una de estas dos es
+    # justo lo que la ④ promete que no pasa.
+    t11 = (MALLA / "11-el-inquilino.yaml").read_text(encoding="utf-8")
+    reglas = re.findall(
+        r"name: (salida-al-modelo[\w-]*)\n.*?ore\.dev/rol: (\w+)\n.*?cidr: ([\d./]+)\n.*?port: (\d+)",
+        t11, re.S)
+    esperado = {("salida-al-modelo", "driver", MODELOS + "/32", "8000"), ("salida-al-modelo-del-control", "control", MODELOS + "/32", "9000")}
+    if set(reglas) != esperado:
+        fallos.append("`11-el-inquilino.yaml`: la salida al modelo no es exactamente driver→%s/32:8000 y control→%s/32:9000 (hay %s)" % (MODELOS, MODELOS, reglas))
+    for f in sorted(MALLA.glob("*.yaml")):
+        if f.name == "11-el-inquilino.yaml":
+            continue
+        if "cidr: %s/32" % MODELOS in f.read_text(encoding="utf-8"):
+            fallos.append("`%s`: abre la IP del gateway de modelos; solo 11 puede, y por clase" % f.name)
+    print("  ⭐ ⑭ la celda sale al gateway de modelos por clase: driver→%s:8000, control→%s:9000, y nadie mas" % (MODELOS, MODELOS))
+
     return veredicto(fallos)
 
 
