@@ -373,6 +373,18 @@ coteja MODELOS con la reserva `modelos` de la VPC, como MAESTRO con el API serve
 que use la IP lleve el tag. Primera pasada real: todo «ya estaba» (E0 lo dejó a mano) y la
 máquina `modelos-e0` con su tag, parada.
 
+**I3 · el realm — ✓ 2026-09-16.** El paso ⑦ del aprovisionador pone en cada cliente de agente
+dos mapeadores y **los converge** —un cliente creado antes los gana en la pasada siguiente sin
+que nadie toque el realm—: `audiencia-modelos` (`included.custom.audience`, como cadena y no
+como cliente: el gateway no es cliente del realm, verifica con el JWKS de fichero y sólo mira
+que `modelos` esté en `aud`; un cliente-audiencia más sería un secreto más que nadie usa) y
+`rubix-celda` (`rubix_celda` = la celda; `azp` deja de ser un contrato). La receta genérica de
+`gen-realm.py` lleva la audiencia. Medido: dos pasadas del CronJob —la primera cogió el guion
+nuevo a mitad de corrida y sólo `victor` lo ganó: el ConfigMap montado cambia bajo el proceso—
+y los tokens de `demo`, `prueba` y `victor` llevan `aud [modelos, ore-serve, account]` y
+`rubix_celda` = su nombre. El gateway (Bastion `9679cb9`): `--oidc-audience modelos`,
+`rubix_celda` manda sobre `azp`.
+
 ### E3 · Deployments tiene filas
 
 La consola cruza `GET /modelos` con lo que el gateway contabiliza (⑥); *Crear* deja de estar
