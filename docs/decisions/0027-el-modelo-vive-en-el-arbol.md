@@ -276,23 +276,37 @@ nada nuevo en la celda: el modelo no está en ella. **Acepta:** la tabla con (a)
 `victor`, y una propiedad del árbol escrita por el modelo, con el commit que la trajo. De aquí
 sale la forma de ① con lo que hizo falta, y la regla de red.
 
-### E1 · El documento
+### E1 · El documento — es ORE, y ya tiene la forma que E0 enseñó
 
-`kind: Model` en `oos` (bump del submódulo); `ore-serve` `POST /modelos` · `GET /modelos` ·
-`DELETE /modelos/{n}` con el encaje de ⑦ contra **la lista de perfiles** (leída de donde
-Bastion la publique; hasta entonces, un fichero que el aprovisionador deja en la celda, como
-`plantilla-catalogo.txt`); `modelo/<nombre>` resoluble desde una `Function`. **Acepta:**
-`los-verbos` con los casos de ⑦ (perfil certificado → 201 y el commit; perfil inexistente →
-422; digest que no es el del perfil → 422; retirar → el fichero desaparece).
+`kind: Model` en `oos` (bump del submódulo) con la forma de ①: `profile`, `digest`, `tier`,
+`task`; y **`runtime: model` con claves propias** en `Function.spec` (el `entrypoint` nombra
+`modelo/<n>` y el prompt deja de vivir en `x-ore-prompt`), con la salida `untrusted` por
+defecto que `OOS7002` ya hace cumplir. En `ore-serve`: `POST /modelos` · `GET /modelos` ·
+`DELETE /modelos/{n}`, que **escriben el documento en el árbol y, en el mismo acto, provisionan
+la suscripción en el gateway** (`POST`/`DELETE /admin/tenants/{celda}/models`, ②; `--modelos
+URL` como `--cola`); el encaje de ⑦ contra **la lista de perfiles** (un fichero que el
+aprovisionador deja en la celda, como `plantilla-catalogo.txt`, hasta que Bastion la publique
+como B2); y `modelo/<n>` resuelto por `ore-serve` a `(puerta, id servido)` desde el `Model`,
+que es lo que el Job de E0 tomaba de variables. **Acepta:** `los-verbos` con los casos de ⑦
+(perfil certificado → 201, el commit, y la suscripción provisionada —un gateway de banco en
+la prueba—; perfil inexistente → 422; digest que no es el del perfil → 422; retirar → el
+fichero desaparece y la suscripción también); `ore verify` acepta un paquete con `runtime:
+model` sin extensiones.
 
-### E2 · La suscripción y el gateway
+### E2 · La celda llega al gateway sin que nadie toque nada
 
-B3 existe sobre un `g4` (hito 3 de 0028). Se decide el hueco de ② y se implementa: la celda
-llama con su token de agente; el gateway responde 401 a quien no está suscrito y contabiliza a
-quien sí. La `NetworkPolicy` de clase de ④ en `13-el-inquilino-reconciliado.yaml`, con la IP
-del gateway como constante nombrada y cotejada. **Acepta:** en `victor`, `POST /modelos` →
-la primera llamada contesta en < 60 s sin que nadie toque nada; `DELETE` → 401; la celda de al
-lado, sin `Model`, → 401.
+El hueco de ② está decidido y medido; lo que queda es que la plataforma lo lleve a la
+plantilla y al realm. `salida-al-modelo` en `13-el-inquilino-reconciliado.yaml` (pods `driver`
+y `ore-serve` → `MODELOS/32:8000`, constante nombrada como `MAESTRO`, cotejada por
+`gen-inquilino.py` ⑫ y por la medida contra la dirección reservada `modelos`); la firewall
+`ore-modelos-desde-la-malla` como su otra mitad, escrita en `malla/`; en el realm, la
+audiencia `modelos` y el mapeador por cliente que emite `rubix_celda` (`gen-realm.py`, un
+cliente por celda como 0026); el gateway en G4 con etiqueta `eu-dc` cuando llegue la cuota
+(hito 3 de 0028) y hasta entonces en la `e2-micro` de la VPC con el vLLM de mentira o un g1
+`community` sólo para medir. **Acepta:** en `victor`, `POST /modelos` desde `curl` → la
+primera llamada de un Job contesta en < 60 s sin que nadie toque `kubectl`; `DELETE` → 401;
+la celda de al lado, sin `Model`, → 401; `--cotejar` de E0 limpio con la regla ya en la
+plantilla.
 
 ### E3 · Deployments tiene filas
 
