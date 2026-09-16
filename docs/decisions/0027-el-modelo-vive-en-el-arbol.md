@@ -445,6 +445,19 @@ concurrencia, TTFT, $/h, digest (B4) y la imagen medida; «Use in this cluster»
 Deployments con `?perfil=`. El banco de la consola contesta `celdas`, `perfiles`, `modelos` (las
 cuatro fases) y `modelo`. Visto en el banco: 3 perfiles, ninguna píldora inventada.
 
+**I3 hecha** (2026-09-16, `rubix-platform` `5c25665`): *Deployments* pinta `GET /modelos` como
+tabla —nombre · estado con su motivo · modelo y perfil · máquina · réplicas = backends arriba/1 ·
+uso hoy y mes · endpoint interno · autor del commit («you» si es el `sub` de la sesión) · desde—;
+la deriva sale como fila `retiring` sin nombre; si el gateway no contestó, un aviso rojo arriba:
+ninguna fase de abajo es real. *Use in this cluster* llama a `POST /modelos` por una Server
+Action (`models/acciones.ts`): el `Model` en el árbol con la firma de la sesión y la suscripción
+en el mismo acto, o nada; los 422 (perfil que no está, dedicated, digest), el 409 (ya hay) y el
+502 (el gateway no contestó: nada escrito) salen en el formulario tal cual. Visto en el banco:
+las cuatro fases, y la escritura rechazada por el banco con su frase (las escrituras no se
+simulan). La aceptación de la ADR —*provisioning* con la hora → *running* con la máquina, el
+`Model` con el autor de la sesión— es I5, en `victor` con `modelos-e0` encendida y una sesión
+de persona.
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
