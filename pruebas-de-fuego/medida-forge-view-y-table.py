@@ -164,6 +164,51 @@ print("     → renglones por vista: %s" % ", ".join(claves))
 shutil.rmtree(T, ignore_errors=True)
 shutil.rmtree(I, ignore_errors=True)
 
+# ── 6 · lo que decide el verbo: el emisor, quién nombra, y la tabla sola ─────
+print("\n  ⑥ lo que decide el verbo:")
+T = tempfile.mkdtemp(prefix="forge-vt6-")
+shutil.copytree(ACME, T, dirs_exist_ok=True)
+rc, out = ore("view", "add", "--from", "workday_worker", "--owner", "team:people-data",
+              "--field", "id=Worker_Reference.ID", "--where", "Compensation_Data.Grade_Reference=IC3",
+              "--where", "Compensation_Data.Grade_Reference=M1", "--path", "packages/hr", "grados", cwd=T)
+rc2, out2 = ore("view", "add", "--from", "workday_worker", "--owner", "team:people-data", "--path", "packages/hr", "grados", cwd=T)
+print("     `ore view add` escribe owner, from (tabla o vista, corto o cualificado), fields, where (lista con el nombre repetido) y oos.maturity: DRAFT: %s"
+      % ("sí" if os.path.exists(os.path.join(T, "packages", "hr", "views", "grados.yaml")) else "NO"))
+print("     · y NO escribe: freshness, materialized, groupBy, having, moved, reserved, description, otras labels, x-rubix-*")
+print("     · sobre un nombre que ya existe se niega (%s): es un verbo de CREAR, no de escribir" % ("sí" if "ya existe" in out2 else "no: " + out2[:80]))
+shutil.rmtree(T, ignore_errors=True)
+
+
+def rotura(nombre, mutar):
+    T = tempfile.mkdtemp(prefix="forge-vt6-")
+    shutil.copytree(ACME, T, dirs_exist_ok=True)
+    mutar(T)
+    rc, out = ore("validate", ".", cwd=T)
+    primera = next((l for l in out.splitlines() if l.startswith("error[")), "ok")
+    print("     %-58s %s  %s" % (nombre, "pasa " if rc == 0 else "falla", primera[:100]))
+    shutil.rmtree(T, ignore_errors=True)
+
+
+def borrar(*rel):
+    def f(T):
+        for r in rel:
+            os.remove(os.path.join(T, *r.split("/")))
+    return f
+
+
+print("     quién nombra a una vista y a una tabla (lo que el 409 de DELETE tiene que decir):")
+rotura("· borrar la vista de una Function que escribe (via Entity.backedBy)",
+       lambda T: (shutil.copytree(os.path.join(RAIZ, "vendor", "oos", "conformance", "v1alpha8", "valid", "a-function-writes-through-its-view", "input"), T, dirs_exist_ok=True),
+                  shutil.rmtree(os.path.join(T, "packages")), os.remove(os.path.join(T, "views", "empleados.yaml"))))
+rotura("T1 · renombrar la tabla que una vista lee", lambda T: escribir(os.path.join(T, "packages/hr/tables/workday.yaml"), leer(os.path.join(T, "packages/hr/tables/workday.yaml")).replace("  name: workday_worker\n", "  name: workday_worker2\n")))
+rotura("T2 · quitar de la tabla una columna que la vista lee", lambda T: escribir(os.path.join(T, "packages/hr/tables/workday.yaml"), "\n".join(l for l in leer(os.path.join(T, "packages/hr/tables/workday.yaml")).splitlines() if "Grade_Reference" not in l) + "\n"))
+rotura("T3 · dos tablas sobre el mismo object", lambda T: escribir(os.path.join(T, "packages/hr/tables/bis.yaml"), leer(os.path.join(T, "packages/hr/tables/workday.yaml")).replace("name: workday_worker", "name: workday_bis")))
+rotura("T4 · borrar una tabla y su vista que nadie más nombra", lambda T: (borrar("packages/supply/tables/snowflake.yaml", "packages/supply/views/envios.yaml")(T), escribir(os.path.join(T, "packages/supply/entities/Shipment.yaml"), leer(os.path.join(T, "packages/supply/entities/Shipment.yaml")).replace("  backedBy: envios\n", ""))))
+print("     → a una vista la nombran Entity.backedBy y View.from.view; a una tabla, View.from.table. Una Function")
+print("       escribe por `effects.writes: hr.Employee.estado` — nombra la ENTIDAD, y la vista la alcanza por backedBy")
+print("     → una tabla no tiene dueño ni referencia propia: se borra cuando ninguna vista sale de ella; dos sobre el")
+print("       mismo object son legales (T3): el object es una cadena opaca, no una identidad")
+
 # ── lo que sale de aquí ─────────────────────────────────────────────────────
 print("\n  ⇒ lo que decide el verbo:")
 print("     · borrar o renombrar una View/Table que alguien nombra es OOS2018 en QUIEN la nombra (A, B, K, P):")
@@ -176,8 +221,11 @@ print("     · agrupar sobre una tabla (M2) y sobre una vista (M3) compilan; M3 
 print("     · View admite x-rubix-displayName (E1) y sólo oos.maturity en labels (F/F2); Table admite x-rubix-displayName (E2) y no labels")
 print("     · View sin owner PASA el esquema (H): `owner` lo exige el emisor (cambiame no valida: OOS2009), no el compilador")
 print("     · un árbol inducido NO compila hasta review (③): la puerta del PUT no puede ser «el árbol compila» sino")
-print("       «el árbol no empeora» — diagnósticos después ⊆ diagnósticos antes. Vale también para Entity (I1)")
+print("       «el árbol no empeora» — diagnósticos después ⊆ diagnósticos antes. Hecho en Entity (70ca231)")
 print("     · el fichero no se llama como el documento (③): buscar por metadata.name, nunca por nombre de fichero")
-print("     · PUT desde JSON reescribe el YAML y PIERDE los comentarios; acme-retail está lleno. Decidir: emitir (ore view add)")
-print("       o aceptar el YAML tal cual y validar")
+print("     · `ore view add` sólo escribe el fragmento invertible sin copia y se niega a reescribir: el PUT no puede pasar por")
+print("       él salvo para crear una vista trivial. El verbo emite el documento entero con el emisor de Entity (JSON → YAML),")
+print("       y la aceptación es que una vista escrita por PUT y la misma por `view add` den el MISMO `plan sha256` en `ore view`")
+print("     · PUT desde JSON reescribe el YAML y PIERDE los comentarios; acme-retail está lleno. El PUT admite también `yaml`")
+print("       tal cual (se valida igual): quien edita el texto no pierde lo que escribió")
 print()

@@ -183,9 +183,22 @@ inventa) y `views/Clientes__public_clientes.yaml` con `name: clientes`, `oos.mat
 Y **el árbol inducido no compila** hasta `review` y `source add` (`OOS2009`, `OOS2010`,
 `OOS2004`).
 
-**El emisor.** `ore view add --from <tabla|vista> --owner … --field p=col … <nombre>` es *el*
-emisor de `View`, el mismo que el inductor; lo que escribe compila. No hay `ore table add`: la
-tabla es un hecho, la escribe el inductor o una persona.
+**El emisor.** `ore view add --from <tabla|vista> --owner … --field p=col … --where col=v …
+<nombre>` es *el* emisor de `View`, el mismo que el inductor; lo que escribe compila. Pero
+escribe **sólo el fragmento invertible sin copia** —`owner`, `from`, `fields`, `where`,
+`oos.maturity: DRAFT`— y **no** `freshness`, `materialized`, `groupBy`, `having`, `moved`,
+`reserved`, `description`, otras `labels` ni `x-rubix-*`; y **se niega a reescribir** un nombre
+que ya existe (*«sobrescribirla sería perder lo que dijera, y este mando no lo decide»*). Es un
+verbo de crear, no de escribir. No hay `ore table add`: la tabla es un hecho, la escribe el
+inductor o una persona.
+
+**Quién nombra a quién** (lo que el 409 de `DELETE` tiene que decir): a una vista la nombran
+`Entity.backedBy` y `View.from.view`; a una tabla, `View.from.table`. Una `Function` escribe por
+`effects.writes: hr.Employee.estado` —nombra la **entidad**— y la vista la alcanza por `backedBy`.
+Renombrar una tabla es borrarla para su vista (`OOS2018`); quitarle una columna que una vista lee
+es `OOS2018` con el nombre de la columna; dos tablas sobre el mismo `object` son legales (el
+`object` es una cadena opaca, no una identidad); una tabla y su vista que nadie más nombra se
+borran sin más.
 
 **Lo derivado.** `ore view .` cuenta por vista `plan · raíz · caras · esquema · linaje · refresco ·
 empuje · cotejo · flujo · restricciones`. Es el material de `/derivados` (I3), no de `/documentos`.
@@ -201,12 +214,15 @@ Cuatro decisiones salen de aquí, y son las de I2:
 2. **El 409 explícito con los nombres** hace falta en `DELETE` de View y Table por lo mismo que
    en Entity: `OOS2018` cuenta la verdad desde quien la nombra. Quién nombra a una vista:
    `Entity.backedBy`, `View.from.view`; a una tabla: `View.from.table`.
-3. **Escribir una View pasa por `ore view add`** cuando es nueva, o se emite la misma forma:
-   un emisor propio en `ore-serve` sería el segundo, y divergirían. `owner` lo exige el verbo.
-4. **Reescribir desde JSON pierde los comentarios** del YAML (`acme-retail` está lleno). Un
-   PUT que trae `yaml` tal cual y se valida conserva lo que la persona escribió; un PUT que trae
-   el documento en JSON lo reescribe. Los dos caben; el que edita un formulario manda JSON y el
-   que edita el texto manda YAML.
+3. **El PUT de una View no puede pasar por `ore view add`**: sólo escribe el fragmento sin
+   copia ni agrupación y se niega a reescribir. El verbo emite el documento entero con el
+   **mismo emisor que `Entity`** (`Node` → YAML en `documentos.rs`): un emisor por servidor, no
+   uno por kind. Que no diverja del inductor se acepta midiendo, no prometiendo: una vista
+   escrita por PUT y la misma por `view add` dan el **mismo `plan sha256`** en `ore view .`.
+   `owner` lo exige el verbo, como `backedBy` en Entity.
+4. **Reescribir desde JSON pierde los comentarios** del YAML (`acme-retail` está lleno). El PUT
+   admite las dos entradas: el documento en JSON (un formulario) o `yaml` tal cual (el texto);
+   las dos pasan por la misma puerta. Quien edita el texto no pierde lo que escribió.
 
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
