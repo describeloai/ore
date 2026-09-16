@@ -97,6 +97,12 @@ PLANTILLAS = [
 #   cluster, y `medida-el-estado-de-la-celda.py --cotejar` lo compara. Vive
 #   aqui, con nombre, y ⑫ exige que la plantilla lleve exactamente este.
 MAESTRO = "10.10.0.2/32"
+# ⭐ EL GATEWAY DE MODELOS (0027 E1/E2): la IP interna reservada `modelos` de la
+#   VPC (`gcloud compute addresses describe modelos --region europe-west1`),
+#   donde corre Bastion B3. `ore-serve` le habla por `--modelos` (9000, el plano
+#   de control) y la regla de clase deja salir a los Jobs y a `control` (8000 y
+#   9000). Cambia si se recrea la reserva; ⑬ exige que 40 lleve exactamente esta.
+MODELOS = "10.10.0.100"
 
 # ⛔⛔ LO QUE SE DEJA FUERA A PROPOSITO, Y CON SU MOTIVO ESCRITO.
 #
@@ -779,6 +785,12 @@ def comprobar():
     if "resources: [resourcequotas, pods]" not in t47 or "resources: [jobs]" not in t47:
         fallos.append("`47-el-informador.yaml`: el Role no es exactamente resourcequotas, pods y jobs")
     print("  ⭐ ⑫ el informador: Role de lectura en su namespace, y el API server es %s" % MAESTRO)
+
+    # ── ⑬ EL GATEWAY DE MODELOS: por IP, y la de la reserva (0027 E1) ─────
+    t40 = (MALLA / "40-ore-serve.yaml").read_text(encoding="utf-8")
+    if ("- --modelos\n            - %s:9000" % MODELOS) not in t40:
+        fallos.append("`40-ore-serve.yaml`: `--modelos` no es MODELOS:9000 (%s)" % MODELOS)
+    print("  ⭐ ⑬ ore-serve suscribe en el gateway de modelos: %s:9000" % MODELOS)
 
     return veredicto(fallos)
 

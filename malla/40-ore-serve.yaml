@@ -274,6 +274,19 @@ spec:
             - ore-cofre.t-demo.svc.cluster.local:8095
             - --organizacion
             - demo
+            # ⭐ EL GATEWAY DE MODELOS (0027 E1): el plano de control de Bastion
+            #   B3, donde `POST /modelos` suscribe a esta celda en el mismo acto
+            #   que escribe el documento. Por IP, como el API server del
+            #   informador (MAESTRO en 47): es una maquina de la VPC, no un
+            #   servicio del cluster, y `gen-inquilino.py` lo lleva como
+            #   constante nombrada (MODELOS) y lo coteja. HTTP llano, sin
+            #   esquema, por lo mismo que el cofre.
+            #
+            # ⛔ Con esto y sin la regla de red `salida-al-modelo` para `control`
+            #   (0027 E2) el alta contesta 502 a los 15 s: el paquete se tira y
+            #   nada se escribe. Es el sintoma correcto y esta dicho.
+            - --modelos
+            - 10.10.0.100:9000
             # ⭐⭐ Y EL TESTIGO, DE UN FICHERO. Ver el volumen `testigo` y el
             # contenedor de inicio de abajo: el valor NO pasa por etcd.
             - --testigo-fichero

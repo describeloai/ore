@@ -157,6 +157,12 @@ jobs:
       - name: y con el arbol en una forja
         run: bash pruebas-de-fuego/servidor-forja.sh
 
+      # Los tres verbos del modelo (0027 E1): el documento en el arbol y la
+      # suscripcion en el gateway EN EL MISMO ACTO, o nada. El gateway es el de
+      # banco (el contrato del plano de control de Bastion B3).
+      - name: y el modelo entra en el arbol con su suscripcion, o no entra
+        run: bash pruebas-de-fuego/los-modelos.sh
+
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
       # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
       # cabecera `Authorization` y que un token bien firmado del MISMO realm

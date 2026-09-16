@@ -322,6 +322,28 @@ por redirección sí.* Lo que I3 lee: `perfiles.json` del clon de la cola, con l
 `{v, image, generated, profiles: [{profile, model, machine, gpus, status, tok_s{1,8,16,32},
 ttft_ms, usd_h, usd_per_mtok, digest}]}`.
 
+**I3 · los verbos — ✓ 2026-09-16** (`crates/ore-serve/src/modelos.rs`; `--modelos host:puerto`,
+`--modelos-url`, `--perfiles`). `POST /modelos {name, profile, tier?, task?, digest?,
+description?}` · `GET /modelos` · `GET /modelos/{n}` · `DELETE /modelos/{n}`, con la figura
+de `POST /fuentes` y **una diferencia deliberada: el documento y la suscripción en el mismo
+acto, o nada** — si el gateway no contesta, 502 y el árbol intacto (una fuente cuya
+credencial falla queda declarada; un `Model` sin suscripción sería una promesa). El encaje
+de ⑦ se decide en el servidor contra `perfiles.json` de la cola: perfil que no está → 422
+con los que hay; `tier: dedicated` → 422 (E5); `digest` cuando el perfil no publica el suyo
+→ 422; la forma la decide la gramática (`ore validate` sobre el clon). `DELETE` con una
+`Function` que lo nombra → 409 (`OOS2005`) y el fichero se queda; sin nadie → 200, fichero y
+suscripción fuera. `GET /modelos/{n}` resuelve `modelo/<n>` a `{url, model}` (la puerta de
+`--modelos`, el id del perfil), que es lo que el Job de E0 tomaba de variables. **Acepta:**
+`pruebas-de-fuego/los-modelos.sh`, 0–8, contra el gateway de banco
+(`gateway-de-banco.py`, el contrato del plano de control de B3) **y contra `bastion-gateway`
+de verdad** (`BASTION_GATEWAY=…`): los dos verdes, y en CI. En la plantilla: `--modelos
+MODELOS:9000` en `40-ore-serve.yaml`, con `MODELOS` como constante nombrada en
+`gen-inquilino.py` (⑬, como MAESTRO). *Lo que la pasada real enseñó: sobre un directorio no
+hay clon que tirar —`escribiendo` escribe en sitio— así que el verbo deshace lo suyo cuando
+falla (retira el fichero; lo vuelve a escribir en un `DELETE` negado).* Lo que queda para E2:
+la regla `control → MODELOS/32:9000` en la plantilla (hoy el alta en `victor` daría 502 a
+los 15 s, y está dicho en 40), la imagen nueva por CI, y la primera llamada en < 60 s.
+
 ### E2 · La celda llega al gateway sin que nadie toque nada
 
 El hueco de ② está decidido y medido; lo que queda es que la plataforma lo lleve a la

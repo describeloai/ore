@@ -42,6 +42,7 @@
 mod cola;
 mod git;
 mod mando;
+mod modelos;
 mod rutas;
 
 use ore_entrada::{http, identidad};
@@ -77,6 +78,14 @@ ore-serve — el plano de control de ORE
                          esto el alta funciona y la credencial SE PIERDE
   --organizacion NOMBRE  de quien es este arbol. El custodio guarda por
                          organizacion, y este proceso sirve UNA
+  --modelos HOST:PUERTO  el plano de control del gateway de modelos (0027 ②):
+                         `POST /modelos` suscribe ahi a esta celda en el mismo
+                         acto que escribe el documento. Sin esto, 422: un
+                         modelo sin suscripcion no se escribe
+  --modelos-url URL      la puerta que una Function llama (por defecto,
+                         `http://HOST:8000/v1` del `--modelos`)
+  --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
+                         la cola (`perfiles.json`): el banco de pruebas
   -h, --help             esto
 ";
 
@@ -106,6 +115,13 @@ struct Opciones {
     cofre: Option<String>,
     /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN.
     organizacion: Option<String>,
+    /// El gateway de modelos, `host:puerto` del plano de control, y la puerta
+    /// que se contesta a quien pregunte por `modelo/<n>`. La misma figura que
+    /// el cofre: HTTP llano dentro de la VPC, y este proceso no gana internet.
+    modelos: Option<String>,
+    modelos_url: Option<String>,
+    /// La lista de perfiles de un fichero (el banco); en la celda viene por la cola.
+    perfiles: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -123,6 +139,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         testigo_fichero: None,
         cofre: None,
         organizacion: None,
+        modelos: None,
+        modelos_url: None,
+        perfiles: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -147,6 +166,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--jwks" => o.jwks = Some(PathBuf::from(valor("--jwks")?)),
             "--cofre" => o.cofre = Some(valor("--cofre")?),
             "--organizacion" => o.organizacion = Some(valor("--organizacion")?),
+            "--modelos" => o.modelos = Some(valor("--modelos")?),
+            "--modelos-url" => o.modelos_url = Some(valor("--modelos-url")?),
+            "--perfiles" => o.perfiles = Some(PathBuf::from(valor("--perfiles")?)),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -273,6 +295,13 @@ fn main() -> ExitCode {
         cola,
         cofre: o.cofre,
         organizacion: o.organizacion,
+        modelos: o.modelos.map(|admin| modelos::Modelos {
+            url: o.modelos_url.unwrap_or_else(|| {
+                format!("http://{}:8000/v1", admin.split(':').next().unwrap_or(&admin))
+            }),
+            admin,
+        }),
+        perfiles: o.perfiles,
     };
 
     match http::servir(escucha, move |p| servidor.atender(p)) {

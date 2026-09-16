@@ -99,6 +99,10 @@ pub struct Servidor {
     /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN, y este
     /// proceso sirve UNA — su namespace es el del inquilino.
     pub organizacion: Option<String>,
+    /// El gateway de modelos (0027 E1): dónde se suscribe y qué puerta se contesta.
+    pub modelos: Option<crate::modelos::Modelos>,
+    /// La lista de certificación de un fichero (el banco); si no, de la cola.
+    pub perfiles: Option<PathBuf>,
 }
 
 impl Servidor {
@@ -166,6 +170,20 @@ impl Servidor {
                 self.estado(&n)
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
+            // ── 0027 E1 · los verbos del modelo (`modelos.rs`) ────────────
+            ("GET", ["modelos"]) => self.leyendo(|r| self.modelos(r)),
+            ("POST", ["modelos"]) => {
+                let cuerpo = p.cuerpo.clone();
+                self.escribiendo(sujeto, "alta de un modelo", |r| self.alta_de_modelo(r, &cuerpo))
+            }
+            ("GET", ["modelos", n]) => {
+                let n = n.to_string();
+                self.leyendo(move |r| self.modelo(r, &n))
+            }
+            ("DELETE", ["modelos", n]) => {
+                let n = n.to_string();
+                self.escribiendo(sujeto, &format!("retirar el modelo `{n}`"), |r| self.retirar_modelo(r, &n))
+            }
             // ⭐⭐ CREAR UNA BASE ELIGIENDO QUE ENTRA. Es lo que el modal de la
             //   consola lleva meses pidiendo con casillas: schemas y tablas de
             //   un origen ya descubierto, marcadas. Hasta hoy la seleccion
@@ -203,7 +221,7 @@ impl Servidor {
                     self.responder(r, &n, &cuerpo)
                 })
             }
-            ("GET", _) | ("POST", _) => Respuesta::error(404, "no hay nada en ese camino"),
+            ("GET", _) | ("POST", _) | ("DELETE", _) => Respuesta::error(404, "no hay nada en ese camino"),
             _ => Respuesta::error(405, "método no admitido"),
         }
     }
@@ -1160,7 +1178,7 @@ pub fn sin_credencial(url: &str) -> Result<(), String> {
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
 
-fn analizar(cuerpo: &str) -> Result<Node, Respuesta> {
+pub(crate) fn analizar(cuerpo: &str) -> Result<Node, Respuesta> {
     if cuerpo.trim().is_empty() {
         return Err(Respuesta::error(400, "el cuerpo está vacío"));
     }
@@ -1194,7 +1212,7 @@ fn de_node(n: &Node) -> Json {
     }
 }
 
-fn primera_linea(stdout: &str, stderr: &str) -> String {
+pub(crate) fn primera_linea(stdout: &str, stderr: &str) -> String {
     let fuente = if stderr.trim().is_empty() {
         stdout
     } else {
@@ -1233,6 +1251,10 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
+        ("GET", "/modelos", con_identidad),
+        ("POST", "/modelos", con_identidad),
+        ("GET", "/modelos/{nombre}", con_identidad),
+        ("DELETE", "/modelos/{nombre}", con_identidad),
     ]
 }
 
