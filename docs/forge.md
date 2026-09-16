@@ -153,6 +153,59 @@ commit del sujeto, sin `backedBy` → 422, propiedad sin campo → 422 `OOS2022`
 `ayuda`, `displayName` sin prefijo → 422 `OOS1005`, dos PUT sobre el mismo commit → 200 y
 409, DELETE referenciada → 409 con quien la nombra, DELETE libre → 200 y 404 después.
 
+### 4.5 · View y Table, antes de I2 (`medida-forge-view-y-table.py`, 2026-09-16)
+
+**La forma.** `View.metadata`: `name · namespace · labels · description`; `spec`: `owner · from ·
+freshness · fields · where · materialized · moved · reserved · groupBy · having` (obligatorios
+`owner`, `from`, `fields`). `Table.metadata`: `name · namespace · description`; `spec`:
+`datasource · object · profile · columns · reads · changes` (obligatorios todos menos `profile`).
+Las dos admiten `x-<proveedor>-*`; `x-rubix-displayName` **pasa** en las dos. `View.labels` sólo
+admite `oos.maturity` (`OOS1005` con cualquier otra); `Table` no admite `labels`.
+
+**El compilador**, contra `acme-retail` (`hr.empleados` sobre `hr.workday_worker`):
+
+| rotura | `ore validate` |
+|---|---|
+| borrar o renombrar la vista que `Employee.backedBy` nombra | `OOS2018` en Employee |
+| borrar la tabla que `empleados.from.table` nombra · `from.table` a una que no existe | `OOS2018` en la vista |
+| un `field` o un `where` sobre una columna que la tabla no tiene · un campo que la vista de abajo no expone | `OOS2018` |
+| una vista sobre otra vista (`from.view`) | pasa |
+| `Table` sin `changes` · `datasource` sin declarar · `reads: none` con una vista virtual encima · copia sin conducto | `OOS1004` · `OOS2004` · `OOS2020` · `OOS4011` |
+| `count(col)` | `OOS1004`, con la frase que manda escribir `count()` |
+| agrupar sobre una **tabla** (`count()`, `groupBy`, `having`) | pasa |
+| agrupar sobre una **vista** (`sum(baseSalary)` de `empleados`) | **falla** con `OOS2018` y un nombre vacío — la spec §5.8 lo admite y la conformidad no lo cubre (9 casos agrupan sobre tabla, 0 sobre vista): fallo del compilador al resolver el argumento del agregado contra la vista de abajo, pendiente de aislar |
+| `View` sin `owner` | **pasa** — `owner` lo exige el emisor (`cambiame` → `OOS2009`), no el compilador |
+
+**El inductor.** `ore discover` escribe `tables/Clientes__public_clientes.yaml` con `name:
+public_clientes` (`reads: {}`, `changes: { mode: none, witness: none }`: no se sondeó, no se
+inventa) y `views/Clientes__public_clientes.yaml` con `name: clientes`, `oos.maturity: DRAFT` y
+`owner: cambiame`. **El fichero no se llama como el documento**: se busca por `metadata.name`.
+Y **el árbol inducido no compila** hasta `review` y `source add` (`OOS2009`, `OOS2010`,
+`OOS2004`).
+
+**El emisor.** `ore view add --from <tabla|vista> --owner … --field p=col … <nombre>` es *el*
+emisor de `View`, el mismo que el inductor; lo que escribe compila. No hay `ore table add`: la
+tabla es un hecho, la escribe el inductor o una persona.
+
+**Lo derivado.** `ore view .` cuenta por vista `plan · raíz · caras · esquema · linaje · refresco ·
+empuje · cotejo · flujo · restricciones`. Es el material de `/derivados` (I3), no de `/documentos`.
+
+Cuatro decisiones salen de aquí, y son las de I2:
+
+1. **La puerta del PUT es «el árbol no empeora», no «el árbol compila».** Sobre un árbol
+   inducido sin revisar, «compila» rechaza cualquier escritura por errores ajenos al documento.
+   Se compila antes y después, y 422 sólo si aparecen diagnósticos nuevos (o cambian los del
+   fichero escrito). **Vale también para `Entity` (I1), que hoy exige que compile entero.**
+2. **El 409 explícito con los nombres** hace falta en `DELETE` de View y Table por lo mismo que
+   en Entity: `OOS2018` cuenta la verdad desde quien la nombra. Quién nombra a una vista:
+   `Entity.backedBy`, `View.from.view`; a una tabla: `View.from.table`.
+3. **Escribir una View pasa por `ore view add`** cuando es nueva, o se emite la misma forma:
+   un emisor propio en `ore-serve` sería el segundo, y divergirían. `owner` lo exige el verbo.
+4. **Reescribir desde JSON pierde los comentarios** del YAML (`acme-retail` está lleno). Un
+   PUT que trae `yaml` tal cual y se valida conserva lo que la persona escribió; un PUT que trae
+   el documento en JSON lo reescribe. Los dos caben; el que edita un formulario manda JSON y el
+   que edita el texto manda YAML.
+
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
 Todos los `kind` son documentos del mismo árbol y se escriben con la misma figura que ya usan
