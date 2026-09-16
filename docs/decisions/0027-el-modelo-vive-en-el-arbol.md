@@ -467,6 +467,31 @@ cuenta y se dice)—. *Retire* → `DELETE /modelos/{n}`: el 409 se enseña como
 modelo se queda»; retirado, vuelve a la lista sin la fila. El nombre en la tabla enlaza al
 detalle. Visto en el banco.
 
+**I5 hecha — E3 aceptada** (2026-09-16 22:21–23:02, `victor`, `modelos-e0` encendida 40 min,
+`pruebas-de-fuego/deployments-tiene-filas.py` a cuatro manos: la persona en su consola, el guion
+alrededor):
+
+| | quién | qué se vio |
+|---|---|---|
+| ⓪ | guion | `start` de la máquina → el gateway contesta con un backend arriba a los **23 s**; `GET /modelos` (con el `ore-serve` de I1, `af0ec27`): `v2-lite` *running*, `['e0-de-mentira']`, autor = el agente de E2, `uso.hoy` 19 req · 465 tok |
+| ① | persona | *Deployments*: la fila *Running* 1/1 con la máquina y el uso; el detalle con *Overview · Endpoint · Usage* |
+| ② | persona | *Retire* → **409 en pantalla**: «no se retira `v2-lite`: alguien del árbol lo nombra… OOS2005… Retira primero la Function que lo invoca». Nada tocado |
+| ② | guion | Job en la celda: `functions/segmentar.yaml` fuera (`38e5c71`) |
+| ③ | persona | *Retire* → «v2-lite retired», la lista vacía |
+| ③ | guion | `GET /modelos` → `[]` (sin deriva: el verbo quitó las dos) · el Job de la celda recibe **401** «cell victor is not subscribed to any model» |
+| ④ | guion | `docker stop de-mentira` en la máquina → `backends_arriba=0` en 8 s |
+| ④ | persona | *Hub → DeepSeek-V2-Lite → Use in this cluster* (nombre por defecto `deepseek-v2-lite`) → fila **Provisioning 22:47:29** «ningún backend sirve … todavía», *Created by* = la persona |
+| ④ | guion | `docker start de-mentira` 22:50:48 → **Running** `['e0-de-mentira']` 7 s después · `git log -1 -- modelos/deepseek-v2-lite.yaml`: **autor = el `sub` de la persona** (`21e8ffd9-…`), committer `ore-serve`, `70b17a3`, «alta de un modelo» |
+| ⑤ | guion | la Function de E1 vuelve nombrando `modelo/deepseek-v2-lite` (`43828e6`, `ore validate` ok) · el Job de la celda ve el modelo (200) · máquina apagada, `TERMINATED` |
+
+Lo que la pasada destapó: (a) un Job sin `ore.dev/rol: driver` no alcanza el metadata server —las
+NetworkPolicies seleccionan por rol— y `gcloud` dice «no active account», que despista; (b)
+`docker` en COS pide `sudo`; (c) un `503 unconditional drop overload` aislado de la entrada
+pública en una lectura — reintentada, nada; (d) la persona se quedó con el nombre por defecto
+(`deepseek-v2-lite`), y el guion se adaptó: el nombre es suyo. Y una petición de la persona al
+verlo: en vez de «you», un redondel con el icono de perfil (relleno si es quien mira), hecho
+(`components/models/Autor.tsx`).
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
