@@ -103,10 +103,26 @@ de la celda (`ore-agente-<celda>`, que ya existe), el perfil, una cuota y la con
 inquilino (B3). El gateway **no enruta** a un tenant soberano a una máquina `community`: la
 etiqueta viaja con la máquina y se comprueba en cada llamada.
 
-⚠️ **Hueco nombrado, por decidir en la E2:** de dónde lee el gateway qué puede llamar una
-celda. Los dos candidatos coherentes con lo que hay: **el token de agente de la celda y una
-concesión en `iam`** —que niega, no concede sobre el conducto—, o **el gateway lee el árbol**.
-El primero encaja con B3 («`bastion-server` + lo que Rubix ya tiene»); se mide antes de elegir.
+~~⚠️ **Hueco nombrado, por decidir en la E2:** de dónde lee el gateway qué puede llamar una
+celda.~~ **Decidido el 2026-09-16, con la medida hecha (Bastion `03bbc22`): la opción (a).**
+El gateway acepta el **token de agente de la celda** tal cual lo verifica `ore-entrada`
+—RS256 contra un JWKS de fichero, `iss` exacto, `aud` nuestra (`modelos`), `exp`,
+`rubix_tipo = agente`— y lee la celda del claim `rubix_celda`; la celda es el tenant. **El token
+dice quién; qué puede llamar es la suscripción que `ore-serve` provisiona** en el plano de
+control del gateway (`POST /admin/tenants/{celda}/models {model}` al crear el `Model`, `DELETE`
+al retirarlo). Una celda sin `Model` recibe 401 «not subscribed»; una suscrita ve y llama sólo
+sus modelos; la de al lado, 401 — es exactamente la aceptación de la E2, y está en las pruebas
+del crate. Medido en proceso, 256 peticiones con 32 concurrentes: clave `bk_` 0,13 ms/petición,
+token de agente 0,13 (se verifica una vez por vida del token y se cachea por hash), token nuevo
+en cada petición 0,30. Contra los 20 ms de un token de salida, nada.
+
+Por qué (a) y no «el gateway lee el árbol»: leerlo obligaría al gateway a conocer git y el
+formato del árbol, y pondría dos lectores del mismo documento; con (a) el árbol sigue siendo
+el sistema de registro, `ore-serve` sigue siendo quien lo deriva, e `iam` no gana un verbo:
+la concesión sobre el conducto no hace falta porque **la suscripción ya es la concesión** y
+vive donde se ejecuta. Lo que la plataforma tiene que añadir: la audiencia `modelos` en los
+tokens de agente y un mapeador por cliente que emita `rubix_celda` (un cliente por celda, como
+ya tiene 0026); y `ore-serve` llamando al plano de control del gateway desde `/modelos`.
 
 > ### ③ En el tier dedicado, el documento deriva a un despliegue con una cuenta que sólo puede desplegar.
 
