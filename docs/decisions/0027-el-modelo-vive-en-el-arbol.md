@@ -359,6 +359,20 @@ primera llamada de un Job contesta en < 60 s sin que nadie toque `kubectl`; `DEL
 la celda de al lado, sin `Model`, → 401; `--cotejar` de E0 limpio con la regla ya en la
 plantilla.
 
+**I1 · la regla en la plantilla — ✓ 2026-09-16.** `salida-al-modelo` (`driver` →
+`MODELOS/32:8000`) y `salida-al-modelo-del-control` (`control` → `MODELOS/32:9000`) en
+`11-el-inquilino.yaml`; la segunda no la nombraba la ADR y es la que I3 de E1 necesita —sin
+ella `POST /modelos` tira el paquete y contesta 502 a los 15 s—. `gen-inquilino.py` ⑭ exige
+exactamente esas dos hacia MODELOS y que ninguna otra plantilla abra esa IP; `--cotejar`
+coteja MODELOS con la reserva `modelos` de la VPC, como MAESTRO con el API server.
+
+**I2 · la red en `malla/` — ✓ 2026-09-16.** `71-la-red-de-los-modelos.sh` (idempotente,
+`--seco`): la reserva `modelos` = MODELOS —cotejada con la constante de `gen-inquilino.py`—,
+`ore-modelos-desde-la-malla` (pods y nodos → tag `modelos`, 8000 y 9000) e
+`ore-modelos-iap-ssh`; la máquina **no se crea aquí** (es de Bastion), sólo se comprueba que la
+que use la IP lleve el tag. Primera pasada real: todo «ya estaba» (E0 lo dejó a mano) y la
+máquina `modelos-e0` con su tag, parada.
+
 ### E3 · Deployments tiene filas
 
 La consola cruza `GET /modelos` con lo que el gateway contabiliza (⑥); *Crear* deja de estar
