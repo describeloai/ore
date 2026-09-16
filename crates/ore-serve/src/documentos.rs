@@ -1,15 +1,17 @@
-//! Los documentos del árbol, por `kind` (Ontology Forge I1): hoy `Entity`.
+//! Los documentos del árbol, por `kind` (Ontology Forge): un motor y una
+//! tabla de kinds — hoy `Entity`, `View` y `Table`.
 //!
-//! `GET /documentos/Entity` · `GET|PUT|DELETE /documentos/Entity/{ns}/{n}`.
+//! `GET /documentos/{kind}` · `GET|PUT|DELETE /documentos/{kind}/{ns}/{n}`.
 //!
-//! # Por qué `/documentos/Entity` y no `/documentos?kind=Entity`
+//! # Por qué `/documentos/{kind}` y no `/documentos?kind=…`
 //!
 //! La puerta **descarta la cadena de consulta a propósito** (`http.rs`: *ningún
 //! dato entra por la URL*). El `kind` no es un dato, pero tampoco hace falta
 //! abrir la consulta para decirlo: es un segmento, como `{n}` en `/modelos/{n}`.
-//! Y va **literal** —`"Entity"`, no `{kind}`— para que la medida
-//! (`medida-forge-contra-serve.py`) no cuente como servido lo que no lo está:
-//! `View`, `Concept` y los demás entran en I2 con su segmento cada uno.
+//! Y se resuelve contra [`KINDS`]: un kind que no esté en la tabla es 404 con
+//! la lista de los que sí, y la medida (`medida-forge-contra-serve.py`) lee la
+//! misma tabla, así que lo que no se sirve no cuenta como servido. Los kinds
+//! de I2 entran como filas, cada una medida antes de escribirla.
 //!
 //! # La figura, que es la de `/modelos`
 //!
@@ -75,8 +77,96 @@ use std::path::{Path, PathBuf};
 
 const API: &str = "oos.dev/v1alpha8";
 
-/// Una entidad tal como está en el árbol: dónde y qué.
+/// Lo que cambia de un `kind` a otro, y es **todo** lo que cambia: dónde se
+/// escribe uno nuevo, qué exige el verbo antes de compilar, y con qué
+/// artículo se nombra. El recorrido, la ficha, el YAML, `If-Match`, la puerta
+/// y el commit son los mismos para todos. Quién nombra a quién está en
+/// [`quien_nombra`], porque depende de DOS kinds: el que se retira y el que lo
+/// referencia.
+///
+/// El `kind` de la ruta se resuelve contra esta tabla, y la medida
+/// (`medida-forge-contra-serve.py`) la lee de aquí: un kind que no esté no se
+/// sirve y no cuenta como servido.
+pub(crate) struct Kind {
+    pub nombre: &'static str,
+    /// `packages/<ns>/<carpeta>/<n>.yaml` cuando el documento es nuevo. Uno
+    /// que ya existe se reescribe donde esté: el fichero no se llama como el
+    /// documento (medido: `discover` escribe `Clientes__public_clientes.yaml`
+    /// con `name: clientes`).
+    pub carpeta: &'static str,
+    pub articulo: &'static str,
+    /// Lo que el verbo exige del `spec` y el compilador todavía no. `Some`
+    /// es el motivo del 422.
+    pub exige: fn(&Node) -> Option<String>,
+}
+
+pub(crate) const KINDS: &[Kind] = &[
+    Kind {
+        nombre: "Entity",
+        carpeta: "entities",
+        articulo: "la entidad",
+        exige: exige_backed_by,
+    },
+    Kind {
+        nombre: "View",
+        carpeta: "views",
+        articulo: "la vista",
+        exige: exige_owner,
+    },
+    Kind {
+        nombre: "Table",
+        carpeta: "tables",
+        articulo: "la tabla",
+        exige: sin_exigencias,
+    },
+];
+
+pub(crate) fn kind_de(nombre: &str) -> Option<&'static Kind> {
+    KINDS.iter().find(|k| k.nombre == nombre)
+}
+
+fn kinds_servidos() -> String {
+    KINDS
+        .iter()
+        .map(|k| k.nombre)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Medido: `ore validate` admite una `Entity` sin `backedBy` porque los
+/// bindings de v1alpha7 siguen siendo legales. Forge no escribe bindings.
+fn exige_backed_by(spec: &Node) -> Option<String> {
+    spec.get("backedBy")
+        .and_then(|(_, v)| v.as_str())
+        .is_none_or(str::is_empty)
+        .then(|| {
+            "falta `spec.backedBy`: la entidad no sale de ninguna vista, así que no hay fila que declarar. \
+             `ore validate` lo admite todavía por los bindings de v1alpha7, pero Forge no escribe bindings"
+                .to_string()
+        })
+}
+
+/// Medido: una `View` sin `owner` pasa el esquema; `owner` lo exige el
+/// emisor (`cambiame` no valida: `OOS2009`). Aquí también.
+fn exige_owner(spec: &Node) -> Option<String> {
+    spec.get("owner")
+        .and_then(|(_, v)| v.as_str())
+        .is_none_or(str::is_empty)
+        .then(|| {
+            "falta `spec.owner`: quien responde de lo que la vista expone y con qué frescura. \
+             `ore validate` no lo exige; `ore view add` sí, y este verbo también"
+                .to_string()
+        })
+}
+
+/// La tabla es un hecho: no tiene dueño, y todo lo demás lo exige el esquema.
+fn sin_exigencias(_: &Node) -> Option<String> {
+    None
+}
+
+/// Un documento tal como está en el árbol: qué es, dónde y qué dice.
 struct Documento {
+    kind: &'static Kind,
     paquete: String,
     fichero: PathBuf,
     texto: String,
@@ -103,9 +193,12 @@ fn campo(n: &Node, padre: &str, k: &str) -> String {
         .to_string()
 }
 
-/// Todas las entidades del árbol, paquete a paquete, y cuántos ficheros no se
-/// pudieron leer. Un fichero roto se salta y se cuenta, como en `/esquema`.
-fn entidades_de(raiz: &Path) -> (Vec<Documento>, usize) {
+/// Todos los documentos de los kinds servidos, paquete a paquete, y cuántos
+/// ficheros no se pudieron leer. Se recorre cada paquete **entero** y el
+/// `kind` es el discriminante, como hace el cargador de `ore-core`: el
+/// directorio es convención, no regla. Un fichero roto se salta y se cuenta,
+/// como en `/esquema`.
+fn documentos_de(raiz: &Path) -> (Vec<Documento>, usize) {
     let mut lista = Vec::new();
     let mut rotos = 0;
     let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
@@ -114,14 +207,13 @@ fn entidades_de(raiz: &Path) -> (Vec<Documento>, usize) {
     let mut paquetes: Vec<_> = paquetes.flatten().map(|e| e.path()).collect();
     paquetes.sort();
     for p in paquetes.into_iter().filter(|p| p.is_dir()) {
-        let Ok(ficheros) = std::fs::read_dir(p.join("entities")) else {
-            continue;
-        };
-        let mut ficheros: Vec<_> = ficheros
-            .flatten()
-            .map(|e| e.path())
-            .filter(|f| f.extension().is_some_and(|x| x == "yaml"))
-            .collect();
+        let paquete = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let mut ficheros = Vec::new();
+        yamls_de(&p, &mut ficheros);
         ficheros.sort();
         for fichero in ficheros {
             let Ok(texto) = std::fs::read_to_string(&fichero) else {
@@ -132,19 +224,20 @@ fn entidades_de(raiz: &Path) -> (Vec<Documento>, usize) {
                 rotos += 1;
                 continue;
             };
-            if nodo.get("kind").and_then(|(_, k)| k.as_str()) != Some("Entity") {
+            let Some(kind) = nodo
+                .get("kind")
+                .and_then(|(_, k)| k.as_str())
+                .and_then(kind_de)
+            else {
                 continue;
-            }
+            };
             if campo(&nodo, "metadata", "name").is_empty() {
                 rotos += 1;
                 continue;
             }
             lista.push(Documento {
-                paquete: p
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
+                kind,
+                paquete: paquete.clone(),
                 fichero,
                 texto,
                 nodo,
@@ -152,6 +245,85 @@ fn entidades_de(raiz: &Path) -> (Vec<Documento>, usize) {
         }
     }
     (lista, rotos)
+}
+
+/// Los `.yaml` de un directorio, hacia dentro y sin entrar en los ocultos.
+fn yamls_de(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entradas.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if !p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            {
+                yamls_de(&p, out);
+            }
+        } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml") {
+            out.push(p);
+        }
+    }
+}
+
+/// ¿`valor` apunta a `d`? Cualificado, o corto dentro del mismo paquete.
+fn apunta(valor: Option<&Node>, d: &Documento, mismo_paquete: bool) -> bool {
+    let Some(v) = valor.and_then(|v| v.as_str()) else {
+        return false;
+    };
+    v == d.cualificado() || (mismo_paquete && v == d.nombre())
+}
+
+/// Quién referencia a `d`, para decirlo en el 409 de `DELETE`. Medido
+/// (`medida-forge-view-y-table.py` ⑥): a una entidad la nombran las
+/// `relations` de otra entidad; a una vista, `Entity.backedBy` y
+/// `View.from.view`; a una tabla, `View.from.table`. Una `Function` escribe
+/// por `effects.writes: hr.Employee.estado` —nombra la entidad— y la vista la
+/// alcanza por `backedBy`.
+fn quien_nombra(todos: &[Documento], d: &Documento) -> Vec<String> {
+    let mut quien = Vec::new();
+    for o in todos.iter().filter(|o| !std::ptr::eq(*o, d)) {
+        let mismo = o.paquete == d.paquete;
+        let spec = o.nodo.get("spec").map(|(_, s)| s);
+        let from = |k: &str| {
+            spec.and_then(|s| s.get("from"))
+                .and_then(|(_, f)| f.get(k))
+                .map(|(_, v)| v)
+        };
+        match (d.kind.nombre, o.kind.nombre) {
+            ("Entity", "Entity") => {
+                for (k, rel) in spec
+                    .and_then(|s| s.get("relations"))
+                    .map(|(_, r)| r.entries())
+                    .unwrap_or(&[])
+                {
+                    if apunta(rel.get("target").map(|(_, t)| t), d, mismo)
+                        && let Some(k) = k.as_str()
+                    {
+                        quien.push(format!("`{}` (relations.{k})", o.cualificado()));
+                    }
+                }
+            }
+            ("View", "Entity") => {
+                if apunta(
+                    spec.and_then(|s| s.get("backedBy")).map(|(_, v)| v),
+                    d,
+                    mismo,
+                ) {
+                    quien.push(format!("`{}` (backedBy)", o.cualificado()));
+                }
+            }
+            ("View", "View") if apunta(from("view"), d, mismo) => {
+                quien.push(format!("`{}` (from.view)", o.cualificado()));
+            }
+            ("Table", "View") if apunta(from("table"), d, mismo) => {
+                quien.push(format!("`{}` (from.table)", o.cualificado()));
+            }
+            _ => {}
+        }
+    }
+    quien
 }
 
 /// La ficha de un documento: `metadata` y `spec` **enteros**, tal como están
@@ -171,7 +343,7 @@ fn ficha(raiz: &Path, d: &Documento) -> Json {
             .unwrap_or(Json::obj([]))
     };
     Json::obj([
-        ("kind", Json::s("Entity")),
+        ("kind", Json::s(d.kind.nombre)),
         ("apiVersion", Json::s(campo_raiz(&d.nodo, "apiVersion"))),
         ("name", Json::s(d.nombre())),
         ("namespace", Json::s(d.espacio())),
@@ -189,12 +361,35 @@ fn campo_raiz(n: &Node, k: &str) -> String {
         .to_string()
 }
 
-/// `GET /documentos/Entity`.
-pub(crate) fn entidades(raiz: &Path) -> Respuesta {
-    let (lista, rotos) = entidades_de(raiz);
+/// El kind de la ruta, o el 404 que dice cuáles se sirven.
+fn kind_o_404(kind: &str) -> Result<&'static Kind, Respuesta> {
+    kind_de(kind).ok_or_else(|| {
+        Respuesta::error(
+            404,
+            format!(
+                "no se sirve `{kind}` por `/documentos`. Los que sí: {}",
+                kinds_servidos()
+            ),
+        )
+    })
+}
+
+/// `GET /documentos/{kind}`.
+pub(crate) fn listar(raiz: &Path, kind: &str) -> Respuesta {
+    let k = match kind_o_404(kind) {
+        Ok(k) => k,
+        Err(r) => return r,
+    };
+    let (lista, rotos) = documentos_de(raiz);
     let mut salida = vec![(
         "documentos",
-        Json::Arr(lista.iter().map(|d| ficha(raiz, d)).collect()),
+        Json::Arr(
+            lista
+                .iter()
+                .filter(|d| std::ptr::eq(d.kind, k))
+                .map(|d| ficha(raiz, d))
+                .collect(),
+        ),
     )];
     if rotos > 0 {
         salida.push(("ilegibles", Json::Int(rotos as i64)));
@@ -202,14 +397,18 @@ pub(crate) fn entidades(raiz: &Path) -> Respuesta {
     Respuesta::ok(Json::obj(salida))
 }
 
-/// `GET /documentos/Entity/{ns}/{n}`: la ficha, su YAML y el commit que la trajo.
-pub(crate) fn entidad(raiz: &Path, ns: &str, n: &str) -> Respuesta {
+/// `GET /documentos/{kind}/{ns}/{n}`: la ficha, su YAML y el commit que la trajo.
+pub(crate) fn uno(raiz: &Path, kind: &str, ns: &str, n: &str) -> Respuesta {
+    let k = match kind_o_404(kind) {
+        Ok(k) => k,
+        Err(r) => return r,
+    };
     if let Err(r) = nombres(ns, n) {
         return r;
     }
-    let (lista, _) = entidades_de(raiz);
-    let Some(d) = lista.iter().find(|d| d.espacio() == ns && d.nombre() == n) else {
-        return Respuesta::error(404, format!("no hay ninguna entidad `{ns}.{n}`"));
+    let (lista, _) = documentos_de(raiz);
+    let Some(d) = buscar(&lista, k, ns, n) else {
+        return Respuesta::error(404, format!("no hay {} `{ns}.{n}`", k.articulo));
     };
     let Json::Obj(mut m) = ficha(raiz, d) else {
         unreachable!("la ficha es un objeto");
@@ -221,71 +420,134 @@ pub(crate) fn entidad(raiz: &Path, ns: &str, n: &str) -> Respuesta {
     Respuesta::ok(Json::Obj(m))
 }
 
+fn buscar<'a>(lista: &'a [Documento], k: &Kind, ns: &str, n: &str) -> Option<&'a Documento> {
+    lista
+        .iter()
+        .find(|d| std::ptr::eq(d.kind, k) && d.espacio() == ns && d.nombre() == n)
+}
+
 fn nombres(ns: &str, n: &str) -> Result<(), Respuesta> {
     token(ns).map_err(|m| Respuesta::error(422, format!("`namespace`: {m}")))?;
     token(n).map_err(|m| Respuesta::error(422, format!("`name`: {m}")))?;
     Ok(())
 }
 
+/// Lo que llega en un PUT: el documento en JSON (un formulario), o `{"yaml":
+/// "…"}` tal cual (el texto, con sus comentarios). Los dos pasan por la misma
+/// puerta; lo que cambia es quién emite el YAML.
+fn documento_del_cuerpo(
+    k: &Kind,
+    ns: &str,
+    n: &str,
+    cuerpo: &str,
+) -> Result<(String, Node), Respuesta> {
+    let cuerpo = analizar(cuerpo)?;
+    // ── el texto tal cual ───────────────────────────────────────────────────
+    if let Some((_, y)) = cuerpo.get("yaml") {
+        let Some(texto) = y.as_str() else {
+            return Err(Respuesta::error(422, "`yaml` tiene que ser una cadena"));
+        };
+        let doc = parse::parse(texto)
+            .map_err(|e| Respuesta::error(422, format!("el `yaml` no analiza: {e:?}")))?;
+        comprobar_cabeza(k, ns, n, &doc)?;
+        return Ok((texto.to_string(), doc));
+    }
+    // ── el documento en JSON: se emite ──────────────────────────────────────
+    comprobar_cabeza(k, ns, n, &cuerpo)?;
+    let Some((_, spec)) = cuerpo.get("spec") else {
+        return Err(Respuesta::error(422, "falta `spec`"));
+    };
+    let api = cuerpo
+        .get("apiVersion")
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or(API);
+    let mut texto = format!(
+        "apiVersion: {api}\nkind: {}\nmetadata:\n  name: {n}\n  namespace: {ns}\n",
+        k.nombre
+    );
+    if let Some((_, m)) = cuerpo.get("metadata") {
+        for (kk, v) in m.entries() {
+            let Some(kk) = kk.as_str() else { continue };
+            if kk == "name" || kk == "namespace" {
+                continue;
+            }
+            entrada_yaml(kk, v, 1, &mut texto);
+        }
+    }
+    texto.push_str("spec:\n");
+    for (kk, v) in spec.entries() {
+        if let Some(kk) = kk.as_str() {
+            entrada_yaml(kk, v, 1, &mut texto);
+        }
+    }
+    Ok((texto, cuerpo))
+}
+
+/// `kind`, `metadata.name` y `metadata.namespace`, si vienen, son los de la
+/// ruta; `spec` es un objeto; y lo que el verbo exige, está.
+fn comprobar_cabeza(k: &Kind, ns: &str, n: &str, doc: &Node) -> Result<(), Respuesta> {
+    if let Some(kd) = doc.get("kind").and_then(|(_, v)| v.as_str())
+        && kd != k.nombre
+    {
+        return Err(Respuesta::error(
+            422,
+            format!(
+                "`kind: {kd}` no es `{}`: esta ruta escribe {}",
+                k.nombre, k.articulo
+            ),
+        ));
+    }
+    if let Some((_, m)) = doc.get("metadata") {
+        for (campo, sitio) in [("name", n), ("namespace", ns)] {
+            if let Some(v) = m.get(campo).and_then(|(_, v)| v.as_str())
+                && v != sitio
+            {
+                return Err(Respuesta::error(
+                    422,
+                    format!(
+                        "`metadata.{campo}: {v}` no es el de la ruta (`{sitio}`): el nombre lo pone la ruta"
+                    ),
+                ));
+            }
+        }
+    }
+    let Some((_, spec)) = doc.get("spec") else {
+        return Err(Respuesta::error(422, "falta `spec`"));
+    };
+    if !matches!(spec, Node::Mapping { .. }) {
+        return Err(Respuesta::error(422, "`spec` tiene que ser un objeto"));
+    }
+    if let Some(motivo) = (k.exige)(spec) {
+        return Err(Respuesta::error(422, motivo));
+    }
+    Ok(())
+}
+
 impl Servidor {
-    /// `PUT /documentos/Entity/{ns}/{n}` con el documento en JSON: `metadata`
-    /// (el nombre y el espacio los pone la ruta) y `spec`. 201 si es nueva,
-    /// 200 si se reescribe; `commit` lo añade `escribiendo`.
-    pub(crate) fn escribir_entidad(
+    /// `PUT /documentos/{kind}/{ns}/{n}` con el documento en JSON (`metadata`
+    /// y `spec`; el nombre y el espacio los pone la ruta) o con `yaml` tal
+    /// cual. 201 si es nuevo, 200 si se reescribe; `commit` lo añade
+    /// `escribiendo`.
+    pub(crate) fn escribir_documento(
         &self,
         raiz: &Path,
+        kind: &str,
         ns: &str,
         n: &str,
         cuerpo: &str,
         si_commit: Option<&str>,
     ) -> Respuesta {
+        let k = match kind_o_404(kind) {
+            Ok(k) => k,
+            Err(r) => return r,
+        };
         if let Err(r) = nombres(ns, n) {
             return r;
         }
-        let cuerpo = match analizar(cuerpo) {
-            Ok(c) => c,
+        let (texto, _) = match documento_del_cuerpo(k, ns, n, cuerpo) {
+            Ok(t) => t,
             Err(r) => return r,
         };
-        if let Some(k) = cuerpo.get("kind").and_then(|(_, k)| k.as_str())
-            && k != "Entity"
-        {
-            return Respuesta::error(
-                422,
-                format!("`kind: {k}` no es `Entity`: esta ruta escribe entidades"),
-            );
-        }
-        let Some((_, spec)) = cuerpo.get("spec") else {
-            return Respuesta::error(422, "falta `spec`");
-        };
-        if !matches!(spec, Node::Mapping { .. }) {
-            return Respuesta::error(422, "`spec` tiene que ser un objeto");
-        }
-        // ── lo que este verbo exige y el compilador todavía no ─────────────
-        if spec
-            .get("backedBy")
-            .and_then(|(_, v)| v.as_str())
-            .is_none_or(str::is_empty)
-        {
-            return Respuesta::error(
-                422,
-                "falta `spec.backedBy`: la entidad no sale de ninguna vista, así que no hay fila que declarar. \
-                 `ore validate` lo admite todavía por los bindings de v1alpha7, pero Forge no escribe bindings",
-            );
-        }
-        if let Some(m) = cuerpo.get("metadata").map(|(_, m)| m) {
-            for (k, sitio) in [("name", n), ("namespace", ns)] {
-                if let Some(v) = m.get(k).and_then(|(_, v)| v.as_str())
-                    && v != sitio
-                {
-                    return Respuesta::error(
-                        422,
-                        format!(
-                            "`metadata.{k}: {v}` no es el de la ruta (`{sitio}`): el nombre lo pone la ruta"
-                        ),
-                    );
-                }
-            }
-        }
         if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
             return r;
         }
@@ -294,48 +556,21 @@ impl Servidor {
             return Respuesta::error(
                 404,
                 format!(
-                    "no hay paquete `{ns}`: el espacio de nombres de una entidad es su paquete (OOS2030)"
+                    "no hay paquete `{ns}`: el espacio de nombres de un documento es su paquete (OOS2030)"
                 ),
             );
         }
-
-        // ── el documento, en YAML y con la cabeza en su sitio ───────────────
-        let api = cuerpo
-            .get("apiVersion")
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or(API);
-        let mut texto =
-            format!("apiVersion: {api}\nkind: Entity\nmetadata:\n  name: {n}\n  namespace: {ns}\n");
-        if let Some((_, m)) = cuerpo.get("metadata") {
-            for (k, v) in m.entries() {
-                let Some(k) = k.as_str() else { continue };
-                if k == "name" || k == "namespace" {
-                    continue;
-                }
-                entrada_yaml(k, v, 1, &mut texto);
-            }
-        }
-        texto.push_str("spec:\n");
-        for (k, v) in spec.entries() {
-            if let Some(k) = k.as_str() {
-                entrada_yaml(k, v, 1, &mut texto);
-            }
-        }
-
         let antes = match self.diagnosticos_de(raiz) {
             Ok(a) => a,
             Err(r) => return r,
         };
-        let (lista, _) = entidades_de(raiz);
-        let existente = lista
-            .iter()
-            .find(|d| d.espacio() == ns && d.nombre() == n)
-            .map(|d| (d.fichero.clone(), d.texto.clone()));
+        let (lista, _) = documentos_de(raiz);
+        let existente = buscar(&lista, k, ns, n).map(|d| (d.fichero.clone(), d.texto.clone()));
         let fichero = existente
             .as_ref()
             .map(|(f, _)| f.clone())
-            .unwrap_or_else(|| paquete.join("entities").join(format!("{n}.yaml")));
-        if let Err(e) = std::fs::create_dir_all(paquete.join("entities"))
+            .unwrap_or_else(|| paquete.join(k.carpeta).join(format!("{n}.yaml")));
+        if let Err(e) = std::fs::create_dir_all(paquete.join(k.carpeta))
             .and_then(|_| std::fs::write(&fichero, &texto))
         {
             return Respuesta::error(
@@ -344,7 +579,7 @@ impl Servidor {
             );
         }
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
-        if let Some(r) = self.empeora(raiz, &antes, &format!("la entidad `{ns}.{n}`")) {
+        if let Some(r) = self.empeora(raiz, &antes, &format!("{} `{ns}.{n}`", k.articulo)) {
             // (sobre un directorio no hay clon que tirar: se deja como estaba)
             match &existente {
                 Some((f, t)) => {
@@ -357,7 +592,7 @@ impl Servidor {
             return r;
         }
         let ficha = Json::obj([
-            ("kind", Json::s("Entity")),
+            ("kind", Json::s(k.nombre)),
             ("name", Json::s(n)),
             ("namespace", Json::s(ns)),
             ("paquete", Json::s(ns)),
@@ -371,56 +606,38 @@ impl Servidor {
         }
     }
 
-    /// `DELETE /documentos/Entity/{ns}/{n}`: fuera si nadie la nombra y el
-    /// árbol sigue compilando; 409 con los nombres si alguien la referencia.
-    pub(crate) fn retirar_entidad(
+    /// `DELETE /documentos/{kind}/{ns}/{n}`: fuera si nadie lo nombra y el
+    /// árbol no empeora; 409 con los nombres si alguien lo referencia.
+    pub(crate) fn retirar_documento(
         &self,
         raiz: &Path,
+        kind: &str,
         ns: &str,
         n: &str,
         si_commit: Option<&str>,
     ) -> Respuesta {
+        let k = match kind_o_404(kind) {
+            Ok(k) => k,
+            Err(r) => return r,
+        };
         if let Err(r) = nombres(ns, n) {
             return r;
         }
-        let (lista, _) = entidades_de(raiz);
-        let Some(d) = lista.iter().find(|d| d.espacio() == ns && d.nombre() == n) else {
-            return Respuesta::error(404, format!("no hay ninguna entidad `{ns}.{n}`"));
+        let (lista, _) = documentos_de(raiz);
+        let Some(d) = buscar(&lista, k, ns, n) else {
+            return Respuesta::error(404, format!("no hay {} `{ns}.{n}`", k.articulo));
         };
         if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
             return r;
         }
         let cualificado = d.cualificado();
-        let quien: Vec<String> = lista
-            .iter()
-            .filter(|o| o.cualificado() != cualificado)
-            .flat_map(|o| {
-                let mismo_paquete = o.paquete == d.paquete;
-                o.nodo
-                    .get("spec")
-                    .and_then(|(_, s)| s.get("relations"))
-                    .map(|(_, r)| r.entries())
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|(_, rel)| {
-                        let t = rel
-                            .get("target")
-                            .and_then(|(_, t)| t.as_str())
-                            .unwrap_or_default();
-                        t == cualificado || (mismo_paquete && t == n)
-                    })
-                    .filter_map(|(k, _)| {
-                        k.as_str()
-                            .map(|k| format!("`{}` (relations.{k})", o.cualificado()))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let quien = quien_nombra(&lista, d);
         if !quien.is_empty() {
             return Respuesta::error(
                 409,
                 format!(
-                    "no se retira `{cualificado}`: la nombra {}. Quita primero esas relaciones",
+                    "no se retira {} `{cualificado}`: la nombra {}. Quita primero esas referencias",
+                    k.articulo,
                     quien.join(", ")
                 ),
             );
@@ -436,14 +653,15 @@ impl Servidor {
                 format!("no se pudo retirar `{}`: {e}", relativo(raiz, &fichero)),
             );
         }
-        if let Some(mut r) = self.empeora(raiz, &antes, &format!("sin la entidad `{cualificado}`"))
+        if let Some(mut r) =
+            self.empeora(raiz, &antes, &format!("sin {} `{cualificado}`", k.articulo))
         {
             let _ = std::fs::write(&fichero, &texto);
             r.codigo = 409;
             return r;
         }
         Respuesta::ok(Json::obj([
-            ("kind", Json::s("Entity")),
+            ("kind", Json::s(k.nombre)),
             ("name", Json::s(n)),
             ("namespace", Json::s(ns)),
             ("retirada", Json::Bool(true)),

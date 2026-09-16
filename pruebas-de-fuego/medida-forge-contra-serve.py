@@ -59,13 +59,29 @@ def sh(cmd):
 
 
 # ── 1 · lo que ore-serve sirve, leído del código ──────────────────────────────
+def kinds_servidos():
+    """La tabla `KINDS` de documentos.rs: los kinds que `/documentos/{kind}` resuelve. Lo que
+    no está ahí contesta 404, así que no cuenta como servido."""
+    src = open(os.path.join(RAIZ, "crates", "ore-serve", "src", "documentos.rs"), encoding="utf-8").read()
+    tabla = src[src.index("const KINDS"):]
+    tabla = tabla[: tabla.index("];")]
+    return re.findall(r'nombre:\s*"(\w+)"', tabla)
+
+
 def rutas_servidas():
     src = open(os.path.join(RAIZ, "crates", "ore-serve", "src", "rutas.rs"), encoding="utf-8").read()
+    kinds = kinds_servidos()
     rutas = set()
     for m in re.finditer(r'\("(GET|POST|PUT|DELETE|PATCH)",\s*\[([^\]]*)\]', src):
         partes = [p.strip() for p in m.group(2).split(",") if p.strip()]
         ruta = "/".join(p.strip('"') if p.startswith('"') else "{n}" for p in partes)
-        rutas.add((m.group(1), ruta))
+        # `/documentos/{kind}` es genérica en rutas.rs y se resuelve contra la tabla: una
+        # ruta por kind servido, y ninguna por los que no están.
+        if ruta.startswith("documentos/{n}"):
+            for k in kinds:
+                rutas.add((m.group(1), ruta.replace("documentos/{n}", "documentos/" + k, 1)))
+        else:
+            rutas.add((m.group(1), ruta))
     return rutas
 
 

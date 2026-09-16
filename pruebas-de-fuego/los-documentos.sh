@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
-# LOS DOCUMENTOS DEL ARBOL (Ontology Forge I1): `Entity`, contra un `ore-serve`
-# de verdad y con el arbol en una forja.
+# LOS DOCUMENTOS DEL ARBOL (Ontology Forge): `/documentos/{kind}` — un motor y
+# una tabla de kinds (Entity, View, Table) — contra un `ore-serve` de verdad y
+# con el arbol en una forja.
 #
 # Forge no lee ficheros: lee `ore-serve`. Y hasta hoy `/esquema` daba nombre,
 # clave, respaldo y propiedades — sin `labels` ni `relations`, asi que Entities
 # no podia pintar sensibilidad y Links no podia pintar aristas. Esto fija que
-# `/documentos/Entity` da el documento ENTERO, y que escribirlo tiene la misma
+# `/documentos/{kind}` da el documento ENTERO, y que escribirlo tiene la misma
 # figura que `/fuentes` y `/modelos`: clonar, escribir, compilar, empujar con
-# el sujeto, y 409 cuando el arbol se movio.
+# el sujeto, 409 cuando el arbol se movio — y la puerta es «el arbol no
+# empeora», no «el arbol compila».
 #
 # El arbol es `acme-retail`, la ontologia de referencia de OOS, sembrada en un
 # repositorio pelado con `file://` (como `servidor-forja.sh`).
+#
+# Los diez primeros son de Entity, la primera fila de la tabla; el 10 fija la
+# puerta; 11-14 son View y Table por el mismo motor:
+#
+#  10  el arbol roto por otro lado    lo valido entra (201), lo invalido sale con
+#                                     SOLO lo suyo, la referenciada sigue en 409
+#  11  GET /documentos/View · Table   enteras; un kind fuera de la tabla, 404 con
+#                                     la lista de los servidos
+#  12  PUT View                       201 y el MISMO `plan sha256` que la misma
+#                                     vista por `ore view add`; sin owner 422;
+#                                     columna que la tabla no tiene, OOS2018
+#  13  PUT con `yaml` tal cual        se guarda con sus comentarios; el nombre lo
+#                                     pone la ruta
+#  14  DELETE View · Table            409 con quien la nombra (backedBy, from.view,
+#                                     from.table); libres, 200
 #
 #   1  GET /documentos/Entity            todas, con `metadata` y `spec` enteros:
 #                                        labels, aiContext, relations, uniqueKeys,
@@ -237,7 +254,74 @@ MAL=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); d['spec']['propertie
 cumple "[x['codigo'] for x in d['diagnosticos']] == ['OOS2022'] and d['previos'] >= 1 and 'no_existe' not in json.dumps(d['diagnosticos'])" "10 · el 422 trae SOLO lo nuevo (OOS2022) y cuenta los previos"
 [ "$(pide DELETE /documentos/Entity/hr/Department)" = "409" ] || falla "10 · retirar una referenciada dejo de ser 409 · $(cat "$TMP/r.json")"
 [ "$(pide DELETE /documentos/Entity/hr/Contractor)" = "200" ] || falla "10 · retirar la libre no dio 200 en un arbol roto · $(cat "$TMP/r.json")"
+# y la rota se retira por el verbo: nadie la nombra, y quitarla no empeora nada
+[ "$(pide DELETE /documentos/View/hr/rota)" = "200" ] || falla "10 · retirar la vista rota no dio 200 · $(cat "$TMP/r.json")"
+git clone -q "$FORJA" "$TMP/limpio" 2>/dev/null && ( cd "$TMP/limpio" && "$ORE" validate . >/dev/null 2>&1 ) || falla "10 · el arbol no volvio a compilar tras retirar la rota"
+rm -rf "$TMP/limpio"
 dice "10 · con el arbol roto por otro lado: lo valido entra, lo invalido sale con solo lo suyo, y la referenciada sigue en 409"
 
+# ── 11 · View y Table: el mismo motor, dos filas más de la tabla de kinds ───
+[ "$(pide GET /documentos/View)" = "200" ] || falla "11 · GET /documentos/View · $(cat "$TMP/r.json")"
+cumple "{x['name'] for x in d['documentos']} == {'empleados','envios'}" "11 · acme-retail tiene dos vistas"
+cumple "[x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['from']=={'table':'workday_worker'} and len([x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['fields'])==12" "11 · la vista trae from y fields enteros"
+[ "$(pide GET /documentos/Table)" = "200" ] || falla "11 · GET /documentos/Table · $(cat "$TMP/r.json")"
+cumple "len(d['documentos']) == 2 and [x for x in d['documentos'] if x['name']=='workday_worker'][0]['spec']['reads']['fullScan']=='forbidden' and 'physicalType' in json.dumps(d['documentos'])" "11 · la tabla trae sus dos caras y sus columnas"
+[ "$(pide GET /documentos/Concept)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
+grep -q "Entity · View · Table" "$TMP/r.json" || falla "11 · el 404 no dice los kinds servidos · $(cat "$TMP/r.json")"
+[ "$(pide GET /documentos/Table/hr/workday_worker)" = "200" ] && cumple "d['yaml'].startswith('apiVersion: oos.dev/v1alpha8') and 'kind: Table' in d['yaml'] and d['commit']['autor']=='semilla'" "11 · una tabla con su YAML y su commit"
+dice "11 · View y Table se leen enteras por el mismo motor; un kind fuera de la tabla es 404 con la lista"
+
+# ── 12 · PUT de una View: el mismo plan que `ore view add` ──────────────────
+#
+# El verbo emite el YAML con el emisor de Entity; `ore view add` con el suyo.
+# Que no divergen se mide: la misma vista por los dos caminos da el mismo
+# `plan sha256` en `ore view .`.
+git clone -q "$FORJA" "$TMP/add" 2>/dev/null
+( cd "$TMP/add" && "$ORE" view add --from workday_worker --owner team:people-data --field id=Worker_Reference.ID --path packages/hr solo_ids >/dev/null 2>&1 ) || falla "12 · ore view add fallo"
+PLAN_ADD=$(cd "$TMP/add" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,/^$/p" | grep -o "sha256:[0-9a-f]*" | head -1)
+[ -n "$PLAN_ADD" ] || falla "12 · ore view no dio plan para la de add"
+rm -rf "$TMP/add"
+VISTA='{"metadata":{"labels":{"oos.maturity":"DRAFT"}},"spec":{"owner":"team:people-data","from":{"table":"workday_worker"},"fields":{"id":"Worker_Reference.ID"}}}'
+[ "$(pide PUT /documentos/View/hr/solo_ids "$VISTA")" = "201" ] || falla "12 · PUT View no dio 201 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'escribir la vista `hr.solo_ids`' ] || falla "12 · el asunto: $(asunto)"
+git clone -q "$FORJA" "$TMP/put" 2>/dev/null
+PLAN_PUT=$(cd "$TMP/put" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,/^$/p" | grep -o "sha256:[0-9a-f]*" | head -1)
+grep -q "^apiVersion" "$TMP/put/packages/hr/views/solo_ids.yaml" || falla "12 · la vista no esta en views/"
+rm -rf "$TMP/put"
+[ "$PLAN_PUT" = "$PLAN_ADD" ] || falla "12 · el plan por PUT ($PLAN_PUT) no es el plan por view add ($PLAN_ADD)"
+# sin owner: lo exige el verbo, no el compilador
+SIN=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); del d['spec']['owner']; print(json.dumps(d))" "$VISTA")
+[ "$(pide PUT /documentos/View/hr/otra "$SIN")" = "422" ] || falla "12 · una vista sin owner entro · $(cat "$TMP/r.json")"
+grep -q "owner" "$TMP/r.json" || falla "12 · el 422 no nombra owner"
+# un field que la tabla no tiene: lo dice el compilador, con el nombre
+MAL='{"spec":{"owner":"team:people-data","from":{"table":"workday_worker"},"fields":{"id":"No_Existe"}}}'
+[ "$(pide PUT /documentos/View/hr/rota2 "$MAL")" = "422" ] || falla "12 · una vista rota entro · $(cat "$TMP/r.json")"
+cumple "d['diagnosticos'][0]['codigo']=='OOS2018' and 'No_Existe' in d['diagnosticos'][0]['mensaje']" "12 · OOS2018 con la columna"
+dice "12 · PUT View: 201, mismo plan que ore view add ($PLAN_PUT), sin owner 422, columna que no esta OOS2018"
+
+# ── 13 · PUT con `yaml` tal cual: los comentarios sobreviven ────────────────
+YAML_DOC=$("$PY" -c 'import json; print(json.dumps({"yaml": "apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata:\n  name: solo_ids\n  namespace: hr\nspec:\n  owner: team:people-data\n  # este comentario es de quien escribe, y se queda\n  from: { table: workday_worker }\n  fields:\n    id: \"Worker_Reference.ID\"\n"}))')
+[ "$(pide PUT /documentos/View/hr/solo_ids "$YAML_DOC")" = "200" ] || falla "13 · PUT con yaml no dio 200 · $(cat "$TMP/r.json")"
+[ "$(pide GET /documentos/View/hr/solo_ids)" = "200" ] && cumple "'este comentario es de quien escribe' in d['yaml'] and 'labels' not in d['metadata']" "13 · el YAML se guardo tal cual, con su comentario"
+YAML_MAL=$("$PY" -c 'import json; print(json.dumps({"yaml": "apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata: { name: otra, namespace: hr }\nspec:\n  owner: team:people-data\n  from: { table: workday_worker }\n  fields: { id: Worker_Reference.ID }\n"}))')
+[ "$(pide PUT /documentos/View/hr/solo_ids "$YAML_MAL")" = "422" ] || falla "13 · un yaml con otro nombre entro · $(cat "$TMP/r.json")"
+dice "13 · PUT con yaml tal cual: se guarda con sus comentarios, y el nombre lo pone la ruta"
+
+# ── 14 · DELETE: quien nombra a una vista y a una tabla ─────────────────────
+[ "$(pide DELETE /documentos/View/hr/empleados)" = "409" ] || falla "14 · retirar la vista de Employee no dio 409 · $(cat "$TMP/r.json")"
+grep -q 'hr.Employee` (backedBy)' "$TMP/r.json" || falla "14 · el 409 no dice quien la nombra · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Table/hr/workday_worker)" = "409" ] || falla "14 · retirar la tabla de empleados no dio 409 · $(cat "$TMP/r.json")"
+grep -q 'hr.empleados` (from.view)\|hr.empleados` (from.table)' "$TMP/r.json" || falla "14 · el 409 de la tabla no dice la vista · $(cat "$TMP/r.json")"
+grep -q 'hr.solo_ids` (from.table)' "$TMP/r.json" || falla "14 · el 409 de la tabla no dice TODAS las vistas · $(cat "$TMP/r.json")"
+# una vista sobre solo_ids, y entonces solo_ids tampoco se retira
+[ "$(pide PUT /documentos/View/hr/encima '{"spec":{"owner":"team:people-data","from":{"view":"solo_ids"},"fields":{"id":"id"}}}')" = "201" ] || falla "14 · la vista sobre vista no entro · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/View/hr/solo_ids)" = "409" ] || falla "14 · retirar una vista con otra encima no dio 409"
+grep -q 'hr.encima` (from.view)' "$TMP/r.json" || falla "14 · el 409 no dice from.view · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/View/hr/encima)" = "200" ] || falla "14 · retirar la de encima no dio 200 · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/View/hr/solo_ids)" = "200" ] || falla "14 · retirar solo_ids no dio 200 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'retirar la vista `hr.solo_ids`' ] || falla "14 · el asunto: $(asunto)"
+[ "$(pide GET /documentos/View)" = "200" ] && cumple "len(d['documentos']) == 2" "14 · vuelven a ser dos"
+dice "14 · DELETE: la vista de un backedBy y la tabla de un from.table son 409 con los nombres; libres, 200"
+
 echo
-echo "ok · /documentos/Entity: la ficha entera, y escribirla es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table — y escribir es un commit del sujeto que no empeora el arbol"

@@ -250,7 +250,7 @@ Cada una se mide antes (§4.3) y cierra filas de la tabla; ninguna pinta lo que 
 |---|---|---|
 | **I0** ✓ | el boceto en la consola sobre `acme-retail` (`components/ontology/`), con cada pantalla diciendo qué verbo le falta; `x-rubix-displayName` en la ficha y en el borrador de `Entity` | — |
 | **I1** ✓ | `/documentos` para `Entity` (lectura con `labels` y `relations`, `PUT`, `DELETE`, §4.4); Forge lee el árbol de la celda en Entities y Links | Entities, Links (lectura) |
-| **I2** | `/documentos` para `View`, `Table`, `Concept`, `Interface`, `Function`, y los de gobierno; `GET /conceptos` (importados + locales, quién los habla) | Views, Concepts, Interfaces, Functions, Policies |
+| **I2** | `/documentos` para `View`, `Table` (✓ hechas: `documentos.rs` es un motor y una tabla de kinds; Views real 3/3), `Concept`, `Interface`, `Function`, y los de gobierno; `GET /conceptos` (importados + locales, quién los habla) | Views ✓, Concepts, Interfaces, Functions, Policies |
 | **I3** | `/derivados`: `diagnosticos`, `topologia`, `clasificacion`; `GET /arbol` | Explore, Links (topología) |
 | **I4** | `/acciones` y `GET /dependencias`; «Proponer cambios» como ciclo real | Ontology config |
 | **I5** | escribir desde Forge: los «Nuevo …» dejan de ser borradores | todas |

@@ -229,26 +229,33 @@ impl Servidor {
                     self.responder(r, &n, &cuerpo)
                 })
             }
-            // ── Ontology Forge I1 · los documentos, por kind (`documentos.rs`) ──
-            // `Entity` va LITERAL: lo que no se sirve no se anuncia.
-            ("GET", ["documentos", "Entity"]) => self.leyendo(documentos::entidades),
-            ("GET", ["documentos", "Entity", ns, n]) => {
-                let (ns, n) = (ns.to_string(), n.to_string());
-                self.leyendo(move |r| documentos::entidad(r, &ns, &n))
+            // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
+            // El kind se resuelve contra `documentos::KINDS`: un kind que no
+            // esté en la tabla es 404 con la lista de los que sí. La medida
+            // lee la misma tabla, así que lo que no se sirve no cuenta.
+            ("GET", ["documentos", kind]) => {
+                let kind = kind.to_string();
+                self.leyendo(move |r| documentos::listar(r, &kind))
             }
-            ("PUT", ["documentos", "Entity", ns, n]) => {
-                let (ns, n) = (ns.to_string(), n.to_string());
+            ("GET", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
+                self.leyendo(move |r| documentos::uno(r, &kind, &ns, &n))
+            }
+            ("PUT", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
                 let si_commit = p.cabeceras.get("if-match").cloned();
-                self.escribiendo(sujeto, &format!("escribir la entidad `{ns}.{n}`"), |r| {
-                    self.escribir_entidad(r, &ns, &n, &cuerpo, si_commit.as_deref())
+                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
+                self.escribiendo(sujeto, &format!("escribir {que} `{ns}.{n}`"), |r| {
+                    self.escribir_documento(r, &kind, &ns, &n, &cuerpo, si_commit.as_deref())
                 })
             }
-            ("DELETE", ["documentos", "Entity", ns, n]) => {
-                let (ns, n) = (ns.to_string(), n.to_string());
+            ("DELETE", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
                 let si_commit = p.cabeceras.get("if-match").cloned();
-                self.escribiendo(sujeto, &format!("retirar la entidad `{ns}.{n}`"), |r| {
-                    self.retirar_entidad(r, &ns, &n, si_commit.as_deref())
+                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
+                self.escribiendo(sujeto, &format!("retirar {que} `{ns}.{n}`"), |r| {
+                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref())
                 })
             }
             ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
@@ -1271,9 +1278,10 @@ fn temporal(nombre: &str, extension: &str) -> PathBuf {
     ))
 }
 
-/// Lo que hay montado, para poder decirlo al arrancar.
-pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
-    vec![
+/// Lo que hay montado, para poder decirlo al arrancar. Las de `/documentos`
+/// salen de `documentos::KINDS`: una por kind servido.
+pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
+    let mut m: Vec<(&'static str, String, bool)> = [
         ("GET", "/salud", true),
         ("GET", "/version", true),
         ("GET", "/fuentes", con_identidad),
@@ -1288,11 +1296,21 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/modelos", con_identidad),
         ("GET", "/modelos/{nombre}", con_identidad),
         ("DELETE", "/modelos/{nombre}", con_identidad),
-        ("GET", "/documentos/Entity", con_identidad),
-        ("GET", "/documentos/Entity/{ns}/{nombre}", con_identidad),
-        ("PUT", "/documentos/Entity/{ns}/{nombre}", con_identidad),
-        ("DELETE", "/documentos/Entity/{ns}/{nombre}", con_identidad),
     ]
+    .into_iter()
+    .map(|(v, r, b)| (v, r.to_string(), b))
+    .collect();
+    for k in documentos::KINDS {
+        m.push(("GET", format!("/documentos/{}", k.nombre), con_identidad));
+        for verbo in ["GET", "PUT", "DELETE"] {
+            m.push((
+                verbo,
+                format!("/documentos/{}/{{ns}}/{{nombre}}", k.nombre),
+                con_identidad,
+            ));
+        }
+    }
+    m
 }
 
 pub fn ruta_de(p: &Path) -> String {
