@@ -174,7 +174,9 @@ impl Servidor {
             ("GET", ["modelos"]) => self.leyendo(|r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();
-                self.escribiendo(sujeto, "alta de un modelo", |r| self.alta_de_modelo(r, &cuerpo))
+                self.escribiendo(sujeto, "alta de un modelo", |r| {
+                    self.alta_de_modelo(r, &cuerpo)
+                })
             }
             ("GET", ["modelos", n]) => {
                 let n = n.to_string();
@@ -182,7 +184,9 @@ impl Servidor {
             }
             ("DELETE", ["modelos", n]) => {
                 let n = n.to_string();
-                self.escribiendo(sujeto, &format!("retirar el modelo `{n}`"), |r| self.retirar_modelo(r, &n))
+                self.escribiendo(sujeto, &format!("retirar el modelo `{n}`"), |r| {
+                    self.retirar_modelo(r, &n)
+                })
             }
             // ⭐⭐ CREAR UNA BASE ELIGIENDO QUE ENTRA. Es lo que el modal de la
             //   consola lleva meses pidiendo con casillas: schemas y tablas de
@@ -221,7 +225,9 @@ impl Servidor {
                     self.responder(r, &n, &cuerpo)
                 })
             }
-            ("GET", _) | ("POST", _) | ("DELETE", _) => Respuesta::error(404, "no hay nada en ese camino"),
+            ("GET", _) | ("POST", _) | ("DELETE", _) => {
+                Respuesta::error(404, "no hay nada en ese camino")
+            }
             _ => Respuesta::error(405, "método no admitido"),
         }
     }

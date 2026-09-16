@@ -297,7 +297,10 @@ fn main() -> ExitCode {
         organizacion: o.organizacion,
         modelos: o.modelos.map(|admin| modelos::Modelos {
             url: o.modelos_url.unwrap_or_else(|| {
-                format!("http://{}:8000/v1", admin.split(':').next().unwrap_or(&admin))
+                format!(
+                    "http://{}:8000/v1",
+                    admin.split(':').next().unwrap_or(&admin)
+                )
             }),
             admin,
         }),

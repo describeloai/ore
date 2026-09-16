@@ -699,8 +699,12 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 // remedio es el de siempre: escribir el documento que falta, o el nombre bueno.
 fn modelos(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for f in pkg.of(Kind::Function) {
-        let Some(nodo) = f.section("model") else { continue };
-        let Some(referencia) = nodo.as_str() else { continue };
+        let Some(nodo) = f.section("model") else {
+            continue;
+        };
+        let Some(referencia) = nodo.as_str() else {
+            continue;
+        };
         let nombre = referencia.strip_prefix("modelo/").unwrap_or(referencia);
         let existe = pkg
             .of(Kind::Model)

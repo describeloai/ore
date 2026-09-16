@@ -1214,7 +1214,11 @@ fn borrador_de_v1alpha8() {
 /// modelo no esta. Ningun codigo nuevo: los remedios son los de siempre.
 #[test]
 fn borrador_de_v1alpha9() {
-    marcador("v1alpha9", "el modelo", "BORRADOR · OOS v1alpha9 · el modelo");
+    marcador(
+        "v1alpha9",
+        "el modelo",
+        "BORRADOR · OOS v1alpha9 · el modelo",
+    );
 }
 
 #[test]

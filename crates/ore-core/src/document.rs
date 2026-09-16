@@ -770,7 +770,10 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                 ] {
                     match n.get(clave).and_then(|(_, v)| v.as_str()) {
                         None => {
-                            return Some((format!("un modelo sin `{clave}`"), Some(ayuda.to_string())));
+                            return Some((
+                                format!("un modelo sin `{clave}`"),
+                                Some(ayuda.to_string()),
+                            ));
                         }
                         Some(v) if !vocabulario.contains(&v) => {
                             return Some((
@@ -801,10 +804,15 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     let Some(m) = modelo else {
                         return Some((
                             "`runtime: model` sin `model`".to_string(),
-                            Some("el documento del arbol que invoca: `model: modelo/<nombre>`".to_string()),
+                            Some(
+                                "el documento del arbol que invoca: `model: modelo/<nombre>`"
+                                    .to_string(),
+                            ),
                         ));
                     };
-                    if m.strip_prefix("modelo/").is_none_or(|r| r.is_empty() || r.contains('/')) {
+                    if m.strip_prefix("modelo/")
+                        .is_none_or(|r| r.is_empty() || r.contains('/'))
+                    {
                         return Some((
                             format!("`model: {m}` no es `modelo/<nombre>`"),
                             Some(
@@ -817,7 +825,10 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     if n.get("entrypoint").is_some() {
                         return Some((
                             "`runtime: model` con `entrypoint`".to_string(),
-                            Some("el modelo es lo que se ejecuta; `entrypoint` es de `wasm`".to_string()),
+                            Some(
+                                "el modelo es lo que se ejecuta; `entrypoint` es de `wasm`"
+                                    .to_string(),
+                            ),
                         ));
                     }
                 } else {
@@ -830,7 +841,10 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     if n.get("prompt").is_some() {
                         return Some((
                             format!("`prompt` con `runtime: {runtime}`"),
-                            Some("un prompt solo se lo dice a un modelo: `runtime: model`".to_string()),
+                            Some(
+                                "un prompt solo se lo dice a un modelo: `runtime: model`"
+                                    .to_string(),
+                            ),
                         ));
                     }
                 }

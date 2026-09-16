@@ -88,17 +88,22 @@ impl Servidor {
     /// La lista, de donde esté: un fichero (`--perfiles`, el banco) o la cola.
     fn perfiles(&self) -> Result<Vec<Perfil>, Respuesta> {
         if let Some(f) = &self.perfiles {
-            let t = std::fs::read_to_string(f)
-                .map_err(|e| Respuesta::error(503, format!("no se pudo leer `{}`: {e}", f.display())))?;
+            let t = std::fs::read_to_string(f).map_err(|e| {
+                Respuesta::error(503, format!("no se pudo leer `{}`: {e}", f.display()))
+            })?;
             return perfiles_de(&t).map_err(|m| Respuesta::error(503, m));
         }
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
                 503,
-                format!("este servidor no sabe de ninguna cola (`--cola`) ni de un fichero de perfiles (`--perfiles`): sin `{PERFILES}` no hay contra qué encajar un modelo"),
+                format!(
+                    "este servidor no sabe de ninguna cola (`--cola`) ni de un fichero de perfiles (`--perfiles`): sin `{PERFILES}` no hay contra qué encajar un modelo"
+                ),
             ));
         };
-        let prestado = forja.clonar().map_err(|e| Respuesta::error(502, e.to_string()))?;
+        let prestado = forja
+            .clonar()
+            .map_err(|e| Respuesta::error(502, e.to_string()))?;
         let t = std::fs::read_to_string(prestado.ruta().join(PERFILES)).map_err(|_| {
             Respuesta::error(
                 503,
@@ -138,7 +143,10 @@ impl Servidor {
             return Respuesta::error(422, format!("`name`: {m}"));
         }
         let Some(profile) = campo(&cuerpo, "profile") else {
-            return Respuesta::error(422, "falta `profile` (`<maquina>/<modelo>`, uno de la lista de certificación)");
+            return Respuesta::error(
+                422,
+                "falta `profile` (`<maquina>/<modelo>`, uno de la lista de certificación)",
+            );
         };
         let tier = campo(&cuerpo, "tier").unwrap_or_else(|| "shared".into());
         let task = campo(&cuerpo, "task").unwrap_or_else(|| "chat".into());
@@ -159,13 +167,20 @@ impl Servidor {
             Err(r) => return r,
         };
         let Some(perfil) = perfiles.iter().find(|p| p.profile == profile) else {
-            let hay: Vec<String> = perfiles.iter().map(|p| format!("`{}` ({})", p.profile, p.status)).collect();
+            let hay: Vec<String> = perfiles
+                .iter()
+                .map(|p| format!("`{}` ({})", p.profile, p.status))
+                .collect();
             return Respuesta::error(
                 422,
                 format!(
                     "`profile: {profile}` no está en la lista de certificación. Un perfil sin número no \
                      existe. Los que hay: {}",
-                    if hay.is_empty() { "ninguno".to_string() } else { hay.join(", ") }
+                    if hay.is_empty() {
+                        "ninguno".to_string()
+                    } else {
+                        hay.join(", ")
+                    }
                 ),
             );
         };
@@ -180,11 +195,18 @@ impl Servidor {
                 None => {
                     return Respuesta::error(
                         422,
-                        format!("`digest` no se puede prometer: el perfil `{profile}` todavía no publica el suyo (B4). Déjalo fuera"),
+                        format!(
+                            "`digest` no se puede prometer: el perfil `{profile}` todavía no publica el suyo (B4). Déjalo fuera"
+                        ),
                     );
                 }
                 Some(suyo) if suyo != d => {
-                    return Respuesta::error(422, format!("`digest` no es el del perfil `{profile}`: el perfil sirve `{suyo}`"));
+                    return Respuesta::error(
+                        422,
+                        format!(
+                            "`digest` no es el del perfil `{profile}`: el perfil sirve `{suyo}`"
+                        ),
+                    );
                 }
                 _ => {}
             }
@@ -195,9 +217,8 @@ impl Servidor {
         if fichero.exists() {
             return Respuesta::error(409, format!("ya hay un modelo `{nombre}`"));
         }
-        let mut texto = format!(
-            "apiVersion: oos.dev/v1alpha9\nkind: Model\nmetadata:\n  name: {nombre}\n"
-        );
+        let mut texto =
+            format!("apiVersion: oos.dev/v1alpha9\nkind: Model\nmetadata:\n  name: {nombre}\n");
         if let Some(d) = &descripcion {
             texto.push_str(&format!("  description: {}\n", Json::s(d.clone()).jcs()));
         }
@@ -206,8 +227,12 @@ impl Servidor {
             texto.push_str(&format!("  digest: {d}\n"));
         }
         texto.push_str(&format!("  tier: {tier}\n  task: {task}\n"));
-        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&fichero, &texto)) {
-            return Respuesta::error(500, format!("no se pudo escribir `modelos/{nombre}.yaml`: {e}"));
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&fichero, &texto))
+        {
+            return Respuesta::error(
+                500,
+                format!("no se pudo escribir `modelos/{nombre}.yaml`: {e}"),
+            );
         }
         // la gramática decide la forma (tier, task, digest…), no este proceso.
         // (Sobre un directorio no hay clon que tirar: lo escrito se retira.)
@@ -223,17 +248,27 @@ impl Servidor {
             None,
             Some(&Json::obj([("model", Json::s(perfil.model.clone()))])),
         ) {
-            Ok((201, _)) | Ok((200, _)) => format!("provisionada en {} para la celda `{celda}`", puerta.admin),
+            Ok((201, _)) | Ok((200, _)) => {
+                format!("provisionada en {} para la celda `{celda}`", puerta.admin)
+            }
             Ok((cod, cuerpo)) => {
                 let _ = std::fs::remove_file(&fichero);
                 return Respuesta::error(
                     502,
-                    format!("el gateway contestó {cod} a la suscripción ({}); no se escribió nada", cuerpo.trim().chars().take(160).collect::<String>()),
+                    format!(
+                        "el gateway contestó {cod} a la suscripción ({}); no se escribió nada",
+                        cuerpo.trim().chars().take(160).collect::<String>()
+                    ),
                 );
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&fichero);
-                return Respuesta::error(502, format!("no se pudo suscribir a `{celda}` en el gateway: {e}; no se escribió nada"));
+                return Respuesta::error(
+                    502,
+                    format!(
+                        "no se pudo suscribir a `{celda}` en el gateway: {e}; no se escribió nada"
+                    ),
+                );
             }
         };
         Respuesta::creado(Json::obj([
@@ -270,7 +305,10 @@ impl Servidor {
             .and_then(|n| n.get("spec").and_then(|(_, s)| campo(s, "profile")))
             .unwrap_or_default();
         if let Err(e) = std::fs::remove_file(&fichero) {
-            return Respuesta::error(500, format!("no se pudo retirar `modelos/{nombre}.yaml`: {e}"));
+            return Respuesta::error(
+                500,
+                format!("no se pudo retirar `modelos/{nombre}.yaml`: {e}"),
+            );
         }
         // una función que lo nombre deja de resolver: se dice y no se retira.
         // (Se vuelve a escribir: sobre un directorio no hay clon que tirar.)
@@ -281,27 +319,51 @@ impl Servidor {
         }
         // el id servido, del perfil; si la lista no está, del gateway no se puede retirar por id
         let id = match self.perfiles() {
-            Ok(p) => p.into_iter().find(|p| p.profile == profile).map(|p| p.model),
+            Ok(p) => p
+                .into_iter()
+                .find(|p| p.profile == profile)
+                .map(|p| p.model),
             Err(_) => None,
         };
         let Some(id) = id else {
             return Respuesta::error(
                 503,
-                format!("no sé qué id sirve el perfil `{profile}` (sin `{PERFILES}`): la suscripción no se puede retirar, y sin eso el modelo tampoco"),
+                format!(
+                    "no sé qué id sirve el perfil `{profile}` (sin `{PERFILES}`): la suscripción no se puede retirar, y sin eso el modelo tampoco"
+                ),
             );
         };
         let camino = format!("/admin/tenants/{celda}/models/{}", id.replace('/', "%2F"));
         match http::pedir("DELETE", &puerta.admin, &camino, None, None) {
             Ok((204, _)) | Ok((200, _)) | Ok((404, _)) => {}
             Ok((cod, cuerpo)) => {
-                return Respuesta::error(502, format!("el gateway contestó {cod} al retirar la suscripción ({}); el modelo se queda", cuerpo.trim().chars().take(160).collect::<String>()));
+                return Respuesta::error(
+                    502,
+                    format!(
+                        "el gateway contestó {cod} al retirar la suscripción ({}); el modelo se queda",
+                        cuerpo.trim().chars().take(160).collect::<String>()
+                    ),
+                );
             }
-            Err(e) => return Respuesta::error(502, format!("no se pudo retirar la suscripción en el gateway: {e}; el modelo se queda")),
+            Err(e) => {
+                return Respuesta::error(
+                    502,
+                    format!(
+                        "no se pudo retirar la suscripción en el gateway: {e}; el modelo se queda"
+                    ),
+                );
+            }
         }
         Respuesta::ok(Json::obj([
             ("name", Json::s(nombre)),
             ("retirado", Json::Bool(true)),
-            ("suscripcion", Json::s(format!("retirada en {} para la celda `{celda}`", puerta.admin))),
+            (
+                "suscripcion",
+                Json::s(format!(
+                    "retirada en {} para la celda `{celda}`",
+                    puerta.admin
+                )),
+            ),
         ]))
     }
 
@@ -310,7 +372,11 @@ impl Servidor {
         let perfiles = self.perfiles().ok();
         let mut lista = Vec::new();
         if let Ok(es) = std::fs::read_dir(raiz.join("modelos")) {
-            let mut rutas: Vec<_> = es.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "yaml")).collect();
+            let mut rutas: Vec<_> = es
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+                .collect();
             rutas.sort();
             for p in rutas {
                 if let Some(j) = self.ficha(&p, perfiles.as_deref()) {
@@ -363,7 +429,10 @@ impl Servidor {
             Err(e) => Some(Respuesta::error(500, e.to_string())),
             Ok(s) if !s.bien() => Some(Respuesta::error(
                 422,
-                format!("el árbol no compila con ese modelo: {}", primera_linea(&s.stdout, &s.stderr)),
+                format!(
+                    "el árbol no compila con ese modelo: {}",
+                    primera_linea(&s.stdout, &s.stderr)
+                ),
             )),
             Ok(_) => None,
         }
