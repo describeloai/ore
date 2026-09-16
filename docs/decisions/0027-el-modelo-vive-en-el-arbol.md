@@ -208,9 +208,58 @@ Bastion** (sus hitos 1 y 2: `bench.sh` PASS con la imagen en un `g1`/`g4`, y el 
 en G4 cuando haya cuota). Lo que ORE tiene que medir primero es **la otra mitad: que una celda
 alcance un modelo servido por un perfil, y que el árbol lo nombre**.
 
-### E0 · La celda alcanza el modelo
+### E0 · La celda alcanza el modelo — ✓ 2026-09-16 (a)(c)(d)(e) en `victor`; (b) queda para el g1
 
-`pruebas-de-fuego/medida-la-celda-alcanza-el-modelo.py`. Con un `g1` servido por
+`pruebas-de-fuego/medida-la-celda-alcanza-el-modelo.py`, contra el gateway de Bastion (B3,
+`bastion/gateway:0.1.0-2`) en **una `e2-micro` de la misma VPC** (`modelos-e0`, IP interna
+reservada `modelos` = `10.10.0.100`, sin IP pública, ~0,01 $/h) con **un vLLM de mentira**
+detrás (`bastion/env/e0`: contesta `pyme` a un prompt de segmentación, una palabra cada 20 ms)
+— porque cuatro de las cinco filas miden **red, identidad y árbol**, no inferencia, y el g1 no
+era pagable. Dos Jobs reales de la celda (`driver`, por la cola; 100–112 s hasta arrancar: el
+pool `jobs` desde cero):
+
+| | medido | resultado |
+|---|---|---|
+| (a) | un Job de `victor` contra `10.10.0.100:8000` con la `NetworkPolicy` de hoy | **no llega**: `curl` rc 28 a los 8 s — `deny-all-egress` tira el paquete |
+| (a) | el mismo Job con `salida-al-modelo` (`driver` → `MODELOS/32:8000`, y nada más) aplicada a mano | **llega**: 401 en 2,5 ms — la puerta pide identidad |
+| (c) | el mismo `curl` con el token real de `ore-agente-victor` (acuñado dentro, como los Jobs de 44) | **401 «cell victor is not subscribed to any model»** sin `Model`; `POST /admin/tenants/victor/models` (lo que `ore-serve` hará en `/modelos`) → **200 visto desde la celda ≤ 4 s** después, y ve sólo su modelo |
+| (b) | 1 y 4 llamadas concurrentes desde la celda | números del modelo de mentira (TTFT 3–5 ms, 16 tokens en 197 ms): **no cuentan**; el mismo comando con un g1 registrado en este gateway los mide |
+| (d) | `functions/segmentar.yaml` con `entrypoint: modelo/v2-lite`; el Job la ejecuta a mano (F4 no existe), llama por el gateway con el token, hace la `Propuesta`, `ore verify` la coteja | **`ventas.Cliente.segmento [clienteId=C-0001] ← pyme`**, «la propuesta cae dentro de lo que el paquete autoriza»; commit `83ac7ac` por `ventas.segmentar <modelo-v2-lite@victor.invalido>` en `propuestas/`; `GET /paquetes` de `ore-serve` lista `ventas 0.1.0` |
+| (e) | `medida-el-estado-de-la-celda.py victor --cotejar` | snapshot fresco, sin diferencias; los pods vivos son `cofre, control, forja, informador` — ninguno sirve un modelo |
+
+**Lo que E0 enseñó, y es la forma de ① que E1 tiene que escribir:**
+
+- **La gramática de hoy admite `runtime: model` y `entrypoint: modelo/v2-lite`** sin tocar
+  `oos` (el valor de `runtime` no se comprueba); el prompt sólo cabe en una extensión
+  (`x-ore-prompt`) porque `Function.spec` es cerrado. E1 decide si eso es la forma o si
+  `runtime: model` merece claves propias.
+- **La salida de un modelo sin endoso es `untrusted`**, y `OOS7002` lo hace cumplir: la
+  propiedad que escribe y el conducto de materialización tuvieron que declararse `untrusted`
+  para que el paquete compilara. Es correcto —es lo que una clasificación sin revisar es en
+  el retículo— y el `Model` no puede prometer más sin un endoso.
+- **Resolver `modelo/v2-lite` es lo que el documento `Model` da**: hoy la plataforma da la
+  puerta (`MODELOS`) y el perfil da el id servido (`deepseek-ai/DeepSeek-V2-Lite`); el Job lo
+  toma de variables y lo dice. E1 lo lee del `Model` (`profile` → id).
+- **La suscripción es la concesión y basta**: tenant = celda, `allowed_models` = los `Model`
+  del árbol. Y un hueco del gateway que la medida destapó y se cerró (Bastion): una celda a
+  la que se le retira su último modelo **es una celda no suscrita** (401), aunque su fila
+  siga — la segunda pasada devolvía 200 con lista vacía.
+- **Lo que aterriza es la `Propuesta`, no la copia**: aplicarla por la vista es F5
+  (`functions.md`), que no existe. El eco que E0 pedía —una propiedad del árbol escrita por
+  el modelo, con su commit— está; la edición sobre la copia llega con F5.
+- **La máquina de modelos vive fuera de GKE y dentro de la VPC**, exactamente 0024 ②: la regla
+  de red es `ipBlock` + puerto, y la firewall de la VPC (`ore-modelos-desde-la-malla`: pods y
+  nodos → tag `modelos`, 8000 y 9000) es su otra mitad. COS tira lo que entra por defecto: el
+  arranque de la máquina abre los dos puertos a `10.0.0.0/8`.
+- **Lo que la pasada real enseñó de paso**: el nodo `sistema-spot` fue reclamado a mitad de
+  medida (13:04 UTC) y la plataforma entera tardó ~6 min en volver; un IdP que da 502 durante
+  eso no puede tumbar el gateway — su JWKS es un fichero y el arranque conserva la última copia.
+
+Lo que E0 deja en `victor`: `packages/ventas`, `functions/segmentar.yaml`, `lattices/assurance.yaml`,
+`conduits.yaml` (commit `437cd35`) y `propuestas/segmentar-C-0001.json` (`83ac7ac`). La regla
+`salida-al-modelo` se retira al acabar; E2 la lleva a la plantilla.
+
+*La aceptación tal como se escribió:* Con un `g1` servido por
 `bastion launch` con `g1/deepseek-v2-lite` —en Vast hoy, etiqueta *community*: **sólo un
 prompt de prueba, nunca datos**; en G4 cuando llegue—, desde `t-victor`: **(a)** que un Job de
 la celda **no** alcanza `:8000` con la `NetworkPolicy` de hoy (el timeout, con código) y sí con
