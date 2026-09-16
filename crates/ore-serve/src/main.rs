@@ -40,6 +40,7 @@
 //! abierto, lo CIERRA*.
 
 mod cola;
+mod documentos;
 mod git;
 mod mando;
 mod modelos;

@@ -54,6 +54,7 @@
 //!   alfabeto ya no admite.
 
 use crate::cola;
+use crate::documentos;
 use crate::git;
 use crate::mando;
 use ore_core::json::Json;
@@ -228,7 +229,29 @@ impl Servidor {
                     self.responder(r, &n, &cuerpo)
                 })
             }
-            ("GET", _) | ("POST", _) | ("DELETE", _) => {
+            // ── Ontology Forge I1 · los documentos, por kind (`documentos.rs`) ──
+            // `Entity` va LITERAL: lo que no se sirve no se anuncia.
+            ("GET", ["documentos", "Entity"]) => self.leyendo(documentos::entidades),
+            ("GET", ["documentos", "Entity", ns, n]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                self.leyendo(move |r| documentos::entidad(r, &ns, &n))
+            }
+            ("PUT", ["documentos", "Entity", ns, n]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                let cuerpo = p.cuerpo.clone();
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                self.escribiendo(sujeto, &format!("escribir la entidad `{ns}.{n}`"), |r| {
+                    self.escribir_entidad(r, &ns, &n, &cuerpo, si_commit.as_deref())
+                })
+            }
+            ("DELETE", ["documentos", "Entity", ns, n]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                self.escribiendo(sujeto, &format!("retirar la entidad `{ns}.{n}`"), |r| {
+                    self.retirar_entidad(r, &ns, &n, si_commit.as_deref())
+                })
+            }
+            ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
                 Respuesta::error(404, "no hay nada en ese camino")
             }
             _ => Respuesta::error(405, "método no admitido"),
@@ -1199,7 +1222,7 @@ pub(crate) fn analizar(cuerpo: &str) -> Result<Node, Respuesta> {
 /// El estilo del escalar decide el tipo, igual que en `ore dev`: un `1` sin
 /// comillas vuelve como número y un `"1"` como cadena. Es lo que hace que la
 /// cola que sale por aquí sea **el mismo JSON** que el inductor escribió.
-fn de_node(n: &Node) -> Json {
+pub(crate) fn de_node(n: &Node) -> Json {
     match n {
         Node::Mapping { entries, .. } => Json::Obj(
             entries
@@ -1265,6 +1288,10 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/modelos", con_identidad),
         ("GET", "/modelos/{nombre}", con_identidad),
         ("DELETE", "/modelos/{nombre}", con_identidad),
+        ("GET", "/documentos/Entity", con_identidad),
+        ("GET", "/documentos/Entity/{ns}/{nombre}", con_identidad),
+        ("PUT", "/documentos/Entity/{ns}/{nombre}", con_identidad),
+        ("DELETE", "/documentos/Entity/{ns}/{nombre}", con_identidad),
     ]
 }
 

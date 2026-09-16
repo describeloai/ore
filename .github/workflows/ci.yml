@@ -163,6 +163,12 @@ jobs:
       - name: y el modelo entra en el arbol con su suscripcion, o no entra
         run: bash pruebas-de-fuego/los-modelos.sh
 
+      # Los documentos del arbol por kind (Ontology Forge I1): `Entity` entera
+      # —labels, relations, todo—, y escribirla con la misma figura: compilar
+      # antes de empujar, el commit del sujeto, 409 cuando el arbol se movio.
+      - name: y la entidad se lee entera y se escribe como un commit
+        run: bash pruebas-de-fuego/los-documentos.sh
+
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
       # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
       # cabecera `Authorization` y que un token bien firmado del MISMO realm

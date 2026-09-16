@@ -33,16 +33,22 @@ ORE = os.path.join(RAIZ, "target", "release", "ore.exe" if os.name == "nt" else 
 
 # ── 3 · lo que cada sección necesita ─────────────────────────────────────────
 # (método, ruta) tal como se escribirían en `rutas.rs`. Las de `/documentos`,
-# `/derivados` y `/acciones` son las tres familias de docs/forge.md §3.
+# `/derivados` y `/acciones` son las tres familias de docs/forge.md §5.
+#
+# `/documentos/<Kind>` y no `/documentos?kind=<Kind>`: la puerta descarta la cadena de
+# consulta a propósito (`http.rs`: ningún dato entra por la URL), y el kind va LITERAL en
+# `rutas.rs` —`["documentos", "Entity"]`— para que lo que no se sirve no cuente como
+# servido. `rutas_servidas` conserva un segmento con comillas tal cual y uno sin ellas
+# como `{n}`, así que `documentos/Entity` sólo cuenta cuando `Entity` está escrito.
 SECCIONES = [
     ("Explore", [("GET", "paquetes"), ("GET", "paquetes/{n}/esquema"), ("GET", "arbol"), ("GET", "derivados/diagnosticos")]),
-    ("Entities", [("GET", "paquetes/{n}/esquema"), ("GET", "documentos?kind=Entity"), ("PUT", "documentos/Entity/{ns}/{n}"), ("DELETE", "documentos/Entity/{ns}/{n}")]),
+    ("Entities", [("GET", "paquetes/{n}/esquema"), ("GET", "documentos/Entity"), ("PUT", "documentos/Entity/{ns}/{n}"), ("DELETE", "documentos/Entity/{ns}/{n}")]),
     ("Concepts", [("GET", "conceptos"), ("PUT", "documentos/Concept/{ns}/{n}")]),
-    ("Links", [("GET", "paquetes/{n}/esquema"), ("PUT", "documentos/Entity/{ns}/{n}"), ("GET", "derivados/topologia")]),
-    ("Interfaces", [("GET", "documentos?kind=Interface"), ("PUT", "documentos/Interface/{ns}/{n}")]),
-    ("Views", [("GET", "documentos?kind=View"), ("GET", "documentos?kind=Table"), ("PUT", "documentos/View/{ns}/{n}")]),
-    ("Functions", [("GET", "modelos"), ("POST", "modelos"), ("DELETE", "modelos/{n}"), ("GET", "documentos?kind=Function"), ("PUT", "documentos/Function/{ns}/{n}")]),
-    ("Policies", [("GET", "documentos?kind=Ruleset"), ("GET", "documentos?kind=ConduitPolicy"), ("GET", "documentos?kind=Lattice"), ("GET", "documentos?kind=RequestPolicy"), ("GET", "politicas")]),
+    ("Links", [("GET", "documentos/Entity"), ("PUT", "documentos/Entity/{ns}/{n}"), ("GET", "derivados/topologia")]),
+    ("Interfaces", [("GET", "documentos/Interface"), ("PUT", "documentos/Interface/{ns}/{n}")]),
+    ("Views", [("GET", "documentos/View"), ("GET", "documentos/Table"), ("PUT", "documentos/View/{ns}/{n}")]),
+    ("Functions", [("GET", "modelos"), ("POST", "modelos"), ("DELETE", "modelos/{n}"), ("GET", "documentos/Function"), ("PUT", "documentos/Function/{ns}/{n}")]),
+    ("Policies", [("GET", "documentos/Ruleset"), ("GET", "documentos/ConduitPolicy"), ("GET", "documentos/Lattice"), ("GET", "documentos/RequestPolicy"), ("GET", "politicas")]),
     ("Ontology config", [("GET", "paquetes"), ("POST", "paquetes"), ("GET", "fuentes"), ("POST", "fuentes"), ("GET", "paquetes/{n}/decisiones"), ("POST", "paquetes/{n}/decisiones"), ("GET", "dependencias"), ("POST", "acciones/validar"), ("POST", "acciones/diff")]),
 ]
 
@@ -128,7 +134,7 @@ for m, r in sorted(servidas):
 tok = token_del_agente()
 vivo = {}
 if tok:
-    for ruta in ["salud", "version", "paquetes", "fuentes", "modelos"]:
+    for ruta in ["salud", "version", "paquetes", "fuentes", "modelos", "documentos/Entity"]:
         vivo[ruta] = pide(tok, ruta)
     paquetes = vivo["paquetes"][1].get("packages", []) if isinstance(vivo["paquetes"][1], dict) else []
     for p in paquetes:
@@ -145,9 +151,21 @@ if tok:
 else:
     print("\n  ② sin token de agente (gcloud/IdP): se mide sólo lo estático")
 
-# ── 4 · la forma de /esquema ─────────────────────────────────────────────────
+# ── 4 · la forma de lo que llega: /documentos/Entity (I1) o, si la celda todavía
+#        corre un ore-serve sin él, /esquema ─────────────────────────────────────
+docs = vivo.get("documentos/Entity", ("", None))
+hay_documentos = isinstance(docs[1], dict) and "documentos" in docs[1]
+if hay_documentos:
+    ents = docs[1]["documentos"]
+    con_labels = sum(1 for e in ents if e.get("metadata", {}).get("labels") or any(p.get("labels") for p in e.get("spec", {}).get("properties", {}).values()))
+    con_rel = sum(1 for e in ents if e.get("spec", {}).get("relations"))
+    campos = sorted({k for e in ents for k in e.keys()})
+    print("\n  ④ /documentos/Entity: %d entidades · campos por entidad: %s" % (len(ents), ", ".join(campos)))
+    print("     con labels: %d · con relations: %d  → %s" % (con_labels, con_rel,
+          "Entities puede pintar sensibilidad y Links puede pintar aristas" if con_labels and con_rel else
+          "el verbo llega entero; lo que no hay son labels/relations EN ESTE ARBOL (un discover no las induce)"))
 esquemas = [v for k, v in vivo.items() if k.endswith("/esquema") and isinstance(v[1], dict)]
-if esquemas:
+if esquemas and not hay_documentos:
     ents = [e for _, c in esquemas for e in c.get("entities", [])]
     con_labels = sum(1 for e in ents if "labels" in json.dumps(e.get("metadata", {})) or "labels" in json.dumps(e.get("properties", [])))
     con_rel = sum(1 for e in ents if "relations" in e or "relations" in json.dumps(e.get("spec", {})))

@@ -119,15 +119,51 @@ sensibilidad y Links no puede pintar aristas hasta que las emita.
 | Policies | falta 0/5 | `/documentos?kind=Ruleset · ConduitPolicy · Lattice · RequestPolicy`, `GET /politicas` |
 | Ontology config | parcial 6/9 | `GET /dependencias`, `POST /acciones/validar`, `POST /acciones/diff` |
 
+### 4.4 · Después de I1 (2026-09-16): `ore-serve` sirve 19 rutas
+
+`/documentos/Entity` (GET) y `/documentos/Entity/{ns}/{n}` (GET · PUT · DELETE). La medida
+pasa **Entities a real (4/4)** y Links a parcial 2/3 (le queda `/derivados/topologia`). Lo
+que se midió antes de escribir el verbo, contra `ore validate` sobre `acme-retail`:
+
+| prueba | resultado |
+|---|---|
+| `Entity` sin `backedBy` | **pasa** — los bindings de v1alpha7 siguen siendo legales |
+| `backedBy` a una vista que no existe | `OOS2018` |
+| una propiedad que la vista no expone | `OOS2022` |
+| `metadata.displayName` sin prefijo | `OOS1005` |
+| `relations.*.target` a lo que no está | `OOS2005` |
+| la cadena de consulta (`?kind=`) | **la puerta la descarta a propósito** (`http.rs`) |
+
+Tres decisiones salen de ahí, y se quedan escritas en `documentos.rs`:
+
+1. **`backedBy` lo exige el verbo, no el compilador.** Forge escribe entidades v1alpha8 y no
+   escribe bindings: una entidad sin `backedBy` es una declaración sobre ninguna fila. El
+   422 lo dice con su motivo y **sin inventarle un código**; §5 decía `OOS2022` y ese código
+   significa otra cosa.
+2. **El `kind` es un segmento, literal.** `/documentos/Entity`, no `?kind=Entity`, y en
+   `rutas.rs` va escrito `"Entity"` y no `{kind}`, para que la medida no cuente como
+   servido lo que no lo está: cada kind de I2 entra con su segmento.
+3. **`If-Match: <commit>`** es como quien leyó dice sobre qué leyó. Si el árbol ya no está
+   ahí, 409 antes de escribir nada. Sin la cabecera no se comprueba, como en `/modelos`.
+
+Aceptado por [`pruebas-de-fuego/los-documentos.sh`](../pruebas-de-fuego/los-documentos.sh)
+(en CI, tras `los-modelos.sh`): la lista con `metadata` y `spec` enteros (7 entidades, 7 con
+labels, 5 con relations), la ficha con su YAML y el commit que la trajo, PUT válida → 201 y
+commit del sujeto, sin `backedBy` → 422, propiedad sin campo → 422 `OOS2022` con `donde` y
+`ayuda`, `displayName` sin prefijo → 422 `OOS1005`, dos PUT sobre el mismo commit → 200 y
+409, DELETE referenciada → 409 con quien la nombra, DELETE libre → 200 y 404 después.
+
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
 Todos los `kind` son documentos del mismo árbol y se escriben con la misma figura que ya usan
 `/fuentes` y `/modelos` (`escribiendo`: clonar, escribir, compilar, empujar con quién lo pidió,
 409 si alguien empujó antes):
 
-1. **`/documentos`** — `GET /documentos?kind=K` · `GET|PUT|DELETE /documentos/K/{ns}/{n}`;
-   validación por kind antes de empujar (una `Entity` sin `backedBy` → 422 `OOS2022`, igual
-   que un `Model` sin perfil). Desbloquea siete secciones.
+1. **`/documentos`** — `GET /documentos/K` · `GET|PUT|DELETE /documentos/K/{ns}/{n}` (el
+   kind es un segmento: la puerta no lee la cadena de consulta, §4.4); validación por kind
+   antes de empujar (una `Entity` sin `backedBy` → 422 con su motivo, igual que un `Model`
+   sin perfil; el resto son los diagnósticos del compilador tal cual, `OOS2022`, `OOS1005`…).
+   Desbloquea siete secciones. `Entity` hecho en I1.
 2. **`/derivados`** — sólo lectura: `diagnosticos`, `linaje`, `clasificacion`, `topologia`.
 3. **`/acciones`** — `validar`, `lock`, `diff`, `pack`: los verbos del repositorio que hoy son
    CLI.
@@ -142,7 +178,7 @@ Cada una se mide antes (§4.3) y cierra filas de la tabla; ninguna pinta lo que 
 | | qué | cierra |
 |---|---|---|
 | **I0** ✓ | el boceto en la consola sobre `acme-retail` (`components/ontology/`), con cada pantalla diciendo qué verbo le falta; `x-rubix-displayName` en la ficha y en el borrador de `Entity` | — |
-| **I1** | `/documentos` para `Entity` (lectura con `labels` y `relations`, `PUT`, `DELETE`); Forge lee el árbol de la celda en Entities y Links | Entities, Links (lectura) |
+| **I1** ✓ | `/documentos` para `Entity` (lectura con `labels` y `relations`, `PUT`, `DELETE`, §4.4); Forge lee el árbol de la celda en Entities y Links | Entities, Links (lectura) |
 | **I2** | `/documentos` para `View`, `Table`, `Concept`, `Interface`, `Function`, y los de gobierno; `GET /conceptos` (importados + locales, quién los habla) | Views, Concepts, Interfaces, Functions, Policies |
 | **I3** | `/derivados`: `diagnosticos`, `topologia`, `clasificacion`; `GET /arbol` | Explore, Links (topología) |
 | **I4** | `/acciones` y `GET /dependencias`; «Proponer cambios» como ciclo real | Ontology config |
