@@ -299,6 +299,18 @@ const MAPA: &[(&str, &str, &str, &str)] = &[
 ",
     ),
     (
+        "modelos",
+        "los modelos que el árbol nombra",
+        "v1alpha9",
+        "Un `Model` nombra **un perfil certificado** —máquina × modelo, con sus números
+         medidos— y **un tier**: compartido o dedicado. Ni runtime, ni recursos, ni pesos:
+         todo eso es del perfil. Una `Function` con `runtime: model` lo invoca como
+         `modelo/<nombre>`, y su salida aterriza en la ontología como cualquier escritura.
+         Lo escribe `ore-serve` (`POST /modelos`), que comprueba el perfil contra la lista
+         de certificación y provisiona la suscripción en el mismo acto.
+",
+    ),
+    (
         "resolutions",
         "el efecto sobre la identidad",
         "v1alpha2",
@@ -554,6 +566,9 @@ fn agentes(nombre: &str, deps: &[Par]) -> String {
          | `Ruleset` | `rulesets/` | v1alpha3 |\n\
          | `Property` (concepto) | `packages/<x>/concepts/` | v1alpha4 |\n\
          | `Interface` | `interfaces/` | v1alpha4 |\n\
+         | `Table` | `packages/<x>/tables/` | v1alpha8 |\n\
+         | `View` | `packages/<x>/views/` | v1alpha7 |\n\
+         | `Model` | `modelos/` | v1alpha9 |\n\
          \n\
          Cada directorio lleva un `README.md` con qué decide lo que va dentro.\n\
          \n\

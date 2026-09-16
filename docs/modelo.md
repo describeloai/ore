@@ -15,13 +15,19 @@
 
 ---
 
-## 1. Tres documentos, tres preguntas
+## 1. Cuatro documentos, cuatro preguntas
 
 | | la pregunta que contesta | quién la decide | ¿lleva significado? |
 |---|---|---|---|
 | **`Table`** | **qué hay ahí fuera** | nadie — es un hecho del origen | no |
 | **`View`** | **qué se pregunta** de ese hecho | su `owner` | **no** |
 | **`Entity`** | **qué es una fila** de esa respuesta | el modelo | **sí — es la única que puede** |
+| **`Model`** | **qué razona** sobre eso | quien lo certifica — nombra un perfil medido | no — lo que produce lo clasifica la función que lo invoca, por sus endosos |
+
+El cuarto llegó con v1alpha9 ([ADR 0027](decisions/0027-el-modelo-vive-en-el-arbol.md)): un
+modelo que se usa es un documento del árbol, `modelos/<n>.yaml`, con `profile`, `digest`,
+`tier` y `task` y nada más — ni runtime, ni recursos, ni pesos, que son del perfil. Una
+`Function` con `runtime: model` lo invoca como `modelo/<n>` y **sigue sin aplicar: propone**.
 
 Y una cuarta cosa que no es un documento: **la copia**. Una vista con `materialized` es la
 **respuesta** a su pregunta, materializada — `Q(origen) ⊕ ediciones`

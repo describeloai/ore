@@ -303,6 +303,7 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     package_metadata(pkg, &mut d);
     dependencies(pkg, &mut d);
     entities(pkg, &mut d);
+    modelos(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
     // una operacion —componer renombres— que `flow` y el ejecutor tambien
@@ -688,6 +689,31 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 }
 
 // ── OOS2005 · OOS2006 · OOS2010 ─────────────────────────────────────────────
+
+// ── v1alpha9 · `Function.model` → `Model` ───────────────────────────────────
+//
+// Una funcion con `runtime: model` nombra un nodo del arbol, `modelo/<nombre>`,
+// y el nodo tiene que estar: es la misma regla que `backedBy` sobre una vista.
+// La forma del nombre la comprueba la regla de forma; aqui solo si resuelve.
+// El codigo es el de siempre para una referencia que no resuelve, porque el
+// remedio es el de siempre: escribir el documento que falta, o el nombre bueno.
+fn modelos(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    for f in pkg.of(Kind::Function) {
+        let Some(nodo) = f.section("model") else { continue };
+        let Some(referencia) = nodo.as_str() else { continue };
+        let nombre = referencia.strip_prefix("modelo/").unwrap_or(referencia);
+        let existe = pkg
+            .of(Kind::Model)
+            .any(|m| m.meta("name").and_then(|n| n.as_str()) == Some(nombre));
+        if !existe {
+            out.push(
+                referencia_rota(&f.path, nodo, referencia, "model").help(format!(
+                    "`model` nombra `modelo/{nombre}` y no hay ningun `kind: Model` con `metadata.name: {nombre}` (en `modelos/`). Un modelo entra en el arbol por `POST /modelos` de `ore-serve`, que comprueba que su perfil este certificado"
+                )),
+            );
+        }
+    }
+}
 
 fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for e in pkg.of(Kind::Entity) {

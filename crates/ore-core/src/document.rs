@@ -49,6 +49,12 @@ pub enum ApiVersion {
     /// desconocido ni uno del futuro — es uno del pasado, y el error tiene que
     /// decir eso y decir por que dos documentos.
     V1Alpha8,
+    /// v1alpha9. Anade `Model` —el modelo como documento del arbol, que nombra
+    /// un perfil certificado y un tier (ORE 0027)— y le da a `Function` un
+    /// segundo `runtime`: `model`, con `model` y `prompt` como claves propias.
+    /// Lo midio la E0 de 0027: la gramatica de v1alpha8 admitia
+    /// `runtime: model` sin comprobarlo y el prompt solo cabia en `x-ore-…`.
+    V1Alpha9,
 }
 
 impl ApiVersion {
@@ -59,6 +65,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha4,
         ApiVersion::V1Alpha7,
         ApiVersion::V1Alpha8,
+        ApiVersion::V1Alpha9,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -69,6 +76,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha4 => "oos.dev/v1alpha4",
             ApiVersion::V1Alpha7 => "oos.dev/v1alpha7",
             ApiVersion::V1Alpha8 => "oos.dev/v1alpha8",
+            ApiVersion::V1Alpha9 => "oos.dev/v1alpha9",
         }
     }
 
@@ -145,6 +153,17 @@ pub enum Kind {
     /// **No hay `kind: Stream`**, y no es un olvido: un stream es el nombre
     /// corriente de una tabla cuya cara de lectura es `none`.
     Table,
+    /// v1alpha9. **El modelo: un operador dentro del grafo, que nombra un
+    /// perfil certificado y un tier — no un runtime ni unos recursos.**
+    ///
+    /// Vive en `modelos/` en la raiz del arbol, como las funciones: es
+    /// direccionable (`modelo/<nombre>`), versionado (cambiar `profile` o
+    /// `digest` es un commit) y gobernado (una `Function` lo invoca y su
+    /// salida es una escritura). Lo que NO lleva: `runtime`, `resources`,
+    /// `weights` — todo eso es del perfil, y el perfil lo certifica quien lo
+    /// mide. El arbol no puede pedir una configuracion que nadie ha medido
+    /// (ORE 0027 ①).
+    Model,
 }
 
 impl Kind {
@@ -163,6 +182,7 @@ impl Kind {
         Kind::RequestPolicy,
         Kind::View,
         Kind::Table,
+        Kind::Model,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -181,6 +201,7 @@ impl Kind {
             Kind::RequestPolicy => "RequestPolicy",
             Kind::View => "View",
             Kind::Table => "Table",
+            Kind::Model => "Model",
         }
     }
 
@@ -195,6 +216,7 @@ impl Kind {
             Kind::Concept | Kind::Interface => ApiVersion::V1Alpha4,
             Kind::View => ApiVersion::V1Alpha7,
             Kind::Table => ApiVersion::V1Alpha8,
+            Kind::Model => ApiVersion::V1Alpha9,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -283,6 +305,12 @@ impl Kind {
             // la vista si —abajo—: una tabla es un HECHO, y los cuatro niveles
             // de ese reticulo son verbos de acuerdo. Nadie acuerda un hecho.
             | Kind::Table => &["name", "namespace", "description"],
+            // El modelo no lleva `namespace`: se direcciona por su nombre
+            // (`modelo/<nombre>`) desde cualquier paquete, como una funcion en
+            // `functions/`. Y no admite `labels`: lo que produce llega al
+            // reticulo por los endosos de la funcion que lo invoca, no por una
+            // etiqueta que el modelo se ponga a si mismo.
+            Kind::Model => &["name", "description"],
             // La vista admite `labels`, y la restriccion a `oos.maturity` la
             // pone `validate::labels_de_vista` porque es sobre la CLAVE, no
             // sobre el campo.
@@ -515,6 +543,12 @@ impl Kind {
                 "reads",
                 "changes",
             ],
+            // v1alpha9. Cuatro claves y ninguna mas, a proposito: `profile` es
+            // el par maquina × modelo certificado (`g4/qwen3-235b-fp8`),
+            // `digest` los pesos que ese perfil sirve, `tier` como se sirve y
+            // se cobra, `task` lo que una funcion puede pedirle. Ni `runtime`,
+            // ni `resources`, ni `weights.repo`: todo eso es del perfil.
+            Kind::Model => &["profile", "digest", "tier", "task"],
         }
     }
 
@@ -532,6 +566,25 @@ impl Kind {
     /// campo que nadie lee es peor que uno que no existe, porque promete algo.
     pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
         match self {
+            // v1alpha9: la funcion gana un segundo runtime. `model` nombra el
+            // documento del arbol que invoca (`modelo/<nombre>`) y `prompt` lo
+            // que le dice. Son claves de v1alpha9 y no de siempre: en v1alpha8
+            // solo cabian como extension, y la E0 de 0027 lo midio.
+            Kind::Function if version >= ApiVersion::V1Alpha9 => &[
+                "runtime",
+                "entrypoint",
+                "source",
+                "limits",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+                "model",
+                "prompt",
+            ],
             Kind::View if version >= ApiVersion::V1Alpha8 => &[
                 "owner",
                 "from",
@@ -653,6 +706,137 @@ fn naturaleza_desconocida(n: &crate::parse::Node) -> Option<String> {
 
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
+        // ── v1alpha9 · el modelo ────────────────────────────────────────────
+        //
+        // Un modelo sin perfil no nombra nada medido; sin tier no se sabe
+        // como se sirve ni como se cobra; sin task ninguna funcion sabe que
+        // pedirle. Los tres vocabularios son cerrados, y una palabra fuera de
+        // ellos no exige nada EN SILENCIO — que es el peor de los dos fallos.
+        ShapeRule {
+            kind: Kind::Model,
+            path: &["spec"],
+            check: |n| {
+                let Some((_, perfil)) = n.get("profile") else {
+                    return Some((
+                        "un modelo sin `profile`".to_string(),
+                        Some(
+                            "el par maquina × modelo certificado, `<maquina>/<modelo>` \
+                             (`g4/qwen3-235b-fp8`). Un perfil sin numero no existe, y un \
+                             modelo sin perfil no nombra nada que alguien haya medido"
+                                .to_string(),
+                        ),
+                    ));
+                };
+                let perfil = perfil.as_str().unwrap_or("");
+                let (maquina, modelo) = perfil.split_once('/').unwrap_or(("", ""));
+                let nombre_ok = |s: &str| {
+                    !s.is_empty()
+                        && s.chars().all(|c| {
+                            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'
+                        })
+                };
+                if !nombre_ok(maquina) || !nombre_ok(modelo) {
+                    return Some((
+                        format!("`profile: {perfil}` no tiene la forma `<maquina>/<modelo>`"),
+                        Some("minusculas, digitos, `-` y `.`, y exactamente una barra".to_string()),
+                    ));
+                }
+                if let Some((_, d)) = n.get("digest") {
+                    let d = d.as_str().unwrap_or("");
+                    let hex = d.strip_prefix("sha256:").unwrap_or("");
+                    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return Some((
+                            "`digest` no es `sha256:<64 hex>`".to_string(),
+                            Some(
+                                "los pesos que el perfil sirve, tal como los publica quien los \
+                                 certifica. Lo que corre es esto, o no corre"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                }
+                for (clave, vocabulario, ayuda) in [
+                    (
+                        "tier",
+                        &["shared", "dedicated"][..],
+                        "`shared`: un pod por modelo, se cobra por token · `dedicated`: una \
+                         maquina para esta celda, precio fijo",
+                    ),
+                    (
+                        "task",
+                        &["chat", "embed", "rerank"][..],
+                        "lo que una funcion puede pedirle: `chat`, `embed` o `rerank`",
+                    ),
+                ] {
+                    match n.get(clave).and_then(|(_, v)| v.as_str()) {
+                        None => {
+                            return Some((format!("un modelo sin `{clave}`"), Some(ayuda.to_string())));
+                        }
+                        Some(v) if !vocabulario.contains(&v) => {
+                            return Some((
+                                format!("`{clave}: {v}` no esta en el vocabulario"),
+                                Some(ayuda.to_string()),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            },
+        },
+        // ── v1alpha9 · la funcion con `runtime: model` ──────────────────────
+        //
+        // `runtime` sigue siendo libre para lo que ya existia (`wasm`, y hay
+        // fixtures con `python3.12`); lo que se comprueba es la pareja: quien
+        // dice `runtime: model` nombra un modelo y no un `entrypoint`, y quien
+        // nombra un modelo dice `runtime: model`. `prompt` solo tiene sentido
+        // con un modelo.
+        ShapeRule {
+            kind: Kind::Function,
+            path: &["spec"],
+            check: |n| {
+                let runtime = n.get("runtime").and_then(|(_, v)| v.as_str()).unwrap_or("");
+                let modelo = n.get("model").and_then(|(_, v)| v.as_str());
+                if runtime == "model" {
+                    let Some(m) = modelo else {
+                        return Some((
+                            "`runtime: model` sin `model`".to_string(),
+                            Some("el documento del arbol que invoca: `model: modelo/<nombre>`".to_string()),
+                        ));
+                    };
+                    if m.strip_prefix("modelo/").is_none_or(|r| r.is_empty() || r.contains('/')) {
+                        return Some((
+                            format!("`model: {m}` no es `modelo/<nombre>`"),
+                            Some(
+                                "una funcion nombra un nodo del arbol, no una URL ni un id de \
+                                 proveedor"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    if n.get("entrypoint").is_some() {
+                        return Some((
+                            "`runtime: model` con `entrypoint`".to_string(),
+                            Some("el modelo es lo que se ejecuta; `entrypoint` es de `wasm`".to_string()),
+                        ));
+                    }
+                } else {
+                    if modelo.is_some() {
+                        return Some((
+                            format!("`model` con `runtime: {runtime}`"),
+                            Some("nombrar un modelo es `runtime: model`".to_string()),
+                        ));
+                    }
+                    if n.get("prompt").is_some() {
+                        return Some((
+                            format!("`prompt` con `runtime: {runtime}`"),
+                            Some("un prompt solo se lo dice a un modelo: `runtime: model`".to_string()),
+                        ));
+                    }
+                }
+                None
+            },
+        },
         // ── v1alpha8 · la tabla ─────────────────────────────────────────────
         //
         // Lo que un puntero necesita para serlo. Sin `columns` no es un puntero

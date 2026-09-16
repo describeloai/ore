@@ -1206,6 +1206,17 @@ fn borrador_de_v1alpha8() {
     marcador("v1alpha8", "la tabla", "BORRADOR · OOS v1alpha8 · la tabla");
 }
 
+/// v1alpha9: el modelo es un documento del arbol, y la funcion gana un
+/// segundo runtime. Salio de la E0 de ORE 0027: lo que hizo falta para que
+/// una `Function` nombrara `modelo/v2-lite` y compilara es lo que esta
+/// version fija — `runtime: model` con `model` y `prompt` como claves
+/// propias, `Model` con `profile`, `tier` y `task`, y `OOS2005` cuando el
+/// modelo no esta. Ningun codigo nuevo: los remedios son los de siempre.
+#[test]
+fn borrador_de_v1alpha9() {
+    marcador("v1alpha9", "el modelo", "BORRADOR · OOS v1alpha9 · el modelo");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

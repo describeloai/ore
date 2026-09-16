@@ -86,6 +86,10 @@ pub const COMPARTIDO: &[Kind] = &[
     Kind::Interface,
     Kind::ConduitPolicy,
     Kind::RequestPolicy,
+    // v1alpha9. El modelo se direcciona por su nombre desde cualquier paquete
+    // (`modelo/<nombre>`) y no lleva `namespace`: es vocabulario del arbol,
+    // como un reticulo, y vive en `modelos/` en la raiz.
+    Kind::Model,
 ];
 
 /// Y los estructurales: el manifiesto **es** el nombre, asi que no puede

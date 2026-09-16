@@ -293,6 +293,21 @@ la prueba—; perfil inexistente → 422; digest que no es el del perfil → 422
 fichero desaparece y la suscripción también); `ore verify` acepta un paquete con `runtime:
 model` sin extensiones.
 
+**I1 · el `kind` — ✓ 2026-09-16** (`oos` v1alpha9: `spec/v1alpha9/{00-scope,01-model}.md`,
+`schemas/v1alpha9/{model,function}.schema.json`, conformidad 9/9 —2 aceptan, 7 rechazan—; en
+el núcleo `Kind::Model`, `V1Alpha9`, las reglas de forma y `OOS2005` cuando `model` no resuelve;
+`ore init` crea `modelos/`). La forma que quedó, y en qué difiere de la frase de arriba: la
+función lleva **`model: modelo/<n>`** como clave propia y `entrypoint` sigue siendo de `wasm`
+—decir «lo que se ejecuta» con la misma clave para un módulo y para un nodo del árbol era dos
+significados en un nombre, y `OOS1004` lo rechaza si vienen juntos—; `prompt` sólo con
+`runtime: model`; `Model` sin `namespace` (vocabulario compartido, como un retículo:
+`modelo/<n>` se direcciona desde cualquier paquete) y sin `labels`. Ningún código nuevo.
+Falsificado a mano antes de la suite: perfil mal formado, tier fuera del vocabulario, sin
+`task`, digest corto, `runtime` en un `Model`, `Model` en v1alpha8, modelo que no está, `model`
+con `entrypoint`, `model` con `runtime: wasm`, `model` en una `Function` v1alpha8 — diez
+rechazos, cada uno con su código y su ayuda. *Pendiente de empujar el submódulo a
+`describeloai/oos` antes de que CI construya con el puntero nuevo.*
+
 ### E2 · La celda llega al gateway sin que nadie toque nada
 
 El hueco de ② está decidido y medido; lo que queda es que la plataforma lo lleve a la
