@@ -1175,6 +1175,32 @@ JSON
       hecho "cliente \`$AGENTE\` creado, con la receta de \`ore-agente\`"
     fi
 
+    # 1b · LOS DOS CLAIMS DEL GATEWAY DE MODELOS (0027 ②, E2), y CONVERGEN: un
+    #     cliente creado antes de hoy no los tiene, y añadirlos aqui —y no solo
+    #     en la receta de arriba— es lo que hace que `demo`, `prueba` y `victor`
+    #     los ganen en la pasada siguiente sin que nadie toque el realm.
+    #
+    #   `modelos`      la AUDIENCIA del gateway. Como `included.custom.audience`
+    #                  y no como cliente: el gateway no es un cliente del realm
+    #                  —verifica con el JWKS de fichero, no inicia sesion de
+    #                  nadie— y un cliente-audiencia mas seria un secreto mas
+    #                  que nadie usa. La cadena `modelos` en `aud` es todo lo
+    #                  que el gateway comprueba (`--oidc-audience modelos`).
+    #   `rubix_celda`  LA CELDA, dicha por el realm: un cliente por celda, y el
+    #                  claim es su nombre. Hasta hoy el gateway la deducia de
+    #                  `azp = ore-agente-<celda>`; con el claim, `azp` deja de
+    #                  ser un contrato.
+    TIENE=$(kc GET "/clients/$ID/protocol-mappers/models" | "$PY" -c 'import json,sys;print(" ".join(m["name"] for m in json.load(sys.stdin)))')
+    mapeador() { # <nombre> <json>
+      case " $TIENE " in
+        *" $1 "*) ya "el mapeador \`$1\` de \`$AGENTE\`" ;;
+        *) COD=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $(cat "$TMP/kc")"              -H 'Content-Type: application/json' "$IDP_BASE/admin/realms/$REALM/clients/$ID/protocol-mappers/models" --data "$2")
+           [ "$COD" = "201" ] && hecho "mapeador \`$1\` en \`$AGENTE\`" || echo "  ⚠ el IdP contesto $COD al mapeador \`$1\`" ;;
+      esac
+    }
+    mapeador audiencia-modelos '{"name":"audiencia-modelos","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper","config":{"included.custom.audience":"modelos","access.token.claim":"true","id.token.claim":"false"}}'
+    mapeador rubix-celda "{\"name\":\"rubix-celda\",\"protocol\":\"openid-connect\",\"protocolMapper\":\"oidc-hardcoded-claim-mapper\",\"config\":{\"claim.name\":\"rubix_celda\",\"claim.value\":\"$NOMBRE\",\"jsonType.label\":\"String\",\"access.token.claim\":\"true\",\"id.token.claim\":\"false\"}}"
+
     # 4 · el `sub`: la cuenta de servicio del cliente.
     AGENTE_SUB=$(kc GET "/clients/$ID/service-account-user" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["id"])')
     [ -n "$AGENTE_SUB" ] || falla "el cliente no tiene cuenta de servicio"

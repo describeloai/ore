@@ -96,6 +96,23 @@ AGENTE = {
     "protocolMappers": [
         MAPEADOR_AUDIENCIA,
         {
+            # 0027 ② (E2): el gateway de modelos es una AUDIENCIA mas del
+            # agente, como cadena y no como cliente — el gateway no inicia
+            # sesion de nadie ni es cliente del realm; verifica con el JWKS de
+            # fichero y solo mira que `modelos` este en `aud`. Los clientes por
+            # celda (`ore-agente-<celda>`, ⑦ del aprovisionador) llevan este y
+            # ademas `rubix_celda`; este generico no es de ninguna celda.
+            "name": "audiencia-modelos",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "consentRequired": False,
+            "config": {
+                "included.custom.audience": "modelos",
+                "id.token.claim": "false",
+                "access.token.claim": "true",
+            },
+        },
+        {
             # El tipo de sujeto, igual que `rubix-consola` marca `persona`.
             "name": "rubix-tipo-agente",
             "protocol": "openid-connect",

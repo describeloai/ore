@@ -430,6 +430,17 @@
               }
             },
             {
+              "name": "audiencia-modelos",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.custom.audience": "modelos",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
               "name": "rubix-tipo-agente",
               "protocol": "openid-connect",
               "protocolMapper": "oidc-hardcoded-claim-mapper",
@@ -695,6 +706,17 @@
               "consentRequired": false,
               "config": {
                 "included.client.audience": "ore-serve",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "audiencia-modelos",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.custom.audience": "modelos",
                 "id.token.claim": "false",
                 "access.token.claim": "true"
               }
@@ -1107,6 +1129,17 @@
               "consentRequired": false,
               "config": {
                 "included.client.audience": "ore-serve",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "audiencia-modelos",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.custom.audience": "modelos",
                 "id.token.claim": "false",
                 "access.token.claim": "true"
               }
