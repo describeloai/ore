@@ -208,7 +208,7 @@ Bastion** (sus hitos 1 y 2: `bench.sh` PASS con la imagen en un `g1`/`g4`, y el 
 en G4 cuando haya cuota). Lo que ORE tiene que medir primero es **la otra mitad: que una celda
 alcance un modelo servido por un perfil, y que el árbol lo nombre**.
 
-### E0 · La celda alcanza el modelo — ✓ 2026-09-16 (a)(c)(d)(e) en `victor`; (b) queda para el g1
+### E0 · La celda alcanza el modelo — ✓ 2026-09-16 (a)–(e) en `victor`; (b) con un g1 real de Vast
 
 `pruebas-de-fuego/medida-la-celda-alcanza-el-modelo.py`, contra el gateway de Bastion (B3,
 `bastion/gateway:0.1.0-2`) en **una `e2-micro` de la misma VPC** (`modelos-e0`, IP interna
@@ -223,8 +223,8 @@ pool `jobs` desde cero):
 | (a) | un Job de `victor` contra `10.10.0.100:8000` con la `NetworkPolicy` de hoy | **no llega**: `curl` rc 28 a los 8 s — `deny-all-egress` tira el paquete |
 | (a) | el mismo Job con `salida-al-modelo` (`driver` → `MODELOS/32:8000`, y nada más) aplicada a mano | **llega**: 401 en 2,5 ms — la puerta pide identidad |
 | (c) | el mismo `curl` con el token real de `ore-agente-victor` (acuñado dentro, como los Jobs de 44) | **401 «cell victor is not subscribed to any model»** sin `Model`; `POST /admin/tenants/victor/models` (lo que `ore-serve` hará en `/modelos`) → **200 visto desde la celda ≤ 4 s** después, y ve sólo su modelo |
-| (b) | 1 y 4 llamadas concurrentes desde la celda | números del modelo de mentira (TTFT 3–5 ms, 16 tokens en 197 ms): **no cuentan**; el mismo comando con un g1 registrado en este gateway los mide |
-| (d) | `functions/segmentar.yaml` con `entrypoint: modelo/v2-lite`; el Job la ejecuta a mano (F4 no existe), llama por el gateway con el token, hace la `Propuesta`, `ore verify` la coteja | **`ventas.Cliente.segmento [clienteId=C-0001] ← pyme`**, «la propuesta cae dentro de lo que el paquete autoriza»; commit `83ac7ac` por `ventas.segmentar <modelo-v2-lite@victor.invalido>` en `propuestas/`; `GET /paquetes` de `ore-serve` lista `ventas 0.1.0` |
+| (b) | 1 y 4 llamadas concurrentes desde la celda, **g1 real** (Vast 51218218, Suiza, 1,54 $/h, `community`, registrado en este gateway por un túnel ssh que vive en la VM) | 1 llamada: **TTFT 202 ms, 16 tokens en 304 ms**; 4 concurrentes: TTFT 196–534 ms, total 276–592 ms. Lleva dentro celda → VPC → ssh Bélgica↔Suiza; el vLLM solo daba TTFT 111 ms. (Con el stub: 3–5 ms / 197 ms, que sólo medían el camino) |
+| (d) | `functions/segmentar.yaml` con `entrypoint: modelo/v2-lite`; el Job la ejecuta a mano (F4 no existe), llama por el gateway con el token, hace la `Propuesta`, `ore verify` la coteja | **`ventas.Cliente.segmento [clienteId=C-0001] ← pyme`**, «la propuesta cae dentro de lo que el paquete autoriza»; commit `83ac7ac` (stub) y **`c35033e` con el g1 real** (`1. pyme`, 68+8 tokens, 259 ms) por `ventas.segmentar <modelo-v2-lite@victor.invalido>` en `propuestas/`; `GET /paquetes` de `ore-serve` lista `ventas 0.1.0` |
 | (e) | `medida-el-estado-de-la-celda.py victor --cotejar` | snapshot fresco, sin diferencias; los pods vivos son `cofre, control, forja, informador` — ninguno sirve un modelo |
 
 **Lo que E0 enseñó, y es la forma de ① que E1 tiene que escribir:**
@@ -251,12 +251,16 @@ pool `jobs` desde cero):
   de red es `ipBlock` + puerto, y la firewall de la VPC (`ore-modelos-desde-la-malla`: pods y
   nodos → tag `modelos`, 8000 y 9000) es su otra mitad. COS tira lo que entra por defecto: el
   arranque de la máquina abre los dos puertos a `10.0.0.0/8`.
-- **Lo que la pasada real enseñó de paso**: el nodo `sistema-spot` fue reclamado a mitad de
-  medida (13:04 UTC) y la plataforma entera tardó ~6 min en volver; un IdP que da 502 durante
+- **Lo que la pasada real enseñó de paso**: el nodo `sistema-spot` fue reclamado **dos veces** a
+  mitad de medida (13:04 y ~14:10 UTC) y la plataforma entera tardó ~6 min en volver; un IdP que da 502 durante
   eso no puede tumbar el gateway — su JWKS es un fichero y el arranque conserva la última copia.
 
+Para (b) el tenant `victor` se puso en `any` durante la pasada (una máquina `community` no se
+enruta a un tenant `eu-dc`: la etiqueta se comprobó) y volvió a `eu-dc` después; el g1 se
+destruyó con verificación (0,46 $, 0,3 h) y el vLLM de mentira volvió a ser el backend.
+
 Lo que E0 deja en `victor`: `packages/ventas`, `functions/segmentar.yaml`, `lattices/assurance.yaml`,
-`conduits.yaml` (commit `437cd35`) y `propuestas/segmentar-C-0001.json` (`83ac7ac`). La regla
+`conduits.yaml` (commit `437cd35`) y `propuestas/segmentar-C-0001.json` (`83ac7ac`, `c35033e`). La regla
 `salida-al-modelo` se retira al acabar; E2 la lleva a la plantilla.
 
 *La aceptación tal como se escribió:* Con un `g1` servido por

@@ -60,6 +60,10 @@ MODELOS = "10.10.0.100"
 PUERTA = 8000
 ADMIN = 9000
 MODELO_ID = "deepseek-ai/DeepSeek-V2-Lite"   # lo que el perfil g1/deepseek-v2-lite sirve; `modelo/v2-lite` resuelve a esto
+# Qué hay detrás del gateway: por defecto el vLLM de mentira. Con un g1 real registrado,
+# `E0_ETIQUETA="g1 real: …"` y las filas (b) y (d) dejan de llamarse «de mentira».
+ETIQUETA = os.environ.get("E0_ETIQUETA", "modelo de mentira: los numeros no son de un g1")
+DE_MENTIRA = ETIQUETA.startswith("modelo de mentira")
 
 # ── El árbol de E0: un paquete mínimo y la Function que nombra el modelo ─────
 #
@@ -315,7 +319,7 @@ def job(nombre, fase):
                                  ("HOME", "/tmp"), ("CLOUDSDK_CONFIG", "/tmp/.gcloud"), ("GIT_TERMINAL_PROMPT", "0"),
                                  ("GIT_CONFIG_COUNT", "2"), ("GIT_CONFIG_KEY_0", "http.extraheader"), ("GIT_CONFIG_KEY_1", "safe.directory"), ("GIT_CONFIG_VALUE_1", "*"),
                                  ("CELDA", CELDA), ("NS", NS), ("FASE", fase), ("MODELOS", MODELOS), ("PUERTA", str(PUERTA)), ("MODELO_ID", MODELO_ID),
-                                 ("ETIQUETA", "modelo de mentira: los numeros no son de un g1"),
+                                 ("ETIQUETA", ETIQUETA),
                                  ("EMISOR", "https://login.paladio.io"), ("DIRECCION", "http://idp-service.identidad.svc.cluster.local:8080"), ("REALM", "rubix")]],
                              "volumeMounts": [{"name": "puesto", "mountPath": "/puesto", "readOnly": True}, {"name": "trabajo", "mountPath": "/trabajo"}, {"name": "e0", "mountPath": "/e0", "readOnly": True}],
                              "command": ["/bin/sh", "/e0/e0.sh"],
@@ -476,8 +480,8 @@ fila("(a)", "con la regla de clase: el Job alcanza :8000", ("SÍ — " + entre(l
 fila("(c)", "el mismo curl con el token de agente", ("401 «not subscribed» → 200 suscrita" if linea("(c) OK suscrita") else "✗ " + (linea("(c) MAL") or linea("(c) ~"))))
 if suscrito_en and linea("(c) OK suscrita"):
     fila("(c)", "segundos entre POST /modelos y verlo desde la celda", "≤ " + entre(linea("(c) OK suscrita"), "vista desde la celda ", " despues"))
-fila("(b)", "1 llamada · http ttft_s total_s", (entre(linea("(b) 1 llamada"), "= ", "  [") or "✗") + "  · de mentira")
-fila("(b)", "4 concurrentes", (entre(linea("(b) 4 concurrentes"), "concurrentes: ", "  [") or "✗") + "  · de mentira")
+fila("(b)", "1 llamada · http ttft_s total_s", (entre(linea("(b) 1 llamada"), "= ", "  [") or "✗") + ("  · de mentira" if DE_MENTIRA else "  · " + ETIQUETA))
+fila("(b)", "4 concurrentes", (entre(linea("(b) 4 concurrentes"), "concurrentes: ", "  [") or "✗") + ("  · de mentira" if DE_MENTIRA else "  · " + ETIQUETA))
 fila("(d)", "la Function nombra modelo/v2-lite y el modelo contesta", (entre(linea("(d) el modelo contesta"), "contesta ", "  [") or "✗"))
 fila("(d)", "la salida aterriza en la ontología (commit)", (entre(linea("(d) OK"), "ontologia: ") or "✗"))
 
