@@ -435,6 +435,16 @@ sin backend → *provisioning*; el backend registrado y sondeado → *running* c
 `estado.backends: [banco-g1]`; retirado → *provisioning*; el uso suma hoy/mes y no cuenta otro
 modelo; el gateway caído → *error* en 2 s. En CI.
 
+**I2 hecha** (2026-09-16, `rubix-platform` `fec7f2c`): la consola conoce `perfiles`, `modelos`,
+`modelo` y los mandatos `crear-modelo` / `retirar-modelo` (`lib/server/query.ts`, por la puerta
+pública de la celda con el token de quien mira); `lib/models/perfiles.ts` deshace lo que el JSON
+de `ore-serve` no puede decir (números como texto, `null` como `false`). El Hub retiró
+`CATALOGO` (16 modelos a mano, píldora «Fits · CPU» en vCPU) y pinta la lista de certificación
+tal cual: secciones por máquina, etiqueta de certificación y $/Mtok, la ficha con tok/s por
+concurrencia, TTFT, $/h, digest (B4) y la imagen medida; «Use in this cluster» lleva a
+Deployments con `?perfil=`. El banco de la consola contesta `celdas`, `perfiles`, `modelos` (las
+cuatro fases) y `modelo`. Visto en el banco: 3 perfiles, ninguna píldora inventada.
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
