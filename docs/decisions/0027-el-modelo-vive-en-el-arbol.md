@@ -458,6 +458,15 @@ simulan). La aceptación de la ADR —*provisioning* con la hora → *running* c
 `Model` con el autor de la sesión— es I5, en `victor` con `modelos-e0` encendida y una sesión
 de persona.
 
+**I4 hecha** (2026-09-16, `rubix-platform` `f0d0378`): el detalle `/models/deployments/{n}` pinta
+`GET /modelos/{n}` en tres pestañas —*Overview* (el documento y lo que lo sirve), *Endpoint*
+(la URL interna, el id, quién puede llamar y la `Function` que lo nombra como `modelo/<n>`; la
+pública es E4), *Usage* (hoy y mes, tal como el gateway cuenta; la latencia por celda no se
+cuenta y se dice)—. *Retire* → `DELETE /modelos/{n}`: el 409 se enseña como aviso («alguien del
+árbol lo nombra: nada retirado», con el OOS2005 del servidor) y no toca nada; el 502 como «el
+modelo se queda»; retirado, vuelve a la lista sin la fila. El nombre en la tabla enlaza al
+detalle. Visto en el banco.
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
