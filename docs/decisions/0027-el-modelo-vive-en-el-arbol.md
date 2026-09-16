@@ -1,12 +1,6 @@
 # 0027 · El modelo vive en el árbol
 
-**Estado:** propuesto · **Fecha:** 2026-09-15 · **Decide:** que un modelo desplegado es **un
-documento del árbol** (`kind: Model`) y no un recurso del plano de control; que `ore-serve` lo
-convierte en manifiesto **rellenando una plantilla que dejó el aprovisionador**, en un segundo
-repositorio de trabajo de la celda, que Flux aplica **con una cuenta que sólo puede desplegar**;
-que los pesos no pasan por el árbol —**el árbol guarda el puntero y el digest, el sustrato los
-bytes**—; que el estado lo trae **el informador** (0026, snapshot v2); y que el plano de control
-**observa y no posee**. Cierra la E6 de [`0024`](0024-donde-corre-el-inquilino.md).
+**Estado:** propuesto (escrito el 2026-09-15; **revisado el 2026-09-16 sobre [`0028`](0028-bastion-es-el-producto-sobre-el-stack.md)**, que fija el sustrato y aún no es definitivo) · **Fecha:** 2026-09-15 · **Decide:** que un modelo que una celda usa es **un documento del árbol** (`kind: Model`) y no un recurso del plano de control; que ese documento nombra **un perfil certificado** (máquina × modelo × motor con números medidos, 0028 B2) y **un tier** —compartido o dedicado—, no un runtime ni unos recursos inventados; que en el tier compartido el documento deriva a **una suscripción** que el gateway (0028 B3) respeta —un pod por modelo, la multi-tenencia es lógica—, y en el dedicado a **un despliegue** que Flux aplica con una cuenta que sólo puede desplegar; que los pesos no pasan por el árbol —**el árbol guarda el puntero y el digest, el sustrato los bytes**—; y que el plano de control **observa y no posee**. Cierra la E6 de [`0024`](0024-donde-corre-el-inquilino.md).
 
 ---
 
@@ -16,13 +10,19 @@ La consola tiene *Models → Hub* y *Models → Deployments* y ningún conducto 
 despliegues está vacía y lo dice. Antes de darle una fila se midió la malla
 (`pruebas-de-fuego/medida-la-malla-para-modelos.py`, 2026-09-15): un nodo `e2-standard-4` spot
 (3,9 vCPU · 13 GiB · **0 GPU**), `jobs-p` 0→3, GPU en cuota **0** en toda la región, celda con
-`requests.cpu: 10 · requests.memory: 36Gi` y **sin dimensión GPU**. Hoy un cliente puede servir
-embeddings y LLMs ≤ 8B cuantizados, en CPU, una réplica. Se ha pedido cuota G4 (8 × RTX PRO
-6000, `europe-west1`); si llega, cambia el suelo y no la decisión.
+`requests.cpu: 10 · requests.memory: 36Gi` y sin dimensión GPU. Ese metro vale para los Jobs;
+**para modelos mide lo equivocado**, y la primera versión de este ADR lo usó: proponía servir
+en CPU con llama.cpp «lo que cabe en la cuota», y un Hub con dieciséis modelos y una píldora
+*Fits · CPU* calculada en vCPU.
 
-La pregunta no es «cómo se levanta un `Deployment` de vLLM» —eso lo hace cualquiera— sino
-**qué es un modelo en este sistema**, y de la respuesta sale dónde se escribe, quién lo aplica,
-quién lo mide y qué no puede hacer.
+`0028` midió el sustrato de verdad (Bastion, 2026-09-14): el coste por token de nivel API sale
+de **vLLM sobre RTX PRO 6000 GDDR7** (Qwen3-235B FP8 en 4 GPUs: 587 tok/s a 32 usuarios =
+2,8 $/M), el motor propio queda congelado, y lo que se ofrece es **un perfil certificado por
+par máquina × modelo, con sus números** —«un perfil sin número no existe»—. Un modelo en CPU
+en la cuota de la celda no es ese producto y no se ofrece como si lo fuera.
+
+La pregunta sigue siendo la misma: **qué es un modelo en este sistema**. La respuesta no cambia
+con 0028; cambia **a qué deriva** y **cómo se despliega el primero**.
 
 ---
 
@@ -36,146 +36,150 @@ quién lo mide y qué no puede hacer.
   ya dijo dónde aterriza una escritura: en la ontología. **El modelo no es un servicio al lado
   de los datos: es un operador dentro del grafo.** Eso es lo que Databricks Serving (un endpoint
   junto a una tabla) y Vertex (un catálogo de APIs ajenas) no tienen, y lo que aquí sale gratis.
+- **`0028` fija el sustrato y sus formas**: una imagen sellada
+  (`bastion/env:0.29.0-sm120`, Artifact Registry `europe-west1`), tres máquinas (`g1`/`g4`/`g8`
+  = 1/4/8 × RTX PRO 6000), **perfiles** `máquina/modelo` con los argumentos exactos de
+  `vllm serve` y los `EXPECT_*` medidos (`env/profiles/`), un lanzador (B1) que lleva una
+  máquina de «nada» a un endpoint OpenAI sano y de vuelta con apagado verificado, y un gateway
+  (B3) con **un pod compartido por modelo**, claves, cuotas y contabilidad por inquilino, que
+  respeta **la etiqueta de soberanía** de la máquina (`gcp: eu-dc, dpa, kms` para clientes;
+  `vast: community` sólo para validar). Hoy hay **tres perfiles**: `g4/qwen3-235b-fp8`,
+  `g4/deepseek-r1-0528-awq`, `g1/deepseek-v2-lite`. Y dos formas de cobrar: **compartido por
+  token** y **máquina dedicada a precio fijo**.
+- **El primer modelo real corre en una VM, no en GKE.** B1 lanza máquinas G4 (COS, contenedor,
+  sin IP pública, `--max-run-duration`); docs/10 §6 de Bastion aplaza el manifiesto de
+  Kubernetes a B3 «hasta que la imagen pase con GPU y haya cuota». `0024 ②` dijo *mismo clúster,
+  otro pool*; el primer despliegue será **misma VPC y zona, otra máquina**. La proximidad
+  árbol↔modelo↔datos que motivó el ② se conserva; el pool de GKE es el destino cuando la cuota
+  bajo demanda exista (nota en `0024 ②`).
 - **`ore-serve` ya escribe manifiestos**: la cola (`cola.rs`). El alta de una fuente rellena
   `plantilla-catalogo.txt` —que **el aprovisionador dejó rendida para esa celda**— y la empuja a
   `t-<celda>/trabajo.git`; Flux la aplica con `cola-<celda>`, cuyo `Role` es **`batch/jobs` y
   nada más** (`13-el-inquilino-reconciliado.yaml`: *«Ni `pods`, ni `secrets`, ni `deployments`»*).
-  ⇒ Un `Deployment` en `trabajo` **no se aplicaría**, y esa negativa es deliberada: es lo que
-  cierra el ④ de `0022` —el gobernado escribiendo su gobierno—. No se reabre; se añade **otra
-  cuenta con otro verbo**.
-- **Los pods nuevos nacen sin salida.** La `NetworkPolicy` de la celda deniega todo egress salvo
-  DNS, forja, cofre, control e IdP. Un pod de modelo que quiera bajar pesos de Hugging Face
-  muere por timeout, igual que `ore-serve` contra el API server en `0026`. Y `ore-serve` **no
-  puede escribir `NetworkPolicy`** (ni debe): la salida de un pod de modelo la tiene que dar la
-  plataforma, de antemano, por clase.
-- **`0024 ②` ya decidió el sitio**: el modelo va con el árbol, en el clúster del inquilino, en
-  otro pool (`gpu`, con su taint, de 0). Dedicado y BYOC son *el mismo manifiesto en otro
-  sitio*; lo que se decida aquí tiene que ser ese manifiesto.
-- **`0026` ya decidió cómo llega el estado**: el informador, con `Role` de sólo lectura, cada
-  60 s, a `ore-iam`. Un `Deployment` más en el namespace es tres campos más en su snapshot.
-- **Lo que hacen los demás con los pesos**: nadie los mete en git. HF los sirve por HTTP con
-  digest por fichero; vLLM y llama.cpp los leen de disco. Un 8B en Q4 son ~5 GB; un 235B en
-  FP8, ~235 GB. El árbol guarda **qué** pesos (repositorio, revisión, digest) y el sustrato
-  —bucket de la celda, o HF la primera vez— guarda los bytes. Es `01-table §2` aplicado a un
-  artefacto: **puntero en el árbol, bytes fuera**.
+  ⇒ Un `Deployment` en `trabajo` **no se aplicaría**, y esa negativa es deliberada: cierra el ④
+  de `0022`. Cuando el tier dedicado viva en GKE se añade **otra cuenta con otro verbo**, no se
+  ensancha ésta.
+- **Los pods de la celda nacen sin salida.** La `NetworkPolicy` deniega todo egress salvo DNS,
+  forja, cofre, control e IdP. Un Job de la celda **no alcanza** un modelo en `:8000` fuera de
+  ella; la salida hacia el gateway la tiene que dar la plataforma, por clase, como `MAESTRO` en
+  `0026`.
+- **`0026` ya decidió cómo llega el estado de la celda**: el informador. Pero el pod del modelo
+  compartido **no está en el namespace de la celda**: su estado no lo puede traer el informador.
+  Lo trae quien lo sirve.
 
 ---
 
 ## La decisión
 
-> ### ① Un modelo es un documento del árbol: `kind: Model`.
+> ### ① Un modelo es un documento del árbol: `kind: Model`. Nombra un perfil y un tier.
 
 Vive en `ontologia/` de la celda, junto a `Table`, `View` y `Entity`, y se escribe por
 `ore-serve` como cualquier otro documento (`POST /modelos`, el mismo acto que `POST /fuentes`:
-commit con quién lo pidió). La forma, a fijar en la especificación (`oos`) en la E1:
+commit con quién lo pidió). La forma, a fijar en la especificación (`oos`) en la E1 con lo
+que la E0 enseñe:
 
 ```yaml
 kind: Model
-name: qwen3-8b
-task: chat                       # chat · embed · rerank
-weights:
-  repo: Qwen/Qwen3-8B            # hf://<repo>  o  bucket://<celda>/modelos/<ruta>
-  revision: 1c4f…                # el commit de HF o el digest del directorio: lo que se bajó
-runtime: vllm                    # vllm (GPU) · llamacpp (CPU)
-resources: { gpu: 1 }            # o { cpu: "3.5", memory: 8Gi }
-serve: { replicas: 1 }           # escalar a 0: cuando haya KEDA, y se dirá
-expose: internal                 # internal · public (con clave; ⑤)
+name: qwen3-235b
+profile: g4/qwen3-235b-fp8        # un perfil certificado (0028 B2): modelo, revisión, motor, máquina, números
+digest: sha256:…                  # los pesos que ese perfil sirve (0028 B4); lo que corre es esto, o no corre
+tier: shared                      # shared: un pod por modelo, por token · dedicated: una máquina, precio fijo
+task: chat                        # chat · embed · rerank — lo que una Function puede pedirle
 ```
 
-Lo que eso regala sin programarlo: el modelo es **direccionable** (`modelo/qwen3-8b`, y una
-`Function` que lo llame nombra un nodo, no una URL); **versionado** (cambiar `revision` es un
+Ni `runtime`, ni `resources`, ni `weights.repo`: **todo eso es del perfil**, y el perfil lo
+certifica quien lo mide. El árbol no puede pedir una configuración que nadie ha medido. Lo que
+eso regala sin programarlo: el modelo es **direccionable** (`modelo/qwen3-235b`; una `Function`
+que lo llame nombra un nodo, no una URL); **versionado** (cambiar `profile` o `digest` es un
 commit, volver es un `revert`, quién lo pidió está dentro); y **gobernado** (Governance ve qué
 vistas lo alimentan y qué escribe, porque está en el grafo).
 
-> ### ② `ore-serve` deriva el manifiesto rellenando una plantilla, y lo empuja a `modelos.git`.
+> ### ② En el tier compartido, el documento deriva a una suscripción. El gateway la respeta.
 
-La misma figura que la cola, sin excepciones: el aprovisionador deja en la celda
-`plantilla-modelo-vllm.txt` y `plantilla-modelo-llamacpp.txt`, **rendidas para esa celda**
-(namespace, pool, taint, toleración, etiquetas, cuenta, límites), con los huecos del modelo
-intactos: nombre, pesos, recursos, réplicas. `ore-serve` sustituye esos huecos y **nada más**.
-No inventa un `Deployment`: rellena el que la plataforma escribió, y `gen-inquilino.py` lo
-comprueba byte a byte como comprueba el resto.
+No hay `Deployment` en `t-<celda>`: el pod del modelo es **uno por modelo, de la plataforma**,
+servido por el perfil en una máquina con etiqueta `eu-dc`, y lo comparten las celdas que lo
+nombran. Lo que el `Model` de una celda produce es **que esa celda pueda llamarlo**: identidad
+de la celda (`ore-agente-<celda>`, que ya existe), el perfil, una cuota y la contabilidad por
+inquilino (B3). El gateway **no enruta** a un tenant soberano a una máquina `community`: la
+etiqueta viaja con la máquina y se comprueba en cada llamada.
 
-El destino es **un tercer repositorio** en la forja de la celda, `t-<celda>/modelos.git`
-(`ore-serve --modelos URL`; mismo usuario `serve-<celda>`, colaborador de tres y de ningún
-otro). No la cola, porque la cola la aplica una cuenta que sólo crea `Job` y así debe seguir.
+⚠️ **Hueco nombrado, por decidir en la E2:** de dónde lee el gateway qué puede llamar una
+celda. Los dos candidatos coherentes con lo que hay: **el token de agente de la celda y una
+concesión en `iam`** —que niega, no concede sobre el conducto—, o **el gateway lee el árbol**.
+El primero encaja con B3 («`bastion-server` + lo que Rubix ya tiene»); se mide antes de elegir.
 
-> ### ③ Flux lo aplica con una cuenta que sólo puede desplegar.
+> ### ③ En el tier dedicado, el documento deriva a un despliegue con una cuenta que sólo puede desplegar.
 
-`GitRepository` + `Kustomization` `modelos-<celda>` en `flux-system`, con la etiqueta
-`ore.dev/rol: agente` —entra en el `Receiver` de `17-` por clase, el webhook dispara en
-segundos— y `serviceAccountName: desplegar-<celda>`, cuyo `Role` en `t-<celda>` es exactamente:
-
-```
-apps/deployments   get list watch create patch delete
-services           get list watch create patch delete
-namespaces         get
-```
-
-Ni `pods` (los crea el `Deployment`), ni `secrets`, ni `networkpolicies`, ni `jobs`. Lo que se
-concede se lee de un vistazo: **desplegar un modelo**. `prune: true`, con lo que arrastra: un
-`Model` que desaparece del árbol **retira** su `Deployment`.
+Una máquina para esa celda —hoy una VM G4 lanzada por B1 con el perfil; cuando haya pool en
+GKE, un `Deployment` en `t-<celda>` con toleración al pool `gpu`—. La figura de la cola, sin
+excepciones: el aprovisionador deja en la celda **la plantilla rendida** (namespace, pool,
+taint, etiquetas, cuenta, límites), `ore-serve` sustituye **sólo** nombre, perfil y digest, y
+la empuja a un tercer repositorio `t-<celda>/modelos.git` que Flux aplica con
+`desplegar-<celda>`, cuyo `Role` en `t-<celda>` es exactamente `apps/deployments` y
+`services` (get list watch create patch delete) y `namespaces` get. Ni `pods`, ni `secrets`,
+ni `networkpolicies`, ni `jobs`: **desplegar un modelo**, y se lee de un vistazo. `prune:
+true`: un `Model` que desaparece del árbol retira su despliegue. Es la E5; no se construye
+antes de que lo compartido sirva.
 
 > ### ④ Los pesos no pasan por el árbol, y la salida la da la plataforma por clase.
 
-El `Deployment` lleva un init container que trae los pesos a un volumen —de HF con la clave del
-cofre si el repositorio es *gated* (`t-<celda>-cofre-hf`, `0024 ⑤`), o del bucket de la celda—
-y **comprueba la `revision`** antes de arrancar: lo que corre es lo que el árbol dice, o no
-corre. `ore-serve` no toca un byte de pesos: sigue sin red.
+Los bytes los trae y los cachea B4 en la máquina que sirve (`/models/hf`, y encima el `.bst`
+con hash y firma); el árbol lleva el `digest`, y **lo que corre es lo que el árbol dice, o no
+corre**. `ore-serve` no toca un byte de pesos: sigue sin red. Lo que sí necesita salida es
+**la celda hacia el modelo**: una `NetworkPolicy` del compartimento —la escribe la plataforma,
+la aplica el `Kustomization` de la celda— que permite a los pods `ore.dev/rol: serve` y a los
+Jobs egress **sólo** al gateway (`IP/32:puerto`, constante nombrada como `MAESTRO`). Ninguna
+celda alcanza una máquina de modelo directamente.
 
-La salida es una `NetworkPolicy` **del compartimento** (la escribe la plataforma, la aplica el
-`Kustomization` de la celda, no el de modelos) que selecciona pods `ore.dev/rol: modelo` y les
-permite egress **sólo** a Hugging Face y al bucket de la celda. La plantilla de ② pone esa
-etiqueta; `ore-serve` no puede quitarla sin que `gen-inquilino.py` deje de reconocer el
-manifiesto. El pod del modelo, una vez arrancado, no necesita salir: sirve dentro.
+> ### ⑤ La puerta es el gateway. No se construye dos veces.
 
-> ### ⑤ La puerta: un `Service` interno, y lo público es otra etapa.
+La celda llama a `https://modelos.<entrada de la plataforma>/v1` con su token de agente; lo
+que una `Function` invoca es `modelo/<nombre>` y `ore-serve` lo resuelve a esa URL y ese
+perfil. **Lo público** —una URL y claves para que el cliente llame desde fuera— es
+exactamente B3 (claves por inquilino, cuotas, contabilidad): la pestaña *Endpoint* de la
+consola enseña lo que el gateway emite, no una puerta propia.
 
-`modelo-<nombre>.t-<celda>.svc:8000`, con la API OpenAI que vLLM y llama.cpp ya hablan. Es lo
-que `ore-serve` y los Jobs de la celda alcanzan, y lo que una `Function` invoca. **Público**
-—URL bajo la entrada de la celda, con clave— es la E4: la misma pieza que `entrada` en `0025`,
-y no antes de que lo interno sirva y se mida.
+> ### ⑥ El estado lo trae quien sirve; el plano de control observa y no posee.
 
-> ### ⑥ El estado lo trae el informador; el plano de control observa y no posee.
+- **Compartido:** el gateway contabiliza por celda —tokens, latencia, cuota consumida, si el
+  perfil está sirviendo— y lo expone; la consola lo pinta cruzado con lo que el árbol declara
+  (`GET /modelos` de `ore-serve`). Declarado y no servido = *provisioning*; servido y no
+  declarado = *retiring*; los dos = lo que el gateway diga.
+- **Dedicado:** `bastion status` (registro reconciliado con el proveedor) mientras sea una VM;
+  el informador de la celda (`0026`, snapshot v2 con `despliegues`) cuando sea un pod en su
+  namespace.
 
-Snapshot **v2** (`0026 ②` + un campo):
+**No hay tabla de despliegues en `iam`.** Lo que `iam` guarda de esto es, como siempre, quién
+puede: la concesión de ②, si se elige ese camino.
 
-```json
-"despliegues": [ { "nombre": "qwen3-8b", "modelo": "Qwen/Qwen3-8B", "revision": "1c4f…",
-                   "listo": 1, "pedidas": 1, "reinicios": 0, "desde": "…" } ]
-```
+> ### ⑦ El encaje es «hay perfil y hay máquina», y se decide en el servidor.
 
-El `Role` del informador gana `apps/deployments get,list` —sigue siendo sólo lectura, sigue en
-su namespace—. `ore-iam` acepta `v: 2` y guarda como hasta ahora: una fila por celda, sin
-huella por snapshot. **No hay tabla de despliegues en `iam`**: *Deployments* en la consola es
-`GET /celdas → estado_medido.despliegues`, cruzado con lo que el árbol declara (`GET /modelos`
-de `ore-serve`). Declarado y no medido = *provisioning*; medido y no declarado = *retiring*;
-los dos = lo que Kubernetes diga. Ninguno de los dos planos finge saber lo del otro (`0024 ④`).
-
-> ### ⑦ El encaje se decide en el servidor, con la misma tabla que ve el Hub.
-
-`POST /modelos` rechaza (422, con el motivo) lo que no cabe: GPU pedida y `gpu: 0` en la cuota;
-recursos por encima de lo que le queda a la celda; `runtime` que la plataforma no rinde. La
-`ResourceQuota` gana `requests.nvidia.com/gpu` (0 por defecto; sube por contrato) y es la
-segunda cerradura: aunque el manifiesto entrara, Kubernetes no lo programaría. La consola no
-inventa el encaje: lo pinta.
+`POST /modelos` rechaza (422, con el motivo) un `profile` que no existe en la matriz de
+certificación, un `digest` que no es el del perfil, y `tier: dedicated` sin cuota de máquina
+para esa organización. **El Hub enseña la matriz de certificación** —hoy tres perfiles, con
+sus tok/s y $/M medidos— y lo que está *por certificar* como tal, no un catálogo de dieciséis
+modelos con una píldora calculada en vCPU. La consola no inventa el encaje: lo pinta.
 
 ---
 
 ## Lo que se acepta a cambio
 
-- **Un tercer repositorio por celda y un tercer `Kustomization`.** Es el precio de que
-  `cola-<celda>` siga pudiendo sólo `Job`. Dos cuentas con un verbo cada una, no una con dos.
-- **Una plantilla más que envejece con la malla.** La comprueba `gen-inquilino.py` como la de
-  catálogo; si diverge, falla la comprobación, no el cliente.
-- **El pod de modelo tiene salida a HF.** Acotada a esa clase de pod y a ese destino, y sólo
-  hasta que el bucket de la celda tenga los pesos (E5): entonces la regla a HF se puede cerrar
-  por celda.
-- **Arranque en frío real.** Bajar 5 GB y cargarlos son minutos; con `spot` te quitan el nodo y
-  vuelves a pagarlos. Se mide en la E0 y se enseña en *provisioning* con la hora, no se
-  esconde. Escalar a 0 (KEDA) queda dicho y no hecho.
-- **GPU entera por celda.** Sin MIG medido, la unidad de cuota es una GPU. Un cliente con un
-  8B en una RTX PRO 6000 usa un tercio de su memoria; el resto es suyo y está parado.
+- **El Hub encoge a lo medido.** Tres perfiles el día uno. Es menos y es cierto; la lista
+  «por certificar» dice lo que viene y no lo vende.
+- **Ningún modelo en CPU dentro de la cuota de la celda.** Embeddings y modelos pequeños que
+  cabrían en 10 vCPU no se ofrecen hasta que tengan perfil en una máquina certificada (un
+  `g1` sirve un 8B o un embedder a muchos inquilinos por menos que N celdas en CPU).
+- **Dos tiers, dos derivaciones.** Una suscripción y un despliegue son objetos distintos con
+  el mismo documento delante. Lo que se gana es que compartido y dedicado se cobran como 0028
+  dice, y que el dedicado es *el mismo manifiesto en otro sitio* (`0024`).
+- **El primer modelo corre fuera de GKE.** Una VM en la misma VPC, con etiqueta y apagado
+  verificado. El pool de GKE llega con la cuota bajo demanda; hasta entonces `0024 ②` lleva una
+  nota, no una excepción silenciosa.
+- **El gateway es una pieza más entre la celda y el modelo.** Un salto de red y un proceso
+  que puede caer; a cambio, claves, cuotas, contabilidad y la etiqueta de soberanía en un
+  sitio, no en N celdas.
+- **Dependencia de la matriz de certificación.** Un modelo entra en el Hub cuando alguien lo
+  mide en una máquina; es trabajo que no termina (0028 lo acepta por su lado).
 - **El árbol lleva un `kind` más**, y la especificación (`oos`) tiene que decirlo antes de que
   `ore-serve` lo acepte.
 
@@ -183,76 +187,79 @@ inventa el encaje: lo pinta.
 
 ## El abordaje — y por qué es así y no de golpe
 
-Igual que en `0026`: cada etapa deja el sistema entero y medido. Se empieza por **un modelo
-sirviendo a mano en una celda real**, porque un conducto para un modelo que nadie ha visto
-arrancar en esa malla es un conducto hacia un número inventado —hoy `encaje()` dice
-`vcpu: 3.5` para un 8B **sin haberlo medido**—.
+Igual que en `0026`: cada etapa deja el sistema entero y medido. **El sustrato lo mide
+Bastion** (sus hitos 1 y 2: `bench.sh` PASS con la imagen en un `g1`/`g4`, y el mismo comando
+en G4 cuando haya cuota). Lo que ORE tiene que medir primero es **la otra mitad: que una celda
+alcance un modelo servido por un perfil, y que el árbol lo nombre**.
 
-### E0 · La medida y el contrato
+### E0 · La celda alcanza el modelo
 
-`pruebas-de-fuego/medida-un-modelo-en-la-celda.py`. En `t-victor`, **a mano y con `kubectl`**
-—sin `ore-serve`, sin Flux, sin plantilla—, un `Deployment` de `llama.cpp` sirviendo
-`Qwen2.5-1.5B-Instruct-Q4_K_M` y otro con un 7–8B Q4, con los recursos que hoy pide el catálogo
-de la consola. Y se mide: **(a)** que el init **no puede** bajar los pesos con la
-`NetworkPolicy` de hoy —el timeout, con código—, y que sí puede con la regla de ④ aplicada a
-mano; **(b)** arranque en frío: descarga + carga, en segundos; **(c)** memoria residente real
-frente a la pedida; **(d)** tok/s con 1 usuario y con 4, `curl` contra
-`/v1/chat/completions` desde un Job de la celda; **(e)** que la `ResourceQuota` lo cuenta y que
-`--cotejar` de `0026` lo ve como un pod más. Si la cuota G4 llega antes, **(f)** lo mismo con
-vLLM, `Qwen3-8B` FP8, 1 GPU, en el pool `gpu` con su taint. De aquí salen dos cosas y no
-opinión: **los números de `encaje()`** (los que hoy son estimados pasan a medidos, o cambian) y
-**el manifiesto de referencia** del que se recorta la plantilla de ②, más la forma del `Model`
-de ① con lo que de verdad hizo falta para arrancarlo. **Acepta:** la tabla de la medida con
-(a)–(e) en `victor`, y un `curl` de la celda contestado por el modelo.
+`pruebas-de-fuego/medida-la-celda-alcanza-el-modelo.py`. Con un `g1` servido por
+`bastion launch` con `g1/deepseek-v2-lite` —en Vast hoy, etiqueta *community*: **sólo un
+prompt de prueba, nunca datos**; en G4 cuando llegue—, desde `t-victor`: **(a)** que un Job de
+la celda **no** alcanza `:8000` con la `NetworkPolicy` de hoy (el timeout, con código) y sí con
+la regla de clase de ④ aplicada a mano; **(b)** latencia y TTFT **vistos desde la celda**, no
+desde el bench, con 1 y con 4 llamadas concurrentes; **(c)** el mismo `curl` con el token de
+agente de la celda en la cabecera, aunque hoy nadie lo compruebe: es el que B3 comprobará;
+**(d)** una `Function` del árbol que nombra `modelo/v2-lite` y cuya salida **aterriza en la
+ontología** —el eco que de verdad hay que demostrar—; **(e)** que `--cotejar` de `0026` no ve
+nada nuevo en la celda: el modelo no está en ella. **Acepta:** la tabla con (a)–(e) en
+`victor`, y una propiedad del árbol escrita por el modelo, con el commit que la trajo. De aquí
+sale la forma de ① con lo que hizo falta, y la regla de red.
 
-### E1 · El documento y la plantilla
+### E1 · El documento
 
 `kind: Model` en `oos` (bump del submódulo); `ore-serve` `POST /modelos` · `GET /modelos` ·
-`DELETE /modelos/{n}` con el encaje de ⑦; `--modelos URL`; las plantillas en `malla/` y en
-`gen-inquilino.py` con su comprobación; `aprovisionar-inquilino.sh` funda `modelos.git` y deja
-las plantillas. **Acepta:** `los-verbos` con los casos de ⑦ (cabe → 201 y el commit en
-`modelos.git` con el manifiesto rendido; GPU sin cuota → 422; retirar → el fichero desaparece).
+`DELETE /modelos/{n}` con el encaje de ⑦ contra **la lista de perfiles** (leída de donde
+Bastion la publique; hasta entonces, un fichero que el aprovisionador deja en la celda, como
+`plantilla-catalogo.txt`); `modelo/<nombre>` resoluble desde una `Function`. **Acepta:**
+`los-verbos` con los casos de ⑦ (perfil certificado → 201 y el commit; perfil inexistente →
+422; digest que no es el del perfil → 422; retirar → el fichero desaparece).
 
-### E2 · Flux lo aplica y el informador lo cuenta
+### E2 · La suscripción y el gateway
 
-`modelos-<celda>` con `desplegar-<celda>` (③) y la `NetworkPolicy` de clase (④) en
-`13-el-inquilino-reconciliado.yaml`; `Role` del informador con `deployments`; `informar.sh` v2;
-`ore-iam` acepta `v: 2`; `medida-el-estado-de-la-celda.py --snapshot` rinde v2. **Acepta:** en
-`victor`, `POST /modelos` desde `curl` → el `Deployment` existe en < 60 s sin que nadie toque
-`kubectl`; `--cotejar` cuadra `despliegues`; `DELETE` lo retira.
+B3 existe sobre un `g4` (hito 3 de 0028). Se decide el hueco de ② y se implementa: la celda
+llama con su token de agente; el gateway responde 401 a quien no está suscrito y contabiliza a
+quien sí. La `NetworkPolicy` de clase de ④ en `13-el-inquilino-reconciliado.yaml`, con la IP
+del gateway como constante nombrada y cotejada. **Acepta:** en `victor`, `POST /modelos` →
+la primera llamada contesta en < 60 s sin que nadie toque nada; `DELETE` → 401; la celda de al
+lado, sin `Model`, → 401.
 
 ### E3 · Deployments tiene filas
 
-La consola cruza `GET /modelos` con `estado_medido.despliegues` (⑥); *Crear* deja de estar
-deshabilitado y llama a `POST /modelos`; el detalle con *Overview · Endpoint · Events*; los
-motivos de 422 en pantalla tal cual. **Acepta:** desde el Hub, *Deploy in this cluster* → fila
-en *provisioning* con la hora → *running* cuando el informador lo vea; y el `Model` está en el
-árbol con el autor de la sesión.
+La consola cruza `GET /modelos` con lo que el gateway contabiliza (⑥); *Crear* deja de estar
+deshabilitado y llama a `POST /modelos`; el Hub pinta la matriz de certificación (⑦); el
+detalle con *Overview · Endpoint · Usage*; los motivos de 422 en pantalla tal cual.
+**Acepta:** desde el Hub, *Use in this cluster* → fila en *provisioning* con la hora →
+*running* con tokens contados; y el `Model` está en el árbol con el autor de la sesión.
 
-### E4 · La puerta pública
+### E4 · Lo público es el gateway
 
-`expose: public`: ruta bajo la entrada de la celda y clave en el cofre; la pestaña *Endpoint*
-con la URL y las claves. **Acepta:** un `curl` desde fuera con la clave contesta; sin clave,
-401; la celda de al lado no lo alcanza.
+La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
+**Acepta:** un `curl` desde fuera con la clave contesta; sin clave, 401; una clave de otra
+organización, 401; el uso aparece en la fila.
 
-### E5 · Los pesos viven en la celda, y la GPU
+### E5 · El tier dedicado
 
-`bucket://` como origen de pesos (el bucket de la celda de `0024 ③`), `ore modelos traer` que
-los deja allí con su digest; cerrar la salida a HF por celda cuando ya no haga falta. Y con la
-cuota G4: pool `gpu` en la malla compartida, `requests.nvidia.com/gpu` en la cuota, `encaje()`
-con la dimensión GPU medida, `MALLA_COMPARTIDA.gpu` deja de ser `null`. **Acepta:** un modelo
-arranca desde el bucket sin regla a HF; un 8B FP8 sirve en 1 GPU con sus tok/s medidos.
+`tier: dedicated`: hoy una VM G4 por celda lanzada con el perfil (B1, apagado verificado,
+`bastion status` como estado); con cuota bajo demanda y pool `gpu` en GKE, el ③ entero —
+`modelos.git`, `desplegar-<celda>`, la plantilla y su comprobación en `gen-inquilino.py`,
+`requests.nvidia.com/gpu` en la cuota, el informador con `despliegues`—. **Acepta:** un
+`Model` dedicado arranca sin que nadie toque `kubectl`, sirve sólo a su celda, y retirarlo
+apaga la máquina y el proveedor lo confirma.
 
 ---
 
 ## Lo que este abordaje NO hace, y por qué
 
+- **No mide un modelo en CPU en la celda.** La primera versión de este ADR lo proponía como E0;
+  mediría un sustrato que el producto no ofrece (0028). Se retira.
 - **No pone una tabla de despliegues en `ore-iam`.** Sería el plano de control poseyendo lo que
-  el árbol declara: dos verdades del mismo objeto. `iam` guarda lo que la celda **informa**.
-- **No ensancha `cola-<celda>`.** Una cuenta que puede `Job` y `Deployment` ya no se lee de un
-  vistazo. Dos cuentas, un verbo cada una.
-- **No deja a `ore-serve` escribir un `Deployment` libre.** Rellena una plantilla que la
-  plataforma rindió y comprueba. Lo que puede cambiar es el modelo; lo que no, el pod.
+  el árbol declara. `iam` guarda quién puede.
+- **No ensancha `cola-<celda>`.** Cuando el dedicado viva en GKE, otra cuenta con otro verbo.
+- **No deja a `ore-serve` inventar una configuración.** Nombra un perfil; el perfil lo certifica
+  quien lo mide. Ni una máquina, ni un motor, ni un flag salen del árbol.
+- **No construye una puerta pública propia.** Es B3.
 - **No mete modelos propietarios por API.** Eso no es un `Model` del árbol: es una
   **conexión**, con clave del cliente y una excepción de salida explícita —«los datos salen del
   clúster»—, y va en otro ADR cuando *Training* exista y el caso maestro/obrero lo pida.

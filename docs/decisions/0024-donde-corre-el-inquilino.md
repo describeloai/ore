@@ -101,6 +101,16 @@ otra cuota de gestión, y dos cosas que importar en BYOC, a cambio de nada que u
 taint no dé. Clúster aparte **sólo** si: otra región u otra nube para el modelo, una exigencia
 regulatoria de separación, o una GPU tan efímera que se levanta y se tira entera. Ninguna hoy.
 
+> ✏️ 2026-09-16 · **El primer modelo corre en una VM, no en un pool.** [`0028`](0028-bastion-es-el-producto-sobre-el-stack.md)
+> fija el sustrato (vLLM certificado sobre RTX PRO 6000, máquinas `g1`/`g4`/`g8` lanzadas por B1
+> como VMs G4 en `europe-west1-b`, sin IP pública) y aplaza el manifiesto de Kubernetes a B3
+> «hasta que la imagen pase con GPU y haya cuota». Así que el primer despliegue es **misma VPC y
+> zona, otra máquina**, alcanzada desde la celda **sólo a través del gateway** ([`0027 ④`](0027-el-modelo-vive-en-el-arbol.md)).
+> Lo que este ② protege —el camino caliente modelo ↔ ontología ↔ datos sin salir de la red— se
+> conserva; el pool `gpu` con su taint sigue siendo el destino cuando exista cuota bajo demanda.
+> En el tier compartido, además, el pod del modelo es **uno por modelo, de la plataforma**, no
+> uno por inquilino: la multi-tenencia es lógica (B3), y el pool de GPU vive fuera de `t-<n>`.
+
 > ### ③ La ingesta de terceros aterriza en el plano de datos del inquilino. `0006` y `0018` se sostienen.
 
 Es la decisión que la ingesta pone a prueba. Si los datos aterrizaran en el plano de control,
