@@ -162,6 +162,7 @@ cp "$TMP/segmentar.yaml" "$FUNCION"
 COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/modelos/v2-lite")
 [ "$COD" = "409" ] || falla "6 · retirar un modelo que una Function nombra devolvio $COD: $(cuerpo)"
 cuerpo | grep -q "OOS2005" || falla "6 · el 409 no dice que no resuelve: $(cuerpo)"
+cuerpo | grep -q "no se retira" || falla "6 · el 409 no dice que alguien lo nombra: $(cuerpo)"
 [ -f "$REPO/modelos/v2-lite.yaml" ] || falla "6 · retiro el fichero aunque una Function lo nombra"
 curl -s "http://127.0.0.1:$PUERTO_GW/admin/tenants" | grep -q "deepseek-ai/DeepSeek-V2-Lite" \
   || falla "6 · retiro la suscripcion aunque no retiro el modelo"

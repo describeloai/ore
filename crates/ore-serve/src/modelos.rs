@@ -312,10 +312,27 @@ impl Servidor {
         }
         // una función que lo nombre deja de resolver: se dice y no se retira.
         // (Se vuelve a escribir: sobre un directorio no hay clon que tirar.)
-        if let Some(mut r) = self.no_compila(raiz) {
+        if let Some(r) = self.no_compila(raiz) {
             let _ = std::fs::write(&fichero, &texto);
-            r.codigo = 409;
-            return r;
+            let motivo = match &r.cuerpo {
+                Json::Obj(m) => m
+                    .get("error")
+                    .and_then(|e| {
+                        if let Json::Str(s) = e {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            return Respuesta::error(
+                409,
+                format!(
+                    "no se retira `{nombre}`: alguien del árbol lo nombra y sin él no compila — {motivo}. Retira primero la Function que lo invoca"
+                ),
+            );
         }
         // el id servido, del perfil; si la lista no está, del gateway no se puede retirar por id
         let id = match self.perfiles() {

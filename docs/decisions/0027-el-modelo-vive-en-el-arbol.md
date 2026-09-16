@@ -344,7 +344,7 @@ falla (retira el fichero; lo vuelve a escribir en un `DELETE` negado).* Lo que q
 la regla `control → MODELOS/32:9000` en la plantilla (hoy el alta en `victor` daría 502 a
 los 15 s, y está dicho en 40), la imagen nueva por CI, y la primera llamada en < 60 s.
 
-### E2 · La celda llega al gateway sin que nadie toque nada
+### E2 · La celda llega al gateway sin que nadie toque nada — ✓ 2026-09-16 en `victor`, de punta a punta
 
 El hueco de ② está decidido y medido; lo que queda es que la plataforma lo lleve a la
 plantilla y al realm. `salida-al-modelo` en `13-el-inquilino-reconciliado.yaml` (pods `driver`
@@ -384,6 +384,25 @@ nuevo a mitad de corrida y sólo `victor` lo ganó: el ConfigMap montado cambia 
 y los tokens de `demo`, `prueba` y `victor` llevan `aud [modelos, ore-serve, account]` y
 `rubix_celda` = su nombre. El gateway (Bastion `9679cb9`): `--oidc-audience modelos`,
 `rubix_celda` manda sobre `azp`.
+
+**I4 · la aceptación — ✓ 2026-09-16** (`pruebas-de-fuego/la-celda-llega-al-gateway.py`, en `victor`
+con `prueba` de vecina; `kubectl` sólo para crear los Jobs de medida y leer sus logs):
+
+| | | |
+|---|---|---|
+| ⓪ | la Function de E0 (forma de v1alpha8) se retira del árbol: la gramática nueva la rechaza (`runtime: model` sin `model`) | `a4b6303` |
+| ① | `POST /modelos {v2-lite, g1/deepseek-v2-lite}` por la puerta pública con el token de agente | **201 en 2,0 s**, commit `5424e11`, «provisionada en 10.10.0.100:9000»; `GET /modelos/v2-lite` resuelve `{model, url, certificado: true}` |
+| ② | un Job de la celda (`driver`, por la cola, su token: `aud [modelos, ore-serve]`, `rubix_celda: victor`) | ve su modelo **a la primera llamada**; TTFT 2,8 ms · 197 ms (el vLLM de mentira) |
+| ③ | `DELETE /modelos/v2-lite` mientras el Job mira | 200 en 2,0 s → el Job recibe **401 «cell victor is not subscribed»** |
+| ④ | un Job de `prueba` con SU token | **401** |
+| ⑤ | `--cotejar` de 0026 · `GET /modelos` | limpio · `[]` |
+| ⑥ | el estado final: `POST` otra vez (201), la Function de E1 en el árbol (`runtime: model`, `model: modelo/v2-lite`, `prompt`; `af029c4`), `DELETE` con la Function nombrándolo | **409** «no se retira: alguien del árbol lo nombra (OOS2005)» |
+
+Lo que la primera pasada destapó: el árbol de `victor` llevaba la Function de E0 en la forma de
+v1alpha8 y `POST /modelos` la rechazó con 422 al validar el clon — correcto: la forma provisional
+se retira y la de E1 llega con el `Model` (⓪ y ⑥). **Nadie tocó `kubectl` para la plataforma**:
+las reglas, `--modelos` y los claims llegaron por Flux y el CronJob; la máquina `modelos-e0` se
+encendió para la pasada y se apaga después.
 
 ### E3 · Deployments tiene filas
 
