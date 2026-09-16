@@ -523,6 +523,27 @@ sin filas no hay sobre qué correr ni dónde aplicar.
 | **P5** | **el modelo de verdad, consistente**: pedir la cuota G4 en GCP **ya** (tarda días; B1 I3: `modelos` pasa a ser el G4 con gateway + vLLM en la misma máquina); mientras, la aceptación de P2 se corre UNA vez con un g1 de Vast (~1 $) como E0 b; y quien enciende/apaga: un reconciliador de Bastion sobre las suscripciones vivas (sin suscripción, apagado) | P2 aceptada con `deepseek-v2-lite` de verdad; la máquina apagada sola cuando nadie la nombra |
 | **P6** | **la consola enseña la inferencia**: Propuestas y corridas, y Forge · Functions sobre datos reales | una Propuesta se lee donde se lee la entidad |
 
+#### P1 · la copia en la celda: la materia, medida
+
+`pruebas-de-fuego/medida-la-copia-en-la-celda.py` (2026-09-16, sobre `demo`):
+
+| | hoy |
+|---|---|
+| el ciclo | **existe entero, en local**: `ore materialize` (679 líneas: plan → testigo → recibo → leer→sellar→subir → registrar → recoger), los lectores `postgres`/`bigquery`/`jsonl`, el almacén delegado `ore-store-r2` (1466 líneas, S3 SigV4 con clave estática), y `refresco.sh` que cuenta filas leídas del origen por acto. `ore` no abre sockets, por construcción |
+| quién declara la copia | `View.materialized {datasource, table, key}` existe; **`ore discover` no lo escribe a propósito** («decisión de operación, no se propone»). En `demo` ninguna vista lo declara: alguien tiene que escribirlo |
+| la celda | la imagen `ore-drivers` ya trae `ore-store-r2` y los lectores; el Job de catálogo (44) es la figura entera (forja + agente + cofre → verbo → commit); **no hay bucket por inquilino** y **nadie lanza `materialize`** (el convergedor sólo rinde catálogos) |
+| el almacén | **GCS por la API S3 no se puede**: `gcloud storage hmac create` → 412, `constraints/iam.disableServiceAccountKeyCreation` (política de la organización, enforced). R2 de Cloudflare funciona pero **la copia saldría de la VPC**. GCS por su API JSON con Workload Identity es lo que los Jobs ya usan para Secret Manager: un token del metadata server, sin clave |
+| el origen | `olist` en Postgres (8 entidades, Customers/Orders/…); **0 de 8 con clave primaria** en el catálogo: la clave que `materialized.key` y F5 necesitan es una decisión (hay 17 abiertas) |
+
+**La materia, en cuatro piezas y en este orden:**
+
+| | qué | acepta |
+|---|---|---|
+| **I1** | **`ore-store-gcs`**: el mismo protocolo que `ore-store-r2` (`sobre.rs`/`carga.rs` se reutilizan; cambia sólo el transporte: JSON API de GCS con el token de WI, y en local el de ADC) · `ore materialize` elige el delegado (`ORE_STORE=gcs`) | `refresco.sh` verde contra un bucket de GCS, con los mismos números de filas leídas |
+| **I2** | **el bucket por inquilino** en el aprovisionador (`gs://<proyecto>-<ns>-copia`, `objectAdmin` para la cuenta `driver`, `--cotejar`) · **la decisión**: `POST /paquetes/{n}/vistas/{v}/copia {key}` en `ore-serve` escribe `materialized` en la vista con la firma de quien decide | la vista lleva `materialized`; el árbol compila; el bucket existe y sólo `driver` escribe |
+| **I3** | **el Job `copiar-<paquete>`** (`45-la-copia.yaml`, la figura de 44) que el convergedor rinde por paquete con vistas materializadas, y repite al refrescar · `GET /paquetes/{n}` gana `copia {filas, digest, testigo, cuándo}` | la copia de `olist.Customers` está; la segunda pasada lee **0 filas** del origen |
+| **I4** | la aceptación en `demo` con números, y la consola lo dice («N rows · copied at») | la tabla de la ADR |
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
