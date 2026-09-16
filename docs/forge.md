@@ -194,8 +194,10 @@ Cuatro decisiones salen de aquí, y son las de I2:
 
 1. **La puerta del PUT es «el árbol no empeora», no «el árbol compila».** Sobre un árbol
    inducido sin revisar, «compila» rechaza cualquier escritura por errores ajenos al documento.
-   Se compila antes y después, y 422 sólo si aparecen diagnósticos nuevos (o cambian los del
-   fichero escrito). **Vale también para `Entity` (I1), que hoy exige que compile entero.**
+   Se compila antes y después, y 422 sólo si aparecen diagnósticos nuevos, identificados por
+   `(código, mensaje)` sin la posición; el 422 trae **sólo los nuevos** y cuenta los `previos`.
+   **Hecho en `Entity` (I1) el mismo día** (`documentos.rs::empeora`, caso 10 de
+   `los-documentos.sh`): el motor de View y Table lo hereda.
 2. **El 409 explícito con los nombres** hace falta en `DELETE` de View y Table por lo mismo que
    en Entity: `OOS2018` cuenta la verdad desde quien la nombra. Quién nombra a una vista:
    `Entity.backedBy`, `View.from.view`; a una tabla: `View.from.table`.

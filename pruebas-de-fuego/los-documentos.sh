@@ -208,5 +208,35 @@ cumple "d['retirada'] is True and d['commit']" "9 · 200 con commit"
 [ "$(pide GET /documentos/Entity)" = "200" ] && cumple "len(d['documentos']) == 7" "9 · la lista vuelve a 7"
 dice "9 · retirar una que nadie nombra: 200, commit, y deja de leerse"
 
+# ── 10 · la puerta es «el árbol no empeora», no «el árbol compila» ──────────
+#
+# Un árbol recién inducido no compila hasta review (owner: cambiame → OOS2009,
+# sin primaryKey → OOS2010). Con la puerta «compila entero», ninguna entidad
+# valida podía entrar ahí. Se rompe la forja por otro lado y se comprueba que
+# lo válido entra, lo inválido sale con SOLO lo suyo, y retirar lo referenciado
+# sigue siendo 409.
+git clone -q "$FORJA" "$TMP/romper" 2>/dev/null
+cat > "$TMP/romper/packages/hr/views/rota.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: rota, namespace: hr }
+spec:
+  owner: cambiame
+  from: { table: workday_worker }
+  fields: { id: "Worker_Reference.ID" }
+Y
+( cd "$TMP/romper" && git add -A && git commit -qm "una vista sin revisar" && git push -q origin HEAD:main ) || falla "10 · no se pudo romper la forja"
+( cd "$TMP/romper" && "$ORE" validate . >/dev/null 2>&1 ) && falla "10 · el arbol roto compila, y tenia que no"
+rm -rf "$TMP/romper"
+ANTES=$(cabeza)
+[ "$(pide PUT /documentos/Entity/hr/Contractor "$CONTRACTOR")" = "201" ] || falla "10 · una entidad valida no entro en un arbol que ya no compilaba · $(cat "$TMP/r.json")"
+[ "$(cabeza)" != "$ANTES" ] || falla "10 · no se empujo"
+MAL=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); d['spec']['properties']['inventada']={'type':'String'}; print(json.dumps(d))" "$CONTRACTOR")
+[ "$(pide PUT /documentos/Entity/hr/Contractor "$MAL")" = "422" ] || falla "10 · la invalida entro · $(cat "$TMP/r.json")"
+cumple "[x['codigo'] for x in d['diagnosticos']] == ['OOS2022'] and d['previos'] >= 1 and 'OOS2009' not in json.dumps(d['diagnosticos'])" "10 · el 422 trae SOLO lo nuevo (OOS2022) y cuenta los previos"
+[ "$(pide DELETE /documentos/Entity/hr/Department)" = "409" ] || falla "10 · retirar una referenciada dejo de ser 409 · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Entity/hr/Contractor)" = "200" ] || falla "10 · retirar la libre no dio 200 en un arbol roto · $(cat "$TMP/r.json")"
+dice "10 · con el arbol roto por otro lado: lo valido entra, lo invalido sale con solo lo suyo, y la referenciada sigue en 409"
+
 echo
-echo "ok · /documentos/Entity: la ficha entera, y escribirla es un commit del sujeto que compila antes de empujar"
+echo "ok · /documentos/Entity: la ficha entera, y escribirla es un commit del sujeto que no empeora el arbol"

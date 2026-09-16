@@ -308,8 +308,27 @@ pub fn pedir(
     testigo: Option<&str>,
     cuerpo: Option<&Json>,
 ) -> Result<(u16, String), String> {
-    let mut flujo = TcpStream::connect(destino)
-        .map_err(|e| format!("no se pudo conectar con `{destino}`: {e}"))?;
+    // ⛔ Y un plazo TAMBIÉN para conectar. `TcpStream::connect` no tiene ninguno:
+    //   con una máquina apagada (0027 E3 I5, `modelos-e0` TERMINATED) los paquetes
+    //   se tiran sin contestar y el SO tarda lo que quiera —medido: `GET /modelos`
+    //   moría a los 30 s de la entrada pública, con `504 stream timeout`—. Un
+    //   servicio de la VPC que no acepta en 5 s no va a aceptar.
+    let destinos = std::net::ToSocketAddrs::to_socket_addrs(&destino)
+        .map_err(|e| format!("no se pudo resolver `{destino}`: {e}"))?;
+    let mut flujo = None;
+    let mut ultimo = String::from("sin direcciones");
+    for d in destinos {
+        match TcpStream::connect_timeout(&d, std::time::Duration::from_secs(5)) {
+            Ok(f) => {
+                flujo = Some(f);
+                break;
+            }
+            Err(e) => ultimo = e.to_string(),
+        }
+    }
+    let Some(mut flujo) = flujo else {
+        return Err(format!("no se pudo conectar con `{destino}`: {ultimo}"));
+    };
     // ⛔ Un tiempo límite en las dos direcciones. Sin esto, un servicio que
     //   acepta la conexión y no contesta deja al plano de control colgado — y
     //   ése es exactamente el síntoma que una `NetworkPolicy` produce.
@@ -359,4 +378,24 @@ pub fn pedir(
 
 fn primera_linea(s: &str) -> String {
     s.lines().next().unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod pruebas_de_pedir {
+    use super::*;
+
+    /// Una dirección que no contesta (10.255.255.1 no enruta a ningún sitio): el
+    /// plazo de conectar es lo que acota la espera, no el SO.
+    #[test]
+    fn una_maquina_apagada_no_cuelga_el_plano_de_control() {
+        let t0 = std::time::Instant::now();
+        let r = pedir("GET", "10.255.255.1:9000", "/admin/health", None, None);
+        assert!(r.is_err(), "{r:?}");
+        assert!(r.unwrap_err().contains("no se pudo conectar"));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(8),
+            "tardó {:?}",
+            t0.elapsed()
+        );
+    }
 }

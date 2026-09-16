@@ -18,6 +18,23 @@
 //! árbol nunca queda a medio escribir. Sobre un directorio (el banco) se
 //! restaura lo que había, porque ahí no hay clon que tirar.
 //!
+//! # La puerta es «el árbol no empeora», no «el árbol compila»
+//!
+//! Medido el 2026-09-16 (`medida-forge-view-y-table.py` ③): un árbol recién
+//! inducido **no compila** hasta que alguien revisa — `owner: cambiame`
+//! (`OOS2009`), entidades sin clave (`OOS2010`), la fuente sin `source add`
+//! (`OOS2004`). Con la puerta «compila entero», escribir una entidad válida en
+//! ese árbol devolvía 422 con cinco errores que no eran suyos, y no había
+//! forma de escribir nada hasta arreglar a mano todo lo demás: la puerta
+//! bloqueaba justo cuando Forge más sirve, con el árbol a medias.
+//!
+//! Así que se compila **antes** de tocar nada y **después**, y se rechaza sólo
+//! lo que la escritura **añade**: 422 (409 al retirar) con los diagnósticos
+//! nuevos, y ninguno de los de siempre. Lo que estaba mal sigue igual de mal y
+//! lo dirá `/derivados/diagnosticos` (I3), no la puerta de cada escritura.
+//! Un diagnóstico se identifica por `(código, mensaje)`, sin la posición: una
+//! línea que se mueve no es un defecto nuevo.
+//!
 //! # Lo que se midió antes de escribir (2026-09-16, `acme-retail`)
 //!
 //! | prueba | `ore validate` |
@@ -305,6 +322,10 @@ impl Servidor {
             }
         }
 
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
         let (lista, _) = entidades_de(raiz);
         let existente = lista
             .iter()
@@ -322,8 +343,8 @@ impl Servidor {
                 format!("no se pudo escribir `{}`: {e}", relativo(raiz, &fichero)),
             );
         }
-        // ── compilar antes de empujar ───────────────────────────────────────
-        if let Some(r) = self.no_compila_con(raiz, &format!("la entidad `{ns}.{n}`")) {
+        // ── compilar antes de empujar: ¿empeora? ────────────────────────────
+        if let Some(r) = self.empeora(raiz, &antes, &format!("la entidad `{ns}.{n}`")) {
             // (sobre un directorio no hay clon que tirar: se deja como estaba)
             match &existente {
                 Some((f, t)) => {
@@ -405,13 +426,18 @@ impl Servidor {
             );
         }
         let (fichero, texto) = (d.fichero.clone(), d.texto.clone());
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
         if let Err(e) = std::fs::remove_file(&fichero) {
             return Respuesta::error(
                 500,
                 format!("no se pudo retirar `{}`: {e}", relativo(raiz, &fichero)),
             );
         }
-        if let Some(mut r) = self.no_compila_con(raiz, &format!("sin la entidad `{cualificado}`")) {
+        if let Some(mut r) = self.empeora(raiz, &antes, &format!("sin la entidad `{cualificado}`"))
+        {
             let _ = std::fs::write(&fichero, &texto);
             r.codigo = 409;
             return r;
@@ -445,45 +471,77 @@ impl Servidor {
         ))
     }
 
-    /// `ore validate` sobre el árbol: `None` si compila, la 422 con los
-    /// diagnósticos del compilador si no.
-    fn no_compila_con(&self, raiz: &Path, que: &str) -> Option<Respuesta> {
+    /// Los diagnósticos del árbol tal como está: la foto de ANTES. Si el
+    /// compilador falla sin diagnósticos (no arranca, no es un árbol), se
+    /// cuenta la primera línea como uno, para que la foto no salga limpia
+    /// sobre algo que no compila.
+    fn diagnosticos_de(&self, raiz: &Path) -> Result<Vec<Json>, Respuesta> {
         match mando::correr(&self.binario, raiz, &["validate".into(), ".".into()]) {
-            Err(e) => Some(Respuesta::error(500, e.to_string())),
+            Err(e) => Err(Respuesta::error(500, e.to_string())),
             Ok(s) if !s.bien() => {
-                let diags = diagnosticos(&s.stderr);
-                let resumen = diags
-                    .iter()
-                    .filter_map(|d| match d {
-                        Json::Obj(m) => Some(format!(
-                            "{}: {}",
-                            texto_de(m.get("codigo")),
-                            texto_de(m.get("mensaje"))
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                Some(Respuesta {
-                    codigo: 422,
-                    cuerpo: Json::obj([
+                let mut d = diagnosticos(&s.stderr);
+                if d.is_empty() {
+                    d.push(Json::obj([
+                        ("codigo", Json::s("")),
                         (
-                            "error",
-                            Json::s(format!(
-                                "el árbol no compila con {que}: {}",
-                                if resumen.is_empty() {
-                                    crate::rutas::primera_linea(&s.stdout, &s.stderr)
-                                } else {
-                                    resumen
-                                }
-                            )),
+                            "mensaje",
+                            Json::s(crate::rutas::primera_linea(&s.stdout, &s.stderr)),
                         ),
-                        ("diagnosticos", Json::Arr(diags)),
-                    ]),
-                })
+                    ]));
+                }
+                Ok(d)
             }
-            Ok(_) => None,
+            Ok(_) => Ok(Vec::new()),
         }
+    }
+
+    /// ¿La escritura **añadió** diagnósticos? `None` si el árbol no empeora
+    /// —aunque siga sin compilar por lo que ya tenía—; la 422 con **sólo los
+    /// nuevos** si sí. Dos diagnósticos son el mismo defecto si coinciden en
+    /// `(código, mensaje)`: la posición no cuenta.
+    fn empeora(&self, raiz: &Path, antes: &[Json], que: &str) -> Option<Respuesta> {
+        let despues = match self.diagnosticos_de(raiz) {
+            Ok(d) => d,
+            Err(r) => return Some(r),
+        };
+        let habia: std::collections::BTreeSet<(String, String)> =
+            antes.iter().map(identidad_de).collect();
+        let nuevos: Vec<Json> = despues
+            .into_iter()
+            .filter(|d| !habia.contains(&identidad_de(d)))
+            .collect();
+        if nuevos.is_empty() {
+            return None;
+        }
+        let resumen = nuevos
+            .iter()
+            .map(|d| {
+                let (c, m) = identidad_de(d);
+                format!("{c}: {m}")
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        Some(Respuesta {
+            codigo: 422,
+            cuerpo: Json::obj([
+                (
+                    "error",
+                    Json::s(format!("el árbol empeora con {que}: {resumen}")),
+                ),
+                ("diagnosticos", Json::Arr(nuevos)),
+                // Cuántos había ya y siguen: para que quien lee sepa que el
+                // 422 no los cuenta, y que existen.
+                ("previos", Json::Int(antes.len() as i64)),
+            ]),
+        })
+    }
+}
+
+/// Lo que identifica un diagnóstico: el código y el mensaje, sin dónde cayó.
+fn identidad_de(d: &Json) -> (String, String) {
+    match d {
+        Json::Obj(m) => (texto_de(m.get("codigo")), texto_de(m.get("mensaje"))),
+        _ => (String::new(), String::new()),
     }
 }
 
