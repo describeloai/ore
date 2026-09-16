@@ -81,7 +81,9 @@ ore-serve — el plano de control de ORE
   --modelos HOST:PUERTO  el plano de control del gateway de modelos (0027 ②):
                          `POST /modelos` suscribe ahi a esta celda en el mismo
                          acto que escribe el documento. Sin esto, 422: un
-                         modelo sin suscripcion no se escribe
+                         modelo sin suscripcion no se escribe. Y `GET
+                         /modelos` le pregunta ahi que sirve y que gasto la
+                         celda (0027 ⑥): la ficha es una fila
   --modelos-url URL      la puerta que una Function llama (por defecto,
                          `http://HOST:8000/v1` del `--modelos`)
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de

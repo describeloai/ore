@@ -412,6 +412,29 @@ detalle con *Overview · Endpoint · Usage*; los motivos de 422 en pantalla tal 
 **Acepta:** desde el Hub, *Use in this cluster* → fila en *provisioning* con la hora →
 *running* con tokens contados; y el `Model` está en el árbol con el autor de la sesión.
 
+Medido antes (`pruebas-de-fuego/medida-deployments-tiene-filas.py`, 2026-09-16): el Hub pintaba
+un catálogo estático de 16 con una píldora en vCPU; *Deployments* estaba vacía y dicha; la consola
+no conocía `/modelos`. `GET /modelos` ya cubría nombre, modelo, tarea y puerta, pero no lo que
+hace de eso una fila: estado, réplicas, autor, uso. El gateway cuenta backends `up` y uso por
+día × celda × modelo, y **sólo la VPC lo alcanza**: el cruce de ⑥ se hace en `ore-serve`, no en
+la consola. Cinco pasos: I1 `ore-serve` · I2 la consola conoce los verbos y el Hub pinta la
+matriz · I3 filas y *Crear* · I4 el detalle y *Retirar* · I5 la aceptación en `victor`.
+
+**I1 hecha** (2026-09-16): `GET /perfiles` (la lista tal como Bastion la publica); `GET /modelos`
+y `GET /modelos/{n}` ganan `estado {fase, backends, motivo?}`, `uso {hoy, mes}`, `autor` y
+`desde`. `ore-serve` pregunta al gateway **una vez por petición** —`/admin/health`,
+`/admin/tenants`, `/admin/usage?tenant=&from=<mes>`— y cruza: declarado y un backend `up` sirve
+su id → `running`; ninguno arriba → `provisioning` con motivo; la celda no suscrita → `error`
+(deriva); el gateway no contesta → `error` con el motivo, **y la ficha sale igual** (`gateway
+{contesta, motivo}` en la lista: la consola nunca espera al gateway); suscrito sin documento →
+fila `retiring` con `declarado: false`. `autor` y `desde` salen de `git log -1 -- modelos/<n>.yaml`
+en el clon: el verbo firma con el sujeto (RFC 8693 en el commit), así que la fila lleva quién la
+pidió sin ninguna tabla. Aceptado por `los-modelos.sh` (4e–4i, 7b, 8b) contra el banco **y contra
+`bastion-gateway` de verdad** (`--health-every 1`, un `--como-backend` que contesta `/v1/models`):
+sin backend → *provisioning*; el backend registrado y sondeado → *running* con
+`estado.backends: [banco-g1]`; retirado → *provisioning*; el uso suma hoy/mes y no cuenta otro
+modelo; el gateway caído → *error* en 2 s. En CI.
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.

@@ -20,6 +20,21 @@
 #                                 suscripcion fuera
 #   8  el gateway caido           POST 502 y NADA en el arbol
 #
+# Y lo que E3 anadio (0027 ⑥, la ficha es una fila):
+#
+#   4e `GET /perfiles`            la lista tal como Bastion la publica
+#   4f sin backend                `estado.fase: provisioning`, con motivo ·
+#                                 `uso {hoy, mes}` a cero
+#   4g un backend up sirve el id  `running` · `estado.backends` lo nombra
+#      (el de verdad lo sondea: `--como-backend` contesta /v1/models)
+#   4h el uso del mes             `uso.hoy` y `uso.mes` suman las filas del
+#                                 gateway (solo el banco: al de verdad no se
+#                                 le puede inyectar uso sin un token)
+#   4i el autor                   `autor` = quien firmo el commit, `desde`
+#   7b suscrito sin documento     una fila `retiring`, `declarado: false`
+#   8b el gateway caido           `GET /modelos` contesta igual: `fase: error`
+#                                 con el motivo, `gateway.contesta: false`
+#
 # El gateway es el de banco (`gateway-de-banco.py`: el contrato del plano de
 # control de Bastion B3) o, con `BASTION_GATEWAY=<binario>`, el de verdad.
 # La lista de perfiles es un fichero con la forma que Bastion publica.
@@ -32,7 +47,9 @@ PUERTO="${PUERTO:-8907}"
 PUERTO_GW="${PUERTO_GW:-9871}"
 BASE="http://127.0.0.1:$PUERTO"
 TMP="$(mktemp -d)"
-SRV=""; GW=""
+SRV=""; GW=""; VLLM=""
+PUERTO_VLLM="${PUERTO_VLLM:-8871}"
+HOY=$(date -u +%F)
 PY=$(command -v python3 || command -v python)
 
 falla() {
@@ -44,6 +61,7 @@ dice()  { echo "  · $*"; }
 limpiar() {
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
   [ -n "$GW" ] && { kill "$GW" 2>/dev/null; wait "$GW" 2>/dev/null; }
+  [ -n "$VLLM" ] && { kill "$VLLM" 2>/dev/null; wait "$VLLM" 2>/dev/null; }
   sleep 0.5   # que el gateway suelte su base antes de borrarla (Windows)
   rm -rf "$TMP"
 }
@@ -67,6 +85,9 @@ FUNCION="$REPO/functions/segmentar.yaml"
 mv "$FUNCION" "$TMP/segmentar.yaml"
 rm -f "$REPO/modelos/v2-lite.yaml"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "el arbol de partida no compila"
+# con historia: `autor` y `desde` salen del commit que trajo el fichero (4i)
+( cd "$REPO" && git init -q && git -c user.name=banco -c user.email=banco@invalido add -A \
+  && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el arbol de partida" ) || falla "no se pudo dar historia al arbol"
 
 # ── la lista de perfiles, con la forma que Bastion publica ──────────────────
 cat > "$TMP/perfiles.json" <<'JSON'
@@ -80,7 +101,7 @@ JSON
 
 # ── el gateway: el de banco, o el de verdad ─────────────────────────────────
 if [ -n "${BASTION_GATEWAY:-}" ]; then
-  "$BASTION_GATEWAY" --listen "127.0.0.1:$((PUERTO_GW - 1000))" --admin "127.0.0.1:$PUERTO_GW" --db "$TMP/gw.db" >"$TMP/gw.txt" 2>&1 &
+  "$BASTION_GATEWAY" --listen "127.0.0.1:$((PUERTO_GW - 1000))" --admin "127.0.0.1:$PUERTO_GW" --db "$TMP/gw.db" --health-every 1 >"$TMP/gw.txt" 2>&1 &
   GW=$!; QUE="bastion-gateway de verdad"
 else
   "$PY" "$RAIZ/pruebas-de-fuego/gateway-de-banco.py" --port "$PUERTO_GW" >"$TMP/gw.txt" 2>&1 &
@@ -151,6 +172,62 @@ COD=$(curl -s -o /dev/null -w '%{http_code}' -H "$SUJ" "$BASE/modelos/nadie")
 [ "$COD" = "404" ] || falla "4 · un modelo que no existe devolvio $COD"
 dice "4 · GET /modelos lo lista con model y url · GET /modelos/v2-lite resuelve · uno que no esta, 404"
 
+# ── 4e–4i · la ficha es una fila (E3 ⑥) ─────────────────────────────────────
+curl -sf -H "$SUJ" "$BASE/perfiles" > "$TMP/perfiles-vistos.json" || falla "4e · GET /perfiles no contesta"
+grep -q '"g1/deepseek-v2-lite"' "$TMP/perfiles-vistos.json" || falla "4e · GET /perfiles no trae el g1: $(cat "$TMP/perfiles-vistos.json")"
+grep -q '"g4/qwen3-235b-fp8"' "$TMP/perfiles-vistos.json" || falla "4e · GET /perfiles no trae el g4"
+grep -q '"v":1' "$TMP/perfiles-vistos.json" || falla "4e · GET /perfiles no es la lista tal cual (falta v)"
+dice "4e · GET /perfiles: la lista tal como Bastion la publica (g1, g4, v:1)"
+
+grep -q '"fase":"provisioning"' "$TMP/lista.json" || falla "4f · sin backend la fase no es provisioning: $(cat "$TMP/lista.json")"
+grep -q '"motivo":"ning' "$TMP/lista.json" || falla "4f · provisioning sin motivo: $(cat "$TMP/lista.json")"
+grep -q '"uso":{"hoy":{"peticiones":0,"tokens":0,"usd":"0.0000"},"mes":{"peticiones":0' "$TMP/lista.json" || falla "4f · el uso no sale a cero: $(cat "$TMP/lista.json")"
+grep -q '"gateway":{"backends_arriba":0,"contesta":true' "$TMP/lista.json" || falla "4f · la lista no dice que el gateway contesta: $(cat "$TMP/lista.json")"
+dice "4f · sin backend: provisioning, con motivo · uso {hoy, mes} a cero · el gateway contesta"
+
+"$PY" "$RAIZ/pruebas-de-fuego/gateway-de-banco.py" --port "$PUERTO_VLLM" --como-backend >"$TMP/vllm.txt" 2>&1 &
+VLLM=$!
+for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PUERTO_VLLM/v1/models" && break; sleep 0.25; done
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST "http://127.0.0.1:$PUERTO_GW/admin/backends" -H 'Content-Type: application/json' \
+  -d "{\"id\":\"banco-g1\",\"url\":\"http://127.0.0.1:$PUERTO_VLLM\",\"model\":\"deepseek-ai/DeepSeek-V2-Lite\",\"sovereignty\":\"eu-dc\"}")
+[ "$COD" = "201" ] || falla "4g · el gateway no acepto el backend: $COD $(cuerpo)"
+for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PUERTO_GW/admin/health" | grep -q '"up":true' && break; sleep 0.25; done
+curl -sf -H "$SUJ" "$BASE/modelos/v2-lite" > "$TMP/ficha.json" || falla "4g · GET /modelos/v2-lite no contesta"
+grep -q '"fase":"running"' "$TMP/ficha.json" || falla "4g · con un backend arriba la fase no es running: $(cat "$TMP/ficha.json")"
+grep -q '"backends":\["banco-g1"\]' "$TMP/ficha.json" || falla "4g · estado.backends no nombra al que sirve: $(cat "$TMP/ficha.json")"
+grep -q '"motivo":false' "$TMP/ficha.json" || falla "4g · running con motivo: $(cat "$TMP/ficha.json")"
+dice "4g · un backend up sirve el id: running · estado.backends = [banco-g1]"
+
+if [ -z "${BASTION_GATEWAY:-}" ]; then
+  MES="${HOY%-*}-01"
+  for fila in "{\"day\":\"$HOY\",\"requests\":3,\"prompt_tokens\":100,\"completion_tokens\":50,\"usd\":0.0012}" \
+              "{\"day\":\"$MES\",\"requests\":2,\"prompt_tokens\":10,\"completion_tokens\":5,\"usd\":0.0003}" \
+              "{\"day\":\"$HOY\",\"requests\":9,\"model\":\"otro/modelo\",\"usd\":9}"; do
+    curl -s -o /dev/null -X POST "http://127.0.0.1:$PUERTO_GW/banco/uso" -H 'Content-Type: application/json' \
+      -d "$(echo "$fila" | sed 's/^{/{"tenant":"victor","model":"deepseek-ai\/DeepSeek-V2-Lite",/')"
+  done
+  curl -sf -H "$SUJ" "$BASE/modelos/v2-lite" > "$TMP/ficha.json" || falla "4h · GET /modelos/v2-lite no contesta"
+  grep -q '"hoy":{"peticiones":3,"tokens":150,"usd":"0.0012"}' "$TMP/ficha.json" || falla "4h · uso.hoy no suma las filas de hoy: $(cat "$TMP/ficha.json")"
+  grep -q '"mes":{"peticiones":5,"tokens":165,"usd":"0.0015"}' "$TMP/ficha.json" || falla "4h · uso.mes no suma el mes: $(cat "$TMP/ficha.json")"
+  dice "4h · uso.hoy 3 peticiones/150 tokens/0.0012 · uso.mes 5/165/0.0015 · el otro modelo no cuenta"
+else
+  dice "4h · (el uso no se inyecta en el de verdad sin un token: se mira la forma)"
+  grep -q '"uso":{"hoy":{"peticiones":0' "$TMP/ficha.json" || falla "4h · la ficha no trae uso: $(cat "$TMP/ficha.json")"
+fi
+
+( cd "$REPO" && git add -A && GIT_AUTHOR_NAME=persona:ana GIT_AUTHOR_EMAIL=ana@invalido \
+  git -c user.name=ore-serve -c user.email=ore-serve@invalido commit -q -m "alta de un modelo" ) || falla "4i · no se pudo firmar el commit"
+curl -sf -H "$SUJ" "$BASE/modelos/v2-lite" > "$TMP/ficha.json" || falla "4i · GET /modelos/v2-lite no contesta"
+grep -q '"autor":"persona:ana"' "$TMP/ficha.json" || falla "4i · la ficha no lleva al autor del commit: $(cat "$TMP/ficha.json")"
+grep -q '"desde":"20' "$TMP/ficha.json" || falla "4i · la ficha no lleva la fecha: $(cat "$TMP/ficha.json")"
+dice "4i · autor = persona:ana (quien firmo el commit) · desde = la fecha del commit"
+
+COD=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://127.0.0.1:$PUERTO_GW/admin/backends/banco-g1")
+[ "$COD" = "204" ] || falla "4g · no se pudo retirar el backend: $COD"
+kill "$VLLM" 2>/dev/null; wait "$VLLM" 2>/dev/null; VLLM=""
+curl -sf -H "$SUJ" "$BASE/modelos/v2-lite" | grep -q '"fase":"provisioning"' || falla "4g · sin el backend la fase no vuelve a provisioning"
+dice "4g · el backend se retira: provisioning otra vez"
+
 # ── 5 · otra vez ────────────────────────────────────────────────────────────
 COD=$(post '{"name":"v2-lite","profile":"g1/deepseek-v2-lite"}')
 [ "$COD" = "409" ] || falla "5 · el mismo nombre otra vez devolvio $COD: $(cuerpo)"
@@ -179,6 +256,16 @@ COD=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/modelos/
 [ "$COD" = "404" ] || falla "7 · retirar dos veces devolvio $COD"
 dice "7 · DELETE 200 · el fichero fuera · la suscripcion fuera · otra vez, 404"
 
+# ── 7b · suscrito en el gateway sin documento: deriva, fila retiring ────────
+curl -s -o /dev/null -X POST "http://127.0.0.1:$PUERTO_GW/admin/tenants/victor/models" -H 'Content-Type: application/json' -d '{"model":"deepseek-ai/DeepSeek-V2-Lite"}'
+curl -sf -H "$SUJ" "$BASE/modelos" > "$TMP/lista.json" || falla "7b · GET /modelos no contesta"
+grep -q '"fase":"retiring"' "$TMP/lista.json" || falla "7b · la suscripcion sin documento no sale como retiring: $(cat "$TMP/lista.json")"
+grep -q '"declarado":false' "$TMP/lista.json" || falla "7b · la fila de deriva se da por declarada: $(cat "$TMP/lista.json")"
+grep -q '"name":false,"uso"' "$TMP/lista.json" || falla "7b · la fila de deriva lleva nombre: $(cat "$TMP/lista.json")"
+curl -s -o /dev/null -X DELETE "http://127.0.0.1:$PUERTO_GW/admin/tenants/victor/models/deepseek-ai%2FDeepSeek-V2-Lite"
+curl -sf -H "$SUJ" "$BASE/modelos" | grep -q '"modelos":\[\]' || falla "7b · retirada la suscripcion la lista no queda vacia"
+dice "7b · suscrito sin documento: una fila retiring, declarado: false · retirada, la lista vacia"
+
 # ── 8 · el gateway caido: nada se escribe ───────────────────────────────────
 kill "$GW" 2>/dev/null; wait "$GW" 2>/dev/null; GW=""
 COD=$(post '{"name":"qwen","profile":"g4/qwen3-235b-fp8"}')
@@ -186,6 +273,19 @@ COD=$(post '{"name":"qwen","profile":"g4/qwen3-235b-fp8"}')
 cuerpo | grep -q "no se escribi" || falla "8 · el 502 no dice que no escribio: $(cuerpo)"
 [ ! -f "$REPO/modelos/qwen.yaml" ] || falla "8 · escribio el modelo con el gateway caido"
 dice "8 · el gateway caido: 502, y nada en el arbol"
+
+# ── 8b · el gateway caido: la lista contesta igual, y dice error ────────────
+printf '%s\n' 'apiVersion: oos.dev/v1alpha9' 'kind: Model' 'metadata: { name: qwen }' 'spec: { profile: g4/qwen3-235b-fp8, tier: shared, task: chat }' > "$REPO/modelos/qwen.yaml"
+T0=$(date +%s)
+curl -sf -H "$SUJ" "$BASE/modelos" > "$TMP/lista.json" || falla "8b · con el gateway caido GET /modelos no contesta"
+T1=$(date +%s)
+grep -q '"name":"qwen"' "$TMP/lista.json" || falla "8b · la ficha no sale: $(cat "$TMP/lista.json")"
+grep -q '"fase":"error"' "$TMP/lista.json" || falla "8b · con el gateway caido la fase no es error: $(cat "$TMP/lista.json")"
+grep -q '"contesta":false' "$TMP/lista.json" || falla "8b · la lista no dice que el gateway no contesta: $(cat "$TMP/lista.json")"
+grep -q '"motivo":"no se pudo conectar' "$TMP/lista.json" || falla "8b · el error no dice por que: $(cat "$TMP/lista.json")"
+[ $((T1 - T0)) -le 5 ] || falla "8b · la lista tardo $((T1 - T0)) s con el gateway caido: la consola esperaria"
+rm -f "$REPO/modelos/qwen.yaml"
+dice "8b · el gateway caido: la ficha sale igual, fase error con el motivo, gateway.contesta false, en $((T1 - T0)) s"
 para
 
-echo "✓ los tres verbos del modelo: 0–8 ($QUE)"
+echo "✓ los tres verbos del modelo y la fila (E3): 0–8 ($QUE)"

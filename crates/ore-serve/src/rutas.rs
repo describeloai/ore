@@ -171,6 +171,9 @@ impl Servidor {
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
             // ── 0027 E1 · los verbos del modelo (`modelos.rs`) ────────────
+            // (E3: la lista de certificación tal como Bastion la publica; no
+            // toca el árbol, pero sí dice qué se puede pedir: con identidad)
+            ("GET", ["perfiles"]) => self.perfiles_publicados(),
             ("GET", ["modelos"]) => self.leyendo(|r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();
@@ -1257,6 +1260,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
+        ("GET", "/perfiles", con_identidad),
         ("GET", "/modelos", con_identidad),
         ("POST", "/modelos", con_identidad),
         ("GET", "/modelos/{nombre}", con_identidad),
