@@ -492,6 +492,41 @@ pública en una lectura — reintentada, nada; (d) la persona se quedó con el n
 verlo: en vez de «you», un redondel con el icono de perfil (relleno si es quien mira), hecho
 (`components/models/Autor.tsx`).
 
+### Después de E3 · de un modelo de verdad a inferencia consistente sobre los datos, medido
+
+La pregunta (2026-09-16, con E3 aceptada): ¿qué falta, en orden, para que un modelo REAL corra
+inferencia de forma consistente sobre los conjuntos de datos de la ontología, como Function o
+como sea? Medido eslabón por eslabón (`pruebas-de-fuego/medida-la-inferencia-sobre-los-datos.py`,
+sobre `demo`):
+
+| eslabón | hoy |
+|---|---|
+| el modelo | detrás del gateway hay un vLLM **de mentira**; el g1 real corrió 20 min en Vast (E0 b) por túnel ssh; la cuota de GPU en europe-west1 es **0** para G4 (sólo K80/P100/V100 legacy a 1); **nadie enciende una máquina** cuando hace falta (`bastion launch` es a mano) |
+| los datos | `demo` tiene datos REALES (Olist en Postgres, paquete `olist` elegido, 8 entidades); pero **no hay copia en ningún almacén**: la malla nunca llama a `ore materialize` y ninguna celda tiene bucket; sólo corren Jobs de catálogo |
+| el vocabulario | `Function runtime: model` + `effects` + la `Propuesta` + `ore verify` existen; **una Function no dice sobre qué vista corre ni con qué clave** (el `Plan` de functions.md §3 no tiene forma en la gramática) |
+| quién invoca | **F4 no existe** (`ore-invoke`); `segmentar` se ejecutó tres veces con un Job escrito a mano en la prueba, una fila fija |
+| cuándo | **nadie** lanza una Function: ni el convergedor, ni la consola, ni un CronJob |
+| dónde aterriza | `propuestas/<f>-<fila>.json` en el árbol (F1); aplicar sobre la copia es **F5, no existe**, y sin copia no habría dónde |
+| la consola | Hub/Deployments hechas; Ontology Forge · Functions en marcha sobre datos de mentira; **ninguna pantalla enseña una Propuesta** |
+
+**El orden, y por qué éste.** La cadena está rota en tres sitios —la copia, el invocador, el
+aplicador— y el modelo NO es el primero: el de mentira contesta `pyme` y basta para construir
+los tres; el real ya demostró en E0 b que sirve. Lo que desbloquea a los demás es la copia, porque
+sin filas no hay sobre qué correr ni dónde aplicar.
+
+| | qué | acepta |
+|---|---|---|
+| **P1** | **la copia en la celda**: un almacén por inquilino (bucket GCS, `ore-store-*`) y un Job `materializar` que el convergedor lanza como el de catálogo (`44-el-catalogo.yaml` → `45-la-copia.yaml`), sobre `olist` de `demo` | `GET /paquetes/olist` dice **N filas** por entidad y el digest de la copia; releer no lee el origen (refresco.sh, en la malla) |
+| **P2** | **F4 para `runtime: model`, el invocador**: la Function gana de qué vista salen las filas (`over:`/`input:`, a medir), un delegado lee la copia, forma el `Plan`, llama por el gateway con el token de la celda, escribe Propuestas y las verifica | `segmentar` sobre 100 clientes de `olist` → 100 Propuestas verificadas en el árbol; el gateway cuenta los tokens en la fila de Deployments |
+| **P3** | **quién y cuándo**: `POST /funciones/{n}/correr` en `ore-serve` → un Job `funcion-<n>` (Kueue), y la corrida como fila (filas hechas/total, tokens, $) en la consola; después, la corrida automática al refrescar la copia | desde la consola, *Run* → la fila avanza → las Propuestas |
+| **P4** | **F5, aplicar por la vista**: las Propuestas caen en la copia (sucesora, idempotente por digest) y la vista devuelve el valor nuevo | `ventas.Cliente.segmento` se lee en la vista; aplicar dos veces = misma copia |
+| **P5** | **el modelo de verdad, consistente**: pedir la cuota G4 en GCP **ya** (tarda días; B1 I3: `modelos` pasa a ser el G4 con gateway + vLLM en la misma máquina); mientras, la aceptación de P2 se corre UNA vez con un g1 de Vast (~1 $) como E0 b; y quien enciende/apaga: un reconciliador de Bastion sobre las suscripciones vivas (sin suscripción, apagado) | P2 aceptada con `deepseek-v2-lite` de verdad; la máquina apagada sola cuando nadie la nombra |
+| **P6** | **la consola enseña la inferencia**: Propuestas y corridas, y Forge · Functions sobre datos reales | una Propuesta se lee donde se lee la entidad |
+
+**Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
+necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
+no capacidad, y espera; B4 (digest) con B2.
+
 ### E4 · Lo público es el gateway
 
 La pestaña *Endpoint* enseña la URL y las claves por inquilino que B3 emite, y el uso.
