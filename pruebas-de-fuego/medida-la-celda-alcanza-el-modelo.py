@@ -229,7 +229,7 @@ if [ ! -f functions/segmentar.yaml ]; then
   cp -rL /e0/arbol/. .
   # el manifiesto de la celda no declara fuentes: E0 pone las dos que el paquete nombra
   if ! grep -q '^datasources:' ontology.config.yaml; then
-    printf '\ndatasources:\n  - { name: erp, type: postgres, connectionEnv: ERP_URL }\n  - { name: lago, type: iceberg, connectionEnv: LAGO_URL }\n' >> ontology.config.yaml
+    printf '\ndatasources:\n  - { name: ventas, type: postgres, connectionEnv: VENTAS_URL }\n' >> ontology.config.yaml
   fi
   ore validate .
   git add -A
