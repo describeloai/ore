@@ -85,7 +85,7 @@ spec: { owner: team:ventas }
 kind: Table
 metadata: { name: clientes, namespace: ventas }
 spec:
-  datasource: erp
+  datasource: ventas
   object: 'public.clientes'
   columns:
     cliente_id: { physicalType: 'varchar(16)' }
@@ -107,7 +107,7 @@ spec:
     actividad: actividad
     segmento: segmento
   # con escrituras se materializa (OOS2025): la copia es donde una edición se sostiene
-  materialized: { datasource: lago, table: 'cache.ventas_clientes' }
+  materialized: { datasource: ventas, table: 'cache.ventas_clientes' }
 """,
     "packages/ventas/entities/Cliente.yaml": """apiVersion: oos.dev/v1alpha1
 kind: Entity
