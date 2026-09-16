@@ -55,6 +55,9 @@ PROYECTO="project-8853a180-450d-47be-b83"
 #   llevaba un prefijo roto. Un numero de proyecto es tan constante como su id.
 NUMERO="339497864493"
 LUGAR="europe-west1"
+# Donde Bastion publica la lista de perfiles certificados (`bastion profiles
+# --publish gs://bastion-perfiles`): lectura publica, sin credencial.
+PERFILES_URL="https://storage.googleapis.com/bastion-perfiles/perfiles.json"
 LLAVERO="ore"
 FORJA_NS="forja"
 # Donde esta la forja DESDE DENTRO. Fuera no se alcanza: no tiene puerta al
@@ -964,6 +967,7 @@ ENGANCHE=""
 #   ruido en una historia que ES la auditoría.
 if [ -n "$SECO" ]; then
   haria "empujar esos manifiestos a $COMPARTIMENTO"
+  haria "bajar perfiles.json de $PERFILES_URL y empujarlo a la cola con la plantilla"
 else
   # ⛔ El testigo por `GIT_CONFIG_*` y no dentro de la URL: un
   #   `http://usuario:token@host/…` deja la credencial en la linea de ordenes,
@@ -1042,6 +1046,22 @@ else
   empujar_fichero "plataforma/enganches" "$TMP/README.md" "README.md" "El README" || true
   if [ -n "$ENGANCHE" ]; then
     empujar_fichero "plataforma/enganches" "$ENGANCHE" "$NOMBRE.yaml" "El enganche" || true
+  fi
+
+  # ⭐ LA LISTA DE PERFILES (0027 ⑦, E1): lo que Bastion mide y publica —cada
+  #   perfil maquina × modelo con sus numeros—, en la cola al lado de la
+  #   plantilla del catalogo. `ore-serve` la lee en `POST /modelos` y rechaza
+  #   (422) un perfil que no este: un perfil sin numero no existe. Se BAJA,
+  #   no se rinde: es un hecho del sustrato, y quien lo publica es quien lo
+  #   mide. Si no se puede bajar, la celda se aprovisiona igual y se dice: sin
+  #   lista, `POST /modelos` contesta 503 hasta la pasada siguiente.
+  # (por redireccion y no con `-o`: el curl de mingw no sabe escribir en la ruta
+  #  de `mktemp` desde dentro de este guion —«(23) client returned ERROR on write»—)
+  if curl -sSf -m 20 "$PERFILES_URL" > "$TMP/cola/perfiles.json" 2>"$TMP/perfiles.err"; then
+    hecho "perfiles.json · $("$PY" -c 'import json,sys;d=json.load(open(sys.argv[1]));print("%d perfiles · %s" % (len(d["profiles"]), d["generated"]))' "$(ruta "$TMP/cola/perfiles.json")" 2>/dev/null || echo "bajado")"
+  else
+    echo "  ⚠ sin perfiles.json: no se pudo bajar $PERFILES_URL ($(head -c 200 "$TMP/perfiles.err" | tr '
+' ' ')). La celda no podra aceptar un Model hasta la pasada siguiente"
   fi
 
   if [ -n "$INQ" ]; then

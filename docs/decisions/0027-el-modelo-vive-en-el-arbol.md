@@ -308,6 +308,20 @@ con `entrypoint`, `model` con `runtime: wasm`, `model` en una `Function` v1alpha
 rechazos, cada uno con su código y su ayuda. *Pendiente de empujar el submódulo a
 `describeloai/oos` antes de que CI construya con el puntero nuevo.*
 
+**I2 · la lista de perfiles — ✓ 2026-09-16.** Bastion la publica (`bastion profiles --json` es
+el documento; `--publish gs://bastion-perfiles` lo sube, lectura pública sin credencial:
+`https://storage.googleapis.com/bastion-perfiles/perfiles.json`, 3 perfiles, `digest: null`
+hasta B4) y **el aprovisionador la baja a la cola** en cada pasada, al lado de
+`plantilla-catalogo.txt` (`PERFILES_URL` en `aprovisionar-inquilino.sh`; sin red la celda se
+aprovisiona igual y lo dice). Se baja, no se rinde: es un hecho del sustrato, y quien lo
+publica es quien lo mide. Medido en `victor`: la pasada real desde fuera empujó
+`perfiles.json` a `t-victor/trabajo` (`fd65e60`) y Flux aplicó la revisión sin inmutarse
+—un `.json` en la cola no es un manifiesto—. *Lo que costó: el `curl` de mingw no escribe con
+`-o` en la ruta de `mktemp` desde dentro del guion («(23) client returned ERROR on write»);
+por redirección sí.* Lo que I3 lee: `perfiles.json` del clon de la cola, con la forma
+`{v, image, generated, profiles: [{profile, model, machine, gpus, status, tok_s{1,8,16,32},
+ttft_ms, usd_h, usd_per_mtok, digest}]}`.
+
 ### E2 · La celda llega al gateway sin que nadie toque nada
 
 El hueco de ② está decidido y medido; lo que queda es que la plataforma lo lleve a la
