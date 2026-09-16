@@ -1364,15 +1364,77 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             }
             let expone = expone(abajo);
             let abajo_qn = abajo.qname().unwrap_or_default();
+            let mios = campos(v);
+            // OOS2018 · lo que agrega, y por lo que agrupa, también son campos
+            // de la vista de abajo. Es la misma regla que sobre una tabla, con
+            // el sujeto cambiado: allí columnas, aquí lo que la otra expone.
+            //
+            // ⛔ Medido el 2026-09-16: esta rama resolvía cada campo con
+            //   `campos(v)`, que EXCLUYE los agregados a propósito, así que
+            //   `total: "sum(baseSalary)"` sobre una vista salía como *«lee ``,
+            //   que no expone»* — un nombre vacío en el diagnóstico y ninguna
+            //   forma de agrupar sobre una vista. La rama de la tabla los
+            //   trataba aparte desde el principio; ésta no.
+            let ags = agregados(v);
             if let Some(fs) = v.section("fields") {
                 for (k, val) in fs.entries() {
                     let Some(campo) = k.as_str() else { continue };
-                    let en_fuente = campos(v).get(campo).cloned().unwrap_or_default();
+                    if let Some(a) = ags.get(campo) {
+                        if let Some(sobre) = &a.sobre {
+                            match expone.get(sobre) {
+                                None => out.push(no_expone(
+                                    &v.path,
+                                    val,
+                                    format!(
+                                        "`{qn}.{campo}` agrega `{sobre}`, que `{abajo_qn}` no expone"
+                                    ),
+                                    &abajo_qn,
+                                    &expone,
+                                )),
+                                // Agregar lo que abajo ya es un agregado no
+                                // llega a ninguna columna: el plan baja cada
+                                // agregado a la columna de la que sale, y de
+                                // `sum(n)` con `n: count()` no sale ninguna.
+                                Some(de) if agregado(de).is_some() => out.push(
+                                    Diagnostic::new(
+                                        Code::Oos2018,
+                                        &v.path,
+                                        format!(
+                                            "`{qn}.{campo}` agrega `{sobre}`, que en `{abajo_qn}` ya es un agregado (`{de}`)"
+                                        ),
+                                    )
+                                    .at(val.pos())
+                                    .help(
+                                        "un agregado se baja a la columna de la que sale, y de un \
+                                         agregado no sale ninguna. Agrega la columna en la vista \
+                                         que la tiene, o agrupa aquí por lo que abajo es un campo",
+                                    ),
+                                ),
+                                Some(_) => {}
+                            }
+                        }
+                        continue;
+                    }
+                    let en_fuente = mios.get(campo).cloned().unwrap_or_default();
                     if !expone.contains_key(&en_fuente) {
                         out.push(no_expone(
                             &v.path,
                             val,
                             format!("`{qn}.{campo}` lee `{en_fuente}`, que `{abajo_qn}` no expone"),
+                            &abajo_qn,
+                            &expone,
+                        ));
+                    }
+                }
+            }
+            if let Some(g) = v.section("groupBy") {
+                for i in g.items() {
+                    let Some(campo) = i.as_str() else { continue };
+                    if !expone.contains_key(campo) {
+                        out.push(no_expone(
+                            &v.path,
+                            i,
+                            format!("`{qn}` agrupa por `{campo}`, que `{abajo_qn}` no expone"),
                             &abajo_qn,
                             &expone,
                         ));
@@ -1993,6 +2055,92 @@ mod tests {
         comprobar(&pkg, &mut out);
         let codigos: Vec<Code> = out.iter().map(|d| d.code).collect();
         assert_eq!(codigos, vec![Code::Oos2018, Code::Oos2018], "{out:?}");
+    }
+
+    /// Una vista v1alpha8 sobre otra: la forma que agrupa.
+    fn vista8_sobre(nombre: &str, from: &str, fields: &str, extra: &str) -> Loaded {
+        doc(
+            Kind::View,
+            &format!(
+                "apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata: {{ name: {nombre}, namespace: hr }}\n\
+                 spec:\n  owner: team:hr\n  from: {from}\n  fields:\n{fields}{extra}"
+            ),
+        )
+    }
+
+    fn solo_2018(pkg: &Package) -> Vec<Code> {
+        let mut out = Vec::new();
+        comprobar(pkg, &mut out);
+        out.iter()
+            .map(|d| d.code)
+            .filter(|c| *c == Code::Oos2018)
+            .collect()
+    }
+
+    /// ⛔ Medido el 2026-09-16: agrupar sobre una TABLA compilaba y agrupar
+    /// sobre una VISTA salía como *«lee ``, que no expone»*, porque esta rama
+    /// resolvía los campos con `campos`, que excluye los agregados a propósito.
+    #[test]
+    fn agregar_sobre_una_vista_compila() {
+        let por_pais = vista8_sobre(
+            "porPais",
+            "{ view: empleados }",
+            "    pais: pais\n    n: \"count()\"\n    ids: \"max(employeeId)\"\n",
+            "  groupBy: [pais]\n",
+        );
+        let pkg = paquete(vec![config(), base(), por_pais]);
+        let mut out = Vec::new();
+        comprobar(&pkg, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn agregar_lo_que_la_de_abajo_no_expone_es_oos2018() {
+        let por_pais = vista8_sobre(
+            "porPais",
+            "{ view: empleados }",
+            "    pais: pais\n    total: \"sum(salario)\"\n",
+            "  groupBy: [pais]\n",
+        );
+        let pkg = paquete(vec![config(), base(), por_pais]);
+        let mut out = Vec::new();
+        comprobar(&pkg, &mut out);
+        assert_eq!(solo_2018(&pkg), vec![Code::Oos2018]);
+        assert!(
+            out.iter().any(|d| d.message.contains("agrega `salario`")),
+            "el diagnóstico tiene que nombrar lo que agrega, no un nombre vacío: {out:?}"
+        );
+    }
+
+    #[test]
+    fn agrupar_por_lo_que_la_de_abajo_no_expone_es_oos2018() {
+        let por_ciudad = vista8_sobre(
+            "porCiudad",
+            "{ view: empleados }",
+            "    n: \"count()\"\n",
+            "  groupBy: [ciudad]\n",
+        );
+        let pkg = paquete(vec![config(), base(), por_ciudad]);
+        assert_eq!(solo_2018(&pkg), vec![Code::Oos2018]);
+    }
+
+    /// De `sum(n)` con `n: count()` abajo no sale ninguna columna.
+    #[test]
+    fn agregar_un_agregado_es_oos2018() {
+        let por_pais = vista8_sobre(
+            "porPais",
+            "{ view: empleados }",
+            "    pais: pais\n    n: \"count()\"\n",
+            "  groupBy: [pais]\n",
+        );
+        let encima = vista8_sobre(
+            "total",
+            "{ view: porPais }",
+            "    pais: pais\n    s: \"sum(n)\"\n",
+            "  groupBy: [pais]\n",
+        );
+        let pkg = paquete(vec![config(), base(), por_pais, encima]);
+        assert_eq!(solo_2018(&pkg), vec![Code::Oos2018]);
     }
 
     #[test]

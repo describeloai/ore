@@ -173,7 +173,7 @@ admite `oos.maturity` (`OOS1005` con cualquier otra); `Table` no admite `labels`
 | `Table` sin `changes` · `datasource` sin declarar · `reads: none` con una vista virtual encima · copia sin conducto | `OOS1004` · `OOS2004` · `OOS2020` · `OOS4011` |
 | `count(col)` | `OOS1004`, con la frase que manda escribir `count()` |
 | agrupar sobre una **tabla** (`count()`, `groupBy`, `having`) | pasa |
-| agrupar sobre una **vista** (`sum(baseSalary)` de `empleados`) | **falla** con `OOS2018` y un nombre vacío — la spec §5.8 lo admite y la conformidad no lo cubre (9 casos agrupan sobre tabla, 0 sobre vista): fallo del compilador al resolver el argumento del agregado contra la vista de abajo, pendiente de aislar |
+| agrupar sobre una **vista** (`sum(baseSalary)` de `empleados`) | **fallaba** con `OOS2018` y un nombre vacío: la rama `from.view` resolvía los campos con la función que excluye los agregados, y la conformidad no lo cubría (9 casos sobre tabla, 0 sobre vista). **Arreglado** en `vistas.rs` el mismo día, con cuatro casos de conformidad (spec §4 y §5.8): agrupar sobre una vista compila; agregar lo que abajo ya es un agregado es `OOS2018` con su motivo |
 | `View` sin `owner` | **pasa** — `owner` lo exige el emisor (`cambiame` → `OOS2009`), no el compilador |
 
 **El inductor.** `ore discover` escribe `tables/Clientes__public_clientes.yaml` con `name:

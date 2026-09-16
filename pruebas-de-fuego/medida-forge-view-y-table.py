@@ -170,7 +170,9 @@ print("     · borrar o renombrar una View/Table que alguien nombra es OOS2018 e
 print("       el 409 explícito con los nombres hace falta por lo mismo que en Entity — la verdad contada desde el sitio correcto")
 print("     · el compilador cubre lo que un PUT puede romper: field/where sin columna (C, D2, Q), fuente sin declarar (J),")
 print("       sin changes (G), reads: none sin copia (O), copia sin conducto (N), agregado mal escrito (M). El verbo no duplica nada")
-print("     · agrupar sobre una tabla compila (M2); sobre una vista NO (M3): un PUT de esa vista daría 422 por un fallo que no es suyo")
+print("     · agrupar sobre una tabla (M2) y sobre una vista (M3) compilan; M3 fallaba el 2026-09-16 y se arregló en vistas.rs"
+      if not R["M3"] else
+      "     · agrupar sobre una tabla compila (M2); sobre una vista NO (M3): un PUT de esa vista daría 422 por un fallo que no es suyo")
 print("     · View admite x-rubix-displayName (E1) y sólo oos.maturity en labels (F/F2); Table admite x-rubix-displayName (E2) y no labels")
 print("     · View sin owner PASA el esquema (H): `owner` lo exige el emisor (cambiame no valida: OOS2009), no el compilador")
 print("     · un árbol inducido NO compila hasta review (③): la puerta del PUT no puede ser «el árbol compila» sino")
