@@ -1,37 +1,38 @@
-//! La decisión de la copia (0027 P1 I2): `POST /paquetes/{n}/vistas/{v}/copia`.
+//! La copia en la celda (0027 P1): **la base estándar**.
 //!
-//! # Por qué es un verbo y no lo escribe `discover`
+//! # La copia se induce, no se edita
 //!
-//! `ore discover` no propone `materialized` a propósito: que una vista tenga
-//! copia es una decisión de operación con coste, y proponerla sería inventarla
-//! (`inductor.rs`). Pero desde el ADR 0018 la copia no es un acelerador: es **el
-//! sistema de registro** —donde una Propuesta aterriza— y sin ella no hay
-//! inferencia sobre los datos. Así que la decisión necesita un sitio donde
-//! tomarse y firmarse, y es éste: quien pulsa decide, y el commit lleva su `sub`.
+//! `ore discover` no propone `materialized` (`inductor.rs`: proponerlo sería
+//! inventarlo), y `ore review` **re-induce el paquete entero** desde el catálogo
+//! y las respuestas — una edición a mano entre las dos se pierde. Así que la
+//! copia no puede ser un campo que alguien escribe en una vista (el verbo por
+//! vista de I2, retirado): tiene que salir de la inducción. Y sale de una
+//! **regla**: la clase de la base, `"type": "standard"` en `discover.scope.json`
+//! —el documento que ya guarda qué entró y de dónde, y que `review` lee y no
+//! reescribe—. Con ella, el inductor emite `materialized` en cada vista cuya
+//! tabla **tiene clave** (la del origen o la contestada en `clave`) y `changes:
+//! mode: upsert, key` en su tabla. Sin clave, la vista espera: una copia que
+//! sólo anexa no puede respaldar una entidad (`OOS2021`), y la decisión `clave`
+//! de la cola dice que la copia la espera. Contestarla la trae.
 //!
-//! # Lo que decide, y es más de un campo
+//! # Lo que queda de este lado
 //!
-//! Medido antes de escribirlo (2026-09-17, sobre `demo/olist`): un `materialized`
-//! solo **no compila** (`OOS4011`: el conducto `materialization.payload` no tiene
-//! autorización declarada). La decisión son tres escrituras coherentes, o nada:
-//!
-//! | | dónde | qué |
-//! |---|---|---|
-//! | la copia | la vista | `materialized: { datasource: <la de su tabla raíz>, table: "copia.<vista>" }` |
-//! | la clave (si se pide) | la tabla raíz | `changes.key: [columnas]` y `mode: upsert` — la identidad de la fila que F5 necesita |
-//! | el conducto | `conduits.yaml` en la raíz | `materialization.payload` autorizado (vacío si el árbol no tiene retículos) |
-//!
-//! Y después `ore validate .`: si no compila, **nada se escribe** (422 con los
-//! diagnósticos). La clave de la ENTIDAD (`primaryKey`) no se toca aquí: es la
-//! decisión `clave` de `ore review`, y sigue abierta donde estaba.
+//! Lo que NO se induce: `conduits.yaml` (en la raíz del árbol, fuera del
+//! paquete) tiene que autorizar `materialization.payload`, o el `materialized`
+//! no compila (`OOS4011`, medido); y el Job de la copia (I3) hay que encolarlo
+//! cuando la lista de vistas con copia cambia. Las dos cosas las hace
+//! [`Servidor::tras_inducir`], después de cada inducción que `ore-serve`
+//! dispara: el alta (`POST /paquetes {type}`), ascender (`POST /paquetes/{n}/
+//! copia` = la clase al alcance + `review --reinducir`) y contestar decisiones.
 //!
 //! # Lo que no hace
 //!
-//! No copia nada: eso es el Job `copiar-<paquete>` (I3), que lee esta
-//! declaración. No elige qué gana cuando el origen y la copia se contradicen
+//! No copia nada: eso es el Job `copiar-<resumen>` (I3), que lee lo que el
+//! árbol declara. No elige qué gana cuando el origen y la copia se contradicen
 //! (functions.md §7.4): es de F5.
 use crate::cola;
-use crate::rutas::{Servidor, analizar, de_node, token};
+use crate::mando;
+use crate::rutas::{Servidor, de_node, primera_linea, token};
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
 use ore_entrada::http::Respuesta;
@@ -69,250 +70,106 @@ fn fichero_de(dir: &Path, kind: &str, nombre: &str) -> Option<(PathBuf, String, 
     None
 }
 
-/// Lo que se escribió, para deshacerlo si al final no compila (sobre un
-/// directorio no hay clon que tirar).
-struct Escrito {
-    ruta: PathBuf,
-    antes: Option<String>,
-}
-
-fn deshacer(escritos: &[Escrito]) {
-    for e in escritos.iter().rev() {
-        match &e.antes {
-            Some(t) => {
-                let _ = std::fs::write(&e.ruta, t);
-            }
-            None => {
-                let _ = std::fs::remove_file(&e.ruta);
-            }
-        }
-    }
-}
-
 impl Servidor {
-    /// `POST /paquetes/{n}/vistas/{v}/copia {key?: [campos]}`.
-    pub(crate) fn decidir_copia(
-        &self,
-        raiz: &Path,
-        paquete: &str,
-        vista: &str,
-        cuerpo: &str,
-        sujeto: &Identidad,
-    ) -> Respuesta {
+    /// **Ascender** una base foránea a estándar: `POST /paquetes/{n}/copia`.
+    /// La clase al alcance y `ore review --reinducir`: el inductor aplica la
+    /// regla sobre lo que ya hay contestado. Luego lo de siempre tras inducir.
+    pub(crate) fn ascender(&self, raiz: &Path, paquete: &str, sujeto: &Identidad) -> Respuesta {
         if let Err(m) = token(paquete) {
             return Respuesta::error(422, format!("nombre de paquete: {m}"));
         }
-        if let Err(m) = token(vista) {
-            return Respuesta::error(422, format!("nombre de vista: {m}"));
-        }
-        // sin cuerpo = sin clave: la decisión mínima
-        let cuerpo = match analizar(if cuerpo.trim().is_empty() {
-            "{}"
-        } else {
-            cuerpo
-        }) {
-            Ok(n) => n,
-            Err(r) => return r,
-        };
-        let clave: Vec<String> = cuerpo
-            .get("key")
-            .map(|(_, k)| {
-                k.items()
-                    .iter()
-                    .filter_map(|i| i.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let dir = raiz.join("packages").join(paquete);
         if !dir.is_dir() {
             return Respuesta::error(404, "no hay tal paquete");
         }
-        // ── la vista ────────────────────────────────────────────────────────
-        let Some((ruta_vista, texto_vista, v)) = fichero_de(&dir.join("views"), "View", vista)
-        else {
-            return Respuesta::error(404, format!("no hay la vista `{paquete}.{vista}`"));
-        };
-        let Some((_, spec)) = v.get("spec") else {
-            return Respuesta::error(422, "la vista no tiene `spec`");
-        };
-        if spec.get("materialized").is_some() {
+        let alcance = dir.join("discover.scope.json");
+        let Ok(texto) = std::fs::read_to_string(&alcance) else {
             return Respuesta::error(
-                409,
-                format!("`{paquete}.{vista}` ya declara `materialized`: la decisión está tomada"),
+                422,
+                format!(
+                    "`{paquete}` no es una base: no tiene `discover.scope.json` (no salió de un alta con `only`)"
+                ),
             );
+        };
+        if clase_de(&dir) == "standard" {
+            return Respuesta::error(409, format!("`{paquete}` ya es una base estándar"));
         }
-        let Some((_, from)) = spec.get("from") else {
-            return Respuesta::error(422, "la vista no tiene `from`");
+        let con_clase = match parse::parse(&texto).map(|n| de_node(&n)) {
+            Ok(Json::Obj(mut m)) => {
+                m.insert("type".into(), Json::s("standard"));
+                Json::Obj(m).pretty()
+            }
+            _ => {
+                return Respuesta::error(422, "`discover.scope.json` no analiza como un objeto");
+            }
         };
-        let Some(tabla) = campo(from, "table") else {
-            return Respuesta::error(
-                422,
-                "la copia se declara sobre una vista que lee UNA tabla (`from.table`); una vista sobre otra vista hereda la copia de la de abajo",
-            );
-        };
-        let tabla_corta = tabla.rsplit('.').next().unwrap_or(&tabla).to_string();
-        let Some((ruta_tabla, texto_tabla, t)) =
-            fichero_de(&dir.join("tables"), "Table", &tabla_corta)
-        else {
-            return Respuesta::error(
-                422,
-                format!("la vista lee `{tabla}` y no hay tal tabla en el paquete"),
-            );
-        };
-        let Some((_, tspec)) = t.get("spec") else {
-            return Respuesta::error(422, format!("la tabla `{tabla}` no tiene `spec`"));
-        };
-        let Some(fuente) = campo(tspec, "datasource") else {
-            return Respuesta::error(422, format!("la tabla `{tabla}` no dice su `datasource`"));
-        };
-        // la clave se pide por CAMPOS de la vista; en la tabla van sus columnas
-        let mut columnas = Vec::new();
-        for c in &clave {
-            let Some(col) = spec
-                .get("fields")
-                .and_then(|(_, f)| f.get(c))
-                .and_then(|(_, v)| v.as_str().map(String::from))
-            else {
-                let hay: Vec<String> = spec
-                    .get("fields")
-                    .map(|(_, f)| {
-                        f.entries()
-                            .iter()
-                            .filter_map(|(k, _)| k.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                return Respuesta::error(
+        if let Err(e) = std::fs::write(&alcance, &con_clase) {
+            return Respuesta::error(500, format!("no se pudo escribir el alcance: {e}"));
+        }
+        let salida = mando::correr(
+            &self.binario,
+            raiz,
+            &[
+                "review".into(),
+                dir.to_string_lossy().into_owned(),
+                "--reinducir".into(),
+            ],
+        );
+        match salida {
+            Err(e) => {
+                let _ = std::fs::write(&alcance, &texto);
+                Respuesta::error(500, e.to_string())
+            }
+            Ok(s) if !s.bien() => {
+                let _ = std::fs::write(&alcance, &texto);
+                Respuesta::error(
                     422,
                     format!(
-                        "`key` nombra `{c}`, que no es un campo de `{paquete}.{vista}`. Los campos: {}",
-                        hay.join(", ")
+                        "`ore review --reinducir` devolvió {}: {}",
+                        s.codigo,
+                        primera_linea(&s.stdout, &s.stderr)
                     ),
-                );
-            };
-            columnas.push(col);
+                )
+            }
+            Ok(s) => {
+                let mut campos = vec![
+                    ("package", Json::s(paquete)),
+                    ("type", Json::s("standard")),
+                    ("informe", Json::s(s.stdout.trim())),
+                ];
+                campos.extend(self.tras_inducir(raiz, paquete, sujeto));
+                Respuesta::creado(Json::obj(campos))
+            }
         }
+    }
 
-        let mut escritos = Vec::new();
-        // ── ① la vista gana `materialized` ──────────────────────────────────
-        let mut nuevo = texto_vista.trim_end().to_string();
-        nuevo.push_str(&format!(
-            "\n  materialized: {{ datasource: {fuente}, table: \"copia.{vista}\" }}\n"
-        ));
-        if let Err(e) = std::fs::write(&ruta_vista, &nuevo) {
-            return Respuesta::error(500, format!("no se pudo escribir la vista: {e}"));
+    /// **Después de cada inducción que este servidor dispara** (alta, ascender,
+    /// decisiones): si la base es estándar, el conducto autorizado y el Job de
+    /// la copia en la cola con todas las vistas del árbol que la declaran. Lo
+    /// que devuelve va en la respuesta: `copias {declaradas, copiadas}` y
+    /// `encolado`. Nunca tumba lo inducido, que ya está escrito.
+    pub(crate) fn tras_inducir(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        sujeto: &Identidad,
+    ) -> Vec<(&'static str, Json)> {
+        let dir = raiz.join("packages").join(paquete);
+        let mut campos = vec![("copias", copias_de(raiz, paquete))];
+        if clase_de(&dir) != "standard" {
+            return campos;
         }
-        escritos.push(Escrito {
-            ruta: ruta_vista.clone(),
-            antes: Some(texto_vista),
-        });
-        // ── ② la tabla gana la clave, si se pidió ───────────────────────────
-        if !columnas.is_empty() {
-            let lista = format!("[{}]", columnas.join(", "));
-            let nuevo = match reescribir_changes(&texto_tabla, &lista) {
-                Some(t) => t,
-                None => {
-                    deshacer(&escritos);
-                    return Respuesta::error(
-                        422,
-                        format!(
-                            "la tabla `{tabla}` no tiene un bloque `changes` con la forma que el inductor escribe (`mode: …` en su primera línea); la clave se pone a mano"
-                        ),
-                    );
-                }
-            };
-            if let Err(e) = std::fs::write(&ruta_tabla, &nuevo) {
-                deshacer(&escritos);
-                return Respuesta::error(500, format!("no se pudo escribir la tabla: {e}"));
-            }
-            escritos.push(Escrito {
-                ruta: ruta_tabla,
-                antes: Some(texto_tabla),
-            });
+        if let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
+            campos.push(("conducto", r.cuerpo));
         }
-        // ── ③ el conducto, autorizado ───────────────────────────────────────
-        let conduits = raiz.join("conduits.yaml");
-        match std::fs::read_to_string(&conduits) {
-            Ok(t) => {
-                if !t.contains("materialization.payload") {
-                    let nuevo = format!("{}\n    materialization.payload: {{}}\n", t.trim_end());
-                    if let Err(e) = std::fs::write(&conduits, &nuevo) {
-                        deshacer(&escritos);
-                        return Respuesta::error(
-                            500,
-                            format!("no se pudo escribir `conduits.yaml`: {e}"),
-                        );
-                    }
-                    escritos.push(Escrito {
-                        ruta: conduits,
-                        antes: Some(t),
-                    });
-                }
-            }
-            Err(_) => {
-                let owner = std::fs::read_to_string(dir.join("package.yaml"))
-                    .ok()
-                    .and_then(|t| parse::parse(&t).ok())
-                    .and_then(|n| n.get("spec").and_then(|(_, s)| campo(s, "owner")))
-                    .unwrap_or_else(|| "team:datos".into());
-                let texto = format!(
-                    "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: {{ name: {paquete} }}\nspec:\n  owner: {owner}\n  conduits:\n    # 0027 P1: la copia de las vistas que lo declaren. Sin retículos, la\n    # autorización es vacía; con ellos, aquí se dice hasta qué etiqueta.\n    materialization.payload: {{}}\n"
-                );
-                if let Err(e) = std::fs::write(&conduits, &texto) {
-                    deshacer(&escritos);
-                    return Respuesta::error(
-                        500,
-                        format!("no se pudo escribir `conduits.yaml`: {e}"),
-                    );
-                }
-                escritos.push(Escrito {
-                    ruta: conduits,
-                    antes: None,
-                });
-            }
-        }
-        // ── y compila, o nada ───────────────────────────────────────────────
-        if let Some(r) = self.no_compila(raiz) {
-            deshacer(&escritos);
-            return r;
-        }
-        // ── y el Job de la copia, en la cola, en el mismo acto (I3) ─────────
-        //
-        // Con TODAS las vistas del árbol que declaran copia, no sólo ésta: el
-        // Job las materializa juntas y su nombre lleva el resumen de la lista.
-        // Es la misma figura que el catálogo (`encolar_catalogo`).
         let todas = vistas_con_copia(raiz);
-        let encolado = self.encolar_copia(&todas, sujeto);
-        Respuesta::creado(Json::obj([
-            ("encolado", Json::s(encolado)),
-            ("package", Json::s(paquete)),
-            ("view", Json::s(vista)),
-            ("table", Json::s(tabla)),
-            ("datasource", Json::s(fuente)),
-            ("copia", Json::s(format!("copia.{vista}"))),
-            (
-                "key",
-                Json::Arr(clave.iter().map(|k| Json::s(k.clone())).collect()),
-            ),
-            (
-                "escritos",
-                Json::Arr(
-                    escritos
-                        .iter()
-                        .map(|e| {
-                            Json::s(
-                                e.ruta
-                                    .strip_prefix(raiz)
-                                    .unwrap_or(&e.ruta)
-                                    .to_string_lossy()
-                                    .replace('\\', "/"),
-                            )
-                        })
-                        .collect(),
-                ),
-            ),
-        ]))
+        let encolado = if todas.is_empty() {
+            "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
+        } else {
+            self.encolar_copia(&todas, sujeto)
+        };
+        campos.push(("encolado", Json::s(encolado)));
+        campos
     }
 
     /// `GET /paquetes/{n}/copias`: las vistas del paquete que declaran copia, con
@@ -414,6 +271,55 @@ impl Servidor {
             Err(e) => format!("NO encolado: {e}"),
         }
     }
+}
+
+/// `materialization.payload` autorizado en `conduits.yaml`, que nace con el
+/// dueño del paquete si no estaba. Idempotente: si ya está, no escribe. Medido
+/// (I2): sin esto un `materialized` no compila (`OOS4011`); y medido (I4b):
+/// con `{}` la autorización es ⊥ —sólo `STABLE`— y una vista inducida es
+/// `DRAFT` (`OOS4002`), así que admite `oos.maturity: DRAFT`.
+fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Respuesta> {
+    let conduits = raiz.join("conduits.yaml");
+    match std::fs::read_to_string(&conduits) {
+        Ok(t) => {
+            if !t.contains("materialization.payload") {
+                let nuevo = format!(
+                    "{}\n    materialization.payload: {{ oos.maturity: DRAFT }}\n",
+                    t.trim_end()
+                );
+                std::fs::write(&conduits, &nuevo).map_err(|e| {
+                    Respuesta::error(500, format!("no se pudo escribir `conduits.yaml`: {e}"))
+                })?;
+            }
+        }
+        Err(_) => {
+            // El dueño del conducto es el del paquete — y un paquete recién
+            // inducido lleva `cambiame` hasta que se conteste `dueno`. Con él
+            // no se escribe nada: un `owner: cambiame` en la raíz del árbol
+            // no lo re-induce nadie y se quedaría. El conducto nace cuando
+            // el dueño esté (la pasada de decisiones vuelve a pasar por aquí).
+            let owner = std::fs::read_to_string(dir.join("package.yaml"))
+                .ok()
+                .and_then(|t| parse::parse(&t).ok())
+                .and_then(|n| n.get("spec").and_then(|(_, s)| campo(s, "owner")))
+                .filter(|o| o != "cambiame");
+            let Some(owner) = owner else {
+                return Err(Respuesta::error(
+                    409,
+                    format!(
+                        "`conduits.yaml` no nace hasta que `{paquete}` tenga dueño (la decisión `dueno`): la copia compila cuando se conteste"
+                    ),
+                ));
+            };
+            let texto = format!(
+                "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: {{ name: {paquete} }}\nspec:\n  owner: {owner}\n  conduits:\n    # 0027 P1: la copia en la celda de las vistas que lo declaren. Admite\n    # DRAFT porque una vista recién inducida lo es y la copia es el registro\n    # del inquilino, no una superficie de consumo. Con retículos propios\n    # (sensibilidad, residencia) aquí se dice hasta qué etiqueta — y eso lo\n    # decide alguien, no esto.\n    materialization.payload: {{ oos.maturity: DRAFT }}\n"
+            );
+            std::fs::write(&conduits, &texto).map_err(|e| {
+                Respuesta::error(500, format!("no se pudo escribir `conduits.yaml`: {e}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// `paquete.vista` de cada vista del árbol que declara `materialized`, en orden.
@@ -549,75 +455,4 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
         return None;
     }
     Some((a.to_string(), b.to_string()))
-}
-
-/// `changes:` con la forma del inductor (`mode: <x>` en su primera línea) →
-/// `mode: upsert` y `key: [...]` justo debajo. Si ya había `key`, se sustituye.
-fn reescribir_changes(texto: &str, lista: &str) -> Option<String> {
-    let mut out = Vec::new();
-    let mut en_changes = false;
-    let mut hecho = false;
-    let mut sangria = String::new();
-    for l in texto.lines() {
-        let t = l.trim_start();
-        if !en_changes {
-            out.push(l.to_string());
-            if t.starts_with("changes:") && t.trim_end() == "changes:" {
-                en_changes = true;
-            }
-            continue;
-        }
-        let s = &l[..l.len() - t.len()];
-        if sangria.is_empty() {
-            sangria = s.to_string();
-        }
-        if s.len() < sangria.len() || t.is_empty() {
-            // salimos del bloque sin haber visto `mode`: no es la forma que se sabe reescribir
-            if !hecho {
-                return None;
-            }
-            en_changes = false;
-            out.push(l.to_string());
-            continue;
-        }
-        if t.starts_with("key:") {
-            continue; // la sustituye la de abajo
-        }
-        if t.starts_with("mode:") {
-            out.push(format!("{sangria}mode: upsert"));
-            out.push(format!("{sangria}key: {lista}"));
-            hecho = true;
-            continue;
-        }
-        out.push(l.to_string());
-    }
-    if !hecho {
-        return None;
-    }
-    let mut s = out.join("\n");
-    s.push('\n');
-    Some(s)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn la_clave_entra_en_el_bloque_changes_del_inductor() {
-        let t = "spec:\n  datasource: pg\n  changes:\n    mode: append\n    witness: log\n";
-        let r = reescribir_changes(t, "[customer_id]").unwrap();
-        assert_eq!(
-            r,
-            "spec:\n  datasource: pg\n  changes:\n    mode: upsert\n    key: [customer_id]\n    witness: log\n"
-        );
-        // una clave previa se sustituye, no se duplica
-        let r2 = reescribir_changes(&r, "[a, b]").unwrap();
-        assert!(
-            r2.contains("key: [a, b]") && !r2.contains("customer_id"),
-            "{r2}"
-        );
-        // en línea (`changes: { … }`) no se sabe reescribir, y se dice
-        assert!(reescribir_changes("spec:\n  changes: { mode: append }\n", "[x]").is_none());
-    }
 }

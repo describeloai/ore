@@ -54,6 +54,12 @@ pub struct Alcance {
     /// recortaría este a cero tablas y el síntoma sería «no se indujo nada».
     fuente: String,
     objetos: BTreeSet<String>,
+    /// **La clase de la base** (ORE 0027 P1 I4): `standard` copia a la celda
+    /// todo lo que entra; ausente = `foreign`, un espejo, lo que toda base era.
+    /// Va aquí y no en las vistas porque es una REGLA sobre lo que entre
+    /// después, y porque `review` re-induce las vistas y esto no se re-induce:
+    /// se aplica.
+    tipo: Option<String>,
 }
 
 /// Lo que quedó fuera al aplicar un alcance, para poder decirlo.
@@ -72,7 +78,20 @@ impl Alcance {
         Alcance {
             fuente: fuente.to_string(),
             objetos: objetos.into_iter().collect(),
+            tipo: None,
         }
+    }
+
+    /// Con la clase declarada. Sólo `standard` se escribe: `foreign` es lo que
+    /// significa no decir nada, y escribirlo inventaría una migración.
+    pub fn con_tipo(mut self, tipo: &str) -> Self {
+        self.tipo = (tipo == "standard").then(|| tipo.to_string());
+        self
+    }
+
+    /// ¿Copia a la celda todo lo que entra?
+    pub fn estandar(&self) -> bool {
+        self.tipo.as_deref() == Some("standard")
     }
 
     /// Se analiza con el analizador de YAML porque **JSON es un subconjunto de
@@ -100,18 +119,35 @@ impl Alcance {
             //   al origen.
             return Err("el alcance no nombra ningún objeto: `only` está vacío".into());
         }
-        Ok(Alcance { fuente, objetos })
+        let tipo = raiz
+            .get("type")
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from);
+        if let Some(t) = &tipo
+            && t != "standard"
+            && t != "foreign"
+        {
+            return Err(format!("`type` es `standard` o `foreign`, no `{t}`"));
+        }
+        Ok(Alcance {
+            fuente,
+            objetos,
+            tipo: tipo.filter(|t| t == "standard"),
+        })
     }
 
     pub fn escribir(&self) -> String {
-        Json::obj([
+        let mut campos = vec![
             ("source", Json::s(&self.fuente)),
             (
                 "only",
                 Json::Arr(self.objetos.iter().map(Json::s).collect()),
             ),
-        ])
-        .pretty()
+        ];
+        if let Some(t) = &self.tipo {
+            campos.push(("type", Json::s(t)));
+        }
+        Json::obj(campos).pretty()
     }
 
     /// **Recorta el catálogo.** Devuelve el catálogo recortado y lo que sobró
@@ -330,6 +366,24 @@ mod prueba {
         // produce un fichero distinto para la misma selección.
         assert_eq!(b.escribir(), t);
         assert!(t.contains("\"a\""), "{t}");
+    }
+
+    #[test]
+    fn la_clase_se_escribe_solo_si_es_estandar_y_vuelve_igual() {
+        let a = Alcance::nuevo("crm", vec!["public.clientes".to_string()]);
+        assert!(!a.estandar());
+        assert!(!a.escribir().contains("type"), "foreign no se escribe");
+        let e = a.con_tipo("standard");
+        assert!(e.estandar());
+        let t = e.escribir();
+        assert!(t.contains("\"type\": \"standard\""), "{t}");
+        assert!(Alcance::leer(&t).unwrap().estandar());
+        assert!(
+            !Alcance::nuevo("crm", vec!["x".to_string()])
+                .con_tipo("foreign")
+                .estandar()
+        );
+        assert!(Alcance::leer(r#"{"source":"crm","only":["x"],"type":"raro"}"#).is_err());
     }
 
     #[test]

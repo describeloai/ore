@@ -432,11 +432,32 @@ pub fn inducir(cat: &Catalogo, paquete: &str) -> Induccion {
 /// columna cambia si su tabla tiene algo que emitir. Por eso las decisiones se
 /// aplican **al catálogo** y no al resultado: lo que sale de aquí es siempre una
 /// inducción de algo, nunca una inducción retocada.
+#[cfg(test)]
 pub fn inducir_con(
     cat: &Catalogo,
     paquete: &str,
     dec: &Decisiones,
     voc: &Vocabulario,
+) -> Induccion {
+    inducir_con_regla(cat, paquete, dec, voc, false)
+}
+
+/// **Con la clase de la base** (ORE 0027 P1 I4): `estandar` es la regla del
+/// alcance —«todo lo que entra se copia a la celda»— y el inductor la APLICA:
+/// cada vista trivial cuya tabla **tiene clave** (la del origen o la contestada
+/// en `clave`) sale con `materialized`, y su tabla con `changes: mode: upsert,
+/// key`. Sin clave, la vista espera: una copia que sólo anexa no puede
+/// respaldar una entidad (`OOS2021`) y la decisión `clave` lo dice.
+///
+/// No contradice lo de arriba —«`materialized` no se propone»—: no se propone,
+/// se deriva de una regla que alguien declaró. Y por eso sobrevive a `review`:
+/// lo que sale de aquí es siempre `inducir(catálogo, alcance, respuestas)`.
+pub fn inducir_con_regla(
+    cat: &Catalogo,
+    paquete: &str,
+    dec: &Decisiones,
+    voc: &Vocabulario,
+    estandar: bool,
 ) -> Induccion {
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
@@ -559,9 +580,17 @@ pub fn inducir_con(
                 &t.nombre,
                 &t.nombre,
                 "sin clave primaria",
-                "el origen no la declara. `01-package` §5: NO DEBE inferirse — \
-                 sin clave no hay identidad, y una identidad inventada es peor \
-                 que ninguna",
+                if estandar {
+                    "el origen no la declara. `01-package` §5: NO DEBE inferirse — \
+                     sin clave no hay identidad, y una identidad inventada es peor \
+                     que ninguna. Y la COPIA de esta tabla espera esta clave: la base \
+                     es estándar, y una copia sin identidad no puede respaldar la \
+                     entidad (OOS2021)"
+                } else {
+                    "el origen no la declara. `01-package` §5: NO DEBE inferirse — \
+                     sin clave no hay identidad, y una identidad inventada es peor \
+                     que ninguna"
+                },
                 t.columnas.iter().map(|c| c.nombre.clone()).collect(),
             ));
         }
@@ -608,13 +637,27 @@ pub fn inducir_con(
             identificador(nombre),
             identificador(&objeto.nombre)
         );
+        // La copia, si la base es estándar y la tabla tiene con qué: la clave
+        // del origen o la contestada, que `claves` ya funde.
+        let copia = if estandar {
+            claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned()
+        } else {
+            None
+        };
         ficheros.insert(
             format!("tables/{sufijo}"),
-            tabla_yaml(paquete, &cat.fuente, t, objeto),
+            tabla_yaml(paquete, &cat.fuente, t, objeto, copia.as_deref()),
         );
         ficheros.insert(
             format!("views/{sufijo}"),
-            vista_yaml(&vista, paquete, &owner, t, objeto),
+            vista_yaml(
+                &vista,
+                paquete,
+                &owner,
+                t,
+                objeto,
+                copia.is_some().then_some(cat.fuente.as_str()),
+            ),
         );
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
@@ -1810,7 +1853,13 @@ fn transcribir(n: &Node, sangria: usize) -> String {
 /// Son decisiones de operación con coste, y proponerlas sería exactamente
 /// inventar. Van en la vista, vacías, y `OOS2020` dice dónde no pueden quedar
 /// vacías.
-fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String {
+fn tabla_yaml(
+    paquete: &str,
+    fuente: &str,
+    t: &Tabla,
+    objeto: &Objeto,
+    clave_de_la_copia: Option<&[String]>,
+) -> String {
     let mut s = String::new();
     let _ = write!(
         s,
@@ -1855,12 +1904,37 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
             "  # El driver no declaró qué se puede empujar a este origen.\n  reads: {}\n",
         ),
     }
-    match &t.cambia {
-        Some(n) => {
+    match (&t.cambia, clave_de_la_copia) {
+        // La base es estándar y la tabla tiene clave: la copia se funde por
+        // ella. El testigo sigue siendo el que el driver sondeó — eso no lo
+        // cambia una clave—; lo que cambia es que ahora hay con qué retirar
+        // una fila, que es lo que `upsert` afirma y `append` no podía.
+        (cambia, Some(clave)) => {
+            let testigo = cambia
+                .as_ref()
+                .and_then(|n| match n {
+                    Json::Obj(m) => m.get("witness").cloned(),
+                    _ => None,
+                })
+                .unwrap_or(Json::s("none"));
+            let _ = writeln!(s, "  changes:");
+            let _ = writeln!(s, "    mode: upsert");
+            let _ = writeln!(
+                s,
+                "    key: [{}]",
+                clave
+                    .iter()
+                    .map(|c| escalar_yaml(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            s.push_str(&cara_yaml(&Json::obj([("witness", testigo)]), 4));
+        }
+        (Some(n), None) => {
             let _ = writeln!(s, "  changes:");
             s.push_str(&cara_yaml(n, 4));
         }
-        None => s.push_str(
+        (None, None) => s.push_str(
             "  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n  \
              changes: { mode: none, witness: none }\n",
         ),
@@ -1885,7 +1959,14 @@ fn tabla_yaml(paquete: &str, fuente: &str, t: &Tabla, objeto: &Objeto) -> String
 /// máquina mirando un catálogo. Hasta que la vista admitió `oos.maturity` no
 /// había forma de decirlo, y una vista adivinada era indistinguible de una
 /// acordada — con la ayuda del comando afirmando que las proponía en `DRAFT`.
-fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objeto) -> String {
+fn vista_yaml(
+    vista: &str,
+    paquete: &str,
+    owner: &str,
+    t: &Tabla,
+    objeto: &Objeto,
+    copia_en: Option<&str>,
+) -> String {
     let campos: Vec<(String, String)> = t
         .columnas
         .iter()
@@ -1899,6 +1980,7 @@ fn vista_yaml(vista: &str, paquete: &str, owner: &str, t: &Tabla, objeto: &Objet
         &Origen::Tabla(identificador(&objeto.nombre)),
         &campos,
         &[],
+        copia_en,
     )
 }
 
@@ -1920,6 +2002,10 @@ pub enum Origen {
 /// `campos` va **en orden**: el del origen cuando lo emite el inductor, el que
 /// pidió quien la autora cuando es a mano. Reordenar aquí sería decidir por
 /// ellos.
+///
+/// `copia_en`: la fuente cuando la vista tiene copia (base estándar con clave):
+/// sale `materialized { datasource, table: "copia.<vista>" }`; sin ella, el
+/// comentario que dice por qué no.
 pub fn documento_vista(
     vista: &str,
     paquete: &str,
@@ -1927,6 +2013,7 @@ pub fn documento_vista(
     de: &Origen,
     campos: &[(String, String)],
     recorte: &[(String, Vec<String>)],
+    copia_en: Option<&str>,
 ) -> String {
     let (clave, valor) = match de {
         Origen::Tabla(t) => ("table", t),
@@ -1943,11 +2030,22 @@ pub fn documento_vista(
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
-           from: {{ {clave}: {valor} }}\n  \
-           # Ni `freshness` ni `materialized`: son decisiones de operación con\n  \
-           # coste, y proponerlas sería inventarlas.\n  \
-           fields:\n"
+           from: {{ {clave}: {valor} }}\n"
     );
+    match copia_en {
+        Some(fuente) => {
+            let _ = writeln!(
+                s,
+                "  # La copia en la celda: la base es estándar y la tabla tiene clave.\n  \
+                 materialized: {{ datasource: {fuente}, table: \"copia.{vista}\" }}"
+            );
+        }
+        None => s.push_str(
+            "  # Ni `freshness` ni `materialized`: son decisiones de operación con\n  \
+             # coste, y proponerlas sería inventarlas.\n",
+        ),
+    }
+    s.push_str("  fields:\n");
     for (prop, col) in campos {
         let _ = writeln!(s, "    {prop}: {}", escalar_yaml(col));
     }
@@ -2163,6 +2261,83 @@ pub fn informe_json(ind: &Induccion) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La regla de la base estándar: la vista de una tabla CON clave sale con
+    /// `materialized` y su tabla en `upsert` por esa clave; la de una tabla sin
+    /// clave, no — y la decisión `clave` dice que la copia la espera. Con la
+    /// clave contestada, la copia aparece en la re-inducción.
+    #[test]
+    fn la_base_estandar_copia_lo_que_tiene_clave_y_espera_lo_demas() {
+        let cat = Catalogo::leer(CATALOGO).unwrap();
+        let sin = inducir_con_regla(
+            &cat,
+            "ventas",
+            &Decisiones::default(),
+            &Vocabulario::default(),
+            false,
+        );
+        for (k, t) in &sin.ficheros {
+            assert!(
+                !t.contains("materialized:"),
+                "foránea con copia en {k}:
+{t}"
+            );
+        }
+        let con = inducir_con_regla(
+            &cat,
+            "ventas",
+            &Decisiones::default(),
+            &Vocabulario::default(),
+            true,
+        );
+        let vista = &con.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"];
+        assert!(
+            vista.contains("materialized: { datasource: bq_ventas, table: \"copia.facturas\" }"),
+            "{vista}"
+        );
+        let tabla = &con.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
+        assert!(
+            tabla.contains(
+                "mode: upsert
+    key: [id_factura]"
+            ),
+            "{tabla}"
+        );
+        let clientes = &con.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
+        assert!(
+            !clientes.contains("materialized:"),
+            "sin clave y con copia:
+{clientes}"
+        );
+        let clave = con
+            .pendientes
+            .iter()
+            .find(|p| p.id == "clave/rubix_demo_ventas.clientes")
+            .expect("la decisión clave de clientes");
+        assert!(
+            clave.porque.contains("la COPIA de esta tabla espera"),
+            "{}",
+            clave.porque
+        );
+        // contestada la clave, la copia aparece
+        let dec = Decisiones::leer(
+            "answers:
+  clave/rubix_demo_ventas.clientes: [id]
+",
+        )
+        .unwrap();
+        let despues = inducir_con_regla(&cat, "ventas", &dec, &Vocabulario::default(), true);
+        let clientes = &despues.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
+        assert!(clientes.contains("copia.clientes"), "{clientes}");
+        let tabla = &despues.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
+        assert!(
+            tabla.contains(
+                "mode: upsert
+    key: [id]"
+            ),
+            "{tabla}"
+        );
+    }
 
     const CATALOGO: &str = r#"{
       "source": "bq_ventas",
@@ -3128,6 +3303,7 @@ mod emisor {
                 ("pais".into(), "cod_pais".into()),
             ],
             &[],
+            None,
         );
         assert!(s.contains("kind: View"), "{s}");
         assert!(s.contains("labels: { oos.maturity: DRAFT }"), "{s}");
@@ -3151,6 +3327,7 @@ mod emisor {
             &Origen::Vista("clientes".into()),
             &[("id".into(), "id".into())],
             &[],
+            None,
         );
         assert!(s.contains("from: { view: clientes }"), "{s}");
     }
@@ -3169,6 +3346,7 @@ mod emisor {
                 ("borrado".into(), vec!["false".into()]),
                 ("pais".into(), vec!["ES".into(), "PT".into()]),
             ],
+            None,
         );
         assert!(s.contains("    borrado: false\n"), "{s}");
         assert!(s.contains("    pais: [ES, PT]\n"), "{s}");
@@ -3186,6 +3364,7 @@ mod emisor {
             &Origen::Tabla("t".into()),
             &[("ref".into(), "Worker_Reference.ID".into())],
             &[],
+            None,
         );
         assert!(s.contains("ref: \"Worker_Reference.ID\""), "{s}");
     }

@@ -94,8 +94,8 @@ fn fallo(codigo: u8, mensaje: impl Into<String>, ayuda: &[&str]) -> Fallo {
     }
 }
 
-pub fn review(raiz: &Path, respuestas: Option<&Path>) -> ExitCode {
-    match intentar(raiz, respuestas) {
+pub fn review(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> ExitCode {
+    match intentar(raiz, respuestas, reinducir) {
         Ok(informe) => {
             print!("{informe}");
             ExitCode::SUCCESS
@@ -110,7 +110,7 @@ pub fn review(raiz: &Path, respuestas: Option<&Path>) -> ExitCode {
     }
 }
 
-fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
+fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<String, Fallo> {
     let ruta = raiz.join(CATALOGO);
     let texto = std::fs::read_to_string(&ruta).map_err(|e| {
         fallo(
@@ -130,9 +130,14 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
     //   hubiera aplicado: `review` vuelve a inducir DESDE EL CATALOGO ENTERO,
     //   que es el que se guarda. Sin este paso, revisar devolveria al paquete
     //   las tablas que alguien dejo fuera — y lo haria en silencio.
+    // ⭐ Y la CLASE de la base viaja con el alcance (ORE 0027 P1 I4): es la
+    //   regla que el inductor aplica, y por eso sobrevive a esta re-induccion
+    //   — el alcance se lee, no se reescribe.
+    let mut estandar = false;
     let catalogo = match crate::alcance::del_paquete(raiz).map_err(|m| fallo(65, m, &[]))? {
         None => catalogo,
         Some(a) => {
+            estandar = a.estandar();
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
             let (c, r) = a.aplicar(catalogo);
@@ -163,7 +168,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
     // puesto: preguntar otra vez lo que alguien ya decidió es la forma más
     // rápida de que deje de contestar.
     let mut dec = acumuladas(raiz)?;
-    let antes = inductor::inducir_con(&catalogo, &paquete, &dec, &voc);
+    let antes = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, estandar);
 
     let nuevas = match respuestas {
         Some(p) => {
@@ -186,6 +191,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
                 )
             })?
         }
+        None if reinducir => Decisiones::default(),
         None => {
             if !std::io::stdin().is_terminal() {
                 return Err(fallo(
@@ -201,7 +207,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
         }
     };
 
-    if nuevas.is_empty() {
+    if nuevas.is_empty() && !reinducir {
         return Ok(informe_sin_cambios(&antes));
     }
     let cuantas = nuevas.len();
@@ -209,7 +215,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>) -> Result<String, Fallo> {
 
     // Y aquí está todo: la revisión es la misma inducción con las decisiones
     // tomadas. Nada de lo de abajo retoca un documento.
-    let despues = inductor::inducir_con(&catalogo, &paquete, &dec, &voc);
+    let despues = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, estandar);
     let retirados = escribir(raiz, &despues, &dec)?;
 
     Ok(informe(&antes, &despues, cuantas, &retirados))

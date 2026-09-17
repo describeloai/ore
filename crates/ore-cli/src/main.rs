@@ -427,6 +427,13 @@ enum Command {
         /// menos en la de un `Job` que la lleva escrita en un manifiesto.
         #[arg(long = "only-file", value_name = "FICHERO")]
         solo_de: Option<PathBuf>,
+        /// **La clase de la base** (ORE 0027 P1 I4): `standard` copia a la celda
+        /// todo lo que entra —cada vista cuya tabla tiene clave sale con
+        /// `materialized`—; `foreign` (lo de siempre, y lo que se entiende si
+        /// falta) es un espejo. Pide un alcance (`--only`): una base es lo que
+        /// se elige.
+        #[arg(long = "type", value_name = "standard|foreign")]
+        tipo: Option<String>,
     },
     /// Escribe el paquete publicable: un `.oob`.
     ///
@@ -484,6 +491,10 @@ enum Command {
         /// CI, y una cola que solo se contesta a mano no se prueba.
         #[arg(long, value_name = "FICHERO")]
         answers: Option<PathBuf>,
+        /// Vuelve a inducir aunque no haya respuesta nueva: para cuando lo que
+        /// cambió es la REGLA (la clase del alcance), no las respuestas.
+        #[arg(long)]
+        reinducir: bool,
     },
     /// **¿Qué se movió en el origen desde que se declaró?** Enseña y para.
     ///
@@ -719,6 +730,7 @@ fn main() -> std::process::ExitCode {
             name,
             solo,
             solo_de,
+            tipo,
         } => {
             return descubrir(
                 from.as_deref(),
@@ -727,9 +739,14 @@ fn main() -> std::process::ExitCode {
                 name.as_deref(),
                 solo,
                 solo_de.as_deref(),
+                tipo.as_deref(),
             );
         }
-        Command::Review { path, answers } => return revision::review(path, answers.as_deref()),
+        Command::Review {
+            path,
+            answers,
+            reinducir,
+        } => return revision::review(path, answers.as_deref(), *reinducir),
         Command::Lock { path, check } => return candado::lock(path, *check),
         Command::Pack {
             path,
@@ -990,7 +1007,15 @@ fn descubrir(
     nombre: Option<&str>,
     solo: &[String],
     solo_de: Option<&std::path::Path>,
+    tipo: Option<&str>,
 ) -> std::process::ExitCode {
+    if let Some(t) = tipo
+        && t != "standard"
+        && t != "foreign"
+    {
+        eprintln!("error: `--type` es `standard` o `foreign`, no `{t}`");
+        return std::process::ExitCode::from(64); // EX_USAGE
+    }
     // El catálogo se lee de un fichero o de una fuente viva, y a partir de aquí
     // el resto del comando no distingue cuál: es el mismo texto.
     let texto = match (origen, fuente) {
@@ -1035,9 +1060,14 @@ fn descubrir(
         }
     }
     let el_alcance = if objetos.is_empty() {
+        if tipo.is_some() {
+            eprintln!("error: `--type` pide un alcance (`--only`): una base es lo que se elige");
+            return std::process::ExitCode::from(64);
+        }
         None
     } else {
-        let a = alcance::Alcance::nuevo(catalogo.fuente(), objetos);
+        let a =
+            alcance::Alcance::nuevo(catalogo.fuente(), objetos).con_tipo(tipo.unwrap_or("foreign"));
         // ⚠️ Los nombres se toman ANTES de recortar. Listarlos despues era el
         //    error que tenia esto: con una errata, el recorte deja el catalogo
         //    vacio y la ayuda salia sin una sola linea — justo cuando lo unico
@@ -1087,7 +1117,14 @@ fn descubrir(
         Some(r) => vocabulario::Vocabulario::leer(&r),
         None => vocabulario::Vocabulario::default(),
     };
-    let ind = inductor::inducir_con(&catalogo, &paquete, &inductor::Decisiones::default(), &voc);
+    let estandar = el_alcance.as_ref().is_some_and(|(a, _)| a.estandar());
+    let ind = inductor::inducir_con_regla(
+        &catalogo,
+        &paquete,
+        &inductor::Decisiones::default(),
+        &voc,
+        estandar,
+    );
     if let Err((codigo, mensaje)) = escribir_paquete(&ind, destino) {
         eprintln!("error: {mensaje}");
         return std::process::ExitCode::from(codigo);

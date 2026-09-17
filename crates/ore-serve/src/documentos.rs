@@ -820,7 +820,7 @@ impl Servidor {
     /// compilador falla sin diagnósticos (no arranca, no es un árbol), se
     /// cuenta la primera línea como uno, para que la foto no salga limpia
     /// sobre algo que no compila.
-    fn diagnosticos_de(&self, raiz: &Path) -> Result<Vec<Json>, Respuesta> {
+    pub(crate) fn diagnosticos_de(&self, raiz: &Path) -> Result<Vec<Json>, Respuesta> {
         match mando::correr(&self.binario, raiz, &["validate".into(), ".".into()]) {
             Err(e) => Err(Respuesta::error(500, e.to_string())),
             Ok(s) if !s.bien() => {
@@ -845,7 +845,12 @@ impl Servidor {
     /// los `OOS9004` nuevos dejan sin hablar; la 422 con **sólo los nuevos**
     /// si sí. Dos diagnósticos son el mismo defecto si coinciden en
     /// `(código, mensaje)`: la posición no cuenta.
-    fn empeora(&self, raiz: &Path, antes: &[Json], que: &str) -> Result<Vec<String>, Respuesta> {
+    pub(crate) fn empeora(
+        &self,
+        raiz: &Path,
+        antes: &[Json],
+        que: &str,
+    ) -> Result<Vec<String>, Respuesta> {
         let despues = self.diagnosticos_de(raiz)?;
         let habia: std::collections::BTreeSet<(String, String)> =
             antes.iter().map(identidad_de).collect();

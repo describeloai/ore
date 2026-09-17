@@ -206,7 +206,7 @@ impl Servidor {
             ("POST", ["paquetes"]) => {
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, "alta de una base", |r| {
-                    self.alta_de_paquete(r, &cuerpo)
+                    self.alta_de_paquete(r, &cuerpo, sujeto)
                 })
             }
             // ⭐⭐ EL ESQUEMA DESCUBIERTO, que hasta hoy no salia por ningun
@@ -227,18 +227,18 @@ impl Servidor {
                 let n = n.to_string();
                 self.leyendo(move |r| self.copias(r, &n))
             }
-            ("POST", ["paquetes", n, "vistas", v, "copia"]) => {
-                let (n, v) = (n.to_string(), v.to_string());
-                let cuerpo = p.cuerpo.clone();
-                self.escribiendo(sujeto, &format!("copia de `{n}.{v}`"), |r| {
-                    self.decidir_copia(r, &n, &v, &cuerpo, sujeto)
+            // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
+            ("POST", ["paquetes", n, "copia"]) => {
+                let n = n.to_string();
+                self.escribiendo(sujeto, &format!("`{n}` pasa a base estándar"), |r| {
+                    self.ascender(r, &n, sujeto)
                 })
             }
             ("POST", ["paquetes", n, "decisiones"]) => {
                 let n = n.to_string();
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, &format!("decisiones de `{n}`"), |r| {
-                    self.responder(r, &n, &cuerpo)
+                    self.responder(r, &n, &cuerpo, sujeto)
                 })
             }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
@@ -678,10 +678,16 @@ impl Servidor {
     /// es el paquete nuevo, y `only` los objetos fisicos que entran, tal como
     /// el catalogo los nombra: `public.pedidos`.
     ///
+    /// ⭐ Y `type` (0027 P1 I4b): `foreign` —un espejo, lo de siempre, y lo que
+    ///   se entiende si falta— o `standard`: la regla va al alcance y el
+    ///   inductor la aplica (`discover --type standard`): cada tabla del `only`
+    ///   con clave nace con copia; las demas esperan la suya. Despues, el
+    ///   conducto y el Job (`copia::tras_inducir`).
+    ///
     /// ⛔ NO se vuelve a leer el origen. Eso lo hizo el Job, con credencial y
     ///   dentro de su red; esto induce de lo que aquel dejo escrito. Si el
     ///   origen cambio desde entonces lo dira `drift-detect`, que es su trabajo.
-    fn alta_de_paquete(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
+    fn alta_de_paquete(&self, raiz: &Path, cuerpo: &str, sujeto: &Identidad) -> Respuesta {
         let cuerpo = match analizar(cuerpo) {
             Ok(n) => n,
             Err(r) => return r,
@@ -701,6 +707,16 @@ impl Servidor {
         if let Err(m) = token(&nombre) {
             return Respuesta::error(422, format!("`name`: {m}"));
         }
+        let tipo = match campo("type").as_deref() {
+            None | Some("foreign") => "foreign",
+            Some("standard") => "standard",
+            Some(otro) => {
+                return Respuesta::error(
+                    422,
+                    format!("`type` es `standard` o `foreign`, no `{otro}`"),
+                );
+            }
+        };
         let objetos: Vec<String> = cuerpo
             .get("only")
             .map(|(_, v)| v.items())
@@ -755,6 +771,8 @@ impl Servidor {
             nombre.clone(),
             "--only-file".into(),
             lista.to_string_lossy().into_owned(),
+            "--type".into(),
+            tipo.into(),
         ];
         let salida = mando::correr(&self.binario, raiz, &args);
         let _ = std::fs::remove_file(&lista);
@@ -771,17 +789,20 @@ impl Servidor {
             ),
             Ok(s) => {
                 let dir = raiz.join("packages").join(&nombre);
-                Respuesta::ok(Json::obj([
+                let mut campos = vec![
                     ("name", Json::s(&nombre)),
                     ("source", Json::s(&fuente)),
+                    ("type", Json::s(tipo)),
                     ("informe", Json::s(s.stdout.trim())),
                     ("quedan", Json::Int(pendientes(&dir) as i64)),
-                ]))
+                ];
+                campos.extend(self.tras_inducir(raiz, &nombre, sujeto));
+                Respuesta::ok(Json::obj(campos))
             }
         }
     }
 
-    fn responder(&self, raiz: &Path, paquete: &str, cuerpo: &str) -> Respuesta {
+    fn responder(&self, raiz: &Path, paquete: &str, cuerpo: &str, sujeto: &Identidad) -> Respuesta {
         let dir = match paquete_de(raiz, paquete) {
             Ok(d) => d,
             Err(r) => return r,
@@ -828,10 +849,16 @@ impl Servidor {
                     primera_linea(&s.stdout, &s.stderr)
                 ),
             ),
-            Ok(s) => Respuesta::ok(Json::obj([
-                ("informe", Json::s(s.stdout.trim())),
-                ("quedan", Json::Int(pendientes(&dir) as i64)),
-            ])),
+            Ok(s) => {
+                // ⭐ Contestar `clave` en una base estandar trae la copia de esa
+                //   tabla (el inductor la aplica): el conducto y el Job, aqui.
+                let mut campos = vec![
+                    ("informe", Json::s(s.stdout.trim())),
+                    ("quedan", Json::Int(pendientes(&dir) as i64)),
+                ];
+                campos.extend(self.tras_inducir(raiz, paquete, sujeto));
+                Respuesta::ok(Json::obj(campos))
+            }
         }
     }
 }
@@ -1313,11 +1340,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
-        (
-            "POST",
-            "/paquetes/{nombre}/vistas/{vista}/copia",
-            con_identidad,
-        ),
+        ("POST", "/paquetes/{nombre}/copia", con_identidad),
         ("GET", "/perfiles", con_identidad),
         ("GET", "/modelos", con_identidad),
         ("POST", "/modelos", con_identidad),
