@@ -968,7 +968,12 @@ try:
 except Exception:
     hechos = set()
 print(",".join(f for f in fuentes if f not in hechos))
+print(",".join(sorted(hechos)))
 ' 2>/dev/null)
+  # Dos lineas: las fuentes SIN paquete (se rinde su catalogo) y los paquetes
+  # que HAY (un catalogo encolado para una de estas ya termino: fuera).
+  CATALOGADAS=$(printf '%s\n' "$FUENTES" | sed -n 2p)
+  FUENTES=$(printf '%s\n' "$FUENTES" | sed -n 1p)
 fi
 [ -n "$FUENTES" ] && hecho "fuentes sin paquete: $FUENTES"
 
@@ -1078,6 +1083,26 @@ else
       find clon -maxdepth 1 -name '*.yaml' -delete
       find clon -maxdepth 1 -name '*.txt' -delete
       cp "$DE"/* clon/ 2>/dev/null || true
+      # ⭐⭐ Y LA COLA ES ADITIVA con lo que `ore-serve` encola (medido en
+      #   `victor` el 2026-09-17, con segundos: el alta encolo el catalogo a
+      #   las 16:13:38, empujo el arbol a las :40, y esta pasada, que leyo
+      #   el arbol ENTRE los dos, reescribio la cola sin el a las :43 — y lo
+      #   borro). Un Job que esta pasada no rinde y la cola ya tiene se
+      #   conserva mientras su trabajo siga pendiente: un `44-*` cuya fuente
+      #   no tiene paquete todavia, y el `48-la-copia.yaml` si esta pasada no
+      #   rindio otro. Lo que si se retira es un catalogo cuya fuente YA tiene
+      #   paquete: ese Job termino, y Flux no debe volver a crearlo.
+      if [ "$REPO" = "$TRABAJO" ]; then
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia)\.yaml$'); do
+          [ -e "clon/$f" ] && continue
+          case "$f" in
+            44-*)
+              FTE=$(cd clon && git show "HEAD:$f" 2>/dev/null | sed -n 's/.*name: FUENTE, value: "\([^"]*\)".*/\1/p' | head -1)
+              case ",${CATALOGADAS:-}," in *",$FTE,"*) continue ;; esac ;;
+          esac
+          ( cd clon && git show "HEAD:$f" > "$f" ) && echo "  · conservado $f (encolado por ore-serve, y sigue pendiente)"
+        done
+      fi
       cd clon
       git add -A
       if git diff --cached --quiet; then cd "$TMP"; exit 3; fi
