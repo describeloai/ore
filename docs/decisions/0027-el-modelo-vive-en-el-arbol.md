@@ -626,6 +626,33 @@ Lo que se acepta a cambio y se dice: `olist` sin claves copia en `append` — el
 la clave sigue siendo una decisión (`clave`, 8 abiertas) y al cerrarla la tabla pasa a `upsert`
 sin tocar la base. Y una base copiada **no se consulta todavía desde la copia**: eso es P4.
 
+**La consola primero, sólo UI** (2026-09-17, rubix-platform `1964756`): el `+` de «Databases»
+abre `NewDatabaseModal` (nombre + *Type*: **Standard** / **Foreign**) en vez del alta inline; el
+modal de crear database desde la conexión gana el mismo selector; `DatabaseTypeSelect` dice la
+frase de cada clase. Lo elegido no viaja aún.
+
+**Y la lógica de negocio, medida** (2026-09-17) — *«primero mover la database actual al estado
+de foreign, luego el tipo nuevo de punta a punta: una copia entera de todo lo que se traiga a
+esa base»*:
+
+| | medido |
+|---|---|
+| **«mover» las de hoy a foráneas** | no hay nada que mover en el árbol: ninguna vista declara `materialized`, así que **son foráneas ya**. Lo que falta es que **se diga**: `GET /paquetes` no clasifica (`name, version, decisionesPendientes, scoped, source`) y la consola pinta `Mapped from <source>` sin clase. Ningún commit por inquilino: ausente = foránea |
+| **dónde vive la clase** | no basta derivarla de las vistas: «estándar» es una **regla sobre lo que entre después** (todo lo que se traiga a esta base se copia), y las vistas de hoy no pueden decir nada de las de mañana. Va en **`discover.scope.json`** —el documento de `ore-serve` que ya guarda `{only, source}`— como `"type": "standard"`; ausente = `foreign`. Las vistas con `materialized` son su **consecuencia**, y `GET /paquetes` devuelve las dos cosas: `type` y `copias {declaradas, copiadas}`. Una estándar con vistas sin copia es una deriva que se enseña, no una tercera clase |
+| **la clave, de dónde sale** | del catálogo: `discover.catalog.json` trae `primaryKey` por tabla (en la fuente de `demo`: las 8 de `olist.*` sin ella → `append`; las ~40 de `public.*` con `id` → ya `upsert`). Con clave, la copia nace en `upsert` sin decisión; sin ella, en `append` y la decisión `clave` sigue abierta |
+| **el verbo de la copia, N vistas** | `decidir_copia` (copia.rs, 94–318) escribe 1–3 ficheros, `validate`, deshace o encola. Para N vistas del mismo paquete: las mismas escrituras por vista, **un** `conduits.yaml`, **un** `validate`, **un** Job con las N — factorizar, no repetir N veces (N `validate` y N commits) |
+| **el Job con N vistas** | `48-la-copia.yaml` ya toma `VISTAS=a,b,c`: una tabla raíz y una credencial por vista, `ore materialize` recorre las N. El egreso del driver permite 443 al mundo salvo lo privado (20-driver.yaml): `storage.googleapis.com` llega como llega Secret Manager. El catálogo **no trae filas** (`rows: null`): el tamaño de `olist` se mide en la aceptación |
+| **quién lee la copia** | nadie (P4). Una base estándar de esta iteración copia y lo dice; consultar desde la copia sigue siendo F5 |
+
+**I4, en tres pasadas y una aceptación:**
+
+| | qué | acepta |
+|---|---|---|
+| **I4a** | `type` en `discover.scope.json` (ausente = `foreign`) · `GET /paquetes` gana `type` y `copias {declaradas, copiadas}` · la consola lo dice: «Foreign database» en el árbol y en la ficha, en vez de `Mapped from` a secas | todas las bases de `demo` salen `foreign`, y la consola lo pinta |
+| **I4b** | `POST /paquetes {…, type: "standard"}`: `discover` + la copia de TODAS sus vistas en un acto (clave del catálogo si la hay) + un Job · `POST /paquetes/{n}/copia`: ascender una foránea · `la-copia-se-decide.sh` 8–9 | una base estándar nace con las N vistas con copia y un Job en la cola; ascender da lo mismo; compila o nada |
+| **I4c** | la consola manda `type`; la ficha de una estándar dice «Standard · N/N tables copied · last copy <cuándo>» y la foránea gana **Copy into this cluster** | banco con las dos clases |
+| **I5** | la aceptación en `demo`: una base estándar sobre `olist` (o ascender la que hay) → el Job copia las 8 tablas al bucket → la ficha lo dice → la segunda pasada lee 0 filas | los números en esta ADR |
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
