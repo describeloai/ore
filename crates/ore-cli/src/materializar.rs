@@ -51,7 +51,12 @@ pub fn materializar(
     recoger: bool,
     informe: Option<&Path>,
 ) -> std::process::ExitCode {
-    let pkg = match crate::cargar_valido(path, true) {
+    // ⭐ La copia exige que compile SU paquete —y lo de la raíz del árbol:
+    //   conductos, retículos—, no el inquilino entero. Medido en `demo` (P1
+    //   I5): una base foránea con `dueno` sin contestar (`owner: cambiame`,
+    //   OOS2009) bloqueaba la copia de otra base que sí compilaba. Un
+    //   diagnóstico en un paquete que no declara copias se dice y no para.
+    let pkg = match cargar_para_copiar(path) {
         Ok(p) => p,
         Err(c) => return c,
     };
@@ -446,6 +451,55 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     }
     std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
         .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))
+}
+
+/// Carga el árbol y lo rechaza sólo si no compila **lo que se copia**: los
+/// paquetes con alguna vista `materialized` y los documentos de la raíz. Lo
+/// que no compila en OTRO paquete se dice —cuántos, y el primero— y no para.
+fn cargar_para_copiar(path: &Path) -> Result<Package, std::process::ExitCode> {
+    if !path.is_dir() {
+        eprintln!("error: `{}` no es un directorio de paquete", path.display());
+        return Err(std::process::ExitCode::from(66)); // EX_NOINPUT
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(path);
+    let con_copia: std::collections::BTreeSet<String> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == ore_core::document::Kind::View && d.section("materialized").is_some())
+        .filter_map(|d| paquete_del_fichero(path, &d.path))
+        .collect();
+    let diags: Vec<_> = ore_core::validate_package(path)
+        .into_iter()
+        .filter(|d| d.code != ore_core::Code::Oos2013)
+        .collect();
+    let (propios, ajenos): (Vec<_>, Vec<_>) = diags.into_iter().partition(|d| {
+        match paquete_del_fichero(path, &d.file) {
+            Some(p) => con_copia.contains(&p),
+            None => true, // la raíz del árbol: conductos, retículos, config
+        }
+    });
+    if !ajenos.is_empty() {
+        eprintln!(
+            "aviso · {} diagnóstico(s) en paquetes que no declaran copia — no bloquean la copia; el primero:\n{}",
+            ajenos.len(),
+            ajenos[0].render(path)
+        );
+    }
+    if let Some(d) = propios.first() {
+        eprintln!("{}", d.render(path));
+        return Err(std::process::ExitCode::from(65)); // EX_DATAERR
+    }
+    Ok(pkg)
+}
+
+/// `packages/<p>/...` → `p`; `None` para lo que vive en la raíz del árbol.
+fn paquete_del_fichero(raiz: &Path, fichero: &Path) -> Option<String> {
+    let rel = fichero.strip_prefix(raiz).unwrap_or(fichero);
+    let mut partes = rel.components();
+    match partes.next()?.as_os_str().to_str()? {
+        "packages" => Some(partes.next()?.as_os_str().to_string_lossy().into_owned()),
+        _ => None,
+    }
 }
 
 /// **③ · El testigo, y el hueco que este peldaño deja abierto.**
