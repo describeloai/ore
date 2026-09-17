@@ -744,6 +744,13 @@ cola; `ore model customers` trae su entidad y su clave y la copia de customers p
 contestada, vuelve en `upsert` y compila. Lo que queda: C2 (`/esquema` desde `tables/`, el verbo
 de modelar en `ore-serve`, `modeladas` en `GET /paquetes`) y C3 (consola) — con la Forge.
 
+**P1 C2 hecha** (2026-09-17, `857f2df`). `GET /paquetes/{n}/esquema` trae **`tables`** desde
+`tables/` —objeto, fuente, columnas con el `physicalType` del origen, la vista que la expone,
+`modeled` y con qué entidad— y deja `entities` hasta que la consola lea `tables` (C3).
+`POST /paquetes/{n}/tablas/{objeto}/modelar` → `ore model` (201 con `copias`/`encolado`; 409 si ya
+lo está; 404 fuera del alcance); `model` entra en la lista de verbos herméticos (no consulta a
+nadie: es `review`). `GET /paquetes` dice `tablas` y `modeladas`. Prueba de fuego 0–6.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
