@@ -37,6 +37,8 @@
 #                                       esquema, el Job la lleva) · otra vez 409 · y al ascender
 #                                       la base: 201, la regla, las dos con copia, el Job con las
 #                                       cuatro · copiar una tabla de una estandar: 409
+#   8  invocar una funcion de lectura (0029 F4a I3): 404/409/422 antes de encolar; 202 con el Job en
+#      la cola (funcion, puerta, id, corrida); dos peticiones son dos Jobs; GET /funciones y …/resultados
 #
 # Uso:  bash pruebas-de-fuego/la-copia-se-decide.sh
 set -u
@@ -393,4 +395,120 @@ sed -i 's/owner: cambiame/owner: team:data/' "$REPO/packages/olist/package.yaml"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7b · el arbol no compila restaurado"
 dice "7b · retirar la base que tapaba (OOS2030) destapa el OOS2009 de otra: 200, no 422"
 
-echo "✓ la base estandar, y el catalogo no modela: 0–7b"
+# ── 8 · invocar una funcion de lectura (0029 F4a I3) ────────────────────────
+# El servidor vuelve a arrancar con la puerta de modelos y la lista de perfiles
+# (no pregunta al gateway para encolar: resuelve el `Model` contra la lista), y
+# la cola gana la plantilla de la invocacion.
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; SRV=""
+cp "$TMP/rendido/plantilla-invocacion.txt" "$TMP/cola-semilla/"
+( cd "$TMP/cola-semilla" && git -c user.name=banco -c user.email=banco@invalido pull -q --rebase origin main && git add -A \
+  && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla de la invocacion" \
+  && git push -q origin HEAD:main ) || falla "8 · no se pudo sembrar la plantilla de la invocacion"
+cat > "$TMP/perfiles.json" <<'JSON'
+{"v": 1, "image": "bastion/env@sha256:0", "generated": "2026-09-16T17:10:33Z", "profiles": [
+  {"profile": "g1/deepseek-v2-lite", "model": "deepseek-ai/DeepSeek-V2-Lite", "machine": "g1", "gpus": 1,
+   "status": "validated", "tok_s": {"1": 209.0}, "usd_h": 1.5, "usd_per_mtok": 0.2765, "digest": null}
+]}
+JSON
+mkdir -p "$REPO/modelos" "$REPO/packages/tienda/functions"
+cat > "$REPO/modelos/v2-lite.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha9
+kind: Model
+metadata: { name: v2-lite }
+spec:
+  profile: g1/deepseek-v2-lite
+  tier: shared
+  task: chat
+Y
+funcion8() { # nombre over extra
+  cat > "$REPO/packages/tienda/functions/$1.yaml" <<Y
+apiVersion: oos.dev/v1alpha10
+kind: Function
+metadata: { name: $1, namespace: tienda }
+spec:
+  runtime: model
+  model: modelo/v2-lite
+  over: $2
+  prompt: "Di el segmento del cliente en una palabra."
+  output:
+    segmento: { type: String }
+$3
+Y
+}
+funcion8 segmentar tienda.customers ""
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$REPO" 2>&1 | head -5; falla "8 · el arbol con la funcion no compila"; }
+FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
+         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo \
+         --modelos 127.0.0.1:1 --perfiles "$TMP/perfiles.json" >"$TMP/arranque.txt" 2>&1 &
+SRV=$!
+for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
+invocar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/funciones/$1/invocar"; }
+
+# la lista
+curl -sf -H "$SUJ" "$BASE/funciones" > "$TMP/f.json" || falla "8 · GET /funciones fallo"
+grep -q '"name":"segmentar"' "$TMP/f.json" && grep -q '"over":"tienda.customers"' "$TMP/f.json" && grep -q '"output":\["segmento"\]' "$TMP/f.json" && grep -q '"resultados":0' "$TMP/f.json" \
+  || falla "8 · GET /funciones no lista segmentar como toca: $(cat "$TMP/f.json")"
+# lo que se niega antes de encolar
+COD=$(invocar tienda/nadie); [ "$COD" = "404" ] || falla "8 · una funcion inventada devolvio $COD"
+COD=$(invocar tienda/segmentar); [ "$COD" = "409" ] || falla "8 · sin la copia hecha devolvio $COD: $(cuerpo)"
+cuerpo | grep -q "no está hecha" || falla "8 · sin la copia hecha no lo dice: $(cuerpo)"
+[ -z "$(en_cola 49-la-invocacion-tienda-segmentar.yaml)" ] || falla "8 · encolo sin la copia hecha"
+cat > "$REPO/packages/tienda/views/libre.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: libre, namespace: tienda }
+spec:
+  owner: team:data
+  from: { view: orders }
+  fields: { id: order_id }
+Y
+funcion8 sinCopia tienda.libre ""
+COD=$(invocar tienda/sinCopia); [ "$COD" = "409" ] || falla "8 · over sin copia declarada devolvio $COD: $(cuerpo)"
+cuerpo | grep -q "no declara copia" || falla "8 · over sin copia declarada no lo dice: $(cuerpo)"
+funcion8 conEfectos tienda.orders "  effects:
+    - writes: tienda.Orders.segmento"
+COD=$(invocar tienda/conEfectos); [ "$COD" = "422" ] || falla "8 · con effects devolvio $COD: $(cuerpo)"
+rm "$REPO/packages/tienda/functions/conEfectos.yaml" "$REPO/packages/tienda/functions/sinCopia.yaml" "$REPO/packages/tienda/views/libre.yaml"
+funcion8 sinModelo tienda.orders ""
+sed -i 's|modelo/v2-lite|modelo/nadie|' "$REPO/packages/tienda/functions/sinModelo.yaml"
+COD=$(invocar tienda/sinModelo); [ "$COD" = "422" ] || falla "8 · un Model que no existe devolvio $COD: $(cuerpo)"
+rm "$REPO/packages/tienda/functions/sinModelo.yaml"
+dice "8 · se niega: 404 inventada · 409 copia no hecha · 409 over sin copia · 422 effects · 422 Model que no resuelve"
+
+# con la copia hecha: 202, y el Job en la cola con la funcion, la puerta, el id y la corrida
+printf '{\n  "estado": "copiada",\n  "vista": "tienda.customers",\n  "clave": "ore/v1/c0ffee",\n  "digest": "sha256:c0ffee",\n  "plan": "sha256:0",\n  "filas": 99441,\n  "bytes": 1\n}\n' > "$REPO/copias/tienda_customers.json"
+COD=$(invocar tienda/segmentar); [ "$COD" = "202" ] || falla "8 · invocar devolvio $COD: $(cuerpo)"
+cuerpo | grep -q '"job":"invocar-tienda-segmentar-[a-f0-9]\{8\}"' || falla "8 · la respuesta no nombra el Job: $(cuerpo)"
+cuerpo | grep -q '"copia":"ore/v1/c0ffee"' || falla "8 · la respuesta no dice que copia se leera: $(cuerpo)"
+cuerpo | grep -q '"id":"deepseek-ai/DeepSeek-V2-Lite"' || falla "8 · no resolvio el id servido: $(cuerpo)"
+cuerpo | grep -q '"url":"http://127.0.0.1:8000/v1"' || falla "8 · no resolvio la puerta: $(cuerpo)"
+cuerpo | grep -q 'encolado como `49-la-invocacion-tienda-segmentar.yaml`' || falla "8 · no encolo: $(cuerpo)"
+JOB1=$(cuerpo | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
+en_cola 49-la-invocacion-tienda-segmentar.yaml > "$TMP/j.yaml" || falla "8 · el Job no esta en la cola"
+grep -q "name: $JOB1" "$TMP/j.yaml" || falla "8 · el Job de la cola no se llama como la respuesta"
+grep -q 'name: FUNCION, value: "tienda.segmentar"' "$TMP/j.yaml" || falla "8 · el Job no lleva la funcion"
+grep -q 'name: MODELO_URL, value: "http://127.0.0.1:8000/v1"' "$TMP/j.yaml" || falla "8 · el Job no lleva la puerta"
+grep -q 'name: MODELO_ID, value: "deepseek-ai/DeepSeek-V2-Lite"' "$TMP/j.yaml" || falla "8 · el Job no lleva el id"
+grep -q 'name: CORRIDA, value: "20[0-9]\{6\}T[0-9]\{6\}Z"' "$TMP/j.yaml" || falla "8 · el Job no lleva la corrida"
+grep -q "namespace: t-demo" "$TMP/j.yaml" || falla "8 · el Job no esta rendido para el inquilino"
+grep -q "ore invoke . --funcion" "$TMP/j.yaml" || falla "8 · el Job no invoca"
+grep -q "ore-cofre" "$TMP/j.yaml" && falla "8 · el Job de una invocacion pide credenciales del origen al cofre"
+"$PY" -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$TMP/j.yaml" 2>/dev/null || dice "8 · (sin pyyaml: no se comprueba que el Job rendido analice)"
+# la segunda peticion es otro Job
+sleep 1.1
+COD=$(invocar tienda/segmentar); [ "$COD" = "202" ] || falla "8 · la segunda invocacion devolvio $COD"
+JOB2=$(cuerpo | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
+[ "$JOB1" != "$JOB2" ] || falla "8 · dos peticiones dieron el mismo Job ($JOB1)"
+en_cola 49-la-invocacion-tienda-segmentar.yaml | grep -q "name: $JOB2" || falla "8 · la cola no lleva el segundo Job"
+dice "8 · 202: el Job en la cola con funcion, puerta, id y corrida; dos peticiones son dos Jobs"
+
+# los resultados, cuando el Job los deje
+mkdir -p "$REPO/resultados"
+printf '{\n  "funcion": "tienda.segmentar",\n  "estado": "ok",\n  "filas": 3,\n  "ok": 3,\n  "errores": 0,\n  "tokens": { "entrada": 30, "salida": 3 },\n  "ms": { "total": 900, "por_fila": 300 },\n  "cuando": "2026-09-17T20:00:00Z"\n}\n' > "$REPO/resultados/tienda_segmentar_20260917T200000Z.json"
+curl -sf -H "$SUJ" "$BASE/funciones/tienda/segmentar/resultados" > "$TMP/res.json" || falla "8 · GET resultados fallo"
+grep -q '"corrida":"20260917T200000Z"' "$TMP/res.json" && grep -q '"ok":3' "$TMP/res.json" || falla "8 · los resultados no salen: $(cat "$TMP/res.json")"
+curl -sf -H "$SUJ" "$BASE/funciones" | grep -q '"resultados":1' || falla "8 · GET /funciones no cuenta el resultado"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" "$BASE/funciones/tienda/nadie/resultados"); [ "$COD" = "404" ] || falla "8 · resultados de una inventada devolvio $COD"
+dice "8 · GET /funciones cuenta los resultados y GET …/resultados los lista, el mas nuevo primero"
+
+echo "✓ la base estandar, y el catalogo no modela: 0–8"

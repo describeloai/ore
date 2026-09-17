@@ -262,6 +262,18 @@ impl Servidor {
                     self.responder(r, &n, &cuerpo, sujeto)
                 })
             }
+            // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
+            ("GET", ["funciones"]) => self.leyendo(|r| self.funciones(r)),
+            ("GET", ["funciones", ns, n, "resultados"]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                self.leyendo(move |r| self.resultados(r, &ns, &n))
+            }
+            // Invocar no escribe el árbol: escribe la cola. Se lee el árbol
+            // para decidir, y el Job hace el resto.
+            ("POST", ["funciones", ns, n, "invocar"]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                self.leyendo(move |r| self.invocar(r, &ns, &n, sujeto))
+            }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
             // El kind se resuelve contra `documentos::KINDS`: un kind que no
             // esté en la tabla es 404 con la lista de los que sí. La medida
@@ -1499,6 +1511,9 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
         ("POST", "/paquetes/{nombre}/copia", con_identidad),
         ("DELETE", "/paquetes/{nombre}", con_identidad),
+        ("GET", "/funciones", con_identidad),
+        ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
+        ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/modelar",

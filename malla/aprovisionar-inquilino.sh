@@ -1089,11 +1089,13 @@ else
       #   el arbol ENTRE los dos, reescribio la cola sin el a las :43 — y lo
       #   borro). Un Job que esta pasada no rinde y la cola ya tiene se
       #   conserva mientras su trabajo siga pendiente: un `44-*` cuya fuente
-      #   no tiene paquete todavia, y el `48-la-copia.yaml` si esta pasada no
-      #   rindio otro. Lo que si se retira es un catalogo cuya fuente YA tiene
+      #   no tiene paquete todavia, el `48-la-copia.yaml` si esta pasada no
+      #   rindio otro, y los `49-*` (invocaciones, 0029 F4a I3: solo los
+      #   encola `ore-serve`; el nombre lleva la corrida, y el siguiente de
+      #   la misma funcion sustituye al fichero). Lo que si se retira es un catalogo cuya fuente YA tiene
       #   paquete: ese Job termino, y Flux no debe volver a crearlo.
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia|49-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
@@ -1125,7 +1127,7 @@ else
       # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
       # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
       # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
-      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt) cp "$f" "$TMP/cola/" ;;
+      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt) cp "$f" "$TMP/cola/" ;;
       *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done

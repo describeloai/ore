@@ -226,3 +226,18 @@ se llama como un campo de la copia, sin puerta. `la-invocacion-se-decide.sh` (CI
 punta a punta contra un S3 y un vLLM de mentira en Python (`de-mentira.py`): 12 filas → 11
 selladas + 1 error dicho; sin `MODELO_TOKEN`, 401 por fila y nada que sellar. Lo que I3 trae:
 `49-la-invocacion.yaml`, `POST /funciones/{ns}/{n}/invocar`, el prefijo `invocar-` en Jobs.
+
+**F4a·I3, hecha (2026-09-17).** Quién manda: `POST /funciones/{ns}/{n}/invocar` en `ore-serve`
+**no escribe el árbol, escribe la cola**: un Job rendido de `plantilla-invocacion.txt`
+(`49-la-invocacion.yaml`, la figura de `48`: driver, agente de la celda, `MODELO_TOKEN` al entorno
+de `ore-invoke`, y **sin credencial del origen**) con la función, la puerta y el id resueltos del
+`Model` (contra la lista de perfiles, sin preguntar al gateway) y la corrida; un fichero por
+función (`49-la-invocacion-<f>.yaml`: la siguiente sustituye a la anterior) y el nombre con la
+corrida (dos peticiones son dos Jobs). Antes de encolar decide con lo que ve: 404 sin función;
+422 si el árbol no compila donde vive, si no es `runtime: model`, si declara `effects` (paso 4) o
+`authorization` (Cedar no se finge), si el `Model` no está o su perfil no resuelve; **409 si `over`
+no declara copia o la copia no está hecha** (el informe de `copias/` lo dice). `GET /funciones`
+(forma + último resultado) y `GET /funciones/{ns}/{n}/resultados` (los informes, el más nuevo
+primero) son lo que la consola lee. El informador tipa `invocar-*` como `invocacion` con `FUNCION`
+de sujeto; Data › Jobs las pinta como *Function* con `ok/filas · tokens · ms/fila` del informe.
+`la-copia-se-decide` 8 lo fija; `gen-inquilino` rinde y comprueba la plantilla (⑧: 13).

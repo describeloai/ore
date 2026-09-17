@@ -42,6 +42,7 @@
 mod cola;
 mod copia;
 mod documentos;
+mod funciones;
 mod git;
 mod mando;
 mod modelos;

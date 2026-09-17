@@ -133,6 +133,78 @@ pub fn rendir_copia(plantilla: &str, vistas: &[String]) -> Result<(String, Strin
     Ok(("48-la-copia.yaml".to_string(), t))
 }
 
+/// La plantilla de la invocación (0029 F4a I3), sin función, que el
+/// aprovisionador deja en la cola junto a las otras dos.
+pub const PLANTILLA_INVOCACION: &str = "plantilla-invocacion.txt";
+const FUNCION_MODELO: &str = "ventas.clasificar";
+const PUERTA_MODELO: &str = "http://10.10.0.100:8000/v1";
+const ID_MODELO: &str = "modelo-id";
+const CORRIDA_MODELO: &str = "00000000T000000Z";
+
+/// Lo que el Job de una invocación necesita saber, resuelto aquí al encolar.
+#[derive(Clone, Copy)]
+pub struct Invocacion<'a> {
+    /// `<paquete>.<nombre>`.
+    pub funcion: &'a str,
+    /// La puerta (`GET /modelos/{n}` → `url`) y el id servido (→ `model`).
+    pub puerta: &'a str,
+    pub modelo: &'a str,
+    /// El instante de la petición: dos peticiones son dos Jobs.
+    pub corrida: &'a str,
+}
+
+/// Rinde el Job de UNA invocación. El fichero lleva la función dentro
+/// (`49-la-invocacion-<objeto>.yaml`): la siguiente invocación de la misma
+/// función lo sustituye —Flux retira el Job anterior y crea el nuevo—, y dos
+/// funciones no se pisan. El nombre del Job lleva la corrida en el resumen.
+pub fn rendir_invocacion(plantilla: &str, i: &Invocacion) -> Result<(String, String), String> {
+    if !plantilla.contains(&format!("invocar-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_INVOCACION}` no trae el hueco `invocar-{RESUMEN_MODELO}`: o no es la              plantilla, o `malla/49-la-invocacion.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    for (de, a) in [
+        (FUNCION_MODELO, i.funcion),
+        (PUERTA_MODELO, i.puerta),
+        (ID_MODELO, i.modelo),
+        (CORRIDA_MODELO, i.corrida),
+    ] {
+        if !plantilla.contains(&format!("value: \"{de}\"")) {
+            return Err(format!(
+                "`{PLANTILLA_INVOCACION}` no trae el hueco `value: \"{de}\"`: `malla/49-la-invocacion.yaml` cambió sin que esto se enterara"
+            ));
+        }
+        if a.contains('"') || a.contains('\n') {
+            return Err(format!("`{a}` no puede ir en un valor del Job"));
+        }
+    }
+    let t = plantilla
+        .replace(
+            &format!("value: \"{FUNCION_MODELO}\""),
+            &format!("value: \"{}\"", i.funcion),
+        )
+        .replace(
+            &format!("value: \"{PUERTA_MODELO}\""),
+            &format!("value: \"{}\"", i.puerta),
+        )
+        .replace(
+            &format!("value: \"{ID_MODELO}\""),
+            &format!("value: \"{}\"", i.modelo),
+        )
+        .replace(
+            &format!("value: \"{CORRIDA_MODELO}\""),
+            &format!("value: \"{}\"", i.corrida),
+        );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let obj = nombre_de_objeto(i.funcion);
+    let t = t.replace(
+        &format!("invocar-{RESUMEN_MODELO}"),
+        &format!("invocar-{obj}-{h}"),
+    );
+    Ok((format!("49-la-invocacion-{obj}.yaml"), t))
+}
+
 #[cfg(test)]
 mod prueba {
     use super::*;
@@ -152,6 +224,69 @@ mod prueba {
         assert_eq!(nombre_de_objeto(""), "sin-nombre");
         // Cortado a 30, y sin dejar un guion colgando al final.
         assert_eq!(nombre_de_objeto(&"a".repeat(60)).len(), 30);
+    }
+
+    #[test]
+    fn la_invocacion_lleva_funcion_puerta_id_y_corrida_y_dos_corridas_son_dos_jobs() {
+        let p = "name: invocar-00000000
+env:
+  - { name: FUNCION, value: \"ventas.clasificar\" }
+  - { name: MODELO_URL, value: \"http://10.10.0.100:8000/v1\" }
+  - { name: MODELO_ID, value: \"modelo-id\" }
+  - { name: CORRIDA, value: \"00000000T000000Z\" }
+";
+        let i = Invocacion {
+            funcion: "olist_copia.traducirCategoria",
+            puerta: "http://x:8000/v1",
+            modelo: "deepseek-ai/DeepSeek-V2-Lite",
+            corrida: "20260917T200000Z",
+        };
+        let (f, a) = rendir_invocacion(p, &i).unwrap();
+        assert_eq!(f, "49-la-invocacion-olist-copia-traducircategoria.yaml");
+        assert!(
+            a.contains("value: \"olist_copia.traducirCategoria\"")
+                && a.contains("value: \"http://x:8000/v1\"")
+                && a.contains("value: \"deepseek-ai/DeepSeek-V2-Lite\"")
+                && a.contains("value: \"20260917T200000Z\""),
+            "{a}"
+        );
+        assert!(
+            a.lines()
+                .next()
+                .unwrap()
+                .starts_with("name: invocar-olist-copia-traducircategoria-"),
+            "{a}"
+        );
+        let (_, b) = rendir_invocacion(
+            p,
+            &Invocacion {
+                corrida: "20260917T200001Z",
+                ..i
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            a.lines().next(),
+            b.lines().next(),
+            "otra corrida es otro Job"
+        );
+        assert!(
+            rendir_invocacion(
+                "name: x
+", &i
+            )
+            .is_err()
+        );
+        assert!(
+            rendir_invocacion(
+                p,
+                &Invocacion {
+                    funcion: "a\"b",
+                    ..i
+                }
+            )
+            .is_err()
+        );
     }
 
     /// ⛔ Una plantilla que no trae el hueco NO se rinde a medias.

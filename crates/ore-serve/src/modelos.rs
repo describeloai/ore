@@ -791,6 +791,44 @@ impl Servidor {
         Some((ficha, id))
     }
 
+    /// `modelo/<n>` → `(url, id servido)` **sin preguntar al gateway**: lo que
+    /// una invocación necesita para encolarse (0029 F4a I3). Si el gateway
+    /// está caído el Job lo dirá con un 401/timeout por fila; lo que aquí se
+    /// exige es que el documento esté y que su perfil resuelva a un id.
+    pub(crate) fn resolver_modelo(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+    ) -> Result<(String, String), Respuesta> {
+        let p = raiz.join("modelos").join(format!("{nombre}.yaml"));
+        let texto = std::fs::read_to_string(&p).map_err(|_| {
+            Respuesta::error(
+                422,
+                format!("la función nombra `modelo/{nombre}` y no hay tal `Model` en el árbol (POST /modelos)"),
+            )
+        })?;
+        let n = parse::parse(&texto).map_err(|e| {
+            Respuesta::error(500, format!("`modelos/{nombre}.yaml` no analiza: {e:?}"))
+        })?;
+        let profile = n
+            .get("spec")
+            .and_then(|(_, s)| campo(s, "profile"))
+            .unwrap_or_default();
+        let perfiles = self.perfiles()?;
+        let id = perfiles
+            .iter()
+            .find(|p| p.profile == profile)
+            .map(|p| p.model.clone())
+            .ok_or_else(|| {
+                Respuesta::error(
+                    422,
+                    format!("el perfil `{profile}` de `modelo/{nombre}` no está en la lista de certificación: no se sabe qué id sirve"),
+                )
+            })?;
+        let url = self.gateway()?.url.clone();
+        Ok((url, id))
+    }
+
     /// `ore validate` sobre el clon: `None` si compila, la respuesta 422 si no.
     pub(crate) fn no_compila(&self, raiz: &Path) -> Option<Respuesta> {
         match mando::correr(&self.binario, raiz, &["validate".into(), ".".into()]) {

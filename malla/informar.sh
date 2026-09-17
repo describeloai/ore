@@ -101,8 +101,9 @@ medir() {
                 elif (.status.succeeded // 0) > 0 then "ok"
                 elif (.status.failed // 0) > 0 then "fallido" else "pendiente" end;
     def tipo: if (.metadata.name | startswith("catalogo-")) then "catalogo"
-              elif (.metadata.name | startswith("copiar-")) then "copia" else "otro" end;
-    def sujeto: [(.spec.template.spec.containers // [])[].env // [] | .[] | select(.name == "VISTAS" or .name == "FUENTE") | .value] | first // "";
+              elif (.metadata.name | startswith("copiar-")) then "copia"
+              elif (.metadata.name | startswith("invocar-")) then "invocacion" else "otro" end;
+    def sujeto: [(.spec.template.spec.containers // [])[].env // [] | .[] | select(.name == "VISTAS" or .name == "FUENTE" or .name == "FUNCION") | .value] | first // "";
     def contenedor: ((.spec.template.spec.containers // []) | last | .name // "");
     def reciente: ((.status.completionTime // .status.startTime // "") as $t | ($t != "") and (($ahora | sub("Z$"; "") | strptime("%Y-%m-%dT%H:%M:%S") | mktime) - ($t | sub("Z$"; "") | strptime("%Y-%m-%dT%H:%M:%S") | mktime) < 7200));
     (.items // []) | sort_by(.metadata.creationTimestamp) | reverse | .[:20]

@@ -225,6 +225,12 @@ POR_COPIAS = "48-la-copia.yaml"
 PLANTILLA_COPIA = "plantilla-copia.txt"
 VISTAS_MODELO = "olist.customers"
 
+# ⭐ La invocacion (0029 F4a I3): UNA por peticion, la encola `ore-serve` con la
+#   funcion, la puerta, el id y el instante. Aqui solo viaja su plantilla, sin
+#   funcion, rendida para el inquilino.
+POR_INVOCACION = "49-la-invocacion.yaml"
+PLANTILLA_INVOCACION = "plantilla-invocacion.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -404,6 +410,12 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     salida[PLANTILLA_COPIA] = copia
+    invocacion = (MALLA / POR_INVOCACION).read_text(encoding="utf-8")
+    salida[PLANTILLA_INVOCACION] = (invocacion
+             .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -467,6 +479,7 @@ def comprobar_plantillas():
         origen = MALLA / (POR_FUENTE
                           if f.startswith("44-") or f == PLANTILLA_COLA
                           else POR_COPIAS if f == POR_COPIAS or f == PLANTILLA_COPIA
+                          else POR_INVOCACION if f == PLANTILLA_INVOCACION
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -622,7 +635,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -694,7 +707,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -743,7 +756,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
@@ -755,7 +768,7 @@ def comprobar():
                 "el `configMapGenerator` monta `%s`, que no es ni plantilla ni "
                 "guion: o sobra, o falta en `PLANTILLAS`" % n)
     print("  ⭐ ⑧ el puesto del aprovisionador lleva las %d plantillas y los 3 guiones"
-          % (len(PLANTILLAS) + 2))
+          % (len(PLANTILLAS) + 3))
 
     # ── ⑩ EL ENGANCHE RENDIDO (0025 E6) ─────────────────────────────────────
     # Siete objetos —dos GitRepository, dos Kustomization, ServiceAccount, Role,

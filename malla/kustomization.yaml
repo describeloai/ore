@@ -164,6 +164,7 @@ configMapGenerator:
       - 46-la-forja-del-inquilino.yaml
       - 47-el-informador.yaml
       - 48-la-copia.yaml
+      - 49-la-invocacion.yaml
       - 50-jwks.yaml
 
 generatorOptions:
