@@ -291,7 +291,15 @@ impl Servidor {
             return campos;
         }
         if let Err(r) = autorizar_conducto(raiz, &dir, paquete) {
+            // Sin conducto la copia no compila (OOS4011): un Job ahora fallaría
+            // y, con la misma lista, no se volvería a encolar. Se espera al
+            // dueño; la pasada de decisiones que lo traiga encola entonces.
             campos.push(("conducto", r.cuerpo));
+            campos.push((
+                "encolado",
+                Json::s("NO encolado: el conducto espera al dueño del paquete; se encola al contestar `dueno`"),
+            ));
+            return campos;
         }
         let todas = vistas_con_copia(raiz);
         let encolado = if todas.is_empty() {

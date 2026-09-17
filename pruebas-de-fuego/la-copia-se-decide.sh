@@ -212,7 +212,7 @@ cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "2 · la resp
 cuerpo | grep -q '0 entidades, 2 tablas y 2 vistas' || falla "2 · el catalogo modelo algo: $(cuerpo)"
 [ ! -d "$REPO/packages/tienda/entities" ] || [ -z "$(ls -A "$REPO/packages/tienda/entities" 2>/dev/null)" ] || falla "2 · el catalogo escribio entidades: $(ls "$REPO/packages/tienda/entities")"
 grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no dice que ninguna esta modelada: $(cat "$REPO/packages/tienda/discover.scope.json")"
-cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "2 · no encolo el Job: $(cuerpo)"
+cuerpo | grep -q '"encolado":"NO encolado: el conducto espera al dueño' || falla "2 · sin conducto encolo un Job que fallaria: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no lleva la regla: $(cat "$REPO/packages/tienda/discover.scope.json")"
 vista tienda orders | grep -q 'materialized: { datasource: pg, table: "copia.orders" }' || falla "2 · orders (con clave) nacio sin copia: $(vista tienda orders)"
 tabla tienda orders | grep -q "mode: upsert" || falla "2 · la tabla orders no esta en upsert: $(tabla tienda orders)"
@@ -223,9 +223,7 @@ grep -q '"clave/' "$REPO/packages/tienda/discover.pending.json" && falla "2 · e
 [ "$(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json" | sort -u)" = '"id": "dueno/tienda"' ] || falla "2 · la cola del catalogo no es solo el dueño: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 [ ! -e "$REPO/conduits.yaml" ] || falla "2 · conduits.yaml nacio con el dueño sin decidir (cambiame)"
 cuerpo | grep -q '"conducto":{"error":"`conduits.yaml` no nace hasta que `tienda` tenga dueño' || falla "2 · no dijo que el conducto espera al dueño: $(cuerpo)"
-en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.customers,tienda.orders"' || falla "2 · el Job no lleva las dos: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
-NOMBRE2=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
-[ -n "$NOMBRE2" ] || falla "2 · el Job no se llama copiar-<resumen>"
+en_cola 48-la-copia.yaml >/dev/null && falla "2 · hay un Job en la cola antes de que la copia pueda compilar"
 paquete tienda | grep -q '"type": "standard"' || falla "2 · GET /paquetes no dice standard: $(paquete tienda)"
 paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "2 · GET /paquetes no cuenta 2/0: $(paquete tienda)"
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
@@ -234,7 +232,7 @@ esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entida
 esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)"},{"name":"customer_city"}\],"copied":true,"datasource":"pg","modeled":false,"name":"olist_customers","object":"olist.customers","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\],.*"view":"orders"' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\[\],.*"view":"customers"' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
-dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · solo dueno en la cola · el conducto espera al dueño · el Job $NOMBRE2 con las dos · GET /paquetes standard 2/0"
+dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · solo dueno en la cola · el conducto espera al dueño y NO se encola todavia · GET /paquetes standard 2/0"
 
 # ── 3 ───────────────────────────────────────────────────────────────────────
 COD=$(decidir tienda '{"answers":{"dueno/tienda":"team:data"}}')
@@ -242,11 +240,14 @@ COD=$(decidir tienda '{"answers":{"dueno/tienda":"team:data"}}')
 vista tienda customers | grep -q 'copia.customers' || falla "3 · la re-induccion perdio la copia de customers: $(vista tienda customers)"
 vista tienda orders | grep -q 'copia.orders' || falla "3 · la re-induccion perdio la copia de orders: $(vista tienda orders)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "3 · la respuesta no cuenta las dos: $(cuerpo)"
-cuerpo | grep -q '"encolado":"ya encolado' || falla "3 · la misma lista y encolo otro Job: $(cuerpo)"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "3 · con el conducto, no encolo el Job: $(cuerpo)"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.customers,tienda.orders"' || falla "3 · el Job no lleva las dos: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+NOMBRE2=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
+[ -n "$NOMBRE2" ] || falla "3 · el Job no se llama copiar-<resumen>"
 grep -q "materialization.payload" "$REPO/conduits.yaml" || falla "3 · con el dueño decidido, conduits.yaml no nacio"
 grep -q "owner: team:data" "$REPO/conduits.yaml" || falla "3 · conduits.yaml no lleva el dueño del paquete: $(cat "$REPO/conduits.yaml")"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "3 · el arbol no compila con la base estandar: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
-dice "3 · dueño contestado: las dos copias se conservan · el Job no cambia · conduits.yaml nace con el dueño · el arbol compila"
+dice "3 · dueño contestado: las dos copias se conservan · conduits.yaml nace con el dueño · y AHORA el Job $NOMBRE2 con las dos · el arbol compila"
 
 # ── 3b · modelar una tabla: la entidad, su cola, y la copia que ahora espera ──
 modelar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/paquetes/$1/tablas/$2/modelar"; }
