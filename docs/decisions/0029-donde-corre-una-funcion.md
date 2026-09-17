@@ -150,3 +150,34 @@ orden no es de conveniencia: **cada una es prerrequisito de la siguiente**.
 Lo que este orden dice y conviene no perder: **la fila de Forge para `Function` (V) va después
 de que una función corra (F4)**, no antes. Pintar en la consola un documento que nadie puede
 ejecutar es el boceto otra vez.
+
+## El orden, revisado (2026-09-17) — por dependencias de la meta, no por el orden en que se escribió
+
+La meta es **el primer modelo real ejecutando inferencia, de forma consistente, sobre conjuntos
+de datos**. Mirado paso a paso —¿es prerrequisito de eso, o de «listo para producción»?— el orden
+de arriba cambia en cuatro sitios:
+
+| paso | ¿prerrequisito de la meta? | por qué |
+|---|---|---|
+| **I5** (P1 cerrada con números) | sí | sin filas en el bucket no hay nada que leer |
+| **el modelo real** (Vast g1 para aceptar; la cuota G4 para quedarse) | sí | contra `de-mentira` no hay inferencia; es de Bastion y va en paralelo |
+| **L0** | **no** | una propiedad DRAFT sin exigencia de integridad se escribe sin endoso (OOS7002); el conducto ya lo pone `tras_inducir`; Cedar sólo si la función declara `authorization`. Es de F6 |
+| **F4 con wasm + WASI** | **no** | el puente al modelo no ejecuta código del cliente. **F4a** (`runtime: model`) primero; **F4b** (wasm) con las funciones de código |
+| **la ontología mínima** | **sí, y no estaba** | `effects.writes` exige una `Entity` con clave (OOS2005, OOS2024), y desde 0027 C1 una base estándar nace sin entidades: modelar una tabla pequeña y contestar su `clave` es un paso, y es de la Forge |
+| **F2·F3** | no para la primera inferencia | sí para que valga más que `inferred` |
+| **F5** | **sí** | sin aplicar, la inferencia es una Propuesta en el árbol, no un hecho que una consulta devuelva |
+| **§7.4** (qué gana entre el refresco y un efecto) | **sí, y estaba aparcado** | «consistente» es exactamente que el hecho inferido sobreviva al refresco. La copia se rehace entera desde el origen: sin decidirlo, F5 escribe y el siguiente refresco lo borra. Se decide **en F5**, con un caso real |
+| **V**, **R** | no | uso, y latencia |
+
+Y dos cosas de tamaño: una Model Function se aplica **una vez por fila** (`customers` son 99 k
+llamadas): la aceptación va sobre una tabla pequeña (`product_category_name_translation`, 71
+filas; `sellers`, 3 095) o una vista con `where`.
+
+**El orden que vale:**
+
+1. **I5** — P1 con números en `demo`.
+2. **F4a** con una **función de lectura** (`reads` + `output`, sin `effects`): lee la copia, llama al modelo real, devuelve. Sin entidad, sin clave, sin L0, sin wasm. El primer «modelo real infiere sobre datos», con latencia y coste medidos.
+3. **La ontología mínima** — una tabla pequeña modelada y su `clave` contestada (Forge).
+4. **F4a con `effects`** → Propuesta cotejada por `ore verify`.
+5. **F5**, y con ella **§7.4 decidido**: aplicar, refrescar, y que el hecho siga. Aquí se cumple «consistente».
+6. Después: **L0**, **F2·F3**, **V**, **F6**, **F4b**, **R**.
