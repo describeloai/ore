@@ -217,6 +217,14 @@ POR_FUENTE = "44-el-catalogo.yaml"
 #   `.txt` y no `.yaml`: `kustomize` aplica los YAML de ese directorio.
 PLANTILLA_COLA = "plantilla-catalogo.txt"
 
+# ⭐ La copia (0027 P1 I3): UNA por arbol con vistas que declaran copia, con la
+#   lista de vistas dentro y el resumen del contenido en el nombre — la misma
+#   figura que el catalogo. Y su plantilla sin lista, para que `ore-serve` la
+#   encole en el mismo acto de la decision.
+POR_COPIAS = "48-la-copia.yaml"
+PLANTILLA_COPIA = "plantilla-copia.txt"
+VISTAS_MODELO = "olist.customers"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -238,7 +246,7 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
-def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None):
+def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copias=()):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
     (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
     es `<propietario>/<repo>` tal como lo guarda `iam.celda.arbol`; por defecto,
@@ -384,6 +392,23 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None):
         t = t.replace("catalogo-%s-00000000" % FUENTE_MODELO,
                       "catalogo-%s-%s" % (obj, h))
         salida["44-el-catalogo-%s.yaml" % obj] = t
+
+    # ── Y la copia: una por arbol, si alguna vista la declara ─────────────
+    #
+    # Las mismas sustituciones del inquilino; la lista de vistas es el hueco.
+    # El bucket lleva `t-demo` dentro, asi que la sustitucion general lo cubre.
+    copia = (MALLA / POR_COPIAS).read_text(encoding="utf-8")
+    copia = (copia
+             .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    salida[PLANTILLA_COPIA] = copia
+    if copias:
+        t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
+        h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
+        t = t.replace("copiar-00000000", "copiar-%s" % h)
+        salida[POR_COPIAS] = t
     return salida
 
 
@@ -438,12 +463,13 @@ def comprobar_plantillas():
     # ⛔ Y es una excepcion de VERDAD, no un descuido: la ① deja de vigilar esos
     #   ocho caracteres. Quien los vigila es la ⑨, que exige que el nombre
     #   rendido tenga exactamente la forma `catalogo-<fuente>-<8 hex>`.
-    for f, t in render(MODELO, fuentes=[FUENTE_MODELO]).items():
+    for f, t in render(MODELO, fuentes=[FUENTE_MODELO], copias=[VISTAS_MODELO]).items():
         origen = MALLA / (POR_FUENTE
                           if f.startswith("44-") or f == PLANTILLA_COLA
+                          else POR_COPIAS if f == POR_COPIAS or f == PLANTILLA_COPIA
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
-        if f.startswith("44-"):
+        if f.startswith("44-") or f == POR_COPIAS:
             a, b = (RESUMEN.sub("-00000000", x) for x in (a, b))
         if a != b:
             fallos.append("`%s`: renderizar `demo` NO devuelve el fichero" % f)
@@ -596,7 +622,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name == POR_FUENTE:
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -668,7 +694,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name == POR_FUENTE,
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -717,7 +743,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
@@ -729,7 +755,7 @@ def comprobar():
                 "el `configMapGenerator` monta `%s`, que no es ni plantilla ni "
                 "guion: o sobra, o falta en `PLANTILLAS`" % n)
     print("  ⭐ ⑧ el puesto del aprovisionador lleva las %d plantillas y los 3 guiones"
-          % (len(PLANTILLAS) + 1))
+          % (len(PLANTILLAS) + 2))
 
     # ── ⑩ EL ENGANCHE RENDIDO (0025 E6) ─────────────────────────────────────
     # Siete objetos —dos GitRepository, dos Kustomization, ServiceAccount, Role,
@@ -839,7 +865,7 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--a", "--organizacion", "--enganche")
+    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--copias", "--a", "--organizacion", "--enganche")
     SIN_VALOR = ("--sin-cola",)
     libres, saltar = [], False
     for a in argv:
@@ -879,7 +905,8 @@ def main(argv):
     if organizacion and not nombre_valido(organizacion):
         print("✗ `%s` no sirve como nombre de organizacion." % organizacion, file=sys.stderr)
         return 65
-    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes, organizacion)
+    copias = [c for c in (valor("--copias") or "").split(",") if c]
+    hecho = render(nombre, valor("--arbol"), valor("--entrada"), fuentes, organizacion, copias)
     # ⭐ Y el enganche, a OTRO directorio (0025 E6): no es del compartimento, es
     #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo
     #   tienen rendido: esta en `13-…` a mano, y se dice.

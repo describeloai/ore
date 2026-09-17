@@ -17,6 +17,15 @@
 #                                       duplica · GET /copias las lista con su clave
 #   6  una vista sobre una vista        422: la copia es de la de abajo
 #
+# Y lo que I3 añadió: la decision ENCOLA el Job de la copia en la cola de trabajo
+# (48-la-copia.yaml rendido de plantilla-copia.txt con la lista de vistas y el
+# resumen en el nombre, como el catalogo), y GET /copias trae `copia` — el
+# informe que el Job deja en `copias/<paquete>_<vista>.json`, o `pendiente`.
+#
+#   3  ...                               y la cola lleva 48-la-copia.yaml con VISTAS=olist.customers
+#   5  ...                               y la cola lleva VISTAS=olist.customers,olist.orders (otro nombre)
+#   7  el informe del Job en el arbol   GET /copias: copia.estado copiada, filas, copiado_por, cuando
+#
 # Uso:  bash pruebas-de-fuego/la-copia-se-decide.sh
 set -u
 
@@ -122,9 +131,23 @@ spec:
   fields: { id: order_id }
 Y
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "el arbol de partida no compila: $(cd "$REPO" && "$ORE" validate . 2>&1 | head -3)"
+# con historia, para que el informe (7) lleve quien y cuando
+( cd "$REPO" && git init -q && git config core.autocrlf false && git -c user.name=banco -c user.email=banco@invalido add -A \
+  && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el arbol de partida" ) || falla "no se pudo dar historia al arbol"
 
-"$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
-         --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque.txt" 2>&1 &
+# ── la cola de trabajo: un repositorio pelado con la plantilla rendida ─────
+COLA="$TMP/cola.git"
+git init -q --bare -b main "$COLA"
+mkdir -p "$TMP/cola-semilla" && ( cd "$TMP/cola-semilla" && git init -q && git config core.autocrlf false )
+PY=$(command -v python3 || command -v python)
+"$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TMP/rendido" >/dev/null 2>&1 || falla "no se pudo rendir la plantilla de la copia"
+cp "$TMP/rendido/plantilla-copia.txt" "$TMP/cola-semilla/"
+( cd "$TMP/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
+  && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "no se pudo sembrar la cola"
+en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
+
+FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
+         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
 SUJ='x-ore-sujeto: persona:ana'
@@ -158,7 +181,14 @@ grep -q "materialization.payload" "$REPO/conduits.yaml" || falla "3 · conduits.
 grep -q "owner: team:data" "$REPO/conduits.yaml" || falla "3 · el dueño del conducto no es el del paquete"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "3 · el arbol no compila tras la decision: $(cd "$REPO" && "$ORE" validate . 2>&1 | head -3)"
 cuerpo | grep -q '"escritos":\["conduits.yaml","packages/olist/views/customers.yaml"\]' || cuerpo | grep -q '"escritos":\["packages/olist/views/customers.yaml","conduits.yaml"\]' || falla "3 · la respuesta no dice que escribio: $(cuerpo)"
-dice "3 · la decision minima: 201 · materialized con la fuente de su tabla · conduits.yaml nace · compila"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "3 · no encolo el Job de la copia: $(cuerpo)"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "olist.customers"' || falla "3 · la cola no lleva el Job con VISTAS=olist.customers: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+en_cola 48-la-copia.yaml | grep -q 'ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia"' || falla "3 · el Job no apunta al bucket del inquilino"
+NOMBRE3=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
+[ -n "$NOMBRE3" ] || falla "3 · el Job no se llama copiar-<resumen>"
+curl -sf -H "$SUJ" "$BASE/paquetes/olist/copias" > "$TMP/c.json" || falla "3 · GET /copias no contesta"
+grep -q '"copia":{"estado":"pendiente"}' "$TMP/c.json" || falla "3 · sin informe la copia no sale pendiente: $(cat "$TMP/c.json")"
+dice "3 · la decision minima: 201 · materialized con la fuente de su tabla · conduits.yaml nace · compila · el Job $NOMBRE3 en la cola · copia pendiente"
 
 # ── 4 ───────────────────────────────────────────────────────────────────────
 COD=$(post customers '{}')
@@ -176,7 +206,10 @@ grep -q "witness: log" "$REPO/packages/olist/tables/orders.yaml" || falla "5 · 
 curl -sf -H "$SUJ" "$BASE/paquetes/olist/copias" > "$TMP/c.json" || falla "5 · GET /copias no contesta"
 grep -q '"view":"customers"' "$TMP/c.json" || falla "5 · GET /copias no lista customers: $(cat "$TMP/c.json")"
 grep -q '"key":\["order_id"\]' "$TMP/c.json" || falla "5 · GET /copias no da la clave de orders: $(cat "$TMP/c.json")"
-dice "5 · con clave: 201 · la tabla raiz en upsert con key · el conducto no se duplica · GET /copias lista las dos, con su clave"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "olist.customers,olist.orders"' || falla "5 · la cola no lleva las dos vistas: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+NOMBRE5=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
+[ "$NOMBRE5" != "$NOMBRE3" ] || falla "5 · otra lista, el mismo nombre de Job: Flux no crearia otro"
+dice "5 · con clave: 201 · la tabla raiz en upsert con key · el conducto no se duplica · GET /copias lista las dos, con su clave · el Job $NOMBRE5 en la cola"
 
 # ── 6 ───────────────────────────────────────────────────────────────────────
 COD=$(post pedidos '{}')
@@ -184,4 +217,17 @@ COD=$(post pedidos '{}')
 cuerpo | grep -q "hereda" || falla "6 · el 422 no dice que la copia es de la de abajo: $(cuerpo)"
 dice "6 · una vista sobre una vista: 422, la copia es de la de abajo"
 
-echo "✓ la decision de la copia: 0–6"
+# ── 7 · el informe que el Job deja, y la ficha lo trae ──────────────────────
+mkdir -p "$REPO/copias"
+printf '{\n  "estado": "copiada",\n  "vista": "olist.customers",\n  "clave": "ore/v1/abc",\n  "digest": "sha256:abc",\n  "plan": "sha256:def",\n  "filas": 99441,\n  "leidas": 99441,\n  "bytes": 1234567,\n  "subido": true,\n  "testigo": { "modo": "log", "valor": "0/1A2B3C" }\n}\n' > "$REPO/copias/olist_customers.json"
+( cd "$REPO" && git add -A && GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido git -c user.name=copiador -c user.email=copiador@invalido commit -q -m "Copia: olist.customers" ) || falla "7 · no se pudo firmar el informe"
+curl -sf -H "$SUJ" "$BASE/paquetes/olist/copias" > "$TMP/c.json" || falla "7 · GET /copias no contesta"
+grep -q '"estado":"copiada"' "$TMP/c.json" || falla "7 · la ficha no trae el estado del informe: $(cat "$TMP/c.json")"
+grep -q '"filas":99441' "$TMP/c.json" || falla "7 · la ficha no trae las filas: $(cat "$TMP/c.json")"
+grep -q '"copiado_por":"copiador"' "$TMP/c.json" || falla "7 · la ficha no dice quien copio: $(cat "$TMP/c.json")"
+grep -q '"cuando":"20' "$TMP/c.json" || falla "7 · la ficha no dice cuando: $(cat "$TMP/c.json")"
+grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\]' "$TMP/c.json" || falla "7 · orders, sin informe, no sale pendiente: $(cat "$TMP/c.json")"
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7 · el arbol no compila con copias/ dentro"
+dice "7 · el informe del Job: copiada · 99441 filas · copiado_por copiador · cuando · y orders sigue pendiente · el arbol compila"
+
+echo "✓ la decision de la copia: 0–7"

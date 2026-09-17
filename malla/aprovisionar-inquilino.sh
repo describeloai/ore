@@ -972,6 +972,30 @@ print(",".join(f for f in fuentes if f not in hechos))
 fi
 [ -n "$FUENTES" ] && hecho "fuentes sin paquete: $FUENTES"
 
+# ⭐ Y las vistas que declaran copia (0027 P1): `paquete.vista` de cada
+#   `materialized` del arbol. Con alguna, se rinde el Job de la copia (45).
+COPIAS=""
+if [ -z "$SECO" ] && [ -n "$INQ" ]; then
+  COPIAS=$(for P in $(crudo "contents/packages" | "$PY" -c 'import json,sys
+try:
+    print(" ".join(e["name"] for e in json.load(sys.stdin) if e.get("type") == "dir"))
+except Exception:
+    pass'); do
+    for V in $(crudo "contents/packages/$P/views" | "$PY" -c 'import json,sys
+try:
+    print(" ".join(e["name"] for e in json.load(sys.stdin) if e.get("type") == "file" and e["name"].endswith(".yaml")))
+except Exception:
+    pass'); do
+      crudo "raw/packages/$P/views/$V" | "$PY" -c 'import re,sys
+t = sys.stdin.read()
+if re.search(r"^\s+materialized:", t, re.M):
+    m = re.search(r"^\s*name:\s*([A-Za-z0-9_]+)", t.split("metadata", 1)[1] if "metadata" in t else t, re.M)
+    if m: print(sys.argv[1] + "." + m.group(1))' "$P"
+    done
+  done | sort -u | paste -sd, -)
+fi
+[ -n "$COPIAS" ] && hecho "vistas con copia: $COPIAS"
+
 # ⭐ Se rinde POR CELDA, y la organizacion va aparte: es lo que `ore-serve` le
 #   dice al custodio y lo que `ore init --name` graba en el arbol.
 # ⛔ El enganche SIN la cola hasta que la forja de la celda viva (`INQ`): la cola
@@ -979,7 +1003,7 @@ fi
 #   compartimento cree el namespace, y Flux no aplica nada si una pieza no pasa
 #   el ensayo. Dos pasadas, como la forja y la cola de trabajo.
 "$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
-  ${FUENTES:+--fuentes "$FUENTES"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
+  ${FUENTES:+--fuentes "$FUENTES"} ${COPIAS:+--copias "$COPIAS"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
   ${INQ:+} $([ -n "$INQ" ] || printf -- --sin-cola) \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"
@@ -1076,7 +1100,7 @@ else
       # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
       # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
       # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
-      44-*|plantilla-catalogo.txt) cp "$f" "$TMP/cola/" ;;
+      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt) cp "$f" "$TMP/cola/" ;;
       *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done

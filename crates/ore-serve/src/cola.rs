@@ -107,6 +107,32 @@ pub fn rendir(plantilla: &str, fuente: &str) -> Result<(String, String), String>
     Ok((format!("44-el-catalogo-{obj}.yaml"), t))
 }
 
+/// La plantilla de la copia (0027 P1 I3), sin lista, que el aprovisionador
+/// deja en la cola junto a la del catálogo.
+pub const PLANTILLA_COPIA: &str = "plantilla-copia.txt";
+const VISTAS_MODELO: &str = "olist.customers";
+
+/// Rinde el Job de la copia con la lista de vistas —`paquete.vista`, las que
+/// declaran `materialized` en todo el árbol— y el resumen del contenido en el
+/// nombre. Es lo mismo que hace `gen-inquilino.py` con `--copias`, y por eso el
+/// fichero se llama igual: dos rendidos de la misma lista son el mismo Job.
+pub fn rendir_copia(plantilla: &str, vistas: &[String]) -> Result<(String, String), String> {
+    if !plantilla.contains(&format!("copiar-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_COPIA}` no trae el hueco `copiar-{RESUMEN_MODELO}`: o no es la \
+             plantilla, o `malla/48-la-copia.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    let t = plantilla.replace(
+        &format!("value: \"{VISTAS_MODELO}\""),
+        &format!("value: \"{}\"", vistas.join(",")),
+    );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let t = t.replace(&format!("copiar-{RESUMEN_MODELO}"), &format!("copiar-{h}"));
+    Ok(("48-la-copia.yaml".to_string(), t))
+}
+
 #[cfg(test)]
 mod prueba {
     use super::*;

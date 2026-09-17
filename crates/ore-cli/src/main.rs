@@ -614,6 +614,11 @@ enum Command {
         /// hasta su marca, y alguien puede estar leyendola por su digest.
         #[arg(long)]
         recoger: bool,
+        /// Escribe un informe por vista (`<DIR>/<paquete>_<vista>.json`): que
+        /// copia hay, cuantas filas, con que testigo. Para quien no alcanza el
+        /// almacen (0027 P1 I3).
+        #[arg(long, value_name = "DIR")]
+        informe: Option<PathBuf>,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -684,7 +689,8 @@ fn main() -> std::process::ExitCode {
             path,
             seco,
             recoger,
-        } => return materializar::materializar(path, *seco, *recoger),
+            informe,
+        } => return materializar::materializar(path, *seco, *recoger, informe.as_deref()),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),

@@ -142,15 +142,21 @@ echo
 echo "══ los cinco actos · el trabajo se cuenta en filas, no en segundos ══"
 antes=$(objetos)
 
-a1=$("$ORE" materialize "$D" 2>&1)
+INF="$D/informes"
+a1=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 1000 "$(leidas "$a1")" "① primera materialización, filas leídas" "I5 (hecho)"
 cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"
+# el informe (P1 I3): lo que quien no alcanza el almacen sabe de la copia
+cmp_n copiada "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe dice el estado" "P1 I3"
+cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe cuenta las filas" "P1 I3"
 n1=$(objetos); cmp_n 2 "$((n1 - antes))" "① objetos nuevos (artefacto + recibo)" "I5 (hecho)"
 
-a2=$("$ORE" materialize "$D" 2>&1)
+a2=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 if grep -q "ya está" <<<"$a2"; then ok "② sin tocar el origen: 0 filas leídas"
 else mal "② releyó el origen sin que cambiara" "el recibo · I5"; fi
 n2=$(objetos); cmp_n 0 "$((n2 - n1))" "② objetos nuevos" "el recibo · I5"
+cmp_n al-dia "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "② el informe dice al-dia" "P1 I3"
+cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "② y conserva las filas de la copia que ya estaba" "P1 I3"
 
 filas 10 1001 >> "$D/datos/pedidos.jsonl"
 a3=$("$ORE" materialize "$D" 2>&1)
@@ -159,10 +165,11 @@ cmp_n 1010 "$(copiadas "$a3")" "③ filas EN LA COPIA" "la copia entera, no solo
 n3=$(objetos); cmp_n 2 "$((n3 - n2))" "③ objetos nuevos" "R2"
 
 sed -i '1,3s/"pais":"ES"/"pais":"PT"/; 1,3s/"actualizado_en":"[0-9]*"/"actualizado_en":"0000002000"/' "$D/datos/pedidos.jsonl"
-a4=$("$ORE" materialize "$D" 2>&1)
+a4=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n4=$(objetos); cmp_n 2 "$((n4 - n3))" "④ objetos nuevos" "R2"
+cmp_n 1010 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "④ el informe cuenta la copia entera" "P1 I3"
 
 "$ORE" materialize "$D" --recoger >/dev/null 2>&1
 n5=$(objetos)

@@ -1,0 +1,255 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA COPIA — el ciclo del almacén, dentro de la celda (0027 P1 I3)
+#
+# ⭐⭐ Es la misma figura que `44-el-catalogo.yaml` y cambia el verbo: en vez de
+#   `ore source catalog` + `ore discover`, `ore materialize` — los seis pasos del
+#   ADR 0015 sobre las vistas que DECLARAN copia (`materialized`, la decisión de
+#   `POST /paquetes/{n}/vistas/{v}/copia`). Lee el origen con la credencial del
+#   cofre, sella y sube al bucket del inquilino con `ore-store-gcs` y el token de
+#   su cuenta —sin clave estática—, y deja en el árbol un INFORME por vista
+#   (`copias/<paquete>_<vista>.json`) para quien no alcanza ni el origen ni el
+#   almacén: `ore-serve` y la consola.
+#
+# ⛔ El informe no es el registro. El recibo vive en el almacén y no hay puntero
+#   mutable (0015); esto es lo que la última pasada dijo, como el snapshot del
+#   informador (0026), y el commit dice cuándo y quién.
+#
+# ── Se rinde UNA VEZ POR ÁRBOL CON COPIAS, con el resumen de su lista ──────
+#
+#   `VISTAS` lleva las vistas que declaran copia, y el nombre del Job el resumen
+#   del contenido: una decisión nueva cambia la lista, cambia el nombre, y Flux
+#   crea otro Job. Rehacer la copia sin que cambie nada (el refresco periódico)
+#   es de la pasada siguiente: un CronJob sobre esta misma plantilla.
+#
+# ⚠️ `--recoger` va puesto: las copias superadas del mismo plan se retiran en
+#   cada pasada. Es explícito en el CLI y aquí lo decide el operador, que es
+#   este fichero: un almacén que crece con los refrescos no es acotado (R5).
+#
+# ── ⛔ Lo que este Job NO decide ────────────────────────────────────────────
+#
+# Qué vistas tienen copia (el verbo, con la firma de quien decide), con qué clave
+# (`changes.key` de la tabla raíz), ni qué gana si el origen y la copia se
+# contradicen (F5). Copia lo declarado, o dice por qué no pudo.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # ── ⭐⭐ EL NOMBRE LLEVA EL CONTENIDO DENTRO ─────────────────────────────
+  #
+  # Los ocho digitos son el resumen del resto de este fichero ya renderizado, y
+  # el `00000000` de aqui es el de la plantilla — el renderizador lo sustituye.
+  #
+  # ⛔ Esto sustituye a `kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`, que
+  #   estaba aqui porque un Job es inmutable: si el nombre no cambia y el
+  #   contenido si, el apply falla con «field is immutable», y la anotacion lo
+  #   evitaba diciendole a Flux que NO tocara el que ya existe.
+  #
+  # ⇒ Y evitaba el error tapando dos cosas de verdad:
+  #
+  #     · un Job que FALLO se quedaba fallado para siempre. `catalogo-bq` de
+  #       `prueba` llevaba once horas en `Failed`, y converger no podia
+  #       arreglarlo por mucho que la plantilla mejorara;
+  #     · y una plantilla nueva NO llegaba al Job existente — justo lo que
+  #       converger viene a resolver.
+  #
+  # ⭐ Con el nombre derivado del contenido, dos objetos que se llaman igual
+  #   tienen el mismo contenido SIEMPRE, asi que el conflicto de inmutabilidad
+  #   no puede darse. Cambiar la plantilla da un nombre nuevo: Flux crea el Job
+  #   nuevo y `prune: true` se lleva el viejo. La inmutabilidad deja de ser un
+  #   problema que hay que esquivar y pasa a ser gratis.
+  #
+  # ⚠️ Lo que NO se reintenta solo: un fallo con la plantilla IGUAL. Repetir
+  #   trabajo identico de forma identica es un bucle, no un reintento. Para
+  #   volver a intentarlo se borra el Job —`kubectl delete job catalogo-…`— y
+  #   Flux lo recrea en la siguiente reconciliacion, porque sigue en el origen.
+  #   Es un acto de una persona, y esta bien que lo sea.
+  name: copiar-00000000
+  namespace: t-demo
+  labels:
+    # ⛔ La cola de Kueue, y no es opcional: es lo que hace que este pod aterrice
+    #   en el pool privado. Sin esta etiqueta el Job no pasa por Kueue —
+    #   `manageJobsWithoutQueueName` está en falso— y aterriza donde caiga, con
+    #   una `NetworkPolicy` que abre el 443 a todo internet.
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  # ── ⛔⛔ Y UN PLAZO, PORQUE ESTO SE CUELGA SIN EL ────────────────────────
+  #
+  # Medido dos veces el 2026-09-10: un origen cuya URL no trae credencial deja a
+  # `ore-read-postgres` esperando, y el Job se quedo OCHO MINUTOS imprimiendo
+  #
+  #     ### leyendo el origen `postgresql_20260910_1305`
+  #
+  # y nada mas. Sin plazo eso no acaba nunca: `backoffLimit` cuenta INTENTOS
+  # FALLIDOS, y un pod que no termina no ha fallado — asi que ni reintenta ni se
+  # rinde, y mantiene vivo un nodo del pool privado indefinidamente.
+  #
+  # ⭐ Diez minutos. Un catalogo tarda segundos contra un origen que contesta;
+  #   lo que pasa de ahi no es lentitud, es que no va a llegar. Y fallar por
+  #   plazo deja el registro y el motivo, que es lo que un cuelgue no deja.
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      # `Never`, y por lo que costó averiguarlo en el aprovisionador: con
+      # `OnFailure` el pod se borra al agotar los reintentos, con su registro
+      # dentro. Un catálogo que falla y no dice por qué obliga a repetirlo.
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: trabajo
+          emptyDir: {}
+      initContainers:
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=t-demo-forja-token --out-file=/puesto/forja
+              chmod 0400 /puesto/forja
+              echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+              # ⭐⭐ Y EL AGENTE, por el mismo camino. Hasta el 2026-09-13 venia de
+              #   un `Secret` `idp-agente` puesto a mano y copiado entre
+              #   inquilinos; ahora es el cliente de Keycloak de ESTE inquilino,
+              #   que el aprovisionador crea en su paso ⑦ y deja en el almacen.
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \
+                  --secret=t-demo-agente-$p --out-file=/puesto/agente-$p
+                chmod 0400 /puesto/agente-$p
+              done
+              echo "agente puesto · $(cat /puesto/agente-cliente)"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: copiar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            # ⚠️ LAS VISTAS CON COPIA. Es lo que distingue una pasada de otra, y
+            #   viene del árbol (`materialized`, la decisión) — no de aquí. Y el
+            #   almacén: el bucket del inquilino (aprovisionador ③b), por
+            #   `ore-store-gcs` con el token de esta cuenta.
+            - { name: VISTAS, value: "olist.customers" }
+            - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
+            #   sustituye el renderizador con la misma regla que el resto, y la
+            #   comprobacion ② puede cazarla si algun dia se cae.
+            - { name: ORGANIZACION, value: "demo" }
+            # ── ⭐⭐ DOS COSAS, Y ES LA QUINTA VEZ QUE HAY QUE SEPARARLAS ──
+            #
+            #   EMISOR     lo que el IdP tiene que AFIRMAR ser
+            #   DIRECCION  por donde se le alcanza HOY
+            #
+            # ⛔ Aqui habia solo `EMISOR`, y se usaba de las dos cosas: se le
+            #   pedia el testigo a `https://login.paladio.io`. Sintoma medido:
+            #
+            #     curl: (28) Failed to connect to login.paladio.io:443
+            #     after 132807 ms
+            #
+            #   Ciento treinta y dos segundos, o sea el cuelgue de siempre: una
+            #   `NetworkPolicy` no rechaza, TIRA EL PAQUETE. Un pod de inquilino
+            #   no sale a internet — es lo que le da su aislamiento— asi que el
+            #   nombre publico de su propio IdP es inalcanzable desde dentro.
+            #
+            # ⭐ `50-jwks.yaml` ya lo tenia resuelto y con estas dos palabras:
+            #   *«la ruta por la que se alcanza al IdP y el nombre que el IdP
+            #   afirma son dos cosas independientes»*. Es la misma figura que
+            #   `arbol` (017), `kek` (019) y `entrada` (022): el nombre va en la
+            #   fila y es unico; por donde se llega es configuracion.
+            - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # ⛔ El testigo por `GIT_CONFIG_*` y no en la URL: un
+              #   `http://usuario:token@host/…` lo lee cualquier proceso de la
+              #   máquina. Misma disciplina que `ore-serve/git.rs`.
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              cd /trabajo
+              git clone --quiet \
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              cd arbol
+              echo "### las vistas con copia: $VISTAS"
+              # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esas
+              # vistas. Se leen de los documentos con awk (no con python: ver
+              # el catálogo), y cada una pide su credencial al cofre.
+              FUENTES=""
+              for QV in $(echo "$VISTAS" | tr ',' ' '); do
+                P="${QV%%.*}"; V="${QV#*.}"
+                T=$(awk -v n="$V" '/^kind: View/{k=1} k&&/name: *[A-Za-z0-9_]+/&&!m{if(match($0,"name: *"n"[^A-Za-z0-9_]|name: *"n"$")){m=1}} m&&/from:/{if(match($0,/table: *[A-Za-z0-9_.]+/)){s=substr($0,RSTART,RLENGTH);sub(/table: */,"",s);sub(/.*\./,"",s);print s;exit}}' packages/"$P"/views/*.yaml)
+                [ -n "$T" ] || { echo "✗ \`$QV\` no lee una tabla del paquete"; exit 1; }
+                F=$(awk -v n="$T" '/^kind: Table/{k=1} k&&/name: *[A-Za-z0-9_]+/&&!m{if(match($0,"name: *"n"[^A-Za-z0-9_]|name: *"n"$")){m=1}} m&&/datasource: *[A-Za-z0-9_]+/{s=$0;sub(/.*datasource: */,"",s);sub(/[^A-Za-z0-9_].*/,"",s);print s;exit}' packages/"$P"/tables/*.yaml)
+                [ -n "$F" ] || { echo "✗ la tabla \`$T\` de \`$QV\` no dice su fuente"; exit 1; }
+                case ",$FUENTES," in *",$F,"*) ;; *) FUENTES="${FUENTES:+$FUENTES,}$F" ;; esac
+              done
+              echo "### fuentes que hay que abrir: $FUENTES"
+              DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])')
+              [ "$DICE" = "$EMISOR/realms/$REALM" ] || { echo "✗ en $DIRECCION contesta \`$DICE\` y esperabamos \`$EMISOR/realms/$REALM\`. No se toca nada."; exit 1; }
+              CLIENTE=$(cat /puesto/agente-cliente); SECRETO=$(cat /puesto/agente-secreto)
+              TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token" \
+                -d grant_type=client_credentials -d "client_id=$CLIENTE" \
+                -d "client_secret=$SECRETO" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+              for F in $(echo "$FUENTES" | tr ',' ' '); do
+                VAR=$(awk -v n="$F" '/^datasources:/{d=1;next} d&&/^[^ ]/{exit} d{if(match($0,/name: *[A-Za-z0-9_]+/)){s=substr($0,RSTART,RLENGTH);sub(/name: */,"",s);c=s} if(match($0,/connectionEnv: *[A-Za-z0-9_]+/)&&c==n){v=substr($0,RSTART,RLENGTH);sub(/connectionEnv: */,"",v);print v;exit}}' ontology.config.yaml)
+                [ -n "$VAR" ] || { echo "✗ el manifiesto no dice el \`connectionEnv\` de \`$F\`"; exit 1; }
+                C=$(curl -s -o /trabajo/s.json -w '%{http_code}' \
+                  -H "authorization: Bearer $TOK" \
+                  "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$F")
+                [ "$C" = "200" ] || { echo "✗ el custodio contesto $C para \`fuente-$F\`"; head -c 200 /trabajo/s.json; exit 1; }
+                export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
+                rm -f /trabajo/s.json
+                echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
+              done
+
+              # ⭐ El ciclo. `ore` no abre sockets: canaliza `ore-read-<tipo>` a
+              #   `ore-store-gcs`, que sube con el token de esta cuenta. El
+              #   informe por vista va a `copias/` en el árbol.
+              echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+              ore materialize . --recoger --informe copias
+
+              git add -A copias
+              if git diff --cached --quiet; then
+                echo "· la copia no cambió: nada que empujar"
+                exit 0
+              fi
+              git -c user.name=copiador -c user.email=copiador@invalido \
+                commit -q -m "Copia: $VISTAS"
+              git push -q origin HEAD:main
+              echo "✓ copia empujada · $(git rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "200m", memory: 512Mi}
+            limits:   {cpu: "2000m", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

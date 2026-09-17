@@ -30,10 +30,12 @@
 //! No copia nada: eso es el Job `copiar-<paquete>` (I3), que lee esta
 //! declaración. No elige qué gana cuando el origen y la copia se contradicen
 //! (functions.md §7.4): es de F5.
+use crate::cola;
 use crate::rutas::{Servidor, analizar, de_node, token};
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
 use ore_entrada::http::Respuesta;
+use ore_entrada::identidad::Identidad;
 use std::path::{Path, PathBuf};
 
 fn campo(n: &Node, k: &str) -> Option<String> {
@@ -95,6 +97,7 @@ impl Servidor {
         paquete: &str,
         vista: &str,
         cuerpo: &str,
+        sujeto: &Identidad,
     ) -> Respuesta {
         if let Err(m) = token(paquete) {
             return Respuesta::error(422, format!("nombre de paquete: {m}"));
@@ -274,7 +277,15 @@ impl Servidor {
             deshacer(&escritos);
             return r;
         }
+        // ── y el Job de la copia, en la cola, en el mismo acto (I3) ─────────
+        //
+        // Con TODAS las vistas del árbol que declaran copia, no sólo ésta: el
+        // Job las materializa juntas y su nombre lleva el resumen de la lista.
+        // Es la misma figura que el catálogo (`encolar_catalogo`).
+        let todas = vistas_con_copia(raiz);
+        let encolado = self.encolar_copia(&todas, sujeto);
         Respuesta::creado(Json::obj([
+            ("encolado", Json::s(encolado)),
             ("package", Json::s(paquete)),
             ("view", Json::s(vista)),
             ("table", Json::s(tabla)),
@@ -356,15 +367,135 @@ impl Servidor {
                     })
                     .unwrap_or(Json::Arr(Vec::new()));
                 lista.push(Json::obj([
-                    ("view", Json::s(nombre)),
+                    ("view", Json::s(nombre.clone())),
                     ("table", tabla.map(Json::s).unwrap_or(Json::Bool(false))),
                     ("materialized", de_node(mat)),
                     ("key", clave),
+                    ("copia", informe_de(raiz, paquete, &nombre)),
                 ]));
             }
         }
         Respuesta::ok(Json::obj([("copias", Json::Arr(lista))]))
     }
+
+    /// El Job de la copia a la cola de trabajo, rendido de la plantilla que el
+    /// aprovisionador dejó allí. Devuelve una frase que dice qué pasó — nunca
+    /// tumba la decisión, que ya está escrita.
+    fn encolar_copia(&self, vistas: &[String], sujeto: &Identidad) -> String {
+        let Some(forja) = &self.cola else {
+            return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
+        };
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return format!("NO encolado: {e}"),
+        };
+        let dir = prestado.ruta();
+        let plantilla = match std::fs::read_to_string(dir.join(cola::PLANTILLA_COPIA)) {
+            Ok(t) => t,
+            Err(_) => {
+                return format!(
+                    "NO encolado: la cola no trae `{}`; hay que converger este inquilino",
+                    cola::PLANTILLA_COPIA
+                );
+            }
+        };
+        let (fichero, texto) = match cola::rendir_copia(&plantilla, vistas) {
+            Ok(v) => v,
+            Err(e) => return format!("NO encolado: {e}"),
+        };
+        if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
+            return format!("NO encolado: no se pudo escribir `{fichero}`: {e}");
+        }
+        if !forja.hay_cambios(dir) {
+            return format!("ya encolado como `{fichero}`");
+        }
+        match forja.publicar(dir, sujeto, &format!("Copiar {}", vistas.join(", "))) {
+            Ok(c) => format!("encolado como `{fichero}` · commit {c}"),
+            Err(e) => format!("NO encolado: {e}"),
+        }
+    }
+}
+
+/// `paquete.vista` de cada vista del árbol que declara `materialized`, en orden.
+fn vistas_con_copia(raiz: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
+        return out;
+    };
+    let mut dirs: Vec<PathBuf> = paquetes
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for d in dirs {
+        let paquete = d
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let Ok(vistas) = std::fs::read_dir(d.join("views")) else {
+            continue;
+        };
+        let mut rutas: Vec<PathBuf> = vistas.flatten().map(|e| e.path()).collect();
+        rutas.sort();
+        for p in rutas {
+            let Ok(texto) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(n) = parse::parse(&texto) else {
+                continue;
+            };
+            if campo(&n, "kind").as_deref() != Some("View") {
+                continue;
+            }
+            if n.get("spec")
+                .and_then(|(_, s)| s.get("materialized"))
+                .is_none()
+            {
+                continue;
+            }
+            if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
+                out.push(format!("{paquete}.{v}"));
+            }
+        }
+    }
+    out
+}
+
+/// Lo que la última pasada del Job dejó en `copias/<paquete>_<vista>.json`, con
+/// quién y cuándo (el commit). Sin informe: `pendiente` — se decidió y nadie ha
+/// copiado todavía.
+fn informe_de(raiz: &Path, paquete: &str, vista: &str) -> Json {
+    let rel = format!("copias/{paquete}_{vista}.json");
+    let Ok(texto) = std::fs::read_to_string(raiz.join(&rel)) else {
+        return Json::obj([("estado", Json::s("pendiente"))]);
+    };
+    let mut j = match parse::parse(&texto).map(|n| de_node(&n)) {
+        Ok(Json::Obj(m)) => m,
+        _ => return Json::obj([("estado", Json::s("ilegible")), ("fichero", Json::s(rel))]),
+    };
+    if let Some((quien, cuando)) = commit_de(raiz, &rel) {
+        j.insert("copiado_por".into(), Json::s(quien));
+        j.insert("cuando".into(), Json::s(cuando));
+    }
+    Json::Obj(j)
+}
+
+fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
+    let s = std::process::Command::new("git")
+        .current_dir(raiz)
+        .args(["log", "-1", "--format=%an%x1f%aI", "--", rel])
+        .output()
+        .ok()?;
+    if !s.status.success() {
+        return None;
+    }
+    let texto = String::from_utf8_lossy(&s.stdout);
+    let (a, b) = texto.trim().split_once('\u{1f}')?;
+    if a.is_empty() {
+        return None;
+    }
+    Some((a.to_string(), b.to_string()))
 }
 
 /// `changes:` con la forma del inductor (`mode: <x>` en su primera línea) →

@@ -45,7 +45,12 @@ use ore_view::{Catalogo, Clasificacion, Vista, comprobar, esquema, linaje};
 /// sitio y no en el otro.
 const CONDUCTO: &str = crate::vista::CONDUCTO;
 
-pub fn materializar(path: &Path, seco: bool, recoger: bool) -> std::process::ExitCode {
+pub fn materializar(
+    path: &Path,
+    seco: bool,
+    recoger: bool,
+    informe: Option<&Path>,
+) -> std::process::ExitCode {
     let pkg = match crate::cargar_valido(path, true) {
         Ok(p) => p,
         Err(c) => return c,
@@ -101,10 +106,33 @@ pub fn materializar(path: &Path, seco: bool, recoger: bool) -> std::process::Exi
             seco,
             recoger,
         ) {
-            Ok(linea) => println!("  {linea}"),
+            Ok((linea, parte)) => {
+                println!("  {linea}");
+                if let Some(dir) = informe
+                    && let Err(e) = escribir_informe(dir, &qn, &parte)
+                {
+                    println!("  {e}");
+                    fallos += 1;
+                }
+            }
             Err(e) => {
                 for l in e.lines() {
                     println!("  {l}");
+                }
+                if let Some(dir) = informe
+                    && let Err(e) = escribir_informe(
+                        dir,
+                        &qn,
+                        &ore_core::json::Json::obj([
+                            ("estado", ore_core::json::Json::s("error")),
+                            (
+                                "motivo",
+                                ore_core::json::Json::s(e.lines().next().unwrap_or("")),
+                            ),
+                        ]),
+                    )
+                {
+                    println!("  {e}");
                 }
                 fallos += 1;
             }
@@ -132,7 +160,7 @@ fn una(
     bundle: &str,
     seco: bool,
     recoger: bool,
-) -> Result<String, String> {
+) -> Result<(String, ore_core::json::Json), String> {
     // ── ① El plan, su digest y su esquema ───────────────────────────────────
     let plan = catalogo
         .expandir(qn)
@@ -206,18 +234,39 @@ fn una(
             .get("clave")
             .and_then(|(_, x)| x.as_str())
             .unwrap_or("?");
-        return Ok(format!(
-            "ya está · {clave}\n  el recibo lo dijo sin leer una sola fila del origen{recogidas}"
+        return Ok((
+            format!(
+                "ya está · {clave}\n  el recibo lo dijo sin leer una sola fila del origen{recogidas}"
+            ),
+            ore_core::json::Json::obj([
+                ("estado", ore_core::json::Json::s("al-dia")),
+                ("clave", ore_core::json::Json::s(clave)),
+                ("plan", ore_core::json::Json::s(plan.digest())),
+                (
+                    "testigo",
+                    ore_core::json::Json::obj([
+                        ("modo", ore_core::json::Json::s(&testigo.0)),
+                        (
+                            "valor",
+                            ore_core::json::Json::s(testigo.1.clone().unwrap_or_default()),
+                        ),
+                    ]),
+                ),
+                ("leidas", ore_core::json::Json::Int(0)),
+            ]),
         ));
     }
     if seco {
-        return Ok(format!(
-            "haría falta copiarla · testigo {}\n  el recibo no está: {}",
-            testigo.1.as_deref().unwrap_or("sin poblar"),
-            buscado
-                .get("recibo")
-                .and_then(|(_, x)| x.as_str())
-                .unwrap_or("?")
+        return Ok((
+            format!(
+                "haría falta copiarla · testigo {}\n  el recibo no está: {}",
+                testigo.1.as_deref().unwrap_or("sin poblar"),
+                buscado
+                    .get("recibo")
+                    .and_then(|(_, x)| x.as_str())
+                    .unwrap_or("?")
+            ),
+            ore_core::json::Json::obj([("estado", ore_core::json::Json::s("pendiente"))]),
         ));
     }
 
@@ -318,13 +367,85 @@ fn una(
             .unwrap_or("?")
             .to_string()
     };
-    Ok(format!(
-        "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}",
-        campo("clave"),
-        campo("filas"),
-        campo("bytes"),
-        campo("subido")
+    let entero = |k: &str| campo(k).parse::<i64>().unwrap_or(0);
+    Ok((
+        format!(
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}",
+            campo("clave"),
+            campo("filas"),
+            campo("bytes"),
+            campo("subido")
+        ),
+        ore_core::json::Json::obj([
+            ("estado", ore_core::json::Json::s("copiada")),
+            ("clave", ore_core::json::Json::s(campo("clave"))),
+            ("digest", ore_core::json::Json::s(campo("digest"))),
+            ("plan", ore_core::json::Json::s(plan.digest())),
+            ("filas", ore_core::json::Json::Int(entero("filas"))),
+            ("leidas", ore_core::json::Json::Int(leidas as i64)),
+            ("bytes", ore_core::json::Json::Int(entero("bytes"))),
+            (
+                "subido",
+                ore_core::json::Json::Bool(campo("subido") == "true"),
+            ),
+            (
+                "testigo",
+                ore_core::json::Json::obj([
+                    ("modo", ore_core::json::Json::s(&testigo.0)),
+                    (
+                        "valor",
+                        ore_core::json::Json::s(testigo.1.clone().unwrap_or_default()),
+                    ),
+                ]),
+            ),
+        ]),
     ))
+}
+
+/// **El informe de la copia** (`--informe DIR`): un JSON por vista, para que
+/// quien no alcanza ni el origen ni el almacén —`ore-serve`, la consola— sepa
+/// qué copia hay y cuánto tiene. Lo escribe el Job de la celda y lo empuja al
+/// árbol, y ahí el commit dice cuándo y quién. No es el registro (0015: el
+/// recibo vive en el almacén y no hay puntero mutable): es lo que la última
+/// pasada dijo, como el snapshot del informador.
+///
+/// Con «ya está» no se conocen las filas —nadie las contó—: se conservan las
+/// del informe anterior si la clave es la misma, y se dice `al-dia`.
+fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Result<(), String> {
+    use ore_core::json::Json;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("no se pudo crear `{}`: {e}", dir.display()))?;
+    let ruta = dir.join(format!("{}.json", qn.replace('.', "_")));
+    let mut m = match parte {
+        Json::Obj(m) => m.clone(),
+        _ => Default::default(),
+    };
+    m.insert("vista".into(), Json::s(qn));
+    if m.get("estado") == Some(&Json::s("al-dia"))
+        && let Ok(previo) = std::fs::read_to_string(&ruta)
+        && let Ok(n) = ore_core::parse::parse(&previo)
+        && n.get("clave").and_then(|(_, c)| c.as_str())
+            == m.get("clave").and_then(|c| {
+                if let Json::Str(s) = c {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+    {
+        for k in ["filas", "bytes", "digest"] {
+            if let Some((_, v)) = n.get(k)
+                && let Some(t) = v.as_str()
+            {
+                m.insert(
+                    k.into(),
+                    t.parse::<i64>().map(Json::Int).unwrap_or(Json::s(t)),
+                );
+            }
+        }
+    }
+    std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
+        .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))
 }
 
 /// **③ · El testigo, y el hueco que este peldaño deja abierto.**

@@ -231,7 +231,7 @@ impl Servidor {
                 let (n, v) = (n.to_string(), v.to_string());
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, &format!("copia de `{n}.{v}`"), |r| {
-                    self.decidir_copia(r, &n, &v, &cuerpo)
+                    self.decidir_copia(r, &n, &v, &cuerpo, sujeto)
                 })
             }
             ("POST", ["paquetes", n, "decisiones"]) => {
