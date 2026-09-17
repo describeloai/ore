@@ -761,13 +761,15 @@ fn main() -> std::process::ExitCode {
                 name.as_deref(),
                 solo,
                 solo_de.as_deref(),
-                tipo.as_deref(),
-                if *sin_modelar {
-                    Some(Vec::new())
-                } else if modelar.is_empty() {
-                    None
-                } else {
-                    Some(modelar.clone())
+                Reglas {
+                    tipo: tipo.as_deref(),
+                    modeladas: if *sin_modelar {
+                        Some(Vec::new())
+                    } else if modelar.is_empty() {
+                        None
+                    } else {
+                        Some(modelar.clone())
+                    },
                 },
             );
         }
@@ -1031,6 +1033,14 @@ fn resumir(props: &[String]) -> String {
     )
 }
 
+/// Lo que el alcance manda (ORE 0027 P1): la clase de la base y qué tablas
+/// se modelan. Juntas porque las dos van al mismo fichero.
+struct Reglas<'a> {
+    tipo: Option<&'a str>,
+    /// `None` = todas; `Some(vec![])` = ninguna.
+    modeladas: Option<Vec<String>>,
+}
+
 fn descubrir(
     origen: Option<&std::path::Path>,
     fuente: Option<&String>,
@@ -1038,9 +1048,9 @@ fn descubrir(
     nombre: Option<&str>,
     solo: &[String],
     solo_de: Option<&std::path::Path>,
-    tipo: Option<&str>,
-    modeladas: Option<Vec<String>>,
+    reglas: Reglas<'_>,
 ) -> std::process::ExitCode {
+    let Reglas { tipo, modeladas } = reglas;
     if let Some(t) = tipo
         && t != "standard"
         && t != "foreign"
