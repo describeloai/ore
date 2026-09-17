@@ -57,8 +57,8 @@ def validar(s):
     control = s.get("control")
     if not isinstance(control, dict) or not isinstance(control.get("listo"), bool):
         faltas.append("control: {listo bool, desde, reinicios}")
-    if len(json.dumps(s, separators=(",", ":"))) > 8192:
-        faltas.append("pasa de 8 KB")
+    if len(json.dumps(s, separators=(",", ":"))) > 32 * 1024:
+        faltas.append("pasa de 32 KB")
     return faltas
 
 

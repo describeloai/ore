@@ -790,8 +790,10 @@ impl Servidor {
     fn estado(&self, s: &Identidad, celda: &str, cuerpo: &str) -> Respuesta {
         let (celda, cuerpo) = (celda.to_string(), cuerpo.to_string());
         self.en_transaccion_observando(s, move |tx, emisor| {
-            if cuerpo.len() > 8192 {
-                return Err(format!("el snapshot pasa de 8 KB ({} bytes)", cuerpo.len()));
+            // 32 KB desde que lleva la lista de Jobs con el log del que corre
+            // (2026-09-17, Data › Jobs en tiempo real); eran 8 KB con solo las cuentas.
+            if cuerpo.len() > 32 * 1024 {
+                return Err(format!("el snapshot pasa de 32 KB ({} bytes)", cuerpo.len()));
             }
             let n = analizar(&cuerpo)?;
             let snapshot = nodo_a_json(&n)?;
@@ -1002,6 +1004,27 @@ fn validar_snapshot(s: &Json) -> Result<(), String> {
     for k in ["activos", "ok", "fallidos"] {
         if !matches!(jobs.get(k), Some(Json::Int(_))) {
             return Err(format!("`jobs.{k}` tiene que ser un entero"));
+        }
+    }
+    // ⭐ La LISTA (2026-09-17): opcional —un informador viejo no la manda—, y
+    //   si viene, cada Job con su nombre y su estado. Lo demas (tipo, sujeto,
+    //   inicio, fin, log) se guarda tal cual: es lo que la consola pinta.
+    if let Some(lista) = jobs.get("lista") {
+        let Json::Arr(items) = lista else {
+            return Err("`jobs.lista` tiene que ser una lista".into());
+        };
+        if items.len() > 50 {
+            return Err(format!("`jobs.lista` pasa de 50 Jobs ({})", items.len()));
+        }
+        for (i, j) in items.iter().enumerate() {
+            let Json::Obj(j) = j else {
+                return Err(format!("`jobs.lista[{i}]` no es un objeto"));
+            };
+            for k in ["nombre", "estado"] {
+                if !matches!(j.get(k), Some(Json::Str(_))) {
+                    return Err(format!("`jobs.lista[{i}].{k}` tiene que ser una cadena"));
+                }
+            }
         }
     }
     match m.get("control") {

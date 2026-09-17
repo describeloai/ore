@@ -42,14 +42,19 @@ metadata:
     ore.dev/tenant: demo
     ore.dev/rol: informador
 rules:
-  # Solo leer, solo aqui. Ni `watch` (no hace falta: mide cada minuto), ni
-  # `secrets`, ni nada de escritura. Un `Role`, no un `ClusterRole`.
+  # Solo leer, solo aqui. Ni `secrets`, ni nada de escritura. Un `Role`, no
+  # un `ClusterRole`. `watch` sobre los Jobs es lo que hace que la pantalla de
+  # Jobs se mueva en el acto (2026-09-17), y `pods/log` (solo `get`) lo que
+  # lleva las ultimas lineas del contenedor que trabaja: sigue siendo leer.
   - apiGroups: [""]
     resources: [resourcequotas, pods]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
   - apiGroups: [batch]
     resources: [jobs]
-    verbs: [get, list]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
