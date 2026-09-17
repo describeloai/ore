@@ -769,6 +769,17 @@ enlace), no lo hace. Queda de C3 en Assets, para cuando se pida: el modal mandan
 ficha de la base estándar («N/N copied · last copy») y **Copy into this cluster** sólo en la
 foránea (dónde viven los datos sí es del catálogo). Y después, I5.
 
+**Copy into this cluster, por tabla** (2026-09-17, ORE `c11195d`; consola `dff6dc8`, local).
+Pedido en la ficha de la **tabla**, sólo para tablas de una foreign database: es la
+**excepción a la clase**. El alcance gana `copies` (qué tablas se copian una a una; en una
+estándar no hace falta y no se escribe) y la `Regla` lo aplica: se copia si la base es
+estándar **o** la tabla está en `copies`. `ore copy <paquete> <objeto>`; `POST
+/paquetes/{n}/tablas/{objeto}/copiar` (201 con `copias`/`encolado`; 409 si ya se copia o la base
+es estándar; 404 fuera del alcance); el esquema dice `copied` por tabla; `tras_inducir` encola
+también en una foránea con copias sueltas. Consola: la entrada en *Actions* (modal de
+confirmación; 409 aviso, 404 error) y la fila *Storage* («Copied into this cluster» / «At
+source»). Prueba de fuego 6.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
