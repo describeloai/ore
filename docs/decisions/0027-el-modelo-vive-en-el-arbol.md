@@ -544,6 +544,26 @@ sin filas no hay sobre qué correr ni dónde aplicar.
 | **I3** | **el Job `copiar-<paquete>`** (`45-la-copia.yaml`, la figura de 44) que el convergedor rinde por paquete con vistas materializadas, y repite al refrescar · `GET /paquetes/{n}` gana `copia {filas, digest, testigo, cuándo}` | la copia de `olist.Customers` está; la segunda pasada lee **0 filas** del origen |
 | **I4** | la aceptación en `demo` con números, y la consola lo dice («N rows · copied at») | la tabla de la ADR |
 
+**P1 I1 hecha** (2026-09-17, `16e3526`): `ore-store-r2` pasa a ser la crate `ore-store` — el
+ciclo, el sobre y la carga compartidos tras un trait `Almacen` (seis verbos sobre claves y
+bytes), y dos binarios que sólo cambian el transporte: `ore-store-r2` (S3 SigV4, intacto) y
+**`ore-store-gcs`** (API JSON de GCS con el token del metadata server —Workload Identity— o
+`ORE_GCS_TOKEN` en local; `ifGenerationMatch=0` es el `If-None-Match: *`, y el `crc32c` que GCS
+devuelve se coteja con el nuestro: si no coincide, el objeto se borra). `ore materialize` elige
+con `ORE_STORE` (`r2` por defecto). `refresco.sh` corre contra los dos; estaba **rojo desde
+`OOS2030`** (7 sep: el fixture decía `namespace: bus` en el paquete `ventas`) y nadie lo vio
+porque no está en CI (necesita un almacén). R6 verde contra un bucket de GCS de prueba, **los
+mismos números** que contra R2: 1000 → 0 → 10/1010 → 3/1010 → 2 tras recoger, y las cuatro
+negativas. Bucket de prueba borrado; la imagen `ore-drivers` lleva los dos binarios.
+
+Y sobre la pregunta del 17 de septiembre —*«lo que falta es un espacio de decisión: cuándo es
+copia que supera al origen y cuándo espejo»*—: sí, y con tres preguntas, no una. **Qué** vistas
+tienen copia (hoy ninguna: `discover` no lo propone, con razón); **con qué clave** (la identidad
+de la fila: en `olist`, 8 decisiones `clave` abiertas, porque el origen no la declara);
+**y qué gana** cuando el origen y la copia se contradicen —functions.md §7.4, abierto—. Desde
+el ADR 0018 la copia no es un espejo: es el sistema de registro, y el origen no se toca. Lo que
+I2 pone es el sitio donde las dos primeras se deciden y firman; la tercera es de F5.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
