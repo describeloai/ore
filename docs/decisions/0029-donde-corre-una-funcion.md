@@ -181,3 +181,30 @@ filas; `sellers`, 3 095) o una vista con `where`.
 4. **F4a con `effects`** → Propuesta cotejada por `ore verify`.
 5. **F5**, y con ella **§7.4 decidido**: aplicar, refrescar, y que el hecho siga. Aquí se cumple «consistente».
 6. Después: **L0**, **F2·F3**, **V**, **F6**, **F4b**, **R**.
+
+> ### F4a · la función de lectura — medido el 2026-09-17, antes de escribir nada
+
+`pruebas-de-fuego/medida-f4a-lectura.py` (20 medidas, 29 s; nada de pago encendido): cuánto de
+cada mitad del Job (③) existe ya para una `Function` con `runtime: model`, `over`, `output` y
+**sin `effects`** sobre la vista copiada de 71 filas de `demo` (`olist_copia.productCategoryNameTranslation`).
+
+| mitad | lo que hay | lo que falta |
+|---|---|---|
+| **la gramática** | `ore validate` la admite tal cual sobre una base estándar **sin entidades** (A1–A2); sin `over`·`reads`·`effects` → OOS1004; `model` que no resuelve → OOS2005 (A4–A5) | nada. Dos notas para `oos`: sin `output` también compila (A3: leer y no devolver nada), y `over` sobre una vista **sin copia** compila (A6): es del runtime decirlo, y el Job lo dirá con 409 |
+| **traer** | Parquet → filas está (`carga::leer`, es lo que `anterior` usa para fundir); demo tiene 3 artefactos (1,26 MB) y 3 recibos (B2–B3) | un verbo **`leer`** en `ore-store-gcs`: cabecera del plan por stdin, las filas por stdout una por línea. Es `anterior` sacando lo que ya lee |
+| **invocar** | la red (`salida-al-modelo` en la plantilla), la identidad (token del agente, E0 c), `GET /modelos/{n}` → `{url, model}` (D6), el cuerpo de la llamada (E0 d: `/v1/chat/completions`, `temperature: 0`, `usage` con los tokens) | **`ore-invoke`** (⑤): en `ore-drivers`, con `ureq` como `ore-store-gcs`; stdin = la puerta, el id, el `prompt`, la forma de `output` y las filas; stdout = una línea por fila `{fila, output, tokens, ms}`; N llamadas a la vez (E0 b midió 4 sin degradar). Y `ore invoke <función>` en `ore-cli`, que encadena `leer → ore-invoke → sellar` sin abrir un socket |
+| **devolver** | — (D5: ③ sólo habla de la Propuesta) | **decisión**: el resultado es un artefacto del bucket del inquilino (`ore-store-gcs sellar` con cabecera `{función, commit, digest de la copia leída}`: mismo sobre, mismo nombre por digest, idempotente) y un **informe** en el árbol `resultados/<ns>_<f>_<corrida>.json` con filas, tokens, ms, y una muestra de 5. Los datos no van al árbol; los números sí, como la copia |
+| **mandar** | `ore verify` (no aplica a una lectura); el informador y Data › Jobs (un prefijo más: `invocar-`) | **`49-la-invocacion.yaml`** (Job con el agente de la celda; env `FUNCION`, `MODELO_URL`, `MODELO_ID` resueltos al encolar), **`POST /funciones/{ns}/{n}/invocar`** en `ore-serve` (compila el árbol, resuelve el `Model`, 409 si `over` no tiene copia, encola) |
+| **el modelo** | `demo` no tiene `Model`; `modelos-e0` está **parada** y `GET /modelos` tarda 7 s en decirlo (C1–C2) | el alta (`POST /modelos`), la máquina (0,01 $/h) y un g1 (E0 b: Vast ~1,5 $/h; la cuota G4 sigue en 0). **Con go** |
+
+**El espectro, en orden:**
+
+| | qué | acepta | paga |
+|---|---|---|---|
+| **F4a·I1** | `ore-store-gcs leer` | las 71 filas de demo vuelven del bucket **desde un Job de la celda** (con el token del metadata server, como `sellar`), y localmente contra un artefacto sellado en la prueba | no |
+| **F4a·I2** | `ore-invoke` + `ore invoke` | `la-invocacion-se-decide.sh` en CI contra un vLLM de mentira en Python (`/v1/chat/completions` que contesta por fila): 71 filas → 71 salidas selladas + informe; una fila que el modelo no contesta sale como `error`, no tumba la corrida | no |
+| **F4a·I3** | `49` + `POST /funciones/…/invocar` + prefijo `invocar-` | en demo, contra el stub en `modelos-e0` (**enciende la e2-micro**): el Job aparece en Data › Jobs corriendo, con su log, y termina con el informe en el árbol | 0,01 $/h |
+| **F4a·I4** | el modelo real | un g1 en Vast como E0 b (**community**: las 71 categorías de Olist son públicas, y aun así es su decisión), `POST /modelos` en demo, la misma función: latencia por fila, tokens, coste; se destruye con verificación | ~1 $ |
+
+Lo que no entra en F4a: `effects` (es el paso 4), Cedar (sólo si la función declara `authorization`),
+wasm, la `Action` (v1alpha10 `02-action`), y el botón en la Forge (se llama por la API y se ve en Jobs).
