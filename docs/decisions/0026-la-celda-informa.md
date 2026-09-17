@@ -87,7 +87,7 @@ muere por una respuesta rara deja de informar justo cuando más falta.
 ```
 
 `[usado, duro]` tal cual los dice Kubernetes (cantidades como cadenas; la consola las parsea, no
-el informador). ≤ 8 KB. `v` sube cuando cambie la forma; `ore-iam` rechaza lo que no reconoce. La
+el informador). ≤ 8 KB (32 KB desde el 2026-09-17: `jobs.lista`, los 20 últimos Jobs con el log del que corre, para que Data › Jobs se mueva en el acto — el informador observa con `watch` y mide cada 3 s mientras algo corre). `v` sube cuando cambie la forma; `ore-iam` rechaza lo que no reconoce. La
 medida `medida-el-estado-de-la-celda.py` **rinde este mismo snapshot** desde fuera con `kubectl`:
 es la implementación de referencia contra la que se coteja el informador.
 
@@ -162,7 +162,7 @@ de ② rendido con `kubectl`, byte a byte como lo rendirá el informador. Es la 
 `estado_medido`; la puerta de clases de `rutas.rs` pasa de «aprovisionador sí/no» a **una tabla
 clase → verbos** (persona, aprovisionador, agente). `los-verbos.sh` caso 13: se acuña un token
 tipo `agente` con el `sub` del agente de `acme` → 200 y el `GET` lo devuelve; una persona → 403;
-el agente de `nova` → 404; el aprovisionador → 403; 9 KB → 422; `v: 2` → 422; dos `POST` seguidos
+el agente de `nova` → 404; el aprovisionador → 403; 33 KB → 422 (eran 9 KB con el tope de 8); `v: 2` → 422; dos `POST` seguidos
 → una fila. **Acepta:** los-verbos verde en local y en CI; desplegado por CI; con `curl` y el
 token real de `ore-agente-victor` (traído por `gcloud`, desde fuera) un snapshot hecho a mano
 entra y `GET /celdas` lo devuelve con `medido_en`.
