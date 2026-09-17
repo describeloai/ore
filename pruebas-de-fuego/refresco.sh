@@ -10,6 +10,12 @@
 #   set -a; . ./.env.local; set +a
 #   PATH="$PWD/target/debug:$PATH" bash pruebas-de-fuego/refresco.sh
 #
+# Y contra el almacén de la celda (GCS con el token de la cuenta, sin clave;
+# `ore-store-gcs`, 2026-09-17), los mismos números:
+#
+#   ORE_STORE=gcs ORE_GCS_BUCKET=<bucket> ORE_GCS_TOKEN=$(gcloud auth print-access-token) \
+#   PATH="$PWD/target/debug:$PATH" bash pruebas-de-fuego/refresco.sh
+#
 # **Esta prueba nace en rojo, y eso es el diseño.** Cada ✗ nombra el peldaño que
 # lo cierra, así que su salida ES la lista de trabajo del plan.
 set -u
@@ -17,13 +23,20 @@ set -u
 ORE="${ORE:-./target/debug/ore.exe}"
 [ -x "$ORE" ] || ORE="./target/debug/ore"
 
-for v in ORE_R2_S3_ENDPOINT ORE_R2_BUCKET ORE_R2_ACCESS_KEY_ID ORE_R2_SECRET_ACCESS_KEY; do
+ALMACEN="${ORE_STORE:-r2}"
+case "$ALMACEN" in
+  r2)  NECESITA="ORE_R2_S3_ENDPOINT ORE_R2_BUCKET ORE_R2_ACCESS_KEY_ID ORE_R2_SECRET_ACCESS_KEY" ;;
+  gcs) NECESITA="ORE_GCS_BUCKET ORE_GCS_TOKEN" ;;
+  *)   echo "ORE_STORE=$ALMACEN no es un almacén: r2 o gcs"; exit 2 ;;
+esac
+for v in $NECESITA; do
   if [ -z "${!v:-}" ]; then
     echo "falta \$$v — carga el entorno primero:  set -a; . ./.env.local; set +a"
     exit 2
   fi
 done
-command -v ore-store-r2 >/dev/null || { echo "pon target/debug en el PATH"; exit 2; }
+command -v "ore-store-$ALMACEN" >/dev/null || { echo "pon target/debug en el PATH (falta ore-store-$ALMACEN)"; exit 2; }
+echo "almacén: $ALMACEN"
 
 fallos=0
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -80,7 +93,7 @@ X
 cat > "$D/tables/pedidos.yaml" <<'X'
 apiVersion: oos.dev/v1alpha8
 kind: Table
-metadata: { name: pedidos, namespace: bus }
+metadata: { name: pedidos, namespace: ventas }
 spec:
   datasource: ficheros
   object: "pedidos.jsonl"
@@ -94,13 +107,21 @@ kind: View
 metadata: { name: copia, namespace: ventas }
 spec:
   owner: team:ventas
-  from: { table: bus.pedidos }
+  from: { table: ventas.pedidos }
   fields: { id: order_id, pais: pais, total: total, cuando: actualizado_en }
   materialized: { datasource: lago, table: "cache.pedidos" }
 X
 export FICHEROS_DIR="$D/datos"
 
+# Cuántos objetos hay en el bucket, por fuera del delegado: la prueba no se fía
+# de que el almacén cuente lo suyo. En R2 con boto3; en GCS con `gcloud`, que en
+# local ya tiene la cuenta.
+GCLOUD=$(command -v gcloud.cmd || command -v gcloud || true)
 objetos() {
+  if [ "$ALMACEN" = "gcs" ]; then
+    "$GCLOUD" storage ls "gs://$ORE_GCS_BUCKET/**" 2>/dev/null | grep -c . || true
+    return
+  fi
   python - <<'PY'
 import os, boto3
 c = boto3.client("s3", endpoint_url=os.environ["ORE_R2_S3_ENDPOINT"],
@@ -207,6 +228,11 @@ fi
 
 echo
 echo "══ limpieza ══"
+if [ "$ALMACEN" = "gcs" ]; then
+  N=$(objetos)
+  [ "$N" -gt 0 ] && "$GCLOUD" storage rm "gs://$ORE_GCS_BUCKET/**" >/dev/null 2>&1
+  echo "  borrados $N · el bucket queda con $(objetos)"
+else
 python - <<'PY'
 import os, boto3
 c = boto3.client("s3", endpoint_url=os.environ["ORE_R2_S3_ENDPOINT"],
@@ -219,6 +245,7 @@ if ll:
     c.delete_objects(Bucket=B, Delete={"Objects": ll})
 print(f"  borrados {len(ll)} · el bucket queda con {c.list_objects_v2(Bucket=B).get('KeyCount', 0)}")
 PY
+fi
 rm -rf "$D" "$D-neg"
 
 echo

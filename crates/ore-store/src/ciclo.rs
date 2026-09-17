@@ -1,4 +1,5 @@
-//! `ore-store-r2` — **el almacén delegado**, fuera del compilador.
+//! **El ciclo del almacén delegado**, fuera del compilador — lo que `ore-store-r2`
+//! y `ore-store-gcs` tienen en común: todo menos el transporte.
 //!
 //! Normativo: [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md).
 //! Es la **tercera** vez que este árbol delega, y por la misma razón que las dos
@@ -39,16 +40,16 @@
 //! - dos escritores que lleguen a la vez escriben los mismos bytes, así que la
 //!   carrera es inofensiva.
 
-mod carga;
-mod r2;
-mod sobre;
-
+use crate::almacen::Almacen;
+use crate::{carga, sobre};
 use std::collections::BTreeMap;
 use std::io::Read;
 
-fn main() -> std::process::ExitCode {
+/// El `main` de los dos binarios: lee la cabecera, elige el verbo, y contesta
+/// una línea. Quién guarda los bytes lo decide el que llama.
+pub fn principal(cuenta: &dyn Almacen) -> std::process::ExitCode {
     let verbo = std::env::args().nth(1).unwrap_or_else(|| "sellar".into());
-    match correr(&verbo) {
+    match correr(&verbo, cuenta) {
         Ok(linea) => {
             println!("{linea}");
             std::process::ExitCode::SUCCESS
@@ -60,7 +61,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn correr(verbo: &str) -> Result<String, String> {
+fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
     let mut texto = String::new();
     std::io::stdin()
         .read_to_string(&mut texto)
@@ -71,7 +72,6 @@ fn correr(verbo: &str) -> Result<String, String> {
         .next()
         .ok_or("la entrada está vacía: se esperaba la cabecera en la primera línea")?;
     let cab = leer_cabecera(cabecera)?;
-    let cuenta = r2::Cuenta::del_entorno()?;
     let recibo = sobre::recibo(&cab);
 
     match verbo {
@@ -79,7 +79,7 @@ fn correr(verbo: &str) -> Result<String, String> {
         // antes de pedirle una fila a nadie, así que este `GET` de 71 bytes
         // decide si hay que leer el origen entero.
         "buscar" => {
-            let hay = r2::leer(&cuenta, &recibo)?;
+            let hay = cuenta.leer(&recibo)?;
             Ok(ore_core::json::Json::obj([
                 (
                     "clave",
@@ -108,11 +108,11 @@ fn correr(verbo: &str) -> Result<String, String> {
                     .and_then(|(_, v)| v.as_str())
                     .map(String::from)
             });
-            sellar(&cuenta, cab, &recibo, base.as_deref(), lineas)
+            sellar(cuenta, cab, &recibo, base.as_deref(), lineas)
         }
-        "anterior" => anterior(&cuenta, &cab, &recibo),
-        "recoger" => recoger(&cuenta, &cab, &recibo, false),
-        "recoger-seco" => recoger(&cuenta, &cab, &recibo, true),
+        "anterior" => anterior(cuenta, &cab, &recibo),
+        "recoger" => recoger(cuenta, &cab, &recibo, false),
+        "recoger-seco" => recoger(cuenta, &cab, &recibo, true),
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger` y \n             `recoger-seco`"
         )),
@@ -126,7 +126,7 @@ fn correr(verbo: &str) -> Result<String, String> {
 /// Al revés, lo peor que pasa es repetir el trabajo — que es lo que hace este
 /// programa idempotente en vez de frágil.
 fn sellar<'a>(
-    cuenta: &r2::Cuenta,
+    cuenta: &dyn Almacen,
     cab: sobre::Cabecera,
     recibo: &str,
     base: Option<&str>,
@@ -158,7 +158,8 @@ fn sellar<'a>(
     } else {
         let anteriores = match base {
             Some(b) => {
-                let bytes = r2::leer_bytes(cuenta, b)?
+                let bytes = cuenta
+                    .leer_bytes(b)?
                     .ok_or_else(|| format!("la copia base `{b}` no está en el almacén"))?;
                 let (_, payload) = sobre::abrir(&bytes)?;
                 carga::leer(payload)?
@@ -173,16 +174,16 @@ fn sellar<'a>(
     let clave = sobre::clave(&artefacto);
     let digest = ore_core::digest::de_bytes(&artefacto);
 
-    let subido = if r2::existe(cuenta, &clave)? {
+    let subido = if cuenta.existe(&clave)? {
         false
     } else {
-        r2::subir(cuenta, &clave, &artefacto)?
+        cuenta.subir(&clave, &artefacto)?
     };
     // Y el recibo, que es lo que hace que la próxima vez no se lea el origen.
     // `If-None-Match` deja ganar al primero: si un segundo escritor llega con
     // otra carga bajo la misma cabecera, el recibo NO cambia — y eso es lo que
     // vuelve detectable que el testigo no fijaba el estado que decía fijar.
-    let recibo_nuevo = r2::subir(cuenta, recibo, clave.as_bytes())?;
+    let recibo_nuevo = cuenta.subir(recibo, clave.as_bytes())?;
 
     Ok(ore_core::json::Json::obj([
         ("bytes", ore_core::json::Json::Int(artefacto.len() as i64)),
@@ -295,23 +296,23 @@ fn objeto_plano(linea: &str) -> Result<carga::Fila, String> {
 /// un recibo apuntando a algo que ya no está — y el paso ④ del ciclo diría *«ya
 /// está»* de una copia borrada.
 fn recoger(
-    cuenta: &r2::Cuenta,
+    cuenta: &dyn Almacen,
     cab: &sobre::Cabecera,
     vigente: &str,
     seco: bool,
 ) -> Result<String, String> {
     let prefijo = sobre::prefijo_de_plan(&cab.plan);
-    let recibos = r2::listar(cuenta, &prefijo)?;
+    let recibos = cuenta.listar(&prefijo)?;
 
     let mut borrados = 0usize;
     let mut sin_artefacto = 0usize;
     for r in recibos.iter().filter(|r| *r != vigente) {
         // El artefacto al que apunta, antes de quitarle el puntero.
-        let artefacto = r2::leer(cuenta, r)?;
+        let artefacto = cuenta.leer(r)?;
         if !seco {
-            r2::borrar(cuenta, r)?;
+            cuenta.borrar(r)?;
             match &artefacto {
-                Some(a) => r2::borrar(cuenta, a)?,
+                Some(a) => cuenta.borrar(a)?,
                 None => sin_artefacto += 1,
             }
         } else if artefacto.is_none() {
@@ -358,22 +359,22 @@ fn recoger(
 /// Así que aquí solo contestan `log` y `field`, y para `snapshot` la respuesta
 /// correcta es *no hay de dónde partir*. No es una limitación: es lo que ese modo
 /// significa.
-fn anterior(cuenta: &r2::Cuenta, cab: &sobre::Cabecera, vigente: &str) -> Result<String, String> {
+fn anterior(cuenta: &dyn Almacen, cab: &sobre::Cabecera, vigente: &str) -> Result<String, String> {
     let ordena = matches!(cab.testigo.modo.as_str(), "log" | "field");
     let mut mejor: Option<(String, String)> = None;
 
     if ordena && !cab.clave.is_empty() {
         let actual = cab.testigo.valor.as_deref().unwrap_or("");
-        for r in r2::listar(cuenta, &sobre::prefijo_de_plan(&cab.plan))? {
+        for r in cuenta.listar(&sobre::prefijo_de_plan(&cab.plan))? {
             if r == vigente {
                 continue;
             }
-            let Some(clave) = r2::leer(cuenta, &r)? else {
+            let Some(clave) = cuenta.leer(&r)? else {
                 continue;
             };
             // El testigo de esa copia sale de su propia cabecera: es la copia la
             // que sabe hasta cuándo fue cierta, no el recibo.
-            let Some(bytes) = r2::leer_bytes(cuenta, &clave)? else {
+            let Some(bytes) = cuenta.leer_bytes(&clave)? else {
                 continue;
             };
             let (cabecera, _) = sobre::abrir(&bytes)?;

@@ -23,7 +23,7 @@
 #                       forja, que es donde vive el árbol.
 #
 #   ore-drivers         todo lo que `ore` puede ejecutar: los tres `ore-read-*`,
-#                       `ore-fetch`, `ore-log`, `ore-sign` y `ore-store-r2`,
+#                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2` y `ore-store-gcs`,
 #                       sobre el SDK de Google Cloud porque `ore-read-bigquery`
 #                       delega en `bq` y no habla la API él mismo.
 #
@@ -46,9 +46,9 @@ COPY . .
 RUN cargo build --release --locked \
       -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
       -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
-      -p ore-fetch -p ore-log -p ore-sign -p ore-store-r2 \
+      -p ore-fetch -p ore-log -p ore-sign -p ore-store \
  && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery \
-             ore-fetch ore-log ore-sign ore-store-r2; do \
+             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs; do \
       strip "target/release/$b"; \
     done
 
@@ -129,6 +129,7 @@ COPY --from=build /src/target/release/ore-fetch          /usr/local/bin/ore-fetc
 COPY --from=build /src/target/release/ore-log            /usr/local/bin/ore-log
 COPY --from=build /src/target/release/ore-sign           /usr/local/bin/ore-sign
 COPY --from=build /src/target/release/ore-store-r2       /usr/local/bin/ore-store-r2
+COPY --from=build /src/target/release/ore-store-gcs      /usr/local/bin/ore-store-gcs
 
 USER 65532:65532
 WORKDIR /trabajo

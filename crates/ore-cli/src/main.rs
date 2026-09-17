@@ -600,7 +600,7 @@ enum Command {
     ///
     /// Compila el plan, comprueba el flujo, pregunta al almacen si la copia ya
     /// esta —y si esta, **no lee ni una fila del origen**—, y si no, canaliza
-    /// las filas de `ore-read-<tipo>` a `ore-store-r2`. `ore` no abre un socket
+    /// las filas de `ore-read-<tipo>` a `ore-store-<r2|gcs>` (`ORE_STORE`). `ore` no abre un socket
     /// en ningun momento: esta en medio de dos procesos.
     Materialize {
         #[arg(default_value = ".")]

@@ -6,10 +6,10 @@
 //! | 1 | compilar: el plan, su digest y el conducto que lo autoriza | `ore` |
 //! | 2 | comprobar el flujo | `ore` |
 //! | 3 | preguntarle al origen su testigo | `ore-read-<tipo> testigo` |
-//! | 4 | el recibo: **si está, termina aquí** | `ore-store-r2 buscar` |
-//! | 5 | leer, canalizar, sellar y subir | `ore-read-<tipo> leer` → `ore-store-r2 sellar` |
+//! | 4 | el recibo: **si está, termina aquí** | `ore-store-<r2|gcs> buscar` |
+//! | 5 | leer, canalizar, sellar y subir | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` |
 //! | 6 | registrar la copia | `ore` |
-//! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-r2 recoger` |
+//! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-<r2|gcs> recoger` |
 //!
 //! # Lo que `ore` hace y lo que no
 //!
@@ -595,10 +595,27 @@ fn almacen(
     if let Some(f) = filas {
         entrada.push_str(f);
     }
-    let salida = lector::ejecutar("ore-store-r2", &[verbo.to_string()], Some(&entrada))
-        .map_err(|f| f.mensaje)?;
+    let programa = programa_del_almacen()?;
+    let salida =
+        lector::ejecutar(&programa, &[verbo.to_string()], Some(&entrada)).map_err(|f| f.mensaje)?;
     ore_core::parse::parse(&salida)
-        .map_err(|e| format!("lo que devolvió `ore-store-r2` no analiza: {e:?}\n{salida}"))
+        .map_err(|e| format!("lo que devolvió `{programa}` no analiza: {e:?}\n{salida}"))
+}
+
+/// `ore-store-r2` o `ore-store-gcs`, según `ORE_STORE`: `r2` (un S3 con clave
+/// estática, el de siempre) o `gcs` (Google Cloud Storage con el token de la
+/// cuenta que corre: la celda). Los dos hablan el mismo protocolo y sellan el
+/// mismo nombre; cambia dónde y con qué credencial. Sin la variable, `r2`, como
+/// hasta el 2026-09-17. Un valor que no es uno de los dos es un error dicho, no
+/// un binario que no se encuentra.
+pub fn programa_del_almacen() -> Result<String, String> {
+    match std::env::var("ORE_STORE").as_deref() {
+        Err(_) | Ok("") | Ok("r2") => Ok("ore-store-r2".into()),
+        Ok("gcs") => Ok("ore-store-gcs".into()),
+        Ok(otro) => Err(format!(
+            "`ORE_STORE={otro}` no es un almacén: vale `r2` (S3 con clave estática) o `gcs` (Google Cloud Storage con Workload Identity)"
+        )),
+    }
 }
 
 #[cfg(test)]

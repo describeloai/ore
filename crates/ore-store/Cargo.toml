@@ -1,11 +1,18 @@
 [package]
-name    = "ore-store-r2"
+name    = "ore-store"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "ore-store-r2"
-path = "src/main.rs"
+path = "src/bin/ore-store-r2.rs"
+
+[[bin]]
+name = "ore-store-gcs"
+path = "src/bin/ore-store-gcs.rs"
 
 [dependencies]
 # La forma canonica y el digest. La cabecera del sobre es JSON canonico por lo

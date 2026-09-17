@@ -1247,7 +1247,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ore-store-r2"
+name = "ore-store"
 version = "0.1.0"
 dependencies = [
  "arrow-array",

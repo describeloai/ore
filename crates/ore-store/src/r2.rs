@@ -27,6 +27,7 @@
 //! 1010`, que **se lee como un fallo de autenticación y no lo es**. Costó un rato
 //! encontrarlo y por eso está escrito aquí y en el ADR.
 
+use crate::almacen::Almacen;
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
 
@@ -406,6 +407,27 @@ pub fn leer_bytes(c: &Cuenta, clave: &str) -> Result<Option<Vec<u8>>, String> {
         }
         Err(ureq::Error::Status(404, _)) => Ok(None),
         Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
+    }
+}
+
+impl Almacen for Cuenta {
+    fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+        leer(self, clave)
+    }
+    fn existe(&self, clave: &str) -> Result<bool, String> {
+        existe(self, clave)
+    }
+    fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+        subir(self, clave, cuerpo)
+    }
+    fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+        listar(self, prefijo)
+    }
+    fn borrar(&self, clave: &str) -> Result<(), String> {
+        borrar(self, clave)
+    }
+    fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+        leer_bytes(self, clave)
     }
 }
 
