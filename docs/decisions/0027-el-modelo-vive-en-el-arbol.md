@@ -751,6 +751,14 @@ de modelar en `ore-serve`, `modeladas` en `GET /paquetes`) y C3 (consola) — co
 lo está; 404 fuera del alcance); `model` entra en la lista de verbos herméticos (no consulta a
 nadie: es `review`). `GET /paquetes` dice `tablas` y `modeladas`. Prueba de fuego 0–6.
 
+**P1 C3, lo pedido** (2026-09-17, consola `9642d5d`, local): el árbol de Assets se construye
+desde `tables` —esquema físico › tabla › columnas con el tipo del origen— y no desde
+`entities`; la ficha de la tabla enseña las columnas de ORE con su `physicalType` y dice «—»
+donde el catálogo no sabe. Clippy en CI (`descubrir` con 8 argumentos) arreglado en `084ead1`;
+CI verde y `demo` desplegado. Queda de C3, para cuando se pida: **Model this table** (→
+`/modelar`), el modal mandando `type`, la ficha de la base estándar («N/N copied · last copy»)
+y **Copy into this cluster** en la foránea (lo que era I4c). Y después, I5.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
