@@ -663,6 +663,30 @@ decidir dos, 2/1 con un informe, y decidir copias sueltas **no cambia la clase**
 dice «Foreign database» o «Database» en la cabecera y en *Type*; las del banco y las creadas en
 local, sin clase, se pintan como database.
 
+**I4b, medida al construirla** (2026-09-17) — dos cosas que la gramática y `review` dijeron en
+cuanto una base estándar intentó nacer en la prueba de fuego:
+
+| | medido |
+|---|---|
+| **OOS2021** | `tienda.Customers` es `nature: entity` y **una copia de una tabla que sólo anexa no puede respaldarla**: sin clave, los borrados nunca viajan y la copia sería el histórico con las filas viejas dentro. Es `olist` en `demo` (8 tablas sin PK → `append`). La regla de la base —«todo lo que entre se copia»— y la de la gramática —«una copia que respalda una entidad necesita identidad»— se encuentran en un sitio: **la base estándar copia cada tabla en cuanto tiene clave** (del catálogo, o contestada en la decisión `clave`), y hasta entonces la vista espera. No es una tercera clase: es la regla aplicada a lo que se sabe |
+| **`review` vuelve a inducir** | `ore review` no edita: **re-induce el paquete entero desde el catálogo y las respuestas** (`revision.rs`: «una edición a mano entre `discover` y `review` se pierde»; `GOBERNADOS = entities, bindings, concepts, tables, views`). Así que el `materialized` que el verbo de I2 escribe en la vista y el `changes: upsert, key` en la tabla **desaparecen en la siguiente decisión contestada** — y `demo/olist` tiene 17 abiertas. El verbo de I2, tal como está, es frágil por construcción. `discover.scope.json` no se reescribe (se aplica): `type` sobrevive |
+| **el dueño** | un paquete recién inducido lleva `owner: cambiame` a propósito hasta que se conteste `dueno` (OOS2009): «compila o nada» rechazaría toda copia sobre `olist` hoy. La regla honesta ya existe en `documentos.rs` (la escribió Forge): **la decisión no añade un diagnóstico, o nada** — `validate` antes y después, lo que ya estaba roto se dice |
+
+**⇒ La copia se induce, no se edita.** Es la misma economía que `review`: lo que sale del
+paquete es siempre `inducir(catálogo, alcance, respuestas)`, y la copia entra por ahí:
+
+| | qué |
+|---|---|
+| el alcance | `discover.scope.json` lleva `"type": "standard"` (ya): la **regla** |
+| el inductor | con `type: standard`, cada vista trivial cuya tabla **tiene clave** —`primaryKey` del catálogo, o la decisión `clave` contestada (`clave_de(t, dec)`, que ya funde las dos)— sale con `materialized {datasource, table: "copia.<v>"}` y su tabla con `changes: mode: upsert, key: [...]` (lo que el verbo de I2 escribía a mano). Sin clave, la vista espera y la decisión `clave` de la cola dice que **la copia espera esta clave**. No es proponer una copia (lo que el inductor se niega a inventar): es aplicar una regla que alguien declaró |
+| `ore-serve` | `POST /paquetes {type: standard}` = escribir el alcance con la clase + `discover --from --type standard` + autorizar `materialization.payload` en `conduits.yaml` (fuera del paquete: no se re-induce) + no empeora. `POST /paquetes/{n}/copia` = la clase al alcance + `ore review` sin respuestas nuevas (re-induce con la regla). Contestar `clave` en una base estándar (`POST …/decisiones`) → `review` → la copia aparece sola. El verbo por vista de I2 se retira: la unidad de decisión es la base |
+| el Job | igual (I3): copia lo que el árbol declara. El convergedor y la cola, igual |
+| la consola | la ficha: «Standard · 3/8 copied · 5 waiting for a key» y la decisión `clave` en la cola de revisión es el camino |
+
+Lo que se tira: `decidir_copia` por vista (I2) y `hacer_estandar` escribiendo vistas a mano
+(el primer intento de I4b, sin commit). Lo que se queda de I2/I4a: el bucket, el conducto
+autorizado desde `ore-serve`, `clase_de`/`copias_de`, `GET /paquetes {type, copias}`.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
