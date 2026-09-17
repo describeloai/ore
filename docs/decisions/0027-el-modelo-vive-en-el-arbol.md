@@ -687,6 +687,21 @@ Lo que se tira: `decidir_copia` por vista (I2) y `hacer_estandar` escribiendo vi
 (el primer intento de I4b, sin commit). Lo que se queda de I2/I4a: el bucket, el conducto
 autorizado desde `ore-serve`, `clase_de`/`copias_de`, `GET /paquetes {type, copias}`.
 
+**P1 I4b hecha** (2026-09-17, `f7580aa`). El alcance lleva la regla (`"type": "standard"`;
+ausente = `foreign`); el inductor la aplica (`inducir_con_regla`): la vista de cada tabla **con
+clave** sale con `materialized` y su tabla en `upsert` por esa clave; sin clave, espera y la
+decisión `clave` lo dice. `ore discover --type`, `ore review --reinducir`. `ore-serve`: el alta
+pasa `--type`; `POST /paquetes/{n}/copia` asciende; y tras cada inducción (`tras_inducir`) el
+conducto y el Job. Dos cosas más que la gramática dijo al construirlo y se resolvieron por diseño,
+no por excepción: **`materialization.payload: {}` es ⊥ —sólo `STABLE`— y una vista inducida es
+`DRAFT` (OOS4002)**, así que el conducto admite `oos.maturity: DRAFT` (la copia es el registro
+del inquilino, no una superficie de consumo; los retículos propios siguen siendo decisión de
+alguien); y **`conduits.yaml` no nace hasta que el paquete tenga dueño** —con `cambiame` en la
+raíz del árbol no lo re-induciría nadie—: la pasada de decisiones lo trae. La prueba de fuego
+(0–6) fija lo que importa: contestar `clave` y `dueno` en una base estándar **trae la copia de
+customers y conserva la de orders** —lo que el verbo a mano perdía— y el árbol compila. El verbo
+por vista se retira. `GET /copias` sigue: es lo que el Job va a copiar, con el informe.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
