@@ -264,30 +264,53 @@ fn llamar(
     .jcs();
 
     let t0 = Instant::now();
-    let mut req = agente
-        .post(&format!("{}/chat/completions", pet.puerta))
-        .set("user-agent", AGENTE)
-        .set("content-type", "application/json");
-    if let Some(t) = token {
-        req = req.set("authorization", &format!("Bearer {t}"));
-    }
-    let texto = match req.send_string(&cuerpo) {
-        Ok(r) => r
-            .into_string()
-            .map_err(|e| format!("la respuesta no se pudo leer: {e}"))?,
-        Err(ureq::Error::Status(c, r)) => {
-            let cuerpo = r.into_string().unwrap_or_default();
-            let linea = cuerpo
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(160)
-                .collect::<String>();
-            return Err(format!("la puerta contestó {c}: {linea}"));
+    // La puerta puede estar un momento sin backend (medido en I4: el gateway
+    // da por caído un backend cuya sonda tarda más de 3 s y lo recupera 5 s
+    // después) y una fila no es culpable de eso: 502, 503, 429 y un fallo de
+    // transporte se reintentan tres veces con espera creciente. Cualquier
+    // otro código —400, 401, 404— es una respuesta, y se dice a la primera.
+    let mut texto = None;
+    let mut ultimo = String::new();
+    for (intento, espera) in [0u64, 2, 5, 10].into_iter().enumerate() {
+        if espera > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(espera));
         }
-        Err(ureq::Error::Transport(t)) => return Err(format!("no se alcanzó la puerta: {t}")),
-    };
+        let mut req = agente
+            .post(&format!("{}/chat/completions", pet.puerta))
+            .set("user-agent", AGENTE)
+            .set("content-type", "application/json");
+        if let Some(t) = token {
+            req = req.set("authorization", &format!("Bearer {t}"));
+        }
+        match req.send_string(&cuerpo) {
+            Ok(r) => {
+                texto = Some(
+                    r.into_string()
+                        .map_err(|e| format!("la respuesta no se pudo leer: {e}"))?,
+                );
+                break;
+            }
+            Err(ureq::Error::Status(c, r)) => {
+                let cuerpo = r.into_string().unwrap_or_default();
+                let linea = cuerpo
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect::<String>();
+                ultimo = format!("la puerta contestó {c}: {linea}");
+                if !matches!(c, 502 | 503 | 429) {
+                    return Err(ultimo);
+                }
+            }
+            Err(ureq::Error::Transport(t)) => ultimo = format!("no se alcanzó la puerta: {t}"),
+        }
+        if intento == 3 {
+            return Err(format!("{ultimo} (tras 4 intentos)"));
+        }
+    }
+    let texto = texto.ok_or_else(|| ultimo.clone())?;
     let ms = t0.elapsed().as_millis() as i64;
     let n = parse::parse(&texto).map_err(|e| format!("la respuesta no analiza: {e:?}"))?;
     let contenido = n
