@@ -287,6 +287,62 @@ Cuatro decisiones para las dos filas:
 
 ✓ Hechas (ORE, `documentos.rs`): dos filas más de `KINDS`, `/conceptos`, casos 15–18.
 
+### 4.7 · Function, antes de su fila (`medida-forge-function.py`, 2026-09-17)
+
+**La forma.** Tres `apiVersion`, tres formas: v1alpha2 exige `entrypoint` y `datasourceRef`
+en cada efecto; desde v1alpha8 `datasourceRef` es `OOS1005` (el destino se deriva por
+`backedBy`); v1alpha9 añade `runtime: model` con `model: modelo/<n>` y `prompt`, y bajo
+v1alpha8 esas claves son `OOS1005`. `metadata` no admite `labels` (`OOS1005`, y es normativo:
+la integridad no se declara sobre uno mismo); `x-rubix-displayName` pasa.
+
+**Una función es la copia.** Sobre acme-retail una función sola no entra, y no por la
+integridad: antes salta que la ontología escribiría por una vista **virtual** (`OOS2025`) cuya
+raíz no declara `changes.key` (`OOS2024`). Escribir exige `View.materialized`,
+`Table.changes.key` y el conducto `materialization.payload` autorizado, y en `hr.empleados`
+eso está cerrado a propósito (`OOS4011`: acme-retail no declara ese conducto). El camino
+completo, medido sobre `supply.Shipment.status`:
+
+| paso | queda |
+|---|---|
+| la función sola | `OOS2020 · 2024 · 2025` |
+| + Lattice de eje `integrity` | igual (y `OOS2013` latente: el esquema Cedar comprometido no conoce los niveles) |
+| + `ore export --format cedarschema` **ahora** | no puede: exige el árbol válido (rc 65) |
+| + etiqueta en la propiedad | igual |
+| + `Table.changes.key` | `OOS2020 · 2025` |
+| + `View.materialized` | `OOS2013` |
+| + conducto `materialization.payload` **con el retículo nuevo** | `OOS2013` (sin el retículo en el conducto, `OOS4002`) |
+| + esquema Cedar regenerado, al final | **compila** |
+
+Siete escrituras de seis kinds para una función, y la última es una **acción**
+(`cedarschema`), no un documento. Con la puerta «no empeora» cada una entra si no añade nada
+nuevo, así que el orden importa: lattice (deja `OOS2013`) → conducto → etiqueta → key →
+materialized → función → regenerar.
+
+**Las reglas de integridad**, ya sobre ese árbol: sin endosos `OOS7002` (untrusted); un `when`
+no cierra; `humanApproval` incondicional llega al techo igual que `attested`; `teamReview`
+`OOS7004`; derivada `OOS4008` antes que `OOS7006`; dos fuentes cae por `OOS2024/2025` de la
+otra vista; `OOS7001` arrastra por **precondiciones** (`target.x`), no por `input`. Quién
+nombra a una función: `Ruleset.duties[].call` (`OOS2001` al retirarla). Quién nombra una
+función: la propiedad (`writes`), el `Model` (`OOS2005` sin él; el que vale es el de
+`POST /modelos`, con perfil certificado y suscripción) y la política (`authorization`).
+
+**Hueco del compilador.** `effects[].writes` a una propiedad **o a una entidad** que no
+existe **compila**; retirar la entidad con la función puesta también. La spec (`02-function`
+§8) dice `OOS2005`. Nadie resuelve `writes`: `effect.rs::propiedad` devuelve `None` y se salta
+el efecto. Es el mismo tipo de hueco que `OOS2035`.
+
+Lo que decide la fila:
+
+1. **El verbo no exige nada propio**: todo lo dice el compilador con código. Escribe v1alpha9
+   (wasm compila igual bajo v1alpha9) y **no escribe Models**: los nombra.
+2. **`quien_nombra`**: Function ← `Ruleset.duties[].call`; y **Entity ← `Function.effects[].writes`**
+   (hoy ni el compilador lo ve; el 409 lo tiene que contar el verbo).
+3. **La fila sola no sirve para escribir una función en la celda**: hacen falta Lattice,
+   ConduitPolicy, Table y la acción `cedarschema` (I2 gobierno + I4 `/acciones`). La consola
+   tiene que decir el camino, no un formulario de siete campos.
+4. **Antes de la fila, el hueco**: `OOS2005` para `writes` que no resuelve (ore-core + spec +
+   conformidad), como se hizo con `OOS2035`.
+
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
 Todos los `kind` son documentos del mismo árbol y se escriben con la misma figura que ya usan
