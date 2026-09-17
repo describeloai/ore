@@ -729,6 +729,21 @@ sesión de Ontology Forge — C2/C3 se acuerdan con ella antes de tocar `documen
 guarda de I4b: todo — la regla en el alcance, `inducir_con_regla`, `--reinducir`, `tras_inducir`;
 sólo cambia que la copia deja de esperar a la clave. Después: I4c e I5.
 
+**P1 C1 hecha** (2026-09-17, `4d0b90b`). Corrección a la tabla de arriba: `vista` («el origen la
+declara vista: ¿la entidad o un informe sobre ella?») es de modelado, no física — quedan **2
+físicas** (`dueno`, `filas`) y **8 de modelado**. El alcance gana `"entities": [...]` (ausente =
+todas: `olist` en `demo` no cambia y `review` no borra nada; `[]` = ninguna, lo que el alta
+escribe). El inductor parte el catálogo (`Regla {estandar, modeladas}`): la tabla sin modelar da
+`Table` + `View` —el nombre que tendría su entidad, o el físico entero si colisiona, sin
+preguntar— y sólo `filas`; con la base estándar **se copia sin esperar a nada** (clave del origen
+→ `upsert`; sin ella, como el origen la dijo: instantánea). La modelada sin clave sigue esperando
+(OOS2021), y es coherente: modelar es pedir identidad, como en Foundry. `ore discover
+--no-model`/`--model`, `ore model <paquete> <objeto>`; el alta de `ore-serve` pasa `--no-model`.
+La prueba de fuego: `tienda` estándar nace con **0 entidades y las dos copias**, sólo `dueno` en la
+cola; `ore model customers` trae su entidad y su clave y la copia de customers pasa a esperar;
+contestada, vuelve en `upsert` y compila. Lo que queda: C2 (`/esquema` desde `tables/`, el verbo
+de modelar en `ore-serve`, `modeladas` en `GET /paquetes`) y C3 (consola) — con la Forge.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
