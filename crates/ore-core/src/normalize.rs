@@ -106,6 +106,12 @@ const CONJUNTOS: &[&str] = &[
     // `primaryKey`, que es lista de nombres y NO es conjunto — ahí el orden es
     // el de la clave compuesta.
     "exports",
+    // v1alpha10, y la prueba de abajo lo pidió antes de que nadie lo olvidara:
+    // `reads` es un conjunto porque leer dos vistas no pone una antes que otra
+    // (la superficie de lectura es la unión), y `sets` —los efectos de una
+    // `Action`— por lo mismo que `effects`: se cumplen todos y ninguno gana.
+    "reads",
+    "sets",
     // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
     // completa, ni siquiera para la versión con la que se escribió**. Tres de
     // estos se midieron dando dos digests para el mismo contenido —`reserved`,
