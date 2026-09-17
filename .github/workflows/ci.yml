@@ -312,7 +312,7 @@ jobs:
       # vLLM de mentira en Python.
       - name: y una funcion de lectura lee la copia, llama al modelo y devuelve
         run: |
-          cargo build --quiet -p ore-store -p ore-invoke
+          cargo build --quiet -p ore-cli -p ore-store -p ore-invoke
           bash pruebas-de-fuego/la-invocacion-se-decide.sh
 
   # ══════════════════════════════════════════════════════════════════════════
