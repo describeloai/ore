@@ -224,6 +224,59 @@ Cuatro decisiones salen de aquí, y son las de I2:
    admite las dos entradas: el documento en JSON (un formulario) o `yaml` tal cual (el texto);
    las dos pasan por la misma puerta. Quien edita el texto no pierde lo que escribió.
 
+### 4.6 · Concept e Interface, antes de sus filas (`medida-forge-concept-e-interface.py`, 2026-09-17)
+
+**La forma** (v1alpha4). `Concept.metadata`: `name · namespace · labels · description`; `spec`:
+`type` (obligatorio) `· labels · description · enum · aiContext · requiresGovernance ·
+confidence`. `Interface.metadata`: `name · namespace · description`; `spec`: `requires`
+(obligatorio) `· description`. Ninguno de los dos esquemas declara `patternProperties x-`, y
+aun así **`x-rubix-displayName` pasa** en los dos: la extensión la admite el validador, no el
+esquema.
+
+**Dónde vive.** El directorio no decide nada; el kind es el discriminante. Un Concept en
+`packages/hr/concepts/` o en `concepts/` de la raíz compila igual; una Interface en
+`interfaces/` de la raíz (que es lo que `ore init` crea; `concepts/` no lo crea) o en
+`packages/hr/interfaces/` también. **`OOS2030` no salta en la raíz**: un documento fuera de
+`packages/` no tiene paquete que lo contradiga.
+
+**El compilador**:
+
+| rotura | `ore validate` |
+|---|---|
+| un Concept nuevo que nadie habla | **`OOS9004`** — y en `DRAFT` también |
+| `is` a un concepto que no está · borrar el concepto que una propiedad habla | `OOS2001` en la propiedad |
+| la propiedad rebaja la etiqueta del concepto · la eleva | `OOS4012` · pasa |
+| el concepto lo habla sólo una entidad de otro paquete | pasa: `OOS9004` mide el árbol, aunque diga «del paquete» |
+| Concept sin `type` | `OOS1004` |
+| `requires` a lo que no está · borrar el concepto que una Interface requiere | `OOS2001` en la interfaz |
+| `implements` sin satisfacer · borrar la interfaz implementada | `OOS9001` · `OOS2001` en la entidad |
+| una Interface que nadie implementa | pasa |
+| **dos ficheros que declaran el mismo concepto** | **pasa** — el compilador no detecta el nombre cualificado duplicado. Anotado como fallo, no arreglado aquí |
+
+**Los importados.** `ore pack` de un vocabulario da un `.oob` (forma canónica en JCS, con sus
+`Concept`, su `Lattice` y su `Package`); en `vendor/*.oob` el cargador lo lee como cualquier
+documento, `is: gdpr.personalEmail` resuelve, y **`OOS9004` no alcanza a lo importado**: es
+publicar vocabulario. No hay `ore concept add` ni `ore interface add`.
+
+**El boceto**: `acme-retail` tiene cero `is:` y cero `Concept`; las 18 propiedades del boceto
+que «hablan» `gdpr.*` o `iso.*` se inventaron en `acme.ts`. En la celda, Concepts sale de
+`/documentos/Concept` y de `vendor/*.oob`.
+
+Cuatro decisiones para las dos filas:
+
+1. **Un PUT de Concept nunca podría entrar solo**: nadie lo habla todavía, `OOS9004` es un
+   diagnóstico nuevo, y la puerta «no empeora» lo rechaza. Y al revés tampoco: el `is` primero
+   es `OOS2001`. El verbo **tolera el `OOS9004` que nombra al documento recién escrito** y lo
+   dice en la respuesta (`sinHablar: true`); el árbol lo seguirá diciendo hasta que una
+   propiedad lo hable.
+2. **Quién nombra**: a un Concept, `Entity.properties.*.is` e `Interface.requires`; a una
+   Interface, `Entity.implements`. El 409 de `DELETE` los cuenta desde aquí.
+3. **El motor recorre también la raíz** para estos kinds (`ore init` pone `interfaces/` ahí),
+   con `paquete: null` para lo que no tiene; uno nuevo se escribe en
+   `packages/<ns>/<carpeta>/`. El verbo no exige nada propio: lo que falta ya es `OOS1004`.
+4. **`GET /conceptos`** = los `Concept` del árbol más los de `vendor/*.oob`, cada uno con su
+   paquete, si es importado, y **quién lo habla** (las propiedades con `is`).
+
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
 Todos los `kind` son documentos del mismo árbol y se escriben con la misma figura que ya usan
