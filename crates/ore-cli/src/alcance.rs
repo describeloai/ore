@@ -60,6 +60,12 @@ pub struct Alcance {
     /// después, y porque `review` re-induce las vistas y esto no se re-induce:
     /// se aplica.
     tipo: Option<String>,
+    /// **Qué tablas están modeladas** (ORE 0027 P1 C1): las que tienen `Entity`
+    /// y su cola de modelado. `None` = todas — lo que era antes de que el
+    /// catálogo y la ontología fueran dos cosas, y por eso los paquetes de
+    /// entonces no cambian—; `Some([])` = ninguna, lo que un alta del
+    /// catálogo escribe. `ore model` añade una.
+    entidades: Option<BTreeSet<String>>,
 }
 
 /// Lo que quedó fuera al aplicar un alcance, para poder decirlo.
@@ -79,7 +85,42 @@ impl Alcance {
             fuente: fuente.to_string(),
             objetos: objetos.into_iter().collect(),
             tipo: None,
+            entidades: None,
         }
+    }
+
+    /// Con las tablas modeladas dichas: `Some(vec![])` es «ninguna».
+    pub fn con_entidades(mut self, e: Option<Vec<String>>) -> Self {
+        self.entidades = e.map(|v| v.into_iter().collect());
+        self
+    }
+
+    /// ¿Esta tabla se modela (lleva `Entity` y sus decisiones)?
+    pub fn modela(&self, objeto: &str) -> bool {
+        self.entidades.as_ref().is_none_or(|e| e.contains(objeto))
+    }
+
+    /// Las modeladas, para el inductor: `None` = todas.
+    pub fn modeladas(&self) -> Option<&BTreeSet<String>> {
+        self.entidades.as_ref()
+    }
+
+    /// **Modelar** una tabla del alcance: la añade a las modeladas. `Err` si no
+    /// está en el alcance, o si ya lo estaba (para decirlo, no para fallar).
+    pub fn modelar(&mut self, objeto: &str) -> Result<(), String> {
+        if !self.objetos.contains(objeto) {
+            return Err(format!(
+                "`{objeto}` no está en el alcance de esta base ({} objetos)",
+                self.objetos.len()
+            ));
+        }
+        if self.modela(objeto) {
+            return Err(format!("`{objeto}` ya está modelada"));
+        }
+        self.entidades
+            .get_or_insert_with(BTreeSet::new)
+            .insert(objeto.to_string());
+        Ok(())
     }
 
     /// Con la clase declarada. Sólo `standard` se escribe: `foreign` es lo que
@@ -129,10 +170,18 @@ impl Alcance {
         {
             return Err(format!("`type` es `standard` o `foreign`, no `{t}`"));
         }
+        let entidades = raiz.get("entities").map(|(_, v)| {
+            v.items()
+                .iter()
+                .filter_map(|n| n.as_str())
+                .map(String::from)
+                .collect::<BTreeSet<String>>()
+        });
         Ok(Alcance {
             fuente,
             objetos,
             tipo: tipo.filter(|t| t == "standard"),
+            entidades,
         })
     }
 
@@ -146,6 +195,9 @@ impl Alcance {
         ];
         if let Some(t) = &self.tipo {
             campos.push(("type", Json::s(t)));
+        }
+        if let Some(e) = &self.entidades {
+            campos.push(("entities", Json::Arr(e.iter().map(Json::s).collect())));
         }
         Json::obj(campos).pretty()
     }
@@ -384,6 +436,33 @@ mod prueba {
                 .estandar()
         );
         assert!(Alcance::leer(r#"{"source":"crm","only":["x"],"type":"raro"}"#).is_err());
+    }
+
+    #[test]
+    fn las_modeladas_viajan_y_ninguna_es_distinto_de_todas() {
+        let a = Alcance::nuevo("crm", vec!["public.a".to_string(), "public.b".to_string()]);
+        assert!(a.modela("public.a"), "sin `entities`, todas");
+        assert!(!a.escribir().contains("entities"));
+        let mut n = Alcance::nuevo("crm", vec!["public.a".to_string(), "public.b".to_string()])
+            .con_entidades(Some(vec![]));
+        assert!(!n.modela("public.a"), "con `entities: []`, ninguna");
+        assert!(
+            n.escribir().contains("\"entities\": []"),
+            "{}",
+            n.escribir()
+        );
+        assert!(n.modelar("public.zzz").is_err(), "fuera del alcance");
+        n.modelar("public.a").unwrap();
+        assert!(n.modelar("public.a").is_err(), "ya modelada");
+        let t = n.escribir();
+        let v = Alcance::leer(&t).unwrap();
+        assert!(v.modela("public.a") && !v.modela("public.b"), "{t}");
+        assert!(
+            Alcance::nuevo("crm", vec!["x".to_string()])
+                .modelar("x")
+                .is_err(),
+            "con todas, modelar es no-op"
+        );
     }
 
     #[test]

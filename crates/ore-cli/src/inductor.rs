@@ -52,7 +52,7 @@
 use crate::vocabulario::Vocabulario;
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -439,15 +439,41 @@ pub fn inducir_con(
     dec: &Decisiones,
     voc: &Vocabulario,
 ) -> Induccion {
-    inducir_con_regla(cat, paquete, dec, voc, false)
+    inducir_con_regla(cat, paquete, dec, voc, &Regla::default())
 }
 
-/// **Con la clase de la base** (ORE 0027 P1 I4): `estandar` es la regla del
-/// alcance —«todo lo que entra se copia a la celda»— y el inductor la APLICA:
-/// cada vista trivial cuya tabla **tiene clave** (la del origen o la contestada
-/// en `clave`) sale con `materialized`, y su tabla con `changes: mode: upsert,
-/// key`. Sin clave, la vista espera: una copia que sólo anexa no puede
-/// respaldar una entidad (`OOS2021`) y la decisión `clave` lo dice.
+/// **Lo que el alcance manda sobre la inducción** (ORE 0027 P1): dos reglas que
+/// alguien declaró, y que el inductor aplica en vez de proponer.
+#[derive(Default, Clone)]
+pub struct Regla {
+    /// La base es estándar: cada vista sale con `materialized`.
+    pub estandar: bool,
+    /// Qué tablas se modelan (`Entity` y su cola). `None` = todas.
+    pub modeladas: Option<BTreeSet<String>>,
+}
+
+impl Regla {
+    fn modela(&self, tabla: &str) -> bool {
+        self.modeladas.as_ref().is_none_or(|m| m.contains(tabla))
+    }
+}
+
+/// **Con las reglas del alcance** (ORE 0027 P1).
+///
+/// **El catálogo no modela** (C1): una tabla del alcance da siempre su `Table`
+/// (el puntero físico, con todas las columnas y su `physicalType`) y su `View`
+/// trivial; la `Entity` —y las decisiones de modelado: colisión, clave, tipo,
+/// vacío, vista, concepto, relación, familia— sólo si el alcance la nombra en
+/// `entities`. Es el reparto de un catálogo de activos y una ontología: una
+/// fila se copia sin identidad; se **modela** con ella.
+///
+/// **La base estándar** (I4b): `estandar` es «todo lo que entra se copia a la
+/// celda», y el inductor lo APLICA: cada vista sale con `materialized`. Con
+/// clave —la del origen o la contestada— la tabla pasa a `upsert` y el refresco
+/// puede ser por diferencia; sin ella la copia es una instantánea que se
+/// sustituye entera. La única que espera es la de una tabla **modelada** sin
+/// clave: una copia que sólo anexa no puede respaldar una entidad (`OOS2021`),
+/// y la decisión `clave` lo dice.
 ///
 /// No contradice lo de arriba —«`materialized` no se propone»—: no se propone,
 /// se deriva de una regla que alguien declaró. Y por eso sobrevive a `review`:
@@ -457,10 +483,92 @@ pub fn inducir_con_regla(
     paquete: &str,
     dec: &Decisiones,
     voc: &Vocabulario,
-    estandar: bool,
+    regla: &Regla,
 ) -> Induccion {
+    let estandar = regla.estandar;
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
+
+    // ── El catálogo: lo que NO se modela ────────────────────────────────────
+    //
+    // Sale antes y aparte: no pasa por familias, colisiones, tipos ni claves.
+    // Lo único que se le pregunta es si una tabla con cero filas entra.
+    let (sin_modelar, con_modelo): (Vec<Tabla>, Vec<Tabla>) = cat
+        .tablas
+        .iter()
+        .cloned()
+        .partition(|t| !regla.modela(&t.nombre));
+    let cat = Catalogo {
+        fuente: cat.fuente.clone(),
+        tablas: con_modelo,
+    };
+    // El nombre de la vista sin modelar es el que tendría su entidad; si dos
+    // tablas del alcance lo comparten, el físico entero. Sin decisión: cuando
+    // se modele, `colision` la nombra y la vista la sigue.
+    let mut cuantos: BTreeMap<String, usize> = BTreeMap::new();
+    for t in sin_modelar.iter().chain(cat.tablas.iter()) {
+        *cuantos.entry(entidad(&t.nombre)).or_default() += 1;
+    }
+    let owner_catalogo = dec
+        .de(&id(Clase::Dueno, paquete))
+        .and_then(Respuesta::palabra)
+        .filter(|h| handle(h))
+        .unwrap_or("cambiame")
+        .to_string();
+    for t in &sin_modelar {
+        if dec.omite(&id(Clase::Filas, &t.nombre)) {
+            continue;
+        }
+        if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
+            pendientes.push(pendiente(
+                Clase::Filas,
+                &t.nombre,
+                &t.nombre,
+                "cero filas",
+                "puede ser una tabla viva y vacía o un resto. El inductor no \
+                 distingue una cosa de la otra, y borrarla sería decidirlo",
+                vec!["mantener".into(), OMITIR.into()],
+            ));
+        }
+        let base = entidad(&t.nombre);
+        let vista = if cuantos.get(&base).copied().unwrap_or(0) > 1 {
+            identificador(&t.nombre)
+        } else {
+            minuscula_inicial(&base)
+        };
+        let objeto = &objeto_de(t);
+        let sufijo = format!(
+            "{}__{}.yaml",
+            capitalizar(&vista),
+            identificador(&objeto.nombre)
+        );
+        // Sin entidad no hay a quién respaldar: la copia no espera a nada. Con
+        // clave del origen, `upsert`; sin ella, instantánea.
+        let clave = clave_de(t, dec);
+        let copia = estandar.then_some(if clave.is_empty() { None } else { Some(clave) });
+        ficheros.insert(
+            format!("tables/{sufijo}"),
+            tabla_yaml(
+                paquete,
+                &cat.fuente,
+                t,
+                objeto,
+                copia.as_ref().and_then(|c| c.as_deref()),
+            ),
+        );
+        ficheros.insert(
+            format!("views/{sufijo}"),
+            vista_yaml(
+                &vista,
+                paquete,
+                &owner_catalogo,
+                t,
+                objeto,
+                estandar.then_some(cat.fuente.as_str()),
+            ),
+        );
+    }
+    let cat = &cat;
 
     // ⓪ El dueño, antes que nada: desde v1alpha8 lo llevan DOS documentos —el
     //    paquete y cada vista— y sigue siendo UNA decisión. Resolverlo dentro
@@ -638,7 +746,8 @@ pub fn inducir_con_regla(
             identificador(&objeto.nombre)
         );
         // La copia, si la base es estándar y la tabla tiene con qué: la clave
-        // del origen o la contestada, que `claves` ya funde.
+        // del origen o la contestada, que `claves` ya funde. Aquí sí espera:
+        // esta vista respalda una entidad, y sin identidad no se mantiene.
         let copia = if estandar {
             claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned()
         } else {
@@ -680,7 +789,13 @@ pub fn inducir_con_regla(
 
     // Lo que se contestó y no llegó a ninguna pregunta. Una errata en un
     // identificador no puede tener el mismo aspecto que una decisión tomada.
-    let huerfanas = huerfanas(dec, &cat.tablas, &tablas, &c.acunados);
+    let todas_antes: Vec<Tabla> = cat
+        .tablas
+        .iter()
+        .cloned()
+        .chain(sin_modelar.iter().cloned())
+        .collect();
+    let huerfanas = huerfanas(dec, &todas_antes, &tablas, &c.acunados);
 
     Induccion {
         ficheros,
@@ -2269,12 +2384,16 @@ mod tests {
     #[test]
     fn la_base_estandar_copia_lo_que_tiene_clave_y_espera_lo_demas() {
         let cat = Catalogo::leer(CATALOGO).unwrap();
+        let todas = |estandar| Regla {
+            estandar,
+            modeladas: None,
+        };
         let sin = inducir_con_regla(
             &cat,
             "ventas",
             &Decisiones::default(),
             &Vocabulario::default(),
-            false,
+            &todas(false),
         );
         for (k, t) in &sin.ficheros {
             assert!(
@@ -2288,7 +2407,7 @@ mod tests {
             "ventas",
             &Decisiones::default(),
             &Vocabulario::default(),
-            true,
+            &todas(true),
         );
         let vista = &con.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"];
         assert!(
@@ -2326,7 +2445,8 @@ mod tests {
 ",
         )
         .unwrap();
-        let despues = inducir_con_regla(&cat, "ventas", &dec, &Vocabulario::default(), true);
+        let despues =
+            inducir_con_regla(&cat, "ventas", &dec, &Vocabulario::default(), &todas(true));
         let clientes = &despues.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
         assert!(clientes.contains("copia.clientes"), "{clientes}");
         let tabla = &despues.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
@@ -2336,6 +2456,103 @@ mod tests {
     key: [id]"
             ),
             "{tabla}"
+        );
+    }
+
+    /// El catálogo no modela: sin `entities`, una tabla da Table + View y
+    /// ninguna decisión de modelado; con la base estándar, la copia no espera
+    /// a ninguna clave. Modelada, vuelve a tener Entity y su cola.
+    #[test]
+    fn el_catalogo_no_modela_y_la_copia_no_espera() {
+        let cat = Catalogo::leer(CATALOGO).unwrap();
+        let ninguna = Regla {
+            estandar: true,
+            modeladas: Some(BTreeSet::new()),
+        };
+        let i = inducir_con_regla(
+            &cat,
+            "ventas",
+            &Decisiones::default(),
+            &Vocabulario::default(),
+            &ninguna,
+        );
+        assert!(
+            !i.ficheros.keys().any(|k| k.starts_with("entities/")),
+            "{:?}",
+            i.ficheros.keys()
+        );
+        assert!(
+            !i.ficheros.keys().any(|k| k.starts_with("concepts/")),
+            "{:?}",
+            i.ficheros.keys()
+        );
+        let vistas: Vec<&String> = i
+            .ficheros
+            .keys()
+            .filter(|k| k.starts_with("views/"))
+            .collect();
+        assert_eq!(
+            vistas.len(),
+            7,
+            "una vista por tabla del catálogo: {vistas:?}"
+        );
+        for k in &vistas {
+            assert!(
+                i.ficheros[*k].contains("materialized:"),
+                "estándar y sin modelar: se copia sin esperar · {k}"
+            );
+        }
+        // sin clave, la tabla se queda como el origen la dijo; con clave, upsert
+        let clientes = &i.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
+        assert!(!clientes.contains("upsert"), "{clientes}");
+        let facturas = &i.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
+        assert!(
+            facturas.contains("mode: upsert\n    key: [id_factura]"),
+            "{facturas}"
+        );
+        // la colisión de nombres (Pedidos / pedidos) se resuelve con el físico, sin preguntar
+        assert!(
+            i.ficheros
+                .contains_key("views/Rubix_demo_ventas_pedidos__rubix_demo_ventas_pedidos.yaml"),
+            "{:?}",
+            i.ficheros.keys()
+        );
+        let clases: BTreeSet<String> = i
+            .pendientes
+            .iter()
+            .map(|p| p.id.split('/').next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            clases.iter().cloned().collect::<Vec<_>>(),
+            vec!["dueno", "filas"],
+            "{clases:?}"
+        );
+        // modelada una, vuelve su entidad y su cola
+        let una = Regla {
+            estandar: true,
+            modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
+        };
+        let m = inducir_con_regla(
+            &cat,
+            "ventas",
+            &Decisiones::default(),
+            &Vocabulario::default(),
+            &una,
+        );
+        assert!(
+            m.ficheros.contains_key("entities/Clientes.yaml"),
+            "{:?}",
+            m.ficheros.keys()
+        );
+        assert!(
+            m.pendientes
+                .iter()
+                .any(|p| p.id == "clave/rubix_demo_ventas.clientes")
+        );
+        assert!(
+            !m.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"]
+                .contains("materialized:"),
+            "modelada sin clave: la copia espera"
         );
     }
 

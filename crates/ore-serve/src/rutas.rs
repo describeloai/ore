@@ -773,6 +773,9 @@ impl Servidor {
             lista.to_string_lossy().into_owned(),
             "--type".into(),
             tipo.into(),
+            // ⭐ El catalogo no modela (0027 P1 C1): una base nace con sus
+            //   tablas y vistas, sin entidades. Modelar es otro acto.
+            "--no-model".into(),
         ];
         let salida = mando::correr(&self.binario, raiz, &args);
         let _ = std::fs::remove_file(&lista);

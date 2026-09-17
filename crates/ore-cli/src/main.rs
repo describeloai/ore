@@ -434,6 +434,26 @@ enum Command {
         /// se elige.
         #[arg(long = "type", value_name = "standard|foreign")]
         tipo: Option<String>,
+        /// **El catálogo no modela** (ORE 0027 P1 C1): con esto, ninguna tabla
+        /// del alcance lleva `Entity` ni cola de modelado — sólo `Table` y
+        /// `View`. Se modela después, una a una, con `ore model`.
+        #[arg(long = "no-model", requires = "tipo")]
+        sin_modelar: bool,
+        /// Modela sólo estas tablas del alcance. Repetible. Sin esto ni
+        /// `--no-model`, se modelan todas (lo de siempre).
+        #[arg(long = "model", value_name = "OBJETO", conflicts_with = "sin_modelar")]
+        modelar: Vec<String>,
+    },
+    /// **Modelar una tabla de una base**: la añade a `entities` del alcance y
+    /// vuelve a inducir. Es lo que un catálogo de activos llama *promote to
+    /// object type*: la tabla gana su `Entity` y sus decisiones (la clave, las
+    /// relaciones, los conceptos), y su copia, si la base es estándar, pasa a
+    /// esperar la clave.
+    Model {
+        /// El paquete de la base: donde `discover --only` escribió.
+        path: PathBuf,
+        /// El objeto físico, como lo nombra el catálogo: `public.pedidos`.
+        objeto: String,
     },
     /// Escribe el paquete publicable: un `.oob`.
     ///
@@ -731,6 +751,8 @@ fn main() -> std::process::ExitCode {
             solo,
             solo_de,
             tipo,
+            sin_modelar,
+            modelar,
         } => {
             return descubrir(
                 from.as_deref(),
@@ -740,8 +762,16 @@ fn main() -> std::process::ExitCode {
                 solo,
                 solo_de.as_deref(),
                 tipo.as_deref(),
+                if *sin_modelar {
+                    Some(Vec::new())
+                } else if modelar.is_empty() {
+                    None
+                } else {
+                    Some(modelar.clone())
+                },
             );
         }
+        Command::Model { path, objeto } => return revision::modelar(path, objeto),
         Command::Review {
             path,
             answers,
@@ -882,6 +912,7 @@ fn main() -> std::process::ExitCode {
         | Command::Verify { .. }
         | Command::Materialize { .. }
         | Command::Review { .. }
+        | Command::Model { .. }
         | Command::Lock { .. }
         | Command::Pack { .. }
         | Command::Source(_)
@@ -1008,6 +1039,7 @@ fn descubrir(
     solo: &[String],
     solo_de: Option<&std::path::Path>,
     tipo: Option<&str>,
+    modeladas: Option<Vec<String>>,
 ) -> std::process::ExitCode {
     if let Some(t) = tipo
         && t != "standard"
@@ -1066,8 +1098,9 @@ fn descubrir(
         }
         None
     } else {
-        let a =
-            alcance::Alcance::nuevo(catalogo.fuente(), objetos).con_tipo(tipo.unwrap_or("foreign"));
+        let a = alcance::Alcance::nuevo(catalogo.fuente(), objetos)
+            .con_tipo(tipo.unwrap_or("foreign"))
+            .con_entidades(modeladas.clone());
         // ⚠️ Los nombres se toman ANTES de recortar. Listarlos despues era el
         //    error que tenia esto: con una errata, el recorte deja el catalogo
         //    vacio y la ayuda salia sin una sola linea — justo cuando lo unico
@@ -1117,13 +1150,18 @@ fn descubrir(
         Some(r) => vocabulario::Vocabulario::leer(&r),
         None => vocabulario::Vocabulario::default(),
     };
-    let estandar = el_alcance.as_ref().is_some_and(|(a, _)| a.estandar());
+    let regla = inductor::Regla {
+        estandar: el_alcance.as_ref().is_some_and(|(a, _)| a.estandar()),
+        modeladas: el_alcance
+            .as_ref()
+            .and_then(|(a, _)| a.modeladas().cloned()),
+    };
     let ind = inductor::inducir_con_regla(
         &catalogo,
         &paquete,
         &inductor::Decisiones::default(),
         &voc,
-        estandar,
+        &regla,
     );
     if let Err((codigo, mensaje)) = escribir_paquete(&ind, destino) {
         eprintln!("error: {mensaje}");

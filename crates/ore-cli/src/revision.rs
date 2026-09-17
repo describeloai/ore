@@ -110,6 +110,52 @@ pub fn review(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> ExitCo
     }
 }
 
+/// `ore model <paquete> <objeto>`: la tabla a `entities` del alcance, y la
+/// misma re-inducción que `--reinducir`. Lo que cambió es la regla.
+pub fn modelar(raiz: &Path, objeto: &str) -> ExitCode {
+    let r = crate::alcance::ruta(raiz);
+    let paso = (|| -> Result<String, Fallo> {
+        let Some(mut a) = crate::alcance::del_paquete(raiz).map_err(|m| fallo(65, m, &[]))? else {
+            return Err(fallo(
+                65,
+                format!(
+                    "`{}` no es una base: no tiene `{}`",
+                    raiz.display(),
+                    crate::alcance::FICHERO
+                ),
+                &[
+                    "  Se modela lo que entró por `discover --only`; un paquete entero ya está modelado.",
+                ],
+            ));
+        };
+        a.modelar(objeto).map_err(|m| fallo(65, m, &[]))?;
+        std::fs::write(&r, a.escribir()).map_err(|e| {
+            fallo(
+                73,
+                format!("no se pudo escribir `{}`: {e}", r.display()),
+                &[],
+            )
+        })?;
+        let informe = intentar(raiz, None, true)?;
+        Ok(format!(
+            "  ✓ `{objeto}` modelada: su entidad y sus decisiones entran en la cola\n{informe}"
+        ))
+    })();
+    match paso {
+        Ok(informe) => {
+            print!("{informe}");
+            ExitCode::SUCCESS
+        }
+        Err(f) => {
+            eprintln!("error: {}", f.mensaje);
+            for l in &f.ayuda {
+                eprintln!("{l}");
+            }
+            ExitCode::from(f.codigo)
+        }
+    }
+}
+
 fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<String, Fallo> {
     let ruta = raiz.join(CATALOGO);
     let texto = std::fs::read_to_string(&ruta).map_err(|e| {
@@ -133,11 +179,12 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     // ⭐ Y la CLASE de la base viaja con el alcance (ORE 0027 P1 I4): es la
     //   regla que el inductor aplica, y por eso sobrevive a esta re-induccion
     //   — el alcance se lee, no se reescribe.
-    let mut estandar = false;
+    let mut regla = inductor::Regla::default();
     let catalogo = match crate::alcance::del_paquete(raiz).map_err(|m| fallo(65, m, &[]))? {
         None => catalogo,
         Some(a) => {
-            estandar = a.estandar();
+            regla.estandar = a.estandar();
+            regla.modeladas = a.modeladas().cloned();
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
             let (c, r) = a.aplicar(catalogo);
@@ -168,7 +215,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     // puesto: preguntar otra vez lo que alguien ya decidió es la forma más
     // rápida de que deje de contestar.
     let mut dec = acumuladas(raiz)?;
-    let antes = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, estandar);
+    let antes = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
 
     let nuevas = match respuestas {
         Some(p) => {
@@ -215,7 +262,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
 
     // Y aquí está todo: la revisión es la misma inducción con las decisiones
     // tomadas. Nada de lo de abajo retoca un documento.
-    let despues = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, estandar);
+    let despues = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
     let retirados = escribir(raiz, &despues, &dec)?;
 
     Ok(informe(&antes, &despues, cuantas, &retirados))
