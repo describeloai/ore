@@ -208,3 +208,21 @@ cada mitad del Job (③) existe ya para una `Function` con `runtime: model`, `ov
 
 Lo que no entra en F4a: `effects` (es el paso 4), Cedar (sólo si la función declara `authorization`),
 wasm, la `Action` (v1alpha10 `02-action`), y el botón en la Forge (se llama por la API y se ve en Jobs).
+
+**F4a·I1 y I2, hechas (2026-09-17).** Decidido: **los datos al bucket, los números al árbol**.
+`ore-store-<tipo> leer` devuelve una copia **por su nombre** (el que su informe dejó en
+`copias/`), cabecera y filas una por línea: por nombre y no por plan porque «la vigente» la sabe
+quien construyó la cabecera, no el almacén. `ore-invoke` (crate nuevo, en `ore-drivers`) es el
+delegado de ⑤ para `runtime: model`: petición + filas por stdin, una línea por fila en el mismo
+orden, N hilos, `temperature: 0`, y al modelo se le pide un objeto JSON con las claves de
+`output`; una fila que no contesta bien sale como `error` y la corrida sigue. `ore invoke
+<árbol> --funcion ns.f` encadena `leer → ore-invoke → sellar` sin abrir un socket: el resultado es
+un artefacto del mismo almacén (esquema = el de la copia + `output`; `conducto` =
+`function:<ns>.<f>`; `testigo.valor` = la clave de la copia leída), así que dos corridas iguales
+son el mismo artefacto y la segunda no sube un byte; `--informe DIR` deja
+`resultados/<ns>_<f>_<corrida>.json` (filas, ok, errores, tokens, ms, muestra de 5). Se niega:
+`over` sin copia declarada o sin hacer, `effects`, `runtime` que no sea `model`, un `output` que
+se llama como un campo de la copia, sin puerta. `la-invocacion-se-decide.sh` (CI) lo cierra de
+punta a punta contra un S3 y un vLLM de mentira en Python (`de-mentira.py`): 12 filas → 11
+selladas + 1 error dicho; sin `MODELO_TOKEN`, 401 por fila y nada que sellar. Lo que I3 trae:
+`49-la-invocacion.yaml`, `POST /funciones/{ns}/{n}/invocar`, el prefijo `invocar-` en Jobs.

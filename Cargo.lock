@@ -1171,6 +1171,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-invoke"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "ore-core",
+ "ureq",
+]
+
+[[package]]
 name = "ore-log"
 version = "0.1.0"
 dependencies = [

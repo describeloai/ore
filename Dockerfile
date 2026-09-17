@@ -23,7 +23,7 @@
 #                       forja, que es donde vive el árbol.
 #
 #   ore-drivers         todo lo que `ore` puede ejecutar: los tres `ore-read-*`,
-#                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2` y `ore-store-gcs`,
+#                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2`, `ore-store-gcs` y `ore-invoke`,
 #                       sobre el SDK de Google Cloud porque `ore-read-bigquery`
 #                       delega en `bq` y no habla la API él mismo.
 #
@@ -130,6 +130,9 @@ COPY --from=build /src/target/release/ore-log            /usr/local/bin/ore-log
 COPY --from=build /src/target/release/ore-sign           /usr/local/bin/ore-sign
 COPY --from=build /src/target/release/ore-store-r2       /usr/local/bin/ore-store-r2
 COPY --from=build /src/target/release/ore-store-gcs      /usr/local/bin/ore-store-gcs
+# El invocador (0029 ⑤): la unica capacidad que anade es hablar con la puerta
+# de modelos, con el token de la celda. Vive aqui por lo mismo que el almacen.
+COPY --from=build /src/target/release/ore-invoke         /usr/local/bin/ore-invoke
 
 USER 65532:65532
 WORKDIR /trabajo

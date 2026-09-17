@@ -16,6 +16,7 @@ mod empaquetar;
 mod fuente;
 mod inductor;
 mod inicio;
+mod invocar;
 mod lector;
 mod materializar;
 mod mcp;
@@ -655,6 +656,37 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
     },
+    /// Invoca una `Function` de lectura (`runtime: model`, `over`, `output`,
+    /// sin `effects`) sobre la COPIA de `over`: `ore-store-<tipo> leer` trae
+    /// las filas, `ore-invoke` las lleva al modelo por la puerta con el token
+    /// de la celda, y el resultado se sella en el bucket del inquilino con un
+    /// informe en el arbol (ADR 0029, F4a). `ore` no abre un socket: esta en
+    /// medio de tres procesos.
+    Invoke {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// La funcion, cualificada: `<paquete>.<nombre>`.
+        #[arg(long, value_name = "NS.NOMBRE")]
+        funcion: String,
+        /// La puerta del modelo (`GET /modelos/{n}` → `url`); o `MODELO_URL`.
+        #[arg(long)]
+        puerta: Option<String>,
+        /// El id que la puerta sirve (`GET /modelos/{n}` → `model`); o `MODELO_ID`.
+        #[arg(long)]
+        modelo: Option<String>,
+        /// Escribe el informe de la corrida en `<DIR>/<ns>_<f>_<corrida>.json`.
+        #[arg(long, value_name = "DIR")]
+        informe: Option<PathBuf>,
+        /// Solo las N primeras filas de la copia: para probar, y para pagar menos.
+        #[arg(long)]
+        limite: Option<usize>,
+        /// Llamadas a la vez (E0 midio 4 sin degradar).
+        #[arg(long, default_value_t = 4)]
+        concurrencia: usize,
+        /// Trae la copia y dice cuantas filas; no llama al modelo ni sella nada.
+        #[arg(long)]
+        seco: bool,
+    },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
     /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
@@ -726,6 +758,29 @@ fn main() -> std::process::ExitCode {
             recoger,
             informe,
         } => return materializar::materializar(path, *seco, *recoger, informe.as_deref()),
+        Command::Invoke {
+            path,
+            funcion,
+            puerta,
+            modelo,
+            informe,
+            limite,
+            concurrencia,
+            seco,
+        } => {
+            return invocar::invocar(
+                path,
+                &invocar::Opciones {
+                    funcion,
+                    puerta: puerta.as_deref(),
+                    modelo: modelo.as_deref(),
+                    informe: informe.as_deref(),
+                    limite: *limite,
+                    concurrencia: *concurrencia,
+                    seco: *seco,
+                },
+            );
+        }
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -918,6 +973,7 @@ fn main() -> std::process::ExitCode {
         | Command::View { .. }
         | Command::Verify { .. }
         | Command::Materialize { .. }
+        | Command::Invoke { .. }
         | Command::Review { .. }
         | Command::Model { .. }
         | Command::Copy { .. }

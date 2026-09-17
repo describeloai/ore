@@ -528,7 +528,7 @@ fn cargar_para_copiar(
 }
 
 /// `packages/<p>/...` → `p`; `None` para lo que vive en la raíz del árbol.
-fn paquete_del_fichero(raiz: &Path, fichero: &Path) -> Option<String> {
+pub(crate) fn paquete_del_fichero(raiz: &Path, fichero: &Path) -> Option<String> {
     let rel = fichero.strip_prefix(raiz).unwrap_or(fichero);
     let mut partes = rel.components();
     match partes.next()?.as_os_str().to_str()? {

@@ -71,6 +71,10 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
     let cabecera = lineas
         .next()
         .ok_or("la entrada está vacía: se esperaba la cabecera en la primera línea")?;
+    // `leer` no lleva cabecera: lleva el nombre de lo que quiere leer.
+    if verbo == "leer" {
+        return leer(cuenta, cabecera);
+    }
     let cab = leer_cabecera(cabecera)?;
     let recibo = sobre::recibo(&cab);
 
@@ -114,7 +118,7 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
         "recoger" => recoger(cuenta, &cab, &recibo, false),
         "recoger-seco" => recoger(cuenta, &cab, &recibo, true),
         otro => Err(format!(
-            "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger` y \n             `recoger-seco`"
+            "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger`, \n             `recoger-seco` y `leer`"
         )),
     }
 }
@@ -195,6 +199,49 @@ fn sellar<'a>(
         ("subido", ore_core::json::Json::Bool(subido)),
     ])
     .jcs())
+}
+
+/// **`leer`: la copia, de vuelta, fila a fila** (0029 ③ «traer», F4a·I1).
+///
+/// Hasta aquí el almacén sólo releía para **fundir** (`anterior` → `sellar`
+/// con `base`). Una función lee la copia para trabajar sobre ella, y eso es
+/// otro verbo: la entrada es **el nombre del artefacto** —`{"clave": "ore/v1/
+/// <sha256>"}`, el que el informe de la copia deja en el árbol— y la salida es
+/// la cabecera del sobre en una línea y después **las filas, una por línea**,
+/// como objetos JSON de cadenas: el mismo protocolo de 0008 en sentido
+/// contrario. Quien lee sabe así **qué copia** leyó (su nombre es su digest) y
+/// puede dejarlo escrito en lo que produzca.
+///
+/// Por nombre y no por plan, a propósito: por plan habría que elegir cuál de
+/// los recibos es «la vigente», y eso lo sabe quien construyó la cabecera
+/// (`ore`, con el testigo del origen), no el almacén. El informe ya lo dice.
+fn leer(cuenta: &dyn Almacen, peticion: &str) -> Result<String, String> {
+    let n =
+        ore_core::parse::parse(peticion).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+    let clave = n
+        .get("clave")
+        .and_then(|(_, v)| v.as_str())
+        .filter(|c| !c.is_empty())
+        .ok_or("a la petición le falta `clave`: el nombre del artefacto que hay que leer")?;
+    let bytes = cuenta
+        .leer_bytes(clave)?
+        .ok_or_else(|| format!("`{clave}` no está en el almacén"))?;
+    let (cabecera, payload) = sobre::abrir(&bytes)?;
+    let filas = carga::leer(payload)?;
+    let mut out = String::with_capacity(bytes.len());
+    out.push_str(&cabecera);
+    for f in &filas {
+        out.push('\n');
+        out.push_str(
+            &ore_core::json::Json::Obj(
+                f.iter()
+                    .map(|(k, v)| (k.clone(), ore_core::json::Json::s(v)))
+                    .collect(),
+            )
+            .jcs(),
+        );
+    }
+    Ok(out)
 }
 
 /// La cabecera, leída con el analizador del núcleo — el mismo que lee YAML, que
@@ -409,4 +456,108 @@ fn anterior(cuenta: &dyn Almacen, cab: &sobre::Cabecera, vigente: &str) -> Resul
         ),
     ])
     .jcs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Un almacén en memoria: lo justo para que el ciclo se pruebe sin red.
+    #[derive(Default)]
+    struct Memoria(RefCell<BTreeMap<String, Vec<u8>>>);
+
+    impl Almacen for Memoria {
+        fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .0
+                .borrow()
+                .get(clave)
+                .map(|b| String::from_utf8_lossy(b).into_owned()))
+        }
+        fn existe(&self, clave: &str) -> Result<bool, String> {
+            Ok(self.0.borrow().contains_key(clave))
+        }
+        fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+            Ok(self
+                .0
+                .borrow_mut()
+                .insert(clave.to_string(), cuerpo.to_vec())
+                .is_none())
+        }
+        fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+            Ok(self
+                .0
+                .borrow()
+                .keys()
+                .filter(|k| k.starts_with(prefijo))
+                .cloned()
+                .collect())
+        }
+        fn borrar(&self, clave: &str) -> Result<(), String> {
+            self.0.borrow_mut().remove(clave);
+            Ok(())
+        }
+        fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.0.borrow().get(clave).cloned())
+        }
+    }
+
+    fn sellada(cuenta: &Memoria) -> String {
+        let cab = sobre::Cabecera {
+            plan: "sha256:plan".into(),
+            esquema: [
+                ("id".to_string(), "String".to_string()),
+                ("nombre".to_string(), "String".to_string()),
+            ]
+            .into(),
+            testigo: sobre::Testigo {
+                modo: "log".into(),
+                valor: Some("7".into()),
+            },
+            clave: vec!["id".into()],
+            conducto: "materialization.payload".into(),
+            bundle: "sha256:bundle".into(),
+        };
+        let filas: Vec<carga::Fila> = vec![
+            [
+                ("id".to_string(), "b".to_string()),
+                ("nombre".to_string(), "Bea".to_string()),
+            ]
+            .into(),
+            [("id".to_string(), "a".to_string())].into(),
+        ];
+        let parquet = carga::escribir(&cab.esquema, &filas).expect("parquet");
+        let artefacto = sobre::sellar(&cab, &parquet);
+        let clave = sobre::clave(&artefacto);
+        cuenta.subir(&clave, &artefacto).expect("sube");
+        clave
+    }
+
+    /// `leer` devuelve la cabecera del sobre y las filas una por línea; un
+    /// nulo es la propiedad ausente, como en el protocolo del driver.
+    #[test]
+    fn leer_devuelve_la_cabecera_y_las_filas_por_nombre() {
+        let cuenta = Memoria::default();
+        let clave = sellada(&cuenta);
+        let salida = leer(&cuenta, &format!("{{\"clave\":\"{clave}\"}}")).expect("lee");
+        let lineas: Vec<&str> = salida.lines().collect();
+        assert_eq!(lineas.len(), 3, "cabecera + 2 filas: {salida}");
+        assert!(
+            lineas[0].contains("\"plan\":\"sha256:plan\""),
+            "{}",
+            lineas[0]
+        );
+        assert_eq!(lineas[1], "{\"id\":\"b\",\"nombre\":\"Bea\"}");
+        assert_eq!(lineas[2], "{\"id\":\"a\"}", "el nulo no viaja");
+    }
+
+    #[test]
+    fn leer_lo_que_no_esta_lo_dice() {
+        let cuenta = Memoria::default();
+        let e = leer(&cuenta, "{\"clave\":\"ore/v1/nadie\"}").unwrap_err();
+        assert!(e.contains("no está en el almacén"), "{e}");
+        let e = leer(&cuenta, "{\"plan\":\"x\"}").unwrap_err();
+        assert!(e.contains("le falta `clave`"), "{e}");
+    }
 }

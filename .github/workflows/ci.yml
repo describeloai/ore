@@ -306,6 +306,15 @@ jobs:
           export PATH="$PWD/target/debug:$PATH"
           bash pruebas-de-fuego/fuentes-reales.sh
 
+      # La invocacion (0029 F4a I1+I2): la copia se relee por su nombre, cada
+      # fila va al modelo por `ore-invoke`, el resultado se sella en el mismo
+      # almacen y el informe queda en el arbol. Sin red de verdad: un S3 y un
+      # vLLM de mentira en Python.
+      - name: y una funcion de lectura lee la copia, llama al modelo y devuelve
+        run: |
+          cargo build --quiet -p ore-store -p ore-invoke
+          bash pruebas-de-fuego/la-invocacion-se-decide.sh
+
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre
   #

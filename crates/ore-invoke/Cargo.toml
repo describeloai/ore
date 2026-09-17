@@ -1,0 +1,19 @@
+[package]
+name    = "ore-invoke"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ore-invoke"
+path = "src/main.rs"
+
+[dependencies]
+# El analizador y la forma canónica del núcleo: la petición, las filas y lo
+# que el modelo contesta son JSON, y no entra un segundo analizador para eso.
+ore-core = { path = "../ore-core" }
+
+# HTTP bloqueante, como `ore-store-gcs` y por la misma razón: este programa
+# hace N llamadas y termina. El gateway se alcanza por HTTP llano dentro de la
+# VPC (0027 E0); el TLS de la plataforma va por si algún día no.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
