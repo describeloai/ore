@@ -265,6 +265,25 @@ grep -q '"name":false,"uso"' "$TMP/lista.json" || falla "7b · la fila de deriva
 curl -s -o /dev/null -X DELETE "http://127.0.0.1:$PUERTO_GW/admin/tenants/victor/models/deepseek-ai%2FDeepSeek-V2-Lite"
 curl -sf -H "$SUJ" "$BASE/modelos" | grep -q '"modelos":\[\]' || falla "7b · retirada la suscripcion la lista no queda vacia"
 dice "7b · suscrito sin documento: una fila retiring, declarado: false · retirada, la lista vacia"
+# ── 7c · el arbol no compila por OTRA cosa: el modelo entra igual (no empeora) ──
+# Medido en demo (0029 F4a I3): cinco bases foraneas con `owner: cambiame`
+# (OOS2009, decisiones sin contestar) bloqueaban el alta de un modelo que no
+# las toca. La regla es no EMPEORAR, la misma que la Forge y que retirar.
+mkdir -p "$REPO/packages/roto"
+cat > "$REPO/packages/roto/package.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: roto, version: 0.1.0, status: active, domain: sales }
+spec: { owner: cambiame }
+Y
+( cd "$REPO" && "$ORE" validate . 2>&1 | grep -q OOS2009 ) || falla "7c · la premisa no vale: el arbol con `roto` no da OOS2009"
+COD=$(post '{"name":"v2-lite","profile":"g1/deepseek-v2-lite"}')
+[ "$COD" = "201" ] || falla "7c · con el arbol roto por otra base el alta devolvio $COD: $(cuerpo)"
+[ -f "$REPO/modelos/v2-lite.yaml" ] || falla "7c · no escribio el modelo"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/modelos/v2-lite")
+[ "$COD" = "200" ] || falla "7c · retirar con el arbol roto por otra base devolvio $COD: $(cuerpo)"
+rm -rf "$REPO/packages/roto"
+dice "7c · el arbol roto por OTRA base (OOS2009): el modelo entra (201) y sale (200): no empeorar, no compilar entero"
 
 # ── 8 · el gateway caido: nada se escribe ───────────────────────────────────
 kill "$GW" 2>/dev/null; wait "$GW" 2>/dev/null; GW=""

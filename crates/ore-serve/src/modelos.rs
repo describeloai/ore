@@ -54,8 +54,8 @@
 //! de propósito general: es `http::pedir`, con su plazo, y nada más.
 
 use crate::cola;
-use crate::mando;
-use crate::rutas::{Servidor, analizar, primera_linea, token};
+
+use crate::rutas::{Servidor, analizar, token};
 use ore_core::json::Json;
 use ore_core::parse::{self, Node};
 use ore_entrada::http::{self, Respuesta};
@@ -471,6 +471,15 @@ impl Servidor {
         if fichero.exists() {
             return Respuesta::error(409, format!("ya hay un modelo `{nombre}`"));
         }
+        // ⭐ La regla de no empeorar, no «el árbol entero compila»: medido en
+        //   `demo` (0029 F4a I3), cinco bases foráneas con `owner: cambiame`
+        //   (OOS2009, decisiones sin contestar) bloqueaban el alta de un
+        //   modelo que no las toca. Lo que se exige es que el modelo no AÑADA
+        //   diagnósticos (`empeora`, la misma regla que la Forge y que retirar).
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
         let mut texto =
             format!("apiVersion: oos.dev/v1alpha9\nkind: Model\nmetadata:\n  name: {nombre}\n");
         if let Some(d) = &descripcion {
@@ -490,7 +499,7 @@ impl Servidor {
         }
         // la gramática decide la forma (tier, task, digest…), no este proceso.
         // (Sobre un directorio no hay clon que tirar: lo escrito se retira.)
-        if let Some(r) = self.no_compila(raiz) {
+        if let Err(r) = self.empeora(raiz, &antes, &format!("el modelo `{nombre}`")) {
             let _ = std::fs::remove_file(&fichero);
             return r;
         }
@@ -558,6 +567,10 @@ impl Servidor {
             .ok()
             .and_then(|n| n.get("spec").and_then(|(_, s)| campo(s, "profile")))
             .unwrap_or_default();
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
         if let Err(e) = std::fs::remove_file(&fichero) {
             return Respuesta::error(
                 500,
@@ -566,7 +579,7 @@ impl Servidor {
         }
         // una función que lo nombre deja de resolver: se dice y no se retira.
         // (Se vuelve a escribir: sobre un directorio no hay clon que tirar.)
-        if let Some(r) = self.no_compila(raiz) {
+        if let Err(r) = self.empeora(raiz, &antes, &format!("retirar el modelo `{nombre}`")) {
             let _ = std::fs::write(&fichero, &texto);
             let motivo = match &r.cuerpo {
                 Json::Obj(m) => m
@@ -827,21 +840,6 @@ impl Servidor {
             })?;
         let url = self.gateway()?.url.clone();
         Ok((url, id))
-    }
-
-    /// `ore validate` sobre el clon: `None` si compila, la respuesta 422 si no.
-    pub(crate) fn no_compila(&self, raiz: &Path) -> Option<Respuesta> {
-        match mando::correr(&self.binario, raiz, &["validate".into(), ".".into()]) {
-            Err(e) => Some(Respuesta::error(500, e.to_string())),
-            Ok(s) if !s.bien() => Some(Respuesta::error(
-                422,
-                format!(
-                    "el árbol no compila con ese modelo: {}",
-                    primera_linea(&s.stdout, &s.stderr)
-                ),
-            )),
-            Ok(_) => None,
-        }
     }
 }
 
