@@ -1158,6 +1158,16 @@ fn descubrir(
             .map(|n| n.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_else(|| "inducido".into())
     });
+    // ⛔ El nombre del paquete ES el espacio de nombres de todo lo que induce
+    //   (OOS2030): una letra y luego letras, dígitos y `_`. Con un guion se
+    //   escribiría un paquete entero que no compila — medido en `victor`
+    //   (`test-standard`, 0027 P1 I5).
+    if !ore_core::pertenencia::puede_ser_namespace(&paquete) {
+        eprintln!(
+            "error: `{paquete}` no puede ser un espacio de nombres: una letra y luego letras, dígitos y `_` (sin guiones ni puntos)"
+        );
+        return std::process::ExitCode::from(64); // EX_USAGE
+    }
 
     // El vocabulario que el repositorio ya publica. Sin esto la séptima pregunta
     // solo sabe ofrecer «acuña uno», que es la respuesta cara y la que produce

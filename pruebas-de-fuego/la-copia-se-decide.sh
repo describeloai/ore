@@ -7,7 +7,8 @@
 #
 #   0  una base a mano (sin alcance) es foranea y no declara copia:
 #      GET /paquetes → type foreign, copias 0/0 · GET /copias → []
-#   1  POST /paquetes {type: raro}      422 · nada escrito
+#   1  POST /paquetes {type: raro}      422 · nada escrito · y un nombre con guion (no puede ser
+#                                       espacio de nombres, OOS2030): 422 antes de escribir nada
 #   2  POST /paquetes {type: standard}  200 · la regla en discover.scope.json · EL CATALOGO NO
 #                                       MODELA (C1): 0 entidades, 2 tablas, 2 vistas, y las DOS
 #                                       con `materialized` — la copia no espera a ninguna clave;
@@ -27,6 +28,9 @@
 #      GET /paquetes dice tablas y modeladas
 #   4  ascender                         409 si ya es estandar · 422 si no es una base (sin alcance)
 #   5  el informe del Job en el arbol   GET /copias: copiada, filas, copiado_por, cuando · 2/1
+#   7  DELETE /paquetes/{n}             409 para la fuente entera (pg) · 200 para una base: el
+#                                       paquete fuera, la cola reencolada con las copias que quedan ·
+#                                       404 despues · el arbol compila
 #   6  una base foranea (sin type)      200 · nada con copia · COPIAR UNA TABLA (POST
 #                                       /tablas/{o}/copiar): 201, la base sigue foranea y solo
 #                                       esa vista copia (`copies` en el alcance, `copied` en el
@@ -202,7 +206,11 @@ dice "0 · una base a mano es foranea: GET /paquetes foreign, 0/0 · GET /copias
 COD=$(alta '{"name":"tienda","source":"pg","only":["olist.customers","olist.orders"],"type":"raro"}')
 [ "$COD" = "422" ] || falla "1 · un type raro devolvio $COD: $(cuerpo)"
 [ ! -e "$REPO/packages/tienda" ] || falla "1 · un type raro dejo el paquete escrito"
-dice "1 · type raro: 422 y nada escrito"
+COD=$(alta '{"name":"test-standard","source":"pg","only":["olist.orders"],"type":"standard"}')
+[ "$COD" = "422" ] || falla "1 · un nombre con guion devolvio $COD: $(cuerpo)"
+cuerpo | grep -q "no puede ser un espacio de nombres" || falla "1 · no dijo por que el guion no vale: $(cuerpo)"
+[ ! -e "$REPO/packages/test-standard" ] || falla "1 · un nombre con guion dejo el paquete escrito"
+dice "1 · type raro: 422 y nada escrito · nombre con guion: 422 con la regla, y nada escrito"
 
 # ── 2 ───────────────────────────────────────────────────────────────────────
 COD=$(alta '{"name":"tienda","source":"pg","only":["olist.customers","olist.orders"],"type":"standard"}')
@@ -335,4 +343,21 @@ COD=$(copiar espejo olist.customers)
 [ "$COD" = "409" ] || falla "6 · copiar una tabla de una estandar devolvio $COD: $(cuerpo)"
 dice "6 · una foranea nace sin copia · copiar UNA tabla: 201, sigue foranea, solo esa copia, el Job la lleva, 409 otra vez · al ascender: 201, la regla, las dos con copia, el Job con las cuatro · copiar en una estandar: 409"
 
-echo "✓ la base estandar, y el catalogo no modela: 0–6"
+# ── 7 · retirar una base ────────────────────────────────────────────────────
+borrar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/paquetes/$1"; }
+COD=$(borrar pg)
+[ "$COD" = "409" ] || falla "7 · retirar la fuente entera devolvio $COD: $(cuerpo)"
+[ -d "$REPO/packages/pg" ] || falla "7 · la fuente entera se fue"
+COD=$(borrar espejo)
+[ "$COD" = "200" ] || falla "7 · retirar espejo devolvio $COD: $(cuerpo)"
+[ ! -e "$REPO/packages/espejo" ] || falla "7 · espejo sigue en el arbol"
+[ ! -e "$REPO/.retirando-espejo" ] || falla "7 · quedo el directorio temporal"
+cuerpo | grep -q '"retirado":true' || falla "7 · la respuesta no dice retirado: $(cuerpo)"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "7 · no reencolo la copia con lo que queda: $(cuerpo)"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.customers,tienda.orders"' || falla "7 · el Job no se quedo con las de tienda: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+COD=$(borrar espejo)
+[ "$COD" = "404" ] || falla "7 · retirar dos veces devolvio $COD"
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7 · el arbol no compila sin espejo"
+dice "7 · retirar: 409 la fuente entera · 200 la base, fuera del arbol y la copia reencolada con lo que queda · 404 despues · compila"
+
+echo "✓ la base estandar, y el catalogo no modela: 0–7"

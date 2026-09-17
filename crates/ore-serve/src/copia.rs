@@ -143,6 +143,66 @@ impl Servidor {
         }
     }
 
+    /// **Retirar una base**: `DELETE /paquetes/{n}`. El paquete fuera del
+    /// árbol —una base es lo que alguien eligió, y puede dejar de elegirlo—;
+    /// sólo una base (con alcance): la fuente entera que el Job de catálogo
+    /// dejó no se retira por aquí (409). Si algo del árbol la nombra (otra
+    /// vista, una función), `validate` lo dice y nada se borra. Y la cola al
+    /// día: si declaraba copias, el Job se reencola con las que quedan.
+    pub(crate) fn retirar_paquete(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        sujeto: &Identidad,
+    ) -> Respuesta {
+        if let Err(m) = token(paquete) {
+            return Respuesta::error(422, format!("nombre de paquete: {m}"));
+        }
+        let dir = raiz.join("packages").join(paquete);
+        if !dir.is_dir() {
+            return Respuesta::error(404, "no hay tal paquete");
+        }
+        if !dir.join("discover.scope.json").is_file() {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{paquete}` no es una base: es la fuente entera que dejó el Job de catálogo, y se retira con la fuente"
+                ),
+            );
+        }
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let tenia_copias = !vistas_con_copia_de(&dir).is_empty();
+        // fuera del árbol a un sitio temporal, por si hay que volver a ponerlo
+        let aparte = raiz.join(format!(".retirando-{paquete}"));
+        if let Err(e) = std::fs::rename(&dir, &aparte) {
+            return Respuesta::error(500, format!("no se pudo retirar el paquete: {e}"));
+        }
+        if let Err(r) = self.empeora(raiz, &antes, &format!("retirar `{paquete}`")) {
+            let _ = std::fs::rename(&aparte, &dir);
+            return r;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&aparte) {
+            return Respuesta::error(500, format!("no se pudo borrar el paquete: {e}"));
+        }
+        let mut campos = vec![
+            ("package", Json::s(paquete)),
+            ("retirado", Json::Bool(true)),
+        ];
+        if tenia_copias {
+            let quedan = vistas_con_copia(raiz);
+            let encolado = if quedan.is_empty() {
+                "nada que encolar: ya no queda ninguna vista con copia".to_string()
+            } else {
+                self.encolar_copia(&quedan, sujeto)
+            };
+            campos.push(("encolado", Json::s(encolado)));
+        }
+        Respuesta::ok(Json::obj(campos))
+    }
+
     /// **Modelar una tabla** de una base: `POST /paquetes/{n}/tablas/{objeto}/
     /// modelar` → `ore model` (la tabla a `entities` del alcance y la
     /// re-inducción). Lo que Foundry llama *promote to object type*: la tabla

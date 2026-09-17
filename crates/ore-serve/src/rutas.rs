@@ -227,6 +227,13 @@ impl Servidor {
                 let n = n.to_string();
                 self.leyendo(move |r| self.copias(r, &n))
             }
+            // ── retirar una base: el paquete fuera del arbol, y la cola al dia ──
+            ("DELETE", ["paquetes", n]) => {
+                let n = n.to_string();
+                self.escribiendo(sujeto, &format!("retirar la base `{n}`"), |r| {
+                    self.retirar_paquete(r, &n, sujeto)
+                })
+            }
             // ── 0027 P1 C2 · modelar una tabla de una base (`ore model`) ──
             ("POST", ["paquetes", n, "tablas", o, "modelar"]) => {
                 let (n, o) = (n.to_string(), o.to_string());
@@ -720,6 +727,17 @@ impl Servidor {
         };
         if let Err(m) = token(&nombre) {
             return Respuesta::error(422, format!("`name`: {m}"));
+        }
+        // ⛔ El nombre es el espacio de nombres de lo inducido (OOS2030). Con
+        //   guion, `discover` escribia una base entera que no compila — medido
+        //   en `victor` (`test-standard`). Se dice aqui, antes.
+        if !ore_core::pertenencia::puede_ser_namespace(&nombre) {
+            return Respuesta::error(
+                422,
+                format!(
+                    "`name`: `{nombre}` no puede ser un espacio de nombres — una letra y luego letras, dígitos y `_` (sin guiones)"
+                ),
+            );
         }
         let tipo = match campo("type").as_deref() {
             None | Some("foreign") => "foreign",
@@ -1480,6 +1498,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
         ("POST", "/paquetes/{nombre}/copia", con_identidad),
+        ("DELETE", "/paquetes/{nombre}", con_identidad),
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/modelar",

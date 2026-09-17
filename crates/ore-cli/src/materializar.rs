@@ -56,7 +56,7 @@ pub fn materializar(
     //   I5): una base foránea con `dueno` sin contestar (`owner: cambiame`,
     //   OOS2009) bloqueaba la copia de otra base que sí compilaba. Un
     //   diagnóstico en un paquete que no declara copias se dice y no para.
-    let pkg = match cargar_para_copiar(path) {
+    let (pkg, rotos) = match cargar_para_copiar(path) {
         Ok(p) => p,
         Err(c) => return c,
     };
@@ -99,6 +99,25 @@ pub fn materializar(
     for v in &declaradas {
         let Some(qn) = v.qname() else { continue };
         println!("{qn}");
+        // Su paquete no compila: esta copia no se intenta, y el informe lo dice.
+        if let Some(d) = paquete_del_fichero(path, &v.path).and_then(|p| rotos.get(&p)) {
+            let motivo = format!("su paquete no compila · {}", d.lines().next().unwrap_or(""));
+            println!("  {motivo}");
+            if let Some(dir) = informe
+                && let Err(e) = escribir_informe(
+                    dir,
+                    &qn,
+                    &ore_core::json::Json::obj([
+                        ("estado", ore_core::json::Json::s("error")),
+                        ("motivo", ore_core::json::Json::s(&motivo)),
+                    ]),
+                )
+            {
+                println!("  {e}");
+            }
+            fallos += 1;
+            continue;
+        }
         match una(
             &pkg,
             path,
@@ -453,10 +472,14 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
         .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))
 }
 
-/// Carga el árbol y lo rechaza sólo si no compila **lo que se copia**: los
-/// paquetes con alguna vista `materialized` y los documentos de la raíz. Lo
-/// que no compila en OTRO paquete se dice —cuántos, y el primero— y no para.
-fn cargar_para_copiar(path: &Path) -> Result<Package, std::process::ExitCode> {
+/// Carga el árbol y lo rechaza sólo si no compila **la raíz** (conductos,
+/// retículos, config). Un paquete que no compila se lleva **sus** vistas —salen
+/// como `error`, con el primer diagnóstico— y no las de los demás: una base a
+/// medio decidir no bloquea las copias del inquilino. Lo roto en paquetes sin
+/// copia se dice y no para.
+fn cargar_para_copiar(
+    path: &Path,
+) -> Result<(Package, BTreeMap<String, String>), std::process::ExitCode> {
     if !path.is_dir() {
         eprintln!("error: `{}` no es un directorio de paquete", path.display());
         return Err(std::process::ExitCode::from(66)); // EX_NOINPUT
@@ -472,24 +495,36 @@ fn cargar_para_copiar(path: &Path) -> Result<Package, std::process::ExitCode> {
         .into_iter()
         .filter(|d| d.code != ore_core::Code::Oos2013)
         .collect();
-    let (propios, ajenos): (Vec<_>, Vec<_>) = diags.into_iter().partition(|d| {
-        match paquete_del_fichero(path, &d.file) {
-            Some(p) => con_copia.contains(&p),
-            None => true, // la raíz del árbol: conductos, retículos, config
+    // paquete → su primer diagnóstico; `None` es la raíz del árbol
+    let mut rotos: BTreeMap<Option<String>, ore_core::Diagnostic> = BTreeMap::new();
+    let mut ajenos = 0usize;
+    for d in diags {
+        let p = paquete_del_fichero(path, &d.file);
+        if let Some(p) = &p
+            && !con_copia.contains(p)
+        {
+            ajenos += 1;
         }
-    });
-    if !ajenos.is_empty() {
+        rotos.entry(p).or_insert(d);
+    }
+    if ajenos > 0 {
         eprintln!(
-            "aviso · {} diagnóstico(s) en paquetes que no declaran copia — no bloquean la copia; el primero:\n{}",
-            ajenos.len(),
-            ajenos[0].render(path)
+            "aviso · {ajenos} diagnóstico(s) en paquetes que no declaran copia — no bloquean la copia"
         );
     }
-    if let Some(d) = propios.first() {
+    if let Some(d) = rotos.get(&None) {
         eprintln!("{}", d.render(path));
         return Err(std::process::ExitCode::from(65)); // EX_DATAERR
     }
-    Ok(pkg)
+    let por_paquete: BTreeMap<String, String> = rotos
+        .into_iter()
+        .filter_map(|(p, d)| Some((p?, d.render(path))))
+        .filter(|(p, _)| con_copia.contains(p))
+        .collect();
+    for (p, d) in &por_paquete {
+        eprintln!("aviso · el paquete `{p}` no compila: sus copias salen como error\n{d}");
+    }
+    Ok((pkg, por_paquete))
 }
 
 /// `packages/<p>/...` → `p`; `None` para lo que vive en la raíz del árbol.

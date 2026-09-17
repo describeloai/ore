@@ -113,7 +113,11 @@ pub const ESTRUCTURAL: &[Kind] = &[Kind::Package, Kind::OntologyConfig];
 /// aflojándola —el `namespace` es lo que es— así que se dice: un paquete cuyo
 /// nombre no sea un identificador **no puede contener contenido gobernado**, y
 /// el diagnóstico lo explica en vez de pedir lo imposible.
-fn puede_ser_namespace(n: &str) -> bool {
+/// Lo que un nombre de paquete tiene que ser para ser un espacio de nombres:
+/// una letra y luego letras, dígitos y `_`. Público porque quien crea un
+/// paquete (`discover --name`, el alta de `ore-serve`) tiene que decirlo ANTES
+/// de escribir uno entero que no compile.
+pub fn puede_ser_namespace(n: &str) -> bool {
     let mut c = n.chars();
     c.next().is_some_and(|p| p.is_ascii_alphabetic())
         && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
