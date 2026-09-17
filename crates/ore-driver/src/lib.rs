@@ -328,21 +328,21 @@ pub fn testigo(modo: &str, valor: Option<&str>) -> String {
 }
 
 pub fn fila(p: &Peticion, valores: &[Option<String>]) -> String {
+    // `null` y la cadena vacía no son lo mismo, y un driver que los confundiera
+    // haría indistinguible «no hay dato» de «hay dato y está vacío». El JSON de
+    // este árbol no tiene `null` (ADR 0002): **un nulo es la propiedad
+    // AUSENTE de la fila**, que es lo que el almacén ya entiende (`carga.rs`:
+    // «una columna ausente es un hueco, y aquí se escribe como nulo») y lo que
+    // la semántica de vistas hace (`EsNulo` sobre lo que no está). Esto emitía
+    // `""` para un nulo, y se midió en `demo` (0027 P1 I5): un `Integer` nulo
+    // llegaba como `""` y la copia, con razón, no inventaba la conversión.
     let obj: std::collections::BTreeMap<String, ore_core::json::Json> = p
         .proyeccion
         .iter()
         .zip(valores)
-        .map(|((prop, _), v)| {
-            (
-                prop.clone(),
-                match v {
-                    Some(x) => ore_core::json::Json::s(x.as_str()),
-                    // `null` y la cadena vacía no son lo mismo, y un driver que
-                    // los confundiera haría indistinguible «no hay dato» de
-                    // «hay dato y está vacío».
-                    None => ore_core::json::Json::Str(String::new()),
-                },
-            )
+        .filter_map(|((prop, _), v)| {
+            v.as_ref()
+                .map(|x| (prop.clone(), ore_core::json::Json::s(x.as_str())))
         })
         .collect();
     ore_core::json::Json::Obj(obj).jcs()
