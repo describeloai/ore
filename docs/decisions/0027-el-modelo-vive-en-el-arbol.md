@@ -564,6 +564,25 @@ de la fila: en `olist`, 8 decisiones `clave` abiertas, porque el origen no la de
 el ADR 0018 la copia no es un espejo: es el sistema de registro, y el origen no se toca. Lo que
 I2 pone es el sitio donde las dos primeras se deciden y firman; la tercera es de F5.
 
+**P1 I2 hecha** (2026-09-17, `6588dd8`). **El almacén:** el aprovisionador pone un bucket por
+inquilino —`gs://<proyecto>-<ns>-copia`, en la región de la celda, acceso uniforme, sin acceso
+público, **cifrado con la KEK del inquilino** (la misma que cifra su cofre; el agente de Cloud
+Storage gana el permiso sobre la llave como lo tiene el de Secret Manager)— y lo borra al retirar
+la celda diciendo cuántos objetos había. Dos papeles y sólo dos: `ore-driver-<n>` escribe
+(`objectAdmin`), `ore-serve-<n>` lee (`objectViewer`) — la separación que el ADR 0015 dejó
+pedida sale gratis porque son dos cuentas. El papel `ore_aprovisionador` gana los permisos de
+bucket y **ninguno sobre objetos salvo listar y borrar**: pone el almacén y no mira dentro.
+`--cotejar` comprueba bucket, CMEK, prevención de acceso público y que ninguna otra cuenta
+tenga nada. **La decisión:** `POST /paquetes/{n}/vistas/{v}/copia {key?}`. Medido antes: un
+`materialized` a secas **no compila** (`OOS4011`, el conducto sin autorización), así que la
+decisión son tres escrituras coherentes o nada — `materialized {datasource: <la de su tabla
+raíz>, table: "copia.<v>"}` en la vista; `changes: mode: upsert, key: [...]` en la tabla raíz si
+se pide la clave (la de la fila, la que F5 necesita; la de la entidad sigue siendo la decisión
+`clave` de `review`); `materialization.payload` autorizado en `conduits.yaml`, que nace con el
+dueño del paquete si no estaba— y `ore validate`: si no compila, nada queda escrito. Una vista
+sobre otra vista → 422 (la copia es de la de abajo). `GET /paquetes/{n}/copias` las lista con su
+clave. `la-copia-se-decide.sh` 0–6, en CI.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
