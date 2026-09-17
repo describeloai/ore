@@ -583,6 +583,23 @@ dueño del paquete si no estaba— y `ore validate`: si no compila, nada queda e
 sobre otra vista → 422 (la copia es de la de abajo). `GET /paquetes/{n}/copias` las lista con su
 clave. `la-copia-se-decide.sh` 0–6, en CI.
 
+**P1 I3 hecha** (2026-09-17, `4a228a9`). El Job **`copiar-<resumen>`** (`48-la-copia.yaml`, la
+figura de 44 con el verbo cambiado): clona el árbol, busca las tablas raíz de las vistas que
+declaran copia, pide al cofre la credencial de cada fuente a una variable, y corre `ore
+materialize . --recoger --informe copias` con `ORE_STORE=gcs` y el bucket del inquilino — `ore`
+canaliza `ore-read-<tipo>` a `ore-store-gcs`, que sube con el token de la cuenta `driver`—; el
+**informe** por vista (`copias/<paquete>_<vista>.json`: estado `copiada`/`al-dia`/`pendiente`/
+`error`, clave, digest, plan, filas, leídas, bytes, testigo) se empuja al árbol, y el commit dice
+quién y cuándo. No es el registro (0015: el recibo vive en el almacén, sin puntero mutable): es lo
+que la última pasada dijo, como el snapshot del informador. Quién lo lanza: **la decisión** —
+`POST …/copia` encola el Job en la cola de trabajo en el mismo acto (`cola::rendir_copia`, como el
+catálogo), con TODAS las vistas con copia del árbol y el resumen de la lista en el nombre: una
+decisión nueva es otro Job— y **el convergedor**, que detecta `materialized` en el árbol y rinde
+48 con `--copias`. `GET /paquetes/{n}/copias` trae `copia {…, copiado_por, cuando}` o `pendiente`.
+Lo que queda dicho y no hecho: el refresco periódico (un CronJob sobre la misma plantilla) es de
+la pasada siguiente; hoy la copia se rehace cuando la lista cambia. `la-copia-se-decide.sh` 0–7 y
+`refresco.sh` (el informe) verdes; la aceptación en `demo` con `olist` es I4.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
