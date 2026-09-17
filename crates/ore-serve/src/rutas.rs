@@ -234,6 +234,13 @@ impl Servidor {
                     self.modelar(r, &n, &o, sujeto)
                 })
             }
+            // ── copiar UNA tabla de una base foránea (`ore copy`) ─────────
+            ("POST", ["paquetes", n, "tablas", o, "copiar"]) => {
+                let (n, o) = (n.to_string(), o.to_string());
+                self.escribiendo(sujeto, &format!("`{n}`: copiar `{o}` a la celda"), |r| {
+                    self.copiar_tabla(r, &n, &o, sujeto)
+                })
+            }
             // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
             ("POST", ["paquetes", n, "copia"]) => {
                 let n = n.to_string();
@@ -909,8 +916,8 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             .and_then(|(_, v)| v.as_str())
             .map(String::from)
     };
-    // vista → tabla, y entidad → vista
-    let mut vista_de_tabla: std::collections::BTreeMap<String, String> = Default::default();
+    // vista → tabla (y si la vista declara copia), y entidad → vista
+    let mut vista_de_tabla: std::collections::BTreeMap<String, (String, bool)> = Default::default();
     for v in leer("views") {
         if let (Some(n), Some(t)) = (
             en(&v, "metadata", "name"),
@@ -919,7 +926,11 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
                 .and_then(|(_, f)| f.get("table"))
                 .and_then(|(_, t)| t.as_str().map(String::from)),
         ) {
-            vista_de_tabla.insert(t.rsplit('.').next().unwrap_or(&t).to_string(), n);
+            let copiada = v
+                .get("spec")
+                .and_then(|(_, s)| s.get("materialized"))
+                .is_some();
+            vista_de_tabla.insert(t.rsplit('.').next().unwrap_or(&t).to_string(), (n, copiada));
         }
     }
     let mut entidad_de_vista: std::collections::BTreeMap<String, String> = Default::default();
@@ -948,7 +959,10 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
                 columnas.push(Json::obj(campos));
             }
         }
-        let vista = vista_de_tabla.get(&nombre).cloned();
+        let (vista, copiada) = match vista_de_tabla.get(&nombre) {
+            Some((v, c)) => (Some(v.clone()), *c),
+            None => (None, false),
+        };
         let entidad = vista
             .as_ref()
             .and_then(|v| entidad_de_vista.get(v).cloned());
@@ -961,6 +975,8 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             ),
             ("columns", Json::Arr(columnas)),
             ("modeled", Json::Bool(entidad.is_some())),
+            // ⭐ Si su vista declara copia: por la clase de la base o una a una.
+            ("copied", Json::Bool(copiada)),
         ];
         if let Some(v) = &vista {
             campos.push(("view", Json::s(v)));
@@ -1467,6 +1483,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/modelar",
+            con_identidad,
+        ),
+        (
+            "POST",
+            "/paquetes/{nombre}/tablas/{objeto}/copiar",
             con_identidad,
         ),
         ("GET", "/perfiles", con_identidad),

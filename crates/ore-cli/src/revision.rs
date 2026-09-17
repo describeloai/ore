@@ -156,6 +156,48 @@ pub fn modelar(raiz: &Path, objeto: &str) -> ExitCode {
     }
 }
 
+/// `ore copy <paquete> <objeto>`: la tabla a `copies` del alcance, y la misma
+/// re-inducción. Es la excepción a la clase de una base foránea.
+pub fn copiar(raiz: &Path, objeto: &str) -> ExitCode {
+    let r = crate::alcance::ruta(raiz);
+    let paso = (|| -> Result<String, Fallo> {
+        let Some(mut a) = crate::alcance::del_paquete(raiz).map_err(|m| fallo(65, m, &[]))? else {
+            return Err(fallo(
+                65,
+                format!(
+                    "`{}` no es una base: no tiene `{}`",
+                    raiz.display(),
+                    crate::alcance::FICHERO
+                ),
+                &["  Se copia lo que entró por `discover --only`."],
+            ));
+        };
+        a.copiar(objeto).map_err(|m| fallo(65, m, &[]))?;
+        std::fs::write(&r, a.escribir()).map_err(|e| {
+            fallo(
+                73,
+                format!("no se pudo escribir `{}`: {e}", r.display()),
+                &[],
+            )
+        })?;
+        let informe = intentar(raiz, None, true)?;
+        Ok(format!("  ✓ `{objeto}` se copia a la celda\n{informe}"))
+    })();
+    match paso {
+        Ok(informe) => {
+            print!("{informe}");
+            ExitCode::SUCCESS
+        }
+        Err(f) => {
+            eprintln!("error: {}", f.mensaje);
+            for l in &f.ayuda {
+                eprintln!("{l}");
+            }
+            ExitCode::from(f.codigo)
+        }
+    }
+}
+
 fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<String, Fallo> {
     let ruta = raiz.join(CATALOGO);
     let texto = std::fs::read_to_string(&ruta).map_err(|e| {
@@ -185,6 +227,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
         Some(a) => {
             regla.estandar = a.estandar();
             regla.modeladas = a.modeladas().cloned();
+            regla.copiadas = a.copiadas().clone();
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
             let (c, r) = a.aplicar(catalogo);

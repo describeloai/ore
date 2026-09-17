@@ -27,8 +27,12 @@
 #      GET /paquetes dice tablas y modeladas
 #   4  ascender                         409 si ya es estandar · 422 si no es una base (sin alcance)
 #   5  el informe del Job en el arbol   GET /copias: copiada, filas, copiado_por, cuando · 2/1
-#   6  una base foranea (sin type)      200 · nada con copia · y al ascenderla: 201, la regla
-#                                       escrita, las dos con copia, el Job con las cuatro vistas
+#   6  una base foranea (sin type)      200 · nada con copia · COPIAR UNA TABLA (POST
+#                                       /tablas/{o}/copiar): 201, la base sigue foranea y solo
+#                                       esa vista copia (`copies` en el alcance, `copied` en el
+#                                       esquema, el Job la lleva) · otra vez 409 · y al ascender
+#                                       la base: 201, la regla, las dos con copia, el Job con las
+#                                       cuatro · copiar una tabla de una estandar: 409
 #
 # Uso:  bash pruebas-de-fuego/la-copia-se-decide.sh
 set -u
@@ -227,7 +231,7 @@ paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
 esquema() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
 esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entidades que no hay: $(esquema tienda)"
-esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)"},{"name":"customer_city"}\],"datasource":"pg","modeled":false,"name":"olist_customers","object":"olist.customers","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
+esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)"},{"name":"customer_city"}\],"copied":true,"datasource":"pg","modeled":false,"name":"olist_customers","object":"olist.customers","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\],.*"view":"orders"' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\[\],.*"view":"customers"' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · solo dueno en la cola · el conducto espera al dueño · el Job $NOMBRE2 con las dos · GET /paquetes standard 2/0"
@@ -301,6 +305,23 @@ grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · una 
 ( vista espejo orders; vista espejo customers ) | grep -q "materialized:" && falla "6 · una foranea nacio con copia"
 [ -z "$(ls -A "$REPO/packages/espejo/entities" 2>/dev/null)" ] || falla "6 · una foranea del catalogo modelo algo"
 paquete espejo | grep -q '"type": "foreign"' || falla "6 · GET /paquetes no dice foreign: $(paquete espejo)"
+# una tabla, una a una: la base sigue foranea
+copiar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/paquetes/$1/tablas/$2/copiar"; }
+COD=$(copiar espejo olist.orders)
+[ "$COD" = "201" ] || falla "6 · copiar una tabla devolvio $COD: $(cuerpo)"
+cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":1}' || falla "6 · copiar una tabla no cuenta 1 declarada: $(cuerpo)"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "6 · copiar una tabla no encolo el Job: $(cuerpo)"
+grep -q '"copies": \[' "$REPO/packages/espejo/discover.scope.json" && grep -q '"olist.orders"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · el alcance no lleva copies: $(cat "$REPO/packages/espejo/discover.scope.json")"
+grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · copiar una tabla cambio la clase"
+vista espejo orders | grep -q 'copia.orders' || falla "6 · la tabla copiada no lleva la copia: $(vista espejo orders)"
+vista espejo customers | grep -q "materialized:" && falla "6 · copiar orders copio tambien customers"
+paquete espejo | grep -q '"type": "foreign"' && paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 1}' || falla "6 · GET /paquetes: sigue foreign con 1 copia: $(paquete espejo)"
+esquema espejo | grep -q '"copied":true,.*"name":"olist_orders"' && esquema espejo | grep -q '"copied":false,.*"name":"olist_customers"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.orders,tienda.customers,tienda.orders"' || falla "6 · el Job no lleva espejo.orders: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+COD=$(copiar espejo olist.orders)
+[ "$COD" = "409" ] || falla "6 · copiar dos veces devolvio $COD: $(cuerpo)"
+COD=$(copiar espejo olist.nadie)
+[ "$COD" = "404" ] || falla "6 · copiar fuera del alcance devolvio $COD: $(cuerpo)"
 COD=$(asc espejo)
 [ "$COD" = "201" ] || falla "6 · ascender espejo devolvio $COD: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · ascender no escribio la regla"
@@ -309,6 +330,8 @@ vista espejo customers | grep -q 'copia.customers' || falla "6 · ascender no co
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "6 · la respuesta no cuenta 2/0: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.customers,espejo.orders,tienda.customers,tienda.orders"' || falla "6 · el Job no lleva las cuatro vistas: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 paquete espejo | grep -q '"type": "standard"' || falla "6 · GET /paquetes no dice standard tras ascender: $(paquete espejo)"
-dice "6 · una foranea nace sin copia, sin entidades y sin type escrito · al ascender: 201, la regla, las dos con copia, el Job con las cuatro"
+COD=$(copiar espejo olist.customers)
+[ "$COD" = "409" ] || falla "6 · copiar una tabla de una estandar devolvio $COD: $(cuerpo)"
+dice "6 · una foranea nace sin copia · copiar UNA tabla: 201, sigue foranea, solo esa copia, el Job la lleva, 409 otra vez · al ascender: 201, la regla, las dos con copia, el Job con las cuatro · copiar en una estandar: 409"
 
 echo "✓ la base estandar, y el catalogo no modela: 0–6"

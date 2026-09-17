@@ -450,11 +450,18 @@ pub struct Regla {
     pub estandar: bool,
     /// Qué tablas se modelan (`Entity` y su cola). `None` = todas.
     pub modeladas: Option<BTreeSet<String>>,
+    /// Qué tablas se copian una a una en una base foránea.
+    pub copiadas: BTreeSet<String>,
 }
 
 impl Regla {
     fn modela(&self, tabla: &str) -> bool {
         self.modeladas.as_ref().is_none_or(|m| m.contains(tabla))
+    }
+
+    /// ¿Se copia esta tabla? Por la clase, o una a una.
+    fn copia(&self, tabla: &str) -> bool {
+        self.estandar || self.copiadas.contains(tabla)
     }
 }
 
@@ -545,7 +552,8 @@ pub fn inducir_con_regla(
         // Sin entidad no hay a quién respaldar: la copia no espera a nada. Con
         // clave del origen, `upsert`; sin ella, instantánea.
         let clave = clave_de(t, dec);
-        let copia = estandar.then_some(if clave.is_empty() { None } else { Some(clave) });
+        let se_copia = regla.copia(&t.nombre);
+        let copia = se_copia.then_some(if clave.is_empty() { None } else { Some(clave) });
         ficheros.insert(
             format!("tables/{sufijo}"),
             tabla_yaml(
@@ -564,7 +572,7 @@ pub fn inducir_con_regla(
                 &owner_catalogo,
                 t,
                 objeto,
-                estandar.then_some(cat.fuente.as_str()),
+                se_copia.then_some(cat.fuente.as_str()),
             ),
         );
     }
@@ -748,7 +756,7 @@ pub fn inducir_con_regla(
         // La copia, si la base es estándar y la tabla tiene con qué: la clave
         // del origen o la contestada, que `claves` ya funde. Aquí sí espera:
         // esta vista respalda una entidad, y sin identidad no se mantiene.
-        let copia = if estandar {
+        let copia = if regla.copia(&t.nombre) {
             claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned()
         } else {
             None
@@ -2387,6 +2395,7 @@ mod tests {
         let todas = |estandar| Regla {
             estandar,
             modeladas: None,
+            copiadas: BTreeSet::new(),
         };
         let sin = inducir_con_regla(
             &cat,
@@ -2468,6 +2477,7 @@ mod tests {
         let ninguna = Regla {
             estandar: true,
             modeladas: Some(BTreeSet::new()),
+            copiadas: BTreeSet::new(),
         };
         let i = inducir_con_regla(
             &cat,
@@ -2531,7 +2541,29 @@ mod tests {
         let una = Regla {
             estandar: true,
             modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
+            copiadas: BTreeSet::new(),
         };
+        // y en una foránea, una tabla copiada una a una: sólo ésa
+        let suelta = Regla {
+            estandar: false,
+            modeladas: Some(BTreeSet::new()),
+            copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
+        };
+        let f = inducir_con_regla(
+            &cat,
+            "ventas",
+            &Decisiones::default(),
+            &Vocabulario::default(),
+            &suelta,
+        );
+        assert!(
+            f.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"]
+                .contains("copia.facturas")
+        );
+        assert!(
+            !f.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"]
+                .contains("materialized:")
+        );
         let m = inducir_con_regla(
             &cat,
             "ventas",

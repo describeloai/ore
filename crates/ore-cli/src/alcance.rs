@@ -66,6 +66,10 @@ pub struct Alcance {
     /// entonces no cambian—; `Some([])` = ninguna, lo que un alta del
     /// catálogo escribe. `ore model` añade una.
     entidades: Option<BTreeSet<String>>,
+    /// **Qué tablas se copian una a una** en una base foránea (`copies`): la
+    /// excepción a la regla de la clase. En una estándar no hace falta —se
+    /// copia todo— y no se escribe.
+    copias: BTreeSet<String>,
 }
 
 /// Lo que quedó fuera al aplicar un alcance, para poder decirlo.
@@ -86,7 +90,37 @@ impl Alcance {
             objetos: objetos.into_iter().collect(),
             tipo: None,
             entidades: None,
+            copias: BTreeSet::new(),
         }
+    }
+
+    /// ¿Esta tabla se copia? Por la clase de la base, o una a una. (El
+    /// inductor lo decide con su `Regla`; esto es para leerlo.)
+    #[cfg(test)]
+    pub fn copia(&self, objeto: &str) -> bool {
+        self.estandar() || self.copias.contains(objeto)
+    }
+
+    pub fn copiadas(&self) -> &BTreeSet<String> {
+        &self.copias
+    }
+
+    /// **Copiar** una tabla de una base foránea. `Err` si no está en el alcance,
+    /// si la base es estándar (ya se copia todo) o si ya estaba.
+    pub fn copiar(&mut self, objeto: &str) -> Result<(), String> {
+        if !self.objetos.contains(objeto) {
+            return Err(format!(
+                "`{objeto}` no está en el alcance de esta base ({} objetos)",
+                self.objetos.len()
+            ));
+        }
+        if self.estandar() {
+            return Err("la base es estándar: ya se copia todo lo que entra".into());
+        }
+        if !self.copias.insert(objeto.to_string()) {
+            return Err(format!("`{objeto}` ya se copia"));
+        }
+        Ok(())
     }
 
     /// Con las tablas modeladas dichas: `Some(vec![])` es «ninguna».
@@ -177,11 +211,22 @@ impl Alcance {
                 .map(String::from)
                 .collect::<BTreeSet<String>>()
         });
+        let copias = raiz
+            .get("copies")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|n| n.as_str())
+                    .map(String::from)
+                    .collect::<BTreeSet<String>>()
+            })
+            .unwrap_or_default();
         Ok(Alcance {
             fuente,
             objetos,
             tipo: tipo.filter(|t| t == "standard"),
             entidades,
+            copias,
         })
     }
 
@@ -198,6 +243,12 @@ impl Alcance {
         }
         if let Some(e) = &self.entidades {
             campos.push(("entities", Json::Arr(e.iter().map(Json::s).collect())));
+        }
+        if !self.copias.is_empty() {
+            campos.push((
+                "copies",
+                Json::Arr(self.copias.iter().map(Json::s).collect()),
+            ));
         }
         Json::obj(campos).pretty()
     }
@@ -463,6 +514,27 @@ mod prueba {
                 .is_err(),
             "con todas, modelar es no-op"
         );
+    }
+
+    #[test]
+    fn una_foranea_copia_tablas_una_a_una_y_una_estandar_no_lo_necesita() {
+        let mut f = Alcance::nuevo("crm", vec!["public.a".to_string(), "public.b".to_string()]);
+        assert!(!f.copia("public.a"));
+        f.copiar("public.a").unwrap();
+        assert!(f.copia("public.a") && !f.copia("public.b"));
+        assert!(f.copiar("public.a").is_err(), "ya se copia");
+        assert!(f.copiar("public.zzz").is_err(), "fuera del alcance");
+        let t = f.escribir();
+        assert!(
+            t.contains("\"copies\": [\n    \"public.a\"")
+                || t.contains("\"copies\": [\"public.a\"]"),
+            "{t}"
+        );
+        assert!(Alcance::leer(&t).unwrap().copia("public.a"));
+        let mut e = Alcance::nuevo("crm", vec!["public.a".to_string()]).con_tipo("standard");
+        assert!(e.copia("public.a"), "estándar: todo");
+        assert!(e.copiar("public.a").is_err(), "estándar: no hace falta");
+        assert!(!e.escribir().contains("copies"));
     }
 
     #[test]

@@ -455,6 +455,10 @@ enum Command {
         /// El objeto físico, como lo nombra el catálogo: `public.pedidos`.
         objeto: String,
     },
+    /// **Copiar una tabla de una base foránea** a la celda: la añade a `copies`
+    /// del alcance y vuelve a inducir. La excepción a la clase: la base sigue
+    /// siendo foránea, esa tabla se copia. En una estándar no hace falta.
+    Copy { path: PathBuf, objeto: String },
     /// Escribe el paquete publicable: un `.oob`.
     ///
     /// No es un archivo comprimido, y esa es la decisión: uno lleva marcas de
@@ -774,6 +778,7 @@ fn main() -> std::process::ExitCode {
             );
         }
         Command::Model { path, objeto } => return revision::modelar(path, objeto),
+        Command::Copy { path, objeto } => return revision::copiar(path, objeto),
         Command::Review {
             path,
             answers,
@@ -915,6 +920,7 @@ fn main() -> std::process::ExitCode {
         | Command::Materialize { .. }
         | Command::Review { .. }
         | Command::Model { .. }
+        | Command::Copy { .. }
         | Command::Lock { .. }
         | Command::Pack { .. }
         | Command::Source(_)
@@ -1165,6 +1171,7 @@ fn descubrir(
         modeladas: el_alcance
             .as_ref()
             .and_then(|(a, _)| a.modeladas().cloned()),
+        copiadas: Default::default(),
     };
     let ind = inductor::inducir_con_regla(
         &catalogo,
