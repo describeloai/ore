@@ -319,6 +319,14 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
         return diags;
     }
 
+    // **La identidad, antes que nada.** Dos documentos con la misma identidad
+    // —kind y nombre cualificado, `90-canonical` §5.2— hacen que toda
+    // referencia resuelva la primera que encuentra; lo que salga despues es
+    // la consecuencia. Medido el 2026-09-17: compilaban limpios.
+    let dobles = crate::identidad::check(&pkg);
+    if !dobles.is_empty() {
+        return dobles;
+    }
     // **La pertenencia, antes que el enlazado.** Si un documento esta en el
     // espacio de nombres equivocado, todo lo que lo nombra falla —`OOS2018`,
     // `OOS2005`— y esos diagnosticos son la CONSECUENCIA: mandarian a mirar el

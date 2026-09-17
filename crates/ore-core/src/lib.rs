@@ -45,6 +45,7 @@ pub mod flow;
 pub mod frescura;
 pub mod governance;
 pub mod graphql;
+pub mod identidad;
 pub mod impacto;
 pub mod json;
 pub mod link;

@@ -1303,8 +1303,8 @@ fn el_submodulo_trae_la_suite_completa() {
     // es otra cosa: cuenta lo que el submodulo TRAE, no lo que se cumple, y
     // baja cuando el vocabulario se retira. Que sean dos numeros distintos es
     // lo que permite decir «se retiro un kind» sin que parezca una regresion.
-    assert_eq!(casos.len(), 74, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&30));
+    assert_eq!(casos.len(), 75, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&31));
     assert_eq!(por_grupo.get("diff"), Some(&21));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));

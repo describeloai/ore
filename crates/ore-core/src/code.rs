@@ -218,6 +218,12 @@ codes! {
     // Escribirlo en el sitio equivocado no da un resultado distinto, da el
     // mismo mas caro, y en silencio.
     Oos2034 = "OOS2034", Reference, "`having` sobre algo que no es un agregado";
+    // LA IDENTIDAD DE UN DOCUMENTO SE DECLARA UNA VEZ. `90-canonical` §5.2 la
+    // define —kind + nombre cualificado, nunca la ruta— y el digest del
+    // paquete se construye sobre esa lista. Medido el 2026-09-17: dos ficheros
+    // con la misma Entity, View, Table, Lattice, Concept o Package compilaban
+    // limpios, y cada referencia resolvia la primera que encontraba.
+    Oos2035 = "OOS2035", Reference, "dos documentos con la misma identidad (kind y nombre cualificado)";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -477,6 +483,7 @@ mod tests {
             Code::Oos2032,
             Code::Oos2033,
             Code::Oos2034,
+            Code::Oos2035,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

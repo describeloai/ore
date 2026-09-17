@@ -251,7 +251,7 @@ esquema.
 | `requires` a lo que no está · borrar el concepto que una Interface requiere | `OOS2001` en la interfaz |
 | `implements` sin satisfacer · borrar la interfaz implementada | `OOS9001` · `OOS2001` en la entidad |
 | una Interface que nadie implementa | pasa |
-| **dos ficheros que declaran el mismo concepto** | **pasa** — el compilador no detecta el nombre cualificado duplicado. Anotado como fallo, no arreglado aquí |
+| **dos ficheros que declaran el mismo concepto** | **pasaba** — y no era de Concept: dos Entity, View, Table, Lattice o Package iguales compilaban igual, y cada referencia resolvía la primera que encontraba. **Arreglado** el mismo día: `OOS2035` (`identidad.rs`, antes que nada en `validate_package`; spec `90-canonical` §5.2 y un caso de conformidad) |
 
 **Los importados.** `ore pack` de un vocabulario da un `.oob` (forma canónica en JCS, con sus
 `Concept`, su `Lattice` y su `Package`); en `vendor/*.oob` el cargador lo lee como cualquier
