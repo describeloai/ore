@@ -241,3 +241,46 @@ no declara copia o la copia no está hecha** (el informe de `copias/` lo dice). 
 primero) son lo que la consola lee. El informador tipa `invocar-*` como `invocacion` con `FUNCION`
 de sujeto; Data › Jobs las pinta como *Function* con `ok/filas · tokens · ms/fila` del informe.
 `la-copia-se-decide` 8 lo fija; `gen-inquilino` rinde y comprueba la plantilla (⑧: 13).
+
+> ### F4a·I4 · el modelo real sobre la copia — ✓ 2026-09-17 en `demo`, 2,74 $
+
+`olist_copia.traducirCategoria` (`runtime: model`, `over` la vista copiada de 71 filas, `output:
+categoriaEs`, sin `effects`) contra **`deepseek-ai/DeepSeek-V2-Lite` de verdad** en un g1 de Vast
+(51342135, España, 1,37 $/h; cargó en 10:22) registrado en el gateway de `modelos-e0` por un túnel
+inverso vía IAP desde el PC (la clave de Vast la lee Bastion; el PC no la toca). `POST /modelos` en
+demo (201, 3,7 s), la `Function` al árbol, `POST /funciones/olist_copia/traducirCategoria/invocar`
+→ 202 en 3–6 s → Flux crea el Job → `ore invoke` en la celda con la identidad de la celda.
+
+| pasada | Job | ok / 71 | qué destapó | arreglo |
+|---|---|---|---|---|
+| 1 | `…-98f60d00` | 0 | 503/502 del gateway en ráfaga; y «lo que el modelo contestó no analiza: `{`» | — |
+| 2 | `…-44fa9b7e` | 21 | **un modelo base sigue hablando** tras el JSON: inventa turnos `User:`/`Assistant:` con más objetos; del primer `{` al último `}` no analiza | `ore-invoke` toma el **primer objeto equilibrado** (`20b9660`) |
+| 3 | `…-423a9a11` | **64** | **el gateway da por caído al backend** cuya sonda (`/v1/models`, cada 5 s, 3 s de plazo) tarda más de 3 s: con 4 llamadas por el túnel de IAP la sonda vence → 503 «every backend down» durante 5 s → ráfagas de filas perdidas | `ore-invoke` **reintenta** 502/503/429 y transporte (4 intentos, 2-5-10 s; 400/401/404 a la primera) (`f412e77`) |
+
+**Los números de la tercera pasada** (`resultados/olist_copia_traducirCategoria_20260917T212002Z.json`;
+resultado sellado `ore/v1/9681d5af…`, 4 741 B):
+
+| | |
+|---|---|
+| filas | 71 → **64 ok · 7 error**, `estado: parcial` |
+| los 7 errores | del **modelo**: en esas filas arranca con `User: …` sin ningún objeto JSON. V2-Lite es un modelo base, no instruido: ni obedece «solo JSON» ni traduce bien (`beleza_saude → beleza_saude`) |
+| tokens | 5 096 entrada + **4 096 salida = 64 × 64**: todas las respuestas agotan `max_tokens`, porque el modelo sigue hablando tras el objeto |
+| latencia | **2 484 ms por fila**, 51,2 s las 71 a 4 en paralelo. Lleva dentro celda → gateway → IAP → PC (España) → ssh → Vast; E0 b midió 259 ms con el túnel en la VM |
+| coste de inferencia | el gateway contó **0,0059 $** para demo en las tres pasadas (0,2765 $/Mtok): **~0,003 $ por 71 filas**; `customers` (99 k filas) serían ~4 $ con este perfil |
+| coste de la pasada | g1 **2,74 $** (1,8 h; destruido y verificado: saldo 5,07 → 2,33); e2-micro ~0,03 $ |
+
+**Lo que I4 cierra**: F4a de lectura de punta a punta con un modelo real —la función vive en el
+árbol, se invoca por la API, corre en la celda con la identidad de la celda, lee la copia y nunca el
+origen, sella lo que devuelve en el bucket y deja los números en el árbol; Data › Jobs lo enseña sin
+que nadie toque Kubernetes ni el bucket. **Lo que no cierra**: la calidad (es del modelo: un
+instruido del catálogo, `g4/qwen3-235b-fp8`, es 71/71) y el paso 4 (`effects` → Propuesta → F5).
+
+**Lo que I4 enseñó de paso, y queda:** (a) la **cuota global de 12 vCPU** hizo fallar dos veces la
+subida del pool de Jobs (dos pods pendientes → dos nodos → 13 > 12); pedir cuota, y que el
+aprovisionador no encole dos Jobs a la vez sin nodo; (b) `POST /modelos` exigía que el árbol
+**entero** compilara y cinco bases foráneas con `owner: cambiame` bloqueaban un modelo que no las
+toca → la regla de no empeorar (`45a45ad`, `los-modelos` 7c); (c) escribir una `Function` en el
+árbol es hoy un acto con `git`: la Forge todavía no sirve `Function` por `/documentos`; (d) un
+Job fallido no tiene `completionTime` y la consola contaba «264 min»: su fin es el paso a
+*Failed* (`971543e`); (e) el balanceador exige `Content-Length` en un `POST` sin cuerpo; (f) la
+sonda del gateway (3 s) no es para un túnel: en producción el backend está en la VPC.
