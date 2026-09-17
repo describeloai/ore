@@ -1,7 +1,31 @@
 //! Los documentos del árbol, por `kind` (Ontology Forge): un motor y una
-//! tabla de kinds — hoy `Entity`, `View` y `Table`.
+//! tabla de kinds — hoy `Entity`, `View`, `Table`, `Concept` e `Interface`.
 //!
-//! `GET /documentos/{kind}` · `GET|PUT|DELETE /documentos/{kind}/{ns}/{n}`.
+//! `GET /documentos/{kind}` · `GET|PUT|DELETE /documentos/{kind}/{ns}/{n}` ·
+//! `GET /conceptos`.
+//!
+//! # Concept e Interface (medido el 2026-09-17, `medida-forge-concept-e-interface.py`)
+//!
+//! - **`OOS9004` es el estado entre dos escrituras, no un defecto de una**.
+//!   Un `Concept` nuevo nunca podría entrar solo: nadie lo habla todavía, eso
+//!   es `OOS9004`, y es un diagnóstico NUEVO que la puerta rechazaría; al revés
+//!   tampoco, el `is` primero es `OOS2001`. Y el fire test (caso 18) midió el
+//!   espejo: quitar el `is` de la única propiedad que lo habla también hace
+//!   nuevo el `OOS9004`, y retirar el concepto antes es 409 porque está
+//!   hablado — **ningún orden entraba**. Así que la puerta entera **tolera
+//!   `OOS9004`** y lo dice en la respuesta (`sinHablar: [conceptos]`); el
+//!   árbol lo seguirá diciendo (`/derivados/diagnosticos`) hasta que alguien
+//!   lo hable o lo retire. No es una fila de la tabla: es del motor.
+//! - **El motor recorre también la raíz**: `ore init` pone `interfaces/` ahí
+//!   y el compilador acepta documentos fuera de `packages/` (el kind es el
+//!   discriminante, no el directorio). Lo que no está en un paquete sale sin
+//!   `paquete`; uno nuevo se escribe en `packages/<ns>/<carpeta>/`.
+//! - **Quién nombra**: a un concepto, `Entity.properties.*.is` e
+//!   `Interface.requires`; a una interfaz, `Entity.implements`.
+//! - **`GET /conceptos`** = los `Concept` del árbol más los importados de
+//!   `vendor/*.oob` (que no se escriben por aquí: son vocabulario publicado),
+//!   cada uno con quién lo habla y quién lo exige. Un `.oob` es la forma
+//!   canónica en JCS y se lee como cualquier documento.
 //!
 //! # Por qué `/documentos/{kind}` y no `/documentos?kind=…`
 //!
@@ -119,7 +143,31 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la tabla",
         exige: sin_exigencias,
     },
+    // Sin exigencias propias: lo que falta ya es `OOS1004` (`type`).
+    Kind {
+        nombre: "Concept",
+        carpeta: "concepts",
+        articulo: "el concepto",
+        exige: sin_exigencias,
+    },
+    Kind {
+        nombre: "Interface",
+        carpeta: "interfaces",
+        articulo: "la interfaz",
+        exige: sin_exigencias,
+    },
 ];
+
+/// El único diagnóstico nuevo que la puerta deja pasar: «el concepto `hr.x`
+/// no lo referencia nada del paquete». Es el estado entre escribir un
+/// concepto y hablarlo, o entre dejar de hablarlo y retirarlo, y no hay orden
+/// que lo evite (ver el módulo).
+const SIN_HABLAR: &str = "OOS9004";
+
+/// El concepto que un `OOS9004` nombra: lo que va entre las primeras comillas.
+fn concepto_del(mensaje: &str) -> String {
+    mensaje.split('`').nth(1).unwrap_or(mensaje).to_string()
+}
 
 pub(crate) fn kind_de(nombre: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.nombre == nombre)
@@ -167,7 +215,9 @@ fn sin_exigencias(_: &Node) -> Option<String> {
 /// Un documento tal como está en el árbol: qué es, dónde y qué dice.
 struct Documento {
     kind: &'static Kind,
-    paquete: String,
+    /// `None` si vive fuera de `packages/` (la raíz, donde `ore init` deja
+    /// `interfaces/`).
+    paquete: Option<String>,
     fichero: PathBuf,
     texto: String,
     nodo: Node,
@@ -193,27 +243,54 @@ fn campo(n: &Node, padre: &str, k: &str) -> String {
         .to_string()
 }
 
-/// Todos los documentos de los kinds servidos, paquete a paquete, y cuántos
-/// ficheros no se pudieron leer. Se recorre cada paquete **entero** y el
-/// `kind` es el discriminante, como hace el cargador de `ore-core`: el
-/// directorio es convención, no regla. Un fichero roto se salta y se cuenta,
-/// como en `/esquema`.
+/// Todos los documentos de los kinds servidos, paquete a paquete y después
+/// la raíz, y cuántos ficheros no se pudieron leer. Se recorre cada paquete
+/// **entero** y el `kind` es el discriminante, como hace el cargador de
+/// `ore-core`: el directorio es convención, no regla. Un fichero roto se
+/// salta y se cuenta, como en `/esquema`.
+///
+/// La raíz son los `.yaml` sueltos y los directorios que no son `packages/`
+/// ni `vendor/` (ahí van los `.oob`, que no son YAML del árbol) ni ocultos:
+/// `ore init` crea `interfaces/` ahí, y el compilador lo lee. Lo que se
+/// encuentra en la raíz no tiene paquete.
 fn documentos_de(raiz: &Path) -> (Vec<Documento>, usize) {
     let mut lista = Vec::new();
     let mut rotos = 0;
-    let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
-        return (lista, rotos);
-    };
-    let mut paquetes: Vec<_> = paquetes.flatten().map(|e| e.path()).collect();
-    paquetes.sort();
-    for p in paquetes.into_iter().filter(|p| p.is_dir()) {
-        let paquete = p
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let mut ficheros = Vec::new();
-        yamls_de(&p, &mut ficheros);
+    let mut sitios: Vec<(Option<String>, Vec<PathBuf>)> = Vec::new();
+    if let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) {
+        let mut paquetes: Vec<_> = paquetes.flatten().map(|e| e.path()).collect();
+        paquetes.sort();
+        for p in paquetes.into_iter().filter(|p| p.is_dir()) {
+            let nombre = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let mut ficheros = Vec::new();
+            yamls_de(&p, &mut ficheros);
+            sitios.push((Some(nombre), ficheros));
+        }
+    }
+    if let Ok(entradas) = std::fs::read_dir(raiz) {
+        let mut sueltos = Vec::new();
+        for p in entradas.flatten().map(|e| e.path()) {
+            let nombre = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if nombre.starts_with('.') || nombre == "packages" || nombre == "vendor" {
+                continue;
+            }
+            if p.is_dir() {
+                yamls_de(&p, &mut sueltos);
+            } else if p.extension().is_some_and(|x| x == "yaml" || x == "yml") {
+                sueltos.push(p);
+            }
+        }
+        sitios.push((None, sueltos));
+    }
+    for (paquete, mut ficheros) in sitios {
         ficheros.sort();
         for fichero in ficheros {
             let Ok(texto) = std::fs::read_to_string(&fichero) else {
@@ -267,31 +344,63 @@ fn yamls_de(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// ¿`valor` apunta a `d`? Cualificado, o corto dentro del mismo paquete.
-fn apunta(valor: Option<&Node>, d: &Documento, mismo_paquete: bool) -> bool {
+/// ¿`valor` apunta a `d`? Cualificado, o corto dentro del mismo espacio de
+/// nombres (la forma corta es legal ahí: `normalize::qualify`).
+fn apunta(valor: Option<&Node>, d: &Documento, mismo_espacio: bool) -> bool {
     let Some(v) = valor.and_then(|v| v.as_str()) else {
         return false;
     };
-    v == d.cualificado() || (mismo_paquete && v == d.nombre())
+    v == d.cualificado() || (mismo_espacio && v == d.nombre())
+}
+
+/// ¿Alguno de una lista (`requires`, `implements`) apunta a `d`?
+fn alguno_apunta(lista: Option<&Node>, d: &Documento, mismo_espacio: bool) -> bool {
+    lista
+        .map(|l| l.items())
+        .unwrap_or(&[])
+        .iter()
+        .any(|v| apunta(Some(v), d, mismo_espacio))
 }
 
 /// Quién referencia a `d`, para decirlo en el 409 de `DELETE`. Medido
-/// (`medida-forge-view-y-table.py` ⑥): a una entidad la nombran las
-/// `relations` de otra entidad; a una vista, `Entity.backedBy` y
-/// `View.from.view`; a una tabla, `View.from.table`. Una `Function` escribe
-/// por `effects.writes: hr.Employee.estado` —nombra la entidad— y la vista la
-/// alcanza por `backedBy`.
+/// (`medida-forge-view-y-table.py` ⑥ y `…-concept-e-interface.py`): a una
+/// entidad la nombran las `relations` de otra entidad; a una vista,
+/// `Entity.backedBy` y `View.from.view`; a una tabla, `View.from.table`; a un
+/// concepto, `Entity.properties.*.is` e `Interface.requires`; a una interfaz,
+/// `Entity.implements`. Una `Function` escribe por `effects.writes:
+/// hr.Employee.estado` —nombra la entidad— y la vista la alcanza por
+/// `backedBy`.
 fn quien_nombra(todos: &[Documento], d: &Documento) -> Vec<String> {
     let mut quien = Vec::new();
     for o in todos.iter().filter(|o| !std::ptr::eq(*o, d)) {
-        let mismo = o.paquete == d.paquete;
+        let mismo = o.espacio() == d.espacio();
         let spec = o.nodo.get("spec").map(|(_, s)| s);
         let from = |k: &str| {
             spec.and_then(|s| s.get("from"))
                 .and_then(|(_, f)| f.get(k))
                 .map(|(_, v)| v)
         };
+        let lista = |k: &str| spec.and_then(|s| s.get(k)).map(|(_, v)| v);
         match (d.kind.nombre, o.kind.nombre) {
+            ("Concept", "Entity") => {
+                for (prop, def) in spec
+                    .and_then(|s| s.get("properties"))
+                    .map(|(_, p)| p.entries())
+                    .unwrap_or(&[])
+                {
+                    if apunta(def.get("is").map(|(_, v)| v), d, mismo)
+                        && let Some(prop) = prop.as_str()
+                    {
+                        quien.push(format!("`{}` (properties.{prop}.is)", o.cualificado()));
+                    }
+                }
+            }
+            ("Concept", "Interface") if alguno_apunta(lista("requires"), d, mismo) => {
+                quien.push(format!("`{}` (requires)", o.cualificado()));
+            }
+            ("Interface", "Entity") if alguno_apunta(lista("implements"), d, mismo) => {
+                quien.push(format!("`{}` (implements)", o.cualificado()));
+            }
             ("Entity", "Entity") => {
                 for (k, rel) in spec
                     .and_then(|s| s.get("relations"))
@@ -342,16 +451,20 @@ fn ficha(raiz: &Path, d: &Documento) -> Json {
             .map(|(_, v)| de_node(v))
             .unwrap_or(Json::obj([]))
     };
-    Json::obj([
+    let mut m = vec![
         ("kind", Json::s(d.kind.nombre)),
         ("apiVersion", Json::s(campo_raiz(&d.nodo, "apiVersion"))),
         ("name", Json::s(d.nombre())),
         ("namespace", Json::s(d.espacio())),
-        ("paquete", Json::s(d.paquete.clone())),
         ("fichero", Json::s(relativo)),
         ("metadata", parte("metadata")),
         ("spec", parte("spec")),
-    ])
+    ];
+    // Sin `paquete` si vive en la raíz: la ficha no inventa uno.
+    if let Some(p) = &d.paquete {
+        m.push(("paquete", Json::s(p.clone())));
+    }
+    Json::obj(m)
 }
 
 fn campo_raiz(n: &Node, k: &str) -> String {
@@ -579,26 +692,40 @@ impl Servidor {
             );
         }
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
-        if let Some(r) = self.empeora(raiz, &antes, &format!("{} `{ns}.{n}`", k.articulo)) {
-            // (sobre un directorio no hay clon que tirar: se deja como estaba)
-            match &existente {
-                Some((f, t)) => {
-                    let _ = std::fs::write(f, t);
+        let sin_hablar = match self.empeora(raiz, &antes, &format!("{} `{ns}.{n}`", k.articulo)) {
+            Ok(t) => t,
+            Err(r) => {
+                // (sobre un directorio no hay clon que tirar: se deja como estaba)
+                match &existente {
+                    Some((f, t)) => {
+                        let _ = std::fs::write(f, t);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(&fichero);
+                    }
                 }
-                None => {
-                    let _ = std::fs::remove_file(&fichero);
-                }
+                return r;
             }
-            return r;
-        }
-        let ficha = Json::obj([
+        };
+        let mut ficha = vec![
             ("kind", Json::s(k.nombre)),
             ("name", Json::s(n)),
             ("namespace", Json::s(ns)),
-            ("paquete", Json::s(ns)),
             ("fichero", Json::s(relativo(raiz, &fichero))),
             ("nueva", Json::Bool(existente.is_none())),
-        ]);
+        ];
+        if fichero.starts_with(raiz.join("packages")) {
+            ficha.push(("paquete", Json::s(ns)));
+        }
+        if !sin_hablar.is_empty() {
+            // Conceptos que esta escritura deja sin nadie que los hable: entró,
+            // y el árbol lo dirá (OOS9004) hasta que alguien los hable o los retire.
+            ficha.push((
+                "sinHablar",
+                Json::Arr(sin_hablar.into_iter().map(Json::s).collect()),
+            ));
+        }
+        let ficha = Json::obj(ficha);
         if existente.is_none() {
             Respuesta::creado(ficha)
         } else {
@@ -653,7 +780,7 @@ impl Servidor {
                 format!("no se pudo retirar `{}`: {e}", relativo(raiz, &fichero)),
             );
         }
-        if let Some(mut r) =
+        if let Err(mut r) =
             self.empeora(raiz, &antes, &format!("sin {} `{cualificado}`", k.articulo))
         {
             let _ = std::fs::write(&fichero, &texto);
@@ -713,23 +840,24 @@ impl Servidor {
         }
     }
 
-    /// ¿La escritura **añadió** diagnósticos? `None` si el árbol no empeora
-    /// —aunque siga sin compilar por lo que ya tenía—; la 422 con **sólo los
-    /// nuevos** si sí. Dos diagnósticos son el mismo defecto si coinciden en
+    /// ¿La escritura **añadió** diagnósticos? `Ok` si el árbol no empeora
+    /// —aunque siga sin compilar por lo que ya tenía—, con los conceptos que
+    /// los `OOS9004` nuevos dejan sin hablar; la 422 con **sólo los nuevos**
+    /// si sí. Dos diagnósticos son el mismo defecto si coinciden en
     /// `(código, mensaje)`: la posición no cuenta.
-    fn empeora(&self, raiz: &Path, antes: &[Json], que: &str) -> Option<Respuesta> {
-        let despues = match self.diagnosticos_de(raiz) {
-            Ok(d) => d,
-            Err(r) => return Some(r),
-        };
+    fn empeora(&self, raiz: &Path, antes: &[Json], que: &str) -> Result<Vec<String>, Respuesta> {
+        let despues = self.diagnosticos_de(raiz)?;
         let habia: std::collections::BTreeSet<(String, String)> =
             antes.iter().map(identidad_de).collect();
-        let nuevos: Vec<Json> = despues
+        let (sin_hablar, nuevos): (Vec<Json>, Vec<Json>) = despues
             .into_iter()
             .filter(|d| !habia.contains(&identidad_de(d)))
-            .collect();
+            .partition(|d| identidad_de(d).0 == SIN_HABLAR);
         if nuevos.is_empty() {
-            return None;
+            return Ok(sin_hablar
+                .iter()
+                .map(|d| concepto_del(&identidad_de(d).1))
+                .collect());
         }
         let resumen = nuevos
             .iter()
@@ -739,7 +867,7 @@ impl Servidor {
             })
             .collect::<Vec<_>>()
             .join(" · ");
-        Some(Respuesta {
+        Err(Respuesta {
             codigo: 422,
             cuerpo: Json::obj([
                 (
@@ -752,6 +880,139 @@ impl Servidor {
                 ("previos", Json::Int(antes.len() as i64)),
             ]),
         })
+    }
+}
+
+// ── /conceptos: los del árbol y los importados, con quién los habla ────────
+
+/// `GET /conceptos`. Los `Concept` del árbol (los que `/documentos/Concept`
+/// escribe) más los de `vendor/*.oob` (`importado: true`, con el `paquete`
+/// que el sobre declara), y para cada uno quién lo habla —`hablado`: las
+/// propiedades con `is`, como `hr.Employee.email`— y quién lo exige
+/// —`exigido`: las interfaces con `requires`—. Medido: el compilador cuenta
+/// las dos cosas como hablar (`OOS9004` no salta si una interfaz lo exige).
+pub(crate) fn conceptos(raiz: &Path) -> Respuesta {
+    let (lista, mut rotos) = documentos_de(raiz);
+    // quién habla y quién exige, por nombre cualificado del concepto
+    let mut hablado: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut exigido: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for d in &lista {
+        let Some((_, spec)) = d.nodo.get("spec") else {
+            continue;
+        };
+        match d.kind.nombre {
+            "Entity" => {
+                for (prop, def) in spec
+                    .get("properties")
+                    .map(|(_, p)| p.entries())
+                    .unwrap_or(&[])
+                {
+                    if let (Some(prop), Some(c)) =
+                        (prop.as_str(), def.get("is").and_then(|(_, v)| v.as_str()))
+                    {
+                        hablado
+                            .entry(cualificar(c, &d.espacio()))
+                            .or_default()
+                            .push(format!("{}.{prop}", d.cualificado()));
+                    }
+                }
+            }
+            "Interface" => {
+                for c in spec
+                    .get("requires")
+                    .map(|(_, r)| r.items())
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|c| c.as_str())
+                {
+                    exigido
+                        .entry(cualificar(c, &d.espacio()))
+                        .or_default()
+                        .push(d.cualificado());
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut salida: Vec<Json> = Vec::new();
+    let quien = |m: &mut Json, q: &str| {
+        let Json::Obj(m) = m else { return };
+        for (clave, tabla) in [("hablado", &hablado), ("exigido", &exigido)] {
+            let lista = tabla.get(q).cloned().unwrap_or_default();
+            m.insert(
+                clave.into(),
+                Json::Arr(lista.into_iter().map(Json::s).collect()),
+            );
+        }
+    };
+    for d in lista.iter().filter(|d| d.kind.nombre == "Concept") {
+        let mut f = ficha(raiz, d);
+        if let Json::Obj(m) = &mut f {
+            m.insert("importado".into(), Json::Bool(false));
+        }
+        quien(&mut f, &d.cualificado());
+        salida.push(f);
+    }
+    // ── los importados: cada `.oob` de vendor/ ──────────────────────────────
+    let mut sobres: Vec<PathBuf> = std::fs::read_dir(raiz.join("vendor"))
+        .map(|e| {
+            e.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "oob"))
+                .collect()
+        })
+        .unwrap_or_default();
+    sobres.sort();
+    for sobre in sobres {
+        let Some(nodo) = std::fs::read_to_string(&sobre)
+            .ok()
+            .and_then(|t| parse::parse(&t).ok())
+        else {
+            rotos += 1;
+            continue;
+        };
+        let paquete = campo_raiz(&nodo, "package");
+        let Some((_, documentos)) = nodo.get("documents") else {
+            rotos += 1;
+            continue;
+        };
+        for (_, doc) in documentos.entries() {
+            if doc.get("kind").and_then(|(_, k)| k.as_str()) != Some("Concept") {
+                continue;
+            }
+            let (name, namespace) = (
+                campo(doc, "metadata", "name"),
+                campo(doc, "metadata", "namespace"),
+            );
+            let parte = |k: &str| doc.get(k).map(|(_, v)| de_node(v)).unwrap_or(Json::obj([]));
+            let mut f = Json::obj([
+                ("kind", Json::s("Concept")),
+                ("apiVersion", Json::s(campo_raiz(doc, "apiVersion"))),
+                ("name", Json::s(name.clone())),
+                ("namespace", Json::s(namespace.clone())),
+                ("paquete", Json::s(paquete.clone())),
+                ("fichero", Json::s(relativo(raiz, &sobre))),
+                ("importado", Json::Bool(true)),
+                ("metadata", parte("metadata")),
+                ("spec", parte("spec")),
+            ]);
+            quien(&mut f, &format!("{namespace}.{name}"));
+            salida.push(f);
+        }
+    }
+    let mut cuerpo = vec![("conceptos", Json::Arr(salida))];
+    if rotos > 0 {
+        cuerpo.push(("ilegibles", Json::Int(rotos as i64)));
+    }
+    Respuesta::ok(Json::obj(cuerpo))
+}
+
+/// La forma corta es legal dentro del mismo espacio de nombres.
+fn cualificar(referencia: &str, espacio: &str) -> String {
+    if referencia.contains('.') {
+        referencia.to_string()
+    } else {
+        format!("{espacio}.{referencia}")
     }
 }
 
@@ -1015,6 +1276,16 @@ mod pruebas {
             out.contains("- from: a\n      to: b"),
             "el primer par va en la linea del guion:\n{out}"
         );
+    }
+
+    #[test]
+    fn el_oos9004_nombra_al_concepto_entre_comillas() {
+        assert_eq!(
+            concepto_del("el concepto `hr.personalEmail` no lo referencia nada del paquete"),
+            "hr.personalEmail"
+        );
+        assert_eq!(cualificar("personalEmail", "hr"), "hr.personalEmail");
+        assert_eq!(cualificar("gdpr.personalEmail", "hr"), "gdpr.personalEmail");
     }
 
     #[test]

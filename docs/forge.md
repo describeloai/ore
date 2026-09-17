@@ -266,16 +266,26 @@ Cuatro decisiones para las dos filas:
 
 1. **Un PUT de Concept nunca podría entrar solo**: nadie lo habla todavía, `OOS9004` es un
    diagnóstico nuevo, y la puerta «no empeora» lo rechaza. Y al revés tampoco: el `is` primero
-   es `OOS2001`. El verbo **tolera el `OOS9004` que nombra al documento recién escrito** y lo
-   dice en la respuesta (`sinHablar: true`); el árbol lo seguirá diciendo hasta que una
-   propiedad lo hable.
+   es `OOS2001`. La decisión era tolerar el `OOS9004` que nombra al documento recién escrito,
+   **y el fire test la corrigió** (`los-documentos.sh` caso 18): el espejo también bloquea —
+   quitar el `is` de la única propiedad que lo habla hace nuevo el `OOS9004` y retirar el
+   concepto antes es 409 porque está hablado; ningún orden entraba. `OOS9004` es **el estado
+   entre dos escrituras**, no un defecto de una, así que lo tolera **el motor entero** (no la
+   fila) y la respuesta dice qué queda sin hablar: `sinHablar: ["hr.personalEmail"]`.
 2. **Quién nombra**: a un Concept, `Entity.properties.*.is` e `Interface.requires`; a una
    Interface, `Entity.implements`. El 409 de `DELETE` los cuenta desde aquí.
-3. **El motor recorre también la raíz** para estos kinds (`ore init` pone `interfaces/` ahí),
-   con `paquete: null` para lo que no tiene; uno nuevo se escribe en
+3. **El motor recorre también la raíz** (`ore init` pone `interfaces/` ahí): los `.yaml`
+   sueltos y los directorios que no son `packages/` ni `vendor/`; lo que no está en un paquete
+   sale **sin `paquete`** (la ficha no inventa uno); uno nuevo se escribe en
    `packages/<ns>/<carpeta>/`. El verbo no exige nada propio: lo que falta ya es `OOS1004`.
-4. **`GET /conceptos`** = los `Concept` del árbol más los de `vendor/*.oob`, cada uno con su
-   paquete, si es importado, y **quién lo habla** (las propiedades con `is`).
+4. **`GET /conceptos`** = los `Concept` del árbol (`importado: false`) más los de `vendor/*.oob`
+   (`importado: true`, con el `paquete` del sobre), cada uno con **quién lo habla** (`hablado`:
+   las propiedades con `is`, `hr.Employee.email`) y **quién lo exige** (`exigido`: las
+   interfaces con `requires`). El fire test siembra un vocabulario `iso` empaquetado; el `gdpr`
+   de conformidad ya no vale para eso: trae el lattice `gdpr.sensitivity` que acme-retail
+   declara, y desde `OOS2035` eso son dos.
+
+✓ Hechas (ORE, `documentos.rs`): dos filas más de `KINDS`, `/conceptos`, casos 15–18.
 
 ## 5. Los verbos que faltan son tres familias, no once rutas
 
@@ -303,7 +313,7 @@ Cada una se mide antes (§4.3) y cierra filas de la tabla; ninguna pinta lo que 
 |---|---|---|
 | **I0** ✓ | el boceto en la consola sobre `acme-retail` (`components/ontology/`), con cada pantalla diciendo qué verbo le falta; `x-rubix-displayName` en la ficha y en el borrador de `Entity` | — |
 | **I1** ✓ | `/documentos` para `Entity` (lectura con `labels` y `relations`, `PUT`, `DELETE`, §4.4); Forge lee el árbol de la celda en Entities y Links | Entities, Links (lectura) |
-| **I2** | `/documentos` para `View`, `Table` (✓ hechas: `documentos.rs` es un motor y una tabla de kinds; Views real 3/3), `Concept`, `Interface`, `Function`, y los de gobierno; `GET /conceptos` (importados + locales, quién los habla) | Views ✓, Concepts, Interfaces, Functions, Policies |
+| **I2** | `/documentos` para `View`, `Table` (✓ hechas: `documentos.rs` es un motor y una tabla de kinds; Views real 3/3), `Concept`, `Interface` (✓ hechas, con `GET /conceptos`: importados + locales, quién los habla y quién los exige), `Function`, y los de gobierno | Views ✓, Concepts ✓, Interfaces ✓, Functions, Policies |
 | **I3** | `/derivados`: `diagnosticos`, `topologia`, `clasificacion`; `GET /arbol` | Explore, Links (topología) |
 | **I4** | `/acciones` y `GET /dependencias`; «Proponer cambios» como ciclo real | Ontology config |
 | **I5** | escribir desde Forge: los «Nuevo …» dejan de ser borradores | todas |

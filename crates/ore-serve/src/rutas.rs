@@ -237,6 +237,9 @@ impl Servidor {
                 let kind = kind.to_string();
                 self.leyendo(move |r| documentos::listar(r, &kind))
             }
+            // Los conceptos del árbol y los importados de `vendor/*.oob`, con
+            // quién los habla: lo que la sección Concepts pinta.
+            ("GET", ["conceptos"]) => self.leyendo(documentos::conceptos),
             ("GET", ["documentos", kind, ns, n]) => {
                 let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
                 self.leyendo(move |r| documentos::uno(r, &kind, &ns, &n))
@@ -1300,6 +1303,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
     .into_iter()
     .map(|(v, r, b)| (v, r.to_string(), b))
     .collect();
+    m.push(("GET", "/conceptos".to_string(), con_identidad));
     for k in documentos::KINDS {
         m.push(("GET", format!("/documentos/{}", k.nombre), con_identidad));
         for verbo in ["GET", "PUT", "DELETE"] {

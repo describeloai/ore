@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # LOS DOCUMENTOS DEL ARBOL (Ontology Forge): `/documentos/{kind}` — un motor y
-# una tabla de kinds (Entity, View, Table) — contra un `ore-serve` de verdad y
-# con el arbol en una forja.
+# una tabla de kinds (Entity, View, Table, Concept, Interface) — y `/conceptos`,
+# contra un `ore-serve` de verdad y con el arbol en una forja.
 #
 # Forge no lee ficheros: lee `ore-serve`. Y hasta hoy `/esquema` daba nombre,
 # clave, respaldo y propiedades — sin `labels` ni `relations`, asi que Entities
@@ -28,6 +28,15 @@
 #                                     pone la ruta
 #  14  DELETE View · Table            409 con quien la nombra (backedBy, from.view,
 #                                     from.table); libres, 200
+#  15  Concept · Interface · /conceptos  vacios en acme-retail; /conceptos trae
+#                                     los importados de vendor/iso.oob
+#  16  PUT Concept                    entra sin que nadie lo hable (sinHablar,
+#                                     OOS9004 tolerado); sin type 422 (OOS1004);
+#                                     con `is`, /conceptos dice quien lo habla
+#  17  PUT Interface · DELETE         requires a lo que no esta OOS2001; 409 con
+#                                     properties.*.is, requires, implements
+#  18  deshacer en orden              dejar de hablar un concepto entra (y lo
+#                                     dice); libres, 200; el commit es del sujeto
 #
 #   1  GET /documentos/Entity            todas, con `metadata` y `spec` enteros:
 #                                        labels, aiContext, relations, uniqueKeys,
@@ -89,6 +98,15 @@ FORJA="$TMP/arbol.git"
 git init -q --bare -b main "$FORJA" || falla "no se pudo crear el repositorio pelado"
 git clone -q "$FORJA" "$TMP/semilla" 2>/dev/null
 cp -r "$RAIZ/vendor/oos/examples/acme-retail/." "$TMP/semilla/"
+# Un vocabulario importado (`ore pack` → vendor/iso.oob) para que /conceptos tenga
+# algo que no es del arbol. `iso` y no el `gdpr` de conformidad: ese trae el lattice
+# `gdpr.sensitivity`, que acme-retail ya declara — y desde OOS2035 eso son dos.
+mkdir -p "$TMP/iso/concepts"
+printf 'apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: iso, version: 1.0.0, status: active, domain: standards }\nspec: { owner: team:standards }\n' > "$TMP/iso/package.yaml"
+printf 'apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: iso, version: 0.1.0 }\ndatasources:\n  - { name: ninguna, type: postgres, connectionEnv: NADA }\n' > "$TMP/iso/ontology.config.yaml"
+printf 'apiVersion: oos.dev/v1alpha4\nkind: Concept\nmetadata: { name: countryCode, namespace: iso }\nspec:\n  type: String\n  description: ISO 3166-1 alpha-2\n' > "$TMP/iso/concepts/countryCode.yaml"
+printf 'apiVersion: oos.dev/v1alpha4\nkind: Concept\nmetadata: { name: currency, namespace: iso }\nspec:\n  type: String\n' > "$TMP/iso/concepts/currency.yaml"
+"$ORE" pack "$TMP/iso" -o "$TMP/semilla/vendor/iso.oob" >/dev/null 2>&1 || falla "0 · no se pudo empaquetar el vocabulario iso"
 ( cd "$TMP/semilla" && git config core.autocrlf false && "$ORE" validate . >/dev/null 2>&1 \
   && git add -A && git commit -qm "acme-retail" && git push -q origin HEAD:main ) \
   || falla "no se pudo sembrar la forja con acme-retail"
@@ -266,8 +284,8 @@ cumple "{x['name'] for x in d['documentos']} == {'empleados','envios'}" "11 · a
 cumple "[x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['from']=={'table':'workday_worker'} and len([x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['fields'])==12" "11 · la vista trae from y fields enteros"
 [ "$(pide GET /documentos/Table)" = "200" ] || falla "11 · GET /documentos/Table · $(cat "$TMP/r.json")"
 cumple "len(d['documentos']) == 2 and [x for x in d['documentos'] if x['name']=='workday_worker'][0]['spec']['reads']['fullScan']=='forbidden' and 'physicalType' in json.dumps(d['documentos'])" "11 · la tabla trae sus dos caras y sus columnas"
-[ "$(pide GET /documentos/Concept)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
-grep -q "Entity · View · Table" "$TMP/r.json" || falla "11 · el 404 no dice los kinds servidos · $(cat "$TMP/r.json")"
+[ "$(pide GET /documentos/Function)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
+grep -q "Entity · View · Table · Concept · Interface" "$TMP/r.json" || falla "11 · el 404 no dice los kinds servidos · $(cat "$TMP/r.json")"
 [ "$(pide GET /documentos/Table/hr/workday_worker)" = "200" ] && cumple "d['yaml'].startswith('apiVersion: oos.dev/v1alpha8') and 'kind: Table' in d['yaml'] and d['commit']['autor']=='semilla'" "11 · una tabla con su YAML y su commit"
 dice "11 · View y Table se leen enteras por el mismo motor; un kind fuera de la tabla es 404 con la lista"
 
@@ -323,5 +341,64 @@ grep -q 'hr.encima` (from.view)' "$TMP/r.json" || falla "14 · el 409 no dice fr
 [ "$(pide GET /documentos/View)" = "200" ] && cumple "len(d['documentos']) == 2" "14 · vuelven a ser dos"
 dice "14 · DELETE: la vista de un backedBy y la tabla de un from.table son 409 con los nombres; libres, 200"
 
+# ── 15 · Concept e Interface: dos filas mas, y /conceptos con lo importado ──
+[ "$(pide GET /documentos/Concept)" = "200" ] && cumple "d['documentos'] == []" "15 · acme-retail no declara ningun Concept"
+[ "$(pide GET /documentos/Interface)" = "200" ] && cumple "d['documentos'] == []" "15 · ni ninguna Interface"
+[ "$(pide GET /conceptos)" = "200" ] || falla "15 · GET /conceptos · $(cat "$TMP/r.json")"
+cumple "sorted(c['name'] for c in d['conceptos']) == ['countryCode','currency'] and all(c['importado'] and c['paquete']=='iso' and c['fichero']=='vendor/iso.oob' and c['hablado']==[] and c['exigido']==[] for c in d['conceptos'])" "15 · los dos conceptos importados, de vendor/iso.oob, sin nadie que los hable"
+cumple "[c for c in d['conceptos'] if c['name']=='countryCode'][0]['spec']['description']=='ISO 3166-1 alpha-2'" "15 · el spec del importado viene entero"
+dice "15 · Concept e Interface se sirven (vacios en acme-retail); /conceptos trae los importados de vendor/*.oob"
+
+# ── 16 · PUT de un Concept: nadie lo habla y aun asi entra (sinHablar) ──────
+CONCEPTO='{"metadata":{"x-rubix-displayName":"Correo personal"},"spec":{"type":"String","labels":{"gdpr.sensitivity":"high"}}}'
+[ "$(pide PUT /documentos/Concept/hr/personalEmail "$CONCEPTO")" = "201" ] || falla "16 · el concepto no entro · $(cat "$TMP/r.json")"
+cumple "d['sinHablar']==['hr.personalEmail'] and d['fichero']=='packages/hr/concepts/personalEmail.yaml'" "16 · entra con sinHablar: el OOS9004 tolerado, con el nombre"
+[ "$(asunto)" = 'escribir el concepto `hr.personalEmail`' ] || falla "16 · el asunto: $(asunto)"
+# un segundo concepto que nadie habla tampoco: el OOS9004 del primero ya estaba, y el suyo se tolera
+[ "$(pide PUT /documentos/Concept/hr/legalName '{"spec":{"type":"String"}}')" = "201" ] || falla "16 · el segundo concepto no entro · $(cat "$TMP/r.json")"
+# pero un Concept sin type es OOS1004 del compilador, y ese NO se tolera
+[ "$(pide PUT /documentos/Concept/hr/sinTipo '{"spec":{"description":"nada"}}')" = "422" ] || falla "16 · un concepto sin type entro · $(cat "$TMP/r.json")"
+cumple "any(x['codigo']=='OOS1004' for x in d['diagnosticos']) and not any(x['codigo']=='OOS9004' for x in d['diagnosticos'])" "16 · 422 con OOS1004 y sin el OOS9004 de los otros"
+# Employee.email pasa a hablar hr.personalEmail: is en vez de type
+[ "$(pide GET /documentos/Entity/hr/Employee)" = "200" ] || falla "16 · GET Employee"
+HABLA=$("$PY" -c "import json,sys; d=json.load(open(sys.argv[1])); e=d['spec']['properties']['email']; e.pop('type'); e['is']='hr.personalEmail'; print(json.dumps({'metadata':d['metadata'],'spec':d['spec']}))" "$TMP/r.json")
+[ "$(pide PUT /documentos/Entity/hr/Employee "$HABLA")" = "200" ] || falla "16 · Employee con is no entro · $(cat "$TMP/r.json")"
+[ "$(pide GET /conceptos)" = "200" ] && cumple "[c for c in d['conceptos'] if c['name']=='personalEmail'][0]['hablado']==['hr.Employee.email'] and [c for c in d['conceptos'] if c['name']=='personalEmail'][0]['importado'] is False and [c for c in d['conceptos'] if c['name']=='personalEmail'][0]['metadata']['x-rubix-displayName']=='Correo personal' and len(d['conceptos'])==4" "16 · /conceptos: hr.personalEmail lo habla hr.Employee.email; cuatro en total"
+[ "$(pide GET /documentos/Concept)" = "200" ] && cumple "sorted(x['name'] for x in d['documentos'])==['legalName','personalEmail'] and all(x['paquete']=='hr' for x in d['documentos'])" "16 · /documentos/Concept son los dos del arbol, no los importados"
+dice "16 · PUT Concept: entra sin que nadie lo hable (sinHablar, OOS9004 tolerado); sin type es 422; con is, /conceptos dice quien lo habla"
+
+# ── 17 · Interface: requires a lo que no esta es OOS2001; DELETE con quien nombra ──
+[ "$(pide PUT /documentos/Interface/hr/Party '{"spec":{"requires":["hr.noExiste"]}}')" = "422" ] || falla "17 · una interfaz a un concepto que no esta entro · $(cat "$TMP/r.json")"
+cumple "d['diagnosticos'][0]['codigo']=='OOS2001' and 'noExiste' in d['diagnosticos'][0]['mensaje']" "17 · OOS2001 con el nombre"
+[ "$(pide PUT /documentos/Interface/hr/Party '{"spec":{"requires":["hr.personalEmail"]}}')" = "201" ] || falla "17 · la interfaz no entro · $(cat "$TMP/r.json")"
+cumple "'sinHablar' not in d and d['fichero']=='packages/hr/interfaces/Party.yaml'" "17 · la interfaz no tolera nada"
+[ "$(pide GET /conceptos)" = "200" ] && cumple "[c for c in d['conceptos'] if c['name']=='personalEmail'][0]['exigido']==['hr.Party']" "17 · /conceptos: hr.Party exige hr.personalEmail"
+[ "$(pide DELETE /documentos/Concept/hr/personalEmail)" = "409" ] || falla "17 · retirar el concepto hablado no dio 409 · $(cat "$TMP/r.json")"
+grep -q 'hr.Employee` (properties.email.is)' "$TMP/r.json" || falla "17 · el 409 no dice la propiedad · $(cat "$TMP/r.json")"
+grep -q 'hr.Party` (requires)' "$TMP/r.json" || falla "17 · el 409 no dice la interfaz · $(cat "$TMP/r.json")"
+# Employee implementa hr.Party (la satisface: email habla personalEmail)
+IMPL=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); d['spec']['implements']=['hr.Party']; print(json.dumps(d))" "$HABLA")
+[ "$(pide PUT /documentos/Entity/hr/Employee "$IMPL")" = "200" ] || falla "17 · Employee implements no entro · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Interface/hr/Party)" = "409" ] || falla "17 · retirar la interfaz implementada no dio 409 · $(cat "$TMP/r.json")"
+grep -q 'hr.Employee` (implements)' "$TMP/r.json" || falla "17 · el 409 no dice implements · $(cat "$TMP/r.json")"
+dice "17 · Interface: requires a lo que no esta es OOS2001; el concepto hablado y la interfaz implementada son 409 con los nombres"
+
+# ── 18 · deshacer en orden: lo que nadie nombra se retira, y el commit es del sujeto ──
+[ "$(pide PUT /documentos/Entity/hr/Employee "$HABLA")" = "200" ] || falla "18 · quitar implements no entro"
+[ "$(pide DELETE /documentos/Interface/hr/Party)" = "200" ] || falla "18 · retirar la interfaz libre no dio 200 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'retirar la interfaz `hr.Party`' ] || falla "18 · el asunto: $(asunto)"
+# legalName nunca lo hablo nadie: se retira, y el arbol no empeora (su OOS9004 se va)
+[ "$(pide DELETE /documentos/Concept/hr/legalName)" = "200" ] || falla "18 · retirar legalName no dio 200 · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Concept/hr/personalEmail)" = "409" ] || falla "18 · personalEmail sigue hablado y no dio 409"
+ORIG=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); e=d['spec']['properties']['email']; e.pop('is'); e['type']='String'; print(json.dumps(d))" "$HABLA")
+# dejar de hablarlo hace nuevo el OOS9004 — y retirarlo antes es 409: ningun orden
+# entraria si la puerta no tolerara OOS9004. Entra, y dice que lo deja sin hablar.
+[ "$(pide PUT /documentos/Entity/hr/Employee "$ORIG")" = "200" ] || falla "18 · Employee sin is no entro · $(cat "$TMP/r.json")"
+cumple "d['sinHablar']==['hr.personalEmail']" "18 · la entidad dice que deja hr.personalEmail sin hablar"
+[ "$(pide DELETE /documentos/Concept/hr/personalEmail)" = "200" ] || falla "18 · retirar personalEmail no dio 200 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'retirar el concepto `hr.personalEmail`' ] || falla "18 · el asunto: $(asunto)"
+[ "$(pide GET /conceptos)" = "200" ] && cumple "len(d['conceptos'])==2 and all(c['importado'] for c in d['conceptos'])" "18 · quedan los dos importados"
+dice "18 · deshecho en orden: libres, 200; el arbol vuelve a ser acme-retail mas el vocabulario iso"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table — y escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface — y /conceptos; escribir es un commit del sujeto que no empeora el arbol"
