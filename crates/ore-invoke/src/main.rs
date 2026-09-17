@@ -318,15 +318,16 @@ fn llamar(
 /// propiedad ausente, como en el driver); si no hay objeto, es un error de esa
 /// fila, dicho con lo que contestó.
 fn extraer(contenido: &str, output: &BTreeMap<String, String>) -> Result<Json, String> {
-    let (Some(a), Some(z)) = (contenido.find('{'), contenido.rfind('}')) else {
+    // El PRIMER objeto equilibrado, no «del primer `{` al último `}`»: un modelo
+    // base sigue hablando después de contestar (medido con DeepSeek-V2-Lite el
+    // 2026-09-17: inventa turnos `User:`/`Assistant:` con más objetos dentro), y
+    // lo que vale es lo que dijo primero.
+    let (Some(a), Some(z)) = (contenido.find('{'), primer_objeto(contenido)) else {
         return Err(format!(
             "el modelo no contestó un objeto JSON: {}",
             contenido.trim().chars().take(120).collect::<String>()
         ));
     };
-    if z < a {
-        return Err("el modelo no contestó un objeto JSON".into());
-    }
     let n: Node = parse::parse(&contenido[a..=z]).map_err(|_| {
         format!(
             "lo que el modelo contestó no analiza: {}",
@@ -352,6 +353,35 @@ fn extraer(contenido: &str, output: &BTreeMap<String, String>) -> Result<Json, S
         ));
     }
     Ok(Json::Obj(m))
+}
+
+/// Dónde cierra el primer `{` del texto, contando llaves fuera de cadenas.
+fn primer_objeto(s: &str) -> Option<usize> {
+    let a = s.find('{')?;
+    let (mut nivel, mut en_cadena, mut escapada) = (0usize, false, false);
+    for (i, c) in s[a..].char_indices() {
+        if en_cadena {
+            match c {
+                _ if escapada => escapada = false,
+                '\\' => escapada = true,
+                '"' => en_cadena = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => en_cadena = true,
+            '{' => nivel += 1,
+            '}' => {
+                nivel -= 1;
+                if nivel == 0 {
+                    return Some(a + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn a_json(n: &Node) -> Json {
@@ -381,6 +411,29 @@ mod tests {
     fn extrae_el_objeto_aunque_el_modelo_hable_alrededor() {
         let j = extraer("Claro: {\"categoriaEs\": \"Bebés\"} ¿algo más?", &output()).unwrap();
         assert_eq!(j.jcs(), "{\"categoriaEs\":\"Bebés\"}");
+    }
+
+    #[test]
+    fn se_queda_con_el_primer_objeto_aunque_el_modelo_siga_hablando() {
+        let c = "{
+  \"categoriaEs\": \"Telefonía\"
+}
+
+User: otra cosa
+
+Assistant:
+{
+  \"categoriaEs\": \"Otra\"
+}";
+        assert_eq!(
+            extraer(c, &output()).unwrap().jcs(),
+            "{\"categoriaEs\":\"Telefonía\"}"
+        );
+        let c = "{\"categoriaEs\": \"Llaves { } dentro\"} y {\"categoriaEs\": \"no\"}";
+        assert_eq!(
+            extraer(c, &output()).unwrap().jcs(),
+            "{\"categoriaEs\":\"Llaves { } dentro\"}"
+        );
     }
 
     #[test]
