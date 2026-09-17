@@ -564,7 +564,14 @@ fn testigo(
         &["testigo".to_string()],
         Some(&peticion),
     )
-    .map_err(|f| f.mensaje)?;
+    .map_err(|f| {
+        let mut s = f.mensaje;
+        for l in f.ayuda {
+            s.push('\n');
+            s.push_str(&l);
+        }
+        s
+    })?;
     let n = ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió el testigo no analiza: {e:?}\n{salida}"))?;
     let modo = n
@@ -771,8 +778,17 @@ fn almacen(
         entrada.push_str(f);
     }
     let programa = programa_del_almacen()?;
+    // Con su stderr: «`ore-store-gcs` falló (1)» a secas costó una pasada en
+    // `demo` sin saber por qué. Lo que el almacén dice es lo único accionable.
     let salida =
-        lector::ejecutar(&programa, &[verbo.to_string()], Some(&entrada)).map_err(|f| f.mensaje)?;
+        lector::ejecutar(&programa, &[verbo.to_string()], Some(&entrada)).map_err(|f| {
+            let mut s = f.mensaje;
+            for l in f.ayuda {
+                s.push('\n');
+                s.push_str(&l);
+            }
+            s
+        })?;
     ore_core::parse::parse(&salida)
         .map_err(|e| format!("lo que devolvió `{programa}` no analiza: {e:?}\n{salida}"))
 }
