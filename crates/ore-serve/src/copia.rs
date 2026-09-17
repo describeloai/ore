@@ -180,7 +180,11 @@ impl Servidor {
         if let Err(e) = std::fs::rename(&dir, &aparte) {
             return Respuesta::error(500, format!("no se pudo retirar el paquete: {e}"));
         }
-        if let Err(r) = self.empeora(raiz, &antes, &format!("retirar `{paquete}`")) {
+        // Retirar sólo puede empeorar el árbol por lo que NOMBRA a la base
+        // retirada: un diagnóstico nuevo que no la nombra estaba tapado por una
+        // fase anterior del validador (la de la propia base), no causado.
+        let nombra = |d: &Json| !texto_de(d).contains(paquete);
+        if let Err(r) = self.empeora_salvo(raiz, &antes, &format!("retirar `{paquete}`"), nombra) {
             let _ = std::fs::rename(&aparte, &dir);
             return r;
         }
@@ -548,6 +552,21 @@ fn vistas_con_copia(raiz: &Path) -> Vec<String> {
 }
 
 /// Las vistas de UN paquete que declaran `materialized`, por nombre y en orden.
+/// Lo que un diagnóstico dice y dónde, junto: para saber si nombra a alguien.
+fn texto_de(d: &Json) -> String {
+    let Json::Obj(m) = d else {
+        return String::new();
+    };
+    ["donde", "mensaje", "ayuda"]
+        .iter()
+        .filter_map(|k| match m.get(*k) {
+            Some(Json::Str(s)) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(vistas) = std::fs::read_dir(dir.join("views")) else {

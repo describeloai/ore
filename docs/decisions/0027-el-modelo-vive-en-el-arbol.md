@@ -795,7 +795,11 @@ y un `Integer` nulo no podía cargarse → un nulo es la propiedad ausente (`fc6
 encolaba antes de que el conducto existiera (`2d1690e`); el convergedor borraba de la cola lo
 que `ore-serve` acababa de encolar (`10a4035`); y en `victor`, `test-standard` con guion no
 puede ser un espacio de nombres (OOS2030) → el alta y `discover` lo rechazan, y `DELETE
-/paquetes/{n}` retira una base (`5735521`). **Lo que I5 mide y no cierra**: la segunda pasada en
+/paquetes/{n}` retira una base (`5735521`); y retirarla dio 422 «el árbol empeora» por los
+`OOS2009`/`OOS2010` de las otras dos bases: el validador va por fases y se para en la primera
+(`validate_package`), así que `test-standard` (OOS2030, pertenencia) TAPABA lo que las otras
+tenían en el enlazado, y quitarla lo destapó → **retirar sólo empeora por lo que nombra a la
+base retirada** (`empeora_salvo`, `la-copia-se-decide` 7b). **Lo que I5 mide y no cierra**: la segunda pasada en
 Postgres **relee** (el LSN se mueve entre pasadas: cualquier escritura del servidor) — el recibo
 funciona, pero «releer no lee el origen» espera al lector del rango del changelog
 (`medida-el-rango-por-posicion.py` §D); hoy el refresco en Postgres es proporcional al tamaño.

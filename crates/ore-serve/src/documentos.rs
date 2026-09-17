@@ -851,12 +851,30 @@ impl Servidor {
         antes: &[Json],
         que: &str,
     ) -> Result<Vec<String>, Respuesta> {
+        self.empeora_salvo(raiz, antes, que, |_| false)
+    }
+
+    /// Como [`Self::empeora`], pero un diagnóstico nuevo por el que `destapado`
+    /// responde `true` NO cuenta como empeorar. El validador va por fases y
+    /// se para en la primera que falla (`validate_package`): quitar del árbol
+    /// lo que fallaba en una fase temprana —una base con nombre que no es
+    /// espacio de nombres, `OOS2030`— deja llegar a fases que antes no corrían,
+    /// y lo que sale de ahí ya estaba, sólo que tapado. Medido en victor el
+    /// 2026-09-17: retirar `test-standard` daba 422 por los `OOS2009`/`OOS2010`
+    /// de las otras dos bases, que ni nombran a la retirada.
+    pub(crate) fn empeora_salvo(
+        &self,
+        raiz: &Path,
+        antes: &[Json],
+        que: &str,
+        destapado: impl Fn(&Json) -> bool,
+    ) -> Result<Vec<String>, Respuesta> {
         let despues = self.diagnosticos_de(raiz)?;
         let habia: std::collections::BTreeSet<(String, String)> =
             antes.iter().map(identidad_de).collect();
         let (sin_hablar, nuevos): (Vec<Json>, Vec<Json>) = despues
             .into_iter()
-            .filter(|d| !habia.contains(&identidad_de(d)))
+            .filter(|d| !habia.contains(&identidad_de(d)) && !destapado(d))
             .partition(|d| identidad_de(d).0 == SIN_HABLAR);
         if nuevos.is_empty() {
             return Ok(sin_hablar

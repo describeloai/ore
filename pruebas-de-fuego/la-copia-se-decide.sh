@@ -359,5 +359,38 @@ COD=$(borrar espejo)
 [ "$COD" = "404" ] || falla "7 · retirar dos veces devolvio $COD"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7 · el arbol no compila sin espejo"
 dice "7 · retirar: 409 la fuente entera · 200 la base, fuera del arbol y la copia reencolada con lo que queda · 404 despues · compila"
+# 7b · lo que victor destapo (2026-09-17): el validador va por fases y se para en la
+# primera. Una base con un nombre que no es espacio de nombres (`OOS2030`, fase de
+# pertenencia) TAPA lo que otras bases tengan en fases posteriores (`OOS2009`, enlazado).
+# Retirarla los destapa; no los causa: tiene que ser 200, no 422.
+mkdir -p "$REPO/packages/mal-nombre/tables"
+echo '{"fuente":"pg","objetos":["olist.customers"]}' > "$REPO/packages/mal-nombre/discover.scope.json"
+cat > "$REPO/packages/mal-nombre/package.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: mal-nombre, version: 0.1.0, status: active, domain: sales }
+spec: { owner: team:data }
+Y
+cat > "$REPO/packages/mal-nombre/tables/customers.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: customers, namespace: mal-nombre }
+spec:
+  datasource: pg
+  object: "olist.customers"
+  columns: { customer_id: {} }
+  reads: { fullScan: cheap }
+  changes: { mode: append, witness: log }
+Y
+sed -i 's/owner: team:data/owner: cambiame/' "$REPO/packages/olist/package.yaml"
+( cd "$REPO" && "$ORE" validate . 2>&1 | grep -q OOS2030 ) || falla "7b · el arbol no se para en OOS2030"
+( cd "$REPO" && "$ORE" validate . 2>&1 | grep -q OOS2009 ) && falla "7b · el OOS2009 de olist no queda tapado: la premisa del caso no vale"
+COD=$(borrar mal-nombre)
+[ "$COD" = "200" ] || falla "7b · ⛔ retirar la base tapadora devolvio $COD (lo destapado no es empeorar): $(cuerpo)"
+[ ! -e "$REPO/packages/mal-nombre" ] || falla "7b · mal-nombre sigue en el arbol"
+( cd "$REPO" && "$ORE" validate . 2>&1 | grep -q OOS2009 ) || falla "7b · sin la tapadora el OOS2009 de olist no aparece"
+sed -i 's/owner: cambiame/owner: team:data/' "$REPO/packages/olist/package.yaml"
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7b · el arbol no compila restaurado"
+dice "7b · retirar la base que tapaba (OOS2030) destapa el OOS2009 de otra: 200, no 422"
 
-echo "✓ la base estandar, y el catalogo no modela: 0–7"
+echo "✓ la base estandar, y el catalogo no modela: 0–7b"
