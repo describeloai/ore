@@ -702,6 +702,33 @@ raíz del árbol no lo re-induciría nadie—: la pasada de decisiones lo trae. 
 customers y conserva la de orders** —lo que el verbo a mano perdía— y el árbol compila. El verbo
 por vista se retira. `GET /copias` sigue: es lo que el Job va a copiar, con el informe.
 
+**La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
+si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos
+clave obligatoria?»*. Tiene razón, y la medida dice de dónde viene la conflación:
+
+| | medido |
+|---|---|
+| **de dónde viene** | `ore discover` nació el 30 de agosto (`1cfa284`) como **inducir la ontología desde un catálogo**: por cada tabla emite `Table` + `View` trivial + **`Entity`** (`nature: entity`, `backedBy`), y su cola de decisiones es de modelado. El Assets catalog (database › schema › table) nació el 10 de septiembre (`4066005`, la consola) **encima** de eso, y hereda las tres cosas sin haberlas pedido |
+| **qué decide cada clase** | de las 10 clases del inductor, **3 son del objeto físico**: `dueno` (quién responde del paquete), `filas` (cero filas: ¿viva o resto?), `vista` (el origen la declara vista). **7 son de modelado**: `colision` (dos tablas dan la misma entidad), `clave` (la identidad de la fila), `tipo` (el tipo OOS de una columna — la `Table` guarda el `physicalType` sin preguntar), `vacio` (sin columna tipable no hay entidad), `concepto`, `relacion`, `familia`, `clasificacion`. En `demo/olist`, 16 de las 17 abiertas son de modelado |
+| **quién consume la Entity** | el SDL de GraphQL y la exportación (`exporta.rs`), `diff`/`promote`, la Forge (`/documentos/Entity`), y **`GET /paquetes/{n}/esquema`**: la consola construye hoy el árbol del catálogo **desde `entities/`** (`backedBy → view → table → object`), no desde `tables/`. Es el único sitio donde el catálogo depende de la ontología, y es al revés de lo que debería: el catálogo físico tiene más que la entidad (todas las columnas, con su `physicalType`, tipables o no) |
+| **qué pide clave** | sólo la cadena copia → View → **Entity** (OOS2021: una copia que sólo anexa no respalda una entidad mutable). Una `Table` + `View` sin entidad **compila y se copia sin clave** (medido en I2: el fixture sin entidades pasó). La copia sin clave es un *snapshot*: se lee entera y se sustituye, los borrados salen solos — lo que `materialize` hace hoy porque ningún lector sirve el rango. La clave sólo compra el refresco por diferencia |
+| **Foundry / Databricks** | el mismo reparto: dataset sin clave, *object type* con `primaryKey`; bronze sin clave, silver con `KEYS`. La clave se pide **al modelar**, no al ingerir |
+| **qué pasa con lo que ya hay** | `review` re-induce `entities/` (`GOBERNADOS`): si el catálogo deja de emitir entidades, una re-inducción de `olist` **las borraría**. Qué tablas están modeladas tiene que ser una regla en el alcance, como la clase de la base |
+
+**⇒ El catálogo no modela.** Tres iteraciones, y van **antes** de I4c (que pintaría «waiting for a
+key», que en este modelo no existe):
+
+| | qué | acepta |
+|---|---|---|
+| **C1** · `ore-cli` | `discover` induce **en dos mitades**: el catálogo (`Table` + `View` por tabla del `only`; decisiones `dueno`, `filas`, `vista`) siempre; la ontología (`Entity` y sus 7 decisiones) sólo para las tablas que el alcance nombra en **`"entities": [...]`**. Ausente = todas (lo que era: `olist` no cambia y `review` no borra nada); el alta del catálogo escribe `[]`. Un verbo para modelar una tabla —`ore model <paquete> <tabla>`: la añade al alcance y re-induce— que es lo que Foundry llama *promote to object type*. Con `type: standard`, **todas** las vistas salen con `materialized`, con o sin clave; la clave (del origen o de `clave`) sigue poniendo la tabla en `upsert` — mejora, no requisito | una base nace sin entidades y con sus N copias; `ore model` trae la entidad y su cola; `review` conserva lo modelado |
+| **C2** · `ore-serve` | `GET /paquetes/{n}/esquema` lee **`tables/`** (todas las columnas, `physicalType`, `object`) y no `entities/`; `decisionesPendientes` cuenta las del catálogo; `POST /paquetes/{n}/tablas/{t}/modelar` → `ore model` (el sitio de la Forge para «promote»); `GET /paquetes` gana `modeladas` | la ficha del catálogo enseña el esquema físico; la Forge ve la entidad al ascender |
+| **C3** · consola | el Assets catalog pinta el esquema físico y **Model this table** (→ Forge); la cola de decisiones del catálogo se queda con las 3 físicas y la Forge gana las 7 de modelado | banco con una base sin modelar y otra modelada |
+
+Lo que hay que coordinar: `Entity`, `/documentos/Entity` y las decisiones de modelado son terreno de la
+sesión de Ontology Forge — C2/C3 se acuerdan con ella antes de tocar `documentos.rs`. Lo que se
+guarda de I4b: todo — la regla en el alcance, `inducir_con_regla`, `--reinducir`, `tras_inducir`;
+sólo cambia que la copia deja de esperar a la clave. Después: I4c e I5.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
