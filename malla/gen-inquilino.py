@@ -803,14 +803,19 @@ def comprobar():
     t47 = (MALLA / "47-el-informador.yaml").read_text(encoding="utf-8")
     if "kind: ClusterRole" in t47:
         fallos.append("`47-el-informador.yaml`: un ClusterRole; el informador solo puede leer SU namespace")
-    for verbo in ("create", "update", "patch", "delete", "watch", "*"):
+    # Leer es get, list y watch (watch es leer lo que cambia: es lo que hace que
+    # Data › Jobs se mueva en el acto, 2026-09-17); escribir es lo demas.
+    for verbo in ("create", "update", "patch", "delete", "deletecollection", "*"):
         if re.search(r"verbs:.*\b%s\b" % re.escape(verbo), t47):
-            fallos.append("`47-el-informador.yaml`: el Role del informador lleva `%s`; solo get y list" % verbo)
+            fallos.append("`47-el-informador.yaml`: el Role del informador lleva `%s`; solo get, list y watch" % verbo)
     if "cidr: %s" % MAESTRO not in t47:
         fallos.append("`47-el-informador.yaml`: la IP del API server no es MAESTRO (%s)" % MAESTRO)
-    if "resources: [resourcequotas, pods]" not in t47 or "resources: [jobs]" not in t47:
-        fallos.append("`47-el-informador.yaml`: el Role no es exactamente resourcequotas, pods y jobs")
-    print("  ⭐ ⑫ el informador: Role de lectura en su namespace, y el API server es %s" % MAESTRO)
+    if ("resources: [resourcequotas, pods]" not in t47 or "resources: [jobs]" not in t47
+            or "resources: [pods/log]" not in t47):
+        fallos.append("`47-el-informador.yaml`: el Role no es exactamente resourcequotas, pods, pods/log y jobs")
+    if re.search(r"resources: \[pods/log\]\s*\n\s*verbs: \[get\]", t47) is None:
+        fallos.append("`47-el-informador.yaml`: pods/log solo puede ser `get`")
+    print("  ⭐ ⑫ el informador: Role de lectura (get, list, watch; pods/log solo get) en su namespace, y el API server es %s" % MAESTRO)
 
     # ── ⑬ EL GATEWAY DE MODELOS: por IP, y la de la reserva (0027 E1) ─────
     t40 = (MALLA / "40-ore-serve.yaml").read_text(encoding="utf-8")
