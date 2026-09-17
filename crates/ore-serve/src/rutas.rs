@@ -227,6 +227,13 @@ impl Servidor {
                 let n = n.to_string();
                 self.leyendo(move |r| self.copias(r, &n))
             }
+            // ── 0027 P1 C2 · modelar una tabla de una base (`ore model`) ──
+            ("POST", ["paquetes", n, "tablas", o, "modelar"]) => {
+                let (n, o) = (n.to_string(), o.to_string());
+                self.escribiendo(sujeto, &format!("`{n}`: modelar `{o}`"), |r| {
+                    self.modelar(r, &n, &o, sujeto)
+                })
+            }
             // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
             ("POST", ["paquetes", n, "copia"]) => {
                 let n = n.to_string();
@@ -875,6 +882,108 @@ const COLA: &str = "discover.pending.json";
 /// Devuelve un mapa de **nombre de vista** a `spec.object` de su tabla. Lo que
 /// no resuelve —una vista sin `from.table`, una tabla sin `object`— no entra
 /// en el mapa, y quien lo consulte omite el campo.
+/// **Las tablas de una base, tal como el catalogo las tiene**: por cada
+/// `Table`, su objeto fisico, su fuente, sus columnas con el `physicalType` que
+/// el origen dijo, la vista trivial que la expone, y si esta modelada (tiene
+/// `Entity`, y entonces cual). Ordenadas por objeto.
+fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
+    let leer = |carpeta: &str| -> Vec<Node> {
+        let Ok(entradas) = std::fs::read_dir(dir.join(carpeta)) else {
+            return Vec::new();
+        };
+        let mut rutas: Vec<PathBuf> = entradas
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("yaml"))
+            .collect();
+        rutas.sort();
+        rutas
+            .into_iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .filter_map(|t| parse::parse(&t).ok())
+            .collect()
+    };
+    let en = |d: &Node, padre: &str, k: &str| -> Option<String> {
+        d.get(padre)
+            .and_then(|(_, m)| m.get(k))
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+    };
+    // vista → tabla, y entidad → vista
+    let mut vista_de_tabla: std::collections::BTreeMap<String, String> = Default::default();
+    for v in leer("views") {
+        if let (Some(n), Some(t)) = (
+            en(&v, "metadata", "name"),
+            v.get("spec")
+                .and_then(|(_, s)| s.get("from"))
+                .and_then(|(_, f)| f.get("table"))
+                .and_then(|(_, t)| t.as_str().map(String::from)),
+        ) {
+            vista_de_tabla.insert(t.rsplit('.').next().unwrap_or(&t).to_string(), n);
+        }
+    }
+    let mut entidad_de_vista: std::collections::BTreeMap<String, String> = Default::default();
+    for e in leer("entities") {
+        if let (Some(n), Some(v)) = (en(&e, "metadata", "name"), en(&e, "spec", "backedBy")) {
+            entidad_de_vista.insert(v, n);
+        }
+    }
+    let mut salida: Vec<(String, Json)> = Vec::new();
+    for t in leer("tables") {
+        let Some(nombre) = en(&t, "metadata", "name") else {
+            continue;
+        };
+        let objeto = en(&t, "spec", "object").unwrap_or_default();
+        let mut columnas = Vec::new();
+        if let Some((_, spec)) = t.get("spec")
+            && let Some((_, c)) = spec.get("columns")
+            && let Node::Mapping { entries, .. } = c
+        {
+            for (k, v) in entries {
+                let Some(k) = k.as_str() else { continue };
+                let mut campos = vec![("name", Json::s(k))];
+                if let Some(pt) = v.get("physicalType").and_then(|(_, p)| p.as_str()) {
+                    campos.push(("physicalType", Json::s(pt)));
+                }
+                columnas.push(Json::obj(campos));
+            }
+        }
+        let vista = vista_de_tabla.get(&nombre).cloned();
+        let entidad = vista
+            .as_ref()
+            .and_then(|v| entidad_de_vista.get(v).cloned());
+        let mut campos = vec![
+            ("name", Json::s(&nombre)),
+            ("object", Json::s(&objeto)),
+            (
+                "datasource",
+                Json::s(en(&t, "spec", "datasource").unwrap_or_default()),
+            ),
+            ("columns", Json::Arr(columnas)),
+            ("modeled", Json::Bool(entidad.is_some())),
+        ];
+        if let Some(v) = &vista {
+            campos.push(("view", Json::s(v)));
+        }
+        if let Some(e) = &entidad {
+            campos.push(("entity", Json::s(e)));
+        }
+        salida.push((objeto, Json::obj(campos)));
+    }
+    salida.sort_by(|a, b| a.0.cmp(&b.0));
+    salida.into_iter().map(|(_, j)| j).collect()
+}
+
+/// Cuantas tablas tiene un paquete y cuantas estan modeladas (tienen `Entity`).
+fn tablas_y_modeladas(dir: &Path) -> (usize, usize) {
+    let t = tablas_del_paquete(dir);
+    let m = t
+        .iter()
+        .filter(|j| matches!(j, Json::Obj(o) if o.get("modeled") == Some(&Json::Bool(true))))
+        .count();
+    (t.len(), m)
+}
+
 fn objetos_fisicos(paquete: &Path) -> std::collections::BTreeMap<String, String> {
     let documentos = |carpeta: &str| -> Vec<Node> {
         let Ok(entradas) = std::fs::read_dir(paquete.join(carpeta)) else {
@@ -993,6 +1102,11 @@ fn paquetes(raiz: &Path) -> Respuesta {
             ("type", Json::s(crate::copia::clase_de(&e.path()))),
             ("copias", crate::copia::copias_de(raiz, &nombre)),
         ];
+        // ⭐ Y cuantas tablas tiene y cuantas estan modeladas (0027 P1 C1): el
+        //   catalogo no modela, asi que una base recien nacida es N/0.
+        let (tablas, modeladas) = tablas_y_modeladas(&e.path());
+        campos.push(("tablas", Json::Int(tablas as i64)));
+        campos.push(("modeladas", Json::Int(modeladas as i64)));
         if let Some(f) = fuente {
             campos.push(("source", Json::s(f)));
         }
@@ -1047,13 +1161,16 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
         Ok(d) => d,
         Err(r) => return r,
     };
+    // ⭐⭐ EL ESQUEMA FISICO, desde `tables/` (0027 P1 C2). El catalogo no
+    //   modela: una base recien nacida no tiene `entities/`, y este esquema es
+    //   el del catalogo de activos —todas las columnas, con el tipo del
+    //   origen— no el del modelo. `entities` sigue debajo hasta que la
+    //   consola lea `tables` (C3).
+    let tablas = tablas_del_paquete(&dir);
     let Ok(entradas) = std::fs::read_dir(dir.join("entities")) else {
         return Respuesta::ok(Json::obj([
+            ("tables", Json::Arr(tablas)),
             ("entities", Json::Arr(Vec::new())),
-            (
-                "nota",
-                Json::s("el paquete no tiene `entities/`: o no se indujo, o no encontro nada"),
-            ),
         ]));
     };
 
@@ -1150,10 +1267,13 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
     }
     lista.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut salida = vec![(
-        "entities",
-        Json::Arr(lista.into_iter().map(|(_, j)| j).collect()),
-    )];
+    let mut salida = vec![
+        ("tables", Json::Arr(tablas)),
+        (
+            "entities",
+            Json::Arr(lista.into_iter().map(|(_, j)| j).collect()),
+        ),
+    ];
     if rotos > 0 {
         // ⭐ Se dice cuantas se saltaron. Una lista mas corta de lo que deberia
         //   y en silencio es la peor forma de contestar.
@@ -1344,6 +1464,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
         ("POST", "/paquetes/{nombre}/copia", con_identidad),
+        (
+            "POST",
+            "/paquetes/{nombre}/tablas/{objeto}/modelar",
+            con_identidad,
+        ),
         ("GET", "/perfiles", con_identidad),
         ("GET", "/modelos", con_identidad),
         ("POST", "/modelos", con_identidad),

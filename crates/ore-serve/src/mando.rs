@@ -54,6 +54,10 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         &["review"],
         "aplica decisiones que vienen de fuera; no consulta a nadie",
     ),
+    (
+        &["model"],
+        "la tabla al alcance y la misma re-inducción que review; no consulta a nadie",
+    ),
     (&["validate"], "lee el árbol y contesta"),
     (&["diff"], "compara dos árboles"),
     (&["view"], "compila una vista; el motor es aritmética"),

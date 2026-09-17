@@ -143,6 +143,71 @@ impl Servidor {
         }
     }
 
+    /// **Modelar una tabla** de una base: `POST /paquetes/{n}/tablas/{objeto}/
+    /// modelar` → `ore model` (la tabla a `entities` del alcance y la
+    /// re-inducción). Lo que Foundry llama *promote to object type*: la tabla
+    /// gana su `Entity` y sus decisiones, y su copia, si la base es estándar,
+    /// pasa a esperar la clave. Y lo de siempre tras inducir.
+    pub(crate) fn modelar(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        objeto: &str,
+        sujeto: &Identidad,
+    ) -> Respuesta {
+        if let Err(m) = token(paquete) {
+            return Respuesta::error(422, format!("nombre de paquete: {m}"));
+        }
+        // el objeto es como el catálogo lo nombra —`public.pedidos`—: con punto
+        if objeto.is_empty()
+            || objeto.len() > 128
+            || !objeto
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Respuesta::error(
+                422,
+                "el objeto es el nombre físico que el catálogo le da (`public.pedidos`)",
+            );
+        }
+        let dir = raiz.join("packages").join(paquete);
+        if !dir.is_dir() {
+            return Respuesta::error(404, "no hay tal paquete");
+        }
+        let salida = mando::correr(
+            &self.binario,
+            raiz,
+            &[
+                "model".into(),
+                dir.to_string_lossy().into_owned(),
+                objeto.into(),
+            ],
+        );
+        match salida {
+            Err(e) => Respuesta::error(500, e.to_string()),
+            Ok(s) if !s.bien() => {
+                let motivo = primera_linea(&s.stdout, &s.stderr);
+                let codigo = if motivo.contains("ya está modelada") {
+                    409
+                } else if motivo.contains("no está en el alcance") {
+                    404
+                } else {
+                    422
+                };
+                Respuesta::error(codigo, motivo)
+            }
+            Ok(s) => {
+                let mut campos = vec![
+                    ("package", Json::s(paquete)),
+                    ("object", Json::s(objeto)),
+                    ("informe", Json::s(s.stdout.trim())),
+                ];
+                campos.extend(self.tras_inducir(raiz, paquete, sujeto));
+                Respuesta::creado(Json::obj(campos))
+            }
+        }
+    }
+
     /// **Después de cada inducción que este servidor dispara** (alta, ascender,
     /// decisiones): si la base es estándar, el conducto autorizado y el Job de
     /// la copia en la cola con todas las vistas del árbol que la declaran. Lo
