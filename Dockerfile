@@ -46,9 +46,9 @@ COPY . .
 RUN cargo build --release --locked \
       -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
       -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
-      -p ore-fetch -p ore-log -p ore-sign -p ore-store \
+      -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke \
  && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery \
-             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs; do \
+             ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke; do \
       strip "target/release/$b"; \
     done
 
