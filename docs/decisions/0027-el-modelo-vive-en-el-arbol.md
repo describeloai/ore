@@ -755,9 +755,19 @@ nadie: es `review`). `GET /paquetes` dice `tablas` y `modeladas`. Prueba de fueg
 desde `tables` —esquema físico › tabla › columnas con el tipo del origen— y no desde
 `entities`; la ficha de la tabla enseña las columnas de ORE con su `physicalType` y dice «—»
 donde el catálogo no sabe. Clippy en CI (`descubrir` con 8 argumentos) arreglado en `084ead1`;
-CI verde y `demo` desplegado. Queda de C3, para cuando se pida: **Model this table** (→
-`/modelar`), el modal mandando `type`, la ficha de la base estándar («N/N copied · last copy»)
-y **Copy into this cluster** en la foránea (lo que era I4c). Y después, I5.
+CI verde y `demo` desplegado.
+
+**Decidido el 17 de septiembre: modelar no se pulsa desde la tabla.** El Assets catalog no modela,
+así que tampoco lleva el botón: modelar es un acto de la ontología y nace en **Ontology Forge ›
+Entities › New entity**, eligiendo la tabla del catálogo que la respalda — como Foundry crea el
+*object type* desde la Ontology Manager eligiendo el dataset. El verbo ya está (`POST
+/paquetes/{n}/tablas/{objeto}/modelar`, 201 con `copias`/`encolado`); quien lo pulsa es la
+Forge, y es de su sesión: que la respuesta diga que las decisiones de modelado (clave,
+relaciones, conceptos) van a la cola, y que en una base estándar la copia de esa tabla pasa a
+esperar la clave. La ficha de la tabla en Assets sólo lo **dice** («Modeled as `Customers`», con
+enlace), no lo hace. Queda de C3 en Assets, para cuando se pida: el modal mandando `type`, la
+ficha de la base estándar («N/N copied · last copy») y **Copy into this cluster** sólo en la
+foránea (dónde viven los datos sí es del catálogo). Y después, I5.
 
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
