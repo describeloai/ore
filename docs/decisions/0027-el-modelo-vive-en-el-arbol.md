@@ -600,6 +600,32 @@ Lo que queda dicho y no hecho: el refresco periódico (un CronJob sobre la misma
 la pasada siguiente; hoy la copia se rehace cuando la lista cambia. `la-copia-se-decide.sh` 0–7 y
 `refresco.sh` (el informe) verdes; la aceptación en `demo` con `olist` es I4.
 
+**Antes de la aceptación, la pregunta del 17 de septiembre, medida** — *«en el espacio de nombres
+del catálogo (database › schema › table) van a existir dos tipos de bases: las normales (copia
+entera) y las foráneas (espejo, las de hoy). Resuelve el problema de raíz y le da el control al
+cliente»*. Lo que hay:
+
+| | hoy |
+|---|---|
+| qué es una «database» | **un paquete con alcance**: `POST /paquetes {name, source, only}` → `ore discover --from <catálogo> --only-file` → por cada objeto elegido una `Table` (el puntero al origen, con `reads` y `changes` sondeados) **y su View trivial** (`from: {table}`, los campos con nombre de identificador) y una `Entity`; `discover.scope.json` guarda `{only, source}`. El modal lo dice ya: *«maps content from the source … without moving the data»* — **todas las bases de hoy son foráneas** |
+| dónde cabe la clase | en la gramática, **por vista**: `View.materialized` es la copia; no hay campo en `Package` (`spec` es `{owner, team}` y cerrado: `additionalProperties: false`) y no hace falta abrirlo: la clase de una base **es lo que sus vistas declaran** — todas con `materialized` = base; ninguna = foránea. Se deriva del árbol, no se apunta dos veces |
+| qué cuesta copiar `olist` | Postgres con `wal_level = logical` y **sin claves primarias** → el driver sondeó `changes: {mode: append, witness: log}` en las 8 tablas. Compila como copia (`OOS2023` sólo rechaza `append` fechado **por columna**); el testigo `log` (LSN) hace que la segunda pasada diga «al día» sin leer; ningún lector sirve aún el rango, así que un refresco real relee entero; **y con `append` los borrados del origen no viajan** hasta que alguien decida la clave (`{key}` en el verbo de I2 → `upsert`) |
+| quién lee la copia | **nadie todavía**: `ore-view::filter_tree` sabe elegir una materialización superconjunto del plan, pero ningún ejecutor la usa — es P4 (F5 aplica por la vista). Una «base» de hoy copia a la celda; las consultas siguen yendo al origen hasta P4 |
+| la consola | `CreateDatabaseModal` (292 líneas): conexión fija, nombre, `only`; `comoDatabase` pinta `Mapped from <source>`; el árbol no distingue clases |
+
+**La iteración, P1 I4 · la base y la base foránea** (y la aceptación pasa a ser I5):
+
+| dónde | qué |
+|---|---|
+| `ore-serve` | `POST /paquetes {…, storage: "copy" \| "foreign"}` (`foreign` si falta: es lo que hay). Con `copy`, tras `discover`, **la decisión de I2 sobre todas las vistas del paquete en un acto** (la misma función, factorizada: `materialized` en cada vista, `key` de la clave primaria del catálogo si la hay, un solo `conduits.yaml`, un `validate`, un Job encolado con las N vistas) — o nada. `POST /paquetes/{n}/copia` = **ascender** una foránea a base (el mismo acto sobre lo que ya existe). `GET /paquetes` gana `storage: copy \| foreign \| mixed` y `copias {declaradas, copiadas}` derivados del árbol y los informes. Lo que no cambia: el verbo por vista (I2) sigue siendo el control fino; `discover` sigue sin escribir `materialized` (la decisión es del cliente, ahora en la unidad que él ve) |
+| consola | el modal elige la clase (dos fichas: **Database** — *a full copy, kept in this cluster*; **Foreign database** — *a mirror: reads go to the source*); el árbol marca las foráneas; `DatabaseDetail` dice «Foreign database · mapped from X» o «Database · 8/8 tables copied · last copy <cuándo>» y la foránea gana **Copy into this cluster** (→ `/copia`). Banco con las dos |
+| prueba | `la-copia-se-decide.sh` 8–9: `storage: copy` deja las N vistas con copia y un Job con las N; ascender una foránea da lo mismo; `GET /paquetes` clasifica |
+| acepta | en `demo`, `olist` (foránea hoy) se asciende; el Job copia 8 tablas al bucket; la consola dice «Database · 8/8 · copied at»; la segunda pasada lee 0 filas |
+
+Lo que se acepta a cambio y se dice: `olist` sin claves copia en `append` — el borrado no viaja;
+la clave sigue siendo una decisión (`clave`, 8 abiertas) y al cerrarla la tabla pasa a `upsert`
+sin tocar la base. Y una base copiada **no se consulta todavía desde la copia**: eso es P4.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
