@@ -653,6 +653,16 @@ esa base»*:
 | **I4c** | la consola manda `type`; la ficha de una estándar dice «Standard · N/N tables copied · last copy <cuándo>» y la foránea gana **Copy into this cluster** | banco con las dos clases |
 | **I5** | la aceptación en `demo`: una base estándar sobre `olist` (o ascender la que hay) → el Job copia las 8 tablas al bucket → la ficha lo dice → la segunda pasada lee 0 filas | los números en esta ADR |
 
+**P1 I4a hecha** (2026-09-17, ORE `cb7d2ee`; consola `f1d1785`, local). `GET /paquetes` dice
+`type` —`standard` | `foreign`, leído de `discover.scope.json`; ausente = `foreign`, que es lo
+que toda base era, así que **ninguna migración**: las de `demo` salen foráneas sin tocar un
+árbol— y `copias {declaradas, copiadas}` (las vistas con `materialized`, y las que tienen
+informe `copiada` | `al-dia`). `la-copia-se-decide.sh` lo afirma: 0/0 de partida, 2/0 tras
+decidir dos, 2/1 con un informe, y decidir copias sueltas **no cambia la clase** (sigue
+`foreign`: la clase es la regla, la copia es la consecuencia). La consola: la ficha de la base
+dice «Foreign database» o «Database» en la cabecera y en *Type*; las del banco y las creadas en
+local, sin clase, se pintan como database.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
