@@ -403,6 +403,13 @@ codes! {
     // precedente de `OOS2001`, que v1alpha1 reservo sin poder alcanzarlo, y su
     // maquina —`vistas::invertible` y su censo— sigue construida y ejercida.
     Oos7013 = "OOS7013", Effect, "efecto a traves de una vista que no se puede invertir · reservado";
+    // v1alpha10 (`01-function` §5.3). El espejo de `OOS2005` en el otro
+    // sentido: lo que la funcion lee tiene que estar en su superficie —`over`
+    // y `reads` resuelven a vistas, y una precondicion mira campos de `over`—
+    // porque lo que no se declara no fluye por la regla de flujo ni arrastra
+    // integridad. Medido: una funcion que leia veinte propiedades por su cuenta
+    // no arrastraba nada.
+    Oos7014 = "OOS7014", Effect, "la funcion lee lo que no declara: over o reads que no resuelve a una vista, o un campo que over no expone";
 
     // ── OOS8xxx · gobierno ──────────────────────────────────────────────────
     //
@@ -520,7 +527,8 @@ mod tests {
                 .iter()
                 .filter(|c| c.family() == Family::Effect)
                 .count(),
-            11,
+            // 12 con v1alpha10: `OOS7014`, la lectura no declarada.
+            12,
             "borrador de efectos"
         );
         assert_eq!(

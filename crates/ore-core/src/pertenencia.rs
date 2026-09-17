@@ -70,6 +70,9 @@ pub const DEL_PAQUETE: &[Kind] = &[
     Kind::View,
     Kind::Table,
     Kind::Function,
+    // v1alpha10. La accion es del paquete como la funcion: alguien la posee,
+    // y lo que causa es de una entidad del paquete.
+    Kind::Action,
     Kind::Resolution,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo

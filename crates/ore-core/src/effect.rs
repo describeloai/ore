@@ -63,8 +63,13 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
         return out;
     }
 
-    // 3 · La regla, función a función.
-    for f in pkg.docs.iter().filter(|d| d.kind == Kind::Function) {
+    // 3 · La regla, función a función. Y acción a acción (v1alpha10): una
+    //     acción declarativa escribe por `sets` y su carencia la cierra quien
+    //     la aplica; una que llama a una función hereda la de la función, que
+    //     ya se comprobó sola, y solo puede añadir.
+    for f in pkg.docs.iter().filter(|d| {
+        d.kind == Kind::Function || (d.kind == Kind::Action && d.section("sets").is_some())
+    }) {
         funcion(pkg, f, &lat, &mut out);
     }
 
@@ -310,7 +315,14 @@ pub fn destinos(f: &Loaded) -> Vec<String> {
 }
 
 fn efectos(f: &Loaded) -> Vec<Efecto> {
-    f.section("effects")
+    // v1alpha10: los efectos de una `Action` se llaman `sets` —valores fijos o
+    // de un parámetro— y son la misma superficie bajo la misma regla.
+    let seccion = if f.kind == Kind::Action {
+        "sets"
+    } else {
+        "effects"
+    };
+    f.section(seccion)
         .map(|n| n.items())
         .unwrap_or(&[])
         .iter()
@@ -542,7 +554,7 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
         // `meet`, no `join`: un cómputo no es más fiable que su entrada menos
         // fiable. La atestación dice que el CÓDIGO es de fiar, no que la
         // ENTRADA lo sea, y sin esta cláusula una firma lavaría la procedencia.
-        let leidas = lee(f, entidad, lat);
+        let leidas = lee(pkg, f, entidad, lat);
 
         for (ret, nivel) in &exigido {
             let l = &lat[ret];
@@ -613,11 +625,18 @@ fn funcion(pkg: &Package, f: &Loaded, lat: &BTreeMap<String, Lattice>, out: &mut
 
 /// Las propiedades que una función **lee**, con su integridad.
 ///
-/// Hoy son las que sus precondiciones nombran como `target.<prop>`, resueltas
-/// contra la entidad de sus efectos. Los parámetros de `input` quedan fuera a
-/// propósito: vienen de quien invoca, y la integridad de quien invoca es una
-/// propiedad de ejecución — L3, no L0.
+/// Hasta v1alpha9 son las que sus precondiciones nombran como `target.<prop>`,
+/// resueltas contra la entidad de sus efectos. Desde v1alpha10 —y en toda
+/// `Action`— son además **todo lo que `over` y `reads` exponen**: cada
+/// propiedad de cada entidad respaldada por esas vistas que la vista expone.
+/// Es lo que `01-function` §5.2 llama «el arrastre gana su sujeto»: la
+/// atestación dice que el código es de fiar, no que la entrada lo sea, y ahora
+/// la entrada está entera a la vista.
+///
+/// Los parámetros de `input` quedan fuera a propósito: vienen de quien invoca,
+/// y la integridad de quien invoca es una propiedad de ejecución — L3, no L0.
 fn lee(
+    pkg: &Package,
     f: &Loaded,
     entidad: &Loaded,
     lat: &BTreeMap<String, Lattice>,
@@ -636,6 +655,50 @@ fn lee(
             }
         }
     }
+    let declara = f.kind == Kind::Action || f.version().is_some_and(|v| v >= ApiVersion::V1Alpha10);
+    if !declara {
+        return out;
+    }
+    let mut vistas: Vec<&Loaded> = Vec::new();
+    if let Some(r) = f.section("over").and_then(|n| n.as_str())
+        && let Some(v) = pkg.resolve_view(r, f)
+    {
+        vistas.push(v);
+    }
+    for r in f.section("reads").map(|n| n.items()).unwrap_or(&[]) {
+        if let Some(s) = r.as_str()
+            && let Some(v) = pkg.resolve_view(s, f)
+        {
+            vistas.push(v);
+        }
+    }
+    for v in vistas {
+        let vqn = v.qname();
+        let campos: Vec<String> = v
+            .section("fields")
+            .map(|x| x.entries())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|(k, _)| k.as_str().map(String::from))
+            .collect();
+        for e in pkg.entities() {
+            if crate::vistas::respaldo(pkg, e).and_then(|r| r.qname()) != vqn {
+                continue;
+            }
+            let eqn = e.qname().unwrap_or_default();
+            for (nombre, def) in e.section("properties").map(|p| p.entries()).unwrap_or(&[]) {
+                let Some(nombre) = nombre.as_str() else {
+                    continue;
+                };
+                if !campos.iter().any(|c| c == nombre) {
+                    continue;
+                }
+                for (ret, nivel) in integridad_de(def, lat) {
+                    out.push((ret, nivel, format!("{eqn}.{nombre}")));
+                }
+            }
+        }
+    }
     out
 }
 
@@ -643,7 +706,7 @@ fn lee(
 /// exactamente lo que hace falta para saber qué lee, y el día que haga falta
 /// evaluar una expresión la respuesta será enlazar un motor de CEL, no ampliar
 /// esta función.
-fn referencias(expr: &str) -> Vec<String> {
+pub(crate) fn referencias(expr: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut resto = expr;
     while let Some(i) = resto.find("target.") {

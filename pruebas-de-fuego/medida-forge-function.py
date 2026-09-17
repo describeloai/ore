@@ -292,9 +292,14 @@ print("     · ②c: la integridad SE COMPUTA de los endosos: sin ninguno, untru
 print("       llega al TECHO (attested) igual que attested; teamReview OOS7004; derivada OOS4008 (antes de OOS7006); dos fuentes OOS2024/25")
 print("       de la otra vista; datasourceRef OOS1005 en v1alpha9; OOS7001 arrastra por PRECONDICIONES (`target.x`), NO por `input`.")
 print("       El verbo no exige nada propio: lo dice todo el compilador, con código")
-print("     · ⚠ HUECO del compilador: `effects[].writes` a una propiedad o a una ENTIDAD que no existe COMPILA (②c: `supply.Shipment.noExiste`")
-print("       y `supply.NoExiste.status` pasan; retirar la entidad con la función puesta pasa). La spec (02-function §8) dice OOS2005.")
-print("       Como OOS2035: nadie resuelve `writes` (propiedad() devuelve None y `continue`). Se anota; no se arregla en esta medida")
+if "OOS2005" in I["ref"] and "OOS2005" in I["ref_ent"] and "OOS2005" in I["sin_ent"]:
+    print("     · `effects[].writes` a una propiedad o a una ENTIDAD que no existe es OOS2005 (②c), y retirar la entidad con la función")
+    print("       puesta también. Era un hueco (la spec lo decía en 02-function §8 y nadie resolvía `writes`); lo cierra `actuar.rs`")
+    print("       desde v1alpha10, para todas las versiones")
+else:
+    print("     · ⚠ HUECO del compilador: `effects[].writes` a una propiedad o a una ENTIDAD que no existe COMPILA (②c: `supply.Shipment.noExiste`")
+    print("       y `supply.NoExiste.status` pasan; retirar la entidad con la función puesta pasa). La spec (02-function §8) dice OOS2005.")
+    print("       Como OOS2035: nadie resuelve `writes` (propiedad() devuelve None y `continue`)")
 print("     · M0/M1/M2: `runtime: model` sólo bajo v1alpha9 (bajo v1alpha8 es OOS1005); `modelo/<n>` es OOS2005 sin el Model, y un Model")
 print("       a mano lo resuelve — pero el que vale es el de POST /modelos (perfil certificado + suscripción). La fila escribe v1alpha9")
 print("       (wasm también compila así, M4) y NO escribe Models. `entrypoint` con `runtime: model` es OOS1004 (M5)")

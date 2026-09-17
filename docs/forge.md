@@ -327,9 +327,20 @@ función: la propiedad (`writes`), el `Model` (`OOS2005` sin él; el que vale es
 `POST /modelos`, con perfil certificado y suscripción) y la política (`authorization`).
 
 **Hueco del compilador.** `effects[].writes` a una propiedad **o a una entidad** que no
-existe **compila**; retirar la entidad con la función puesta también. La spec (`02-function`
-§8) dice `OOS2005`. Nadie resuelve `writes`: `effect.rs::propiedad` devuelve `None` y se salta
-el efecto. Es el mismo tipo de hueco que `OOS2035`.
+existe **compilaba**; retirar la entidad con la función puesta también. La spec (`02-function`
+§8) dice `OOS2005`. Nadie resolvía `writes`: `effect.rs::propiedad` devolvía `None` y se
+saltaba el efecto. Es el mismo tipo de hueco que `OOS2035`, y se cerró el mismo día en
+`ore-core/src/actuar.rs`, para todas las versiones.
+
+**Lo que salió de aquí: v1alpha10.** La medida y la comparación con las funciones de una
+ontología de objetos (leer, editar, puente con modelos, action types) llevaron a cambiar la
+naturaleza de `Function` en la spec en vez de escribir la fila: `oos` `spec/v1alpha10/`
+(«actuar»: `lee(f) ⊆ reads(f)` y `causa(f) ⊆ effects(f)`; `over` y `reads` son **vistas**,
+porque la ontología no tiene objetos sino preguntas; `effects` opcional; el puente con el
+modelo es la misma función; `OOS7014` la lectura no declarada) y el kind `Action` (la
+invocación sin código: `over`, `input`, `preconditions`, exactamente uno de `sets` o `call`).
+El compilador lo lee (`actuar.rs`, `effect.rs`) y la suite `conformance/v1alpha10` tiene quince
+casos en verde. La fila de Forge para `Function` y `Action` se escribe sobre eso.
 
 Lo que decide la fila:
 

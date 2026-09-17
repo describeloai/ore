@@ -55,6 +55,14 @@ pub enum ApiVersion {
     /// Lo midio la E0 de 0027: la gramatica de v1alpha8 admitia
     /// `runtime: model` sin comprobarlo y el prompt solo cabia en `x-ore-…`.
     V1Alpha9,
+    /// v1alpha10. **Actuar.** Cambia la naturaleza de `Function` —logica
+    /// encapsulada que lee, edita o infiere sobre la copia, con su superficie
+    /// en los dos sentidos: `over` y `reads` son vistas, `effects` es
+    /// opcional— y anade `Action`, la invocacion como documento, sin codigo.
+    /// Lo midio `pruebas-de-fuego/medida-forge-function.py` (2026-09-17): una
+    /// funcion no podia entrar sola, la copia ya no se decide vista a vista, y
+    /// lo que una funcion leia no se declaraba.
+    V1Alpha10,
 }
 
 impl ApiVersion {
@@ -66,6 +74,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha7,
         ApiVersion::V1Alpha8,
         ApiVersion::V1Alpha9,
+        ApiVersion::V1Alpha10,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -77,6 +86,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha7 => "oos.dev/v1alpha7",
             ApiVersion::V1Alpha8 => "oos.dev/v1alpha8",
             ApiVersion::V1Alpha9 => "oos.dev/v1alpha9",
+            ApiVersion::V1Alpha10 => "oos.dev/v1alpha10",
         }
     }
 
@@ -164,6 +174,13 @@ pub enum Kind {
     /// mide. El arbol no puede pedir una configuracion que nadie ha medido
     /// (ORE 0027 ①).
     Model,
+    /// v1alpha10. **La invocacion como documento, sin codigo**: que parametros
+    /// pide, sobre que filas (`over`, una vista), con que criterios, que causa
+    /// —`sets`, con valores fijos o de un parametro, o `call` a una
+    /// `Function`— y quien puede. Es un kind aparte de `Function` porque no
+    /// tiene codigo que atestar: la carencia de integridad la cierra quien la
+    /// aplica, o la funcion que llama.
+    Action,
 }
 
 impl Kind {
@@ -183,6 +200,7 @@ impl Kind {
         Kind::View,
         Kind::Table,
         Kind::Model,
+        Kind::Action,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -202,6 +220,7 @@ impl Kind {
             Kind::View => "View",
             Kind::Table => "Table",
             Kind::Model => "Model",
+            Kind::Action => "Action",
         }
     }
 
@@ -217,6 +236,7 @@ impl Kind {
             Kind::View => ApiVersion::V1Alpha7,
             Kind::Table => ApiVersion::V1Alpha8,
             Kind::Model => ApiVersion::V1Alpha9,
+            Kind::Action => ApiVersion::V1Alpha10,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -299,6 +319,10 @@ impl Kind {
             // `RequestPolicy` es como `ConduitPolicy`: uno por paquete, sin
             // espacio de nombres. No porta datos, luego no tiene clasificacion.
             | Kind::RequestPolicy
+            // v1alpha10. La accion tampoco: su integridad la cierra quien la
+            // aplica, y una etiqueta seria la misma afirmacion sobre uno mismo
+            // que la funcion no puede hacer.
+            | Kind::Action
             // La tabla no admite `labels`: es el objeto tal cual esta. Su
             // ubicacion la etiqueta el `datasource`, y lo que significa una
             // columna lo dice la entidad. Y tampoco admite `oos.maturity`, que
@@ -549,6 +573,18 @@ impl Kind {
             // se cobra, `task` lo que una funcion puede pedirle. Ni `runtime`,
             // ni `resources`, ni `weights.repo`: todo eso es del perfil.
             Kind::Model => &["profile", "digest", "tier", "task"],
+            // v1alpha10. La invocacion sin codigo: sobre que filas, que pide,
+            // con que criterios, que causa (`sets` o `call`, exactamente uno,
+            // y eso lo comprueba `actuar`), y quien puede.
+            Kind::Action => &[
+                "over",
+                "input",
+                "preconditions",
+                "sets",
+                "call",
+                "endorsements",
+                "authorization",
+            ],
         }
     }
 
@@ -566,6 +602,28 @@ impl Kind {
     /// campo que nadie lee es peor que uno que no existe, porque promete algo.
     pub fn spec_keys_en(self, version: ApiVersion) -> &'static [&'static str] {
         match self {
+            // v1alpha10: la superficie en los dos sentidos. `over` es la vista
+            // cuyas filas son la unidad; `reads`, las demas que puede leer. Lo
+            // que causa sigue siendo `effects`, y ahora puede faltar: leer y
+            // devolver es legitimo. Son claves de v1alpha10 y en una version
+            // anterior son `OOS1005`.
+            Kind::Function if version >= ApiVersion::V1Alpha10 => &[
+                "runtime",
+                "entrypoint",
+                "source",
+                "limits",
+                "over",
+                "reads",
+                "input",
+                "output",
+                "preconditions",
+                "effects",
+                "endorsements",
+                "authorization",
+                "idempotency",
+                "model",
+                "prompt",
+            ],
             // v1alpha9: la funcion gana un segundo runtime. `model` nombra el
             // documento del arbol que invoca (`modelo/<nombre>`) y `prompt` lo
             // que le dice. Son claves de v1alpha9 y no de siempre: en v1alpha8

@@ -116,7 +116,8 @@ const IMPLEMENTADAS: &[&str] = &[
     // OOS7xxx · efectos e integridad. Borrador de v1alpha2, contado aparte.
     "OOS7001", "OOS7002", "OOS7003", "OOS7004", "OOS7005", "OOS7006", "OOS7007", "OOS7008",
     "OOS7009", "OOS7011",
-    // OOS8xxx · gobierno. Borrador de v1alpha3, contado aparte.
+    // Lo introduce v1alpha10: la lectura no declarada, el espejo de OOS2005.
+    "OOS7014", // OOS8xxx · gobierno. Borrador de v1alpha3, contado aparte.
     "OOS8001", "OOS8002", "OOS8003", "OOS8005", "OOS8006",
     // OOS9xxx · significado. Borrador de v1alpha4, contado aparte.
     "OOS9001", "OOS9003", "OOS9004",
@@ -1219,6 +1220,17 @@ fn borrador_de_v1alpha9() {
         "el modelo",
         "BORRADOR · OOS v1alpha9 · el modelo",
     );
+}
+
+/// v1alpha10: actuar. La funcion cambia de naturaleza —logica encapsulada
+/// que lee, edita o infiere sobre la copia, con `over` y `reads` como
+/// vistas y `effects` opcional— y llega `Action`, la invocacion sin codigo.
+/// Un codigo nuevo, `OOS7014` (la lectura no declarada), y uno de siempre
+/// que no se aplicaba: `OOS2005` sobre `writes`. Salio de la medida de
+/// Function para Forge (2026-09-17).
+#[test]
+fn borrador_de_v1alpha10() {
+    marcador("v1alpha10", "actuar", "BORRADOR · OOS v1alpha10 · actuar");
 }
 
 #[test]

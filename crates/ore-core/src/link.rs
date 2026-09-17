@@ -304,6 +304,11 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     dependencies(pkg, &mut d);
     entities(pkg, &mut d);
     modelos(pkg, &mut d);
+    // v1alpha10: la superficie de una funcion en los dos sentidos —`over` y
+    // `reads` resuelven a vistas, `writes` a propiedades— y la forma y las
+    // referencias de una `Action`. Vive en su modulo porque es la regla de
+    // una version, no una mas de estas.
+    crate::actuar::comprobar(pkg, &mut d);
     // Las vistas y `backedBy`: la fuente declarada, la cadena que resuelve y no
     // se muerde, y la clave expuesta. Viven en su modulo porque la cadena es
     // una operacion —componer renombres— que `flow` y el ejecutor tambien
@@ -893,7 +898,12 @@ fn entities(pkg: &Package, out: &mut Vec<Diagnostic>) {
     }
 }
 
-fn referencia_rota(path: &Path, nodo: &Node, referencia: &str, campo: &str) -> Diagnostic {
+pub(crate) fn referencia_rota(
+    path: &Path,
+    nodo: &Node,
+    referencia: &str,
+    campo: &str,
+) -> Diagnostic {
     Diagnostic::new(Code::Oos2005, path, format!("`{referencia}` no existe"))
         .at(nodo.pos())
         .help(format!(

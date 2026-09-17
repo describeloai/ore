@@ -160,13 +160,32 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                 }
             }
         }
-        Kind::Function => {
-            for e in d.section("effects").map(|e| e.items()).unwrap_or(&[]) {
-                if let Some((_, v)) = e.get("writes")
-                    && let Some(s) = v.as_str()
-                {
-                    push(sin_propiedad(s), Kind::Entity, "effects.writes", v.pos());
+        Kind::Function | Kind::Action => {
+            // `effects` de la funcion, `sets` de la accion: la misma superficie.
+            for seccion in ["effects", "sets"] {
+                for e in d.section(seccion).map(|e| e.items()).unwrap_or(&[]) {
+                    if let Some((_, v)) = e.get("writes")
+                        && let Some(s) = v.as_str()
+                    {
+                        push(sin_propiedad(s), Kind::Entity, "writes", v.pos());
+                    }
                 }
+            }
+            // v1alpha10: lo que lee cruza la frontera igual que lo que escribe.
+            if let Some(v) = d.section("over")
+                && let Some(s) = v.as_str()
+            {
+                push(s, Kind::View, "over", v.pos());
+            }
+            for r in d.section("reads").map(|r| r.items()).unwrap_or(&[]) {
+                if let Some(s) = r.as_str() {
+                    push(s, Kind::View, "reads", r.pos());
+                }
+            }
+            if let Some(v) = d.section("call")
+                && let Some(s) = v.as_str()
+            {
+                push(s, Kind::Function, "call", v.pos());
             }
         }
         Kind::Resolution => {
