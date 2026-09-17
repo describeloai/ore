@@ -235,6 +235,29 @@ if "--cotejar" in sys.argv:
         difs.append("MODELOS: la plantilla de la celda no lleva %s/32 (la reserva `modelos`)" % modelos)
     elif not modelos:
         difs.append("MODELOS: no hay reserva `modelos` en la VPC")
+    # Y la copia (0027 P1 I2): el bucket del inquilino existe, esta cifrado con SU llave, y
+    # solo dos cuentas lo tocan — la del driver escribe, la de serve lee. Cualquier otro
+    # miembro, o un papel de mas, es deriva.
+    copia = "%s-t-%s-copia" % (PROYECTO, CELDA)
+    desc = sh("gcloud storage buckets describe gs://%s --project=%s --format=json" % (copia, PROYECTO))
+    if not desc:
+        difs.append("COPIA: no hay bucket gs://%s" % copia)
+    else:
+        d = json.loads(desc)
+        kek = (d.get("default_kms_key") or d.get("encryption", {}).get("defaultKmsKeyName") or "")
+        if ("keyRings/ore/cryptoKeys/" not in kek) or (CELDA not in kek):
+            difs.append("COPIA: gs://%s no esta cifrado con la llave de %s (%s)" % (copia, CELDA, kek or "sin CMEK"))
+        if d.get("public_access_prevention", d.get("iamConfiguration", {}).get("publicAccessPrevention")) not in ("enforced", "inherited"):
+            difs.append("COPIA: gs://%s sin public-access-prevention" % copia)
+        pol = sh("gcloud storage buckets get-iam-policy gs://%s --project=%s --format=json" % (copia, PROYECTO))
+        vinculos = {(b["role"], m) for b in (json.loads(pol).get("bindings", []) if pol else []) for m in b.get("members", [])}
+        esperados = {("roles/storage.objectAdmin", "serviceAccount:ore-driver-%s@%s.iam.gserviceaccount.com" % (CELDA, PROYECTO)),
+                     ("roles/storage.objectViewer", "serviceAccount:ore-serve-%s@%s.iam.gserviceaccount.com" % (CELDA, PROYECTO))}
+        for r, m in esperados - vinculos:
+            difs.append("COPIA: falta %s para %s" % (r, m.split(":")[-1].split("@")[0]))
+        for r, m in vinculos - esperados:
+            if not m.startswith("projectOwner:") and not m.startswith("projectEditor:") and not m.startswith("projectViewer:"):
+                difs.append("COPIA: %s tiene %s y no deberia" % (m.split(":")[-1].split("@")[0], r))
     fresco = g["hace_s"] <= 90
     bien = fresco and not faltas and not difs
     print("  %s snapshot %s · %s" % ("✓" if bien else "✗",

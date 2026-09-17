@@ -163,6 +163,11 @@ jobs:
       - name: y el modelo entra en el arbol con su suscripcion, o no entra
         run: bash pruebas-de-fuego/los-modelos.sh
 
+      # La decision de la copia (0027 P1 I2): `materialized` en la vista, la
+      # clave en su tabla y el conducto autorizado, en un acto o nada.
+      - name: y la copia de una vista se decide, o no se decide
+        run: bash pruebas-de-fuego/la-copia-se-decide.sh
+
       # Los documentos del arbol por kind (Ontology Forge I1): `Entity` entera
       # —labels, relations, todo—, y escribirla con la misma figura: compilar
       # antes de empujar, el commit del sujeto, 409 cuando el arbol se movio.

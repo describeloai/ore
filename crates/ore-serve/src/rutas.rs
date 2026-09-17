@@ -222,6 +222,18 @@ impl Servidor {
                 let n = n.to_string();
                 self.leyendo(move |r| decisiones(r, &n))
             }
+            // ── 0027 P1 I2 · la decisión de la copia (`copia.rs`) ────────
+            ("GET", ["paquetes", n, "copias"]) => {
+                let n = n.to_string();
+                self.leyendo(move |r| self.copias(r, &n))
+            }
+            ("POST", ["paquetes", n, "vistas", v, "copia"]) => {
+                let (n, v) = (n.to_string(), v.to_string());
+                let cuerpo = p.cuerpo.clone();
+                self.escribiendo(sujeto, &format!("copia de `{n}.{v}`"), |r| {
+                    self.decidir_copia(r, &n, &v, &cuerpo)
+                })
+            }
             ("POST", ["paquetes", n, "decisiones"]) => {
                 let n = n.to_string();
                 let cuerpo = p.cuerpo.clone();
@@ -1294,6 +1306,12 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
         ("POST", "/paquetes/{nombre}/decisiones", con_identidad),
+        ("GET", "/paquetes/{nombre}/copias", con_identidad),
+        (
+            "POST",
+            "/paquetes/{nombre}/vistas/{vista}/copia",
+            con_identidad,
+        ),
         ("GET", "/perfiles", con_identidad),
         ("GET", "/modelos", con_identidad),
         ("POST", "/modelos", con_identidad),

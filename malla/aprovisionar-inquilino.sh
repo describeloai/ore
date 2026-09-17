@@ -187,6 +187,11 @@ hecho "estado: $ESTADO"
 hecho "arbol declarado: $ARBOL"
 hecho "llave declarada: $KEK"
 LLAVE="${KEK#*/}"
+# ⭐ El almacén de la copia (0027 P1): un bucket POR INQUILINO, y el nombre es
+#   una función de la celda, como el prefijo de sus secretos. `gen-inquilino.py`
+#   y `--cotejar` lo derivan igual: si esto cambiara sin aquello, un Job
+#   escribiría en un bucket que la plantilla no nombra.
+COPIA="$PROYECTO-$NS-copia"
 
 # ── La forja y la identidad ante ore-iam, ANTES de ②: la retirada (abajo) las
 #   necesita y no debe pasar por ② ni ③, que crearian lo que va a borrar. ──────
@@ -387,6 +392,14 @@ if [ "$ESTADO" = "retirada" ]; then
     --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
     --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
     && hecho "\`ore-cofre-$NOMBRE\` ya no puede usar $KEK" || ya "el permiso del cofre sobre la llave"
+  # la copia (0027 P1): el bucket del inquilino, con lo que tenga dentro. Es SU
+  # sistema de registro (0018): retirar la celda es retirarlo, y se dice cuanto habia.
+  if "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)" >/dev/null 2>&1; then
+    N=$("$GCLOUD" storage ls "gs://$COPIA/**" 2>/dev/null | grep -c . || true)
+    correr "$GCLOUD" storage rm -r "gs://$COPIA" && hecho "la copia gs://$COPIA borrada ($N objetos)"
+  else
+    ya "la copia gs://$COPIA"
+  fi
   # las cuentas
   for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE"; do
     if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
@@ -479,6 +492,45 @@ enlace "ore-serve-$NOMBRE" ore-serve
 enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
 enlace "ore-informador-$NOMBRE" informador
+
+# ── ⭐⭐ LA COPIA: UN BUCKET POR INQUILINO, Y DOS PAPELES (0027 P1 I2) ─────
+#
+# Hasta el 2026-09-17 el almacén de copias era UN bucket de R2 con UNA
+# credencial de lectura y escritura en un `.env.local`: el hueco que el ADR
+# 0015 dejó dicho («quien refresca y quien responde son el mismo») y, con dos
+# inquilinos, dos árboles compartiendo espacio de nombres y llave. Aquí:
+#
+#   · un bucket por celda, en la región de la celda, acceso uniforme (sin ACLs
+#     por objeto: solo IAM), y cifrado con la KEK DEL INQUILINO — la misma que
+#     cifra su cofre. El agente de servicio de Cloud Storage tiene que poder
+#     usarla, igual que el de Secret Manager arriba;
+#   · `ore-driver-<n>` ESCRIBE (`objectAdmin`: sellar, y recoger lo superado);
+#   · `ore-serve-<n>` LEE (`objectViewer`: la ficha de la copia, F5 mañana).
+#     Esa es la separación que 0015 pedía, y sale gratis: son dos cuentas.
+#
+# ⛔ Sin clave estática de ningún tipo: la política de la organización lo
+#   prohíbe (`iam.disableServiceAccountKeyCreation`, y las HMAC de la API S3 de
+#   GCS cuentan). Los Jobs hablan con `ore-store-gcs` y el token del metadata
+#   server, como ya hacen con Secret Manager.
+AGENTE_GCS="service-$NUMERO@gs-project-accounts.iam.gserviceaccount.com"
+if "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)" >/dev/null 2>&1; then
+  ya "la copia gs://$COPIA"
+else
+  correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
+    --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
+    --member="serviceAccount:$AGENTE_GCS" \
+    && hecho "Cloud Storage puede cifrar con $KEK (CMEK)"
+  correr "$GCLOUD" storage buckets create "gs://$COPIA" --location="$LUGAR" \
+    --uniform-bucket-level-access --public-access-prevention \
+    --default-encryption-key="projects/$PROYECTO/locations/$LUGAR/keyRings/$LLAVERO/cryptoKeys/$LLAVE" \
+    && hecho "la copia gs://$COPIA, en $LUGAR, cifrada con $KEK"
+fi
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin && hecho "\`ore-driver-$NOMBRE\` escribe en la copia"
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer && hecho "\`ore-serve-$NOMBRE\` lee la copia, y no escribe"
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #

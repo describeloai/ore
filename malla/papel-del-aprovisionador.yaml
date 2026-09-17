@@ -115,3 +115,15 @@ includedPermissions:
   - dns.resourceRecordSets.delete
   - dns.changes.create
   - dns.changes.get
+  # La copia (0027 P1 I2): el bucket del inquilino — crear, conceder a sus dos
+  # cuentas, y borrar al retirar. Fijate en que NO hay `objects.get` ni
+  # `objects.create`: el aprovisionador pone el almacen y no mira dentro. Al
+  # retirar, `storage rm -r` sí borra objetos: por eso `objects.delete` y
+  # `objects.list`, y solo esos.
+  - storage.buckets.create
+  - storage.buckets.get
+  - storage.buckets.delete
+  - storage.buckets.getIamPolicy
+  - storage.buckets.setIamPolicy
+  - storage.objects.list
+  - storage.objects.delete

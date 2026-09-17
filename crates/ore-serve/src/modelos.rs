@@ -792,7 +792,7 @@ impl Servidor {
     }
 
     /// `ore validate` sobre el clon: `None` si compila, la respuesta 422 si no.
-    fn no_compila(&self, raiz: &Path) -> Option<Respuesta> {
+    pub(crate) fn no_compila(&self, raiz: &Path) -> Option<Respuesta> {
         match mando::correr(&self.binario, raiz, &["validate".into(), ".".into()]) {
             Err(e) => Some(Respuesta::error(500, e.to_string())),
             Ok(s) if !s.bien() => Some(Respuesta::error(
