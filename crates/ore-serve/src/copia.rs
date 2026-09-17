@@ -433,33 +433,86 @@ fn vistas_con_copia(raiz: &Path) -> Vec<String> {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let Ok(vistas) = std::fs::read_dir(d.join("views")) else {
+        out.extend(
+            vistas_con_copia_de(&d)
+                .into_iter()
+                .map(|v| format!("{paquete}.{v}")),
+        );
+    }
+    out
+}
+
+/// Las vistas de UN paquete que declaran `materialized`, por nombre y en orden.
+fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(vistas) = std::fs::read_dir(dir.join("views")) else {
+        return out;
+    };
+    let mut rutas: Vec<PathBuf> = vistas.flatten().map(|e| e.path()).collect();
+    rutas.sort();
+    for p in rutas {
+        let Ok(texto) = std::fs::read_to_string(&p) else {
             continue;
         };
-        let mut rutas: Vec<PathBuf> = vistas.flatten().map(|e| e.path()).collect();
-        rutas.sort();
-        for p in rutas {
-            let Ok(texto) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            let Ok(n) = parse::parse(&texto) else {
-                continue;
-            };
-            if campo(&n, "kind").as_deref() != Some("View") {
-                continue;
-            }
-            if n.get("spec")
-                .and_then(|(_, s)| s.get("materialized"))
-                .is_none()
-            {
-                continue;
-            }
-            if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
-                out.push(format!("{paquete}.{v}"));
-            }
+        let Ok(n) = parse::parse(&texto) else {
+            continue;
+        };
+        if campo(&n, "kind").as_deref() != Some("View") {
+            continue;
+        }
+        if n.get("spec")
+            .and_then(|(_, s)| s.get("materialized"))
+            .is_none()
+        {
+            continue;
+        }
+        if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
+            out.push(v);
         }
     }
     out
+}
+
+/// **La clase de una base** (0027 P1 I4a): `standard` o `foreign`.
+///
+/// Se lee de `discover.scope.json` —el documento que ya guarda qué entró y de
+/// dónde— porque es una REGLA sobre lo que entre después («todo lo que se traiga
+/// a esta base se copia»), y las vistas de hoy no pueden decir nada de las de
+/// mañana. Ausente = `foreign`: es lo que todas las bases eran antes de que
+/// existiera la palabra, y por eso no hay ninguna migración.
+pub(crate) fn clase_de(dir: &Path) -> &'static str {
+    let declarada = std::fs::read_to_string(dir.join("discover.scope.json"))
+        .ok()
+        .and_then(|t| parse::parse(&t).ok())
+        .and_then(|n| campo(&n, "type"));
+    match declarada.as_deref() {
+        Some("standard") => "standard",
+        _ => "foreign",
+    }
+}
+
+/// **Cuántas copias declara un paquete, y cuántas están hechas.** Las vistas
+/// con `materialized` son la CONSECUENCIA de la clase; esto las cuenta para que
+/// una base estándar con vistas sin copiar se vea como lo que es —una deriva—
+/// y no como una tercera clase.
+pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
+    let dir = raiz.join("packages").join(paquete);
+    let declaradas = vistas_con_copia_de(&dir);
+    let copiadas = declaradas
+        .iter()
+        .filter(|v| {
+            let rel = format!("copias/{paquete}_{v}.json");
+            std::fs::read_to_string(raiz.join(rel))
+                .ok()
+                .and_then(|t| parse::parse(&t).ok())
+                .and_then(|n| campo(&n, "estado"))
+                .is_some_and(|e| e == "copiada" || e == "al-dia")
+        })
+        .count();
+    Json::obj([
+        ("declaradas", Json::Int(declaradas.len() as i64)),
+        ("copiadas", Json::Int(copiadas as i64)),
+    ])
 }
 
 /// Lo que la última pasada del Job dejó en `copias/<paquete>_<vista>.json`, con

@@ -26,6 +26,11 @@
 #   5  ...                               y la cola lleva VISTAS=olist.customers,olist.orders (otro nombre)
 #   7  el informe del Job en el arbol   GET /copias: copia.estado copiada, filas, copiado_por, cuando
 #
+# Y la clase de la base (I4a): GET /paquetes dice `type` (standard | foreign;
+# sin `type` en discover.scope.json es foreign, que es lo que toda base era) y
+# `copias {declaradas, copiadas}` — 0/0 de partida, 2/0 tras decidir dos, 2/1
+# con el informe de una.
+#
 # Uso:  bash pruebas-de-fuego/la-copia-se-decide.sh
 set -u
 
@@ -157,7 +162,10 @@ cuerpo() { cat "$TMP/r.json"; }
 # ── 0 ───────────────────────────────────────────────────────────────────────
 curl -sf -H "$SUJ" "$BASE/paquetes/olist/copias" > "$TMP/c.json" || falla "0 · GET /copias no contesta"
 grep -q '"copias":\[\]' "$TMP/c.json" || falla "0 · el arbol de partida declara copias: $(cat "$TMP/c.json")"
-dice "0 · el arbol de partida compila y no declara ninguna copia"
+paquete_olist() { curl -sf -H "$SUJ" "$BASE/paquetes" | "$PY" -c 'import json,sys; print(json.dumps([p for p in json.load(sys.stdin)["packages"] if p["name"]=="olist"][0], sort_keys=True))'; }
+paquete_olist | grep -q '"type": "foreign"' || falla "0 · la base de partida no sale foreign: $(paquete_olist)"
+paquete_olist | grep -q '"copias": {"copiadas": 0, "declaradas": 0}' || falla "0 · la base de partida declara copias: $(paquete_olist)"
+dice "0 · el arbol de partida compila y no declara ninguna copia · GET /paquetes: foreign, 0/0"
 
 # ── 1 ───────────────────────────────────────────────────────────────────────
 COD=$(post nadie '{}')
@@ -209,7 +217,9 @@ grep -q '"key":\["order_id"\]' "$TMP/c.json" || falla "5 · GET /copias no da la
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "olist.customers,olist.orders"' || falla "5 · la cola no lleva las dos vistas: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 NOMBRE5=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
 [ "$NOMBRE5" != "$NOMBRE3" ] || falla "5 · otra lista, el mismo nombre de Job: Flux no crearia otro"
-dice "5 · con clave: 201 · la tabla raiz en upsert con key · el conducto no se duplica · GET /copias lista las dos, con su clave · el Job $NOMBRE5 en la cola"
+paquete_olist | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "5 · GET /paquetes no cuenta las dos declaradas: $(paquete_olist)"
+paquete_olist | grep -q '"type": "foreign"' || falla "5 · decidir dos copias no cambia la clase: $(paquete_olist)"
+dice "5 · con clave: 201 · la tabla raiz en upsert con key · el conducto no se duplica · GET /copias lista las dos, con su clave · el Job $NOMBRE5 en la cola · GET /paquetes: 2 declaradas, 0 copiadas"
 
 # ── 6 ───────────────────────────────────────────────────────────────────────
 COD=$(post pedidos '{}')
@@ -228,6 +238,7 @@ grep -q '"copiado_por":"copiador"' "$TMP/c.json" || falla "7 · la ficha no dice
 grep -q '"cuando":"20' "$TMP/c.json" || falla "7 · la ficha no dice cuando: $(cat "$TMP/c.json")"
 grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\]' "$TMP/c.json" || falla "7 · orders, sin informe, no sale pendiente: $(cat "$TMP/c.json")"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7 · el arbol no compila con copias/ dentro"
-dice "7 · el informe del Job: copiada · 99441 filas · copiado_por copiador · cuando · y orders sigue pendiente · el arbol compila"
+paquete_olist | grep -q '"copias": {"copiadas": 1, "declaradas": 2}' || falla "7 · GET /paquetes no cuenta la copiada: $(paquete_olist)"
+dice "7 · el informe del Job: copiada · 99441 filas · copiado_por copiador · cuando · y orders sigue pendiente · el arbol compila · GET /paquetes: 2/1"
 
 echo "✓ la decision de la copia: 0–7"

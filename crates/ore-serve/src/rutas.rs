@@ -951,11 +951,17 @@ fn paquetes(raiz: &Path) -> Respuesta {
         //   esquema descubierto de esta — y sin este campo no podria
         //   distinguirlos.
         let (fuente, elegido) = origen_de(&e.path());
+        // ⭐ Y su CLASE (0027 P1 I4a): `standard` copia todo lo que entra a la
+        //   celda; `foreign` es un espejo, cada lectura va al origen. Con las
+        //   copias que declara y las que están hechas, para que la ficha diga
+        //   «8/8 copied» — o vea la deriva.
         let mut campos = vec![
             ("name", Json::s(nombre.clone())),
             ("version", Json::s(campo("version"))),
             ("decisionesPendientes", Json::Int(abiertas as i64)),
             ("scoped", Json::Bool(elegido)),
+            ("type", Json::s(crate::copia::clase_de(&e.path()))),
+            ("copias", crate::copia::copias_de(raiz, &nombre)),
         ];
         if let Some(f) = fuente {
             campos.push(("source", Json::s(f)));
