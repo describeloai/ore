@@ -659,8 +659,7 @@ grep -q "no hay ninguna celda" "$TMP/r.json" || falla "13 · el mensaje de la in
 GORDO=$("$PY" -c 'import json;print(json.dumps({"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"],"memoria":["1","2"],"jobs":[1,2]},"jobs":{"activos":0,"ok":0,"fallidos":0},"control":{"listo":True},"relleno":"x"*33000}))')
 [ "$(pide POST "/celdas/acme/estado" "$AGEA" "$GORDO")" = "422" ] || falla "13 · ⛔ SE ACEPTARON 33 KB (el tope es 32: la lista de Jobs con el log del que corre)"
 # Y la lista de Jobs (2026-09-17): opcional, y si viene, cada uno con nombre y estado.
-CONLISTA=$("$PY" -c 'import json;print(json.dumps({"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"],"memoria":["1","2"],"jobs":[1,2]},"jobs":{"activos":1,"ok":0,"fallidos":0,"lista":[{"nombre":"copiar-1","tipo":"copia","sujeto":"a.b","estado":"corriendo","inicio":"2026-09-15T11:19:00Z","fin":None,"log":"a.b
-  copiada"}]},"control":{"listo":True}}))')
+CONLISTA=$("$PY" -c 'import json;print(json.dumps({"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"],"memoria":["1","2"],"jobs":[1,2]},"jobs":{"activos":1,"ok":0,"fallidos":0,"lista":[{"nombre":"copiar-1","tipo":"copia","sujeto":"a.b","estado":"corriendo","inicio":"2026-09-15T11:19:00Z","fin":None,"log":"a.b"+chr(10)+"  copiada"}]},"control":{"listo":True}}))')
 [ "$(pide POST "/celdas/acme/estado" "$AGEA" "$CONLISTA")" = "200" ] || falla "13 · la lista de Jobs no entro: $(cat "$TMP/r.json")"
 SINESTADO=$("$PY" -c 'import json;print(json.dumps({"v":1,"medido_en":"2026-09-15T11:20:03Z","cuota":{"cpu":["1","2"],"memoria":["1","2"],"jobs":[1,2]},"jobs":{"activos":1,"ok":0,"fallidos":0,"lista":[{"nombre":"copiar-1"}]},"control":{"listo":True}}))')
 [ "$(pide POST "/celdas/acme/estado" "$AGEA" "$SINESTADO")" = "422" ] || falla "13 · ⛔ SE ACEPTO UN JOB SIN ESTADO"
