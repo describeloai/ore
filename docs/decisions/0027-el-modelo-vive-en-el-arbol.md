@@ -780,6 +780,26 @@ también en una foránea con copias sueltas. Consola: la entrada en *Actions* (m
 confirmación; 409 aviso, 404 error) y la fila *Storage* («Copied into this cluster» / «At
 source»). Prueba de fuego 6.
 
+**P1 I5 hecha** (2026-09-17, `demo`, `pruebas-de-fuego/la-copia-en-demo.py`). Una base estándar
+`olist_copia` (3 tablas pequeñas de olist) creada por el API con el agente de la celda en 5 s;
+el Job `copiar-822ce320` en `t-demo` (Flux → Kueue → pod en `jobs-p`, ~2 min de arranque):
+cofre → origen → `ore-store-gcs` → **el bucket del inquilino**, con CMEK. Resultado:
+`product_category_name_translation` 71 filas · 3 608 B; `products` 32 951 · 1 165 659 B; `sellers`
+3 095 · 119 439 B; 3 artefactos Parquet + 3 recibos; el informe empujado al árbol (`2c2fa93`,
+`copiador`); `GET /paquetes/olist_copia/copias` lo dice y `GET /paquetes` cuenta 3/3. **Lo que
+destapó, y se arregló sobre la marcha** (cada uno un commit en `main`): `materialize` validaba el
+árbol entero y otra base con `dueno` abierto (OOS2009) bloqueaba ésta → sólo su paquete y la
+raíz, y un paquete roto se lleva sólo sus vistas (`eaeae41`, `5735521`); el error del almacén
+tragaba su stderr (`9c4d51e`); **un NULL viajaba como `""`** en el protocolo del driver desde M4
+y un `Integer` nulo no podía cargarse → un nulo es la propiedad ausente (`fc66a35`); el Job se
+encolaba antes de que el conducto existiera (`2d1690e`); el convergedor borraba de la cola lo
+que `ore-serve` acababa de encolar (`10a4035`); y en `victor`, `test-standard` con guion no
+puede ser un espacio de nombres (OOS2030) → el alta y `discover` lo rechazan, y `DELETE
+/paquetes/{n}` retira una base (`5735521`). **Lo que I5 mide y no cierra**: la segunda pasada en
+Postgres **relee** (el LSN se mueve entre pasadas: cualquier escritura del servidor) — el recibo
+funciona, pero «releer no lee el origen» espera al lector del rango del changelog
+(`medida-el-rango-por-posicion.py` §D); hoy el refresco en Postgres es proporcional al tamaño.
+
 **Lo que se aparca:** E4 (endpoint público) y E5 (dedicado) van después de P1–P4 — nadie de fuera
 necesita llamar a un modelo que todavía no corre sobre datos—; B2 (`bastion certify`) es precio,
 no capacidad, y espera; B4 (digest) con B2.
