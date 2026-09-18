@@ -232,7 +232,16 @@ spec:
                 C=$(curl -s -o /trabajo/s.json -w '%{http_code}' \
                   -H "authorization: Bearer $TOK" \
                   "http://ore-cofre.t-demo.svc.cluster.local:8095/organizaciones/$ORGANIZACION/secretos/fuente-$F")
-                [ "$C" = "200" ] || { echo "✗ el custodio contesto $C para \`fuente-$F\`"; head -c 200 /trabajo/s.json; exit 1; }
+                # ⚠️ Sin credencial NO se para la pasada (2026-09-18): en un inquilino
+                #   el paquete de ejemplo `ventas` (`VENTAS_URL`, nunca en el
+                #   custodio) tumbaba CADA pasada, y la base estándar recién
+                #   creada nunca llegó a copiarse. Las vistas de esa fuente
+                #   fallarán una a una en `materialize`, y su informe lo dirá.
+                if [ "$C" != "200" ]; then
+                  echo "  ⚠️ el custodio contesto $C para \`fuente-$F\`: sus vistas no se copiarán en esta pasada — $(head -c 160 /trabajo/s.json)"
+                  rm -f /trabajo/s.json
+                  continue
+                fi
                 export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
                 rm -f /trabajo/s.json
                 echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
@@ -241,14 +250,21 @@ spec:
               # ⭐ El ciclo. `ore` no abre sockets: canaliza `ore-read-<tipo>` a
               #   `ore-store-gcs`, que sube con el token de esta cuenta. El
               #   informe por vista va a `copias/` en el árbol.
+              # ⚠️ Y una vista que falla NO tumba la pasada: `materialize` deja
+              #   el informe de cada una (copiada, al día, o error con su motivo)
+              #   y es ESO lo que hay que empujar. Con `set -e` y el código de
+              #   salida, un fallo en una vista perdía los informes de las que
+              #   sí se copiaron, y el Job se reintentaba tres veces leyendo
+              #   los orígenes enteros otra vez. La pasada termina bien si
+              #   informó; lo que no se copió lo dice su informe.
               if [ -n "$REHACER" ]; then
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
-                ore materialize . --rehacer $SOLO --recoger --informe copias
+                ore materialize . --rehacer $SOLO --recoger --informe copias                   || echo "⚠️ alguna vista no se rehizo: su informe en copias/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                ore materialize . --recoger --informe copias
+                ore materialize . --recoger --informe copias                   || echo "⚠️ alguna vista no se copió: su informe en copias/ lo dice"
               fi
 
               git add -A copias
