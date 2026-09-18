@@ -28,11 +28,11 @@
 #   7  la huella                              emitir y resolver, SIN el valor
 #   8  ⭐ se abre con la llave con la que se CERRÓ, no con la de ahora
 #   9  ⭐⭐ el material NO está en la base central (0024-⑤): está en el almacén
+#        de la celda, bajo el prefijo del inquilino — y lo viejo se MUDA
 #  10  ⭐ la baja (037): owner o `secreto:retirar`; fila con retirado_en, concesiones
 #      revocadas, material fuera del almacén, huella sin el valor; el agente no puede
 #  11  ⭐ la baja de operador (038): `retirar-huerfanos --declaradas` retira las de fuentes
 #      que ya no están, atribuidas al operador; `--seco`; sin lista se niega
-#        de la celda, bajo el prefijo del inquilino — y lo viejo se MUDA
 #
 # ── ⭐ Y el almacén también es de mentira, por lo mismo ────────────────────
 #
