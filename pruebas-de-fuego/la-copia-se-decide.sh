@@ -511,4 +511,27 @@ curl -sf -H "$SUJ" "$BASE/funciones" | grep -q '"resultados":1' || falla "8 · G
 COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" "$BASE/funciones/tienda/nadie/resultados"); [ "$COD" = "404" ] || falla "8 · resultados de una inventada devolvio $COD"
 dice "8 · GET /funciones cuenta los resultados y GET …/resultados los lista, el mas nuevo primero"
 
-echo "✓ la base estandar, y el catalogo no modela: 0–8"
+# ── 9 · rehacer la copia (0030 W1): cuando el recibo miente ─────────────────
+# Escribe la cola, no el arbol: el Job de la copia con REHACER al instante y
+# VISTAS a las del paquete. Dos peticiones son dos Jobs. 404 sin paquete; 409
+# sin vistas con copia (olist, la foranea a mano).
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-length: 0' "$BASE/paquetes/tienda/copia/rehacer")
+[ "$COD" = "202" ] || falla "9 · POST /copia/rehacer devolvio $COD · $(cuerpo)"
+cuerpo | grep -q '"job":"copiar-rehacer-[a-f0-9]\{8\}"' || falla "9 · la respuesta no nombra el Job: $(cuerpo)"
+cuerpo | grep -q '"vistas":\["tienda.customers","tienda.orders"\]' || falla "9 · las vistas no son las de tienda: $(cuerpo)"
+F9=$(cuerpo | sed -n 's/.*"fichero":"\([^"]*\)".*/\1/p'); R1=$(cuerpo | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
+en_cola "$F9" > "$TMP/j9.yaml" || falla "9 · el Job no esta en la cola ($F9)"
+grep -q 'name: VISTAS, value: "tienda.customers,tienda.orders"' "$TMP/j9.yaml" || falla "9 · VISTAS no son las de tienda: $(grep -n VISTAS "$TMP/j9.yaml")"
+grep -q 'name: REHACER, value: "[0-9]\{8\}T[0-9]\{6\}Z"' "$TMP/j9.yaml" || falla "9 · REHACER no lleva el instante: $(grep -n REHACER "$TMP/j9.yaml")"
+grep -q "  name: $R1\$" "$TMP/j9.yaml" || falla "9 · el Job no se llama como dice la respuesta"
+grep -q 'ore materialize . --rehacer $SOLO' "$TMP/j9.yaml" || falla "9 · el guion no rehace"
+en_cola 48-la-copia.yaml | grep -q 'name: REHACER, value: ""' || falla "9 · la copia de siempre perdio su REHACER vacio"
+sleep 1
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-length: 0' "$BASE/paquetes/tienda/copia/rehacer")
+[ "$COD" = "202" ] || falla "9 · la segunda peticion devolvio $COD"
+R2=$(cuerpo | sed -n 's/.*"job":"\([^"]*\)".*/\1/p'); [ "$R1" != "$R2" ] || falla "9 · dos peticiones dieron el mismo Job ($R1)"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-length: 0' "$BASE/paquetes/nadie/copia/rehacer"); [ "$COD" = "404" ] || falla "9 · un paquete inventado devolvio $COD"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-length: 0' "$BASE/paquetes/olist/copia/rehacer"); [ "$COD" = "409" ] || falla "9 · una base sin copias devolvio $COD · $(cuerpo)"
+dice "9 · rehacer: 202 con el Job en la cola (REHACER al instante, VISTAS las del paquete); dos peticiones, dos Jobs · 404 · 409"
+
+echo "✓ la base estandar, y el catalogo no modela: 0–9"

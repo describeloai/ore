@@ -250,6 +250,11 @@ impl Servidor {
                 })
             }
             // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
+            // 0030 W1 · rehacer la copia: escribe la cola, no el árbol.
+            ("POST", ["paquetes", n, "copia", "rehacer"]) => {
+                let n = n.to_string();
+                self.leyendo(move |r| self.rehacer_copia(r, &n, sujeto))
+            }
             ("POST", ["paquetes", n, "copia"]) => {
                 let n = n.to_string();
                 self.escribiendo(sujeto, &format!("`{n}` pasa a base estándar"), |r| {
@@ -1550,6 +1555,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
         ("POST", "/vistas/{ns}/{nombre}/ejecutar", con_identidad),
+        ("POST", "/paquetes/{nombre}/copia/rehacer", con_identidad),
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/modelar",

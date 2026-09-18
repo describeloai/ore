@@ -172,7 +172,7 @@ fn ficha(raiz: &Path, f: &Funcion) -> Json {
 
 /// `AAAAMMDDTHHMMSSZ`: el instante de la petición, en el nombre del Job y en el
 /// mensaje del commit de la cola.
-fn corrida_ahora() -> String {
+pub(crate) fn corrida_ahora() -> String {
     let s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

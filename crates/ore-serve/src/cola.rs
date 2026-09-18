@@ -133,6 +133,43 @@ pub fn rendir_copia(plantilla: &str, vistas: &[String]) -> Result<(String, Strin
     Ok(("48-la-copia.yaml".to_string(), t))
 }
 
+/// **Rehacer** (0030 W1): el mismo Job de la copia, con `REHACER` puesto al
+/// instante de la petición y `VISTAS` a las del paquete. El fichero y el
+/// nombre llevan el instante: dos peticiones son dos Jobs, como en la
+/// invocación, porque «rehaz ahora» no es idempotente por contenido.
+pub fn rendir_rehacer(
+    plantilla: &str,
+    vistas: &[String],
+    instante: &str,
+) -> Result<(String, String), String> {
+    if !plantilla.contains("name: REHACER, value: \"\"") {
+        return Err(format!(
+            "`{PLANTILLA_COPIA}` no trae el hueco `REHACER`: o no es la plantilla, o \
+             `malla/48-la-copia.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    let (_, t) = rendir_copia(plantilla, vistas)?;
+    let t = t.replace(
+        "name: REHACER, value: \"\"",
+        &format!("name: REHACER, value: \"{instante}\""),
+    );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    // El nombre que `rendir_copia` puso lleva el resumen de la lista; el de
+    // rehacer lleva el de la pasada entera, instante incluido.
+    let mut salida = String::new();
+    for linea in t.lines() {
+        if let Some(resto) = linea.strip_prefix("  name: copiar-") {
+            let _ = resto;
+            salida.push_str(&format!("  name: copiar-rehacer-{h}\n"));
+        } else {
+            salida.push_str(linea);
+            salida.push('\n');
+        }
+    }
+    Ok((format!("48-la-copia-rehacer-{h}.yaml"), salida))
+}
+
 /// La plantilla de la invocación (0029 F4a I3), sin función, que el
 /// aprovisionador deja en la cola junto a las otras dos.
 pub const PLANTILLA_INVOCACION: &str = "plantilla-invocacion.txt";

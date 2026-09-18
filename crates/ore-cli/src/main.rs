@@ -656,6 +656,15 @@ enum Command {
         /// almacen (0027 P1 I3).
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
+        /// No pregunta al recibo: lee el origen entero y deja el recibo
+        /// apuntando a la copia nueva (la superada se borra). Para cuando
+        /// cambia COMO se lee, o el testigo no se mueve aunque los datos si.
+        #[arg(long)]
+        rehacer: bool,
+        /// Solo estas vistas (`paquete.vista`, repetible). Sin esto, todas
+        /// las que declaran copia.
+        #[arg(long, value_name = "NS.VISTA")]
+        vista: Vec<String>,
     },
     /// Invoca una `Function` de lectura (`runtime: model`, `over`, `output`,
     /// sin `effects`) sobre la COPIA de `over`: `ore-store-<tipo> leer` trae
@@ -778,7 +787,20 @@ fn main() -> std::process::ExitCode {
             seco,
             recoger,
             informe,
-        } => return materializar::materializar(path, *seco, *recoger, informe.as_deref()),
+            rehacer,
+            vista,
+        } => {
+            return materializar::materializar(
+                path,
+                &materializar::Opciones {
+                    seco: *seco,
+                    recoger: *recoger,
+                    informe: informe.as_deref(),
+                    rehacer: *rehacer,
+                    solo: vista,
+                },
+            );
+        }
         Command::Ask {
             path,
             vista,

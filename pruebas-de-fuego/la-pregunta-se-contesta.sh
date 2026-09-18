@@ -19,6 +19,9 @@
 #   6  lo que se niega: sin ninguna copia que conteste; copia declarada y no hecha
 #   7  SERVIDO (W1 ④): `POST /vistas/{ns}/{n}/ejecutar` en ore-serve devuelve la
 #      cabecera con `datos`; `{"limite": N}`; 404 / 409 / 422 como `ore ask`
+#   8  REHACER: el recibo manda —el origen cambia sin mover el testigo y la
+#      copia no se entera—; `--rehacer --vista` lee entero, el recibo apunta a la
+#      nueva, la superada se borra, y `ask` contesta lo nuevo
 #
 # Necesita `ore`, `ore-serve`, `ore-store-r2` y `ore-read-jsonl` en el PATH o en
 # target/{release,debug}, y python3.
@@ -289,6 +292,46 @@ case "$s" in *'`ventas.declarada` la contesta, pero'*"no está hecha"*) ;; *) fa
 s=$("$ORE" ask "$A" --vista ventas.noExiste 2>&1) && falla "6 · una vista que no existe no falló"
 ok "6 · se niega: sin copia que conteste · declarada y no hecha (propia, y vecina) · vista que no existe"
 
+# ── 8 · rehacer: cuando el recibo miente ──────────────────────────────────────
+# El caso de demo (medida W1 §B): la copia se hizo con un lector que callaba
+# —aquí, una fila de menos— bajo la cabecera VERDADERA (mismo plan, esquema y
+# testigo). Se reproduce sellando 4 filas con la cabecera real y apuntando el
+# recibo a ese artefacto. Copiar otra vez dice «ya está»; `ask` sirve la
+# mentira; `--rehacer` lee entero, mueve el recibo y borra la superada.
+CAB=$(printf '{"clave":"%s"}
+' "$CLAVE" | ore-store-r2 leer | head -1)
+MALA=$( { echo "$CAB"; printf '{"id":"p1","pais":"ES","total":"10.50","unidades":"2"}
+{"id":"p2","pais":"ES","total":"4.25","unidades":"1"}
+{"id":"p3","pais":"PT","total":"7","unidades":"3"}
+{"id":"p4","pais":"FR","total":"1.10","unidades":"1"}
+'; } | ore-store-r2 sellar) || falla "8 · no se pudo sellar la copia mala"
+K_MALA=$("$PY" -c 'import json,sys;print(json.loads(sys.argv[1])["clave"])' "$MALA")
+RECIBO=$("$PY" -c 'import json,sys;print(json.loads(sys.argv[1])["recibo"])' "$MALA")
+[ -n "$K_MALA" ] && [ "$K_MALA" != "$CLAVE" ] && [ -n "$RECIBO" ] || falla "8 · la copia mala no se selló: $MALA"
+curl -s -o /dev/null -X DELETE "$ORE_R2_S3_ENDPOINT/copia/$RECIBO"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$ORE_R2_S3_ENDPOINT/copia/$RECIBO" -d "$K_MALA")" = "200" ] || falla "8 · no se pudo apuntar el recibo a la copia mala"
+salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · materialize"; }
+case "$salida" in *"ya está · $K_MALA"*) ;; *) falla "8 · sin --rehacer tenía que decir «ya está» con la mala: $salida";; esac
+pregunta --vista ventas.pedidos > "$TMP/out.txt" || { cat "$TMP/err.txt"; falla "8 · ask con la mala"; }
+cumple "cab['copia']['clave']=='$K_MALA' and cab['filas']==4" "8 · ask sirve la copia que hay: 4 filas (la mentira)"
+salida=$("$ORE" materialize "$A" --seco --rehacer --vista ventas.pedidos 2>&1) || { echo "$salida"; falla "8 · --seco --rehacer"; }
+case "$salida" in *"se rehará entera"*) ;; *) falla "8 · --seco --rehacer no dijo que se rehará: $salida";; esac
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/$K_MALA")" = "200" ] || falla "8 · --seco tocó el almacén"
+salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · --rehacer"; }
+case "$salida" in *"rehecha: el recibo apunta a la nueva y se borró $K_MALA"*) ;; *) falla "8 · --rehacer no movió el recibo ni borró la superada: $salida";; esac
+"$PY" - "$A/copias/ventas_pedidos.json" "$K_MALA" "$CLAVE" <<'EOF' || falla "8 · el informe de la rehecha"
+import json, sys
+i = json.load(open(sys.argv[1]))
+assert i["estado"] == "copiada" and i["rehecha"] is True and i["superada"] == sys.argv[2] and i["clave"] == sys.argv[3] and i["filas"] == 5 and i["leidas"] == 5, i
+EOF
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/$K_MALA")" = "404" ] || falla "8 · la copia superada sigue en el almacén"
+[ "$(curl -s "$ORE_R2_S3_ENDPOINT/copia/$RECIBO")" = "$CLAVE" ] || falla "8 · el recibo no apunta a la buena"
+salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · --rehacer otra vez"; }
+case "$salida" in *"los mismos bytes, el recibo no se movió"*) ;; *) falla "8 · rehacer con los mismos bytes tenía que decirlo: $salida";; esac
+salida=$("$ORE" materialize "$A" --rehacer --vista ventas.noExiste 2>&1) && falla "8 · una vista que no declara copia no falló"
+pregunta --vista ventas.pedidos > "$TMP/out.txt" || { cat "$TMP/err.txt"; falla "8 · ask tras rehacer"; }
+cumple "cab['copia']['clave']=='$CLAVE' and cab['filas']==5" "8 · ask contesta con la copia rehecha (5 filas)" && ok "8 · rehacer: el recibo decía «ya está» de una copia que mentía; --rehacer lee entero, mueve el recibo, borra la superada y ask ve las 5"
+
 # ── 7 · servido: ore-serve delante, contra el mismo S3 de mentira ─────────────
 ( cd "$A" && git init -q && git config core.autocrlf false && git -c user.name=banco -c user.email=banco@invalido add -A   && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el arbol con su copia" ) || falla "7 · no se pudo dar historia al arbol"
 PUERTO=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
@@ -310,4 +353,4 @@ servido "len(d['datos'])==2 and d['filas']==2 and d['leidas']==5 and d['limite']
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/vistas/ventas/pedidos/ejecutar")" = "401" ] || falla "7 · sin identidad no dio 401"
 ok "7 · servido: POST /vistas/{ns}/{n}/ejecutar → 200 con datos · limite · 404 · 409 · 422 · 401"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x937\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x938\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

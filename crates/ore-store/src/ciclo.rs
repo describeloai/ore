@@ -107,12 +107,19 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
             //
             // Se cae solo: `leer_cabecera` construye la `Cabecera` de campos
             // nombrados, así que un campo de más simplemente no se lee.
-            let base = ore_core::parse::parse(cabecera).ok().and_then(|n| {
+            let peticion = ore_core::parse::parse(cabecera).ok();
+            let base = peticion.as_ref().and_then(|n| {
                 n.get("base")
                     .and_then(|(_, v)| v.as_str())
                     .map(String::from)
             });
-            sellar(cuenta, cab, &recibo, base.as_deref(), lineas)
+            // `rehacer` tampoco entra en la cabecera, por lo mismo: es cómo se
+            // construyó, no qué contiene.
+            let rehacer = peticion
+                .as_ref()
+                .and_then(|n| n.get("rehacer").and_then(|(_, v)| v.as_str()))
+                .is_some_and(|v| v == "true");
+            sellar(cuenta, cab, &recibo, base.as_deref(), rehacer, lineas)
         }
         "anterior" => anterior(cuenta, &cab, &recibo),
         "recoger" => recoger(cuenta, &cab, &recibo, false),
@@ -129,11 +136,19 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
 /// antes y la subida fallara, el paso 4 diría que la copia está y no estaría.
 /// Al revés, lo peor que pasa es repetir el trabajo — que es lo que hace este
 /// programa idempotente en vez de frágil.
+///
+/// **Con `rehacer`** (W1, el recibo que mentía): el artefacto nuevo se sube
+/// como siempre, y el recibo **se sobrescribe** para apuntar a él. El
+/// artefacto al que apuntaba antes —misma cabecera, otros bytes— se borra: no
+/// lo nombra ningún recibo y `recoger` no lo encontraría, porque recoge
+/// recibos de cabeceras superadas y esta cabecera sigue vigente. Si los bytes
+/// son los mismos, no hay nada que sobrescribir ni que borrar, y se dice.
 fn sellar<'a>(
     cuenta: &dyn Almacen,
     cab: sobre::Cabecera,
     recibo: &str,
     base: Option<&str>,
+    rehacer: bool,
     filas: impl Iterator<Item = &'a str>,
 ) -> Result<String, String> {
     let llegadas: Vec<carga::Fila> = filas
@@ -202,8 +217,24 @@ fn sellar<'a>(
     // otra carga bajo la misma cabecera, el recibo NO cambia — y eso es lo que
     // vuelve detectable que el testigo no fijaba el estado que decía fijar.
     let recibo_nuevo = cuenta.subir(recibo, clave.as_bytes())?;
+    let mut superada = None;
+    if rehacer && !recibo_nuevo {
+        let anterior = cuenta.leer(recibo)?.unwrap_or_default();
+        if anterior != clave {
+            cuenta.sobrescribir(recibo, clave.as_bytes())?;
+            if !anterior.is_empty() {
+                cuenta.borrar(&anterior)?;
+                superada = Some(anterior);
+            }
+        }
+    }
 
     Ok(ore_core::json::Json::obj([
+        ("rehecha", ore_core::json::Json::Bool(rehacer)),
+        (
+            "superada",
+            ore_core::json::Json::s(superada.unwrap_or_default()),
+        ),
         ("bytes", ore_core::json::Json::Int(artefacto.len() as i64)),
         ("clave", ore_core::json::Json::s(&clave)),
         ("columnas", columnas),
@@ -493,12 +524,14 @@ mod tests {
         fn existe(&self, clave: &str) -> Result<bool, String> {
             Ok(self.0.borrow().contains_key(clave))
         }
+        // Como los de verdad: si estaba, no se toca (`If-None-Match: *`).
         fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
-            Ok(self
-                .0
-                .borrow_mut()
-                .insert(clave.to_string(), cuerpo.to_vec())
-                .is_none())
+            let mut m = self.0.borrow_mut();
+            if m.contains_key(clave) {
+                return Ok(false);
+            }
+            m.insert(clave.to_string(), cuerpo.to_vec());
+            Ok(true)
         }
         fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
             Ok(self
@@ -547,6 +580,102 @@ mod tests {
         let clave = sobre::clave(&artefacto);
         cuenta.subir(&clave, &artefacto).expect("sube");
         clave
+    }
+
+    /// **Rehacer**: misma cabecera, otros bytes. El recibo pasa a apuntar al
+    /// artefacto nuevo y el viejo se borra; con los mismos bytes no hay nada
+    /// que cambiar. Sin `rehacer`, el recibo no se mueve: gana el primero.
+    #[test]
+    fn rehacer_mueve_el_recibo_y_borra_lo_superado() {
+        let cuenta = Memoria::default();
+        let cab = || sobre::Cabecera {
+            plan: "sha256:plan".into(),
+            esquema: [("id".to_string(), "String".to_string())].into(),
+            testigo: sobre::Testigo {
+                modo: "snapshot".into(),
+                valor: None,
+            },
+            clave: vec![],
+            conducto: "materialization.payload".into(),
+            bundle: "sha256:bundle".into(),
+        };
+        let recibo = sobre::recibo(&cab());
+        let primera = sellar(
+            &cuenta,
+            cab(),
+            &recibo,
+            None,
+            false,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .expect("sella");
+        let k1 = ore_core::parse::parse(&primera)
+            .unwrap()
+            .get("clave")
+            .unwrap()
+            .1
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(cuenta.leer(&recibo).unwrap().as_deref(), Some(k1.as_str()));
+
+        // sin rehacer, otros bytes NO mueven el recibo
+        let segunda = sellar(
+            &cuenta,
+            cab(),
+            &recibo,
+            None,
+            false,
+            ["{\"id\":\"b\"}"].into_iter(),
+        )
+        .expect("sella");
+        let k2 = ore_core::parse::parse(&segunda)
+            .unwrap()
+            .get("clave")
+            .unwrap()
+            .1
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(k1, k2);
+        assert_eq!(
+            cuenta.leer(&recibo).unwrap().as_deref(),
+            Some(k1.as_str()),
+            "gana el primero"
+        );
+        cuenta.borrar(&k2).unwrap();
+
+        // con rehacer, el recibo apunta al nuevo y el viejo se borra
+        let tercera = sellar(
+            &cuenta,
+            cab(),
+            &recibo,
+            None,
+            true,
+            ["{\"id\":\"b\"}"].into_iter(),
+        )
+        .expect("sella");
+        let n = ore_core::parse::parse(&tercera).unwrap();
+        assert_eq!(n.get("clave").unwrap().1.as_str(), Some(k2.as_str()));
+        assert_eq!(n.get("rehecha").unwrap().1.as_str(), Some("true"));
+        assert_eq!(n.get("superada").unwrap().1.as_str(), Some(k1.as_str()));
+        assert_eq!(cuenta.leer(&recibo).unwrap().as_deref(), Some(k2.as_str()));
+        assert!(!cuenta.existe(&k1).unwrap(), "la superada se fue");
+        assert!(cuenta.existe(&k2).unwrap());
+
+        // rehacer con los mismos bytes: nada que mover ni borrar
+        let cuarta = sellar(
+            &cuenta,
+            cab(),
+            &recibo,
+            None,
+            true,
+            ["{\"id\":\"b\"}"].into_iter(),
+        )
+        .expect("sella");
+        let n = ore_core::parse::parse(&cuarta).unwrap();
+        assert_eq!(n.get("superada").unwrap().1.as_str(), Some(""));
+        assert_eq!(cuenta.leer(&recibo).unwrap().as_deref(), Some(k2.as_str()));
     }
 
     /// `leer` devuelve la cabecera del sobre y las filas una por línea; un

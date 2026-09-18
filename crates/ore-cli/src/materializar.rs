@@ -45,12 +45,22 @@ use ore_view::{Catalogo, Clasificacion, Vista, comprobar, esquema, linaje};
 /// sitio y no en el otro.
 const CONDUCTO: &str = crate::vista::CONDUCTO;
 
-pub fn materializar(
-    path: &Path,
-    seco: bool,
-    recoger: bool,
-    informe: Option<&Path>,
-) -> std::process::ExitCode {
+/// Lo que se pide al ciclo, además del árbol.
+pub struct Opciones<'a> {
+    pub seco: bool,
+    pub recoger: bool,
+    pub informe: Option<&'a Path>,
+    /// **Rehacer**: no preguntar al recibo, leer el origen entero, y dejar el
+    /// recibo apuntando a lo nuevo (el artefacto superado se borra). Para
+    /// cuando cambia CÓMO se lee —un driver corregido— o el testigo no se
+    /// mueve aunque los datos sí. Sin esto, el recibo manda.
+    pub rehacer: bool,
+    /// Solo estas vistas (`paquete.vista`); vacío es todas las que declaran copia.
+    pub solo: &'a [String],
+}
+
+pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
+    let (seco, recoger, informe) = (op.seco, op.recoger, op.informe);
     // ⭐ La copia exige que compile SU paquete —y lo de la raíz del árbol:
     //   conductos, retículos—, no el inquilino entero. Medido en `demo` (P1
     //   I5): una base foránea con `dueno` sin contestar (`owner: cambiame`,
@@ -96,8 +106,13 @@ pub fn materializar(
     let bundle = ore_core::digest::bundle(&pkg);
 
     let mut fallos = 0usize;
+    let mut vistas = 0usize;
     for v in &declaradas {
         let Some(qn) = v.qname() else { continue };
+        if !op.solo.is_empty() && !op.solo.contains(&qn) {
+            continue;
+        }
+        vistas += 1;
         println!("{qn}");
         // Su paquete no compila: esta copia no se intenta, y el informe lo dice.
         if let Some(d) = paquete_del_fichero(path, &v.path).and_then(|p| rotos.get(&p)) {
@@ -129,6 +144,7 @@ pub fn materializar(
             &bundle,
             seco,
             recoger,
+            op.rehacer,
         ) {
             Ok((linea, parte)) => {
                 println!("  {linea}");
@@ -162,11 +178,15 @@ pub fn materializar(
             }
         }
     }
-    if fallos > 0 {
+    if !op.solo.is_empty() && vistas == 0 {
         eprintln!(
-            "error: {fallos} de {} no se materializaron",
-            declaradas.len()
+            "error: ninguna de las vistas pedidas ({}) declara copia en este árbol",
+            op.solo.join(", ")
         );
+        return std::process::ExitCode::from(65);
+    }
+    if fallos > 0 {
+        eprintln!("error: {fallos} de {vistas} no se materializaron");
         return std::process::ExitCode::from(65);
     }
     std::process::ExitCode::SUCCESS
@@ -184,6 +204,7 @@ fn una(
     bundle: &str,
     seco: bool,
     recoger: bool,
+    rehacer: bool,
 ) -> Result<(String, ore_core::json::Json), String> {
     // ── ① El plan, su digest y su esquema ───────────────────────────────────
     let plan = catalogo
@@ -249,10 +270,12 @@ fn una(
         String::new()
     };
 
-    if buscado
-        .get("existe")
-        .and_then(|(_, x)| x.as_str())
-        .is_some_and(|s| s == "true")
+    // Con `rehacer` el recibo no decide: se lee el origen aunque esté.
+    if !rehacer
+        && buscado
+            .get("existe")
+            .and_then(|(_, x)| x.as_str())
+            .is_some_and(|s| s == "true")
     {
         let clave = buscado
             .get("clave")
@@ -283,8 +306,14 @@ fn una(
     if seco {
         return Ok((
             format!(
-                "haría falta copiarla · testigo {}\n  el recibo no está: {}",
+                "{} · testigo {}\n  el recibo {}: {}",
+                if rehacer {
+                    "se rehará entera"
+                } else {
+                    "haría falta copiarla"
+                },
                 testigo.1.as_deref().unwrap_or("sin poblar"),
+                if rehacer { "no decide" } else { "no está" },
                 buscado
                     .get("recibo")
                     .and_then(|(_, x)| x.as_str())
@@ -303,7 +332,14 @@ fn una(
     //
     // Y si no hay anterior —primera vez, o un testigo que no ordena— las dos
     // salen vacías y esto es exactamente lo que era: una copia entera.
-    let previa = almacen("anterior", &cabecera, None)?;
+    // Rehacer es leer entero: sin base sobre la que fundir ni rango desde el
+    // que partir. Lo que se copió antes con un lector que callaba columnas no
+    // es una base, es lo que se está sustituyendo.
+    let previa = if rehacer {
+        ore_core::parse::parse("{}").map_err(|e| format!("{e:?}"))?
+    } else {
+        almacen("anterior", &cabecera, None)?
+    };
     let base = previa
         .get("clave")
         .and_then(|(_, x)| x.as_str())
@@ -373,10 +409,13 @@ fn una(
     let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
     // La petición del sellado lleva `base`, y la cabecera que se sella **no**:
     // qué contiene la copia y cómo se construyó son dos cosas.
-    let peticion = match &base {
+    let mut peticion = match &base {
         Some(b) => cabecera.replacen('{', &format!("{{\"base\":\"{b}\","), 1),
         None => cabecera.clone(),
     };
+    if rehacer {
+        peticion = peticion.replacen('{', "{\"rehacer\":true,", 1);
+    }
     let salida = almacen("sellar", &peticion, Some(&filas))?;
 
     // ── ⑥ Registrar, y recoger lo que quedó atrás ───────────────────────────
@@ -424,9 +463,24 @@ fn una(
             vacias.join(", ")
         )
     };
+    let superada = campo("superada");
+    let superada = if superada == "?" {
+        String::new()
+    } else {
+        superada
+    };
+    let rehecha = if rehacer {
+        if superada.is_empty() {
+            "\n  rehecha: los mismos bytes, el recibo no se movió".to_string()
+        } else {
+            format!("\n  rehecha: el recibo apunta a la nueva y se borró {superada}")
+        }
+    } else {
+        String::new()
+    };
     Ok((
         format!(
-            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}",
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}{rehecha}",
             campo("clave"),
             campo("filas"),
             campo("bytes"),
@@ -434,6 +488,8 @@ fn una(
         ),
         ore_core::json::Json::obj([
             ("estado", ore_core::json::Json::s("copiada")),
+            ("rehecha", ore_core::json::Json::Bool(rehacer)),
+            ("superada", ore_core::json::Json::s(superada)),
             ("clave", ore_core::json::Json::s(campo("clave"))),
             ("digest", ore_core::json::Json::s(campo("digest"))),
             ("plan", ore_core::json::Json::s(plan.digest())),

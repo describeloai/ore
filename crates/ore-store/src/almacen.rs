@@ -15,6 +15,16 @@ pub trait Almacen {
     fn listar(&self, prefijo: &str) -> Result<Vec<String>, String>;
     /// Borra; borrar lo que no está no es un error.
     fn borrar(&self, clave: &str) -> Result<(), String>;
+    /// **Sube aunque estuviera.** Solo lo usa `rehacer` sobre el recibo: el
+    /// recibo es el único objeto cuyo nombre no es su contenido, y la única
+    /// vez que hace falta cambiarlo es cuando la misma cabecera tiene que
+    /// apuntar a otro artefacto. Borrar y subir, y no un tercer verbo por
+    /// almacén: la ventana entre los dos la cierra quien la pise repitiendo el
+    /// trabajo, que es lo que `sellar` ya hace.
+    fn sobrescribir(&self, clave: &str, cuerpo: &[u8]) -> Result<(), String> {
+        self.borrar(clave)?;
+        self.subir(clave, cuerpo).map(|_| ())
+    }
     /// Un objeto entero: la copia anterior, para fundir.
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String>;
 }

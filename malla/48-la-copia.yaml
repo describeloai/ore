@@ -155,6 +155,12 @@ spec:
             #   almacén: el bucket del inquilino (aprovisionador ③b), por
             #   `ore-store-gcs` con el token de esta cuenta.
             - { name: VISTAS, value: "olist.customers" }
+            # ⭐ REHACER (0030 W1): vacio es la copia de siempre —el recibo
+            #   manda—. Con un instante dentro, la pasada es un «rehacer»
+            #   pedido a mano (`POST /paquetes/{n}/copia/rehacer`): no pregunta
+            #   al recibo, lee el origen entero SOLO para `VISTAS`, y deja el
+            #   recibo apuntando a la copia nueva. Dos peticiones son dos Jobs.
+            - { name: REHACER, value: "" }
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
@@ -235,8 +241,15 @@ spec:
               # ⭐ El ciclo. `ore` no abre sockets: canaliza `ore-read-<tipo>` a
               #   `ore-store-gcs`, que sube con el token de esta cuenta. El
               #   informe por vista va a `copias/` en el árbol.
-              echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-              ore materialize . --recoger --informe copias
+              if [ -n "$REHACER" ]; then
+                echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+                # shellcheck disable=SC2086
+                ore materialize . --rehacer $SOLO --recoger --informe copias
+              else
+                echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+                ore materialize . --recoger --informe copias
+              fi
 
               git add -A copias
               if git diff --cached --quiet; then

@@ -441,6 +441,93 @@ impl Servidor {
     /// El Job de la copia a la cola de trabajo, rendido de la plantilla que el
     /// aprovisionador dejó allí. Devuelve una frase que dice qué pasó — nunca
     /// tumba la decisión, que ya está escrita.
+    /// `POST /paquetes/{n}/copia/rehacer`: encola el Job de la copia en modo
+    /// rehacer para las vistas con copia de ESTE paquete. Es lo que hace
+    /// falta cuando el recibo miente —cambió cómo se lee, o el testigo no se
+    /// mueve aunque los datos sí— y no tiene otra puerta: sin esto, la copia
+    /// rota es para siempre (medida W1 §B, `products` en demo).
+    pub(crate) fn rehacer_copia(
+        &self,
+        raiz: &Path,
+        paquete: &str,
+        sujeto: &Identidad,
+    ) -> Respuesta {
+        if let Err(m) = token(paquete) {
+            return Respuesta::error(422, format!("paquete: {m}"));
+        }
+        let dir = raiz.join("packages").join(paquete);
+        if !dir.is_dir() {
+            return Respuesta::error(404, format!("no hay ningún paquete `{paquete}`"));
+        }
+        let vistas: Vec<String> = vistas_con_copia_de(&dir)
+            .into_iter()
+            .map(|v| format!("{paquete}.{v}"))
+            .collect();
+        if vistas.is_empty() {
+            return Respuesta::error(
+                409,
+                format!("`{paquete}` no tiene ninguna vista con copia: no hay nada que rehacer"),
+            );
+        }
+        let instante = crate::funciones::corrida_ahora();
+        let Some(forja) = &self.cola else {
+            return Respuesta::error(
+                409,
+                "este servidor no sabe de ninguna cola (`--cola`): no se puede encolar",
+            );
+        };
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return Respuesta::error(502, e.to_string()),
+        };
+        let cdir = prestado.ruta();
+        let plantilla = match std::fs::read_to_string(cdir.join(cola::PLANTILLA_COPIA)) {
+            Ok(t) => t,
+            Err(_) => {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "la cola no trae `{}`; hay que converger este inquilino",
+                        cola::PLANTILLA_COPIA
+                    ),
+                );
+            }
+        };
+        let (fichero, texto) = match cola::rendir_rehacer(&plantilla, &vistas, &instante) {
+            Ok(v) => v,
+            Err(e) => return Respuesta::error(409, e),
+        };
+        if let Err(e) = std::fs::write(cdir.join(&fichero), &texto) {
+            return Respuesta::error(502, format!("no se pudo escribir `{fichero}`: {e}"));
+        }
+        let job = texto
+            .lines()
+            .find_map(|l| l.strip_prefix("  name: copiar-rehacer-"))
+            .map(|h| format!("copiar-rehacer-{h}"))
+            .unwrap_or_default();
+        match forja.publicar(
+            cdir,
+            sujeto,
+            &format!("Rehacer la copia de {} ({instante})", vistas.join(", ")),
+        ) {
+            Ok(c) => Respuesta {
+                codigo: 202,
+                cuerpo: Json::obj([
+                    ("package", Json::s(paquete)),
+                    ("vistas", Json::Arr(vistas.iter().map(Json::s).collect())),
+                    ("instante", Json::s(&instante)),
+                    ("job", Json::s(&job)),
+                    ("fichero", Json::s(&fichero)),
+                    (
+                        "encolado",
+                        Json::s(format!("encolado como `{fichero}` · commit {c}")),
+                    ),
+                ]),
+            },
+            Err(e) => Respuesta::error(502, format!("NO encolado: {e}")),
+        }
+    }
+
     fn encolar_copia(&self, vistas: &[String], sujeto: &Identidad) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
