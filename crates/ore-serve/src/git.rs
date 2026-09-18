@@ -162,6 +162,21 @@ impl Forja {
         Ok(prestado)
     }
 
+    /// Cuándo se tocó `fichero` por última vez en este clon: `(segundos, ISO
+    /// 8601)` del commit, o `None` si no tiene historia. Es lo que permite
+    /// decir «encolada desde las 18:46» sin inventar un reloj.
+    pub fn fecha_de(&self, dir: &Path, fichero: &str) -> Option<(i64, String)> {
+        let s = self
+            .git(
+                Some(dir),
+                &["log", "-1", "--format=%ct%n%cI", "--", fichero],
+            )
+            .ok()?;
+        let mut l = s.lines();
+        let seg = l.next()?.trim().parse().ok()?;
+        Some((seg, l.next()?.trim().to_string()))
+    }
+
     /// ¿Cambió algo? Un `commit` vacío es ruido en la historia, y la historia
     /// **es** la auditoría: un commit por petición que no cambió nada convierte
     /// «quién cambió qué» en una lista de quién pasó por aquí.

@@ -414,7 +414,6 @@ fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
             })
             .unwrap_or_default(),
         conducto: s("conducto")?,
-        bundle: s("bundle")?,
     })
 }
 
@@ -642,7 +641,6 @@ mod tests {
             },
             clave: vec!["id".into()],
             conducto: "materialization.payload".into(),
-            bundle: "sha256:bundle".into(),
         };
         let filas: Vec<carga::Fila> = vec![
             [
@@ -674,7 +672,6 @@ mod tests {
             },
             clave: vec![],
             conducto: "materialization.payload".into(),
-            bundle: "sha256:bundle".into(),
         };
         let recibo = sobre::recibo(&cab());
         let primera = sellar(

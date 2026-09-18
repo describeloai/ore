@@ -11,9 +11,26 @@
 //!   esquema         qué columnas produce, y de qué tipo
 //!   testigo         { modo, valor } — hasta cuándo fue cierta
 //!   conducto        cuál autorizó la copia
-//!   bundle          contra qué compilación se construyó
 //! carga             Parquet
 //! ```
+//!
+//! # Lo que NO va en la cabecera: el bundle (desde el 2026-09-18)
+//!
+//! Iba: *«contra qué compilación se construyó»*. Y era el digest del **árbol
+//! entero** (‖ versión OOS ‖ lock), así que cualquier commit en cualquier
+//! paquete —un alta, un catálogo, una retirada, hasta `ontology.config.yaml`—
+//! cambiaba la cabecera de TODAS las copias y dejaba sin recibo a todas las
+//! vistas: medido en `victor`, 16 de 19 commits, y `postgre_standard` (10
+//! tablas) releída del origen en las tres pasadas del día sin que nada suyo
+//! cambiara (`medida-lo-que-parece-roto.py` §4). Y la versión de OOS dentro
+//! significaba que cada release releía todos los orígenes de todos los
+//! inquilinos.
+//!
+//! La cabecera dice **qué contiene** la copia —plan, esquema, clave, testigo,
+//! conducto— y eso ya nombra la compilación que importa: el plan ES la vista
+//! compilada hasta su tabla. De qué árbol salió es procedencia, y la
+//! procedencia va en el informe (`copias/<vista>.json`, campo `bundle`), que
+//! vive en el árbol y se lee sin abrir el almacén.
 //!
 //! # Por qué el sobre es nuestro y la carga no
 //!
@@ -48,7 +65,8 @@ pub struct Testigo {
 }
 
 /// Lo que va en la cabecera. Cinco campos, y los cinco contestan una pregunta
-/// distinta sobre **la copia**, no sobre quien la consulta.
+/// distinta sobre **la copia**, no sobre quien la consulta ni sobre el árbol
+/// del que salió.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cabecera {
     /// El digest del plan que esta copia contesta. Es lo que el View Matcher
@@ -68,8 +86,6 @@ pub struct Cabecera {
     /// El conducto que la autorizó. Sin él no se sabría bajo qué permiso
     /// existen estas filas fuera de su origen.
     pub conducto: String,
-    /// Contra qué compilación se construyó.
-    pub bundle: String,
 }
 
 impl Cabecera {
@@ -83,7 +99,6 @@ impl Cabecera {
             None => Json::obj([("modo", Json::s(&self.testigo.modo))]),
         };
         Json::obj([
-            ("bundle", Json::s(&self.bundle)),
             ("clave", Json::Arr(self.clave.iter().map(Json::s).collect())),
             ("conducto", Json::s(&self.conducto)),
             (
@@ -147,7 +162,7 @@ pub fn clave(artefacto: &[u8]) -> String {
 /// ```
 ///
 /// La cabecera se conoce **antes** de leer una fila —plan, esquema, testigo,
-/// conducto y bundle salen todos de la compilación— así que el `HEAD` de verdad
+/// clave y conducto salen todos de la compilación— así que el `HEAD` de verdad
 /// se hace aquí. Y **sigue sin haber puntero mutable**: el nombre del recibo
 /// también es su contenido, y se escribe con `If-None-Match: *`.
 ///
@@ -228,7 +243,6 @@ mod tests {
             },
             clave: vec!["id".into()],
             conducto: "materialization.payload".into(),
-            bundle: "sha256:bbbb".into(),
         }
     }
 
@@ -267,8 +281,8 @@ mod tests {
         variantes.push(("conducto", c));
 
         let mut c = cabecera();
-        c.bundle = "sha256:dddd".into();
-        variantes.push(("bundle", c));
+        c.clave = vec!["id".into(), "pais".into()];
+        variantes.push(("clave", c));
 
         for (que, c) in variantes {
             assert_ne!(

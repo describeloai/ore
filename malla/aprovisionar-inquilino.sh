@@ -334,6 +334,44 @@ forja_api() { # <metodo> <camino> [cuerpo] — imprime el codigo, o corta el gui
     *) falla "la forja ($F_NS) contesto '$cod' a $m $c" ;;
   esac
 }
+# ── ⭐⭐ EL AVISO, MIRANDO ANTES DE CREAR ────────────────────────────────
+#
+# Medido el 2026-09-18 (`medida-lo-que-parece-roto.py` §1): esto era un `POST`
+# a secas cuyo 422 se marcaba ✓ por «idempotencia», y ese 422 era la url VACIA
+# (el aprovisionador no bajaba `receptor-url`): ningun inquilino tenia hook.
+# Y cuando la url si llego, cada pasada creo OTRO hook igual: cinco en demo.
+#
+# ⇒ Primero se mira que hay: si uno apunta al receptor, ya esta; si hay mas de
+#   uno, sobran y se retiran (convergencia, no contabilidad); si no hay
+#   ninguno, se crea — y un 422 aqui es un FALLO que se dice, no un ✓.
+aviso_a_flux() {
+  if [ -z "$RECEPTOR" ]; then
+    echo "  ⚠ sin RECEPTOR (dentro: /puesto/receptor-url; fuera: el entorno): la forja de $PROPIETARIO no avisara a Flux"
+    return 0
+  fi
+  local host ids n primero id cod
+  host=$(printf '%s' "$RECEPTOR" | sed -E 's#^https?://([^/]*)/.*$#\1#')
+  # Los hooks de la organizacion cuya url lleva el host del receptor, por id.
+  ids=$(forja_json "/orgs/$PROPIETARIO/hooks?limit=50" | tr -d '\n' \
+    | sed 's/},{/}\n{/g' | grep -F "$host" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  n=$(printf '%s\n' "$ids" | grep -c . || true)
+  if [ "$n" -ge 1 ]; then
+    primero=$(printf '%s\n' "$ids" | head -1)
+    ya "el hook $primero de $PROPIETARIO apunta al receptor"
+    for id in $(printf '%s\n' "$ids" | tail -n +2); do
+      hecho "hook $id de $PROPIETARIO, repetido, fuera · $(forja_api DELETE "/orgs/$PROPIETARIO/hooks/$id")"
+    done
+    return 0
+  fi
+  cod=$(forja_api POST "/orgs/$PROPIETARIO/hooks" \
+    "{\"type\":\"gitea\",\"active\":true,\"events\":[\"push\"],\
+\"config\":{\"url\":\"$RECEPTOR\",\"content_type\":\"json\"}}")
+  case "$cod" in
+    2??) hecho "avisara a Flux en cada empujon · $cod" ;;
+    *)   echo "  ✗ el hook de $PROPIETARIO no se creo ($cod): revisa ALLOWED_HOST_LIST de la forja y la url del receptor" ;;
+  esac
+}
+
 forja_json() { # <camino> — el cuerpo de un GET, o vacio
   if [ -n "${DENTRO:-}" ]; then
     curl -sS -H "Authorization: token $F_ADMIN" "$F_URL/api/v1$1" 2>/dev/null
@@ -638,9 +676,7 @@ else
   #
   # ⚠️ El camino ES el secreto —`generic` no verifica firma— asi que la URL
   #   entera viene del almacen, no de aqui.
-  hecho "avisara a Flux en cada empujon · $(forja_api POST "/orgs/$PROPIETARIO/hooks" \
-    "{\"type\":\"gitea\",\"active\":true,\"events\":[\"push\"],\
-\"config\":{\"url\":\"$RECEPTOR\",\"content_type\":\"json\"}}")"
+  aviso_a_flux
   hecho "repositorio $ARBOL · $(forja_api POST "/orgs/$PROPIETARIO/repos" "{\"name\":\"$REPO\",\"private\":true}")"
   # ── ⭐⭐ POR API, Y ESTO ES LO QUE PERMITE QUE SEA UN JOB ────────────────
   #

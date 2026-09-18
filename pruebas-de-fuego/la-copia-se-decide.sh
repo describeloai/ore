@@ -262,6 +262,25 @@ copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\],.*"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\[\],.*"view":"customers"' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es la organizacion (team:demo): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
 
+# ── 2b · Run mientras la copia esta en marcha: el 409 dice que ESTA EN MARCHA ─
+# Medido el 2026-09-18: 435 s de media por alta con la consola diciendo «not
+# made yet» y un boton de copiar mientras el Job estaba en la cola. El 409 gana
+# `copia.estado`: `encolada` (el 48- de la cola la nombra y no hay informe mas
+# nuevo), `fallida` (el informe dice error), `pendiente`.
+correr() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' "$BASE/vistas/$1/ejecutar" -d '{}'; }
+[ "$(correr tienda/customers)" = "409" ] || falla "2b · Run sin copia no dio 409: $(cuerpo)"
+cuerpo | grep -q '"copia":{[^}]*"estado":"encolada"' || falla "2b · el 409 no dice que la copia esta encolada: $(cuerpo)"
+cuerpo | grep -q '"fichero":"48-la-copia.yaml"' || falla "2b · el 409 no nombra el Job de la cola: $(cuerpo)"
+cuerpo | grep -q '"vista":"tienda.customers"' || falla "2b · el 409 no dice de que vista es la copia: $(cuerpo)"
+# el informe de una pasada que fallo, y ningun Job mas nuevo (el arbol es un directorio: sin fechas, el informe manda)
+mkdir -p "$REPO/copias"
+printf '{"estado":"error","motivo":"`ore-read-postgres` fallo (1)","vista":"tienda.customers"}\n' > "$REPO/copias/tienda_customers.json"
+[ "$(correr tienda/customers)" = "409" ] || falla "2b · Run con informe de error no dio 409: $(cuerpo)"
+cuerpo | grep -q '"estado":"fallida"' || falla "2b · el 409 no dice fallida: $(cuerpo)"
+cuerpo | grep -q '"motivo":"`ore-read-postgres` fallo (1)"' || falla "2b · el 409 no trae el motivo del informe: $(cuerpo)"
+rm -f "$REPO/copias/tienda_customers.json"
+dice "2b · Run con la copia en marcha: 409 con copia.estado=encolada y el Job de la cola · con informe de error y nada mas nuevo: fallida con su motivo"
+
 # ── 3 ───────────────────────────────────────────────────────────────────────
 COD=$(decidir tienda '{"answers":{"dueno/tienda":"team:data"}}')
 [ "$COD" = "200" ] || falla "3 · contestar devolvio $COD: $(cuerpo)"

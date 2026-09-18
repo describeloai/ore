@@ -332,6 +332,43 @@ salida=$("$ORE" materialize "$A" --rehacer --vista ventas.noExiste 2>&1) && fall
 pregunta --vista ventas.pedidos > "$TMP/out.txt" || { cat "$TMP/err.txt"; falla "8 · ask tras rehacer"; }
 cumple "cab['copia']['clave']=='$CLAVE' and cab['filas']==5" "8 · ask contesta con la copia rehecha (5 filas)" && ok "8 · rehacer: el recibo decía «ya está» de una copia que mentía; --rehacer lee entero, mueve el recibo, borra la superada y ask ve las 5"
 
+# ── 8b · un commit en OTRO paquete no deja sin recibo a esta copia ────────────
+# Medido en victor el 18 de septiembre: la cabecera llevaba el digest del árbol
+# ENTERO y 16 de 19 commits (altas, catálogos, retiradas de otras bases) dejaban
+# sin recibo a todas las vistas, que releían el origen sin que nada suyo
+# cambiara. Aquí: otro paquete nace, y `ventas.pedidos` sigue diciendo «ya está»;
+# y el informe dice de qué árbol salió (`bundle`), que es procedencia, no llave.
+mkdir -p "$A/packages/otro/tables"
+cat > "$A/packages/otro/package.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: otro, version: 0.1.0, status: active, domain: sales }
+spec: { owner: team:data }
+Y
+cat > "$A/packages/otro/tables/clientes_t.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: clientes_t, namespace: otro }
+spec:
+  datasource: erp
+  object: "clientes.jsonl"
+  columns:
+    cliente_id: {}
+    pais: {}
+  reads: { fullScan: cheap }
+  changes: { mode: append, witness: snapshot }
+Y
+"$ORE" validate "$A" >/dev/null 2>&1 || falla "8b · el árbol con el paquete nuevo no compila"
+salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8b · materialize tras el paquete nuevo"; }
+case "$salida" in *"ya está · $CLAVE"*) ;; *) falla "8b · otro paquete en el árbol dejó sin recibo a ventas.pedidos: $salida";; esac
+"$PY" - "$A/copias/ventas_pedidos.json" <<'EOF' || falla "8b · el informe no dice de qué árbol salió"
+import json, sys
+i = json.load(open(sys.argv[1]))
+assert i["estado"] == "al-dia" and i["bundle"].startswith("sha256:"), i
+EOF
+rm -rf "$A/packages/otro"
+ok "8b · un paquete nuevo en el árbol no toca el recibo de ventas.pedidos («ya está»), y el informe lleva el bundle como procedencia"
+
 # ── 7 · servido: ore-serve delante, contra el mismo S3 de mentira ─────────────
 ( cd "$A" && git init -q && git config core.autocrlf false && git -c user.name=banco -c user.email=banco@invalido add -A   && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el arbol con su copia" ) || falla "7 · no se pudo dar historia al arbol"
 PUERTO=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')

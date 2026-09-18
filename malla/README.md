@@ -22,6 +22,19 @@ clúster ore-mesh    ZONAL · canal REGULAR · Dataplane V2 · Workload Identity
   pool default      e2-standard-2   1 fijo    ore.dev/pool=system   IP pública
   pool jobs-p       e2-standard-4   0 → 3     ore.dev/pool=jobs     PRIVADO
                                               taint ore.dev/jobs=true:NoSchedule
+  autoescalado      perfil BALANCED (desde el 2026-09-18; era OPTIMIZE_UTILIZATION)
+```
+
+**El perfil es `balanced`, y es una medida, no un gusto.** Con `optimize-utilization` el nodo
+de `jobs-p` se iba en cuanto sobraba: el catálogo de una fuente pedía nodo a las 18:42 y la
+copia de la base creada sobre ella lo pedía OTRA VEZ a las 18:52 — cada acto pagaba los ~100 s
+de frío (nodo 58 · imagen 20 · init 22; `medida-lo-que-parece-roto.py` §2). Con `balanced` el
+nodo se queda ~10 min sin carga, que es la ventana en la que una persona da de alta la fuente
+y después la base: el frío se paga una vez. Lo que cuesta son esos diez minutos de nodo por
+ráfaga; mín 1 (nodo siempre encendido, ~100 €/mes) sigue siendo una decisión con número.
+
+```
+gcloud container clusters update ore-mesh --zone europe-west1-b --autoscaling-profile balanced
 ```
 
 **El pool de jobs es privado, y eso quitó un techo que nadie había contado.** Cada nodo con

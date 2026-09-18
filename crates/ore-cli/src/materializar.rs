@@ -285,7 +285,7 @@ fn una(
     let testigo = testigo(pkg, raiz_pkg, v, &r)?;
 
     // ── ④ El recibo ─────────────────────────────────────────────────────────
-    let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave, bundle);
+    let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave);
     let buscado = almacen("buscar", &cabecera, None)?;
 
     // La recogida va **aquí**, en cuanto se sabe cuál es la cabecera vigente, y
@@ -322,6 +322,7 @@ fn una(
                 ("estado", ore_core::json::Json::s("al-dia")),
                 ("clave", ore_core::json::Json::s(clave)),
                 ("plan", ore_core::json::Json::s(plan.digest())),
+                ("bundle", ore_core::json::Json::s(bundle)),
                 (
                     "testigo",
                     ore_core::json::Json::obj([
@@ -533,6 +534,9 @@ fn una(
             ("clave", ore_core::json::Json::s(campo("clave"))),
             ("digest", ore_core::json::Json::s(campo("digest"))),
             ("plan", ore_core::json::Json::s(plan.digest())),
+            // Procedencia: de qué árbol salió. NO está en la cabecera del
+            // recibo, y por eso está aquí.
+            ("bundle", ore_core::json::Json::s(bundle)),
             ("filas", ore_core::json::Json::Int(entero("filas"))),
             ("leidas", ore_core::json::Json::Int(leidas as i64)),
             ("bytes", ore_core::json::Json::Int(entero("bytes"))),
@@ -828,12 +832,18 @@ fn testigo(
 
 /// La cabecera del sobre, en JSON canónico y en **una** línea, que es lo que el
 /// protocolo del almacén espera.
+///
+/// **Sin el bundle** (2026-09-18). Iba, y era el digest del árbol entero: un
+/// commit en cualquier paquete dejaba sin recibo a todas las vistas y se
+/// releían los orígenes sin que nada suyo cambiara (16 de 19 commits en
+/// `victor`; `medida-lo-que-parece-roto.py` §4). Plan, esquema, clave, testigo
+/// y conducto ya nombran lo que la copia contiene; de qué árbol salió es
+/// procedencia y va al informe (`bundle`), no a la llave.
 fn cabecera(
     plan: &str,
     esq: &BTreeMap<String, ore_core::types::Type>,
     testigo: &(String, Option<String>),
     clave: &[String],
-    bundle: &str,
 ) -> String {
     use ore_core::json::Json;
     let t = match &testigo.1 {
@@ -841,7 +851,6 @@ fn cabecera(
         None => Json::obj([("modo", Json::s(&testigo.0))]),
     };
     Json::obj([
-        ("bundle", Json::s(bundle)),
         ("clave", Json::Arr(clave.iter().map(Json::s).collect())),
         ("conducto", Json::s(CONDUCTO)),
         (

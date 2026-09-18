@@ -182,8 +182,15 @@ spec:
                   #   agente de cada celda y la da por aprovisionada. Dos verbos.
                   gcloud secrets versions access latest \
                     --secret=aprovisionador-secreto --out-file=/puesto/aprovisionador-secreto
+                  # ⭐ Y la URL del receptor de Flux (17-el-aviso): su camino ES el
+                  #   secreto, y el guion la lee de aqui para el webhook de cada
+                  #   organizacion. Faltaba (medido el 2026-09-18): sin ella el
+                  #   guion pedia el hook con url vacia, la forja decia 422 y el
+                  #   guion lo marcaba ✓ — ningun inquilino avisaba a Flux.
+                  gcloud secrets versions access latest \
+                    --secret=receptor-url --out-file=/puesto/receptor-url
                   chmod 0400 /puesto/*
-                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) + $(wc -c < /puesto/aprovisionador-secreto) bytes"
+                  echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) + $(wc -c < /puesto/aprovisionador-secreto) + $(wc -c < /puesto/receptor-url) bytes"
               resources:
                 requests: {cpu: "50m", memory: 128Mi}
                 limits:   {cpu: "500m", memory: 256Mi}

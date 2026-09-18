@@ -103,6 +103,15 @@ impl Servidor {
                 65 | 66 => 422,
                 _ => 502,
             };
+            if codigo == 409 {
+                // El 409 dice que la copia no está; esto dice SI ESTÁ EN MARCHA.
+                let copia = self.estado_de_la_copia(raiz, &motivo);
+                let mut cuerpo = Json::obj([("error", Json::s(&motivo))]);
+                if let Json::Obj(m) = &mut cuerpo {
+                    m.insert("copia".into(), copia);
+                }
+                return Respuesta { codigo, cuerpo };
+            }
             return Respuesta::error(codigo, motivo);
         }
         // La cabecera en la primera línea, las filas debajo: se devuelven juntas.
@@ -137,6 +146,128 @@ impl Servidor {
             m.insert("datos".into(), Json::Arr(datos));
         }
         Respuesta::ok(cabecera)
+    }
+
+    /// **¿La copia está en marcha?** Lo que el 409 no decía, y que hacía que
+    /// una base recién creada pareciera rota: medido el 2026-09-18, 435 s de
+    /// media por alta con la consola diciendo «not made yet» y un botón de
+    /// copiar mientras el Job estaba en la cola o corriendo — y el botón,
+    /// pulsado en esa ventana, encoló un `rehacer` que releyó el origen.
+    ///
+    /// Tres estados, los mismos que `estado` da para una fuente:
+    ///
+    /// ```text
+    /// encolada   la cola tiene un `48-la-copia*.yaml` que la nombra y es MÁS
+    ///            NUEVO que su último informe (o no hay informe): la pasada no
+    ///            ha terminado. `desde` es el commit de la cola
+    /// fallida    su informe dice `error` y ningún Job más nuevo la nombra:
+    ///            `motivo` es el del informe. Aquí sí sirve copiar
+    /// pendiente  nadie la ha encolado
+    /// ```
+    ///
+    /// Mirar la cola cuesta un clon, así que sólo se hace en el 409.
+    fn estado_de_la_copia(&self, raiz: &Path, motivo: &str) -> Json {
+        // La vista cuya copia contestaría: la primera «`x` la contesta».
+        let partes: Vec<&str> = motivo.split('`').collect();
+        let vista = partes
+            .windows(2)
+            .find(|w| w[1].starts_with(" la contesta"))
+            .map(|w| w[0].to_string());
+        let Some(vista) = vista else {
+            return Json::obj([("estado", Json::s("desconocido"))]);
+        };
+        let fichero_informe = format!("copias/{}.json", vista.replace('.', "_"));
+        let informe = std::fs::read_to_string(raiz.join(&fichero_informe))
+            .ok()
+            .and_then(|t| ore_core::parse::parse(&t).ok());
+        let estado_informe = informe
+            .as_ref()
+            .and_then(|i| {
+                i.get("estado")
+                    .and_then(|(_, x)| x.as_str().map(String::from))
+            })
+            .unwrap_or_default();
+        let motivo_informe = informe
+            .as_ref()
+            .and_then(|i| {
+                i.get("motivo")
+                    .and_then(|(_, x)| x.as_str().map(String::from))
+            })
+            .unwrap_or_default();
+        let fecha_informe = match &self.arbol {
+            crate::rutas::Arbol::Forja(f) => f.fecha_de(raiz, &fichero_informe),
+            crate::rutas::Arbol::Directorio(_) => None,
+        };
+
+        // La cola: el `48-…` más nuevo que la nombre.
+        let mut en_cola: Option<(String, (i64, String))> = None;
+        if let Some(cola) = &self.cola
+            && let Ok(prestado) = cola.clonar()
+            && let Ok(entradas) = std::fs::read_dir(prestado.ruta())
+        {
+            for e in entradas.flatten() {
+                let nombre = e.file_name().to_string_lossy().into_owned();
+                if !nombre.starts_with("48-la-copia") || !nombre.ends_with(".yaml") {
+                    continue;
+                }
+                let Ok(texto) = std::fs::read_to_string(e.path()) else {
+                    continue;
+                };
+                let la_nombra = texto.lines().any(|l| {
+                    l.contains("name: VISTAS")
+                        && l.split('"')
+                            .nth(1)
+                            .is_some_and(|v| v.split(',').any(|x| x.trim() == vista))
+                });
+                if !la_nombra {
+                    continue;
+                }
+                let fecha = cola
+                    .fecha_de(prestado.ruta(), &nombre)
+                    .unwrap_or((0, String::new()));
+                if en_cola.as_ref().is_none_or(|(_, (s, _))| fecha.0 > *s) {
+                    en_cola = Some((nombre, fecha));
+                }
+            }
+        }
+
+        // Sin fechas (un árbol que es un directorio, sin historia) el informe
+        // es la última palabra que se ve: `error` es `fallida`.
+        let mas_nueva_que_el_informe =
+            |(s, _): &(i64, String)| fecha_informe.as_ref().is_some_and(|(si, _)| *s > *si);
+        match en_cola {
+            Some((fichero, fecha))
+                if informe.is_none()
+                    || estado_informe != "error"
+                    || mas_nueva_que_el_informe(&fecha) =>
+            {
+                Json::obj([
+                    ("vista", Json::s(&vista)),
+                    ("estado", Json::s("encolada")),
+                    ("fichero", Json::s(&fichero)),
+                    ("desde", Json::s(&fecha.1)),
+                    (
+                        "dice",
+                        Json::s("se está copiando: el Job está en la cola o corriendo"),
+                    ),
+                ])
+            }
+            _ if estado_informe == "error" => Json::obj([
+                ("vista", Json::s(&vista)),
+                ("estado", Json::s("fallida")),
+                ("motivo", Json::s(&motivo_informe)),
+                (
+                    "desde",
+                    Json::s(fecha_informe.map(|(_, f)| f).unwrap_or_default()),
+                ),
+                ("dice", Json::s("la última pasada no pudo copiarla")),
+            ]),
+            _ => Json::obj([
+                ("vista", Json::s(&vista)),
+                ("estado", Json::s("pendiente")),
+                ("dice", Json::s("nadie ha encolado su copia")),
+            ]),
+        }
     }
 }
 

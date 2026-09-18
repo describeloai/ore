@@ -964,11 +964,30 @@ spec:
   # ⇒ P4 otra vez: omitir es cerrar. Y lo que se cierra no es teórico — con el
   #   defecto, un pod de un INQUILINO podría disparar reconciliaciones de la
   #   plataforma. No decir cuáles, pero sí forzarlas.
+  #
+  # ── ⭐ Y LA FORJA DE CADA INQUILINO, desde el 2026-09-18 ────────────────
+  #
+  # Desde la 0024 E3-(c) (14 de septiembre) el árbol y la cola de trabajo viven
+  # en la forja DEL INQUILINO (`t-<n>/forja-0`), y ésta no estaba en la lista:
+  # medido (`medida-lo-que-parece-roto.py` §1), `t-demo` entregó 142 webhooks
+  # con «context deadline exceeded» y 0 aciertos, y cada empujón a la cola
+  # tardaba 130 s de media en ser un Job — el sondeo de 5 min, no el aviso.
+  #
+  # ⇒ Entran los namespaces de carga (`ore.dev/rol: cargas`) pero SÓLO su pod
+  #   de forja (`ore.dev/rol: forja`): el argumento de arriba se conserva
+  #   entero — un driver, un Job o el `ore-serve` de un inquilino siguen sin
+  #   poder tocar el receptor. Lo que se abre es exactamente lo que empuja.
   ingress:
   - from:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: forja
+    - namespaceSelector:
+        matchLabels:
+          ore.dev/rol: cargas
+      podSelector:
+        matchLabels:
+          ore.dev/rol: forja
     ports:
     - port: 9292
       protocol: TCP

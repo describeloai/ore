@@ -26,7 +26,7 @@ fallos=0
 ok()   { echo "  ✓ $1"; }
 mal()  { echo "  ✗ $1"; fallos=$((fallos + 1)); }
 
-CAB='{"plan":"sha256:aaaa","esquema":{"id":"Integer","pais":"String","total":"Decimal"},"conducto":"materialization.payload","bundle":"sha256:bbbb","testigo":{"modo":"log","valor":"__T__"}}'
+CAB='{"plan":"sha256:aaaa","esquema":{"id":"Integer","pais":"String","total":"Decimal"},"conducto":"materialization.payload","testigo":{"modo":"log","valor":"__T__"}}'
 entrada() {
   echo "${CAB/__T__/$1}"
   echo '{"id":"1","pais":"ES","total":"10.50"}'
