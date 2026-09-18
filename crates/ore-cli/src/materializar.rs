@@ -469,8 +469,15 @@ fn una(
     } else {
         superada
     };
+    // Tres desenlaces de un rehacer, y los tres se dicen: la cabecera cambió
+    // (el testigo se movió: recibo nuevo, y la anterior queda para `recoger`),
+    // la misma cabecera con otros bytes (el recibo se movió y la superada se
+    // borró), o los mismos bytes (nada que mover).
     let rehecha = if rehacer {
-        if superada.is_empty() {
+        if campo("recibo_nuevo") == "true" {
+            "\n  rehecha: bajo una cabecera nueva (el testigo se movió); la anterior queda superada"
+                .to_string()
+        } else if superada.is_empty() {
             "\n  rehecha: los mismos bytes, el recibo no se movió".to_string()
         } else {
             format!("\n  rehecha: el recibo apunta a la nueva y se borró {superada}")
