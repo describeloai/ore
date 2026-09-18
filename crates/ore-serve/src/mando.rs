@@ -63,6 +63,10 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         "la tabla a `copies` del alcance y la misma re-inducción; no consulta a nadie",
     ),
     (&["validate"], "lee el árbol y contesta"),
+    (
+        &["ask"],
+        "contesta una vista sobre LA COPIA del inquilino (0030 W1): `ore` compila y decide;          quien lee el bucket es `ore-store-<r2|gcs>`, con la identidad del pod y su          `objectViewer` (aprovisionador ③b). Nunca un origen: sin copia hecha, se niega",
+    ),
     (&["diff"], "compara dos árboles"),
     (&["view"], "compila una vista; el motor es aritmética"),
     (&["package", "new"], "escribe un manifiesto"),

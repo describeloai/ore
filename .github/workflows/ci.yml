@@ -319,8 +319,10 @@ jobs:
       # sirve (la suya, o una vecina con compensacion), `ore-store-r2 leer` la
       # trae, la hoja la tipa y el recomputo la ejecuta. Contra el mismo S3 de
       # mentira.
-      - name: y una vista se contesta sobre la copia, sin abrir el origen
-        run: bash pruebas-de-fuego/la-pregunta-se-contesta.sh
+      - name: y una vista se contesta sobre la copia, sin abrir el origen (y servida)
+        run: |
+          cargo build --quiet -p ore-serve
+          bash pruebas-de-fuego/la-pregunta-se-contesta.sh
 
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre

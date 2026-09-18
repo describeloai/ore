@@ -47,6 +47,7 @@ mod funciones;
 mod git;
 mod mando;
 mod modelos;
+mod preguntar;
 mod rutas;
 
 use ore_entrada::{http, identidad};

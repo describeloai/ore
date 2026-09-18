@@ -160,6 +160,10 @@ RUN apk add --no-cache git ca-certificates
 
 COPY --from=build /src/target/release/ore       /usr/local/bin/ore
 COPY --from=build /src/target/release/ore-serve /usr/local/bin/ore-serve
+# W1 ④ (0030): `POST /vistas/{ns}/{n}/ejecutar` corre `ore ask`, y quien trae
+# la copia del bucket es este programa — con la identidad del pod (`objectViewer`,
+# aprovisionador ③b) y nunca un origen. `ore` sigue sin abrir un socket.
+COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
 
 USER 65532:65532
 WORKDIR /trabajo

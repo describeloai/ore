@@ -17,8 +17,10 @@
 #   4  `--limite N` recorta la respuesta, no lo que se lee
 #   5  `--seco` decide sin traer
 #   6  lo que se niega: sin ninguna copia que conteste; copia declarada y no hecha
+#   7  SERVIDO (W1 ④): `POST /vistas/{ns}/{n}/ejecutar` en ore-serve devuelve la
+#      cabecera con `datos`; `{"limite": N}`; 404 / 409 / 422 como `ore ask`
 #
-# Necesita `ore`, `ore-store-r2` y `ore-read-jsonl` en el PATH o en
+# Necesita `ore`, `ore-serve`, `ore-store-r2` y `ore-read-jsonl` en el PATH o en
 # target/{release,debug}, y python3.
 # ══════════════════════════════════════════════════════════════════════════════
 set -u
@@ -34,6 +36,7 @@ buscar() {
   command -v "$1"
 }
 ORE="$(buscar ore)" || { echo "no hay binario de \`ore\`"; exit 2; }
+SERVE="$(buscar ore-serve)" || { echo "no hay binario de \`ore-serve\` — cargo build -p ore-serve"; exit 2; }
 for b in ore-store-r2 ore-read-jsonl; do
   B="$(buscar $b)" || { echo "no hay binario de \`$b\` — cargo build -p ore-store -p ore-read-jsonl"; exit 2; }
   export PATH="$(dirname "$B"):$PATH"
@@ -46,7 +49,7 @@ dice() { printf '  \xc2\xb7 %s\n' "$1"; }
 
 TMP="${TMPDIR:-/tmp}/ore-pregunta-$$"
 rm -rf "$TMP"; mkdir -p "$TMP/datos" "$TMP/arbol"
-limpiar() { kill "$S3_PID" 2>/dev/null; rm -rf "$TMP"; }
+limpiar() { kill "$S3_PID" "${SRV:-}" 2>/dev/null; rm -rf "$TMP"; }
 trap limpiar EXIT
 
 # ── el S3 de mentira ─────────────────────────────────────────────────────────
@@ -286,4 +289,25 @@ case "$s" in *'`ventas.declarada` la contesta, pero'*"no está hecha"*) ;; *) fa
 s=$("$ORE" ask "$A" --vista ventas.noExiste 2>&1) && falla "6 · una vista que no existe no falló"
 ok "6 · se niega: sin copia que conteste · declarada y no hecha (propia, y vecina) · vista que no existe"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x936\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ── 7 · servido: ore-serve delante, contra el mismo S3 de mentira ─────────────
+( cd "$A" && git init -q && git config core.autocrlf false && git -c user.name=banco -c user.email=banco@invalido add -A   && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el arbol con su copia" ) || falla "7 · no se pudo dar historia al arbol"
+PUERTO=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+BASE="http://127.0.0.1:$PUERTO"
+FORJA_TOKEN=no-hace-falta "$SERVE" --repo "$A" --ore "$ORE" --bind "127.0.0.1:$PUERTO"   --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/serve.log" 2>&1 &
+SRV=$!
+for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
+SUJ='x-ore-sujeto: persona:ana'
+sirve() { curl -s -o "$TMP/out.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' "$BASE/vistas/$1/ejecutar" -d "${2:-}"; }
+servido() { "$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert eval(sys.argv[2]), d' "$TMP/out.json" "$1" || falla "$2"; }
+[ "$(sirve ventas/porPais)" = "200" ] || falla "7 · POST /ejecutar porPais · $(cat "$TMP/out.json")"
+servido "d['view']=='ventas.porPais' and d['copia']['de']=='ventas.pedidos' and d['datos']==[{'masa':'14.8','media':'4.933333','n':3,'pais':'ES'}] and d['columnas']['media']=='Decimal' and d['limite']==200" "7 · la respuesta servida trae la cabecera y los datos"
+[ "$(sirve ventas/pedidos '{"limite": 2}')" = "200" ] || falla "7 · con limite · $(cat "$TMP/out.json")"
+servido "len(d['datos'])==2 and d['filas']==2 and d['leidas']==5 and d['limite']==2" "7 · {limite: 2} recorta la respuesta"
+[ "$(sirve ventas/noExiste)" = "404" ] || falla "7 · una vista que no existe no dio 404: $(cat "$TMP/out.json")"
+[ "$(sirve ventas/declarada)" = "409" ] || falla "7 · copia declarada y no hecha no dio 409: $(cat "$TMP/out.json")"
+[ "$(sirve ventas/proveedores)" = "422" ] || falla "7 · sin copia que conteste no dio 422: $(cat "$TMP/out.json")"
+[ "$(sirve ventas/pedidos '{"limite": 0}')" = "422" ] || falla "7 · limite 0 no dio 422"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/vistas/ventas/pedidos/ejecutar")" = "401" ] || falla "7 · sin identidad no dio 401"
+ok "7 · servido: POST /vistas/{ns}/{n}/ejecutar → 200 con datos · limite · 404 · 409 · 422 · 401"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x937\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

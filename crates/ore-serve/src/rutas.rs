@@ -297,6 +297,13 @@ impl Servidor {
                 let (ns, n) = (ns.to_string(), n.to_string());
                 self.leyendo(move |r| self.invocar(r, &ns, &n, sujeto))
             }
+            // ── 0030 W1 ④ · la pregunta, servida (`preguntar.rs`) ──────────
+            // Síncrono y de lectura: clona, `ore ask`, y devuelve las filas.
+            ("POST", ["vistas", ns, n, "ejecutar"]) => {
+                let (ns, n) = (ns.to_string(), n.to_string());
+                let cuerpo = p.cuerpo.clone();
+                self.leyendo(move |r| self.ejecutar(r, &ns, &n, &cuerpo))
+            }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
             // El kind se resuelve contra `documentos::KINDS`: un kind que no
             // esté en la tabla es 404 con la lista de los que sí. La medida
@@ -1542,6 +1549,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/funciones", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
+        ("POST", "/vistas/{ns}/{nombre}/ejecutar", con_identidad),
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/modelar",

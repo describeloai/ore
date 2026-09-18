@@ -293,6 +293,19 @@ spec:
             - /testigo/forja
           env:
             - { name: HOME, value: /tmp }
+            # ── W1 ④ (0030) · LA COPIA, LEIDA DESDE AQUI ──────────────────
+            #
+            # `POST /vistas/{ns}/{n}/ejecutar` corre `ore ask`, que trae la
+            # copia con `ore-store-gcs` (en esta misma imagen) y la identidad
+            # de este pod: `ore-serve-<n>` tiene `objectViewer` sobre el bucket
+            # de la celda —«lee la copia, y no escribe», aprovisionador ③b— y
+            # el metadata server le da el token. Nunca un origen: `ore` no abre
+            # un socket, y sin copia hecha el verbo se niega.
+            #
+            # El bucket lleva `t-demo` dentro: la sustitucion general del
+            # renderizador lo pone por inquilino, como en 48 y 49.
+            - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ── ⭐⭐ EL TESTIGO YA NO VIENE DE AQUI ────────────────────────
             #
             # ✏️ 2026-09-09 · aqui habia un `FORJA_TOKEN` leido de un `Secret` de
