@@ -221,7 +221,7 @@ fn intentar() -> Result<String, String> {
             native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
         );
         let mut cliente = postgres::Client::connect(&url, tls)
-            .map_err(|e| format!("no se pudo conectar: {e}"))?;
+            .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
         let filas = cliente
             .query(
                 "SELECT nspname FROM pg_namespace                  WHERE nspname NOT IN ('pg_catalog', 'information_schema')                    AND nspname !~ '^pg_' ORDER BY nspname",
@@ -256,8 +256,10 @@ fn intentar() -> Result<String, String> {
     let mut cliente = postgres::Client::connect(url, tls)
         // El mensaje del servidor va entero: «password authentication failed» y
         // «no pg_hba.conf entry» se arreglan solos en cuanto se leen, y
-        // resumirlos los convierte en una tarde.
-        .map_err(|e| format!("no se pudo conectar: {e}"))?;
+        // resumirlos los convierte en una tarde. Y va por `causa`: `{e}` a
+        // secas decía «db error», que es lo que se leyó en victor el
+        // 2026-09-18 en trece copias seguidas sin saber por qué.
+        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
 
     let filas = cliente
         .query(CATALOGO, &[])
@@ -619,8 +621,8 @@ fn testigo(entrada: &str) -> Result<String, String> {
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
     );
-    let mut cliente =
-        postgres::Client::connect(&url, tls).map_err(|e| format!("no se pudo conectar: {e}"))?;
+    let mut cliente = postgres::Client::connect(&url, tls)
+        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
 
     let wal_level: String = cliente
         .query_one("SELECT current_setting('wal_level')", &[])
@@ -694,8 +696,8 @@ fn filas(peticion: &str) -> Result<String, String> {
     let tls = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().map_err(|e| format!("no se pudo preparar TLS: {e}"))?,
     );
-    let mut cliente =
-        postgres::Client::connect(&p.url, tls).map_err(|e| format!("no se pudo conectar: {e}"))?;
+    let mut cliente = postgres::Client::connect(&p.url, tls)
+        .map_err(|e| format!("no se pudo conectar: {}", texto::causa(&e)))?;
 
     cliente
         .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
