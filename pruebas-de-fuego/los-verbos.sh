@@ -419,7 +419,10 @@ s = cat["porRol"]["SECURITYADMIN"]
 #   esa asimetria.
 assert sorted(s["anade"]) == ["actividad:leer-toda", "secreto:emitir", "secreto:listar", "secreto:retirar"], "SECURITYADMIN trae %r" % s["anade"]
 assert not [p for p in s["anade"] if p.startswith("secreto") and "leer" in p], "⛔ SECURITYADMIN NO puede tener una potestad de LEER secretos: leer es una concesion"
-assert cat["potestades"]["secreto:emitir"]["ejercida"] is False, "no hay verbo de emitir todavia, y el catalogo tiene que decirlo"
+# ⭐ Desde la 037 el catalogo dice la verdad: emitir se ejerce desde el alta
+#   de fuentes (0022) y listar desde el cofre; retirar nace ejercida.
+assert cat["potestades"]["secreto:emitir"]["ejercida"] is True, "emitir se ejerce desde el alta de fuentes, y el catalogo tiene que decirlo"
+assert cat["potestades"]["secreto:retirar"]["ejercida"] is True, "retirar tiene verbo (DELETE …/secretos/{n}) y el catalogo tiene que decirlo"
 assert cat["potestades"]["actividad:leer-toda"]["ejercida"] is False, "esa potestad no tiene ruta todavia, y el catalogo tiene que decirlo"
 assert "concesion" in s["nota"].lower(), "su nota tiene que decir por que emitir no da acceso: %r" % s["nota"]
 
