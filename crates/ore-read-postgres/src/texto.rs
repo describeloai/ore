@@ -29,7 +29,41 @@
 //! Un `enum` es su etiqueta, y se lee como texto: el binario de un tipo
 //! enumerado es la etiqueta en UTF-8.
 
-use postgres::types::{FromSql, Kind, Type};
+use postgres::types::{Format, FromSql, IsNull, Kind, ToSql, Type, to_sql_checked};
+
+/// **Un parámetro, como texto, para que lo coaccione el servidor.**
+///
+/// El dialecto de Postgres es posicional y su promesa era *«el servidor
+/// coacciona el texto»* — cierto para un literal, y falso para un parámetro
+/// mandado por el crate: `String` como `ToSql` solo acepta columnas de texto,
+/// así que un `where` o una clave sobre un `int4` fallaba en el cliente antes
+/// de llegar al servidor («cannot convert between String and int4»). Esto es
+/// la otra mitad de [`Texto`]: el valor se manda **en formato texto** y con
+/// cualquier tipo, y es Postgres quien lo lee como `int4`, `date` o lo que la
+/// columna sea, igual que haría con `'1'` escrito en la consulta.
+#[derive(Debug)]
+pub struct Parametro(pub String);
+
+impl ToSql for Parametro {
+    fn to_sql(
+        &self,
+        _: &Type,
+        out: &mut postgres::types::private::BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        out.extend_from_slice(self.0.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+
+    fn encode_format(&self, _: &Type) -> Format {
+        Format::Text
+    }
+
+    to_sql_checked!();
+}
 
 /// Un valor ya en texto, leído de cualquier tipo que se sepa decodificar.
 #[derive(Debug, PartialEq, Eq)]

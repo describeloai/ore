@@ -82,11 +82,11 @@ INSERT INTO tipos VALUES
    '12345678-9abc-def0-1234-56789abcdef0', '{"a": 1}', 'hola', NULL, '1 day');
 SQL
 pide() {
-  printf '%s' "{\"url\":\"$PG_URL\",\"objeto\":\"public.tipos\",\"proyeccion\":{$1},\"claveColumnas\":[\"id\"],\"claves\":[[\"1\"]],\"filtros\":[]}"     | ore-read-postgres leer erp 2>&1
+  printf '%s' "{\"url\":\"$PG_URL\",\"objeto\":\"public.tipos\",\"proyeccion\":{$1},\"claveColumnas\":[\"id\"],\"claves\":[[\"1\"]],\"filtros\":[]}"     | ore-read-postgres leer erp 2>&1 || true
 }
 fila=$(pide '"id":"id","grande":"grande","real8":"real8","exacto":"exacto","si":"si","dia":"dia","instante":"instante","uuid":"uuid","doc":"doc","texto":"texto","vacio":"vacio"')
 igual "$fila" '{"dia":"2020-02-29","doc":"{\"a\": 1}","exacto":"10.50","grande":"9007199254740993","id":"1","instante":"2020-02-29 10:00:00.5+00","real8":"12.5","si":"true","texto":"hola","uuid":"12345678-9abc-def0-1234-56789abcdef0"}'   "cada tipo llega como texto, exacto, y el nulo es la propiedad ausente"
-salida=$(pide '"id":"id","lapso":"lapso"' || true)
+salida=$(pide '"id":"id","lapso":"lapso"')
 case "$salida" in
   *'`lapso`'*'`interval`'*) ;;
   *) falla "un interval tenia que negarse nombrando la columna y el tipo; salio: $salida";;

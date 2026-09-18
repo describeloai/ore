@@ -701,8 +701,15 @@ fn filas(peticion: &str) -> Result<String, String> {
         .simple_query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         .map_err(|e| format!("no se pudo abrir la sesión en solo lectura: {e}"))?;
 
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = c
+    // Cada parámetro va como texto y lo coacciona el servidor (`texto.rs`):
+    // un `String` del crate solo acepta columnas de texto, y una clave sobre
+    // un `int4` fallaba en el cliente.
+    let parametros: Vec<texto::Parametro> = c
         .parametros
+        .iter()
+        .map(|v| texto::Parametro(v.clone()))
+        .collect();
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = parametros
         .iter()
         .map(|v| v as &(dyn postgres::types::ToSql + Sync))
         .collect();
