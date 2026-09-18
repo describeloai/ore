@@ -7,6 +7,8 @@
 #
 #   0  una base a mano (sin alcance) es foranea y no declara copia:
 #      GET /paquetes → type foreign, copias 0/0 · GET /copias → []
+#   0b el paquete de la FUENTE es solo `package.yaml` + `discover.catalog.json` (lo que el Job
+#      de catalogo deja desde el 18 de septiembre): GET /esquema lo lee del catalogo
 #   1  POST /paquetes {type: raro}      422 · nada escrito · y un nombre con guion (no puede ser
 #                                       espacio de nombres, OOS2030): 422 antes de escribir nada
 #   2  POST /paquetes {type: standard}  200 · la regla en discover.scope.json · EL CATALOGO NO
@@ -205,6 +207,16 @@ paquete olist | grep -q '"type": "foreign"' || falla "0 · la base a mano no sal
 paquete olist | grep -q '"copias": {"copiadas": 0, "declaradas": 0}' || falla "0 · la base a mano declara copias: $(paquete olist)"
 copias olist | grep -q '"copias":\[\]' || falla "0 · GET /copias de la base a mano no esta vacio: $(copias olist)"
 dice "0 · una base a mano es foranea: GET /paquetes foreign, 0/0 · GET /copias []"
+# ── 0b · el paquete de la fuente es SOLO el catalogo, y su esquema sale de el ─
+# (0027, 18 de septiembre: el Job de catalogo ya no induce nada gobernado)
+[ ! -d "$REPO/packages/pg/tables" ] || falla "0b · la fuente del arbol de partida tiene tables/"
+esquema0() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
+esquema0 pg | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":false,"datasource":"pg","modeled":false,"name":"olist.customers","object":"olist.customers"' || falla "0b · el esquema de la fuente no sale del catalogo: $(esquema0 pg)"
+esquema0 pg | grep -q '"name":"olist.orders","object":"olist.orders"' || falla "0b · al esquema de la fuente le falta orders: $(esquema0 pg)"
+esquema0 pg | grep -q '"entities":\[\]' || falla "0b · la fuente tiene entidades: $(esquema0 pg)"
+paquete pg | grep -q '"tablas": 2' || falla "0b · GET /paquetes no cuenta las 2 tablas del catalogo: $(paquete pg)"
+paquete pg | grep -q '"modeladas": 0' || falla "0b · GET /paquetes dice que la fuente modela algo: $(paquete pg)"
+dice "0b · el paquete de la fuente es el catalogo y el manifiesto: GET /esquema lo lee del catalogo (2 tablas, physicalType, 0 entidades) · GET /paquetes 2 tablas, 0 modeladas"
 
 # ── 1 ───────────────────────────────────────────────────────────────────────
 COD=$(alta '{"name":"tienda","source":"pg","only":["olist.customers","olist.orders"],"type":"raro"}')

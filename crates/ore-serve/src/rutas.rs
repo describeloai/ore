@@ -989,7 +989,19 @@ const COLA: &str = "discover.pending.json";
 /// `Table`, su objeto fisico, su fuente, sus columnas con el `physicalType` que
 /// el origen dijo, la vista trivial que la expone, y si esta modelada (tiene
 /// `Entity`, y entonces cual). Ordenadas por objeto.
+///
+/// ⭐ Y el paquete de UNA FUENTE no tiene `tables/` (0027, «el catalogo de la
+///   conexion»): el Job deja solo `discover.catalog.json` y el manifiesto, y
+///   lo gobernado nace al crear una database. Su esquema —lo que la ficha de
+///   la conexion y el modal de nueva database ensenan— se lee del catalogo,
+///   con la misma forma: nada modelado, nada copiado, sin vista.
 fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
+    if !dir.join("tables").is_dir() {
+        let del_catalogo = tablas_del_catalogo(dir);
+        if !del_catalogo.is_empty() {
+            return del_catalogo;
+        }
+    }
     let leer = |carpeta: &str| -> Vec<Node> {
         let Ok(entradas) = std::fs::read_dir(dir.join(carpeta)) else {
             return Vec::new();
@@ -1081,6 +1093,55 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             campos.push(("entity", Json::s(e)));
         }
         salida.push((objeto, Json::obj(campos)));
+    }
+    salida.sort_by(|a, b| a.0.cmp(&b.0));
+    salida.into_iter().map(|(_, j)| j).collect()
+}
+
+/// El esquema de una fuente, desde `discover.catalog.json`: `name` es el objeto
+/// fisico (`public.pedidos`), y `physicalType` es el `sourceType` que el
+/// origen dijo —si no lo dijo, el tipo de OOS que el lector dedujo va en `type`
+/// y `physicalType` se omite, como en una `Table`—.
+fn tablas_del_catalogo(dir: &Path) -> Vec<Json> {
+    let Ok(texto) = std::fs::read_to_string(dir.join("discover.catalog.json")) else {
+        return Vec::new();
+    };
+    let Ok(cat) = parse::parse(&texto) else {
+        return Vec::new();
+    };
+    let fuente = cat
+        .get("source")
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let mut salida: Vec<(String, Json)> = Vec::new();
+    for t in cat.get("tables").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let Some(objeto) = t.get("name").and_then(|(_, v)| v.as_str()) else {
+            continue;
+        };
+        let mut columnas = Vec::new();
+        for c in t.get("columns").map(|(_, v)| v.items()).unwrap_or(&[]) {
+            let Some(n) = c.get("name").and_then(|(_, v)| v.as_str()) else {
+                continue;
+            };
+            let mut campos = vec![("name", Json::s(n))];
+            if let Some(pt) = c.get("sourceType").and_then(|(_, v)| v.as_str()) {
+                campos.push(("physicalType", Json::s(pt)));
+            }
+            if let Some(ty) = c.get("type").and_then(|(_, v)| v.as_str()) {
+                campos.push(("type", Json::s(ty)));
+            }
+            columnas.push(Json::obj(campos));
+        }
+        let campos = vec![
+            ("name", Json::s(objeto)),
+            ("object", Json::s(objeto)),
+            ("datasource", Json::s(&fuente)),
+            ("columns", Json::Arr(columnas)),
+            ("modeled", Json::Bool(false)),
+            ("copied", Json::Bool(false)),
+        ];
+        salida.push((objeto.to_string(), Json::obj(campos)));
     }
     salida.sort_by(|a, b| a.0.cmp(&b.0));
     salida.into_iter().map(|(_, j)| j).collect()

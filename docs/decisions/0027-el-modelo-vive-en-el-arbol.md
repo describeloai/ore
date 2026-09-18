@@ -722,6 +722,27 @@ sabe). Transferir la propiedad a un equipo, cuando IAM los tenga, es contestar `
 del paquete. Si el nombre de la organización no puede ser un handle, se vuelve a lo de antes
 (`cambiame` y la decisión en la cola), y la respuesta del alta lo dice en `owner`.
 
+**El catálogo de la conexión (18 de septiembre, medido).** *«¿Al crear el source se crean tablas,
+vistas o entidades, o sólo la conexión?»*. Las dos cosas, y la segunda era la inducción del 30 de
+agosto: el Job de catálogo (`44-el-catalogo.yaml`) hacía `ore discover` entero sobre el catálogo —
+por fuente de 48 tablas, **48 Table + 48 View + 48 Entity, 35 decisiones de modelado que nadie
+pidió (`clave` 8, `concepto` 15, `relacion` 11, `dueno` 1), `owner: cambiame`, y un paquete que no
+compila** (OOS2009, OOS2010 ×8)—. C1 decidió que el catálogo no modela y se aplicó a las databases,
+no a la fuente. `medida-el-paquete-de-la-fuente.py` sobre los árboles reales: en demo los paquetes
+de fuente eran el **93 % de los ficheros y el 84 % de los bytes** del árbol, y `ore validate` —que
+corre en cada Save, cada Run y cada alta— **pasa de 3,06 s a 0,07 s sin ellos** (56 diagnósticos →
+9, todos de `olist`). Y nadie los usaba: la database se induce **del catálogo** (`POST /paquetes`
+→ `discover --from`), y de `tables/` sólo leía `GET /paquetes/{n}/esquema` (la ficha de la
+conexión, el modal de nueva database), que trae lo mismo que el catálogo (objeto, columnas,
+`sourceType`, claves). Decisión: **tres actos, tres cosas** — *conectar* (`ore source add`: la
+conexión en `ontology.config.yaml`, la credencial en el cofre), *catalogar* (el Job deja
+`packages/<fuente>/package.yaml` con `owner: team:<organización>` y `discover.catalog.json`, y
+**nada gobernado**: compila desde que nace), *modelar* (al crear una database nacen Tables y
+Views; la Entity, tabla a tabla, al promoverla). `GET /esquema` lee el catálogo cuando no hay
+`tables/`, con la misma forma (`la-copia-se-decide` 0b). Los paquetes de fuente que ya existían
+en demo y victor se dejaron en manifiesto + catálogo con un commit por forja: eran prescindibles,
+y los catálogos se conservan para crear databases sin recatalogar.
+
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos
 clave obligatoria?»*. Tiene razón, y la medida dice de dónde viene la conflación:

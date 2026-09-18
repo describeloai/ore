@@ -275,15 +275,27 @@ spec:
               export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
               echo "  ✓ credencial puesta en \`$VAR\` — y no toca el disco"
 
+              # ⭐⭐ EL CATALOGO DE LA CONEXION, Y NADA MAS (0027, 18 de
+              #   septiembre). Esto hacia `ore discover` entero sobre el
+              #   catalogo: 48 Table + 48 View + 48 Entity por fuente, 35
+              #   decisiones de modelado que nadie pidio, `owner: cambiame`, y
+              #   un paquete que NO compila hasta que alguien lo revise. Medido
+              #   en demo: el 93 % de los ficheros del arbol eran esto y
+              #   `ore validate` —que corre en cada Save, cada Run, cada alta—
+              #   pasaba de 3,06 s a 0,07 s sin ellos. Y nada lo usaba: la
+              #   database se induce DEL CATALOGO (`POST /paquetes`), y la ficha
+              #   de la conexion lee el esquema, que ore-serve saca del catalogo.
+              #
+              #   Tres actos, tres cosas: CONECTAR (`ore source add`, la
+              #   conexion), CATALOGAR (esto: que hay en el origen), MODELAR
+              #   (al crear una database y, tabla a tabla, al promoverla).
+              #
+              # ⭐ El manifiesto lleva a la organizacion como dueno («el dueno
+              #   es la organizacion», 0027): el paquete compila desde que nace.
               echo "### leyendo el origen \`$FUENTE\`"
-              ore source catalog "$FUENTE" --out /trabajo/catalogo.json
-
-              # ⭐ La inducción no abre nada: lee un fichero y escribe
-              #   documentos. Lo que tocó el mundo se quedó en la línea de
-              #   arriba.
-              echo "### induciendo"
-              ore discover --from /trabajo/catalogo.json \
-                --out "packages/$FUENTE" --name "$FUENTE"
+              [ -f "packages/$FUENTE/package.yaml" ] \
+                || ore package new "$FUENTE" --owner "team:$ORGANIZACION" --path .
+              ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json"
 
               git add -A
               if git diff --cached --quiet; then
@@ -291,7 +303,7 @@ spec:
                 exit 0
               fi
               git -c user.name=catalogo -c user.email=catalogo@invalido \
-                commit -q -m "Catalogo de \`$FUENTE\`, con sus decisiones abiertas"
+                commit -q -m "Catalogo de \`$FUENTE\`"
               git push -q origin HEAD:main
               echo "✓ \`$FUENTE\` catalogada · $(git rev-parse --short HEAD)"
           resources:
