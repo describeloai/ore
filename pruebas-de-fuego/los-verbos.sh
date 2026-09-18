@@ -417,7 +417,7 @@ s = cat["porRol"]["SECURITYADMIN"]
 #   secreto. Si algun dia apareciera aqui una potestad que diera acceso a
 #   valores, esta linea se pone roja — y es la unica guarda automatica que tiene
 #   esa asimetria.
-assert sorted(s["anade"]) == ["actividad:leer-toda", "secreto:emitir", "secreto:listar"], "SECURITYADMIN trae %r" % s["anade"]
+assert sorted(s["anade"]) == ["actividad:leer-toda", "secreto:emitir", "secreto:listar", "secreto:retirar"], "SECURITYADMIN trae %r" % s["anade"]
 assert not [p for p in s["anade"] if p.startswith("secreto") and "leer" in p], "⛔ SECURITYADMIN NO puede tener una potestad de LEER secretos: leer es una concesion"
 assert cat["potestades"]["secreto:emitir"]["ejercida"] is False, "no hay verbo de emitir todavia, y el catalogo tiene que decirlo"
 assert cat["potestades"]["actividad:leer-toda"]["ejercida"] is False, "esa potestad no tiene ruta todavia, y el catalogo tiene que decirlo"

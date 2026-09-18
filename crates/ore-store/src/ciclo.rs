@@ -160,7 +160,7 @@ fn recoger_huerfanas(cuenta: &dyn Almacen, entrada: &str) -> Result<String, Stri
         .unwrap_or(&[])
         .iter()
         .filter_map(|p| p.as_str())
-        .map(|p| sobre::prefijo_de_plan(p))
+        .map(sobre::prefijo_de_plan)
         .collect();
 
     let recibos = cuenta.listar("ore/v1/plan/")?;

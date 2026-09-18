@@ -568,10 +568,7 @@ fn una(
 fn recoger_huerfanas(planes: &[String]) -> Result<String, String> {
     use ore_core::json::Json;
     let entrada = Json::obj([
-        (
-            "planes",
-            Json::Arr(planes.iter().map(|p| Json::s(p)).collect()),
-        ),
+        ("planes", Json::Arr(planes.iter().map(Json::s).collect())),
         ("seco", Json::Bool(false)),
     ])
     .jcs();
@@ -612,10 +609,9 @@ fn retirar_informes_de_nadie(dir: &Path, vivas: &[String]) {
         });
         if let Some(v) = vista
             && !vivas.contains(&v)
+            && std::fs::remove_file(&ruta).is_ok()
         {
-            if std::fs::remove_file(&ruta).is_ok() {
-                println!("  informe de `{v}` retirado: la vista ya no está en el árbol");
-            }
+            println!("  informe de `{v}` retirado: la vista ya no está en el árbol");
         }
     }
 }
