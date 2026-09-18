@@ -373,7 +373,41 @@ pub fn pedir(
         .nth(1)
         .and_then(|c| c.parse::<u16>().ok())
         .ok_or_else(|| format!("`{destino}` no dijo un código: {}", primera_linea(cabeza)))?;
-    Ok((codigo, cuerpo.to_string()))
+    // ⭐ La forja (Go) trocea las respuestas largas (`Transfer-Encoding:
+    //   chunked`): sin esto, un diff de una PR llegaría con los tamaños de los
+    //   trozos dentro. Los servidores nuestros mandan `Content-Length`.
+    let troceado = cabeza
+        .lines()
+        .any(|l| l.to_ascii_lowercase().replace(' ', "") == "transfer-encoding:chunked");
+    let cuerpo = if troceado {
+        destrocear(cuerpo)
+    } else {
+        cuerpo.to_string()
+    };
+    Ok((codigo, cuerpo))
+}
+
+/// Un cuerpo `chunked` (RFC 9112 §7.1), junto: `tamaño-hex\r\ntrozo\r\n…0\r\n`.
+/// Un trozo mal formado corta la lectura ahí y devuelve lo que había: lo que
+/// sigue es un JSON que no analiza, y eso ya se dice.
+fn destrocear(cuerpo: &str) -> String {
+    let b = cuerpo.as_bytes();
+    let mut i = 0;
+    let mut salida = Vec::with_capacity(b.len());
+    while let Some(fin) = b[i..].windows(2).position(|w| w == b"\r\n") {
+        let linea = &cuerpo[i..i + fin];
+        let tamano = linea.split(';').next().unwrap_or("").trim();
+        let Ok(n) = usize::from_str_radix(tamano, 16) else {
+            break;
+        };
+        i += fin + 2;
+        if n == 0 || i + n > b.len() {
+            break;
+        }
+        salida.extend_from_slice(&b[i..i + n]);
+        i += n + 2;
+    }
+    String::from_utf8_lossy(&salida).into_owned()
 }
 
 fn primera_linea(s: &str) -> String {
@@ -383,6 +417,16 @@ fn primera_linea(s: &str) -> String {
 #[cfg(test)]
 mod pruebas_de_pedir {
     use super::*;
+
+    #[test]
+    fn un_cuerpo_troceado_se_junta() {
+        assert_eq!(
+            destrocear("4\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\n\r\n"),
+            "{\"a\":1}"
+        );
+        assert_eq!(destrocear("5;ext=1\r\nhola \r\n0\r\n\r\n"), "hola ");
+        assert_eq!(destrocear("zz\r\n"), "");
+    }
 
     /// Una dirección que no contesta (10.255.255.1 no enruta a ningún sitio): el
     /// plazo de conectar es lo que acota la espera, no el SO.

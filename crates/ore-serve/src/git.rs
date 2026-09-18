@@ -53,6 +53,8 @@ pub enum Fallo {
     Adelantado(String),
     /// Cualquier otra cosa que git dijo.
     Git(String),
+    /// La rama pedida no está en la forja (0030 W2).
+    SinRama(String),
 }
 
 impl std::fmt::Display for Fallo {
@@ -66,6 +68,7 @@ impl std::fmt::Display for Fallo {
                  volver a decidir sobre lo que hay ahora: {m}"
             ),
             Fallo::Git(m) => write!(f, "git: {m}"),
+            Fallo::SinRama(r) => write!(f, "no hay ninguna rama `{r}` en la forja"),
         }
     }
 }
@@ -138,8 +141,16 @@ impl Forja {
         )
     }
 
-    /// Un clon fresco, en un directorio que se borra solo.
+    /// Un clon fresco de la rama por defecto, en un directorio que se borra solo.
     pub fn clonar(&self) -> Result<Prestado, Fallo> {
+        self.clonar_rama(None)
+    }
+
+    /// Un clon fresco de UNA rama (0030 W2). `None` es la rama por defecto —
+    /// `main`—, que es lo que todo hacía hasta hoy. Con rama, `HEAD` del clon
+    /// es esa rama, así que `publicar` empuja a ella y no a `main`: una
+    /// propuesta no toca lo que Flux mira.
+    pub fn clonar_rama(&self, rama: Option<&str>) -> Result<Prestado, Fallo> {
         let destino = temporal();
         std::fs::create_dir_all(&destino)
             .map_err(|e| Fallo::Git(format!("no se pudo crear el directorio: {e}")))?;
@@ -148,17 +159,18 @@ impl Forja {
         //   byte a byte, en cualquier máquina. Medido en Windows (0030 W0):
         //   un Git de sistema con `autocrlf=true` dejaba CRLF en el clon,
         //   «reescribir lo mismo» parecía un cambio, y el commit vacío daba 502.
-        self.git(
-            None,
-            &[
-                "-c",
-                "core.autocrlf=false",
-                "clone",
-                "--quiet",
-                &self.url,
-                &destino.to_string_lossy(),
-            ],
-        )?;
+        let destino_s = destino.to_string_lossy().into_owned();
+        let mut args = vec!["-c", "core.autocrlf=false", "clone", "--quiet"];
+        if let Some(r) = rama {
+            args.extend(["--branch", r]);
+        }
+        args.extend([self.url.as_str(), destino_s.as_str()]);
+        self.git(None, &args).map_err(|e| match (rama, e) {
+            (Some(r), Fallo::Git(m)) if m.contains("not found") || m.contains("Remote branch") => {
+                Fallo::SinRama(r.to_string())
+            }
+            (_, e) => e,
+        })?;
         Ok(prestado)
     }
 

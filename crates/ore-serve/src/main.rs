@@ -43,11 +43,13 @@ mod arbol;
 mod cola;
 mod copia;
 mod documentos;
+mod forja;
 mod funciones;
 mod git;
 mod mando;
 mod modelos;
 mod preguntar;
+mod propuestas;
 mod rutas;
 
 use ore_entrada::{http, identidad};
@@ -129,6 +131,8 @@ struct Opciones {
     modelos_url: Option<String>,
     /// La lista de perfiles de un fichero (el banco); en la celda viene por la cola.
     perfiles: Option<PathBuf>,
+    /// `--forja-api host:puerto`: la API de la forja aparte de la URL del árbol (0030 W2).
+    forja_api: Option<String>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -149,6 +153,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         modelos: None,
         modelos_url: None,
         perfiles: None,
+        forja_api: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -160,6 +165,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "-h" | "--help" => return Ok(None),
             "--repo" => o.repo = PathBuf::from(valor("--repo")?),
             "--forja" => o.forja = Some(valor("--forja")?),
+            "--forja-api" => o.forja_api = Some(valor("--forja-api")?),
             "--cola" => o.cola = Some(valor("--cola")?),
             "--testigo-fichero" => {
                 o.testigo_fichero = Some(PathBuf::from(valor("--testigo-fichero")?))
@@ -295,6 +301,25 @@ fn main() -> ExitCode {
         _ => None,
     };
 
+    // ⭐ LA API DE LA FORJA (0030 W2): ramas y propuestas. Sale de la misma URL
+    //   y el mismo testigo que el árbol; `--forja-api host:puerto` la dice
+    //   aparte cuando el árbol va por `file://` (el banco, con una API de
+    //   mentira). Sin ella, el árbol es sólo `main`, como hasta hoy.
+    let forja_api = match (&o.forja, testigo(&o)) {
+        (Some(url), Some(t)) => forja::Api::de(url, o.forja_api.as_deref(), &t),
+        _ => None,
+    };
+    eprintln!(
+        "  ramas y propuestas: {}",
+        match &forja_api {
+            Some(a) => format!(
+                "la API de la forja en {} ({}/{})",
+                a.destino, a.dueno, a.repo
+            ),
+            None => "no (el árbol es sólo main)".into(),
+        }
+    );
+
     let servidor = rutas::Servidor {
         binario: o.ore,
         arbol,
@@ -312,6 +337,7 @@ fn main() -> ExitCode {
             admin,
         }),
         perfiles: o.perfiles,
+        forja_api,
     };
 
     match http::servir(escucha, move |p| servidor.atender(p)) {

@@ -105,6 +105,9 @@ pub struct Servidor {
     pub modelos: Option<crate::modelos::Modelos>,
     /// La lista de certificación de un fichero (el banco); si no, de la cola.
     pub perfiles: Option<PathBuf>,
+    /// La API de la forja del árbol (0030 W2): ramas y propuestas. `None` ⇒
+    /// las rutas de ramas y propuestas contestan 422 y el árbol es sólo `main`.
+    pub forja_api: Option<crate::forja::Api>,
 }
 
 impl Servidor {
@@ -142,6 +145,13 @@ impl Servidor {
     }
 
     fn con_sujeto(&self, p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Respuesta {
+        // La rama en la que el editor lee o escribe el árbol (0030 W2); sin
+        // cabecera, `main`. Sólo las rutas del árbol la miran.
+        let rama = p
+            .cabeceras
+            .get(crate::propuestas::CABECERA_RAMA)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
         match (p.metodo.as_str(), seg) {
             ("GET", ["fuentes"]) => self.leyendo(fuentes),
             ("POST", ["fuentes"]) => {
@@ -287,27 +297,53 @@ impl Servidor {
                 })
             }
             // ── 0030 W0 · el árbol por ruta (`arbol.rs`): lo que el editor abre ──
-            ("GET", ["arbol"]) => self.leyendo(arbol::indice),
-            ("GET", ["arbol", "diagnosticos"]) => self.leyendo(|r| self.diagnosticos_del_arbol(r)),
+            //   Y desde W2, EN LA RAMA que diga `X-Ore-Rama` (`propuestas.rs`);
+            //   sin cabecera, `main`, como siempre.
+            ("GET", ["arbol"]) => self.leyendo_en(rama, arbol::indice),
+            ("GET", ["arbol", "diagnosticos"]) => {
+                self.leyendo_en(rama, |r| self.diagnosticos_del_arbol(r))
+            }
             ("GET", ["arbol", ruta @ ..]) => {
                 let ruta = ruta.join("/");
-                self.leyendo(move |r| arbol::leer(r, &ruta))
+                self.leyendo_en(rama, move |r| arbol::leer(r, &ruta))
             }
             ("PUT", ["arbol", ruta @ ..]) => {
                 let ruta = ruta.join("/");
                 let cuerpo = p.cuerpo.clone();
                 let si_commit = p.cabeceras.get("if-match").cloned();
-                self.escribiendo(sujeto, &format!("escribir `{ruta}`"), |r| {
+                self.escribiendo_en(rama, sujeto, &format!("escribir `{ruta}`"), |r| {
                     self.escribir_fichero(r, &ruta, &cuerpo, si_commit.as_deref())
                 })
             }
             ("DELETE", ["arbol", ruta @ ..]) => {
                 let ruta = ruta.join("/");
                 let si_commit = p.cabeceras.get("if-match").cloned();
-                self.escribiendo(sujeto, &format!("retirar `{ruta}`"), |r| {
+                self.escribiendo_en(rama, sujeto, &format!("retirar `{ruta}`"), |r| {
                     self.retirar_fichero(r, &ruta, si_commit.as_deref())
                 })
             }
+            // ── 0030 W2 · ramas y propuestas (`propuestas.rs`) ──
+            ("GET", ["ramas"]) => self.ramas(),
+            ("POST", ["ramas"]) => self.crear_rama(sujeto, &p.cuerpo),
+            ("DELETE", ["ramas", nombre @ ..]) => self.retirar_rama(&nombre.join("/")),
+            ("GET", ["propuestas"]) => self.propuestas(),
+            ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
+            ("GET", ["propuestas", n]) => match n.parse::<u64>() {
+                Ok(n) => self.propuesta(n),
+                Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
+            },
+            ("POST", ["propuestas", n, "revisar"]) => match n.parse::<u64>() {
+                Ok(n) => self.revisar(sujeto, n, &p.cuerpo),
+                Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
+            },
+            ("POST", ["propuestas", n, "fusionar"]) => match n.parse::<u64>() {
+                Ok(n) => self.fusionar(sujeto, n),
+                Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
+            },
+            ("DELETE", ["propuestas", n]) => match n.parse::<u64>() {
+                Ok(n) => self.cerrar_propuesta(n),
+                Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
+            },
             // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
             ("GET", ["funciones"]) => self.leyendo(|r| self.funciones(r)),
             ("GET", ["funciones", ns, n, "resultados"]) => {
@@ -370,7 +406,7 @@ impl Servidor {
 
     /// Le da a `f` un árbol para leer. Con la forja, un clon fresco que se
     /// borra al salir; con un directorio, el de siempre.
-    fn leyendo(&self, f: impl FnOnce(&Path) -> Respuesta) -> Respuesta {
+    pub(crate) fn leyendo(&self, f: impl FnOnce(&Path) -> Respuesta) -> Respuesta {
         match &self.arbol {
             Arbol::Directorio(d) => f(d),
             Arbol::Forja(forja) => match forja.clonar() {
@@ -386,7 +422,7 @@ impl Servidor {
     /// deja el clon a medias, y el clon se tira. Es lo que hace que un error no
     /// pueda dejar el árbol a medio escribir — no hay nada que deshacer porque
     /// no se llegó a escribir en ningún sitio duradero.
-    fn escribiendo(
+    pub(crate) fn escribiendo(
         &self,
         sujeto: &Identidad,
         mensaje: &str,
@@ -1879,6 +1915,15 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/arbol/{ruta}", con_identidad),
         ("PUT", "/arbol/{ruta}", con_identidad),
         ("DELETE", "/arbol/{ruta}", con_identidad),
+        ("GET", "/ramas", con_identidad),
+        ("POST", "/ramas", con_identidad),
+        ("DELETE", "/ramas/{nombre}", con_identidad),
+        ("GET", "/propuestas", con_identidad),
+        ("POST", "/propuestas", con_identidad),
+        ("GET", "/propuestas/{n}", con_identidad),
+        ("POST", "/propuestas/{n}/revisar", con_identidad),
+        ("POST", "/propuestas/{n}/fusionar", con_identidad),
+        ("DELETE", "/propuestas/{n}", con_identidad),
         ("GET", "/funciones", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),

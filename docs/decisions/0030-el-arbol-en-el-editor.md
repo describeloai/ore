@@ -132,6 +132,26 @@ consola cablea las tres pantallas y el botón *Commit* pasa a ser «proponer»; 
 dos sujetos, dos ramas, una revisión, merge → Flux → Job. Lo que se aparca: proteger `main` en
 la forja, CODEOWNERS y `propuesta:fusionar`.
 
+**(1) y (2) hechos (2026-09-18, `la-propuesta.sh` 1–9, en CI).** La rama va en la cabecera
+**`X-Ore-Rama`** y no en la URL (ningún dato entra por la URL): las cinco rutas del árbol leen y
+escriben EN esa rama —`clonar_rama`, y `publicar` empuja a `HEAD`, que es la rama— y sin cabecera
+son `main` como siempre; el gate «no empeora» sigue en la rama. `forja.rs` es la API de la forja
+por `http::pedir` (que aprendió `chunked`: la forja es Go), `Api::de(url)` saca destino y
+`dueño/repo` de la URL del árbol, y `--forja-api` la dice aparte cuando el árbol va por `file://`
+(el banco: `forja-de-mentira.py`, git de verdad para ramas y diffs, PRs y reviews en memoria, un
+solo usuario como la de verdad). Las rutas: `GET/POST /ramas`, `DELETE /ramas/{n}` (409 con
+propuesta abierta, 422 la de por defecto), `GET/POST /propuestas`, `GET /propuestas/{n}`
+(ficheros, diff de líneas, `semantico` = `ore diff base rama`, diagnósticos de la rama,
+revisiones), `POST …/revisar {veredicto: aprobar|pedir-cambios|comentar, texto}`, `POST
+…/fusionar`, `DELETE …/{n}`. **La persona viaja en el cuerpo**: la PR nace con `sub: <persona>`
+en la primera línea y cada revisión es una review `COMMENT` que empieza `revision: <persona>
+<veredicto>` — la forja guarda, el servidor decide: quien propone no aprueba ni fusiona lo suyo
+(422), sin aprobación de otra persona no se fusiona (422), la rama tiene que compilar (422 con
+los diagnósticos) y no tener conflictos (409); el commit de merge dice quién propuso, quién
+revisó y quién fusionó, y la rama se retira al fusionar. Lo que la consola tiene que cablear
+está en `propuestas.rs`; lo que no se hizo: encolar la copia de una vista `materialized` que
+llegue por merge (hoy `PUT /arbol` tampoco lo hace) y proteger `main` en la forja.
+
 ## Lo que se aparca
 
 - El *language server* de verdad (marcadores por tecla) espera a que un clon deje de costar un
