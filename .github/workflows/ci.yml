@@ -314,6 +314,13 @@ jobs:
         run: |
           cargo build --quiet -p ore-cli -p ore-store -p ore-invoke
           bash pruebas-de-fuego/la-invocacion-se-decide.sh
+      # W1 (0030): `ore ask` contesta la pregunta de una vista sobre la copia,
+      # en la celda y sin abrir el origen: el View Matcher decide que copia
+      # sirve (la suya, o una vecina con compensacion), `ore-store-r2 leer` la
+      # trae, la hoja la tipa y el recomputo la ejecuta. Contra el mismo S3 de
+      # mentira.
+      - name: y una vista se contesta sobre la copia, sin abrir el origen
+        run: bash pruebas-de-fuego/la-pregunta-se-contesta.sh
 
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre

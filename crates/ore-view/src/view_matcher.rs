@@ -938,6 +938,46 @@ pub fn cotejar(
             )
         }
         (Forma::Agregada(p), Forma::Agregada(q)) => cotejar_agregadas(&p, &q, m, restricciones)?,
+        // **Un agregado sobre una copia plana.** Es el caso corriente de una
+        // pregunta (0030 W1): la copia es la tabla —o un recorte— y la vista
+        // agrupa encima. La materialización contesta lo de DENTRO del
+        // agregado como cualquier SPJ, y el agregado, el `having` y la
+        // proyección se re-ejecutan encima tal cual: nada se enrolla, porque
+        // la copia no agrupó nada. El *aggregate computability* a
+        // granularidad cero.
+        (Forma::Agregada(p), Forma::Spj(q)) => {
+            let base = cotejar_spj(&p.dentro, &q, restricciones)?;
+            // Solo lo que el agregado lee: las columnas de grupo y las que
+            // agrega. Pedir el resto exigiría a la copia columnas que la
+            // pregunta no usa.
+            let usadas: BTreeSet<&String> = p
+                .por
+                .iter()
+                .chain(p.agregados.values().filter_map(|a| a.sobre.as_ref()))
+                .collect();
+            let dentro = p
+                .dentro
+                .salida
+                .iter()
+                .filter(|(k, _)| usadas.contains(k))
+                .map(|(k, x)| Ok((k.clone(), sustituir(x, &base.disponibles)?)))
+                .collect::<Result<_, _>>()?;
+            let agrupado = Nodo::Agrupa {
+                entrada: Box::new(Nodo::Proyecta {
+                    entrada: Box::new(cuerpo(m, &base)),
+                    campos: dentro,
+                }),
+                por: p.por.clone(),
+                agregados: p.agregados.clone(),
+            };
+            (
+                Nodo::Proyecta {
+                    entrada: Box::new(filtrando(agrupado, p.encima.clone())),
+                    campos: p.salida.clone(),
+                },
+                base.compensation,
+            )
+        }
         _ => return Err(NoContesta::FormasDistintas),
     };
 
@@ -1894,15 +1934,58 @@ mod tests {
         );
     }
 
-    /// Uno agrega y el otro no: formas distintas.
+    /// **Un agregado sobre una copia plana contesta** (0030 W1): la copia
+    /// sirve lo de dentro y el agregado se re-ejecuta encima. Si a la copia le
+    /// falta la columna de grupo, no es «formas distintas»: es que esa columna
+    /// no se deriva.
     #[test]
-    fn uno_agrega_y_el_otro_no() {
-        let m = mat("p", proyecta(pedidos(), &["id", "total"]));
+    fn un_agregado_sobre_una_copia_plana_se_reagrupa_encima() {
         let plan = agrupa(
             pedidos(),
             &["pais"],
             &[("suma", Agregado::Suma, Some("total"))],
         );
+        let entera = mat("p", proyecta(pedidos(), &["id", "pais", "total"]));
+        let rw = cotejar(&plan, &entera, &nada(), &[]).unwrap();
+        assert!(rw.compensation.is_empty());
+        let mut agrupa_encima = false;
+        let mut lee_la_copia = false;
+        rw.plan.recorrer(&mut |n| match n {
+            Nodo::Agrupa { por, .. } => agrupa_encima = por.contains("pais"),
+            Nodo::Lee(l) => lee_la_copia = l.objeto == entera.tabla.objeto,
+            _ => {}
+        });
+        assert!(agrupa_encima && lee_la_copia, "{}", rw.plan.canonico());
+        assert_eq!(
+            esquema(&rw.plan)
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["pais".to_string(), "suma".to_string()]
+        );
+
+        let sin_pais = mat("q", proyecta(pedidos(), &["id", "total"]));
+        assert_eq!(
+            cotejar(&plan, &sin_pais, &nada(), &[]),
+            Err(NoContesta::ColumnaNoDerivable {
+                columna: "pais".into()
+            })
+        );
+    }
+
+    /// Al revés no: una copia agregada no contesta un plan plano.
+    #[test]
+    fn una_copia_agregada_no_contesta_un_plan_plano() {
+        let m = mat(
+            "p",
+            agrupa(
+                pedidos(),
+                &["pais"],
+                &[("suma", Agregado::Suma, Some("total"))],
+            ),
+        );
+        let plan = proyecta(pedidos(), &["id", "total"]);
         assert_eq!(
             cotejar(&plan, &m, &nada(), &[]),
             Err(NoContesta::FormasDistintas)

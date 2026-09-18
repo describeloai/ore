@@ -121,7 +121,14 @@ pub type Trabajo = u64;
 /// proporcional a la base, que es justo lo que la incrementalización existe
 /// para evitar. Medir una pieza es la forma más barata de descubrir que no hace
 /// lo que dice.
-type Indice = BTreeMap<Vec<Valor>, Zset>;
+type Indice = BTreeMap<Clave, Zset>;
+
+/// **La clave de un grupo o de una junta, con sus huecos.** Un nulo es la
+/// propiedad ausente (ADR 0002), y una clave que lo saltara desalinearía las
+/// columnas: `[ES]` podría ser `pais` o `ciudad`. Con `None` en su posición,
+/// los nulos de una columna de grupo caen en el mismo grupo —como SQL— y la
+/// fila del grupo sale sin esa columna.
+type Clave = Vec<Option<Valor>>;
 
 /// Un multiconjunto con pesos con signo. Un peso cero **no se guarda**: una fila
 /// que se puso y se quitó no está.
@@ -731,7 +738,7 @@ impl Op {
                 integrado,
             } => {
                 let d = entrada.paso(deltas, t)?;
-                let tocados: BTreeSet<Vec<Valor>> = d.filas().map(|(f, _)| clave(f, por)).collect();
+                let tocados: BTreeSet<Clave> = d.filas().map(|(f, _)| clave(f, por)).collect();
                 *t += d.filas().count() as Trabajo;
                 let antes = agregar_grupos(integrado, &tocados, por, agregados, t)?;
                 for (f, w) in d.filas() {
@@ -929,6 +936,7 @@ fn recomputar_con(
     })
 }
 
+/// Un campo que evalúa a nulo no sale en la fila: es la propiedad ausente.
 fn proyectar(
     z: &Zset,
     campos: &BTreeMap<String, Expr>,
@@ -939,42 +947,49 @@ fn proyectar(
         *t += 1;
         let mut nueva = Fila::new();
         for (k, x) in campos {
-            nueva.insert(k.clone(), evaluar(x, f)?);
+            if let Some(v) = evaluar(x, f)? {
+                nueva.insert(k.clone(), v);
+            }
         }
         out.insertar(nueva, w);
     }
     Ok(out)
 }
 
+/// Pasa lo que evalúa a **verdadero**: un predicado nulo —desconocido— no
+/// pasa, como en SQL.
 fn filtrar(z: &Zset, p: &Expr, t: &mut Trabajo) -> Result<Zset, Evaluacion> {
     let mut out = Zset::nuevo();
     for (f, w) in z.filas() {
         *t += 1;
         match evaluar(p, f)? {
-            Valor::Booleano(true) => out.insertar(f.clone(), w),
-            Valor::Booleano(false) => {}
-            _ => return Err(Evaluacion::NoEsBooleano),
+            Some(Valor::Booleano(true)) => out.insertar(f.clone(), w),
+            Some(Valor::Booleano(false)) | None => {}
+            Some(_) => return Err(Evaluacion::NoEsBooleano),
         }
     }
     Ok(out)
 }
 
-fn clave(f: &Fila, cols: &BTreeSet<String>) -> Vec<Valor> {
-    cols.iter().filter_map(|c| f.get(c).cloned()).collect()
+/// La clave de grupo de una fila, en el orden de `por`.
+fn clave(f: &Fila, cols: &BTreeSet<String>) -> Clave {
+    cols.iter().map(|c| f.get(c).cloned()).collect()
 }
 
-/// La clave de junta de una fila, en el orden de `sobre`.
-fn clave_de_junta(f: &Fila, cols: &[String]) -> Vec<Valor> {
-    cols.iter().filter_map(|c| f.get(c).cloned()).collect()
+/// La clave de junta de una fila, en el orden de `sobre`. **Un nulo no casa
+/// con nada, tampoco con otro nulo** —es la regla de SQL, y la única que no
+/// inventa parejas—: una fila con un hueco en la clave no entra en la junta.
+fn clave_de_junta(f: &Fila, cols: &[String]) -> Option<Clave> {
+    cols.iter().map(|c| f.get(c).cloned().map(Some)).collect()
 }
 
 /// Mete un Z-set en un índice por clave de junta. Cuesta una fila por fila.
 fn indexar(idx: &mut Indice, z: &Zset, cols: &[String], t: &mut Trabajo) {
     for (f, w) in z.filas() {
         *t += 1;
-        idx.entry(clave_de_junta(f, cols))
-            .or_default()
-            .insertar(f.clone(), w);
+        if let Some(k) = clave_de_junta(f, cols) {
+            idx.entry(k).or_default().insertar(f.clone(), w);
+        }
     }
 }
 
@@ -993,7 +1008,7 @@ fn juntar_indexado(d: &Zset, cols_d: &[String], idx: &Indice, t: &mut Trabajo) -
     let mut out = Zset::nuevo();
     for (fd, wd) in d.filas() {
         *t += 1;
-        let Some(casan) = idx.get(&clave_de_junta(fd, cols_d)) else {
+        let Some(casan) = clave_de_junta(fd, cols_d).and_then(|k| idx.get(&k)) else {
             continue;
         };
         for (fi, wi) in casan.filas() {
@@ -1015,28 +1030,23 @@ fn juntar(a: &Zset, b: &Zset, sobre: &[(String, String)], t: &mut Trabajo) -> Zs
     let kb: BTreeSet<String> = sobre.iter().map(|(_, y)| y.clone()).collect();
     // Los pares van en el orden de `sobre`, no en el del BTreeSet, para que la
     // clave de un lado se corresponda posición a posición con la del otro.
-    let clave_a = |f: &Fila| -> Vec<Valor> {
-        sobre
-            .iter()
-            .filter_map(|(x, _)| f.get(x).cloned())
-            .collect()
-    };
-    let clave_b = |f: &Fila| -> Vec<Valor> {
-        sobre
-            .iter()
-            .filter_map(|(_, y)| f.get(y).cloned())
-            .collect()
-    };
+    let clave_a =
+        |f: &Fila| -> Option<Vec<Valor>> { sobre.iter().map(|(x, _)| f.get(x).cloned()).collect() };
+    let clave_b =
+        |f: &Fila| -> Option<Vec<Valor>> { sobre.iter().map(|(_, y)| f.get(y).cloned()).collect() };
     let _ = (&ka, &kb);
     let mut indice: BTreeMap<Vec<Valor>, Vec<(&Fila, i64)>> = BTreeMap::new();
     for (f, w) in b.filas() {
         *t += 1;
-        indice.entry(clave_b(f)).or_default().push((f, w));
+        // Un nulo en la clave no casa con nada (`clave_de_junta`).
+        if let Some(k) = clave_b(f) {
+            indice.entry(k).or_default().push((f, w));
+        }
     }
     let mut out = Zset::nuevo();
     for (fa, wa) in a.filas() {
         *t += 1;
-        if let Some(casan) = indice.get(&clave_a(fa)) {
+        if let Some(casan) = clave_a(fa).and_then(|k| indice.get(&k)) {
             for (fb, wb) in casan {
                 *t += 1;
                 let mut fila = fa.clone();
@@ -1054,10 +1064,10 @@ fn agregar(
     z: &Zset,
     por: &BTreeSet<String>,
     agregados: &BTreeMap<String, Agregacion>,
-    solo: Option<&BTreeSet<Vec<Valor>>>,
+    solo: Option<&BTreeSet<Clave>>,
     t: &mut Trabajo,
 ) -> Result<Zset, Evaluacion> {
-    let mut grupos: BTreeMap<Vec<Valor>, Vec<(&Fila, i64)>> = BTreeMap::new();
+    let mut grupos: BTreeMap<Clave, Vec<(&Fila, i64)>> = BTreeMap::new();
     for (f, w) in z.presentes() {
         *t += 1;
         let k = clave(f, por);
@@ -1078,7 +1088,7 @@ fn agregar(
 /// que pesan los grupos que el Δ toca y no lo que pesa la vista.
 fn agregar_grupos(
     idx: &Indice,
-    tocados: &BTreeSet<Vec<Valor>>,
+    tocados: &BTreeSet<Clave>,
     por: &BTreeSet<String>,
     agregados: &BTreeMap<String, Agregacion>,
     t: &mut Trabajo,
@@ -1099,68 +1109,80 @@ fn agregar_grupos(
 /// El valor de cada agregado sobre las filas de **un** grupo. Escrito una vez:
 /// lo llaman el recómputo y el paso, y dos definiciones de `MIN` divergirían en
 /// el empate.
+///
+/// **Los nulos, como en SQL**: `sum`, `min`, `max` y `avg` saltan las filas
+/// donde la columna no está, y si no está en ninguna el agregado es nulo — la
+/// propiedad no sale. `count()` cuenta filas, tengan lo que tengan. Una
+/// columna de grupo nula tampoco sale en la fila del grupo.
 fn de_un_grupo(
-    k: &[Valor],
+    k: &[Option<Valor>],
     filas: &[(&Fila, i64)],
     por: &BTreeSet<String>,
     agregados: &BTreeMap<String, Agregacion>,
 ) -> Result<Fila, Evaluacion> {
-    {
-        let mut fila: Fila = por.iter().cloned().zip(k.iter().cloned()).collect();
-        for (nombre, a) in agregados {
-            let v = match (a.funcion, &a.sobre) {
-                (Agregado::Cuenta, _) => Valor::Entero(filas.iter().map(|(_, w)| w).sum()),
-                (_, None) => return Err(Evaluacion::ColumnaAusente(nombre.clone())),
-                (Agregado::Suma, Some(c)) => suma_de(filas, c)?,
-                // Solo llega aquí desde el recómputo: `compilar` niega el
-                // promedio antes de construir el circuito (`motivos`).
-                (Agregado::Promedio, Some(c)) => {
-                    let cuenta: i64 = filas.iter().map(|(_, w)| w).sum();
-                    promedio(&suma_de(filas, c)?, cuenta)?
+    let mut fila: Fila = por
+        .iter()
+        .cloned()
+        .zip(k.iter().cloned())
+        .filter_map(|(c, v)| v.map(|v| (c, v)))
+        .collect();
+    for (nombre, a) in agregados {
+        let v = match (a.funcion, &a.sobre) {
+            (Agregado::Cuenta, _) => Some(Valor::Entero(filas.iter().map(|(_, w)| w).sum())),
+            (_, None) => return Err(Evaluacion::ColumnaAusente(nombre.clone())),
+            (Agregado::Suma, Some(c)) => suma_de(filas, c)?,
+            // Solo llega aquí desde el recómputo: `compilar` niega el
+            // promedio antes de construir el circuito (`motivos`).
+            (Agregado::Promedio, Some(c)) => {
+                let cuenta: i64 = filas
+                    .iter()
+                    .filter(|(f, _)| f.contains_key(c))
+                    .map(|(_, w)| w)
+                    .sum();
+                match suma_de(filas, c)? {
+                    Some(s) => Some(promedio(&s, cuenta)?),
+                    None => None,
                 }
-                (f, Some(c)) => {
-                    let mut mejor: Option<&Valor> = None;
-                    for (fila, _) in filas {
-                        let v = fila
-                            .get(c)
-                            .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?;
-                        mejor = Some(match mejor {
-                            None => v,
-                            Some(m) => {
-                                let o = v.comparar(m).ok_or(Evaluacion::TiposDistintos)?;
-                                let gana = match f {
-                                    Agregado::Minimo => o == Ordering::Less,
-                                    _ => o == Ordering::Greater,
-                                };
-                                if gana { v } else { m }
-                            }
-                        });
-                    }
-                    mejor
-                        .cloned()
-                        .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?
+            }
+            (f, Some(c)) => {
+                let mut mejor: Option<&Valor> = None;
+                for (fila, _) in filas {
+                    let Some(v) = fila.get(c) else { continue };
+                    mejor = Some(match mejor {
+                        None => v,
+                        Some(m) => {
+                            let o = v.comparar(m).ok_or(Evaluacion::TiposDistintos)?;
+                            let gana = match f {
+                                Agregado::Minimo => o == Ordering::Less,
+                                _ => o == Ordering::Greater,
+                            };
+                            if gana { v } else { m }
+                        }
+                    });
                 }
-            };
+                mejor.cloned()
+            }
+        };
+        if let Some(v) = v {
             fila.insert(nombre.clone(), v);
         }
-        Ok(fila)
     }
+    Ok(fila)
 }
 
-/// La suma de una columna sobre las filas de un grupo, con sus pesos.
-fn suma_de(filas: &[(&Fila, i64)], c: &str) -> Result<Valor, Evaluacion> {
+/// La suma de una columna sobre las filas de un grupo, con sus pesos. Salta
+/// los huecos; sin ningún valor es nula.
+fn suma_de(filas: &[(&Fila, i64)], c: &str) -> Result<Option<Valor>, Evaluacion> {
     let mut acc: Option<Valor> = None;
     for (f, w) in filas {
-        let v = f
-            .get(c)
-            .ok_or_else(|| Evaluacion::ColumnaAusente(c.to_string()))?;
+        let Some(v) = f.get(c) else { continue };
         let v = por_peso(v, *w)?;
         acc = Some(match acc {
             None => v,
             Some(a) => sumar_valores(&a, &v)?,
         });
     }
-    acc.ok_or_else(|| Evaluacion::ColumnaAusente(c.to_string()))
+    Ok(acc)
 }
 
 /// La escala del promedio. Fija, para que dos recómputos den los mismos dígitos.
@@ -1194,71 +1216,84 @@ fn promedio(suma: &Valor, cuenta: i64) -> Result<Valor, Evaluacion> {
 
 // ── Expresiones ─────────────────────────────────────────────────────────────
 
-fn evaluar(x: &Expr, f: &Fila) -> Result<Valor, Evaluacion> {
+/// **Con nulos, a tres valores.** `None` es nulo: un campo ausente, y todo lo
+/// que lo toque — comparar con nulo es nulo, `Y`/`O` como en SQL (`false Y
+/// nulo` es `false`, `true O nulo` es `true`, y si no, nulo), `No` de nulo es
+/// nulo. `EsNulo` es lo único que lo vuelve verdadero.
+fn evaluar(x: &Expr, f: &Fila) -> Result<Option<Valor>, Evaluacion> {
     Ok(match x {
-        Expr::Campo(c) => f
-            .get(c)
-            .cloned()
-            .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?,
-        Expr::Literal(v) => v.clone().normalizado(),
+        Expr::Campo(c) => f.get(c).cloned(),
+        Expr::Literal(v) => Some(v.clone().normalizado()),
         Expr::Compara {
             op,
             izquierda,
             derecha,
         } => {
-            let (a, b) = (evaluar(izquierda, f)?, evaluar(derecha, f)?);
+            let (Some(a), Some(b)) = (evaluar(izquierda, f)?, evaluar(derecha, f)?) else {
+                return Ok(None);
+            };
             let o = a.comparar(&b).ok_or(Evaluacion::TiposDistintos)?;
-            Valor::Booleano(match op {
+            Some(Valor::Booleano(match op {
                 Comparador::Igual => o == Ordering::Equal,
                 Comparador::Distinto => o != Ordering::Equal,
                 Comparador::Menor => o == Ordering::Less,
                 Comparador::MenorIgual => o != Ordering::Greater,
                 Comparador::Mayor => o == Ordering::Greater,
                 Comparador::MayorIgual => o != Ordering::Less,
-            })
+            }))
         }
         Expr::EnConjunto { campo, valores } => {
-            let v = f
-                .get(campo)
-                .ok_or_else(|| Evaluacion::ColumnaAusente(campo.clone()))?;
-            Valor::Booleano(
+            let Some(v) = f.get(campo) else {
+                return Ok(None);
+            };
+            Some(Valor::Booleano(
                 valores
                     .iter()
                     .any(|w| v.comparar(w) == Some(Ordering::Equal)),
-            )
+            ))
         }
-        // Sin nulos en esta semántica: nada es nulo.
-        Expr::EsNulo(e) => {
-            evaluar(e, f)?;
-            Valor::Booleano(false)
-        }
+        Expr::EsNulo(e) => Some(Valor::Booleano(evaluar(e, f)?.is_none())),
         Expr::Y(v) => {
+            let mut nulo = false;
             for e in v {
-                if evaluar(e, f)? != Valor::Booleano(true) {
-                    return Ok(Valor::Booleano(false));
+                match evaluar(e, f)? {
+                    Some(Valor::Booleano(true)) => {}
+                    Some(Valor::Booleano(false)) => return Ok(Some(Valor::Booleano(false))),
+                    None => nulo = true,
+                    Some(_) => return Err(Evaluacion::NoEsBooleano),
                 }
             }
-            Valor::Booleano(true)
+            if nulo {
+                None
+            } else {
+                Some(Valor::Booleano(true))
+            }
         }
         Expr::O(v) => {
+            let mut nulo = false;
             for e in v {
-                if evaluar(e, f)? == Valor::Booleano(true) {
-                    return Ok(Valor::Booleano(true));
+                match evaluar(e, f)? {
+                    Some(Valor::Booleano(true)) => return Ok(Some(Valor::Booleano(true))),
+                    Some(Valor::Booleano(false)) => {}
+                    None => nulo = true,
+                    Some(_) => return Err(Evaluacion::NoEsBooleano),
                 }
             }
-            Valor::Booleano(false)
+            if nulo {
+                None
+            } else {
+                Some(Valor::Booleano(false))
+            }
         }
         Expr::No(e) => match evaluar(e, f)? {
-            Valor::Booleano(b) => Valor::Booleano(!b),
-            _ => return Err(Evaluacion::NoEsBooleano),
+            Some(Valor::Booleano(b)) => Some(Valor::Booleano(!b)),
+            None => None,
+            Some(_) => return Err(Evaluacion::NoEsBooleano),
         },
         Expr::Opaca(_) => return Err(Evaluacion::Opaca),
     })
 }
 
-// ── Aritmética exacta, sin coma flotante ────────────────────────────────────
-
-/// Un decimal como `(mantisa, escala)`: `12.30` → `(1230, 2)`.
 fn escalado(s: &str) -> Result<(i128, u32), Evaluacion> {
     let (neg, s) = match s.strip_prefix('-') {
         Some(r) => (true, r),
@@ -1671,6 +1706,93 @@ mod tests {
     }
 
     /// **Lo que se refusa, con su motivo.**
+    /// **Los nulos son ausencia, y se evalúan a tres valores** (W1): la
+    /// proyección no inventa el campo, el filtro no pasa lo desconocido,
+    /// `EsNulo` lo ve, el grupo nulo es un grupo, y `sum` salta lo que no está
+    /// mientras `count()` cuenta la fila. Y el Δ dice lo mismo que el recómputo.
+    #[test]
+    fn los_nulos_son_ausencia_a_tres_valores() {
+        let con = fila(&[("id", n(1)), ("pais", s("ES")), ("total", d("10"))]);
+        let sin_total = fila(&[("id", n(2)), ("pais", s("ES"))]);
+        let sin_pais = fila(&[("id", n(3)), ("total", d("5"))]);
+        let base = Zset::de([
+            (con.clone(), 1),
+            (sin_total.clone(), 1),
+            (sin_pais.clone(), 1),
+        ]);
+        let bases: BTreeMap<Hoja, Zset> = [(hoja(PEDIDOS), base.clone())].into_iter().collect();
+
+        // proyectar: el hueco sigue siendo hueco
+        let plan = Nodo::Proyecta {
+            entrada: Box::new(pedidos()),
+            campos: [("t".to_string(), Expr::Campo("total".into()))]
+                .into_iter()
+                .collect(),
+        };
+        let z = recomputar(&plan, &bases).unwrap();
+        assert!(
+            z.presentes().any(|(f, _)| f.is_empty()),
+            "la fila sin total sale vacía"
+        );
+
+        // filtrar: `total == 10` no pasa lo desconocido; `EsNulo(total)` sí
+        let plan = Nodo::Filtra {
+            entrada: Box::new(pedidos()),
+            predicado: Expr::Compara {
+                op: Comparador::Igual,
+                izquierda: Box::new(Expr::Campo("total".into())),
+                derecha: Box::new(Expr::Literal(d("10"))),
+            },
+        };
+        assert_eq!(recomputar(&plan, &bases).unwrap().presentes().count(), 1);
+        let plan = Nodo::Filtra {
+            entrada: Box::new(pedidos()),
+            predicado: Expr::EsNulo(Box::new(Expr::Campo("total".into()))),
+        };
+        let z = recomputar(&plan, &bases).unwrap();
+        assert_eq!(
+            z.presentes().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+            vec![sin_total.clone()]
+        );
+
+        // agrupar: el grupo sin país existe; sum salta el hueco; count no
+        let plan = Nodo::Agrupa {
+            entrada: Box::new(pedidos()),
+            por: ["pais".to_string()].into_iter().collect(),
+            agregados: [
+                (
+                    "n".to_string(),
+                    Agregacion {
+                        funcion: Agregado::Cuenta,
+                        sobre: None,
+                    },
+                ),
+                (
+                    "suma".to_string(),
+                    Agregacion {
+                        funcion: Agregado::Suma,
+                        sobre: Some("total".into()),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let z = recomputar(&plan, &bases).unwrap();
+        let grupos: Vec<Fila> = z.presentes().map(|(f, _)| f.clone()).collect();
+        assert_eq!(
+            grupos,
+            vec![
+                fila(&[("n", n(1)), ("suma", d("5"))]),
+                fila(&[("n", n(2)), ("pais", s("ES")), ("suma", d("10"))]),
+            ]
+        );
+        // y el circuito, alimentado con la base entera, dice lo mismo
+        let mut c = Circuito::compilar(&plan).unwrap();
+        let paso = c.paso(&bases).unwrap();
+        assert_eq!(paso, z);
+    }
+
     /// **El recómputo sí promedia**: `suma / cuenta` a seis decimales, mitad
     /// lejos de cero, normalizado. Y promedia enteros como decimales.
     #[test]

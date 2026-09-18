@@ -21,6 +21,7 @@ mod lector;
 mod materializar;
 mod mcp;
 mod paquete;
+mod preguntar;
 mod registro;
 mod revision;
 mod verificar;
@@ -687,6 +688,26 @@ enum Command {
         #[arg(long)]
         seco: bool,
     },
+    /// Ejecuta la pregunta de una vista sobre su copia, en la celda y sin
+    /// abrir el origen (0030 W1).
+    ///
+    /// Compila el plan, decide que copia lo contesta (la suya, o una que lo
+    /// implique, con compensacion), la trae por su nombre con
+    /// `ore-store-<r2|gcs> leer`, tipa las filas por la cabecera y ejecuta
+    /// el plan reescrito. Cabecera y filas por stdout; no escribe nada.
+    Ask {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// La vista, cualificada: `<paquete>.<nombre>`.
+        #[arg(long, value_name = "NS.NOMBRE")]
+        vista: String,
+        /// Solo las N primeras filas DE LA RESPUESTA (el plan se ejecuta entero).
+        #[arg(long)]
+        limite: Option<u64>,
+        /// Decide quien contesta y con que; no trae ni ejecuta.
+        #[arg(long)]
+        seco: bool,
+    },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
     /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
@@ -758,6 +779,21 @@ fn main() -> std::process::ExitCode {
             recoger,
             informe,
         } => return materializar::materializar(path, *seco, *recoger, informe.as_deref()),
+        Command::Ask {
+            path,
+            vista,
+            limite,
+            seco,
+        } => {
+            return preguntar::preguntar(
+                path,
+                &preguntar::Opciones {
+                    vista,
+                    limite: *limite,
+                    seco: *seco,
+                },
+            );
+        }
         Command::Invoke {
             path,
             funcion,
@@ -974,6 +1010,7 @@ fn main() -> std::process::ExitCode {
         | Command::Verify { .. }
         | Command::Materialize { .. }
         | Command::Invoke { .. }
+        | Command::Ask { .. }
         | Command::Review { .. }
         | Command::Model { .. }
         | Command::Copy { .. }

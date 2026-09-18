@@ -725,7 +725,9 @@ impl Nodo {
         out
     }
 
-    fn recorrer<'a>(&'a self, f: &mut impl FnMut(&'a Nodo)) {
+    /// Cada nodo, de arriba abajo. Público desde W1: quien ejecuta o reescribe
+    /// un plan necesita mirarlo sin repetir el `match`.
+    pub fn recorrer<'a>(&'a self, f: &mut impl FnMut(&'a Nodo)) {
         f(self);
         for h in self.entradas() {
             h.recorrer(f);
