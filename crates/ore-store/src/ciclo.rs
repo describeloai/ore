@@ -75,6 +75,10 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
     if verbo == "leer" {
         return leer(cuenta, cabecera);
     }
+    // `recoger-huerfanas` tampoco: lleva los planes que el árbol reclama.
+    if verbo == "recoger-huerfanas" {
+        return recoger_huerfanas(cuenta, cabecera);
+    }
     let cab = leer_cabecera(cabecera)?;
     let recibo = sobre::recibo(&cab);
 
@@ -125,9 +129,82 @@ fn correr(verbo: &str, cuenta: &dyn Almacen) -> Result<String, String> {
         "recoger" => recoger(cuenta, &cab, &recibo, false),
         "recoger-seco" => recoger(cuenta, &cab, &recibo, true),
         otro => Err(format!(
-            "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger`, \n             `recoger-seco` y `leer`"
+            "verbo desconocido `{otro}`: hace `buscar`, `anterior`, `sellar`, `recoger`, \n             `recoger-seco`, `recoger-huerfanas` y `leer`"
         )),
     }
+}
+
+/// **Lo que ninguna vista reclama.** `recoger` borra las copias SUPERADAS de un
+/// plan vigente; esto borra las de los planes que **ya no tienen vista**: la
+/// base se retiró, o la vista dejó de declarar copia (medido el 2026-09-18 en
+/// `demo`: recibos de planes que el árbol no reclama y artefactos sin recibo,
+/// que nadie iba a borrar nunca). La entrada es una línea JSON con los planes
+/// que el árbol reclama —TODOS los de las vistas con copia, no sólo los de
+/// esta pasada— y `seco` para decir qué se iría sin tocar nada:
+///
+/// ```text
+/// {"planes": ["sha256:…", …], "seco": false}
+/// ```
+///
+/// Se borra el recibo y luego su artefacto, como en `recoger`; y después los
+/// artefactos a los que ningún recibo apunta (una subida que se cortó).
+fn recoger_huerfanas(cuenta: &dyn Almacen, entrada: &str) -> Result<String, String> {
+    let n = ore_core::parse::parse(entrada).map_err(|e| format!("la entrada no analiza: {e:?}"))?;
+    let seco = n
+        .get("seco")
+        .and_then(|(_, v)| v.as_str())
+        .is_some_and(|v| v == "true");
+    let planes: std::collections::BTreeSet<String> = n
+        .get("planes")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|p| p.as_str())
+        .map(|p| sobre::prefijo_de_plan(p))
+        .collect();
+
+    let recibos = cuenta.listar("ore/v1/plan/")?;
+    let mut huerfanas = 0usize;
+    let mut apuntados: std::collections::BTreeSet<String> = Default::default();
+    for r in &recibos {
+        // `ore/v1/plan/<plan>/<cabecera>` → su prefijo de plan
+        let Some(prefijo) = r.rsplit_once('/').map(|(p, _)| p.to_string()) else {
+            continue;
+        };
+        let artefacto = cuenta.leer(r)?;
+        if planes.contains(&prefijo) {
+            if let Some(a) = artefacto {
+                apuntados.insert(a);
+            }
+            continue;
+        }
+        if !seco {
+            cuenta.borrar(r)?;
+            if let Some(a) = &artefacto {
+                cuenta.borrar(a)?;
+            }
+        }
+        huerfanas += 1;
+    }
+    // Los artefactos que ningún recibo vigente apunta.
+    let mut sueltos = 0usize;
+    for a in cuenta.listar("ore/v1/")? {
+        if a.starts_with("ore/v1/plan/") || apuntados.contains(&a) {
+            continue;
+        }
+        if !seco {
+            cuenta.borrar(&a)?;
+        }
+        sueltos += 1;
+    }
+    Ok(ore_core::json::Json::obj([
+        ("recibos", ore_core::json::Json::Int(recibos.len() as i64)),
+        ("planes", ore_core::json::Json::Int(planes.len() as i64)),
+        ("huerfanas", ore_core::json::Json::Int(huerfanas as i64)),
+        ("sueltos", ore_core::json::Json::Int(sueltos as i64)),
+        ("seco", ore_core::json::Json::Bool(seco)),
+    ])
+    .jcs())
 }
 
 /// Los pasos 5 y 6: sella el artefacto, lo sube, y **deja el recibo**.

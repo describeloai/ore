@@ -84,7 +84,10 @@ impl Servidor {
             ("POST", ["organizaciones", org, "secretos"]) => self.emitir(s, org, &p.cuerpo.clone()),
             ("GET", ["organizaciones", org, "secretos"]) => self.listar(s, org),
             ("GET", ["organizaciones", org, "secretos", nombre]) => self.resolver(s, org, nombre),
-            ("GET", _) | ("POST", _) => Respuesta::error(404, "no hay nada en ese camino"),
+            ("DELETE", ["organizaciones", org, "secretos", nombre]) => self.retirar(s, org, nombre),
+            ("GET", _) | ("POST", _) | ("DELETE", _) => {
+                Respuesta::error(404, "no hay nada en ese camino")
+            }
             _ => Respuesta::error(405, "método no admitido"),
         }
     }
@@ -267,6 +270,83 @@ impl Servidor {
         })
     }
 
+    // ── retirar ─────────────────────────────────────────────────────────────
+
+    /// **Dar de baja un secreto** (037): `DELETE /organizaciones/{org}/secretos/{n}`.
+    ///
+    /// Puede el `owner` del secreto —quien lo emitió, `0023`— o quien tenga
+    /// `secreto:retirar` en la organización (los mismos roles que emiten). Una
+    /// PERSONA: un agente saca lo que existe; no decide que deje de existir.
+    ///
+    /// Lo que hace, en la misma transacción: la fila con `retirado_en` y
+    /// `retiro` (no un `delete`: tiene que seguir contando que existió), sus
+    /// concesiones revocadas con fecha, el material fuera del almacén de la
+    /// celda, y la huella. Si el almacén dice que no, nada queda retirado.
+    ///
+    /// ⛔ El mismo error para «no existe», «ya retirado» y «no es tuyo», por lo
+    ///   mismo que en `resolver`: distinguirlos sería un directorio de lo ajeno.
+    fn retirar(&self, s: &Identidad, org: &str, nombre: &str) -> Respuesta {
+        let (org, nombre) = (org.to_string(), nombre.to_string());
+        let almacen = &self.almacen;
+        let self_celda = self.celda.clone();
+        self.en_transaccion(s, move |tx, emisor| {
+            let org = canonica(tx, &org)?;
+            let quien = verbos::persona_id(tx, emisor, &s.persona)?;
+            let recurso = format!("secreto/{nombre}");
+            let f = tx
+                .uno(
+                    "select s.id, ce.nombre,
+                            exists (select 1 from iam.concesion_viva c
+                                     where c.recurso = $3 and c.organizacion = s.organizacion
+                                       and c.sujeto = $4 and c.rol = 'owner') as es_dueno
+                       from cofre.secreto s
+                       join iam.celda ce on ce.id = s.celda and ce.nombre = $5
+                      where s.organizacion = $1 and s.nombre = $2
+                        and s.retirado_en is null",
+                    &[&org, &nombre, &recurso, &quien, &self_celda],
+                )?
+                .ok_or("ese secreto no existe o no es tuyo")?;
+            let (id, inquilino, es_dueno): (String, String, bool) = (f.get(0), f.get(1), f.get(2));
+            let como = if es_dueno {
+                "owner"
+            } else {
+                potestad::exige(tx, emisor, &s.persona, &org, "secreto:retirar")
+                    .map_err(|_| "ese secreto no existe o no es tuyo".to_string())?;
+                "secreto:retirar"
+            };
+
+            tx.ejecutar(
+                "update cofre.secreto set retirado_en = now(), retiro = $2 where id = $1",
+                &[&id, &quien],
+            )?;
+            let revocadas: i32 = tx
+                .uno(
+                    "select iam.revocar_de_secreto($1, $2, $3)",
+                    &[&recurso, &org, &quien],
+                )?
+                .map(|r| r.get(0))
+                .unwrap_or(0);
+            almacen.borrar(&nombre_en_almacen(&inquilino, &nombre))?;
+
+            tx.anotar(
+                "secreto:retirar",
+                &id,
+                Json::obj([
+                    ("organizacion", Json::s(&org)),
+                    ("nombre", Json::s(&nombre)),
+                    ("como", Json::s(como)),
+                    ("concesiones_revocadas", Json::Int(revocadas as i64)),
+                ]),
+            )?;
+            Ok(Json::obj([
+                ("secreto", Json::s(id)),
+                ("nombre", Json::s(nombre)),
+                ("retirado", Json::Bool(true)),
+                ("concesiones_revocadas", Json::Int(revocadas as i64)),
+            ]))
+        })
+    }
+
     // ── listar ──────────────────────────────────────────────────────────────
 
     fn listar(&self, s: &Identidad, org: &str) -> Respuesta {
@@ -438,6 +518,7 @@ pub fn mapa(con: bool) -> Vec<(&'static str, &'static str, bool)> {
         ("POST", "/organizaciones/{org}/secretos", con),
         ("GET", "/organizaciones/{org}/secretos", con),
         ("GET", "/organizaciones/{org}/secretos/{nombre}", con),
+        ("DELETE", "/organizaciones/{org}/secretos/{nombre}", con),
     ]
 }
 

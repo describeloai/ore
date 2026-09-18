@@ -569,8 +569,17 @@ grep -q "name: pg" "$REPO/ontology.config.yaml" && [ -d "$REPO/packages/pg" ] ||
 # un Job de catalogo en la cola, como si el reconciliador lo hubiera dejado
 cp "$TMP/rendido/plantilla-catalogo.txt" "$TMP/cola-semilla/44-el-catalogo-pg.yaml"
 ( cd "$TMP/cola-semilla" && git -c user.name=banco -c user.email=banco@invalido pull -q --rebase origin main; git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el catalogo de pg, encolado" && git push -q origin HEAD:main ) || falla "10 · no se pudo encolar el catalogo de pg"
+[ -f "$REPO/copias/tienda_orders.json" ] || falla "10 · falta el recibo de tienda.orders que dejo el caso 5"
 COD=$(borrar tienda)
 [ "$COD" = "200" ] || falla "10 · retirar tienda devolvio $COD: $(cuerpo)"
+# lo huerfano (2026-09-18): su recibo fuera del arbol en el mismo acto, y la
+# pasada de la copia encolada AUNQUE no quede ninguna vista con copia — es la
+# que recoge del almacen lo que la base dejo
+cuerpo | grep -q '"recibos":2' || falla "10 · no retiro los dos recibos de tienda (orders del caso 5, customers del 5b): $(cuerpo)"
+[ ! -e "$REPO/copias/tienda_customers.json" ] || falla "10 · copias/tienda_customers.json sigue en el arbol"
+[ ! -e "$REPO/copias/tienda_orders.json" ] || falla "10 · copias/tienda_orders.json sigue en el arbol"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml` .*sin vistas: la pasada que recoge lo huérfano' || falla "10 · sin vistas no encolo la pasada que recoge: $(cuerpo)"
+en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: ""' || falla "10 · el Job no lleva VISTAS vacio: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 # olist es la base A MANO sobre pg (sin alcance): no se retira por la API; se
 # quita del arbol como se puso, a mano
 rm -rf "$REPO/packages/olist"
@@ -579,7 +588,7 @@ COD=$(baja_fuente pg)
 cuerpo | grep -q '"retirada":true' || falla "10 · la respuesta no dice retirada: $(cuerpo)"
 cuerpo | grep -q '"catalogo":true' || falla "10 · no retiro el catalogo: $(cuerpo)"
 cuerpo | grep -q '"desencolado":"`44-el-catalogo-pg.yaml` fuera de la cola' || falla "10 · no desencolo el Job: $(cuerpo)"
-cuerpo | grep -q '"secreto":"sigue en el custodio como `fuente-pg`' || falla "10 · no dijo que la credencial sigue: $(cuerpo)"
+cuerpo | grep -q '"secreto":"`fuente-pg` sigue en el custodio: este servidor no sabe de ninguno' || falla "10 · sin cofre tenia que decir que la credencial sigue y por que: $(cuerpo)"
 grep -q "name: pg" "$REPO/ontology.config.yaml" && falla "10 · la conexion sigue en el manifiesto"
 [ ! -e "$REPO/packages/pg" ] || falla "10 · packages/pg sigue en el arbol"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "10 · el arbol no compila sin la fuente: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
@@ -590,6 +599,6 @@ COD=$(baja_fuente pg)
 [ "$COD" = "404" ] || falla "10 · retirar dos veces devolvio $COD: $(cuerpo)"
 COD=$(baja_fuente nadie)
 [ "$COD" = "404" ] || falla "10 · una fuente inventada devolvio $COD"
-dice "10 · retirar la fuente: 409 con la lista de databases que salen de ella · retiradas, 200: conexion, catalogo y Job fuera, la credencial dicha · 404 despues"
+dice "10 · retirar la fuente: 409 con la lista de databases que salen de ella · retirada tienda: su recibo fuera y la pasada que recoge encolada · 200: conexion, catalogo y Job fuera, la credencial pedida al custodio · 404 despues"
 
 echo "✓ la base estandar, y el catalogo no modela: 0–10"

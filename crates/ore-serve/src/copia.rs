@@ -191,18 +191,41 @@ impl Servidor {
         if let Err(e) = std::fs::remove_dir_all(&aparte) {
             return Respuesta::error(500, format!("no se pudo borrar el paquete: {e}"));
         }
+        // ⭐ Sus recibos en el árbol (`copias/<n>_*.json`), fuera en el mismo
+        //   commit: un recibo de una vista que ya no está es un recibo de nadie.
+        let mut recibos = 0usize;
+        if let Ok(entradas) = std::fs::read_dir(raiz.join("copias")) {
+            let prefijo = format!("{paquete}_");
+            for e in entradas.flatten() {
+                let nombre = e.file_name().to_string_lossy().into_owned();
+                if nombre.starts_with(&prefijo)
+                    && nombre.ends_with(".json")
+                    && std::fs::remove_file(e.path()).is_ok()
+                {
+                    recibos += 1;
+                }
+            }
+        }
         let mut campos = vec![
             ("package", Json::s(paquete)),
             ("retirado", Json::Bool(true)),
+            ("recibos", Json::Int(recibos as i64)),
         ];
         if tenia_copias {
+            // ⭐ Se encola AUNQUE no quede ninguna vista con copia: esa pasada es
+            //   la que recoge del almacén lo que la base retirada dejó
+            //   (`materialize --recoger` → `recoger-huerfanas`). Sin ella, el
+            //   bucket acumularía copias de nadie (medido el 2026-09-18).
             let quedan = vistas_con_copia(raiz);
-            let encolado = if quedan.is_empty() {
-                "nada que encolar: ya no queda ninguna vista con copia".to_string()
-            } else {
-                self.encolar_copia(&quedan, sujeto)
-            };
-            campos.push(("encolado", Json::s(encolado)));
+            let encolado = self.encolar_copia(&quedan, sujeto);
+            campos.push((
+                "encolado",
+                Json::s(if quedan.is_empty() {
+                    format!("{encolado} · sin vistas: la pasada que recoge lo huérfano")
+                } else {
+                    encolado
+                }),
+            ));
         }
         Respuesta::ok(Json::obj(campos))
     }

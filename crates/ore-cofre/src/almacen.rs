@@ -172,6 +172,17 @@ impl Almacen {
         version_de(&String::from_utf8_lossy(&salida))
     }
 
+    /// Borra el secreto entero del almacén, con todas sus versiones. Que no
+    /// esté ya no es un error: una baja que se quedó a medias entre el almacén
+    /// y la base se termina volviendo a llamar, como `crear`.
+    pub fn borrar(&self, nombre: &str) -> Result<(), String> {
+        match self.correr(&["delete", nombre, "--quiet"], None) {
+            Ok(_) => Ok(()),
+            Err(e) if e.contains("NOT_FOUND") || e.contains("not found") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// El valor de la última versión, y cuál es. Dos llamadas y no una: el
     /// `access` devuelve el valor crudo, sin envolver, y así no hay que
     /// descodificar nada aquí; el `describe` dice el número.

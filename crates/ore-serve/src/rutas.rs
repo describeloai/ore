@@ -178,8 +178,15 @@ impl Servidor {
             //   cofre no tiene baja todavía, y es un acto con su propia huella.
             ("DELETE", ["fuentes", n]) => {
                 let n = n.to_string();
+                // Con el testigo de quien pide, como el alta: el custodio decide
+                // si esa persona puede retirar (`owner`, o `secreto:retirar`).
+                let testigo = p
+                    .cabeceras
+                    .get("authorization")
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .map(str::to_string);
                 self.escribiendo(sujeto, &format!("retirar la fuente `{n}`"), |r| {
-                    self.retirar_fuente(r, &n, sujeto)
+                    self.retirar_fuente(r, &n, testigo.as_deref(), sujeto)
                 })
             }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
@@ -494,15 +501,22 @@ impl Servidor {
     ///    no es de nadie; el reconciliador no lo re-cataloga porque la fuente
     ///    ya no está declarada;
     /// 3. su Job de catálogo fuera de la cola, si seguía ahí;
-    /// 4. ⛔ la credencial SIGUE en el custodio como `fuente-<n>`: el cofre no
-    ///    tiene baja, y darla es un acto suyo con su propia huella. Se dice.
+    /// 4. la credencial fuera del custodio (`DELETE …/secretos/fuente-<n>`, con
+    ///    el testigo de quien pide: el cofre decide y deja su huella). Si el
+    ///    custodio dice que no, la fuente ya no está y se DICE lo que quedó.
     ///
     /// **409 si alguna database sale de ella**: una base es un paquete con
     /// alcance cuyo `source` es esta fuente, y sus tablas la nombran como
     /// `datasource`. Retirar la fuente las dejaría sin compilar; se retiran
     /// antes, y aquí se dice cuáles. Y la puerta de siempre: si el árbol
     /// empeora por algo que no la nombra, no se escribe nada.
-    fn retirar_fuente(&self, raiz: &Path, nombre: &str, sujeto: &Identidad) -> Respuesta {
+    fn retirar_fuente(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+        testigo: Option<&str>,
+        sujeto: &Identidad,
+    ) -> Respuesta {
         if let Err(m) = token(nombre) {
             return Respuesta::error(422, format!("nombre de fuente: {m}"));
         }
@@ -624,18 +638,47 @@ impl Servidor {
         }
         // ③ la cola.
         let desencolado = self.desencolar_catalogo(nombre, sujeto);
+        // ④ la credencial.
+        let secreto = self.retirar_credencial(nombre, testigo);
         Respuesta::ok(Json::obj([
             ("source", Json::s(nombre)),
             ("retirada", Json::Bool(true)),
             ("catalogo", Json::Bool(catalogo_retirado)),
             ("desencolado", Json::s(desencolado)),
-            (
-                "secreto",
-                Json::s(format!(
-                    "sigue en el custodio como `fuente-{nombre}`: el cofre no tiene baja todavía, y es un acto suyo"
-                )),
-            ),
+            ("secreto", Json::s(secreto)),
         ]))
+    }
+
+    /// `DELETE /organizaciones/{org}/secretos/fuente-<n>` en el custodio, con el
+    /// testigo de quien pide. Lo que dice va en la respuesta; no deshace la
+    /// baja de la fuente, que ya está escrita.
+    fn retirar_credencial(&self, nombre: &str, testigo: Option<&str>) -> String {
+        let (Some(cofre), Some(org)) = (&self.cofre, &self.organizacion) else {
+            return format!(
+                "`fuente-{nombre}` sigue en el custodio: este servidor no sabe de ninguno (`--cofre` y `--organizacion`)"
+            );
+        };
+        let Some(t) = testigo else {
+            return format!(
+                "`fuente-{nombre}` sigue en el custodio: la petición no traía testigo que reenviar"
+            );
+        };
+        match http::pedir(
+            "DELETE",
+            cofre,
+            &format!("/organizaciones/{org}/secretos/fuente-{nombre}"),
+            Some(t),
+            None,
+        ) {
+            Err(e) => format!("`fuente-{nombre}` sigue en el custodio: {e}"),
+            Ok((c, _)) if (200..300).contains(&c) => {
+                format!("`fuente-{nombre}` retirada del custodio")
+            }
+            Ok((c, b)) => format!(
+                "`fuente-{nombre}` sigue en el custodio: contestó {c} · {}",
+                b.trim().chars().take(90).collect::<String>()
+            ),
+        }
     }
 
     /// El Job de catálogo de una fuente fuera de la cola, si seguía ahí. Lo

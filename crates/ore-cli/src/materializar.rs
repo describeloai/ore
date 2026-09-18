@@ -77,6 +77,16 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         .collect();
     if declaradas.is_empty() {
         println!("sin copias · ninguna vista del paquete declara `materialized`");
+        // Y lo que quedó de las que hubo: la pasada que limpia.
+        if recoger && !seco {
+            match recoger_huerfanas(&[]) {
+                Ok(l) => println!("  {l}"),
+                Err(e) => println!("  {e}"),
+            }
+        }
+        if let Some(dir) = informe {
+            retirar_informes_de_nadie(dir, &[]);
+        }
         return std::process::ExitCode::SUCCESS;
     }
 
@@ -178,6 +188,29 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             }
         }
     }
+    // ── Lo huérfano (2026-09-18) ─────────────────────────────────────────────
+    //
+    // `recoger` (dentro de `una`) borra las copias superadas de CADA plan
+    // vigente. Lo que ningún plan vigente reclama —la base que se retiró, la
+    // vista que dejó de declarar copia— sólo se sabe mirando el árbol entero:
+    // los planes de TODAS las vistas con copia, con o sin `--vista`, porque una
+    // pasada parcial no puede tomar por huérfano lo que no le tocaba.
+    let reclamados: Vec<String> = declaradas
+        .iter()
+        .filter_map(|v| v.qname())
+        .filter_map(|qn| catalogo.expandir(&qn).ok().map(|p| p.digest()))
+        .collect();
+    if recoger && !seco {
+        match recoger_huerfanas(&reclamados) {
+            Ok(l) => println!("{l}"),
+            Err(e) => println!("{e}"),
+        }
+    }
+    if let Some(dir) = informe {
+        let vivas: Vec<String> = declaradas.iter().filter_map(|v| v.qname()).collect();
+        retirar_informes_de_nadie(dir, &vivas);
+    }
+
     if !op.solo.is_empty() && vistas == 0 {
         eprintln!(
             "error: ninguna de las vistas pedidas ({}) declara copia en este árbol",
@@ -531,6 +564,62 @@ fn una(
 ///
 /// Con «ya está» no se conocen las filas —nadie las contó—: se conservan las
 /// del informe anterior si la clave es la misma, y se dice `al-dia`.
+/// `ore-store recoger-huerfanas` con los planes que el árbol reclama.
+fn recoger_huerfanas(planes: &[String]) -> Result<String, String> {
+    use ore_core::json::Json;
+    let entrada = Json::obj([
+        (
+            "planes",
+            Json::Arr(planes.iter().map(|p| Json::s(p)).collect()),
+        ),
+        ("seco", Json::Bool(false)),
+    ])
+    .jcs();
+    let r = almacen("recoger-huerfanas", &entrada, None)?;
+    let n = |k: &str| {
+        r.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("0")
+            .to_string()
+    };
+    Ok(format!(
+        "huérfanas: {} copia(s) de planes que ninguna vista reclama y {} artefacto(s) sin recibo, fuera del almacén ({} recibos, {} planes vigentes)",
+        n("huerfanas"),
+        n("sueltos"),
+        n("recibos"),
+        n("planes")
+    ))
+}
+
+/// Los informes `copias/<paquete>_<vista>.json` de vistas que ya no están en
+/// el árbol, fuera: un recibo de nadie en el árbol es tan engañoso como una
+/// copia de nadie en el almacén.
+fn retirar_informes_de_nadie(dir: &Path, vivas: &[String]) {
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entradas.flatten() {
+        let ruta = e.path();
+        if ruta.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(t) = std::fs::read_to_string(&ruta) else {
+            continue;
+        };
+        let vista = ore_core::parse::parse(&t).ok().and_then(|n| {
+            n.get("vista")
+                .and_then(|(_, v)| v.as_str().map(String::from))
+        });
+        if let Some(v) = vista
+            && !vivas.contains(&v)
+        {
+            if std::fs::remove_file(&ruta).is_ok() {
+                println!("  informe de `{v}` retirado: la vista ya no está en el árbol");
+            }
+        }
+    }
+}
+
 fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Result<(), String> {
     use ore_core::json::Json;
     std::fs::create_dir_all(dir)

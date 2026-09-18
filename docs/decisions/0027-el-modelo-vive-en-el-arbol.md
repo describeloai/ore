@@ -748,6 +748,25 @@ nombre como `datasource`; y la credencial **dicha**: sigue en el custodio, porqu
 tiene baja y darla es un acto suyo con su huella (`la-copia-se-decide` 10). En la consola, el ⋮ de
 la ficha de la conexión.
 
+**Los dos huecos de la baja, medidos y cerrados (18 de septiembre,
+`medida-los-huecos-de-la-baja.py`).** *Copias de nadie:* retirar una base dejaba sus recibos en
+`copias/` y sus objetos en el bucket, y `recoger` no los veía (busca superadas BAJO un plan
+vigente). En demo: 1 recibo de un plan sin vista y 2 artefactos sin recibo; poco hoy, y para
+siempre. Cierre: `DELETE /paquetes/{n}` retira `copias/<n>_*.json` en el mismo commit y **encola la
+pasada de la copia aunque no quede ninguna vista** (`VISTAS=""`), porque esa pasada es la que
+limpia: `ore materialize --recoger` llama a `ore-store recoger-huerfanas` con los planes de
+**todas** las vistas con copia del árbol (con o sin `--vista`) y el almacén borra recibo y
+artefacto de lo que ningún plan reclama, más los artefactos sin recibo; y con `--informe` retira
+los informes de vistas que ya no están (`la-pregunta` 9, `la-copia` 10). *Credenciales de nadie:*
+19 fuentes retiradas en demo (cota superior) y 2 en victor dejaron su `fuente-<n>` vivo en el
+custodio. Cierre: la `037` da la potestad `secreto:retirar` (a los mismos roles que emiten) y
+`iam.revocar_de_secreto`, gemela de la `021`; el cofre gana `DELETE /organizaciones/{org}/secretos/{n}`
+— puede el `owner` (quien lo emitió) o quien tenga la potestad, nunca un agente; la fila queda con
+`retirado_en` y quien (la `020` lo previó: «no un delete»), las concesiones revocadas con fecha, el
+material fuera del almacén de la celda, y la huella sin el valor (`el-cofre` 10). Y `DELETE
+/fuentes/{n}` lo pide con el testigo de quien pulsa, como el alta: la respuesta dice si la
+credencial salió o por qué no.
+
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos
 clave obligatoria?»*. Tiene razón, y la medida dice de dónde viene la conflación:

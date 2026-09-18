@@ -78,6 +78,7 @@ configMapGenerator:
       - migraciones/034-el-realm-es-rubix.sql
       - migraciones/035-el-perfil-de-la-organizacion.sql
       - migraciones/036-el-estado-de-la-celda.sql
+      - migraciones/037-la-baja-del-secreto.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

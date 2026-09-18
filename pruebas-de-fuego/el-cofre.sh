@@ -28,6 +28,8 @@
 #   7  la huella                              emitir y resolver, SIN el valor
 #   8  ⭐ se abre con la llave con la que se CERRÓ, no con la de ahora
 #   9  ⭐⭐ el material NO está en la base central (0024-⑤): está en el almacén
+#  10  ⭐ la baja (037): owner o `secreto:retirar`; fila con retirado_en, concesiones
+#      revocadas, material fuera del almacén, huella sin el valor; el agente no puede
 #        de la celda, bajo el prefijo del inquilino — y lo viejo se MUDA
 #
 # ── ⭐ Y el almacén también es de mentira, por lo mismo ────────────────────
@@ -178,6 +180,16 @@ def opt(n):
 if a[0] == "secrets":
     raiz = os.environ["ALMACEN_DE_MENTIRA"]
     proyecto = opt("--project") or "?"
+    if a[1] == "delete":
+        # la baja (037): el secreto entero, con sus versiones; NOT_FOUND si no esta
+        import shutil
+        nombre = a[2]
+        d = os.path.join(raiz, nombre)
+        if not os.path.isdir(d):
+            sys.stderr.write("ERROR: (gcloud.secrets.delete) NOT_FOUND: Secret [%s] not found.\n" % nombre)
+            raise SystemExit(1)
+        shutil.rmtree(d)
+        raise SystemExit(0)
     if a[1] == "create":
         nombre = a[2]
         d = os.path.join(raiz, nombre)
@@ -492,6 +504,50 @@ COFRE_URL="$URL_COFRE" "$COFRE" mudar --organizacion acme \
   || falla "9 · la segunda pasada de \`mudar\` fallo: $(cat "$TMP/mudar.txt")"
 grep -q "0 secretos mudados" "$TMP/mudar.txt" || falla "9 · la segunda pasada deberia mudar 0: $(cat "$TMP/mudar.txt")"
 dice "9 · el material esta en el almacen y no en la base · con la CMEK de la organizacion · y lo viejo se muda una vez"
+
+# ── 10 · la baja (037): retirar un secreto ───────────────────────────────────
+#
+# Medido el 2026-09-18: 19 fuentes retiradas en `demo` dejaron 19 credenciales
+# vivas en el custodio, porque no habia verbo. Ahora lo hay, y lo que fija:
+#   · Zoe (de `otra`, sin potestad ni concesion) NO puede, y el error es el
+#     mismo que «no existe» — no se destapa lo ajeno
+#   · Ada, `owner` por haberlo emitido, retira: 200, la fila queda con
+#     `retirado_en` y quien (no un delete), las concesiones revocadas con fecha,
+#     el material FUERA del almacen, y la huella `secreto:retirar` SIN el valor
+#   · despues, resolver dice «no existe o no es tuyo», y retirar otra vez igual
+#   · el agente (`usar`) no puede retirar: un agente no decide que algo deje
+#     de existir
+[ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$ZOE")" = "422" ] \
+  || falla "10 · Zoe retiro un secreto ajeno: $(cat "$TMP/r.json")"
+grep -q "no existe o no es tuyo" "$TMP/r.json" || falla "10 · el error de Zoe destapa algo: $(cat "$TMP/r.json")"
+[ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$UNO")" = "422" ] \
+  || falla "10 · el agente retiro un secreto: $(cat "$TMP/r.json")"
+[ -d "$TMP/almacen/t-acme-cofre-pg-produccion" ] || falla "10 · algo borro el material antes de tiempo"
+[ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "200" ] \
+  || falla "10 · Ada no pudo retirar el suyo: $(cat "$TMP/r.json")"
+[ "$(campo retirado)" = "True" ] || falla "10 · la respuesta no dice retirado: $(cat "$TMP/r.json")"
+[ "$(campo concesiones_revocadas)" -ge 2 ] || falla "10 · no revoco owner y usar: $(cat "$TMP/r.json")"
+[ ! -d "$TMP/almacen/t-acme-cofre-pg-produccion" ] || falla "10 · el material sigue en el almacen: $(ls "$TMP/almacen")"
+FILA=$(psql "$URL" -qtAc "select (retirado_en is not null) and (retiro is not null) from cofre.secreto where nombre='pg-produccion' and organizacion='$ORG'")
+[ "$FILA" = "t" ] || falla "10 · la fila no quedo con retirado_en y retiro: $FILA"
+VIVAS=$(psql "$URL" -qtAc "select count(*) from iam.concesion_viva where recurso='secreto/pg-produccion' and organizacion='$ORG'")
+[ "$VIVAS" = "0" ] || falla "10 · quedan concesiones vivas sobre el secreto retirado: $VIVAS"
+REVOCADAS=$(psql "$URL" -qtAc "select count(*) from iam.concesion where recurso='secreto/pg-produccion' and organizacion='$ORG' and revocada_en is not null and revoco is not null")
+[ "$REVOCADAS" -ge 2 ] || falla "10 · las concesiones no quedaron revocadas con fecha y quien: $REVOCADAS"
+HUELLA=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='secreto:retirar' and detalle->>'nombre'='pg-produccion' and detalle->>'como'='owner'")
+[ "$HUELLA" = "1" ] || falla "10 · falta la huella secreto:retirar como owner: $HUELLA"
+FUGA=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='secreto:retirar' and detalle::text like '%postgres://%'")
+[ "$FUGA" = "0" ] || falla "10 · la huella de la baja lleva el valor dentro"
+[ "$(pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "422" ] \
+  || falla "10 · retirado y se sigue resolviendo: $(cat "$TMP/r.json")"
+[ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$ADA")" = "422" ] \
+  || falla "10 · retirar dos veces no dio el mismo error: $(cat "$TMP/r.json")"
+# Y con la POTESTAD, sin ser owner: Ada emite otro, y quien tiene
+# `secreto:retirar` en `acme` sin haberlo emitido... es Ada misma (ORGADMIN);
+# se comprueba la potestad en la tabla, que es lo que la 037 añade.
+POT=$(psql "$URL" -qtAc "select string_agg(rol, ' ' order by rol) from iam.rol_potestad where potestad='secreto:retirar'")
+[ "$POT" = "ACCOUNTADMIN ORGADMIN SECURITYADMIN" ] || falla "10 · la potestad secreto:retirar no esta en los roles que emiten: $POT"
+dice "10 · la baja: Zoe y el agente no pueden (mismo error que «no existe») · Ada, owner, retira: fila con retirado_en, concesiones revocadas con fecha, material fuera del almacen, huella sin el valor · despues no resuelve ni se retira dos veces"
 
 echo
 echo "✓ el custodio guarda, abre a quien puede, y no deja el valor en ningun otro sitio"

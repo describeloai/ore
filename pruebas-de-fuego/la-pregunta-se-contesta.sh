@@ -353,4 +353,31 @@ servido "len(d['datos'])==2 and d['filas']==2 and d['leidas']==5 and d['limite']
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/vistas/ventas/pedidos/ejecutar")" = "401" ] || falla "7 · sin identidad no dio 401"
 ok "7 · servido: POST /vistas/{ns}/{n}/ejecutar → 200 con datos · limite · 404 · 409 · 422 · 401"
 
+# ── 9 · lo huérfano: la vista se va, su copia y su recibo también ─────────────
+# Retirar una base deja sus copias en el almacén y su recibo en `copias/`, y
+# `recoger` no las ve (busca superadas BAJO un plan vigente). Medido en demo el
+# 2026-09-18. La pasada con `--recoger` recoge lo que ningún plan del árbol
+# reclama, y retira el informe de la vista que ya no está.
+kill "$SRV" 2>/dev/null; SRV=""
+RECIBOS_ANTES=$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v1/plan/" | grep -o '<Key>[^<]*</Key>' | wc -l)
+[ "$RECIBOS_ANTES" -ge 1 ] || falla "9 · el almacén no tiene recibos que recoger ($RECIBOS_ANTES)"
+# un artefacto suelto, como una subida que se cortó
+curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v1/deadbeef" -d "bytes de nadie"
+salida=$("$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger con todo vigente"; }
+case "$salida" in *"huérfanas: 0 copia(s)"*"1 artefacto(s) sin recibo"*) ;; *) falla "9 · con todo vigente tenía que recoger 0 huérfanas y 1 suelto: $salida";; esac
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/ore/v1/deadbeef")" = "404" ] || falla "9 · el artefacto suelto sigue"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/$CLAVE")" = "200" ] || falla "9 · recoger tocó la copia vigente de pedidos"
+# la vista deja de declarar copia (la entidad la respalda: quitarla rompería
+# OOS2018); para el almacén es lo mismo que si su base se hubiera retirado
+grep -v '^  materialized:' "$A/packages/ventas/views/pedidos.yaml" > "$TMP/pedidos.sin" && mv "$TMP/pedidos.sin" "$A/packages/ventas/views/pedidos.yaml"
+grep -q materialized "$A/packages/ventas/views/pedidos.yaml" && falla "9 · pedidos sigue declarando copia"
+( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "9 · el árbol sin pedidos no compila: $(cd "$A" && "$ORE" validate . 2>&1 | grep -A1 '^error' | head -4)"
+salida=$("$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger sin pedidos"; }
+case "$salida" in *"huérfanas: 1 copia(s)"*) ;; *) falla "9 · sin pedidos tenía que recoger 1 huérfana: $salida";; esac
+case "$salida" in *"informe de \`ventas.pedidos\` retirado"*) ;; *) falla "9 · no retiró el informe de la vista que ya no está: $salida";; esac
+[ ! -f "$A/copias/ventas_pedidos.json" ] || falla "9 · copias/ventas_pedidos.json sigue en el árbol"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/$CLAVE")" = "404" ] || falla "9 · la copia de la vista retirada sigue en el almacén"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/$RECIBO")" = "404" ] || falla "9 · el recibo de la vista retirada sigue en el almacén"
+ok "9 · lo huérfano: con todo vigente, recoger no toca nada (y borra un artefacto suelto); retirada la vista, su recibo y su copia salen del almacén y su informe del árbol"
+
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x938\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
