@@ -149,6 +149,8 @@ cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"
 # el informe (P1 I3): lo que quien no alcanza el almacen sabe de la copia
 cmp_n copiada "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe dice el estado" "P1 I3"
 cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe cuenta las filas" "P1 I3"
+# y por columna (medida W1 §B): una copia con las filas y sin los valores era `copiada` igual
+cmp_n 1000 "$(tr -d ' \n' < "$INF/ventas_copia.json" | sed -n 's/.*"columnas":{[^}]*"total":\([0-9]*\).*/\1/p' | head -1)" "① el informe cuenta cada columna" "W1 §B"
 n1=$(objetos); cmp_n 2 "$((n1 - antes))" "① objetos nuevos (artefacto + recibo)" "I5 (hecho)"
 
 a2=$("$ORE" materialize "$D" --informe "$INF" 2>&1)

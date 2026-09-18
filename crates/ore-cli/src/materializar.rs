@@ -392,9 +392,41 @@ fn una(
             .to_string()
     };
     let entero = |k: &str| campo(k).parse::<i64>().unwrap_or(0);
+    // Por columna, cuántas filas la traen: lo que salga vacío se dice aquí y
+    // va al informe. Una copia con todas sus filas y sin sus números era
+    // `copiada` igual, y nadie lo veía sin abrir el artefacto (medida W1 §B).
+    let columnas: BTreeMap<String, ore_core::json::Json> = salida
+        .get("columnas")
+        .map(|(_, o)| {
+            o.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    Some((
+                        k.as_str()?.to_string(),
+                        ore_core::json::Json::Int(v.as_str()?.parse().ok()?),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let vacias: Vec<&str> = columnas
+        .iter()
+        .filter(|(_, n)| matches!(n, ore_core::json::Json::Int(0)))
+        .map(|(c, _)| c.as_str())
+        .collect();
+    let aviso_columnas = if vacias.is_empty() || entero("filas") == 0 {
+        String::new()
+    } else {
+        format!(
+            "\n  ⚠ {} de {} columnas sin ningún valor: {}",
+            vacias.len(),
+            columnas.len(),
+            vacias.join(", ")
+        )
+    };
     Ok((
         format!(
-            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}",
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}",
             campo("clave"),
             campo("filas"),
             campo("bytes"),
@@ -408,6 +440,7 @@ fn una(
             ("filas", ore_core::json::Json::Int(entero("filas"))),
             ("leidas", ore_core::json::Json::Int(leidas as i64)),
             ("bytes", ore_core::json::Json::Int(entero("bytes"))),
+            ("columnas", ore_core::json::Json::Obj(columnas)),
             (
                 "subido",
                 ore_core::json::Json::Bool(campo("subido") == "true"),

@@ -168,6 +168,12 @@ export FICHEROS_DIR="$TMP/datos"
 salida=$("$ORE" materialize "$A" --informe "$A/copias" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
 CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["clave"])' "$A/copias/olist_copia_productCategoryNameTranslation.json")
 [ -n "$CLAVE" ] || { falla "0 · el informe de la copia no tiene clave"; exit 1; }
+# y cuenta por columna (medida W1 §B): en demo una copia «copiada» tenía 2 de 9 columnas
+"$PY" - "$A/copias/olist_copia_productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
+import json, sys
+i = json.load(open(sys.argv[1]))
+assert i["columnas"] == {"productCategoryName": i["filas"], "productCategoryNameEnglish": i["filas"]}, i.get("columnas")
+EOF
 dice "0 · copia hecha · $CLAVE"
 
 # ── 1 · I1: la copia vuelve por su nombre ────────────────────────────────────

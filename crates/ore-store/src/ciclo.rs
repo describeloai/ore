@@ -173,6 +173,20 @@ fn sellar<'a>(
         carga::fundir(anteriores, llegadas, &cab.clave)
     };
 
+    // **Cuántas filas traen cada columna.** El informe decía «32 951 filas,
+    // copiada» de una copia con 2 de 9 columnas vacías (medida W1 §B: el
+    // driver de Postgres convertía en nulo lo que no sabía leer). Las filas no
+    // bastan para saber qué hay: se cuenta por columna, y lo que salga vacío
+    // se ve en el informe sin abrir el artefacto.
+    let columnas = ore_core::json::Json::Obj(
+        cab.esquema
+            .keys()
+            .map(|c| {
+                let n = filas.iter().filter(|f| f.contains_key(c)).count();
+                (c.clone(), ore_core::json::Json::Int(n as i64))
+            })
+            .collect(),
+    );
     let parquet = carga::escribir(&cab.esquema, &filas)?;
     let artefacto = sobre::sellar(&cab, &parquet);
     let clave = sobre::clave(&artefacto);
@@ -192,6 +206,7 @@ fn sellar<'a>(
     Ok(ore_core::json::Json::obj([
         ("bytes", ore_core::json::Json::Int(artefacto.len() as i64)),
         ("clave", ore_core::json::Json::s(&clave)),
+        ("columnas", columnas),
         ("digest", ore_core::json::Json::s(&digest)),
         ("filas", ore_core::json::Json::Int(filas.len() as i64)),
         ("recibo", ore_core::json::Json::s(recibo)),

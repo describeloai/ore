@@ -62,6 +62,8 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::process::ExitCode;
 
+mod texto;
+
 /// Un documento, una consulta.
 ///
 /// Va contra `pg_catalog` y no contra `information_schema`, y eso salió midiendo:
@@ -710,9 +712,13 @@ fn filas(peticion: &str) -> Result<String, String> {
 
     let mut out = String::new();
     for fila in &resultado {
-        // Todo sale como texto: el driver no interpreta tipos, y convertirlos
-        // aquí sería una segunda costura de tipos al lado de la que ya existe
-        // para el catálogo.
+        // Todo sale como texto: el driver no interpreta tipos, **los
+        // transporta**. Cada valor se decodifica del cable por su tipo y se
+        // escribe como Postgres lo escribiría (`texto.rs`); lo que no se sabe
+        // leer falla nombrando la columna y el tipo. Esto hacía
+        // `try_get::<Option<String>>(i).unwrap_or(None)`, y un `float8` o un
+        // `int8` —que no son `String`— salían como nulo sin decirlo: la copia
+        // de `products` en demo tenía 2 de 9 columnas (medida W1 §B).
         //
         // **Y se lee por NOMBRE, no por posición.** Esto leía por índice
         // —`0..proyeccion.len()`— y funcionaba porque su traductor no
@@ -720,16 +726,17 @@ fn filas(peticion: &str) -> Result<String, String> {
         // *i* del resultado ya no es la propiedad *i*: `c.columnas` dice el
         // orden real, y dos propiedades de la misma columna reciben el mismo
         // valor, que es lo correcto.
-        let valores: Vec<Option<String>> = p
-            .proyeccion
-            .iter()
-            .map(|(_, col)| {
-                c.columnas
-                    .iter()
-                    .position(|x| x == col)
-                    .and_then(|i| fila.try_get::<_, Option<String>>(i).unwrap_or(None))
-            })
-            .collect();
+        let mut valores: Vec<Option<String>> = Vec::with_capacity(p.proyeccion.len());
+        for (_, col) in &p.proyeccion {
+            let Some(i) = c.columnas.iter().position(|x| x == col) else {
+                valores.push(None);
+                continue;
+            };
+            let v = fila
+                .try_get::<_, Option<texto::Texto>>(i)
+                .map_err(|e| format!("la columna `{col}` no se pudo leer: {e}"))?;
+            valores.push(v.map(|t| t.0));
+        }
         out.push_str(&ore_driver::fila(&p, &valores));
         out.push('\n');
     }
