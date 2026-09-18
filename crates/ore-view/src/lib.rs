@@ -53,6 +53,7 @@ pub mod cost_model;
 pub mod delta_compiler;
 pub mod filter_tree;
 pub mod flow;
+pub mod hoja;
 pub mod lineage;
 pub mod plan;
 pub mod refresh_analyzer;

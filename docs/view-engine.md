@@ -288,6 +288,15 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   Snowflake entre medias. De ahí sale `Politica::Trabajo`, que compara medidas en vez de
   extrapolar, y `ore-maintain` la alimenta con lo suyo: la carga inicial de una sesión **es** un
   recómputo, así que de ella sale el coste por fila de recomputar.
+- **El recómputo es el ejecutor de una pregunta** ([ADR 0030](decisions/0030-el-arbol-en-el-editor.md)
+  W1). `recomputar(plan, bases)` era la semántica de referencia contra la que se comprueba el
+  circuito; con la copia entera como base es la **respuesta** de una vista, y por eso hay dos
+  cosas que el Δ niega y el recómputo no: `Limita` (los primeros `n` en el orden canónico) y el
+  promedio (`suma / cuenta`, exacto, a seis decimales, mitad lejos de cero). El Δ niega lo que no
+  puede *mantener*, no lo que no puede calcular. La entrada tipada sale de `hoja.rs`: la cabecera
+  de la copia dice el tipo de cada campo y las filas en texto se convierten en `Valor` —`Integer`
+  entero, `Decimal`/`Float` decimal exacto, `Boolean`, y el resto cadena—; un `Float` con
+  exponente, `NaN` o `Infinity` se niega en la hoja nombrando fila, columna y valor.
 
   Lo que queda medido a medias es el **almacén real**: estas cifras son de la máquina de
   referencia, sobre Z-sets en memoria.

@@ -184,7 +184,7 @@ impl Zset {
     }
 
     /// Solo las filas con peso positivo: lo que **está**, como multiconjunto.
-    fn presentes(&self) -> impl Iterator<Item = (&Fila, i64)> {
+    pub fn presentes(&self) -> impl Iterator<Item = (&Fila, i64)> {
         self.0.iter().filter(|(_, w)| **w > 0).map(|(f, w)| (f, *w))
     }
 
@@ -332,8 +332,9 @@ pub enum Evaluacion {
     Opaca,
     /// Un entero se salió de `i64`, o un decimal de `i128`.
     Desborde,
-    /// Lo que no tiene semántica de referencia: `Limita`, una junta externa, un
-    /// promedio, una referencia sin expandir. Se dice cuál.
+    /// Lo que no tiene semántica de referencia: una junta externa, una
+    /// referencia sin expandir. Se dice cuál. (`Limita` y el promedio la
+    /// tienen desde W1: son de un recómputo, no de un Δ.)
     SinSemantica(&'static str),
     /// La condición de un filtro no dio un booleano.
     NoEsBooleano,
@@ -823,7 +824,22 @@ impl Op {
 // ── La semántica de referencia ──────────────────────────────────────────────
 
 /// **`Q`**, sin incrementalizar: el plan entero sobre las bases enteras. Es
-/// contra lo que se comprueba el circuito.
+/// contra lo que se comprueba el circuito — y es **el ejecutor de una
+/// pregunta** (0030 W1): la copia entera como base, un recómputo, la respuesta.
+///
+/// Por eso aquí hay dos cosas que el circuito Δ **niega y esto no**, y no es
+/// una incoherencia: el Δ niega lo que no puede *mantener*, no lo que no puede
+/// calcular.
+///
+/// - **`Limita`**: los primeros `n` en el orden canónico del Z-set, que es
+///   determinista. Retirar una fila de dentro del top-N exige conocer la N+1
+///   —de ahí que el Δ lo niegue—; recomputar no retira nada. No hay `orderBy`
+///   en el vocabulario de `View`: cuando lo haya, el orden se decide aquí.
+/// - **El promedio**: `suma / cuenta`, exacto sobre los dígitos y **a seis
+///   decimales**, redondeado a la mitad lejos de cero, normalizado. Mantenerlo
+///   exige dividir en cada paso y el álgebra no divide; calcularlo una vez es
+///   una división, y la escala fija es lo que hace que dos recómputos den los
+///   mismos dígitos.
 pub fn recomputar(plan: &Nodo, bases: &BTreeMap<Hoja, Zset>) -> Result<Zset, Evaluacion> {
     recomputar_contando(plan, bases).map(|(z, _)| z)
 }
@@ -850,7 +866,21 @@ fn recomputar_con(
 ) -> Result<Zset, Evaluacion> {
     Ok(match plan {
         Nodo::Referencia(_) => return Err(Evaluacion::SinSemantica("referencia sin expandir")),
-        Nodo::Limita { .. } => return Err(Evaluacion::SinSemantica("limita")),
+        Nodo::Limita { entrada, n } => {
+            let z = recomputar_con(entrada, bases, t)?;
+            let mut out = Zset::nuevo();
+            let mut quedan = *n;
+            for (f, w) in z.presentes() {
+                if quedan == 0 {
+                    break;
+                }
+                *t += 1;
+                let toma = u64::try_from(w).unwrap_or(0).min(quedan);
+                out.insertar(f.clone(), toma as i64);
+                quedan -= toma;
+            }
+            out
+        }
         Nodo::Lee(l) => bases
             .get(&(l.datasource.clone(), l.objeto.clone()))
             .cloned()
@@ -1080,21 +1110,13 @@ fn de_un_grupo(
         for (nombre, a) in agregados {
             let v = match (a.funcion, &a.sobre) {
                 (Agregado::Cuenta, _) => Valor::Entero(filas.iter().map(|(_, w)| w).sum()),
-                (Agregado::Promedio, _) => return Err(Evaluacion::SinSemantica("promedio")),
                 (_, None) => return Err(Evaluacion::ColumnaAusente(nombre.clone())),
-                (Agregado::Suma, Some(c)) => {
-                    let mut acc: Option<Valor> = None;
-                    for (f, w) in filas {
-                        let v = f
-                            .get(c)
-                            .ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?;
-                        let v = por_peso(v, *w)?;
-                        acc = Some(match acc {
-                            None => v,
-                            Some(a) => sumar_valores(&a, &v)?,
-                        });
-                    }
-                    acc.ok_or_else(|| Evaluacion::ColumnaAusente(c.clone()))?
+                (Agregado::Suma, Some(c)) => suma_de(filas, c)?,
+                // Solo llega aquí desde el recómputo: `compilar` niega el
+                // promedio antes de construir el circuito (`motivos`).
+                (Agregado::Promedio, Some(c)) => {
+                    let cuenta: i64 = filas.iter().map(|(_, w)| w).sum();
+                    promedio(&suma_de(filas, c)?, cuenta)?
                 }
                 (f, Some(c)) => {
                     let mut mejor: Option<&Valor> = None;
@@ -1123,6 +1145,51 @@ fn de_un_grupo(
         }
         Ok(fila)
     }
+}
+
+/// La suma de una columna sobre las filas de un grupo, con sus pesos.
+fn suma_de(filas: &[(&Fila, i64)], c: &str) -> Result<Valor, Evaluacion> {
+    let mut acc: Option<Valor> = None;
+    for (f, w) in filas {
+        let v = f
+            .get(c)
+            .ok_or_else(|| Evaluacion::ColumnaAusente(c.to_string()))?;
+        let v = por_peso(v, *w)?;
+        acc = Some(match acc {
+            None => v,
+            Some(a) => sumar_valores(&a, &v)?,
+        });
+    }
+    acc.ok_or_else(|| Evaluacion::ColumnaAusente(c.to_string()))
+}
+
+/// La escala del promedio. Fija, para que dos recómputos den los mismos dígitos.
+const ESCALA_PROMEDIO: u32 = 6;
+
+/// `suma / cuenta`, exacto sobre los dígitos, a [`ESCALA_PROMEDIO`] decimales y
+/// redondeado a la mitad lejos de cero. Un entero se promedia como decimal:
+/// `(1 + 2) / 2` es `1.5`, no `1`.
+fn promedio(suma: &Valor, cuenta: i64) -> Result<Valor, Evaluacion> {
+    if cuenta <= 0 {
+        return Err(Evaluacion::Desborde);
+    }
+    let (m, e) = match suma {
+        Valor::Entero(x) => (i128::from(*x), 0u32),
+        Valor::Decimal(d) => escalado(d)?,
+        _ => return Err(Evaluacion::TiposDistintos),
+    };
+    // Se lleva la suma a la escala del promedio, se divide con un dígito de
+    // más, y ese dígito decide el redondeo.
+    let escala = e.max(ESCALA_PROMEDIO);
+    let m = m
+        .checked_mul(10i128.pow(escala - e + 1))
+        .ok_or(Evaluacion::Desborde)?;
+    let q = m / i128::from(cuenta);
+    let (magnitud, ultimo) = (q.unsigned_abs() / 10, q.unsigned_abs() % 10);
+    let magnitud = if ultimo >= 5 { magnitud + 1 } else { magnitud };
+    let redondeado = i128::try_from(magnitud).map_err(|_| Evaluacion::Desborde)?;
+    let redondeado = if q < 0 { -redondeado } else { redondeado };
+    Ok(desescalar(redondeado, escala))
 }
 
 // ── Expresiones ─────────────────────────────────────────────────────────────
@@ -1604,6 +1671,132 @@ mod tests {
     }
 
     /// **Lo que se refusa, con su motivo.**
+    /// **El recómputo sí promedia**: `suma / cuenta` a seis decimales, mitad
+    /// lejos de cero, normalizado. Y promedia enteros como decimales.
+    #[test]
+    fn el_recomputo_promedia_exacto_a_seis_decimales() {
+        let plan = Nodo::Agrupa {
+            entrada: Box::new(pedidos()),
+            por: ["pais".to_string()].into_iter().collect(),
+            agregados: [(
+                "media".to_string(),
+                Agregacion {
+                    funcion: Agregado::Promedio,
+                    sobre: Some("total".into()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let base = Zset::de([
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("ES".into())),
+                    ("total", Valor::Decimal("1".into())),
+                ]),
+                1,
+            ),
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("ES".into())),
+                    ("total", Valor::Decimal("2".into())),
+                ]),
+                1,
+            ),
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("PT".into())),
+                    ("total", Valor::Decimal("1".into())),
+                ]),
+                1,
+            ),
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("PT".into())),
+                    ("total", Valor::Decimal("1.5".into())),
+                ]),
+                2,
+            ),
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("FR".into())),
+                    ("total", Valor::Entero(-1)),
+                ]),
+                1,
+            ),
+            (
+                fila(&[
+                    ("pais", Valor::Cadena("FR".into())),
+                    ("total", Valor::Entero(-2)),
+                ]),
+                1,
+            ),
+        ]);
+        let bases: BTreeMap<Hoja, Zset> = [(hoja(PEDIDOS), base)].into_iter().collect();
+        let z = recomputar(&plan, &bases).unwrap();
+        let media = |pais: &str| {
+            z.presentes()
+                .find(|(f, _)| f.get("pais") == Some(&Valor::Cadena(pais.into())))
+                .and_then(|(f, _)| f.get("media").cloned())
+                .unwrap()
+        };
+        assert_eq!(media("ES"), Valor::Decimal("1.5".into()));
+        // (1 + 1.5·2) / 3 = 1.333333…
+        assert_eq!(media("PT"), Valor::Decimal("1.333333".into()));
+        // (-1 + -2) / 2 = -1.5: enteros promediados como decimal, y el signo
+        assert_eq!(media("FR"), Valor::Decimal("-1.5".into()));
+        // 2 / 3 redondea a la mitad lejos de cero en el séptimo dígito
+        assert_eq!(
+            promedio(&Valor::Entero(2), 3).unwrap(),
+            Valor::Decimal("0.666667".into())
+        );
+        assert_eq!(
+            promedio(&Valor::Entero(-2), 3).unwrap(),
+            Valor::Decimal("-0.666667".into())
+        );
+        assert_eq!(
+            promedio(&Valor::Decimal("0.0000005".into()), 1).unwrap(),
+            Valor::Decimal("0.0000005".into())
+        );
+        // y el circuito lo sigue negando: mantenerlo no es calcularlo
+        assert!(matches!(
+            Circuito::compilar(&plan),
+            Err(NoIncrementalizable::Promedio { .. })
+        ));
+    }
+
+    /// **`Limita` en el recómputo**: los primeros `n` en el orden canónico,
+    /// contando pesos; el circuito lo sigue negando.
+    #[test]
+    fn el_recomputo_limita_en_orden_canonico() {
+        let plan = Nodo::Limita {
+            entrada: Box::new(pedidos()),
+            n: 3,
+        };
+        let base = Zset::de([
+            (fila(&[("pais", Valor::Cadena("PT".into()))]), 2),
+            (fila(&[("pais", Valor::Cadena("ES".into()))]), 2),
+            (fila(&[("pais", Valor::Cadena("FR".into()))]), 1),
+        ]);
+        let bases: BTreeMap<Hoja, Zset> = [(hoja(PEDIDOS), base)].into_iter().collect();
+        let z = recomputar(&plan, &bases).unwrap();
+        let filas: Vec<(String, i64)> = z
+            .presentes()
+            .map(|(f, w)| (f.get("pais").unwrap().json().jcs(), w))
+            .collect();
+        assert_eq!(
+            filas,
+            vec![
+                ("{\"s\":\"ES\"}".to_string(), 2),
+                ("{\"s\":\"FR\"}".to_string(), 1)
+            ]
+        );
+        assert!(matches!(
+            Circuito::compilar(&plan),
+            Err(NoIncrementalizable::Limita)
+        ));
+    }
+
     #[test]
     fn lo_que_no_se_mantiene_se_dice() {
         let limita = Nodo::Limita {
