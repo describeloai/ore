@@ -167,6 +167,18 @@ pub fn decodificar(ty: &Type, raw: &[u8]) -> Result<String, String> {
     }
 }
 
+/// El error del crate envuelve el nuestro —«error deserializing column 1»— y
+/// lo que dice el tipo está en la causa. Se sigue la cadena entera.
+pub fn causa(e: &dyn std::error::Error) -> String {
+    let mut partes = vec![e.to_string()];
+    let mut actual = e.source();
+    while let Some(c) = actual {
+        partes.push(c.to_string());
+        actual = c.source();
+    }
+    partes.join(": ")
+}
+
 fn utf8(raw: &[u8]) -> Result<String, String> {
     std::str::from_utf8(raw)
         .map(str::to_string)

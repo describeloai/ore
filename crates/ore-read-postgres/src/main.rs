@@ -741,7 +741,7 @@ fn filas(peticion: &str) -> Result<String, String> {
             };
             let v = fila
                 .try_get::<_, Option<texto::Texto>>(i)
-                .map_err(|e| format!("la columna `{col}` no se pudo leer: {e}"))?;
+                .map_err(|e| format!("la columna `{col}` no se pudo leer: {}", texto::causa(&e)))?;
             valores.push(v.map(|t| t.0));
         }
         out.push_str(&ore_driver::fila(&p, &valores));
