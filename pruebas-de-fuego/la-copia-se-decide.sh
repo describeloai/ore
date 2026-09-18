@@ -556,4 +556,40 @@ COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-l
 COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-length: 0' "$BASE/paquetes/olist/copia/rehacer"); [ "$COD" = "409" ] || falla "9 · una base sin copias devolvio $COD · $(cuerpo)"
 dice "9 · rehacer: 202 con el Job en la cola (REHACER al instante, VISTAS las del paquete); dos peticiones, dos Jobs · 404 · 409"
 
-echo "✓ la base estandar, y el catalogo no modela: 0–9"
+# ── 10 · retirar la fuente (0027, «el catalogo de la conexion») ──────────────
+# DELETE /fuentes/{n}: 409 mientras alguna database salga de ella (con la lista);
+# retiradas, 200: la conexion fuera del manifiesto, su catalogo fuera del arbol,
+# su Job fuera de la cola, y la credencial DICHA (el cofre no tiene baja). 404
+# despues. El arbol compila.
+baja_fuente() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/fuentes/$1"; }
+COD=$(baja_fuente pg)
+[ "$COD" = "409" ] || falla "10 · con databases que salen de pg devolvio $COD: $(cuerpo)"
+cuerpo | grep -q 'database(s): olist, tienda' || falla "10 · el 409 no lista las databases: $(cuerpo)"
+grep -q "name: pg" "$REPO/ontology.config.yaml" && [ -d "$REPO/packages/pg" ] || falla "10 · el 409 toco el arbol"
+# un Job de catalogo en la cola, como si el reconciliador lo hubiera dejado
+cp "$TMP/rendido/plantilla-catalogo.txt" "$TMP/cola-semilla/44-el-catalogo-pg.yaml"
+( cd "$TMP/cola-semilla" && git -c user.name=banco -c user.email=banco@invalido pull -q --rebase origin main; git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el catalogo de pg, encolado" && git push -q origin HEAD:main ) || falla "10 · no se pudo encolar el catalogo de pg"
+COD=$(borrar tienda)
+[ "$COD" = "200" ] || falla "10 · retirar tienda devolvio $COD: $(cuerpo)"
+# olist es la base A MANO sobre pg (sin alcance): no se retira por la API; se
+# quita del arbol como se puso, a mano
+rm -rf "$REPO/packages/olist"
+COD=$(baja_fuente pg)
+[ "$COD" = "200" ] || falla "10 · retirar la fuente devolvio $COD: $(cuerpo)"
+cuerpo | grep -q '"retirada":true' || falla "10 · la respuesta no dice retirada: $(cuerpo)"
+cuerpo | grep -q '"catalogo":true' || falla "10 · no retiro el catalogo: $(cuerpo)"
+cuerpo | grep -q '"desencolado":"`44-el-catalogo-pg.yaml` fuera de la cola' || falla "10 · no desencolo el Job: $(cuerpo)"
+cuerpo | grep -q '"secreto":"sigue en el custodio como `fuente-pg`' || falla "10 · no dijo que la credencial sigue: $(cuerpo)"
+grep -q "name: pg" "$REPO/ontology.config.yaml" && falla "10 · la conexion sigue en el manifiesto"
+[ ! -e "$REPO/packages/pg" ] || falla "10 · packages/pg sigue en el arbol"
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "10 · el arbol no compila sin la fuente: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
+en_cola 44-el-catalogo-pg.yaml >/dev/null && falla "10 · el Job sigue en la cola"
+curl -sf -H "$SUJ" "$BASE/fuentes" | grep -q '"name":"pg"' && falla "10 · GET /fuentes sigue listando pg"
+curl -sf -H "$SUJ" "$BASE/paquetes" | grep -q '"name": "pg"' && falla "10 · GET /paquetes sigue listando el catalogo de pg"
+COD=$(baja_fuente pg)
+[ "$COD" = "404" ] || falla "10 · retirar dos veces devolvio $COD: $(cuerpo)"
+COD=$(baja_fuente nadie)
+[ "$COD" = "404" ] || falla "10 · una fuente inventada devolvio $COD"
+dice "10 · retirar la fuente: 409 con la lista de databases que salen de ella · retiradas, 200: conexion, catalogo y Job fuera, la credencial dicha · 404 despues"
+
+echo "✓ la base estandar, y el catalogo no modela: 0–10"

@@ -47,6 +47,10 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         "registra la fuente y separa el secreto; NO la sondea",
     ),
     (
+        &["source", "remove"],
+        "quita la fuente del manifiesto; NO toca el custodio ni abre nada",
+    ),
+    (
         &["discover"],
         "induce desde un catálogo YA LEÍDO, que le llega como fichero",
     ),

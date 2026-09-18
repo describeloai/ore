@@ -171,6 +171,17 @@ impl Servidor {
                 let n = n.to_string();
                 self.estado(&n)
             }
+            // ⭐ Retirar una fuente (0027, «el catálogo de la conexión»): la
+            //   conexión fuera del manifiesto, su catálogo fuera del árbol, su
+            //   Job de catálogo fuera de la cola. 409 si alguna database sale
+            //   de ella. La credencial del custodio se dice y no se toca: el
+            //   cofre no tiene baja todavía, y es un acto con su propia huella.
+            ("DELETE", ["fuentes", n]) => {
+                let n = n.to_string();
+                self.escribiendo(sujeto, &format!("retirar la fuente `{n}`"), |r| {
+                    self.retirar_fuente(r, &n, sujeto)
+                })
+            }
             ("GET", ["paquetes"]) => self.leyendo(paquetes),
             // ── 0027 E1 · los verbos del modelo (`modelos.rs`) ────────────
             // (E3: la lista de certificación tal como Bastion la publica; no
@@ -471,6 +482,187 @@ impl Servidor {
                 "NO guardada: el custodio contesto {c} · {}",
                 b.trim().chars().take(90).collect::<String>()
             ),
+        }
+    }
+
+    /// **Retirar una fuente**: `DELETE /fuentes/{n}` — el inverso del alta,
+    /// servido. Tres cosas en un acto, y una cuarta que se dice:
+    ///
+    /// 1. la conexión fuera de `ontology.config.yaml` (`ore source remove`);
+    /// 2. su catálogo (`packages/<n>`, manifiesto + `discover.catalog.json`)
+    ///    fuera del árbol — es lo que el Job de catálogo dejó, y sin conexión
+    ///    no es de nadie; el reconciliador no lo re-cataloga porque la fuente
+    ///    ya no está declarada;
+    /// 3. su Job de catálogo fuera de la cola, si seguía ahí;
+    /// 4. ⛔ la credencial SIGUE en el custodio como `fuente-<n>`: el cofre no
+    ///    tiene baja, y darla es un acto suyo con su propia huella. Se dice.
+    ///
+    /// **409 si alguna database sale de ella**: una base es un paquete con
+    /// alcance cuyo `source` es esta fuente, y sus tablas la nombran como
+    /// `datasource`. Retirar la fuente las dejaría sin compilar; se retiran
+    /// antes, y aquí se dice cuáles. Y la puerta de siempre: si el árbol
+    /// empeora por algo que no la nombra, no se escribe nada.
+    fn retirar_fuente(&self, raiz: &Path, nombre: &str, sujeto: &Identidad) -> Respuesta {
+        if let Err(m) = token(nombre) {
+            return Respuesta::error(422, format!("nombre de fuente: {m}"));
+        }
+        let manifiesto = raiz.join("ontology.config.yaml");
+        let declarada = std::fs::read_to_string(&manifiesto)
+            .ok()
+            .and_then(|t| parse::parse(&t).ok())
+            .and_then(|n| {
+                n.get("datasources").map(|(_, v)| {
+                    v.items()
+                        .iter()
+                        .any(|d| d.get("name").and_then(|(_, x)| x.as_str()) == Some(nombre))
+                })
+            })
+            .unwrap_or(false);
+        if !declarada {
+            return Respuesta::error(404, format!("no hay ninguna fuente `{nombre}` declarada"));
+        }
+        // Los paquetes que la nombran —una `Table` con `datasource: <n>`—: 409
+        // con la lista. Son las databases que salen de ella y cualquier paquete
+        // escrito a mano sobre ella; sin la fuente, OOS2004 en cada tabla.
+        let mut bases = Vec::new();
+        if let Ok(entradas) = std::fs::read_dir(raiz.join("packages")) {
+            for e in entradas.flatten() {
+                let dir = e.path();
+                let Some(p) = dir.file_name().and_then(|x| x.to_str()) else {
+                    continue;
+                };
+                if p == nombre {
+                    continue;
+                }
+                let Ok(tablas) = std::fs::read_dir(dir.join("tables")) else {
+                    continue;
+                };
+                let la_nombra = tablas
+                    .flatten()
+                    .filter_map(|t| std::fs::read_to_string(t.path()).ok())
+                    .filter_map(|t| parse::parse(&t).ok())
+                    .any(|d| {
+                        d.get("spec")
+                            .and_then(|(_, s)| s.get("datasource"))
+                            .and_then(|(_, v)| v.as_str())
+                            == Some(nombre)
+                    });
+                if la_nombra {
+                    bases.push(p.to_string());
+                }
+            }
+        }
+        if !bases.is_empty() {
+            bases.sort();
+            return Respuesta::error(
+                409,
+                format!(
+                    "de `{nombre}` salen {} database(s): {}. Retíralas antes; sus tablas nombran esta fuente como `datasource`",
+                    bases.len(),
+                    bases.join(", ")
+                ),
+            );
+        }
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        // ① la conexión. `--keep-secret`: en un árbol servido no hay
+        //   `.env.local`; la credencial está en el custodio.
+        let salida = mando::correr(
+            &self.binario,
+            raiz,
+            &[
+                "source".into(),
+                "remove".into(),
+                nombre.into(),
+                "--path".into(),
+                ".".into(),
+                "--keep-secret".into(),
+            ],
+        );
+        match salida {
+            Err(e) => return Respuesta::error(500, e.to_string()),
+            Ok(s) if !s.bien() => {
+                return Respuesta::error(
+                    422,
+                    format!(
+                        "`ore source remove` devolvió {}: {}",
+                        s.codigo,
+                        primera_linea(&s.stdout, &s.stderr)
+                    ),
+                );
+            }
+            Ok(_) => {}
+        }
+        // ② su catálogo. Sólo si es eso —manifiesto y catálogo, sin alcance—;
+        //   un paquete con alcance que se llame como la fuente sería una base,
+        //   y ya se habría contestado 409.
+        let dir = raiz.join("packages").join(nombre);
+        let catalogo_retirado = if dir.join("discover.catalog.json").is_file()
+            && !dir.join("discover.scope.json").is_file()
+        {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                return Respuesta::error(
+                    500,
+                    format!("no se pudo retirar `packages/{nombre}`: {e}"),
+                );
+            }
+            true
+        } else {
+            false
+        };
+        // La puerta: sólo puede empeorar por lo que la NOMBRA.
+        let nombra = |d: &Json| !crate::copia::texto_de(d).contains(nombre);
+        if let Err(r) = self.empeora_salvo(
+            raiz,
+            &antes,
+            &format!("retirar la fuente `{nombre}`"),
+            nombra,
+        ) {
+            return r;
+        }
+        // ③ la cola.
+        let desencolado = self.desencolar_catalogo(nombre, sujeto);
+        Respuesta::ok(Json::obj([
+            ("source", Json::s(nombre)),
+            ("retirada", Json::Bool(true)),
+            ("catalogo", Json::Bool(catalogo_retirado)),
+            ("desencolado", Json::s(desencolado)),
+            (
+                "secreto",
+                Json::s(format!(
+                    "sigue en el custodio como `fuente-{nombre}`: el cofre no tiene baja todavía, y es un acto suyo"
+                )),
+            ),
+        ]))
+    }
+
+    /// El Job de catálogo de una fuente fuera de la cola, si seguía ahí. Lo
+    /// que dice va en la respuesta; no tumba la baja, que ya está escrita.
+    fn desencolar_catalogo(&self, fuente: &str, sujeto: &Identidad) -> String {
+        let Some(forja) = &self.cola else {
+            return "sin cola (`--cola`): nada que desencolar".into();
+        };
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return format!("NO desencolado: {e}"),
+        };
+        let dir = prestado.ruta();
+        let fichero = format!("44-el-catalogo-{}.yaml", cola::nombre_de_objeto(fuente));
+        if !dir.join(&fichero).is_file() {
+            return format!("`{fichero}` no estaba en la cola");
+        }
+        if let Err(e) = std::fs::remove_file(dir.join(&fichero)) {
+            return format!("NO desencolado: {e}");
+        }
+        match forja.publicar(
+            dir,
+            sujeto,
+            &format!("Desencolar el catálogo de `{fuente}`"),
+        ) {
+            Ok(c) => format!("`{fichero}` fuera de la cola · commit {c}"),
+            Err(e) => format!("NO desencolado: {e}"),
         }
     }
 
@@ -1630,6 +1822,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/version", true),
         ("GET", "/fuentes", con_identidad),
         ("POST", "/fuentes", con_identidad),
+        ("DELETE", "/fuentes/{nombre}", con_identidad),
         ("GET", "/fuentes/{nombre}/estado", con_identidad),
         ("GET", "/paquetes", con_identidad),
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),

@@ -741,7 +741,12 @@ conexión en `ontology.config.yaml`, la credencial en el cofre), *catalogar* (el
 Views; la Entity, tabla a tabla, al promoverla). `GET /esquema` lee el catálogo cuando no hay
 `tables/`, con la misma forma (`la-copia-se-decide` 0b). Los paquetes de fuente que ya existían
 en demo y victor se dejaron en manifiesto + catálogo con un commit por forja: eran prescindibles,
-y los catálogos se conservan para crear databases sin recatalogar.
+y los catálogos se conservan para crear databases sin recatalogar. Y el inverso del alta, servido:
+**`DELETE /fuentes/{n}`** —la conexión fuera del manifiesto (`ore source remove`, hermético), su
+catálogo fuera del árbol, su Job fuera de la cola; 409 con la lista mientras alguna `Table` la
+nombre como `datasource`; y la credencial **dicha**: sigue en el custodio, porque el cofre no
+tiene baja y darla es un acto suyo con su huella (`la-copia-se-decide` 10). En la consola, el ⋮ de
+la ficha de la conexión.
 
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos

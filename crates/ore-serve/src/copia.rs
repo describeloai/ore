@@ -640,7 +640,7 @@ fn vistas_con_copia(raiz: &Path) -> Vec<String> {
 
 /// Las vistas de UN paquete que declaran `materialized`, por nombre y en orden.
 /// Lo que un diagnóstico dice y dónde, junto: para saber si nombra a alguien.
-fn texto_de(d: &Json) -> String {
+pub(crate) fn texto_de(d: &Json) -> String {
     let Json::Obj(m) = d else {
         return String::new();
     };
