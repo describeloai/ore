@@ -189,6 +189,26 @@ def seccion_e():
     fila("E3 · lo que W0 dejó", "ArbolFileView: Save = PUT /arbol; el mismo sitio para Run = POST …/ejecutar y una rejilla debajo", "✓ encaja")
 
 
+# ── §F · el data grid del panel de resultados (④b) ─────────────────────────
+def seccion_f():
+    print("
+§F · el data grid: Carbon DataTable frente a TanStack Table + Virtual vestido de Carbon")
+    # Medido el 2026-09-18 en el banco de la consola (Next dev, sin optimizar, los
+    # dos igual): una pagina `app/medida-grid` con 9 columnas de `products`,
+    # N filas, montado + layout forzado, nodos del DOM bajo el grid y el peor
+    # salto de scroll (lo que tarda en volver el hilo). Sin rAF: el panel del
+    # navegador estaba oculto y rAF no dispara.
+    fila("F1 · Carbon DataTable · 200 filas", "montado 468 ms · 2 104 nodos · peor salto 317 ms")
+    fila("F2 · Carbon DataTable · 2 000 filas", "montado 2 149 ms · 20 104 nodos · peor salto 1 154 ms", "✗ se cae")
+    fila("F3 · Carbon DataTable · 5 000 filas", "montado 4 469 ms · 50 104 nodos · peor salto 2 428 ms", "✗ se cae")
+    fila("F4 · TanStack + Virtual · 200 filas", "montado 126 ms · 305 nodos (30 filas) · peor salto 5 ms", "✓")
+    fila("F5 · TanStack + Virtual · 2 000 filas", "montado 180 ms · 305 nodos · peor salto 5 ms", "✓")
+    fila("F6 · TanStack + Virtual · 5 000 filas", "montado 195–247 ms · 305 nodos · peor salto 5 ms", "✓ plano")
+    fila("F7 · peso", "react-virtual 1,6 KB gz + virtual-core 10,5 KB gz; react-table 8,6 KB gz + table-core por feature (v9: tree-shake)", "MIT")
+    fila("F8 · descartados", "AG Grid Community 21 MB desempaquetado y estilo propio; Glide canvas 3,6 MB + linaria", "pelean con Carbon")
+    fila("F9 · vestido de Carbon", "la tabla es <table class=cds--data-table>: los tokens y el tema de Carbon, la logica de TanStack", "✓ un sistema de diseño")
+
+
 if __name__ == "__main__":
     print("Medida W1 · ejecutar la pregunta")
     seccion_a()
@@ -196,5 +216,6 @@ if __name__ == "__main__":
     seccion_c()
     seccion_d()
     seccion_e()
+    seccion_f()
     print("\nLo que sale: la gramática es cerrada y pequeña, la copia ya está en la celda y ore-serve ya puede leerla;")
     print("el residuo cabe en `ore` sin motor externo; lo que W1 no puede saltarse es que la copia hoy calla columnas.")
