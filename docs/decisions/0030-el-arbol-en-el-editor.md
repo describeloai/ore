@@ -98,7 +98,7 @@ para *Model this* (`entities/` con `backedBy`), que dejan de ser formularios.
 | | qué | acepta |
 |---|---|---|
 | **W0** | el árbol en el editor: ①–④ | demo (801 ficheros) abierto en el workspace; abrir una vista, romper una referencia, guardar → 422 con el marcador en su línea; arreglar, guardar → commit de la persona en la forja y Data › Jobs sin novedad; *Create › View › Standard* deja el fichero pre-rellenado |
-| **W1** | ejecutar la pregunta: *Run* sobre una `View` = el plan + filas de la copia (motor de proyección/filtro/agregado sobre el Parquet del bucket, en `ore-drivers`) o del origen para una foránea | una vista con `where` y `groupBy` devuelve filas en la celda sin abrir el origen de una base estándar |
+| **W1** ✓ 2026-09-18 | ejecutar la pregunta: *Run* sobre una `View` = el plan + filas de la copia (motor de proyección/filtro/agregado sobre el Parquet del bucket, en `ore-drivers`) o del origen para una foránea | una vista con `where` y `groupBy` devuelve filas en la celda sin abrir el origen de una base estándar — en victor, `standard_postgre_3.products`: 20 filas en 1,6 s desde la copia. Lo que queda alrededor (aviso, frío, panel, bundle) está medido en 0027 |
 | **W2** | proponer: rama por persona, PR en la forja, diff y diagnósticos de la rama, merge → Flux | dos personas, dos ramas, una revisión |
 | **W3** | la sesión viva: un pod por persona en la celda para celdas Python/notebook con la copia legible, sin salida, Kueue, TTL | una celda Python lee `over` como DataFrame y no alcanza internet |
 

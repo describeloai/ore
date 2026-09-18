@@ -771,6 +771,24 @@ inquilino como `mudar`: `ore-cofre retirar-huerfanos --declaradas <las de hoy>` 
 con su propia atribución (`038`: `retiro_agente`, `revoco_agente`), nunca una persona que no lo
 hizo (`el-cofre` 11).
 
+**W1 contesta, y lo que hace que una base nueva parezca rota durante minutos, medido (18 de
+septiembre, `medida-lo-que-parece-roto.py`, victor y demo).** `standard_postgre_3.products` → 20
+filas, 22 columnas, 1,6 s desde la copia, en la consola: el criterio de W1 (0030 ⑤). Pero entre
+«alta de una base» y ese *Run* pasaron **553 s** (y 568 en la anterior, 184 en la que sólo tenía 3
+tablas) en los que `ask` contestaba 409 «not made yet» con un botón de copiar. Cuatro causas, cada
+una con su medida:
+
+| | medido | qué lo cierra (siguiente iteración) |
+|---|---|---|
+| **el aviso** | la forja del inquilino **no avisa a Flux desde que la cola vive en ella (0024 E3-(c), 14 de septiembre)**, por tres cosas a la vez: ① `allow-webhooks` (17-el-aviso) sólo deja entrar al namespace `forja`, así que `t-demo` entrega 142 veces con «context deadline exceeded» y 0 aciertos (la de la plataforma: 36/36); ② el aprovisionador no baja `receptor-url` a `/puesto` (baja `iam-url`, `forja-admin`, `idp-admin`, `aprovisionador-secreto`), `RECEPTOR=""`, y `POST /orgs/t-victor/hooks` da **422 cada 5 minutos**, que el guion marca ✓ por idempotencia: `t-victor` tiene 0 hooks; ③ cuando la URL sí llegó (a mano), el guion creó **5 hooks iguales** en `t-demo`, uno por pasada. Sin aviso, un empujón a la cola tarda en ser artefacto **130 s de media, 254 máx** (21 commits en 6 h) | ① la entrada al receptor desde los namespaces `ore.dev/rol: cargas` **y sólo el pod `ore.dev/rol: forja`** (el argumento de P4 se conserva: un pod de un inquilino no puede disparar nada); ② el aprovisionador baja `receptor-url`; ③ antes de crear, `GET /orgs/{o}/hooks` y sólo si ninguno apunta al receptor — y un 422 del hook deja de ser ✓ |
+| **el frío** | `jobs-p` es `e2-standard-4` **a demanda** (no spot), mín 0, máx 3, perfil `OPTIMIZE_UTILIZATION`: el nodo se va en cuanto sobra. `copiar-ef5beced`: **102 s** desde crear el Job hasta que su contenedor trabaja (nodo 58 s · imagen 20 s + init 22 s), y el trabajo, 72 s. El catálogo pidió nodo a las 18:42 y la copia otra vez a las 18:52: **cada acto paga el frío** porque el nodo ya se había ido | lo que no cuesta: perfil `BALANCED` (el nodo se queda ~10 min: catálogo y copia de la misma alta pagan uno); lo que cuesta ~100 €/mes: mín 1 en `jobs-p`. Se decide con número, no aquí |
+| **el panel** | ventana media **435 s** por alta (3 con informe) en la que la consola dice «not made yet» + *Copy*, mientras el Job está en la cola o corriendo; el 18:01 el botón se pulsó en esa ventana y encoló un `rehacer` que releyó Neon. `ore-serve` ya distingue tres estados para una FUENTE (`catalogada`/`encolada`/`pendiente`, clonando la cola) y **para una vista no mira la cola**: el 409 sale de `ore ask` tal cual | el 409 de `ask` gana `estado`: `encolada` (hay `48-la-copia*.yaml` en la cola que la nombra, con la fecha del commit) · `fallida` (el informe dice `error` y su `motivo`) · `pendiente`; el panel pinta «copying since 18:46 · Job 48-la-copia» sin botón, y *Copy* sólo en `fallida`/`pendiente` |
+| **el bundle** | la cabecera del recibo lleva `bundle` = SHA-256(**árbol entero** ‖ versión OOS ‖ lock). En victor, **16 de 19 commits** lo cambian —cada alta, catálogo o retirada de *cualquier* base, y hasta `ontology.config.yaml`—; sólo los `copias/*.json` lo dejan igual. Cada uno deja sin recibo a **todas** las vistas del árbol: `postgre_standard` (10 tablas) se releyó de Neon en las 3 pasadas del día sin que nada suyo cambiara —eso fue la cuota—, y el testigo en Neon es `none` (sin `wal_level=logical`), así que el bundle era lo **único** que cambiaba. Y la versión de OOS dentro significa que **cada release relee todos los orígenes de todos los inquilinos** | fuera de la cabecera: `plan` + `esquema` + `clave` + `testigo` ya nombran lo que se copia y de dónde; el bundle va al **cuerpo** del recibo como procedencia (qué árbol lo pidió), no a la llave. `verificar`/`propuesta` siguen comparando el bundle donde lo comparan hoy |
+
+Y de paso: el árbol de `demo` **no compila** desde OOS2009 (`olist` con `owner: cambiame`, más 8
+OOS2010): `materialize` lo salta paquete a paquete, así que sus copias siguen, pero cualquier
+medida sobre demo con `ore compile` sale vacía hasta que se le dé dueño (`discover --owner`).
+
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos
 clave obligatoria?»*. Tiene razón, y la medida dice de dónde viene la conflación:
