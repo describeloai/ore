@@ -109,6 +109,29 @@ guarda, para la persona y para el modelo (una `Function` de lectura que proponga
 entidades escribe en el mismo árbol por la misma puerta). No cierra: ejecutar (W1), proponer
 (W2), correr código que no sea YAML (W3), ni la calidad de lo que un modelo proponga.
 
+## W2, medido antes de construir (`pruebas-de-fuego/medida-w2-proponer.py`, 2026-09-18, victor)
+
+La intuición era que la lógica ya está. La medida dice **dónde está y dónde no**, pieza a pieza,
+con el testigo de `serve-victor` desde su pod (cuatro PRs de medida abiertas y cerradas; `main`
+sin tocar):
+
+| | medido | qué dice para W2 |
+|---|---|---|
+| **la forja** (Forgejo 15.0.7, API gitea 1.22) | crear rama por API **1,4 s** · clonar la rama **0,7 s** · empujar el commit **1,5 s** · abrir la PR **0,7–1,6 s** · `mergeable: true` · ficheros de la PR **100 ms** · `.diff` **80 ms** (744 B) · review `COMMENT` **0,5 s** | todo lo que W2 necesita existe y cuesta segundos; ninguna pieza nueva en la forja |
+| **lo que la forja NO hace** | `serve-victor` es el autor de TODAS las PRs y la forja **no deja aprobar la propia (422)**; el testigo no escribe comentarios de issue (403, ámbito); `main` **no está protegida** (ore-serve y el Job del catálogo empujan directo) y `branch_protections` es 403 para un colaborador; no hay CODEOWNERS (404); borrar la rama **no cierra la PR**, cerrarla es un `PATCH` | **la revisión es nuestra, no de la forja**: la forja guarda rama, PR, diff y comentarios; quién puede fusionar y que no sea quien propuso lo decide `ore-serve` con la identidad de la sesión, y lo deja escrito como review `COMMENT` (`persona:bea aprueba`) y en la huella. Proteger `main` rompería W0/W1 (todo empuja a main): se protege **por convención del servidor**, no por la forja |
+| **el diagnóstico** | `ore validate` de la rama **80 ms** tras el clon (y con un fichero mal puesto: OOS2035 con su línea, medido de paso) · `ore diff main rama` **100 ms**: JSON semántico con `changes[{axis, code, …}]`, `requiredBump` y `verdicts` (una vista nueva → `OOS5021`, `patch`, `CONSUMER: compatible`) | la PR enseña **dos diffs**: el de la forja (líneas) y el de `ore diff` (significado: qué cambia para quien consume), más los diagnósticos de la rama — los tres ya se calculan |
+| **ore-serve** | 5 rutas tocan el árbol (`GET /arbol`, `/arbol/diagnosticos`, `GET/PUT/DELETE /arbol/{ruta}`); `clonar()` sin `--branch` (= main); `publicar()` hace `push origin HEAD` (= main); **0** menciones a rama/PR | el hueco está aquí y es pequeño: `leyendo`/`escribiendo` ganan la rama (`?rama=` en las cinco rutas; sin ella, main como hoy), y nacen las rutas de W2: `GET/POST /ramas`, `GET/POST /propuestas`, `GET /propuestas/{n}` (ficheros, diff de líneas, `ore diff`, diagnósticos de la rama), `POST /propuestas/{n}/revisar`, `POST /propuestas/{n}/fusionar`, `DELETE /propuestas/{n}` |
+| **la identidad** | autor del commit = la persona (`sub`), committer `ore-serve` (RFC 8693, ya); autor de la PR en la forja = `serve-<n>`, la persona sólo en el cuerpo; 17 potestades en ore-iam, **ninguna** sobre el árbol; dueño del paquete = `team:<org>`, sin equipos en la forja | la PR lleva `sub` en el cuerpo (como el commit lleva el autor); **`dos personas`** = quien fusiona ≠ quien propuso, comprobado por `ore-serve` contra el `sub` de la PR; quién puede fusionar: hoy cualquiera con sesión en la organización escribe en main, así que W2 no puede exigir menos que eso — una potestad `propuesta:fusionar` es de la iteración siguiente, no de esta |
+| **la consola** | `BranchesView` (181 líneas, `Rama{nombre, porDefecto, protegida, checks, pr}`), `PullRequestsView` (403 líneas: lista Open/Merged/Closed, detalle, *Files changed*, *Comments*, nueva PR, `PullRequest{numero, titulo, descripcion, estado, head, base}`, `CambioDeFichero`, `Comentario`), botones *Branches · Commit · Pull requests* en la barra — todo con mocks y «todavía no implementado» ×12; **0** llamadas de `lib/server` a ramas o PRs | las pantallas son las de W2 y las formas casan con lo que la forja devuelve: se cablean, no se rediseñan. Lo que falta de superficie: en qué rama estoy (el editor guarda en main hoy) y el botón *Commit* que hoy no hace nada |
+| **Flux** | `inquilino-victor` y `trabajo-victor` miran **sólo `main`** (5 m de respaldo); merge → main → aviso **~4 s** (17-el-aviso, medido hoy) | una rama no despliega nada, que es exactamente lo que se quiere; el merge es lo que despliega, y ya avisa |
+
+**⇒ Cómo se construye W2**, en el orden en que la medida lo dicta: (1) `ore-serve` sabe de ramas
+(`?rama=` en las rutas del árbol; `clonar(rama)`, `publicar` a la misma rama); (2) las rutas de
+propuestas sobre la API de la forja, con la revisión y el «dos personas» en el servidor; (3) la
+consola cablea las tres pantallas y el botón *Commit* pasa a ser «proponer»; (4) prueba de fuego:
+dos sujetos, dos ramas, una revisión, merge → Flux → Job. Lo que se aparca: proteger `main` en
+la forja, CODEOWNERS y `propuesta:fusionar`.
+
 ## Lo que se aparca
 
 - El *language server* de verdad (marcadores por tecla) espera a que un clon deje de costar un
