@@ -702,6 +702,26 @@ raíz del árbol no lo re-induciría nadie—: la pasada de decisiones lo trae. 
 customers y conserva la de orders** —lo que el verbo a mano perdía— y el árbol compila. El verbo
 por vista se retira. `GET /copias` sigue: es lo que el Job va a copiar, con el informe.
 
+**El dueño es la organización (18 de septiembre).** En `victor`, una base recién creada desde la
+consola no corría (`Run` → OOS2009: `owner: cambiame`) y su copia no se encolaba. La consola lo
+enseñaba y no lo dejaba resolver, y las dos salidas que se probaron —un campo *Owner* en el modal
+y un «Set owner & run» en el panel— eran la misma cosa: pedirle a la persona **que se invente una
+cadena**. La raíz es una desconexión entre dos mundos: `owner` en OOS es «quién responde» como
+**handle de forja** (`team:x`, se resuelve contra CODEOWNERS, y de él heredan las políticas), y la
+CLI no lo deriva porque no sabe quién la ejecuta; en la plataforma no hay CODEOWNERS, ni equipos,
+ni handles: identidad en Keycloak, pertenencia en `ore-iam`, y **el inquilino es el repositorio
+de la organización** (0022) que nadie edita a mano. La respuesta, en la plataforma, es un hecho y
+no una decisión: **el árbol es de la organización**, y `ore-serve` ya corre con `--organizacion`.
+Así que el alta contesta `dueno` con `team:<organización>` —`discover --owner`, que entra por
+`Decisiones` y se guarda en `discover.answers.json` para que `review` no lo devuelva a
+`cambiame`— y la base nace compilando, con el conducto y la copia encolada. Quién **pulsó** ya va
+en el commit (`sub` + `act`); quién **responde** es la organización; nada se inventa. La doctrina
+de la CLI no cambia (`owner` se pregunta, no se deriva: lo contesta quien llama, que aquí sí
+sabe). Transferir la propiedad a un equipo, cuando IAM los tenga, es contestar `dueno` otra vez
+(`la-copia-se-decide` 3), y el conducto **no** sigue al paquete: es la política del inquilino, no
+del paquete. Si el nombre de la organización no puede ser un handle, se vuelve a lo de antes
+(`cambiame` y la decisión en la cola), y la respuesta del alta lo dice en `owner`.
+
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos
 clave obligatoria?»*. Tiene razón, y la medida dice de dónde viene la conflación:

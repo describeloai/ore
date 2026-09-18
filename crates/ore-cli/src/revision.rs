@@ -678,6 +678,12 @@ pub fn ruta_cola(raiz: &Path) -> std::path::PathBuf {
     raiz.join(COLA)
 }
 
+/// Donde viven las respuestas ya dadas: `discover --owner` escribe la primera y
+/// `review` las acumula.
+pub fn ruta_respuestas(raiz: &Path) -> std::path::PathBuf {
+    raiz.join(RESPUESTAS)
+}
+
 // ── Comprobaciones ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

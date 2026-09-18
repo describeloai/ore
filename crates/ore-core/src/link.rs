@@ -502,13 +502,7 @@ fn es_semver(s: &str) -> bool {
 }
 
 fn es_handle(s: &str) -> bool {
-    let Some((tipo, h)) = s.split_once(':') else {
-        return false;
-    };
-    matches!(tipo, "team" | "user")
-        && h.starts_with(|c: char| c.is_ascii_lowercase())
-        && h.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    crate::pertenencia::es_handle(s)
 }
 
 // ── OOS2002 · OOS2003 ───────────────────────────────────────────────────────

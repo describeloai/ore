@@ -123,6 +123,20 @@ pub fn puede_ser_namespace(n: &str) -> bool {
         && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
 }
 
+/// Lo que un `owner` tiene que ser (`OOS2009`): `team:<handle>` o
+/// `user:<handle>`, y el handle en minúsculas, dígitos y guiones. Público por
+/// lo mismo que `puede_ser_namespace`: quien lo escribe (`discover --owner`, el
+/// alta de `ore-serve` con su organización) tiene que saberlo ANTES.
+pub fn es_handle(s: &str) -> bool {
+    let Some((tipo, h)) = s.split_once(':') else {
+        return false;
+    };
+    matches!(tipo, "team" | "user")
+        && h.starts_with(|c: char| c.is_ascii_lowercase())
+        && h.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let miembros = crate::link::miembros(pkg);
     if miembros.is_empty() {

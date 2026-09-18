@@ -837,7 +837,7 @@ impl Servidor {
         if std::fs::write(&lista, objetos.join("\n")).is_err() {
             return Respuesta::error(500, "no se pudo escribir la lista de objetos");
         }
-        let args = vec![
+        let mut args = vec![
             "discover".into(),
             "--from".into(),
             catalogo.to_string_lossy().into_owned(),
@@ -856,6 +856,22 @@ impl Servidor {
             //   tablas y vistas, sin entidades. Modelar es otro acto.
             "--no-model".into(),
         ];
+        // ⭐⭐ EL DUEÑO ES LA ORGANIZACIÓN. `owner` en OOS es «quién responde»
+        //   como handle de forja (`team:x`, contra CODEOWNERS), y la CLI no lo
+        //   deriva porque no sabe quién la ejecuta. Este servidor SÍ sabe de
+        //   quién es el árbol (0022: el inquilino es el repositorio de la
+        //   organización; `--organizacion`), así que contesta `dueno` con
+        //   `team:<organización>` y la base nace compilando —y, si es estándar,
+        //   con la copia encolada—. Quién PULSÓ ya va en el commit (`sub`+`act`);
+        //   quién RESPONDE es la organización. Preguntárselo a la persona era
+        //   pedirle que inventase una cadena que no resuelve contra nada.
+        //   Transferir la propiedad a un equipo, cuando IAM los tenga, será otro
+        //   acto (contestar `dueno` de nuevo).
+        let dueno = self.dueno_del_arbol();
+        if let Some(o) = &dueno {
+            args.push("--owner".into());
+            args.push(o.clone());
+        }
         let salida = mando::correr(&self.binario, raiz, &args);
         let _ = std::fs::remove_file(&lista);
 
@@ -878,10 +894,25 @@ impl Servidor {
                     ("informe", Json::s(s.stdout.trim())),
                     ("quedan", Json::Int(pendientes(&dir) as i64)),
                 ];
+                match &dueno {
+                    Some(o) => campos.push(("owner", Json::s(o))),
+                    None => campos.push((
+                        "owner",
+                        Json::s("cambiame: este servidor no tiene organización (o su nombre no es un handle); contesta `dueno`"),
+                    )),
+                }
                 campos.extend(self.tras_inducir(raiz, &nombre, sujeto));
                 Respuesta::ok(Json::obj(campos))
             }
         }
+    }
+
+    /// `team:<organización>`, si este servidor sabe de quién es el árbol y el
+    /// nombre puede ser un handle. Si no, nadie: el paquete nace con `cambiame`
+    /// y la decisión `dueno` en la cola, como siempre.
+    pub(crate) fn dueno_del_arbol(&self) -> Option<String> {
+        let o = format!("team:{}", self.organizacion.as_deref()?);
+        ore_core::pertenencia::es_handle(&o).then_some(o)
     }
 
     fn responder(&self, raiz: &Path, paquete: &str, cuerpo: &str, sujeto: &Identidad) -> Respuesta {

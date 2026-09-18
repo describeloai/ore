@@ -338,4 +338,21 @@ dice vistas.txt 'caras     reads:' 'ore view no ensena la cara de lectura'
 # comprobar otra cosa.
 dice vistas.txt 'raíz de lectura' 'ore view no dice de donde se lee de verdad'
 
+# ── 7 · `--owner`: la decision `dueno` contestada por quien llama ───────────
+#
+# El inductor no deriva el dueño (no sabe quien lo ejecuta); quien SI lo sabe
+# —ore-serve con su organizacion, una persona en su terminal— lo contesta de
+# antemano. Entra como cualquier respuesta y se guarda con ellas, para que
+# `review` no devuelva el manifiesto a `cambiame`.
+ore discover --from "$CAT" --out packages/ventas2 --name ventas2 --owner Team:Datos > /dev/null 2> mal.txt   && falla "acepto un owner que no es un handle"
+dice mal.txt 'no es un handle' "no dijo por que \`Team:Datos\` no vale: $(cat mal.txt)"
+[ ! -e packages/ventas2 ] || falla "con un owner invalido escribio el paquete igual"
+ore discover --from "$CAT" --out packages/ventas2 --name ventas2 --owner team:datos > /dev/null 2>&1   || falla "discover --owner fallo"
+dice packages/ventas2/package.yaml 'owner: "team:datos"' "el manifiesto no lleva el dueño contestado"
+dice packages/ventas2/discover.answers.json '"dueno/ventas2": "team:datos"' "la respuesta no quedo guardada con las demas"
+grep -q '"dueno/ventas2"' packages/ventas2/discover.pending.json && falla "con --owner, la cola sigue preguntando el dueño"
+ore review packages/ventas2 --reinducir > /dev/null 2>&1 || falla "review --reinducir fallo sobre ventas2"
+dice packages/ventas2/package.yaml 'owner: "team:datos"' "review devolvio el manifiesto a cambiame"
+rm -rf packages/ventas2
+
 echo "el eslabon vivo, diez de las once preguntas, un paquete en verde, una superficie podada y las dos caras"

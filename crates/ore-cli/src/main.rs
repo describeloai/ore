@@ -445,6 +445,11 @@ enum Command {
         /// `--no-model`, se modelan todas (lo de siempre).
         #[arg(long = "model", value_name = "OBJETO", conflicts_with = "sin_modelar")]
         modelar: Vec<String>,
+        /// Quien responde del paquete (`team:<handle>` | `user:<handle>`): es la
+        /// decision `dueno`, contestada por quien llama. Sin el se escribe
+        /// `cambiame`, que NO valida, y la decision queda en la cola.
+        #[arg(long, value_name = "HANDLE")]
+        owner: Option<String>,
     },
     /// **Modelar una tabla de una base**: la añade a `entities` del alcance y
     /// vuelve a inducir. Es lo que un catálogo de activos llama *promote to
@@ -870,6 +875,7 @@ fn main() -> std::process::ExitCode {
             tipo,
             sin_modelar,
             modelar,
+            owner,
         } => {
             return descubrir(
                 from.as_deref(),
@@ -887,6 +893,7 @@ fn main() -> std::process::ExitCode {
                     } else {
                         Some(modelar.clone())
                     },
+                    owner: owner.as_deref(),
                 },
             );
         }
@@ -1160,6 +1167,8 @@ struct Reglas<'a> {
     tipo: Option<&'a str>,
     /// `None` = todas; `Some(vec![])` = ninguna.
     modeladas: Option<Vec<String>>,
+    /// La decisión `dueno`, contestada de antemano por quien llama.
+    owner: Option<&'a str>,
 }
 
 fn descubrir(
@@ -1171,12 +1180,27 @@ fn descubrir(
     solo_de: Option<&std::path::Path>,
     reglas: Reglas<'_>,
 ) -> std::process::ExitCode {
-    let Reglas { tipo, modeladas } = reglas;
+    let Reglas {
+        tipo,
+        modeladas,
+        owner,
+    } = reglas;
     if let Some(t) = tipo
         && t != "standard"
         && t != "foreign"
     {
         eprintln!("error: `--type` es `standard` o `foreign`, no `{t}`");
+        return std::process::ExitCode::from(64); // EX_USAGE
+    }
+    // ⛔ Un dueño que no es un handle se rechaza AQUI, antes de escribir: el
+    //   inductor lo escribiria tal cual y el paquete entero naceria sin
+    //   compilar (OOS2009) — lo mismo que `cambiame`, pero aparentando que no.
+    if let Some(o) = owner
+        && !ore_core::pertenencia::es_handle(o)
+    {
+        eprintln!(
+            "error: `--owner {o}` no es un handle: `team:<handle>` o `user:<handle>`, en minúsculas, dígitos y guiones"
+        );
         return std::process::ExitCode::from(64); // EX_USAGE
     }
     // El catálogo se lee de un fichero o de una fuente viva, y a partir de aquí
@@ -1298,16 +1322,28 @@ fn descubrir(
             .and_then(|(a, _)| a.modeladas().cloned()),
         copiadas: Default::default(),
     };
-    let ind = inductor::inducir_con_regla(
-        &catalogo,
-        &paquete,
-        &inductor::Decisiones::default(),
-        &voc,
-        &regla,
-    );
+    // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
+    //   decision — y por eso entra por `Decisiones` y se guarda con las demas
+    //   (`discover.answers.json`), para que `review` lo conserve en vez de
+    //   devolver el manifiesto a `cambiame`.
+    let mut dec = inductor::Decisiones::default();
+    if let Some(o) = owner {
+        dec.responder(
+            format!("dueno/{paquete}"),
+            inductor::Respuesta::Palabra(o.to_string()),
+        );
+    }
+    let ind = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
     if let Err((codigo, mensaje)) = escribir_paquete(&ind, destino) {
         eprintln!("error: {mensaje}");
         return std::process::ExitCode::from(codigo);
+    }
+    if !dec.is_empty() {
+        let dadas = revision::ruta_respuestas(destino);
+        if let Err(e) = std::fs::write(&dadas, dec.json().pretty()) {
+            eprintln!("error: no se pudo escribir `{}`: {e}", dadas.display());
+            return std::process::ExitCode::from(73);
+        }
     }
 
     // El catálogo, al lado de lo que produjo. No es un caché: es lo que hace que
