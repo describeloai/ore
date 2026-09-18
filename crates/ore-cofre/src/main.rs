@@ -40,6 +40,7 @@
 //! sobre una llave. Está probado en `malla/99-el-cerrojo-de-la-llave.yaml`.
 
 mod almacen;
+mod huerfanos;
 mod kms;
 mod mudar;
 mod rutas;
@@ -59,6 +60,13 @@ ore-cofre — el custodio: guarda el material en el almacén de la celda y lo ab
                    --kms PROGRAMA --proyecto PROYECTO --lugar REGION
   ore-cofre mudar  --organizacion NOMBRE
                    --kms PROGRAMA --proyecto PROYECTO --lugar REGION
+  ore-cofre retirar-huerfanos --organizacion NOMBRE --declaradas a,b,c [--seco]
+                   --kms PROGRAMA --proyecto PROYECTO --lugar REGION
+
+  `retirar-huerfanos` (038) da de baja las credenciales de conexión
+  (`fuente-<n>`) cuya fuente NO está en `--declaradas` —las del
+  `ontology.config.yaml` del inquilino—: lo que quedó de fuentes retiradas
+  antes de que hubiera baja. De operador, con su huella, y EN el inquilino.
 
   `servir` es el custodio. `mudar` es de UNA vez por inquilino: lleva lo que
   `cofre.material` guardaba cifrado en la base central al Secret Manager de la
@@ -98,7 +106,7 @@ fn valor(args: &[String], que: &str) -> Option<String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let verbo = args.first().map(String::as_str);
-    if verbo != Some("servir") && verbo != Some("mudar") {
+    if verbo != Some("servir") && verbo != Some("mudar") && verbo != Some("retirar-huerfanos") {
         print!("{USO}");
         return ExitCode::from(64);
     }
@@ -202,6 +210,46 @@ fn main() -> ExitCode {
     } else {
         String::new()
     };
+
+    if verbo == Some("retirar-huerfanos") {
+        let Some(org) = valor(&args, "--organizacion") else {
+            eprintln!("✗ falta `--organizacion`: es de UN inquilino, el que corre esto.");
+            return ExitCode::from(64);
+        };
+        let Some(declaradas) = valor(&args, "--declaradas") else {
+            eprintln!(
+                "✗ falta `--declaradas a,b,c`: las fuentes que el árbol declara HOY. Sin la lista, todo sería huérfano."
+            );
+            return ExitCode::from(64);
+        };
+        let declaradas: Vec<String> = declaradas
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let seco = args.iter().any(|a| a == "--seco");
+        let base = match base::conectar(&url) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("✗ {e}");
+                return ExitCode::from(69);
+            }
+        };
+        return match huerfanos::retirar(base, &org, &declaradas, &almacen, seco) {
+            Ok(n) => {
+                eprintln!(
+                    "ok · {n} credencial(es) huérfana(s){}",
+                    if seco { " (en seco)" } else { " retiradas" }
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("✗ {e}");
+                ExitCode::from(70)
+            }
+        };
+    }
 
     if verbo == Some("mudar") {
         let Some(org) = valor(&args, "--organizacion") else {

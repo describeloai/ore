@@ -765,7 +765,11 @@ custodio. Cierre: la `037` da la potestad `secreto:retirar` (a los mismos roles 
 `retirado_en` y quien (la `020` lo previó: «no un delete»), las concesiones revocadas con fecha, el
 material fuera del almacén de la celda, y la huella sin el valor (`el-cofre` 10). Y `DELETE
 /fuentes/{n}` lo pide con el testigo de quien pulsa, como el alta: la respuesta dice si la
-credencial salió o por qué no.
+credencial salió o por qué no. *Y lo que quedó de antes* —fuentes que ya no están en ningún
+manifiesto, inalcanzables desde la consola— lo retira un verbo de operador que corre en el
+inquilino como `mudar`: `ore-cofre retirar-huerfanos --declaradas <las de hoy>` (`--seco` primero),
+con su propia atribución (`038`: `retiro_agente`, `revoco_agente`), nunca una persona que no lo
+hizo (`el-cofre` 11).
 
 **La pregunta del 17 de septiembre, medida** — *«¿por qué se genera una Entity desde la ingesta,
 si eso es la abstracción ontológica? El Assets catalog no es la ontología; ¿por qué pedimos

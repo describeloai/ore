@@ -30,6 +30,8 @@
 #   9  ⭐⭐ el material NO está en la base central (0024-⑤): está en el almacén
 #  10  ⭐ la baja (037): owner o `secreto:retirar`; fila con retirado_en, concesiones
 #      revocadas, material fuera del almacén, huella sin el valor; el agente no puede
+#  11  ⭐ la baja de operador (038): `retirar-huerfanos --declaradas` retira las de fuentes
+#      que ya no están, atribuidas al operador; `--seco`; sin lista se niega
 #        de la celda, bajo el prefijo del inquilino — y lo viejo se MUDA
 #
 # ── ⭐ Y el almacén también es de mentira, por lo mismo ────────────────────
@@ -548,6 +550,47 @@ FUGA=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='secre
 POT=$(psql "$URL" -qtAc "select string_agg(rol, ' ' order by rol) from iam.rol_potestad where potestad='secreto:retirar'")
 [ "$POT" = "ACCOUNTADMIN ORGADMIN SECURITYADMIN" ] || falla "10 · la potestad secreto:retirar no esta en los roles que emiten: $POT"
 dice "10 · la baja: Zoe y el agente no pueden (mismo error que «no existe») · Ada, owner, retira: fila con retirado_en, concesiones revocadas con fecha, material fuera del almacen, huella sin el valor · despues no resuelve ni se retira dos veces"
+
+# ── 11 · la baja de operador (038): las credenciales de fuentes que ya no estan ──
+#
+# Lo que quedo de antes de la 037 no lo alcanza `DELETE /fuentes`: su fuente ya
+# no esta en ningun manifiesto. `ore-cofre retirar-huerfanos` corre EN el
+# inquilino con la lista de fuentes declaradas HOY, y retira el resto — con su
+# propia atribucion (`retiro_agente`, `revoco_agente`), no con una persona que
+# no lo hizo. `--seco` dice que se iria sin tocar nada; sin `--declaradas` se niega.
+[ "$(pide POST "/organizaciones/$ORG/secretos" "$ADA" \
+      '{"nombre":"fuente-viva","clase":"conexion","valor":"postgres://v:v@db/viva"}')" = "200" ] \
+  || falla "11 · no se pudo emitir fuente-viva: $(cat "$TMP/r.json")"
+[ "$(pide POST "/organizaciones/$ORG/secretos" "$ADA" \
+      '{"nombre":"fuente-muerta","clase":"conexion","valor":"postgres://m:m@db/muerta"}')" = "200" ] \
+  || falla "11 · no se pudo emitir fuente-muerta: $(cat "$TMP/r.json")"
+COFRE_URL="$URL_COFRE" "$COFRE" retirar-huerfanos --organizacion acme \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/huerf.txt" 2>&1 \
+  && falla "11 · sin --declaradas tenia que negarse (todo seria huerfano)"
+grep -q "falta \`--declaradas" "$TMP/huerf.txt" || falla "11 · no dijo que falta --declaradas: $(cat "$TMP/huerf.txt")"
+COFRE_URL="$URL_COFRE" "$COFRE" retirar-huerfanos --organizacion acme --declaradas viva --seco \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/huerf.txt" 2>&1 \
+  || falla "11 · --seco fallo: $(cat "$TMP/huerf.txt")"
+grep -q "fuente-muerta se iría" "$TMP/huerf.txt" || falla "11 · --seco no dijo que fuente-muerta se iria: $(cat "$TMP/huerf.txt")"
+grep -q "fuente-viva se iría" "$TMP/huerf.txt" && falla "11 · --seco tomo la viva por huerfana"
+[ -d "$TMP/almacen/t-acme-cofre-fuente-muerta" ] || falla "11 · --seco toco el almacen"
+COFRE_URL="$URL_COFRE" "$COFRE" retirar-huerfanos --organizacion acme --declaradas viva \
+  --kms "$TMP/kms-de-mentira" --proyecto proyecto-de-mentira --lugar europe-west1 > "$TMP/huerf.txt" 2>&1 \
+  || falla "11 · retirar-huerfanos fallo: $(cat "$TMP/huerf.txt")"
+grep -q "ok · 1 credencial(es) huérfana(s) retiradas" "$TMP/huerf.txt" || falla "11 · tenia que retirar exactamente 1: $(cat "$TMP/huerf.txt")"
+[ ! -d "$TMP/almacen/t-acme-cofre-fuente-muerta" ] || falla "11 · el material de la muerta sigue en el almacen"
+[ -d "$TMP/almacen/t-acme-cofre-fuente-viva" ] || falla "11 · se llevo el material de la viva"
+FILA=$(psql "$URL" -qtAc "select (retirado_en is not null) and retiro is null and retiro_agente = 'ore-cofre retirar-huerfanos' from cofre.secreto where nombre='fuente-muerta' and organizacion='$ORG'")
+[ "$FILA" = "t" ] || falla "11 · la fila no quedo atribuida al operador (retiro_agente) y sin persona: $FILA"
+REV=$(psql "$URL" -qtAc "select count(*) from iam.concesion where recurso='secreto/fuente-muerta' and organizacion='$ORG' and revocada_en is not null and revoco is null and revoco_agente = 'ore-cofre retirar-huerfanos'")
+[ "$REV" -ge 1 ] || falla "11 · las concesiones no quedaron revocadas por el operador: $REV"
+HUELLA=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='secreto:retirar' and detalle->>'nombre'='fuente-muerta' and detalle->>'como'='operador' and quien='operador'")
+[ "$HUELLA" = "1" ] || falla "11 · falta la huella del operador: $HUELLA"
+FUGA=$(psql "$URL" -qtAc "select count(*) from iam.huella where detalle::text like '%postgres://m:m@db%'")
+[ "$FUGA" = "0" ] || falla "11 · la huella lleva el valor de la muerta"
+[ "$(pide GET "/organizaciones/$ORG/secretos/fuente-viva" "$ADA")" = "200" ] || falla "11 · la viva dejo de resolver: $(cat "$TMP/r.json")"
+[ "$(pide GET "/organizaciones/$ORG/secretos/fuente-muerta" "$ADA")" = "422" ] || falla "11 · la muerta sigue resolviendo"
+dice "11 · retirar-huerfanos: sin --declaradas se niega · --seco dice que se iria · retira la de la fuente que no esta (fila y concesiones atribuidas al operador, material fuera, huella sin valor) y deja la viva"
 
 echo
 echo "✓ el custodio guarda, abre a quien puede, y no deja el valor en ningun otro sitio"
