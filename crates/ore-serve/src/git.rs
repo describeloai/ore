@@ -144,9 +144,20 @@ impl Forja {
         std::fs::create_dir_all(&destino)
             .map_err(|e| Fallo::Git(format!("no se pudo crear el directorio: {e}")))?;
         let prestado = Prestado(destino.clone());
+        // ⛔ Sin `autocrlf`: el árbol es LF y el clon tiene que ser el árbol,
+        //   byte a byte, en cualquier máquina. Medido en Windows (0030 W0):
+        //   un Git de sistema con `autocrlf=true` dejaba CRLF en el clon,
+        //   «reescribir lo mismo» parecía un cambio, y el commit vacío daba 502.
         self.git(
             None,
-            &["clone", "--quiet", &self.url, &destino.to_string_lossy()],
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--quiet",
+                &self.url,
+                &destino.to_string_lossy(),
+            ],
         )?;
         Ok(prestado)
     }

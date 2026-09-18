@@ -797,7 +797,7 @@ impl Servidor {
 
     /// `If-Match` contra la cabeza del árbol. `None` si cuadra, si no se dijo,
     /// o si no hay historia contra la que mirar.
-    fn arbol_se_movio(&self, raiz: &Path, si_commit: Option<&str>) -> Option<Respuesta> {
+    pub(crate) fn arbol_se_movio(&self, raiz: &Path, si_commit: Option<&str>) -> Option<Respuesta> {
         let esperado = si_commit?.trim().trim_matches('"');
         if esperado.is_empty() {
             return None;
@@ -1054,7 +1054,7 @@ fn texto_de(j: Option<&Json>) -> String {
     }
 }
 
-fn relativo(raiz: &Path, f: &Path) -> String {
+pub(crate) fn relativo(raiz: &Path, f: &Path) -> String {
     f.strip_prefix(raiz)
         .unwrap_or(f)
         .to_string_lossy()
@@ -1063,7 +1063,7 @@ fn relativo(raiz: &Path, f: &Path) -> String {
 
 // ── Lo que dice git ─────────────────────────────────────────────────────────
 
-fn git(raiz: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(raiz: &Path, args: &[&str]) -> Option<String> {
     let s = std::process::Command::new("git")
         .current_dir(raiz)
         .args(args)
@@ -1076,12 +1076,12 @@ fn git(raiz: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// La cabeza del árbol, o nada si no hay historia (un directorio del banco).
-fn cabeza_de(raiz: &Path) -> Option<String> {
+pub(crate) fn cabeza_de(raiz: &Path) -> Option<String> {
     git(raiz, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty())
 }
 
 /// El commit que trajo un fichero: `{hash, autor, fecha}`.
-fn commit_de(raiz: &Path, fichero: &Path) -> Option<Json> {
+pub(crate) fn commit_de(raiz: &Path, fichero: &Path) -> Option<Json> {
     let rel = fichero
         .strip_prefix(raiz)
         .ok()?

@@ -399,6 +399,59 @@ cumple "d['sinHablar']==['hr.personalEmail']" "18 · la entidad dice que deja hr
 [ "$(asunto)" = 'retirar el concepto `hr.personalEmail`' ] || falla "18 · el asunto: $(asunto)"
 [ "$(pide GET /conceptos)" = "200" ] && cumple "len(d['conceptos'])==2 and all(c['importado'] for c in d['conceptos'])" "18 · quedan los dos importados"
 dice "18 · deshecho en orden: libres, 200; el arbol vuelve a ser acme-retail mas el vocabulario iso"
+# ── 19 · /arbol: el arbol por ruta, lo que el editor abre (0030 W0) ──────────
+pon() { # ruta fichero-con-el-texto [cabecera-extra]
+  curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$SUJ" -H "${3:-x-nada: 1}" \
+    -H 'Content-Type: text/yaml' --data-binary "@$2" "$BASE/arbol/$1"
+}
+[ "$(pide GET /arbol)" = "200" ] || falla "19 · GET /arbol · $(cat "$TMP/r.json")"
+cumple "len(d['ficheros']) > 20 and d['cabeza'] and any(f['ruta']=='packages/hr/entities/Employee.yaml' and f['kind']=='Entity' for f in d['ficheros']) and any(f['ruta']=='ontology.config.yaml' for f in d['ficheros'])" "19 · el indice: cabeza, rutas y kinds"
+cumple "all('/' not in f['ruta'][:1] and '..' not in f['ruta'] for f in d['ficheros'])" "19 · rutas relativas"
+[ "$(pide GET /arbol/packages/hr/entities/Employee.yaml)" = "200" ] || falla "19 · GET /arbol/<ruta> · $(cat "$TMP/r.json")"
+cumple "d['kind']=='Entity' and 'kind: Entity' in d['texto'] and d['commit']['hash'] and d['ruta']=='packages/hr/entities/Employee.yaml'" "19 · el fichero con su kind, su texto y su commit"
+CABEZA=$(campo "d['cabeza']")
+[ "$(pide GET /arbol/no/existe.yaml)" = "404" ] || falla "19 · un fichero que no esta no dio 404"
+[ "$(pide GET /arbol/../etc/passwd)" != "200" ] || falla "19 · una ruta con .. entro"
+[ "$(pide GET /arbol/diagnosticos)" = "200" ] || falla "19 · GET /arbol/diagnosticos · $(cat "$TMP/r.json")"
+cumple "d['diagnosticos']==[] and d['cabeza']" "19 · acme-retail compila: sin diagnosticos"
+# una vista nueva por ruta: 201, sin diagnosticos, commit del sujeto
+cat > "$TMP/porRuta.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: porRuta, namespace: hr }
+spec:
+  owner: team:people-data
+  from: { view: empleados }
+  fields:
+    id: employeeId
+Y
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/porRuta.yaml")" = "201" ] || falla "19 · PUT /arbol de una vista nueva · $(cat "$TMP/r.json")"
+cumple "d['nueva'] is True and d['kind']=='View' and d['diagnosticos']==[] and d['commit']" "19 · 201 con kind, commit y sin diagnosticos"
+[ "$(asunto)" = 'escribir `packages/hr/views/porRuta.yaml`' ] || falla "19 · el asunto: $(asunto)"
+git --git-dir="$FORJA" log -1 --format='%an' main | grep -q "ana" || falla "19 · el commit no es del sujeto: $(git --git-dir="$FORJA" log -1 --format='%an' main)"
+# el mismo texto otra vez: 200, igual, y ningun commit
+ANTES=$(cabeza)
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/porRuta.yaml")" = "200" ] || falla "19 · reescribir lo mismo no dio 200"
+cumple "d.get('igual') is True" "19 · lo mismo es igual"
+[ "$(cabeza)" = "$ANTES" ] || falla "19 · reescribir lo mismo hizo un commit"
+# romper una referencia: 422 con el marcador en su fichero y su linea, y nada escrito
+sed 's/from: { view: empleados }/from: { view: no_existe }/' "$TMP/porRuta.yaml" > "$TMP/rota.yaml"
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/rota.yaml")" = "422" ] || falla "19 · romper una referencia no dio 422 · $(cat "$TMP/r.json")"
+cumple "d['diagnosticos'][0]['codigo']=='OOS2018' and d['diagnosticos'][0]['fichero']=='packages/hr/views/porRuta.yaml' and d['diagnosticos'][0]['linea']==6 and d['diagnosticos'][0]['columna']>0 and d['diagnosticos'][0]['severidad']=='error'" "19 · el marcador: OOS2018, fichero, linea 6, columna, severidad"
+[ "$(pide GET /arbol/packages/hr/views/porRuta.yaml)" = "200" ] && cumple "'view: empleados' in d['texto']" "19 · la que rompia no se escribio"
+[ "$(cabeza)" = "$ANTES" ] || falla "19 · un 422 hizo commit"
+# If-Match viejo: 409 y nada escrito
+sed 's/id: Worker_Reference.ID/id: Worker_Reference.ID\n    nombre: Legal_Name/' "$TMP/porRuta.yaml" > "$TMP/mas.yaml"
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/mas.yaml" "If-Match: $CABEZA")" = "409" ] || falla "19 · con If-Match viejo no dio 409 · $(cat "$TMP/r.json")"
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/mas.yaml" "If-Match: $(cabeza)")" = "200" ] || falla "19 · con If-Match al dia no entro · $(cat "$TMP/r.json")"
+# lo gobernado que se induce, y la historia, no se editan
+[ "$(pon packages/hr/discover.scope.json "$TMP/porRuta.yaml")" = "422" ] || falla "19 · discover.scope.json entro por /arbol"
+[ "$(pon .git/config "$TMP/porRuta.yaml")" = "422" ] || falla "19 · .git entro por /arbol"
+# retirar: 200, y otra vez 404
+[ "$(pide DELETE /arbol/packages/hr/views/porRuta.yaml)" = "200" ] || falla "19 · DELETE /arbol · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'retirar `packages/hr/views/porRuta.yaml`' ] || falla "19 · el asunto del retiro: $(asunto)"
+[ "$(pide GET /arbol/packages/hr/views/porRuta.yaml)" = "404" ] || falla "19 · retirada y sigue"
+dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, igual, 422 con marcador fichero:linea:columna, 409 If-Match) · lo inducido y .git no se editan · DELETE"
 
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface — y /conceptos; escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface — y /conceptos; /arbol por ruta (0030 W0); escribir es un commit del sujeto que no empeora el arbol"

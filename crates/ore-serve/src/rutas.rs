@@ -53,6 +53,7 @@
 //!   camino; `..` no es un caso especial que haya que recordar, es algo que el
 //!   alfabeto ya no admite.
 
+use crate::arbol;
 use crate::cola;
 use crate::documentos;
 use crate::git;
@@ -260,6 +261,28 @@ impl Servidor {
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, &format!("decisiones de `{n}`"), |r| {
                     self.responder(r, &n, &cuerpo, sujeto)
+                })
+            }
+            // ── 0030 W0 · el árbol por ruta (`arbol.rs`): lo que el editor abre ──
+            ("GET", ["arbol"]) => self.leyendo(arbol::indice),
+            ("GET", ["arbol", "diagnosticos"]) => self.leyendo(|r| self.diagnosticos_del_arbol(r)),
+            ("GET", ["arbol", ruta @ ..]) => {
+                let ruta = ruta.join("/");
+                self.leyendo(move |r| arbol::leer(r, &ruta))
+            }
+            ("PUT", ["arbol", ruta @ ..]) => {
+                let ruta = ruta.join("/");
+                let cuerpo = p.cuerpo.clone();
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                self.escribiendo(sujeto, &format!("escribir `{ruta}`"), |r| {
+                    self.escribir_fichero(r, &ruta, &cuerpo, si_commit.as_deref())
+                })
+            }
+            ("DELETE", ["arbol", ruta @ ..]) => {
+                let ruta = ruta.join("/");
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                self.escribiendo(sujeto, &format!("retirar `{ruta}`"), |r| {
+                    self.retirar_fichero(r, &ruta, si_commit.as_deref())
                 })
             }
             // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
@@ -1511,6 +1534,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
         ("POST", "/paquetes/{nombre}/copia", con_identidad),
         ("DELETE", "/paquetes/{nombre}", con_identidad),
+        ("GET", "/arbol", con_identidad),
+        ("GET", "/arbol/diagnosticos", con_identidad),
+        ("GET", "/arbol/{ruta}", con_identidad),
+        ("PUT", "/arbol/{ruta}", con_identidad),
+        ("DELETE", "/arbol/{ruta}", con_identidad),
         ("GET", "/funciones", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),

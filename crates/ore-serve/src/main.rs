@@ -39,6 +39,7 @@
 //! Los dos son la misma frase que el resto del proyecto: *omitir no deja nada
 //! abierto, lo CIERRA*.
 
+mod arbol;
 mod cola;
 mod copia;
 mod documentos;
