@@ -141,6 +141,32 @@ vez de degradar. Nada se degrada en silencio: es la diferencia entre un contrato
 (2026-09-19, en local, los tres SDK de verdad): arriba, en «El problema». La matriz completa por
 tipo y lenguaje está en [`0031`, «Lo medido para W3.5 · leer»](0031-el-puesto.md).
 
+### T4, medido (`pruebas-de-fuego/medida-w3-arrow.py`, 2026-09-20, en local): Arrow en Node y en Java
+
+El mismo Parquet de 23 tipos y el de 10 M de filas, por los caminos **columnares** que existen,
+antes de meter nada en una imagen:
+
+| camino | fidelidad (de 23) | 10 M filas: cargar · sumar una columna | pesa |
+|---|---|---|---|
+| **Java · DuckDB JDBC → Arrow Java** (`arrowExportStream`, arrow-vector + c-data + memory-unsafe) | **23/23** | **684 ms · 166 ms → 14,6 M filas/s** (JDBC filas-objeto: 15,7 s) | 5,0 MB en 12 jars + `--add-opens=java.base/java.nio` |
+| **Node · DuckDB tipado por columnas** (`getColumns()`: `DuckDBDecimalValue`, `DuckDBTimestampTZValue`, `DuckDBMapValue`…) | 22/23 (sólo −0 → 0) | 14,5 s · 244 ms → 0,7 M filas/s (filas-objeto: 34,6 s) | 0 (ya está en la imagen) |
+| **Node · parquet-wasm + apache-arrow** | 11/23: fechas e instantes como **número de ms** (ns pierde), `time` como número, decimales como `Uint32Array(4)` sin aritmética, una lista con nulos → `[1,2,0]`, struct y map como arrays | 10,0 s · 344 ms → 1,0 M filas/s | 15,3 + 5,8 MB |
+
+**Lo que decide:**
+
+- **Java: Arrow.** Exacto en los 23 tipos y 20× más rápido que las filas-objeto por JDBC; el
+  coste (5 MB, un `--add-opens` en el `CMD` de `puesto-jvm:1`) es nada. `over()` en Java
+  devuelve `VectorSchemaRoot` y el mapeo por vector es el de `medida-w3-arrow.py` (ya escrito).
+- **Node: DuckDB tipado por columnas, no Arrow JS.** La API de valores de Arrow JS no cumple
+  el contrato (ni decimal, ni ns, ni nulos en listas) y pesa 21 MB para ir sólo 1,4× más rápido.
+  Los valores tipados de DuckDB cumplen la tabla de 0032 §1 sin añadir nada a la imagen. Lo que
+  NO arregla es la velocidad: materializar 40 M de valores en JS cuesta 14 s en cualquier camino
+  (0,7–1 M filas/s), porque JS crea un objeto por valor. ⇒ **en Node no se materializan 10 M
+  de filas**: `over()` devuelve columnas tipadas hasta un límite dicho (y `sql()` agrega en
+  DuckDB, 60–140 ms); lo masivo es SQL o Python, no un `for` en JS. Cuando `@duckdb/node-api`
+  exporte Arrow (está en su hoja de ruta), los `TypedArray` numéricos serán zero-copy.
+- **Python: pyarrow** ya lo era (13 M filas/s); sólo cambia el `to_pandas` (`ArrowDtype`).
+
 ## Lo que se acepta a cambio
 
 - **Un cambio de espec** (`Table.columns.<c>.type`) y **rehacer las copias** para que lleven
@@ -158,4 +184,4 @@ tipo y lenguaje está en [`0031`, «Lo medido para W3.5 · leer»](0031-el-puest
 | **T1** | la tabla de arriba como código: `ore_core::tipos` (escalar ↔ Arrow ↔ forma canónica del texto) con sus pruebas; `carga.rs` estrecha por ella; el informe de la copia dice lo no estrechado | la copia de `olist.products` lleva `price: decimal`, `recorded_at: timestamp[us, UTC]`; `medida-w3-tipos.py` deja de decir `string×218` |
 | **T2** | el escalar al árbol: derivación desde `physicalType` en el compilador (ya) y `Table.columns.<c>.type` en OOS (como toca) | un `sum(price)` en una vista es `Decimal` en el plan sin defaults |
 | **T3** | la celda: `over()` columnar en los tres, el JSON único, `estricto` | `medida-w3-leer.py` sin `≠` fuera de lo que la tabla dice |
-| **T4** | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | los números, y una decisión por lenguaje |
+| **T4** ✓ 2026-09-20 | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | arriba: Java → Arrow (23/23, 14,6 M filas/s, 5 MB); Node → DuckDB tipado por columnas (22/23, sin añadir nada) y no Arrow JS (11/23, 21 MB); en Node no se materializan 10 M de filas |

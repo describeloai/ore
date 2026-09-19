@@ -107,7 +107,10 @@ def verdad(tabla):
     v = {}
     for c in tabla.column_names:
         col = tabla.column(c)
-        v[c] = {"tipo": str(col.type), "valores": [canonico(x) for x in col.to_pylist()]}
+        vals = [canonico(x) for x in col.to_pylist()]
+        if str(col.type).startswith("map"):
+            vals = ["{}" if x == "[]" else x for x in vals]
+        v[c] = {"tipo": str(col.type), "valores": vals}
     return v
 
 
@@ -156,10 +159,15 @@ def canonico_desde_json(x):
     if isinstance(x, str):
         if x in ("Infinity", "-Infinity"):
             return "inf" if x[0] != "-" else "-inf"
+        # java.time deja fuera los segundos cuando son cero: `00:00`, `1970-01-01T00:00`
+        if re.fullmatch(r"\d\d:\d\d", x) or re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", x):
+            x = x + ":00"
         if re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d", x):
             x = x[:10] + "T" + x[11:]
         if re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?[+-]\d\d$", x):
             x = x + ":00"
+        if re.match(r"^\d{4}-\d\d-\d\dT.*Z$", x):
+            x = x[:-1] + "+00:00"
         if re.match(r"^\d{4}-\d\d-\d\dT.*[+-]\d\d:\d\d$", x):
             try:
                 return dt.datetime.fromisoformat(x).astimezone(dt.timezone.utc).isoformat()
@@ -170,8 +178,8 @@ def canonico_desde_json(x):
             x = m.group(1)
         if re.fullmatch(r"(\\x[0-9a-fA-F]{2})+", x):
             x = "".join(h.lower() for h in re.findall(r"\\x([0-9a-fA-F]{2})", x))
-        if re.match(r"^\[.*\]$|^\{.*\}$", x) and " " in x:
-            x = x.replace(", ", ",").replace("=", ":").replace("null", "None")
+        if re.match(r"^\[.*\]$|^\{.*\}$", x) and (" " in x or "'" in x):
+            x = x.replace(", ", ",").replace(": ", ":").replace("'", "").replace("=", ":").replace("null", "None")
         return x
     if x is None:
         return None
