@@ -64,6 +64,19 @@ use std::time::{Duration, Instant};
 const ESPERA: Duration = Duration::from_secs(20);
 /// Sin latido del agente durante esto, el puesto está perdido.
 const SIN_LATIDO: Duration = Duration::from_secs(90);
+/// Encolado sin que ningún agente lo reclame durante esto, el puesto está
+/// perdido (el Job no llegó a arrancar, o alguien se lo llevó de la cola: en
+/// frío el nodo tarda ~2 min; esto es cinco veces eso).
+const SIN_ARRANCAR: Duration = Duration::from_secs(600);
+
+/// Un puesto que no va a contestar: vivo sin latido, o encolado sin arrancar.
+fn perdido(p: &Puesto) -> bool {
+    match p.estado {
+        Estado::Vivo => p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO),
+        Estado::Encolado => p.creado.elapsed() > SIN_ARRANCAR,
+        Estado::Cerrado => false,
+    }
+}
 /// Una celda no puede ser un fichero.
 const TEXTO_MAXIMO: usize = 256 * 1024;
 
@@ -164,10 +177,10 @@ fn es_agente(sujeto: &Identidad) -> bool {
 }
 
 fn ficha(id: &str, p: &Puesto) -> Json {
-    let vivo = p.estado == Estado::Vivo && p.latido.is_some_and(|l| l.elapsed() < SIN_LATIDO);
-    let estado = match p.estado {
-        Estado::Vivo if !vivo => "perdido",
-        e => e.dice(),
+    let estado = if perdido(p) {
+        "perdido"
+    } else {
+        p.estado.dice()
     };
     Json::obj([
         ("id", Json::s(id)),
@@ -256,10 +269,11 @@ impl Servidor {
         {
             let lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
-            // Uno PERDIDO (vivo sin latido: TTL, tope o relevo) se sustituye.
+            // Uno PERDIDO (vivo sin latido: TTL, tope o relevo; o encolado
+            // que nunca arrancó) se sustituye.
             if let Some(p) = lista.get(&id)
                 && p.estado != Estado::Cerrado
-                && !(p.estado == Estado::Vivo && p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO))
+                && !perdido(p)
             {
                 return Respuesta::ok(ficha(&id, p));
             }
@@ -466,13 +480,20 @@ impl Servidor {
                 ),
             );
         }
-        if p.estado == Estado::Vivo && p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO) {
+        if perdido(p) {
             return Respuesta::error(
                 409,
-                format!(
-                    "el puesto lleva {} s sin dar señales: se perdió (¿TTL, tope o relevo?); ciérralo y abre otro",
-                    p.latido.map(|l| l.elapsed().as_secs()).unwrap_or(0)
-                ),
+                if p.estado == Estado::Encolado {
+                    format!(
+                        "el puesto lleva {} s encolado sin arrancar: se perdió (¿el Job no está?); ciérralo y abre otro",
+                        p.creado.elapsed().as_secs()
+                    )
+                } else {
+                    format!(
+                        "el puesto lleva {} s sin dar señales: se perdió (¿TTL, tope o relevo?); ciérralo y abre otro",
+                        p.latido.map(|l| l.elapsed().as_secs()).unwrap_or(0)
+                    )
+                },
             );
         }
         let num = p.siguiente;
