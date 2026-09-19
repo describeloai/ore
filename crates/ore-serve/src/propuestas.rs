@@ -316,6 +316,112 @@ impl Servidor {
         }
     }
 
+    /// `POST /ramas/{rama}/fusionar {desde}`: traer OTRA rama a ésta (el «Merge»
+    /// del menú del workspace). Es `git merge --no-ff` en un clon de la rama,
+    /// con el gate de siempre —el árbol resultante no empeora, o nada se
+    /// empuja— y el empujón. **`main` no**: lo que llega a `main` llega por una
+    /// propuesta revisada por otra persona; aquí se contesta 422 y se dice.
+    pub(crate) fn fusionar_en_rama(
+        &self,
+        sujeto: &Identidad,
+        rama: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let Some(forja) = self.forja() else {
+            return Respuesta::error(
+                422,
+                "este árbol es un directorio, no una forja: no hay ramas que fusionar",
+            );
+        };
+        if let Err(m) = nombre_de_rama_valido(rama) {
+            return Respuesta::error(422, m);
+        }
+        let Some(desde) = del_cuerpo(cuerpo, "desde").filter(|d| !d.is_empty()) else {
+            return Respuesta::error(422, "falta `desde`: la rama que se trae");
+        };
+        if let Err(m) = nombre_de_rama_valido(&desde) {
+            return Respuesta::error(422, m);
+        }
+        if desde == rama {
+            return Respuesta::error(
+                422,
+                format!("`{rama}` ya es `{rama}`: no hay nada que traer"),
+            );
+        }
+        let por_defecto = self
+            .api()
+            .ok()
+            .and_then(|a| a.rama_por_defecto().ok())
+            .unwrap_or_else(|| "main".into());
+        if rama == por_defecto {
+            return Respuesta::error(
+                422,
+                format!(
+                    "a `{por_defecto}` no se le trae una rama a mano: se propone, otra persona la revisa y se fusiona (Pull requests)"
+                ),
+            );
+        }
+        let prestado = match forja.clonar_rama(Some(rama)) {
+            Err(crate::git::Fallo::SinRama(r)) => {
+                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+            }
+            Err(e) => return Respuesta::error(502, e.to_string()),
+            Ok(p) => p,
+        };
+        let raiz = prestado.ruta();
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let mensaje = format!("Traer `{desde}` a `{rama}` ({})", sujeto.persona);
+        match forja.traer(raiz, &desde, sujeto, &mensaje) {
+            Ok(false) => {
+                return Respuesta::ok(Json::obj([
+                    ("rama", Json::s(rama)),
+                    ("desde", Json::s(&desde)),
+                    ("fusionada", Json::Bool(false)),
+                    (
+                        "dice",
+                        Json::s(format!("`{rama}` ya tiene todo lo de `{desde}`")),
+                    ),
+                ]));
+            }
+            Ok(true) => {}
+            Err(crate::git::Fallo::SinRama(r)) => {
+                return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
+            }
+            Err(e @ crate::git::Fallo::Conflicto(_)) => {
+                return Respuesta::error(409, e.to_string());
+            }
+            Err(e) => return Respuesta::error(502, e.to_string()),
+        }
+        if let Err(mut r) = self.empeora(raiz, &antes, &format!("traer `{desde}`")) {
+            if let Json::Obj(m) = &mut r.cuerpo
+                && let Some(Json::Arr(ds)) = m.get("diagnosticos").cloned()
+            {
+                m.insert(
+                    "diagnosticos".into(),
+                    Json::Arr(ds.iter().map(crate::arbol::con_posicion).collect()),
+                );
+            }
+            // El merge se queda en el clon, y el clon se tira.
+            return r;
+        }
+        match forja.empujar(raiz) {
+            Ok(commit) => Respuesta::ok(Json::obj([
+                ("rama", Json::s(rama)),
+                ("desde", Json::s(&desde)),
+                ("fusionada", Json::Bool(true)),
+                ("commit", Json::s(commit)),
+                ("por", Json::s(&sujeto.persona)),
+            ])),
+            Err(crate::git::Fallo::Adelantado(m)) => {
+                Respuesta::error(409, crate::git::Fallo::Adelantado(m).to_string())
+            }
+            Err(e) => Respuesta::error(502, e.to_string()),
+        }
+    }
+
     // ── Propuestas ─────────────────────────────────────────────────────────
 
     /// `GET /propuestas`: todas, con su estado (`abierta`, `fusionada`, `cerrada`).

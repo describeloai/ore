@@ -537,6 +537,88 @@ impl Servidor {
         // el mensaje de la persona (el que `escribiendo` recibió).
         Respuesta::creado(ficha)
     }
+
+    /// **`GET /arbol/historia/{ruta}`** (0030 W2, *Version history*): las
+    /// versiones de un fichero, que git ya tiene. Medido en victor el
+    /// 2026-09-19: `ontology.config.yaml` lleva 12; `git log --follow` sobre un
+    /// fichero cuesta menos de 10 ms tras el clon. El autor es la persona (el
+    /// `sub`) y el committer este servidor, como en cada commit.
+    pub(crate) fn historia_del_fichero(&self, raiz: &Path, ruta: &str) -> Respuesta {
+        let rel = match ruta_valida(ruta) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
+        if !raiz.join(&rel).is_file() {
+            // Puede haber existido: la historia de un fichero retirado también es historia.
+            let habia = git(raiz, &["log", "-1", "--format=%h", "--", ruta]).unwrap_or_default();
+            if habia.is_empty() {
+                return Respuesta::error(404, format!("no hay `{ruta}` en el árbol, ni lo hubo"));
+            }
+        }
+        let Some(s) = git(
+            raiz,
+            &[
+                "log",
+                "--follow",
+                "--format=%H%x1f%h%x1f%an%x1f%cn%x1f%aI%x1f%s",
+                "--",
+                ruta,
+            ],
+        ) else {
+            return Respuesta::ok(Json::obj([
+                ("ruta", Json::s(ruta)),
+                ("versiones", Json::Arr(vec![])),
+            ]));
+        };
+        let versiones: Vec<Json> = s
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let mut p = l.split('\u{1f}');
+                Json::obj([
+                    ("hash", Json::s(p.next().unwrap_or_default())),
+                    ("corto", Json::s(p.next().unwrap_or_default())),
+                    ("autor", Json::s(p.next().unwrap_or_default())),
+                    ("committer", Json::s(p.next().unwrap_or_default())),
+                    ("cuando", Json::s(p.next().unwrap_or_default())),
+                    ("mensaje", Json::s(p.next().unwrap_or_default())),
+                ])
+            })
+            .collect();
+        Respuesta::ok(Json::obj([
+            ("ruta", Json::s(ruta)),
+            ("versiones", Json::Arr(versiones)),
+        ]))
+    }
+
+    /// **`GET /arbol/version/{hash}/{ruta}`**: el texto de UNA versión
+    /// (`git show hash:ruta`). Restaurarla no necesita verbo: es un `PUT` con
+    /// ese texto, un commit nuevo de la persona.
+    pub(crate) fn version_del_fichero(&self, raiz: &Path, hash: &str, ruta: &str) -> Respuesta {
+        if hash.is_empty() || hash.len() > 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Respuesta::error(422, format!("`{hash}` no es un commit"));
+        }
+        if let Err(r) = ruta_valida(ruta) {
+            return r;
+        }
+        // Sin `trim`: el texto de una versión es el fichero byte a byte, con su
+        // salto de línea final — si no, restaurarla sería un cambio.
+        let salida = std::process::Command::new("git")
+            .current_dir(raiz)
+            .args(["show", &format!("{hash}:{ruta}")])
+            .output();
+        match salida {
+            Ok(s) if s.status.success() => Respuesta::ok(Json::obj([
+                ("ruta", Json::s(ruta)),
+                ("hash", Json::s(hash)),
+                (
+                    "texto",
+                    Json::s(String::from_utf8_lossy(&s.stdout).into_owned()),
+                ),
+            ])),
+            _ => Respuesta::error(404, format!("no hay `{ruta}` en el commit `{hash}`")),
+        }
+    }
 }
 
 /// Lo que un `POST /arbol/commit` quiere, antes de clonar: si es en seco y con

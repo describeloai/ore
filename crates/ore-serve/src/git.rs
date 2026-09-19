@@ -55,6 +55,8 @@ pub enum Fallo {
     Git(String),
     /// La rama pedida no está en la forja (0030 W2).
     SinRama(String),
+    /// Un merge con conflictos: los ficheros que chocan (0030 W2).
+    Conflicto(Vec<String>),
 }
 
 impl std::fmt::Display for Fallo {
@@ -69,6 +71,11 @@ impl std::fmt::Display for Fallo {
             ),
             Fallo::Git(m) => write!(f, "git: {m}"),
             Fallo::SinRama(r) => write!(f, "no hay ninguna rama `{r}` en la forja"),
+            Fallo::Conflicto(fs) => write!(
+                f,
+                "las dos ramas cambian lo mismo y git no sabe cuál vale: {}",
+                fs.join(", ")
+            ),
         }
     }
 }
@@ -187,6 +194,68 @@ impl Forja {
         let mut l = s.lines();
         let seg = l.next()?.trim().parse().ok()?;
         Some((seg, l.next()?.trim().to_string()))
+    }
+
+    /// **Traer otra rama a este clon** (0030 W2, el «Merge» del menú): `git
+    /// merge --no-ff` de `desde`, con la persona de autor y este servidor de
+    /// committer, SIN empujar — el gate decide después si se empuja. `Ok(false)`
+    /// es «ya estaba al día»; un conflicto deshace el merge y dice qué choca.
+    pub fn traer(
+        &self,
+        dir: &Path,
+        desde: &str,
+        sujeto: &Identidad,
+        mensaje: &str,
+    ) -> Result<bool, Fallo> {
+        if self
+            .git(Some(dir), &["fetch", "--quiet", "origin", desde])
+            .is_err()
+        {
+            return Err(Fallo::SinRama(desde.to_string()));
+        }
+        let mut c = Command::new("git");
+        c.current_dir(dir);
+        for (k, v) in self.entorno() {
+            c.env(k, v);
+        }
+        c.env("GIT_AUTHOR_NAME", &sujeto.persona)
+            .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
+            .env(
+                "GIT_COMMITTER_NAME",
+                sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
+            )
+            .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+        let s = c
+            .args(["merge", "--no-ff", "--no-edit", "-m", mensaje, "FETCH_HEAD"])
+            .output()
+            .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
+        let mut salida = String::from_utf8_lossy(&s.stdout).into_owned();
+        salida.push('\n');
+        salida.push_str(&String::from_utf8_lossy(&s.stderr));
+        if s.status.success() {
+            return Ok(!salida.contains("Already up to date"));
+        }
+        let _ = self.git(Some(dir), &["merge", "--abort"]);
+        let chocan: Vec<String> = salida
+            .lines()
+            .filter(|l| l.starts_with("CONFLICT"))
+            .filter_map(|l| l.rsplit(' ').next())
+            .map(|f| f.trim_end_matches('.').to_string())
+            .collect();
+        if chocan.is_empty() {
+            Err(Fallo::Git(primera(&salida)))
+        } else {
+            Err(Fallo::Conflicto(chocan))
+        }
+    }
+
+    /// Empuja lo que el clon ya tiene commiteado (un merge). Devuelve el commit.
+    pub fn empujar(&self, dir: &Path) -> Result<String, Fallo> {
+        self.git(Some(dir), &["push", "--quiet", "origin", "HEAD"])?;
+        Ok(self
+            .git(Some(dir), &["rev-parse", "--short", "HEAD"])?
+            .trim()
+            .to_string())
     }
 
     /// ¿Cambió algo? Un `commit` vacío es ruido en la historia, y la historia

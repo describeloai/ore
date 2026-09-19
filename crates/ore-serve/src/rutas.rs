@@ -303,6 +303,15 @@ impl Servidor {
             ("GET", ["arbol", "diagnosticos"]) => {
                 self.leyendo_en(rama, |r| self.diagnosticos_del_arbol(r))
             }
+            // ⭐ Las versiones de un fichero (0030 W2, *Version history*): git las tiene.
+            ("GET", ["arbol", "historia", ruta @ ..]) => {
+                let ruta = ruta.join("/");
+                self.leyendo_en(rama, move |r| self.historia_del_fichero(r, &ruta))
+            }
+            ("GET", ["arbol", "version", hash, ruta @ ..]) => {
+                let (hash, ruta) = (hash.to_string(), ruta.join("/"));
+                self.leyendo_en(rama, move |r| self.version_del_fichero(r, &hash, &ruta))
+            }
             ("GET", ["arbol", ruta @ ..]) => {
                 let ruta = ruta.join("/");
                 self.leyendo_en(rama, move |r| arbol::leer(r, &ruta))
@@ -342,6 +351,11 @@ impl Servidor {
             ("GET", ["ramas"]) => self.ramas(),
             ("POST", ["ramas"]) => self.crear_rama(sujeto, &p.cuerpo),
             ("DELETE", ["ramas", nombre @ ..]) => self.retirar_rama(&nombre.join("/")),
+            // ⭐ Traer OTRA rama a ésta (el «Merge» del menú): git merge en un clon de
+            //   la rama, el gate de siempre, y el empujón. `main` no: eso es una propuesta.
+            ("POST", ["ramas", resto @ .., "fusionar"]) if !resto.is_empty() => {
+                self.fusionar_en_rama(sujeto, &resto.join("/"), &p.cuerpo)
+            }
             ("GET", ["propuestas"]) => self.propuestas(),
             ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
             ("GET", ["propuestas", n]) => match n.parse::<u64>() {
@@ -1932,6 +1946,9 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("PUT", "/arbol/{ruta}", con_identidad),
         ("DELETE", "/arbol/{ruta}", con_identidad),
         ("POST", "/arbol/commit", con_identidad),
+        ("GET", "/arbol/historia/{ruta}", con_identidad),
+        ("GET", "/arbol/version/{hash}/{ruta}", con_identidad),
+        ("POST", "/ramas/{nombre}/fusionar", con_identidad),
         ("GET", "/ramas", con_identidad),
         ("POST", "/ramas", con_identidad),
         ("DELETE", "/ramas/{nombre}", con_identidad),
