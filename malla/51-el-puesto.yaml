@@ -4,17 +4,22 @@
 # ⭐⭐ Es la misma figura que `48-la-copia.yaml` y `49-la-invocacion.yaml` —un
 #   Job de Kueue en el pool privado, con la identidad del pod y el testigo
 #   traído por un `initContainer`— y cambia la VIDA: este Job **no termina**.
-#   Dentro corre el agente (`puesto/python/agente.py`) sobre `puesto-python:1`
-#   (el entorno 1: python 3.12, pandas, pyarrow, duckdb, GCS): pide celdas a
-#   `ore-serve` por polling largo, las ejecuta en un espacio que dura toda la
-#   sesión, y devuelve la salida tipada. La consola nunca habla con este pod.
+#   Dentro corre el agente de un ENTORNO (W3.4): `puesto-python:1` (python
+#   3.12, pandas, pyarrow, duckdb, GCS · `puesto/python/agente.py`),
+#   `puesto-node:1` (node 24, TS sin transpilador, duckdb · `puesto/node/
+#   agente.mjs`) o `puesto-jvm:1` (JDK 21, JShell en proceso, duckdb JDBC ·
+#   `puesto/jvm/ore/Agente.java`): pide celdas a `ore-serve` por polling largo,
+#   las ejecuta en un espacio que dura toda la sesión, y devuelve la salida
+#   tipada. La consola nunca habla con este pod. Cada imagen trae su `CMD`
+#   (el agente), por eso aquí no hay `command`.
 #
 # ── Quién lo rinde y quién lo retira ────────────────────────────────────────
 #
-#   `ore-serve` escribe `51-el-puesto-<persona>.yaml` en la cola del inquilino
-#   (rendido de `plantilla-puesto.txt`, ⚠️ esta plantilla) al `POST /puestos`, y
-#   Flux lo aplica. `DELETE /puestos/{id}` quita el fichero y `prune: true` se
-#   lleva el Job. Uno por persona: el fichero se llama por ella.
+#   `ore-serve` escribe `51-el-puesto-<persona>-<entorno>.yaml` en la cola del
+#   inquilino (rendido de `plantilla-puesto.txt`, ⚠️ esta plantilla: el hueco
+#   del entorno → la imagen) al `POST /puestos`, y Flux lo
+#   aplica. `DELETE /puestos/{id}` quita el fichero y `prune: true` se lleva
+#   el Job. Uno por persona y entorno: el fichero se llama por ellos.
 #
 # ── Cuándo muere ───────────────────────────────────────────────────────────
 #
@@ -146,7 +151,9 @@ spec:
             capabilities: { drop: [ALL] }
       containers:
         - name: puesto
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          # El hueco del entorno: `ore-serve` pone `puesto-python:1`,
+          # `puesto-node:1` o `puesto-jvm:1` según el lenguaje del puesto.
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-entorno-modelo:1
           # ⛔ `Always`, y no es descuido: `:1` es el ENTORNO (lo que una celda
           #   importa no cambia), pero el agente y el SDK viajan dentro y cambian
           #   con cada commit. Con `IfNotPresent` el nodo se quedaba con el `:1`
@@ -154,7 +161,6 @@ spec:
           #   agente que aún no sabía de SQL). `Always` sólo compara el digest
           #   con el registro: ~1 s cuando ya está.
           imagePullPolicy: Always
-          command: ["python3", "/opt/ore/agente.py"]
           env:
             - { name: PUESTO, value: "puesto-modelo" }
             - { name: RAMA, value: "rama-modelo" }

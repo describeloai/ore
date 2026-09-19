@@ -8,6 +8,9 @@ que la resuelve en nombre de la persona y con su potestad) y baja el artefacto
 con la identidad del pod (Workload Identity). El sobre `ORECOPY1` se desenvuelve
 aquí; la carga es Parquet.
 
+`persona()` (W3.4) dice quién abrió el puesto: la identidad con la que corre
+lo que haces aquí.
+
 `sql("select … from hr.espanoles")` (W3.3) pregunta a las copias por el nombre
 de sus vistas: cada `paquete.vista` tras FROM/JOIN se resuelve igual que en
 `over()`, se baja una vez por sesión y se registra en DuckDB como la vista
@@ -25,7 +28,7 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "puesto"]
+__all__ = ["over", "sql", "persona", "puesto"]
 
 
 class Puesto:
@@ -36,6 +39,8 @@ class Puesto:
         self.id = os.environ.get("PUESTO", "")
         self.bucket = os.environ.get("BUCKET", "")
         self.almacen = os.environ.get("ORE_ALMACEN", "gcs")
+        # Quién abrió el puesto: lo pone el agente al reclamarlo (de la ficha).
+        self.persona = ""
         # El token lo pone el agente (`agente.py`) y lo renueva; una celda no lo ve.
         self._cabeceras = {}
 
@@ -60,6 +65,14 @@ class Puesto:
 
 
 puesto = Puesto()
+
+
+def persona():
+    """Quién abrió el puesto (`persona:…`): la identidad con la que corre lo que
+    haces aquí (W3.4). Lo sabe el agente desde que reclama el puesto."""
+    if not puesto.persona:
+        raise RuntimeError("persona(): el agente aún no sabe quién abrió el puesto")
+    return puesto.persona
 
 
 def _bajar(bucket, clave):

@@ -7,7 +7,7 @@ largo: el puesto no acepta conexiones, «sin entrada»), ejecuta cada celda en u
 espacio de nombres que dura toda la sesión, y devuelve la salida TIPADA —tabla,
 texto, error, vacía— al mismo sitio. La consola nunca habla con este proceso.
 
-  GET  /puestos/{id}/pendiente            → 200 {celda, texto} | 204 nada aún
+  GET  /puestos/{id}/pendiente            → 200 {pendiente, celda, lenguaje, texto}
   POST /puestos/{id}/celdas/{n}/salida    ← {tipo, ms, …}
 
 Quién es: dentro del clúster, el agente de la celda (`ore-agente-<n>`, client
@@ -78,7 +78,7 @@ class Testigo:
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
-        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "ore": ore}
+        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "persona": ore.persona, "ore": ore}
 
     def correr(self, texto, lenguaje="python"):
         t0 = time.time()
@@ -197,7 +197,10 @@ def main():
             log("ore-serve no contesta (%s): reintento en 5 s" % e)
             time.sleep(5)
             continue
-        if codigo == 204 or codigo == 200 and not r:
+        # Sin celda en la espera: `{pendiente: false}` (era `not r`, y un dict
+        # con `pendiente: false` NO está vacío: el agente moría con KeyError
+        # al primer poll vacío, y el puesto se daba por perdido a los 90 s).
+        if codigo == 200 and not (r and r.get("pendiente")):
             continue
         if codigo == 410:
             log("el puesto está cerrado: adiós")
@@ -206,6 +209,11 @@ def main():
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))
             time.sleep(5)
             continue
+        if not p.persona:
+            c2, ficha = p.pedir("GET", "/puestos/%s" % p.id)
+            if c2 == 200 and (ficha or {}).get("persona"):
+                p.persona = ficha["persona"]
+                log("el puesto es de %s" % p.persona)
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         salida = kernel.correr(texto, lenguaje)

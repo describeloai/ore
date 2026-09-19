@@ -268,3 +268,56 @@ RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.
 
 USER 65532:65532
 WORKDIR /trabajo
+# El agente es el CMD: la plantilla del puesto (51-el-puesto.yaml) no lleva
+# `command`, y así vale para los tres entornos.
+CMD ["python3", "/opt/ore/agente.py"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Etapa 7 · puesto-node:1 — el ENTORNO 1 de TS/JS (0031 W3.4)
+#
+# Node 24 quita los tipos de TypeScript por sí mismo (sin tsc ni esbuild:
+# `process.features.typescript = "strip"`; medido en victor: un `.ts` se
+# importa tal cual en 4 ms). DuckDB (`@duckdb/node-api`) es lo que hace que
+# `over()`/`sql()` lean las copias Parquet, como en Python. El SDK va como
+# paquete `ore` en `/opt/ore/node_modules`: una celda-módulo (con `import`/
+# `export`) escrita en /trabajo lo resuelve por el enlace que hace el agente.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM node:24-slim AS puesto-node
+
+WORKDIR /opt/ore
+RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
+ && npm ls --depth=0 > /entorno-1.txt \
+ && node -e "const d=require('@duckdb/node-api'); console.log('entorno 1 · node', process.version, '· duckdb', d.version())"
+COPY puesto/node/agente.mjs /opt/ore/agente.mjs
+COPY puesto/node/ore        /opt/ore/node_modules/ore
+RUN node --check /opt/ore/agente.mjs \
+ && node -e "import('ore').then(m => console.log('agente y sdk listos ·', Object.keys(m).join(' ')))"
+
+USER 65532:65532
+WORKDIR /trabajo
+CMD ["node", "/opt/ore/agente.mjs"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Etapa 8 · puesto-jvm:1 — el ENTORNO 1 de Java (0031 W3.4)
+#
+# JDK 21 (hace falta el JDK: `jdk.jshell` no va en el JRE). El agente evalúa
+# cada celda con JShell EN PROCESO (`executionEngine("local")`: 25 ms de crear,
+# 20–250 ms por celda; el motor remoto por JDI tarda 770 ms — medido en
+# victor). El SDK (`ore.Ore`) va compilado en /opt/ore/clases y se importa
+# estático en la sesión. DuckDB por JDBC para `sql()`/`over()`. Sobre Ubuntu
+# (glibc) y no alpine: el JDBC de DuckDB no trae natives para musl.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
+
+ARG DUCKDB_JDBC=1.5.5.1
+RUN mkdir -p /opt/ore/lib /opt/ore/clases \
+ && curl -fsSL -o /opt/ore/lib/duckdb_jdbc.jar \
+      "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/${DUCKDB_JDBC}/duckdb_jdbc-${DUCKDB_JDBC}.jar" \
+ && echo "duckdb_jdbc ${DUCKDB_JDBC}" > /entorno-1.txt && java -version 2>> /entorno-1.txt
+COPY puesto/jvm /opt/ore/src
+RUN javac -Xlint:-options --release 21 -cp /opt/ore/lib/duckdb_jdbc.jar -d /opt/ore/clases /opt/ore/src/ore/*.java \
+ && java -cp /opt/ore/clases:/opt/ore/lib/duckdb_jdbc.jar ore.Agente --comprobar
+
+USER 65532:65532
+WORKDIR /trabajo
+CMD ["java", "-XX:+UseSerialGC", "-cp", "/opt/ore/clases:/opt/ore/lib/duckdb_jdbc.jar", "ore.Agente"]

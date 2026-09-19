@@ -2,27 +2,36 @@
 # EL PUESTO (0031 W3.1): la sesión viva, de punta a punta sin clúster.
 #
 # `ore-serve` con el árbol en un directorio y la cola en un repositorio pelado
-# con la plantilla del puesto; el AGENTE DE VERDAD (`puesto/python/agente.py`)
-# corriendo aquí al lado con la identidad de cabecera `agente:…` y el almacén en
-# un directorio (`ORE_ALMACEN=dir:`), donde hay una copia de verdad —el sobre
-# `ORECOPY1` con Parquet dentro— de la vista `hr.espanoles`.
+# con la plantilla del puesto; los AGENTES DE VERDAD (`puesto/python/agente.py`,
+# `puesto/node/agente.mjs`, `puesto/jvm/ore/Agente.java`) corriendo aquí al
+# lado con la identidad de cabecera `agente:…` y el almacén en un directorio
+# (`ORE_ALMACEN=dir:`), donde hay una copia de verdad —el sobre `ORECOPY1` con
+# Parquet dentro— de la vista `hr.espanoles`. Los puestos node y jvm (8, 9) se
+# prueban si hay `node` ≥ 22.13 y `javac` ≥ 21 (en CI, los hay).
 #
-#   1  POST /puestos (ana)             201 puesto-ana encolado · el fichero en la cola con
-#                                      el id y el Job `puesto-ana-<8 hex>` · repetido, 200 el
+#   1  POST /puestos (ana)             201 puesto-ana-python encolado · el fichero en la cola con
+#                                      el id y el Job `puesto-ana-python-<8 hex>` · repetido, 200 el
 #                                      mismo · bea no lo ve (403) · el agente no abre (403) ·
 #                                      sin cola, 503
-#   2  el agente reclama el puesto     GET /puestos/puesto-ana pasa a vivo · otro agente, 403
+#   2  el agente reclama el puesto     GET /puestos/puesto-ana-python pasa a vivo · otro agente, 403
 #   3  las celdas                      `1+1` → texto 2 · `print` → texto · `x = 3` → vacia ·
 #                                      `x * 2` → 6 (el espacio dura) · `1/0` → error con traza ·
 #                                      bea no manda celdas a lo de ana (403)
 #   4  over("hr.espanoles")            tabla: columnas y filas de la copia, total · `hr.nada` →
 #                                      error LookupError (404 de datos) · `hr.empleados` sin
 #                                      copia → RuntimeError (409)
-#   5  DELETE /puestos/puesto-ana      200 · el fichero fuera de la cola · el agente se cierra
+#   5  DELETE /puestos/puesto-ana-python      200 · el fichero fuera de la cola · el agente se cierra
 #                                      (410) · una celda más → 410
 #   7  SQL sobre el bucket (W3.3)     una celda `sql`: `select count(*) from hr.espanoles` → tabla
 #                                      3 · un join de dos vistas · una que no existe → error ·
 #                                      `sql()` desde una celda Python · `java` → 422
+#   8  TS en node (W3.4)               POST /puestos {typescript} → puesto-ana-node con puesto-node:1 ·
+#                                      el agente de Node (puesto/node/agente.mjs) · celdas TS (tipos
+#                                      fuera, contexto que dura, await arriba) · un modulo con export
+#                                      · saludo(persona()) → hola persona:ana · over() · sql · python 422
+#   9  Java en jvm (W3.4)              POST /puestos {java} → puesto-ana-jvm con puesto-jvm:1 · el
+#                                      agente de la JVM (JShell en proceso) · varios snippets por celda
+#                                      · una clase con main · saludo(persona()) · over() · sql
 #   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
 #                                      digest capa-<12 hex> · POST /puestos (bea) → 409 y el Job de
 #                                      la capa en la cola con el digest · POST /entorno → 202 la
@@ -166,35 +175,37 @@ curl -s -o /dev/null "$BASE/salud" || falla "el servidor no arranca"
 
 # ── 1 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /puestos "$ANA" '{}')" = "201" ] || falla "1 · abrir: $(cuerpo)"
-tiene "d['id']=='puesto-ana' and d['estado']=='encolado' and d['lenguaje']=='python' and d['fichero']=='51-el-puesto-ana.yaml' and d['job'].startswith('puesto-ana-') and 'commit' in d['cola']" || falla "1 · la ficha: $(cuerpo)"
-en_cola 51-el-puesto-ana.yaml | grep -q 'name: PUESTO, value: "puesto-ana"' || falla "1 · el fichero de la cola no lleva el id: $(en_cola 51-el-puesto-ana.yaml | grep -n PUESTO)"
-en_cola 51-el-puesto-ana.yaml | grep -qE 'name: puesto-ana-[0-9a-f]{8}$' || falla "1 · el Job no se llama puesto-ana-<8 hex>"
-en_cola 51-el-puesto-ana.yaml | grep -q 'ore.dev/rol: puesto' || falla "1 · el Job no lleva el rol puesto"
-[ "$(pide POST /puestos "$ANA" '{}')" = "200" ] && tiene "d['id']=='puesto-ana'" || falla "1 · repetir no dio 200 con el mismo: $(cuerpo)"
-[ "$(pide GET /puestos/puesto-ana "$BEA")" = "403" ] || falla "1 · bea ve el puesto de ana: $(cuerpo)"
+tiene "d['id']=='puesto-ana-python' and d['estado']=='encolado' and d['entorno']=='python' and d['fichero']=='51-el-puesto-ana-python.yaml' and d['job'].startswith('puesto-ana-python-') and 'commit' in d['cola']" || falla "1 · la ficha: $(cuerpo)"
+en_cola 51-el-puesto-ana-python.yaml | grep -q 'name: PUESTO, value: "puesto-ana-python"' || falla "1 · el fichero de la cola no lleva el id: $(en_cola 51-el-puesto-ana-python.yaml | grep -n PUESTO)"
+en_cola 51-el-puesto-ana-python.yaml | grep -qE 'name: puesto-ana-python-[0-9a-f]{8}$' || falla "1 · el Job no se llama puesto-ana-python-<8 hex>"
+en_cola 51-el-puesto-ana-python.yaml | grep -q 'ore.dev/rol: puesto' || falla "1 · el Job no lleva el rol puesto"
+[ "$(pide POST /puestos "$ANA" '{}')" = "200" ] && tiene "d['id']=='puesto-ana-python'" || falla "1 · repetir no dio 200 con el mismo: $(cuerpo)"
+[ "$(pide GET /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "1 · bea ve el puesto de ana: $(cuerpo)"
 [ "$(pide POST /puestos "$AG" '{}')" = "403" ] || falla "1 · un agente abrio un puesto: $(cuerpo)"
-[ "$(pide POST /puestos "$ANA" '{"lenguaje":"java"}')" = "200" ] || true  # ya tiene uno: 200 antes de mirar el lenguaje
-[ "$(pide POST /puestos "$BEA" '{"lenguaje":"java"}')" = "422" ] || falla "1 · java no dio 422: $(cuerpo)"
+[ "$(pide POST /puestos "$BEA" '{"lenguaje":"rust"}')" = "422" ] || falla "1 · rust no dio 422: $(cuerpo)"
+en_cola 51-el-puesto-ana-python.yaml | grep -q 'image: .*/puesto-python:1' || falla "1 · el Job no lleva la imagen del entorno python"
+en_cola 51-el-puesto-ana-python.yaml | grep -q 'puesto-entorno-modelo' && falla "1 · el hueco del entorno se quedo sin rendir"
 [ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$BEA" -H 'content-type: application/json' --data-binary '{}' "http://127.0.0.1:$PUERTO_SIN/puestos")" = "503" ] || falla "1 · sin cola no dio 503: $(cuerpo)"
-dice "1 · POST /puestos: 201 puesto-ana encolado, el fichero en la cola con id, Job puesto-ana-<8 hex> y rol puesto · repetido 200 · bea 403 · un agente 403 · java 422 · sin cola 503"
+dice "1 · POST /puestos: 201 puesto-ana-python encolado, el fichero en la cola con id, Job puesto-ana-python-<8 hex>, rol puesto e imagen puesto-python:1 · repetido 200 · bea 403 · un agente 403 · rust 422 · sin cola 503"
 
 # ── 2 · el agente reclama el puesto ────────────────────────────────────────
-ORE_SERVE="$BASE" PUESTO=puesto-ana ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.txt" 2>&1 &
 AGENTE=$!
-for _ in $(seq 1 40); do pide GET /puestos/puesto-ana "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
+for _ in $(seq 1 40); do pide GET /puestos/puesto-ana-python "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
 tiene "d['estado']=='vivo'" || falla "2 · el puesto no pasa a vivo: $(cuerpo)"
-[ "$(pide GET /puestos/puesto-ana/pendiente "$OTRO")" = "403" ] || falla "2 · otro agente reclamo el puesto: $(cuerpo)"
-[ "$(pide GET /puestos/puesto-ana/pendiente "$ANA")" = "403" ] || falla "2 · una persona pidio trabajo: $(cuerpo)"
+[ "$(pide GET /puestos/puesto-ana-python/pendiente "$OTRO")" = "403" ] || falla "2 · otro agente reclamo el puesto: $(cuerpo)"
+[ "$(pide GET /puestos/puesto-ana-python/pendiente "$ANA")" = "403" ] || falla "2 · una persona pidio trabajo: $(cuerpo)"
 dice "2 · el agente reclama el puesto: vivo · otro agente 403 · una persona 403"
 
 # ── 3 · las celdas ─────────────────────────────────────────────────────────
+P=puesto-ana-python; LEN=python   # el puesto y el lenguaje de `celda` (8 y 9 los cambian)
 celda() { # <texto json-escapado> → deja la salida en r.json; imprime el codigo de la espera
   local n
-  [ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" "{\"texto\":\"$1\"}")" = "202" ] || falla "3 · ejecutar no dio 202: $(cuerpo)"
+  [ "$(pide POST /puestos/$P/ejecutar "$ANA" "{\"texto\":\"$1\",\"lenguaje\":\"$LEN\"}")" = "202" ] || falla "ejecutar ($LEN en $P) no dio 202: $(cuerpo)"
   n=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
   for _ in $(seq 1 3); do
-    pide GET "/puestos/puesto-ana/celdas/$n" "$ANA" >/dev/null
+    pide GET "/puestos/$P/celdas/$n" "$ANA" >/dev/null
     tiene "d['estado']=='hecha'" && return 0
   done
   return 1
@@ -204,9 +215,9 @@ celda 'print(\"hola\")' && tiene "d['salida']['tipo']=='texto' and d['salida']['
 celda 'x = 3' && tiene "d['salida']['tipo']=='vacia'" || falla "3 · x = 3: $(cuerpo)"
 celda 'x * 2' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='6'" || falla "3 · x * 2 (el espacio dura): $(cuerpo)"
 celda '1/0' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ZeroDivisionError' and 'Traceback' in d['salida']['traza']" || falla "3 · 1/0: $(cuerpo)"
-[ "$(pide POST /puestos/puesto-ana/ejecutar "$BEA" '{"texto":"1"}')" = "403" ] || falla "3 · bea mando una celda a lo de ana: $(cuerpo)"
-[ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" '{}')" = "422" ] || falla "3 · sin texto no dio 422: $(cuerpo)"
-pide GET /puestos/puesto-ana "$ANA" >/dev/null; tiene "d['celdas']==5 and d['pendientes']==0" || falla "3 · la ficha no cuenta las celdas: $(cuerpo)"
+[ "$(pide POST /puestos/puesto-ana-python/ejecutar "$BEA" '{"texto":"1"}')" = "403" ] || falla "3 · bea mando una celda a lo de ana: $(cuerpo)"
+[ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{}')" = "422" ] || falla "3 · sin texto no dio 422: $(cuerpo)"
+pide GET /puestos/puesto-ana-python "$ANA" >/dev/null; tiene "d['celdas']==5 and d['pendientes']==0" || falla "3 · la ficha no cuenta las celdas: $(cuerpo)"
 dice "3 · las celdas: 1+1 → 2 · print → texto · x = 3 → vacia · x * 2 → 6 (el espacio dura) · 1/0 → error con traza · bea 403 · sin texto 422"
 
 # ── 4 · over() ─────────────────────────────────────────────────────────────
@@ -214,36 +225,31 @@ celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' a
 celda 'len(df)' && tiene "d['salida']['texto']=='3'" || falla "4 · len(df): $(cuerpo)"
 celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "4 · hr.nada: $(cuerpo)"
 celda 'over(\"hr.empleados\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError' and 'no est' in d['salida']['mensaje']" || falla "4 · hr.empleados sin copia: $(cuerpo)"
-[ "$(pide GET /puestos/puesto-ana/datos/hr.espanoles "$AG")" = "200" ] && tiene "d['clave']=='$CLAVE' and d['estado']=='copiada'" || falla "4 · datos: $(cuerpo)"
-[ "$(pide GET /puestos/puesto-ana/datos/hr.espanoles "$ANA")" = "403" ] || falla "4 · una persona pidio datos por la ruta del agente: $(cuerpo)"
+[ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$AG")" = "200" ] && tiene "d['clave']=='$CLAVE' and d['estado']=='copiada'" || falla "4 · datos: $(cuerpo)"
+[ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$ANA")" = "403" ] || falla "4 · una persona pidio datos por la ruta del agente: $(cuerpo)"
 dice "4 · over(\"hr.espanoles\") → tabla 3 × 2 desde la copia (ORECOPY1 + Parquet) · hr.nada → LookupError (404) · sin copia → RuntimeError (409) · datos solo para el agente"
 
 # ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
-celda_sql() { # <sql json-escapado>
-  local n
-  [ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" "{\"texto\":\"$1\",\"lenguaje\":\"sql\"}")" = "202" ] || falla "7 · ejecutar sql no dio 202: $(cuerpo)"
-  n=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
-  for _ in $(seq 1 3); do pide GET "/puestos/puesto-ana/celdas/$n" "$ANA" >/dev/null; tiene "d['estado']=='hecha'" && return 0; done
-  return 1
-}
+celda_sql() { local l=$LEN; LEN=sql; celda "$1"; local r=$?; LEN=$l; return $r; }
 celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['columnas'][0]['name']=='n' and d['salida']['filas']==[[3]]" || falla "7 · count sobre la copia: $(cuerpo)"
 celda_sql 'select a.id, b.pais from hr.espanoles a join hr.espanoles b on a.id = b.id order by 1' && tiene "d['salida']['tipo']=='tabla' and d['salida']['total']==3 and d['salida']['filas'][0]==['e1','ES']" || falla "7 · el join: $(cuerpo)"
 celda_sql 'select * from hr.nada' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "7 · una vista que no existe: $(cuerpo)"
 celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError'" || falla "7 · una vista sin copia: $(cuerpo)"
 celda_sql 'selec nada' && tiene "d['salida']['tipo']=='error'" || falla "7 · sql roto: $(cuerpo)"
 celda 'sql(\"select sum(1) as s from hr.espanoles\")' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · sql() desde python: $(cuerpo)"
-[ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" '{"texto":"x","lenguaje":"java"}')" = "422" ] || falla "7 · java no dio 422: $(cuerpo)"
-dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vistas · vista inexistente → LookupError · sin copia → RuntimeError · sql roto → error · sql() desde python · java 422"
+[ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"java"}')" = "422" ] && grep -q 'abre uno `jvm`' "$TMP/r.json" || falla "7 · java en un puesto python no dio 422: $(cuerpo)"
+[ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"rust"}')" = "422" ] || falla "7 · rust no dio 422: $(cuerpo)"
+dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vistas · vista inexistente → LookupError · sin copia → RuntimeError · sql roto → error · sql() desde python · java en un puesto python 422 (abre uno jvm) · rust 422"
 
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
-[ "$(pide DELETE /puestos/puesto-ana "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
-[ "$(pide DELETE /puestos/puesto-ana "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
-en_cola 51-el-puesto-ana.yaml >/dev/null && falla "5 · el fichero sigue en la cola"
+[ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
+[ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
+en_cola 51-el-puesto-ana-python.yaml >/dev/null && falla "5 · el fichero sigue en la cola"
 for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
 kill -0 "$AGENTE" 2>/dev/null && falla "5 · el agente no se cerro al 410"
 AGENTE=""
 grep -q "cerrado" "$TMP/agente.txt" || falla "5 · el agente no dijo por que se fue: $(tail -3 "$TMP/agente.txt")"
-[ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" '{"texto":"1"}')" = "410" ] || falla "5 · una celda tras cerrar no dio 410: $(cuerpo)"
+[ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"1"}')" = "410" ] || falla "5 · una celda tras cerrar no dio 410: $(cuerpo)"
 [ "$(pide POST /puestos "$ANA" '{}')" = "201" ] || falla "5 · abrir de nuevo tras cerrar: $(cuerpo)"
 dice "5 · DELETE: 200, el fichero fuera de la cola, el agente se cierra al 410, una celda mas → 410, y se puede abrir otro"
 
@@ -269,22 +275,107 @@ CORTO=${DIGEST#capa-}
 en_cola "52-la-capa-$CORTO.yaml" | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el Job de la capa no esta en la cola con el digest"
 en_cola "52-la-capa-$CORTO.yaml" | grep -q 'ore.dev/rol: driver' || falla "6 · el Job de la capa no lleva el rol driver (PyPI)"
 [ "$(pide POST /entorno "$ANA")" = "202" ] && tiene "d['job'].startswith('la-capa-$CORTO-') and 'ya encolada' in d['cola']" || falla "6 · POST /entorno pendiente no dio 202 la misma: $(cuerpo)"
-en_cola "51-el-puesto-bea.yaml" >/dev/null && falla "6 · el puesto de bea se encolo sin capa"
+en_cola "51-el-puesto-bea-python.yaml" >/dev/null && falla "6 · el puesto de bea se encolo sin capa"
 # el informe (lo que 52-la-capa deja en el arbol): la capa esta lista
 mkdir -p "$A/entorno"
 "$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["duckdb","polars>=1.40"],"ruedas":["polars-1.44.2-py3-none-any.whl","duckdb-1.5.5-cp312-abi3-manylinux_2_17_x86_64.whl"],"mb":"55","cuando":"2026-09-19T00:00:00Z"}, open(sys.argv[2],"w"))' "$DIGEST" "$A/entorno/python.json"
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='lista' and len(d['informe']['ruedas'])==2" || falla "6 · entorno lista: $(cuerpo)"
 [ "$(pide POST /entorno "$ANA")" = "200" ] || falla "6 · resolver con la capa lista no dio 200: $(cuerpo)"
-[ "$(pide POST /puestos "$BEA" '{}')" = "201" ] && tiene "d['id']=='puesto-bea'" || falla "6 · abrir con la capa lista: $(cuerpo)"
-en_cola 51-el-puesto-bea.yaml | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el puesto de bea no lleva la capa: $(en_cola 51-el-puesto-bea.yaml | grep -n CAPA)"
-en_cola 51-el-puesto-bea.yaml | grep -q 'name: PYTHONPATH, value: /capa' || falla "6 · el puesto no pone /capa en el PYTHONPATH"
+[ "$(pide POST /puestos "$BEA" '{}')" = "201" ] && tiene "d['id']=='puesto-bea-python'" || falla "6 · abrir con la capa lista: $(cuerpo)"
+en_cola 51-el-puesto-bea-python.yaml | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el puesto de bea no lleva la capa: $(en_cola 51-el-puesto-bea-python.yaml | grep -n CAPA)"
+en_cola 51-el-puesto-bea-python.yaml | grep -q 'name: PYTHONPATH, value: /capa' || falla "6 · el puesto no pone /capa en el PYTHONPATH"
 # cambia la declaracion: la capa vuelve a estar pendiente
 printf '[project]
 dependencies = ["polars>=1.40", "scikit-learn"]
 ' > "$A/pyproject.toml"
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['digest']!='$DIGEST'" || falla "6 · otra declaracion no vuelve a pendiente: $(cuerpo)"
-pide DELETE /puestos/puesto-bea "$BEA" >/dev/null
+pide DELETE /puestos/puesto-bea-python "$BEA" >/dev/null
 dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa y /capa en el PYTHONPATH · otra declaracion → pendiente"
 
+# ── 8 · TS en el puesto node (W3.4): el agente de Node, celdas TS, un módulo del árbol, persona() ──
+NODE=$(command -v node || true)
+NODE_OK=$("$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.stdout.write(a>22||(a==22&&b>=13)?"si":"no")' 2>/dev/null || echo no)
+if [ "$NODE_OK" = "si" ]; then
+  # El SDK resuelve `@duckdb/node-api` desde donde esta: se copia `puesto/node` y se instala ahi.
+  mkdir -p "$TMP/node" && cp -r "$RAIZ/puesto/node/." "$TMP/node/"
+  ( cd "$TMP/node" && npm install --no-audit --no-fund --silent @duckdb/node-api >"$TMP/npm.txt" 2>&1 ) || falla "8 · npm install @duckdb/node-api: $(tail -5 "$TMP/npm.txt")"
+  [ "$(pide POST /puestos "$ANA" '{"lenguaje":"typescript"}')" = "201" ] || falla "8 · abrir node: $(cuerpo)"
+  tiene "d['id']=='puesto-ana-node' and d['entorno']=='node' and d['fichero']=='51-el-puesto-ana-node.yaml'" || falla "8 · la ficha node: $(cuerpo)"
+  en_cola 51-el-puesto-ana-node.yaml | grep -q 'image: .*/puesto-node:1' || falla "8 · el Job no lleva puesto-node:1"
+  [ "$(pide POST /puestos "$ANA" '{"lenguaje":"javascript"}')" = "200" ] && tiene "d['id']=='puesto-ana-node'" || falla "8 · javascript no es el mismo puesto node: $(cuerpo)"
+  pide GET /puestos "$ANA" >/dev/null; tiene "sorted(p['id'] for p in d['puestos'])==['puesto-ana-node','puesto-ana-python']" || falla "8 · GET /puestos no lista los dos: $(cuerpo)"
+  ORE_SERVE="$BASE" PUESTO=puesto-ana-node ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" ORE_CELDAS="$TMP/node-trabajo" TTL=600 \
+    "$NODE" --no-warnings "$TMP/node/agente.mjs" >"$TMP/agente.txt" 2>&1 &
+  AGENTE=$!
+  for _ in $(seq 1 60); do pide GET /puestos/puesto-ana-node "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
+  tiene "d['estado']=='vivo'" || falla "8 · el puesto node no pasa a vivo: $(cuerpo)"
+  P=puesto-ana-node; LEN=typescript
+  celda '1 + 1' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='2'" || falla "8 · 1+1: $(cuerpo)"
+  celda 'const x: number = 3' && tiene "d['salida']['tipo']=='vacia'" || falla "8 · const x: number (tipos fuera): $(cuerpo)"
+  celda 'x * 2' && tiene "d['salida']['texto']=='6'" || falla "8 · x * 2 (el contexto dura): $(cuerpo)"
+  celda 'console.log(\"hola\", x)' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='hola 3\n'" || falla "8 · console.log: $(cuerpo)"
+  celda 'noExiste + 1' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ReferenceError'" || falla "8 · ReferenceError: $(cuerpo)"
+  celda 'const y = await Promise.resolve(41); y + 1' && tiene "d['salida']['texto']=='42'" || falla "8 · await arriba: $(cuerpo)"
+  celda 'interface C { pais: string }\nconst cs: C[] = [{ pais: \"ES\" }, { pais: \"PT\" }]\ncs.filter(c => c.pais === \"ES\").length' && tiene "d['salida']['texto']=='1'" || falla "8 · interface + filter: $(cuerpo)"
+  celda 'export function saludo(n: string): string { return \"hola \" + n }' && tiene "d['salida']['tipo']=='texto' and 'saludo' in d['salida']['texto']" || falla "8 · un modulo (export) del arbol: $(cuerpo)"
+  celda 'saludo(persona())' && tiene "d['salida']['texto']=='hola persona:ana'" || falla "8 · saludo(persona()) — la funcion del arbol con la identidad de la persona: $(cuerpo)"
+  celda 'const df = await over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "8 · over(hr.espanoles): $(cuerpo)"
+  celda 'await over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · hr.nada: $(cuerpo)"
+  celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "8 · sql en node: $(cuerpo)"
+  LEN=javascript; celda 'let z = 5; z * 2' && tiene "d['salida']['texto']=='10'" || falla "8 · javascript: $(cuerpo)"; LEN=typescript
+  [ "$(pide POST /puestos/puesto-ana-node/ejecutar "$ANA" '{"texto":"1","lenguaje":"python"}')" = "422" ] || falla "8 · python en node no dio 422: $(cuerpo)"
+  [ "$(pide DELETE /puestos/puesto-ana-node "$ANA")" = "200" ] || falla "8 · cerrar node: $(cuerpo)"
+  for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
+  kill -0 "$AGENTE" 2>/dev/null && falla "8 · el agente node no se cerro al 410"
+  AGENTE=""
+  dice "8 · TS en el puesto node: 1+1 · const x: number → los tipos fuera · el contexto dura · console.log · ReferenceError · await arriba · interface · un modulo con export · saludo(persona()) → hola persona:ana · over() tabla · sql → [[3]] · javascript · python 422 · cierre"
+else
+  dice "8 · (sin node ≥ 22.13: el puesto node no se prueba aqui)"
+fi
+
+# ── 9 · Java en el puesto jvm (W3.4): el agente de la JVM (JShell en proceso), celdas, main, persona() ──
+JAVAC=$(command -v javac || true); JAVA=$(command -v java || true)
+JAVA_OK=no
+[ -n "$JAVAC" ] && "$JAVAC" -version 2>&1 | grep -qE '^javac (2[1-9]|[3-9][0-9])' && JAVA_OK=si
+if [ "$JAVA_OK" = "si" ]; then
+  JAR="${DUCKDB_JDBC_JAR:-$TMP/duckdb_jdbc.jar}"
+  [ -f "$JAR" ] || curl -sfL -o "$JAR" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar" || falla "9 · no se pudo bajar duckdb_jdbc (DUCKDB_JDBC_JAR=<jar> para darlo)"
+  JAR_CP="$JAR"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) JAR_CP="$(cd "$(dirname "$JAR")" && pwd -W)/$(basename "$JAR")";; esac
+  CLASES="$TMP/clases"; CLASES_CP="$CLASES"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) mkdir -p "$CLASES"; CLASES_CP="$(cd "$CLASES" && pwd -W)";; esac
+  SEP=":"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";";; esac
+  "$JAVAC" -Xlint:-options --release 21 -cp "$JAR_CP" -d "$CLASES_CP" "$RAIZ"/puesto/jvm/ore/*.java 2>"$TMP/javac.txt" || falla "9 · el agente no compila: $(head -20 "$TMP/javac.txt")"
+  "$JAVA" -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente --comprobar >"$TMP/comprobar.txt" 2>&1 || falla "9 · --comprobar: $(tail -5 "$TMP/comprobar.txt")"
+  [ "$(pide POST /puestos "$ANA" '{"lenguaje":"java"}')" = "201" ] || falla "9 · abrir jvm: $(cuerpo)"
+  tiene "d['id']=='puesto-ana-jvm' and d['entorno']=='jvm'" || falla "9 · la ficha jvm: $(cuerpo)"
+  en_cola 51-el-puesto-ana-jvm.yaml | grep -q 'image: .*/puesto-jvm:1' || falla "9 · el Job no lleva puesto-jvm:1"
+  ORE_SERVE="$BASE" PUESTO=puesto-ana-jvm ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$JAVA" -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente >"$TMP/agente.txt" 2>&1 &
+  AGENTE=$!
+  for _ in $(seq 1 120); do pide GET /puestos/puesto-ana-jvm "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
+  tiene "d['estado']=='vivo'" || falla "9 · el puesto jvm no pasa a vivo: $(cuerpo)"
+  P=puesto-ana-jvm; LEN=java
+  celda '1 + 1' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='2'" || falla "9 · 1+1: $(cuerpo)"
+  celda 'int x = 3;' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · int x = 3: $(cuerpo)"
+  celda 'x * 2' && tiene "d['salida']['texto']=='6'" || falla "9 · x * 2 (la sesion dura): $(cuerpo)"
+  celda 'System.out.println(\"hola \" + x);' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='hola 3\n'" || falla "9 · println: $(cuerpo)"
+  celda '1 / 0' && tiene "d['salida']['tipo']=='error' and 'ArithmeticException' in d['salida']['nombre']" || falla "9 · 1/0: $(cuerpo)"
+  celda 'int y = \"a\";' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='CompilationError'" || falla "9 · no compila: $(cuerpo)"
+  celda 'record C(String pais) {}\nvar cs = List.of(new C(\"ES\"), new C(\"PT\"));\ncs.stream().filter(c -> c.pais().equals(\"ES\")).count()' && tiene "d['salida']['texto']=='1'" || falla "9 · record + stream (varios snippets): $(cuerpo)"
+  celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
+  celda 'saludo(persona())' && tiene "d['salida']['texto']=='\"hola persona:ana\"'" || falla "9 · saludo(persona()) — con la identidad de la persona: $(cuerpo)"
+  celda 'public class Programa { public static void main(String[] a) { System.out.println(\"main de \" + persona()); } }' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='main de persona:ana\n'" || falla "9 · una clase con main (un .java del arbol): $(cuerpo)"
+  celda 'var df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "9 · over(hr.espanoles): $(cuerpo)"
+  celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · hr.nada: $(cuerpo)"
+  celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "9 · sql en la jvm: $(cuerpo)"
+  [ "$(pide POST /puestos/puesto-ana-jvm/ejecutar "$ANA" '{"texto":"1","lenguaje":"typescript"}')" = "422" ] || falla "9 · typescript en jvm no dio 422: $(cuerpo)"
+  [ "$(pide DELETE /puestos/puesto-ana-jvm "$ANA")" = "200" ] || falla "9 · cerrar jvm: $(cuerpo)"
+  for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
+  kill -0 "$AGENTE" 2>/dev/null && falla "9 · el agente jvm no se cerro al 410"
+  AGENTE=""
+  dice "9 · Java en el puesto jvm: 1+1 · int x → vacia · la sesion dura · println · ArithmeticException · no compila → CompilationError · record + stream · un metodo · saludo(persona()) · una clase con main · over() tabla · sql → [[3]] · typescript 422 · cierre"
+else
+  dice "9 · (sin javac ≥ 21: el puesto jvm no se prueba aqui)"
+fi
+
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.3): 1–7 · la sesión viva, el agente de verdad, over() y sql() sobre las copias, la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.4): 1–9 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, persona(), la capa declarada en el árbol"

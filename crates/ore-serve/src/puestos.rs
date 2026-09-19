@@ -1,11 +1,21 @@
 //! **El puesto** (ADR 0031, W3.1): la sesión viva de una persona en su celda.
 //!
-//! Un puesto es un Job de Kueue que **no termina**: la imagen `puesto-python:1`
-//! con el agente dentro (`puesto/python/agente.py`), la identidad del pod y la
-//! cola del inquilino. Este servidor no toca Kubernetes: **escribe la cola**
-//! (`51-el-puesto-<persona>.yaml`, rendido de `plantilla-puesto.txt`) y Flux
-//! rinde el Job, como con la copia y la invocación. Retirarlo es quitar el
-//! fichero (`prune: true`).
+//! Un puesto es un Job de Kueue que **no termina**: la imagen de un **entorno**
+//! (`puesto-python:1`, `puesto-node:1`, `puesto-jvm:1` — W3.4) con su agente
+//! dentro (`puesto/python/agente.py`, `puesto/node/agente.mjs`,
+//! `puesto/jvm/ore/Agente.java`), la identidad del pod y la cola del
+//! inquilino. Este servidor no toca Kubernetes: **escribe la cola**
+//! (`51-el-puesto-<persona>-<entorno>.yaml`, rendido de `plantilla-puesto.txt`)
+//! y Flux rinde el Job, como con la copia y la invocación. Retirarlo es quitar
+//! el fichero (`prune: true`).
+//!
+//! # Lenguajes y entornos
+//!
+//! Una celda lleva un **lenguaje** (`python`, `sql`, `typescript`, `javascript`,
+//! `java`); un puesto es de un **entorno** (`python`, `node`, `jvm`). Uno por
+//! persona **y entorno**: `puesto-<persona>-<entorno>`. `python` corre en
+//! `python`, `typescript`/`javascript` en `node`, `java` en `jvm`, y `sql` en
+//! cualquiera (los tres agentes llevan DuckDB y el mismo `sql()`).
 //!
 //! # Sin entrada
 //!
@@ -90,7 +100,8 @@ pub(crate) struct Celda {
 #[derive(Debug)]
 pub(crate) struct Puesto {
     pub persona: String,
-    pub lenguaje: String,
+    /// `python`, `node` o `jvm`: la imagen (`cola::ENTORNOS`).
+    pub entorno: String,
     pub rama: Option<String>,
     pub fichero: String,
     pub job: String,
@@ -116,8 +127,9 @@ impl std::fmt::Debug for Puestos {
     }
 }
 
-/// `persona:ana` → `ana`; un `sub` opaco, recortado y en minúsculas.
-pub(crate) fn id_de(persona: &str) -> String {
+/// `persona:ana` + `node` → `puesto-ana-node`; un `sub` opaco, recortado y en
+/// minúsculas. Uno por persona y entorno.
+pub(crate) fn id_de(persona: &str, entorno: &str) -> String {
     let s = persona.rsplit(':').next().unwrap_or(persona);
     let s = cola::nombre_de_objeto(s);
     let s = if s.len() > 24 {
@@ -125,7 +137,26 @@ pub(crate) fn id_de(persona: &str) -> String {
     } else {
         s
     };
-    format!("puesto-{s}")
+    format!("puesto-{s}-{entorno}")
+}
+
+/// Los lenguajes que una celda puede llevar.
+const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java"];
+
+/// En qué entorno corre un lenguaje (`sql`: en el que haya → `python` si hay que
+/// abrir uno). Un nombre de entorno vale como lenguaje al abrir.
+pub(crate) fn entorno_de(lenguaje: &str) -> Option<&'static str> {
+    match lenguaje {
+        "python" | "sql" => Some("python"),
+        "typescript" | "javascript" | "node" => Some("node"),
+        "java" | "jvm" => Some("jvm"),
+        _ => None,
+    }
+}
+
+/// ¿Corre este lenguaje en este entorno? `sql` corre en todos.
+fn corre_en(lenguaje: &str, entorno: &str) -> bool {
+    lenguaje == "sql" || entorno_de(lenguaje) == Some(entorno)
 }
 
 fn es_agente(sujeto: &Identidad) -> bool {
@@ -141,7 +172,7 @@ fn ficha(id: &str, p: &Puesto) -> Json {
     Json::obj([
         ("id", Json::s(id)),
         ("persona", Json::s(&p.persona)),
-        ("lenguaje", Json::s(&p.lenguaje)),
+        ("entorno", Json::s(&p.entorno)),
         ("rama", Json::s(p.rama.clone().unwrap_or_default())),
         ("estado", Json::s(estado)),
         ("job", Json::s(&p.job)),
@@ -181,7 +212,8 @@ impl Servidor {
     // ── la persona ──────────────────────────────────────────────────────────
 
     /// `POST /puestos {lenguaje?, rama?}`: el puesto de la persona en esta
-    /// celda. Uno por persona: si ya lo tiene, 200 con el que hay.
+    /// celda para ese lenguaje (o entorno). Uno por persona y entorno: si ya
+    /// lo tiene, 200 con el que hay.
     pub(crate) fn abrir_puesto(&self, sujeto: &Identidad, cuerpo: &str) -> Respuesta {
         if es_agente(sujeto) {
             return Respuesta::error(403, "un agente no abre puestos: los abre una persona");
@@ -206,18 +238,21 @@ impl Servidor {
                 .map(str::to_string);
             (l, r)
         };
-        if lenguaje != "python" {
+        let Some(entorno) = entorno_de(&lenguaje) else {
             return Respuesta::error(
                 422,
-                format!("`{lenguaje}` no tiene puesto todavía: hoy sólo `python` (0031 W3.1)"),
+                format!(
+                    "`{lenguaje}` no tiene puesto: python, sql, typescript, javascript o java (o un entorno: {})",
+                    cola::ENTORNOS.join(", ")
+                ),
             );
-        }
+        };
         if let Some(r) = &rama
             && let Err(m) = crate::propuestas::nombre_de_rama_valido(r)
         {
             return Respuesta::error(422, m);
         }
-        let id = id_de(&sujeto.persona);
+        let id = id_de(&sujeto.persona, entorno);
         {
             let lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
@@ -232,20 +267,26 @@ impl Servidor {
         // ⭐ La capa (0031 W3.2): lo que el árbol declara, resuelto. Lista →
         //   el puesto nace con ella; pendiente → se encola y 409 para que la
         //   consola espere; error → 409 con el motivo (y se reintenta la capa).
-        let e = match self.leyendo_en(rama.as_deref(), |raiz| {
-            let e = crate::entorno::entorno_de(raiz);
-            Respuesta::ok(Json::obj([
-                ("estado", Json::s(e.estado)),
-                ("digest", Json::s(&e.digest)),
-                (
-                    "declarado",
-                    Json::Arr(e.declarado.iter().map(Json::s).collect()),
-                ),
-                ("informe", e.informe.unwrap_or_else(|| Json::obj([]))),
-            ]))
-        }) {
-            r if r.codigo != 200 => return r,
-            r => r.cuerpo,
+        //   Hoy la capa es de Python (`pyproject.toml` → ruedas); `node` y `jvm`
+        //   nacen con lo que trae su imagen (W3.4; la suya, cuando se mida).
+        let e = if entorno != "python" {
+            Json::obj([("estado", Json::s("sin-dependencias"))])
+        } else {
+            match self.leyendo_en(rama.as_deref(), |raiz| {
+                let e = crate::entorno::entorno_de(raiz);
+                Respuesta::ok(Json::obj([
+                    ("estado", Json::s(e.estado)),
+                    ("digest", Json::s(&e.digest)),
+                    (
+                        "declarado",
+                        Json::Arr(e.declarado.iter().map(Json::s).collect()),
+                    ),
+                    ("informe", e.informe.unwrap_or_else(|| Json::obj([]))),
+                ]))
+            }) {
+                r if r.codigo != 200 => return r,
+                r => r.cuerpo,
+            }
         };
         let campo = |k: &str| match &e {
             Json::Obj(m) => match m.get(k) {
@@ -298,13 +339,14 @@ impl Servidor {
             }
         };
         // A la cola: Flux rinde el Job.
-        let (fichero, job, dicho) = match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa) {
-            Ok(v) => v,
-            Err(r) => return r,
-        };
+        let (fichero, job, dicho) =
+            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
         let p = Puesto {
             persona: sujeto.persona.clone(),
-            lenguaje,
+            entorno: entorno.to_string(),
             rama,
             fichero,
             job,
@@ -326,7 +368,7 @@ impl Servidor {
         Respuesta::creado(f)
     }
 
-    /// `GET /puestos`: los de la persona (uno, hoy).
+    /// `GET /puestos`: los de la persona (uno por entorno, como mucho).
     pub(crate) fn puestos_de(&self, sujeto: &Identidad) -> Respuesta {
         let lista = self.puestos.lista.lock().unwrap();
         let mios: Vec<Json> = lista
@@ -392,10 +434,13 @@ impl Servidor {
             .and_then(|(_, v)| v.as_str())
             .unwrap_or("python")
             .to_string();
-        if !matches!(lenguaje.as_str(), "python" | "sql") {
+        if !LENGUAJES.contains(&lenguaje.as_str()) {
             return Respuesta::error(
                 422,
-                format!("`{lenguaje}` no corre en un puesto: hoy `python` o `sql` (0031 W3.3)"),
+                format!(
+                    "`{lenguaje}` no corre en un puesto: {}",
+                    LENGUAJES.join(", ")
+                ),
             );
         }
         if texto.len() > TEXTO_MAXIMO {
@@ -410,6 +455,16 @@ impl Servidor {
         }
         if p.estado == Estado::Cerrado {
             return Respuesta::error(410, "el puesto está cerrado: abre otro");
+        }
+        if !corre_en(&lenguaje, &p.entorno) {
+            return Respuesta::error(
+                422,
+                format!(
+                    "una celda `{lenguaje}` no corre en un puesto `{}`: abre uno `{}`",
+                    p.entorno,
+                    entorno_de(&lenguaje).unwrap_or("?")
+                ),
+            );
         }
         if p.estado == Estado::Vivo && p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO) {
             return Respuesta::error(
@@ -605,6 +660,7 @@ impl Servidor {
         sujeto: &Identidad,
         rama: Option<&str>,
         capa: &str,
+        entorno: &str,
     ) -> Result<(String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
@@ -633,7 +689,7 @@ impl Servidor {
             .map(|d| d.as_secs().to_string())
             .unwrap_or_default();
         let (fichero, texto, job) =
-            cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa, &abierto)
+            cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa, &abierto, entorno)
                 .map_err(|e| Respuesta::error(500, e))?;
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
@@ -760,13 +816,30 @@ mod prueba {
     use super::*;
 
     #[test]
-    fn el_id_sale_de_la_persona() {
-        assert_eq!(id_de("persona:ana"), "puesto-ana");
-        assert_eq!(id_de("persona:Ana García"), "puesto-ana-garc-a");
+    fn el_id_sale_de_la_persona_y_del_entorno() {
+        assert_eq!(id_de("persona:ana", "python"), "puesto-ana-python");
         assert_eq!(
-            id_de("4f0a9c2e-1b2c-4d5e-8f90-1234567890ab"),
-            "puesto-4f0a9c2e-1b2c-4d5e-8f90"
+            id_de("persona:Ana García", "node"),
+            "puesto-ana-garc-a-node"
         );
+        assert_eq!(
+            id_de("4f0a9c2e-1b2c-4d5e-8f90-1234567890ab", "jvm"),
+            "puesto-4f0a9c2e-1b2c-4d5e-8f90-jvm"
+        );
+    }
+
+    #[test]
+    fn cada_lenguaje_corre_en_su_entorno_y_sql_en_todos() {
+        assert_eq!(entorno_de("python"), Some("python"));
+        assert_eq!(entorno_de("typescript"), Some("node"));
+        assert_eq!(entorno_de("javascript"), Some("node"));
+        assert_eq!(entorno_de("java"), Some("jvm"));
+        assert_eq!(entorno_de("sql"), Some("python"));
+        assert_eq!(entorno_de("jvm"), Some("jvm"));
+        assert_eq!(entorno_de("rust"), None);
+        assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
+        assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
+        assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
     }
 
     #[test]

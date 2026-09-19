@@ -67,8 +67,10 @@ sabe de pods, tokens ni buckets: importa `ore` y llama al SDK.
 ### 3 · Runtimes: imágenes base numeradas + una capa por paquete, resuelta en CI
 
 - **Pocas imágenes base por lenguaje, numeradas**: `puesto-python:1`, `puesto-node:1`,
-  `puesto-jvm:1`, con su `requirements`/lock **dentro de la imagen** (Databricks: entornos 1…5;
-  Foundry: `hawk.lock`). Nunca `latest`. Lo que una celda importa hoy importa igual en un año.
+  `puesto-jvm:1` (las tres existen desde W3.4), con su `requirements`/lock **dentro de la
+  imagen** (`/entorno-1.txt`; Databricks: entornos 1…5; Foundry: `hawk.lock`). Nunca `latest`.
+  Lo que una celda importa hoy importa igual en un año. **Un puesto por persona y entorno**
+  (`puesto-<persona>-<entorno>`): la sesión es de una imagen; `sql` corre en cualquiera.
 - **Las dependencias se declaran en el árbol** (`pyproject.toml`, `package.json`, `pom.xml` del
   paquete) y **la plataforma las resuelve en una capa** sobre la base. ⭐ Medido antes de elegir
   el cómo (W3.2, `medida-w3-la-capa.py`): la capa **no es una imagen en el registro** sino una
@@ -137,7 +139,7 @@ pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los
 | **W3.1** ✓ 2026-09-19 | la sesión Python: `puesto-python:1`, el agente (`puesto/python/agente.py`), `POST /puestos` → la cola → Flux, celdas por polling largo, salida tipada; rol `puesto` + `21-el-puesto.yaml` + `72-google-en-privado.sh`; en la consola, Run sobre un `.py` corre en el puesto y `CellListViva` para los notebooks | `el-puesto.sh` 1–5 en CI (el agente de verdad, `over()` sobre una copia ORECOPY1); en victor con rol `puesto`: la copia baja por `private.googleapis.com` en 257 ms y **pypi no contesta**; el agente real en el pod obtiene su token y habla con `ore-serve` |
 | **W3.2** ✓ 2026-09-19 | las dependencias del árbol (`[project].dependencies` de `pyproject.toml`, raíz y paquetes) → **la capa**: un Job del driver (`52-la-capa.yaml`) resuelve para el entorno 1 y deja la caja de ruedas en el bucket (`ore/puesto/<capa>/`) y el informe `entorno/python.json` en el árbol; el puesto la instala al arrancar sin internet (`traer-la-capa` → `/capa`); `GET/POST /entorno`; abrir con la capa pendiente la encola y contesta 409 | medido (`medida-w3-la-capa.py`): resolver `polars` 1,8 s + subir 51 MB 1 s; el puesto la baja en 0,9 s y la instala en 3,2 s, `import polars` 160 ms, pypi no contesta; en demo, de punta a punta: el Job resuelve y empuja el informe, el puesto instala 182 MB en 3 s; `el-puesto.sh` 6 |
 | **W3.3** ✓ 2026-09-19 (SQL) | SQL sobre el bucket **en la sesión**: `sql("select … from hr.espanoles")` (DuckDB en el puesto; cada `paquete.vista` tras FROM/JOIN se resuelve por ore-serve y se baja una vez); un `.sql` del árbol o una celda SQL van enteros a `sql()`. **Medido antes** (`medida-w3-el-sql.py`, 2 CPU · 3 GB): 200 M de filas → `count(*)` 5 ms, `group by` con agregados **1,9 s**, `where` 1 s, top-n 0,9 s; 1,4 GB al bucket en 11 s y de vuelta en 9,5 s. ⇒ un `count(*)` sobre 200 M **no necesita un Job**: cabe en la sesión con segundos de margen; el trabajo encolado queda para lo que no quepa en un nodo (disco de 50 GB, o más de un nodo) y para entrenar (W3.5) | `el-puesto.sh` 7 |
-| **W3.4** | TS y JVM: `puesto-node:1`, `puesto-jvm:1`; una función TS invocable desde la consola | la función del árbol contesta en la consola con la identidad de la persona |
+| **W3.4** ✓ 2026-09-19 (TS y JVM) | **Un puesto por persona y entorno** (`puesto-<persona>-<entorno>`: `python`, `node`, `jvm`; `POST /puestos {lenguaje}` elige la imagen; `sql` corre en los tres). `puesto-node:1` (node 24: los tipos de TS los quita Node, sin transpilador; `@duckdb/node-api`; el agente `puesto/node/agente.mjs` evalúa con el REPL de Node: contexto que dura, `await` arriba; una celda con `import`/`export` —un `.ts` del árbol— se escribe y se importa, y sus exports quedan en el contexto) y `puesto-jvm:1` (JDK 21 sobre noble; `puesto/jvm/ore/Agente.java`: JShell **en proceso**, varios snippets por celda, el valor de la expresión como objeto por `guarda()`, una clase con `main` se declara y se llama; DuckDB por JDBC). El SDK en los tres: `over()`, `sql()`, **`persona()`** (quién abrió el puesto). La plantilla del puesto lleva el hueco del entorno y cada imagen su `CMD`. En la consola, un `.ts`/`.js`/`.java` corre en su sesión; una fila por sesión abierta con su «Stop». **Medido antes** (`medida-w3-ts-jvm.py`): abajo | `el-puesto.sh` 8 (`saludo(persona())` → `hola persona:ana` desde un módulo TS con `export`; `over()`, `sql`) y 9 (lo mismo en Java, y una clase con `main`) en CI; en el clúster, las imágenes salen de `cloudbuild.yaml` |
 | **W3.5** | `Model`: publicar desde la celda, fine-tune como trabajo con sabor `gpu` | un adaptador entrenado en la celda sirve por `Function` |
 
 ## Lo medido (`pruebas-de-fuego/medida-w3-el-puesto.py`, 2026-09-19, victor)
@@ -163,6 +165,28 @@ frío **85 s** (nodo 56 s · pull de la imagen 18 s), caliente **3 s**; la copia
 no después; (b) el frío de 110 s obliga a decidir `min 1` en horario o progreso visible — se
 mide el coste de `min 1` (un e2-standard-4) frente a la espera; (c) el TTL de inactividad es del
 agente, y el tope de sesión del Job.
+
+## Lo medido para W3.4 (`pruebas-de-fuego/medida-w3-ts-jvm.py`, 2026-09-19, victor)
+
+Antes de escribir los agentes: en local (node 22.14) y en el puesto (rol `puesto`, `jobs-p`,
+imágenes de `mirror.gcr.io` — la malla las alcanza: node 81 MB en 9,7 s, temurin 184 MB en 7,5 s).
+
+| | medido | lo que dice |
+|---|---|---|
+| **TS sin transpilador** | `stripTypeScriptTypes` 74 ms la primera vez, <2 ms después; node 24 tiene `process.features.typescript = "strip"` y **importa un `.ts` tal cual en 4 ms** | no hace falta `tsc` ni `esbuild` en la imagen: los tipos se quitan y las posiciones se conservan |
+| **el REPL de Node como kernel** | `repl.start().eval`: `{ES:1,PT:1}` en 1,8 ms · una variable persiste (0,4 ms) · `const x = await …` queda en el contexto (11 ms) · `console.log` capturado por el `output` del REPL · un error síncrono **no llega al callback**: va al dominio del REPL (sin el oído propio, la celda no contesta nunca) | el mismo contrato que el kernel Python, con `await` arriba de regalo; el dominio se intercepta |
+| **la JVM** | arranque **1,36 s** (incluye compilar el guion por el *source launcher*); JShell **local: 25 ms** de crear, primera celda 237 ms (carga clases), 22–70 ms después; error de compilación 24 ms; excepción 62 ms; el motor **remoto (JDI) 770 ms** sólo en arrancar | JShell en proceso y no otra JVM: la sesión es la misma JVM que el agente, y así el valor de una expresión se recoge como objeto (`guarda()`), no como `toString` |
+| **las imágenes** (Docker Hub, comprimidas) | node:24-slim 81 MB · node:24-alpine 62 · temurin:21-jdk-alpine 184 · **temurin:21-jdk-noble 211** · jre-alpine 74 (sin `jdk.jshell`) · python:3.12-slim 43 | el JDK es obligatorio (JShell); noble y no alpine porque el JDBC de DuckDB no trae natives para musl; el pull de 211 MB cabe en el arranque en frío (el nodo tarda 56 s) |
+| **el Job entero** | 84 s en frío (pool a cero) con los dos contenedores | igual que Python: el frío es el nodo, no el lenguaje |
+
+**Lo que cambia tras medir:** (a) las imágenes no traen transpilador ni JVM aparte; (b) los
+agentes de Node y de la JVM son *el mismo agente* (polling, salida tipada, TTL, 410) con el
+kernel del lenguaje; (c) `persona()` entra en los tres SDK: es lo que hace que «la función del
+árbol contesta con la identidad de la persona» sea una llamada y no una promesa.
+
+**Lo que queda de W3.4:** la capa de Node (`package.json` → `node_modules` en el bucket) y la de
+la JVM (`pom.xml`/Gradle → jars): hoy las dos imágenes nacen con lo que traen (DuckDB y el SDK)
+y el árbol no declara dependencias para ellas; se mide como se midió la de Python (W3.2).
 
 ## Lo que se aparca
 

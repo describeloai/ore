@@ -180,11 +180,21 @@ jobs:
       - name: y una propuesta la revisa otra persona antes de llegar a main
         run: bash pruebas-de-fuego/la-propuesta.sh
 
-      # El puesto (0031 W3.1): la sesion viva de una persona, con el agente de
-      # verdad (`puesto/python/agente.py`) al lado y una copia ORECOPY1 en un
-      # directorio. pyarrow y pandas son para escribir esa copia y para que
-      # `over()` la lea; en el cluster van dentro de `puesto-python:1`.
-      - name: y una sesion Python lee la copia con over()
+      # El puesto (0031 W3.1–W3.4): la sesion viva de una persona, con los
+      # agentes de verdad al lado (`puesto/python/agente.py`, `puesto/node/
+      # agente.mjs`, `puesto/jvm/ore/Agente.java`) y una copia ORECOPY1 en un
+      # directorio. pyarrow y pandas escriben esa copia; duckdb (en Python, en
+      # Node y por JDBC) es lo que `over()`/`sql()` usan para leerla; en el
+      # cluster van dentro de `puesto-python:1`, `puesto-node:1` y `puesto-jvm:1`.
+      # Node 24 y un JDK 21: los mismos que las imagenes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: y una sesion Python, una TS y una Java leen la copia con over() y sql()
         run: |
           python3 -m pip install --quiet pyarrow pandas duckdb
           bash pruebas-de-fuego/el-puesto.sh
@@ -395,7 +405,7 @@ jobs:
           install_components: gke-gcloud-auth-plugin
 
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
-      - name: construir las siete imagenes
+      - name: construir las nueve imagenes
         run: |
           # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
           #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla

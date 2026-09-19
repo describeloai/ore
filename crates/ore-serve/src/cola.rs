@@ -248,21 +248,40 @@ const PUESTO_MODELO: &str = "puesto-modelo";
 const RAMA_MODELO: &str = "rama-modelo";
 const CAPA_MODELO: &str = "capa-modelo";
 const ABIERTO_MODELO: &str = "abierto-modelo";
+/// El hueco de la imagen del puesto: `puesto-entorno-modelo:1` →
+/// `puesto-<entorno>:1` (W3.4: python, node o jvm; las tres con el agente
+/// dentro y su `CMD`, por eso la plantilla no lleva `command`).
+const ENTORNO_MODELO: &str = "puesto-entorno-modelo:1";
+/// Los entornos que tienen imagen (`Dockerfile`, `cloudbuild.yaml`).
+pub const ENTORNOS: [&str; 3] = ["python", "node", "jvm"];
 
-/// Rinde el Job del puesto de `id` (`puesto-<persona>`), en `rama` (vacía =
-/// `main`) y con la `capa` (el digest de `entorno.rs`, o vacía: sin capa).
-/// Devuelve `(fichero, texto, nombre del Job)`. Un mismo puesto en la misma
-/// rama y con la misma capa es el mismo fichero: abrirlo dos veces no crea dos Jobs.
+/// Rinde el Job del puesto de `id` (`puesto-<persona>-<entorno>`), en `rama`
+/// (vacía = `main`), con la `capa` (el digest de `entorno.rs`, o vacía: sin
+/// capa) y sobre la imagen del `entorno`. Devuelve `(fichero, texto, nombre
+/// del Job)`. Un mismo puesto en la misma rama y con la misma capa es el mismo
+/// fichero: abrirlo dos veces no crea dos Jobs.
 pub fn rendir_puesto(
     plantilla: &str,
     id: &str,
     rama: &str,
     capa: &str,
     abierto: &str,
+    entorno: &str,
 ) -> Result<(String, String, String), String> {
     if !plantilla.contains(&format!("puesto-{RESUMEN_MODELO}")) {
         return Err(format!(
             "`{PLANTILLA_PUESTO}` no trae el hueco `puesto-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if !ENTORNOS.contains(&entorno) {
+        return Err(format!(
+            "`{entorno}` no es un entorno con imagen: {}",
+            ENTORNOS.join(", ")
+        ));
+    }
+    if plantilla.matches(ENTORNO_MODELO).count() != 1 {
+        return Err(format!(
+            "`{PLANTILLA_PUESTO}` no trae (una vez) el hueco `{ENTORNO_MODELO}`: `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
         ));
     }
     for (de, a) in [
@@ -296,7 +315,8 @@ pub fn rendir_puesto(
         .replace(
             &format!("value: \"{ABIERTO_MODELO}\""),
             &format!("value: \"{abierto}\""),
-        );
+        )
+        .replace(ENTORNO_MODELO, &format!("puesto-{entorno}:1"));
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
     let quien = id.strip_prefix("puesto-").unwrap_or(id);
@@ -374,30 +394,56 @@ mod prueba {
     #[test]
     fn el_puesto_lleva_id_rama_y_capa_y_el_mismo_puesto_es_el_mismo_fichero() {
         let p = "name: puesto-00000000
+image: registro/ore/puesto-entorno-modelo:1
 env:
   - { name: PUESTO, value: \"puesto-modelo\" }
   - { name: RAMA, value: \"rama-modelo\" }
   - { name: CAPA, value: \"capa-modelo\" }
   - { name: ABIERTO, value: \"abierto-modelo\" }
 ";
-        let (f, t, job) =
-            rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab", "1").unwrap();
-        assert_eq!(f, "51-el-puesto-ana.yaml");
-        assert!(job.starts_with("puesto-ana-") && job.len() == "puesto-ana-".len() + 8);
+        let (f, t, job) = rendir_puesto(
+            p,
+            "puesto-ana-python",
+            "ana/x",
+            "capa-0123456789ab",
+            "1",
+            "python",
+        )
+        .unwrap();
+        assert_eq!(f, "51-el-puesto-ana-python.yaml");
         assert!(
-            t.contains("value: \"puesto-ana\"")
+            job.starts_with("puesto-ana-python-") && job.len() == "puesto-ana-python-".len() + 8
+        );
+        assert!(
+            t.contains("value: \"puesto-ana-python\"")
                 && t.contains("value: \"ana/x\"")
                 && t.contains("value: \"capa-0123456789ab\"")
+                && t.contains("image: registro/ore/puesto-python:1")
         );
         assert!(t.contains(&format!("name: {job}")));
-        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "", "", "1").unwrap();
+        let (_, t2, _) = rendir_puesto(p, "puesto-ana-python", "", "", "1", "python").unwrap();
         assert!(t2.contains("value: \"\""));
         // Reabrir en otro instante es OTRO Job (Flux retira el viejo): el fichero, el mismo.
-        let (f3, _, job3) =
-            rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab", "2").unwrap();
+        let (f3, _, job3) = rendir_puesto(
+            p,
+            "puesto-ana-python",
+            "ana/x",
+            "capa-0123456789ab",
+            "2",
+            "python",
+        )
+        .unwrap();
         assert_eq!(f3, f);
         assert_ne!(job3, job);
-        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "", "1").is_err());
+        // Otro entorno (W3.4): otra imagen, otro fichero, otro Job.
+        let (f4, t4, job4) = rendir_puesto(p, "puesto-ana-node", "", "", "1", "node").unwrap();
+        assert_eq!(f4, "51-el-puesto-ana-node.yaml");
+        assert!(
+            t4.contains("image: registro/ore/puesto-node:1")
+                && job4.starts_with("puesto-ana-node-")
+        );
+        assert!(rendir_puesto(p, "puesto-ana-rust", "", "", "1", "rust").is_err());
+        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "", "1", "python").is_err());
     }
 
     #[test]

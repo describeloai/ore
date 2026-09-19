@@ -53,6 +53,13 @@ steps:
   - id: puesto-python
     name: gcr.io/cloud-builders/docker
     args: [build, --target, puesto-python, -t, '${_REGISTRO}/puesto-python:1', -t, '${_REGISTRO}/puesto-python:${_SHA}', .]
+  # Y los de TS/JS y Java (0031 W3.4): mismo agente, otro runtime.
+  - id: puesto-node
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, puesto-node, -t, '${_REGISTRO}/puesto-node:1', -t, '${_REGISTRO}/puesto-node:${_SHA}', .]
+  - id: puesto-jvm
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, puesto-jvm, -t, '${_REGISTRO}/puesto-jvm:1', -t, '${_REGISTRO}/puesto-jvm:${_SHA}', .]
 
 images:
   - '${_REGISTRO}/ore:main'
@@ -69,6 +76,10 @@ images:
   - '${_REGISTRO}/ore-informador:${_SHA}'
   - '${_REGISTRO}/puesto-python:1'
   - '${_REGISTRO}/puesto-python:${_SHA}'
+  - '${_REGISTRO}/puesto-node:1'
+  - '${_REGISTRO}/puesto-node:${_SHA}'
+  - '${_REGISTRO}/puesto-jvm:1'
+  - '${_REGISTRO}/puesto-jvm:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8

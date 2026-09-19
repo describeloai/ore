@@ -1,0 +1,8 @@
+{
+  "name": "ore",
+  "version": "1.0.0",
+  "description": "El SDK del puesto (ORE 0031 W3.4): over(), sql(), persona() desde una celda TS/JS",
+  "type": "module",
+  "exports": "./index.mjs",
+  "private": true
+}
