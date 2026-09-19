@@ -152,12 +152,15 @@ revisó y quién fusionó, y la rama se retira al fusionar. Y el panel de *Commi
 workspace pedía lo que un `PUT` por fichero no da: **`POST /arbol/commit`** (2026-09-19) — varios
 ficheros en UN commit con el mensaje de la persona, y en `seco` lo que ese commit sería: `A`/`M`/`D`
 y +/− los dice git (`status --porcelain`, `diff --cached --numstat`) sobre el clon, con el gate de
-siempre (`la-propuesta` 3b). En la consola, «sin commitear» son los borradores de la sesión:
-guardar (Ctrl+S) commitea uno, *Commit* los manda todos. **Version history** no
+siempre (`la-propuesta` 3b). En la consola, «sin commitear» son los borradores de la sesión y
+**no hay Save** (2026-09-19): guardar un fichero ES commitearlo — fuera el botón, Ctrl+S y el
+`PUT /arbol/<ruta>` desde el workspace; sólo *Commit* escribe, y con ello nace la versión. *Run*
+corre lo commiteado (el corredor lee el árbol) y con cambios pendientes se deshabilita y lo dice.
+`PUT /arbol/<ruta>` sigue en `ore-serve` para las pruebas y los clientes por fichero. **Version history** no
 necesitó inventar nada (`medida-w2-historial.py`, victor: 12 versiones en `ontology.config.yaml`,
 `git log --follow` <10 ms tras el clon): `GET /arbol/historia/{ruta}` (persona, committer, mensaje
-por commit) y `GET /arbol/version/{hash}/{ruta}` (el texto de entonces, byte a byte); restaurar es
-guardar ese texto, un commit nuevo. Y el *Merge* del menú es `POST /ramas/{rama}/fusionar {desde}`:
+por commit) y `GET /arbol/version/{hash}/{ruta}` (el texto de entonces, byte a byte); restaurar
+deja ese texto en el editor como borrador y commitearlo es la versión nueva. Y el *Merge* del menú es `POST /ramas/{rama}/fusionar {desde}`:
 `git merge --no-ff` de la persona con el gate, conflicto 409 con el fichero, y a `main` nunca a
 mano (422: se propone). Lo que la consola tiene que cablear
 está en `propuestas.rs`; lo que no se hizo: encolar la copia de una vista `materialized` que
