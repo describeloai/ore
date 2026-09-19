@@ -43,6 +43,7 @@ mod arbol;
 mod cola;
 mod copia;
 mod documentos;
+mod entorno;
 mod forja;
 mod funciones;
 mod git;

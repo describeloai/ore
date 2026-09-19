@@ -362,6 +362,9 @@ impl Servidor {
             // La persona abre, manda celdas y espera salidas; el agente del
             // pod pide trabajo, entrega salidas y resuelve datos. Sin árbol
             // salvo `datos`, que lee el informe de la copia en la rama.
+            // ── 0031 W3.2 · el entorno: lo que el árbol declara, y su capa ──
+            ("GET", ["entorno"]) => self.entorno(rama),
+            ("POST", ["entorno"]) => self.resolver_entorno(sujeto, rama),
             ("GET", ["puestos"]) => self.puestos_de(sujeto),
             ("POST", ["puestos"]) => self.abrir_puesto(sujeto, &p.cuerpo),
             ("GET", ["puestos", id]) => self.puesto(sujeto, id),
@@ -1973,6 +1976,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/ramas", con_identidad),
         ("POST", "/ramas", con_identidad),
         ("DELETE", "/ramas/{nombre}", con_identidad),
+        ("GET", "/entorno", con_identidad),
+        ("POST", "/entorno", con_identidad),
         ("GET", "/puestos", con_identidad),
         ("POST", "/puestos", con_identidad),
         ("GET", "/puestos/{id}", con_identidad),

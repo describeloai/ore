@@ -1,0 +1,173 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA CAPA — las dependencias que el árbol declara, resueltas (0031 §3, W3.2)
+#
+# ⭐ El puesto no tiene `pip` como verdad: no alcanza PyPI (21-el-puesto.yaml).
+#   Lo que una sesión Python necesita se DECLARA en el árbol —`[project]
+#   .dependencies` de `pyproject.toml`, en la raíz o en `packages/<p>/`— y lo
+#   resuelve ESTE Job, con la red del driver (que sí alcanza PyPI): baja las
+#   ruedas para el intérprete del entorno 1 (cp312, manylinux x86_64), las
+#   sube al bucket del inquilino como `ore/puesto/<capa>/`, y deja en el árbol
+#   el informe `entorno/python.json`. El puesto, al arrancar, baja esa caja del
+#   bucket y la instala en `/capa` (51-el-puesto.yaml, `traer-la-capa`).
+#
+# ── Por qué una caja de ruedas y no una imagen ─────────────────────────────
+#   Medido el 2026-09-19 (`medida-w3-la-capa.py`, victor, `polars`): resolver
+#   1,8 s y subir 51 MB en 1 s; el puesto las baja en 0,9 s y las instala en
+#   3,2 s. Cinco segundos al arrancar, sin un builder de imágenes en el clúster
+#   ni permisos de registro por inquilino, y hermético igual.
+#
+# ── Quién lo rinde ─────────────────────────────────────────────────────────
+#   `ore-serve` escribe `52-la-capa-<12 hex>.yaml` en la cola (rendido de
+#   `plantilla-capa.txt`, ⚠️ esta plantilla) al `POST /entorno`, o al abrir un
+#   puesto con la capa pendiente. `CAPA` es el digest de la declaración; el Job
+#   la recalcula del árbol y, si el árbol cambió entre medias, el informe lleva
+#   el digest de lo que resolvió de verdad.
+#
+# ── Lo que este Job NO decide ──────────────────────────────────────────────
+#   Qué versión gana: la resuelve `pip` con lo declarado, y queda escrita en el
+#   informe (las ruedas). Cambiar una dependencia es cambiar el árbol.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: la-capa-00000000
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: trabajo
+          emptyDir: {}
+      initContainers:
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=t-demo-forja-token --out-file=/puesto/forja
+              chmod 0400 /puesto/forja
+              echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: resolver
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: PIP_CACHE_DIR, value: /tmp/pip }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            - { name: CAPA, value: "capa-modelo" }
+            - { name: RAMA, value: "rama-modelo" }
+            - { name: INTENTO, value: "intento-modelo" }
+            - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # El intérprete del entorno 1 (`puesto-python:1`): las ruedas se
+            # resuelven PARA ÉL, no para el python de esta imagen.
+            - { name: PY, value: "3.12" }
+            - { name: ABI, value: "cp312" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              cd /trabajo
+              git clone --quiet ${RAMA:+--branch "$RAMA"} \
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              cd arbol
+              # ── 1 · la declaración: la unión de los pyproject, como la lee ore-serve ──
+              python3 - <<'PY'
+              import glob, hashlib, json, tomllib
+              deps = set()
+              for f in ["pyproject.toml"] + sorted(glob.glob("packages/*/pyproject.toml")):
+                  try:
+                      with open(f, "rb") as fh:
+                          deps.update(str(d).strip() for d in tomllib.load(fh).get("project", {}).get("dependencies", []))
+                  except (OSError, tomllib.TOMLDecodeError):
+                      pass
+              deps = sorted(d for d in deps if d)
+              digest = "capa-" + hashlib.sha256("\n".join(deps).encode()).hexdigest()[:12] if deps else ""
+              open("/trabajo/deps.txt", "w").write("\n".join(deps) + "\n")
+              open("/trabajo/digest.txt", "w").write(digest)
+              print("### declarado:", ", ".join(deps) or "(nada)", "→", digest or "(sin capa)")
+              PY
+              DIGEST=$(cat /trabajo/digest.txt)
+              [ -n "$DIGEST" ] || { echo "· el árbol no declara dependencias: nada que resolver"; exit 0; }
+              [ "$DIGEST" = "$CAPA" ] || echo "⚠️ se pidió $CAPA y el árbol declara $DIGEST (cambió entre medias): se resuelve lo que hay"
+              # ── 2 · resolver para el entorno 1 y subir la caja ──
+              mkdir -p /trabajo/ruedas
+              INFORME="entorno/python.json"; mkdir -p entorno
+              CUANDO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              if python3 -m pip download --disable-pip-version-check -q \
+                   --only-binary=:all: --python-version "$PY" --implementation cp \
+                   --abi "$ABI" --abi abi3 --abi none \
+                   --platform manylinux_2_17_x86_64 --platform manylinux_2_28_x86_64 \
+                   --platform manylinux_2_34_x86_64 --platform manylinux2014_x86_64 \
+                   --dest /trabajo/ruedas -r /trabajo/deps.txt 2>/trabajo/pip.err; then
+                ls /trabajo/ruedas | sort > /trabajo/ruedas/requirements.lock
+                MB=$(du -sm /trabajo/ruedas | cut -f1)
+                echo "### $(wc -l < /trabajo/ruedas/requirements.lock) rueda(s) · ${MB} MB"
+                gcloud storage cp -q /trabajo/ruedas/* "gs://$BUCKET/ore/puesto/$DIGEST/"
+                echo "### subida a gs://$BUCKET/ore/puesto/$DIGEST/"
+                python3 - "$DIGEST" "$CUANDO" "$MB" "$INFORME" <<'PY'
+              import json, sys
+              d, cuando, mb, informe = sys.argv[1:]
+              deps = [l.strip() for l in open("/trabajo/deps.txt") if l.strip()]
+              ruedas = [l.strip() for l in open("/trabajo/ruedas/requirements.lock") if l.strip() and l.strip() != "requirements.lock"]
+              json.dump({"estado": "lista", "digest": d, "declarado": deps, "ruedas": ruedas, "mb": mb, "cuando": cuando, "entorno": "puesto-python:1"}, open(informe, "w"), indent=1, sort_keys=True)
+              PY
+              else
+                echo "✗ pip no pudo resolver: $(tail -c 600 /trabajo/pip.err)"
+                python3 - "$DIGEST" "$CUANDO" "$INFORME" <<'PY'
+              import json, sys
+              d, cuando, informe = sys.argv[1:]
+              deps = [l.strip() for l in open("/trabajo/deps.txt") if l.strip()]
+              err = open("/trabajo/pip.err", errors="replace").read()[-800:]
+              json.dump({"estado": "error", "digest": d, "declarado": deps, "error": err, "cuando": cuando, "entorno": "puesto-python:1"}, open(informe, "w"), indent=1, sort_keys=True)
+              PY
+              fi
+              # ── 3 · el informe al árbol ──
+              git add -A entorno
+              if git diff --cached --quiet; then echo "· el informe no cambió"; exit 0; fi
+              git -c user.name=la-capa -c user.email=la-capa@invalido \
+                commit -q -m "La capa $DIGEST: $(python3 -c 'import json;print(json.load(open("entorno/python.json"))["estado"])')"
+              git push -q origin HEAD:${RAMA:-main}
+              echo "✓ informe empujado · $(git rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "2000m", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

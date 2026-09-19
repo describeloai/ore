@@ -246,21 +246,28 @@ pub fn rendir_invocacion(plantilla: &str, i: &Invocacion) -> Result<(String, Str
 pub const PLANTILLA_PUESTO: &str = "plantilla-puesto.txt";
 const PUESTO_MODELO: &str = "puesto-modelo";
 const RAMA_MODELO: &str = "rama-modelo";
+const CAPA_MODELO: &str = "capa-modelo";
 
 /// Rinde el Job del puesto de `id` (`puesto-<persona>`), en `rama` (vacía =
-/// `main`). Devuelve `(fichero, texto, nombre del Job)`. Un mismo puesto en la
-/// misma rama es el mismo fichero: abrirlo dos veces no crea dos Jobs.
+/// `main`) y con la `capa` (el digest de `entorno.rs`, o vacía: sin capa).
+/// Devuelve `(fichero, texto, nombre del Job)`. Un mismo puesto en la misma
+/// rama y con la misma capa es el mismo fichero: abrirlo dos veces no crea dos Jobs.
 pub fn rendir_puesto(
     plantilla: &str,
     id: &str,
     rama: &str,
+    capa: &str,
 ) -> Result<(String, String, String), String> {
     if !plantilla.contains(&format!("puesto-{RESUMEN_MODELO}")) {
         return Err(format!(
             "`{PLANTILLA_PUESTO}` no trae el hueco `puesto-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
         ));
     }
-    for (de, a) in [(PUESTO_MODELO, id), (RAMA_MODELO, rama)] {
+    for (de, a) in [
+        (PUESTO_MODELO, id),
+        (RAMA_MODELO, rama),
+        (CAPA_MODELO, capa),
+    ] {
         if !plantilla.contains(&format!("value: \"{de}\"")) {
             return Err(format!(
                 "`{PLANTILLA_PUESTO}` no trae el hueco `value: \"{de}\"`: `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
@@ -278,6 +285,10 @@ pub fn rendir_puesto(
         .replace(
             &format!("value: \"{RAMA_MODELO}\""),
             &format!("value: \"{rama}\""),
+        )
+        .replace(
+            &format!("value: \"{CAPA_MODELO}\""),
+            &format!("value: \"{capa}\""),
         );
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
@@ -287,25 +298,112 @@ pub fn rendir_puesto(
     Ok((format!("51-el-puesto-{quien}.yaml"), t, job))
 }
 
+// ── La capa (0031 §3, W3.2): las dependencias del árbol, resueltas ──────────
+pub const PLANTILLA_CAPA: &str = "plantilla-capa.txt";
+const INTENTO_MODELO: &str = "intento-modelo";
+
+/// Rinde el Job que resuelve la capa `digest` (`capa-<12 hex>`, de
+/// `entorno::digest_de`) en `rama`. `intento` distingue un reintento tras un
+/// error (un Job con el mismo nombre no se vuelve a correr): `"1"` la primera
+/// vez. Devuelve `(fichero, texto, nombre del Job)`.
+pub fn rendir_capa(
+    plantilla: &str,
+    digest: &str,
+    rama: &str,
+    intento: &str,
+) -> Result<(String, String, String), String> {
+    if !plantilla.contains(&format!("la-capa-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_CAPA}` no trae el hueco `la-capa-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/52-la-capa.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if !digest.starts_with("capa-")
+        || digest.len() != 17
+        || !digest[5..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "`{digest}` no es el digest de una capa (`capa-<12 hex>`)"
+        ));
+    }
+    for (de, a) in [
+        (CAPA_MODELO, digest),
+        (RAMA_MODELO, rama),
+        (INTENTO_MODELO, intento),
+    ] {
+        if !plantilla.contains(&format!("value: \"{de}\"")) {
+            return Err(format!(
+                "`{PLANTILLA_CAPA}` no trae el hueco `value: \"{de}\"`: `malla/52-la-capa.yaml` cambió sin que esto se enterara"
+            ));
+        }
+        if a.contains('"') || a.contains('\n') {
+            return Err(format!("`{a}` no puede ir en un valor del Job"));
+        }
+    }
+    let t = plantilla
+        .replace(
+            &format!("value: \"{CAPA_MODELO}\""),
+            &format!("value: \"{digest}\""),
+        )
+        .replace(
+            &format!("value: \"{RAMA_MODELO}\""),
+            &format!("value: \"{rama}\""),
+        )
+        .replace(
+            &format!("value: \"{INTENTO_MODELO}\""),
+            &format!("value: \"{intento}\""),
+        );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let corto = &digest[5..];
+    let job = format!("la-capa-{corto}-{h}");
+    let t = t.replace(&format!("la-capa-{RESUMEN_MODELO}"), &job);
+    Ok((format!("52-la-capa-{corto}.yaml"), t, job))
+}
+
 #[cfg(test)]
 mod prueba {
     use super::*;
 
     #[test]
-    fn el_puesto_lleva_id_y_rama_y_el_mismo_puesto_es_el_mismo_fichero() {
+    fn el_puesto_lleva_id_rama_y_capa_y_el_mismo_puesto_es_el_mismo_fichero() {
         let p = "name: puesto-00000000
 env:
   - { name: PUESTO, value: \"puesto-modelo\" }
   - { name: RAMA, value: \"rama-modelo\" }
+  - { name: CAPA, value: \"capa-modelo\" }
 ";
-        let (f, t, job) = rendir_puesto(p, "puesto-ana", "ana/x").unwrap();
+        let (f, t, job) = rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab").unwrap();
         assert_eq!(f, "51-el-puesto-ana.yaml");
         assert!(job.starts_with("puesto-ana-") && job.len() == "puesto-ana-".len() + 8);
-        assert!(t.contains("value: \"puesto-ana\"") && t.contains("value: \"ana/x\""));
+        assert!(
+            t.contains("value: \"puesto-ana\"")
+                && t.contains("value: \"ana/x\"")
+                && t.contains("value: \"capa-0123456789ab\"")
+        );
         assert!(t.contains(&format!("name: {job}")));
-        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "").unwrap();
+        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "", "").unwrap();
         assert!(t2.contains("value: \"\""));
-        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "").is_err());
+        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "").is_err());
+    }
+
+    #[test]
+    fn la_capa_lleva_digest_rama_e_intento_y_se_llama_por_el_digest() {
+        let p = "name: la-capa-00000000
+env:
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: INTENTO, value: \"intento-modelo\" }
+";
+        let (f, t, job) = rendir_capa(p, "capa-0123456789ab", "", "1").unwrap();
+        assert_eq!(f, "52-la-capa-0123456789ab.yaml");
+        assert!(
+            job.starts_with("la-capa-0123456789ab-")
+                && job.len() == "la-capa-0123456789ab-".len() + 8
+        );
+        assert!(t.contains("value: \"capa-0123456789ab\"") && t.contains(&format!("name: {job}")));
+        let (_, _, job2) = rendir_capa(p, "capa-0123456789ab", "", "r2").unwrap();
+        assert_ne!(job, job2);
+        assert!(rendir_capa(p, "no-es-un-digest", "", "1").is_err());
     }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de

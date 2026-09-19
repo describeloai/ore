@@ -168,6 +168,7 @@ configMapGenerator:
       - 49-la-invocacion.yaml
       - 50-jwks.yaml
       - 51-el-puesto.yaml
+      - 52-la-capa.yaml
 
 generatorOptions:
   disableNameSuffixHash: true

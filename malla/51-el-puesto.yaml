@@ -65,6 +65,10 @@ spec:
           emptyDir: { medium: Memory }
         - name: trabajo
           emptyDir: {}
+        # ⭐ La capa (0031 §3, W3.2): las dependencias del árbol, instaladas al
+        #   arrancar desde la caja de ruedas del bucket (52-la-capa.yaml).
+        - name: capa
+          emptyDir: {}
       initContainers:
         # El testigo del agente de la celda: con él el agente pide tokens al
         # emisor (client credentials) y habla con `ore-serve` como agente.
@@ -90,6 +94,50 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
+        # ⭐ La capa: sin `pip` contra internet (esta red no lo alcanza). Baja
+        #   `ore/puesto/<capa>/` del bucket y lo instala en /capa con
+        #   `--no-index`; medido: ~1 s de bajada y ~3 s de instalación (polars).
+        #   Sin capa (`CAPA` vacía) no hace nada.
+        - name: traer-la-capa
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: CAPA, value: "capa-modelo" }
+            - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            - { name: HOME, value: /tmp }
+            - { name: PIP_CACHE_DIR, value: /tmp/pip }
+          volumeMounts:
+            - { name: capa, mountPath: /capa }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              [ -n "$CAPA" ] || { echo "· sin capa: el árbol no declara dependencias"; exit 0; }
+              mkdir -p /trabajo/ruedas
+              python3 - <<'PY'
+              import os, time
+              from google.cloud import storage
+              t = time.time(); cli = storage.Client(); b = cli.bucket(os.environ["BUCKET"]); pre = "ore/puesto/" + os.environ["CAPA"] + "/"
+              n = 0
+              for o in cli.list_blobs(b, prefix=pre):
+                  o.download_to_filename("/trabajo/ruedas/" + o.name[len(pre):]); n += 1
+              print("### capa %s: %d objeto(s) en %d ms" % (os.environ["CAPA"], n, (time.time() - t) * 1000), flush=True)
+              if n == 0:
+                  raise SystemExit("✗ la caja de la capa no está en el bucket: ¿la resolvió 52-la-capa?")
+              PY
+              T0=$(cut -d. -f1 /proc/uptime)
+              python3 -m pip install --disable-pip-version-check -q --no-index --no-deps --target /capa /trabajo/ruedas/*.whl
+              echo "### instalada en /capa en $(( $(cut -d. -f1 /proc/uptime) - T0 )) s · $(du -sm /capa | cut -f1) MB"
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "2", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }
       containers:
         - name: puesto
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
@@ -98,6 +146,8 @@ spec:
           env:
             - { name: PUESTO, value: "puesto-modelo" }
             - { name: RAMA, value: "rama-modelo" }
+            - { name: CAPA, value: "capa-modelo" }
+            - { name: PYTHONPATH, value: /capa }
             - { name: TTL, value: "1800" }
             - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
             - { name: ORE_ALMACEN, value: "gcs" }
@@ -110,6 +160,7 @@ spec:
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
+            - { name: capa, mountPath: /capa, readOnly: true }
           workingDir: /trabajo
           resources:
             requests: {cpu: "1", memory: 2Gi}

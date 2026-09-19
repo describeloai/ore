@@ -224,8 +224,76 @@ impl Servidor {
                 return Respuesta::ok(ficha(&id, p));
             }
         }
+        // ⭐ La capa (0031 W3.2): lo que el árbol declara, resuelto. Lista →
+        //   el puesto nace con ella; pendiente → se encola y 409 para que la
+        //   consola espere; error → 409 con el motivo (y se reintenta la capa).
+        let e = match self.leyendo_en(rama.as_deref(), |raiz| {
+            let e = crate::entorno::entorno_de(raiz);
+            Respuesta::ok(Json::obj([
+                ("estado", Json::s(e.estado)),
+                ("digest", Json::s(&e.digest)),
+                (
+                    "declarado",
+                    Json::Arr(e.declarado.iter().map(Json::s).collect()),
+                ),
+                ("informe", e.informe.unwrap_or_else(|| Json::obj([]))),
+            ]))
+        }) {
+            r if r.codigo != 200 => return r,
+            r => r.cuerpo,
+        };
+        let campo = |k: &str| match &e {
+            Json::Obj(m) => match m.get(k) {
+                Some(Json::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        let capa = match campo("estado").as_str() {
+            "lista" => campo("digest"),
+            "sin-dependencias" => String::new(),
+            estado => {
+                let intento = if estado == "error" {
+                    format!(
+                        "r{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    )
+                } else {
+                    "1".to_string()
+                };
+                let dicho = match self.encolar_capa(
+                    &campo("digest"),
+                    rama.as_deref().unwrap_or(""),
+                    sujeto,
+                    &intento,
+                ) {
+                    Ok((job, d)) => format!("{d} · Job {job}"),
+                    Err(r) => return r,
+                };
+                let mut cuerpo = Json::obj([
+                    (
+                        "error",
+                        Json::s(format!(
+                            "la capa del árbol no está lista ({estado}): se resuelve ahora; vuelve a abrir el puesto en un minuto"
+                        )),
+                    ),
+                    ("capa", Json::s(campo("digest"))),
+                    ("cola", Json::s(dicho)),
+                ]);
+                if let Json::Obj(m) = &mut cuerpo {
+                    m.insert("entorno".into(), e.clone());
+                }
+                return Respuesta {
+                    codigo: 409,
+                    cuerpo,
+                };
+            }
+        };
         // A la cola: Flux rinde el Job.
-        let (fichero, job, dicho) = match self.encolar_puesto(&id, sujeto, rama.as_deref()) {
+        let (fichero, job, dicho) = match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa) {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -517,6 +585,7 @@ impl Servidor {
         id: &str,
         sujeto: &Identidad,
         rama: Option<&str>,
+        capa: &str,
     ) -> Result<(String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
@@ -538,7 +607,7 @@ impl Servidor {
                     ),
                 )
             })?;
-        let (fichero, texto, job) = cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""))
+        let (fichero, texto, job) = cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa)
             .map_err(|e| Respuesta::error(500, e))?;
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;

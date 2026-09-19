@@ -20,6 +20,12 @@
 #                                      copia → RuntimeError (409)
 #   5  DELETE /puestos/puesto-ana      200 · el fichero fuera de la cola · el agente se cierra
 #                                      (410) · una celda más → 410
+#   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
+#                                      digest capa-<12 hex> · POST /puestos (bea) → 409 y el Job de
+#                                      la capa en la cola con el digest · POST /entorno → 202 la
+#                                      misma · el informe lista → GET /entorno lista, POST /entorno
+#                                      200, POST /puestos 201 con la capa en el Job · otra
+#                                      declaracion → pendiente otra vez
 #
 # Uso:  bash pruebas-de-fuego/el-puesto.sh
 set -u
@@ -138,7 +144,7 @@ git init -q --bare -b main "$COLA"
 mkdir -p "$TMP/cola-semilla" && ( cd "$TMP/cola-semilla" && git init -q -b main && git config core.autocrlf false )
 "$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TMP/rendido" >/dev/null 2>&1 || falla "no se pudo rendir la plantilla del puesto"
 [ -f "$TMP/rendido/plantilla-puesto.txt" ] || falla "gen-inquilino no rinde plantilla-puesto.txt"
-cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/cola-semilla/"
+cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" "$TMP/cola-semilla/"
 ( cd "$TMP/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
   && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "no se pudo sembrar la cola"
 en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
@@ -221,5 +227,44 @@ grep -q "cerrado" "$TMP/agente.txt" || falla "5 · el agente no dijo por que se 
 [ "$(pide POST /puestos "$ANA" '{}')" = "201" ] || falla "5 · abrir de nuevo tras cerrar: $(cuerpo)"
 dice "5 · DELETE: 200, el fichero fuera de la cola, el agente se cierra al 410, una celda mas → 410, y se puede abrir otro"
 
+# ── 6 · la capa (W3.2): lo que el árbol declara, resuelto antes del puesto ──
+[ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='sin-dependencias' and d['declarado']==[] and d['digest']==''" || falla "6 · entorno sin dependencias: $(cuerpo)"
+[ "$(pide POST /entorno "$ANA")" = "422" ] || falla "6 · resolver sin dependencias no dio 422: $(cuerpo)"
+printf '[project]
+name = "hr"
+dependencies = [
+  "polars>=1.40",  # rapido
+  "duckdb",
+]
+' > "$A/packages/hr/pyproject.toml"
+printf '[project]
+dependencies = ["polars>=1.40"]
+' > "$A/pyproject.toml"
+[ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['declarado']==['duckdb','polars>=1.40'] and d['digest'].startswith('capa-') and len(d['digest'])==17" || falla "6 · entorno pendiente: $(cuerpo)"
+DIGEST=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$TMP/r.json")
+# abrir un puesto con la capa pendiente: 409, y la capa encolada
+[ "$(pide POST /puestos "$BEA" '{}')" = "409" ] || falla "6 · abrir con la capa pendiente no dio 409: $(cuerpo)"
+tiene "d['capa']=='$DIGEST' and 'Job la-capa-' in d['cola'] and d['entorno']['estado']=='pendiente'" || falla "6 · el 409 no dice la capa ni el Job: $(cuerpo)"
+CORTO=${DIGEST#capa-}
+en_cola "52-la-capa-$CORTO.yaml" | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el Job de la capa no esta en la cola con el digest"
+en_cola "52-la-capa-$CORTO.yaml" | grep -q 'ore.dev/rol: driver' || falla "6 · el Job de la capa no lleva el rol driver (PyPI)"
+[ "$(pide POST /entorno "$ANA")" = "202" ] && tiene "d['job'].startswith('la-capa-$CORTO-') and 'ya encolada' in d['cola']" || falla "6 · POST /entorno pendiente no dio 202 la misma: $(cuerpo)"
+en_cola "51-el-puesto-bea.yaml" >/dev/null && falla "6 · el puesto de bea se encolo sin capa"
+# el informe (lo que 52-la-capa deja en el arbol): la capa esta lista
+mkdir -p "$A/entorno"
+"$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["duckdb","polars>=1.40"],"ruedas":["polars-1.44.2-py3-none-any.whl","duckdb-1.5.5-cp312-abi3-manylinux_2_17_x86_64.whl"],"mb":"55","cuando":"2026-09-19T00:00:00Z"}, open(sys.argv[2],"w"))' "$DIGEST" "$A/entorno/python.json"
+[ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='lista' and len(d['informe']['ruedas'])==2" || falla "6 · entorno lista: $(cuerpo)"
+[ "$(pide POST /entorno "$ANA")" = "200" ] || falla "6 · resolver con la capa lista no dio 200: $(cuerpo)"
+[ "$(pide POST /puestos "$BEA" '{}')" = "201" ] && tiene "d['id']=='puesto-bea'" || falla "6 · abrir con la capa lista: $(cuerpo)"
+en_cola 51-el-puesto-bea.yaml | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el puesto de bea no lleva la capa: $(en_cola 51-el-puesto-bea.yaml | grep -n CAPA)"
+en_cola 51-el-puesto-bea.yaml | grep -q 'name: PYTHONPATH, value: /capa' || falla "6 · el puesto no pone /capa en el PYTHONPATH"
+# cambia la declaracion: la capa vuelve a estar pendiente
+printf '[project]
+dependencies = ["polars>=1.40", "scikit-learn"]
+' > "$A/pyproject.toml"
+[ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['digest']!='$DIGEST'" || falla "6 · otra declaracion no vuelve a pendiente: $(cuerpo)"
+pide DELETE /puestos/puesto-bea "$BEA" >/dev/null
+dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa y /capa en el PYTHONPATH · otra declaracion → pendiente"
+
 limpiar
-echo "✓ el puesto (0031 W3.1): 1–5 · la sesión viva, el agente de verdad, over() sobre la copia"
+echo "✓ el puesto (0031 W3.1–W3.2): 1–6 · la sesión viva, el agente de verdad, over() sobre la copia, la capa declarada en el árbol"

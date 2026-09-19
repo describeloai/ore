@@ -238,6 +238,11 @@ PLANTILLA_INVOCACION = "plantilla-invocacion.txt"
 POR_PUESTO = "51-el-puesto.yaml"
 PLANTILLA_PUESTO = "plantilla-puesto.txt"
 
+# ⭐ La capa (0031 W3.2): las dependencias del arbol resueltas por un Job del
+#   driver; la encola `ore-serve` con el digest de la declaracion y la rama.
+POR_CAPA = "52-la-capa.yaml"
+PLANTILLA_CAPA = "plantilla-capa.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -428,6 +433,11 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    capa = (MALLA / POR_CAPA).read_text(encoding="utf-8")
+    salida[PLANTILLA_CAPA] = (capa
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -493,6 +503,7 @@ def comprobar_plantillas():
                           else POR_COPIAS if f == POR_COPIAS or f == PLANTILLA_COPIA
                           else POR_INVOCACION if f == PLANTILLA_INVOCACION
                           else POR_PUESTO if f == PLANTILLA_PUESTO
+                          else POR_CAPA if f == PLANTILLA_CAPA
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -648,7 +659,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -720,7 +731,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -769,7 +780,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
