@@ -386,7 +386,7 @@ jobs:
           install_components: gke-gcloud-auth-plugin
 
       # Las cuatro, en una sola construcción: comparten la etapa `build`.
-      - name: construir las seis imagenes
+      - name: construir las siete imagenes
         run: |
           # ⛔ `--service-account` a proposito: sin el, Cloud Build corre como la
           #   cuenta de COMPUTO, y para eso `ore-ci` necesitaria poder suplantarla

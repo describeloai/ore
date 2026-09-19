@@ -49,6 +49,10 @@ steps:
   - id: informador
     name: gcr.io/cloud-builders/docker
     args: [build, --target, informador, -t, '${_REGISTRO}/ore-informador:main', -t, '${_REGISTRO}/ore-informador:${_SHA}', .]
+  # El puesto Python, entorno 1 (0031 W3): un runtime, no un binario nuestro.
+  - id: puesto-python
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, puesto-python, -t, '${_REGISTRO}/puesto-python:1', -t, '${_REGISTRO}/puesto-python:${_SHA}', .]
 
 images:
   - '${_REGISTRO}/ore:main'
@@ -63,6 +67,8 @@ images:
   - '${_REGISTRO}/ore-cofre:${_SHA}'
   - '${_REGISTRO}/ore-informador:main'
   - '${_REGISTRO}/ore-informador:${_SHA}'
+  - '${_REGISTRO}/puesto-python:1'
+  - '${_REGISTRO}/puesto-python:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8

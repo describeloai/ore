@@ -238,3 +238,27 @@ COPY --from=build /src/target/release/ore-cofre /usr/local/bin/ore-cofre
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-cofre"]
+
+# ── 6 · El puesto: Python, entorno 1 (0031 W3) ──────────────────────────────
+#
+# La imagen BASE de una sesión Python del workspace. No sale del `build` de
+# arriba: no lleva un binario nuestro, lleva un RUNTIME — y por eso se numera
+# como lo hacen Databricks y Foundry (entorno 1, 2, 3…), nunca como `latest`:
+# lo que una celda importa hoy tiene que importar igual dentro de un año.
+#
+# ⛔ Sin `pip` en caliente como verdad. Lo que hay es lo que hay; lo que un
+#   paquete del árbol declare se resuelve en CI en una CAPA sobre ésta (0031).
+#   El `pip freeze` de abajo deja en la imagen el `requirements` que reproduce
+#   el entorno en local, como el `requirements-env-N.txt` de Databricks.
+#
+# ⚠️ Los nodos de `jobs-p` no alcanzan Docker Hub (privados, sin NAT): TODO lo
+#   que corra ahí sale de nuestro registro, y por eso esta imagen existe antes
+#   que la medida de W3 — no hay forma de medir un puesto Python sin ella.
+FROM python:3.12-slim AS puesto-python
+
+RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
+ && pip freeze > /entorno-1.txt \
+ && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
+
+USER 65532:65532
+WORKDIR /trabajo
