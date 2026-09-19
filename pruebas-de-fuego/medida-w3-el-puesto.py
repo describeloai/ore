@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 os.environ["MSYS_NO_PATHCONV"] = "1"
 os.environ["MSYS2_ARG_CONV_EXCL"] = "*"
 
@@ -149,6 +150,9 @@ spec:
             limits:   {{cpu: "2", memory: 4Gi}}
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: {{ type: RuntimeDefault }}
             capabilities: {{ drop: [ALL] }}
 """
 

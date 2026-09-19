@@ -1,6 +1,6 @@
 # 0031 · El puesto
 
-**Estado:** borrador (escrito el 2026-09-19 tras el estado del arte; la medida se anota al pie) ·
+**Estado:** borrador medido (escrito el 2026-09-19 tras el estado del arte; la medida al pie) ·
 **Fecha:** 2026-09-19 · **Decide:** que W3 —«la sesión viva» de [`0030`](0030-el-arbol-en-el-editor.md)—
 no es un kernel Python en un pod sino **el sustrato de ejecución** del que cuelga todo lo que no
 es YAML: celdas Python y notebooks, funciones TypeScript y Java, SQL sobre datasets grandes,
@@ -135,9 +135,25 @@ pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los
 | **W3.4** | TS y JVM: `puesto-node:1`, `puesto-jvm:1`; una función TS invocable desde la consola | la función del árbol contesta en la consola con la identidad de la persona |
 | **W3.5** | `Model`: publicar desde la celda, fine-tune como trabajo con sabor `gpu` | un adaptador entrenado en la celda sirve por `Function` |
 
-## Lo medido (`pruebas-de-fuego/medida-w3-el-puesto.py`, victor)
+## Lo medido (`pruebas-de-fuego/medida-w3-el-puesto.py`, 2026-09-19, victor)
 
-*(se rellena al correr la medida)*
+Con `puesto-python:1` (python 3.12-slim · pandas 3.0.6 · pyarrow 25.0.1 · duckdb 1.5.5 · GCS),
+un Job de Kueue en `cola` que se queda vivo, identidad `driver`, 1 CPU · 2 Gi:
+
+| | medido | lo que dice |
+|---|---|---|
+| **el sitio** | `jobs-p` e2-standard-4 on-demand, 0–3, disco 50 GB, taint `ore.dev/jobs`; en `europe-west1-b` hay **L4, T4, H100 (80/mega), H200, B200, RTX PRO 6000** y máquinas `g2` (L4) y `a3` (H100) — consultado, nada lanzado | el sabor `gpu` tiene dónde aterrizar en la misma zona; L4 en `g2-standard-4` es el primer peldaño razonable |
+| **frío** (pool a cero) | **110 s** hasta `Running` (el nodo; igual que 0027: ~100 s) | una sesión nueva con el pool a cero tarda casi dos minutos: o el pool tiene **min 1** en horario de trabajo, o la consola lo dice y enseña el progreso; no hay tercera |
+| **caliente** (nodo e imagen ya estaban) | **1 s** hasta trabajar; python + `import pandas, pyarrow, duckdb` **1,0 s** | con el nodo caliente la sesión es instantánea; la imagen (`IfNotPresent`) se queda en el nodo |
+| **la copia desde dentro** | listar `ore/v1/` 28 objetos **296 ms** · bajar la mayor **10,9 MB en 253 ms** · sobre `ORECOPY1` → Parquet → DataFrame **99 441 × 8 en 82 ms** (23 MB en memoria) · duckdb `count/distinct` **40 ms** | `over("…")` como DataFrame cuesta **medio segundo** de punta a punta con Workload Identity, sin credencial en el pod; el sobre se desenvuelve en tres líneas |
+| **¿alcanza internet?** | **SÍ** — `pypi.org:443` en 37 ms | ⚠️ el puesto llevaba `ore.dev/rol: driver`, y `salida-del-driver` abre 0.0.0.0/0 (menos privadas) porque el driver lee orígenes; y `jobs-p` es privado pero **hay Cloud NAT** (`salida-a-origenes`). El puesto de sesión necesita **su propio rol** (`ore.dev/rol: puesto`) con DNS + metadatos + Google APIs por `private.googleapis.com` (199.36.153.8/30 con zona DNS privada: el «paso 2» de `20-driver.yaml`) y **nada más**. Sin eso, «no alcanza internet» es falso |
+| **la cola** | las dos Workloads admitidas en `cq-victor` sabor `jobs`; un puesto vivo ocupa `cpu 1 · 2 Gi` de la cuota (10 · 36 Gi) mientras viva; `activeDeadlineSeconds` es el tope | Kueue trata un Job que no termina como cualquier otro: la sesión **es** un Job con tope; el TTL de inactividad lo tiene que poner el agente (terminar el proceso), no la cola |
+| PodSecurity | el primer intento avisó `restricted:latest` (runAsNonRoot, seccomp) | la plantilla del puesto lleva `runAsNonRoot: true`, `runAsUser: 65532`, `seccompProfile: RuntimeDefault` |
+
+**Lo que cambia en la decisión tras medir:** (a) el rol `puesto` y su política de red van en W3.1,
+no después; (b) el frío de 110 s obliga a decidir `min 1` en horario o progreso visible — se
+mide el coste de `min 1` (un e2-standard-4) frente a la espera; (c) el TTL de inactividad es del
+agente, y el tope de sesión del Job.
 
 ## Lo que se aparca
 
