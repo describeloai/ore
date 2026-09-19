@@ -1129,10 +1129,16 @@ else
       #   rindio otro, los `48-la-copia-rehacer-*` (0030 W1: un rehacer
       #   pedido a mano, con su instante), y los `49-*` (invocaciones, 0029 F4a I3: solo los
       #   encola `ore-serve`; el nombre lleva la corrida, y el siguiente de
-      #   la misma funcion sustituye al fichero). Lo que si se retira es un catalogo cuya fuente YA tiene
-      #   paquete: ese Job termino, y Flux no debe volver a crearlo.
+      #   la misma funcion sustituye al fichero), los `51-el-puesto-*` (0031:
+      #   la SESION de una persona; vive hasta que `DELETE /puestos` quita el
+      #   fichero — ⛔ medido en victor el 2026-09-19: sin esto, esta pasada
+      #   borraba el puesto recien abierto y Flux se llevaba el Job antes de
+      #   que el nodo arrancara: «the session did not start in 5 minutes»)
+      #   y los `52-la-capa-*` (la capa que un puesto espera). Lo que si se
+      #   retira es un catalogo cuya fuente YA tiene paquete: ese Job termino,
+      #   y Flux no debe volver a crearlo.
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+)?|49-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
