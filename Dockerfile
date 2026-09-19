@@ -288,10 +288,15 @@ WORKDIR /opt/ore
 RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
  && npm ls --depth=0 > /entorno-1.txt \
  && node -e "const d=require('@duckdb/node-api'); console.log('entorno 1 · node', process.version, '· duckdb', d.version())"
+# El SDK al lado del agente (`./ore/index.mjs`, como en `puesto/node/`) y como
+# paquete `ore` para las celdas-módulo (un enlace en node_modules). ⛔ Medido en
+# victor el 2026-09-19: sólo en node_modules, el agente moría al arrancar con
+# ERR_MODULE_NOT_FOUND y `node --check` no lo veía — por eso la comprobación
+# de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
-COPY puesto/node/ore        /opt/ore/node_modules/ore
-RUN node --check /opt/ore/agente.mjs \
- && node -e "import('ore').then(m => console.log('agente y sdk listos ·', Object.keys(m).join(' ')))"
+COPY puesto/node/ore        /opt/ore/ore
+RUN ln -s ../ore /opt/ore/node_modules/ore \
+ && ORE_CELDAS=/tmp/comprobar node /opt/ore/agente.mjs --comprobar
 
 USER 65532:65532
 WORKDIR /trabajo
