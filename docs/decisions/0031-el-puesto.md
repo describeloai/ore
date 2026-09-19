@@ -70,8 +70,13 @@ sabe de pods, tokens ni buckets: importa `ore` y llama al SDK.
   `puesto-jvm:1`, con su `requirements`/lock **dentro de la imagen** (Databricks: entornos 1…5;
   Foundry: `hawk.lock`). Nunca `latest`. Lo que una celda importa hoy importa igual en un año.
 - **Las dependencias se declaran en el árbol** (`pyproject.toml`, `package.json`, `pom.xml` del
-  paquete) y **CI las resuelve y construye una capa** sobre la base: `puesto-python:1+<digest del
-  lock>`. Cambiar una librería es un cambio de código: pasa por commit, PR y checks.
+  paquete) y **la plataforma las resuelve en una capa** sobre la base. ⭐ Medido antes de elegir
+  el cómo (W3.2, `medida-w3-la-capa.py`): la capa **no es una imagen en el registro** sino una
+  **caja de ruedas en el bucket** (`ore/puesto/<capa-digest>/`) que un Job del driver resuelve
+  para el intérprete del entorno 1 y que el puesto instala al arrancar en un `emptyDir` sin
+  alcanzar PyPI (5 s: bajar 1 s + instalar 3 s). Hermética y reproducible igual, sin builder de
+  imágenes ni permisos de registro por inquilino. Cambiar una librería es un cambio de código:
+  pasa por commit, PR y checks; el informe `entorno/python.json` dice qué ruedas ganaron.
 - `pip install` en la celda puede existir como **comodidad sin persistencia** (Snowflake) y sólo
   si la política de red lo abre; nunca es la verdad del entorno.
 - `puesto-python:1` existe desde hoy (`Dockerfile` etapa 6, `cloudbuild.yaml`): los nodos de
@@ -130,7 +135,7 @@ pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los
 |---|---|---|
 | **W3.0** | medir el puesto (`medida-w3-el-puesto.py`) y esta decisión | los números de abajo |
 | **W3.1** ✓ 2026-09-19 | la sesión Python: `puesto-python:1`, el agente (`puesto/python/agente.py`), `POST /puestos` → la cola → Flux, celdas por polling largo, salida tipada; rol `puesto` + `21-el-puesto.yaml` + `72-google-en-privado.sh`; en la consola, Run sobre un `.py` corre en el puesto y `CellListViva` para los notebooks | `el-puesto.sh` 1–5 en CI (el agente de verdad, `over()` sobre una copia ORECOPY1); en victor con rol `puesto`: la copia baja por `private.googleapis.com` en 257 ms y **pypi no contesta**; el agente real en el pod obtiene su token y habla con `ore-serve` |
-| **W3.2** | dependencias del árbol → capa en CI; `pyproject` del paquete | un paquete declara `polars` y la sesión lo importa sin `pip` |
+| **W3.2** ✓ 2026-09-19 | las dependencias del árbol (`[project].dependencies` de `pyproject.toml`, raíz y paquetes) → **la capa**: un Job del driver (`52-la-capa.yaml`) resuelve para el entorno 1 y deja la caja de ruedas en el bucket (`ore/puesto/<capa>/`) y el informe `entorno/python.json` en el árbol; el puesto la instala al arrancar sin internet (`traer-la-capa` → `/capa`); `GET/POST /entorno`; abrir con la capa pendiente la encola y contesta 409 | medido (`medida-w3-la-capa.py`): resolver `polars` 1,8 s + subir 51 MB 1 s; el puesto la baja en 0,9 s y la instala en 3,2 s, `import polars` 160 ms, pypi no contesta; en demo, de punta a punta: el Job resuelve y empuja el informe, el puesto instala 182 MB en 3 s; `el-puesto.sh` 6 |
 | **W3.3** | trabajos desde la sesión: SQL grande y un entrenamiento como Job encolado con sabor | un `count(*)` sobre 200 M de filas vuelve como job con su salida en el bucket |
 | **W3.4** | TS y JVM: `puesto-node:1`, `puesto-jvm:1`; una función TS invocable desde la consola | la función del árbol contesta en la consola con la identidad de la persona |
 | **W3.5** | `Model`: publicar desde la celda, fine-tune como trabajo con sabor `gpu` | un adaptador entrenado en la celda sirve por `Function` |

@@ -136,7 +136,8 @@ spec:
                    --platform manylinux_2_17_x86_64 --platform manylinux_2_28_x86_64 \
                    --platform manylinux_2_34_x86_64 --platform manylinux2014_x86_64 \
                    --dest /trabajo/ruedas -r /trabajo/deps.txt 2>/trabajo/pip.err; then
-                ls /trabajo/ruedas | sort > /trabajo/ruedas/requirements.lock
+                ls /trabajo/ruedas | sort > /trabajo/requirements.lock
+                mv /trabajo/requirements.lock /trabajo/ruedas/requirements.lock
                 MB=$(du -sm /trabajo/ruedas | cut -f1)
                 echo "### $(wc -l < /trabajo/ruedas/requirements.lock) rueda(s) · ${MB} MB"
                 gcloud storage cp -q /trabajo/ruedas/* "gs://$BUCKET/ore/puesto/$DIGEST/"
