@@ -131,6 +131,29 @@ instante para el resto (Foundry).
 imagen, job, error) al panel de resultados que ya existe; `DELETE` cierra. El editor no sabe de
 pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los ve en Data › Jobs.
 
+### 9 · El código, en tres lenguajes, con cuatro verbos (2026-09-19, tras W3.4)
+
+Con la sesión viva en Python, TS y Java, lo que queda es **una sola superficie de código con
+cuatro verbos** —leer, escribir, declarar, correr— y cada verbo con la misma semántica en los
+tres lenguajes. Lo que no sea igual en los tres no entra. La promoción de lo escrito en código a
+objeto de la ontología (una `Function` publicada, un `Model`) viene **después** de que el entorno
+de código sea robusto por sí mismo; no se aborda todavía.
+
+| verbo | hoy | lo que lo hace robusto |
+|---|---|---|
+| **leer** `over("p.v")`, `sql()` | en los tres, sobre las copias del bucket | **tipos consistentes**: hoy Python da pandas, TS objetos JSON, Java `List<Map>`. La verdad común es **Arrow** (la tabla Arrow de cada lenguaje, y de ahí a lo suyo): timestamps, decimales, nulos, enteros grandes y anidados sobreviven idénticos en los tres. Se mide: el mismo Parquet leído por los tres, campo a campo |
+| **escribir** `write("p.salida", tabla)` | no existe | Parquet + sobre `ORECOPY1` al bucket, **con nombre**, y un informe en el árbol para que `over("p.salida")` lo lea desde cualquier lenguaje y sesión. Un dataset derivado es una copia (0027) que produjo código. Idempotente por digest; una escritura sucesora no borra la anterior (0017 §A) |
+| **declarar** `transform(inputs, output)` | sólo la `Function` YAML (0029) | **en el código**, igual en los tres (decorador en Python, función en TS, anotación en Java): lo declarado es lo único que la sesión y el trabajo pueden leer y escribir; el resto, 403. Es el material del que después saldrá el documento |
+| **correr** | la sesión (W3.1–W3.4) | **el trabajo**: un transform de un commit corre como Job de Kueue con la imagen de su entorno y su capa, lee y escribe lo declarado, deja el informe en el árbol y aparece en Data › Jobs. `Run` desde la sesión (bucle rápido) y como Job (el «build») |
+
+Debajo de los cuatro, dos cimientos: **las dependencias en los tres** (`package.json`,
+`pom.xml`/`build.gradle` como ya `pyproject.toml`: W3.4b) y **la rama** (una sesión o un trabajo
+en una rama lee las copias de `main` mientras no tenga las suyas y escribe en la suya: §4).
+
+Cotejo con Foundry: sus transforms son declarar+correr (con Spark debajo, que aquí entra sólo
+cuando un dataset no quepa en un nodo); sus Functions son las de baja latencia; su Ontology es la
+promoción que se deja para luego.
+
 ## Los peldaños de W3
 
 | | qué | acepta |
@@ -140,7 +163,12 @@ pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los
 | **W3.2** ✓ 2026-09-19 | las dependencias del árbol (`[project].dependencies` de `pyproject.toml`, raíz y paquetes) → **la capa**: un Job del driver (`52-la-capa.yaml`) resuelve para el entorno 1 y deja la caja de ruedas en el bucket (`ore/puesto/<capa>/`) y el informe `entorno/python.json` en el árbol; el puesto la instala al arrancar sin internet (`traer-la-capa` → `/capa`); `GET/POST /entorno`; abrir con la capa pendiente la encola y contesta 409 | medido (`medida-w3-la-capa.py`): resolver `polars` 1,8 s + subir 51 MB 1 s; el puesto la baja en 0,9 s y la instala en 3,2 s, `import polars` 160 ms, pypi no contesta; en demo, de punta a punta: el Job resuelve y empuja el informe, el puesto instala 182 MB en 3 s; `el-puesto.sh` 6 |
 | **W3.3** ✓ 2026-09-19 (SQL) | SQL sobre el bucket **en la sesión**: `sql("select … from hr.espanoles")` (DuckDB en el puesto; cada `paquete.vista` tras FROM/JOIN se resuelve por ore-serve y se baja una vez); un `.sql` del árbol o una celda SQL van enteros a `sql()`. **Medido antes** (`medida-w3-el-sql.py`, 2 CPU · 3 GB): 200 M de filas → `count(*)` 5 ms, `group by` con agregados **1,9 s**, `where` 1 s, top-n 0,9 s; 1,4 GB al bucket en 11 s y de vuelta en 9,5 s. ⇒ un `count(*)` sobre 200 M **no necesita un Job**: cabe en la sesión con segundos de margen; el trabajo encolado queda para lo que no quepa en un nodo (disco de 50 GB, o más de un nodo) y para entrenar (W3.5) | `el-puesto.sh` 7 |
 | **W3.4** ✓ 2026-09-19 (TS y JVM) | **Un puesto por persona y entorno** (`puesto-<persona>-<entorno>`: `python`, `node`, `jvm`; `POST /puestos {lenguaje}` elige la imagen; `sql` corre en los tres). `puesto-node:1` (node 24: los tipos de TS los quita Node, sin transpilador; `@duckdb/node-api`; el agente `puesto/node/agente.mjs` evalúa con el REPL de Node: contexto que dura, `await` arriba; una celda con `import`/`export` —un `.ts` del árbol— se escribe y se importa, y sus exports quedan en el contexto) y `puesto-jvm:1` (JDK 21 sobre noble; `puesto/jvm/ore/Agente.java`: JShell **en proceso**, varios snippets por celda, el valor de la expresión como objeto por `guarda()`, una clase con `main` se declara y se llama; DuckDB por JDBC). El SDK en los tres: `over()`, `sql()`, **`persona()`** (quién abrió el puesto). La plantilla del puesto lleva el hueco del entorno y cada imagen su `CMD`. En la consola, un `.ts`/`.js`/`.java` corre en su sesión; una fila por sesión abierta con su «Stop». **Medido antes** (`medida-w3-ts-jvm.py`): abajo | `el-puesto.sh` 8 (`saludo(persona())` → `hola persona:ana` desde un módulo TS con `export`; `over()`, `sql`) y 9 (lo mismo en Java, y una clase con `main`) en CI; en el clúster, las imágenes salen de `cloudbuild.yaml` |
-| **W3.5** | `Model`: publicar desde la celda, fine-tune como trabajo con sabor `gpu` | un adaptador entrenado en la celda sirve por `Function` |
+| **W3.5** · leer | el verbo **leer**, consistente: Arrow como verdad común en los tres SDK; el contrato de tipos ORE ↔ Parquet ↔ lenguaje escrito y medido (`medida-w3-leer.py`: un Parquet con todos los tipos difíciles leído por los tres `over()`/`sql()`, campo a campo, y el caudal a 10 M de filas) | los tres lenguajes leen la misma copia y ven los mismos valores; lo que no sobrevive está dicho, no escondido |
+| **W3.6** · escribir | `write("p.salida", tabla)` en los tres: Parquet + `ORECOPY1` al bucket con nombre, informe en el árbol, `over()` lo lee desde los otros dos | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal |
+| **W3.4b** · dependencias | las capas de Node (`package.json` → `node_modules` en el bucket) y de la JVM (`pom.xml`/`build.gradle` → jars en el bucket, resueltos con Maven en el Job del driver; nunca Gradle del cliente en la malla) | medido como la de Python: resolver, subir, bajar, cargar |
+| **W3.7** · declarar y correr | `transform(inputs, output)` en los tres; el trabajo de código desde un commit (`ore run packages/p/transforms/x.{py,ts,java}`) con entorno + capa; fallback de rama; un `over` no declarado se rechaza | medido: frío del trabajo por entorno, un transform sobre 200 M de filas |
+| **W3.8** · baja latencia | funciones TS y Python residentes (0029 ②): un proceso por función con sus vistas calientes, invocado por `ore-serve` | medido: p50/p99, memoria de las vistas calientes, arranque |
+| **W3.9** · ML in situ | sabor `gpu`, entrenar y fine-tunear como trabajo, pesos al bucket con documento | un adaptador entrenado desde la celda sirve por una función |
 
 ## Lo medido (`pruebas-de-fuego/medida-w3-el-puesto.py`, 2026-09-19, victor)
 
