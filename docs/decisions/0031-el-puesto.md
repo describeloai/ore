@@ -216,6 +216,46 @@ kernel del lenguaje; (c) `persona()` entra en los tres SDK: es lo que hace que �
 la JVM (`pom.xml`/Gradle → jars): hoy las dos imágenes nacen con lo que traen (DuckDB y el SDK)
 y el árbol no declara dependencias para ellas; se mide como se midió la de Python (W3.2).
 
+## Lo medido para W3.5 · leer (`pruebas-de-fuego/medida-w3-leer.py`, 2026-09-19, en local)
+
+Un Parquet con 23 columnas de tipos difíciles (i8…i64 con 2⁵³+1, u64 máximo, NaN/inf/−0,
+decimal(18,4) y decimal(38,10), timestamp sin zona/UTC/Europe·Madrid/ns, date, time, lista,
+struct, map, binario, diccionario, todo-nulo) leído con los **SDK de verdad** por `over()` y
+`sql()` de Python (pandas), Node (`@duckdb/node-api`) y Java (DuckDB JDBC), cotejado campo a
+campo con pyarrow. Se perdona la *forma* (`T` o espacio, el desfase en que se pinta un instante,
+el `toString` de una lista) y no el *valor*.
+
+| | pierde | por qué |
+|---|---|---|
+| **Python · pandas** | `i64`/`u64` **con nulos → float64** (2⁵³+1 llega como …992); NaN → null al pasar a JSON; decimal(38,10) → float; map → lista de pares | pandas clásico no tiene enteros nulables ni decimales: es el `to_pandas()` por defecto. Con `types_mapper=pd.ArrowDtype` los conserva |
+| **Node** | `i64`/`u64` llegan **como cadena** (valor exacto, tipo perdido); decimal(38,10) → número (pierde dígitos); map → `[{key,value}]`; −0 → 0 | el conversor JSON de DuckDB protege el valor con una cadena; un `bigint` de JS lo daría exacto y tipado |
+| **Java** | timestamp **ns → 1970** y time → `00:00` (bugs del mapeo JDBC en `Ore.llano`); decimal(38,10) → double (`llano` lo convierte); NaN/inf → null; binario como `DuckDBBlobResult{…}`; **map → `{}`** | el camino `ResultSet.getObject` + un `llano` escrito a mano: cada tipo es un caso, y cuatro están mal |
+| **los tres** | **decimal(38,10)** no sobrevive en ninguno; **NaN/inf** no viajan en JSON | un decimal exacto sólo viaja como cadena o como tipo decimal; JSON no tiene NaN |
+
+**A escala (10 M filas · 4 columnas · 71 MB):** `over()` entero en **Python 755 ms (13 M
+filas/s)**, **Node 34,6 s (0,3 M/s)**, **Java 15,7 s (0,6 M/s)**; `sql()` con `group by` en
+61–141 ms en los tres (es DuckDB en todos). ⇒ El cuello no es leer Parquet ni DuckDB: es
+**materializar filas como objetos** (`{col: valor}` por fila en JS, `Map` por fila en Java).
+Python va 20–40× más rápido porque pandas es columnar.
+
+**Lo que dice para el contrato (W3.5):**
+
+1. **La verdad es columnar y Arrow**, no «filas de objetos». `over()` devuelve la tabla Arrow
+   del lenguaje —pyarrow (con `to_pandas(types_mapper=pd.ArrowDtype)` o polars como comodidad),
+   Arrow JS (`apache-arrow`: Int64 como `BigInt`, columnas tipadas) y Arrow Java (`VectorSchemaRoot`,
+   que DuckDB JDBC exporta con `arrowExportStream`)— y las filas-objeto son una vista sobre ella,
+   no la forma de entrega. Es lo que hace que 10 M de filas cuesten lo mismo en los tres.
+2. **Un contrato de tipos escrito**: los tipos ORE ↔ Arrow/Parquet ↔ cada lenguaje, con lo que
+   *no* sobrevive dicho: decimal viaja exacto (como decimal donde lo hay, como cadena donde no);
+   un instante con zona es UTC; NaN/inf se dicen como `"NaN"`/`"inf"`; el binario en base64;
+   map como objeto de claves-texto o lista de pares, una de las dos, igual en los tres.
+3. **El JSON de la consola** (la salida `tabla` de los agentes) obedece ese contrato: hoy cada
+   agente tiene su `llano` y los tres discrepan.
+4. Arrow JS y Arrow Java tienen sus **costes** que hay que medir antes de meterlos en la imagen:
+   Arrow JS no tiene decimales de verdad (cuatro `Uint32` sin aritmética) ni ns sin pérdida;
+   Arrow Java pesa ~10 MB de jars y pide `--add-opens=java.base/java.nio`. Se mide con la misma
+   matriz.
+
 ## Lo que se aparca
 
 - El motor distribuido para lo masivo (Ray/Spark sobre la cola): el contrato (Parquet en el
