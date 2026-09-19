@@ -1,6 +1,6 @@
 # 0031 · El puesto
 
-**Estado:** borrador medido (escrito el 2026-09-19 tras el estado del arte; la medida al pie) ·
+**Estado:** propuesto (escrito y medido el 2026-09-19; W3.1 hecho) ·
 **Fecha:** 2026-09-19 · **Decide:** que W3 —«la sesión viva» de [`0030`](0030-el-arbol-en-el-editor.md)—
 no es un kernel Python en un pod sino **el sustrato de ejecución** del que cuelga todo lo que no
 es YAML: celdas Python y notebooks, funciones TypeScript y Java, SQL sobre datasets grandes,
@@ -129,7 +129,7 @@ pods. Los trabajos van por la cola como hoy (Flux rinde el Job) y la consola los
 | | qué | acepta |
 |---|---|---|
 | **W3.0** | medir el puesto (`medida-w3-el-puesto.py`) y esta decisión | los números de abajo |
-| **W3.1** | la sesión Python: `puesto-python:1`, el agente, `POST /puestos`, una celda → salida al panel; TTL y tope | una celda lee `over("…")` como DataFrame en la consola y no alcanza internet |
+| **W3.1** ✓ 2026-09-19 | la sesión Python: `puesto-python:1`, el agente (`puesto/python/agente.py`), `POST /puestos` → la cola → Flux, celdas por polling largo, salida tipada; rol `puesto` + `21-el-puesto.yaml` + `72-google-en-privado.sh`; en la consola, Run sobre un `.py` corre en el puesto y `CellListViva` para los notebooks | `el-puesto.sh` 1–5 en CI (el agente de verdad, `over()` sobre una copia ORECOPY1); en victor con rol `puesto`: la copia baja por `private.googleapis.com` en 257 ms y **pypi no contesta**; el agente real en el pod obtiene su token y habla con `ore-serve` |
 | **W3.2** | dependencias del árbol → capa en CI; `pyproject` del paquete | un paquete declara `polars` y la sesión lo importa sin `pip` |
 | **W3.3** | trabajos desde la sesión: SQL grande y un entrenamiento como Job encolado con sabor | un `count(*)` sobre 200 M de filas vuelve como job con su salida en el bucket |
 | **W3.4** | TS y JVM: `puesto-node:1`, `puesto-jvm:1`; una función TS invocable desde la consola | la función del árbol contesta en la consola con la identidad de la persona |
@@ -149,6 +149,10 @@ un Job de Kueue en `cola` que se queda vivo, identidad `driver`, 1 CPU · 2 Gi:
 | **¿alcanza internet?** | **SÍ** — `pypi.org:443` en 37 ms | ⚠️ el puesto llevaba `ore.dev/rol: driver`, y `salida-del-driver` abre 0.0.0.0/0 (menos privadas) porque el driver lee orígenes; y `jobs-p` es privado pero **hay Cloud NAT** (`salida-a-origenes`). El puesto de sesión necesita **su propio rol** (`ore.dev/rol: puesto`) con DNS + metadatos + Google APIs por `private.googleapis.com` (199.36.153.8/30 con zona DNS privada: el «paso 2» de `20-driver.yaml`) y **nada más**. Sin eso, «no alcanza internet» es falso |
 | **la cola** | las dos Workloads admitidas en `cq-victor` sabor `jobs`; un puesto vivo ocupa `cpu 1 · 2 Gi` de la cuota (10 · 36 Gi) mientras viva; `activeDeadlineSeconds` es el tope | Kueue trata un Job que no termina como cualquier otro: la sesión **es** un Job con tope; el TTL de inactividad lo tiene que poner el agente (terminar el proceso), no la cola |
 | PodSecurity | el primer intento avisó `restricted:latest` (runAsNonRoot, seccomp) | la plantilla del puesto lleva `runAsNonRoot: true`, `runAsUser: 65532`, `seccompProfile: RuntimeDefault` |
+
+**Con el rol `puesto`** (tras `21-el-puesto.yaml` y la zona `googleapis-en-privado`, mismo día):
+frío **85 s** (nodo 56 s · pull de la imagen 18 s), caliente **3 s**; la copia **257 ms** por
+`private.googleapis.com`; **`pypi.org:443` no contesta** (timeout). Lo que la política promete, medido.
 
 **Lo que cambia en la decisión tras medir:** (a) el rol `puesto` y su política de red van en W3.1,
 no después; (b) el frío de 110 s obliga a decidir `min 1` en horario o progreso visible — se
