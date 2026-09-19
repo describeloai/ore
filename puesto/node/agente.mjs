@@ -226,4 +226,15 @@ async function main() {
   }
 }
 
+// `--comprobar` (la imagen, al construirse): importa, crea el kernel y corre una
+// celda. Lo que `node --check` no ve —un import que no resuelve— se ve aquí.
+if (process.argv.includes("--comprobar")) {
+  const k = new Kernel();
+  const r = await k.correr("const xs: number[] = [1, 2]; xs.length * 21", "typescript");
+  if (r.tipo !== "texto" || r.texto !== "42") { log(`el kernel no contesta 42: ${JSON.stringify(r)}`); process.exit(1); }
+  const m = await import("ore");
+  log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")}`);
+  k.repl.close();
+  process.exit(0);
+}
 process.exitCode = await main();
