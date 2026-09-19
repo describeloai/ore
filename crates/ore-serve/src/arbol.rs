@@ -560,7 +560,7 @@ impl Servidor {
             &[
                 "log",
                 "--follow",
-                "--format=%H%x1f%h%x1f%an%x1f%cn%x1f%aI%x1f%s",
+                "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%cn%x1f%aI%x1f%s",
                 "--",
                 ruta,
             ],
@@ -579,6 +579,15 @@ impl Servidor {
                     ("hash", Json::s(p.next().unwrap_or_default())),
                     ("corto", Json::s(p.next().unwrap_or_default())),
                     ("autor", Json::s(p.next().unwrap_or_default())),
+                    // El sujeto, que va en el correo del autor (`<sub>@sujeto.invalid`).
+                    (
+                        "sujeto",
+                        Json::s(
+                            p.next()
+                                .unwrap_or_default()
+                                .trim_end_matches("@sujeto.invalid"),
+                        ),
+                    ),
                     ("committer", Json::s(p.next().unwrap_or_default())),
                     ("cuando", Json::s(p.next().unwrap_or_default())),
                     ("mensaje", Json::s(p.next().unwrap_or_default())),

@@ -218,13 +218,19 @@ impl Forja {
         for (k, v) in self.entorno() {
             c.env(k, v);
         }
-        c.env("GIT_AUTHOR_NAME", &sujeto.persona)
-            .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
-            .env(
-                "GIT_COMMITTER_NAME",
-                sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
-            )
-            .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+        // ⭐ El autor lleva el NOMBRE de la persona cuando el emisor lo afirma
+        //   (claim `name`; 0030 W2, *Version history*), y el sujeto —la verdad—
+        //   va en el correo: `<sub>@sujeto.invalid`. Sin nombre, el sujeto.
+        c.env(
+            "GIT_AUTHOR_NAME",
+            sujeto.nombre.as_deref().unwrap_or(&sujeto.persona),
+        )
+        .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
+        .env(
+            "GIT_COMMITTER_NAME",
+            sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
+        )
+        .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
         let s = c
             .args(["merge", "--no-ff", "--no-edit", "-m", mensaje, "FETCH_HEAD"])
             .output()
@@ -282,13 +288,19 @@ impl Forja {
         for (k, v) in self.entorno() {
             c.env(k, v);
         }
-        c.env("GIT_AUTHOR_NAME", &sujeto.persona)
-            .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
-            .env(
-                "GIT_COMMITTER_NAME",
-                sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
-            )
-            .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+        // ⭐ El autor lleva el NOMBRE de la persona cuando el emisor lo afirma
+        //   (claim `name`; 0030 W2, *Version history*), y el sujeto —la verdad—
+        //   va en el correo: `<sub>@sujeto.invalid`. Sin nombre, el sujeto.
+        c.env(
+            "GIT_AUTHOR_NAME",
+            sujeto.nombre.as_deref().unwrap_or(&sujeto.persona),
+        )
+        .env("GIT_AUTHOR_EMAIL", correo(&sujeto.persona))
+        .env(
+            "GIT_COMMITTER_NAME",
+            sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
+        )
+        .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
         let s = c
             .args(["commit", "--quiet", "-m", mensaje])
             .output()
