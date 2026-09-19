@@ -260,5 +260,11 @@ RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
  && pip freeze > /entorno-1.txt \
  && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
 
+# El agente y el SDK (`puesto/python/`): lo unico nuestro en la imagen. `ore`
+# se importa desde la celda; el agente lo pone en el `sys.path` por estar al lado.
+COPY puesto/python/agente.py /opt/ore/agente.py
+COPY puesto/python/ore       /opt/ore/ore
+RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
+
 USER 65532:65532
 WORKDIR /trabajo

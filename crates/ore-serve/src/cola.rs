@@ -242,9 +242,71 @@ pub fn rendir_invocacion(plantilla: &str, i: &Invocacion) -> Result<(String, Str
     Ok((format!("49-la-invocacion-{obj}.yaml"), t))
 }
 
+// ── El puesto (0031 W3.1): la sesión viva de una persona ─────────────────────
+pub const PLANTILLA_PUESTO: &str = "plantilla-puesto.txt";
+const PUESTO_MODELO: &str = "puesto-modelo";
+const RAMA_MODELO: &str = "rama-modelo";
+
+/// Rinde el Job del puesto de `id` (`puesto-<persona>`), en `rama` (vacía =
+/// `main`). Devuelve `(fichero, texto, nombre del Job)`. Un mismo puesto en la
+/// misma rama es el mismo fichero: abrirlo dos veces no crea dos Jobs.
+pub fn rendir_puesto(
+    plantilla: &str,
+    id: &str,
+    rama: &str,
+) -> Result<(String, String, String), String> {
+    if !plantilla.contains(&format!("puesto-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_PUESTO}` no trae el hueco `puesto-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    for (de, a) in [(PUESTO_MODELO, id), (RAMA_MODELO, rama)] {
+        if !plantilla.contains(&format!("value: \"{de}\"")) {
+            return Err(format!(
+                "`{PLANTILLA_PUESTO}` no trae el hueco `value: \"{de}\"`: `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+            ));
+        }
+        if a.contains('"') || a.contains('\n') {
+            return Err(format!("`{a}` no puede ir en un valor del Job"));
+        }
+    }
+    let t = plantilla
+        .replace(
+            &format!("value: \"{PUESTO_MODELO}\""),
+            &format!("value: \"{id}\""),
+        )
+        .replace(
+            &format!("value: \"{RAMA_MODELO}\""),
+            &format!("value: \"{rama}\""),
+        );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let quien = id.strip_prefix("puesto-").unwrap_or(id);
+    let job = format!("puesto-{quien}-{h}");
+    let t = t.replace(&format!("puesto-{RESUMEN_MODELO}"), &job);
+    Ok((format!("51-el-puesto-{quien}.yaml"), t, job))
+}
+
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    #[test]
+    fn el_puesto_lleva_id_y_rama_y_el_mismo_puesto_es_el_mismo_fichero() {
+        let p = "name: puesto-00000000
+env:
+  - { name: PUESTO, value: \"puesto-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+";
+        let (f, t, job) = rendir_puesto(p, "puesto-ana", "ana/x").unwrap();
+        assert_eq!(f, "51-el-puesto-ana.yaml");
+        assert!(job.starts_with("puesto-ana-") && job.len() == "puesto-ana-".len() + 8);
+        assert!(t.contains("value: \"puesto-ana\"") && t.contains("value: \"ana/x\""));
+        assert!(t.contains(&format!("name: {job}")));
+        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "").unwrap();
+        assert!(t2.contains("value: \"\""));
+        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "").is_err());
+    }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de
     /// coincidir, el aprovisionador y el alta encolarían Jobs con nombres

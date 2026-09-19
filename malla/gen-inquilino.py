@@ -74,6 +74,8 @@ MALLA = pathlib.Path(__file__).resolve().parent
 PLANTILLAS = [
     "11-el-inquilino.yaml",
     "20-driver.yaml",
+    # ⭐ La red del puesto (0031 W3.1): la salida de una sesión, con nombre.
+    "21-el-puesto.yaml",
     "40-ore-serve.yaml",
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
@@ -230,6 +232,11 @@ VISTAS_MODELO = "olist.customers"
 #   funcion, rendida para el inquilino.
 POR_INVOCACION = "49-la-invocacion.yaml"
 PLANTILLA_INVOCACION = "plantilla-invocacion.txt"
+
+# ⭐ El puesto (0031 W3.1): UNO por persona, lo encola `ore-serve` con el id y la
+#   rama. Aqui solo viaja su plantilla, rendida para el inquilino.
+POR_PUESTO = "51-el-puesto.yaml"
+PLANTILLA_PUESTO = "plantilla-puesto.txt"
 
 MODELO = "demo"
 
@@ -416,6 +423,11 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    puesto = (MALLA / POR_PUESTO).read_text(encoding="utf-8")
+    salida[PLANTILLA_PUESTO] = (puesto
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -480,6 +492,7 @@ def comprobar_plantillas():
                           if f.startswith("44-") or f == PLANTILLA_COLA
                           else POR_COPIAS if f == POR_COPIAS or f == PLANTILLA_COPIA
                           else POR_INVOCACION if f == PLANTILLA_INVOCACION
+                          else POR_PUESTO if f == PLANTILLA_PUESTO
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -635,7 +648,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -707,7 +720,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -756,7 +769,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):

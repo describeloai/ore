@@ -108,6 +108,8 @@ pub struct Servidor {
     /// La API de la forja del árbol (0030 W2): ramas y propuestas. `None` ⇒
     /// las rutas de ramas y propuestas contestan 422 y el árbol es sólo `main`.
     pub forja_api: Option<crate::forja::Api>,
+    /// Los puestos vivos (0031 W3.1): todo el estado de las sesiones, en memoria.
+    pub puestos: crate::puestos::Puestos,
 }
 
 impl Servidor {
@@ -356,6 +358,25 @@ impl Servidor {
             ("POST", ["ramas", resto @ .., "fusionar"]) if !resto.is_empty() => {
                 self.fusionar_en_rama(sujeto, &resto.join("/"), &p.cuerpo)
             }
+            // ── 0031 W3.1 · el puesto: la sesión viva (`puestos.rs`) ──────
+            // La persona abre, manda celdas y espera salidas; el agente del
+            // pod pide trabajo, entrega salidas y resuelve datos. Sin árbol
+            // salvo `datos`, que lee el informe de la copia en la rama.
+            ("GET", ["puestos"]) => self.puestos_de(sujeto),
+            ("POST", ["puestos"]) => self.abrir_puesto(sujeto, &p.cuerpo),
+            ("GET", ["puestos", id]) => self.puesto(sujeto, id),
+            ("DELETE", ["puestos", id]) => self.cerrar_puesto(sujeto, id),
+            ("POST", ["puestos", id, "ejecutar"]) => self.ejecutar_en_puesto(sujeto, id, &p.cuerpo),
+            ("GET", ["puestos", id, "celdas", n]) => match n.parse::<u64>() {
+                Ok(n) => self.celda_del_puesto(sujeto, id, n),
+                Err(_) => Respuesta::error(422, "la celda es un número"),
+            },
+            ("GET", ["puestos", id, "pendiente"]) => self.pendiente_del_puesto(sujeto, id),
+            ("POST", ["puestos", id, "celdas", n, "salida"]) => match n.parse::<u64>() {
+                Ok(n) => self.salida_del_puesto(sujeto, id, n, &p.cuerpo),
+                Err(_) => Respuesta::error(422, "la celda es un número"),
+            },
+            ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
             ("GET", ["propuestas"]) => self.propuestas(),
             ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
             ("GET", ["propuestas", n]) => match n.parse::<u64>() {
@@ -1952,6 +1973,15 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/ramas", con_identidad),
         ("POST", "/ramas", con_identidad),
         ("DELETE", "/ramas/{nombre}", con_identidad),
+        ("GET", "/puestos", con_identidad),
+        ("POST", "/puestos", con_identidad),
+        ("GET", "/puestos/{id}", con_identidad),
+        ("DELETE", "/puestos/{id}", con_identidad),
+        ("POST", "/puestos/{id}/ejecutar", con_identidad),
+        ("GET", "/puestos/{id}/celdas/{n}", con_identidad),
+        ("GET", "/puestos/{id}/pendiente", con_identidad),
+        ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),
+        ("GET", "/puestos/{id}/datos/{vista}", con_identidad),
         ("GET", "/propuestas", con_identidad),
         ("POST", "/propuestas", con_identidad),
         ("GET", "/propuestas/{n}", con_identidad),

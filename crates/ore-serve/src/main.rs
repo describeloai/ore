@@ -50,6 +50,7 @@ mod mando;
 mod modelos;
 mod preguntar;
 mod propuestas;
+mod puestos;
 mod rutas;
 
 use ore_entrada::{http, identidad};
@@ -338,6 +339,7 @@ fn main() -> ExitCode {
         }),
         perfiles: o.perfiles,
         forja_api,
+        puestos: puestos::Puestos::default(),
     };
 
     match http::servir(escucha, move |p| servidor.atender(p)) {

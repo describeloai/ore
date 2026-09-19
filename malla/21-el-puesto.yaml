@@ -1,0 +1,53 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA RED DEL PUESTO (0031 W3.1) — lo que una sesión alcanza, y nada más
+#
+# El puesto (`51-el-puesto.yaml`) lleva `ore.dev/rol: puesto`, y esta es su
+# única salida. Se escribe aparte de `20-driver.yaml` a propósito: el driver
+# lee ORÍGENES y por eso su regla abre el mundo (paso 1, «más flojo de lo que
+# queremos»); una sesión no lee ningún origen —lee LA COPIA— y no tiene por qué
+# alcanzar nada que no esté aquí con nombre.
+#
+# Medido el 2026-09-19 antes de escribirlo (`medida-w3-el-puesto.py`): con el
+# rol del driver, `pypi.org:443` contestaba en 37 ms desde dentro del pod. Con
+# este rol la misma prueba tiene que decir «no».
+#
+# ── Lo que alcanza ─────────────────────────────────────────────────────────
+#   · el DNS del clúster (kube-system:53), que `deny-all` ya concedía a todos;
+#   · el servidor de metadatos (169.254.169.254:80): el token de Workload
+#     Identity con el que baja la copia sale de ahí;
+#   · Google por `private.googleapis.com` (199.36.153.8/30:443): el bucket de
+#     copias. ⚠️ Exige la zona DNS privada de `72-google-en-privado.sh`, que
+#     resuelve `*.googleapis.com` a esas cuatro direcciones para toda la VPC; sin
+#     ella `storage.googleapis.com` resuelve a IPs públicas y esta regla las
+#     TIRA (una NetworkPolicy no rechaza: el síntoma es un timeout);
+#   · `ore-serve` (:8080) y el emisor: por `salida-al-control` y
+#     `salida-al-emisor` de `11-el-inquilino.yaml`, que ya seleccionan a todos.
+#
+# ── Lo que NO alcanza, a propósito ─────────────────────────────────────────
+#   internet (`pip install`, un origen, un webhook), la forja, el cofre, los
+#   modelos, otros pods de la celda. Una celda Python que quiera una librería
+#   la declara en el árbol y CI la resuelve (0031 §3); una que quiera un
+#   origen no existe: lee la copia.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-del-puesto
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: puesto
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: { cidr: 169.254.169.254/32 }
+      ports: [{protocol: TCP, port: 80}]
+    - to:
+        - ipBlock: { cidr: 199.36.153.8/30 }
+      ports: [{protocol: TCP, port: 443}]

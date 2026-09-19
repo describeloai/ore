@@ -1,0 +1,122 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL PUESTO — la sesión viva de una persona en su celda (0031 W3.1)
+#
+# ⭐⭐ Es la misma figura que `48-la-copia.yaml` y `49-la-invocacion.yaml` —un
+#   Job de Kueue en el pool privado, con la identidad del pod y el testigo
+#   traído por un `initContainer`— y cambia la VIDA: este Job **no termina**.
+#   Dentro corre el agente (`puesto/python/agente.py`) sobre `puesto-python:1`
+#   (el entorno 1: python 3.12, pandas, pyarrow, duckdb, GCS): pide celdas a
+#   `ore-serve` por polling largo, las ejecuta en un espacio que dura toda la
+#   sesión, y devuelve la salida tipada. La consola nunca habla con este pod.
+#
+# ── Quién lo rinde y quién lo retira ────────────────────────────────────────
+#
+#   `ore-serve` escribe `51-el-puesto-<persona>.yaml` en la cola del inquilino
+#   (rendido de `plantilla-puesto.txt`, ⚠️ esta plantilla) al `POST /puestos`, y
+#   Flux lo aplica. `DELETE /puestos/{id}` quita el fichero y `prune: true` se
+#   lleva el Job. Uno por persona: el fichero se llama por ella.
+#
+# ── Cuándo muere ───────────────────────────────────────────────────────────
+#
+#   · sin celdas durante `TTL` segundos: el agente se va (el TTL de inactividad
+#     es del agente, no de la cola — medido en 0031);
+#   · `activeDeadlineSeconds`: el tope de sesión, lo pone el Job;
+#   · `DELETE /puestos/{id}`, o un relevo de `ore-serve` (el agente recibe 410
+#     y se cierra: el estado de la sesión vive en memoria del servidor).
+#
+# ── ⛔ La red: `ore.dev/rol: puesto`, y NO `driver` ─────────────────────────
+#
+#   Medido el 2026-09-19 (`medida-w3-el-puesto.py`): un puesto con el rol del
+#   driver ALCANZA INTERNET —`salida-del-driver` abre 0.0.0.0/0 porque el driver
+#   lee orígenes, y `jobs-p` es privado pero hay Cloud NAT—. Este rol tiene su
+#   política (`21-el-puesto.yaml`): DNS, metadatos, `ore-serve`, el emisor y
+#   Google por `private.googleapis.com`. Nada más.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # El nombre lleva el resumen del contenido, como la copia y la invocación:
+  # `puesto-<persona>-<8 hex>`. El renderizador lo pone.
+  name: puesto-00000000
+  namespace: t-demo
+  labels:
+    # ⛔ La cola de Kueue, y no es opcional: es lo que hace que este pod aterrice
+    #   en el pool privado y cuente contra la cuota del inquilino.
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+    ore.dev/rol: puesto
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  # El tope de sesión (0031: 24 h en Foundry; aquí 8 h mientras se mide).
+  activeDeadlineSeconds: 28800
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: puesto
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      # La cuenta del driver: Workload Identity con lectura del bucket de copias
+      # y de los secretos del agente. La RED no va por la cuenta sino por el rol.
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: trabajo
+          emptyDir: {}
+      initContainers:
+        # El testigo del agente de la celda: con él el agente pide tokens al
+        # emisor (client credentials) y habla con `ore-serve` como agente.
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              for p in cliente secreto; do
+                gcloud secrets versions access latest \
+                  --secret=t-demo-agente-$p --out-file=/puesto/agente-$p
+                chmod 0444 /puesto/agente-$p
+              done
+              echo "agente puesto · $(cat /puesto/agente-cliente)"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: puesto
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/ore/agente.py"]
+          env:
+            - { name: PUESTO, value: "puesto-modelo" }
+            - { name: RAMA, value: "rama-modelo" }
+            - { name: TTL, value: "1800" }
+            - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
+            - { name: ORE_ALMACEN, value: "gcs" }
+            - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix" }
+            - { name: PUESTO_DIR, value: /puesto }
+            - { name: HOME, value: /tmp }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          workingDir: /trabajo
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits:   {cpu: "2", memory: 4Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }

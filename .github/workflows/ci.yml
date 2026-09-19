@@ -180,6 +180,15 @@ jobs:
       - name: y una propuesta la revisa otra persona antes de llegar a main
         run: bash pruebas-de-fuego/la-propuesta.sh
 
+      # El puesto (0031 W3.1): la sesion viva de una persona, con el agente de
+      # verdad (`puesto/python/agente.py`) al lado y una copia ORECOPY1 en un
+      # directorio. pyarrow y pandas son para escribir esa copia y para que
+      # `over()` la lea; en el cluster van dentro de `puesto-python:1`.
+      - name: y una sesion Python lee la copia con over()
+        run: |
+          python3 -m pip install --quiet pyarrow pandas
+          bash pruebas-de-fuego/el-puesto.sh
+
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no
       # fijan las pruebas del crate es el CABLEADO: que el sujeto sale de la
       # cabecera `Authorization` y que un token bien firmado del MISMO realm
