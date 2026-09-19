@@ -12,7 +12,8 @@
 #                                       NO lo tiene (404) y la rama si (200); una rama que no
 #                                       existe → 404; el gate «no empeora» sigue en la rama (422)
 #   3b POST /arbol/commit               varios ficheros en UN commit con mensaje, o en seco lo que
-#                                       seria: A/M/D y +/- de git, el gate «no empeora», 0 cambiados
+#                                       seria: A/M/D y +/- de git, el gate «no empeora» (422
+#                                       forzable), forzar: true commitea igual y lo dice, 0 cambiados
 #                                       al repetir, retirar sale como D
 #   4  POST /propuestas                  201 #1 con autor persona:ana · GET /propuestas la lista
 #                                       abierta · 422 sin rama · 422 desde main
@@ -229,12 +230,24 @@ import json, sys
 json.dump({"seco": False, "mensaje": "rompo", "ficheros": [{"ruta": "packages/hr/views/rota.yaml", "texto": sys.argv[2]}]}, open(sys.argv[1], 'w'))
 EOF
 [ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "422" ] || falla "3b · el gate no dio 422: $(cuerpo)"
-tiene "len(d['diagnosticos'])>=1 and d['cambios'][0]['estado']=='A'" || falla "3b · el 422 no trae diagnosticos y cambios: $(cuerpo)"
+tiene "len(d['diagnosticos'])>=1 and d['cambios'][0]['estado']=='A' and d['forzable'] is True" || falla "3b · el 422 no trae diagnosticos, cambios y forzable: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/views/rota.yaml "$ANA" "" ana/vistas-hr)" = "404" ] || falla "3b · el gate escribio igual"
+# ⭐ el arbol es de quien lo escribe: forzar: true commitea lo roto igual, y lo dice
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["forzar"]=True; json.dump(d, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "201" ] || falla "3b · forzar no commiteo: $(cuerpo)"
+tiene "d['forzado'] is True and d['nuevos']>=1 and d['cambiados']==1 and len(d['diagnosticos'])>=1 and len(d['commit'])>=7" || falla "3b · la respuesta del commit forzado: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/rota.yaml "$ANA" "" ana/vistas-hr)" = "200" ] || falla "3b · el commit forzado no escribio"
+git --git-dir="$BARE" log -1 --format='%an · %s' ana/vistas-hr | grep -q "persona:ana · rompo" || falla "3b · el commit forzado no es de ana con su mensaje"
+# en seco tras forzar: el arbol ya tiene lo roto, 0 cambiados y ya no empeora
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["seco"]=True; json.dump(d, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambiados']==0" || falla "3b · en seco tras forzar: $(cuerpo)"
+# y se arregla retirandolo: el arbol mejora, commit normal
+"$PY" -c 'import json,sys; json.dump({"seco": False, "mensaje": "fuera lo roto", "retirar": ["packages/hr/views/rota.yaml"]}, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "201" ] && tiene "d['forzado'] is False and d['cambios']==[{'ruta':'packages/hr/views/rota.yaml','estado':'D','mas':0,'menos':9}] and d['diagnosticos']==[]" || falla "3b · retirar lo roto: $(cuerpo)"
 # retirar en el mismo commit
 "$PY" -c 'import json,sys; json.dump({"seco": True, "retirar": ["packages/hr/views/portugueses.yaml"]}, open(sys.argv[1],"w"))' "$TMP/commit.json"
 [ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambios']==[{'ruta':'packages/hr/views/portugueses.yaml','estado':'D','mas':0,'menos':9}]" || falla "3b · retirar en seco: $(cuerpo)"
-dice "3b · POST /arbol/commit: en seco, A/M con +/- de git y nada escrito · sin mensaje 422 · con mensaje, UN commit de la persona con los dos ficheros en la rama · repetido, 0 cambiados · el gate 422 con diagnosticos y cambios · retirar sale como D"
+dice "3b · POST /arbol/commit: en seco, A/M con +/- de git y nada escrito · sin mensaje 422 · con mensaje, UN commit de la persona con los dos ficheros en la rama · repetido, 0 cambiados · el gate 422 forzable con diagnosticos y cambios · forzar: true commitea lo roto y lo dice (forzado, nuevos) · retirar lo roto, commit normal · retirar sale como D"
 
 # ── 4 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas "$ANA" '{"titulo":"x"}')" = "422" ] || falla "4 · sin rama no dio 422: $(cuerpo)"

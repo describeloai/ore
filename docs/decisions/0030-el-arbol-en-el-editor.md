@@ -156,7 +156,13 @@ siempre (`la-propuesta` 3b). En la consola, «sin commitear» son los borradores
 **no hay Save** (2026-09-19): guardar un fichero ES commitearlo — fuera el botón, Ctrl+S y el
 `PUT /arbol/<ruta>` desde el workspace; sólo *Commit* escribe, y con ello nace la versión. *Run*
 corre lo commiteado (el corredor lee el árbol) y con cambios pendientes se deshabilita y lo dice.
-`PUT /arbol/<ruta>` sigue en `ore-serve` para las pruebas y los clientes por fichero. **Version history** no
+`PUT /arbol/<ruta>` sigue en `ore-serve` para las pruebas y los clientes por fichero. Y **el árbol es de
+quien lo escribe** (2026-09-19): el gate «no empeora» avisa pero no manda — el 422 de `POST /arbol/commit`
+dice `forzable: true` y repetir con `forzar: true` commitea igual, en cualquier rama y en `main` también,
+contestando `forzado: true` y `nuevos` (los diagnósticos que entran con él); la consola enseña los
+diagnósticos nuevos en el panel y ofrece *Commit anyway* (`la-propuesta` 3b). Git deja commitear lo que
+sea; lo que no compila lo dicen los marcadores, *Run* y los checks de una propuesta, no una negativa a
+escribir. Fusionar una propuesta sí sigue exigiendo que la rama compile. **Version history** no
 necesitó inventar nada (`medida-w2-historial.py`, victor: 12 versiones en `ontology.config.yaml`,
 `git log --follow` <10 ms tras el clon): `GET /arbol/historia/{ruta}` (persona, committer, mensaje
 por commit) y `GET /arbol/version/{hash}/{ruta}` (el texto de entonces, byte a byte); restaurar

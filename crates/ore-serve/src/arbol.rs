@@ -332,7 +332,7 @@ impl Servidor {
     /// en el clon, `git status --porcelain` y `git diff --cached --numstat`.
     ///
     /// ```text
-    /// {"seco": true|false, "mensaje": "…",
+    /// {"seco": true|false, "mensaje": "…", "forzar": true|false,
     ///  "ficheros": [{"ruta": "packages/hr/views/x.yaml", "texto": "…"}],
     ///  "retirar": ["packages/hr/views/y.yaml"]}
     /// ```
@@ -342,7 +342,14 @@ impl Servidor {
     ///   diagnósticos que el árbol tendría. Es lo que el panel enseña al abrirse;
     /// - `seco: false` con `mensaje`: el mismo gate que un `PUT` —el árbol no
     ///   empeora, o 422 con los diagnósticos nuevos y nada escrito— y entonces
-    ///   un commit del sujeto con ese mensaje, en la rama de `X-Ore-Rama`.
+    ///   un commit del sujeto con ese mensaje, en la rama de `X-Ore-Rama`;
+    /// - ⭐ `forzar: true` (2026-09-19): **el árbol es de quien lo escribe**. El
+    ///   gate avisa (el 422 de arriba, con los diagnósticos nuevos) pero no
+    ///   manda: con `forzar` el commit se hace igual, en cualquier rama —`main`
+    ///   también—, y la respuesta lo dice: `forzado: true` y `nuevos` (cuántos
+    ///   diagnósticos que antes no estaban entran con él). Git deja commitear lo
+    ///   que sea; lo que no compila lo dicen los diagnósticos, *Run* y los
+    ///   checks de una propuesta, no una negativa a escribir.
     ///
     /// `If-Match` vale como en el `PUT`: 409 si el árbol se movió.
     pub(crate) fn commit_del_arbol(
@@ -364,6 +371,10 @@ impl Servidor {
             .and_then(|(_, v)| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let forzar = n
+            .get("forzar")
+            .and_then(|(_, v)| v.as_str())
+            .is_some_and(|s| s == "true");
         if !seco && mensaje.is_none() {
             return Respuesta::error(
                 422,
@@ -496,24 +507,36 @@ impl Servidor {
             .iter()
             .filter(|c| matches!(c, Json::Obj(m) if m.get("estado") != Some(&Json::s(""))))
             .count();
-        // ── El gate de siempre: el árbol no empeora, o nada se escribe ──
+        // ── El gate de siempre: el árbol no empeora, o nada se escribe… ──
+        //    …salvo que la persona lo fuerce: entonces se escribe y se dice.
         let que = if cambiados == 1 {
             "1 fichero".to_string()
         } else {
             format!("{cambiados} ficheros")
         };
+        let mut nuevos = 0;
         if let Err(mut r) = self.empeora(raiz, &antes, &que) {
-            if let Json::Obj(m) = &mut r.cuerpo
-                && let Some(Json::Arr(ds)) = m.get("diagnosticos").cloned()
-            {
-                m.insert(
-                    "diagnosticos".into(),
-                    Json::Arr(ds.iter().map(con_posicion).collect()),
-                );
-                m.insert("cambios".into(), Json::Arr(cambios));
+            let ds = match &r.cuerpo {
+                Json::Obj(m) => match m.get("diagnosticos") {
+                    Some(Json::Arr(ds)) => ds.clone(),
+                    _ => vec![],
+                },
+                _ => vec![],
+            };
+            if !forzar || seco {
+                if let Json::Obj(m) = &mut r.cuerpo {
+                    m.insert(
+                        "diagnosticos".into(),
+                        Json::Arr(ds.iter().map(con_posicion).collect()),
+                    );
+                    m.insert("cambios".into(), Json::Arr(cambios));
+                    // Que quien lee sepa que puede: el árbol es suyo.
+                    m.insert("forzable".into(), Json::Bool(!seco));
+                }
+                // En seco el clon se tira; con commit, `escribiendo` no publica un 422.
+                return r;
             }
-            // En seco el clon se tira; con commit, `escribiendo` no publica un 422.
-            return r;
+            nuevos = ds.len();
         }
         let despues = self.diagnosticos_de(raiz).unwrap_or_default();
         let ficha = Json::obj([
@@ -525,6 +548,8 @@ impl Servidor {
                 Json::Arr(despues.iter().map(con_posicion).collect()),
             ),
             ("mensaje", Json::s(mensaje.clone().unwrap_or_default())),
+            ("forzado", Json::Bool(nuevos > 0)),
+            ("nuevos", Json::Int(nuevos as i64)),
         ]);
         if seco {
             // Lo escrito se queda en el clon, que se tira: `leyendo` no publica.
