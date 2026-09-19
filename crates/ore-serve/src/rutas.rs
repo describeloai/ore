@@ -307,6 +307,22 @@ impl Servidor {
                 let ruta = ruta.join("/");
                 self.leyendo_en(rama, move |r| arbol::leer(r, &ruta))
             }
+            // ⭐ Varios ficheros en UN commit con mensaje (0030 W2), o en seco
+            //   lo que ese commit sería: lo que el panel de Commit enseña.
+            ("POST", ["arbol", "commit"]) => {
+                let cuerpo = p.cuerpo.clone();
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                let (seco, mensaje) = arbol::intencion_del_commit(&cuerpo);
+                if seco {
+                    self.leyendo_en(rama, |r| {
+                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref())
+                    })
+                } else {
+                    self.escribiendo_en(rama, sujeto, &mensaje, |r| {
+                        self.commit_del_arbol(r, &cuerpo, si_commit.as_deref())
+                    })
+                }
+            }
             ("PUT", ["arbol", ruta @ ..]) => {
                 let ruta = ruta.join("/");
                 let cuerpo = p.cuerpo.clone();
@@ -1915,6 +1931,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/arbol/{ruta}", con_identidad),
         ("PUT", "/arbol/{ruta}", con_identidad),
         ("DELETE", "/arbol/{ruta}", con_identidad),
+        ("POST", "/arbol/commit", con_identidad),
         ("GET", "/ramas", con_identidad),
         ("POST", "/ramas", con_identidad),
         ("DELETE", "/ramas/{nombre}", con_identidad),

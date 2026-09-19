@@ -11,6 +11,9 @@
 #   3  el arbol EN la rama               PUT /arbol/… con X-Ore-Rama → 201 con commit y rama; main
 #                                       NO lo tiene (404) y la rama si (200); una rama que no
 #                                       existe → 404; el gate «no empeora» sigue en la rama (422)
+#   3b POST /arbol/commit               varios ficheros en UN commit con mensaje, o en seco lo que
+#                                       seria: A/M/D y +/- de git, el gate «no empeora», 0 cambiados
+#                                       al repetir, retirar sale como D
 #   4  POST /propuestas                  201 #1 con autor persona:ana · GET /propuestas la lista
 #                                       abierta · 422 sin rama · 422 desde main
 #   5  GET /propuestas/1                 ficheros (1, added), diff de lineas con el fichero,
@@ -184,6 +187,50 @@ ROTA=$(printf '%s' "$NUEVA")
 [ "$(pide GET /arbol/packages/hr/views/rota.yaml "$ANA" "" ana/vistas-hr)" = "404" ] || falla "3 · la vista rota quedo en la rama"
 dice "3 · el arbol EN la rama: PUT con X-Ore-Rama → 201 con commit y rama · main no lo tiene, la rama si · diagnosticos de la rama · 404 rama inexistente · 422 nombre malo · el gate «no empeora» sigue en la rama"
 
+# ── 3b · varios ficheros en UN commit con mensaje (POST /arbol/commit), y en seco lo que seria ──
+# Lo que el panel de Commit del workspace enseña sale de git, no de un contador:
+# `A`/`M`/`D` de `git status`, +/− de `git diff --cached --numstat`.
+"$PY" - "$TMP/commit.json" "$NUEVA" <<'EOF'
+import json, sys
+nueva = sys.argv[2]
+portugueses = nueva.replace('name: espanoles', 'name: portugueses').replace('pais: ES', 'pais: PT')
+cambiada = nueva.rstrip('\n') + '\n    pais: { from: pais, type: String }\n'
+json.dump({"seco": True, "ficheros": [
+    {"ruta": "packages/hr/views/portugueses.yaml", "texto": portugueses},
+    {"ruta": "packages/hr/views/espanoles.yaml", "texto": cambiada},
+]}, open(sys.argv[1], 'w'))
+EOF
+commit() { # <quien> <rama> <fichero json>
+  curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$1" -H 'content-type: application/json' -H "x-ore-rama: $2" --data-binary "@$3" "$BASE/arbol/commit"
+}
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] || falla "3b · en seco: $(cuerpo)"
+tiene "d['seco'] is True and d['cambiados']==2 and {c['ruta']:(c['estado'],c['mas'],c['menos']) for c in d['cambios']}=={'packages/hr/views/portugueses.yaml':('A',9,0),'packages/hr/views/espanoles.yaml':('M',1,0)} and d['diagnosticos']==[]" || falla "3b · los cambios en seco no son los de git: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/portugueses.yaml "$ANA" "" ana/vistas-hr)" = "404" ] || falla "3b · en seco escribio en la rama"
+# sin mensaje y sin seco: 422
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["seco"]=False; json.dump(d, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "422" ] || falla "3b · sin mensaje no dio 422: $(cuerpo)"
+# el commit de verdad, con mensaje
+"$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d["mensaje"]="Los portugueses, y una descripcion para los espanoles"; json.dump(d, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "201" ] || falla "3b · el commit: $(cuerpo)"
+tiene "d['seco'] is False and d['cambiados']==2 and d['rama']=='ana/vistas-hr' and len(d['commit'])>=7" || falla "3b · la respuesta del commit: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/portugueses.yaml "$ANA" "" ana/vistas-hr)" = "200" ] || falla "3b · la rama no tiene el fichero nuevo"
+git --git-dir="$BARE" log -1 --format='%an · %s' ana/vistas-hr | grep -q "persona:ana · Los portugueses, y una descripcion para los espanoles" || falla "3b · el commit no lleva el mensaje y el autor: $(git --git-dir="$BARE" log -1 --format='%an · %s' ana/vistas-hr)"
+[ "$(git --git-dir="$BARE" show --stat --format= ana/vistas-hr | grep -c 'yaml')" = "2" ] || falla "3b · el commit no lleva los dos ficheros"
+# el mismo commit otra vez: nada cambia, 200 con 0 cambiados
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambiados']==0" || falla "3b · repetir el commit no dio 200 con 0 cambiados: $(cuerpo)"
+# y el gate: un fichero que duplica una identidad → 422 con los diagnosticos y los cambios, nada escrito
+"$PY" - "$TMP/commit.json" "$NUEVA" <<'EOF'
+import json, sys
+json.dump({"seco": False, "mensaje": "rompo", "ficheros": [{"ruta": "packages/hr/views/rota.yaml", "texto": sys.argv[2]}]}, open(sys.argv[1], 'w'))
+EOF
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "422" ] || falla "3b · el gate no dio 422: $(cuerpo)"
+tiene "len(d['diagnosticos'])>=1 and d['cambios'][0]['estado']=='A'" || falla "3b · el 422 no trae diagnosticos y cambios: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/rota.yaml "$ANA" "" ana/vistas-hr)" = "404" ] || falla "3b · el gate escribio igual"
+# retirar en el mismo commit
+"$PY" -c 'import json,sys; json.dump({"seco": True, "retirar": ["packages/hr/views/portugueses.yaml"]}, open(sys.argv[1],"w"))' "$TMP/commit.json"
+[ "$(commit "$ANA" ana/vistas-hr "$TMP/commit.json")" = "200" ] && tiene "d['cambios']==[{'ruta':'packages/hr/views/portugueses.yaml','estado':'D','mas':0,'menos':9}]" || falla "3b · retirar en seco: $(cuerpo)"
+dice "3b · POST /arbol/commit: en seco, A/M con +/- de git y nada escrito · sin mensaje 422 · con mensaje, UN commit de la persona con los dos ficheros en la rama · repetido, 0 cambiados · el gate 422 con diagnosticos y cambios · retirar sale como D"
+
 # ── 4 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas "$ANA" '{"titulo":"x"}')" = "422" ] || falla "4 · sin rama no dio 422: $(cuerpo)"
 [ "$(pide POST /propuestas "$ANA" '{"rama":"main"}')" = "422" ] || falla "4 · proponer main no dio 422: $(cuerpo)"
@@ -195,12 +242,12 @@ dice "4 · POST /propuestas: 201 #1 de persona:ana · listada abierta · la rama
 
 # ── 5 ───────────────────────────────────────────────────────────────────────
 [ "$(pide GET /propuestas/1 "$BEA")" = "200" ] || falla "5 · GET /propuestas/1: $(cuerpo)"
-tiene "d['ficheros']==[{'ruta':'packages/hr/views/espanoles.yaml','estado':'added','mas':9,'menos':0}]" || falla "5 · los ficheros: $(cuerpo | head -c 400)"
+tiene "sorted((f['ruta'],f['estado'],f['mas'],f['menos']) for f in d['ficheros'])==[('packages/hr/views/espanoles.yaml','added',10,0),('packages/hr/views/portugueses.yaml','added',9,0)]" || falla "5 · los ficheros: $(cuerpo | head -c 400)"
 tiene "'+++ b/packages/hr/views/espanoles.yaml' in d['diff'] and '+  where: { pais: ES }' in d['diff']" || falla "5 · el diff de lineas: $(cuerpo | head -c 400)"
 tiene "any(c.get('code')=='OOS5021' for c in d['semantico']['changes']) and d['semantico']['requiredBump']=='patch'" || falla "5 · el diff semantico: $(cuerpo | head -c 600)"
 tiene "d['diagnosticos']==[] and d['revisiones']==[]" || falla "5 · diagnosticos y revisiones de partida: $(cuerpo | head -c 300)"
 [ "$(pide GET /propuestas/9 "$BEA")" = "404" ] || falla "5 · una propuesta que no existe no dio 404"
-dice "5 · GET /propuestas/1: ficheros (added, +9) · diff de lineas · diff de significado (OOS5021, patch) · diagnosticos [] · revisiones []"
+dice "5 · GET /propuestas/1: ficheros (dos added, +10 y +9) · diff de lineas · diff de significado (OOS5021, patch) · diagnosticos [] · revisiones []"
 
 # ── 6 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas/1/revisar "$ANA" '{"veredicto":"aprobar"}')" = "422" ] || falla "6 · ana aprobo lo suyo: $(cuerpo)"
@@ -226,15 +273,15 @@ git --git-dir="$BARE" log -1 --format=%s main | grep -q "Propuesta #1 de persona
 dice "7 · fusionar (bea): 200 · main tiene la vista · la rama fuera · fusionada · 409 la segunda vez · el commit de merge dice quien propuso, quien reviso y quien fusiono"
 
 # ── 8 ───────────────────────────────────────────────────────────────────────
-[ "$(pide POST /ramas "$BEA" '{"nombre":"portugueses"}')" = "201" ] || falla "8 · la rama de bea: $(cuerpo)"
-PT=$(printf '%s' "$NUEVA" | sed 's/name: espanoles/name: portugueses/; s/pais: ES/pais: PT/')
-[ "$(put_fichero packages/hr/views/portugueses.yaml "$BEA" "$PT" bea/portugueses)" = "201" ] || falla "8 · el fichero de bea en su rama: $(cuerpo)"
-[ "$(pide POST /propuestas "$BEA" '{"rama":"bea/portugueses"}')" = "201" ] && tiene "d['numero']==2 and d['autor']=='persona:bea' and d['titulo'].startswith('Propuesta de persona:bea')" || falla "8 · la propuesta de bea: $(cuerpo)"
-[ "$(pide DELETE /ramas/bea/portugueses "$BEA")" = "409" ] || falla "8 · retirar una rama con propuesta abierta no dio 409: $(cuerpo)"
+[ "$(pide POST /ramas "$BEA" '{"nombre":"franceses"}')" = "201" ] || falla "8 · la rama de bea: $(cuerpo)"
+FR=$(printf '%s' "$NUEVA" | sed 's/name: espanoles/name: franceses/; s/pais: ES/pais: FR/')
+[ "$(put_fichero packages/hr/views/franceses.yaml "$BEA" "$FR" bea/franceses)" = "201" ] || falla "8 · el fichero de bea en su rama: $(cuerpo)"
+[ "$(pide POST /propuestas "$BEA" '{"rama":"bea/franceses"}')" = "201" ] && tiene "d['numero']==2 and d['autor']=='persona:bea' and d['titulo'].startswith('Propuesta de persona:bea')" || falla "8 · la propuesta de bea: $(cuerpo)"
+[ "$(pide DELETE /ramas/bea/franceses "$BEA")" = "409" ] || falla "8 · retirar una rama con propuesta abierta no dio 409: $(cuerpo)"
 [ "$(pide POST /propuestas/2/fusionar "$BEA")" = "422" ] || falla "8 · bea fusiono lo suyo"
 [ "$(pide POST /propuestas/2/revisar "$ANA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8 · ana no pudo aprobar: $(cuerpo)"
 [ "$(pide POST /propuestas/2/fusionar "$ANA")" = "200" ] && tiene "d['por']=='persona:ana' and d['revisada_por']==['persona:ana']" || falla "8 · ana no pudo fusionar: $(cuerpo)"
-[ "$(pide GET /arbol/packages/hr/views/portugueses.yaml "$ANA")" = "200" ] || falla "8 · main no tiene la vista de bea"
+[ "$(pide GET /arbol/packages/hr/views/franceses.yaml "$ANA")" = "200" ] || falla "8 · main no tiene la vista de bea"
 [ "$(pide GET /propuestas "$ANA")" = "200" ] && tiene "sorted((p['numero'],p['autor'],p['estado']) for p in d['propuestas'])==[(1,'persona:ana','fusionada'),(2,'persona:bea','fusionada')]" || falla "8 · las dos propuestas: $(cuerpo)"
 # cerrar sin fusionar, y entonces la rama se retira
 [ "$(pide POST /ramas "$ANA" '{"nombre":"borrador"}')" = "201" ] || falla "8 · la rama borrador"

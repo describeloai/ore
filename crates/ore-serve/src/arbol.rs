@@ -320,6 +320,241 @@ impl Servidor {
             ("retirado", Json::Bool(true)),
         ]))
     }
+
+    /// **`POST /arbol/commit`** (0030 W2): VARIOS ficheros en UN commit, con el
+    /// mensaje de la persona — y en seco, lo que ese commit sería.
+    ///
+    /// `PUT /arbol/{ruta}` es un commit por fichero, sin mensaje: es lo que un
+    /// *Save* hace. El panel de *Commit* del workspace pide otra cosa: lo que
+    /// la sesión tiene sin commitear —N ficheros—, con qué es cada cambio
+    /// (`A`/`M`/`D`, +/− líneas) y un mensaje para todos. Lo que dice cada
+    /// cambio lo dice **git**, no un contador nuestro: se escriben los ficheros
+    /// en el clon, `git status --porcelain` y `git diff --cached --numstat`.
+    ///
+    /// ```text
+    /// {"seco": true|false, "mensaje": "…",
+    ///  "ficheros": [{"ruta": "packages/hr/views/x.yaml", "texto": "…"}],
+    ///  "retirar": ["packages/hr/views/y.yaml"]}
+    /// ```
+    ///
+    /// - `seco: true` (o sin `mensaje`) **no escribe nada**: contesta `cambios`
+    ///   —un objeto por fichero con `estado`, `mas`, `menos`— y los
+    ///   diagnósticos que el árbol tendría. Es lo que el panel enseña al abrirse;
+    /// - `seco: false` con `mensaje`: el mismo gate que un `PUT` —el árbol no
+    ///   empeora, o 422 con los diagnósticos nuevos y nada escrito— y entonces
+    ///   un commit del sujeto con ese mensaje, en la rama de `X-Ore-Rama`.
+    ///
+    /// `If-Match` vale como en el `PUT`: 409 si el árbol se movió.
+    pub(crate) fn commit_del_arbol(
+        &self,
+        raiz: &Path,
+        cuerpo: &str,
+        si_commit: Option<&str>,
+    ) -> Respuesta {
+        let n = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => n,
+            Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
+        };
+        let seco = n
+            .get("seco")
+            .and_then(|(_, v)| v.as_str())
+            .is_some_and(|s| s == "true");
+        let mensaje = n
+            .get("mensaje")
+            .and_then(|(_, v)| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if !seco && mensaje.is_none() {
+            return Respuesta::error(
+                422,
+                "un commit lleva `mensaje`; sin él, `seco: true` para ver los cambios",
+            );
+        }
+        let mut escribir: Vec<(PathBuf, String, String)> = Vec::new();
+        if let Some((_, fs)) = n.get("ficheros") {
+            for f in fs.items() {
+                let Some(ruta) = f.get("ruta").and_then(|(_, v)| v.as_str()) else {
+                    return Respuesta::error(422, "cada fichero lleva `ruta` y `texto`");
+                };
+                let texto = f
+                    .get("texto")
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if texto.len() > 2 * 1024 * 1024 {
+                    return Respuesta::error(413, format!("`{ruta}` pasa de 2 MB"));
+                }
+                match ruta_valida(ruta) {
+                    Ok(rel) => escribir.push((rel, ruta.to_string(), texto)),
+                    Err(r) => return r,
+                }
+            }
+        }
+        let mut retirar: Vec<(PathBuf, String)> = Vec::new();
+        if let Some((_, rs)) = n.get("retirar") {
+            for r in rs.items() {
+                let Some(ruta) = r.as_str() else { continue };
+                match ruta_valida(ruta) {
+                    Ok(rel) => retirar.push((rel, ruta.to_string())),
+                    Err(r) => return r,
+                }
+            }
+        }
+        if escribir.is_empty() && retirar.is_empty() {
+            return Respuesta::ok(Json::obj([
+                ("cambios", Json::Arr(vec![])),
+                ("diagnosticos", Json::Arr(vec![])),
+                ("seco", Json::Bool(seco)),
+            ]));
+        }
+        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+            return r;
+        }
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        // ── Se escribe en el clon: lo que diga git de aquí en adelante es real ──
+        for (rel, ruta, texto) in &escribir {
+            let p = raiz.join(rel);
+            if let Some(dir) = p.parent()
+                && let Err(e) = std::fs::create_dir_all(dir)
+            {
+                return Respuesta::error(
+                    500,
+                    format!("no se pudo crear `{}`: {e}", relativo(raiz, dir)),
+                );
+            }
+            if let Err(e) = std::fs::write(&p, texto) {
+                return Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}"));
+            }
+        }
+        for (rel, ruta) in &retirar {
+            let p = raiz.join(rel);
+            if p.is_file()
+                && let Err(e) = std::fs::remove_file(&p)
+            {
+                return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
+            }
+        }
+        // `git add -A` y el índice dicen QUÉ cambió y CUÁNTO. Sin git (un
+        // directorio sin historia) no hay estados: los ficheros salen con `?`.
+        let _ = git(raiz, &["add", "-A"]);
+        let estados: std::collections::BTreeMap<String, String> =
+            git(raiz, &["status", "--porcelain"])
+                .map(|s| {
+                    s.lines()
+                        .filter(|l| l.len() > 3)
+                        .map(|l| {
+                            (
+                                l[3..].trim().trim_matches('"').to_string(),
+                                l[..2].trim().to_string(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        let lineas: std::collections::BTreeMap<String, (i64, i64)> =
+            git(raiz, &["diff", "--cached", "--numstat"])
+                .map(|s| {
+                    s.lines()
+                        .filter_map(|l| {
+                            let mut p = l.split('\t');
+                            let mas = p.next()?.parse().unwrap_or(0);
+                            let menos = p.next()?.parse().unwrap_or(0);
+                            Some((p.next()?.trim().trim_matches('"').to_string(), (mas, menos)))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        let cambios: Vec<Json> = escribir
+            .iter()
+            .map(|(_, ruta, _)| ruta.clone())
+            .chain(retirar.iter().map(|(_, ruta)| ruta.clone()))
+            .map(|ruta| {
+                let estado = estados.get(&ruta).cloned().unwrap_or_default();
+                let (mas, menos) = lineas.get(&ruta).copied().unwrap_or((0, 0));
+                Json::obj([
+                    ("ruta", Json::s(&ruta)),
+                    // `A` nuevo, `M` cambiado, `D` retirado, `` igual que estaba
+                    (
+                        "estado",
+                        Json::s(
+                            estado
+                                .chars()
+                                .next()
+                                .map(|c| c.to_string())
+                                .unwrap_or_default(),
+                        ),
+                    ),
+                    ("mas", Json::Int(mas)),
+                    ("menos", Json::Int(menos)),
+                ])
+            })
+            .collect();
+        let cambiados = cambios
+            .iter()
+            .filter(|c| matches!(c, Json::Obj(m) if m.get("estado") != Some(&Json::s(""))))
+            .count();
+        // ── El gate de siempre: el árbol no empeora, o nada se escribe ──
+        let que = if cambiados == 1 {
+            "1 fichero".to_string()
+        } else {
+            format!("{cambiados} ficheros")
+        };
+        if let Err(mut r) = self.empeora(raiz, &antes, &que) {
+            if let Json::Obj(m) = &mut r.cuerpo
+                && let Some(Json::Arr(ds)) = m.get("diagnosticos").cloned()
+            {
+                m.insert(
+                    "diagnosticos".into(),
+                    Json::Arr(ds.iter().map(con_posicion).collect()),
+                );
+                m.insert("cambios".into(), Json::Arr(cambios));
+            }
+            // En seco el clon se tira; con commit, `escribiendo` no publica un 422.
+            return r;
+        }
+        let despues = self.diagnosticos_de(raiz).unwrap_or_default();
+        let ficha = Json::obj([
+            ("seco", Json::Bool(seco)),
+            ("cambiados", Json::Int(cambiados as i64)),
+            ("cambios", Json::Arr(cambios)),
+            (
+                "diagnosticos",
+                Json::Arr(despues.iter().map(con_posicion).collect()),
+            ),
+            ("mensaje", Json::s(mensaje.clone().unwrap_or_default())),
+        ]);
+        if seco {
+            // Lo escrito se queda en el clon, que se tira: `leyendo` no publica.
+            return Respuesta::ok(ficha);
+        }
+        if cambiados == 0 {
+            return Respuesta::ok(ficha);
+        }
+        // `git add -A` ya está hecho; `publicar` vuelve a hacerlo y commitea con
+        // el mensaje de la persona (el que `escribiendo` recibió).
+        Respuesta::creado(ficha)
+    }
+}
+
+/// Lo que un `POST /arbol/commit` quiere, antes de clonar: si es en seco y con
+/// qué mensaje. `escribiendo` necesita el mensaje ANTES de correr el cuerpo.
+pub(crate) fn intencion_del_commit(cuerpo: &str) -> (bool, String) {
+    let Ok(n) = ore_core::parse::parse(cuerpo) else {
+        return (true, String::new());
+    };
+    let seco = n
+        .get("seco")
+        .and_then(|(_, v)| v.as_str())
+        .is_some_and(|s| s == "true");
+    let mensaje = n
+        .get("mensaje")
+        .and_then(|(_, v)| v.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    (seco || mensaje.is_empty(), mensaje)
 }
 
 #[cfg(test)]
