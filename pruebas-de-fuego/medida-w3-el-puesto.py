@@ -109,6 +109,9 @@ dice(paso="fin")
 '''
 
 
+ROL = "driver"
+
+
 def job_yaml(ns, inq, nombre, bucket, vivo):
     return f"""apiVersion: batch/v1
 kind: Job
@@ -118,7 +121,7 @@ metadata:
   labels:
     kueue.x-k8s.io/queue-name: cola
     ore.dev/tenant: {inq}
-    ore.dev/rol: driver
+    ore.dev/rol: {ROL}
     ore.dev/medida: w3
 spec:
   backoffLimit: 0
@@ -127,7 +130,7 @@ spec:
   template:
     metadata:
       labels:
-        ore.dev/rol: driver
+        ore.dev/rol: {ROL}
         ore.dev/tenant: {inq}
     spec:
       restartPolicy: Never
@@ -337,13 +340,18 @@ def seccion_2_3(ns, inq, bucket):
 
 
 def main():
+    global ROL
     inq = "victor"
     if "--inquilino" in sys.argv:
         inq = sys.argv[sys.argv.index("--inquilino") + 1]
+    # `--rol puesto`: la red del puesto (21-el-puesto.yaml) en vez de la del driver.
+    if "--rol" in sys.argv:
+        ROL = sys.argv[sys.argv.index("--rol") + 1]
     ns = f"t-{inq}"
     bucket = f"project-8853a180-450d-47be-b83-t-{inq}-copia"
     print("MEDIDA · W3 · el puesto · %s · %s" % (inq, dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%MZ")))
     fila("imagen", IMAGEN.rsplit("/", 1)[-1], "python:3.12-slim + pandas + pyarrow + duckdb + GCS")
+    fila("rol del pod", ROL, "driver = la red del driver (abre el mundo) · puesto = 21-el-puesto.yaml")
     seccion_1()
     seccion_2_3(ns, inq, bucket)
     nodos = json.loads(k("get", "nodes", "-l", "ore.dev/pool=jobs", "-o", "json") or "{}").get("items", [])
