@@ -186,7 +186,7 @@ jobs:
       # `over()` la lea; en el cluster van dentro de `puesto-python:1`.
       - name: y una sesion Python lee la copia con over()
         run: |
-          python3 -m pip install --quiet pyarrow pandas
+          python3 -m pip install --quiet pyarrow pandas duckdb
           bash pruebas-de-fuego/el-puesto.sh
 
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no

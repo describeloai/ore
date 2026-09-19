@@ -78,12 +78,21 @@ class Testigo:
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
-        self.espacio = {"__name__": "__main__", "over": ore.over, "ore": ore}
+        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "ore": ore}
 
-    def correr(self, texto):
+    def correr(self, texto, lenguaje="python"):
         t0 = time.time()
         salida = io.StringIO()
         valor = None
+        # Una celda SQL (W3.3): la consulta entera va a `ore.sql`, sobre las copias.
+        if lenguaje == "sql":
+            try:
+                with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(salida):
+                    valor = ore.sql(texto)
+            except Exception as e:  # noqa: BLE001
+                return {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "traza": traceback.format_exc(),
+                        "texto": salida.getvalue(), "ms": ms(t0)}
+            return self.salida_de(valor, salida.getvalue(), t0)
         try:
             arbol = ast.parse(texto, mode="exec")
             ultimo = None
@@ -154,6 +163,9 @@ def llano(v):
             return None
     except (ImportError, TypeError, ValueError):
         pass
+    # Un Decimal (los agregados de DuckDB): entero si lo es, si no float.
+    if type(v).__name__ == "Decimal":
+        return int(v) if v == v.to_integral_value() else float(v)
     if hasattr(v, "isoformat"):
         return v.isoformat()
     if hasattr(v, "item"):
@@ -194,9 +206,9 @@ def main():
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))
             time.sleep(5)
             continue
-        n, texto = r["celda"], r.get("texto", "")
-        log("celda %s · %d bytes" % (n, len(texto)))
-        salida = kernel.correr(texto)
+        n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
+        log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
+        salida = kernel.correr(texto, lenguaje)
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

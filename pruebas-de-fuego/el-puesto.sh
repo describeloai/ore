@@ -20,6 +20,9 @@
 #                                      copia → RuntimeError (409)
 #   5  DELETE /puestos/puesto-ana      200 · el fichero fuera de la cola · el agente se cierra
 #                                      (410) · una celda más → 410
+#   7  SQL sobre el bucket (W3.3)     una celda `sql`: `select count(*) from hr.espanoles` → tabla
+#                                      3 · un join de dos vistas · una que no existe → error ·
+#                                      `sql()` desde una celda Python · `java` → 422
 #   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
 #                                      digest capa-<12 hex> · POST /puestos (bea) → 409 y el Job de
 #                                      la capa en la cola con el digest · POST /entorno → 202 la
@@ -215,6 +218,23 @@ celda 'over(\"hr.empleados\")' && tiene "d['salida']['tipo']=='error' and d['sal
 [ "$(pide GET /puestos/puesto-ana/datos/hr.espanoles "$ANA")" = "403" ] || falla "4 · una persona pidio datos por la ruta del agente: $(cuerpo)"
 dice "4 · over(\"hr.espanoles\") → tabla 3 × 2 desde la copia (ORECOPY1 + Parquet) · hr.nada → LookupError (404) · sin copia → RuntimeError (409) · datos solo para el agente"
 
+# ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
+celda_sql() { # <sql json-escapado>
+  local n
+  [ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" "{\"texto\":\"$1\",\"lenguaje\":\"sql\"}")" = "202" ] || falla "7 · ejecutar sql no dio 202: $(cuerpo)"
+  n=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
+  for _ in $(seq 1 3); do pide GET "/puestos/puesto-ana/celdas/$n" "$ANA" >/dev/null; tiene "d['estado']=='hecha'" && return 0; done
+  return 1
+}
+celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['columnas'][0]['name']=='n' and d['salida']['filas']==[[3]]" || falla "7 · count sobre la copia: $(cuerpo)"
+celda_sql 'select a.id, b.pais from hr.espanoles a join hr.espanoles b on a.id = b.id order by 1' && tiene "d['salida']['tipo']=='tabla' and d['salida']['total']==3 and d['salida']['filas'][0]==['e1','ES']" || falla "7 · el join: $(cuerpo)"
+celda_sql 'select * from hr.nada' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "7 · una vista que no existe: $(cuerpo)"
+celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError'" || falla "7 · una vista sin copia: $(cuerpo)"
+celda_sql 'selec nada' && tiene "d['salida']['tipo']=='error'" || falla "7 · sql roto: $(cuerpo)"
+celda 'sql(\"select sum(1) as s from hr.espanoles\")' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · sql() desde python: $(cuerpo)"
+[ "$(pide POST /puestos/puesto-ana/ejecutar "$ANA" '{"texto":"x","lenguaje":"java"}')" = "422" ] || falla "7 · java no dio 422: $(cuerpo)"
+dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vistas · vista inexistente → LookupError · sin copia → RuntimeError · sql roto → error · sql() desde python · java 422"
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -267,4 +287,4 @@ pide DELETE /puestos/puesto-bea "$BEA" >/dev/null
 dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa y /capa en el PYTHONPATH · otra declaracion → pendiente"
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.2): 1–6 · la sesión viva, el agente de verdad, over() sobre la copia, la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.3): 1–7 · la sesión viva, el agente de verdad, over() y sql() sobre las copias, la capa declarada en el árbol"

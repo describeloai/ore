@@ -8,17 +8,24 @@ que la resuelve en nombre de la persona y con su potestad) y baja el artefacto
 con la identidad del pod (Workload Identity). El sobre `ORECOPY1` se desenvuelve
 aquí; la carga es Parquet.
 
+`sql("select … from hr.espanoles")` (W3.3) pregunta a las copias por el nombre
+de sus vistas: cada `paquete.vista` tras FROM/JOIN se resuelve igual que en
+`over()`, se baja una vez por sesión y se registra en DuckDB como la vista
+`paquete.vista`; devuelve un DataFrame. Medido en victor (2 CPU · 3 GB):
+200 M de filas, `group by` con agregados en 1,9 s, `where` en 1 s.
+
 Fuera del clúster (las pruebas de fuego) el almacén es un directorio:
 `ORE_ALMACEN=dir:/ruta` lee `ore/v1/<clave>` de ahí.
 """
 import io
 import json
 import os
+import re
 import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "puesto"]
+__all__ = ["over", "sql", "puesto"]
 
 
 class Puesto:
@@ -75,23 +82,82 @@ def _desenvolver(crudo):
     return cabecera, crudo[12 + n:]
 
 
-def over(vista, como="pandas"):
-    """La copia de `<paquete>.<vista>` como DataFrame (`como="pandas"`) o como
-    `pyarrow.Table` (`como="arrow"`)."""
+def _resolver(vista):
+    """Qué copia es `<paquete>.<vista>`, según ore-serve (en nombre de la persona)."""
     if not isinstance(vista, str) or vista.count(".") != 1:
-        raise ValueError("over() quiere `<paquete>.<vista>`, no %r" % (vista,))
+        raise ValueError("se quiere `<paquete>.<vista>`, no %r" % (vista,))
     codigo, r = puesto.pedir("GET", "/puestos/%s/datos/%s" % (puesto.id, vista))
     if codigo == 409:
         raise RuntimeError("la copia de `%s` no está hecha: %s" % (vista, (r or {}).get("error", "")))
     if codigo == 404:
         raise LookupError("no hay ninguna `View` `%s` en el árbol" % vista)
     if codigo != 200:
-        raise RuntimeError("ore-serve contestó %s a over(%r): %s" % (codigo, vista, (r or {}).get("error", r)))
+        raise RuntimeError("ore-serve contestó %s por `%s`: %s" % (codigo, vista, (r or {}).get("error", r)))
+    return r
+
+
+def _parquet_de(vista):
+    """La copia de la vista como fichero Parquet local, bajado UNA vez por sesión
+    (la clave es el digest del artefacto: una clave nueva es otra copia)."""
+    r = _resolver(vista)
+    d = os.environ.get("ORE_COPIAS", "/trabajo/copias")
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, r["clave"].replace("/", "_") + ".parquet")
+    if not os.path.exists(f):
+        crudo = _bajar(r.get("bucket") or puesto.bucket, r["clave"])
+        _, carga = _desenvolver(crudo)
+        tmp = f + ".parte"
+        with open(tmp, "wb") as fh:
+            fh.write(carga)
+        os.replace(tmp, f)
+    return f, r
+
+
+def over(vista, como="pandas"):
+    """La copia de `<paquete>.<vista>` como DataFrame (`como="pandas"`) o como
+    `pyarrow.Table` (`como="arrow"`)."""
     import pyarrow.parquet as pq
 
-    crudo = _bajar(r.get("bucket") or puesto.bucket, r["clave"])
-    _, carga = _desenvolver(crudo)
-    tabla = pq.read_table(io.BytesIO(carga))
+    f, _ = _parquet_de(vista)
+    tabla = pq.read_table(f)
+    if como == "arrow":
+        return tabla
+    return tabla.to_pandas()
+
+
+_VISTAS_EN_SQL = re.compile(r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
+_con = None
+
+
+def _duckdb():
+    global _con
+    if _con is None:
+        import duckdb
+
+        _con = duckdb.connect()
+        hilos = os.environ.get("ORE_HILOS")
+        if hilos:
+            _con.execute("set threads to %d" % int(hilos))
+    return _con
+
+
+def sql(texto, como="pandas"):
+    """SQL (DuckDB) sobre las copias: cada `paquete.vista` tras FROM/JOIN se
+    resuelve, se baja una vez y queda como vista `paquete.vista`. Devuelve un
+    DataFrame (`como="pandas"`) o una `pyarrow.Table` (`como="arrow"`)."""
+    if not isinstance(texto, str) or not texto.strip():
+        raise ValueError("sql() quiere una consulta")
+    con = _duckdb()
+    for esquema, nombre in sorted(set(_VISTAS_EN_SQL.findall(texto))):
+        f, _ = _parquet_de("%s.%s" % (esquema, nombre))
+        con.execute('create schema if not exists "%s"' % esquema)
+        # Sin parámetros: un CREATE VIEW no se prepara. La ruta es nuestra (la
+        # clave del artefacto), sin comillas dentro; se escapa igual.
+        con.execute('create or replace view "%s"."%s" as select * from read_parquet(\'%s\')' % (esquema, nombre, f.replace("'", "''").replace("\\", "/")))
+    r = con.execute(texto)
+    if r.description is None:
+        return None
+    tabla = r.fetch_arrow_table()
     if como == "arrow":
         return tabla
     return tabla.to_pandas()

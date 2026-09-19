@@ -80,6 +80,8 @@ impl Estado {
 #[derive(Debug, Clone)]
 pub(crate) struct Celda {
     pub texto: String,
+    /// `python` (por defecto) o `sql` (W3.3: la consulta entera a `ore.sql`).
+    pub lenguaje: String,
     pub enviada: Instant,
     pub empezada: Option<Instant>,
     pub salida: Option<Json>,
@@ -382,6 +384,17 @@ impl Servidor {
         let Some(texto) = n.get("texto").and_then(|(_, v)| v.as_str()) else {
             return Respuesta::error(422, "una celda lleva `texto`");
         };
+        let lenguaje = n
+            .get("lenguaje")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("python")
+            .to_string();
+        if !matches!(lenguaje.as_str(), "python" | "sql") {
+            return Respuesta::error(
+                422,
+                format!("`{lenguaje}` no corre en un puesto: hoy `python` o `sql` (0031 W3.3)"),
+            );
+        }
         if texto.len() > TEXTO_MAXIMO {
             return Respuesta::error(422, "la celda es demasiado larga (256 KiB)");
         }
@@ -410,6 +423,7 @@ impl Servidor {
             num,
             Celda {
                 texto: texto.to_string(),
+                lenguaje,
                 enviada: Instant::now(),
                 empezada: None,
                 salida: None,
@@ -502,11 +516,13 @@ impl Servidor {
                 let c = p.celdas.get_mut(&n).expect("la celda pendiente existe");
                 c.empezada = Some(Instant::now());
                 let texto = c.texto.clone();
+                let lenguaje = c.lenguaje.clone();
                 drop(lista);
                 self.puestos.campana.notify_all();
                 return Respuesta::ok(Json::obj([
                     ("pendiente", Json::Bool(true)),
                     ("celda", Json::Int(n as i64)),
+                    ("lenguaje", Json::s(lenguaje)),
                     ("texto", Json::s(texto)),
                 ]));
             }
