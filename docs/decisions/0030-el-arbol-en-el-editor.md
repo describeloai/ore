@@ -148,7 +148,12 @@ en la primera línea y cada revisión es una review `COMMENT` que empieza `revis
 <veredicto>` — la forja guarda, el servidor decide: quien propone no aprueba ni fusiona lo suyo
 (422), sin aprobación de otra persona no se fusiona (422), la rama tiene que compilar (422 con
 los diagnósticos) y no tener conflictos (409); el commit de merge dice quién propuso, quién
-revisó y quién fusionó, y la rama se retira al fusionar. Lo que la consola tiene que cablear
+revisó y quién fusionó, y la rama se retira al fusionar. Y el panel de *Commit* del
+workspace pedía lo que un `PUT` por fichero no da: **`POST /arbol/commit`** (2026-09-19) — varios
+ficheros en UN commit con el mensaje de la persona, y en `seco` lo que ese commit sería: `A`/`M`/`D`
+y +/− los dice git (`status --porcelain`, `diff --cached --numstat`) sobre el clon, con el gate de
+siempre (`la-propuesta` 3b). En la consola, «sin commitear» son los borradores de la sesión:
+guardar (Ctrl+S) commitea uno, *Commit* los manda todos. Lo que la consola tiene que cablear
 está en `propuestas.rs`; lo que no se hizo: encolar la copia de una vista `materialized` que
 llegue por merge (hoy `PUT /arbol` tampoco lo hace) y proteger `main` en la forja.
 
