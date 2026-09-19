@@ -100,7 +100,13 @@ spec:
         #   Sin capa (`CAPA` vacía) no hace nada.
         - name: traer-la-capa
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
-          imagePullPolicy: IfNotPresent
+          # ⛔ `Always`, y no es descuido: `:1` es el ENTORNO (lo que una celda
+          #   importa no cambia), pero el agente y el SDK viajan dentro y cambian
+          #   con cada commit. Con `IfNotPresent` el nodo se quedaba con el `:1`
+          #   viejo (medido en victor el 2026-09-19: una celda SQL llegó a un
+          #   agente que aún no sabía de SQL). `Always` sólo compara el digest
+          #   con el registro: ~1 s cuando ya está.
+          imagePullPolicy: Always
           env:
             - { name: CAPA, value: "capa-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
@@ -141,7 +147,13 @@ spec:
       containers:
         - name: puesto
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
-          imagePullPolicy: IfNotPresent
+          # ⛔ `Always`, y no es descuido: `:1` es el ENTORNO (lo que una celda
+          #   importa no cambia), pero el agente y el SDK viajan dentro y cambian
+          #   con cada commit. Con `IfNotPresent` el nodo se quedaba con el `:1`
+          #   viejo (medido en victor el 2026-09-19: una celda SQL llegó a un
+          #   agente que aún no sabía de SQL). `Always` sólo compara el digest
+          #   con el registro: ~1 s cuando ya está.
+          imagePullPolicy: Always
           command: ["python3", "/opt/ore/agente.py"]
           env:
             - { name: PUESTO, value: "puesto-modelo" }

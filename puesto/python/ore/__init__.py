@@ -100,7 +100,7 @@ def _parquet_de(vista):
     """La copia de la vista como fichero Parquet local, bajado UNA vez por sesión
     (la clave es el digest del artefacto: una clave nueva es otra copia)."""
     r = _resolver(vista)
-    d = os.environ.get("ORE_COPIAS", "/trabajo/copias")
+    d = os.environ.get("ORE_COPIAS") or _copias_por_defecto()
     os.makedirs(d, exist_ok=True)
     f = os.path.join(d, r["clave"].replace("/", "_") + ".parquet")
     if not os.path.exists(f):
@@ -111,6 +111,15 @@ def _parquet_de(vista):
             fh.write(carga)
         os.replace(tmp, f)
     return f, r
+
+
+def _copias_por_defecto():
+    """`/trabajo/copias` en el puesto; fuera (las pruebas), un directorio temporal."""
+    if os.path.isdir("/trabajo") and os.access("/trabajo", os.W_OK):
+        return "/trabajo/copias"
+    import tempfile
+
+    return os.path.join(tempfile.gettempdir(), "ore-copias")
 
 
 def over(vista, como="pandas"):
