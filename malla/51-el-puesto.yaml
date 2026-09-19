@@ -159,6 +159,9 @@ spec:
             - { name: PUESTO, value: "puesto-modelo" }
             - { name: RAMA, value: "rama-modelo" }
             - { name: CAPA, value: "capa-modelo" }
+            # El instante de apertura: reabrir tras un TTL, un tope o un relevo
+            # es OTRO Job (otro nombre), y Flux retira el viejo. Lo pone ore-serve.
+            - { name: ABIERTO, value: "abierto-modelo" }
             - { name: PYTHONPATH, value: /capa }
             - { name: TTL, value: "1800" }
             - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }

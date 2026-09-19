@@ -247,6 +247,7 @@ pub const PLANTILLA_PUESTO: &str = "plantilla-puesto.txt";
 const PUESTO_MODELO: &str = "puesto-modelo";
 const RAMA_MODELO: &str = "rama-modelo";
 const CAPA_MODELO: &str = "capa-modelo";
+const ABIERTO_MODELO: &str = "abierto-modelo";
 
 /// Rinde el Job del puesto de `id` (`puesto-<persona>`), en `rama` (vacía =
 /// `main`) y con la `capa` (el digest de `entorno.rs`, o vacía: sin capa).
@@ -257,6 +258,7 @@ pub fn rendir_puesto(
     id: &str,
     rama: &str,
     capa: &str,
+    abierto: &str,
 ) -> Result<(String, String, String), String> {
     if !plantilla.contains(&format!("puesto-{RESUMEN_MODELO}")) {
         return Err(format!(
@@ -267,6 +269,7 @@ pub fn rendir_puesto(
         (PUESTO_MODELO, id),
         (RAMA_MODELO, rama),
         (CAPA_MODELO, capa),
+        (ABIERTO_MODELO, abierto),
     ] {
         if !plantilla.contains(&format!("value: \"{de}\"")) {
             return Err(format!(
@@ -289,6 +292,10 @@ pub fn rendir_puesto(
         .replace(
             &format!("value: \"{CAPA_MODELO}\""),
             &format!("value: \"{capa}\""),
+        )
+        .replace(
+            &format!("value: \"{ABIERTO_MODELO}\""),
+            &format!("value: \"{abierto}\""),
         );
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
@@ -371,8 +378,10 @@ env:
   - { name: PUESTO, value: \"puesto-modelo\" }
   - { name: RAMA, value: \"rama-modelo\" }
   - { name: CAPA, value: \"capa-modelo\" }
+  - { name: ABIERTO, value: \"abierto-modelo\" }
 ";
-        let (f, t, job) = rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab").unwrap();
+        let (f, t, job) =
+            rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab", "1").unwrap();
         assert_eq!(f, "51-el-puesto-ana.yaml");
         assert!(job.starts_with("puesto-ana-") && job.len() == "puesto-ana-".len() + 8);
         assert!(
@@ -381,9 +390,14 @@ env:
                 && t.contains("value: \"capa-0123456789ab\"")
         );
         assert!(t.contains(&format!("name: {job}")));
-        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "", "").unwrap();
+        let (_, t2, _) = rendir_puesto(p, "puesto-ana", "", "", "1").unwrap();
         assert!(t2.contains("value: \"\""));
-        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "").is_err());
+        // Reabrir en otro instante es OTRO Job (Flux retira el viejo): el fichero, el mismo.
+        let (f3, _, job3) =
+            rendir_puesto(p, "puesto-ana", "ana/x", "capa-0123456789ab", "2").unwrap();
+        assert_eq!(f3, f);
+        assert_ne!(job3, job);
+        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "", "1").is_err());
     }
 
     #[test]

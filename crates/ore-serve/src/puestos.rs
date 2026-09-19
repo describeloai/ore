@@ -220,8 +220,11 @@ impl Servidor {
         let id = id_de(&sujeto.persona);
         {
             let lista = self.puestos.lista.lock().unwrap();
+            // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
+            // Uno PERDIDO (vivo sin latido: TTL, tope o relevo) se sustituye.
             if let Some(p) = lista.get(&id)
                 && p.estado != Estado::Cerrado
+                && !(p.estado == Estado::Vivo && p.latido.is_some_and(|l| l.elapsed() > SIN_LATIDO))
             {
                 return Respuesta::ok(ficha(&id, p));
             }
@@ -623,8 +626,15 @@ impl Servidor {
                     ),
                 )
             })?;
-        let (fichero, texto, job) = cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa)
-            .map_err(|e| Respuesta::error(500, e))?;
+        // El instante de apertura va en el Job: reabrir (tras un TTL, un tope o
+        // un relevo) rinde OTRO nombre, y Flux retira el Job viejo y crea el nuevo.
+        let abierto = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
+        let (fichero, texto, job) =
+            cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa, &abierto)
+                .map_err(|e| Respuesta::error(500, e))?;
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {
