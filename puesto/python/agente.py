@@ -126,54 +126,14 @@ def ms(t0):
 
 
 def como_tabla(valor):
-    """Un DataFrame o una Table de Arrow → columnas y las primeras filas, en JSON llano."""
-    try:
-        import pandas as pd
-    except ImportError:
-        pd = None
-    df = None
-    if pd is not None and isinstance(valor, pd.DataFrame):
-        df = valor
-    elif pd is not None and isinstance(valor, pd.Series):
-        df = valor.to_frame()
-    else:
-        try:
-            import pyarrow as pa
-            if isinstance(valor, pa.Table):
-                df = valor.to_pandas()
-        except ImportError:
-            pass
-    if df is None:
-        return None
-    total = len(df)
-    cabeza = df.head(FILAS_MAXIMAS)
-    columnas = [{"name": str(c), "type": str(t)} for c, t in zip(cabeza.columns, cabeza.dtypes)]
-    filas = [[llano(v) for v in fila] for fila in cabeza.itertuples(index=False, name=None)]
-    return {"columnas": columnas, "filas": filas, "total": total, "limite": FILAS_MAXIMAS}
+    """La salida `tabla` del contrato: la hace el SDK (`ore.tabla`), que es lo que
+    una celda también puede pedir; aquí sólo se le pone el límite de la consola."""
+    return ore.tabla(valor, FILAS_MAXIMAS)
 
 
 def llano(v):
-    if v is None or isinstance(v, (bool, int, float, str)):
-        if isinstance(v, float) and v != v:
-            return None
-        return v
-    try:
-        import pandas as pd
-        if pd.isna(v):
-            return None
-    except (ImportError, TypeError, ValueError):
-        pass
-    # Un Decimal (los agregados de DuckDB): entero si lo es, si no float.
-    if type(v).__name__ == "Decimal":
-        return int(v) if v == v.to_integral_value() else float(v)
-    if hasattr(v, "isoformat"):
-        return v.isoformat()
-    if hasattr(v, "item"):
-        try:
-            return llano(v.item())
-        except (ValueError, AttributeError):
-            pass
-    return str(v)
+    """Un valor suelto (el resultado de una celda que no es tabla) → JSON."""
+    return ore.json_de(v)
 
 
 # ── El bucle ───────────────────────────────────────────────────────────────

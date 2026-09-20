@@ -147,27 +147,45 @@ El driver ya traduce; el inductor deja de tirarlo. Se pensaron dos caminos y se 
   Una columna sin `type` es la que el conector no supo traducir: texto para quien la lea, y se
   sabe que lo es porque nadie dijo otra cosa.
 
-### 4 · La celda ve columnas
+### 4 · La celda ve columnas (como quedó en T3)
 
-`over()` devuelve **la tabla columnar del lenguaje**, y las filas-objeto son una vista:
+`over()` y `sql()` devuelven **valores tipados según la tabla**, en la forma natural de cada
+lenguaje, y lo columnar está a mano para lo masivo:
 
-- **Python**: `pyarrow.Table`; `como="pandas"` con `types_mapper=pd.ArrowDtype` (enteros
-  nulables, decimales, zonas); `como="polars"` cuando esté en la capa.
-- **Node**: hoy el resultado tipado de DuckDB por columnas (`DuckDBResultReader.getColumns()`,
-  valores `DuckDBDecimalValue`, `DuckDBTimestampTZValue`…), que ya cumple la tabla sin Arrow
-  JS; `filas()` como comodidad. Arrow JS (`apache-arrow`) **se mide antes de meterlo** en la
-  imagen: no tiene decimales de verdad ni ns sin pérdida.
-- **Java**: Arrow Java (`VectorSchemaRoot` que DuckDB JDBC exporta con `arrowExportStream`),
-  **medido antes**: ~10 MB de jars y `--add-opens=java.base/java.nio`. Si no compensa, el
-  camino JDBC con el mapeo por tipo arreglado (ns, time, map, decimal).
-- **El JSON de la consola** (la salida `tabla` de los tres agentes) es la última columna de la
-  tabla, igual en los tres: hoy cada agente tiene su `llano`, y discrepan.
+- **Python**: DataFrame de pandas **con `ArrowDtype`** por defecto (es la misma memoria de
+  Arrow: un `int64` con nulos sigue siendo `int64`, un `decimal128` es `Decimal` exacto, un
+  instante lleva su zona; 16,7 M filas/s en 10 M); `como="arrow"` da la `pyarrow.Table`,
+  `como="polars"` un DataFrame de polars si está en la capa. Se prefirió pandas por defecto y
+  no `pyarrow.Table` (como decía el borrador) porque es lo que una celda espera, y con
+  `ArrowDtype` **nada se degrada**: no hay razón para hacer pagar la conversión a mano.
+- **Node**: **filas** (objetos) con los valores tipados de DuckDB —`bigint`,
+  `DuckDBDecimalValue`, `DuckDBDateValue`, `DuckDBTimestampTZValue` (`.micros` UTC),
+  `DuckDBBlobValue`…—, **hasta un límite** (`LIMITE = 100 000`) y diciéndolo: `filas.total`,
+  `filas.truncada`, `filas.tipos` (columna → tipo de Arrow). `{ como: "columnas" }` da arrays
+  por columna sin objeto por fila. Un `count(*)` es `3n`: el tipo dice lo que es. No Arrow JS
+  (T4: 11/23 y 21 MB).
+- **Java**: **`Filas`** (`List<Map<String,Object>>` con `tipos`, `total`, `truncada`, hasta
+  `LIMITE = 1 000 000`) con `Long`, `BigDecimal`, `LocalDate`, `LocalTime`, `LocalDateTime`,
+  `Instant`, `byte[]`, `List`, `Map` —construidos **desde Arrow** (`arrowExportStream`), no
+  desde `getObject` de JDBC, que tenía cuatro tipos mal—; y `arrow("p.v")` / `arrowSql("…")`
+  dan el `ArrowReader` por lotes (`VectorSchemaRoot`) para recorrer 10 M de filas a 13,5 M
+  filas/s sin un objeto por fila. La imagen lleva 13 jars (4,8 MB, `puesto/jvm/jars.txt`) y
+  `--add-opens=java.base/java.nio=ALL-UNNAMED`.
+- **El JSON de la consola** lo hace **el SDK** (`ore.tabla(valor)` / `ore.jsonDe`), igual en
+  los tres, y los agentes sólo le ponen el límite de filas; una celda puede pedirlo. `columnas`
+  lleva el tipo de Arrow con el nombre de `pyarrow` (`int64`, `decimal128(18, 4)`,
+  `timestamp[us, tz=UTC]`…). Una precisión que la tabla no tenía: un **decimal de escala 0**
+  (el `HUGEINT` de un `sum(1)` o un `count`) es un entero y va como los enteros; la fecha-hora
+  lleva `T`, segundos siempre y la fracción sólo si no es cero, sin ceros de más.
 
 ### 5 · Lo que no sobrevive, se dice
 
 Cada conversión con pérdida posible tiene un sitio donde decirse: el informe de la copia
-(`columnas_sin_estrechar`), la tabla de arriba (JSON), y `over(…, estricto=True)` que falla en
-vez de degradar. Nada se degrada en silencio: es la diferencia entre un contrato y una costumbre.
+(`columnas_sin_estrechar`), la tabla de arriba (JSON), y **`estricto`** donde hay algo que
+degradar: en Node y Java, el límite de filas —`over(v, { estricto: true })` /
+`over(v, limite, true)` fallan en vez de recortar—. En Python no existe el parámetro porque
+con `ArrowDtype` no hay conversión con pérdida que pedir que falle. Nada se degrada en
+silencio: es la diferencia entre un contrato y una costumbre.
 
 ## Lo medido
 
@@ -243,6 +261,28 @@ antes de meter nada en una imagen:
   en vez de `(38, 18)`): la cabecera de la copia lleva sólo el escalar. Es cosmético —
   `decimal128` ocupa 16 bytes con cualquier precisión— y queda para T3 si el SDK lo necesita.
 
+### T3, hecho: la celda ve el contrato
+
+`pruebas-de-fuego/medida-w3-leer.py` (rehecha para medir el contrato: lo que la consola ve por
+`ore.tabla()`, cotejado con la verdad de pyarrow; 2026-09-20, en local):
+
+| | over · sql | tipo nativo | 10 M de filas |
+|---|---|---|---|
+| **Python** | 23/23 · 23/23 | `int64[pyarrow]`, `decimal128(18, 4)[pyarrow]`, `timestamp[us, tz=UTC][pyarrow]`… | `over()` entero 598 ms (16,7 M filas/s); sumar una columna 19 ms; `sql()` group by 109 ms |
+| **Node** | 23/23 · 23/23 | `bigint`, `DuckDBDecimalValue`, `DuckDBTimestampTZValue`, `DuckDBBlobValue`… | `over()` 100 000 de 10 M en 381 ms y lo dice (`truncada`); `{como: "columnas", limite: 10 M}` 11,0 s; `sql()` group by 186 ms |
+| **Java** | 23/23 · 23/23 | `Long`, `BigDecimal`, `LocalDate`, `LocalTime`, `LocalDateTime`, `Instant`, `byte[]` | `over()` 1 M de 10 M en 1,1 s y lo dice; `arrow()` recorre las 10 M en 741 ms (13,5 M filas/s); `sql()` group by 84 ms |
+
+Antes de T3 (19-09): pandas perdía enteros con nulos y decimales grandes, Node daba los
+`bigint` como cadena y el JSON de cada agente era distinto, Java tenía ns → 1970, `time` →
+00:00, `map` → `{}` y decimal → double. Ahora los tres agentes emiten **el mismo JSON** desde el
+SDK, y `--comprobar` (la imagen, al construirse) ejerce un `bigint`, un `decimal(4,2)` y un
+`timestamptz` por el camino real: si faltan los jars o el `--add-opens`, falla la imagen y no la
+primera celda de una persona.
+
+Lo que la tabla de §1 no decía y T3 fijó: el decimal de escala 0 es entero (arriba); `-0.0` sale
+`0` en Node (JSON no tiene −0; se acepta); los anidados se nombran `struct`/`map` en Node
+(DuckDB no da los hijos por nombre sin más trabajo) y con los hijos en Python y Java.
+
 ## Lo que se acepta a cambio
 
 - **Un cambio de espec** (`Table.columns.<c>.type`) y **rehacer las copias** para que lleven
@@ -291,5 +331,5 @@ dataset escrito por código nace Iceberg; la expectativa es que sí.
 |---|---|---|
 | **T1** ✓ 2026-09-20 | la tabla de arriba como código: `ore_core::tipos` (escalar ↔ físico ↔ forma canónica del texto) con sus pruebas; `carga.rs` estrecha por ella; el informe de la copia dice lo no estrechado | hecho, abajo; la copia de `olist.products` llevará `price: decimal`, `recorded_at: timestamp[us, UTC]` cuando T2 ponga el escalar en la cabecera (hoy el plan dice `String`); `medida-w3-tipos.py` deja de decir `string×218` con T2 + rehacer |
 | **T2** ✓ 2026-09-20 | el escalar al árbol: `Table.columns.<c>.type` en OOS (`oos@65715b8`), el driver emite tipo y cita, el inductor los escribe, `tipos_de_raiz` tipa con la tabla y la entidad afina | hecho: `ore view` de una vista sobre una tabla tipada sin entidad da `id: Integer · sueldo: Decimal · desde: Date` (prueba `el_tipo_de_la_tabla_llega_al_esquema_del_plan_y_la_entidad_lo_afina`); en el clúster, tras desplegar: re-inducir el paquete (`POST /paquetes/{n}/copia` o rehacer la database) → la cabecera de la copia cambia → la pasada siguiente sella copias tipadas y `medida-w3-tipos.py` deja de decir `string×218` |
-| **T3** | la celda: `over()` columnar en los tres, el JSON único, `estricto` | `medida-w3-leer.py` sin `≠` fuera de lo que la tabla dice |
+| **T3** ✓ 2026-09-20 | la celda: valores tipados en los tres (pandas `ArrowDtype` · DuckDB tipado con límite · Arrow Java con `Filas` y `arrow()`), el JSON único en el SDK (`ore.tabla`), `estricto` donde hay algo que degradar | `medida-w3-leer.py`: **23/23 en los seis caminos** (`over`/`sql` × Python/Node/Java), 0 degradadas; `el-puesto.sh` 1–9 con los tres agentes; `--comprobar` de las dos imágenes ejerce el contrato al construirse |
 | **T4** ✓ 2026-09-20 | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | arriba: Java → Arrow (23/23, 14,6 M filas/s, 5 MB); Node → DuckDB tipado por columnas (22/23, sin añadir nada) y no Arrow JS (11/23, 21 MB); en Node no se materializan 10 M de filas |

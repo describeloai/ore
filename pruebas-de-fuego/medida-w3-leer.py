@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-MEDIDA · W3.5 · el verbo LEER, de punta a punta en los tres lenguajes (19 de septiembre)
+MEDIDA · W3.5 · el verbo LEER, de punta a punta en los tres lenguajes (19 de septiembre;
+rehecha el 20 para 0032 T3: ahora mide EL CONTRATO)
 
-`over("p.v")` y `sql()` existen en Python, TS y Java (W3.1–W3.4), pero cada
-uno devuelve lo suyo: pandas, objetos JSON de DuckDB, `List<Map>` de JDBC.
-Antes de decidir el contrato de tipos (0031 §9, «Arrow como verdad común»),
-lo que hay que saber es QUÉ LLEGA HOY a cada lenguaje —y a la consola— de
-cada tipo que un Parquet puede llevar, y cuánto cuesta leer a escala:
+`over("p.v")` y `sql()` existen en Python, TS y Java (W3.1–W3.4). La primera
+pasada (19-09) enseñó que cada uno devolvía lo suyo —pandas, objetos JSON de
+DuckDB, `List<Map>` de JDBC— y que la consola veía tres JSON distintos; de ahí
+salió el contrato de tipos (0032). Desde T3 los tres SDK devuelven valores
+tipados (Arrow / DuckDB tipado / Arrow Java) y un único JSON de consola
+(`ore.tabla()`), y esta medida es la que lo comprueba:
 
   §1  LOS TIPOS      un Parquet con todos los tipos difíciles (enteros de 64
                      bits fuera del rango de un double, uint64, NaN/inf,
                      decimales de 18 y 38 dígitos, timestamps con y sin zona,
                      ns, date, time, lista, struct, map, binario, diccionario,
-                     nulos en todo) leído por `over()`/`sql()` de los TRES SDK
-                     y cotejado CAMPO A CAMPO con la verdad (pyarrow): qué
-                     sobrevive, qué se degrada y cómo (bigint → cadena,
-                     decimal → cadena, zona perdida, NaN → null…)
-  §2  A ESCALA       10 M de filas (4 columnas): `over()` entero y `sql()` con
-                     group by en cada lenguaje: ms y filas/s
+                     nulos en todo) leído por `over()`/`sql()` de los TRES SDK,
+                     pasado por `ore.tabla()` —lo que la consola ve— y cotejado
+                     CAMPO A CAMPO con la verdad (pyarrow). El criterio de T3:
+                     ningún ≠ fuera de lo que la tabla de 0032 §1 dice
+  §2  A ESCALA       10 M de filas (4 columnas): lo que cada lenguaje hace con
+                     ellas según el contrato —Python las materializa (Arrow),
+                     Node y Java hasta su límite y lo dicen, Java las recorre
+                     por `arrow()`— y `sql()` con group by: ms y filas/s
 
 Los SDK son los de verdad (`puesto/{python,node,jvm}`); `ore-serve` se
 sustituye por un stub HTTP que contesta `GET /puestos/{id}/datos/{vista}`
@@ -108,8 +112,6 @@ def verdad(tabla):
     for c in tabla.column_names:
         col = tabla.column(c)
         vals = [canonico(x) for x in col.to_pylist()]
-        if str(col.type).startswith("map"):
-            vals = ["{}" if x == "[]" else x for x in vals]
         v[c] = {"tipo": str(col.type), "valores": vals}
     return v
 
@@ -125,15 +127,17 @@ def canonico(x):
             return "NaN"
         if x in (float("inf"), float("-inf")):
             return "inf" if x > 0 else "-inf"
-        if x == 0 and str(x).startswith("-"):
-            return "-0"
+        # JSON no tiene −0 ni distingue 1.0 de 1: la forma se perdona, el valor no.
+        if x == int(x) and abs(x) < 1e15:
+            return str(int(x))
         return repr(x)
     if isinstance(x, int):
         return str(x)
     if isinstance(x, decimal.Decimal):
         return format(x, "f")
     if isinstance(x, bytes):
-        return x.hex()
+        import base64
+        return base64.b64encode(x).decode("ascii")
     if isinstance(x, dt.datetime):
         # Un instante con zona es un instante: se compara en UTC, venga con el
         # desfase que venga (DuckDB lo enseña en la zona de la sesión).
@@ -190,14 +194,15 @@ def canonico_desde_json(x):
             return "NaN"
         if x in (float("inf"), float("-inf")):
             return "inf" if x > 0 else "-inf"
-        if x == 0 and str(x).startswith("-"):
-            return "-0"
         if x == int(x) and abs(x) < 1e15:
             return str(int(x))
         return repr(x)
     if isinstance(x, int):
         return str(x)
     if isinstance(x, list):
+        # Un map del contrato: `[{key, value}]` → la forma de la verdad.
+        if x and all(isinstance(e, dict) and set(e) == {"key", "value"} for e in x):
+            return "{" + ",".join("%s:%s" % (canonico_desde_json(e["key"]), canonico_desde_json(e["value"])) for e in x) + "}"
         return "[" + ",".join(str(canonico_desde_json(e)) for e in x) + "]"
     if isinstance(x, dict):
         return "{" + ",".join("%s:%s" % (k, canonico_desde_json(vv)) for k, vv in x.items()) + "}"
@@ -205,85 +210,79 @@ def canonico_desde_json(x):
 
 
 # ── lo que corre en cada lenguaje: over() y sql() con el SDK de verdad ────
-LECTOR_PY = r'''
-import json, os, sys, time, math, decimal, datetime as dt
+LECTOR_PY = r"""
+import json, os, sys, time
 sys.path.insert(0, os.environ["SDK_PY"])
 import ore
 ore.puesto._cabeceras = {"x-ore-sujeto": "agente:medida"}
-def llano(v):
-    if v is None or isinstance(v, (bool, int, str)): return v
-    if isinstance(v, float): return None if v != v else v
-    try:
-        import pandas as pd
-        if pd.isna(v): return None
-    except (ImportError, TypeError, ValueError): pass
-    if type(v).__name__ == "Decimal": return int(v) if v == v.to_integral_value() else float(v)
-    if hasattr(v, "isoformat"): return v.isoformat()
-    if hasattr(v, "item"):
-        try: return llano(v.item())
-        except (ValueError, AttributeError): pass
-    if hasattr(v, "tolist"): return [llano(x) for x in v.tolist()]
-    if isinstance(v, dict): return {k: llano(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple)): return [llano(x) for x in v]
-    return str(v)
+def columnas(t):
+    return {c["name"]: {"tipo": c["type"], "valores": [f[i] for f in t["filas"]]} for i, c in enumerate(t["columnas"])}
 salida = {}
-t = time.time(); df = ore.over("tipos.dificiles"); salida["over_pandas_ms"] = round((time.time() - t) * 1000)
-salida["pandas"] = {c: {"tipo": str(df[c].dtype), "valores": [llano(v) for v in df[c].tolist()]} for c in df.columns}
-t = time.time(); ta = ore.over("tipos.dificiles", como="arrow"); salida["over_arrow_ms"] = round((time.time() - t) * 1000)
-salida["arrow"] = {c: {"tipo": str(ta.column(c).type)} for c in ta.column_names}
+t = time.time(); df = ore.over("tipos.dificiles"); salida["over_ms"] = round((time.time() - t) * 1000)
+salida["over"] = columnas(ore.tabla(df))
+salida["nativo"] = {c: str(df[c].dtype) for c in df.columns}
 t = time.time(); ds = ore.sql("select * from tipos.dificiles"); salida["sql_ms"] = round((time.time() - t) * 1000)
-salida["sql"] = {c: {"tipo": str(ds[c].dtype), "valores": [llano(v) for v in ds[c].tolist()]} for c in ds.columns}
+salida["sql"] = columnas(ore.tabla(ds))
 if os.environ.get("GRANDE"):
-    t = time.time(); g = ore.over("grande.filas"); salida["grande_over_ms"] = round((time.time() - t) * 1000); salida["grande_filas"] = len(g)
+    t = time.time(); g = ore.over("grande.filas"); salida["grande_over_ms"] = round((time.time() - t) * 1000); salida["grande_filas"] = len(g); salida["grande_como"] = "over(): DataFrame con ArrowDtype, entero"
+    t = time.time(); s = float(g["importe"].sum()); salida["grande_suma_ms"] = round((time.time() - t) * 1000)
     t = time.time(); r = ore.sql("select pais, count(*) n, sum(importe) s from grande.filas group by 1 order by 2 desc"); salida["grande_sql_ms"] = round((time.time() - t) * 1000); salida["grande_grupos"] = len(r)
 print(json.dumps(salida, default=str))
-'''
+"""
 
-LECTOR_MJS = r'''
+LECTOR_MJS = r"""
 import * as ore from "./ore/index.mjs";
 ore.puesto._cabeceras = { "x-ore-sujeto": "agente:medida" };
-const llano = (v) => v === undefined ? null : typeof v === "bigint" ? v.toString() : v;
+const columnas = (t) => Object.fromEntries(t.columnas.map((c, i) => [c.name, { tipo: c.type, valores: t.filas.map((f) => f[i]) }]));
 const salida = {};
 let t = performance.now(); const filas = await ore.over("tipos.dificiles"); salida.over_ms = Math.round(performance.now() - t);
-const cols = Object.keys(filas[0]);
-salida.over = Object.fromEntries(cols.map((c) => [c, { tipo: typeof filas.find((f) => f[c] !== null && f[c] !== undefined)?.[c] ?? "null", valores: filas.map((f) => llano(f[c])) }]));
+salida.over = columnas(ore.tabla(filas));
+salida.nativo = Object.fromEntries(Object.keys(filas[0]).map((c) => { const v = filas.find((f) => f[c] !== null && f[c] !== undefined)?.[c]; return [c, v === undefined ? "null" : typeof v === "object" ? v.constructor.name : typeof v]; }));
 t = performance.now(); const fs = await ore.sql("select * from tipos.dificiles"); salida.sql_ms = Math.round(performance.now() - t);
-salida.sql = Object.fromEntries(cols.map((c) => [c, { valores: fs.map((f) => llano(f[c])) }]));
+salida.sql = columnas(ore.tabla(fs));
 if (process.env.GRANDE) {
-  t = performance.now(); const g = await ore.over("grande.filas"); salida.grande_over_ms = Math.round(performance.now() - t); salida.grande_filas = g.length;
+  t = performance.now(); const g = await ore.over("grande.filas"); salida.grande_over_ms = Math.round(performance.now() - t); salida.grande_filas = g.length; salida.grande_como = `over(): ${g.length} filas de ${g.total} (truncada: ${g.truncada}, el límite por defecto)`;
+  t = performance.now(); const c = await ore.over("grande.filas", { como: "columnas", limite: 10_000_000 }); salida.grande_columnas_ms = Math.round(performance.now() - t);
+  t = performance.now(); let s = 0; for (const x of c.columnas[2]) s += x; salida.grande_suma_ms = Math.round(performance.now() - t); salida.grande_columnas_filas = c.columnas[0].length;
   t = performance.now(); const r = await ore.sql("select pais, count(*) n, sum(importe) s from grande.filas group by 1 order by 2 desc"); salida.grande_sql_ms = Math.round(performance.now() - t); salida.grande_grupos = r.length;
 }
 console.log(JSON.stringify(salida));
-'''
+"""
 
-LECTOR_JAVA = r'''
+LECTOR_JAVA = r"""
 import java.util.*;
 public class Lector {
+    static Map<String, Object> columnas(Map<String, Object> t) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        List<Map<String, Object>> cols = (List<Map<String, Object>>) t.get("columnas");
+        List<List<Object>> filas = (List<List<Object>>) t.get("filas");
+        for (int i = 0; i < cols.size(); i++) { List<Object> vs = new ArrayList<>(); for (List<Object> f : filas) vs.add(f.get(i)); Map<String, Object> c = new LinkedHashMap<>(); c.put("tipo", cols.get(i).get("type")); c.put("valores", vs); out.put((String) cols.get(i).get("name"), c); }
+        return out;
+    }
     public static void main(String[] a) throws Exception {
         java.lang.reflect.Field f = ore.Ore.Puesto.class.getDeclaredField("cabeceras"); f.setAccessible(true);
         f.set(ore.Ore.puesto, Map.of("x-ore-sujeto", "agente:medida"));
         Map<String, Object> salida = new LinkedHashMap<>();
-        long t = System.nanoTime(); List<Map<String, Object>> filas = ore.Ore.over("tipos.dificiles"); salida.put("over_ms", (System.nanoTime() - t) / 1_000_000);
-        Map<String, Object> over = new LinkedHashMap<>();
-        for (String c : filas.get(0).keySet()) {
-            String tipo = "null";
-            for (Map<String, Object> r : filas) { Object v = r.get(c); if (v != null) { tipo = v.getClass().getSimpleName(); break; } }
-            List<Object> vs = new ArrayList<>(); for (Map<String, Object> r : filas) vs.add(r.get(c));
-            Map<String, Object> col = new LinkedHashMap<>(); col.put("tipo", tipo); col.put("valores", vs); over.put(c, col);
-        }
-        salida.put("over", over);
-        t = System.nanoTime(); List<Map<String, Object>> fs = ore.Ore.sql("select * from tipos.dificiles"); salida.put("sql_ms", (System.nanoTime() - t) / 1_000_000);
-        Map<String, Object> sql = new LinkedHashMap<>();
-        for (String c : fs.get(0).keySet()) { List<Object> vs = new ArrayList<>(); for (Map<String, Object> r : fs) vs.add(r.get(c)); Map<String, Object> col = new LinkedHashMap<>(); col.put("valores", vs); sql.put(c, col); }
-        salida.put("sql", sql);
+        long t = System.nanoTime(); ore.Ore.Filas filas = ore.Ore.over("tipos.dificiles"); salida.put("over_ms", (System.nanoTime() - t) / 1_000_000);
+        salida.put("over", columnas(ore.Ore.tabla(filas, 200)));
+        Map<String, Object> nativo = new LinkedHashMap<>();
+        for (String c : filas.tipos.keySet()) { String tipo = "null"; for (Map<String, Object> r : filas) { Object v = r.get(c); if (v != null) { tipo = v.getClass().getSimpleName(); break; } } nativo.put(c, tipo); }
+        salida.put("nativo", nativo);
+        t = System.nanoTime(); ore.Ore.Filas fs = ore.Ore.sql("select * from tipos.dificiles"); salida.put("sql_ms", (System.nanoTime() - t) / 1_000_000);
+        salida.put("sql", columnas(ore.Ore.tabla(fs, 200)));
         if (System.getenv("GRANDE") != null) {
-            t = System.nanoTime(); List<Map<String, Object>> g = ore.Ore.over("grande.filas"); salida.put("grande_over_ms", (System.nanoTime() - t) / 1_000_000); salida.put("grande_filas", g.size());
-            t = System.nanoTime(); List<Map<String, Object>> r = ore.Ore.sql("select pais, count(*) n, sum(importe) s from grande.filas group by 1 order by 2 desc"); salida.put("grande_sql_ms", (System.nanoTime() - t) / 1_000_000); salida.put("grande_grupos", r.size());
+            t = System.nanoTime(); ore.Ore.Filas g = ore.Ore.over("grande.filas"); salida.put("grande_over_ms", (System.nanoTime() - t) / 1_000_000); salida.put("grande_filas", g.size()); salida.put("grande_como", "over(): " + g.size() + " filas de " + g.total + " (truncada: " + g.truncada + ", el límite por defecto)");
+            t = System.nanoTime(); long n = 0; double s = 0;
+            try (org.apache.arrow.vector.ipc.ArrowReader lector = ore.Ore.arrow("grande.filas")) {
+                while (lector.loadNextBatch()) { var raiz = lector.getVectorSchemaRoot(); var imp = (org.apache.arrow.vector.Float8Vector) raiz.getVector("importe"); for (int i = 0; i < raiz.getRowCount(); i++) { s += imp.get(i); n++; } }
+            }
+            salida.put("grande_arrow_ms", (System.nanoTime() - t) / 1_000_000); salida.put("grande_arrow_filas", n);
+            t = System.nanoTime(); ore.Ore.Filas r = ore.Ore.sql("select pais, count(*) n, sum(importe) s from grande.filas group by 1 order by 2 desc"); salida.put("grande_sql_ms", (System.nanoTime() - t) / 1_000_000); salida.put("grande_grupos", r.size());
         }
         System.out.println(ore.Json.escribir(salida));
     }
 }
-'''
+"""
 
 
 # ── el stub de ore-serve: sólo `datos` ─────────────────────────────────────
@@ -320,6 +319,24 @@ def sobre(tabla, almacen, nombre):
     with open(os.path.join(almacen, clave), "wb") as f:
         f.write(art)
     return clave, len(carga)
+
+
+def jars_de_arrow():
+    """Los jars de `puesto/jvm/jars.txt`, bajados una vez a %TEMP%/ore-arrow-java."""
+    d = os.path.join(tempfile.gettempdir(), "ore-arrow-java")
+    os.makedirs(d, exist_ok=True)
+    out = []
+    for linea in open(os.path.join(RAIZ, "puesto", "jvm", "jars.txt"), encoding="utf-8"):
+        linea = linea.strip()
+        if not linea or linea.startswith("#"):
+            continue
+        g, v = linea.split()
+        n = "%s-%s.jar" % (g.rsplit("/", 1)[1], v)
+        f = os.path.join(d, n)
+        if not os.path.isfile(f):
+            urllib.request.urlretrieve("https://repo1.maven.org/maven2/%s/%s/%s" % (g, v, n), f)
+        out.append(f)
+    return out
 
 
 def tabla_grande(n):
@@ -389,17 +406,19 @@ def main():
             jar = os.environ.get("DUCKDB_JDBC_JAR") or os.path.join(tempfile.gettempdir(), "duckdb_jdbc-%s.jar" % DUCKDB_JDBC)
             if not os.path.isfile(jar):
                 urllib.request.urlretrieve("https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/%s/duckdb_jdbc-%s.jar" % (DUCKDB_JDBC, DUCKDB_JDBC), jar)
+            jars = [jar] + jars_de_arrow()
             clases = os.path.join(tmp, "clases")
             os.makedirs(clases)
             with open(os.path.join(tmp, "Lector.java"), "w", encoding="utf-8", newline="\n") as f:
                 f.write(LECTOR_JAVA)
             fuentes = [os.path.join(RAIZ, "puesto", "jvm", "ore", x) for x in ("Json.java", "Ore.java", "Agente.java")] + [os.path.join(tmp, "Lector.java")]
-            c, out, err = sh("javac", "-Xlint:-options", "--release", "21", "-cp", win(jar), "-d", win(clases), *[win(x) for x in fuentes])
+            sep = ";" if os.name == "nt" else ":"
+            cp = sep.join(win(x) for x in jars)
+            c, out, err = sh("javac", "-Xlint:-options,-unchecked", "--release", "21", "-cp", cp, "-d", win(clases), *[win(x) for x in fuentes])
             if c != 0:
                 fila("java", "✗ javac", err.strip().splitlines()[0][:90])
             else:
-                sep = ";" if os.name == "nt" else ":"
-                c, out, err = sh("java", "-Dstdout.encoding=UTF-8", "-Dfile.encoding=UTF-8", "-cp", win(clases) + sep + win(jar), "Lector", env=env)
+                c, out, err = sh("java", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-Dstdout.encoding=UTF-8", "-Dfile.encoding=UTF-8", "-cp", win(clases) + sep + cp, "Lector", env=env)
                 if c != 0:
                     fila("java", "✗", (err.strip().splitlines()[-1] if err.strip() else out)[:90])
                 else:
@@ -407,8 +426,8 @@ def main():
 
         # ── la matriz: campo a campo ──────────────────────────────────────
         print()
-        print("§1 · lo que llega de cada tipo (✓ = igual que la verdad; si no, lo que llegó)")
-        lenguas = [("py·pandas", "python", "pandas"), ("py·sql", "python", "sql"), ("node·over", "node", "over"), ("node·sql", "node", "sql"), ("java·over", "java", "over"), ("java·sql", "java", "sql")]
+        print("§1 · lo que la consola ve de cada tipo por `ore.tabla()` (✓ = igual que la verdad, con el tipo Arrow que el SDK declara; si no, lo que llegó)")
+        lenguas = [("py·over", "python", "over"), ("py·sql", "python", "sql"), ("node·over", "node", "over"), ("node·sql", "node", "sql"), ("java·over", "java", "over"), ("java·sql", "java", "sql")]
         lenguas = [l for l in lenguas if l[1] in resultados]
         print("  %-13s %-26s %s" % ("columna", "verdad (arrow)", " ".join("%-22s" % l[0] for l in lenguas)))
         degradaciones = {l[0]: 0 for l in lenguas}
@@ -430,15 +449,26 @@ def main():
             print("  %-13s %-26s %s" % (col, ("%s · %s" % (vv["tipo"], str(vv["valores"][0])[:12]))[:26], " ".join("%-22s" % c for c in celdas)))
         print("  %-13s %-26s %s" % ("degradadas", "de %d" % len(v), " ".join("%-22s" % degradaciones[l[0]] for l in lenguas)))
         print()
+        print("§1b · el tipo NATIVO que `over()` entrega en cada lenguaje (lo que una celda toca)")
+        print("  %-13s %-34s %-30s %s" % ("columna", "python (pandas ArrowDtype)", "node (valor tipado)", "java"))
+        for col in v:
+            print("  %-13s %-34s %-30s %s" % (col, str(resultados.get("python", {}).get("nativo", {}).get(col, "—"))[:34], str(resultados.get("node", {}).get("nativo", {}).get(col, "—"))[:30], str(resultados.get("java", {}).get("nativo", {}).get(col, "—"))))
+        print()
         print("§2 · a escala (%d filas, %.0f MB de Parquet)" % (filas, bytes_g / 1e6))
         for lng in ("python", "node", "java"):
             r = resultados.get(lng)
             if not r:
                 continue
             ms_o, ms_s = r.get("grande_over_ms"), r.get("grande_sql_ms")
-            fila("  %s · over() entero" % lng, "%s ms" % ms_o, "%.1f M filas/s · %s filas" % (filas / max(ms_o, 1) / 1000, r.get("grande_filas")) if ms_o else "")
+            fila("  %s · over()" % lng, "%s ms" % ms_o, "%s · %.1f M filas/s" % (r.get("grande_como"), r.get("grande_filas", 0) / max(ms_o, 1) / 1000) if ms_o else "")
+            if r.get("grande_suma_ms") is not None and lng == "python":
+                fila("  %s · sumar una columna" % lng, "%s ms" % r["grande_suma_ms"], "sobre el DataFrame")
+            if r.get("grande_columnas_ms") is not None:
+                fila("  %s · over(como: columnas)" % lng, "%s ms" % r["grande_columnas_ms"], "%s filas · sumar una columna %s ms" % (r.get("grande_columnas_filas"), r.get("grande_suma_ms")))
+            if r.get("grande_arrow_ms") is not None:
+                fila("  %s · arrow() recorrido" % lng, "%s ms" % r["grande_arrow_ms"], "%s filas sumadas · %.1f M filas/s" % (r.get("grande_arrow_filas"), r.get("grande_arrow_filas", 0) / max(r["grande_arrow_ms"], 1) / 1000))
             fila("  %s · sql() group by" % lng, "%s ms" % ms_s, "%s grupos" % r.get("grande_grupos"))
-            fila("  %s · tipos: over/sql" % lng, "%s / %s ms" % (r.get("over_ms", r.get("over_pandas_ms")), r.get("sql_ms")), "la primera bajada incluida")
+            fila("  %s · tipos: over/sql" % lng, "%s / %s ms" % (r.get("over_ms"), r.get("sql_ms")), "la primera bajada incluida")
         srv.shutdown()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

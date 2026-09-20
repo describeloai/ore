@@ -5,6 +5,24 @@
 //   sql("select … from p.v")    → las filas del resultado (DuckDB en el puesto)
 //   persona()                   → quién abrió el puesto (`persona:…`)
 //
+// Los valores son los TIPADOS de DuckDB, que cumplen el contrato de tipos
+// (0032 §1) sin añadir nada a la imagen: `bigint` para un entero de 64 bits,
+// `DuckDBDecimalValue` (exacto) para un decimal, `DuckDBDateValue`,
+// `DuckDBTimeValue`, `DuckDBTimestampValue` (hora de pared, `.micros`),
+// `DuckDBTimestampTZValue` (un instante, `.micros` desde la época UTC),
+// `DuckDBBlobValue` (`.bytes`), `DuckDBListValue` (`.items`)… Un `count(*)` es
+// `3n`, no `3`: el tipo dice lo que es.
+//
+// Y EN NODE NO SE MATERIALIZAN 10 M DE FILAS (medido en 0032 T4: JS crea un
+// objeto por valor, 0,7 M filas/s por cualquier camino). `over()` y `sql()`
+// devuelven hasta `limite` filas (100 000 por defecto) y lo dicen:
+// `filas.total` (las que hay, si se sabe), `filas.truncada`, `filas.tipos`
+// (columna → tipo de Arrow). Con `{ estricto: true }` una respuesta que no cabe
+// en el límite falla en vez de recortarse; lo masivo se agrega en SQL
+// (60–140 ms para 10 M de filas) o se hace en Python. `{ como: "columnas" }`
+// da `{ nombres, tipos, columnas }` —arrays por columna, sin objeto por fila—
+// para quien recorra muchas filas.
+//
 // El código nunca ve el bucket ni una credencial: pregunta a `ore-serve` QUÉ
 // copia es (con la identidad del puesto, que la resuelve en nombre de la
 // persona y con su potestad) y baja el artefacto con la identidad del pod
@@ -129,38 +147,82 @@ async function duckdb() {
 
 const VISTAS_EN_SQL = /\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b/gi;
 
-/** Las filas de un resultado de DuckDB, como objetos con valores llanos (JSON).
- *  DuckDB da los enteros grandes y los decimales como CADENAS por si no caben
- *  en un `number`; un `count(*)` es un BIGINT y se quiere el 3, no el "3":
- *  vuelven a número cuando caben (si no, se quedan en cadena). */
-async function filasDe(con, texto) {
-  const r = await con.runAndReadAll(texto);
-  const numericas = new Set(r.columnNames().filter((_, i) => /^(U?BIGINT|U?HUGEINT|DECIMAL)/.test(String(r.columnTypes()[i]))));
-  const filas = r.getRowObjectsJson();
-  if (numericas.size) {
-    for (const f of filas) {
-      for (const c of numericas) {
-        const v = f[c];
-        if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) {
-          const n = Number(v);
-          if (Number.isFinite(n) && (v.includes(".") || Number.isSafeInteger(n))) f[c] = n;
-        }
-      }
-    }
+/** Cuántas filas materializa `over()`/`sql()` si no se dice otra cosa. */
+export const LIMITE = 100_000;
+
+/** El tipo de DuckDB, con el nombre que Arrow (y `pyarrow`) le da: es lo que la
+ *  consola enseña y lo mismo que dicen los agentes de Python y de Java. */
+export function nombreArrow(tipo) {
+  const t = String(tipo);
+  const simples = {
+    BOOLEAN: "bool", TINYINT: "int8", SMALLINT: "int16", INTEGER: "int32", BIGINT: "int64", HUGEINT: "int128",
+    UTINYINT: "uint8", USMALLINT: "uint16", UINTEGER: "uint32", UBIGINT: "uint64", UHUGEINT: "uint128",
+    FLOAT: "float", DOUBLE: "double", VARCHAR: "string", BLOB: "binary", UUID: "string",
+    DATE: "date32[day]", TIME: "time64[us]", TIMESTAMP: "timestamp[us]", "TIMESTAMP WITH TIME ZONE": "timestamp[us, tz=UTC]",
+    TIMESTAMP_NS: "timestamp[ns]", TIMESTAMP_MS: "timestamp[ms]", TIMESTAMP_S: "timestamp[s]", "NULL": "null",
+  };
+  if (simples[t]) return simples[t];
+  let m = /^DECIMAL\((\d+),\s*(\d+)\)$/.exec(t);
+  if (m) return `decimal128(${m[1]}, ${m[2]})`;
+  if (t.endsWith("[]")) return `list<item: ${nombreArrow(t.slice(0, -2))}>`;
+  if (t.startsWith("STRUCT(")) return "struct";
+  if (t.startsWith("MAP(")) return "map";
+  if (t.startsWith("ENUM(")) return "dictionary<values=string, indices=int32, ordered=0>";
+  return t.toLowerCase();
+}
+
+/** Corre `texto` y materializa hasta `limite` filas (+1 para saber si había más). */
+async function leerHasta(con, texto, limite) {
+  const r = await con.runAndReadUntil(texto, limite + 1);
+  const truncada = r.currentRowCount > limite;
+  return { r, truncada };
+}
+
+/** El resultado en la forma pedida, con lo que hay que saber de él colgado. */
+function entregar(r, truncada, limite, total, como) {
+  const nombres = r.columnNames();
+  const tipos = Object.fromEntries(nombres.map((n, i) => [n, nombreArrow(r.columnTypes()[i])]));
+  if (como === "columnas") {
+    const columnas = r.getColumns().map((c) => (truncada ? c.slice(0, limite) : c));
+    return { nombres, tipos, columnas, total, truncada };
   }
+  if (como !== "filas") throw new Error(`como: ${JSON.stringify(como)} no es una forma: vale "filas" o "columnas"`);
+  const filas = r.getRowObjects();
+  if (truncada) filas.length = limite;
+  // Propiedades, no elementos: `filas.length`, `filas.map` y `for…of` ven sólo filas.
+  Object.defineProperties(filas, {
+    tipos: { value: tipos, enumerable: false },
+    total: { value: total, enumerable: false },
+    truncada: { value: truncada, enumerable: false },
+  });
   return filas;
 }
 
-/** La copia de `<paquete>.<vista>` como filas (objetos). */
-export async function over(vista) {
+function opciones(o) {
+  const { limite = LIMITE, estricto = false, como = "filas" } = o ?? {};
+  if (!Number.isInteger(limite) || limite < 1) throw new Error("limite quiere un entero ≥ 1");
+  return { limite, estricto, como };
+}
+
+/** La copia de `<paquete>.<vista>`: filas (objetos con valores tipados) hasta
+ *  `limite`, con `.tipos`, `.total` y `.truncada`; o `{ como: "columnas" }`. */
+export async function over(vista, o) {
+  const { limite, estricto, como } = opciones(o);
   const [f] = await parquetDe(vista);
-  return filasDe(await duckdb(), `select * from read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`);
+  const con = await duckdb();
+  const ruta = f.replaceAll("'", "''").replaceAll("\\", "/");
+  const total = Number((await con.runAndReadAll(`select count(*) from read_parquet('${ruta}')`)).getColumns()[0][0]);
+  if (estricto && total > limite) throw new Error(`over(${JSON.stringify(vista)}): la copia tiene ${total} filas y el límite es ${limite}; sube limite, agrega en sql() o quita estricto`);
+  const { r, truncada } = await leerHasta(con, `select * from read_parquet('${ruta}')`, limite);
+  return entregar(r, truncada, limite, total, como);
 }
 
 /** SQL (DuckDB) sobre las copias: cada `paquete.vista` tras FROM/JOIN se
- *  resuelve, se baja una vez y queda como vista `paquete.vista`. */
-export async function sql(texto) {
+ *  resuelve, se baja una vez y queda como vista `paquete.vista`. Devuelve lo
+ *  mismo que `over()`; `total` sólo se sabe si el resultado cabe en el límite. */
+export async function sql(texto, o) {
   if (typeof texto !== "string" || !texto.trim()) throw new Error("sql() quiere una consulta");
+  const { limite, estricto, como } = opciones(o);
   const con = await duckdb();
   const vistas = new Set([...texto.matchAll(VISTAS_EN_SQL)].map((m) => `${m[1]}.${m[2]}`));
   for (const v of [...vistas].sort()) {
@@ -169,7 +231,128 @@ export async function sql(texto) {
     await con.run(`create schema if not exists "${esquema}"`);
     await con.run(`create or replace view "${esquema}"."${nombre}" as select * from read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`);
   }
-  return filasDe(con, texto);
+  const { r, truncada } = await leerHasta(con, texto, limite);
+  if (estricto && truncada) throw new Error(`sql(): el resultado pasa de ${limite} filas; sube limite, agrega más o quita estricto`);
+  return entregar(r, truncada, limite, truncada ? undefined : r.currentRowCount, como);
 }
 
-export default { over, sql, persona, puesto };
+// ── El JSON de la consola (0032 §1) ───────────────────────────────────────
+/** Lo que devuelven `over()` y `sql()` —filas (objetos con valores tipados) o
+ *  `{ nombres, tipos, columnas }`— → la salida `tabla` del contrato (0032 §1,
+ *  columna «JSON de la consola»): el MISMO JSON que emiten los agentes de
+ *  Python y de Java. Un array de objetos cualquiera también vale (sin tipos
+ *  declarados se infieren del primer valor). */
+export function tabla(valor, limite = 200) {
+  if (valor && typeof valor === "object" && Array.isArray(valor.nombres) && Array.isArray(valor.columnas)) {
+    const n = valor.columnas[0]?.length ?? 0;
+    const filas = [];
+    for (let i = 0; i < Math.min(n, limite); i++) filas.push(valor.columnas.map((c) => jsonDe(c[i])));
+    return {
+      columnas: valor.nombres.map((c) => ({ name: c, type: valor.tipos?.[c] ?? "null" })),
+      filas,
+      total: valor.total ?? n,
+      limite,
+    };
+  }
+  if (!Array.isArray(valor) || valor.length === 0) return null;
+  if (!valor.every((f) => f && typeof f === "object" && !Array.isArray(f))) return null;
+  const cabeza = valor.slice(0, limite);
+  const columnas = valor.tipos ? Object.keys(valor.tipos) : [...new Set(cabeza.flatMap((f) => Object.keys(f)))];
+  const tipoDe = (c) => valor.tipos?.[c] ?? tipoInferido(valor.find((f) => f[c] !== null && f[c] !== undefined)?.[c]);
+  return {
+    columnas: columnas.map((c) => ({ name: c, type: tipoDe(c) })),
+    filas: cabeza.map((f) => columnas.map((c) => jsonDe(f[c]))),
+    total: valor.total ?? valor.length,
+    limite,
+  };
+}
+
+/** El tipo de Arrow de un valor suelto, para lo que no viene de `over()`/`sql()`. */
+function tipoInferido(v) {
+  if (v === undefined || v === null) return "null";
+  if (typeof v === "bigint") return "int64";
+  if (typeof v === "number") return Number.isInteger(v) ? "int64" : "double";
+  if (typeof v === "boolean") return "bool";
+  if (typeof v === "string") return "string";
+  if (v instanceof Date) return "timestamp[ms, tz=UTC]";
+  const clase = v?.constructor?.name ?? "";
+  if (clase === "DuckDBDecimalValue") return `decimal128(${v.width}, ${v.scale})`;
+  if (clase === "DuckDBDateValue") return "date32[day]";
+  if (clase === "DuckDBTimeValue") return "time64[us]";
+  if (clase === "DuckDBTimestampValue") return "timestamp[us]";
+  if (clase === "DuckDBTimestampTZValue") return "timestamp[us, tz=UTC]";
+  if (clase === "DuckDBBlobValue") return "binary";
+  if (clase === "DuckDBListValue") return "list";
+  if (clase === "DuckDBStructValue") return "struct";
+  if (clase === "DuckDBMapValue") return "map";
+  return Array.isArray(v) ? "list" : "struct";
+}
+
+const ENTERO_EXACTO = 2n ** 53n;
+const US_POR_DIA = 86_400_000_000n;
+
+function dos(n) { return String(n).padStart(2, "0"); }
+
+/** Fracción de segundo en microsegundos → `.ffffff` sin ceros de más, o nada. */
+function fraccion(us) {
+  if (us === 0n) return "";
+  return "." + String(us).padStart(6, "0").replace(/0+$/, "");
+}
+
+/** Días desde 1970-01-01 → `YYYY-MM-DD` (calendario proléptico, como Arrow). */
+function fechaDeDias(dias) {
+  const d = new Date(Number(dias) * 86_400_000);
+  const y = d.getUTCFullYear();
+  return `${y < 0 ? "-" : ""}${String(Math.abs(y)).padStart(4, "0")}-${dos(d.getUTCMonth() + 1)}-${dos(d.getUTCDate())}`;
+}
+
+/** Microsegundos desde la medianoche → `HH:MM:SS[.ffffff]`. */
+function horaDeMicros(us) {
+  const s = us / 1_000_000n;
+  return `${dos(s / 3600n)}:${dos((s / 60n) % 60n)}:${dos(s % 60n)}${fraccion(us % 1_000_000n)}`;
+}
+
+/** Microsegundos desde la época → ISO 8601 con `T`; `z` añade la `Z` de un instante en UTC. */
+function isoDeMicros(us, z) {
+  const dias = us >= 0n ? us / US_POR_DIA : -((-us + US_POR_DIA - 1n) / US_POR_DIA);
+  const resto = us - dias * US_POR_DIA;
+  return `${fechaDeDias(dias)}T${horaDeMicros(resto)}${z ? "Z" : ""}`;
+}
+
+/** Un valor (tipado de DuckDB, o suelto) → el JSON del contrato (0032 §1):
+ *  entero → número si |x| ≤ 2⁵³, si no cadena · decimal → cadena siempre
+ *  (salvo el de escala 0, que es un entero y va como tal) ·
+ *  float → número, y `NaN`/`Infinity`/`-Infinity` como cadena · fecha
+ *  `YYYY-MM-DD` · hora `HH:MM:SS[.ffffff]` · fecha-hora sin zona en ISO con `T`
+ *  · instante en UTC con `Z` · bytes en base64 · lista → array · struct →
+ *  objeto · map → `[{key, value}]`. Nada se degrada en silencio. */
+export function jsonDe(v) {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "bigint") return v >= -ENTERO_EXACTO && v <= ENTERO_EXACTO ? Number(v) : v.toString();
+  if (typeof v === "number") return Number.isNaN(v) ? "NaN" : Number.isFinite(v) ? v : v > 0 ? "Infinity" : "-Infinity";
+  if (typeof v === "string" || typeof v === "boolean") return v;
+  if (v instanceof Date) return v.toISOString();
+  if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
+  if (Array.isArray(v)) return v.map(jsonDe);
+  const clase = v?.constructor?.name ?? "";
+  // Un decimal de escala 0 (un HUGEINT: `sum(1)`, `count`) es un entero y va como los enteros; con decimales, cadena siempre.
+  if (clase === "DuckDBDecimalValue") return v.scale === 0 ? jsonDe(BigInt(v.value)) : v.toString();
+  if (clase === "DuckDBDateValue") return fechaDeDias(BigInt(v.days));
+  if (clase === "DuckDBTimeValue") return horaDeMicros(BigInt(v.micros));
+  if (clase === "DuckDBTimestampValue") return isoDeMicros(BigInt(v.micros), false);
+  if (clase === "DuckDBTimestampTZValue") return isoDeMicros(BigInt(v.micros), true);
+  if (clase === "DuckDBTimestampNanosecondsValue") { const ns = BigInt(v.nanos); const s = ns >= 0n ? ns / 1_000_000_000n : -((-ns + 999_999_999n) / 1_000_000_000n); const f = String(ns - s * 1_000_000_000n).padStart(9, "0").replace(/0+$/, ""); return isoDeMicros(s * 1_000_000n, false) + (f ? "." + f : ""); }
+  if (clase === "DuckDBBlobValue") return Buffer.from(v.bytes).toString("base64");
+  if (clase === "DuckDBListValue" || clase === "DuckDBArrayValue") return v.items.map(jsonDe);
+  if (clase === "DuckDBStructValue") return Object.fromEntries(Object.entries(v.entries).map(([k, x]) => [k, jsonDe(x)]));
+  if (clase === "DuckDBMapValue") return v.entries.map((e) => ({ key: jsonDe(e.key), value: jsonDe(e.value) }));
+  if (clase === "DuckDBUUIDValue" || clase === "DuckDBIntervalValue" || clase === "DuckDBTimeTZValue" || clase === "DuckDBBitValue") return v.toString();
+  if (typeof v === "object") {
+    try { return JSON.parse(JSON.stringify(v, (k, x) => (typeof x === "bigint" ? jsonDe(x) : x))); } catch { return String(v); }
+  }
+  return String(v);
+}
+
+/** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
+
+export default { over, sql, persona, puesto, nombreArrow, LIMITE, tabla, jsonDe };

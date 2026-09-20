@@ -309,20 +309,26 @@ CMD ["node", "/opt/ore/agente.mjs"]
 # cada celda con JShell EN PROCESO (`executionEngine("local")`: 25 ms de crear,
 # 20–250 ms por celda; el motor remoto por JDI tarda 770 ms — medido en
 # victor). El SDK (`ore.Ore`) va compilado en /opt/ore/clases y se importa
-# estático en la sesión. DuckDB por JDBC para `sql()`/`over()`. Sobre Ubuntu
-# (glibc) y no alpine: el JDBC de DuckDB no trae natives para musl.
+# estático en la sesión. DuckDB por JDBC lee el Parquet y lo entrega por
+# ARROW (`arrowExportStream`, 0032 T3/T4: exacto en los 23 tipos, 14,6 M
+# filas/s; el mapeo de JDBC tenía cuatro tipos mal): los jars de Arrow Java
+# los dice `puesto/jvm/jars.txt` (una lista, tres lectores) y hacen falta
+# `--add-opens=java.base/java.nio` (arrow-memory-unsafe). Sobre Ubuntu (glibc)
+# y no alpine: el JDBC de DuckDB no trae natives para musl.
 # ═══════════════════════════════════════════════════════════════════════════
 FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
 
 ARG DUCKDB_JDBC=1.5.5.1
+COPY puesto/jvm /opt/ore/src
 RUN mkdir -p /opt/ore/lib /opt/ore/clases \
  && curl -fsSL -o /opt/ore/lib/duckdb_jdbc.jar \
       "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/${DUCKDB_JDBC}/duckdb_jdbc-${DUCKDB_JDBC}.jar" \
- && echo "duckdb_jdbc ${DUCKDB_JDBC}" > /entorno-1.txt && java -version 2>> /entorno-1.txt
-COPY puesto/jvm /opt/ore/src
-RUN javac -Xlint:-options --release 21 -cp /opt/ore/lib/duckdb_jdbc.jar -d /opt/ore/clases /opt/ore/src/ore/*.java \
- && java -cp /opt/ore/clases:/opt/ore/lib/duckdb_jdbc.jar ore.Agente --comprobar
+ && grep -v '^#' /opt/ore/src/jars.txt | while read -r g v; do n="${g##*/}-$v.jar"; \
+      curl -fsSL -o "/opt/ore/lib/$n" "https://repo1.maven.org/maven2/$g/$v/$n" || exit 1; done \
+ && echo "duckdb_jdbc ${DUCKDB_JDBC} · $(ls /opt/ore/lib | wc -l) jars" > /entorno-1.txt && java -version 2>> /entorno-1.txt
+RUN javac -Xlint:-options --release 21 -cp "/opt/ore/lib/*" -d /opt/ore/clases /opt/ore/src/ore/*.java \
+ && java --add-opens=java.base/java.nio=ALL-UNNAMED -cp "/opt/ore/clases:/opt/ore/lib/*" ore.Agente --comprobar
 
 USER 65532:65532
 WORKDIR /trabajo
-CMD ["java", "-XX:+UseSerialGC", "-cp", "/opt/ore/clases:/opt/ore/lib/duckdb_jdbc.jar", "ore.Agente"]
+CMD ["java", "-XX:+UseSerialGC", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*", "ore.Agente"]

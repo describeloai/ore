@@ -1,12 +1,15 @@
 """
 `ore` · el SDK del puesto (0031 W3.1).
 
-Lo que una celda importa. Hoy, una cosa: `over("<paquete>.<vista>")` devuelve la
-copia de esa vista como DataFrame. El código nunca ve el bucket ni una
-credencial: pregunta a `ore-serve` QUÉ copia es (con la identidad del puesto,
-que la resuelve en nombre de la persona y con su potestad) y baja el artefacto
-con la identidad del pod (Workload Identity). El sobre `ORECOPY1` se desenvuelve
-aquí; la carga es Parquet.
+Lo que una celda importa. `over("<paquete>.<vista>")` devuelve la copia de esa
+vista como DataFrame **con tipos de Arrow** (0032 T3: `pd.ArrowDtype`, así que un
+entero con nulos sigue siendo entero, un `Decimal` es exacto y un instante lleva
+su zona); `como="arrow"` da la `pyarrow.Table` y `como="polars"` un DataFrame de
+polars si está en la capa. El código nunca ve el bucket ni una credencial:
+pregunta a `ore-serve` QUÉ copia es (con la identidad del puesto, que la
+resuelve en nombre de la persona y con su potestad) y baja el artefacto con la
+identidad del pod (Workload Identity). El sobre `ORECOPY1` se desenvuelve aquí;
+la carga es Parquet.
 
 `persona()` (W3.4) dice quién abrió el puesto: la identidad con la que corre
 lo que haces aquí.
@@ -28,7 +31,7 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "persona", "puesto"]
+__all__ = ["over", "sql", "persona", "puesto", "tabla", "json_de"]
 
 
 class Puesto:
@@ -135,16 +138,33 @@ def _copias_por_defecto():
     return os.path.join(tempfile.gettempdir(), "ore-copias")
 
 
+def _como(tabla, como):
+    """Una `pyarrow.Table` en la forma pedida. `pandas` va con `ArrowDtype`: es la
+    misma memoria de Arrow debajo, y nada se degrada (un `int64` con nulos no se
+    vuelve `float64`, un `decimal128` no se vuelve `object` de `Decimal` sin tipo,
+    un `timestamp[us, tz=UTC]` conserva la zona). Por eso aquí no hay `estricto`:
+    no hay conversión con pérdida que pedir que falle."""
+    if como == "arrow":
+        return tabla
+    if como == "pandas":
+        import pandas as pd
+
+        return tabla.to_pandas(types_mapper=pd.ArrowDtype)
+    if como == "polars":
+        import polars as pl
+
+        return pl.from_arrow(tabla)
+    raise ValueError("como=%r no es una forma: vale `pandas`, `arrow` o `polars`" % (como,))
+
+
 def over(vista, como="pandas"):
-    """La copia de `<paquete>.<vista>` como DataFrame (`como="pandas"`) o como
-    `pyarrow.Table` (`como="arrow"`)."""
+    """La copia de `<paquete>.<vista>`: DataFrame con tipos de Arrow
+    (`como="pandas"`, por defecto), `pyarrow.Table` (`como="arrow"`) o DataFrame
+    de polars (`como="polars"`)."""
     import pyarrow.parquet as pq
 
     f, _ = _parquet_de(vista)
-    tabla = pq.read_table(f)
-    if como == "arrow":
-        return tabla
-    return tabla.to_pandas()
+    return _como(pq.read_table(f), como)
 
 
 _VISTAS_EN_SQL = re.compile(r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
@@ -165,8 +185,8 @@ def _duckdb():
 
 def sql(texto, como="pandas"):
     """SQL (DuckDB) sobre las copias: cada `paquete.vista` tras FROM/JOIN se
-    resuelve, se baja una vez y queda como vista `paquete.vista`. Devuelve un
-    DataFrame (`como="pandas"`) o una `pyarrow.Table` (`como="arrow"`)."""
+    resuelve, se baja una vez y queda como vista `paquete.vista`. Devuelve lo
+    mismo que `over()`: DataFrame con tipos de Arrow, `pyarrow.Table` o polars."""
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() quiere una consulta")
     con = _duckdb()
@@ -179,7 +199,101 @@ def sql(texto, como="pandas"):
     r = con.execute(texto)
     if r.description is None:
         return None
-    tabla = r.fetch_arrow_table()
-    if como == "arrow":
-        return tabla
-    return tabla.to_pandas()
+    return _como(r.fetch_arrow_table(), como)
+
+
+# ── El JSON de la consola (0032 §1) ───────────────────────────────────────
+def tabla(valor, limite=200):
+    """Un DataFrame (pandas o polars), una Series o una Table de Arrow → la salida
+    `tabla` del contrato (0032 §1, columna «JSON de la consola»): `columnas` con el
+    tipo de Arrow por nombre, y las primeras filas en el JSON de la tabla. Es el
+    MISMO JSON que emiten los agentes de Node y de Java: la consola no distingue.
+    `limite` es cuántas filas van en `filas`; `total` dice cuántas hay."""
+    import pyarrow as pa
+
+    t = None
+    if isinstance(valor, pa.Table):
+        t = valor
+    elif isinstance(valor, pa.RecordBatch):
+        t = pa.Table.from_batches([valor])
+    else:
+        try:
+            import pandas as pd
+            if isinstance(valor, pd.Series):
+                valor = valor.to_frame()
+            if isinstance(valor, pd.DataFrame):
+                # Con `ArrowDtype` (lo que `over()` da) es la misma memoria; con
+                # tipos de numpy se convierte, y `preserve_index=False` porque
+                # el índice no es una columna de la copia.
+                t = pa.Table.from_pandas(valor, preserve_index=False)
+        except ImportError:
+            pass
+        if t is None and type(valor).__module__.startswith("polars") and hasattr(valor, "to_arrow"):
+            t = valor.to_arrow()
+    if t is None:
+        return None
+    total = t.num_rows
+    cabeza = t.slice(0, limite)
+    columnas = [{"name": f.name, "type": str(f.type)} for f in cabeza.schema]
+    por_columna = [[json_de(v, f.type) for v in cabeza.column(i).to_pylist()] for i, f in enumerate(cabeza.schema)]  # noqa: E501
+    filas = [list(f) for f in zip(*por_columna)] if por_columna else []
+    return {"columnas": columnas, "filas": filas, "total": total, "limite": limite}
+
+
+ENTERO_EXACTO = 2 ** 53
+
+
+def json_de(v, tipo=None):
+    """Un valor de Arrow (ya en Python) → el JSON del contrato (0032 §1):
+    entero → número si |x| ≤ 2⁵³, si no cadena · decimal → cadena siempre
+    (salvo el de escala 0, que es un entero y va como tal) ·
+    float → número, y `NaN`/`Infinity`/`-Infinity` como cadena · fecha `YYYY-MM-DD`
+    · hora `HH:MM:SS[.ffffff]` · fecha-hora sin zona en ISO con `T` · instante en
+    UTC con `Z` · bytes en base64 · lista → array · struct → objeto · map →
+    `[{key, value}]`. Nunca se degrada en silencio: lo que no cabe en un número
+    de JSON va como cadena, no como un número parecido."""
+    import datetime as dt
+    import decimal
+
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return v if -ENTERO_EXACTO <= v <= ENTERO_EXACTO else str(v)
+    if isinstance(v, float):
+        if v != v:
+            return "NaN"
+        if v in (float("inf"), float("-inf")):
+            return "Infinity" if v > 0 else "-Infinity"
+        return v
+    if isinstance(v, str):
+        return v
+    if isinstance(v, decimal.Decimal):
+        # Un decimal de escala 0 (un HUGEINT de DuckDB, `sum(1)`, `count`) es un
+        # entero y va como los enteros; con decimales, cadena siempre.
+        if v == v.to_integral_value() and (tipo is None or getattr(tipo, "scale", 0) == 0) and -ENTERO_EXACTO <= v <= ENTERO_EXACTO:
+            return int(v)
+        return format(v, "f")
+    if isinstance(v, dt.datetime):
+        if v.tzinfo is not None:
+            return v.astimezone(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+        return v.isoformat()
+    if isinstance(v, (dt.date, dt.time)):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray)):
+        import base64
+        return base64.b64encode(bytes(v)).decode("ascii")
+    if isinstance(v, list):
+        # Un map de Arrow llega como lista de pares (tuplas).
+        if v and isinstance(v[0], tuple) and len(v[0]) == 2:
+            return [{"key": json_de(k), "value": json_de(x)} for k, x in v]
+        return [json_de(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): json_de(x) for k, x in v.items()}
+    if hasattr(v, "item"):
+        try:
+            return json_de(v.item())
+        except (ValueError, AttributeError):
+            pass
+    return str(v)

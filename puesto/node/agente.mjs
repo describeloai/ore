@@ -165,29 +165,12 @@ class Kernel {
   }
 }
 
-/** Un array de objetos (lo que devuelven `over()` y `sql()`) → columnas y las
- *  primeras filas, en JSON llano. */
-function comoTabla(valor) {
-  if (!Array.isArray(valor) || valor.length === 0) return null;
-  if (!valor.every((f) => f && typeof f === "object" && !Array.isArray(f))) return null;
-  const columnas = [...new Set(valor.slice(0, FILAS_MAXIMAS).flatMap((f) => Object.keys(f)))];
-  const tipoDe = (c) => { const v = valor.find((f) => f[c] !== null && f[c] !== undefined)?.[c]; return v === undefined ? "null" : v instanceof Date ? "date" : typeof v; };
-  return {
-    columnas: columnas.map((c) => ({ name: c, type: tipoDe(c) })),
-    filas: valor.slice(0, FILAS_MAXIMAS).map((f) => columnas.map((c) => llano(f[c]))),
-    total: valor.length,
-    limite: FILAS_MAXIMAS,
-  };
-}
+/** La salida `tabla` del contrato: la hace el SDK (`ore.tabla`), que es lo que
+ *  una celda también puede pedir; aquí sólo se le pone el límite de la consola. */
+function comoTabla(valor) { return ore.tabla(valor, FILAS_MAXIMAS); }
 
-function llano(v) {
-  if (v === undefined || v === null) return null;
-  if (typeof v === "number") return Number.isNaN(v) ? null : v;
-  if (typeof v === "bigint") return Number.isSafeInteger(Number(v)) ? Number(v) : v.toString();
-  if (typeof v === "string" || typeof v === "boolean") return v;
-  if (v instanceof Date) return v.toISOString();
-  try { return JSON.parse(JSON.stringify(v)); } catch { return String(v); }
-}
+/** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
+function llano(v) { return ore.jsonDe(v); }
 
 // ── El bucle ───────────────────────────────────────────────────────────────
 async function main() {
@@ -233,7 +216,11 @@ if (process.argv.includes("--comprobar")) {
   const r = await k.correr("const xs: number[] = [1, 2]; xs.length * 21", "typescript");
   if (r.tipo !== "texto" || r.texto !== "42") { log(`el kernel no contesta 42: ${JSON.stringify(r)}`); process.exit(1); }
   const m = await import("ore");
-  log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")}`);
+  // Y el contrato de tipos por DuckDB (0032 T3): un bigint es 42n, un decimal es exacto, y el JSON de la tabla es el del contrato.
+  const f = await m.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
+  const t = comoTabla(f);
+  if (f[0].n !== 42n || f.tipos.d !== "decimal128(4, 2)" || t.filas[0][0] !== 42 || t.filas[0][1] !== "1.50" || !/Z$/.test(t.filas[0][2])) { log(`el sdk no cumple el contrato de tipos: ${JSON.stringify(t)}`); process.exit(1); }
+  log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")} · tipos ok`);
   k.repl.close();
   process.exit(0);
 }

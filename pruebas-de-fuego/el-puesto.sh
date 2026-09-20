@@ -338,18 +338,23 @@ JAVAC=$(command -v javac || true); JAVA=$(command -v java || true)
 JAVA_OK=no
 [ -n "$JAVAC" ] && "$JAVAC" -version 2>&1 | grep -qE '^javac (2[1-9]|[3-9][0-9])' && JAVA_OK=si
 if [ "$JAVA_OK" = "si" ]; then
-  JAR="${DUCKDB_JDBC_JAR:-$TMP/duckdb_jdbc.jar}"
-  [ -f "$JAR" ] || curl -sfL -o "$JAR" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar" || falla "9 · no se pudo bajar duckdb_jdbc (DUCKDB_JDBC_JAR=<jar> para darlo)"
-  JAR_CP="$JAR"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) JAR_CP="$(cd "$(dirname "$JAR")" && pwd -W)/$(basename "$JAR")";; esac
+  # Los jars: DuckDB JDBC y los de Arrow Java (`puesto/jvm/jars.txt`), en una
+  # cache que sobrevive a la prueba (`ORE_JARS`, o el temporal del sistema).
+  LIB="${ORE_JARS:-${TMPDIR:-/tmp}/ore-jars}"; mkdir -p "$LIB"
+  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar" || falla "9 · no se pudo bajar duckdb_jdbc"
+  grep -v '^#' "$RAIZ/puesto/jvm/jars.txt" | while read -r g v; do n="${g##*/}-$v.jar"; [ -f "$LIB/$n" ] || curl -sfL -o "$LIB/$n" "https://repo1.maven.org/maven2/$g/$v/$n" || echo "✗ 9 · no se pudo bajar $n"; done
+  LIB_CP="$LIB"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) LIB_CP="$(cd "$LIB" && pwd -W)";; esac
+  JAR_CP="$LIB_CP/*"
   CLASES="$TMP/clases"; CLASES_CP="$CLASES"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) mkdir -p "$CLASES"; CLASES_CP="$(cd "$CLASES" && pwd -W)";; esac
   SEP=":"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";";; esac
+  ABRE="--add-opens=java.base/java.nio=ALL-UNNAMED"
   "$JAVAC" -Xlint:-options --release 21 -cp "$JAR_CP" -d "$CLASES_CP" "$RAIZ"/puesto/jvm/ore/*.java 2>"$TMP/javac.txt" || falla "9 · el agente no compila: $(head -20 "$TMP/javac.txt")"
-  "$JAVA" -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente --comprobar >"$TMP/comprobar.txt" 2>&1 || falla "9 · --comprobar: $(tail -5 "$TMP/comprobar.txt")"
+  "$JAVA" $ABRE -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente --comprobar >"$TMP/comprobar.txt" 2>&1 || falla "9 · --comprobar: $(tail -5 "$TMP/comprobar.txt")"
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"java"}')" = "201" ] || falla "9 · abrir jvm: $(cuerpo)"
   tiene "d['id']=='puesto-ana-jvm' and d['entorno']=='jvm'" || falla "9 · la ficha jvm: $(cuerpo)"
   en_cola 51-el-puesto-ana-jvm.yaml | grep -q 'image: .*/puesto-jvm:1' || falla "9 · el Job no lleva puesto-jvm:1"
   ORE_SERVE="$BASE" PUESTO=puesto-ana-jvm ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
-    "$JAVA" -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente >"$TMP/agente.txt" 2>&1 &
+    "$JAVA" $ABRE -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente >"$TMP/agente.txt" 2>&1 &
   AGENTE=$!
   for _ in $(seq 1 120); do pide GET /puestos/puesto-ana-jvm "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
   tiene "d['estado']=='vivo'" || falla "9 · el puesto jvm no pasa a vivo: $(cuerpo)"

@@ -1,0 +1,19 @@
+# Los jars que el puesto JVM lleva además de DuckDB (0032 T3): Arrow Java para
+# `over()`/`sql()` por `arrowExportStream` —exacto en los 23 tipos y 20× las
+# filas-objeto de JDBC, medido en `medida-w3-arrow.py`— y lo que Arrow arrastra.
+# Una línea por jar: `grupo/artefacto versión`. Lo leen el Dockerfile (etapa
+# puesto-jvm), `pruebas-de-fuego/el-puesto.sh` y las medidas: una lista, tres
+# lectores. Requiere `--add-opens=java.base/java.nio=ALL-UNNAMED` (memory-unsafe).
+org/apache/arrow/arrow-vector 19.0.0
+org/apache/arrow/arrow-format 19.0.0
+org/apache/arrow/arrow-memory-core 19.0.0
+org/apache/arrow/arrow-memory-unsafe 19.0.0
+org/apache/arrow/arrow-c-data 19.0.0
+com/google/flatbuffers/flatbuffers-java 24.3.25
+com/fasterxml/jackson/core/jackson-core 2.18.2
+com/fasterxml/jackson/core/jackson-annotations 2.18.2
+com/fasterxml/jackson/core/jackson-databind 2.18.2
+com/fasterxml/jackson/datatype/jackson-datatype-jsr310 2.18.2
+org/slf4j/slf4j-api 2.0.16
+org/slf4j/slf4j-nop 2.0.16
+commons-codec/commons-codec 1.17.1

@@ -13,17 +13,57 @@ import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
+import org.apache.arrow.vector.BitVector;
+import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.DecimalVector;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.Float4Vector;
+import org.apache.arrow.vector.Float8Vector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.LargeVarBinaryVector;
+import org.apache.arrow.vector.LargeVarCharVector;
+import org.apache.arrow.vector.SmallIntVector;
+import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeStampMicroTZVector;
+import org.apache.arrow.vector.TimeStampMicroVector;
+import org.apache.arrow.vector.TimeStampMilliTZVector;
+import org.apache.arrow.vector.TimeStampMilliVector;
+import org.apache.arrow.vector.TimeStampNanoTZVector;
+import org.apache.arrow.vector.TimeStampNanoVector;
+import org.apache.arrow.vector.TimeStampSecTZVector;
+import org.apache.arrow.vector.TimeStampSecVector;
+import org.apache.arrow.vector.TinyIntVector;
+import org.apache.arrow.vector.UInt1Vector;
+import org.apache.arrow.vector.UInt2Vector;
+import org.apache.arrow.vector.UInt4Vector;
+import org.apache.arrow.vector.UInt8Vector;
+import org.apache.arrow.vector.VarBinaryVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.ipc.ArrowReader;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 
 /**
  * {@code ore} · el SDK del puesto para Java (0031 W3.4). El mismo contrato que
@@ -33,12 +73,26 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>{@code over("<paquete>.<vista>")} → las filas de la copia de esa vista
- *       ({@code List<Map<String,Object>>}), leídas por DuckDB (JDBC).</li>
+ *       ({@link Filas}: una {@code List<Map<String,Object>>} con {@code tipos},
+ *       {@code total} y {@code truncada}), leídas por DuckDB y entregadas por
+ *       <b>Arrow</b> ({@code arrowExportStream}): exacto en los 23 tipos del
+ *       contrato (0032 T4), donde el mapeo de JDBC tenía cuatro mal.</li>
  *   <li>{@code sql("select … from p.v")} → las filas del resultado: cada
  *       {@code paquete.vista} tras FROM/JOIN se resuelve, se baja una vez y
  *       queda como vista de DuckDB.</li>
+ *   <li>{@code arrow("<paquete>.<vista>")} / {@code arrowSql("…")} → el
+ *       {@code ArrowReader} por lotes ({@code VectorSchemaRoot}), sin objeto
+ *       por fila: 14,6 M filas/s. Quien lo pide lo cierra.</li>
  *   <li>{@code persona()} → quién abrió el puesto ({@code persona:…}).</li>
  * </ul>
+ *
+ * <p>Los valores son los del contrato de tipos (0032 §1): {@code Long} para un
+ * entero de 64 bits, {@code BigDecimal} exacto, {@code LocalDate},
+ * {@code LocalTime}, {@code LocalDateTime} (hora de pared), {@code Instant}
+ * (un instante, en UTC), {@code byte[]}, {@code List}, {@code Map}. Y hay un
+ * límite de filas materializadas ({@link #LIMITE}, 1 M): {@code over()} y
+ * {@code sql()} lo dicen ({@code truncada}), y con {@code estricto} fallan en
+ * vez de recortar; lo masivo va por {@code arrow()} o se agrega en SQL.
  *
  * El código nunca ve el bucket ni una credencial: pregunta a {@code ore-serve}
  * QUÉ copia es (con la identidad del puesto, que la resuelve en nombre de la
@@ -163,8 +217,9 @@ public final class Ore {
         return f;
     }
 
-    // ── DuckDB ──────────────────────────────────────────────────────────────
+    // ── DuckDB → Arrow ─────────────────────────────────────────────────────
     private static Connection conexion;
+    private static BufferAllocator asignador;
 
     private static synchronized Connection duckdb() throws SQLException {
         if (conexion == null) {
@@ -174,6 +229,7 @@ public final class Ore {
             conexion = DriverManager.getConnection("jdbc:duckdb:");
             String hilos = System.getenv("ORE_HILOS");
             if (hilos != null && !hilos.isEmpty()) try (Statement s = conexion.createStatement()) { s.execute("set threads to " + Integer.parseInt(hilos)); }
+            asignador = new RootAllocator();
         }
         return conexion;
     }
@@ -182,47 +238,59 @@ public final class Ore {
 
     private static String rutaSql(Path f) { return f.toString().replace("\\", "/").replace("'", "''"); }
 
-    /** Las filas de un resultado, con valores llanos (JSON): {@code List<Map>} en el orden de las columnas. */
-    private static List<Map<String, Object>> filasDe(Connection con, String texto) throws SQLException {
-        try (Statement s = con.createStatement()) {
-            boolean hay = s.execute(texto);
-            if (!hay) return new ArrayList<>();
-            try (ResultSet rs = s.getResultSet()) {
-                ResultSetMetaData md = rs.getMetaData();
-                int n = md.getColumnCount();
-                List<Map<String, Object>> filas = new ArrayList<>();
-                while (rs.next()) {
+    /** Cuántas filas materializan {@code over()} y {@code sql()} si no se dice otra cosa. */
+    public static final int LIMITE = 1_000_000;
+
+    /** Las filas que devuelven {@code over()} y {@code sql()}: la lista, y lo que hay que saber de ella. */
+    public static final class Filas extends ArrayList<Map<String, Object>> {
+        /** Columna → tipo de Arrow, con el nombre que {@code pyarrow} le da. */
+        public final Map<String, String> tipos;
+        /** Las filas que hay (aunque no se hayan materializado todas), o {@code null} si no se sabe. */
+        public final Long total;
+        /** Si se paró en el límite. */
+        public final boolean truncada;
+        Filas(Map<String, String> tipos, Long total, boolean truncada) { this.tipos = tipos; this.total = total; this.truncada = truncada; }
+    }
+
+    /** Un lector de Arrow atado a su {@code ResultSet}: cerrarlo cierra los dos. */
+    private static ArrowReader exportar(Statement st, String texto, int lote) throws SQLException {
+        ResultSet rs = st.executeQuery(texto);
+        ArrowReader lector = (ArrowReader) ((org.duckdb.DuckDBResultSet) rs).arrowExportStream(asignador, lote);
+        return new ArrowReader(asignador) {
+            @Override public boolean loadNextBatch() throws IOException { return lector.loadNextBatch(); }
+            @Override public long bytesRead() { return lector.bytesRead(); }
+            @Override protected void closeReadSource() throws IOException { try { lector.close(); rs.close(); st.close(); } catch (SQLException e) { throw new IOException(e); } }
+            @Override protected org.apache.arrow.vector.types.pojo.Schema readSchema() throws IOException { return lector.getVectorSchemaRoot().getSchema(); }
+            @Override public VectorSchemaRoot getVectorSchemaRoot() throws IOException { return lector.getVectorSchemaRoot(); }
+        };
+    }
+
+    /** Materializa hasta {@code limite} filas de un lector (y lo cierra). */
+    private static Filas filasDe(ArrowReader lector, int limite, boolean estricto, Long total, String que) throws Exception {
+        try (lector) {
+            Map<String, String> tipos = new LinkedHashMap<>();
+            List<Map<String, Object>> out = new ArrayList<>();
+            boolean truncada = false;
+            while (!truncada && lector.loadNextBatch()) {
+                VectorSchemaRoot raiz = lector.getVectorSchemaRoot();
+                if (tipos.isEmpty()) for (Field f : raiz.getSchema().getFields()) tipos.put(f.getName(), nombreArrow(f));
+                List<FieldVector> vs = raiz.getFieldVectors();
+                for (int i = 0; i < raiz.getRowCount(); i++) {
+                    if (out.size() == limite) { truncada = true; break; }
                     Map<String, Object> fila = new LinkedHashMap<>();
-                    for (int i = 1; i <= n; i++) fila.put(md.getColumnLabel(i), llano(rs.getObject(i)));
-                    filas.add(fila);
+                    for (FieldVector v : vs) fila.put(v.getName(), valorDe(v, i));
+                    out.add(fila);
                 }
-                return filas;
             }
+            if (tipos.isEmpty()) for (Field f : lector.getVectorSchemaRoot().getSchema().getFields()) tipos.put(f.getName(), nombreArrow(f));
+            if (truncada && estricto) throw new IllegalStateException(que + ": el resultado pasa de " + limite + " filas; sube el límite, agrega en sql(), usa arrow() o quita estricto");
+            Filas filas = new Filas(tipos, truncada ? total : Long.valueOf(out.size()), truncada);
+            filas.addAll(out);
+            return filas;
         }
     }
 
-    /** Un valor de JDBC → algo que JSON entiende (los agregados de DuckDB son BigDecimal/HugeInt). */
-    public static Object llano(Object v) {
-        if (v == null || v instanceof String || v instanceof Boolean || v instanceof Integer || v instanceof Long || v instanceof Double) return v;
-        if (v instanceof java.math.BigDecimal d) return d.scale() <= 0 || d.stripTrailingZeros().scale() <= 0 ? (Object) d.longValueExact() : (Object) d.doubleValue();
-        if (v instanceof java.math.BigInteger b) return b.bitLength() < 63 ? (Object) b.longValue() : (Object) b.toString();
-        if (v instanceof Number n) return n.longValue() == n.doubleValue() ? (Object) n.longValue() : (Object) n.doubleValue();
-        if (v instanceof java.sql.Timestamp t) return t.toLocalDateTime().toString();
-        if (v instanceof java.sql.Date d) return d.toLocalDate().toString();
-        if (v instanceof java.util.Date d) return d.toInstant().toString();
-        return String.valueOf(v);
-    }
-
-    /** La copia de {@code <paquete>.<vista>} como filas. */
-    public static List<Map<String, Object>> over(String vista) throws Exception {
-        Path f = parquetDe(vista);
-        return filasDe(duckdb(), "select * from read_parquet('" + rutaSql(f) + "')");
-    }
-
-    /** SQL (DuckDB) sobre las copias: cada {@code paquete.vista} tras FROM/JOIN se resuelve, se baja una vez y queda como vista. */
-    public static List<Map<String, Object>> sql(String texto) throws Exception {
-        if (texto == null || texto.isBlank()) throw new IllegalArgumentException("sql() quiere una consulta");
-        Connection con = duckdb();
+    private static void registrar(Connection con, String texto) throws Exception {
         TreeSet<String> vistas = new TreeSet<>();
         Matcher m = VISTAS_EN_SQL.matcher(texto);
         while (m.find()) vistas.add(m.group(1) + "." + m.group(2));
@@ -234,6 +302,228 @@ public final class Ore {
                 s.execute("create or replace view \"" + p[0] + "\".\"" + p[1] + "\" as select * from read_parquet('" + rutaSql(f) + "')");
             }
         }
-        return filasDe(con, texto);
     }
+
+    /** La copia de {@code <paquete>.<vista>} como filas, hasta {@link #LIMITE}. */
+    public static Filas over(String vista) throws Exception { return over(vista, LIMITE, false); }
+
+    /** La copia como filas, hasta {@code limite}; con {@code estricto}, falla si no cabe. */
+    public static Filas over(String vista, int limite, boolean estricto) throws Exception {
+        Path f = parquetDe(vista);
+        Connection con = duckdb();
+        long total;
+        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery("select count(*) from read_parquet('" + rutaSql(f) + "')")) { rs.next(); total = rs.getLong(1); }
+        if (estricto && total > limite) throw new IllegalStateException("over(" + vista + "): la copia tiene " + total + " filas y el límite es " + limite + "; sube el límite, agrega en sql(), usa arrow() o quita estricto");
+        return filasDe(exportar(con.createStatement(), "select * from read_parquet('" + rutaSql(f) + "')", 8192), limite, estricto, total, "over(" + vista + ")");
+    }
+
+    /** SQL (DuckDB) sobre las copias: cada {@code paquete.vista} tras FROM/JOIN se resuelve, se baja una vez y queda como vista. */
+    public static Filas sql(String texto) throws Exception { return sql(texto, LIMITE, false); }
+
+    public static Filas sql(String texto, int limite, boolean estricto) throws Exception {
+        if (texto == null || texto.isBlank()) throw new IllegalArgumentException("sql() quiere una consulta");
+        Connection con = duckdb();
+        registrar(con, texto);
+        return filasDe(exportar(con.createStatement(), texto, 8192), limite, estricto, null, "sql()");
+    }
+
+    /** La copia entera, por lotes de Arrow: {@code while (r.loadNextBatch()) { VectorSchemaRoot raiz = r.getVectorSchemaRoot(); … }}. Cerrar al acabar. */
+    public static ArrowReader arrow(String vista) throws Exception {
+        Path f = parquetDe(vista);
+        return exportar(duckdb().createStatement(), "select * from read_parquet('" + rutaSql(f) + "')", 65_536);
+    }
+
+    /** El resultado de una consulta, por lotes de Arrow. Cerrar al acabar. */
+    public static ArrowReader arrowSql(String texto) throws Exception {
+        if (texto == null || texto.isBlank()) throw new IllegalArgumentException("arrowSql() quiere una consulta");
+        Connection con = duckdb();
+        registrar(con, texto);
+        return exportar(con.createStatement(), texto, 65_536);
+    }
+
+    // ── El contrato de tipos (0032 §1) ─────────────────────────────────────
+
+    /** El valor de la fila {@code i} de un vector, en el tipo de Java del contrato. */
+    public static Object valorDe(FieldVector v, int i) {
+        if (v.isNull(i)) return null;
+        if (v instanceof BigIntVector x) return x.get(i);
+        if (v instanceof IntVector x) return x.get(i);
+        if (v instanceof SmallIntVector x) return x.get(i);
+        if (v instanceof TinyIntVector x) return x.get(i);
+        if (v instanceof UInt8Vector x) return x.getObjectNoOverflow(i);
+        if (v instanceof UInt4Vector x) return x.getObjectNoOverflow(i);
+        if (v instanceof UInt2Vector x) return (int) x.get(i);
+        if (v instanceof UInt1Vector x) return (short) x.getObjectNoOverflow(i);
+        if (v instanceof Float8Vector x) return x.get(i);
+        if (v instanceof Float4Vector x) return x.get(i);
+        if (v instanceof BitVector x) return x.get(i) != 0;
+        if (v instanceof VarCharVector x) return new String(x.get(i), StandardCharsets.UTF_8);
+        if (v instanceof LargeVarCharVector x) return new String(x.get(i), StandardCharsets.UTF_8);
+        if (v instanceof DecimalVector x) return x.getObject(i);
+        if (v instanceof DateDayVector x) return LocalDate.ofEpochDay(x.get(i));
+        if (v instanceof TimeMicroVector x) return LocalTime.ofNanoOfDay(x.get(i) * 1000L);
+        if (v instanceof TimeStampMicroTZVector x) return instante(x.get(i), 1_000_000L);
+        if (v instanceof TimeStampMicroVector x) return LocalDateTime.ofEpochSecond(Math.floorDiv(x.get(i), 1_000_000L), (int) (Math.floorMod(x.get(i), 1_000_000L) * 1000), ZoneOffset.UTC);
+        if (v instanceof TimeStampNanoTZVector x) return instante(x.get(i), 1_000_000_000L);
+        if (v instanceof TimeStampNanoVector x) return LocalDateTime.ofEpochSecond(Math.floorDiv(x.get(i), 1_000_000_000L), (int) Math.floorMod(x.get(i), 1_000_000_000L), ZoneOffset.UTC);
+        if (v instanceof TimeStampMilliTZVector x) return instante(x.get(i), 1_000L);
+        if (v instanceof TimeStampMilliVector x) return LocalDateTime.ofEpochSecond(Math.floorDiv(x.get(i), 1_000L), (int) (Math.floorMod(x.get(i), 1_000L) * 1_000_000), ZoneOffset.UTC);
+        if (v instanceof TimeStampSecTZVector x) return Instant.ofEpochSecond(x.get(i));
+        if (v instanceof TimeStampSecVector x) return LocalDateTime.ofEpochSecond(x.get(i), 0, ZoneOffset.UTC);
+        if (v instanceof VarBinaryVector x) return x.get(i);
+        if (v instanceof LargeVarBinaryVector x) return x.get(i);
+        if (v instanceof StructVector st) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            for (FieldVector c : st.getChildrenFromFields()) m.put(c.getName(), valorDe(c, i));
+            return m;
+        }
+        // Un map de Arrow ES una lista de struct(key, value): sale como List<Map>.
+        if (v instanceof ListVector l) {
+            FieldVector datos = l.getDataVector();
+            List<Object> out = new ArrayList<>();
+            for (int j = l.getElementStartIndex(i); j < l.getElementEndIndex(i); j++) out.add(valorDe(datos, j));
+            return out;
+        }
+        Object o = v.getObject(i);
+        return o instanceof org.apache.arrow.vector.util.Text t ? t.toString() : o;
+    }
+
+    private static Instant instante(long n, long porSegundo) {
+        return Instant.ofEpochSecond(Math.floorDiv(n, porSegundo), Math.floorMod(n, porSegundo) * (1_000_000_000L / porSegundo));
+    }
+
+    /** El tipo de Arrow de un campo, con el nombre que {@code pyarrow} le da. */
+    public static String nombreArrow(Field f) {
+        ArrowType t = f.getType();
+        if (t instanceof ArrowType.Int x) return (x.getIsSigned() ? "int" : "uint") + x.getBitWidth();
+        if (t instanceof ArrowType.FloatingPoint x) return switch (x.getPrecision()) { case HALF -> "halffloat"; case SINGLE -> "float"; case DOUBLE -> "double"; };
+        if (t instanceof ArrowType.Bool) return "bool";
+        if (t instanceof ArrowType.Utf8) return "string";
+        if (t instanceof ArrowType.LargeUtf8) return "large_string";
+        if (t instanceof ArrowType.Binary) return "binary";
+        if (t instanceof ArrowType.LargeBinary) return "large_binary";
+        if (t instanceof ArrowType.Decimal x) return "decimal" + x.getBitWidth() + "(" + x.getPrecision() + ", " + x.getScale() + ")";
+        if (t instanceof ArrowType.Date x) return x.getUnit() == org.apache.arrow.vector.types.DateUnit.DAY ? "date32[day]" : "date64[ms]";
+        if (t instanceof ArrowType.Time x) return "time" + x.getBitWidth() + "[" + unidad(x.getUnit()) + "]";
+        if (t instanceof ArrowType.Timestamp x) return "timestamp[" + unidad(x.getUnit()) + (x.getTimezone() == null ? "]" : ", tz=UTC]");
+        if (t instanceof ArrowType.List) return "list<item: " + nombreArrow(f.getChildren().get(0)) + ">";
+        if (t instanceof ArrowType.Struct) { StringBuilder b = new StringBuilder("struct<"); for (int i = 0; i < f.getChildren().size(); i++) { Field c = f.getChildren().get(i); if (i > 0) b.append(", "); b.append(c.getName()).append(": ").append(nombreArrow(c)); } return b.append(">").toString(); }
+        if (t instanceof ArrowType.Map) { Field par = f.getChildren().get(0); return "map<" + nombreArrow(par.getChildren().get(0)) + ", " + nombreArrow(par.getChildren().get(1)) + ">"; }
+        if (t instanceof ArrowType.Null) return "null";
+        return t.toString().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static String unidad(org.apache.arrow.vector.types.TimeUnit u) {
+        return switch (u) { case SECOND -> "s"; case MILLISECOND -> "ms"; case MICROSECOND -> "us"; case NANOSECOND -> "ns"; };
+    }
+
+    private static final long ENTERO_EXACTO = 1L << 53;
+
+    /**
+     * Un valor del contrato → el JSON de la consola (0032 §1): entero → número si
+     * |x| ≤ 2⁵³, si no cadena · decimal → cadena siempre (salvo el de escala
+     * 0, que es un entero y va como tal) · float → número, y
+     * NaN/Infinity/-Infinity como cadena · fecha {@code YYYY-MM-DD} · hora
+     * {@code HH:MM:SS[.ffffff]} · fecha-hora sin zona en ISO con {@code T} ·
+     * instante en UTC con {@code Z} · bytes en base64 · lista → array · struct →
+     * objeto · map → {@code [{key, value}]}. Nada se degrada en silencio. Es el
+     * MISMO JSON que emiten los agentes de Python y de Node.
+     */
+    public static Object jsonDe(Object v) {
+        if (v == null || v instanceof String || v instanceof Boolean) return v;
+        if (v instanceof Integer || v instanceof Short || v instanceof Byte) return v;
+        if (v instanceof Long n) return n >= -ENTERO_EXACTO && n <= ENTERO_EXACTO ? (Object) n : (Object) n.toString();
+        if (v instanceof java.math.BigInteger n) return n.bitLength() < 54 ? (Object) n.longValue() : (Object) n.toString();
+        // Un decimal de escala 0 (un HUGEINT: `sum(1)`, `count`) es un entero y va como los enteros; con decimales, cadena siempre.
+        if (v instanceof java.math.BigDecimal d) return d.scale() == 0 ? jsonDe(d.toBigInteger()) : d.toPlainString();
+        if (v instanceof Double d) return d.isNaN() ? "NaN" : d.isInfinite() ? (d > 0 ? "Infinity" : "-Infinity") : (Object) d;
+        if (v instanceof Float f) return f.isNaN() ? "NaN" : f.isInfinite() ? (f > 0 ? "Infinity" : "-Infinity") : (Object) f.doubleValue();
+        if (v instanceof LocalDate d) return d.toString();
+        if (v instanceof LocalTime t) return hora(t);
+        if (v instanceof LocalDateTime t) return t.toLocalDate() + "T" + hora(t.toLocalTime());
+        if (v instanceof Instant t) { LocalDateTime l = LocalDateTime.ofInstant(t, ZoneOffset.UTC); return l.toLocalDate() + "T" + hora(l.toLocalTime()) + "Z"; }
+        if (v instanceof byte[] b) return Base64.getEncoder().encodeToString(b);
+        if (v instanceof Map<?, ?> m) { Map<String, Object> out = new LinkedHashMap<>(); for (Map.Entry<?, ?> e : m.entrySet()) out.put(String.valueOf(e.getKey()), jsonDe(e.getValue())); return out; }
+        if (v instanceof Iterable<?> it) { List<Object> out = new ArrayList<>(); for (Object x : it) out.add(jsonDe(x)); return out; }
+        if (v instanceof Object[] a) return jsonDe(java.util.Arrays.asList(a));
+        // Lo que JDBC daría si alguien lo usa a mano: se acerca al contrato.
+        if (v instanceof java.sql.Timestamp t) return jsonDe(t.toLocalDateTime());
+        if (v instanceof java.sql.Date d) return jsonDe(d.toLocalDate());
+        if (v instanceof java.sql.Time t) return jsonDe(t.toLocalTime());
+        if (v instanceof java.util.Date d) return jsonDe(d.toInstant());
+        return String.valueOf(v);
+    }
+
+    /** {@code HH:MM:SS}, y la fracción sólo si no es cero, sin ceros de más. */
+    private static String hora(LocalTime t) {
+        String s = String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
+        if (t.getNano() == 0) return s;
+        String f = String.format("%09d", t.getNano()).replaceAll("0+$", "");
+        return s + "." + f;
+    }
+
+    /**
+     * Lo que devuelven {@code over()} y {@code sql()} ({@link Filas}), o una
+     * lista de mapas cualquiera → la salida {@code tabla} del contrato (0032 §1,
+     * columna «JSON de la consola»): el MISMO JSON que emiten los agentes de
+     * Python y de Node. Sin tipos declarados se infieren del primer valor.
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> tabla(Object valor, int limite) {
+        if (!(valor instanceof List<?> lista) || lista.isEmpty()) return null;
+        for (Object f : lista) if (!(f instanceof Map)) return null;
+        Map<String, String> tipos = valor instanceof Filas fs ? fs.tipos : null;
+        List<String> columnas = new ArrayList<>(tipos != null ? tipos.keySet() : ((Map<String, Object>) lista.get(0)).keySet());
+        List<Map<String, Object>> cols = new ArrayList<>();
+        for (String c : columnas) {
+            String tipo = tipos != null ? tipos.get(c) : null;
+            if (tipo == null) {
+                tipo = "null";
+                for (Object f : lista) {
+                    Object v = ((Map<String, Object>) f).get(c);
+                    if (v != null) { tipo = tipoInferido(v); break; }
+                }
+            }
+            Map<String, Object> col = new LinkedHashMap<>();
+            col.put("name", c);
+            col.put("type", tipo);
+            cols.add(col);
+        }
+        List<List<Object>> filas = new ArrayList<>();
+        for (Object f : lista.subList(0, Math.min(limite, lista.size()))) {
+            List<Object> fila = new ArrayList<>();
+            for (String c : columnas) fila.add(jsonDe(((Map<String, Object>) f).get(c)));
+            filas.add(fila);
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("columnas", cols);
+        m.put("filas", filas);
+        m.put("total", valor instanceof Filas fs && fs.total != null ? fs.total : (Object) lista.size());
+        m.put("limite", limite);
+        return m;
+    }
+
+    /** El tipo de Arrow de un valor suelto, para lo que no viene de {@code over()}/{@code sql()}. */
+    public static String tipoInferido(Object v) {
+        if (v instanceof Long || v instanceof java.math.BigInteger) return "int64";
+        if (v instanceof Integer) return "int32";
+        if (v instanceof Short) return "int16";
+        if (v instanceof Byte) return "int8";
+        if (v instanceof Double) return "double";
+        if (v instanceof Float) return "float";
+        if (v instanceof java.math.BigDecimal d) return "decimal128(" + Math.max(d.precision(), d.scale()) + ", " + Math.max(d.scale(), 0) + ")";
+        if (v instanceof Boolean) return "bool";
+        if (v instanceof String) return "string";
+        if (v instanceof java.time.LocalDate) return "date32[day]";
+        if (v instanceof java.time.LocalTime) return "time64[us]";
+        if (v instanceof java.time.LocalDateTime) return "timestamp[us]";
+        if (v instanceof java.time.Instant || v instanceof java.util.Date) return "timestamp[us, tz=UTC]";
+        if (v instanceof byte[]) return "binary";
+        if (v instanceof Map) return "struct";
+        if (v instanceof Iterable || v instanceof Object[]) return "list";
+        return v.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** Lo que era {@code llano}: el nombre se conserva para quien lo llamara. */
+    public static Object llano(Object v) { return jsonDe(v); }
 }

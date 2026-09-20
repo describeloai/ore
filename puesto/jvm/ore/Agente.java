@@ -262,37 +262,8 @@ public final class Agente {
         return w.toString();
     }
 
-    /** Una lista de mapas (lo que devuelven {@code over()} y {@code sql()}) → columnas y las primeras filas. */
-    @SuppressWarnings("unchecked")
-    static Map<String, Object> comoTabla(Object valor) {
-        if (!(valor instanceof List<?> lista) || lista.isEmpty()) return null;
-        for (Object f : lista) if (!(f instanceof Map)) return null;
-        List<String> columnas = new ArrayList<>(((Map<String, Object>) lista.get(0)).keySet());
-        List<Map<String, Object>> cols = new ArrayList<>();
-        for (String c : columnas) {
-            String tipo = "null";
-            for (Object f : lista) {
-                Object v = ((Map<String, Object>) f).get(c);
-                if (v != null) { tipo = v.getClass().getSimpleName().toLowerCase(Locale.ROOT); break; }
-            }
-            Map<String, Object> col = new LinkedHashMap<>();
-            col.put("name", c);
-            col.put("type", tipo);
-            cols.add(col);
-        }
-        List<List<Object>> filas = new ArrayList<>();
-        for (Object f : lista.subList(0, Math.min(FILAS_MAXIMAS, lista.size()))) {
-            List<Object> fila = new ArrayList<>();
-            for (String c : columnas) fila.add(Ore.llano(((Map<String, Object>) f).get(c)));
-            filas.add(fila);
-        }
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("columnas", cols);
-        m.put("filas", filas);
-        m.put("total", lista.size());
-        m.put("limite", FILAS_MAXIMAS);
-        return m;
-    }
+    /** La salida {@code tabla} del contrato: la hace el SDK ({@link Ore#tabla}); aquí sólo se le pone el límite de la consola. */
+    static Map<String, Object> comoTabla(Object valor) { return Ore.tabla(valor, FILAS_MAXIMAS); }
 
     // ── El bucle ────────────────────────────────────────────────────────────
     public static void main(String[] args) {
@@ -306,12 +277,20 @@ public final class Agente {
         }
     }
 
+    @SuppressWarnings("unchecked")
     static void bucle(String[] args) throws Exception {
         if (args.length > 0 && args[0].equals("--comprobar")) {
             Kernel k = new Kernel();
             Map<String, Object> r = k.correr("record P(String n, int e) {}\nvar xs = List.of(new P(\"a\", 1), new P(\"b\", 2));\nxs.size() * 21", "java");
             if (!"42".equals(String.valueOf(r.get("texto")))) throw new IllegalStateException("el kernel no contesta 42: " + Json.escribir(r));
-            LOG.println("agente y sdk listos · " + Runtime.version() + " · duckdb " + (tieneDuckdb() ? "sí" : "no"));
+            // Y el contrato de tipos por Arrow (0032 T3): si faltan los jars o el
+            // --add-opens, se ve aquí y no en la primera celda de una persona.
+            Ore.Filas f = Ore.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
+            Map<String, Object> t = comoTabla(f);
+            List<Object> fila = ((List<List<Object>>) t.get("filas")).get(0);
+            if (!Long.valueOf(42).equals(f.get(0).get("n")) || !"decimal128(4, 2)".equals(f.tipos.get("d")) || !Long.valueOf(42).equals(fila.get(0)) || !"1.50".equals(fila.get(1)) || !String.valueOf(fila.get(2)).endsWith("Z"))
+                throw new IllegalStateException("el sdk no cumple el contrato de tipos: " + Json.escribir(t));
+            LOG.println("agente y sdk listos · " + Runtime.version() + " · duckdb " + (tieneDuckdb() ? "sí" : "no") + " · arrow y tipos ok");
             return;
         }
         Ore.Puesto p = Ore.puesto;
