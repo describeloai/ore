@@ -564,9 +564,30 @@ impl Lago {
         for r in &requisitos {
             r.check(None).map_err(err)?;
         }
-        // Desde cero: lo que los cambios traen decide la tabla; lo que no
-        // traen lo pone el dataset (la ubicación) o la spec (v2, sin partición
-        // ni orden).
+        let nuevo = Self::desde_cero(self, dataset, cambios)?;
+        let destino = MetadataLocation::new_with_metadata(nuevo.location(), &nuevo);
+        let io = self.file_io();
+        runtime()
+            .block_on(nuevo.write_to(&io, &destino))
+            .map_err(|e| format!("no se pudo escribir `{destino}`: {e}"))?;
+        self.tabla(nuevo, Some(destino.to_string()), dataset)
+            .map_err(err)
+    }
+
+    /// **La tabla que nacería de estos cambios, en memoria** (`stage-create`).
+    pub fn esbozar(&self, dataset: &str, cambios: Vec<TableUpdate>) -> Result<Table, String> {
+        let meta = Self::desde_cero(self, dataset, cambios)?;
+        self.tabla(meta, None, dataset).map_err(err)
+    }
+
+    /// Los metadatos de una tabla nueva a partir de sus cambios: lo que traen
+    /// decide la tabla; lo que no traen lo pone el dataset (la ubicación) o la
+    /// spec (v2, sin partición ni orden).
+    fn desde_cero(
+        &self,
+        dataset: &str,
+        cambios: Vec<TableUpdate>,
+    ) -> Result<TableMetadata, String> {
         let mut esquema = None;
         let mut spec = None;
         let mut orden = None;
@@ -608,14 +629,7 @@ impl Lago {
             // sin efecto: el constructor reconoce lo igual.
             b = c.apply(b).map_err(err)?;
         }
-        let nuevo = b.build().map_err(err)?.metadata;
-        let destino = MetadataLocation::new_with_metadata(nuevo.location(), &nuevo);
-        let io = self.file_io();
-        runtime()
-            .block_on(nuevo.write_to(&io, &destino))
-            .map_err(|e| format!("no se pudo escribir `{destino}`: {e}"))?;
-        self.tabla(nuevo, Some(destino.to_string()), dataset)
-            .map_err(err)
+        Ok(b.build().map_err(err)?.metadata)
     }
 
     /// **El esquema de la tabla pasa a ser el del lote**, si no lo era ya. Un
@@ -1099,7 +1113,11 @@ impl Lago {
         }
         for s in meta.snapshots() {
             vivos.insert(s.manifest_list().to_string());
-            let lista = tabla.manifest_list_reader(s).load().await.map_err(err)?;
+            // Un snapshot cuya lista ya no está (lo expiró otra pasada, desde
+            // otro clon del árbol) no nombra nada: se salta, no se rompe.
+            let Ok(lista) = tabla.manifest_list_reader(s).load().await else {
+                continue;
+            };
             for mf in lista.entries() {
                 vivos.insert(mf.manifest_path.clone());
                 let m = mf.load_manifest(io).await.map_err(err)?;

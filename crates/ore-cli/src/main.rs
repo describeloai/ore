@@ -775,6 +775,33 @@ enum Command {
         /// Donde viven los punteros de las copias; sin esto, `<arbol>/copias`.
         #[arg(long, value_name = "DIR")]
         informe: Option<PathBuf>,
+        /// El commit del catalogo REST de Iceberg (0031 §11): `requirements` +
+        /// `updates` de un `updateTable` o un `commitTransaction`, aplicados,
+        /// la clave de operacion cotejada, la Table que nace o sigue el esquema,
+        /// y el puntero. Con `--peticion`.
+        #[arg(long)]
+        commit: bool,
+        /// Con `--commit`: la tabla `<paquete>.<tabla>` si el cuerpo no trae `identifier`.
+        #[arg(long, value_name = "NS.TABLA")]
+        tabla: Option<String>,
+        /// La tabla nace de un `createTable` (sin stage): metadata.json v0, Table y puntero.
+        #[arg(long, value_name = "NS.TABLA")]
+        crear: Option<String>,
+        /// `stage-create`: los metadatos que la tabla tendria, sin escribir nada.
+        #[arg(long, value_name = "NS.TABLA")]
+        esbozar: Option<String>,
+        /// La retencion declarada en la tabla (`history.expire.*`), con `--edad` y `--minimo`.
+        #[arg(long, value_name = "NS.TABLA")]
+        retencion: Option<String>,
+        /// Con `--retencion`: cuantos snapshots se conservan como minimo.
+        #[arg(long)]
+        minimo: Option<i64>,
+        /// El cuerpo de la peticion: JSON, `@fichero` o `-` (stdin).
+        #[arg(long, value_name = "JSON|@FICHERO|-")]
+        peticion: Option<String>,
+        /// Con `--commit`/`--crear`: la retencion de una tabla que nace y no la trae (`7d`).
+        #[arg(long, value_name = "EDAD")]
+        retencion_defecto: Option<String>,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -890,6 +917,14 @@ fn main() -> std::process::ExitCode {
             columnas,
             sujeto,
             informe,
+            commit,
+            tabla,
+            crear,
+            esbozar,
+            retencion,
+            minimo,
+            peticion,
+            retencion_defecto,
         } => {
             return datasets::datasets(
                 path,
@@ -907,6 +942,14 @@ fn main() -> std::process::ExitCode {
                     columnas: columnas.as_deref(),
                     sujeto: sujeto.as_deref(),
                     informe: informe.as_deref(),
+                    commit: *commit,
+                    tabla: tabla.as_deref(),
+                    crear: crear.as_deref(),
+                    esbozar: esbozar.as_deref(),
+                    retencion: retencion.as_deref(),
+                    minimo: *minimo,
+                    peticion: peticion.as_deref(),
+                    retencion_defecto: retencion_defecto.as_deref(),
                 },
             );
         }

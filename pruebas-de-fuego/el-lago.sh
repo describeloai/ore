@@ -22,8 +22,23 @@
 #   6  el mantenimiento: `ore datasets . --recoger --edad 0` expira lo superado,
 #      retira lo que nadie nombra y mueve el puntero; `--seco` no toca nada
 #
+# Y el verbo escribir sobre el árbol (W3.6c c2, 0031 §11), con `ore-store
+# escribir` (la tabla Arrow por IPC) haciendo de `write()`:
+#   7  `ore datasets --commit`: la tabla NACE del cuerpo que `escribir` devolvió
+#      (`assert-create` + sus cambios): metadata.json, la `Table` del lago con
+#      las columnas de OOS traducidas de Iceberg (`Integer`, `String`,
+#      `Decimal`, `DateTimeTz`), el puntero con `uuid` y `operacion`; compila
+#   8  la clave de operación: la MISMA escritura otra vez no deja snapshot ni
+#      mueve nada (`repetida`); otra clave anexa; un cuerpo con la base vieja es
+#      código 75 con `actual`; y una columna nueva regenera la `Table`
+#   9  dos tablas en un commit (`table-changes`): las dos nacen o se mueven en
+#      la misma pasada; una `View` como destino se niega sin tocar nada
+#  10  la retención declarada en la tabla (`--retencion p.t --edad 0`) es la que
+#      `--recoger` obedece SIN `--edad`; la que nació con `--retencion-defecto
+#      7d` conserva; la que no tiene ninguna no expira
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` en target/{release,debug}, git y
-# python3.
+# python3 con pyarrow (para 7–10; sin pyarrow se saltan y se dice).
 # ══════════════════════════════════════════════════════════════════════════════
 set -u
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -226,8 +241,137 @@ DESPUES_OBJ=$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/datas
 n=$(printf '{"metadata_location":"%s"}\n' "$MLN" | "$STORE" leer | grep -c '^{"id"'); [ "$n" = "2" ] || falla "6 · tras recoger la vigente no se lee entera ($n)"
 # y las escrituras que perdieron la carrera (tres tablas sin puntero... no: tres
 # snapshots que nadie apunta en la MISMA tabla) se fueron con los huérfanos
+# y el puntero movido se empuja, como hace el CronJob de mantenimiento
+( cd "$TMP/mant" && git add -A datasets && git commit -qm "mantenimiento" && git push -q origin HEAD:main ) || falla "6 · el mantenimiento no pudo empujar"
 salida=$("$ORE" datasets "$TMP/mant" 2>&1) || falla "6 · ore datasets"
 case "$salida" in *"dataset  ventas.salida"*"copiada"*) ;; *) falla "6 · la lista no enseña el dataset: $salida";; esac
 ok "6 · ore datasets --recoger: en seco no toca; de verdad expira, retira ($ANTES_OBJ → $DESPUES_OBJ objetos) y mueve el puntero; la vigente sigue entera"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x936\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ el verbo escribir sobre el árbol (c2) ════════════════════════════════════
+if ! "$PY" -c 'import pyarrow' 2>/dev/null; then
+  dice "sin pyarrow: 7–10 (el verbo escribir) se saltan"
+  if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x936\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+  exit 0
+fi
+# La tabla Arrow que un SDK mandaría: pyarrow la escribe por IPC en stdout.
+cat > "$TMP/ipc.py" <<'PY'
+import sys
+import pyarrow as pa
+desde, n = int(sys.argv[1]), int(sys.argv[2])
+extra = len(sys.argv) > 3
+cols = {
+    "id": pa.array(range(desde, desde + n), pa.int64()),
+    "pais": pa.array(["ES", "PT"][i % 2] for i in range(n)),
+    "total": pa.array([(desde + i) * 10 + 0.5 for i in range(n)], pa.float64()).cast(pa.decimal128(18, 2)),
+    "cuando": pa.array([1_700_000_000_000_000 + desde + i for i in range(n)], pa.timestamp("us", tz="UTC")),
+}
+if extra:
+    cols["canal"] = pa.array(["web"] * n)
+t = pa.table(cols)
+w = pa.ipc.new_stream(sys.stdout.buffer, t.schema)
+w.write_table(t)
+w.close()
+PY
+# escribe <dataset> <modo> <base> <clave> <desde> <n> [extra] → $TMP/escrito.json
+escribe() {
+  { printf '{"dataset":"datasets/%s","modo":"%s","base":"%s","operacion":"%s"}\n' "$1" "$2" "$3" "$4"
+    "$PY" "$TMP/ipc.py" "$5" "$6" ${7:-}; } | "$STORE" escribir > "$TMP/escrito.json" 2>"$TMP/escrito.err" \
+    || { cat "$TMP/escrito.err" >&2; return 1; }
+}
+jq_() { "$PY" -c 'import json,sys
+v=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    v = v[int(k)] if k.isdigit() else v[k]
+print(v if not isinstance(v,bool) else str(v).lower())' "$1" "$2"; }
+CL="$TMP/c2"; git clone -q "$FORJA" "$CL"
+
+# ── 7 · la tabla nace del cuerpo de `escribir` ───────────────────────────────
+escribe ventas_escrita sobrescribir "" op-1 0 5 || falla "7 · ore-store escribir"
+[ "$(jq_ "$TMP/escrito.json" requirements.0.type)" = "assert-create" ] || falla "7 · sin base, el requisito es assert-create"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --sujeto persona:ana --retencion-defecto 7d --json > "$TMP/commit.json" 2>"$TMP/commit.err" \
+  || { cat "$TMP/commit.err"; falla "7 · ore datasets --commit"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.tabla_nueva)" = "true" ] || falla "7 · la Table tenía que nacer: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$TMP/commit.json" tablas.0.puntero_nuevo)" = "true" ] || falla "7 · el puntero tenía que nacer"
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "5" ] || falla "7 · 5 filas: $(jq_ "$TMP/commit.json" tablas.0.filas)"
+ML7=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+grep -q "cuando: { type: DateTimeTz }" "$CL/packages/ventas/tables/escrita.yaml" || falla "7 · la Table no lleva DateTimeTz: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
+grep -q "total: { type: Decimal }" "$CL/packages/ventas/tables/escrita.yaml" || falla "7 · la Table no lleva Decimal"
+[ "$(jq_ "$CL/datasets/ventas_escrita.json" operacion)" = "op-1" ] || falla "7 · el puntero no lleva la operación"
+[ -n "$(jq_ "$CL/datasets/ventas_escrita.json" uuid)" ] || falla "7 · el puntero no lleva el uuid"
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "7 · el árbol no compila con la Table que nació"; }
+( cd "$CL" && git add -A && git commit -qm "escrita nace" && git push -q origin HEAD:main ) || falla "7 · no se pudo empujar"
+n=$(printf '{"metadata_location":"%s","dataset":"datasets/ventas_escrita"}\n' "$ML7" | "$STORE" leer | grep -c '^{"'); [ "$n" = "6" ] || falla "7 · leer sin cabecera de copia: $n líneas y no 6"
+ok "7 · --commit: la tabla nace del cuerpo de \`escribir\` (assert-create), con su Table tipada desde Iceberg y su puntero; compila y se lee"
+
+# ── 8 · la clave de operación, la base vieja, el esquema que evoluciona ──────
+escribe ventas_escrita sobrescribir "$ML7" op-1 0 5 || falla "8 · escribir (repetida)"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8 · commit repetido"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.repetida)" = "true" ] || falla "8 · la misma operación tenía que ser \`repetida\`: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)" = "$ML7" ] || falla "8 · la repetida movió el puntero"
+[ -z "$(cd "$CL" && git status --porcelain)" ] || falla "8 · la repetida tocó el árbol: $(cd "$CL" && git status --porcelain)"
+escribe ventas_escrita anexar "$ML7" op-2 5 3 || falla "8 · escribir (anexar)"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8 · commit anexar"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "8" ] || falla "8 · tras anexar, 8 filas: $(cat "$TMP/commit.json")"
+ML8=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+# la base vieja: alguien escribió mientras tanto → 75 con actual
+escribe ventas_escrita anexar "$ML7" op-3 100 1 || falla "8 · escribir (base vieja)"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
+[ "$c" = "75" ] || falla "8 · la base vieja tenía que ser código 75 y fue $c: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$TMP/commit.json" actual.metadata_location)" = "$ML8" ] || falla "8 · el 75 no dice \`actual\`: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)" = "$ML8" ] || falla "8 · el 75 movió el puntero"
+# una columna más: la Table del árbol sigue el esquema
+escribe ventas_escrita sobrescribir "$ML8" op-4 0 2 extra || falla "8 · escribir (columna nueva)"
+[ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "8 · escribir no vio el esquema nuevo"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8 · commit con columna nueva"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "8 · la Table tenía que regenerarse: $(cat "$TMP/commit.json")"
+grep -q "canal: { type: String }" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la Table no lleva la columna nueva"
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "8 · el árbol no compila con la Table regenerada"; }
+ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+"$ORE" datasets "$CL" --ficha ventas.escrita --json > "$TMP/ficha.json" 2>&1 || falla "8 · ficha"
+[ "$(jq_ "$TMP/ficha.json" snapshots.0.idempotencia)" = "op-4" ] || falla "8 · la ficha no enseña la clave de operación: $(cat "$TMP/ficha.json")"
+[ "$(jq_ "$TMP/ficha.json" retencion.edad_ms)" = "604800000" ] || falla "8 · la ficha no enseña la retención con la que nació (7d): $(jq_ "$TMP/ficha.json" retencion.edad_ms)"
+ok "8 · la misma operación no deja snapshot ni toca el árbol; otra anexa; la base vieja es 75 con \`actual\`; una columna nueva regenera la Table; la ficha lo cuenta"
+
+# ── 9 · dos tablas en un commit, y lo que no se escribe ──────────────────────
+escribe ventas_escrita anexar "$ML8b" op-5 200 1 || falla "9 · escribir escrita"; cp "$TMP/escrito.json" "$TMP/e1.json"
+escribe ventas_otra sobrescribir "" op-6 0 4 || falla "9 · escribir otra"; cp "$TMP/escrito.json" "$TMP/e2.json"
+"$PY" -c 'import json,sys
+e1=json.load(open(sys.argv[1])); e2=json.load(open(sys.argv[2]))
+def cambio(ns,n,e): return {"identifier":{"namespace":[ns],"name":n},"requirements":e["requirements"],"updates":e["updates"]}
+json.dump({"table-changes":[cambio("ventas","escrita",e1),cambio("ventas","otra",e2)]}, open(sys.argv[3],"w"))' "$TMP/e1.json" "$TMP/e2.json" "$TMP/tx.json"
+"$ORE" datasets "$CL" --commit --peticion "@$TMP/tx.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9 · commitTransaction"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "3" ] || falla "9 · escrita: 3 filas (2 + 1): $(cat "$TMP/commit.json")"
+[ "$(jq_ "$TMP/commit.json" tablas.1.tabla_nueva)" = "true" ] || falla "9 · otra tenía que nacer"
+[ -f "$CL/datasets/ventas_otra.json" ] && [ -f "$CL/packages/ventas/tables/otra.yaml" ] || falla "9 · otra no dejó puntero y Table"
+( cd "$CL" && git add -A && git commit -qm "dos tablas" && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar"
+# una View como destino: se niega, y no queda nada a medias
+mkdir -p "$CL/packages/ventas/views"
+printf 'apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata: { name: vista, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.pedidos }\n  fields: { id: order_id }\n' > "$CL/packages/ventas/views/vista.yaml"
+escribe ventas_vista sobrescribir "" op-7 0 1 || falla "9 · escribir vista"
+"$ORE" datasets "$CL" --commit --tabla ventas.vista --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
+[ "$c" = "65" ] || falla "9 · escribir una View tenía que ser 65 y fue $c: $(cat "$TMP/commit.json")"
+[ ! -f "$CL/datasets/ventas_vista.json" ] || falla "9 · la View dejó puntero"
+# una Table de otra fuente: lo mismo
+escribe ventas_pedidos sobrescribir "" op-8 0 1 || falla "9 · escribir pedidos"
+"$ORE" datasets "$CL" --commit --tabla ventas.pedidos --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
+[ "$c" = "65" ] || falla "9 · escribir una Table de ficheros tenía que ser 65 y fue $c"
+ok "9 · dos tablas en un commit (una nace, otra anexa); una View y una Table de otra fuente se niegan sin dejar nada"
+
+# ── 10 · la retención declarada es la que --recoger obedece ──────────────────
+"$ORE" datasets "$CL" --retencion ventas.escrita --edad 0 --json > "$TMP/ret.json" 2>&1 || { cat "$TMP/ret.json"; falla "10 · --retencion"; }
+[ "$(jq_ "$TMP/ret.json" edad_ms)" = "0" ] || falla "10 · --retencion no dejó 0"
+escribe ventas_libre sobrescribir "" op-9 0 1 || falla "10 · escribir libre"
+"$ORE" datasets "$CL" --commit --tabla ventas.libre --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "10 · commit libre (sin retención)"; }
+MLL=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+escribe ventas_libre anexar "$MLL" op-10 1 1 || falla "10 · escribir libre 2"
+"$ORE" datasets "$CL" --commit --tabla ventas.libre --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || falla "10 · commit libre 2"
+"$ORE" datasets "$CL" --recoger --json > "$TMP/rec.json" 2>&1 || { cat "$TMP/rec.json"; falla "10 · --recoger sin --edad"; }
+"$PY" -c 'import json,sys
+r=json.load(open(sys.argv[1])); por={d["nombre"]:d for d in r["por_dataset"]}
+assert por["ventas.escrita"]["expirados"]>=1, ("escrita (retencion 0) tenia que expirar", por)
+assert por["ventas.otra"]["expirados"]==0, ("otra (7d) no tenia que expirar", por)
+assert por["ventas.libre"]["expirados"]==0, ("libre (sin retencion) no tenia que expirar", por)
+assert por["ventas.escrita"]["movido"] is True, ("el puntero de escrita tenia que moverse", por)' "$TMP/rec.json" || falla "10 · recoger no obedeció la retención de cada tabla: $(cat "$TMP/rec.json")"
+ok "10 · --recoger sin --edad obedece la retención de cada tabla: 0 expira, 7d conserva, ninguna no expira"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9310\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

@@ -14,6 +14,29 @@
 //! | `--ficha p.x` | el puntero y la historia de la tabla (`ore-store historia`) | `GET /datasets/{ns}/{n}` |
 //! | `--recoger [--edad 7d]` | expirar lo superado, retirar lo que nadie nombra, mover los punteros | el CronJob de mantenimiento |
 //! | `--confirmar p.t --metadata-location …` | **el swap**: el puntero de un dataset del lago, con su `Table` | `POST /datasets/{ns}/{n}/confirmar`, por quien no puede empujar |
+//! | `--commit [--tabla p.t] --peticion …` | **el commit del catálogo REST** (W3.6c, 0031 §11): `requirements` + `updates` de un `updateTable` o un `commitTransaction`, aplicados por `ore-store aplicar`, la clave de operación cotejada, la `Table` que nace o evoluciona, y el puntero | `POST /v1/namespaces/{ns}/tables/{t}` y `POST /v1/transactions/commit` |
+//! | `--crear p.t --peticion …` | la tabla nace de un `createTable` (sin `stage-create`): su `metadata.json` v0, su `Table` y su puntero | `POST /v1/namespaces/{ns}/tables` |
+//! | `--esbozar p.t --peticion …` | `stage-create`: los metadatos que la tabla tendría, sin escribir nada | idem, con `stage-create: true` |
+//! | `--retencion p.t --edad 30d [--minimo 3]` | la retención declarada en la tabla (`history.expire.*`), que `--recoger` obedece | quien gobierna el dataset |
+//!
+//! # El commit, y lo que decide `ore` (0031 §11 ①④⑥)
+//!
+//! El cuerpo del cliente —PyIceberg, DuckDB, o el agente del puesto tras
+//! `ore-store escribir`— **pasa tal cual** a `ore-store aplicar` (el JSON de
+//! `ore` no modela `null`, y un `assert-ref-snapshot-id` de una tabla recién
+//! nacida lo lleva). Aquí se decide lo que es del catálogo: el paquete existe;
+//! la `Table` es del lago o no existe todavía (una `View` o una `Table` de otra
+//! fuente no se escribe); **el puntero vigente es la base** contra la que se
+//! validan los requisitos (el CAS semántico: un `assert-ref-snapshot-id` que no
+//! cuadra es código 75 con `actual`); **la clave de operación** del snapshot
+//! (`ore.operacion`) se coteja con la ancestría y, si ya está, se contesta con
+//! lo que hay sin tocar nada; la tabla que nace recibe la retención por defecto
+//! si no la trae; la `Table` nace con las columnas de OOS traducidas del
+//! esquema de Iceberg (o las actualiza cuando el esquema evolucionó, si el
+//! documento es de los nuestros); y el puntero se mueve. Un `commitTransaction`
+//! de N tablas aplica las N antes de mover ningún puntero: o se mueven todos en
+//! el commit del árbol que `ore-serve` hace después, o ninguno (lo que se
+//! escribió y no se apuntó lo retira `--recoger` como huérfano).
 //!
 //! # El swap, y por qué lo hace `ore` y no `ore-serve`
 //!
@@ -59,11 +82,35 @@ pub struct Opciones<'a> {
     pub sujeto: Option<&'a str>,
     /// Dónde viven los punteros de las copias; sin él, `<árbol>/copias`.
     pub informe: Option<&'a Path>,
+    /// `--commit`: el commit del catálogo REST (ver la cabecera).
+    pub commit: bool,
+    /// Con `--commit`: la tabla, cuando el cuerpo no trae `identifier`.
+    pub tabla: Option<&'a str>,
+    /// `--crear p.t`: la tabla nace de un `createTable`.
+    pub crear: Option<&'a str>,
+    /// `--esbozar p.t`: `stage-create`, sin escribir nada.
+    pub esbozar: Option<&'a str>,
+    /// `--retencion p.t`: la retención declarada en la tabla (con `--edad` y `--minimo`).
+    pub retencion: Option<&'a str>,
+    /// Con `--retencion`: cuántos snapshots se conservan como mínimo.
+    pub minimo: Option<i64>,
+    /// El cuerpo de la petición: JSON, `@fichero` o `-` (stdin).
+    pub peticion: Option<&'a str>,
+    /// La retención de una tabla que nace y no la trae (`7d`); sin ella, no se declara.
+    pub retencion_defecto: Option<&'a str>,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let r = if let Some(n) = op.confirmar {
         confirmar(path, n, op)
+    } else if op.commit {
+        commit(path, op)
+    } else if let Some(n) = op.crear {
+        crear(path, n, op)
+    } else if let Some(n) = op.esbozar {
+        esbozar(path, n, op)
+    } else if let Some(n) = op.retencion {
+        retencion(path, n, op)
     } else if let Some(n) = op.ficha {
         ficha(path, n, op)
     } else if op.recoger {
@@ -372,7 +419,8 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ("huerfanos", Json::Int(hn("huerfanos"))),
         ("heredados", Json::Int(hn("heredados"))),
         ("seco", Json::Bool(op.seco)),
-        ("edad_ms", Json::Int(edad.unwrap_or(0))),
+        // -1: sin `--edad`; rige la retención de cada tabla (0031 §11 ⑥)
+        ("edad_ms", Json::Int(edad.unwrap_or(-1))),
         ("por_dataset", Json::Arr(lineas)),
     ]);
     if op.json {
@@ -417,15 +465,16 @@ pub(crate) fn asegurar_lago(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// **El swap.** Ver la cabecera del módulo.
-fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn bien(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+}
+
+/// `<paquete>.<tabla>` → (`paquete`, `tabla`), o por qué no.
+fn partes(nombre: &str) -> Result<(&str, &str), Fallo> {
     let Some((ns, tabla)) = nombre.split_once('.') else {
         return Err((64, format!("`{nombre}` no es `<paquete>.<tabla>`")));
-    };
-    let bien = |s: &str| {
-        !s.is_empty()
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     };
     if !bien(ns) || !bien(tabla) {
         return Err((
@@ -433,6 +482,804 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             format!("`{nombre}`: paquete y tabla llevan letras, dígitos y `_`"),
         ));
     }
+    Ok((ns, tabla))
+}
+
+/// La marca de los documentos que este verbo escribe: sólo esos se regeneran
+/// cuando el esquema de la tabla evoluciona; uno escrito a mano se respeta.
+const MARCA: &str = "# Una tabla del lago (0031 §10)";
+
+/// Qué hay del documento de la `Table`: `Ok(None)` si no existe, `Ok(Some(texto))`
+/// si es del lago, `Err` si es de otra fuente.
+fn documento_de_la_tabla(path: &Path, ns: &str, tabla: &str) -> Result<Option<String>, Fallo> {
+    // Una View con ese nombre: se escribe en una tabla del lago, no en una consulta.
+    if path
+        .join("packages")
+        .join(ns)
+        .join("views")
+        .join(format!("{tabla}.yaml"))
+        .is_file()
+    {
+        return Err((
+            65,
+            format!(
+                "`{ns}.{tabla}` es una View: una consulta no se escribe; escribe en una tabla del lago"
+            ),
+        ));
+    }
+    let doc = path
+        .join("packages")
+        .join(ns)
+        .join("tables")
+        .join(format!("{tabla}.yaml"));
+    let Some(t) = std::fs::read_to_string(&doc).ok() else {
+        return Ok(None);
+    };
+    let n = ore_core::parse::parse(&t)
+        .map_err(|e| (65, format!("`{}` no analiza: {e:?}", doc.display())))?;
+    let ds = n
+        .get("spec")
+        .and_then(|(_, s)| s.get("datasource"))
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or("");
+    if ds != "lago" {
+        return Err((
+            65,
+            format!(
+                "`{ns}.{tabla}` es una Table de `{ds}`, no del lago: un dataset no puede apuntar a una tabla de otra fuente"
+            ),
+        ));
+    }
+    Ok(Some(t))
+}
+
+/// Las columnas que un documento del lago declara (`spec.columns`).
+fn columnas_del_documento(texto: &str) -> BTreeMap<String, String> {
+    ore_core::parse::parse(texto)
+        .ok()
+        .and_then(|n| {
+            n.get("spec")
+                .and_then(|(_, s)| s.get("columns"))
+                .map(|(_, c)| {
+                    c.entries()
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            Some((
+                                k.as_str()?.to_string(),
+                                v.get("type")
+                                    .and_then(|(_, t)| t.as_str())
+                                    .unwrap_or("String")
+                                    .to_string(),
+                            ))
+                        })
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+/// **La `Table` del lago nace, o sigue el esquema de la tabla.** Sin documento:
+/// nace con `columnas`. Con documento nuestro y otras columnas: se regenera
+/// (el esquema evolucionó con una escritura). Con documento ajeno: se deja, y
+/// se dice si difiere. Compila sólo lo que este documento dice; si no compila,
+/// se revierte. Devuelve `(nueva, regenerada)`.
+fn asegurar_table(
+    path: &Path,
+    ns: &str,
+    tabla: &str,
+    columnas: &BTreeMap<String, String>,
+) -> Result<(bool, bool), Fallo> {
+    let nombre = format!("{ns}.{tabla}");
+    if columnas.is_empty() {
+        return Err((64, format!("la Table `{nombre}` no tiene columnas")));
+    }
+    for (c, t) in columnas {
+        if !bien(c) {
+            return Err((64, format!("la columna `{c}` no es un identificador")));
+        }
+        if ore_core::types::parse_type(t).is_err() {
+            return Err((
+                64,
+                format!("la columna `{c}` tiene un tipo que OOS no conoce: `{t}`"),
+            ));
+        }
+    }
+    let doc = path
+        .join("packages")
+        .join(ns)
+        .join("tables")
+        .join(format!("{tabla}.yaml"));
+    let texto_previo = documento_de_la_tabla(path, ns, tabla)?;
+    let (nueva, regenerar) = match &texto_previo {
+        None => (true, true),
+        Some(t) => (
+            false,
+            t.contains(MARCA) && columnas_del_documento(t) != *columnas,
+        ),
+    };
+    if !regenerar {
+        return Ok((false, false));
+    }
+    let mut s = format!(
+        "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: la escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y se regenera cuando el esquema evoluciona). Su puntero es\n# `datasets/{ns}_{tabla}.json`; su historia, los snapshots de la tabla.\nspec:\n  datasource: lago\n  object: \"{ns}_{tabla}\"\n  columns:\n"
+    );
+    for (c, t) in columnas {
+        s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
+    }
+    s.push_str("  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n");
+    if let Some(padre) = doc.parent() {
+        std::fs::create_dir_all(padre)
+            .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
+    }
+    std::fs::write(&doc, s)
+        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", doc.display())))?;
+    // ¿Compila lo que se escribió? Sólo los diagnósticos de ESTE documento:
+    // un paquete vecino roto no es de esta escritura.
+    let malos: Vec<String> = ore_core::validate_package(path)
+        .into_iter()
+        .filter(|d| d.file == doc)
+        .map(|d| d.render(path))
+        .collect();
+    if !malos.is_empty() {
+        match &texto_previo {
+            Some(t) => {
+                let _ = std::fs::write(&doc, t);
+            }
+            None => {
+                let _ = std::fs::remove_file(&doc);
+            }
+        }
+        return Err((
+            65,
+            format!(
+                "la Table `{nombre}` no compila con esas columnas:\n{}",
+                malos.join("\n")
+            ),
+        ));
+    }
+    Ok((nueva, !nueva))
+}
+
+/// El puntero de un dataset del lago, leído del árbol (`datasets/<ns>_<t>.json`).
+fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>) {
+    let ruta = path.join("datasets").join(format!("{ns}_{tabla}.json"));
+    let previo = std::fs::read_to_string(&ruta)
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok());
+    (ruta, previo)
+}
+
+/// Escribe el puntero: lo que había, con el estado nuevo encima.
+fn escribir_puntero(
+    ruta: &Path,
+    previo: Option<&Node>,
+    campos: Vec<(&str, Json)>,
+) -> Result<(), Fallo> {
+    if let Some(padre) = ruta.parent() {
+        std::fs::create_dir_all(padre)
+            .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
+    }
+    let mut m: BTreeMap<String, Json> = match previo.map(Json::de_node) {
+        Some(Json::Obj(m)) => m,
+        _ => Default::default(),
+    };
+    for (k, v) in campos {
+        m.insert(k.into(), v);
+    }
+    m.remove("motivo");
+    std::fs::write(ruta, Json::Obj(m).pretty() + "\n")
+        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))
+}
+
+/// El cuerpo de `--peticion`: JSON tal cual, `@fichero`, o `-` por stdin.
+fn cuerpo_de(op: &Opciones) -> Result<String, Fallo> {
+    let p = op.peticion.filter(|s| !s.trim().is_empty()).ok_or((
+        64,
+        "falta `--peticion`: el cuerpo (JSON, `@fichero` o `-`)".to_string(),
+    ))?;
+    let texto = if p == "-" {
+        let mut t = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut t)
+            .map_err(|e| (66, format!("no se pudo leer la petición de stdin: {e}")))?;
+        t
+    } else if let Some(f) = p.strip_prefix('@') {
+        std::fs::read_to_string(f).map_err(|e| (66, format!("no se pudo leer `{f}`: {e}")))?
+    } else {
+        p.to_string()
+    };
+    if ore_core::parse::parse(&texto).is_err() {
+        return Err((64, "la petición no es JSON".into()));
+    }
+    Ok(texto.trim().to_string())
+}
+
+/// `ore-store <verbo>` con una petición ya escrita (no se reanaliza) y la
+/// respuesta tal cual.
+fn almacen_crudo(verbo: &str, peticion: &str) -> Result<String, Fallo> {
+    let programa = programa_del_almacen().map_err(|e| (78, e))?;
+    lector::ejecutar(&programa, &[verbo.to_string()], Some(peticion)).map_err(|f| {
+        let mut s = f.mensaje;
+        for l in f.ayuda {
+            s.push('\n');
+            s.push_str(&l);
+        }
+        (69, s)
+    })
+}
+
+/// Un texto como literal JSON.
+fn lit(s: &str) -> String {
+    Json::s(s).jcs()
+}
+
+/// Las propiedades de retención por defecto, como JSON, si `--retencion-defecto`.
+fn retencion_defecto(op: &Opciones) -> Result<String, Fallo> {
+    match op.retencion_defecto {
+        Some(e) => {
+            let ms = edad_ms(e).map_err(|m| (64, m))?;
+            Ok(format!(
+                "{{\"history.expire.max-snapshot-age-ms\":\"{ms}\",\"history.expire.min-snapshots-to-keep\":\"1\"}}"
+            ))
+        }
+        None => Ok("{}".into()),
+    }
+}
+
+/// Lo que un cambio (un `updateTable`, o una entrada de `table-changes`) dice
+/// de sí mismo: a qué tabla va, si crea, y su clave de operación.
+struct Cambio<'a> {
+    nodo: &'a Node,
+    indice: Option<usize>,
+}
+
+impl Cambio<'_> {
+    fn identificador(&self) -> Option<String> {
+        let id = self.nodo.get("identifier").map(|(_, v)| v)?;
+        let ns = id
+            .get("namespace")
+            .map(|(_, v)| v.items())
+            .and_then(|i| i.last())
+            .and_then(|n| n.as_str())?;
+        let n = id.get("name").and_then(|(_, v)| v.as_str())?;
+        Some(format!("{ns}.{n}"))
+    }
+    fn crea(&self) -> bool {
+        self.nodo
+            .get("requirements")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .any(|r| r.get("type").and_then(|(_, v)| v.as_str()) == Some("assert-create"))
+    }
+    fn operacion(&self) -> Option<String> {
+        self.nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                u.get("snapshot")
+                    .and_then(|(_, s)| s.get("summary"))
+                    .and_then(|(_, m)| m.get("ore.operacion"))
+                    .and_then(|(_, v)| v.as_str())
+                    .filter(|c| !c.is_empty())
+                    .map(String::from)
+            })
+            .next_back()
+    }
+}
+
+/// Lo que `ore-store aplicar` contestó, ya como JSON del núcleo más lo que
+/// hace falta para el puntero.
+struct Aplicado {
+    metadata_location: String,
+    snapshot: String,
+    filas: i64,
+    uuid: String,
+    operacion: String,
+    columnas_oos: BTreeMap<String, String>,
+}
+
+fn aplicado_de(n: &Node) -> Aplicado {
+    Aplicado {
+        metadata_location: campo_de(n, "metadata_location").unwrap_or_default(),
+        snapshot: campo_de(n, "snapshot").unwrap_or_default(),
+        filas: campo_de(n, "filas")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        uuid: campo_de(n, "uuid").unwrap_or_default(),
+        operacion: campo_de(n, "operacion").unwrap_or_default(),
+        columnas_oos: n
+            .get("columnas_oos")
+            .map(|(_, c)| {
+                c.entries()
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// El CAS perdido, dicho con `actual` y con código 75.
+fn adelantado(op: &Opciones, tabla: &str, actual_ml: &str, actual_snap: &str, m: String) -> Fallo {
+    if op.json {
+        println!(
+            "{}",
+            Json::obj([
+                (
+                    "actual",
+                    Json::obj([
+                        ("metadata_location", Json::s(actual_ml)),
+                        ("snapshot", Json::s(actual_snap)),
+                    ]),
+                ),
+                ("error", Json::s(&m)),
+                ("tabla", Json::s(tabla)),
+            ])
+            .jcs()
+        );
+    }
+    eprintln!("error: {m}");
+    (ADELANTADO, String::new())
+}
+
+/// **El commit del catálogo REST** (ver la cabecera). Uno o varios cambios;
+/// se aplican todos antes de mover ningún puntero.
+fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+    let texto = cuerpo_de(op)?;
+    let n = ore_core::parse::parse(&texto)
+        .map_err(|e| (64, format!("la petición no analiza: {e:?}")))?;
+    let cambios: Vec<Cambio> = match n.get("table-changes") {
+        Some((_, t)) => t
+            .items()
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Cambio {
+                nodo: c,
+                indice: Some(i),
+            })
+            .collect(),
+        None => vec![Cambio {
+            nodo: &n,
+            indice: None,
+        }],
+    };
+    if cambios.is_empty() {
+        return Err((64, "la petición no trae ningún cambio".into()));
+    }
+    let defecto = retencion_defecto(op)?;
+    let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
+
+    // ── primero, todos: ¿a qué tabla, existe, cuál es la base, ya se hizo? ──
+    struct Plan<'a> {
+        cambio: Cambio<'a>,
+        nombre: String,
+        ns: String,
+        tabla: String,
+        ruta: PathBuf,
+        previo: Option<Node>,
+        base: String,
+        repetida: bool,
+    }
+    let mut planes = Vec::new();
+    for c in cambios {
+        let nombre = c
+            .identificador()
+            .or_else(|| op.tabla.map(String::from))
+            .ok_or((
+                64,
+                "el cambio no trae `identifier` y no se dio `--tabla <paquete>.<tabla>`"
+                    .to_string(),
+            ))?;
+        let (ns, tabla) = {
+            let (a, b) = partes(&nombre)?;
+            (a.to_string(), b.to_string())
+        };
+        let (ns, tabla) = (ns.as_str(), tabla.as_str());
+        if !path
+            .join("packages")
+            .join(ns)
+            .join("package.yaml")
+            .is_file()
+        {
+            return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
+        }
+        documento_de_la_tabla(path, ns, tabla)?;
+        let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+        let base = previo
+            .as_ref()
+            .and_then(|p| campo_de(p, "metadata_location"))
+            .unwrap_or_default();
+        let snap = previo
+            .as_ref()
+            .and_then(|p| campo_de(p, "snapshot"))
+            .unwrap_or_default();
+        if c.crea() && !base.is_empty() {
+            return Err(adelantado(
+                op,
+                &nombre,
+                &base,
+                &snap,
+                format!("`{nombre}` ya existe (`{base}`) y el cambio dice `assert-create`"),
+            ));
+        }
+        if !c.crea() && base.is_empty() {
+            return Err((
+                65,
+                format!("no hay ningún dataset `{nombre}`: la tabla no existe todavía"),
+            ));
+        }
+        // La clave de operación en la ancestría: la misma escritura otra vez
+        // (la celda reejecutada, el reintento tras un 5xx) no deja snapshot.
+        let repetida = match (c.operacion(), base.is_empty()) {
+            (Some(clave), false) => {
+                let h = almacen(
+                    "historia",
+                    &Json::obj([
+                        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+                        ("metadata_location", Json::s(&base)),
+                    ]),
+                )?;
+                h.get("snapshots")
+                    .map(|(_, v)| v.items())
+                    .unwrap_or(&[])
+                    .iter()
+                    .any(|s| campo_de(s, "idempotencia").as_deref() == Some(clave.as_str()))
+            }
+            _ => false,
+        };
+        planes.push(Plan {
+            cambio: c,
+            nombre,
+            ns: ns.to_string(),
+            tabla: tabla.to_string(),
+            ruta,
+            previo,
+            base,
+            repetida,
+        });
+    }
+
+    // ── después, aplicar cada uno (los `metadata.json`), sin mover nada ─────
+    let mut aplicados: Vec<Option<Aplicado>> = Vec::new();
+    for p in &planes {
+        if p.repetida {
+            aplicados.push(None);
+            continue;
+        }
+        let pet = format!(
+            "{{\"dataset\":{},\"metadata_location\":{},\"peticion\":{texto},\"cambio\":{},\"retencion_defecto\":{defecto}}}",
+            lit(&format!("datasets/{}_{}", p.ns, p.tabla)),
+            lit(&p.base),
+            p.cambio
+                .indice
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "null".into()),
+        );
+        let salida = match almacen_crudo("aplicar", &pet) {
+            Ok(s) => s,
+            Err((_, m)) if m.contains("conflicto") => {
+                let snap = p
+                    .previo
+                    .as_ref()
+                    .and_then(|x| campo_de(x, "snapshot"))
+                    .unwrap_or_default();
+                return Err(adelantado(
+                    op,
+                    &p.nombre,
+                    &p.base,
+                    &snap,
+                    format!(
+                        "el puntero de `{}` ya no es la base del cambio: alguien escribió mientras tanto ({}). Hay que volver a leer y escribir sobre lo que hay ahora",
+                        p.nombre,
+                        m.trim_start_matches("error: ")
+                    ),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+        let n = ore_core::parse::parse(&salida).map_err(|e| {
+            (
+                69,
+                format!("lo que devolvió `ore-store aplicar` no analiza: {e:?}"),
+            )
+        })?;
+        aplicados.push(Some(aplicado_de(&n)));
+    }
+
+    // ── y al final, la `Table` y el puntero de cada uno ─────────────────────
+    let mut lineas = Vec::new();
+    for (p, a) in planes.iter().zip(aplicados) {
+        let Some(a) = a else {
+            // la operación ya estaba: lo que hay, sin tocar nada
+            let snap = p
+                .previo
+                .as_ref()
+                .and_then(|x| campo_de(x, "snapshot"))
+                .unwrap_or_default();
+            let filas = p
+                .previo
+                .as_ref()
+                .and_then(|x| campo_de(x, "filas"))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            lineas.push(Json::obj([
+                ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+                ("filas", Json::Int(filas)),
+                ("metadata_location", Json::s(&p.base)),
+                (
+                    "operacion",
+                    Json::s(p.cambio.operacion().unwrap_or_default()),
+                ),
+                ("puntero_nuevo", Json::Bool(false)),
+                ("repetida", Json::Bool(true)),
+                ("snapshot", Json::s(snap)),
+                ("tabla", Json::s(&p.nombre)),
+                ("tabla_nueva", Json::Bool(false)),
+                ("tabla_regenerada", Json::Bool(false)),
+            ]));
+            continue;
+        };
+        let (tabla_nueva, regenerada) = asegurar_table(path, &p.ns, &p.tabla, &a.columnas_oos)?;
+        let mut campos = vec![
+            ("estado", Json::s("copiada")),
+            ("tabla", Json::s(&p.nombre)),
+            ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+            ("metadata_location", Json::s(&a.metadata_location)),
+            ("snapshot", Json::s(&a.snapshot)),
+            ("filas", Json::Int(a.filas)),
+            ("uuid", Json::s(&a.uuid)),
+            ("operacion", Json::s(&a.operacion)),
+        ];
+        if let Some(s) = op.sujeto {
+            campos.push(("escrito_por", Json::s(s)));
+        }
+        escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
+        lineas.push(Json::obj([
+            ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+            ("filas", Json::Int(a.filas)),
+            ("metadata_location", Json::s(&a.metadata_location)),
+            ("operacion", Json::s(&a.operacion)),
+            ("puntero_nuevo", Json::Bool(p.previo.is_none())),
+            ("repetida", Json::Bool(false)),
+            ("snapshot", Json::s(&a.snapshot)),
+            ("tabla", Json::s(&p.nombre)),
+            ("tabla_nueva", Json::Bool(tabla_nueva)),
+            ("tabla_regenerada", Json::Bool(regenerada)),
+        ]));
+    }
+    let j = Json::obj([
+        ("lago_declarado", Json::Bool(lago_nuevo)),
+        ("tablas", Json::Arr(lineas.clone())),
+    ]);
+    if op.json {
+        println!("{}", j.jcs());
+    } else {
+        for l in &lineas {
+            let g = |k: &str| match l {
+                Json::Obj(m) => match m.get(k) {
+                    Some(Json::Str(s)) => s.clone(),
+                    Some(Json::Bool(b)) => b.to_string(),
+                    Some(Json::Int(i)) => i.to_string(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            println!(
+                "{} · {}{}{} · {} filas\n  {}",
+                g("tabla"),
+                if g("repetida") == "true" {
+                    "ya estaba (misma operación)"
+                } else if g("puntero_nuevo") == "true" {
+                    "puntero nuevo"
+                } else {
+                    "puntero movido"
+                },
+                if g("tabla_nueva") == "true" {
+                    " · la Table del lago nace"
+                } else if g("tabla_regenerada") == "true" {
+                    " · la Table sigue el esquema nuevo"
+                } else {
+                    ""
+                },
+                if lago_nuevo {
+                    " · `datasource: lago` declarado"
+                } else {
+                    ""
+                },
+                g("filas"),
+                g("metadata_location")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// **La tabla nace de un `createTable`** (sin `stage-create`): el `metadata.json`
+/// v0 por `ore-store aplicar` con `crear`, la `Table` con sus columnas, el
+/// puntero. Es lo que un `POST /v1/namespaces/{ns}/tables` hace.
+fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let (ns, tabla) = partes(nombre)?;
+    let texto = cuerpo_de(op)?;
+    if !path
+        .join("packages")
+        .join(ns)
+        .join("package.yaml")
+        .is_file()
+    {
+        return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
+    }
+    documento_de_la_tabla(path, ns, tabla)?;
+    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+    if let Some(p) = &previo
+        && let Some(base) = campo_de(p, "metadata_location")
+    {
+        let snap = campo_de(p, "snapshot").unwrap_or_default();
+        return Err(adelantado(
+            op,
+            nombre,
+            &base,
+            &snap,
+            format!("`{nombre}` ya existe: `{base}`"),
+        ));
+    }
+    let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
+    let defecto = retencion_defecto(op)?;
+    let pet = format!(
+        "{{\"dataset\":{},\"crear\":true,\"peticion\":{texto},\"retencion_defecto\":{defecto}}}",
+        lit(&format!("datasets/{ns}_{tabla}"))
+    );
+    let salida = almacen_crudo("aplicar", &pet)?;
+    let n = ore_core::parse::parse(&salida).map_err(|e| {
+        (
+            69,
+            format!("lo que devolvió `ore-store aplicar` no analiza: {e:?}"),
+        )
+    })?;
+    let a = aplicado_de(&n);
+    let (tabla_nueva, _) = asegurar_table(path, ns, tabla, &a.columnas_oos)?;
+    let mut campos = vec![
+        ("estado", Json::s("copiada")),
+        ("tabla", Json::s(nombre)),
+        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("metadata_location", Json::s(&a.metadata_location)),
+        ("snapshot", Json::s(&a.snapshot)),
+        ("filas", Json::Int(a.filas)),
+        ("uuid", Json::s(&a.uuid)),
+    ];
+    if let Some(s) = op.sujeto {
+        campos.push(("escrito_por", Json::s(s)));
+    }
+    escribir_puntero(&ruta, previo.as_ref(), campos)?;
+    let j = Json::obj([
+        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("lago_declarado", Json::Bool(lago_nuevo)),
+        ("metadata_location", Json::s(&a.metadata_location)),
+        ("puntero_nuevo", Json::Bool(true)),
+        ("tabla", Json::s(nombre)),
+        ("tabla_nueva", Json::Bool(tabla_nueva)),
+        ("uuid", Json::s(&a.uuid)),
+    ]);
+    if op.json {
+        println!("{}", j.jcs());
+    } else {
+        println!(
+            "{nombre} · nace{}\n  {}",
+            if tabla_nueva {
+                " · la Table del lago nace"
+            } else {
+                ""
+            },
+            a.metadata_location
+        );
+    }
+    Ok(())
+}
+
+/// **`stage-create`**: los metadatos que la tabla tendría, para que el cliente
+/// escriba sus ficheros; nace en el commit con `assert-create`. No toca el
+/// árbol ni el bucket; la respuesta de `ore-store` se imprime tal cual.
+fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let (ns, tabla) = partes(nombre)?;
+    let texto = cuerpo_de(op)?;
+    if !path
+        .join("packages")
+        .join(ns)
+        .join("package.yaml")
+        .is_file()
+    {
+        return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
+    }
+    documento_de_la_tabla(path, ns, tabla)?;
+    let (_, previo) = puntero_del_lago(path, ns, tabla);
+    if let Some(p) = &previo
+        && let Some(base) = campo_de(p, "metadata_location")
+    {
+        let snap = campo_de(p, "snapshot").unwrap_or_default();
+        return Err(adelantado(
+            op,
+            nombre,
+            &base,
+            &snap,
+            format!("`{nombre}` ya existe: `{base}`"),
+        ));
+    }
+    let pet = format!(
+        "{{\"dataset\":{},\"peticion\":{texto}}}",
+        lit(&format!("datasets/{ns}_{tabla}"))
+    );
+    println!("{}", almacen_crudo("esbozar", &pet)?.trim());
+    Ok(())
+}
+
+/// **La retención declarada en la tabla**: `history.expire.*` como propiedades,
+/// en un commit (`set-properties` con `assert-table-uuid`), y el puntero se
+/// mueve. Es lo que `--recoger` obedece.
+fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let (ns, tabla) = partes(nombre)?;
+    let edad = op
+        .edad
+        .ok_or((
+            64,
+            "falta `--edad`: cuánta historia se conserva (`30d`, `0`)".to_string(),
+        ))
+        .and_then(|e| edad_ms(e).map_err(|m| (64, m)))?;
+    let minimo = op.minimo.unwrap_or(1).max(1);
+    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+    let base = previo
+        .as_ref()
+        .and_then(|p| campo_de(p, "metadata_location"))
+        .ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
+    let uuid = previo
+        .as_ref()
+        .and_then(|p| campo_de(p, "uuid"))
+        .map(|u| {
+            format!(
+                ",\"requirements\":[{{\"type\":\"assert-table-uuid\",\"uuid\":{}}}]",
+                lit(&u)
+            )
+        })
+        .unwrap_or_default();
+    let pet = format!(
+        "{{\"dataset\":{},\"metadata_location\":{},\"updates\":[{{\"action\":\"set-properties\",\"updates\":{{\"history.expire.max-snapshot-age-ms\":\"{edad}\",\"history.expire.min-snapshots-to-keep\":\"{minimo}\"}}}}]{uuid}}}",
+        lit(&format!("datasets/{ns}_{tabla}")),
+        lit(&base),
+    );
+    let salida = almacen_crudo("aplicar", &pet)?;
+    let n = ore_core::parse::parse(&salida).map_err(|e| {
+        (
+            69,
+            format!("lo que devolvió `ore-store aplicar` no analiza: {e:?}"),
+        )
+    })?;
+    let a = aplicado_de(&n);
+    escribir_puntero(
+        &ruta,
+        previo.as_ref(),
+        vec![("metadata_location", Json::s(&a.metadata_location))],
+    )?;
+    let j = Json::obj([
+        ("edad_ms", Json::Int(edad)),
+        ("metadata_location", Json::s(&a.metadata_location)),
+        ("minimo", Json::Int(minimo)),
+        ("tabla", Json::s(nombre)),
+    ]);
+    if op.json {
+        println!("{}", j.jcs());
+    } else {
+        println!(
+            "{nombre} · retención: {edad} ms, mínimo {minimo} snapshot(s)\n  {}",
+            a.metadata_location
+        );
+    }
+    Ok(())
+}
+
+/// **El swap.** Ver la cabecera del módulo.
+fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let (ns, tabla) = partes(nombre)?;
     let ml = op.metadata_location.filter(|s| !s.is_empty()).ok_or((
         64,
         "falta `--metadata-location`: el `metadata.json` que el escritor dejó en el bucket"
@@ -457,11 +1304,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
 
     // ── el CAS semántico: el puntero sigue donde el escritor lo dejó ────────
-    let dir = path.join("datasets");
-    let ruta = dir.join(format!("{ns}_{tabla}.json"));
-    let previo = std::fs::read_to_string(&ruta)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok());
+    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
     let actual = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -500,11 +1343,6 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 
     // ── la fuente y el documento ────────────────────────────────────────────
     let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
-    let doc = path
-        .join("packages")
-        .join(ns)
-        .join("tables")
-        .join(format!("{tabla}.yaml"));
     let columnas: Option<BTreeMap<String, String>> = match op.columnas {
         Some(c) => {
             let n = ore_core::parse::parse(c).map_err(|e| {
@@ -521,42 +1359,13 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             if m.is_empty() {
                 return Err((64, "`--columnas` está vacío".into()));
             }
-            for (c, t) in &m {
-                if !bien(c) {
-                    return Err((64, format!("la columna `{c}` no es un identificador")));
-                }
-                if ore_core::types::parse_type(t).is_err() {
-                    return Err((
-                        64,
-                        format!("la columna `{c}` tiene un tipo que OOS no conoce: `{t}`"),
-                    ));
-                }
-            }
             Some(m)
         }
         None => None,
     };
-    let tabla_nueva = !doc.is_file();
-    let texto_previo = std::fs::read_to_string(&doc).ok();
-    if let Some(t) = &texto_previo {
-        let n = ore_core::parse::parse(t)
-            .map_err(|e| (65, format!("`{}` no analiza: {e:?}", doc.display())))?;
-        let ds = n
-            .get("spec")
-            .and_then(|(_, s)| s.get("datasource"))
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("");
-        if ds != "lago" {
-            return Err((
-                65,
-                format!(
-                    "`{nombre}` es una Table de `{ds}`, no del lago: un dataset no puede apuntar a una tabla de otra fuente"
-                ),
-            ));
-        }
-    }
-    let escribir_doc = match (&columnas, tabla_nueva) {
-        (None, true) => {
+    let hay_doc = documento_de_la_tabla(path, ns, tabla)?.is_some();
+    let tabla_nueva = match (&columnas, hay_doc) {
+        (None, false) => {
             return Err((
                 65,
                 format!(
@@ -564,73 +1373,25 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
                 ),
             ));
         }
-        (None, false) => false,
-        (Some(_), _) => true,
+        (None, true) => false,
+        (Some(cols), _) => asegurar_table(path, ns, tabla, cols)?.0,
     };
-    if escribir_doc {
-        let cols = columnas.as_ref().expect("columnas");
-        let mut s = format!(
-            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n# Una tabla del lago (0031 §10): la escribió `write()` desde un puesto, y este\n# documento nació con el esquema de esa primera escritura. Su puntero es\n# `datasets/{ns}_{tabla}.json`; su historia, los snapshots de la tabla Iceberg.\nspec:\n  datasource: lago\n  object: \"{ns}_{tabla}\"\n  columns:\n"
-        );
-        for (c, t) in cols {
-            s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
-        }
-        s.push_str(
-            "  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n",
-        );
-        if let Some(padre) = doc.parent() {
-            std::fs::create_dir_all(padre)
-                .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
-        }
-        std::fs::write(&doc, s)
-            .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", doc.display())))?;
-        // ¿Compila lo que se escribió? Sólo los diagnósticos de ESTE documento:
-        // un paquete vecino roto no es de esta escritura.
-        let malos: Vec<String> = ore_core::validate_package(path)
-            .into_iter()
-            .filter(|d| d.file == doc)
-            .map(|d| d.render(path))
-            .collect();
-        if !malos.is_empty() {
-            match &texto_previo {
-                Some(t) => {
-                    let _ = std::fs::write(&doc, t);
-                }
-                None => {
-                    let _ = std::fs::remove_file(&doc);
-                }
-            }
-            return Err((
-                65,
-                format!(
-                    "la Table `{nombre}` no compila con esas columnas:\n{}",
-                    malos.join("\n")
-                ),
-            ));
-        }
-    }
 
     // ── el puntero ──────────────────────────────────────────────────────────
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", dir.display())))?;
-    let mut m: BTreeMap<String, Json> = match previo.as_ref().map(Json::de_node) {
-        Some(Json::Obj(m)) => m,
-        _ => Default::default(),
-    };
-    m.insert("estado".into(), Json::s("copiada"));
-    m.insert("tabla".into(), Json::s(nombre));
-    m.insert("dataset".into(), Json::s(format!("datasets/{ns}_{tabla}")));
-    m.insert("metadata_location".into(), Json::s(ml));
-    m.insert("snapshot".into(), Json::s(op.snapshot.unwrap_or_default()));
+    let mut campos = vec![
+        ("estado", Json::s("copiada")),
+        ("tabla", Json::s(nombre)),
+        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("metadata_location", Json::s(ml)),
+        ("snapshot", Json::s(op.snapshot.unwrap_or_default())),
+    ];
     if let Some(f) = op.filas {
-        m.insert("filas".into(), Json::Int(f));
+        campos.push(("filas", Json::Int(f)));
     }
     if let Some(s) = op.sujeto {
-        m.insert("escrito_por".into(), Json::s(s));
+        campos.push(("escrito_por", Json::s(s)));
     }
-    m.remove("motivo");
-    std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
-        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
+    escribir_puntero(&ruta, previo.as_ref(), campos)?;
     salida(
         op,
         nombre,
@@ -690,6 +1451,45 @@ fn salida(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lo que un cambio del catálogo REST dice de sí mismo, y las columnas
+    /// de un documento del lago.
+    #[test]
+    fn el_cambio_dice_a_que_tabla_va_si_crea_y_su_operacion() {
+        let n = ore_core::parse::parse(
+            r#"{"identifier":{"namespace":["ventas"],"name":"salida"},"requirements":[{"type":"assert-create"}],"updates":[{"action":"add-schema"},{"action":"add-snapshot","snapshot":{"summary":{"operation":"append","ore.operacion":"op-7"}}}]}"#,
+        )
+        .unwrap();
+        let c = Cambio {
+            nodo: &n,
+            indice: None,
+        };
+        assert_eq!(c.identificador().as_deref(), Some("ventas.salida"));
+        assert!(c.crea());
+        assert_eq!(c.operacion().as_deref(), Some("op-7"));
+        let n = ore_core::parse::parse(
+            r#"{"requirements":[{"type":"assert-table-uuid","uuid":"x"}],"updates":[]}"#,
+        )
+        .unwrap();
+        let c = Cambio {
+            nodo: &n,
+            indice: Some(2),
+        };
+        assert_eq!(c.identificador(), None);
+        assert!(!c.crea());
+        assert_eq!(c.operacion(), None);
+        let cols = columnas_del_documento(
+            "kind: Table
+spec:
+  datasource: lago
+  columns:
+    id: { type: Integer }
+    pais: {}
+",
+        );
+        assert_eq!(cols.get("id").map(String::as_str), Some("Integer"));
+        assert_eq!(cols.get("pais").map(String::as_str), Some("String"));
+    }
 
     #[test]
     fn la_edad_se_lee_en_dias_horas_minutos_y_segundos() {

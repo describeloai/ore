@@ -172,6 +172,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             recoger(&lago, &dataset, &ml, edad, verbo == "recoger-seco")
         }
         "aplicar" => aplicar(&lago, primera),
+        "esbozar" => esbozar(&lago, primera),
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
         "historia" => {
@@ -181,7 +182,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `escribir`, `aplicar`, \
-             `recoger`, `recoger-seco`, `recoger-huerfanas`, `leer` e `historia`"
+             `esbozar`, `recoger`, `recoger-seco`, `recoger-huerfanas`, `leer` e `historia`"
         )),
     }
 }
@@ -476,6 +477,15 @@ fn json_de<T: serde::Serialize>(v: &T) -> Result<Json, String> {
 /// Se validan los requisitos (un `assert-ref-snapshot-id` que no cuadra es un
 /// conflicto, y se dice como tal), se aplican los cambios y se escribe el
 /// siguiente `metadata.json`. Nadie lo apunta todavía.
+///
+/// La petición puede traer los `requirements` y `updates` arriba, o **el cuerpo
+/// del cliente tal cual** en `peticion` (con `cambio: i` si es un
+/// `commitTransaction` con `table-changes`): `ore` lo pasa sin reanalizar,
+/// porque su JSON no modela `null` y un `assert-ref-snapshot-id` de una tabla
+/// recién nacida lo lleva. Con `crear: true`, `peticion` es un
+/// `CreateTableRequest` (`schema`, `partition-spec`, `write-order`,
+/// `properties`) y los cambios se construyen de él. `retencion_defecto` son
+/// las propiedades de retención que una tabla que nace recibe si no las trae.
 fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
     let j: serde_json::Value = serde_json::from_str(peticion)
         .map_err(|e| format!("la petición de `aplicar` no es JSON: {e}"))?;
@@ -490,20 +500,38 @@ fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from);
-    let requisitos: Vec<iceberg::TableRequirement> = j
-        .get("requirements")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| format!("`requirements` no se entiende: {e}"))?
-        .unwrap_or_default();
-    let cambios: Vec<iceberg::TableUpdate> = j
-        .get("updates")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| format!("`updates` no se entiende: {e}"))?
-        .unwrap_or_default();
+    let (requisitos, mut cambios) = if j.get("crear").and_then(|v| v.as_bool()) == Some(true) {
+        let cuerpo = j
+            .get("peticion")
+            .ok_or("a `aplicar` con `crear` le falta `peticion`")?;
+        cambios_de_creacion(lago, cuerpo, &dataset)?
+    } else {
+        let cuerpo = match j.get("peticion") {
+            Some(p) => match j.get("cambio").and_then(|v| v.as_u64()) {
+                Some(i) => p
+                    .get("table-changes")
+                    .and_then(|t| t.get(i as usize))
+                    .ok_or_else(|| format!("la petición no tiene `table-changes[{i}]`"))?,
+                None => p,
+            },
+            None => &j,
+        };
+        let requisitos: Vec<iceberg::TableRequirement> = cuerpo
+            .get("requirements")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| format!("`requirements` no se entiende: {e}"))?
+            .unwrap_or_default();
+        let cambios: Vec<iceberg::TableUpdate> = cuerpo
+            .get("updates")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| format!("`updates` no se entiende: {e}"))?
+            .unwrap_or_default();
+        (requisitos, cambios)
+    };
     if cambios.is_empty() {
         return Err("`updates` está vacío: nada que aplicar".into());
     }
@@ -511,6 +539,23 @@ fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
         Some(m) => Some(lago.abrir(m, &dataset)?),
         None => None,
     };
+    // La retención de una tabla que nace: lo que traiga, o el defecto.
+    if base.is_none()
+        && let Some(defecto) = j.get("retencion_defecto").and_then(|v| v.as_object())
+    {
+        let ya = cambios.iter().any(|c| {
+            matches!(c, iceberg::TableUpdate::SetProperties { updates } if updates.contains_key(lago::PROP_RETENCION_EDAD))
+        });
+        if !ya {
+            let updates: HashMap<String, String> = defecto
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect();
+            if !updates.is_empty() {
+                cambios.push(iceberg::TableUpdate::SetProperties { updates });
+            }
+        }
+    }
     let t = lago
         .aplicar(base.as_ref(), &dataset, requisitos, cambios)
         .map_err(|e| {
@@ -584,6 +629,98 @@ fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
         ("uuid", Json::s(t.metadata().uuid().to_string())),
     ])
     .jcs())
+}
+
+/// Los cambios con los que una tabla nace de un `CreateTableRequest` (la spec
+/// REST: `schema`, `partition-spec`, `write-order`, `properties`, y
+/// `format-version` entre las propiedades), con `assert-create` de requisito.
+fn cambios_de_creacion(
+    lago: &Lago,
+    cuerpo: &serde_json::Value,
+    dataset: &str,
+) -> Result<(Vec<iceberg::TableRequirement>, Vec<iceberg::TableUpdate>), String> {
+    use iceberg::TableUpdate;
+    let esquema: iceberg::spec::Schema = cuerpo
+        .get("schema")
+        .cloned()
+        .ok_or_else(|| "a la creación le falta `schema`".to_string())
+        .and_then(|v| {
+            serde_json::from_value(v).map_err(|e| format!("`schema` no se entiende: {e}"))
+        })?;
+    let mut cambios = vec![
+        TableUpdate::AddSchema { schema: esquema },
+        TableUpdate::SetCurrentSchema { schema_id: -1 },
+    ];
+    if let Some(v) = cuerpo.get("partition-spec").filter(|v| !v.is_null()) {
+        let spec: iceberg::spec::UnboundPartitionSpec = serde_json::from_value(v.clone())
+            .map_err(|e| format!("`partition-spec` no se entiende: {e}"))?;
+        cambios.push(TableUpdate::AddSpec { spec });
+        cambios.push(TableUpdate::SetDefaultSpec { spec_id: -1 });
+    }
+    if let Some(v) = cuerpo.get("write-order").filter(|v| !v.is_null()) {
+        let orden: iceberg::spec::SortOrder = serde_json::from_value(v.clone())
+            .map_err(|e| format!("`write-order` no se entiende: {e}"))?;
+        cambios.push(TableUpdate::AddSortOrder { sort_order: orden });
+        cambios.push(TableUpdate::SetDefaultSortOrder { sort_order_id: -1 });
+    }
+    let ubicacion = cuerpo
+        .get("location")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| lago.uri(&format!("{}/{dataset}", lago::RAIZ)));
+    cambios.push(TableUpdate::SetLocation {
+        location: ubicacion,
+    });
+    let mut props: HashMap<String, String> = cuerpo
+        .get("properties")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(v) = props.remove("format-version") {
+        let version = match v.as_str() {
+            "1" => iceberg::spec::FormatVersion::V1,
+            "2" => iceberg::spec::FormatVersion::V2,
+            "3" => iceberg::spec::FormatVersion::V3,
+            otro => return Err(format!("`format-version: {otro}` no es 1, 2 ni 3")),
+        };
+        cambios.push(TableUpdate::UpgradeFormatVersion {
+            format_version: version,
+        });
+    }
+    props
+        .entry(lago::PROP_DATASET.into())
+        .or_insert_with(|| dataset.into());
+    cambios.push(TableUpdate::SetProperties { updates: props });
+    Ok((vec![iceberg::TableRequirement::NotExist], cambios))
+}
+
+/// **`esbozar`: la tabla que nacería, sin escribir nada** (`stage-create` de
+/// la spec REST): el cliente recibe los metadatos —uuid, esquema con sus ids,
+/// ubicación— para escribir sus ficheros, y la tabla nace en el commit que
+/// siga con `assert-create`. Petición: `{dataset, peticion: <CreateTableRequest>}`.
+fn esbozar(lago: &Lago, peticion: &str) -> Result<String, String> {
+    let j: serde_json::Value = serde_json::from_str(peticion)
+        .map_err(|e| format!("la petición de `esbozar` no es JSON: {e}"))?;
+    let dataset = j
+        .get("dataset")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("a `esbozar` le falta `dataset`")?;
+    let cuerpo = j.get("peticion").ok_or("a `esbozar` le falta `peticion`")?;
+    let (_, cambios) = cambios_de_creacion(lago, cuerpo, dataset)?;
+    let t = lago.esbozar(dataset, cambios)?;
+    let meta = serde_json::to_string(t.metadata())
+        .map_err(|e| format!("los metadatos no se pudieron serializar: {e}"))?;
+    Ok(format!(
+        "{{\"metadata\":{meta},\"ubicacion\":{},\"uuid\":\"{}\"}}",
+        serde_json::to_string(t.metadata().location()).unwrap_or_default(),
+        t.metadata().uuid()
+    ))
 }
 
 /// **`leer`: la copia, de vuelta, fila a fila** (0029 ③ «traer», F4a·I1).
@@ -1648,26 +1785,46 @@ mod tests {
         let e = aplicar(&lago, &pet2.to_string()).unwrap_err();
         assert!(e.contains("conflicto"), "{e}");
 
-        // PyIceberg: la tabla nace de un `createTable` sin stage (lo que el
-        // catálogo hace con el cuerpo de `create-table`), y después los commits
+        // DuckDB antes pidió `stage-create`: `esbozar` devuelve los metadatos
+        // sin escribir nada (uuid, esquema con ids, ubicación)
+        let st: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/cuerpos/duckdb-stage-create.json"))
+                .unwrap();
+        let objetos_antes = cuenta.0.lock().unwrap().len();
+        let e = esbozar(
+            &lago,
+            &serde_json::json!({"dataset": "datasets/ventas_pato", "peticion": st}).to_string(),
+        )
+        .expect("esboza");
+        let ej: serde_json::Value = serde_json::from_str(&e).unwrap();
+        assert_eq!(ej["metadata"]["format-version"], 2);
+        assert_eq!(ej["metadata"]["schemas"][0]["fields"][1]["name"], "pais");
+        assert_eq!(
+            ej["ubicacion"],
+            "memory://pruebas/ore/v2/datasets/ventas_pato"
+        );
+        assert_eq!(
+            cuenta.0.lock().unwrap().len(),
+            objetos_antes,
+            "esbozar no escribe"
+        );
+
+        // PyIceberg: la tabla nace de un `createTable` sin stage (su cuerpo,
+        // con `crear: true`: los cambios salen de él), y después los commits
         let c: serde_json::Value = serde_json::from_str(&cuerpo(include_str!(
             "../tests/cuerpos/pyiceberg-create-table.json"
         )))
         .unwrap();
-        let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "requirements": [{"type": "assert-create"}], "updates": [
-            {"action": "assign-uuid", "uuid": "2a035a11-5a84-4677-99e9-10e8ceb8476c"},
-            {"action": "add-schema", "schema": c["schema"]},
-            {"action": "set-current-schema", "schema-id": -1},
-            {"action": "set-location", "location": "memory://pruebas/ore/v2/datasets/ventas_escrita"},
-            {"action": "set-properties", "updates": c["properties"]},
-        ]});
+        let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "crear": true, "peticion": c,
+            "retencion_defecto": {"history.expire.max-snapshot-age-ms": "604800000", "history.expire.min-snapshots-to-keep": "1"}});
         let a0 = aplicar(&lago, &pet.to_string()).expect("nace");
         assert_eq!(campo(&a0, "snapshot"), "", "sin snapshot todavía");
         let a0j: serde_json::Value = serde_json::from_str(&a0).unwrap();
         assert_eq!(
             a0j["retencion"]["edad_ms"], 1,
-            "la retención que PyIceberg declaró como propiedad"
+            "la retención que PyIceberg declaró como propiedad manda sobre el defecto"
         );
+        let uuid_py = campo(&a0, "uuid");
         assert_eq!(a0j["columnas_oos"]["cuando"], "DateTimeTz");
         let mut ml = campo(&a0, "metadata_location");
         let mut filas = Vec::new();
@@ -1685,8 +1842,12 @@ mod tests {
                 include_str!("../tests/cuerpos/pyiceberg-overwrite.json"),
             ),
         ] {
-            let j: serde_json::Value = serde_json::from_str(&cuerpo(txt)).unwrap();
-            let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "requirements": j["requirements"], "updates": j["updates"]});
+            let j: serde_json::Value = serde_json::from_str(
+                &cuerpo(txt).replace("2a035a11-5a84-4677-99e9-10e8ceb8476c", &uuid_py),
+            )
+            .unwrap();
+            // tal cual llegó (`peticion`), que es como `ore` lo pasa
+            let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "peticion": j});
             let a = aplicar(&lago, &pet.to_string()).unwrap_or_else(|e| panic!("{f}: {e}"));
             ml = campo(&a, "metadata_location");
             filas.push(campo(&a, "filas"));
@@ -1706,7 +1867,10 @@ mod tests {
 
         // la carrera: el cuerpo de la mano que perdió (base vieja) es un conflicto
         let perdedor = r#"{"requirements": [{"type": "assert-ref-snapshot-id", "ref": "main", "snapshot-id": 3058442587801331811}, {"type": "assert-table-uuid", "uuid": "2a035a11-5a84-4677-99e9-10e8ceb8476c"}], "updates": []}"#;
-        let j: serde_json::Value = serde_json::from_str(perdedor).unwrap();
+        let j: serde_json::Value = serde_json::from_str(
+            &perdedor.replace("2a035a11-5a84-4677-99e9-10e8ceb8476c", &uuid_py),
+        )
+        .unwrap();
         let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "requirements": j["requirements"], "updates": [{"action": "set-properties", "updates": {"x": "y"}}]});
         let e = aplicar(&lago, &pet.to_string()).unwrap_err();
         assert!(e.contains("conflicto"), "{e}");
@@ -1716,7 +1880,9 @@ mod tests {
         let dk = cuerpo(include_str!(
             "../tests/cuerpos/duckdb-transactions-commit.json"
         ));
-        let mut dj: serde_json::Value = serde_json::from_str(&dk).unwrap();
+        let mut dj: serde_json::Value =
+            serde_json::from_str(&dk.replace("2a035a11-5a84-4677-99e9-10e8ceb8476c", &uuid_py))
+                .unwrap();
         let cambio = &mut dj["table-changes"][0];
         cambio["requirements"][1]["snapshot-id"] = serde_json::json!(885001052737991215i64);
         cambio["updates"][0]["snapshot"]["parent-snapshot-id"] =
