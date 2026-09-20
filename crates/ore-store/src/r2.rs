@@ -435,6 +435,26 @@ impl Almacen for Cuenta {
         format!("s3://{}", self.bucket)
     }
 
+    /// Lo que S3 y R2 entienden (`s3.*` de la spec REST): las credenciales de
+    /// esta cuenta **tal cual**, sin acotar. R2 tiene credenciales temporales
+    /// por API y S3 tiene STS con política inline; ninguna de las dos está
+    /// puesta todavía, y se dice (`acotada: false`) para que quien preste sepa
+    /// qué presta. En local (el S3 de mentira) es lo que hay.
+    fn prestar(&self, _prefijo: &str) -> Result<crate::almacen::Prestamo, String> {
+        Ok(crate::almacen::Prestamo {
+            config: [
+                ("s3.access-key-id".to_string(), self.clave.clone()),
+                ("s3.secret-access-key".to_string(), self.secreto.clone()),
+                ("s3.endpoint".to_string(), self.endpoint.clone()),
+                ("s3.region".to_string(), self.region.clone()),
+                ("s3.path-style-access".to_string(), "true".to_string()),
+            ]
+            .into(),
+            caduca_ms: None,
+            acotada: false,
+        })
+    }
+
     fn tamano(&self, clave: &str) -> Result<Option<u64>, String> {
         tamano(self, clave)
     }

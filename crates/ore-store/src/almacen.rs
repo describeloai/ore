@@ -10,6 +10,19 @@
 //! metadatos de una tabla Iceberg nombran sus ficheros por URI absoluta, y esa
 //! URI es lo que un lector ajeno (DuckDB en el puesto, PyIceberg) va a pedir.
 
+/// **Una credencial prestada** (0031 §11 ③): lo que un escritor de fuera
+/// —PyIceberg, DuckDB, el agente del puesto— recibe del catálogo al cargar
+/// una tabla para escribir sus ficheros **sólo bajo el prefijo de esa tabla**.
+/// `config` lleva las claves que la spec REST de Iceberg nombra
+/// (`gcs.oauth2.token`, `s3.access-key-id`, …); `caduca_ms`, cuándo deja de
+/// valer, si deja.
+pub struct Prestamo {
+    pub config: std::collections::BTreeMap<String, String>,
+    pub caduca_ms: Option<i64>,
+    /// Si la credencial está de verdad acotada al prefijo, o es la de siempre.
+    pub acotada: bool,
+}
+
 /// Un almacén de objetos con nombre.
 pub trait Almacen: Send + Sync {
     /// La raíz por la que este almacén se nombra desde fuera, sin barra final:
@@ -39,4 +52,13 @@ pub trait Almacen: Send + Sync {
     }
     /// Un objeto entero.
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String>;
+    /// **Presta una credencial acotada a `prefijo`** (leer y crear, nunca
+    /// borrar ni sobrescribir): lo que el catálogo devuelve al cargar una
+    /// tabla con `X-Iceberg-Access-Delegation: vended-credentials`. Un almacén
+    /// que no sabe acotar lo dice.
+    fn prestar(&self, prefijo: &str) -> Result<Prestamo, String> {
+        Err(format!(
+            "este almacén no presta credenciales acotadas (se pidió `{prefijo}`)"
+        ))
+    }
 }

@@ -306,6 +306,16 @@ spec:
             # renderizador lo pone por inquilino, como en 48 y 49.
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # ── W3.6c (0031 §11) · EL CATALOGO REST DE ICEBERG ─────────────
+            #
+            # `/v1/…` es la cara por la que PyIceberg, DuckDB, Spark y el agente
+            # del puesto escriben en el lago: `ore-serve-<n>` tiene ademas
+            # `objectCreator` (aprovisionador ③b) para escribir el metadata.json
+            # de cada commit y prestar a quien escribe un token ACOTADO al
+            # prefijo de su tabla (`ore-store-gcs prestar`, por STS con el token
+            # de este pod). La retencion con la que nace una tabla que no la
+            # trae; `ore datasets --recoger` la obedece (y sin ella, nada expira).
+            - { name: ORE_RETENCION, value: "7d" }
             # ── ⭐⭐ EL TESTIGO YA NO VIENE DE AQUI ────────────────────────
             #
             # ✏️ 2026-09-09 · aqui habia un `FORJA_TOKEN` leido de un `Secret` de

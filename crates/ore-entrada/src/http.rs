@@ -79,6 +79,14 @@ impl Respuesta {
         }
     }
 
+    /// Hecho, y nada que decir (`204`): el cuerpo no se escribe.
+    pub fn sin_contenido() -> Respuesta {
+        Respuesta {
+            codigo: 204,
+            cuerpo: Json::obj([]),
+        }
+    }
+
     pub fn creado(cuerpo: Json) -> Respuesta {
         Respuesta {
             codigo: 201,
@@ -100,6 +108,7 @@ fn texto(codigo: u16) -> &'static str {
     match codigo {
         200 => "OK",
         201 => "Created",
+        204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -259,7 +268,12 @@ fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
 }
 
 fn responder(flujo: &mut TcpStream, r: &Respuesta) {
-    let cuerpo = r.cuerpo.jcs();
+    // Un 204 no lleva cuerpo, por definición: lo que trajera se calla.
+    let cuerpo = if r.codigo == 204 {
+        String::new()
+    } else {
+        r.cuerpo.jcs()
+    };
     let cabeza = format!(
         "HTTP/1.1 {} {}\r\n\
          content-type: application/json\r\n\

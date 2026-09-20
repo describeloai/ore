@@ -36,6 +36,12 @@ const API: &str = "https://storage.googleapis.com";
 const AGENTE: &str = "ore-store-gcs/0.1";
 const METADATA: &str =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+/// El intercambio de tokens de Google: de un token de la cuenta a uno **acotado**
+/// por *Credential Access Boundary* (0031 §11 ③, medido en
+/// `medida-w3-escribir.py`: dentro del prefijo 200; fuera, borrar y sobrescribir
+/// 403). No es una API de Cloud Storage: es STS, y vale con cualquier token
+/// OAuth2 de la cuenta, el del metadata server incluido.
+const STS: &str = "https://sts.googleapis.com/v1/token";
 
 pub struct Cuenta {
     pub bucket: String,
@@ -175,6 +181,61 @@ fn campo(json: &str, k: &str) -> Option<String> {
 impl Almacen for Cuenta {
     fn base(&self) -> String {
         format!("gs://{}", self.bucket)
+    }
+
+    /// El token de esta cuenta, acotado a `prefijo` con `objectCreator` +
+    /// `objectViewer`: escribe dentro, lee dentro, y no puede borrar,
+    /// sobrescribir ni salir. Caduca cuando caduque el de la cuenta (STS lo
+    /// dice; si no, se asume una hora menos un margen).
+    fn prestar(&self, prefijo: &str) -> Result<crate::almacen::Prestamo, String> {
+        let regla = format!(
+            "{{\"accessBoundary\":{{\"accessBoundaryRules\":[{{\"availableResource\":\"//storage.googleapis.com/projects/_/buckets/{b}\",\"availablePermissions\":[\"inRole:roles/storage.objectCreator\",\"inRole:roles/storage.objectViewer\"],\"availabilityCondition\":{{\"expression\":\"resource.name.startsWith('projects/_/buckets/{b}/objects/{p}')\"}}}}]}}}}",
+            b = self.bucket,
+            p = prefijo
+        );
+        let cuerpo = format!(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&subject_token={}&options={}",
+            codificar(&self.token()?),
+            codificar(&regla)
+        );
+        let r = cliente()?
+            .post(STS)
+            .set("content-type", "application/x-www-form-urlencoded")
+            .set("user-agent", AGENTE)
+            .timeout(std::time::Duration::from_secs(20))
+            .send_string(&cuerpo);
+        let texto = match r {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| format!("STS contestó algo ilegible: {e}"))?,
+            Err(ureq::Error::Status(c, r)) => {
+                let t = r.into_string().unwrap_or_default();
+                return Err(format!(
+                    "STS no acotó el token ({c}): {}",
+                    t.chars().take(200).collect::<String>()
+                ));
+            }
+            Err(e) => return Err(format!("STS no contesta: {e}")),
+        };
+        let n = ore_core::parse::parse(&texto).map_err(|_| "STS no devolvió JSON".to_string())?;
+        let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        let token = campo("access_token").ok_or("STS no devolvió `access_token`")?;
+        let segundos: i64 = campo("expires_in")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600 - 300);
+        let caduca = crate::lago::ahora_ms() + segundos * 1000;
+        Ok(crate::almacen::Prestamo {
+            config: [
+                ("gcs.oauth2.token".to_string(), token),
+                (
+                    "gcs.oauth2.token-expires-at".to_string(),
+                    caduca.to_string(),
+                ),
+            ]
+            .into(),
+            caduca_ms: Some(caduca),
+            acotada: true,
+        })
     }
 
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {

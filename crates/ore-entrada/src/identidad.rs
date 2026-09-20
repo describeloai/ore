@@ -98,11 +98,30 @@ pub const CABECERA_AGENTE: &str = "x-ore-agente";
 /// un salto dentro es lo que convierte un registro de acceso en dos—. Lo que
 /// **no** comprueba, y es todo lo que importa, es que quien lo manda sea quien
 /// dice.
+///
+/// Y **el mismo sujeto como portador** (`Authorization: Bearer persona:ana`),
+/// para los clientes del catálogo REST de Iceberg (0031 §11 ①) que no saben
+/// mandar una cabecera propia —DuckDB `TOKEN 'persona:ana'`— y sí un
+/// portador. Es la misma afirmación por otra cabecera, en el mismo modo de
+/// banco, y nada más: en producción el portador es un token de OIDC y lo lee
+/// el otro proveedor.
 pub fn por_cabecera() -> Proveedor {
     Box::new(|cabeceras| {
-        let persona = match cabeceras.get(CABECERA_SUJETO) {
-            None => return Err(SinIdentidad::Ausente),
-            Some(v) => v.trim(),
+        let portador = cabeceras
+            .get("authorization")
+            .and_then(|v| {
+                v.trim()
+                    .strip_prefix("Bearer ")
+                    .or_else(|| v.trim().strip_prefix("bearer "))
+            })
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let persona = match cabeceras.get(CABECERA_SUJETO).map(|v| v.trim()) {
+            Some(v) if !v.is_empty() => v,
+            _ => match portador {
+                Some(v) => v,
+                None => return Err(SinIdentidad::Ausente),
+            },
         };
         if persona.is_empty() {
             return Err(SinIdentidad::Ausente);
@@ -247,6 +266,24 @@ fn ahora() -> i64 {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// En el modo de banco, el portador es la misma afirmación que la cabecera;
+    /// la cabecera manda si están las dos.
+    #[test]
+    fn el_portador_vale_como_sujeto_en_el_modo_de_banco() {
+        let p = por_cabecera();
+        let mut c = BTreeMap::new();
+        c.insert(
+            "authorization".to_string(),
+            "Bearer persona:ana".to_string(),
+        );
+        assert_eq!(p(&c).unwrap().persona, "persona:ana");
+        c.insert(CABECERA_SUJETO.to_string(), "persona:bea".to_string());
+        assert_eq!(p(&c).unwrap().persona, "persona:bea");
+        let mut c = BTreeMap::new();
+        c.insert("authorization".to_string(), "Basic abc".to_string());
+        assert!(matches!(p(&c), Err(SinIdentidad::Ausente)));
+    }
 
     fn cabeceras(pares: &[(&str, &str)]) -> BTreeMap<String, String> {
         pares

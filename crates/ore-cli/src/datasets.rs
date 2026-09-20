@@ -18,6 +18,7 @@
 //! | `--crear p.t --peticion …` | la tabla nace de un `createTable` (sin `stage-create`): su `metadata.json` v0, su `Table` y su puntero | `POST /v1/namespaces/{ns}/tables` |
 //! | `--esbozar p.t --peticion …` | `stage-create`: los metadatos que la tabla tendría, sin escribir nada | idem, con `stage-create: true` |
 //! | `--retencion p.t --edad 30d [--minimo 3]` | la retención declarada en la tabla (`history.expire.*`), que `--recoger` obedece | quien gobierna el dataset |
+//! | `--cargar p.t [--prestar]` | el `LoadTableResult` de la spec REST, tal cual: el puntero, el `metadata.json` del bucket y, con `--prestar`, la credencial acotada a la tabla (`ore-store prestar`) | `GET /v1/namespaces/{ns}/tables/{t}` |
 //!
 //! # El commit, y lo que decide `ore` (0031 §11 ①④⑥)
 //!
@@ -98,6 +99,10 @@ pub struct Opciones<'a> {
     pub peticion: Option<&'a str>,
     /// La retención de una tabla que nace y no la trae (`7d`); sin ella, no se declara.
     pub retencion_defecto: Option<&'a str>,
+    /// `--cargar p.t`: el `LoadTableResult` de la tabla.
+    pub cargar: Option<&'a str>,
+    /// Con `--cargar`/`--esbozar`: la credencial acotada a la tabla, prestada.
+    pub prestar: bool,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -109,6 +114,8 @@ pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
         crear(path, n, op)
     } else if let Some(n) = op.esbozar {
         esbozar(path, n, op)
+    } else if let Some(n) = op.cargar {
+        cargar(path, n, op)
     } else if let Some(n) = op.retencion {
         retencion(path, n, op)
     } else if let Some(n) = op.ficha {
@@ -1178,6 +1185,57 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     Ok(())
 }
 
+/// La credencial prestada para `datasets/<ns>_<tabla>`, como los dos campos
+/// del `LoadTableResult` (`config` y `storage-credentials`), ya escritos.
+fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
+    if !op.prestar {
+        return Ok("\"config\":{}".into());
+    }
+    let salida = almacen_crudo(
+        "prestar",
+        &format!("{{\"dataset\":{}}}", lit(&format!("datasets/{ns}_{tabla}"))),
+    )?;
+    let n = ore_core::parse::parse(&salida).map_err(|e| {
+        (
+            69,
+            format!("lo que devolvió `ore-store prestar` no analiza: {e:?}"),
+        )
+    })?;
+    let config = n
+        .get("config")
+        .map(|(_, c)| Json::de_node(c).jcs())
+        .unwrap_or_else(|| "{}".into());
+    let prefijo = campo_de(&n, "prefijo").unwrap_or_default();
+    Ok(format!(
+        "\"config\":{config},\"storage-credentials\":[{{\"prefix\":{},\"config\":{config}}}]",
+        lit(&prefijo)
+    ))
+}
+
+/// **`loadTable`**: el `LoadTableResult` de la spec REST, tal cual —el
+/// `metadata.json` no se reanaliza: lleva `null` y números que el JSON de
+/// `ore` no modela—, con la credencial prestada si se pide.
+fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let (ns, tabla) = partes(nombre)?;
+    documento_de_la_tabla(path, ns, tabla)?;
+    let (_, previo) = puntero_del_lago(path, ns, tabla);
+    let ml = previo
+        .as_ref()
+        .and_then(|p| campo_de(p, "metadata_location"))
+        .ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
+    let metadatos = almacen_crudo(
+        "metadatos",
+        &format!("{{\"metadata_location\":{}}}", lit(&ml)),
+    )?;
+    let cred = prestamo(ns, tabla, op)?;
+    println!(
+        "{{\"metadata-location\":{},\"metadata\":{},{cred}}}",
+        lit(&ml),
+        metadatos.trim()
+    );
+    Ok(())
+}
+
 /// **`stage-create`**: los metadatos que la tabla tendría, para que el cliente
 /// escriba sus ficheros; nace en el commit con `assert-create`. No toca el
 /// árbol ni el bucket; la respuesta de `ore-store` se imprime tal cual.
@@ -1210,7 +1268,16 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         "{{\"dataset\":{},\"peticion\":{texto}}}",
         lit(&format!("datasets/{ns}_{tabla}"))
     );
-    println!("{}", almacen_crudo("esbozar", &pet)?.trim());
+    let salida = almacen_crudo("esbozar", &pet)?;
+    let salida = salida.trim();
+    // `{"metadata":…,"ubicacion":…,"uuid":…}` → el `LoadTableResult` sin
+    // `metadata-location` (no hay: nace en el commit), con la credencial.
+    let fin = salida.rfind(",\"ubicacion\":").ok_or((
+        69,
+        "lo que devolvió `ore-store esbozar` no tiene la forma esperada".to_string(),
+    ))?;
+    let cred = prestamo(ns, tabla, op)?;
+    println!("{},{cred}}}", &salida[..fin]);
     Ok(())
 }
 

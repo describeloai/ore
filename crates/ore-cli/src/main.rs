@@ -802,6 +802,12 @@ enum Command {
         /// Con `--commit`/`--crear`: la retencion de una tabla que nace y no la trae (`7d`).
         #[arg(long, value_name = "EDAD")]
         retencion_defecto: Option<String>,
+        /// `loadTable`: el LoadTableResult de la tabla, tal cual (con `--prestar`, la credencial).
+        #[arg(long, value_name = "NS.TABLA")]
+        cargar: Option<String>,
+        /// Con `--cargar`/`--esbozar`: la credencial acotada a la tabla, prestada por el almacen.
+        #[arg(long)]
+        prestar: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -925,6 +931,8 @@ fn main() -> std::process::ExitCode {
             minimo,
             peticion,
             retencion_defecto,
+            cargar,
+            prestar,
         } => {
             return datasets::datasets(
                 path,
@@ -950,6 +958,8 @@ fn main() -> std::process::ExitCode {
                     minimo: *minimo,
                     peticion: peticion.as_deref(),
                     retencion_defecto: retencion_defecto.as_deref(),
+                    cargar: cargar.as_deref(),
+                    prestar: *prestar,
                 },
             );
         }

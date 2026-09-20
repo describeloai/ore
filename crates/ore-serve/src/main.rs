@@ -40,6 +40,7 @@
 //! abierto, lo CIERRA*.
 
 mod arbol;
+mod catalogo;
 mod cola;
 mod copia;
 mod datasets;

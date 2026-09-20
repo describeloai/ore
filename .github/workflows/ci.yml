@@ -164,7 +164,7 @@ jobs:
       - name: el lago
         run: |
           cargo build --quiet -p ore-store
-          python3 -m pip install --quiet pyarrow duckdb
+          python3 -m pip install --quiet pyarrow duckdb "pyiceberg[pyarrow]"
           bash pruebas-de-fuego/el-lago.sh
 
       # Los tres verbos del modelo (0027 E1): el documento en el arbol y la

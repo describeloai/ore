@@ -568,7 +568,10 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --role=roles/storage.objectAdmin && hecho "\`ore-driver-$NOMBRE\` escribe en la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer && hecho "\`ore-serve-$NOMBRE\` lee la copia, y no escribe"
+  --role=roles/storage.objectViewer && hecho "\`ore-serve-$NOMBRE\` lee la copia"
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectCreator && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #

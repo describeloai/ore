@@ -173,6 +173,33 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         "aplicar" => aplicar(&lago, primera),
         "esbozar" => esbozar(&lago, primera),
+        // El `metadata.json` de un puntero, tal cual está en el bucket: lo que
+        // un `loadTable` del catálogo REST devuelve como `metadata`.
+        "metadatos" => {
+            let ml = campo("metadata_location")
+                .ok_or("a `metadatos` le falta `metadata_location`: el puntero del dataset")?;
+            let clave = lago.clave(&ml).map_err(|e| e.to_string())?;
+            let bytes = cuenta
+                .leer_bytes(&clave)?
+                .ok_or_else(|| format!("`{ml}` no está en el bucket"))?;
+            String::from_utf8(bytes).map_err(|_| format!("`{ml}` no es texto"))
+        }
+        // La credencial prestada para escribir SÓLO bajo un dataset (0031 §11 ③).
+        "prestar" => {
+            let dataset = campo("dataset").ok_or("a `prestar` le falta `dataset`")?;
+            let prefijo = format!("{}/{dataset}/", lago::RAIZ);
+            let p = cuenta.prestar(&prefijo)?;
+            Ok(Json::obj([
+                ("acotada", Json::Bool(p.acotada)),
+                ("caduca_ms", Json::Int(p.caduca_ms.unwrap_or(-1))),
+                (
+                    "config",
+                    Json::Obj(p.config.into_iter().map(|(k, v)| (k, Json::s(v))).collect()),
+                ),
+                ("prefijo", Json::s(lago.uri(&prefijo))),
+            ])
+            .jcs())
+        }
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
         "historia" => {
@@ -182,7 +209,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `escribir`, `aplicar`, \
-             `esbozar`, `recoger`, `recoger-seco`, `recoger-huerfanas`, `leer` e `historia`"
+             `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
+             `recoger-huerfanas`, `leer` e `historia`"
         )),
     }
 }

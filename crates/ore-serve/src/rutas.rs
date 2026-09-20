@@ -380,6 +380,8 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "la celda es un número"),
             },
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
+            // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
+            (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
             // ── 0031 §10 · los datasets (`datasets.rs`): la lista, la ficha y el swap ──
             ("GET", ["datasets"]) => self.datasets(rama),
             ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),

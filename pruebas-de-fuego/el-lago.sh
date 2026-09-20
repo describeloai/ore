@@ -37,8 +37,23 @@
 #      `--recoger` obedece SIN `--edad`; la que nació con `--retencion-defecto
 #      7d` conserva; la que no tiene ninguna no expira
 #
+# Y el catálogo REST de Iceberg en `ore-serve` (W3.6c c3, 0031 §11 ①③), con
+# PyIceberg y DuckDB DE VERDAD como clientes (lo de la medida, como prueba):
+#  11  PyIceberg: `create_table` + dos `append` contra `/v1/…` → la Table y el
+#      puntero nacen en el árbol firmados por el sujeto, y se lee de vuelta; dos
+#      manos con la misma base: 409 y el cliente refresca y reintenta solo
+#  12  DuckDB: `ATTACH … TYPE iceberg`, lee lo de PyIceberg, `INSERT` (por
+#      `transactions/commit`), `CREATE TABLE … AS` (`stage-create` +
+#      `assert-create`); PyIceberg lee lo de DuckDB
+#  13  la credencial prestada: con `X-Iceberg-Access-Delegation` el
+#      `LoadTableResult` trae `config` y `storage-credentials` acotadas al
+#      prefijo de la tabla; sin ella, nada; una View como destino es 400, una
+#      tabla que no existe 404, la base vieja 409 `CommitFailedException` con
+#      `actual` — todos con la forma de error de la spec
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` en target/{release,debug}, git y
-# python3 con pyarrow (para 7–10; sin pyarrow se saltan y se dice).
+# python3 con pyarrow (para 7–10), pyiceberg y duckdb (11–13); sin ellos se
+# saltan y se dice.
 # ══════════════════════════════════════════════════════════════════════════════
 set -u
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
@@ -351,6 +366,7 @@ escribe ventas_vista sobrescribir "" op-7 0 1 || falla "9 · escribir vista"
 "$ORE" datasets "$CL" --commit --tabla ventas.vista --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
 [ "$c" = "65" ] || falla "9 · escribir una View tenía que ser 65 y fue $c: $(cat "$TMP/commit.json")"
 [ ! -f "$CL/datasets/ventas_vista.json" ] || falla "9 · la View dejó puntero"
+( cd "$CL" && git add -A && git commit -qm "una vista" && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar la vista"
 # una Table de otra fuente: lo mismo
 escribe ventas_pedidos sobrescribir "" op-8 0 1 || falla "9 · escribir pedidos"
 "$ORE" datasets "$CL" --commit --tabla ventas.pedidos --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
@@ -374,4 +390,102 @@ assert por["ventas.libre"]["expirados"]==0, ("libre (sin retencion) no tenia que
 assert por["ventas.escrita"]["movido"] is True, ("el puntero de escrita tenia que moverse", por)' "$TMP/rec.json" || falla "10 · recoger no obedeció la retención de cada tabla: $(cat "$TMP/rec.json")"
 ok "10 · --recoger sin --edad obedece la retención de cada tabla: 0 expira, 7d conserva, ninguna no expira"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9310\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ══ el catálogo REST en ore-serve (c3) ═══════════════════════════════════════
+if ! "$PY" -c 'import pyiceberg, duckdb' 2>/dev/null; then
+  dice "sin pyiceberg/duckdb: 11–13 (el catálogo REST) se saltan"
+  if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9310\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+  exit 0
+fi
+export ORE_RETENCION=7d
+# ── 11 · PyIceberg escribe por el catálogo ───────────────────────────────────
+cat > "$TMP/py11.py" <<'PY'
+import sys, json
+import pyarrow as pa
+from pyiceberg.catalog import load_catalog
+from pyiceberg.exceptions import CommitFailedException
+base = sys.argv[1]
+cat = load_catalog("ore", **{"type": "rest", "uri": base, "header.x-ore-sujeto": "persona:ana"})
+def datos(desde, n):
+    return pa.table({"id": pa.array(range(desde, desde + n), pa.int64()), "pais": pa.array(["ES"] * n),
+                     "total": pa.array([i * 1.5 for i in range(n)], pa.float64()).cast(pa.decimal128(18, 2)),
+                     "cuando": pa.array([1_700_000_000_000_000 + i for i in range(n)], pa.timestamp("us", tz="UTC"))})
+t = cat.create_table(("ventas", "py"), schema=datos(0, 1).schema)
+t.append(datos(0, 100))
+t.append(datos(100, 100))
+n = cat.load_table(("ventas", "py")).scan().to_arrow().num_rows
+# dos manos con la misma base: la segunda pierde, refresca y reintenta sola
+a = cat.load_table(("ventas", "py")); b = cat.load_table(("ventas", "py"))
+a.append(datos(200, 10))
+b.append(datos(300, 10))
+n2 = cat.load_table(("ventas", "py")).scan().to_arrow().num_rows
+snaps = len(cat.load_table(("ventas", "py")).metadata.snapshots)
+print(json.dumps({"filas": n, "filas2": n2, "snapshots": snaps, "tablas": [i[1] for i in cat.list_tables("ventas")], "ns": cat.list_namespaces()}))
+PY
+"$PY" "$TMP/py11.py" "$BASE" > "$TMP/py11.json" 2> "$TMP/py11.err" || { tail -5 "$TMP/py11.err"; falla "11 · PyIceberg contra ore-serve"; }
+[ "$(jq_ "$TMP/py11.json" filas)" = "200" ] || falla "11 · PyIceberg leyó $(jq_ "$TMP/py11.json" filas) filas y no 200"
+[ "$(jq_ "$TMP/py11.json" filas2)" = "220" ] || falla "11 · tras la carrera tenía que haber 220 filas: $(cat "$TMP/py11.json")"
+[ "$(jq_ "$TMP/py11.json" snapshots)" = "4" ] || falla "11 · 4 snapshots: $(cat "$TMP/py11.json")"
+grep -q "Commit failed due to a concurrent update, retrying" "$TMP/py11.err" || falla "11 · la segunda mano no vio el 409 ni reintentó: $(tail -3 "$TMP/py11.err")"
+[ "$(pide GET /arbol/packages/ventas/tables/py.yaml)" = "200" ] || falla "11 · la Table no está en el árbol"
+grep -q '"total: { type: Decimal }' "$TMP/out.json" || grep -q 'total: { type: Decimal }' "$TMP/out.json" || falla "11 · la Table no lleva Decimal: $(cat "$TMP/out.json" | head -c 300)"
+[ "$(pide GET /arbol/historia/datasets/ventas_py.json)" = "200" ] || falla "11 · GET /arbol/historia del puntero"
+[ "$(campo versiones.0.autor)" = "persona:ana" ] || falla "11 · el commit no es del sujeto: $(campo versiones.0.autor)"
+NV=$("$PY" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["versiones"]))' "$TMP/out.json")
+[ "$NV" = "5" ] || falla "11 · el puntero tenía que tener 5 versiones (nace, 2 append, 2 de la carrera) y tiene $NV"
+ok "11 · PyIceberg contra ore-serve: la Table y el puntero nacen firmados por el sujeto, 200 + 20 filas, la carrera es 409 y el cliente reintenta solo"
+
+# ── 12 · DuckDB escribe por el catálogo ──────────────────────────────────────
+cat > "$TMP/duck12.py" <<'PY'
+import sys, json, duckdb
+base, s3 = sys.argv[1], sys.argv[2]
+con = duckdb.connect(); con.execute("load iceberg; load httpfs;")
+con.execute("create secret s3 (type s3, key_id 'de', secret 'mentira', endpoint '%s', url_style 'path', use_ssl false, region 'auto')" % s3.replace("http://", ""))
+con.execute("create secret ice (type iceberg, token 'persona:ana')")
+con.execute("attach '' as lago (type iceberg, endpoint '%s', secret ice)" % base)
+n0 = con.execute("select count(*) from lago.ventas.py").fetchone()[0]
+con.execute("insert into lago.ventas.py select 1000 + i as id, 'PT' as pais, (i * 2.5)::decimal(18,2) as total, (timestamp '2023-11-14 22:13:20' + interval (i) second)::timestamptz as cuando from range(50) r(i)")
+n1 = con.execute("select count(*) from lago.ventas.py").fetchone()[0]
+con.execute("create table lago.ventas.pato as select i as id, 'PT' as pais from range(7) r(i)")
+n2 = con.execute("select count(*) from lago.ventas.pato").fetchone()[0]
+print(json.dumps({"antes": n0, "despues": n1, "pato": n2, "tablas": sorted(r[0] for r in con.execute("select table_name from information_schema.tables where table_catalog='lago'").fetchall())}))
+PY
+"$PY" "$TMP/duck12.py" "$BASE" "$ORE_R2_S3_ENDPOINT" > "$TMP/duck12.json" 2> "$TMP/duck12.err" || { tail -5 "$TMP/duck12.err"; falla "12 · DuckDB contra ore-serve"; }
+[ "$(jq_ "$TMP/duck12.json" antes)" = "220" ] || falla "12 · DuckDB tenía que leer 220: $(cat "$TMP/duck12.json")"
+[ "$(jq_ "$TMP/duck12.json" despues)" = "270" ] || falla "12 · tras el INSERT, 270: $(cat "$TMP/duck12.json")"
+[ "$(jq_ "$TMP/duck12.json" pato)" = "7" ] || falla "12 · CREATE TABLE AS: 7 filas: $(cat "$TMP/duck12.json")"
+[ "$(pide GET /arbol/packages/ventas/tables/pato.yaml)" = "200" ] || falla "12 · la Table de DuckDB no está en el árbol"
+"$PY" - "$BASE" > "$TMP/py12.json" 2>&1 <<'PY' || { cat "$TMP/py12.json"; falla "12 · PyIceberg lee lo de DuckDB"; }
+import sys, json
+from pyiceberg.catalog import load_catalog
+cat = load_catalog("ore", **{"type": "rest", "uri": sys.argv[1], "header.x-ore-sujeto": "persona:ana"})
+print(json.dumps({"py": cat.load_table(("ventas", "py")).scan().to_arrow().num_rows, "pato": cat.load_table(("ventas", "pato")).scan().to_arrow().num_rows}))
+PY
+[ "$(jq_ "$TMP/py12.json" pato)" = "7" ] && [ "$(jq_ "$TMP/py12.json" py)" = "270" ] || falla "12 · PyIceberg no lee lo de DuckDB: $(cat "$TMP/py12.json")"
+ok "12 · DuckDB contra ore-serve: lee lo de PyIceberg, INSERT por transactions/commit, CREATE TABLE AS por stage-create; PyIceberg lee lo de DuckDB"
+
+# ── 13 · la credencial prestada y los errores de la spec ─────────────────────
+curl -s -o "$TMP/out.json" -H "$SUJ" -H 'X-Iceberg-Access-Delegation: vended-credentials' "$BASE/v1/namespaces/ventas/tables/py" > /dev/null
+[ "$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["config"].get("s3.access-key-id",""))' "$TMP/out.json")" = "de" ] || falla "13 · con delegación, config sin la credencial: $(head -c 200 "$TMP/out.json")"
+[ "$(campo storage-credentials.0.prefix)" = "s3://copia/ore/v2/datasets/ventas_py/" ] || falla "13 · el prefijo de la credencial: $(campo storage-credentials.0.prefix)"
+[ "$(campo metadata-location)" != "" ] || falla "13 · sin metadata-location"
+curl -s -o "$TMP/out.json" -H "$SUJ" "$BASE/v1/namespaces/ventas/tables/py" > /dev/null
+[ "$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["config"])' "$TMP/out.json")" = "{}" ] || falla "13 · sin delegación tenía que venir config vacío"
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -H "$SUJ" "$BASE/v1/namespaces/ventas/tables/nadie"); [ "$c" = "404" ] || falla "13 · una tabla que no existe: $c"
+[ "$(campo error.type)" = "NoSuchTableException" ] || falla "13 · el 404 no es NoSuchTableException: $(cat "$TMP/out.json")"
+c=$(curl -s -o "$TMP/out.json" -w '%{http_code}' -X HEAD -I -H "$SUJ" "$BASE/v1/namespaces/ventas/tables/py" | head -c 3); [ "$c" = "204" ] || falla "13 · HEAD de una tabla que existe: $c"
+# una View como destino: 400 con la forma de la spec, y nada en el árbol
+c=$(pide POST /v1/namespaces/ventas/tables '{"name":"vista","schema":{"type":"struct","fields":[{"id":1,"name":"id","type":"long","required":false}]}}'); [ "$c" = "400" ] || falla "13 · escribir una View tenía que ser 400 y fue $c: $(cat "$TMP/out.json")"
+[ "$(campo error.type)" = "BadRequestException" ] || falla "13 · el 400 no lleva la forma de la spec: $(cat "$TMP/out.json")"
+# la base vieja: 409 CommitFailedException con `actual`
+UUID=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata"]["table-uuid"])' "$TMP/out.json" 2>/dev/null || true)
+curl -s -o "$TMP/out.json" -H "$SUJ" "$BASE/v1/namespaces/ventas/tables/py" > /dev/null
+UUID=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata"]["table-uuid"])' "$TMP/out.json")
+c=$(pide POST /v1/namespaces/ventas/tables/py "{\"requirements\":[{\"type\":\"assert-table-uuid\",\"uuid\":\"$UUID\"},{\"type\":\"assert-ref-snapshot-id\",\"ref\":\"main\",\"snapshot-id\":1}],\"updates\":[{\"action\":\"set-properties\",\"updates\":{\"x\":\"y\"}}]}")
+[ "$c" = "409" ] || falla "13 · la base vieja tenía que ser 409 y fue $c: $(cat "$TMP/out.json")"
+[ "$(campo error.type)" = "CommitFailedException" ] || falla "13 · el 409 no es CommitFailedException: $(cat "$TMP/out.json")"
+[ "$(campo actual.actual.metadata_location)" != "" ] || falla "13 · el 409 no trae actual: $(cat "$TMP/out.json")"
+# y un cuerpo sin assert-create sobre una tabla que no existe: 404
+c=$(pide POST /v1/namespaces/ventas/tables/nadie '{"requirements":[],"updates":[{"action":"set-properties","updates":{"x":"y"}}]}'); [ "$c" = "404" ] || falla "13 · commit sobre lo que no existe: $c"
+ok "13 · la credencial prestada acotada al prefijo (y sin pedirla, nada); 404, 400, 409 con \`actual\` y la forma de error de la spec"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9313\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
