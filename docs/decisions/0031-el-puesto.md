@@ -508,6 +508,71 @@ nuestro, y Node —sin escritor de producción— manda Arrow al agente y escrib
 token acotado a la tabla (*Credential Access Boundary* de GCS) en vez de una cuenta de puesto del
 aprovisionador. Lo que hay que medir está en su §4; la spec del verbo (un §11) viene después.
 
+## Lo medido para W3.6c · escribir (`pruebas-de-fuego/medida-w3-escribir.py`, 2026-09-20, en local con una forja pelada, el S3 de mentira y el bucket de prueba)
+
+Un **catálogo REST de Iceberg de mentira** (ciento cincuenta líneas de Python en la medida) puesto
+delante de `ore-serve`: `GET /v1/config`, `GET …/namespaces/{ns}/tables/{t}` (el puntero por
+`GET /datasets/{ns}/{n}` + su `metadata.json`), `POST …/tables` (crear, también `stage-create`),
+`POST …/tables/{t}` y `POST /v1/transactions/commit` (`requirements` validados, `updates`
+aplicados, el `metadata.json` siguiente escrito, y **el swap por `POST …/confirmar` de W3.6b**).
+Nada de ORE se tocó; el S3 de mentira aprendió la subida multiparte (`aws-chunked`) que pyarrow y
+DuckDB usan al escribir.
+
+1. **PyIceberg 0.12 y DuckDB 1.5.4 escriben contra él sin parches.** PyIceberg: `create_table`
+   = 1 POST (la Table **nace en el árbol** con `columns` de OOS por `confirmar --columnas`,
+   1,8 s = el swap); `append` de 100 000 = **1 POST** con `requirements: [assert-ref-snapshot-id,
+   assert-table-uuid]`, `updates: [add-snapshot, set-snapshot-ref]` (1,4 s, de los que el
+   swap es casi todo); `overwrite` igual. DuckDB: `ATTACH … TYPE iceberg` (`GET /config`, 2 ms),
+   lee lo que PyIceberg escribió (100 040 filas, 430 ms), **`INSERT` va SIEMPRE por
+   `POST /v1/transactions/commit`** (el commit multi-tabla, aunque sea una) con los mismos
+   `requirements`/`updates`, y `CREATE TABLE … AS` es `stage-create: true` + un commit con
+   `assert-create` y once `updates` (`assign-uuid`, `upgrade-format-version`, `add-schema`, …,
+   `add-snapshot`). PyIceberg lee lo de DuckDB y DuckDB lo de PyIceberg; `GET /datasets/ventas/
+   escrita` cuenta 9 snapshots y `escrito_por`. **Los dos mandan `X-Iceberg-Access-Delegation:
+   vended-credentials` al cargar la tabla y ninguno manda `Idempotency-Key`.**
+2. **La carrera la resuelve el cliente; el 5xx no.** Dos manos con la misma base: la segunda
+   recibe 409 (`CommitFailedException`) y **PyIceberg refresca y reintenta solo** (`200 · 409 ·
+   200`; «retrying (1/4) in 102 ms»). Un 502 *después* de confirmar: el cliente ve
+   `CommitStateUnknownException`, el catálogo tiene las 100 030 filas —el commit entró— y el
+   siguiente `append` del mismo cliente refresca y pasa. **No hay clave de operación**: el mismo
+   `append` dos veces deja dos snapshots (200 000 filas), y las claves del resumen del snapshot
+   (`added-records`, `total-records`, … `operation`) no llevan nada que lo identifique.
+3. **`ore-store leer` niega lo que otro escribió** («no lleva la cabecera de ORE»): la cabecera
+   (`ore.cabecera`, el digest del plan de la copia) es de la copia, no de un dataset; `historia`
+   sí lo lee. `ore datasets --recoger` **sin `--edad` expira todo lo superado** (`edad_ms: 0`), y
+   `history.expire.max-snapshot-age-ms` / `min-snapshots-to-keep`, que llegan al `metadata.json`
+   como propiedades, **nadie las lee ni la ficha las enseña**.
+4. **El token acotado a la tabla funciona en GCS y lo aceptan los dos.** STS `token-exchange` con
+   `accessBoundary` (`objectCreator` + `objectViewer` sólo bajo
+   `ore/v2/datasets/ventas_escrita/`), 230 ms, desde el token de la sesión (en el pod, el del
+   metadata server): PUT dentro 200; PUT en otra tabla **403**; PUT en `copias/` **403**;
+   **DELETE dentro 403** (el puesto escribe, no retira); **PUT encima de lo escrito 403** (los
+   ficheros de Iceberg son inmutables, y así lo impone el bucket). PyIceberg con ese token como
+   credencial prestada por el catálogo (`gcs.oauth2.token` en `config`): `create` + `append` de
+   100 000 en `gs://` en 3,7 s y lee de vuelta; con el token de OTRA tabla: `PERMISSION_DENIED`.
+   **DuckDB acepta `CREATE SECRET (TYPE gcs, BEARER_TOKEN …)`** e inserta en `gs://` por el
+   catálogo (2,4 s, 100 010 filas). El bucket de prueba quedó a cero.
+5. **Node sin escritor: la tabla Arrow por IPC a Rust cuesta lo que cuesta escribir.** 10 M filas
+   (Int64, Utf8, Float64, Timestamp µs): el escritor de Rust (iceberg-rust, lo que `ore-store`
+   es) **lee 234 ms + escribe 2,1 s + confirma 16 ms** (132 MB, un fichero); lo que domina es
+   que Node *fabrique* la tabla (17 s en JS: si el código ya tiene Arrow, es cero). El camino de
+   hoy —filas JSON a `ore-store sellar`— tarda **69 s por 1 M** (y `cuando` se queda en texto
+   porque los micros no son `DateTimeTz`): **250× más** que IPC. PyIceberg desde Python: 10 M en
+   7,4 s (1,4 M filas/s; el commit, 1,5 s fijo, es el swap).
+
+**Lo que decide.** (a) `ore-serve` habla el catálogo REST de Iceberg: es lo que ya hace
+`confirmar` con otro vocabulario, y los tres escritores (PyIceberg, DuckDB, y Java por el mismo
+protocolo —no medido aquí: sin JDK 11 en esta máquina; se coteja en CI, donde `el-puesto.sh` ya
+baja los jars—) escriben sin SDK nuestro; hace falta también `commitTransaction` y
+`stage-create`. (b) La identidad del puesto es un token acotado a la tabla que el catálogo presta
+al cargarla: sin cuenta nueva, sin aprovisionador, y el bucket impone lo que la spec quiere
+(no borrar, no sobrescribir, no salir del prefijo). (c) La clave de operación la pone `write()`
+(los clientes no la traen) como propiedad del snapshot, y `confirmar` la coteja con la ancestría.
+(d) El 5xx de `write()` es «mira antes de reintentar» (`GET /datasets/{ns}/{n}`), y PyIceberg ya
+lo hace por su cuenta. (e) La retención se lee de las propiedades de la tabla; el `--edad` es el
+defecto y **sin nada no se expira nada**. (f) Node escribe por IPC al agente y el agente por
+`ore-store`; `leer` deja de exigir la cabecera de la copia.
+
 ## Lo que se aparca
 
 - El motor distribuido para lo masivo (Ray/Spark sobre la cola): el contrato (Parquet en el

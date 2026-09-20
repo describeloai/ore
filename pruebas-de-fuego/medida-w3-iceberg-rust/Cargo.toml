@@ -16,8 +16,17 @@ iceberg-storage-opendal = { version = "0.10.1", default-features = false, featur
 arrow-array = "58"
 arrow-schema = "58"
 parquet = "58"
+arrow-ipc = "58"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 
 [profile.release]
 opt-level = 3
+
+[[bin]]
+name = "medida-w3-iceberg-rust"
+path = "src/main.rs"
+
+[[bin]]
+name = "ipc"
+path = "src/bin/ipc.rs"
