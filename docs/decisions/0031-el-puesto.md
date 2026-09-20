@@ -206,7 +206,7 @@ luego el swap, luego `write()`.
 | **W3.3** ✓ 2026-09-19 (SQL) | SQL sobre el bucket **en la sesión**: `sql("select … from hr.espanoles")` (DuckDB en el puesto; cada `paquete.vista` tras FROM/JOIN se resuelve por ore-serve y se baja una vez); un `.sql` del árbol o una celda SQL van enteros a `sql()`. **Medido antes** (`medida-w3-el-sql.py`, 2 CPU · 3 GB): 200 M de filas → `count(*)` 5 ms, `group by` con agregados **1,9 s**, `where` 1 s, top-n 0,9 s; 1,4 GB al bucket en 11 s y de vuelta en 9,5 s. ⇒ un `count(*)` sobre 200 M **no necesita un Job**: cabe en la sesión con segundos de margen; el trabajo encolado queda para lo que no quepa en un nodo (disco de 50 GB, o más de un nodo) y para entrenar (W3.5) | `el-puesto.sh` 7 |
 | **W3.4** ✓ 2026-09-19 (TS y JVM) | **Un puesto por persona y entorno** (`puesto-<persona>-<entorno>`: `python`, `node`, `jvm`; `POST /puestos {lenguaje}` elige la imagen; `sql` corre en los tres). `puesto-node:1` (node 24: los tipos de TS los quita Node, sin transpilador; `@duckdb/node-api`; el agente `puesto/node/agente.mjs` evalúa con el REPL de Node: contexto que dura, `await` arriba; una celda con `import`/`export` —un `.ts` del árbol— se escribe y se importa, y sus exports quedan en el contexto) y `puesto-jvm:1` (JDK 21 sobre noble; `puesto/jvm/ore/Agente.java`: JShell **en proceso**, varios snippets por celda, el valor de la expresión como objeto por `guarda()`, una clase con `main` se declara y se llama; DuckDB por JDBC). El SDK en los tres: `over()`, `sql()`, **`persona()`** (quién abrió el puesto). La plantilla del puesto lleva el hueco del entorno y cada imagen su `CMD`. En la consola, un `.ts`/`.js`/`.java` corre en su sesión; una fila por sesión abierta con su «Stop». **Medido antes** (`medida-w3-ts-jvm.py`): abajo | `el-puesto.sh` 8 (`saludo(persona())` → `hola persona:ana` desde un módulo TS con `export`; `over()`, `sql`) y 9 (lo mismo en Java, y una clase con `main`) en CI; en el clúster, las imágenes salen de `cloudbuild.yaml` |
 | **W3.5** · leer | el verbo **leer**, consistente: Arrow como verdad común en los tres SDK; el contrato de tipos ORE ↔ Parquet ↔ lenguaje escrito y medido (`medida-w3-leer.py`: un Parquet con todos los tipos difíciles leído por los tres `over()`/`sql()`, campo a campo, y el caudal a 10 M de filas) | los tres lenguajes leen la misma copia y ven los mismos valores; lo que no sobrevive está dicho, no escondido |
-| **W3.5b** · el lector del lago | **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
+| **W3.5b** · el lector del lago | **medido** (abajo, 2026-09-20): camino (b), directo del bucket con el token del pod; extensiones preinstaladas; node sin CA; una extensión ausente cuelga 120 s. Antes: **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
 | **W3.6a** · la copia es un dataset | **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
 | **W3.6b** · el swap y el lago | `ore-serve` hace el CAS sobre el puntero y el commit por la forja (`POST …/datasets/{t}/confirmar {metadata_location, esperado}` → 409 si otro ganó); el `datasource: lago` del inquilino nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento (expirar snapshots, huérfanos) | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta; `git log` de un puntero es la historia de la tabla |
 | **W3.6c** · escribir | `write("p.salida", tabla)` en los tres (Python con PyIceberg primero; Node y Java por DuckDB `COPY … TO` Iceberg cuando lo tenga, o por el trabajo): datos y `metadata.json` al bucket con la identidad del pod (`objectCreator` sobre `datasets/`), el puntero por `ore-serve`, la `Table` del lago escrita con el esquema de Arrow la primera vez; 0032 convierte lo que Iceberg no tiene (ns → µs, zona → UTC) y niega `uint64`/`null` diciéndolo | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, latencia de un commit en el clúster |
@@ -300,6 +300,41 @@ Python va 20–40× más rápido porque pandas es columnar.
    Arrow JS no tiene decimales de verdad (cuatro `Uint32` sin aritmética) ni ns sin pérdida;
    Arrow Java pesa ~10 MB de jars y pide `--add-opens=java.base/java.nio`. Se mide con la misma
    matriz.
+
+## Lo medido para W3.5b · el lector del lago (`pruebas-de-fuego/medida-w3-lago.py`, 2026-09-20, demo, `jobs-p`)
+
+Un Job con **tres contenedores** —`puesto-python:1`, `puesto-node:1`, `puesto-jvm:1`, rol `puesto`:
+sin internet— leyendo una tabla Iceberg de 10 M de filas y la de los 19 tipos que Iceberg
+admite, escritas en el bucket de demo desde fuera (PyIceberg) y borradas al acabar:
+
+| | python | node | jvm |
+|---|---|---|---|
+| DuckDB del enlace | 1.5.5 · linux_amd64 | 1.5.5 · linux_amd64 | 1.5.5 · linux_amd64 |
+| `LOAD iceberg` + `httpfs` **preinstaladas por nombre** (`~/.duckdb/extensions/v1.5.5/linux_amd64/`: iceberg, avro, httpfs, json, icu) | ✓ 550 ms | ✓ 545 ms | ✓ 619 ms |
+| **(b) directo de `gs://`**: token del servidor de metadatos como `BEARER_TOKEN` de un secreto HTTP + `iceberg_scan('https://storage.googleapis.com/<bucket>/<raíz>', version='<la del puntero>', allow_moved_paths=true)` · 10 M filas | count 482 · group by 753 · filtro 507 ms | 395 · 712 · 549 ms | 359 · 534 · 422 ms |
+| **(c) bajar y leer**: la API JSON con el token (como hoy el sobre), 5 objetos, 39 MB, y `iceberg_scan` en local | listar 36 + bajar 618 ms · count 5 ms | 48 + 786 · 6 ms | — |
+| los 19 tipos por (b), cotejados con la verdad | **19/19** | **19/19** | **19/19** |
+| `INSTALL spatial` (una extensión que no está) | **se rinde a los 120 s**: la NetworkPolicy tira el paquete | | |
+
+Lo que decide:
+
+- **El camino de lectura es (b), directo del bucket con la identidad del pod y sin credencial
+  nueva**: el token que el agente ya tiene, la API XML de GCS por `private.googleapis.com`,
+  y DuckDB leyendo Iceberg con poda (el filtro sobre 10 M en 0,4–0,5 s sin bajar los 39 MB).
+  (c) queda como lo que es: lo que hace el sobre hoy, y vale para una copia que se vaya a
+  recorrer entera varias veces (bajar una vez, 0,6 s; luego 5 ms). HMAC (a) no hace falta.
+- **El puntero basta**: a DuckDB se le da **la raíz de la tabla y la versión** (las dos salen
+  del `metadata_location` del puntero) con `allow_moved_paths`; con el fichero directo
+  resolvía `…/metadata.json/metadata/snap…` (404). Nada se lista.
+- **Las imágenes cambian en tres cosas**: (1) preinstalar las cinco extensiones de la
+  versión exacta de DuckDB de cada enlace al construir (`INSTALL` en el `Dockerfile`, que sí
+  tiene red); (2) `node:24-slim` **no trae `ca-certificates`** y DuckDB (OpenSSL) no puede
+  verificar a Google —en la medida se le dio el manojo de la imagen de Python por
+  `SSL_CERT_FILE`; la imagen lo lleva—; (3) el SDK abre DuckDB con
+  `autoinstall_known_extensions = false`: una extensión que falte tiene que fallar en el acto
+  con su nombre, no colgar la celda **dos minutos** contra una red que no contesta.
+- **Java lee por Arrow igual**: `arrowExportStream` es del `ResultSet`, venga de un Parquet
+  local o de `iceberg_scan` por https; `Filas` y el JSON de 0032 T3 no cambian.
 
 ## Lo que se aparca
 
