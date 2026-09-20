@@ -25,7 +25,9 @@ demás —el `iceberg_scan` en sitio con el token del pod, los tipos, el JSON—
 el `over()` de la imagen.
 
 Un Job en `t-demo` (Kueue → `jobs-p`, 0 → 1 → 0) con los tres contenedores de
-puesto (las imágenes de ESTE commit) y el testigo del agente (como `51`); cada
+puesto (las imágenes de ESTE commit), la cuenta del puesto (`puesto`: sólo lee
+el bucket; lo que escribe va con el token prestado) y el testigo del agente
+(como `51`); cada
 uno corre un guion que hace lo que una celda haría. Los datasets nacen bajo
 `<paquete>.medida_escrito_<lenguaje>` en el primer paquete del árbol y se
 retiran al final: los documentos y punteros por `DELETE /arbol/…` (un segundo
@@ -264,7 +266,7 @@ def job(nombre, contenedores, guiones):
                 "metadata": {"labels": {"ore.dev/rol": "puesto", "ore.dev/tenant": INQUILINO}},
                 "spec": {
                     "restartPolicy": "Never",
-                    "serviceAccountName": "driver",
+                    "serviceAccountName": "puesto",
                     "volumes": [{"name": "puesto", "emptyDir": {"medium": "Memory"}}, {"name": "trabajo", "emptyDir": {}}, {"name": "guiones", "configMap": {"name": nombre}}],
                     "initContainers": [{
                         "name": "traer-el-testigo",
