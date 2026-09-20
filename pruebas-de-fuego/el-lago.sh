@@ -30,7 +30,8 @@
 #      `Decimal`, `DateTimeTz`), el puntero con `uuid` y `operacion`; compila
 #   8  la clave de operación: la MISMA escritura otra vez no deja snapshot ni
 #      mueve nada (`repetida`); otra clave anexa; un cuerpo con la base vieja es
-#      código 75 con `actual`; y una columna nueva regenera la `Table`
+#      código 75 con `actual`; y una columna nueva regenera la `Table` sin
+#      perder lo que alguien le añadió a mano (descripción, etiquetas)
 #   9  dos tablas en un commit (`table-changes`): las dos nacen o se mueven en
 #      la misma pasada; una `View` como destino se niega sin tocar nada
 #  10  la retención declarada en la tabla (`--retencion p.t --edad 0`) es la que
@@ -44,7 +45,9 @@
 #      manos con la misma base: 409 y el cliente refresca y reintenta solo
 #  12  DuckDB: `ATTACH … TYPE iceberg`, lee lo de PyIceberg, `INSERT` (por
 #      `transactions/commit`), `CREATE TABLE … AS` (`stage-create` +
-#      `assert-create`); PyIceberg lee lo de DuckDB
+#      `assert-create`); PyIceberg lee lo de DuckDB; y DuckDB `DELETE` y
+#      `UPDATE` (merge-on-read: deja *position deletes*) → `ore-store leer` y
+#      la ficha cuentan las filas que quedan, como DuckDB y PyIceberg
 #  13  la credencial prestada: con `X-Iceberg-Access-Delegation` el
 #      `LoadTableResult` trae `config` y `storage-credentials` acotadas al
 #      prefijo de la tabla; sin ella, nada; una View como destino es 400, una
@@ -334,18 +337,23 @@ escribe ventas_escrita anexar "$ML7" op-3 100 1 || falla "8 · escribir (base vi
 [ "$c" = "75" ] || falla "8 · la base vieja tenía que ser código 75 y fue $c: $(cat "$TMP/commit.json")"
 [ "$(jq_ "$TMP/commit.json" actual.metadata_location)" = "$ML8" ] || falla "8 · el 75 no dice \`actual\`: $(cat "$TMP/commit.json")"
 [ "$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)" = "$ML8" ] || falla "8 · el 75 movió el puntero"
-# una columna más: la Table del árbol sigue el esquema
+# una columna más: la Table del árbol sigue el esquema — y lo que alguien le
+# añadió a mano (una descripción, una etiqueta en una columna) se queda
+sed -i 's|^metadata: { name: escrita, namespace: ventas }|metadata: { name: escrita, namespace: ventas, description: "lo que ana escribió" }|; s|^    total: { type: Decimal }|    total: { type: Decimal, labels: { gdpr.sensitivity: high } }|' "$CL/packages/ventas/tables/escrita.yaml"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" && grep -q "gdpr.sensitivity: high" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · no se pudo anotar la Table a mano: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
 escribe ventas_escrita sobrescribir "$ML8" op-4 0 2 extra || falla "8 · escribir (columna nueva)"
 [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "8 · escribir no vio el esquema nuevo"
 "$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8 · commit con columna nueva"; }
 [ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "8 · la Table tenía que regenerarse: $(cat "$TMP/commit.json")"
 grep -q "canal: { type: String }" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la Table no lleva la columna nueva"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la regeneración perdió la descripción"
+grep -q "total: { type: Decimal, labels: { gdpr.sensitivity: high } }" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la regeneración perdió la etiqueta: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "8 · el árbol no compila con la Table regenerada"; }
 ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 "$ORE" datasets "$CL" --ficha ventas.escrita --json > "$TMP/ficha.json" 2>&1 || falla "8 · ficha"
 [ "$(jq_ "$TMP/ficha.json" snapshots.0.idempotencia)" = "op-4" ] || falla "8 · la ficha no enseña la clave de operación: $(cat "$TMP/ficha.json")"
 [ "$(jq_ "$TMP/ficha.json" retencion.edad_ms)" = "604800000" ] || falla "8 · la ficha no enseña la retención con la que nació (7d): $(jq_ "$TMP/ficha.json" retencion.edad_ms)"
-ok "8 · la misma operación no deja snapshot ni toca el árbol; otra anexa; la base vieja es 75 con \`actual\`; una columna nueva regenera la Table; la ficha lo cuenta"
+ok "8 · la misma operación no deja snapshot ni toca el árbol; otra anexa; la base vieja es 75 con \`actual\`; una columna nueva regenera la Table sin perder lo añadido a mano; la ficha lo cuenta"
 
 # ── 9 · dos tablas en un commit, y lo que no se escribe ──────────────────────
 escribe ventas_escrita anexar "$ML8b" op-5 200 1 || falla "9 · escribir escrita"; cp "$TMP/escrito.json" "$TMP/e1.json"
@@ -464,6 +472,32 @@ print(json.dumps({"py": cat.load_table(("ventas", "py")).scan().to_arrow().num_r
 PY
 [ "$(jq_ "$TMP/py12.json" pato)" = "7" ] && [ "$(jq_ "$TMP/py12.json" py)" = "270" ] || falla "12 · PyIceberg no lee lo de DuckDB: $(cat "$TMP/py12.json")"
 ok "12 · DuckDB contra ore-serve: lee lo de PyIceberg, INSERT por transactions/commit, CREATE TABLE AS por stage-create; PyIceberg lee lo de DuckDB"
+
+# ── 12b · lo que DuckDB deja al mutar: position deletes, y ORE los aplica ────
+# DuckDB `DELETE`/`UPDATE` sobre una tabla v2 es merge-on-read: un fichero de
+# posiciones por fichero de datos, no una reescritura. Medido (0031, «Lo medido
+# fuera del verbo»): sin aplicarlos `ore-store leer` leía 1008 donde DuckDB y
+# PyIceberg leen 1004, y la ficha contaba 1010.
+"$PY" - "$BASE" "$ORE_R2_S3_ENDPOINT" > "$TMP/duck12b.json" 2> "$TMP/duck12b.err" <<'PY' || { tail -5 "$TMP/duck12b.err"; falla "12b · DuckDB DELETE/UPDATE contra ore-serve"; }
+import sys, json, duckdb
+base, s3 = sys.argv[1], sys.argv[2]
+con = duckdb.connect()
+con.execute("install iceberg; install httpfs; load iceberg; load httpfs;")
+con.execute("create secret s3 (type s3, key_id 'de', secret 'mentira', endpoint '%s', url_style 'path', use_ssl false, region 'auto')" % s3.replace("http://", ""))
+con.execute("create secret ice (type iceberg, token 'persona:ana')")
+con.execute("attach '' as lago (type iceberg, endpoint '%s', secret ice)" % base)
+con.execute("delete from lago.ventas.py where id in (0, 1, 2)")
+con.execute("update lago.ventas.py set pais = 'FR' where id = 3")
+print(json.dumps({"filas": con.execute("select count(*) from lago.ventas.py").fetchone()[0], "fr": con.execute("select count(*) from lago.ventas.py where pais = 'FR'").fetchone()[0]}))
+PY
+[ "$(jq_ "$TMP/duck12b.json" filas)" = "267" ] && [ "$(jq_ "$TMP/duck12b.json" fr)" = "1" ] || falla "12b · DuckDB tenía que leer 267 y un FR: $(cat "$TMP/duck12b.json")"
+[ "$(pide GET /datasets/ventas/py)" = "200" ] || falla "12b · la ficha"
+[ "$(campo filas)" = "267" ] || falla "12b · la ficha cuenta $(campo filas) filas y no 267 (los position deletes no se restan)"
+ML12=$(campo metadata_location)
+n=$(printf '{"metadata_location":"%s","dataset":"datasets/ventas_py"}\n' "$ML12" | "$STORE" leer | grep -c '^{"'); [ "$n" = "268" ] || falla "12b · ore-store leer da $((n - 1)) filas y no 267 (los position deletes no se aplican)"
+printf '{"metadata_location":"%s","dataset":"datasets/ventas_py"}\n' "$ML12" | "$STORE" leer | grep -q '"id":"3","pais":"FR"' || falla "12b · la fila actualizada no se lee como FR"
+printf '{"metadata_location":"%s","dataset":"datasets/ventas_py"}\n' "$ML12" | "$STORE" leer | grep -q '"id":"1",' && falla "12b · la fila borrada sigue leyéndose"
+ok "12b · DuckDB DELETE/UPDATE por el catálogo dejan position deletes y ore-store leer y la ficha cuentan 267, con la fila actualizada y sin las borradas"
 
 # ── 13 · la credencial prestada y los errores de la spec ─────────────────────
 curl -s -o "$TMP/out.json" -H "$SUJ" -H 'X-Iceberg-Access-Delegation: vended-credentials' "$BASE/v1/namespaces/ventas/tables/py" > /dev/null

@@ -607,13 +607,16 @@ fn asegurar_table(
     if !regenerar {
         return Ok((false, false));
     }
-    let mut s = format!(
-        "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: la escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y se regenera cuando el esquema evoluciona). Su puntero es\n# `datasets/{ns}_{tabla}.json`; su historia, los snapshots de la tabla.\nspec:\n  datasource: lago\n  object: \"{ns}_{tabla}\"\n  columns:\n"
-    );
-    for (c, t) in columnas {
-        s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
-    }
-    s.push_str("  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n");
+    // Con documento: se edita, para no perder lo que alguien le añadió a mano
+    // (medido: `labels` y `description` se perdían al evolucionar el esquema).
+    // Sin documento, o si el de antes no se deja editar: desde cero.
+    let s = match texto_previo
+        .as_deref()
+        .and_then(|t| seguir_esquema(t, columnas))
+    {
+        Some(s) => s,
+        None => documento_nuevo(ns, tabla, columnas),
+    };
     if let Some(padre) = doc.parent() {
         std::fs::create_dir_all(padre)
             .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
@@ -645,6 +648,147 @@ fn asegurar_table(
         ));
     }
     Ok((nueva, !nueva))
+}
+
+/// La `Table` del lago desde cero: lo que `write()` sabe de ella.
+fn documento_nuevo(ns: &str, tabla: &str, columnas: &BTreeMap<String, String>) -> String {
+    let mut s = format!(
+        "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: la escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}_{tabla}.json`; su\n# historia, los snapshots de la tabla.\nspec:\n  datasource: lago\n  object: \"{ns}_{tabla}\"\n  columns:\n"
+    );
+    for (c, t) in columnas {
+        s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
+    }
+    s.push_str("  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n");
+    s
+}
+
+/// **El documento sigue el esquema sin perder lo demás.** Se edita el texto
+/// por posiciones (las que el analizador da): a una columna que cambió de
+/// tipo se le cambia sólo el tipo, una columna nueva se añade al final del
+/// bloque `columns`, y una que ya no está se quita con sus líneas. Lo que no
+/// es `columns` —`metadata.description`, `labels` en una columna que sigue,
+/// `reads`, comentarios— queda como estaba. `None` si el documento no tiene
+/// la forma esperada (y entonces se escribe desde cero).
+fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<String> {
+    let n = ore_core::parse::parse(texto).ok()?;
+    let (_, spec) = n.get("spec")?;
+    let (clave_cols, cols) = spec.get("columns")?;
+    let mut lineas: Vec<String> = texto.lines().map(String::from).collect();
+    // Dónde acaba el bloque de columnas (1-based, exclusivo): la entrada de
+    // `spec` que sigue a `columns`, o el final del documento.
+    let fin = spec
+        .entries()
+        .iter()
+        .map(|(k, _)| k.pos().line)
+        .filter(|l| *l > clave_cols.pos().line)
+        .min()
+        .unwrap_or(lineas.len() + 1);
+    // Las columnas del documento, en el orden del texto: nombre, línea de la
+    // clave, y dónde está su `type` (línea, columna, largo) si lo tiene.
+    struct Col {
+        nombre: String,
+        linea: usize,
+        tipo: Option<(usize, usize, usize)>,
+        vacia: bool,
+    }
+    let mut doc: Vec<Col> = cols
+        .entries()
+        .iter()
+        .filter_map(|(k, v)| {
+            Some(Col {
+                nombre: k.as_str()?.to_string(),
+                linea: k.pos().line,
+                tipo: v.get("type").and_then(|(_, t)| {
+                    Some((t.pos().line, t.pos().col, t.as_str()?.chars().count()))
+                }),
+                vacia: v.entries().is_empty(),
+            })
+        })
+        .collect();
+    doc.sort_by_key(|c| c.linea);
+    if doc
+        .iter()
+        .any(|c| c.linea < clave_cols.pos().line || c.linea >= fin)
+    {
+        return None;
+    }
+    let sangria = doc
+        .first()
+        .map(|c| c.linea)
+        .and_then(|l| lineas.get(l - 1))
+        .map(|l| l.len() - l.trim_start().len())
+        .unwrap_or(4);
+    // Cada edición nombra líneas 1-based; se aplican de abajo arriba para que
+    // las de arriba sigan valiendo.
+    enum Edicion {
+        Quitar(usize, usize),
+        Linea(usize, String),
+        Tipo(usize, usize, usize, String),
+        Insertar(usize, Vec<String>),
+    }
+    let mut ediciones = Vec::new();
+    for (i, c) in doc.iter().enumerate() {
+        let siguiente = doc.get(i + 1).map(|d| d.linea).unwrap_or(fin);
+        match columnas.get(&c.nombre) {
+            None => ediciones.push(Edicion::Quitar(c.linea, siguiente)),
+            Some(t) => match c.tipo {
+                Some((l, col, largo)) => ediciones.push(Edicion::Tipo(l, col, largo, t.clone())),
+                None if c.vacia => ediciones.push(Edicion::Linea(
+                    c.linea,
+                    format!("{}{}: {{ type: {t} }}", " ".repeat(sangria), c.nombre),
+                )),
+                // Un mapa con otras claves y sin `type`: se le pone la suya.
+                None => {
+                    let s2 = lineas
+                        .get(c.linea)
+                        .map(|l| l.len() - l.trim_start().len())
+                        .unwrap_or(sangria + 2);
+                    ediciones.push(Edicion::Insertar(
+                        c.linea + 1,
+                        vec![format!("{}type: {t}", " ".repeat(s2))],
+                    ));
+                }
+            },
+        }
+    }
+    let nuevas: Vec<String> = columnas
+        .iter()
+        .filter(|(c, _)| !doc.iter().any(|d| &d.nombre == *c))
+        .map(|(c, t)| format!("{}{c}: {{ type: {t} }}", " ".repeat(sangria)))
+        .collect();
+    if !nuevas.is_empty() {
+        ediciones.push(Edicion::Insertar(fin, nuevas));
+    }
+    let linea_de = |e: &Edicion| match e {
+        Edicion::Quitar(l, _)
+        | Edicion::Linea(l, _)
+        | Edicion::Tipo(l, _, _, _)
+        | Edicion::Insertar(l, _) => *l,
+    };
+    ediciones.sort_by_key(|e| std::cmp::Reverse(linea_de(e)));
+    for e in ediciones {
+        match e {
+            Edicion::Quitar(desde, hasta) => {
+                lineas.drain(desde - 1..(hasta - 1).min(lineas.len()));
+            }
+            Edicion::Linea(l, s) => lineas[l - 1] = s,
+            Edicion::Tipo(l, col, largo, t) => {
+                let linea = &lineas[l - 1];
+                let antes: String = linea.chars().take(col - 1).collect();
+                let despues: String = linea.chars().skip(col - 1 + largo).collect();
+                lineas[l - 1] = format!("{antes}{t}{despues}");
+            }
+            Edicion::Insertar(l, vs) => {
+                let en = (l - 1).min(lineas.len());
+                for (i, v) in vs.into_iter().enumerate() {
+                    lineas.insert(en + i, v);
+                }
+            }
+        }
+    }
+    let mut out = lineas.join("\n");
+    out.push('\n');
+    Some(out)
 }
 
 /// El puntero de un dataset del lago, leído del árbol (`datasets/<ns>_<t>.json`).
@@ -1517,6 +1661,45 @@ fn salida(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn el_documento_sigue_el_esquema_sin_perder_lo_demas() {
+        use super::seguir_esquema;
+        use std::collections::BTreeMap;
+        let doc = "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Una tabla del lago (0031 §10): la escribió `write()`\nspec:\n  datasource: lago\n  object: \"ventas_salida\"\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: Integer }\n    pais: {}\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    vieja:\n      type: String\n      labels: { gdpr.sensitivity: low }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n";
+        let cols: BTreeMap<String, String> = [
+            ("cuando", "DateTimeTz"),
+            ("id", "String"),     // cambia de tipo
+            ("pais", "String"),   // tenía `{}`
+            ("total", "Decimal"), // sigue, con sus labels
+            ("nota", "String"),   // nueva
+                                  // `vieja` ya no está
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let s = seguir_esquema(doc, &cols).unwrap();
+        assert_eq!(
+            s,
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Una tabla del lago (0031 §10): la escribió `write()`\nspec:\n  datasource: lago\n  object: \"ventas_salida\"\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: String }\n    pais: { type: String }\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    nota: { type: String }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n"
+        );
+        // lo que compila: las columnas del resultado son exactamente las pedidas
+        assert_eq!(super::columnas_del_documento(&s), cols);
+        // un documento sin `columns` no se edita: desde cero
+        assert!(seguir_esquema("kind: Table\nspec: { datasource: lago }\n", &cols).is_none());
+        // un mapa con otras claves y sin `type` recibe el suyo
+        let s = seguir_esquema(
+            "spec:\n  columns:\n    a:\n      labels: { x: y }\n",
+            &[("a".to_string(), "Integer".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            s,
+            "spec:\n  columns:\n    a:\n      type: Integer\n      labels: { x: y }\n"
+        );
+    }
+
     use super::*;
 
     /// Lo que un cambio del catálogo REST dice de sí mismo, y las columnas

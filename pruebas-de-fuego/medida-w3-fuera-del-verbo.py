@@ -195,6 +195,16 @@ elif que == "leer":
     t = cat.load_table((ns, nombre)).scan().to_arrow().to_pylist()
     por = {f["id"]: f["pais"] for f in t}
     out = {"filas": len(t), "id1": por.get(1), "id2": por.get(2, "no está"), "id3": por.get(3)}
+elif que == "deletes":
+    ns, nombre = sys.argv[4], sys.argv[5]
+    t = cat.load_table((ns, nombre))
+    d = t.inspect.delete_files().to_pylist()
+    import pyarrow.parquet as pq, io
+    def dentro(path):
+        with t.io.new_input(path).open() as f:
+            return [(r["file_path"].rsplit("/", 1)[1][-24:], r["pos"]) for r in pq.read_table(io.BytesIO(f.read())).to_pylist()]
+    out = {"version": t.metadata.format_version, "delete_files": [{"content": f["content"], "formato": f["file_format"], "filas": f["record_count"], "fichero": f["file_path"].rsplit("/", 1)[1][-24:], "dentro": dentro(f["file_path"])} for f in d],
+           "datos": [(f["file_path"].rsplit("/", 1)[1][-24:], f["record_count"]) for f in t.inspect.data_files().to_pylist()]}
 elif que == "credencial":
     ns, nombre = sys.argv[4], sys.argv[5]
     import urllib.request
@@ -433,6 +443,8 @@ def main():
             c, t = pide(base, "GET", "/datasets/ventas/ups")
             f = json.loads(t) if c == 200 else {}
             fila("  la ficha (ore-store historia)", "HTTP %d · %d snapshots" % (c, len(f.get("snapshots", []))), ", ".join("%s(%s)" % (s.get("operacion"), s.get("filas")) for s in f.get("snapshots", []))[:100] if c == 200 else t[:100])
+            r = pyice("deletes", "ventas", "ups")
+            fila("  lo que DuckDB dejó (PyIceberg inspect)", "formato v%s" % r.get("version"), json.dumps(r.get("delete_files", r.get("error")))[:160])
             r = subprocess.run([STORE, "leer"], input=json.dumps({"metadata_location": f.get("metadata_location", ""), "dataset": "ventas_ups"}) + "\n", capture_output=True, text=True, encoding="utf-8", env=env)
             fila("  ore-store leer (iceberg-rust)", "código %d" % r.returncode, ("%d filas" % (r.stdout.count("\n"))) if r.returncode == 0 else r.stderr.strip()[-120:])
             # el coste copy-on-write sobre 1 M

@@ -911,7 +911,7 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                         "operacion",
                         Json::s(format!("{:?}", s.summary().operation).to_lowercase()),
                     ),
-                    ("filas", n("total-records")),
+                    ("filas", Json::Int(Lago::filas_de(&t, s) as i64)),
                     ("ficheros", n("total-data-files")),
                     ("bytes", n("total-files-size")),
                     ("anadidas", n("added-records")),

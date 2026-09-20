@@ -67,9 +67,9 @@ use iceberg::io::{
     StorageConfig, StorageFactory,
 };
 use iceberg::spec::{
-    DataFile, DataFileFormat, MAIN_BRANCH, ManifestContentType, ManifestListWriter,
-    ManifestWriterBuilder, NestedField, Operation, Schema, Snapshot, SnapshotReference,
-    SnapshotRetention, SnapshotSummaryCollector, Summary, TableMetadata,
+    DataContentType, DataFile, DataFileFormat, MAIN_BRANCH, ManifestContentType,
+    ManifestListWriter, ManifestWriterBuilder, NestedField, Operation, Schema, Snapshot,
+    SnapshotReference, SnapshotRetention, SnapshotSummaryCollector, Summary, TableMetadata,
 };
 use iceberg::table::Table;
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
@@ -984,24 +984,61 @@ impl Lago {
     /// **Las filas de la tabla, en su snapshot vigente**, como texto canónico
     /// (lo que [`carga::leer`] devuelve): para fundir un incremento y para
     /// `leer`. Cada fichero de datos se baja entero, que es lo que se necesita.
+    /// **Las filas vigentes**, con los *position deletes* aplicados. Lo que
+    /// ORE escribe es copy-on-write y no deja delete files; lo que otro motor
+    /// escribe por el catálogo (DuckDB `UPDATE`/`DELETE`/`MERGE`, Spark) es
+    /// merge-on-read y los deja: un fichero de posiciones por fichero de datos.
+    /// Medido (0031, «Lo medido fuera del verbo»): sin aplicarlos se leían
+    /// 1008 filas donde DuckDB y PyIceberg leen 1004. Los *equality deletes*
+    /// no se aplican: se dice, en vez de leer de más.
     pub fn filas(&self, tabla: &Table) -> Result<Vec<carga::Fila>, String> {
-        let rutas = runtime().block_on(self.ficheros_vivos(tabla))?;
+        let (rutas, posiciones) = runtime().block_on(self.ficheros_vivos(tabla))?;
         let cuenta = self.cuenta().map_err(err)?;
+        // Las posiciones borradas, por fichero de datos: lo que dicen los
+        // ficheros de posiciones (`file_path`, `pos`).
+        let mut borradas: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
+        for ruta in posiciones {
+            let k = self.clave(&ruta).map_err(err)?;
+            let bytes = cuenta.leer_bytes(&k)?.ok_or_else(|| {
+                format!("el fichero de posiciones `{ruta}` no está en el almacén")
+            })?;
+            for f in carga::leer(&bytes)? {
+                if let (Some(fichero), Some(Ok(pos))) =
+                    (f.get("file_path"), f.get("pos").map(|p| p.parse::<i64>()))
+                {
+                    borradas.entry(fichero.clone()).or_default().insert(pos);
+                }
+            }
+        }
         let mut out = Vec::new();
         for ruta in rutas {
             let k = self.clave(&ruta).map_err(err)?;
             let bytes = cuenta
                 .leer_bytes(&k)?
                 .ok_or_else(|| format!("el fichero de datos `{ruta}` no está en el almacén"))?;
-            out.extend(carga::leer(&bytes)?);
+            let filas = carga::leer(&bytes)?;
+            match borradas.get(&ruta) {
+                // `leer` entrega las filas en el orden del fichero: la
+                // posición es el índice.
+                Some(pos) => out.extend(
+                    filas
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !pos.contains(&(*i as i64)))
+                        .map(|(_, f)| f),
+                ),
+                None => out.extend(filas),
+            }
         }
         Ok(out)
     }
 
-    /// Los ficheros de datos vivos del snapshot vigente.
-    async fn ficheros_vivos(&self, tabla: &Table) -> Result<Vec<String>, String> {
+    /// Los ficheros vivos del snapshot vigente: los de datos, y aparte los de
+    /// posiciones borradas (`PositionDeletes`). Un *equality delete* es error:
+    /// no se sabe aplicar todavía, y leer sin él sería leer filas que no están.
+    async fn ficheros_vivos(&self, tabla: &Table) -> Result<(Vec<String>, Vec<String>), String> {
         let Some(actual) = tabla.metadata().current_snapshot() else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
         let io = tabla.file_io();
         let lista = tabla
@@ -1009,20 +1046,24 @@ impl Lago {
             .load()
             .await
             .map_err(err)?;
-        let mut out = Vec::new();
+        let (mut datos, mut posiciones) = (Vec::new(), Vec::new());
         for mf in lista.entries() {
-            if mf.content != ManifestContentType::Data {
-                continue;
-            }
             let m = mf.load_manifest(io).await.map_err(err)?;
-            out.extend(
-                m.entries()
-                    .iter()
-                    .filter(|e| e.is_alive())
-                    .map(|e| e.file_path().to_string()),
-            );
+            for e in m.entries().iter().filter(|e| e.is_alive()) {
+                match e.data_file().content_type() {
+                    DataContentType::Data => datos.push(e.file_path().to_string()),
+                    DataContentType::PositionDeletes => posiciones.push(e.file_path().to_string()),
+                    DataContentType::EqualityDeletes => {
+                        return Err(format!(
+                            "`{}` es un equality delete y `ore-store` no lo aplica todavía: la tabla la \
+                             escribió otro motor con merge-on-read; léela con DuckDB o reescríbela",
+                            e.file_path()
+                        ));
+                    }
+                }
+            }
         }
-        Ok(out)
+        Ok((datos, posiciones))
     }
 
     /// **Expira los snapshots que no son el vigente y son más viejos que
@@ -1139,14 +1180,47 @@ impl Lago {
         Ok(vivos)
     }
 
-    /// Cuántas filas dice el snapshot vigente (`total-records`).
+    /// Cuántas filas tiene el snapshot vigente: las de sus ficheros de datos
+    /// menos las posiciones borradas. Se cuenta **por los manifiestos**, no por
+    /// el resumen: `total-records` de un snapshot que DuckDB dejó al mutar
+    /// decía 275 donde había 267 (medido en `el-lago.sh` 12b).
     pub fn filas_del_snapshot(tabla: &Table) -> u64 {
         tabla
             .metadata()
             .current_snapshot()
-            .and_then(|s| s.summary().additional_properties.get("total-records"))
-            .and_then(|v| v.parse().ok())
+            .map(|s| Self::filas_de(tabla, s))
             .unwrap_or(0)
+    }
+
+    /// Las filas de un snapshot por sus manifiestos: `record_count` de los
+    /// ficheros de datos vivos menos el de los de posiciones borradas. Si la
+    /// lista ya no está (la expiró otro clon), lo que diga el resumen.
+    pub fn filas_de(tabla: &Table, s: &std::sync::Arc<Snapshot>) -> u64 {
+        let resumen = || {
+            let p = &s.summary().additional_properties;
+            let n = |k: &str| p.get(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            n("total-records").saturating_sub(n("total-position-deletes"))
+        };
+        runtime()
+            .block_on(async {
+                let io = tabla.file_io();
+                let lista = tabla.manifest_list_reader(s).load().await.ok()?;
+                let (mut datos, mut borradas) = (0u64, 0u64);
+                for mf in lista.entries() {
+                    let m = mf.load_manifest(io).await.ok()?;
+                    for e in m.entries().iter().filter(|e| e.is_alive()) {
+                        match e.data_file().content_type() {
+                            DataContentType::Data => datos += e.data_file().record_count(),
+                            DataContentType::PositionDeletes => {
+                                borradas += e.data_file().record_count()
+                            }
+                            DataContentType::EqualityDeletes => {}
+                        }
+                    }
+                }
+                Some(datos.saturating_sub(borradas))
+            })
+            .unwrap_or_else(resumen)
     }
 
     /// Una propiedad del snapshot vigente, o de la tabla.
