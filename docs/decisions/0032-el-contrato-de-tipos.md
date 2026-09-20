@@ -318,12 +318,56 @@ para 31 copias de 71–112 k filas y 2–20 columnas, manifiestos y snapshots so
 y el sobre es más simple y más honesto (0015). El día que una copia sea incremental
 (`changes.mode: append`) o multi-fichero, es un dataset y va por Iceberg.
 
-**Antes de diseñar `write()`, se mide** (`medida-w3-iceberg.py`): PyIceberg e `iceberg-rust`
-escribiendo 10 M de filas al bucket del inquilino con el árbol como catálogo (sin servicio REST);
-DuckDB leyendo por `metadata.json` directo; BigQuery leyéndolo en sitio; el coste de un snapshot
-(ficheros y latencia por commit); un *append* incremental; una evolución de esquema con
-promoción; y la madurez de escritura desde los tres lenguajes. Con esos números se decide si el
-dataset escrito por código nace Iceberg; la expectativa es que sí.
+**Medido antes de diseñar `write()`** (`pruebas-de-fuego/medida-w3-iceberg.py`, 2026-09-20; PyIceberg
+0.12, DuckDB 1.5 con la extensión `iceberg`, git; en local, y §7 contra el bucket de demo):
+
+- **El catálogo es git, y funciona.** `ArbolCatalog` (en la medida) es un catálogo de PyIceberg
+  cuyo estado es un repo: `catalogo/<ns>/<tabla>.json` apunta al `metadata.json` vigente y el
+  commit es el *swap*. Dos escritores desde el mismo snapshot: el segundo **choca** contra el
+  puntero del árbol (`assert-ref-snapshot-id`), refresca y reintenta —un *append* conmuta: 2
+  snapshots, como Iceberg manda—; dos cambios de esquema a la vez: el segundo **se niega**. El
+  commit cuesta 210–260 ms aquí (dos procesos `git` en Windows; con el cliente git de
+  `ore-serve` en Linux son decenas de ms) y **no depende del tamaño del árbol** (2 000 ficheros:
+  igual). `git log -- catalogo/ventas/grande.json` es la historia de la tabla.
+- **Escribir 10 M de filas**: Iceberg 0,3 + 4,0 s, **39 MB** (zstd) en 1 fichero de datos + 4 de
+  metadatos (9 KB); el sobre de hoy 4,0 s, 71 MB (snappy), 1 objeto. Mismo tiempo, la mitad de
+  bytes.
+- **Leer sin catálogo**: DuckDB `iceberg_scan('<metadata.json>')` con el puntero del árbol,
+  `group by` sobre 10 M en 121 ms (la copia por `read_parquet`: 82); PyIceberg → Arrow 372 ms
+  (pyarrow sobre la copia: 388); `scan(pais = 'A')` poda por estadísticas del manifiesto. ⇒
+  `over("p.dataset")` en los tres SDK es el mismo DuckDB de hoy apuntado al `metadata.json`.
+- **Evolucionar**: *append* de 1 M sobre 10 M en 542 ms **sin reescribir los 10 M** (la copia
+  de hoy los reescribe enteros); `int → long` + columna nueva en 215 ms **sin tocar un fichero
+  de datos**; el snapshot 1 se lee desde DuckDB en 14 ms y desde PyIceberg en 274. Es
+  exactamente lo que los transforms incrementales (0031 §7.4) y las promociones de este
+  contrato piden.
+- **Los tipos**: **19 de 23** entran en Iceberg v2 y vuelven exactos por PyIceberg y por
+  DuckDB. Los 4 que no: `uint64` (no existe), `timestamp[ns]` (v3, o bajar a µs: nuestro
+  contrato ya es µs), un instante con zona que no sea UTC (hay que convertir antes: nuestro
+  contrato ya lo hace), y el tipo `null`. `int8/16` suben a `int`, `large_string` y el
+  diccionario a `string`. El contrato de 0032 §1 cabe entero; `write()` convierte lo que no
+  entra y lo dice.
+- **La copia pequeña** (100 k × 3, como las 31 de demo/victor): sobre 29 ms, 627 KB, 1 objeto;
+  Iceberg **493 ms, 5 objetos y 2 commits** por 319 KB. Los metadatos pesan 9 KB (1,4 %); lo
+  que cuesta son objetos y commits, y para una vista sellada por digest no compran nada.
+- **Los metadatos crecen por commit**: 50 *appends* de 1 fila = 151 ficheros, 1,4 MB. Hace
+  falta `expire_snapshots`/compactación como mantenimiento (un Job), igual que en cualquier
+  lago; no es un problema, es una tarea.
+- **En el bucket** (§7, contra GCS de verdad desde esta máquina, donde un PUT de 300 B cuesta
+  473 ms): 1 M de filas, sobre 1,5 s (1 PUT), Iceberg 2,6 + 2,8 s; un commit de 1 fila **2,0 s**
+  (4–5 idas serie a GCS + 250 ms de git); leer 1 M desde GCS con PyIceberg 2,0 s. En el
+  clúster, misma región, cada ida son 20–50 ms: un commit queda en 150–300 ms. El coste de
+  Iceberg es **latencia por commit**, no caudal.
+
+**Lo que sale de la medida**: se confirma la decisión de arriba. Iceberg es el formato de
+**dataset** del bucket —lo que `write()` produce y todo lo que evoluciona— con **git como
+catálogo** (el puntero en el árbol, el commit como *swap*, la forja rechazando el push que no
+es *fast-forward* como CAS entre pods), leído por el mismo DuckDB de los tres SDK y por
+cualquier motor; la **copia** sigue `ORECOPY1`. Para W3.6 quedan por diseñar, ya con números:
+dónde vive el puntero en el árbol (junto al documento del dataset), el mantenimiento de
+snapshots, y el escritor de producción (PyIceberg en el puesto Python hoy; `iceberg-rust` en
+`ore-store` cuando `write()` salga de un Job; Java por DuckDB). No medido, porque exige el
+clúster o pago: BigQuery (BigLake) leyendo el `metadata.json` en sitio.
 
 ## Los peldaños
 
