@@ -53,13 +53,36 @@
 //!   los sobres heredados que ningún puntero sigue nombrando;
 //! - **`leer`** abre la tabla por `metadata_location` (o el sobre por `clave`,
 //!   mientras quede alguno) y devuelve la cabecera y las filas, como siempre.
+//!
+//! # Lo que cambió con el verbo escribir (W3.6c, 0031 §11)
+//!
+//! Un puesto escribe con `write()` y un motor de fuera (PyIceberg, DuckDB,
+//! Spark) escribe por el catálogo REST que `ore-serve` habla; los dos hacen
+//! **lo mismo en dos mitades**: el escritor deja los ficheros de datos, los
+//! manifiestos y la lista en el bucket, y el catálogo aplica `requirements` +
+//! `updates` y escribe el `metadata.json`. Aquí son dos verbos:
+//!
+//! - **`escribir`**: la petición en la primera línea (`dataset`, `modo`
+//!   `anexar`|`sobrescribir`, `base` si la tabla existe, `operacion` —la clave
+//!   de idempotencia—, `propiedades` para una tabla que nace) y después **la
+//!   tabla Arrow por IPC**, tal como el SDK la mandó; se lleva al físico de
+//!   0032 (`carga::normalizar`), se escribe, y se devuelven los `requirements`
+//!   y `updates` que un catálogo aplica, con las cuentas;
+//! - **`aplicar`**: `{metadata_location?, dataset, requirements, updates}` —de
+//!   `escribir` o de un cliente de fuera— → se validan, se aplican y se
+//!   escribe el `metadata.json` siguiente (desde cero si `assert-create`).
+//!   Devuelve el `metadata_location` nuevo, el snapshot, las columnas como
+//!   Iceberg y como OOS, la clave de operación del snapshot y la retención.
+//!
+//! Y `leer` deja de exigir la cabecera de la copia: lo que otro escribió
+//! también se lee, con una cabecera hecha del esquema de la tabla.
 
 use crate::almacen::Almacen;
 use crate::lago::{self, Lago, Operacion};
 use crate::{carga, sobre};
 use ore_core::json::Json;
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::sync::Arc;
 
 /// El `main` de los dos binarios: lee la petición, elige el verbo, y contesta
@@ -79,17 +102,35 @@ pub fn principal(cuenta: Arc<dyn Almacen>) -> std::process::ExitCode {
 }
 
 fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
-    let mut texto = String::new();
-    std::io::stdin()
-        .read_to_string(&mut texto)
-        .map_err(|e| format!("no se pudo leer la entrada: {e}"))?;
-
-    let mut lineas = texto.lines().filter(|l| !l.trim().is_empty());
-    let primera = lineas
-        .next()
-        .ok_or("la entrada está vacía: se esperaba la petición en la primera línea")?;
+    // La primera línea es la petición; lo que sigue son filas de texto (una por
+    // línea) o, para `escribir`, la tabla Arrow por IPC: bytes, no texto.
+    let stdin = std::io::stdin();
+    let mut lector = std::io::BufReader::with_capacity(1 << 20, stdin.lock());
+    let mut primera = String::new();
+    while primera.trim().is_empty() {
+        primera.clear();
+        if lector
+            .read_line(&mut primera)
+            .map_err(|e| format!("no se pudo leer la entrada: {e}"))?
+            == 0
+        {
+            return Err(
+                "la entrada está vacía: se esperaba la petición en la primera línea".into(),
+            );
+        }
+    }
+    let primera = primera.trim().to_string();
+    let primera = primera.as_str();
     let n =
         ore_core::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+    if verbo == "escribir" {
+        return escribir(&Lago::nuevo(cuenta), &n, lector);
+    }
+    let mut texto = String::new();
+    lector
+        .read_to_string(&mut texto)
+        .map_err(|e| format!("no se pudo leer la entrada: {e}"))?;
+    let lineas = texto.lines().filter(|l| !l.trim().is_empty());
     let campo = |k: &str| -> Option<String> {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -130,6 +171,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             let edad = campo("edad_ms").and_then(|v| v.parse::<i64>().ok());
             recoger(&lago, &dataset, &ml, edad, verbo == "recoger-seco")
         }
+        "aplicar" => aplicar(&lago, primera),
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
         "historia" => {
@@ -138,8 +180,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             historia(&lago, &ml, campo("dataset").as_deref().unwrap_or("dataset"))
         }
         otro => Err(format!(
-            "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer` e `historia`"
+            "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `escribir`, `aplicar`, \
+             `recoger`, `recoger-seco`, `recoger-huerfanas`, `leer` e `historia`"
         )),
     }
 }
@@ -304,6 +346,246 @@ fn sellar<'a>(
     .jcs())
 }
 
+/// **`escribir`: la primera mitad del verbo escribir** (0031 §11 ②). La tabla
+/// Arrow llega por IPC tal como el SDK la mandó; cada lote se lleva al físico
+/// de 0032 ([`carga::normalizar`]: lo que no cabe se niega con el nombre de la
+/// columna), el esquema de la tabla pasa a ser el del lote (por id, como en la
+/// copia), los ficheros, los manifiestos y la lista se escriben, y **no se
+/// confirma nada**: se devuelven los `requirements` y `updates` que un
+/// catálogo aplica —`ore-store aplicar` detrás de `ore datasets --commit`, o
+/// cualquier catálogo REST— y las cuentas. `operacion` es la clave de
+/// idempotencia: va al resumen del snapshot y el catálogo la coteja.
+fn escribir(
+    lago: &Lago,
+    n: &ore_core::parse::Node,
+    lector: impl std::io::Read,
+) -> Result<String, String> {
+    let campo = |k: &str| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+    };
+    let dataset = campo("dataset").ok_or(
+        "a `escribir` le falta `dataset`: bajo qué nombre vive la tabla (`datasets/<p>_<t>`)",
+    )?;
+    let operacion = match campo("modo").as_deref() {
+        None | Some("sobrescribir") => Operacion::Sobrescribir,
+        Some("anexar") => Operacion::Anexar,
+        Some(otro) => return Err(format!("`modo` es `sobrescribir` o `anexar`, no `{otro}`")),
+    };
+    let clave = campo("operacion");
+    let propiedades: HashMap<String, String> = n
+        .get("propiedades")
+        .map(|(_, p)| {
+            p.entries()
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // La tabla Arrow, lote a lote, al físico del contrato.
+    let flujo = arrow_ipc::reader::StreamReader::try_new(lector, None)
+        .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
+    let mut lotes = Vec::new();
+    for lote in flujo {
+        let lote = lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
+        if lote.num_rows() > 0 {
+            lotes.push(carga::normalizar(&lote)?);
+        }
+    }
+    let Some(primero) = lotes.first() else {
+        return Err("el flujo IPC no trae ninguna fila: nada que escribir".into());
+    };
+    let columnas = lago::columnas_de(primero);
+    if columnas.is_empty() {
+        return Err("la tabla no tiene columnas: nada que escribir".into());
+    }
+    for (i, l) in lotes.iter().enumerate().skip(1) {
+        if lago::columnas_de(l) != columnas {
+            return Err(format!(
+                "el lote {i} del flujo no tiene las columnas del primero"
+            ));
+        }
+    }
+
+    let previa = match campo("base") {
+        Some(b) => Some(lago.abrir(&b, &dataset)?),
+        None => None,
+    };
+    let deseado = lago::esquema_deseado(
+        &columnas,
+        previa
+            .as_ref()
+            .map(|t| t.metadata().current_schema().as_ref()),
+    )?;
+    let tabla = match &previa {
+        Some(t) => t.clone(),
+        None => {
+            let mut props = propiedades;
+            props
+                .entry(lago::PROP_DATASET.into())
+                .or_insert_with(|| dataset.clone());
+            lago.crear(&dataset, deseado.clone(), props)?
+        }
+    };
+    let mut resumen = HashMap::new();
+    if let Some(c) = &clave {
+        resumen.insert(lago::PROP_OPERACION.to_string(), c.clone());
+    }
+    let p = lago.preparar(&tabla, deseado, lotes, operacion, resumen)?;
+    let columnas_json = |t: &iceberg::table::Table| -> Json {
+        Json::Obj(
+            lago::columnas_iceberg(t)
+                .into_iter()
+                .map(|(k, v)| (k, Json::s(v)))
+                .collect(),
+        )
+    };
+    Ok(Json::obj([
+        ("bytes", Json::Int(p.bytes as i64)),
+        ("columnas", columnas_json(&tabla)),
+        ("esquema_cambiado", Json::Bool(p.esquema_cambiado)),
+        ("ficheros", Json::Int(p.ficheros as i64)),
+        ("filas", Json::Int(p.filas as i64)),
+        ("nueva", Json::Bool(previa.is_none())),
+        ("operacion", Json::s(clave.unwrap_or_default())),
+        ("requirements", json_de(&p.requisitos)?),
+        ("retirados", Json::Int(p.retirados as i64)),
+        ("snapshot", Json::s(p.snapshot_id.to_string())),
+        ("ubicacion", Json::s(tabla.metadata().location())),
+        ("updates", json_de(&p.cambios)?),
+    ])
+    .jcs())
+}
+
+/// Lo que `iceberg` serializa con serde (el JSON de la spec REST), como `Json`
+/// del núcleo para que salga en la misma línea que lo demás.
+fn json_de<T: serde::Serialize>(v: &T) -> Result<Json, String> {
+    let texto = serde_json::to_string(v).map_err(|e| format!("no se pudo serializar: {e}"))?;
+    let n =
+        ore_core::parse::parse(&texto).map_err(|e| format!("lo serializado no analiza: {e:?}"))?;
+    Ok(Json::de_node(&n))
+}
+
+/// **`aplicar`: la segunda mitad** (0031 §11 ①): el cuerpo de un `updateTable`
+/// —de `escribir`, de PyIceberg, de DuckDB— contra la tabla del puntero, o
+/// contra ninguna si el requisito es `assert-create`. La petición es una línea:
+/// `{"dataset": …, "metadata_location": …?, "requirements": […], "updates": […]}`.
+/// Se validan los requisitos (un `assert-ref-snapshot-id` que no cuadra es un
+/// conflicto, y se dice como tal), se aplican los cambios y se escribe el
+/// siguiente `metadata.json`. Nadie lo apunta todavía.
+fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
+    let j: serde_json::Value = serde_json::from_str(peticion)
+        .map_err(|e| format!("la petición de `aplicar` no es JSON: {e}"))?;
+    let dataset = j
+        .get("dataset")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("a `aplicar` le falta `dataset`")?
+        .to_string();
+    let ml = j
+        .get("metadata_location")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let requisitos: Vec<iceberg::TableRequirement> = j
+        .get("requirements")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("`requirements` no se entiende: {e}"))?
+        .unwrap_or_default();
+    let cambios: Vec<iceberg::TableUpdate> = j
+        .get("updates")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| format!("`updates` no se entiende: {e}"))?
+        .unwrap_or_default();
+    if cambios.is_empty() {
+        return Err("`updates` está vacío: nada que aplicar".into());
+    }
+    let base = match &ml {
+        Some(m) => Some(lago.abrir(m, &dataset)?),
+        None => None,
+    };
+    let t = lago
+        .aplicar(base.as_ref(), &dataset, requisitos, cambios)
+        .map_err(|e| {
+            if e.contains("Conflict") || e.contains("conflict") || e.contains("does not match") {
+                format!("conflicto: {e}")
+            } else {
+                e
+            }
+        })?;
+    let (edad, minimo) = Lago::retencion(&t, None);
+    Ok(Json::obj([
+        (
+            "columnas",
+            Json::Obj(
+                lago::columnas_iceberg(&t)
+                    .into_iter()
+                    .map(|(k, v)| (k, Json::s(v)))
+                    .collect(),
+            ),
+        ),
+        (
+            "columnas_oos",
+            Json::Obj(
+                lago::columnas_oos(&t)
+                    .into_iter()
+                    .map(|(k, v)| (k, Json::s(v)))
+                    .collect(),
+            ),
+        ),
+        ("filas", Json::Int(Lago::filas_del_snapshot(&t) as i64)),
+        (
+            "metadata_location",
+            Json::s(t.metadata_location().unwrap_or_default()),
+        ),
+        ("nueva", Json::Bool(ml.is_none())),
+        (
+            "operacion",
+            Json::s(
+                t.metadata()
+                    .current_snapshot()
+                    .and_then(|s| {
+                        s.summary()
+                            .additional_properties
+                            .get(lago::PROP_OPERACION)
+                            .cloned()
+                    })
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "retencion",
+            Json::obj([
+                ("edad_ms", edad.map(Json::Int).unwrap_or(Json::Int(-1))),
+                ("minimo", Json::Int(minimo as i64)),
+            ]),
+        ),
+        (
+            "snapshot",
+            Json::s(
+                t.metadata()
+                    .current_snapshot_id()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "snapshots",
+            Json::Int(t.metadata().snapshots().count() as i64),
+        ),
+        ("ubicacion", Json::s(t.metadata().location())),
+        ("uuid", Json::s(t.metadata().uuid().to_string())),
+    ])
+    .jcs())
+}
+
 /// **`leer`: la copia, de vuelta, fila a fila** (0029 ③ «traer», F4a·I1).
 ///
 /// La entrada es **el puntero**: `{"metadata_location": "…"}` para un dataset,
@@ -323,8 +605,31 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
     let (cabecera, filas) = if let Some(ml) = campo("metadata_location") {
         let dataset = campo("dataset").unwrap_or_else(|| "dataset".into());
         let t = lago.abrir(&ml, &dataset)?;
-        let cab = Lago::propiedad(&t, lago::PROP_CABECERA)
-            .ok_or_else(|| format!("`{ml}` no lleva la cabecera de ORE (`{}`): no es un dataset que este programa haya sellado", lago::PROP_CABECERA))?;
+        // La cabecera de la copia si la hay; si no —lo escribió `write()` o un
+        // motor de fuera— una hecha del esquema de la tabla, que es lo que
+        // quien lee necesita saber: qué columnas y de qué tipo.
+        let cab = Lago::propiedad(&t, lago::PROP_CABECERA).unwrap_or_else(|| {
+            let meta = t.metadata();
+            sobre::Cabecera {
+                plan: meta
+                    .properties()
+                    .get("ore.plan")
+                    .cloned()
+                    .unwrap_or_default(),
+                esquema: lago::columnas_oos(&t),
+                testigo: sobre::Testigo {
+                    modo: "snapshot".into(),
+                    valor: meta.current_snapshot_id().map(|s| s.to_string()),
+                },
+                clave: Vec::new(),
+                conducto: meta
+                    .properties()
+                    .get("ore.conducto")
+                    .cloned()
+                    .unwrap_or_default(),
+            }
+            .jcs()
+        });
         (cab, lago.filas(&t)?)
     } else if let Some(clave) = campo("clave") {
         let cuenta = lago_cuenta(lago)?;
@@ -377,6 +682,7 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                     ("anadidas", n("added-records")),
                     ("retiradas", n("deleted-records")),
                     ("plan", prop(lago::PROP_PLAN)),
+                    ("idempotencia", prop(lago::PROP_OPERACION)),
                     (
                         "testigo",
                         Json::obj([
@@ -394,7 +700,15 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
         .collect();
     // Del más reciente al más viejo: lo que una ficha enseña.
     snapshots.sort_by_key(|(t, _)| -*t);
+    let (edad, minimo) = Lago::retencion(&t, None);
     Ok(Json::obj([
+        (
+            "retencion",
+            Json::obj([
+                ("edad_ms", edad.map(Json::Int).unwrap_or(Json::Int(-1))),
+                ("minimo", Json::Int(minimo as i64)),
+            ]),
+        ),
         (
             "esquema",
             Json::Obj(
@@ -435,8 +749,10 @@ fn lago_cuenta(lago: &Lago) -> Result<Arc<dyn Almacen>, String> {
 /// expira cuando alguien lo pide, y `recoger-seco` dice antes qué se iría.
 ///
 /// Dos pasos: expirar los snapshots que no son el vigente y son más viejos que
-/// `edad_ms` (sin `edad_ms`, todos los superados: el sentido que `recoger`
-/// tuvo siempre), y retirar del bucket lo que ningún snapshot que quede nombra
+/// la edad que rige —**la de la tabla** (`history.expire.max-snapshot-age-ms`,
+/// 0031 §11 ⑥) o, si la tabla no la declara, `edad_ms`; sin ninguna de las
+/// dos **no se expira nada**, y `history.expire.min-snapshots-to-keep` se
+/// respeta—, y retirar del bucket lo que ningún snapshot que quede nombra
 /// —ficheros de los expirados, y lo que dejó una pasada que no llegó a
 /// apuntarse en el árbol—. Si expiró alguno hay un `metadata.json` nuevo, y se
 /// devuelve: **el puntero tiene que moverse a él**.
@@ -449,27 +765,26 @@ fn recoger(
 ) -> Result<String, String> {
     let tabla = lago.abrir(metadata_location, dataset)?;
     let antes = tabla.metadata().snapshots().count();
-    let (tabla, expirados) = if seco {
-        let corte = lago::ahora_ms() - edad_ms.unwrap_or(0);
-        let cur = tabla.metadata().current_snapshot_id();
-        let ids: Vec<i64> = tabla
-            .metadata()
-            .snapshots()
-            .filter(|s| Some(s.snapshot_id()) != cur && s.timestamp_ms() <= corte)
-            .map(|s| s.snapshot_id())
-            .collect();
-        (tabla, ids)
-    } else {
-        lago.expirar(&tabla, edad_ms.unwrap_or(0))?
+    // `edad_ms: -1` en la respuesta es «sin retención»: no se expira nada.
+    let (edad, minimo) = Lago::retencion(&tabla, edad_ms);
+    let (tabla, expirados) = match edad {
+        None => (tabla, Vec::new()),
+        Some(e) if seco => {
+            let ids = Lago::expirables(&tabla, e, minimo);
+            (tabla, ids)
+        }
+        Some(e) => lago.expirar(&tabla, e, minimo)?,
     };
     let ficheros = lago.huerfanos(&tabla, seco)?;
     Ok(Json::obj([
+        ("edad_ms", edad.map(Json::Int).unwrap_or(Json::Int(-1))),
         ("expirados", Json::Int(expirados.len() as i64)),
         ("ficheros", Json::Int(ficheros as i64)),
         (
             "metadata_location",
             Json::s(tabla.metadata_location().unwrap_or(metadata_location)),
         ),
+        ("minimo", Json::Int(minimo as i64)),
         ("seco", Json::Bool(seco)),
         ("snapshots", Json::Int(antes as i64)),
     ])
@@ -825,14 +1140,17 @@ mod tests {
 
         // ⑤ recoger: expiran los dos snapshots superados y se van sus ficheros
         let antes = cuenta.0.lock().unwrap().len();
-        let seco = recoger(&lago, "copias/p_v", &ml3, None, true).expect("seco");
+        // sin edad —ni en la tabla ni en la petición— no se expira nada (§11 ⑥)
+        let nada = recoger(&lago, "copias/p_v", &ml3, None, true).expect("nada");
+        assert_eq!(campo(&nada, "expirados"), "0");
+        let seco = recoger(&lago, "copias/p_v", &ml3, Some(0), true).expect("seco");
         assert_eq!(campo(&seco, "expirados"), "2");
         assert_eq!(
             cuenta.0.lock().unwrap().len(),
             antes,
             "en seco no se toca nada"
         );
-        let r = recoger(&lago, "copias/p_v", &ml3, None, false).expect("recoge");
+        let r = recoger(&lago, "copias/p_v", &ml3, Some(0), false).expect("recoge");
         assert_eq!(campo(&r, "expirados"), "2");
         let ml4 = campo(&r, "metadata_location");
         assert_ne!(ml4, ml3, "expirar deja un metadata.json nuevo");
@@ -844,7 +1162,7 @@ mod tests {
             "los ficheros de los expirados se fueron: {r}"
         );
         // y recoger otra vez no mueve el puntero
-        let r2 = recoger(&lago, "copias/p_v", &ml4, None, false).expect("recoge");
+        let r2 = recoger(&lago, "copias/p_v", &ml4, Some(0), false).expect("recoge");
         assert_eq!(campo(&r2, "metadata_location"), ml4);
         assert_eq!(campo(&r2, "ficheros"), "0");
 
@@ -964,6 +1282,459 @@ mod tests {
         assert!(claves.iter().any(|k| k.contains("copias/p_a/")));
         assert!(claves.contains(&"ore/v1/viejo".to_string()));
         assert!(!claves.contains(&"ore/v1/plan/x/y".to_string()));
+    }
+
+    /// La tabla Arrow que un SDK mandaría, con lo que cada lenguaje tiene de
+    /// suyo: `int32`, `timestamp[ns]`, `large_utf8`, una zona que no es UTC.
+    /// 0032 al escribir la lleva a los físicos del contrato.
+    fn tabla_ipc(desde: i64, n: i64, con_canal: bool) -> Vec<u8> {
+        use arrow_array::{
+            Decimal128Array, Int32Array, LargeStringArray, StringArray, TimestampNanosecondArray,
+        };
+        use arrow_schema::{Field, Schema};
+        let mut campos = vec![
+            Field::new("id", arrow_schema::DataType::Int32, true),
+            Field::new("nombre", arrow_schema::DataType::LargeUtf8, true),
+            Field::new("total", arrow_schema::DataType::Decimal128(18, 2), true),
+            Field::new(
+                "cuando",
+                arrow_schema::DataType::Timestamp(
+                    arrow_schema::TimeUnit::Nanosecond,
+                    Some("Europe/Madrid".into()),
+                ),
+                true,
+            ),
+        ];
+        let mut columnas: Vec<arrow_array::ArrayRef> = vec![
+            Arc::new(Int32Array::from_iter_values(
+                (desde..desde + n).map(|i| i as i32),
+            )),
+            Arc::new(LargeStringArray::from_iter_values(
+                (desde..desde + n).map(|i| format!("n{i}")),
+            )),
+            Arc::new(
+                Decimal128Array::from_iter_values(
+                    (desde..desde + n).map(|i| (i * 100 + 50) as i128),
+                )
+                .with_precision_and_scale(18, 2)
+                .unwrap(),
+            ),
+            Arc::new(
+                TimestampNanosecondArray::from_iter_values(
+                    (desde..desde + n).map(|i| 1_700_000_000_000_000_000 + i * 1_000),
+                )
+                .with_timezone("Europe/Madrid"),
+            ),
+        ];
+        if con_canal {
+            campos.push(Field::new("canal", arrow_schema::DataType::Utf8, true));
+            columnas.push(Arc::new(StringArray::from_iter_values(
+                (desde..desde + n).map(|_| "web"),
+            )));
+        }
+        let esquema = Arc::new(Schema::new(campos));
+        let lote = arrow_array::RecordBatch::try_new(esquema.clone(), columnas).unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn nodo(linea: &str) -> ore_core::parse::Node {
+        ore_core::parse::parse(linea).unwrap()
+    }
+
+    fn aplicar_lo_escrito(lago: &Lago, escrito: &str, dataset: &str, base: Option<&str>) -> String {
+        let e: serde_json::Value = serde_json::from_str(escrito).unwrap();
+        let mut pet = serde_json::json!({
+            "dataset": dataset,
+            "requirements": e["requirements"],
+            "updates": e["updates"],
+        });
+        if let Some(b) = base {
+            pet["metadata_location"] = serde_json::Value::String(b.into());
+        }
+        aplicar(lago, &pet.to_string()).expect("aplica")
+    }
+
+    /// **El verbo escribir en sus dos mitades, sobre un almacén en memoria.**
+    /// La tabla llega por IPC con los físicos de su lenguaje; `escribir` la
+    /// lleva a 0032, deja los ficheros y devuelve `requirements` + `updates`;
+    /// `aplicar` los convierte en el `metadata.json`. Nace, anexa, sobrescribe
+    /// con una columna nueva, y `leer` lo lee sin cabecera de copia.
+    #[test]
+    fn escribir_por_ipc_y_aplicar() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "datasets/ventas_salida";
+
+        // ① nace: sin base, la petición trae la clave de operación y propiedades
+        let e1 = escribir(
+            &lago,
+            &nodo(&format!(
+                "{{\"dataset\":\"{ds}\",\"modo\":\"sobrescribir\",\"operacion\":\"op-1\",\"propiedades\":{{\"history.expire.max-snapshot-age-ms\":\"0\"}}}}"
+            )),
+            &tabla_ipc(0, 3, false)[..],
+        )
+        .expect("escribe");
+        assert_eq!(campo(&e1, "nueva"), "true");
+        assert_eq!(campo(&e1, "filas"), "3");
+        assert_eq!(campo(&e1, "operacion"), "op-1");
+        let j1: serde_json::Value = serde_json::from_str(&e1).unwrap();
+        assert_eq!(j1["requirements"][0]["type"], "assert-create");
+        let acciones: Vec<&str> = j1["updates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            acciones,
+            [
+                "assign-uuid",
+                "upgrade-format-version",
+                "add-schema",
+                "set-current-schema",
+                "add-spec",
+                "set-default-spec",
+                "add-sort-order",
+                "set-default-sort-order",
+                "set-location",
+                "set-properties",
+                "add-snapshot",
+                "set-snapshot-ref"
+            ],
+            "{e1}"
+        );
+        // los físicos de 0032, no los del lenguaje
+        assert_eq!(j1["columnas"]["id"], "long");
+        assert_eq!(j1["columnas"]["nombre"], "string");
+        assert_eq!(j1["columnas"]["total"], "decimal(18, 2)");
+        assert_eq!(j1["columnas"]["cuando"], "timestamptz");
+        assert_eq!(
+            j1["updates"][10]["snapshot"]["summary"]["ore.operacion"],
+            "op-1"
+        );
+        // nada confirmado todavía: ficheros de datos + manifiesto + lista, sin metadata.json
+        assert!(
+            !cuenta
+                .0
+                .lock()
+                .unwrap()
+                .keys()
+                .any(|k| k.ends_with(".metadata.json")),
+            "{:?}",
+            cuenta.0.lock().unwrap().keys()
+        );
+        let a1 = aplicar_lo_escrito(&lago, &e1, ds, None);
+        let ml1 = campo(&a1, "metadata_location");
+        assert!(
+            ml1.starts_with("memory://pruebas/ore/v2/datasets/ventas_salida/metadata/00000-"),
+            "{ml1}"
+        );
+        assert_eq!(campo(&a1, "nueva"), "true");
+        assert_eq!(campo(&a1, "filas"), "3");
+        assert_eq!(campo(&a1, "operacion"), "op-1");
+        let ja1: serde_json::Value = serde_json::from_str(&a1).unwrap();
+        assert_eq!(ja1["columnas_oos"]["cuando"], "DateTimeTz");
+        assert_eq!(ja1["columnas_oos"]["total"], "Decimal");
+        assert_eq!(ja1["retencion"]["edad_ms"], 0);
+
+        // leer, sin cabecera de copia: una hecha del esquema, y las filas canónicas
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{ml1}\",\"dataset\":\"{ds}\"}}"
+            )),
+        )
+        .expect("lee");
+        let lineas: Vec<&str> = l.lines().collect();
+        assert_eq!(lineas.len(), 4, "{l}");
+        let cab = nodo(lineas[0]);
+        assert_eq!(
+            cab.get("esquema").unwrap().1.get("id").unwrap().1.as_str(),
+            Some("Integer")
+        );
+        assert_eq!(
+            cab.get("testigo")
+                .unwrap()
+                .1
+                .get("modo")
+                .unwrap()
+                .1
+                .as_str(),
+            Some("snapshot")
+        );
+        let f0 = nodo(lineas[1]);
+        assert_eq!(f0.get("total").unwrap().1.as_str(), Some("0.5"));
+        assert_eq!(
+            f0.get("cuando").unwrap().1.as_str(),
+            Some("2023-11-14 22:13:20+00"),
+            "ns → µs, Madrid → UTC: el instante no cambia"
+        );
+
+        // ② anexar sobre la base, con otra clave
+        let e2 = escribir(
+            &lago,
+            &nodo(&format!("{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"base\":\"{ml1}\",\"operacion\":\"op-2\"}}")),
+            &tabla_ipc(3, 2, false)[..],
+        )
+        .expect("anexa");
+        assert_eq!(campo(&e2, "nueva"), "false");
+        assert_eq!(campo(&e2, "filas"), "5", "el total tras anexar");
+        let j2: serde_json::Value = serde_json::from_str(&e2).unwrap();
+        assert_eq!(j2["requirements"][0]["type"], "assert-table-uuid");
+        assert_eq!(j2["requirements"][1]["type"], "assert-ref-snapshot-id");
+        assert_eq!(j2["updates"][0]["action"], "add-snapshot");
+        let a2 = aplicar_lo_escrito(&lago, &e2, ds, Some(&ml1));
+        let ml2 = campo(&a2, "metadata_location");
+        assert_ne!(ml2, ml1);
+        assert_eq!(campo(&a2, "filas"), "5");
+        assert_eq!(campo(&a2, "snapshots"), "2");
+        // aplicar lo mismo otra vez contra la tabla que ya avanzó es un
+        // conflicto: `main` ya no apunta a donde el requisito dice (contra
+        // qué puntero se comprueba lo decide `ore`, que es el catálogo)
+        let otra = aplicar_lo_escrito_err(&lago, &e2, ds, Some(&ml2));
+        assert!(otra.contains("conflicto"), "{otra}");
+
+        // ③ sobrescribir con una columna más: el esquema cambia dentro del commit
+        let e3 = escribir(
+            &lago,
+            &nodo(&format!(
+                "{{\"dataset\":\"{ds}\",\"base\":\"{ml2}\",\"operacion\":\"op-3\"}}"
+            )),
+            &tabla_ipc(10, 4, true)[..],
+        )
+        .expect("sobrescribe");
+        assert_eq!(campo(&e3, "esquema_cambiado"), "true");
+        let j3: serde_json::Value = serde_json::from_str(&e3).unwrap();
+        assert_eq!(j3["updates"][0]["action"], "add-schema");
+        assert_eq!(j3["updates"][1]["action"], "set-current-schema");
+        assert_eq!(j3["updates"][2]["action"], "add-snapshot");
+        assert_eq!(
+            j3["updates"][2]["snapshot"]["summary"]["operation"],
+            "overwrite"
+        );
+        assert_eq!(
+            j3["updates"][2]["snapshot"]["schema-id"], 1,
+            "el id que el constructor le dará"
+        );
+        let a3 = aplicar_lo_escrito(&lago, &e3, ds, Some(&ml2));
+        let ml3 = campo(&a3, "metadata_location");
+        let ja3: serde_json::Value = serde_json::from_str(&a3).unwrap();
+        assert_eq!(ja3["columnas"]["canal"], "string");
+        assert_eq!(campo(&a3, "filas"), "4");
+        let t3 = lago.abrir(&ml3, ds).unwrap();
+        assert_eq!(t3.metadata().current_schema_id(), 1);
+        assert_eq!(t3.metadata().snapshots().count(), 3);
+        let f = lago.filas(&t3).unwrap();
+        assert_eq!(f.len(), 4);
+        assert_eq!(f[0]["canal"], "web");
+
+        // ④ la ficha: cada snapshot con su clave de idempotencia; la retención de la tabla
+        let h = historia(&lago, &ml3, ds).expect("historia");
+        let hn: serde_json::Value = serde_json::from_str(&h).unwrap();
+        assert_eq!(hn["snapshots"][0]["idempotencia"], "op-3");
+        assert_eq!(hn["snapshots"][2]["idempotencia"], "op-1");
+        assert_eq!(hn["retencion"]["edad_ms"], 0);
+        // y recoger obedece a la tabla (0 ms) aunque nadie mande edad
+        let r = recoger(&lago, ds, &ml3, None, true).expect("seco");
+        assert_eq!(campo(&r, "expirados"), "2", "{r}");
+        assert_eq!(campo(&r, "edad_ms"), "0");
+
+        // ⑤ lo que 0032 no tiene se niega con el nombre de la columna
+        let mut bytes = Vec::new();
+        {
+            use arrow_array::UInt64Array;
+            let esquema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "grande",
+                arrow_schema::DataType::UInt64,
+                true,
+            )]));
+            let lote = arrow_array::RecordBatch::try_new(
+                esquema.clone(),
+                vec![Arc::new(UInt64Array::from_iter_values([1u64]))],
+            )
+            .unwrap();
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.finish().unwrap();
+        }
+        let e = escribir(
+            &lago,
+            &nodo(&format!("{{\"dataset\":\"{ds}\"}}")),
+            &bytes[..],
+        )
+        .unwrap_err();
+        assert!(e.contains("`grande`") && e.contains("uint64"), "{e}");
+    }
+
+    fn aplicar_lo_escrito_err(
+        lago: &Lago,
+        escrito: &str,
+        dataset: &str,
+        base: Option<&str>,
+    ) -> String {
+        let e: serde_json::Value = serde_json::from_str(escrito).unwrap();
+        let pet = serde_json::json!({
+            "dataset": dataset,
+            "metadata_location": base,
+            "requirements": e["requirements"],
+            "updates": e["updates"],
+        });
+        aplicar(lago, &pet.to_string()).unwrap_err()
+    }
+
+    /// **Lo que PyIceberg y DuckDB mandan de verdad** (`tests/cuerpos/`, los
+    /// cuerpos capturados en `medida-w3-escribir.py`), aplicado tal cual: la
+    /// tabla nace de un `assert-create` con once cambios (DuckDB), dos
+    /// `append` encadenados y un `overwrite` de dos snapshots (PyIceberg), y
+    /// la carrera: el segundo de dos con la misma base es un conflicto.
+    #[test]
+    fn los_cuerpos_de_pyiceberg_y_duckdb_se_aplican() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        // los cuerpos nombran `s3://copia`; aquí el almacén es `memory://pruebas`.
+        // Y sus snapshots tienen la hora de la medida: se traen a ahora, porque
+        // un snapshot más de un minuto anterior al último cambio de la tabla se
+        // niega (la misma tolerancia que Iceberg-Java).
+        let desfase = lago::ahora_ms() - 1_789_919_000_000;
+        let cuerpo = |txt: &str| {
+            let mut j: serde_json::Value =
+                serde_json::from_str(&txt.replace("s3://copia", "memory://pruebas")).unwrap();
+            fn mover(v: &mut serde_json::Value, d: i64) {
+                match v {
+                    serde_json::Value::Object(m) => {
+                        if let Some(t) = m.get_mut("timestamp-ms").and_then(|t| t.as_i64()) {
+                            m.insert("timestamp-ms".into(), serde_json::json!(t + d));
+                        }
+                        for x in m.values_mut() {
+                            mover(x, d);
+                        }
+                    }
+                    serde_json::Value::Array(a) => a.iter_mut().for_each(|x| mover(x, d)),
+                    _ => {}
+                }
+            }
+            mover(&mut j, desfase);
+            j.to_string()
+        };
+
+        // DuckDB: `stage-create` + commit con `assert-create` y sus once cambios
+        let d = cuerpo(include_str!("../tests/cuerpos/duckdb-assert-create.json"));
+        let dj: serde_json::Value = serde_json::from_str(&d).unwrap();
+        let pet = serde_json::json!({"dataset": "datasets/ventas_pato", "requirements": dj["requirements"], "updates": dj["updates"]});
+        let a = aplicar(&lago, &pet.to_string()).expect("la tabla de DuckDB nace");
+        assert_eq!(
+            campo(&a, "uuid"),
+            "b52eee68-6f5d-4010-8aff-48d6846d7df0",
+            "el uuid que el cliente asignó"
+        );
+        assert_eq!(campo(&a, "snapshot"), "1216494158087733543");
+        assert_eq!(campo(&a, "filas"), "10");
+        let aj: serde_json::Value = serde_json::from_str(&a).unwrap();
+        assert_eq!(aj["columnas_oos"]["id"], "Integer");
+        assert_eq!(aj["columnas_oos"]["pais"], "String");
+        assert!(
+            campo(&a, "metadata_location")
+                .starts_with("memory://pruebas/ore/v2/datasets/ventas_pato/metadata/00000-"),
+            "{a}"
+        );
+        // y aplicarlo otra vez sobre lo que nació es un conflicto (`assert-create`)
+        let pet2 = serde_json::json!({"dataset": "datasets/ventas_pato", "metadata_location": campo(&a, "metadata_location"), "requirements": dj["requirements"], "updates": dj["updates"]});
+        let e = aplicar(&lago, &pet2.to_string()).unwrap_err();
+        assert!(e.contains("conflicto"), "{e}");
+
+        // PyIceberg: la tabla nace de un `createTable` sin stage (lo que el
+        // catálogo hace con el cuerpo de `create-table`), y después los commits
+        let c: serde_json::Value = serde_json::from_str(&cuerpo(include_str!(
+            "../tests/cuerpos/pyiceberg-create-table.json"
+        )))
+        .unwrap();
+        let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "requirements": [{"type": "assert-create"}], "updates": [
+            {"action": "assign-uuid", "uuid": "2a035a11-5a84-4677-99e9-10e8ceb8476c"},
+            {"action": "add-schema", "schema": c["schema"]},
+            {"action": "set-current-schema", "schema-id": -1},
+            {"action": "set-location", "location": "memory://pruebas/ore/v2/datasets/ventas_escrita"},
+            {"action": "set-properties", "updates": c["properties"]},
+        ]});
+        let a0 = aplicar(&lago, &pet.to_string()).expect("nace");
+        assert_eq!(campo(&a0, "snapshot"), "", "sin snapshot todavía");
+        let a0j: serde_json::Value = serde_json::from_str(&a0).unwrap();
+        assert_eq!(
+            a0j["retencion"]["edad_ms"], 1,
+            "la retención que PyIceberg declaró como propiedad"
+        );
+        assert_eq!(a0j["columnas_oos"]["cuando"], "DateTimeTz");
+        let mut ml = campo(&a0, "metadata_location");
+        let mut filas = Vec::new();
+        for (f, txt) in [
+            (
+                "append-1",
+                include_str!("../tests/cuerpos/pyiceberg-append-1.json"),
+            ),
+            (
+                "append-2",
+                include_str!("../tests/cuerpos/pyiceberg-append-2.json"),
+            ),
+            (
+                "overwrite",
+                include_str!("../tests/cuerpos/pyiceberg-overwrite.json"),
+            ),
+        ] {
+            let j: serde_json::Value = serde_json::from_str(&cuerpo(txt)).unwrap();
+            let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "requirements": j["requirements"], "updates": j["updates"]});
+            let a = aplicar(&lago, &pet.to_string()).unwrap_or_else(|e| panic!("{f}: {e}"));
+            ml = campo(&a, "metadata_location");
+            filas.push(campo(&a, "filas"));
+        }
+        assert_eq!(
+            filas,
+            ["100000", "200000", "100000"],
+            "append, append, overwrite"
+        );
+        let t = lago.abrir(&ml, "datasets/ventas_escrita").unwrap();
+        assert_eq!(
+            t.metadata().snapshots().count(),
+            4,
+            "el overwrite de PyIceberg son dos snapshots"
+        );
+        assert_eq!(t.metadata().current_snapshot_id(), Some(885001052737991215));
+
+        // la carrera: el cuerpo de la mano que perdió (base vieja) es un conflicto
+        let perdedor = r#"{"requirements": [{"type": "assert-ref-snapshot-id", "ref": "main", "snapshot-id": 3058442587801331811}, {"type": "assert-table-uuid", "uuid": "2a035a11-5a84-4677-99e9-10e8ceb8476c"}], "updates": []}"#;
+        let j: serde_json::Value = serde_json::from_str(perdedor).unwrap();
+        let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "requirements": j["requirements"], "updates": [{"action": "set-properties", "updates": {"x": "y"}}]});
+        let e = aplicar(&lago, &pet.to_string()).unwrap_err();
+        assert!(e.contains("conflicto"), "{e}");
+
+        // DuckDB anexa sobre la tabla de PyIceberg: su cuerpo, con el uuid y
+        // la base de la tabla bajo prueba (los suyos eran de otra corrida)
+        let dk = cuerpo(include_str!(
+            "../tests/cuerpos/duckdb-transactions-commit.json"
+        ));
+        let mut dj: serde_json::Value = serde_json::from_str(&dk).unwrap();
+        let cambio = &mut dj["table-changes"][0];
+        cambio["requirements"][1]["snapshot-id"] = serde_json::json!(885001052737991215i64);
+        cambio["updates"][0]["snapshot"]["parent-snapshot-id"] =
+            serde_json::json!(885001052737991215i64);
+        let pet = serde_json::json!({"dataset": "datasets/ventas_escrita", "metadata_location": ml, "requirements": cambio["requirements"], "updates": cambio["updates"]});
+        let a = aplicar(&lago, &pet.to_string()).expect("DuckDB anexa");
+        assert_eq!(campo(&a, "snapshot"), "9023652766361145222");
+        assert_eq!(campo(&a, "filas"), "200040");
+        // la historia lo cuenta todo, y ninguno de estos trae clave de operación
+        let h = historia(
+            &lago,
+            &campo(&a, "metadata_location"),
+            "datasets/ventas_escrita",
+        )
+        .unwrap();
+        let hj: serde_json::Value = serde_json::from_str(&h).unwrap();
+        assert_eq!(hj["snapshots"].as_array().unwrap().len(), 5);
+        assert_eq!(hj["snapshots"][0]["idempotencia"], "");
     }
 
     #[test]

@@ -1,0 +1,1 @@
+{"stage-create":true,"name":"pato","schema":{"type":"struct","fields":[{"name":"id","id":1,"type":"long","required":false},{"name":"pais","id":2,"type":"string","required":false}],"schema-id":0},"partition-spec":{"spec-id":0,"type":"struct","fields":[]},"write-order":{"order-id":0,"fields":[]},"properties":{"format-version":"2"}}

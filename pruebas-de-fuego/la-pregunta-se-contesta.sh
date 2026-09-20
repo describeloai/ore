@@ -428,7 +428,9 @@ curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v1/deadbeef" -d "byte
 curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v2/copias/nadie_nada/metadata/00000-x.metadata.json" -d "{}"
 # y con --recoger DENTRO del dataset vigente: los snapshots superados (8 dejó
 # tres tras el vigente) se expiran y sus ficheros se van; el puntero se mueve al metadata nuevo
-salida=$("$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger con todo vigente"; }
+# Sin edad —ni en la tabla ni en `ORE_RECOGER_EDAD`— no se expira nada (0031 §11
+# ⑥, W3.6c): aquí se pide expirar todo lo superado.
+salida=$(ORE_RECOGER_EDAD=0 "$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger con todo vigente"; }
 case "$salida" in *"recogidos 3 snapshot(s) superado(s)"*) ;; *) falla "9 · tenía que expirar los 3 snapshots superados de pedidos: $salida";; esac
 case "$salida" in *"huérfanas: 1 dataset(s)"*"1 objeto(s) heredado(s)"*) ;; *) falla "9 · con todo vigente tenía que recoger 1 dataset huérfano y 1 heredado: $salida";; esac
 [ "$(en_bucket ore/v1/deadbeef)" = "0" ] || falla "9 · el sobre heredado sigue"

@@ -24,8 +24,9 @@
 # son los de la tabla —`metadata.json`, lista de manifiestos, manifiestos,
 # ficheros de datos— y el bucket queda acotado por `--recoger`, que expira los
 # snapshots superados y retira lo que ningún snapshot nombra. `ORE_RECOGER_EDAD`
-# (segundos) conserva la historia reciente; aquí no se pone: se expira todo lo
-# superado, que es lo que «recoger» significó siempre.
+# (segundos) dice cuánta historia se conserva; desde W3.6c (0031 §11 ⑥) sin
+# edad —ni en la tabla ni en el entorno— NO se expira nada, así que aquí va a 0:
+# se expira todo lo superado, que es lo que este guion siempre midió.
 set -u
 
 ORE="${ORE:-./target/debug/ore.exe}"
@@ -151,7 +152,7 @@ echo "══ los cinco actos · el trabajo se cuenta en filas, no en segundos �
 antes=$(objetos)
 
 INF="$D/informes"
-export -n ORE_RECOGER_EDAD 2>/dev/null; unset ORE_RECOGER_EDAD
+export ORE_RECOGER_EDAD=0
 a1=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 1000 "$(leidas "$a1")" "① primera materialización, filas leídas" "I5 (hecho)"
 cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"

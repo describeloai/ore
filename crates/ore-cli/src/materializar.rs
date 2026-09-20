@@ -627,10 +627,10 @@ fn una(
 /// sellar y también en «ya está»: si fuera sólo al sellar, un almacén lleno de
 /// snapshots viejos no se limpiaría nunca mientras nada cambiara.
 ///
-/// La edad que se conserva la dice `ORE_RECOGER_EDAD` (segundos; sin ella,
-/// todo lo superado): la política de retención de la historia es de W3.6b
-/// (el CronJob de mantenimiento), y hasta entonces recoger es lo que siempre
-/// fue — borrar lo superado cuando alguien lo pide.
+/// La edad que se conserva la dice la tabla (`history.expire.*`, 0031 §11 ⑥)
+/// y, para lo que la tabla no diga, `ORE_RECOGER_EDAD` (segundos). **Sin
+/// ninguna de las dos no se expira nada**: la política vive en la tabla y en el
+/// CronJob de mantenimiento (`53`), no en un defecto.
 fn recoger_dataset(
     hacer: bool,
     dataset: &str,

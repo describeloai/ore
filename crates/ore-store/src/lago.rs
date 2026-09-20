@@ -36,6 +36,17 @@
 //!   ([`Lago::confirmar`]), que es exactamente lo que `MemoryCatalog::
 //!   update_table` hace por dentro.
 //!
+//! # Lo que W3.6c añade: escribir en dos mitades, como el catálogo REST
+//!
+//! Un escritor de Iceberg —el nuestro o uno de fuera— escribe **los ficheros de
+//! datos, los manifiestos y la lista** y manda al catálogo `requirements` +
+//! `updates` (`add-snapshot`, `set-snapshot-ref`, …); **el catálogo escribe el
+//! `metadata.json`**. Aquí eso son dos funciones: [`Lago::preparar`] (la
+//! primera mitad: devuelve los cambios sin confirmar nada) y [`Lago::aplicar`]
+//! (la segunda: valida, aplica y escribe el siguiente `metadata.json`, desde
+//! una tabla o desde cero cuando el requisito es `assert-create`).
+//! [`Lago::instantanea`] sigue siendo las dos seguidas, para la copia.
+//!
 //! # El suelo
 //!
 //! `iceberg` habla con el bucket a través de un `Storage`. Aquí ese `Storage`
@@ -85,6 +96,16 @@ pub const PROP_PLAN: &str = "ore.plan";
 pub const PROP_TESTIGO_MODO: &str = "ore.testigo.modo";
 pub const PROP_TESTIGO_VALOR: &str = "ore.testigo.valor";
 pub const PROP_DATASET: &str = "ore.dataset";
+/// **La clave de operación** (0031 §11 ④): quién escribió qué, como propiedad
+/// del snapshot. `write()` la pone; el catálogo la coteja con la ancestría
+/// antes de aplicar, y la misma operación dos veces no deja dos snapshots.
+pub const PROP_OPERACION: &str = "ore.operacion";
+/// **La retención, declarada en la tabla** (0031 §11 ⑥), con los nombres que
+/// Iceberg usa para lo mismo: cuánto vive un snapshot superado y cuántos se
+/// conservan como mínimo. Las lee `recoger`; sin ellas y sin `edad_ms`, no se
+/// expira nada.
+pub const PROP_RETENCION_EDAD: &str = "history.expire.max-snapshot-age-ms";
+pub const PROP_RETENCION_MINIMO: &str = "history.expire.min-snapshots-to-keep";
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -397,6 +418,21 @@ pub struct Escrito {
     pub retirados: usize,
 }
 
+/// **La primera mitad de una escritura**: los ficheros ya están en el bucket y
+/// esto es lo que un catálogo tiene que aplicar para que cuenten. Es el cuerpo
+/// de un `updateTable` de la spec REST, con las cuentas al lado.
+pub struct Preparado {
+    pub requisitos: Vec<TableRequirement>,
+    pub cambios: Vec<TableUpdate>,
+    pub snapshot_id: i64,
+    pub ficheros: usize,
+    pub bytes: u64,
+    pub filas: u64,
+    pub retirados: usize,
+    /// Si el esquema de la tabla cambió con este lote (`add-schema` va dentro).
+    pub esquema_cambiado: bool,
+}
+
 impl Lago {
     fn ident(dataset: &str) -> TableIdent {
         TableIdent::from_strs(["ore", dataset]).expect("un identificador")
@@ -479,10 +515,13 @@ impl Lago {
         cambios: Vec<TableUpdate>,
         requisitos: Vec<TableRequirement>,
     ) -> Result<Table, String> {
-        for r in &requisitos {
-            r.check(Some(tabla.metadata())).map_err(err)?;
-        }
+        // Una tabla sin `metadata_location` todavía no existe para nadie: sus
+        // requisitos (`assert-create`) se comprueban contra «ninguna».
         let actual = tabla.metadata_location().map(String::from);
+        for r in &requisitos {
+            r.check(actual.as_ref().map(|_| tabla.metadata()))
+                .map_err(err)?;
+        }
         let mut b = tabla.metadata().clone().into_builder(actual.clone());
         for c in cambios {
             b = c.apply(b).map_err(err)?;
@@ -501,6 +540,81 @@ impl Lago {
             .await
             .map_err(|e| format!("no se pudo escribir `{destino}`: {e}"))?;
         self.tabla(nuevo, Some(destino.to_string()), tabla.identifier().name())
+            .map_err(err)
+    }
+
+    /// **La segunda mitad de una escritura, para lo que venga de fuera**: los
+    /// `requirements` y `updates` de un `updateTable` (los de PyIceberg, los de
+    /// DuckDB, los de [`Lago::preparar`]) aplicados a la tabla del puntero —o a
+    /// **ninguna**, cuando el requisito es `assert-create`: entonces la tabla
+    /// nace de los propios cambios (`add-schema`, `add-spec`, `set-location`,
+    /// …), que es lo que un `stage-create` seguido de su commit significa—.
+    /// Escribe el siguiente `metadata.json` y devuelve la tabla sobre él. El
+    /// puntero sigue sin moverse: eso es de `ore`.
+    pub fn aplicar(
+        &self,
+        base: Option<&Table>,
+        dataset: &str,
+        requisitos: Vec<TableRequirement>,
+        cambios: Vec<TableUpdate>,
+    ) -> Result<Table, String> {
+        if let Some(t) = base {
+            return self.confirmar(t, cambios, requisitos);
+        }
+        for r in &requisitos {
+            r.check(None).map_err(err)?;
+        }
+        // Desde cero: lo que los cambios traen decide la tabla; lo que no
+        // traen lo pone el dataset (la ubicación) o la spec (v2, sin partición
+        // ni orden).
+        let mut esquema = None;
+        let mut spec = None;
+        let mut orden = None;
+        let mut ubicacion = None;
+        let mut version = iceberg::spec::FormatVersion::V2;
+        let mut props = HashMap::new();
+        for c in &cambios {
+            match c {
+                TableUpdate::AddSchema { schema, .. } if esquema.is_none() => {
+                    esquema = Some(schema.clone())
+                }
+                TableUpdate::AddSpec { spec: s } if spec.is_none() => spec = Some(s.clone()),
+                TableUpdate::AddSortOrder { sort_order } if orden.is_none() => {
+                    orden = Some(sort_order.clone())
+                }
+                TableUpdate::SetLocation { location } => ubicacion = Some(location.clone()),
+                TableUpdate::UpgradeFormatVersion { format_version } => version = *format_version,
+                TableUpdate::SetProperties { updates } => props.extend(updates.clone()),
+                _ => {}
+            }
+        }
+        let esquema = esquema.ok_or("una tabla nueva necesita `add-schema` entre sus cambios")?;
+        let ubicacion = ubicacion.unwrap_or_else(|| self.uri(&format!("{RAIZ}/{dataset}")));
+        props
+            .entry(PROP_DATASET.into())
+            .or_insert_with(|| dataset.into());
+        let mut b = iceberg::spec::TableMetadataBuilder::new(
+            esquema,
+            spec.unwrap_or_else(iceberg::spec::UnboundPartitionSpec::default),
+            orden.unwrap_or_else(iceberg::spec::SortOrder::unsorted_order),
+            ubicacion,
+            version,
+            props,
+        )
+        .map_err(err)?;
+        for c in cambios {
+            // Lo que ya puso el arranque —el esquema, la partición, el orden,
+            // la ubicación, la versión, las propiedades— vuelve a aplicarse
+            // sin efecto: el constructor reconoce lo igual.
+            b = c.apply(b).map_err(err)?;
+        }
+        let nuevo = b.build().map_err(err)?.metadata;
+        let destino = MetadataLocation::new_with_metadata(nuevo.location(), &nuevo);
+        let io = self.file_io();
+        runtime()
+            .block_on(nuevo.write_to(&io, &destino))
+            .map_err(|e| format!("no se pudo escribir `{destino}`: {e}"))?;
+        self.tabla(nuevo, Some(destino.to_string()), dataset)
             .map_err(err)
     }
 
@@ -534,20 +648,73 @@ impl Lago {
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Escrito, String> {
-        runtime().block_on(self.instantanea_async(tabla, lote, operacion, propiedades))
+        let esquema = tabla.metadata().current_schema().as_ref().clone();
+        let p = self.preparar(tabla, esquema, vec![lote], operacion, propiedades)?;
+        let nueva = self.confirmar(tabla, p.cambios, p.requisitos)?;
+        Ok(Escrito {
+            tabla: nueva,
+            ficheros: p.ficheros,
+            bytes: p.bytes,
+            filas: p.filas,
+            retirados: p.retirados,
+        })
     }
 
-    async fn instantanea_async(
+    /// **La primera mitad de escribir**: los ficheros de datos (Parquet, SNAPPY,
+    /// con las estadísticas que Iceberg pide), los manifiestos y la lista, para
+    /// los lotes que lleguen, con `esquema` —el de la tabla, o el que el lote
+    /// pide: si no es el vigente, `add-schema` + `set-current-schema` van
+    /// delante del snapshot y los ficheros ya llevan los ids nuevos—. Devuelve
+    /// los `requirements` y `updates` que un catálogo aplica; nada se confirma.
+    pub fn preparar(
         &self,
         tabla: &Table,
-        lote: RecordBatch,
+        esquema: Schema,
+        lotes: Vec<RecordBatch>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
-    ) -> Result<Escrito, String> {
+    ) -> Result<Preparado, String> {
+        runtime().block_on(self.preparar_async(tabla, esquema, lotes, operacion, propiedades))
+    }
+
+    async fn preparar_async(
+        &self,
+        tabla: &Table,
+        esquema: Schema,
+        lotes: Vec<RecordBatch>,
+        operacion: Operacion,
+        propiedades: HashMap<String, String>,
+    ) -> Result<Preparado, String> {
         let meta = tabla.metadata();
         let io = tabla.file_io().clone();
-        let esquema = meta.current_schema().clone();
-        let filas = lote.num_rows() as u64;
+        let filas: u64 = lotes.iter().map(|l| l.num_rows() as u64).sum();
+        let esquema = Arc::new(esquema);
+
+        // ── el esquema: el de la tabla, o el nuevo con el id que le tocará ──
+        let esquema_cambiado = !mismo_esquema(meta.current_schema(), &esquema);
+        let mut cambios = Vec::new();
+        let schema_id = if esquema_cambiado {
+            // Lo mismo que el constructor de Iceberg hace al aplicar
+            // `add-schema`: si ya hay un esquema igual, su id; si no, el
+            // siguiente al mayor.
+            let ya = meta
+                .schemas_iter()
+                .find(|s| s.as_struct() == esquema.as_struct())
+                .map(|s| s.schema_id());
+            cambios.push(TableUpdate::AddSchema {
+                schema: esquema.as_ref().clone(),
+            });
+            cambios.push(TableUpdate::SetCurrentSchema { schema_id: -1 });
+            ya.unwrap_or_else(|| {
+                meta.schemas_iter()
+                    .map(|s| s.schema_id())
+                    .max()
+                    .unwrap_or(-1)
+                    + 1
+            })
+        } else {
+            meta.current_schema_id()
+        };
 
         // ── los ficheros de datos ───────────────────────────────────────────
         let ficheros: Vec<DataFile> = if filas == 0 {
@@ -574,9 +741,11 @@ impl Lago {
                 .await
                 .map_err(err)?;
             let arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&esquema).map_err(err)?);
-            let lote = RecordBatch::try_new(arrow, lote.columns().to_vec())
-                .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
-            escritor.write(lote).await.map_err(err)?;
+            for lote in lotes {
+                let lote = RecordBatch::try_new(arrow.clone(), lote.columns().to_vec())
+                    .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
+                escritor.write(lote).await.map_err(err)?;
+            }
             escritor.close().await.map_err(err)?
         };
         let bytes: u64 = ficheros.iter().map(|f| f.file_size_in_bytes()).sum();
@@ -720,37 +889,74 @@ impl Lago {
                 },
                 additional_properties: props,
             })
-            .with_schema_id(meta.current_schema_id())
+            .with_schema_id(schema_id)
             .build();
-        let mut requisitos = vec![TableRequirement::UuidMatch { uuid: meta.uuid() }];
-        if tabla.metadata_location().is_some() {
-            requisitos.push(TableRequirement::RefSnapshotIdMatch {
-                r#ref: MAIN_BRANCH.to_string(),
-                snapshot_id: meta.current_snapshot_id(),
-            });
-        }
-        let nueva = self
-            .confirmar_async(
-                tabla,
-                vec![
-                    TableUpdate::AddSnapshot { snapshot },
-                    TableUpdate::SetSnapshotRef {
-                        ref_name: MAIN_BRANCH.to_string(),
-                        reference: SnapshotReference::new(
-                            snapshot_id,
-                            SnapshotRetention::branch(None, None, None),
-                        ),
-                    },
-                ],
-                requisitos,
-            )
-            .await?;
-        Ok(Escrito {
-            tabla: nueva,
+        // Los requisitos: la tabla que se abrió sigue siendo esa (uuid) y
+        // `main` sigue donde estaba. Una tabla que todavía no tiene
+        // `metadata.json` es una que nace en este commit: `assert-create`, y
+        // con ella viajan todos sus cimientos, como manda la spec REST.
+        let requisitos = if tabla.metadata_location().is_some() {
+            vec![
+                TableRequirement::UuidMatch { uuid: meta.uuid() },
+                TableRequirement::RefSnapshotIdMatch {
+                    r#ref: MAIN_BRANCH.to_string(),
+                    snapshot_id: meta.current_snapshot_id(),
+                },
+            ]
+        } else {
+            let mut cimientos = vec![
+                TableUpdate::AssignUuid { uuid: meta.uuid() },
+                TableUpdate::UpgradeFormatVersion {
+                    format_version: meta.format_version(),
+                },
+            ];
+            if !esquema_cambiado {
+                cimientos.push(TableUpdate::AddSchema {
+                    schema: esquema.as_ref().clone(),
+                });
+                cimientos.push(TableUpdate::SetCurrentSchema { schema_id: -1 });
+            }
+            cimientos.extend([
+                TableUpdate::AddSpec {
+                    spec: meta
+                        .default_partition_spec()
+                        .as_ref()
+                        .clone()
+                        .into_unbound(),
+                },
+                TableUpdate::SetDefaultSpec { spec_id: -1 },
+                TableUpdate::AddSortOrder {
+                    sort_order: meta.default_sort_order().as_ref().clone(),
+                },
+                TableUpdate::SetDefaultSortOrder { sort_order_id: -1 },
+                TableUpdate::SetLocation {
+                    location: meta.location().to_string(),
+                },
+                TableUpdate::SetProperties {
+                    updates: meta.properties().clone(),
+                },
+            ]);
+            cimientos.append(&mut cambios);
+            cambios = cimientos;
+            vec![TableRequirement::NotExist]
+        };
+        cambios.push(TableUpdate::AddSnapshot { snapshot });
+        cambios.push(TableUpdate::SetSnapshotRef {
+            ref_name: MAIN_BRANCH.to_string(),
+            reference: SnapshotReference::new(
+                snapshot_id,
+                SnapshotRetention::branch(None, None, None),
+            ),
+        });
+        Ok(Preparado {
+            requisitos,
+            cambios,
+            snapshot_id,
             ficheros: ficheros.len(),
             bytes,
             filas: total_filas,
             retirados,
+            esquema_cambiado,
         })
     }
 
@@ -802,18 +1008,17 @@ impl Lago {
     /// `edad_ms`**. Sólo los metadatos: los ficheros que se quedan sin
     /// snapshot los retira [`Lago::huerfanos`]. Un `metadata.json` más sólo si
     /// expiró alguno.
-    pub fn expirar(&self, tabla: &Table, edad_ms: i64) -> Result<(Table, Vec<i64>), String> {
-        let meta = tabla.metadata();
-        let corte = ahora_ms() - edad_ms;
-        let ids: Vec<i64> = meta
-            .snapshots()
-            .filter(|s| Some(s.snapshot_id()) != meta.current_snapshot_id())
-            .filter(|s| s.timestamp_ms() <= corte)
-            .map(|s| s.snapshot_id())
-            .collect();
+    pub fn expirar(
+        &self,
+        tabla: &Table,
+        edad_ms: i64,
+        minimo: usize,
+    ) -> Result<(Table, Vec<i64>), String> {
+        let ids = Self::expirables(tabla, edad_ms, minimo);
         if ids.is_empty() {
             return Ok((tabla.clone(), ids));
         }
+        let meta = tabla.metadata();
         let t = self.confirmar(
             tabla,
             vec![TableUpdate::RemoveSnapshots {
@@ -822,6 +1027,39 @@ impl Lago {
             vec![TableRequirement::UuidMatch { uuid: meta.uuid() }],
         )?;
         Ok((t, ids))
+    }
+
+    /// **Qué snapshots expirarían**: los que no son el vigente, son más viejos
+    /// que `edad_ms`, y no están entre los `minimo` más recientes (el vigente
+    /// cuenta entre ellos, como en Iceberg).
+    pub fn expirables(tabla: &Table, edad_ms: i64, minimo: usize) -> Vec<i64> {
+        let meta = tabla.metadata();
+        let corte = ahora_ms() - edad_ms;
+        let mut todos: Vec<_> = meta.snapshots().collect();
+        todos.sort_by_key(|s| -s.timestamp_ms());
+        todos
+            .iter()
+            .skip(minimo.max(1))
+            .filter(|s| Some(s.snapshot_id()) != meta.current_snapshot_id())
+            .filter(|s| s.timestamp_ms() <= corte)
+            .map(|s| s.snapshot_id())
+            .collect()
+    }
+
+    /// **La retención que rige**: la de la tabla (`history.expire.*`) y, para
+    /// lo que la tabla no diga, el defecto que traiga quien llama. `None` de
+    /// edad es «no expirar».
+    pub fn retencion(tabla: &Table, edad_defecto_ms: Option<i64>) -> (Option<i64>, usize) {
+        let p = tabla.metadata().properties();
+        let edad = p
+            .get(PROP_RETENCION_EDAD)
+            .and_then(|v| v.parse::<i64>().ok())
+            .or(edad_defecto_ms);
+        let minimo = p
+            .get(PROP_RETENCION_MINIMO)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1);
+        (edad, minimo)
     }
 
     /// **Lo que hay bajo la ubicación de la tabla y ningún snapshot suyo
@@ -906,6 +1144,40 @@ pub fn ahora_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// **Del tipo de Iceberg al escalar de OOS** (0032, la vuelta): lo que la
+/// `Table` del lago declara cuando nace de una escritura. Lo que el contrato
+/// no tiene (anidados, binario, uuid) va como `String` y se dice en la ficha
+/// por su tipo de Iceberg.
+pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> &'static str {
+    use iceberg::spec::{PrimitiveType, Type};
+    match t {
+        Type::Primitive(p) => match p {
+            PrimitiveType::Int | PrimitiveType::Long => "Integer",
+            PrimitiveType::Float | PrimitiveType::Double => "Float",
+            PrimitiveType::Boolean => "Boolean",
+            PrimitiveType::Decimal { .. } => "Decimal",
+            PrimitiveType::Date => "Date",
+            PrimitiveType::Time => "Time",
+            PrimitiveType::Timestamp | PrimitiveType::TimestampNs => "DateTime",
+            PrimitiveType::Timestamptz | PrimitiveType::TimestamptzNs => "DateTimeTz",
+            _ => "String",
+        },
+        _ => "String",
+    }
+}
+
+/// Las columnas de un esquema de Iceberg como escalares de OOS.
+pub fn columnas_oos(tabla: &Table) -> BTreeMap<String, String> {
+    tabla
+        .metadata()
+        .current_schema()
+        .as_struct()
+        .fields()
+        .iter()
+        .map(|f| (f.name.clone(), oos_de_iceberg(&f.field_type).to_string()))
+        .collect()
 }
 
 /// Las columnas de un esquema de Iceberg, por nombre y tipo, para el informe.

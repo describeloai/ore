@@ -33,8 +33,8 @@ ore-serve tendría: carga la tabla por el puntero y confirma por `confirmar`.
                          `--recoger`?
 
 Uso:  python pruebas-de-fuego/medida-w3-escribir.py [--sin-gcs] [--filas 10000000]
-Necesita target/debug (ore, ore-serve, ore-store-r2, ore-read-jsonl), el crate
-desechable `medida-w3-iceberg-rust` compilado en release (`ipc`), pyiceberg,
+Necesita target/debug (ore, ore-serve, ore-store-r2, ore-read-jsonl; para §3,
+mejor `ORE_STORE_RELEASE=1` con target/release/ore-store-r2), pyiceberg,
 duckdb, pyarrow, node con apache-arrow (`--nodo <dir con node_modules>`), git y
 gcloud (sesión propia; §2 usa el bucket de PRUEBA y lo limpia al final). No
 toca el clúster.
@@ -61,11 +61,15 @@ EXE = ".exe" if os.name == "nt" else ""
 ORE = "%s/ore%s" % (BIN, EXE)
 SERVE = "%s/ore-serve%s" % (BIN, EXE)
 STORE = "%s/ore-store-r2%s" % (BIN, EXE)
-IPC = RAIZ + "/pruebas-de-fuego/medida-w3-iceberg-rust/target/release/ipc" + EXE
+# El escritor de Rust: la medida se hizo con un `ipc` desechable del crate
+# `medida-w3-iceberg-rust` (IPC → tabla Iceberg en disco); desde c1 es
+# `ore-store escribir` (IPC → ficheros en el bucket + `requirements`/`updates`),
+# y es lo que aquí corre, contra el S3 de mentira.
 PY = sys.executable
 SIN_GCS = "--sin-gcs" in sys.argv
 FILAS = int(sys.argv[sys.argv.index("--filas") + 1]) if "--filas" in sys.argv else 10_000_000
 NODO = sys.argv[sys.argv.index("--nodo") + 1] if "--nodo" in sys.argv else ""
+CUERPOS = sys.argv[sys.argv.index("--cuerpos") + 1] if "--cuerpos" in sys.argv else ""
 PRUEBA = "project-8853a180-450d-47be-b83-t-prueba-copia"
 
 espec = importlib.util.spec_from_file_location("swap", RAIZ + "/pruebas-de-fuego/medida-w3-swap.py")
@@ -285,6 +289,13 @@ class Catalogo(BaseHTTPRequestHandler):
 
     def do_POST(self):
         t0 = time.time(); p = self._partes(); cuerpo = self._cuerpo()
+        # `--cuerpos <dir>`: cada cuerpo que un cliente manda, como fixture
+        # (los de c1 en ore-store salen de aquí: lo que PyIceberg y DuckDB
+        # mandan de verdad, no lo que uno cree que mandan).
+        if CUERPOS:
+            os.makedirs(CUERPOS, exist_ok=True)
+            n = len([f for f in os.listdir(CUERPOS)])
+            open("%s/%02d-%s-%s.json" % (CUERPOS, n, self.headers.get("User-Agent", "x").split("/")[0].replace(" ", "")[:12], "-".join(p[1:])[:40]), "wb").write(cuerpo)
         try:
             if len(p) == 4 and p[3] == "tables":
                 self._crear(p[2], json.loads(cuerpo))
@@ -708,32 +719,34 @@ process.stderr.write(JSON.stringify({ generar_ms: Date.now() - t0, filas: n }) +
 def s3_nodo(tmp):
     print()
     print("§3 · Node sin escritor: la tabla Arrow por IPC a Rust (iceberg-rust), contra JSON a `ore-store sellar` y contra PyIceberg")
-    if not NODO or not os.path.exists(IPC):
-        fila("falta", "", "--nodo <dir con node_modules/apache-arrow> y/o %s" % IPC); return
+    if not NODO:
+        fila("falta", "", "--nodo <dir con node_modules/apache-arrow>"); return
+    store = STORE.replace("/debug/", "/release/") if os.environ.get("ORE_STORE_RELEASE") and os.path.exists(STORE.replace("/debug/", "/release/")) else STORE
     # el .mjs vive junto a node_modules: los `import` de ESM no miran NODE_PATH
     open(NODO + "/genera.mjs", "w").write(GENERA_MJS)
     env = dict(os.environ)
-    # (a) IPC → ipc (Rust) en local
+    # (a) IPC → `ore-store escribir` (Rust) contra el S3 de mentira, y `aplicar`
     for n in sorted({1_000_000, FILAS}):
-        bodega = tmp + "/bodega-ipc-%d" % n
-        os.makedirs(bodega)
         t0 = time.time()
         gen = subprocess.Popen(["node", NODO + "/genera.mjs", str(n), "ipc"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-        r = subprocess.run([IPC, "--bodega", "file:///" + bodega.lstrip("/")], stdin=gen.stdout, capture_output=True, text=True, encoding="utf-8")
-        gen.stdout.close(); gen_err = gen.stderr.read().decode(); gen.wait()
+        p = subprocess.Popen([store, "escribir"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=CAT["env"])
+        p.stdin.write(('{"dataset":"datasets/ventas_ipc%d","modo":"sobrescribir","operacion":"op-%d"}' % (n, n) + chr(10)).encode())
+        shutil.copyfileobj(gen.stdout, p.stdin, 1 << 20); p.stdin.close()
+        out, err = p.communicate(); gen_err = gen.stderr.read().decode(); gen.wait()
         total = ms(t0)
-        j = [json.loads(l[4:]) for l in r.stdout.splitlines() if l.startswith("### ")]
         try:
             g = json.loads(gen_err.strip().splitlines()[-1]) if gen_err.strip() else {}
         except Exception:
             g = {"error": gen_err.strip()[:200]}
-        if j:
-            j = j[0]
-            fila("Node → IPC → Rust · %s filas" % format(n, ",").replace(",", " "), "%d ms de pared" % total,
-                 "node genera %s ms · rust lee %s ms + escribe %s ms + commit %s ms · %d ficheros · %.0f MB · %.1f M filas/s" % (g.get("generar_ms"), j["leer_ms"], j["escribir_ms"], j["commit_ms"], j["ficheros"], j["bytes"] / 1e6, n / max(total, 1) / 1000))
-            fila("  tipos que llegaron", "", ", ".join(j["columnas"])[:100])
-        else:
-            fila("Node → IPC → Rust · %d" % n, "✗", (r.stderr or gen_err)[:110])
+        try:
+            j = json.loads(out)
+            t1 = time.time()
+            c, a, e = store_con(store, "aplicar", {"dataset": "datasets/ventas_ipc%d" % n, "requirements": j["requirements"], "updates": j["updates"]})
+            fila("Node → IPC → ore-store escribir · %s filas" % format(n, ",").replace(",", " "), "%d ms de pared" % total,
+                 "node genera %s ms · %d ficheros · %.0f MB · aplicar %d ms · %.1f M filas/s" % (g.get("generar_ms"), j["ficheros"], j["bytes"] / 1e6, ms(t1), n / max(total, 1) / 1000))
+            fila("  tipos que llegaron → Iceberg", "", json.dumps(j["columnas"])[:100])
+        except Exception:
+            fila("Node → IPC → ore-store escribir · %d" % n, "✗", (err.decode("utf-8", "replace") or gen_err)[:110])
     # (b) el camino de hoy: filas JSON a ore-store sellar (S3 de mentira)
     n = 1_000_000
     t0 = time.time()

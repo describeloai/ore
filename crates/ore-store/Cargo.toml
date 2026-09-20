@@ -41,6 +41,16 @@ iceberg = "0.10.1"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 arrow-array  = "58"
 arrow-schema = "58"
+# W3.6c (0031 §11): `escribir` recibe la tabla Arrow por IPC (lo que el SDK
+# del puesto manda en cualquiera de los tres lenguajes) y la lleva al fisico
+# de 0032 con `cast` (ns → µs, zona → UTC, enteros cortos a int64, texto
+# grande a texto). Las tres crates ya estaban en el cierre por `parquet`.
+arrow-ipc    = "58"
+arrow-cast   = "58"
+# Los `requirements` y `updates` de un commit viajan en el JSON de la spec REST
+# de Iceberg, que `iceberg` serializa y deserializa con serde; aqui solo se
+# analiza y se imprime ese JSON. Ya estaba en el cierre por `iceberg`.
+serde_json = "1"
 # El escritor de Iceberg es asincrono; este programa no. Un runtime que se
 # arranca una vez y se bloquea hasta que termina cada verbo.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }

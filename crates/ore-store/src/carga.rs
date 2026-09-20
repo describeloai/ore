@@ -94,6 +94,78 @@ fn fisico_del_arrow(d: &DataType) -> Option<Fisico> {
     })
 }
 
+/// **0032 al escribir: el lote que llega por IPC, llevado al físico del
+/// contrato.** Lo que un SDK manda tiene el físico de su lenguaje —pandas
+/// escribe `timestamp[ns]`, Node `int32` o `float32` cuando le viene bien,
+/// pyarrow `large_utf8` o `utf8_view`— y la tabla del lago tiene **los diez
+/// físicos de 0032** y ninguno más. Cada columna se convierte a su físico
+/// (`cast`, sin inventar nada: los enteros cortos ensanchan a `int64`, los
+/// reales a `float64`, el texto grande a texto, `ns` → `µs`, una zona → UTC
+/// —el instante no cambia—, `date64` → `date32`, `time32` → `time64[µs]`), y
+/// lo que el contrato no tiene **se niega con el nombre de la columna**:
+/// `uint64` (no cabe en `int64` sin mentir), `null` (una columna sin tipo),
+/// `decimal256`, binario, anidados.
+pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
+    let mut campos = Vec::with_capacity(lote.num_columns());
+    let mut columnas = Vec::with_capacity(lote.num_columns());
+    for (campo, col) in lote.schema().fields().iter().zip(lote.columns()) {
+        let nombre = campo.name();
+        let destino = match campo.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => DataType::Utf8,
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32 => DataType::Int64,
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => DataType::Float64,
+            DataType::Boolean => DataType::Boolean,
+            DataType::Decimal128(p, e) if *e >= 0 => DataType::Decimal128(*p, *e),
+            DataType::Date32 | DataType::Date64 => DataType::Date32,
+            DataType::Time32(_) | DataType::Time64(_) => DataType::Time64(TimeUnit::Microsecond),
+            DataType::Timestamp(_, None) => DataType::Timestamp(TimeUnit::Microsecond, None),
+            DataType::Timestamp(_, Some(_)) => {
+                DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into()))
+            }
+            DataType::Dictionary(_, v) if matches!(**v, DataType::Utf8 | DataType::LargeUtf8) => {
+                DataType::Utf8
+            }
+            DataType::UInt64 => {
+                return Err(format!(
+                    "la columna `{nombre}` es `uint64`: no cabe en `int64` sin mentir (0032); \
+                     conviértela antes de escribir"
+                ));
+            }
+            DataType::Null => {
+                return Err(format!(
+                    "la columna `{nombre}` no tiene tipo (`null`): dale uno antes de escribir (0032)"
+                ));
+            }
+            otro => {
+                return Err(format!(
+                    "la columna `{nombre}` es `{otro}`, que el contrato de tipos (0032) no tiene: \
+                     texto, entero, real, lógico, decimal, fecha, hora, fecha-hora o instante"
+                ));
+            }
+        };
+        let valores = if col.data_type() == &destino {
+            col.clone()
+        } else {
+            arrow_cast::cast(col, &destino).map_err(|e| {
+                format!(
+                    "la columna `{nombre}` no se pudo llevar de `{}` a `{destino}`: {e}",
+                    col.data_type()
+                )
+            })?
+        };
+        campos.push(Field::new(nombre, destino, true));
+        columnas.push(valores);
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(campos)), columnas)
+        .map_err(|e| format!("el lote no cuadra tras normalizar: {e}"))
+}
+
 /// Las filas ya leídas: cada una es columna → valor **en texto**, que es como
 /// las entrega el protocolo del driver. Una columna ausente en una fila es un
 /// hueco, y aquí se escribe como nulo.

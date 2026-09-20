@@ -14,6 +14,16 @@ es de un programa delegado — porque `ore` no puede abrir un socket
 > snapshots de la misma tabla; `--recoger` expira snapshots y retira lo que ninguno nombra. El
 > protocolo revisado está en 0031 («W3.6a hecho») y en `crates/ore-store/src/ciclo.rs`. Los
 > sobres `ORECOPY1` que queden se siguen leyendo hasta que ningún puntero los nombre.
+>
+> **Y el 2026-09-20 por [0031 §11](0031-el-puesto.md) (W3.6c, «escribir», paso c1).** El programa
+> delegado gana los dos verbos del catálogo REST de Iceberg, en dos mitades: **`escribir`** (la
+> tabla Arrow por IPC tras la petición → el físico de 0032, los ficheros, los manifiestos y la
+> lista, y de vuelta los `requirements` + `updates` que un catálogo aplica, con la clave de
+> operación en el resumen del snapshot) y **`aplicar`** (`requirements` + `updates` —de
+> `escribir`, de PyIceberg, de DuckDB— validados y aplicados sobre la tabla del puntero o desde
+> cero con `assert-create`, y el `metadata.json` siguiente escrito). `leer` ya no exige la
+> cabecera de la copia; `recoger` obedece `history.expire.*` de la tabla y **sin edad no expira
+> nada**; `historia` enseña la clave de idempotencia y la retención.
 
 ---
 
