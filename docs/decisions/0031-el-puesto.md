@@ -142,7 +142,7 @@ de código sea robusto por sí mismo; no se aborda todavía.
 | verbo | hoy | lo que lo hace robusto |
 |---|---|---|
 | **leer** `over("p.v")`, `sql()` | en los tres, sobre las copias del bucket | **tipos consistentes**: hoy Python da pandas, TS objetos JSON, Java `List<Map>`. La verdad común es **Arrow** (la tabla Arrow de cada lenguaje, y de ahí a lo suyo): timestamps, decimales, nulos, enteros grandes y anidados sobreviven idénticos en los tres. Se mide: el mismo Parquet leído por los tres, campo a campo |
-| **escribir** `write("p.salida", tabla)` | no existe | Parquet + sobre `ORECOPY1` al bucket, **con nombre**, y un informe en el árbol para que `over("p.salida")` lo lea desde cualquier lenguaje y sesión. Un dataset derivado es una copia (0027) que produjo código. Idempotente por digest; una escritura sucesora no borra la anterior (0017 §A) |
+| **escribir** `write("p.salida", tabla)` | no existe | **§11** (2026-09-20, tras §10 y lo medido para W3.6c): una tabla Iceberg en el bucket, **con nombre**, y el puntero en el árbol para que `over("p.salida")` lo lea desde cualquier lenguaje y sesión. Un dataset derivado es un dataset (§10) que produjo código. Idempotente por clave de operación; una escritura sucesora no borra la anterior: es un snapshot más. *(Antes decía: Parquet + sobre `ORECOPY1`, idempotente por digest.)* |
 | **declarar** `transform(inputs, output)` | sólo la `Function` YAML (0029) | **en el código**, igual en los tres (decorador en Python, función en TS, anotación en Java): lo declarado es lo único que la sesión y el trabajo pueden leer y escribir; el resto, 403. Es el material del que después saldrá el documento |
 | **correr** | la sesión (W3.1–W3.4) | **el trabajo**: un transform de un commit corre como Job de Kueue con la imagen de su entorno y su capa, lee y escribe lo declarado, deja el informe en el árbol y aparece en Data › Jobs. `Run` desde la sesión (bucle rápido) y como Job (el «build») |
 
@@ -196,6 +196,74 @@ W3.5b–W3.6 de abajo, en ese orden: **primero el lector en el clúster** (todo 
 DuckDB lea Iceberg en GCS con la identidad del pod, sin internet), luego el escritor de la copia,
 luego el swap, luego `write()`.
 
+### 11 · Escribir (2026-09-20, tras medir `medida-w3-escribir.py`)
+
+El verbo **escribir** es `write("p.t", tabla[, modo])` en los tres lenguajes, con la misma
+semántica, y lo que deja es **un dataset** (§10): una tabla Iceberg en `ore/v2/datasets/<p>_<t>/`,
+una `Table` con `datasource: lago` en `packages/<p>/tables/<t>.yaml` y el puntero
+`datasets/<p>_<t>.json`. Lo mirado (`docs/investigacion/w3-escribir-estado-del-arte.md`) y lo
+medido (abajo) fijan **siete reglas**:
+
+1. **El árbol es el catálogo, y el catálogo habla el protocolo REST de Iceberg.** `ore-serve`
+   sirve `GET /v1/config`, `GET /v1/namespaces[/{ns}[/tables]]`, `GET|HEAD /v1/namespaces/{ns}/
+   tables/{t}` (el puntero + su `metadata.json`), `POST …/tables` (crear, con `stage-create`),
+   `POST …/tables/{t}` y `POST /v1/transactions/commit`. Un commit son `requirements` que se
+   validan (`assert-ref-snapshot-id`, `assert-table-uuid`, `assert-create`, …) y `updates` que
+   se aplican (`add-snapshot`, `set-snapshot-ref`, `add-schema`, `set-properties`, …): **el
+   catálogo escribe el `metadata.json` siguiente** (`ore-store`) y mueve el puntero con el
+   swap de W3.6b (CAS semántico + CAS de la forja); un `commitTransaction` de N tablas es **un
+   commit del árbol con N punteros**. Los códigos son los de la spec: 200, 409
+   `CommitFailedException` (refresca y reintenta), 5xx `CommitStateUnknownException` (**mira
+   antes de reintentar**: `GET …/tables/{t}` o `GET /datasets/{ns}/{n}`), 404, 422. Un
+   namespace es un paquete; sólo una `Table` del lago se escribe (una `View` o una `Table` de
+   otra fuente: 409 «no un dataset»); la `Table` **nace en el commit que la crea** con
+   `columns` de OOS traducidas del esquema de Iceberg (0032), y `escrito_por` es el sujeto.
+   Medido: PyIceberg y DuckDB escriben así sin parches. **Es la puerta abierta**: cualquier
+   motor que hable el protocolo (Spark, Trino, Flink, PyIceberg suelto) escribe en el lago del
+   inquilino con las mismas reglas.
+2. **`write()` es la puerta de casa, y va por un solo escritor.** En los tres lenguajes el SDK
+   convierte lo que le den (pandas/polars/Arrow; filas u objetos Arrow en Node; `List<Map>` o
+   `VectorSchemaRoot` en Java) a **Arrow** y lo manda por IPC al agente del puesto; el agente
+   escribe los ficheros de datos, los manifiestos y la lista con **`ore-store escribir`** (el
+   escritor de Rust de W3.6a, medido: 10 M filas en 2,1 s; el JSON de hoy, 250× más) y
+   **confirma por el catálogo** con el mismo `updateTable` que un motor de fuera. Una verdad
+   (Arrow), un escritor (0032 se implementa una vez: `ns → µs`, zona → UTC, `uint64` y `null`
+   se niegan diciéndolo en la celda), un camino de commit. Java no necesita Iceberg-Java.
+3. **La identidad es un token acotado a la tabla que el catálogo presta.** Al cargar la tabla
+   (`X-Iceberg-Access-Delegation: vended-credentials`, que PyIceberg y DuckDB ya mandan)
+   `ore-serve` devuelve en `config`/`storage-credentials` un token corto de GCS acotado por
+   *Credential Access Boundary* a `ore/v2/datasets/<p>_<t>/` con `objectCreator` +
+   `objectViewer`: el escritor **escribe dentro, no escribe fuera, no borra, no sobrescribe**
+   (medido: 200/403/403/403/403). Sin cuenta de puesto ni aprovisionador: la cuenta de
+   `ore-serve` tiene `objectCreator` sobre el bucket y presta menos. Retirar es del
+   mantenimiento (`53`), nunca del puesto. En local (S3 de mentira) presta las credenciales
+   estáticas.
+4. **Idempotente por clave de operación.** Ningún cliente la trae (medido); `write()` la pone:
+   `ore.operacion = sha256(sesión · celda · nombre · modo · esquema · digest de la tabla)` como
+   propiedad del snapshot, y el catálogo la coteja con la ancestría de la rama antes de aplicar:
+   si ya está, contesta 200 con lo que hay y **no deja snapshot ni commit** (la celda
+   reejecutada, el reintento tras un 5xx). Un motor de fuera que no la mande, duplica: es lo
+   que hace Iceberg.
+5. **Dos modos, y el tercero con nombre.** `sobrescribir` (por defecto: un snapshot que retira
+   lo anterior y añade lo nuevo; lo anterior sigue legible por su id hasta que expire) y
+   `anexar` (`modo="anexar"`: sólo añade; jamás toca un fichero existente, y el bucket lo
+   impone). *Upsert* por clave (equality deletes / deletion vectors) queda aparcado con nombre.
+   El esquema **nace con la primera escritura** y evoluciona por id con cada una (W3.6a: otro
+   tipo, otro id); lo que 0032 no promete no entra.
+6. **La retención se declara en la tabla.** `history.expire.max-snapshot-age-ms` y
+   `history.expire.min-snapshots-to-keep` son propiedades de la tabla (nacen con ella con el
+   defecto del inquilino; se cambian por `set-properties` o `ore datasets --retencion p.t 30d`)
+   y **`--recoger` las obedece**; `--edad` es sólo el defecto para quien no las tenga, y sin
+   nada **no se expira nada** (hoy expira todo: medido). La ficha las enseña.
+7. **La rama.** Una sesión en una rama escribe **en su rama**: el commit del puntero (y el
+   nacimiento de la `Table`) va a la rama de la sesión; leer cae a `main` para lo que la rama no
+   tiene (§4). Publicar es el merge del puntero (W2). Las refs de Iceberg no se usan como ramas.
+
+Lo que **no** cambia: `over()`/`sql()`/`arrow()` leen lo escrito por el puntero como leen una
+copia (W3.5b); el mantenimiento es el mismo CronJob; el `git log` del puntero es la historia.
+Lo que **sí** cambia de casa: `ore-store leer` deja de exigir la cabecera de la copia (lo que
+otro escribió también se lee).
+
 ## Los peldaños de W3
 
 | | qué | acepta |
@@ -209,7 +277,7 @@ luego el swap, luego `write()`.
 | **W3.5b** ✓ 2026-09-20 · el lector del lago | **hecho**: `GET …/datos/{x}` contesta `metadata_location` (o `clave`, heredado); `over()`/`sql()`/`arrow()` en los tres leen por `iceberg_scan(raíz, version, allow_moved_paths)` —https con el token del pod en el bucket, ruta en local—, sesión en UTC, `autoinstall_known_extensions=false`, la cadena `json·icu·avro·iceberg(·httpfs)` cargada por nombre; las tres imágenes preinstalan las extensiones en `/opt/ore/duckdb` (JVM por `preinstalar/Extensiones.java`) y `node` lleva `ca-certificates`; `ore-serve` guarda la salida de una celda **tal cual** (`Json::Crudo`): `null` y `1.5` llegaban a la consola como cadenas; `el-puesto.sh` 4/8/9 leen `hr.lago` (PyIceberg, catálogo = árbol) con el mismo JSON en los tres. **Medido** (abajo): camino (b), directo del bucket con el token del pod; extensiones preinstaladas; node sin CA; una extensión ausente cuelga 120 s. Antes: **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
 | **W3.6a** ✓ 2026-09-20 · la copia es un dataset | **hecho** (abajo, «W3.6a hecho»): `ore-store` escribe la tabla Iceberg en Rust —crear, refrescar fundiendo (sobrescribir), rehacer (sobrescribir), esquema que evoluciona con el lote, expirar y huérfanos— con el almacén de siempre como suelo de Iceberg y **sin catálogo**: el puntero `copias/<p>_<v>.json` (`metadata_location`, `cabecera`, `snapshot`, `testigo`) es el estado, `ore` lo lee antes de leer una fila y lo mueve al terminar, el commit del Job es el *swap* y la forja el CAS; el recibo del bucket se retira; `ore ask` e `ore invoke` leen por el puntero (el resultado de una función también es un dataset, `resultados/<p>_<f>`); `--recoger` expira lo superado (`ORE_RECOGER_EDAD` conserva la historia reciente; el Job, siete días); cotejado con DuckDB y PyIceberg en GCS y con `ore-store-r2` en R2. **Medido** antes: `iceberg-rust` 0.10 escribe lo que hace falta a 2,6 M filas/s con los diez tipos exactos, también en gs:// → **se construye en Rust**. Antes: **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
 | **W3.6b** ✓ 2026-09-20 · el swap y el lago | **hecho** (abajo, «W3.6b hecho»): `POST /datasets/{ns}/{n}/confirmar {metadata_location, esperado, snapshot, filas, columnas}` → `ore datasets --confirmar` decide (CAS semántico: código 75 → 409 con `actual`; el `metadata.json` tiene que estar en el bucket; la `Table` del lago nace tipada con `columnas` en el mismo commit) y `ore-serve` empuja (CAS de la forja → 409, **también en la carrera de verdad**: `[remote rejected] … incorrect old value` era 502 y `git.rs` no lo conocía); `GET /datasets` y `GET /datasets/{ns}/{n}` (la ficha: snapshots con operación, filas, testigo, plan; el esquema de Iceberg; `ore-store historia`); el puesto resuelve una `Table` del lago por `datasets/<p>_<t>.json`; `ore init` declara `datasource: lago` (`LAGO_URL`, la raíz del bucket) y `confirmar` lo declara si falta; `53-el-mantenimiento.yaml`: un CronJob diario por inquilino con `ore datasets . --recoger --edad 7d` sobre punteros, sin compilar ni tocar orígenes. `el-lago.sh` 0–6. **Medido** antes (abajo). Antes: `ore-serve` hace el CAS sobre el puntero y el commit por la forja; el `datasource: lago` nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta (**cuatro a la vez: uno gana, tres 409**); `git log` de un puntero es la historia de la tabla (`GET /arbol/historia/datasets/…`, tres versiones con quién) |
-| **W3.6c** · escribir | `write("p.salida", tabla)` en los tres (Python con PyIceberg primero; Node y Java por DuckDB `COPY … TO` Iceberg cuando lo tenga, o por el trabajo): datos y `metadata.json` al bucket con la identidad del pod (`objectCreator` sobre `datasets/`), el puntero por `ore-serve`, la `Table` del lago escrita con el esquema de Arrow la primera vez; 0032 convierte lo que Iceberg no tiene (ns → µs, zona → UTC) y niega `uint64`/`null` diciéndolo | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, latencia de un commit en el clúster |
+| **W3.6c** · escribir | **§11**, en cinco pasos (abajo, «Los pasos de W3.6c»): c1 `ore-store escribir` (IPC → ficheros + manifiestos → `updates`) y `aplicar` (`requirements` + `updates` → el `metadata.json` siguiente); c2 `ore datasets --commit` (la clave de operación, la Table que nace, la retención por propiedades); c3 `ore-serve` como catálogo REST de Iceberg con credenciales prestadas (CAB) y `commitTransaction`; c4 `write()` en los tres SDK por IPC al agente; c5 en el clúster. **Medido antes** (abajo). *(Antes: PyIceberg en Python, DuckDB `COPY` en Node y Java, `objectCreator` del aprovisionador.)* | los tres escriben 10 M de filas y los otros dos las leen exactas; la celda repetida no duplica; PyIceberg y DuckDB escriben contra `ore-serve` sin parches; el token acotado desde el pod escribe dentro y no fuera |
 | **W3.4b** · dependencias | las capas de Node (`package.json` → `node_modules` en el bucket) y de la JVM (`pom.xml`/`build.gradle` → jars en el bucket, resueltos con Maven en el Job del driver; nunca Gradle del cliente en la malla) | medido como la de Python: resolver, subir, bajar, cargar |
 | **W3.7** · declarar y correr | `transform(inputs, output)` en los tres; el trabajo de código desde un commit (`ore run packages/p/transforms/x.{py,ts,java}`) con entorno + capa; fallback de rama; un `over` no declarado se rechaza | medido: frío del trabajo por entorno, un transform sobre 200 M de filas |
 | **W3.8** · baja latencia | funciones TS y Python residentes (0029 ②): un proceso por función con sus vistas calientes, invocado por `ore-serve` | medido: p50/p99, memoria de las vistas calientes, arranque |
@@ -572,6 +640,20 @@ al cargarla: sin cuenta nueva, sin aprovisionador, y el bucket impone lo que la 
 lo hace por su cuenta. (e) La retención se lee de las propiedades de la tabla; el `--edad` es el
 defecto y **sin nada no se expira nada**. (f) Node escribe por IPC al agente y el agente por
 `ore-store`; `leer` deja de exigir la cabecera de la copia.
+
+## Los pasos de W3.6c · escribir (definidos el 2026-09-20; cada uno cierra con sus pruebas antes del siguiente)
+
+| paso | qué | dónde | acepta |
+|---|---|---|---|
+| **c1** · el escritor y el aplicador | `ore-store escribir {dataset, ubicacion, modo, base?, operacion, propiedades?}` + **Arrow IPC por stdin** → escribe los ficheros de datos (0032 al escribir: `ns → µs`, zona → UTC, `uint64`/`null` negados con el nombre de la columna), los manifiestos y la lista, y **devuelve `{requirements, updates, filas, columnas, bytes, ficheros}`** en el vocabulario REST (`assert-ref-snapshot-id`/`assert-create` · `add-snapshot` + `set-snapshot-ref` [+ `add-schema`/`set-current-schema` si el lote trae columnas nuevas], `ore.operacion` en el resumen); `ore-store aplicar {metadata_location?, requirements, updates}` → valida, aplica (`TableUpdate::apply`; desde cero cuando `assert-create`), escribe el `metadata.json` siguiente y devuelve `{metadata_location, snapshot, filas, columnas, operacion, propiedades}`; `leer` sin cabecera; `recoger` obedece `history.expire.*` y sin nada no expira; `historia` enseña operación y retención | `crates/ore-store/src/{ciclo,lago,carga}.rs`; el `ipc` desechable se va | unitarias con `Memoria`: IPC de los diez físicos de 0032 exactos; los cuerpos que PyIceberg (append, overwrite) y DuckDB (`stage-create` + once updates) mandaron en la medida, guardados como fixtures, se aplican y DuckDB los lee; la misma operación dos veces = un snapshot; 10 M por IPC en el orden de lo medido |
+| **c2** · el verbo sobre el árbol | `ore datasets --commit p.t --peticion <json>` (el `CommitTableRequest`; `--crear` con `stage-create`): el paquete existe; la `Table` es del lago o no existe (una `View`/otra fuente → 65); el puntero es la base (`assert-ref-snapshot-id`) o 75 con `actual`; **la clave de operación en la ancestría → 0 sin tocar nada**; `ore-store aplicar`; la `Table` nace con `columns` (0032 ← Iceberg) y las propiedades de retención con el defecto del inquilino; el puntero con `escrito_por`, `operacion`; `--commit` con **varias peticiones = un commit**; `--retencion p.t 30d`; `--ficha` con retención y operación por snapshot; `--recoger` sin `--edad` obedece la tabla | `crates/ore-cli/src/datasets.rs` (+ `fuente.rs`) | `el-lago.sh` 7–10: nace por commit, se repite sin commit, dos tablas en un commit, retención declarada y obedecida (y sin nada no se expira) |
+| **c3** · el catálogo REST | las rutas `/v1/…` en `ore-serve` (`config`, namespaces = paquetes, `loadTable` = puntero + `metadata.json` leído por `ore-store`, `createTable`, `updateTable`, `commitTransaction`, HEAD); cuerpos de error de la spec; identidad la de siempre (bearer/cabecera) → `escrito_por`; **credenciales prestadas**: con `X-Iceberg-Access-Delegation`, un token CAB acotado a `ore/v2/datasets/<p>_<t>/` (`objectCreator`+`objectViewer`, STS desde el token del pod de `ore-serve`) en `config` y `storage-credentials` con su caducidad; en local, las estáticas del S3 de mentira; la rama de la sesión (`?rama=`/cabecera) para el commit; el aprovisionador da `objectCreator` a `ore-serve-<t>` sobre el bucket | `crates/ore-serve/src/{catalogo,rutas,datasets}.rs`, `malla/`, aprovisionador | `el-lago.sh` 11–13 en CI con **PyIceberg y DuckDB de verdad** contra `ore-serve` (lo de la medida, como prueba): crear, anexar, sobrescribir, `CREATE TABLE … AS` por `transactions/commit`, la carrera (409 y reintento del cliente), el 502 tras confirmar (el commit está y `GET` lo dice), un token de otra tabla negado (en local, por las credenciales que presta) |
+| **c4** · `write()` en los tres | SDK: `write(nombre, datos, modo="sobrescribir"|"anexar")` en `puesto/python/ore`, `puesto/node/ore`, `puesto/jvm/ore` → Arrow IPC al agente (`{"verbo":"escribir"}`); el agente: `loadTable` (o `stage-create`) al catálogo con `vended-credentials`, `ore-store-gcs escribir` con el token prestado en el entorno, `updateTable`; 409 → refresca y repite; 5xx → `GET` y compara; la clave de operación; los errores de 0032 dichos en la celda con la columna; `ore-store-gcs` en las tres imágenes de puesto | `puesto/*`, `Dockerfile` | `el-puesto.sh` 10–13: cada lenguaje escribe (pandas, polars, Arrow / objetos, Arrow / `List<Map>`, `VectorSchemaRoot`) y los otros dos leen exacto (los diez físicos); la misma celda dos veces = un snapshot; `anexar` sobre lo escrito por otro lenguaje; escribir una `View` → 409 dicho |
+| **c5** · en el clúster | el token CAB desde el token del pod de `ore-serve-demo`; los tres puestos escriben en el bucket de demo bajo `ore/v2/datasets/medida_*` y se leen entre sí; la ficha por `GET /datasets/{ns}/{n}`; se limpia el prefijo. **Con go**: `jobs-p` 0 → 1 → 0 | `pruebas-de-fuego/la-escritura-en-demo.py` | lo de c4 en el clúster, con la identidad real; 0031 lleva «W3.6c hecho» |
+
+Fuera del verbo, y con dueño: la ficha del dataset en la consola (la sesión de la consola; el
+endpoint ya está), el gobierno de lo escrito (las etiquetas por el grafo: W3.7, con
+`declarar`), *upsert*.
 
 ## Lo que se aparca
 
