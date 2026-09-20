@@ -195,6 +195,34 @@ antes de meter nada en una imagen:
   exporte Arrow (está en su hoja de ruta), los `TypedArray` numéricos serán zero-copy.
 - **Python: pyarrow** ya lo era (13 M filas/s); sólo cambia el `to_pandas` (`ArrowDtype`).
 
+### T1, hecho: la tabla como código
+
+- **`ore_core::tipos`**: `Fisico` (el tipo Arrow/Parquet de cada escalar: `Texto · Entero · Real ·
+  Logico · Decimal{p,s} · Fecha · Hora · FechaHora · Instante`), `Fisico::de(&Type)` (la tabla de
+  §1: `Money<EUR,2>` → `decimal128(38, 2)`; `Opaque`, `list<T>` e importados → texto por ahora),
+  `Fisico::analizar(texto) -> Option<Valor>` (la forma canónica: la que `ore-read-postgres::texto`
+  emite —`2020-02-29 10:00:00.5+00`, `true`, `12345.6789`— más `T`, `Z` y `±HH:MM` en instantes) y
+  `Valor::texto(&Fisico)` (la vuelta; `analizar(v.texto()) == v`). Sin Arrow en el núcleo: el
+  físico es un enum propio y `carga.rs` lo lleva a `DataType` en diez líneas. Lo que no analiza
+  contesta `None` y **no se inventa** (`" 1"`, `+1`, `1.0` como `Integer`, `t` como `Boolean`,
+  `2021-02-29`, `24:00:00`, un instante sin desfase, un `1.7E9` como `DateTimeTz`, un decimal con
+  más de 18 decimales o de 38 dígitos).
+- **`ore-store::carga`** estrecha **todos** los escalares por esa tabla (revisa 0015). Por columna:
+  se analiza todo y sólo si todo analiza se estrecha; si un valor no cabe, **la columna entera
+  queda `string`** y `escribir` devuelve `Carga { bytes, sin_estrechar: columna → "3 de 120
+  valores no son DateTimeTz: el primero es `…`; la columna se queda como texto" }`. Ni nulo
+  silencioso ni copia rota. `leer` vuelve cada columna estrechada a su forma canónica, así que
+  base leída + incremento del origen y resellar dan **los mismos bytes** que sellar de golpe (hay
+  prueba), y dos desfases del mismo instante son la misma copia.
+- **El informe**: `sellar` saca `sin_estrechar`; `ore materialize` lo pone en
+  `copias/<p>_<v>.json` como `columnas_sin_estrechar` y en la línea de la pasada
+  («⚠ 2 columnas sin estrechar (se quedan como texto): id — 1 de 2 valores no son Integer…»).
+  `pruebas-de-fuego/almacen-r2.sh` §4 pasa de «se niega» a «sella y lo dice».
+- **Lo que cambia para quien lee**: nada hasta T2, porque la cabecera de las copias de hoy dice
+  `String` para todo (el plan pone `String` a lo que la vista no tipa). Con `Integer`/`Decimal`
+  declarados en una entidad (el e2e `la-pregunta-se-contesta.sh`), la copia ya sale con `int64` y
+  `decimal128(38, 18)` y `ore ask` contesta lo mismo.
+
 ## Lo que se acepta a cambio
 
 - **Un cambio de espec** (`Table.columns.<c>.type`) y **rehacer las copias** para que lleven
@@ -205,11 +233,43 @@ antes de meter nada en una imagen:
 - **`DateTimeTz` pierde la zona del origen** (se guarda el instante en UTC). Es la decisión de
   Arrow/Parquet/Spark/BigQuery; la alternativa (guardar zona por valor) no existe en Parquet.
 
+## Lo que se aparca hasta W3.6: Iceberg como formato de dataset del bucket
+
+Preguntado el 2026-09-20, decidido en principio y aplazado con su medida. Iceberg es tres cosas:
+Parquet como fichero, una capa de metadatos (esquema, particiones, *snapshots* con sus
+manifiestos) y un catálogo cuyo único deber es el *swap* atómico del puntero al `metadata.json`
+vigente. Nosotros ya tenemos las tres en formato propio: Parquet dentro de `ORECOPY1`, el informe
+`copias/<p>_<v>.json` como metadato, y **el árbol como catálogo** —el commit es el swap atómico,
+`git log` es el *time travel*, y la cadena de copias sucesoras (0017 §A) es un log de snapshots
+hecho a mano. Lo que hace un catálogo Iceberg (Polaris, Nessie, BigLake) es lo que hace nuestro
+git: guardar la referencia actual de cada tabla y cambiarla de forma atómica y con historia.
+Nuestro git *es* nuestro Polaris, hecho en casa y con la ontología al lado.
+
+**Se adopta** Iceberg como **estándar de dataset del bucket** —lo que un `write()` produce
+(W3.6) y todo lo incremental o multi-fichero—, con git como catálogo: el informe en el árbol lleva
+el puntero al `metadata.json` y el commit lo cambia. Lo que se gana es que BigQuery (BigLake),
+Snowflake, Spark/Databricks y DuckDB **leen el dataset en sitio, sin moverlo**, y que la
+evolución de esquema con las promociones que este contrato adopta (int→long, decimal P↑) y el
+*append* con aislamiento vienen resueltos en vez de reinventados sobre el sobre. El contrato de
+tipos ya es el suyo (µs, timestamptz en UTC, decimal ≤ 38): no hay traducción.
+
+**La copia sigue siendo `ORECOPY1`** mientras sea «una vista sellada en un fichero por digest»:
+para 31 copias de 71–112 k filas y 2–20 columnas, manifiestos y snapshots son peso sin beneficio,
+y el sobre es más simple y más honesto (0015). El día que una copia sea incremental
+(`changes.mode: append`) o multi-fichero, es un dataset y va por Iceberg.
+
+**Antes de diseñar `write()`, se mide** (`medida-w3-iceberg.py`): PyIceberg e `iceberg-rust`
+escribiendo 10 M de filas al bucket del inquilino con el árbol como catálogo (sin servicio REST);
+DuckDB leyendo por `metadata.json` directo; BigQuery leyéndolo en sitio; el coste de un snapshot
+(ficheros y latencia por commit); un *append* incremental; una evolución de esquema con
+promoción; y la madurez de escritura desde los tres lenguajes. Con esos números se decide si el
+dataset escrito por código nace Iceberg; la expectativa es que sí.
+
 ## Los peldaños
 
 | | qué | acepta |
 |---|---|---|
-| **T1** | la tabla de arriba como código: `ore_core::tipos` (escalar ↔ Arrow ↔ forma canónica del texto) con sus pruebas; `carga.rs` estrecha por ella; el informe de la copia dice lo no estrechado | la copia de `olist.products` lleva `price: decimal`, `recorded_at: timestamp[us, UTC]`; `medida-w3-tipos.py` deja de decir `string×218` |
+| **T1** ✓ 2026-09-20 | la tabla de arriba como código: `ore_core::tipos` (escalar ↔ físico ↔ forma canónica del texto) con sus pruebas; `carga.rs` estrecha por ella; el informe de la copia dice lo no estrechado | hecho, abajo; la copia de `olist.products` llevará `price: decimal`, `recorded_at: timestamp[us, UTC]` cuando T2 ponga el escalar en la cabecera (hoy el plan dice `String`); `medida-w3-tipos.py` deja de decir `string×218` con T2 + rehacer |
 | **T2** | el escalar al árbol: derivación desde `physicalType` en el compilador (ya) y `Table.columns.<c>.type` en OOS (como toca) | un `sum(price)` en una vista es `Decimal` en el plan sin defaults |
 | **T3** | la celda: `over()` columnar en los tres, el JSON único, `estricto` | `medida-w3-leer.py` sin `≠` fuera de lo que la tabla dice |
 | **T4** ✓ 2026-09-20 | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | arriba: Java → Arrow (23/23, 14,6 M filas/s, 5 MB); Node → DuckDB tipado por columnas (22/23, sin añadir nada) y no Arrow JS (11/23, 21 MB); en Node no se materializan 10 M de filas |

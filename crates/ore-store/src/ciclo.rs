@@ -279,7 +279,10 @@ fn sellar<'a>(
             })
             .collect(),
     );
-    let parquet = carga::escribir(&cab.esquema, &filas)?;
+    let carga::Carga {
+        bytes: parquet,
+        sin_estrechar,
+    } = carga::escribir(&cab.esquema, &filas)?;
     let artefacto = sobre::sellar(&cab, &parquet);
     let clave = sobre::clave(&artefacto);
     let digest = ore_core::digest::de_bytes(&artefacto);
@@ -315,6 +318,18 @@ fn sellar<'a>(
         ("bytes", ore_core::json::Json::Int(artefacto.len() as i64)),
         ("clave", ore_core::json::Json::s(&clave)),
         ("columnas", columnas),
+        // Las columnas que la tabla de 0032 quería estrechar y se quedaron
+        // como texto porque un valor no analizó, con el porqué. Vacío es lo
+        // que el contrato promete; lo que haya va al informe tal cual.
+        (
+            "sin_estrechar",
+            ore_core::json::Json::Obj(
+                sin_estrechar
+                    .iter()
+                    .map(|(c, p)| (c.clone(), ore_core::json::Json::s(p)))
+                    .collect(),
+            ),
+        ),
         ("digest", ore_core::json::Json::s(&digest)),
         ("filas", ore_core::json::Json::Int(filas.len() as i64)),
         ("recibo", ore_core::json::Json::s(recibo)),
@@ -650,7 +665,9 @@ mod tests {
             .into(),
             [("id".to_string(), "a".to_string())].into(),
         ];
-        let parquet = carga::escribir(&cab.esquema, &filas).expect("parquet");
+        let parquet = carga::escribir(&cab.esquema, &filas)
+            .expect("parquet")
+            .bytes;
         let artefacto = sobre::sellar(&cab, &parquet);
         let clave = sobre::clave(&artefacto);
         cuenta.subir(&clave, &artefacto).expect("sube");

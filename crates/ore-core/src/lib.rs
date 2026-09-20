@@ -58,6 +58,7 @@ pub mod politica;
 pub mod propuesta;
 pub mod significado;
 pub mod sync;
+pub mod tipos;
 pub mod transparencia;
 pub mod types;
 pub mod validate;

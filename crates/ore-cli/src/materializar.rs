@@ -497,6 +497,42 @@ fn una(
             vacias.join(", ")
         )
     };
+    // Las columnas que el contrato de tipos (0032) quería estrechar y se
+    // quedaron como texto porque un valor no analizó. La copia está bien y es
+    // legible; lo que no está es el tipo, y hay que decirlo donde se lee.
+    let sin_estrechar: BTreeMap<String, ore_core::json::Json> = salida
+        .get("sin_estrechar")
+        .map(|(_, o)| {
+            o.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    Some((
+                        k.as_str()?.to_string(),
+                        ore_core::json::Json::s(v.as_str()?),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let aviso_tipos = if sin_estrechar.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n  ⚠ {} columnas sin estrechar (se quedan como texto): {}",
+            sin_estrechar.len(),
+            sin_estrechar
+                .iter()
+                .map(|(c, p)| format!(
+                    "{c} — {}",
+                    match p {
+                        ore_core::json::Json::Str(s) => s.as_str(),
+                        _ => "?",
+                    }
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    };
     let superada = campo("superada");
     let superada = if superada == "?" {
         String::new()
@@ -521,7 +557,7 @@ fn una(
     };
     Ok((
         format!(
-            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}{rehecha}",
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}{aviso_tipos}{rehecha}",
             campo("clave"),
             campo("filas"),
             campo("bytes"),
@@ -541,6 +577,10 @@ fn una(
             ("leidas", ore_core::json::Json::Int(leidas as i64)),
             ("bytes", ore_core::json::Json::Int(entero("bytes"))),
             ("columnas", ore_core::json::Json::Obj(columnas)),
+            (
+                "columnas_sin_estrechar",
+                ore_core::json::Json::Obj(sin_estrechar),
+            ),
             (
                 "subido",
                 ore_core::json::Json::Bool(campo("subido") == "true"),

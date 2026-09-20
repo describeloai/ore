@@ -53,15 +53,21 @@ otra=$(campo "$c" clave)
 [ "$otra" != "$clave" ] && ok "otro nombre" || mal "el testigo no entra en el digest"
 [ "$(campo "$c" subido)" = "true" ] && ok "y sube" || mal "no subió: $c"
 
-echo "── 4 · lo que no es del tipo declarado se niega ─────────────────"
-d=$({ echo "${CAB/__T__/4210}"; echo '{"id":"uno","pais":"ES","total":"1"}'; } | "$BIN" 2>&1)
+echo "── 4 · lo que no es del tipo declarado se queda texto, y se dice ─"
+# 0032: un valor que no analiza no se inventa ni rompe la copia. La columna
+# entera queda como texto y `sin_estrechar` dice cuántos valores y cuál.
+d=$({ echo "${CAB/__T__/4212}"; echo '{"id":"uno","pais":"ES","total":"1"}'; } | "$BIN" 2>&1) || { echo "$d"; exit 1; }
+tercera=$(campo "$d" clave)
 case "$d" in
-  *"no inventa una conversión"*) ok "se niega, y dice cuál columna" ;;
-  *) mal "aceptó un Integer que no lo es: $d" ;;
+  *'"sin_estrechar":{"id":"1 de 1 valores no son Integer'*'`uno`'*) ok "sella, y dice qué columna se quedó texto y por qué" ;;
+  *) mal "no dijo que \`id\` se quedó texto: $d" ;;
+esac
+case "$d" in
+  *'"total"'*) ;; *) mal "sin \`columnas\`: $d" ;;
 esac
 
 echo "── limpieza ────────────────────────────────────────────────────"
-for k in "$clave" "$otra"; do
+for k in "$clave" "$otra" "$tercera"; do
   python - "$k" <<'PY' 2>/dev/null || echo "  (borra a mano: $k)"
 import os, sys, boto3
 boto3.client("s3", endpoint_url=os.environ["ORE_R2_S3_ENDPOINT"],
@@ -71,7 +77,7 @@ boto3.client("s3", endpoint_url=os.environ["ORE_R2_S3_ENDPOINT"],
 ).delete_object(Bucket=os.environ["ORE_R2_BUCKET"], Key=sys.argv[1])
 PY
 done
-echo "  borrados 2"
+echo "  borrados 3"
 
 echo
 [ "$fallos" -eq 0 ] && echo "todo verde" || echo "$fallos fallo(s)"
