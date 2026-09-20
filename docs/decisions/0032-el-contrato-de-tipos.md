@@ -46,6 +46,34 @@ Medido antes de decidir nada (`medida-w3-leer.py`, `medida-w3-tipos.py`):
 - **Foundry** tipa el dataset en el *schema* del dataset (Spark types) y cada transform lo lee
   tipado; **Databricks** en Delta/Iceberg; **Snowflake** en la tabla. Ninguno entrega texto y
   deja al lector adivinar.
+- **Lo que dicen los tres sistemas de tipos de referencia, cotejados el 2026-09-20** (Foundry
+  `SchemaFieldType`: 15 tipos —BYTE/SHORT/INTEGER/LONG, FLOAT/DOUBLE, DECIMAL(p,s), BOOLEAN,
+  STRING, BINARY, DATE, TIMESTAMP, ARRAY, MAP, STRUCT—; Databricks/Spark: los mismos más
+  `TIMESTAMP_NTZ`, `INTERVAL`, `VARIANT`, `GEOGRAPHY`; Iceberg: 14 primitivos, `timestamp` sin
+  zona y `timestamptz` **guardado en UTC**, `time`/`timestamp` en microsegundos, decimal P ≤ 38):
+  1. **Todos tipan en la tabla/dataset**, y ninguno entrega texto a la celda. Lo que sí hacen
+     todos con lo que llega **sin tipos** (CSV, JSON) es exactamente lo nuestro: columnas
+     `string` hasta que alguien aplica un esquema (Foundry: «Apply a schema» infiere sobre una
+     muestra; Databricks: `inferSchema=false` → todo cadena, y para producción «esquema
+     explícito»). Un origen JDBC llega tipado en los tres porque el conector lee sus tipos —
+     que es nuestro caso con Postgres y BigQuery, y donde hoy fallamos.
+  2. **Dos instantes, no uno**: Spark/Databricks/Foundry `TIMESTAMP` = instante (normalizado a
+     UTC, se pinta en la zona de sesión) y `TIMESTAMP_NTZ` = hora de pared; Iceberg
+     `timestamptz` (UTC) y `timestamp`. Nuestro `DateTimeTz`/`DateTime` es ese par, letra por letra.
+  3. **Anchos**: ellos distinguen BYTE/SHORT/INTEGER/LONG y FLOAT/DOUBLE; OOS tiene `Integer` y
+     `Float`. Se resuelve ensanchando sin pérdida (`int64`, `float64`), que es la promoción que
+     Iceberg admite (int → long, float → double, decimal(P) → decimal(P′ > P)) y **la única**
+     evolución de tipo que una copia sucesora de la misma vista puede hacer; estrechar es otra vista.
+  4. **Un cast que falla**: Databricks en modo ANSI **falla** (`CAST`) o da **null** (`try_cast`);
+     Foundry infiere sobre una muestra y el lote que no encaja rompe el build. Lo nuestro es la
+     tercera vía y se elige a propósito: la columna **se queda texto, la copia sale, y el informe
+     lo dice**. Ni un null inventado ni un build roto por una fila.
+  5. **Anidados**: struct/map/array son de primera clase en los tres; OOS los aplana en el
+     binding (v1alpha1) y sólo tiene `list<T>`. Es una brecha conocida frente a orígenes JSON, y
+     se deja dicha: la copia los guarda si vienen (Arrow los tiene), el contrato no los promete.
+  6. **Semánticos**: Foundry añade GeoPoint/GeoShape/TimeSeries/Attachment; Databricks
+     GEOGRAPHY/GEOMETRY/VARIANT. OOS tiene `Money<>`, `Quantity<>` y tipos importados
+     (`iso.CountryAlpha2`): el mismo mecanismo, otro catálogo. Después.
 - **pandas 3 con `ArrowDtype`** (`to_pandas(types_mapper=pd.ArrowDtype)`) conserva enteros
   nulables, decimales y zonas; **`@duckdb/node-api`** tiene valores tipados por tipo
   (`DuckDBDecimalValue` exacto, `DuckDBTimestampTZValue`, `DuckDBMapValue`…) y acceso por
@@ -68,7 +96,7 @@ Medido antes de decidir nada (`medida-w3-leer.py`, `medida-w3-tipos.py`):
 | OOS | Arrow / Parquet | pyarrow / pandas(ArrowDtype) | Node (DuckDB tipado) | Java (Arrow) | JSON de la consola |
 |---|---|---|---|---|---|
 | `Integer` | `int64` | · / `int64[pyarrow]` (nulable) | `bigint` | `Long` | número si \|x\| ≤ 2⁵³, si no **cadena** |
-| `Decimal` | `decimal128(p, s)` (p, s del `physicalType`; sin ellos, (38, 9)) | `Decimal` · | `DuckDBDecimalValue` · | `BigDecimal` · | **cadena** siempre (`"12345.6789"`) |
+| `Decimal` | `decimal128(p, s)` (p, s del `physicalType`; sin ellos, **(38, 18)**, el mismo por defecto que Foundry) | `Decimal` · | `DuckDBDecimalValue` · | `BigDecimal` · | **cadena** siempre (`"12345.6789"`) |
 | `Float` | `float64` | · | `number` | `Double` | número; `NaN`, `inf`, `-inf` como **cadena** |
 | `Boolean` | `bool` | · | `boolean` | `Boolean` | booleano |
 | `String` | `string` (`large_string` si > 2 GB de columna) | · | `string` | `String` | cadena |
