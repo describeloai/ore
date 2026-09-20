@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Los spikes de medida en Rust (`pruebas-de-fuego/medida-*-rust/`) tienen su
+# propio Cargo.toml y no entran aqui: son desechables y traen dependencias que
+# el producto no lleva (arrow 58 frente al 56 del arbol).
+exclude = ["pruebas-de-fuego/medida-w3-iceberg-rust"]
 
 # El build POR DEFECTO de este repositorio es el compilador hermetico. Los
 # drivers son miembros —entran en `Cargo.lock`, y por tanto en el radar del

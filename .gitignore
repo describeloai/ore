@@ -1,4 +1,7 @@
 /target
+# el target del spike de medida en Rust (crate fuera del workspace)
+pruebas-de-fuego/medida-w3-iceberg-rust/target
+pruebas-de-fuego/medida-w3-iceberg-rust/Cargo.lock
 **/*.rs.bk
 .env
 .env.local

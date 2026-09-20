@@ -1,0 +1,23 @@
+# MEDIDA · W3.6a · ¿escribe iceberg-rust desde Rust lo que el Job de copia
+# necesita? Un crate DESECHABLE, fuera del workspace (la raíz lo excluye): sólo
+# lo corre `pruebas-de-fuego/medida-w3-iceberg-rust.py`. Lo que se mide es la
+# librería (`iceberg` 0.10 + `iceberg-storage-opendal` para gs://), no ore-store.
+[package]
+name = "medida-w3-iceberg-rust"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+iceberg = "0.10.1"
+iceberg-storage-opendal = { version = "0.10.1", default-features = false, features = ["opendal-fs", "opendal-gcs", "opendal-memory"] }
+arrow-array = "58"
+arrow-schema = "58"
+parquet = "58"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
