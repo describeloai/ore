@@ -38,8 +38,11 @@ contrato (0032: `ns` → `µs`, zona → UTC; `uint64` y `null` se niegan con el
 de la columna) y escribe los ficheros **con la credencial que el catálogo prestó**
 —acotada al prefijo de esa tabla—; el commit va al catálogo REST de Iceberg de
 `ore-serve` (`/v1/…`), que valida, escribe el `metadata.json` y mueve el puntero.
-`modo="sobrescribir"` (por defecto) o `"anexar"`. Idempotente: la misma tabla al
-mismo nombre y modo otra vez no deja otro snapshot (la clave de operación).
+`modo="sobrescribir"` (por defecto), `"anexar"` o `"upsert"` (con `clave=[…]`, las
+columnas que identifican una fila: lo que había menos esas claves, más lo que
+llega, reescrito entero —copy-on-write— y la clave queda declarada en la tabla
+para la siguiente vez). Idempotente: la misma tabla al mismo nombre y modo otra
+vez no deja otro snapshot (la clave de operación).
 Un 409 (alguien escribió mientras tanto) se reintenta sobre lo que hay; un 5xx
 se MIRA antes de reintentar: si el commit entró, entró.
 """
@@ -433,15 +436,20 @@ def _mensaje(r):
     return str(e or r)
 
 
-def write(nombre, datos, modo="sobrescribir"):
+def write(nombre, datos, modo="sobrescribir", clave=None):
     """Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
     Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""
     import hashlib
 
     if not isinstance(nombre, str) or nombre.count(".") != 1:
         raise ValueError("write() quiere `<paquete>.<tabla>`, no %r" % (nombre,))
-    if modo not in ("sobrescribir", "anexar"):
-        raise ValueError("modo=%r: vale `sobrescribir` o `anexar`" % (modo,))
+    if modo not in ("sobrescribir", "anexar", "upsert"):
+        raise ValueError("modo=%r: vale `sobrescribir`, `anexar` o `upsert`" % (modo,))
+    if clave is not None and (isinstance(clave, str) or not all(isinstance(c, str) for c in clave)):
+        raise ValueError("clave=%r: una lista de nombres de columna" % (clave,))
+    if clave is not None and modo != "upsert":
+        raise ValueError("`clave` es de modo=\"upsert\"")
+    clave_upsert = list(clave) if clave else None
     ns, t = nombre.split(".")
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
@@ -453,7 +461,7 @@ def write(nombre, datos, modo="sobrescribir"):
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de
     # lo mismo), con esta semilla: la misma tabla al mismo nombre y modo es la
     # misma escritura, y el catálogo no la repite.
-    semilla = "%s|%s" % (nombre, modo)
+    semilla = "%s|%s" % (nombre, modo) + ("|" + ",".join(clave_upsert) if clave_upsert else "")
     clave = None
     dataset = "datasets/%s_%s" % (ns, t)
 
@@ -475,6 +483,8 @@ def write(nombre, datos, modo="sobrescribir"):
             _s3 = config
         binario, env = _ore_store(config, ubicacion)
         peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla}
+        if clave_upsert:
+            peticion["clave"] = clave_upsert
         if base:
             peticion["base"] = base
         else:

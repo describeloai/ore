@@ -400,11 +400,26 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     let dataset = campo("dataset").ok_or(
         "a `escribir` le falta `dataset`: bajo qué nombre vive la tabla (`datasets/<p>_<t>`)",
     )?;
-    let operacion = match campo("modo").as_deref() {
-        None | Some("sobrescribir") => Operacion::Sobrescribir,
-        Some("anexar") => Operacion::Anexar,
-        Some(otro) => return Err(format!("`modo` es `sobrescribir` o `anexar`, no `{otro}`")),
+    let modo = campo("modo").unwrap_or_else(|| "sobrescribir".into());
+    let operacion = match modo.as_str() {
+        "sobrescribir" | "upsert" => Operacion::Sobrescribir,
+        "anexar" => Operacion::Anexar,
+        otro => {
+            return Err(format!(
+                "`modo` es `sobrescribir`, `anexar` o `upsert`, no `{otro}`"
+            ));
+        }
     };
+    // La clave del upsert: la de la petición, o la que la tabla ya declara.
+    let clave_upsert: Vec<String> = n
+        .get("clave")
+        .and_then(|c| c.as_array())
+        .map(|c| {
+            c.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
     let semilla = campo("semilla").unwrap_or_default();
     let clave_pedida = campo("operacion");
     let propiedades: HashMap<String, String> = n
@@ -513,6 +528,63 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
             .collect::<Result<Vec<_>, _>>()?,
         None => lotes,
     };
+    // `upsert` (0031 §11 ⑤): copy-on-write en Arrow. Lo que había —con sus
+    // position deletes aplicados— menos las claves que llegan, más lo que
+    // llega, y todo al esquema unión (la tabla más las columnas nuevas del
+    // lote: un upsert no tira columnas); se escribe entero como `overwrite`.
+    // La clave: la de la petición, o la que la tabla declara (`ore.clave`).
+    let mut clave_upsert = clave_upsert;
+    if modo == "upsert" {
+        if clave_upsert.is_empty() {
+            clave_upsert = previa
+                .as_ref()
+                .and_then(|t| t.metadata().properties().get(lago::PROP_CLAVE).cloned())
+                .map(|c| c.split(',').map(String::from).collect())
+                .unwrap_or_default();
+        }
+        if clave_upsert.is_empty() {
+            return Err(
+                "`upsert` quiere `clave` (las columnas que identifican una fila): la tabla no la declara todavía"
+                    .into(),
+            );
+        }
+    }
+    let lotes = match (&previa, modo.as_str()) {
+        (Some(t), "upsert") => {
+            let de_la_tabla = iceberg::arrow::schema_to_arrow_schema(t.metadata().current_schema())
+                .map_err(|e| format!("el esquema de la tabla no pasa a Arrow: {e}"))?;
+            let mut campos: Vec<arrow_schema::Field> = lotes[0]
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect();
+            for f in de_la_tabla.fields() {
+                if !campos.iter().any(|c| c.name() == f.name()) {
+                    campos.push(f.as_ref().clone().with_nullable(true));
+                }
+            }
+            let union = std::sync::Arc::new(arrow_schema::Schema::new(campos));
+            for c in &clave_upsert {
+                if union.field_with_name(c).is_err() {
+                    return Err(format!(
+                        "la clave nombra `{c}`, que no es una columna de la tabla ni del lote"
+                    ));
+                }
+            }
+            let nuevos = lotes
+                .iter()
+                .map(|l| carga::al_esquema(l, &union))
+                .collect::<Result<Vec<_>, _>>()?;
+            let viejos = lago
+                .lotes(t)?
+                .iter()
+                .map(|l| carga::al_esquema(l, &union))
+                .collect::<Result<Vec<_>, _>>()?;
+            carga::fundir_lotes(viejos, &nuevos, &clave_upsert)?
+        }
+        _ => lotes,
+    };
     let columnas = lago::columnas_de(&lotes[0]);
     let deseado = lago::esquema_deseado(
         &columnas,
@@ -533,7 +605,19 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     if let Some(c) = &clave {
         resumen.insert(lago::PROP_OPERACION.to_string(), c.clone());
     }
-    let p = lago.preparar(&tabla, deseado, lotes, operacion, resumen)?;
+    if modo == "upsert" {
+        resumen.insert(lago::PROP_MODO.to_string(), modo.clone());
+        resumen.insert(lago::PROP_CLAVE.to_string(), clave_upsert.join(","));
+    }
+    let mut p = lago.preparar(&tabla, deseado, lotes, operacion, resumen)?;
+    // La clave queda declarada en la tabla, para la siguiente escritura.
+    if modo == "upsert"
+        && tabla.metadata().properties().get(lago::PROP_CLAVE) != Some(&clave_upsert.join(","))
+    {
+        p.cambios.push(iceberg::TableUpdate::SetProperties {
+            updates: HashMap::from([(lago::PROP_CLAVE.to_string(), clave_upsert.join(","))]),
+        });
+    }
     let columnas_json = |t: &iceberg::table::Table| -> Json {
         Json::Obj(
             lago::columnas_iceberg(t)
@@ -548,6 +632,7 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         ("esquema_cambiado", Json::Bool(p.esquema_cambiado)),
         ("ficheros", Json::Int(p.ficheros as i64)),
         ("filas", Json::Int(p.filas as i64)),
+        ("modo", Json::s(&modo)),
         ("nueva", Json::Bool(previa.is_none())),
         ("operacion", Json::s(clave.unwrap_or_default())),
         ("requirements", json_de(&p.requisitos)?),
@@ -1830,6 +1915,139 @@ mod tests {
         }
         let e = escribir(&lago, &format!("{{\"dataset\":\"{ds}\"}}"), &bytes[..]).unwrap_err();
         assert!(e.contains("`grande`") && e.contains("uint64"), "{e}");
+    }
+
+    /// `modo: upsert` (0031 §11 ⑤): copy-on-write en Arrow. Lo que había menos
+    /// las claves que llegan, más lo que llega; la clave queda en la tabla y la
+    /// siguiente escritura no la repite; una columna nueva no tira las de antes.
+    #[test]
+    fn upsert_funde_por_clave_y_declara_la_clave() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let ds = "datasets/ventas_ups";
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"sobrescribir\",\"operacion\":\"u-1\"}}"),
+            &tabla_ipc(0, 5, false)[..],
+        )
+        .expect("nace");
+        let ml1 = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, None),
+            "metadata_location",
+        );
+        // sin clave y sin declararla: se dice
+        let sin = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"base\":\"{ml1}\",\"operacion\":\"u-2\"}}"),
+            &tabla_ipc(3, 3, false)[..],
+        )
+        .unwrap_err();
+        assert!(sin.contains("`upsert` quiere `clave`"), "{sin}");
+        // ids 3 y 4 cambian (n3, n4 con otro total: 3..6 trae 3,4,5), 5 es nuevo → 6 filas
+        let e2 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"clave\":[\"id\"],\"base\":\"{ml1}\",\"operacion\":\"u-2\"}}"),
+            &tabla_ipc(3, 3, false)[..],
+        )
+        .expect("upsert");
+        assert_eq!(campo(&e2, "modo"), "upsert");
+        assert_eq!(campo(&e2, "filas"), "6", "{e2}");
+        assert_eq!(
+            campo(&e2, "retirados"),
+            "1",
+            "copy-on-write: el fichero de antes se retira"
+        );
+        let j2: serde_json::Value = serde_json::from_str(&e2).unwrap();
+        let acciones: Vec<&str> = j2["updates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            acciones,
+            ["add-snapshot", "set-snapshot-ref", "set-properties"],
+            "{e2}"
+        );
+        assert_eq!(j2["updates"][2]["updates"]["ore.clave"], "id");
+        assert_eq!(
+            j2["updates"][0]["snapshot"]["summary"]["operation"],
+            "overwrite"
+        );
+        assert_eq!(
+            j2["updates"][0]["snapshot"]["summary"]["ore.modo"],
+            "upsert"
+        );
+        assert_eq!(j2["updates"][0]["snapshot"]["summary"]["ore.clave"], "id");
+        let a2 = aplicar_lo_escrito(&lago, &e2, ds, Some(&ml1));
+        let ml2 = campo(&a2, "metadata_location");
+        assert_eq!(campo(&a2, "filas"), "6");
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{ml2}\",\"dataset\":\"{ds}\"}}"
+            )),
+        )
+        .expect("lee");
+        let filas: Vec<serde_json::Value> = l
+            .lines()
+            .skip(1)
+            .map(|x| serde_json::from_str(x).unwrap())
+            .collect();
+        assert_eq!(filas.len(), 6, "{l}");
+        let mut ids: Vec<&str> = filas.iter().map(|f| f["id"].as_str().unwrap()).collect();
+        ids.sort();
+        assert_eq!(ids, ["0", "1", "2", "3", "4", "5"]);
+        // la misma clave, sin repetirla (la tabla la declara), y una columna nueva: la unión
+        let e3 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"base\":\"{ml2}\",\"operacion\":\"u-3\"}}"),
+            &tabla_ipc(5, 2, true)[..],
+        )
+        .expect("upsert con la clave de la tabla");
+        assert_eq!(campo(&e3, "filas"), "7");
+        assert_eq!(campo(&e3, "esquema_cambiado"), "true");
+        let j3: serde_json::Value = serde_json::from_str(&e3).unwrap();
+        assert!(
+            !j3["updates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|u| u["action"] == "set-properties"),
+            "la clave ya estaba: {e3}"
+        );
+        let a3 = aplicar_lo_escrito(&lago, &e3, ds, Some(&ml2));
+        let ml3 = campo(&a3, "metadata_location");
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{ml3}\",\"dataset\":\"{ds}\"}}"
+            )),
+        )
+        .expect("lee");
+        let filas: Vec<serde_json::Value> = l
+            .lines()
+            .skip(1)
+            .map(|x| serde_json::from_str(x).unwrap())
+            .collect();
+        assert_eq!(filas.len(), 7, "{l}");
+        let con_canal = filas.iter().filter(|f| f.get("canal").is_some()).count();
+        assert_eq!(
+            con_canal, 2,
+            "sólo las dos nuevas traen `canal`; las de antes lo tienen nulo: {l}"
+        );
+        assert!(
+            filas.iter().all(|f| f.get("nombre").is_some()),
+            "ninguna columna de antes se tira"
+        );
+        // una clave que no es columna: se dice
+        let mal = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"clave\":[\"nadie\"],\"base\":\"{ml3}\",\"operacion\":\"u-4\"}}"),
+            &tabla_ipc(0, 1, false)[..],
+        )
+        .unwrap_err();
+        assert!(mal.contains("`nadie`"), "{mal}");
     }
 
     fn aplicar_lo_escrito_err(

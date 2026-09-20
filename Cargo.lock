@@ -2242,6 +2242,7 @@ dependencies = [
  "arrow-cast",
  "arrow-ipc",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "bytes",
  "futures",

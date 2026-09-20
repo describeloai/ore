@@ -34,6 +34,11 @@
 #      perder lo que alguien le añadió a mano (descripción, etiquetas)
 #   9  dos tablas en un commit (`table-changes`): las dos nacen o se mueven en
 #      la misma pasada; una `View` como destino se niega sin tocar nada
+#  9b  `modo: upsert` (0031 §11 ⑤): con `clave`, lo que había menos esas claves
+#      más lo que llega, reescrito entero (copy-on-write: un `overwrite`); la
+#      clave queda en la tabla (`ore.clave`) y la `Table` del árbol pasa a
+#      `changes: { mode: upsert, key: [id] }`; la siguiente vez no hace falta
+#      repetirla, y nada de antes se pierde
 #  10  la retención declarada en la tabla (`--retencion p.t --edad 0`) es la que
 #      `--recoger` obedece SIN `--edad`; la que nació con `--retencion-defecto
 #      7d` conserva; la que no tiene ninguna no expira
@@ -380,6 +385,45 @@ escribe ventas_pedidos sobrescribir "" op-8 0 1 || falla "9 · escribir pedidos"
 "$ORE" datasets "$CL" --commit --tabla ventas.pedidos --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
 [ "$c" = "65" ] || falla "9 · escribir una Table de ficheros tenía que ser 65 y fue $c"
 ok "9 · dos tablas en un commit (una nace, otra anexa); una View y una Table de otra fuente se niegan sin dejar nada"
+
+# ── 9b · upsert: fundir por clave, copy-on-write, y la Table lo declara ──────
+# `escrita` tiene 3 filas (ids 0 y 1 con `canal`, y 200 sin él). Llegan ids 1
+# (cambia) y 2 (nueva) → 4 filas, en UN fichero nuevo (lo de antes se retira).
+upserta() { # dataset base op desde n [clave-json] [extra]
+  { printf '{"dataset":"datasets/%s","modo":"upsert","base":"%s","operacion":"%s"%s}\n' "$1" "$2" "$3" "${6:+,\"clave\":$6}"
+    "$PY" "$TMP/ipc.py" "$4" "$5" ${7:-}; } | "$STORE" escribir > "$TMP/escrito.json" 2>"$TMP/escrito.err" \
+    || { cat "$TMP/escrito.err" >&2; return 1; }
+}
+lee9() { printf '{"metadata_location":"%s","dataset":"datasets/ventas_escrita"}\n' "$1" | "$STORE" leer; }
+ML9=$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)
+upserta ventas_escrita "$ML9" up-1 1 2 2>/dev/null && falla "9b · un upsert sin clave tenía que negarse"
+grep -q 'quiere `clave`' "$TMP/escrito.err" || falla "9b · el upsert sin clave no dijo por qué: $(cat "$TMP/escrito.err")"
+upserta ventas_escrita "$ML9" up-1 1 2 '["id"]' || falla "9b · upsert"
+[ "$(jq_ "$TMP/escrito.json" modo)" = "upsert" ] && [ "$(jq_ "$TMP/escrito.json" filas)" = "4" ] && [ "$(jq_ "$TMP/escrito.json" retirados)" != "0" ] || falla "9b · el upsert tenía que dejar 4 filas y retirar lo de antes: $(cat "$TMP/escrito.json")"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9b · commit upsert"; }
+[ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "4" ] || falla "9b · tras el upsert, 4 filas: $(cat "$TMP/commit.json")"
+[ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "9b · la Table tenía que regenerarse con la clave: $(cat "$TMP/commit.json")"
+grep -q 'changes: { mode: upsert, key: \[id\], witness: snapshot }' "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la Table no declara el upsert: $(grep changes "$CL/packages/ventas/tables/escrita.yaml")"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la regeneración perdió la descripción"
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "9b · el árbol no compila con la Table upsert"; }
+ML9b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+n=$(lee9 "$ML9b" | grep -c '^{"'); [ "$n" = "5" ] || falla "9b · leer da $((n - 1)) filas y no 4"
+[ "$(lee9 "$ML9b" | grep -c '"id":"1",')" = "1" ] || falla "9b · el id 1 tenía que estar una sola vez"
+lee9 "$ML9b" | grep '"id":"1",' | grep -q '"total":"10.5"' || falla "9b · el id 1 no trae el total nuevo"
+( cd "$CL" && git add -A && git commit -qm "upsert" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar el upsert"
+[ "$(pide GET /datasets/ventas/escrita)" = "200" ] && [ "$(campo snapshots.0.operacion)" = "overwrite" ] && [ "$(campo snapshots.0.filas)" = "4" ] || falla "9b · la ficha: $(cat "$TMP/out.json")"
+# la siguiente vez, sin repetir la clave (la tabla la declara), y con una columna
+# que la tabla ya no declaraba (`canal`: la dejó fuera el anexar de 9): la unión
+# la trae de vuelta, el id 200 la lleva y los demás la tienen nula
+upserta ventas_escrita "$ML9b" up-2 200 1 '' extra || falla "9b · upsert con la clave de la tabla"
+[ "$(jq_ "$TMP/escrito.json" filas)" = "4" ] && [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "9b · el segundo upsert: $(cat "$TMP/escrito.json")"
+"$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9b · commit del segundo upsert"; }
+grep -q 'changes: { mode: upsert, key: \[id\]' "$CL/packages/ventas/tables/escrita.yaml" && grep -q "canal: { type: String }" "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la Table tras el segundo upsert: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
+ML9c=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
+lee9 "$ML9c" | grep '"id":"200"' | grep -q '"canal":"web"' || falla "9b · el id 200 no se actualizó"
+[ "$(lee9 "$ML9c" | grep -c '^{"')" = "5" ] || falla "9b · tras el segundo upsert tenía que haber 4 filas"
+( cd "$CL" && git add -A && git commit -qm "upserts" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar"
+ok "9b · upsert por clave: 3 → 4 filas en un overwrite (copy-on-write, lo de antes se retira), la Table declara \`mode: upsert, key: [id]\` y conserva su descripción; la siguiente vez sin clave (la tabla la declara) y con una columna más, el id 200 se actualiza, la Table la gana y nada de antes se pierde"
 
 # ── 10 · la retención declarada es la que --recoger obedece ──────────────────
 "$ORE" datasets "$CL" --retencion ventas.escrita --edad 0 --json > "$TMP/ret.json" 2>&1 || { cat "$TMP/ret.json"; falla "10 · --retencion"; }

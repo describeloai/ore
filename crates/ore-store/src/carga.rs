@@ -516,6 +516,122 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
     Ok(out)
 }
 
+/// **Los lotes de un Parquet, tal como están** (los tipos del fichero): lo que
+/// `modo: upsert` lee de la tabla para fundir en Arrow, sin pasar por texto.
+pub fn lotes_de_parquet(parquet: &[u8]) -> Result<Vec<RecordBatch>, String> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let b = bytes::Bytes::copy_from_slice(parquet);
+    let lector = ParquetRecordBatchReaderBuilder::try_new(b)
+        .map_err(|e| format!("la carga no es un Parquet legible: {e}"))?
+        .with_batch_size(65_536)
+        .build()
+        .map_err(|e| format!("no se pudo abrir la carga: {e}"))?;
+    lector
+        .map(|l| l.map_err(|e| format!("un lote de la carga no se lee: {e}")))
+        .collect()
+}
+
+/// **Un lote al esquema `destino`, por nombre**: las columnas que faltan van
+/// nulas (un fichero de antes de que existieran), una de otro tipo se
+/// convierte si Arrow sabe (`cast`) y si no se dice con su nombre, y una que
+/// `destino` no tiene se queda fuera: la dejó fuera una escritura anterior
+/// (el esquema de la tabla sigue al lote, y un fichero viejo puede llevar
+/// columnas que la tabla ya no declara). Lo que llega nunca pierde nada:
+/// `destino` es la unión de la tabla y del lote.
+pub fn al_esquema(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBatch, String> {
+    let n = lote.num_rows();
+    let columnas = destino
+        .fields()
+        .iter()
+        .map(|campo| -> Result<ArrayRef, String> {
+            match lote.column_by_name(campo.name()) {
+                None => Ok(arrow_array::new_null_array(campo.data_type(), n)),
+                Some(col) if col.data_type() == campo.data_type() => Ok(col.clone()),
+                Some(col) => arrow_cast::cast(col, campo.data_type()).map_err(|e| {
+                    format!(
+                        "la columna `{}` es `{}` en un fichero y `{}` en la tabla, y no se convierte: {e}",
+                        campo.name(),
+                        col.data_type(),
+                        campo.data_type()
+                    )
+                }),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(destino.clone(), columnas)
+        .map_err(|e| format!("el lote no construye: {e}"))
+}
+
+/// El texto de la clave de cada fila: los valores de las columnas de `clave`
+/// tal como Arrow los enseña, separados por `\0` (un nulo es `\x01`, que
+/// ningún valor lleva).
+fn claves_de(lote: &RecordBatch, clave: &[String]) -> Result<Vec<String>, String> {
+    use arrow_cast::display::{ArrayFormatter, FormatOptions};
+    let opciones = FormatOptions::default();
+    let columnas = clave
+        .iter()
+        .map(|c| {
+            lote.column_by_name(c)
+                .ok_or_else(|| format!("la clave nombra `{c}`, que no es una columna de la tabla"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let formatos = columnas
+        .iter()
+        .map(|c| ArrayFormatter::try_new(c.as_ref(), &opciones).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut out = Vec::with_capacity(lote.num_rows());
+    for i in 0..lote.num_rows() {
+        let mut k = String::new();
+        for (c, f) in columnas.iter().zip(&formatos) {
+            if c.is_null(i) {
+                k.push('\x01');
+            } else {
+                k.push_str(&f.value(i).to_string());
+            }
+            k.push('\0');
+        }
+        out.push(k);
+    }
+    Ok(out)
+}
+
+/// **La fusión por clave, en Arrow** (`modo: upsert`, 0031 §11 ⑤): lo que
+/// había **menos las filas cuya clave trae el lote nuevo**, más el lote nuevo.
+/// Copy-on-write: el resultado se escribe entero y ningún lector tiene que
+/// aplicar nada. Los dos lados ya vienen al mismo esquema (`al_esquema`).
+/// Dos filas con la misma clave dentro de lo nuevo se quedan las dos: el
+/// escritor no decide cuál gana, y el catálogo lo enseña tal cual.
+pub fn fundir_lotes(
+    viejos: Vec<RecordBatch>,
+    nuevos: &[RecordBatch],
+    clave: &[String],
+) -> Result<Vec<RecordBatch>, String> {
+    use arrow_array::BooleanArray;
+    use arrow_select::filter::filter_record_batch;
+    use std::collections::HashSet;
+    if clave.is_empty() {
+        return Err("`upsert` quiere `clave`: las columnas que identifican una fila".into());
+    }
+    let mut llegan: HashSet<String> = HashSet::new();
+    for l in nuevos {
+        llegan.extend(claves_de(l, clave)?);
+    }
+    let mut out = Vec::with_capacity(viejos.len() + nuevos.len());
+    for v in viejos {
+        if v.num_rows() == 0 {
+            continue;
+        }
+        let ks = claves_de(&v, clave)?;
+        let quedan: BooleanArray = ks.iter().map(|k| Some(!llegan.contains(k))).collect();
+        let f = filter_record_batch(&v, &quedan).map_err(|e| format!("no se pudo filtrar: {e}"))?;
+        if f.num_rows() > 0 {
+            out.push(f);
+        }
+    }
+    out.extend(nuevos.iter().cloned());
+    Ok(out)
+}
+
 /// **La fusión: lo que había, más el incremento, por clave.**
 ///
 /// Es la operación que convierte *«leer menos»* en *«leer menos y seguir estando

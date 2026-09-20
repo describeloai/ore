@@ -575,6 +575,7 @@ fn asegurar_table(
     ns: &str,
     tabla: &str,
     columnas: &BTreeMap<String, String>,
+    clave: Option<&[String]>,
 ) -> Result<(bool, bool), Fallo> {
     let nombre = format!("{ns}.{tabla}");
     if columnas.is_empty() {
@@ -597,11 +598,22 @@ fn asegurar_table(
         .join("tables")
         .join(format!("{tabla}.yaml"));
     let texto_previo = documento_de_la_tabla(path, ns, tabla)?;
+    // Lo que `changes` tiene que decir: `upsert` con su clave si la escritura
+    // fue un upsert (y entonces una Entity puede respaldarse de esta tabla:
+    // OOS2021 no lo permite de una que «solo anexa»), y si no, lo que diga.
+    let cambios = clave.filter(|c| !c.is_empty()).map(|c| {
+        format!(
+            "  changes: {{ mode: upsert, key: [{}], witness: snapshot }}",
+            c.join(", ")
+        )
+    });
     let (nueva, regenerar) = match &texto_previo {
         None => (true, true),
         Some(t) => (
             false,
-            t.contains(MARCA) && columnas_del_documento(t) != *columnas,
+            t.contains(MARCA)
+                && (columnas_del_documento(t) != *columnas
+                    || cambios.as_ref().is_some_and(|c| !t.contains(c.trim()))),
         ),
     };
     if !regenerar {
@@ -610,13 +622,16 @@ fn asegurar_table(
     // Con documento: se edita, para no perder lo que alguien le añadió a mano
     // (medido: `labels` y `description` se perdían al evolucionar el esquema).
     // Sin documento, o si el de antes no se deja editar: desde cero.
-    let s = match texto_previo
+    let mut s = match texto_previo
         .as_deref()
         .and_then(|t| seguir_esquema(t, columnas))
     {
         Some(s) => s,
         None => documento_nuevo(ns, tabla, columnas),
     };
+    if let Some(c) = &cambios {
+        s = con_cambios(&s, c);
+    }
     if let Some(padre) = doc.parent() {
         std::fs::create_dir_all(padre)
             .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
@@ -791,6 +806,27 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
     Some(out)
 }
 
+/// La línea `changes:` de `spec`, sustituida (con el bloque que tuviera
+/// debajo, si iba en varias líneas); si no la hay, se añade al final de `spec`.
+fn con_cambios(texto: &str, linea: &str) -> String {
+    let mut lineas: Vec<String> = texto.lines().map(String::from).collect();
+    if let Some(i) = lineas.iter().position(|l| l.starts_with("  changes:")) {
+        let mut fin = i + 1;
+        while fin < lineas.len()
+            && (lineas[fin].trim().is_empty()
+                || lineas[fin].len() - lineas[fin].trim_start().len() > 2)
+        {
+            fin += 1;
+        }
+        lineas.splice(i..fin, [linea.to_string()]);
+    } else {
+        lineas.push(linea.to_string());
+    }
+    let mut out = lineas.join("\n");
+    out.push('\n');
+    out
+}
+
 /// El puntero de un dataset del lago, leído del árbol (`datasets/<ns>_<t>.json`).
 fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>) {
     let ruta = path.join("datasets").join(format!("{ns}_{tabla}.json"));
@@ -916,6 +952,29 @@ impl Cambio<'_> {
                     .and_then(|(_, v)| v.as_str())
                     .filter(|c| !c.is_empty())
                     .map(String::from)
+            })
+            .next_back()
+    }
+    /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
+    fn clave(&self) -> Option<Vec<String>> {
+        self.nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                let m = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
+                if m.get("ore.modo").and_then(|(_, v)| v.as_str()) != Some("upsert") {
+                    return None;
+                }
+                let c = m.get("ore.clave").and_then(|(_, v)| v.as_str())?;
+                Some(
+                    c.split(',')
+                        .filter(|x| !x.is_empty())
+                        .map(String::from)
+                        .collect(),
+                )
             })
             .next_back()
     }
@@ -1173,7 +1232,9 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ]));
             continue;
         };
-        let (tabla_nueva, regenerada) = asegurar_table(path, &p.ns, &p.tabla, &a.columnas_oos)?;
+        let clave = p.cambio.clave();
+        let (tabla_nueva, regenerada) =
+            asegurar_table(path, &p.ns, &p.tabla, &a.columnas_oos, clave.as_deref())?;
         let mut campos = vec![
             ("estado", Json::s("copiada")),
             ("tabla", Json::s(&p.nombre)),
@@ -1290,7 +1351,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_table(path, ns, tabla, &a.columnas_oos)?;
+    let (tabla_nueva, _) = asegurar_table(path, ns, tabla, &a.columnas_oos, None)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -1585,7 +1646,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_table(path, ns, tabla, cols)?.0,
+        (Some(cols), _) => asegurar_table(path, ns, tabla, cols, None)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -1686,6 +1747,19 @@ mod tests {
         assert_eq!(super::columnas_del_documento(&s), cols);
         // un documento sin `columns` no se edita: desde cero
         assert!(seguir_esquema("kind: Table\nspec: { datasource: lago }\n", &cols).is_none());
+        // `changes` con la clave del upsert, en el sitio de la línea de antes
+        let c = super::con_cambios(
+            &s,
+            "  changes: { mode: upsert, key: [id], witness: snapshot }",
+        );
+        assert!(c.ends_with("  reads: { fullScan: cheap }\n  changes: { mode: upsert, key: [id], witness: snapshot }\n"), "{c}");
+        assert_eq!(
+            super::con_cambios(
+                "spec:\n  changes:\n    mode: append\n    witness: snapshot\n  reads: {}\n",
+                "  changes: { mode: upsert, key: [a], witness: snapshot }"
+            ),
+            "spec:\n  changes: { mode: upsert, key: [a], witness: snapshot }\n  reads: {}\n"
+        );
         // un mapa con otras claves y sin `type` recibe el suyo
         let s = seguir_esquema(
             "spec:\n  columns:\n    a:\n      labels: { x: y }\n",

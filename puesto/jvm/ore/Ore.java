@@ -618,10 +618,14 @@ public final class Ore {
     public static Map<String, Object> write(String nombre, Object datos) throws Exception { return write(nombre, datos, "sobrescribir"); }
 
     /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago; {@code modo} es {@code sobrescribir} o {@code anexar}. */
+    public static Map<String, Object> write(String nombre, Object datos, String modo) throws Exception { return write(nombre, datos, modo, null); }
+
+    /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago; {@code modo} es {@code sobrescribir}, {@code anexar} o {@code upsert} (con {@code clave}: las columnas que identifican una fila; copy-on-write, y la clave queda declarada en la tabla). */
     @SuppressWarnings("unchecked")
-    public static Map<String, Object> write(String nombre, Object datos, String modo) throws Exception {
+    public static Map<String, Object> write(String nombre, Object datos, String modo, List<String> clave) throws Exception {
         if (nombre == null || nombre.chars().filter(c -> c == '.').count() != 1) throw new IllegalArgumentException("write() quiere `<paquete>.<tabla>`, no " + nombre);
-        if (!modo.equals("sobrescribir") && !modo.equals("anexar")) throw new IllegalArgumentException("modo " + modo + ": vale `sobrescribir` o `anexar`");
+        if (!modo.equals("sobrescribir") && !modo.equals("anexar") && !modo.equals("upsert")) throw new IllegalArgumentException("modo " + modo + ": vale `sobrescribir`, `anexar` o `upsert`");
+        if (clave != null && !modo.equals("upsert")) throw new IllegalArgumentException("`clave` es de modo `upsert`");
         String[] p = nombre.split("\\.");
         String ns = p[0], t = p[1];
         List<Map<String, Object>> campos = new ArrayList<>();
@@ -629,8 +633,8 @@ public final class Ore {
         Map<String, Object> esquema = new LinkedHashMap<>();
         esquema.put("type", "struct"); esquema.put("schema-id", 0); esquema.put("fields", campos);
         String dataset = "datasets/" + ns + "_" + t;
-        String semilla = nombre + "|" + modo;
-        String clave = "";
+        String semilla = nombre + "|" + modo + (clave != null && !clave.isEmpty() ? "|" + String.join(",", clave) : "");
+        String claveOperacion = "";
         for (int intento = 0; intento < 4; intento++) {
             // 1 · la tabla, con la credencial prestada; o esbozada si no existe
             String base = null; Object esbozo = null; Map<String, String> config; String ubicacion;
@@ -654,6 +658,7 @@ public final class Ore {
             // 2 · los ficheros, por ore-store
             Map<String, Object> peticion = new LinkedHashMap<>();
             peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla);
+            if (clave != null && !clave.isEmpty()) peticion.put("clave", clave);
             if (base != null) peticion.put("base", base); else peticion.put("esbozo", esbozo);
             Process proc = escritor(config, ubicacion).start();
             try (OutputStream in = proc.getOutputStream()) { in.write((Json.escribir(peticion) + "\n").getBytes(StandardCharsets.UTF_8)); in.write(ipc); }
@@ -661,7 +666,7 @@ public final class Ore {
             String err = new String(proc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
             if (proc.waitFor() != 0) throw new IllegalStateException("write(): " + (err.isEmpty() ? "el escritor falló" : err.replaceFirst("^error: ", "")));
             Map<String, Object> escrito = Json.objeto(new String(salida, StandardCharsets.UTF_8));
-            clave = String.valueOf(escrito.getOrDefault("operacion", clave));
+            claveOperacion = String.valueOf(escrito.getOrDefault("operacion", claveOperacion));
             // 3 · el commit, por el catálogo
             Map<String, Object> commit = new LinkedHashMap<>();
             commit.put("identifier", Map.of("namespace", List.of(ns), "name", t));
@@ -671,7 +676,7 @@ public final class Ore {
                 Map<String, Object> md = (Map<String, Object>) c.cuerpo().get("metadata");
                 Map<String, Object> out = new LinkedHashMap<>();
                 out.put("tabla", nombre); out.put("filas", escrito.get("filas")); out.put("snapshot", String.valueOf(md == null ? "" : md.get("current-snapshot-id")));
-                out.put("metadata_location", String.valueOf(c.cuerpo().getOrDefault("metadata-location", ""))); out.put("operacion", clave);
+                out.put("metadata_location", String.valueOf(c.cuerpo().getOrDefault("metadata-location", ""))); out.put("operacion", claveOperacion);
                 // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
                 out.put("repetida", base != null && base.equals(String.valueOf(c.cuerpo().get("metadata-location"))));
                 return out;
@@ -685,10 +690,10 @@ public final class Ore {
                     Object actual = md.get("current-snapshot-id");
                     for (Object sn : (List<Object>) md.getOrDefault("snapshots", List.of())) {
                         Map<String, Object> m = (Map<String, Object>) sn;
-                        if (String.valueOf(m.get("snapshot-id")).equals(String.valueOf(actual)) && m.get("summary") instanceof Map<?, ?> su && clave.equals(String.valueOf(su.get("ore.operacion")))) {
+                        if (String.valueOf(m.get("snapshot-id")).equals(String.valueOf(actual)) && m.get("summary") instanceof Map<?, ?> su && claveOperacion.equals(String.valueOf(su.get("ore.operacion")))) {
                             Map<String, Object> out = new LinkedHashMap<>();
                             out.put("tabla", nombre); out.put("filas", escrito.get("filas")); out.put("snapshot", String.valueOf(actual));
-                            out.put("metadata_location", String.valueOf(v.cuerpo().get("metadata-location"))); out.put("operacion", clave); out.put("repetida", false);
+                            out.put("metadata_location", String.valueOf(v.cuerpo().get("metadata-location"))); out.put("operacion", claveOperacion); out.put("repetida", false);
                             return out;
                         }
                     }

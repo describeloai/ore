@@ -244,12 +244,20 @@ medido (abajo) fijan **siete reglas**:
    si ya está, contesta 200 con lo que hay y **no deja snapshot ni commit** (la celda
    reejecutada, el reintento tras un 5xx). Un motor de fuera que no la mande, duplica: es lo
    que hace Iceberg.
-5. **Dos modos, y el tercero con nombre.** `sobrescribir` (por defecto: un snapshot que retira
-   lo anterior y añade lo nuevo; lo anterior sigue legible por su id hasta que expire) y
-   `anexar` (`modo="anexar"`: sólo añade; jamás toca un fichero existente, y el bucket lo
-   impone). *Upsert* por clave (equality deletes / deletion vectors) queda aparcado con nombre.
-   El esquema **nace con la primera escritura** y evoluciona por id con cada una (W3.6a: otro
-   tipo, otro id); lo que 0032 no promete no entra.
+5. **Tres modos.** `sobrescribir` (por defecto: un snapshot que retira lo anterior y añade lo
+   nuevo; lo anterior sigue legible por su id hasta que expire), `anexar` (`modo="anexar"`: sólo
+   añade; jamás toca un fichero existente, y el bucket lo impone) y **`upsert`**
+   (`modo="upsert", clave=[…]`, desde el 2026-09-20 —antes decía «aparcado con nombre»—: lo que
+   había **menos las filas cuya clave llega**, más lo que llega, reescrito entero como un
+   `overwrite`: **copy-on-write, en Arrow, en el escritor**, y ningún lector tiene que aplicar
+   nada —lo que ORE escribe lo lee todo el mundo—. La clave queda declarada en la tabla
+   (`ore.clave`) y en la `Table` del árbol (`changes: { mode: upsert, key: […] }`, con lo que una
+   Entity puede respaldarse de ella); la siguiente vez no hace falta repetirla. El esquema del
+   resultado es la unión: la tabla más las columnas nuevas del lote, y lo de antes que el lote no
+   trae va nulo. Los *equality deletes* y los *deletion vectors* siguen fuera: lo que otros motores
+   dejan como *position deletes* se lee —(a)—, pero no se escribe). El esquema **nace con la
+   primera escritura** y evoluciona por id con cada una (W3.6a: otro tipo, otro id); lo que 0032
+   no promete no entra.
 6. **La retención se declara en la tabla.** `history.expire.max-snapshot-age-ms` y
    `history.expire.min-snapshots-to-keep` son propiedades de la tabla (nacen con ella con el
    defecto del inquilino; se cambian por `set-properties` o `ore datasets --retencion p.t 30d`)
@@ -740,7 +748,25 @@ Identity al KSA `puesto` de `21-el-puesto.yaml` (con el rol de red `puesto` que 
 retira con el inquilino—; la plantilla `51-el-puesto.yaml` corre con `serviceAccountName: puesto`
 en vez de `driver` (`objectAdmin`). El préstamo del catálogo (§11 ③) es desde hoy **lo único con lo
 que un puesto escribe**. Llega a cada inquilino por el aprovisionador (converge cada 5 min desde
-la malla reconciliada); `gen-inquilino.py` rinde `puesto-<n>`. El nodo de `jobs-p` no baja solo mientras haya un puesto abierto o un
+la malla reconciliada); `gen-inquilino.py` rinde `puesto-<n>`.
+
+**(c, 2026-09-20) `modo: upsert`** (§11 ⑤, reescrito): `ore-store escribir {modo: upsert, clave:
+[…]}` lee los lotes vivos de la tabla en Arrow (`Lago::lotes`, con los position deletes
+aplicados), lleva lo viejo y lo nuevo al esquema unión (`carga::al_esquema`: lo que falta, nulo;
+lo que la tabla ya no declara, fuera), quita de lo viejo las claves que llegan
+(`carga::fundir_lotes`, un `filter`) y lo escribe todo como `overwrite`; `ore.modo` y `ore.clave`
+van en el resumen del snapshot, y `set-properties ore.clave` en el commit la primera vez (sin
+`clave` en la petición, vale la de la tabla; sin ninguna, se dice). `ore datasets --commit` lee
+la clave del resumen y la `Table` pasa a `changes: { mode: upsert, key: […], witness: snapshot }`
+(`con_cambios`, sobre el documento editado, no desde cero). Los tres SDK: `write(nombre, datos,
+modo="upsert", clave=["n"])` (Python), `{ modo: "upsert", clave: ["n"] }` (Node),
+`write(nombre, datos, "upsert", List.of("n"))` (Java); `clave` sin `upsert` es error, y la
+semilla de la operación lleva la clave. Pruebas: `upsert_funde_por_clave_y_declara_la_clave`
+(ore-store), `el-lago.sh` 9b (3 → 4 filas en un overwrite que retira lo de antes, la Table
+declara la clave y conserva su descripción, la siguiente vez sin clave y con una columna que la
+tabla ya no declaraba: la gana y nada se pierde), `el-puesto.sh` 10, 8 y 9 (Python, Node y Java
+hacen upsert y `sql()` suma lo que toca). Coste: copy-on-write (medido: 0,4 s/1 M en Arrow),
+que es lo que la tabla tiene que valer para que nadie tenga que fundir al leer. El nodo de `jobs-p` no baja solo mientras haya un puesto abierto o un
 Job reintentando: hoy estuvo 8 h arriba con puestos de victor y Jobs de otras sesiones cada pocos
 minutos; sin nada encima el autoescalador lo retira a los 10 min, y `gcloud container clusters
 resize … --num-nodes 0` lo baja al momento.

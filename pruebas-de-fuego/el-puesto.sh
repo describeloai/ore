@@ -37,7 +37,8 @@
 #                                      el catálogo prestó), el commit por `/v1/…`, y `over("hr.salida")`
 #                                      devuelve EL MISMO JSON que hr.lago (los tipos sobreviven la
 #                                      vuelta) · la misma escritura otra vez: `repetida`, un snapshot ·
-#                                      `anexar` un DataFrame → 5 · a una View → error · uint64 → error
+#                                      `anexar` un DataFrame → 5 · `upsert` por clave → 6 y la Table
+#                                      declara `mode: upsert, key: [n]` · a una View → error · uint64 → error
 #                                      con la columna; y en 8 y 9, Node y Java escriben lo suyo y leen
 #                                      lo de los demás
 #   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
@@ -343,11 +344,16 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   # anexar un DataFrame de pandas: 5 filas, y el esquema se respeta
   celda 'import pandas as pd, datetime as dt, decimal; e = write(\"hr.salida\", pd.DataFrame({\"n\": [4, 5], \"letra\": [\"d\", \"e\"], \"cuando\": [dt.datetime(2024, 6, 2, tzinfo=dt.timezone.utc)] * 2, \"importe\": [decimal.Decimal(\"4.00\"), decimal.Decimal(\"5.00\")]}), modo=\"anexar\"); e[\"filas\"]' && tiene "d['salida']['texto']=='5'" || falla "10 · anexar: $(cuerpo)"
   celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida\")' && tiene "d['salida']['filas']==[[5,'12.75']]" || falla "10 · sql sobre lo escrito: $(cuerpo)"
+  # upsert por clave (0031 §11 ⑤): el 4 cambia (4.00 → 40.00), el 6 es nuevo → 6 filas, 54.75; la Table declara la clave
+  celda 'import pandas as pd, datetime as dt, decimal; e = write(\"hr.salida\", pd.DataFrame({\"n\": [4, 6], \"letra\": [\"D\", \"f\"], \"cuando\": [dt.datetime(2024, 6, 3, tzinfo=dt.timezone.utc)] * 2, \"importe\": [decimal.Decimal(\"40.00\"), decimal.Decimal(\"6.00\")]}), modo=\"upsert\", clave=[\"n\"]); e[\"filas\"]' && tiene "d['salida']['texto']=='6'" || falla "10 · upsert: $(cuerpo)"
+  celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida\")' && tiene "d['salida']['filas']==[[6,'54.75']]" || falla "10 · sql tras el upsert: $(cuerpo)"
+  grep -q "changes: { mode: upsert, key: \[n\], witness: snapshot }" "$A/packages/hr/tables/salida.yaml" || falla "10 · la Table no declara el upsert: $(grep changes "$A/packages/hr/tables/salida.yaml")"
+  celda 'write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\"), clave=[\"n\"])' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError'" || falla "10 · clave sin upsert tenía que ser ValueError: $(cuerpo)"
   # lo que no se escribe: una View, y una columna que 0032 no tiene
   celda 'write(\"hr.espanoles\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "10 · escribir una View: $(cuerpo)"
   celda 'import pyarrow as pa; write(\"hr.mala\", pa.table({\"grande\": pa.array([1], pa.uint64())}))' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'grande' in d['salida']['mensaje']" || falla "10 · uint64: $(cuerpo)"
   [ ! -f "$A/datasets/hr_mala.json" ] || falla "10 · lo negado dejó puntero"
-  dice "10 · write(hr.salida) desde la celda: la tabla por IPC a ore-store-r2 con la credencial prestada, el commit por /v1, la Table del lago nace tipada y over() devuelve el mismo JSON que hr.lago · repetida sin snapshot · anexar un DataFrame → 5 y sql lo suma · una View → error · uint64 → ValueError con la columna"
+  dice "10 · write(hr.salida) desde la celda: la tabla por IPC a ore-store-r2 con la credencial prestada, el commit por /v1, la Table del lago nace tipada y over() devuelve el mismo JSON que hr.lago · repetida sin snapshot · anexar un DataFrame → 5 y sql lo suma · upsert por clave → 6 (54.75) y la Table declara la clave · una View → error · uint64 → ValueError con la columna"
   ESCRITO_OK=si
 else
   ESCRITO_OK=no
@@ -439,12 +445,14 @@ if [ "$NODE_OK" = "si" ]; then
   fi
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
     # write() desde Node: lo que Python escribió (5 filas), leído; y lo suyo, escrito y leído
-    celda 'const s = await over(\"hr.salida\"); s.length' && tiene "d['salida']['texto']=='5'" || falla "8 · Node lee lo que Python escribió: $(cuerpo)"
+    celda 'const s = await over(\"hr.salida\"); s.length' && tiene "d['salida']['texto']=='6'" || falla "8 · Node lee lo que Python escribió: $(cuerpo)"
     celda 'const e = await write(\"hr.salida_node\", await over(\"hr.lago\")); [e.filas, e.repetida]' && tiene "d['salida']['texto']=='[ 3, false ]'" || falla "8 · write(hr.salida_node) desde filas: $(cuerpo)"
     celda 'await over(\"hr.salida_node\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.salida_node) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'const e2 = await write(\"hr.salida_node\", await over(\"hr.lago\", { como: \"columnas\" })); e2.repetida' && tiene "d['salida']['texto']=='true'" || falla "8 · la misma escritura (por columnas) tenía que ser repetida: $(cuerpo)"
     celda 'const e3 = await write(\"hr.salida_node\", [{ n: 4, letra: \"d\", cuando: new Date(\"2024-06-02T00:00:00Z\"), importe: 4 }], { modo: \"anexar\" }); e3.filas' && tiene "d['salida']['texto']=='4'" || falla "8 · anexar objetos JS: $(cuerpo)"
     celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.salida_node\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "8 · sql sobre lo escrito desde Node: $(cuerpo)"
+    celda 'const e4 = await write(\"hr.salida_node\", [{ n: 4, letra: \"D\", cuando: new Date(\"2024-06-03T00:00:00Z\"), importe: 40 }, { n: 6, letra: \"f\", cuando: null, importe: 6 }], { modo: \"upsert\", clave: [\"n\"] }); e4.filas' && tiene "d['salida']['texto']=='5'" || falla "8 · upsert desde Node: $(cuerpo)"
+    celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.salida_node\")' && tiene "d['salida']['filas']==[[5,'49.75']]" || falla "8 · sql tras el upsert desde Node: $(cuerpo)"
     celda 'await write(\"hr.espanoles\", [{ a: 1 }])' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · escribir una View desde Node: $(cuerpo)"
   fi
   celda 'await over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · hr.nada: $(cuerpo)"
@@ -502,13 +510,15 @@ if [ "$JAVA_OK" = "si" ]; then
     celda 'sql(\"select count(*) as n, sum(importe) as s from hr.lago\")' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "9 · sql sobre el dataset Iceberg: $(cuerpo)"
   fi
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
-    # write() desde Java: lo que Python (5) y Node (4) escribieron, leído; y lo suyo, escrito y leído
-    celda 'over(\"hr.salida\").size() + over(\"hr.salida_node\").size()' && tiene "d['salida']['texto']=='9'" || falla "9 · Java lee lo que Python y Node escribieron: $(cuerpo)"
+    # write() desde Java: lo que Python (6) y Node (5) escribieron, leído; y lo suyo, escrito y leído
+    celda 'over(\"hr.salida\").size() + over(\"hr.salida_node\").size()' && tiene "d['salida']['texto']=='11'" || falla "9 · Java lee lo que Python y Node escribieron: $(cuerpo)"
     celda 'var e = write(\"hr.salida_jvm\", over(\"hr.lago\")); e.get(\"filas\") + \" \" + e.get(\"repetida\")' && tiene "d['salida']['texto']=='\"3 false\"'" || falla "9 · write(hr.salida_jvm) desde Filas: $(cuerpo)"
     celda 'over(\"hr.salida_jvm\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.salida_jvm) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'var e2 = write(\"hr.salida_jvm\", arrow(\"hr.lago\")); e2.get(\"repetida\")' && tiene "d['salida']['texto']=='true'" || falla "9 · la misma escritura (por Arrow) tenía que ser repetida: $(cuerpo)"
     celda 'var e3 = write(\"hr.salida_jvm\", List.of(Map.of(\"n\", 4L, \"letra\", \"d\", \"cuando\", java.time.Instant.parse(\"2024-06-02T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"4.00\"))), \"anexar\"); e3.get(\"filas\")' && tiene "d['salida']['texto']=='4'" || falla "9 · anexar un List<Map>: $(cuerpo)"
     celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida_jvm\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "9 · sql sobre lo escrito desde Java: $(cuerpo)"
+    celda 'var e4 = write(\"hr.salida_jvm\", List.of(Map.of(\"n\", 4L, \"letra\", \"D\", \"cuando\", java.time.Instant.parse(\"2024-06-03T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"40.00\")), Map.of(\"n\", 6L, \"letra\", \"f\", \"cuando\", java.time.Instant.parse(\"2024-06-03T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"6.00\"))), \"upsert\", List.of(\"n\")); e4.get(\"filas\")' && tiene "d['salida']['texto']=='5'" || falla "9 · upsert desde Java: $(cuerpo)"
+    celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida_jvm\")' && tiene "d['salida']['filas']==[[5,'49.75']]" || falla "9 · sql tras el upsert desde Java: $(cuerpo)"
     celda 'write(\"hr.espanoles\", List.of(Map.of(\"a\", 1L)))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · escribir una View desde Java: $(cuerpo)"
   fi
   celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · hr.nada: $(cuerpo)"

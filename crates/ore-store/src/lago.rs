@@ -100,6 +100,13 @@ pub const PROP_DATASET: &str = "ore.dataset";
 /// del snapshot. `write()` la pone; el catálogo la coteja con la ancestría
 /// antes de aplicar, y la misma operación dos veces no deja dos snapshots.
 pub const PROP_OPERACION: &str = "ore.operacion";
+/// El modo de la escritura, en el resumen del snapshot (`upsert` es el que
+/// cambia algo: el catálogo declara la clave en la `Table`).
+pub const PROP_MODO: &str = "ore.modo";
+/// Las columnas que identifican una fila (`modo: upsert`), separadas por
+/// comas: en el resumen del snapshot que las usó y como propiedad de la
+/// tabla, para que la siguiente escritura no tenga que repetirlas.
+pub const PROP_CLAVE: &str = "ore.clave";
 /// **La retención, declarada en la tabla** (0031 §11 ⑥), con los nombres que
 /// Iceberg usa para lo mismo: cuánto vive un snapshot superado y cuántos se
 /// conservan como mínimo. Las lee `recoger`; sin ellas y sin `edad_ms`, no se
@@ -1028,6 +1035,56 @@ impl Lago {
                         .map(|(_, f)| f),
                 ),
                 None => out.extend(filas),
+            }
+        }
+        Ok(out)
+    }
+
+    /// **Los lotes vigentes de la tabla, en Arrow** (lo que `modo: upsert` funde),
+    /// con los *position deletes* aplicados: la posición es el índice de la
+    /// fila dentro de su fichero, y va corriendo de lote en lote.
+    pub fn lotes(&self, tabla: &Table) -> Result<Vec<RecordBatch>, String> {
+        use arrow_array::BooleanArray;
+        use arrow_select::filter::filter_record_batch;
+        let (rutas, posiciones) = runtime().block_on(self.ficheros_vivos(tabla))?;
+        let cuenta = self.cuenta().map_err(err)?;
+        let mut borradas: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
+        for ruta in posiciones {
+            let k = self.clave(&ruta).map_err(err)?;
+            let bytes = cuenta.leer_bytes(&k)?.ok_or_else(|| {
+                format!("el fichero de posiciones `{ruta}` no está en el almacén")
+            })?;
+            for f in carga::leer(&bytes)? {
+                if let (Some(fichero), Some(Ok(pos))) =
+                    (f.get("file_path"), f.get("pos").map(|p| p.parse::<i64>()))
+                {
+                    borradas.entry(fichero.clone()).or_default().insert(pos);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for ruta in rutas {
+            let k = self.clave(&ruta).map_err(err)?;
+            let bytes = cuenta
+                .leer_bytes(&k)?
+                .ok_or_else(|| format!("el fichero de datos `{ruta}` no está en el almacén"))?;
+            let lotes = carga::lotes_de_parquet(&bytes)?;
+            match borradas.get(&ruta) {
+                None => out.extend(lotes),
+                Some(pos) => {
+                    let mut desde = 0i64;
+                    for l in lotes {
+                        let n = l.num_rows() as i64;
+                        let quedan: BooleanArray = (desde..desde + n)
+                            .map(|i| Some(!pos.contains(&i)))
+                            .collect();
+                        desde += n;
+                        let f = filter_record_batch(&l, &quedan).map_err(|e| e.to_string())?;
+                        if f.num_rows() > 0 {
+                            out.push(f);
+                        }
+                    }
+                }
             }
         }
         Ok(out)

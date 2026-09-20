@@ -452,16 +452,18 @@ function mensajeDe(r) {
 /** Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
  *  Devuelve `{ tabla, filas, snapshot, metadata_location, operacion, repetida }`. */
 export async function write(nombre, datos, o) {
-  const { modo = "sobrescribir" } = o ?? {};
+  const { modo = "sobrescribir", clave } = o ?? {};
   if (typeof nombre !== "string" || nombre.split(".").length !== 2) throw new Error(`write() quiere \`<paquete>.<tabla>\`, no ${JSON.stringify(nombre)}`);
-  if (modo !== "sobrescribir" && modo !== "anexar") throw new Error(`modo: ${JSON.stringify(modo)}: vale "sobrescribir" o "anexar"`);
+  if (modo !== "sobrescribir" && modo !== "anexar" && modo !== "upsert") throw new Error(`modo: ${JSON.stringify(modo)}: vale "sobrescribir", "anexar" o "upsert"`);
+  if (clave !== undefined && (!Array.isArray(clave) || !clave.every((c) => typeof c === "string"))) throw new Error(`clave: ${JSON.stringify(clave)}: una lista de nombres de columna`);
+  if (clave !== undefined && modo !== "upsert") throw new Error('`clave` es de modo: "upsert"');
   const [ns, t] = nombre.split(".");
   const { nombres, tipos, columnas } = columnasDe(datos);
   if (nombres.length === 0 || (columnas[0]?.length ?? 0) === 0) throw new Error("write(): la tabla no tiene filas");
   const esquema = { type: "struct", "schema-id": 0, fields: nombres.map((n, i) => ({ id: i + 1, name: n, type: tipoIceberg(n, tipos[n]), required: false })) };
   const parquet = await parquetDe_(nombres, tipos, columnas);
   const dataset = `datasets/${ns}_${t}`;
-  const semilla = `${nombre}|${modo}`;
+  const semilla = `${nombre}|${modo}` + (clave?.length ? `|${clave.join(",")}` : "");
   const cargar = async () => {
     const [c, r] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
     if (c === 200) return { base: r["metadata-location"], esbozo: null, config: r.config ?? {}, ubicacion: r.metadata.location };
@@ -472,24 +474,25 @@ export async function write(nombre, datos, o) {
     }
     throw new Error(`write(${nombre}): ore-serve contestó ${c}: ${mensajeDe(r)}`);
   };
-  let clave = "";
+  let claveOperacion = "";
   let escrito = null;
   for (let intento = 0; intento < 4; intento++) {
     const { base, esbozo, config, ubicacion } = await cargar();
     if (config["s3.access-key-id"]) s3 = config;
     const { binario, env } = escritor(config, ubicacion);
     const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla };
+    if (clave?.length) peticion.clave = clave;
     if (base) peticion.base = base; else peticion.esbozo = esbozo;
     const p = spawnSync(binario, ["escribir"], { input: Buffer.concat([Buffer.from(JSON.stringify(peticion) + "\n"), parquet]), env, maxBuffer: 1 << 26 });
     if (p.status !== 0) throw new Error(`write(): ${(p.stderr?.toString("utf8") ?? "").trim().replace(/^error: /, "") || "el escritor falló"}`);
     escrito = JSON.parse(p.stdout.toString("utf8"));
-    clave = escrito.operacion || clave;
+    claveOperacion = escrito.operacion || claveOperacion;
     const [c, r] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables/${t}`, { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, 120_000);
     if (c === 200) {
       const snap = r?.metadata?.["current-snapshot-id"];
       // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
       // — los ids de snapshot no se comparan: en JS un int64 pierde precisión
-      return { tabla: nombre, filas: escrito.filas, snapshot: String(snap ?? ""), metadata_location: r?.["metadata-location"] ?? "", operacion: clave, repetida: base !== null && r?.["metadata-location"] === base };
+      return { tabla: nombre, filas: escrito.filas, snapshot: String(snap ?? ""), metadata_location: r?.["metadata-location"] ?? "", operacion: claveOperacion, repetida: base !== null && r?.["metadata-location"] === base };
     }
     if (c === 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
     if (c >= 500) {
@@ -498,8 +501,8 @@ export async function write(nombre, datos, o) {
       if (c2 === 200) {
         const md = r2.metadata;
         const vigente = (md.snapshots ?? []).find((x) => x["snapshot-id"] === md["current-snapshot-id"]);
-        if (vigente?.summary?.["ore.operacion"] === clave) {
-          return { tabla: nombre, filas: escrito.filas, snapshot: String(md["current-snapshot-id"]), metadata_location: r2["metadata-location"], operacion: clave, repetida: false };
+        if (vigente?.summary?.["ore.operacion"] === claveOperacion) {
+          return { tabla: nombre, filas: escrito.filas, snapshot: String(md["current-snapshot-id"]), metadata_location: r2["metadata-location"], operacion: claveOperacion, repetida: false };
         }
       }
       throw new Error(`write(${nombre}): el catálogo contestó ${c} y el commit no está: ${mensajeDe(r)}`);
