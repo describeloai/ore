@@ -438,7 +438,9 @@ ok "11 · PyIceberg contra ore-serve: la Table y el puntero nacen firmados por e
 cat > "$TMP/duck12.py" <<'PY'
 import sys, json, duckdb
 base, s3 = sys.argv[1], sys.argv[2]
-con = duckdb.connect(); con.execute("load iceberg; load httpfs;")
+con = duckdb.connect()
+# en CI no están preinstaladas: se bajan (hay red); en el puesto sí lo están (W3.5b)
+con.execute("install iceberg; install httpfs; load iceberg; load httpfs;")
 con.execute("create secret s3 (type s3, key_id 'de', secret 'mentira', endpoint '%s', url_style 'path', use_ssl false, region 'auto')" % s3.replace("http://", ""))
 con.execute("create secret ice (type iceberg, token 'persona:ana')")
 con.execute("attach '' as lago (type iceberg, endpoint '%s', secret ice)" % base)
