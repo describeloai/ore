@@ -172,6 +172,9 @@ spec:
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            # El lago del inquilino como fuente (`datasource: lago`, 0031 §10):
+            # la raíz de su bucket. No es un secreto.
+            - { name: LAGO_URL, value: "gs://project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
             #   sustituye el renderizador con la misma regla que el resto, y la
             #   comprobacion ② puede cazarla si algun dia se cae.

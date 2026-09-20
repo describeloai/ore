@@ -72,7 +72,7 @@ cat > "$REPO/catalogo.json" <<'JSON'
 JSON
 
 # La fuente, con una URL que NO lleva credencial — la que la presta la nube.
-( cd "$REPO" && "$ORE" source add --name lago "bigquery://un-proyecto/ventas" >/dev/null 2>&1 ) \
+( cd "$REPO" && "$ORE" source add --name bq "bigquery://un-proyecto/ventas" >/dev/null 2>&1 ) \
   || falla "1 · \`ore source add\` fallo"
 ( cd "$REPO" && "$ORE" discover --from catalogo.json --out packages/ventas --name ventas >/dev/null 2>&1 ) \
   || falla "1 · \`ore discover\` fallo"

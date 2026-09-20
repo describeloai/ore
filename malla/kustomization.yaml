@@ -169,6 +169,7 @@ configMapGenerator:
       - 50-jwks.yaml
       - 51-el-puesto.yaml
       - 52-la-capa.yaml
+      - 53-el-mantenimiento.yaml
 
 generatorOptions:
   disableNameSuffixHash: true

@@ -208,7 +208,7 @@ luego el swap, luego `write()`.
 | **W3.5** · leer | el verbo **leer**, consistente: Arrow como verdad común en los tres SDK; el contrato de tipos ORE ↔ Parquet ↔ lenguaje escrito y medido (`medida-w3-leer.py`: un Parquet con todos los tipos difíciles leído por los tres `over()`/`sql()`, campo a campo, y el caudal a 10 M de filas) | los tres lenguajes leen la misma copia y ven los mismos valores; lo que no sobrevive está dicho, no escondido |
 | **W3.5b** ✓ 2026-09-20 · el lector del lago | **hecho**: `GET …/datos/{x}` contesta `metadata_location` (o `clave`, heredado); `over()`/`sql()`/`arrow()` en los tres leen por `iceberg_scan(raíz, version, allow_moved_paths)` —https con el token del pod en el bucket, ruta en local—, sesión en UTC, `autoinstall_known_extensions=false`, la cadena `json·icu·avro·iceberg(·httpfs)` cargada por nombre; las tres imágenes preinstalan las extensiones en `/opt/ore/duckdb` (JVM por `preinstalar/Extensiones.java`) y `node` lleva `ca-certificates`; `ore-serve` guarda la salida de una celda **tal cual** (`Json::Crudo`): `null` y `1.5` llegaban a la consola como cadenas; `el-puesto.sh` 4/8/9 leen `hr.lago` (PyIceberg, catálogo = árbol) con el mismo JSON en los tres. **Medido** (abajo): camino (b), directo del bucket con el token del pod; extensiones preinstaladas; node sin CA; una extensión ausente cuelga 120 s. Antes: **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
 | **W3.6a** ✓ 2026-09-20 · la copia es un dataset | **hecho** (abajo, «W3.6a hecho»): `ore-store` escribe la tabla Iceberg en Rust —crear, refrescar fundiendo (sobrescribir), rehacer (sobrescribir), esquema que evoluciona con el lote, expirar y huérfanos— con el almacén de siempre como suelo de Iceberg y **sin catálogo**: el puntero `copias/<p>_<v>.json` (`metadata_location`, `cabecera`, `snapshot`, `testigo`) es el estado, `ore` lo lee antes de leer una fila y lo mueve al terminar, el commit del Job es el *swap* y la forja el CAS; el recibo del bucket se retira; `ore ask` e `ore invoke` leen por el puntero (el resultado de una función también es un dataset, `resultados/<p>_<f>`); `--recoger` expira lo superado (`ORE_RECOGER_EDAD` conserva la historia reciente; el Job, siete días); cotejado con DuckDB y PyIceberg en GCS y con `ore-store-r2` en R2. **Medido** antes: `iceberg-rust` 0.10 escribe lo que hace falta a 2,6 M filas/s con los diez tipos exactos, también en gs:// → **se construye en Rust**. Antes: **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
-| **W3.6b** · el swap y el lago | `ore-serve` hace el CAS sobre el puntero y el commit por la forja (`POST …/datasets/{t}/confirmar {metadata_location, esperado}` → 409 si otro ganó); el `datasource: lago` del inquilino nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento (expirar snapshots, huérfanos) | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta; `git log` de un puntero es la historia de la tabla |
+| **W3.6b** ✓ 2026-09-20 · el swap y el lago | **hecho** (abajo, «W3.6b hecho»): `POST /datasets/{ns}/{n}/confirmar {metadata_location, esperado, snapshot, filas, columnas}` → `ore datasets --confirmar` decide (CAS semántico: código 75 → 409 con `actual`; el `metadata.json` tiene que estar en el bucket; la `Table` del lago nace tipada con `columnas` en el mismo commit) y `ore-serve` empuja (CAS de la forja → 409, **también en la carrera de verdad**: `[remote rejected] … incorrect old value` era 502 y `git.rs` no lo conocía); `GET /datasets` y `GET /datasets/{ns}/{n}` (la ficha: snapshots con operación, filas, testigo, plan; el esquema de Iceberg; `ore-store historia`); el puesto resuelve una `Table` del lago por `datasets/<p>_<t>.json`; `ore init` declara `datasource: lago` (`LAGO_URL`, la raíz del bucket) y `confirmar` lo declara si falta; `53-el-mantenimiento.yaml`: un CronJob diario por inquilino con `ore datasets . --recoger --edad 7d` sobre punteros, sin compilar ni tocar orígenes. `el-lago.sh` 0–6. **Medido** antes (abajo). Antes: `ore-serve` hace el CAS sobre el puntero y el commit por la forja; el `datasource: lago` nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta (**cuatro a la vez: uno gana, tres 409**); `git log` de un puntero es la historia de la tabla (`GET /arbol/historia/datasets/…`, tres versiones con quién) |
 | **W3.6c** · escribir | `write("p.salida", tabla)` en los tres (Python con PyIceberg primero; Node y Java por DuckDB `COPY … TO` Iceberg cuando lo tenga, o por el trabajo): datos y `metadata.json` al bucket con la identidad del pod (`objectCreator` sobre `datasets/`), el puntero por `ore-serve`, la `Table` del lago escrita con el esquema de Arrow la primera vez; 0032 convierte lo que Iceberg no tiene (ns → µs, zona → UTC) y niega `uint64`/`null` diciéndolo | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, latencia de un commit en el clúster |
 | **W3.4b** · dependencias | las capas de Node (`package.json` → `node_modules` en el bucket) y de la JVM (`pom.xml`/`build.gradle` → jars en el bucket, resueltos con Maven en el Job del driver; nunca Gradle del cliente en la malla) | medido como la de Python: resolver, subir, bajar, cargar |
 | **W3.7** · declarar y correr | `transform(inputs, output)` en los tres; el trabajo de código desde un commit (`ore run packages/p/transforms/x.{py,ts,java}`) con entorno + capa; fallback de rama; un `over` no declarado se rechaza | medido: frío del trabajo por entorno, un transform sobre 200 M de filas |
@@ -423,6 +423,74 @@ los binarios van con `strip` en la imagen.
 `ORE_RECOGER_EDAD` en el Job, siete días) y el CronJob de mantenimiento; el *upsert* con
 *equality deletes* cuando `iceberg-rust` lo escriba; el swap por `ore-serve` para lo que no
 escribe el Job (`write()`); la ficha del dataset con sus snapshots en la consola.
+
+## Lo medido para W3.6b · el swap y el lago (`pruebas-de-fuego/medida-w3-swap.py`, 2026-09-20, en local con una forja pelada y el S3 de mentira)
+
+| | resultado |
+|---|---|
+| **la carrera** (8 hilos, el mismo puntero, el mismo `If-Match`, `PUT /arbol/datasets/…`) | **1 gana y 7 pierden**, la forja tiene un commit más y el puntero es el del que ganó. Pero los 7 llegaban como **502 «git: To file://…»** y no como 409: bajo una carrera de verdad git no dice `non-fast-forward` sino `[remote rejected] … (incorrect old value provided)` (o `failed to update ref`, `cannot lock ref`), y `git.rs` sólo conocía la primera cara. Arreglado en la misma medida: 1 × 200, **7 × 409**, y los 7 reintentando con la cabeza nueva se serializan en **7 rondas exactas** (~1,5 s cada una: clonar + compilar dos veces + commit + push; para un puntero, compilar el árbol sobra) |
+| **el `If-Match` de commit** | los 8 lo pasan (clonaron la misma cabeza): el CAS que decide es el de la forja. Para un dataset hace falta además el **semántico** —`esperado` = el `metadata_location` sobre el que se construyó— para contestar 409 sin empujar cuando el puntero ya se movió |
+| **`datasource: lago`** | el tipo es abierto en OOS: `{ name: lago, type: lago, connectionEnv: LAGO_URL }` con una `Table` tipada encima y una `View` sobre ella **compila** (`ore validate` 0, `ore view` la traza como cualquier tabla). `materialize` de una View sobre el lago pide `ore-read-lago`, que no existe; `ore ask` dice «ninguna copia contesta»; `datos_de` del puesto sólo resuelve Views (`packages/<ns>/views`): **una Table del lago da 404** |
+| **300 snapshots** sobre una tabla (`ore-store-r2`, una fila por snapshot) | `metadata.json` crece **~1 KB por snapshot** (1 → 283 KB) y el registro de metadatos se corta en 100; `leer` abre los 300 en 137 ms; `recoger` expira 299 y retira 1 395 objetos en 2,8 s, y el fichero queda en 16 KB (1 snapshot + 100 del registro) → la retención es por **edad**, y siete días de refrescos horarios (~170 KB) no pesan |
+| **el barrido** | `ore materialize --recoger` al día tarda 443 ms y **le pregunta el testigo al origen** (26 ms de driver): un mantenimiento no puede pasar por ahí. El bucket de demo hoy: 3 objetos (la capa de un puesto) y ningún sobre; victor: 28 recibos y 10 sobres heredados que la primera pasada nueva resellará |
+| **la historia** | `GET /arbol/historia/datasets/…` da las versiones del puntero (hash, autor, cuándo) y `GET /arbol/version/{hash}/…` cada una con su `snapshot`: **`git log` del puntero es la historia de la tabla**, sin nada nuevo |
+
+**Lo que decide**: (1) el CAS es la forja y ya funciona; lo que faltaba era **decirlo** (409) y
+un endpoint que lo haga por quien no puede empujar, con `esperado` semántico y sin compilar el
+árbol; (2) el lago es una fuente que ya compila; lo que falta es **resolverla** en el puesto
+(`datasets/<p>_<t>.json`) y que nazca con el árbol; leerla como origen de `materialize`/`ask`
+(`ore-read-lago`) es otro peldaño; (3) el mantenimiento es **un verbo sobre punteros** —sin
+compilar, sin tocar orígenes— con retención por edad, en un CronJob.
+
+## W3.6b hecho · el swap y el lago (2026-09-20)
+
+**`ore datasets`** (`crates/ore-cli/src/datasets.rs`): el verbo sobre punteros. Lista
+(`copias/` y `datasets/`, con clase, estado, filas, `metadata_location`); `--ficha p.x`
+(el puntero más `ore-store historia`: los snapshots del más nuevo al más viejo con operación,
+filas, ficheros, bytes, añadidas/retiradas, plan y testigo; el esquema de Iceberg; el uuid);
+`--recoger [--edad 7d] [--seco]` (por cada dataset `ore-store recoger` con la edad, y si expiró
+algo **el puntero se mueve** al `metadata.json` nuevo; al final `recoger-huerfanas` con todos
+los datasets y los sobres que algún puntero nombre); y **`--confirmar p.t --metadata-location
+… [--esperado …] [--snapshot] [--filas] [--columnas {json}] [--sujeto]`**: el swap.
+
+**El swap**, paso a paso: el paquete existe (422 si no); el `metadata.json` está en el bucket
+(`ore-store buscar`, un HEAD; 422 si no); **el puntero es el `esperado`** —vacío si el dataset
+nace— o **código 75** con `actual` (409 en `ore-serve`, y quién lo movió está en el árbol);
+el mismo puntero otra vez es idempotente y no deja commit; `datasource: lago` se declara si
+falta; la `Table` existe (y es del lago: una de otra fuente es 422) o **nace con `columnas`**
+(tipos de OOS; 422 sin columnas; se compila el documento y se revierte si no compila); y el
+puntero `datasets/<p>_<t>.json` con `estado`, `dataset`, `tabla`, `metadata_location`,
+`snapshot`, `filas`, `escrito_por`. `ore-serve` (`datasets.rs`) clona, corre esto y empuja
+(`escribiendo`): 201 si el puntero nace, 200 si se mueve, 409 en cualquiera de las dos caras
+del CAS, 422/400 con lo que `ore` dijo. **`git.rs` aprendió la cara de la carrera**: `[remote
+rejected] … (incorrect old value provided)`, `failed to update ref` y `cannot lock ref` son
+`Adelantado` como `non-fast-forward`, y el mensaje es la línea del rechazo y no «To file://…».
+
+**El lago como fuente**: `ore init` declara `{ name: lago, type: lago, connectionEnv: LAGO_URL }`
+(la raíz del bucket, que no es un secreto; `48-la-copia.yaml` y `53-el-mantenimiento.yaml` la
+llevan); el puesto (`datos_de`) resuelve una `View` con copia por `copias/` y una `Table` del
+lago por `datasets/`; una `Table` de otra fuente es 409 «no un dataset» y lo que no está, 404.
+Leer el lago como origen de `materialize`/`ask` (`ore-read-lago`, que el driver reciba el
+puntero) queda para el peldaño que lo necesite.
+
+**El mantenimiento**: `malla/53-el-mantenimiento.yaml`, un CronJob diario por inquilino (04:00,
+`Forbid`, Kueue, SA `driver`, el testigo de la forja del almacén) que clona, corre `ore datasets
+. --recoger --edad 7d` y empuja los punteros que se movieron. Sobre punteros: no compila el
+árbol ni abre un origen (la medida: `materialize --recoger` al día le pregunta el testigo al
+driver). Rendido por `gen-inquilino.py` con las demás plantillas.
+
+**Probado**: `el-lago.sh` 0–6 (forja pelada + S3 de mentira + `ore-store-r2` de escritor):
+la Table tipada y el puntero nacen en un commit del sujeto y el árbol compila; la lista y la
+ficha; el CAS en sus cinco negativas sin dejar commit; **cuatro escritores a la vez: uno gana,
+tres 409**; tres versiones del puntero con quién; recoger en seco no toca y de verdad retira
+(34 → 8 objetos) y mueve el puntero. Unitarias: `datos_de` resuelve las dos clases; las tres
+caras del adelantado en `git.rs`; edad, punteros y `asegurar_lago` en `datasets.rs`.
+
+**Lo que queda para W3.6c**: `write()` en los tres lenguajes (datos y `metadata.json` al bucket
+con la identidad del pod —hoy `driver`, `objectAdmin` sobre todo el bucket; una cuenta de
+puesto con `objectCreator` sobre `datasets/` es del aprovisionador— y `confirmar` por
+`ore-serve` con las columnas de Arrow según 0032); la ficha en la consola (`GET /datasets/{ns}/{n}`
+ya la sirve); la retención declarada por dataset.
 
 ## Lo que se aparca
 

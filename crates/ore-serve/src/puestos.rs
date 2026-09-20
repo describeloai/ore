@@ -768,29 +768,58 @@ fn nombra(texto: &str, nombre: &str) -> bool {
     })
 }
 
-/// Lo que el árbol dice de la copia de una vista: `copias/<p>_<v>.json`, el
-/// informe que deja `ore materialize` (0027). Con `estado: copiada|al-dia` y
-/// `clave`, la copia está; si no, 409 con lo que el informe diga.
+/// Lo que el árbol dice del dataset de un nombre (0031 §10: **un lector**):
+/// una `View` materializada → `copias/<p>_<v>.json`, el puntero que deja `ore
+/// materialize`; una `Table` del lago (`datasource: lago`) →
+/// `datasets/<p>_<t>.json`, el puntero que deja `confirmar`. Con `estado:
+/// copiada|al-dia` y `metadata_location` (o `clave`, heredado), el dataset
+/// está; si no, 409 con lo que el puntero diga. Lo demás —una View virtual,
+/// una Table de otra fuente— es 409 «sin copia»: no hay camino por el que
+/// esta ruta llegue a un origen.
 fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
-    // ¿Existe la vista? El informe de una vista que no está es un 404, no un 409.
-    let hay_vista = std::fs::read_dir(raiz.join("packages").join(ns).join("views"))
-        .map(|d| {
-            d.flatten()
-                .any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| nombra(&t, nombre)))
-        })
-        .unwrap_or(false);
-    if !hay_vista {
+    let hay = |carpeta: &str| {
+        std::fs::read_dir(raiz.join("packages").join(ns).join(carpeta))
+            .map(|d| {
+                d.flatten().find_map(|e| {
+                    std::fs::read_to_string(e.path())
+                        .ok()
+                        .filter(|t| nombra(t, nombre))
+                })
+            })
+            .unwrap_or(None)
+    };
+    // ¿Existe el documento? El puntero de algo que no está es un 404, no un 409.
+    let informe = if hay("views").is_some() {
+        raiz.join("copias").join(format!("{ns}_{nombre}.json"))
+    } else if let Some(t) = hay("tables") {
+        let del_lago = ore_core::parse::parse(&t)
+            .ok()
+            .and_then(|n| {
+                n.get("spec")
+                    .and_then(|(_, s)| s.get("datasource"))
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            })
+            .is_some_and(|d| d == "lago");
+        if !del_lago {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{vista}` es una `Table` de una fuente, no un dataset: se lee por una `View` con copia, nunca del origen"
+                ),
+            );
+        }
+        raiz.join("datasets").join(format!("{ns}_{nombre}.json"))
+    } else {
         return Respuesta::error(
             404,
-            format!("no hay ninguna `View` `{vista}` en el paquete `{ns}`"),
+            format!("no hay ninguna `View` ni `Table` `{vista}` en el paquete `{ns}`"),
         );
-    }
-    let informe = raiz.join("copias").join(format!("{ns}_{nombre}.json"));
+    };
     let Ok(texto) = std::fs::read_to_string(&informe) else {
         return Respuesta::error(
             409,
             format!(
-                "la copia de `{vista}` no está hecha: no declara `materialized` o aún no se copió"
+                "el dataset de `{vista}` no está: no declara `materialized`, aún no se copió, o nadie lo escribió todavía"
             ),
         );
     };
@@ -847,6 +876,76 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    /// **Un lector** (0031 §10): una View con copia resuelve por `copias/`, una
+    /// Table del lago por `datasets/`, una Table de otra fuente es 409 y lo
+    /// que no está es 404.
+    #[test]
+    fn el_puesto_resuelve_views_con_copia_y_tables_del_lago() {
+        let d = std::env::temp_dir().join(format!("ore-datos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for sub in [
+            "packages/v/views",
+            "packages/v/tables",
+            "copias",
+            "datasets",
+        ] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        std::fs::write(
+            d.join("packages/v/views/pedidos.yaml"),
+            "kind: View\nmetadata: { name: pedidos, namespace: v }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/v/tables/salida.yaml"),
+            "kind: Table\nmetadata: { name: salida, namespace: v }\nspec:\n  datasource: lago\n  object: v_salida\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/v/tables/origen.yaml"),
+            "kind: Table\nmetadata: { name: origen, namespace: v }\nspec:\n  datasource: pg\n  object: public.origen\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("copias/v_pedidos.json"),
+            "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"snapshot\":\"1\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("datasets/v_salida.json"),
+            "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/datasets/v_salida/metadata/2.metadata.json\",\"snapshot\":\"2\"}",
+        )
+        .unwrap();
+        let r = datos_de(&d, "v", "pedidos", "v.pedidos");
+        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        assert!(
+            r.cuerpo.jcs().contains("copias/v_pedidos"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        let r = datos_de(&d, "v", "salida", "v.salida");
+        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        assert!(
+            r.cuerpo.jcs().contains("datasets/v_salida"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        let r = datos_de(&d, "v", "origen", "v.origen");
+        assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
+        assert!(
+            r.cuerpo.jcs().contains("no un dataset"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        let r = datos_de(&d, "v", "nadie", "v.nadie");
+        assert_eq!(r.codigo, 404);
+        // la Table del lago sin puntero todavía: 409, no 404
+        std::fs::remove_file(d.join("datasets/v_salida.json")).unwrap();
+        let r = datos_de(&d, "v", "salida", "v.salida");
+        assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn el_id_sale_de_la_persona_y_del_entorno() {

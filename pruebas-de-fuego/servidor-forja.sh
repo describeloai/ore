@@ -81,7 +81,7 @@ SUJ='x-ore-sujeto: persona:ana'
 
 # ── 1 · Escribir deja un commit ─────────────────────────────────────────────
 curl -s -o "$TMP/alta.json" -X POST -H "$SUJ" "$BASE/fuentes" \
-  -d '{"name":"lago","url":"bigquery://un-proyecto/ventas"}'
+  -d '{"name":"bq","url":"bigquery://un-proyecto/ventas"}'
 grep -q '"commit"' "$TMP/alta.json" \
   || falla "1 · el alta no devolvio un commit: $(cat "$TMP/alta.json")"
 dice "1 · el alta deja un commit, y lo dice: $(grep -o '"commit":"[^\"]*"' "$TMP/alta.json")"
@@ -94,7 +94,7 @@ QUIEN=$(git --git-dir="$FORJA" log -1 --format='%cn' main)
 dice "2 · autor=$AUTOR  committer=$QUIEN  —  \`sub\` y \`act\`, en la historia"
 
 # ── 3 · Leer vuelve a clonar ────────────────────────────────────────────────
-curl -sf -H "$SUJ" "$BASE/fuentes" | grep -q '"name":"lago"' \
+curl -sf -H "$SUJ" "$BASE/fuentes" | grep -q '"name":"bq"' \
   || falla "3 · una lectura nueva no ve lo que se escribio"
 dice "3 · la lectura siguiente lo ve: el servidor volvio a clonar"
 

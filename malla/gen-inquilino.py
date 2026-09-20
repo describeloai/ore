@@ -92,6 +92,9 @@ PLANTILLAS = [
     #   empuja a ore-iam. Otro proceso con otro privilegio; ore-serve no cambia.
     "47-el-informador.yaml",
     "50-jwks.yaml",
+    # ⭐ El mantenimiento del lago (0031 §10, W3.6b): un CronJob por inquilino
+    #   que expira lo superado y retira lo que nadie nombra, sobre punteros.
+    "53-el-mantenimiento.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es

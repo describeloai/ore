@@ -132,9 +132,14 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
+        "historia" => {
+            let ml = campo("metadata_location")
+                .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
+            historia(&lago, &ml, campo("dataset").as_deref().unwrap_or("dataset"))
+        }
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas` y `leer`"
+             `recoger-huerfanas`, `leer` e `historia`"
         )),
     }
 }
@@ -341,6 +346,82 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
         out.push_str(&Json::Obj(f.iter().map(|(k, v)| (k.clone(), Json::s(v))).collect()).jcs());
     }
     Ok(out)
+}
+
+/// **`historia`: la ficha del dataset** (W3.6b). Lo que el puntero no dice y
+/// la tabla sí: sus snapshots —cuándo, qué operación, cuántas filas, con qué
+/// testigo y qué plan— y su esquema de Iceberg. Es lo que la consola enseña
+/// como la ficha del dataset, y lo que `git log` del puntero no puede contar
+/// solo (un snapshot que el Job no llegó a apuntar no tiene commit).
+fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<String, String> {
+    let t = lago.abrir(metadata_location, dataset)?;
+    let meta = t.metadata();
+    let mut snapshots: Vec<(i64, Json)> = meta
+        .snapshots()
+        .map(|s| {
+            let p = &s.summary().additional_properties;
+            let prop = |k: &str| Json::s(p.get(k).cloned().unwrap_or_default());
+            let n = |k: &str| Json::Int(p.get(k).and_then(|v| v.parse().ok()).unwrap_or(0));
+            (
+                s.timestamp_ms(),
+                Json::obj([
+                    ("id", Json::s(s.snapshot_id().to_string())),
+                    ("cuando_ms", Json::Int(s.timestamp_ms())),
+                    (
+                        "operacion",
+                        Json::s(format!("{:?}", s.summary().operation).to_lowercase()),
+                    ),
+                    ("filas", n("total-records")),
+                    ("ficheros", n("total-data-files")),
+                    ("bytes", n("total-files-size")),
+                    ("anadidas", n("added-records")),
+                    ("retiradas", n("deleted-records")),
+                    ("plan", prop(lago::PROP_PLAN)),
+                    (
+                        "testigo",
+                        Json::obj([
+                            ("modo", prop(lago::PROP_TESTIGO_MODO)),
+                            ("valor", prop(lago::PROP_TESTIGO_VALOR)),
+                        ]),
+                    ),
+                    (
+                        "vigente",
+                        Json::Bool(Some(s.snapshot_id()) == meta.current_snapshot_id()),
+                    ),
+                ]),
+            )
+        })
+        .collect();
+    // Del más reciente al más viejo: lo que una ficha enseña.
+    snapshots.sort_by_key(|(t, _)| -*t);
+    Ok(Json::obj([
+        (
+            "esquema",
+            Json::Obj(
+                lago::columnas_iceberg(&t)
+                    .into_iter()
+                    .map(|(k, v)| (k, Json::s(v)))
+                    .collect(),
+            ),
+        ),
+        ("metadata_location", Json::s(metadata_location)),
+        ("metadata_log", Json::Int(meta.metadata_log().len() as i64)),
+        (
+            "snapshot",
+            Json::s(
+                meta.current_snapshot_id()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            ),
+        ),
+        (
+            "snapshots",
+            Json::Arr(snapshots.into_iter().map(|(_, j)| j).collect()),
+        ),
+        ("ubicacion", Json::s(meta.location())),
+        ("uuid", Json::s(meta.uuid().to_string())),
+    ])
+    .jcs())
 }
 
 fn lago_cuenta(lago: &Lago) -> Result<Arc<dyn Almacen>, String> {
@@ -766,6 +847,38 @@ mod tests {
         let r2 = recoger(&lago, "copias/p_v", &ml4, None, false).expect("recoge");
         assert_eq!(campo(&r2, "metadata_location"), ml4);
         assert_eq!(campo(&r2, "ficheros"), "0");
+
+        // ⑥ la ficha: los snapshots que había antes de recoger, del más nuevo
+        // al más viejo, con su operación y su testigo; y tras recoger, uno.
+        let h = historia(&lago, &ml3, "copias/p_v").expect("historia");
+        let n = ore_core::parse::parse(&h).unwrap();
+        let ss = n.get("snapshots").unwrap().1.items().to_vec();
+        assert_eq!(ss.len(), 3, "{h}");
+        assert_eq!(ss[0].get("vigente").unwrap().1.as_str(), Some("true"));
+        assert_eq!(
+            ss[0].get("operacion").unwrap().1.as_str(),
+            Some("overwrite")
+        );
+        assert_eq!(ss[0].get("filas").unwrap().1.as_str(), Some("1"));
+        assert_eq!(ss[2].get("operacion").unwrap().1.as_str(), Some("append"));
+        assert_eq!(
+            ss[2]
+                .get("testigo")
+                .unwrap()
+                .1
+                .get("valor")
+                .unwrap()
+                .1
+                .as_str(),
+            Some("7")
+        );
+        assert_eq!(
+            n.get("esquema").unwrap().1.get("total").unwrap().1.as_str(),
+            Some("decimal(38, 18)")
+        );
+        let h4 = historia(&lago, &ml4, "copias/p_v").expect("historia");
+        let n4 = ore_core::parse::parse(&h4).unwrap();
+        assert_eq!(n4.get("snapshots").unwrap().1.items().len(), 1);
     }
 
     /// Un cambio de esquema —una columna nueva y otra que cambia de tipo— lo

@@ -608,7 +608,7 @@ fn entrecomillar(s: &str) -> String {
 
 /// Inserta el bloque al final de `datasources:`, o crea la sección si no está.
 /// Todo lo demás conserva sus bytes: comentarios incluidos.
-fn insertar(texto: &str, bloque: &str) -> Result<String, String> {
+pub(crate) fn insertar(texto: &str, bloque: &str) -> Result<String, String> {
     let lineas: Vec<&str> = texto.lines().collect();
 
     let cabecera = lineas.iter().position(|l| {

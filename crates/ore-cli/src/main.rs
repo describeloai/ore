@@ -11,6 +11,7 @@ mod alcance;
 mod autoria;
 mod cache;
 mod candado;
+mod datasets;
 mod deriva;
 mod empaquetar;
 mod fuente;
@@ -722,6 +723,59 @@ enum Command {
         #[arg(long)]
         seco: bool,
     },
+    /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
+    /// cada vista materializada (`copias/`) y la salida de cada `write()`
+    /// (`datasets/`), que son la misma cosa — una tabla Iceberg en el bucket.
+    /// Sin banderas los lista; `--ficha` trae la historia de una tabla;
+    /// `--recoger` es el mantenimiento (expirar lo superado, retirar lo que
+    /// nadie nombra, mover los punteros); `--confirmar` es el swap del puntero
+    /// de un dataset del lago, con su `Table`, por quien no puede empujar.
+    /// Trabaja sobre los punteros: no compila el arbol ni abre un origen.
+    Datasets {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// La salida como una linea JSON (lo que `ore-serve` lee).
+        #[arg(long)]
+        json: bool,
+        /// El puntero y la historia de la tabla de `<paquete>.<nombre>`.
+        #[arg(long, value_name = "NS.NOMBRE")]
+        ficha: Option<String>,
+        /// El mantenimiento: expirar, retirar, mover los punteros.
+        #[arg(long)]
+        recoger: bool,
+        /// Cuanta historia conserva `--recoger`: `7d`, `12h`, `30m`, `0`.
+        #[arg(long, value_name = "EDAD")]
+        edad: Option<String>,
+        /// Con `--recoger`: dice que se iria y no toca nada.
+        #[arg(long)]
+        seco: bool,
+        /// El swap: el puntero de la Table del lago `<paquete>.<tabla>`.
+        #[arg(long, value_name = "NS.TABLA")]
+        confirmar: Option<String>,
+        /// Con `--confirmar`: el `metadata.json` que el escritor dejo en el bucket.
+        #[arg(long, value_name = "URI")]
+        metadata_location: Option<String>,
+        /// Con `--confirmar`: el `metadata_location` sobre el que se construyo
+        /// (vacio si el dataset nace). Si el puntero ya no es ese: codigo 75.
+        #[arg(long, value_name = "URI")]
+        esperado: Option<String>,
+        /// Con `--confirmar`: el id del snapshot vigente.
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Con `--confirmar`: cuantas filas tiene.
+        #[arg(long)]
+        filas: Option<i64>,
+        /// Con `--confirmar`: las columnas de la Table del lago como JSON
+        /// `{"col": "Tipo", ...}` (obligatorio si la Table no existe).
+        #[arg(long, value_name = "JSON")]
+        columnas: Option<String>,
+        /// Con `--confirmar`: quien escribio (queda en el puntero).
+        #[arg(long)]
+        sujeto: Option<String>,
+        /// Donde viven los punteros de las copias; sin esto, `<arbol>/copias`.
+        #[arg(long, value_name = "DIR")]
+        informe: Option<PathBuf>,
+    },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
     /// Es la mitad del tercer plano que si es nuestra. Las filas viven en una
@@ -818,6 +872,41 @@ fn main() -> std::process::ExitCode {
                     vista,
                     limite: *limite,
                     seco: *seco,
+                },
+            );
+        }
+        Command::Datasets {
+            path,
+            json,
+            ficha,
+            recoger,
+            edad,
+            seco,
+            confirmar,
+            metadata_location,
+            esperado,
+            snapshot,
+            filas,
+            columnas,
+            sujeto,
+            informe,
+        } => {
+            return datasets::datasets(
+                path,
+                &datasets::Opciones {
+                    json: *json,
+                    ficha: ficha.as_deref(),
+                    recoger: *recoger,
+                    edad: edad.as_deref(),
+                    seco: *seco,
+                    confirmar: confirmar.as_deref(),
+                    metadata_location: metadata_location.as_deref(),
+                    esperado: esperado.as_deref(),
+                    snapshot: snapshot.as_deref(),
+                    filas: *filas,
+                    columnas: columnas.as_deref(),
+                    sujeto: sujeto.as_deref(),
+                    informe: informe.as_deref(),
                 },
             );
         }
@@ -1039,6 +1128,7 @@ fn main() -> std::process::ExitCode {
         | Command::Verify { .. }
         | Command::Materialize { .. }
         | Command::Invoke { .. }
+        | Command::Datasets { .. }
         | Command::Ask { .. }
         | Command::Review { .. }
         | Command::Model { .. }

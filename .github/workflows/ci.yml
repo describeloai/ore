@@ -157,6 +157,15 @@ jobs:
       - name: y con el arbol en una forja
         run: bash pruebas-de-fuego/servidor-forja.sh
 
+      # El lago (0031 §10, W3.6b): el swap del puntero por ore-serve con su
+      # compare-and-set (semantico y de la forja), el `datasource: lago`, la
+      # ficha con la historia de la tabla, y el mantenimiento sobre punteros.
+      # Forja pelada, S3 de mentira y ore-store-r2 de escritor.
+      - name: el lago
+        run: |
+          cargo build --quiet -p ore-store
+          bash pruebas-de-fuego/el-lago.sh
+
       # Los tres verbos del modelo (0027 E1): el documento en el arbol y la
       # suscripcion en el gateway EN EL MISMO ACTO, o nada. El gateway es el de
       # banco (el contrato del plano de control de Bastion B3).

@@ -380,6 +380,12 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "la celda es un número"),
             },
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
+            // ── 0031 §10 · los datasets (`datasets.rs`): la lista, la ficha y el swap ──
+            ("GET", ["datasets"]) => self.datasets(rama),
+            ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),
+            ("POST", ["datasets", ns, n, "confirmar"]) => {
+                self.confirmar_dataset(sujeto, ns, n, &p.cuerpo)
+            }
             ("GET", ["propuestas"]) => self.propuestas(),
             ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
             ("GET", ["propuestas", n]) => match n.parse::<u64>() {

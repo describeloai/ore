@@ -136,16 +136,13 @@ impl Forja {
             return Ok(String::from_utf8_lossy(&s.stdout).into_owned());
         }
         let bajo = err.to_ascii_lowercase();
-        Err(
-            if bajo.contains("non-fast-forward") || bajo.contains("fetch first") {
-                Fallo::Adelantado(primera(&err))
-            } else if bajo.contains("could not resolve host") || bajo.contains("connection refused")
-            {
-                Fallo::NoResponde(primera(&err))
-            } else {
-                Fallo::Git(primera(&err))
-            },
-        )
+        Err(if adelantado(&bajo) {
+            Fallo::Adelantado(primera(&err))
+        } else if bajo.contains("could not resolve host") || bajo.contains("connection refused") {
+            Fallo::NoResponde(primera(&err))
+        } else {
+            Fallo::Git(primera(&err))
+        })
     }
 
     /// Un clon fresco de la rama por defecto, en un directorio que se borra solo.
@@ -336,12 +333,32 @@ fn correo(persona: &str) -> String {
     format!("{limpio}@sujeto.invalid")
 }
 
+/// ⭐ Las TRES caras de «alguien escribió antes» (medida W3.6b, 2026-09-20):
+/// `non-fast-forward` / `fetch first` cuando el clon iba por detrás al empujar;
+/// y `[remote rejected] … (incorrect old value provided)`, `failed to update
+/// ref` o `cannot lock ref` cuando dos empujones llegan A LA VEZ y la forja
+/// decide en su cerrojo. Ocho hilos sobre el mismo puntero daban 1 × 200 y
+/// 7 × 502 «git: To file://…»: el CAS funcionaba y la respuesta mentía. Las
+/// tres son 409.
+fn adelantado(bajo: &str) -> bool {
+    bajo.contains("non-fast-forward")
+        || bajo.contains("fetch first")
+        || bajo.contains("incorrect old value")
+        || bajo.contains("failed to update ref")
+        || bajo.contains("cannot lock ref")
+        || bajo.contains("[remote rejected]")
+}
+
+/// La línea que dice algo: la del rechazo o el error si la hay («To file://…»
+/// a secas, que es la primera de un `push` fallido, no le dice nada a nadie).
 fn primera(s: &str) -> String {
-    s.lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    let lineas: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lineas
+        .iter()
+        .find(|l| l.contains("rejected") || l.starts_with("error:") || l.starts_with("fatal:"))
+        .or(lineas.first())
+        .map(|l| l.trim_start_matches("! ").to_string())
+        .unwrap_or_default()
 }
 
 fn temporal() -> PathBuf {

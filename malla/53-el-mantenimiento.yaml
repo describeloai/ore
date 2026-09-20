@@ -1,0 +1,139 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL MANTENIMIENTO DEL LAGO — un CronJob por inquilino (0031 §10, W3.6b)
+#
+# ⭐ Todo es un dataset: la copia de cada vista materializada y la salida de
+#   cada `write()` son tablas Iceberg en el bucket del inquilino, con historia
+#   (snapshots), y el árbol es el catálogo (un puntero por dataset en `copias/`
+#   y `datasets/`). Cada escritura deja un snapshot más; lo que nadie lee ya
+#   tiene que retirarse, o el bucket crece con cada refresco (R5).
+#
+#   Esto lo hace UNA pasada diaria de `ore datasets . --recoger --edad 7d`:
+#     · expira los snapshots superados de más de siete días —la historia
+#       reciente se queda: un snapshot anterior se lee por su id—;
+#     · retira del bucket lo que ningún snapshot que quede nombra (ficheros de
+#       los expirados, y lo que dejó una pasada que no llegó a apuntarse);
+#     · mueve el puntero de cada dataset al `metadata.json` de expirar, y lo
+#       empuja: el árbol sigue siendo la verdad;
+#     · y lo huérfano: datasets sin puntero, y sobres `ore/v1/` heredados que
+#       ningún puntero nombra.
+#
+# ⛔ Sobre punteros, y nada más. `ore materialize --recoger` también recoge,
+#   pero compila el árbol y le pregunta el testigo a cada ORIGEN (medido:
+#   443 ms para no hacer nada, con el driver dentro). Un mantenimiento no toca
+#   orígenes: `ore datasets` no compila ni abre ninguno; lo único que toca del
+#   bucket lo toca por `ore-store-gcs` con el token de esta cuenta.
+#
+# ⚠️ `ORE_RECOGER_EDAD` en `48-la-copia.yaml` hace lo mismo para la copia en
+#   cada pasada del Job; aquí es donde la política vive para TODOS los
+#   datasets, escriba quien escriba, y la declaración de la retención (por
+#   dataset, en el documento) es lo que queda para más adelante.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mantenimiento
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  # A las cuatro de la madrugada, hora del clúster: cuando los Jobs de copia
+  # del día ya pasaron y ningún puesto escribe.
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        # ⛔ La cola de Kueue, como todo Job de inquilino: aterriza en el pool
+        #   privado, con su NetworkPolicy.
+        kueue.x-k8s.io/queue-name: cola
+        ore.dev/tenant: demo
+        ore.dev/rol: driver
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: driver
+            ore.dev/tenant: demo
+        spec:
+          restartPolicy: Never
+          serviceAccountName: driver
+          volumes:
+            - name: puesto
+              emptyDir: { medium: Memory }
+            - name: trabajo
+              emptyDir: {}
+          initContainers:
+            - name: traer-el-testigo
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+              volumeMounts: [{ name: puesto, mountPath: /puesto }]
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  gcloud secrets versions access latest \
+                    --secret=t-demo-forja-token --out-file=/puesto/forja
+                  chmod 0400 /puesto/forja
+                  echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "500m", memory: 256Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+          containers:
+            - name: mantener
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              imagePullPolicy: Always
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: GIT_TERMINAL_PROMPT, value: "0" }
+                - { name: GIT_CONFIG_COUNT, value: "2" }
+                - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+                - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+                - { name: GIT_CONFIG_VALUE_1, value: "*" }
+                - { name: ORE_STORE, value: "gcs" }
+                - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+                # El lago del inquilino, como fuente (`datasource: lago`): la
+                # raíz de su bucket. No es un secreto.
+                - { name: LAGO_URL, value: "gs://project-8853a180-450d-47be-b83-t-demo-copia" }
+                # Cuánta historia se conserva.
+                - { name: EDAD, value: "7d" }
+              volumeMounts:
+                - { name: puesto, mountPath: /puesto, readOnly: true }
+                - { name: trabajo, mountPath: /trabajo }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+                  cd /trabajo
+                  git clone --quiet \
+                    http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
+                  cd arbol
+                  echo "### mantenimiento del lago (edad: $EDAD · bucket: $ORE_GCS_BUCKET)"
+                  ore datasets . --recoger --edad "$EDAD" || { echo "⚠️ el mantenimiento falló: los punteros no se tocan"; exit 1; }
+                  git add -A copias datasets
+                  if git diff --cached --quiet; then
+                    echo "· ningún puntero se movió: nada que empujar"
+                    exit 0
+                  fi
+                  git -c user.name=mantenimiento -c user.email=mantenimiento@invalido \
+                    commit -q -m "Mantenimiento del lago: punteros movidos tras expirar"
+                  git push -q origin HEAD:main
+                  echo "✓ punteros empujados · $(git rev-parse --short HEAD)"
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits:   {cpu: "1000m", memory: 1Gi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
