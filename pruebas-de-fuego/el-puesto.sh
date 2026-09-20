@@ -404,8 +404,8 @@ if [ "$JAVA_OK" = "si" ]; then
   # Los jars: DuckDB JDBC y los de Arrow Java (`puesto/jvm/jars.txt`), en una
   # cache que sobrevive a la prueba (`ORE_JARS`, o el temporal del sistema).
   LIB="${ORE_JARS:-${TMPDIR:-/tmp}/ore-jars}"; mkdir -p "$LIB"
-  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar" || falla "9 · no se pudo bajar duckdb_jdbc"
-  grep -v '^#' "$RAIZ/puesto/jvm/jars.txt" | while read -r g v; do n="${g##*/}-$v.jar"; [ -f "$LIB/$n" ] || curl -sfL -o "$LIB/$n" "https://repo1.maven.org/maven2/$g/$v/$n" || echo "✗ 9 · no se pudo bajar $n"; done
+  [ -f "$LIB/duckdb_jdbc.jar" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/duckdb_jdbc.jar" "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/1.5.5.1/duckdb_jdbc-1.5.5.1.jar" || falla "9 · no se pudo bajar duckdb_jdbc"
+  grep -v '^#' "$RAIZ/puesto/jvm/jars.txt" | while read -r g v; do n="${g##*/}-$v.jar"; [ -f "$LIB/$n" ] || curl -sfL --retry 3 --retry-all-errors -o "$LIB/$n" "https://repo1.maven.org/maven2/$g/$v/$n" || echo "✗ 9 · no se pudo bajar $n"; done
   LIB_CP="$LIB"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) LIB_CP="$(cd "$LIB" && pwd -W)";; esac
   JAR_CP="$LIB_CP/*"
   CLASES="$TMP/clases"; CLASES_CP="$CLASES"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) mkdir -p "$CLASES"; CLASES_CP="$(cd "$CLASES" && pwd -W)";; esac
