@@ -22,6 +22,12 @@ Uso:
 
 Lee los buckets con `gcloud storage` (sesión propia); baja los artefactos a un
 temporal y lo borra. Nada de pago, nada en el clúster.
+
+Nota (W3.6a, ese mismo día por la tarde): desde que la copia es un dataset
+(0031 §10), lo que la pasada deja en el bucket es una tabla Iceberg bajo
+`ore/v2/copias/<p>_<v>/`, con el puntero en `copias/<p>_<v>.json`. §2 sigue
+leyendo los sobres `ORECOPY1` de `ore/v1/` que queden —el censo que motivó el
+contrato—; el de las tablas nuevas lo da `iceberg_scan` desde el puesto.
 """
 import collections
 import datetime as dt

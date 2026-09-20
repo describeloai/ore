@@ -77,7 +77,14 @@ saphyr-parser = "0.0.12"
 # en otros. `sha2` es la implementacion estandar del ecosistema, esta auditada y
 # no arrastra FFI: la razon que descarto a los validadores de JSON Schema y a
 # los colores de clap no aplica aqui.
-sha2 = "0.10"
+#
+# 0.11 y no 0.10 desde W3.6a (2026-09-20), y no por la API: `ore-store` trae
+# `iceberg`, que trae `aes-gcm`, que enciende `crypto-common 0.1/rand_core` y
+# con ella `getrandom` — y `sha2 0.10` comparte ese `crypto-common 0.1`. Con
+# `sha2 0.11` (`digest 0.11`, `crypto-common 0.2`) el digest de `ore` no pisa
+# ningun nodo que otro crate del workspace haya encendido: `dependencias.rs`
+# lo mide. `ore-entrada` se queda en 0.10 porque `rsa 0.9` lo exige.
+sha2 = "0.11"
 
 # Ed25519, y **solo para verificar**.
 #

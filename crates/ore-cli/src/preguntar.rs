@@ -52,7 +52,7 @@ use ore_view::view_matcher::{NoContesta, Rewrite};
 use ore_view::{Catalogo, Clasificacion, Nodo, Valor, Vista, esquema};
 
 use crate::lector;
-use crate::materializar::programa_del_almacen;
+use crate::materializar::{Puntero, programa_del_almacen};
 use crate::vista::Vistas as _;
 
 pub struct Opciones<'a> {
@@ -135,7 +135,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
     let restricciones = crate::registro::restricciones(&pkg);
     let cotejos = crate::registro::cotejos(&inventario, &plan, &clasificacion, &restricciones);
-    let (de, rw, clave) = elegir(op.vista, cotejos, |nombre| clave_de(path, nombre))?;
+    let (de, rw, puntero) = elegir(op.vista, cotejos, |nombre| Puntero::hecho(path, nombre))?;
 
     // El plan que se ejecuta: el reescrito sobre la copia, y el límite encima.
     let ejecutable = match op.limite {
@@ -160,30 +160,24 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
 
     eprintln!("{}", op.vista);
     eprintln!(
-        "  contesta `{de}`{} · {} · copia {clave}",
+        "  contesta `{de}`{} · {} · copia {}",
         if de == op.vista { " (su copia)" } else { "" },
         match rw.compensation.len() {
             0 => "sin compensación".to_string(),
             1 => "1 conyunto de compensación".to_string(),
             n => format!("{n} conyuntos de compensación"),
-        }
+        },
+        puntero.nombre()
     );
     if op.seco {
-        println!(
-            "{}",
-            cabecera(op, &de, &clave, &rw, &columnas, 0, 0, 0).jcs()
-        );
+        println!("{}", cabecera(op, &puntero, &rw, &columnas, 0, 0, 0).jcs());
         return Ok(());
     }
 
     // ── ④ Traer y tipar ──────────────────────────────────────────────────────
     let programa = programa_del_almacen().map_err(|e| (78, e))?;
-    let leido = lector::ejecutar(
-        &programa,
-        &["leer".into()],
-        Some(&Json::obj([("clave", Json::s(&clave))]).jcs()),
-    )
-    .map_err(|e| (69, con_ayuda(e)))?;
+    let leido = lector::ejecutar(&programa, &["leer".into()], Some(&puntero.peticion_leer()))
+        .map_err(|e| (69, con_ayuda(e)))?;
     let (_, base, leidas) = ore_view::hoja::de_leer(&leido).map_err(|e| (69, e))?;
 
     // ── ⑤ Ejecutar ───────────────────────────────────────────────────────────
@@ -197,7 +191,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let filas: u64 = z.presentes().map(|(_, w)| w as u64).sum();
     println!(
         "{}",
-        cabecera(op, &de, &clave, &rw, &columnas, filas, leidas, trabajo).jcs()
+        cabecera(op, &puntero, &rw, &columnas, filas, leidas, trabajo).jcs()
     );
     for (f, w) in z.presentes() {
         let linea = Json::Obj(f.iter().map(|(k, v)| (k.clone(), plano(v))).collect()).jcs();
@@ -216,8 +210,8 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
 fn elegir(
     vista: &str,
     cotejos: Vec<(String, Result<Rewrite, NoContesta>)>,
-    hecha: impl Fn(&str) -> Result<String, String>,
-) -> Result<(String, Rewrite, String), Fallo> {
+    hecha: impl Fn(&str) -> Result<Puntero, String>,
+) -> Result<(String, Rewrite, Puntero), Fallo> {
     let contestan: Vec<(&String, &Rewrite)> = cotejos
         .iter()
         .filter_map(|(n, r)| r.as_ref().ok().map(|rw| (n, rw)))
@@ -227,7 +221,7 @@ fn elegir(
     let mut sin_hacer = Vec::new();
     for (n, rw) in propia.into_iter().chain(ajenas) {
         match hecha(n) {
-            Ok(clave) => return Ok(((*n).clone(), (*rw).clone(), clave)),
+            Ok(p) => return Ok(((*n).clone(), (*rw).clone(), p)),
             Err(porque) => sin_hacer.push(format!("  `{n}` la contesta, pero {porque}")),
         }
     }
@@ -270,27 +264,6 @@ fn elegir(
     Err((65, msg))
 }
 
-/// La clave de la copia de una vista, si su informe dice que está hecha.
-fn clave_de(path: &Path, vista: &str) -> Result<String, String> {
-    let informe = path
-        .join("copias")
-        .join(format!("{}.json", vista.replace('.', "_")));
-    let copia = std::fs::read_to_string(&informe)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok())
-        .ok_or_else(|| format!("su copia no está hecha: no hay `{}`", informe.display()))?;
-    let estado = copia
-        .get("estado")
-        .and_then(|(_, x)| x.as_str())
-        .unwrap_or("");
-    copia
-        .get("clave")
-        .and_then(|(_, x)| x.as_str())
-        .filter(|c| !c.is_empty() && matches!(estado, "copiada" | "al-dia"))
-        .map(str::to_string)
-        .ok_or_else(|| format!("su copia no está: el informe dice `{estado}`"))
-}
-
 /// La hoja del plan reescrito: la tabla donde vive la copia.
 fn hoja_de(n: &Nodo) -> Option<(String, String)> {
     match n {
@@ -309,8 +282,7 @@ fn hoja_de(n: &Nodo) -> Option<(String, String)> {
 #[allow(clippy::too_many_arguments)]
 fn cabecera(
     op: &Opciones,
-    de: &str,
-    clave: &str,
+    puntero: &Puntero,
     rw: &Rewrite,
     columnas: &BTreeMap<String, Json>,
     filas: u64,
@@ -319,10 +291,7 @@ fn cabecera(
 ) -> Json {
     Json::obj([
         ("vista", Json::s(op.vista)),
-        (
-            "copia",
-            Json::obj([("de", Json::s(de)), ("clave", Json::s(clave))]),
-        ),
+        ("copia", puntero.como_json()),
         ("plan", Json::s(rw.plan.digest())),
         ("compensacion", Json::Int(rw.compensation.len() as i64)),
         ("columnas", Json::Obj(columnas.clone())),

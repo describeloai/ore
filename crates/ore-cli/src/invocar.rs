@@ -28,7 +28,7 @@
 //! decidir quién puede invocarla (Cedar, en `ore-serve` al encolar).
 
 use crate::lector;
-use crate::materializar::{paquete_del_fichero, programa_del_almacen};
+use crate::materializar::{Puntero, paquete_del_fichero, programa_del_almacen};
 use ore_core::json::Json;
 use ore_core::link::Loaded;
 use std::collections::BTreeMap;
@@ -155,28 +155,9 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ),
         ));
     }
-    let informe_copia = path
-        .join("copias")
-        .join(format!("{}.json", over.replace('.', "_")));
-    let copia = std::fs::read_to_string(&informe_copia)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok())
-        .ok_or_else(|| (65, format!("la copia de `{over}` no está hecha: no hay `{}` (ore materialize --informe copias)", informe_copia.display())))?;
-    let estado = copia
-        .get("estado")
-        .and_then(|(_, v)| v.as_str())
-        .unwrap_or("");
-    let clave_copia = copia
-        .get("clave")
-        .and_then(|(_, v)| v.as_str())
-        .filter(|c| !c.is_empty() && matches!(estado, "copiada" | "al-dia"))
-        .ok_or_else(|| {
-            (
-                65,
-                format!("la copia de `{over}` no está: el informe dice `{estado}`"),
-            )
-        })?
-        .to_string();
+    let puntero =
+        Puntero::hecho(path, &over).map_err(|e| (65, format!("la copia de `{over}`: {e}")))?;
+    let clave_copia = puntero.nombre().to_string();
 
     // ── ④ La puerta y el id servido ─────────────────────────────────────────
     let nombre_modelo = modelo_doc
@@ -204,12 +185,8 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
 
     // ── traer ───────────────────────────────────────────────────────────────
     let programa = programa_del_almacen().map_err(|e| (78, e))?;
-    let leido = lector::ejecutar(
-        &programa,
-        &["leer".into()],
-        Some(&Json::obj([("clave", Json::s(&clave_copia))]).jcs()),
-    )
-    .map_err(|e| (69, con_ayuda(e)))?;
+    let leido = lector::ejecutar(&programa, &["leer".into()], Some(&puntero.peticion_leer()))
+        .map_err(|e| (69, con_ayuda(e)))?;
     let mut lineas = leido.lines().filter(|l| !l.trim().is_empty());
     let cabecera = lineas
         .next()
@@ -352,6 +329,25 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
 
     // ── devolver ────────────────────────────────────────────────────────────
+    //
+    // El resultado es un dataset (0031 §10): `resultados/<p>_<f>`, con su
+    // puntero en `<informe>/<p>_<f>.json` y una corrida por snapshot. Si el
+    // puntero está, la corrida de hoy sobrescribe la anterior y la historia
+    // se queda; si no, el dataset nace.
+    let dataset_resultado = format!("resultados/{}", op.funcion.replace('.', "_"));
+    let puntero_resultado = op
+        .informe
+        .map(|d| d.join(format!("{}.json", op.funcion.replace('.', "_"))));
+    let base_resultado: Option<String> = puntero_resultado
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r).ok())
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("metadata_location")
+                .and_then(|(_, v)| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        });
     let plan = ore_core::digest::de_bytes(
         Json::obj([
             ("copia", Json::s(&clave_copia)),
@@ -385,7 +381,17 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ),
     ])
     .jcs();
-    let mut para_sellar = cabecera_resultado;
+    let mut para_sellar = cabecera_resultado.replacen(
+        '{',
+        &format!(
+            "{{\"dataset\":\"{dataset_resultado}\",\"fundir\":false,{}",
+            base_resultado
+                .as_ref()
+                .map(|b| format!("\"base\":\"{b}\","))
+                .unwrap_or_default()
+        ),
+        1,
+    );
     for b in &buenas {
         para_sellar.push('\n');
         para_sellar.push_str(b);
@@ -405,14 +411,13 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             .to_string()
     };
     println!(
-        "  sellado · {} · {} filas · {} bytes{}",
-        campo("clave"),
+        "  sellado · {} · {} filas · {} bytes · {}",
+        campo("metadata_location"),
         campo("filas"),
         campo("bytes"),
-        if campo("subido") == "false" {
-            " · ya estaba"
-        } else {
-            ""
+        match campo("operacion").as_str() {
+            "creada" => "el dataset nace",
+            _ => "snapshot nuevo sobre la corrida anterior",
         }
     );
 
@@ -420,10 +425,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let cuando = ahora_utc();
         let corrida = cuando.replace(['-', ':'], "");
         let informe = Json::obj([
-            (
-                "copia",
-                Json::obj([("clave", Json::s(&clave_copia)), ("vista", Json::s(&over))]),
-            ),
+            ("copia", puntero.como_json()),
             ("cuando", Json::s(&cuando)),
             ("errores", Json::Int(errores.len() as i64)),
             (
@@ -463,9 +465,11 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 "resultado",
                 Json::obj([
                     ("bytes", Json::Int(campo("bytes").parse().unwrap_or(0))),
-                    ("clave", Json::s(campo("clave"))),
-                    ("digest", Json::s(campo("digest"))),
+                    ("dataset", Json::s(&dataset_resultado)),
+                    ("metadata_location", Json::s(campo("metadata_location"))),
+                    ("operacion", Json::s(campo("operacion"))),
                     ("plan", Json::s(&plan)),
+                    ("snapshot", Json::s(campo("snapshot"))),
                 ]),
             ),
             (
@@ -482,6 +486,22 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         std::fs::write(&ruta, informe.pretty() + "\n")
             .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
         println!("  informe · {}", ruta.display());
+        // Y el puntero del dataset de resultados: lo que la siguiente corrida
+        // sobrescribe, y lo que un lector encuentra sin buscar la corrida.
+        if let Some(r) = &puntero_resultado {
+            let p = Json::obj([
+                ("estado", Json::s("copiada")),
+                ("dataset", Json::s(&dataset_resultado)),
+                ("metadata_location", Json::s(campo("metadata_location"))),
+                ("snapshot", Json::s(campo("snapshot"))),
+                ("filas", Json::Int(campo("filas").parse().unwrap_or(0))),
+                ("funcion", Json::s(op.funcion)),
+                ("corrida", Json::s(&corrida)),
+                ("plan", Json::s(&plan)),
+            ]);
+            std::fs::write(r, p.pretty() + "\n")
+                .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", r.display())))?;
+        }
     }
     Ok(())
 }

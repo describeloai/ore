@@ -304,6 +304,26 @@ pub fn existe(c: &Cuenta, clave: &str) -> Result<bool, String> {
     }
 }
 
+/// El `HEAD`, con lo que dice: `Content-Length`. `None` es que no está.
+pub fn tamano(c: &Cuenta, clave: &str) -> Result<Option<u64>, String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let cab = firmar(c, "HEAD", &ruta, Vec::new(), &vacio);
+    let mut r = cliente()?.head(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(resp) => Ok(Some(
+            resp.header("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        )),
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(format!("el `HEAD` de `{clave}` falla: {e}")),
+    }
+}
+
 /// **La subida, con las dos garantías que R2 honra.**
 ///
 /// `If-None-Match: *` para no reescribir, y `ChecksumSHA256` para que **la
@@ -411,6 +431,14 @@ pub fn leer_bytes(c: &Cuenta, clave: &str) -> Result<Option<Vec<u8>>, String> {
 }
 
 impl Almacen for Cuenta {
+    fn base(&self) -> String {
+        format!("s3://{}", self.bucket)
+    }
+
+    fn tamano(&self, clave: &str) -> Result<Option<u64>, String> {
+        tamano(self, clave)
+    }
+
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {
         leer(self, clave)
     }

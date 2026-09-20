@@ -207,7 +207,7 @@ luego el swap, luego `write()`.
 | **W3.4** ✓ 2026-09-19 (TS y JVM) | **Un puesto por persona y entorno** (`puesto-<persona>-<entorno>`: `python`, `node`, `jvm`; `POST /puestos {lenguaje}` elige la imagen; `sql` corre en los tres). `puesto-node:1` (node 24: los tipos de TS los quita Node, sin transpilador; `@duckdb/node-api`; el agente `puesto/node/agente.mjs` evalúa con el REPL de Node: contexto que dura, `await` arriba; una celda con `import`/`export` —un `.ts` del árbol— se escribe y se importa, y sus exports quedan en el contexto) y `puesto-jvm:1` (JDK 21 sobre noble; `puesto/jvm/ore/Agente.java`: JShell **en proceso**, varios snippets por celda, el valor de la expresión como objeto por `guarda()`, una clase con `main` se declara y se llama; DuckDB por JDBC). El SDK en los tres: `over()`, `sql()`, **`persona()`** (quién abrió el puesto). La plantilla del puesto lleva el hueco del entorno y cada imagen su `CMD`. En la consola, un `.ts`/`.js`/`.java` corre en su sesión; una fila por sesión abierta con su «Stop». **Medido antes** (`medida-w3-ts-jvm.py`): abajo | `el-puesto.sh` 8 (`saludo(persona())` → `hola persona:ana` desde un módulo TS con `export`; `over()`, `sql`) y 9 (lo mismo en Java, y una clase con `main`) en CI; en el clúster, las imágenes salen de `cloudbuild.yaml` |
 | **W3.5** · leer | el verbo **leer**, consistente: Arrow como verdad común en los tres SDK; el contrato de tipos ORE ↔ Parquet ↔ lenguaje escrito y medido (`medida-w3-leer.py`: un Parquet con todos los tipos difíciles leído por los tres `over()`/`sql()`, campo a campo, y el caudal a 10 M de filas) | los tres lenguajes leen la misma copia y ven los mismos valores; lo que no sobrevive está dicho, no escondido |
 | **W3.5b** ✓ 2026-09-20 · el lector del lago | **hecho**: `GET …/datos/{x}` contesta `metadata_location` (o `clave`, heredado); `over()`/`sql()`/`arrow()` en los tres leen por `iceberg_scan(raíz, version, allow_moved_paths)` —https con el token del pod en el bucket, ruta en local—, sesión en UTC, `autoinstall_known_extensions=false`, la cadena `json·icu·avro·iceberg(·httpfs)` cargada por nombre; las tres imágenes preinstalan las extensiones en `/opt/ore/duckdb` (JVM por `preinstalar/Extensiones.java`) y `node` lleva `ca-certificates`; `ore-serve` guarda la salida de una celda **tal cual** (`Json::Crudo`): `null` y `1.5` llegaban a la consola como cadenas; `el-puesto.sh` 4/8/9 leen `hr.lago` (PyIceberg, catálogo = árbol) con el mismo JSON en los tres. **Medido** (abajo): camino (b), directo del bucket con el token del pod; extensiones preinstaladas; node sin CA; una extensión ausente cuelga 120 s. Antes: **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
-| **W3.6a** · la copia es un dataset | **medido** (abajo): `iceberg-rust` 0.10 escribe lo que hace falta a 2,6 M filas/s con los diez tipos exactos, también en gs:// → **se construye en Rust**. Antes: **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
+| **W3.6a** ✓ 2026-09-20 · la copia es un dataset | **hecho** (abajo, «W3.6a hecho»): `ore-store` escribe la tabla Iceberg en Rust —crear, refrescar fundiendo (sobrescribir), rehacer (sobrescribir), esquema que evoluciona con el lote, expirar y huérfanos— con el almacén de siempre como suelo de Iceberg y **sin catálogo**: el puntero `copias/<p>_<v>.json` (`metadata_location`, `cabecera`, `snapshot`, `testigo`) es el estado, `ore` lo lee antes de leer una fila y lo mueve al terminar, el commit del Job es el *swap* y la forja el CAS; el recibo del bucket se retira; `ore ask` e `ore invoke` leen por el puntero (el resultado de una función también es un dataset, `resultados/<p>_<f>`); `--recoger` expira lo superado (`ORE_RECOGER_EDAD` conserva la historia reciente; el Job, siete días); cotejado con DuckDB y PyIceberg en GCS y con `ore-store-r2` en R2. **Medido** antes: `iceberg-rust` 0.10 escribe lo que hace falta a 2,6 M filas/s con los diez tipos exactos, también en gs:// → **se construye en Rust**. Antes: **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
 | **W3.6b** · el swap y el lago | `ore-serve` hace el CAS sobre el puntero y el commit por la forja (`POST …/datasets/{t}/confirmar {metadata_location, esperado}` → 409 si otro ganó); el `datasource: lago` del inquilino nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento (expirar snapshots, huérfanos) | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta; `git log` de un puntero es la historia de la tabla |
 | **W3.6c** · escribir | `write("p.salida", tabla)` en los tres (Python con PyIceberg primero; Node y Java por DuckDB `COPY … TO` Iceberg cuando lo tenga, o por el trabajo): datos y `metadata.json` al bucket con la identidad del pod (`objectCreator` sobre `datasets/`), el puntero por `ore-serve`, la `Table` del lago escrita con el esquema de Arrow la primera vez; 0032 convierte lo que Iceberg no tiene (ns → µs, zona → UTC) y niega `uint64`/`null` diciéndolo | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, latencia de un commit en el clúster |
 | **W3.4b** · dependencias | las capas de Node (`package.json` → `node_modules` en el bucket) y de la JVM (`pom.xml`/`build.gradle` → jars en el bucket, resueltos con Maven en el Job del driver; nunca Gradle del cliente en la malla) | medido como la de Python: resolver, subir, bajar, cargar |
@@ -357,6 +357,72 @@ columna nueva, los diez tipos, GCS con la identidad del pod— al mismo caudal q
 hoy (2,6 M filas/s frente a 2,5). No hace falta PyIceberg en la imagen del Job. Lo que cuesta
 es tamaño (crates y binario) y la subida de arrow a 58; lo que falta (promoción de tipos,
 expirar por número) tiene rodeo y no bloquea. **W3.6a se construye en Rust, en `ore-store`.**
+
+## W3.6a hecho · la copia sella Iceberg (2026-09-20)
+
+Construido tal como la medida lo dejó, con tres decisiones que la medida no tomó y que se
+tomaron al abrir `iceberg` 0.10 por dentro:
+
+1. **Sin catálogo, y sin `opendal`.** `iceberg-rust` quiere un `Catalog` para confirmar y un
+   `Storage` para escribir. El catálogo es el árbol —el puntero en `copias/`—, así que no hay
+   ninguno: `ore-store` abre la tabla por su `metadata_location` (`Table::builder`), aplica los
+   cambios a los metadatos (`TableUpdate::apply`, con sus requisitos comprobados) y escribe el
+   siguiente `metadata.json`; **nadie lo apunta hasta que el Job hace `git push`**, y la forja,
+   al rechazar lo que no avanza en línea recta, es el *compare-and-set*. El `Storage` es el
+   `Almacen` de siempre (`gcs.rs`, `r2.rs`) con el traje de Iceberg: el mismo token del pod, el
+   mismo SigV4, un transporte y no dos (la medida usó `iceberg-storage-opendal`; el producto
+   no lo lleva). Una pasada que perdiera la carrera del push dejaría un snapshot que ningún
+   puntero nombra, y `--recoger` lo retira en la siguiente.
+2. **Sobrescribir, a mano.** 0.10 sólo trae `fast_append`. Un refresco (fundir lo que había con
+   el incremento) y un rehacer producen un snapshot `overwrite` construido con las piezas
+   públicas de la crate: un manifiesto con los ficheros nuevos como `ADDED`, otro con los vivos
+   del snapshot anterior como `DELETED`, la lista de manifiestos, el `Snapshot` con sus totales,
+   `AddSnapshot` + `SetSnapshotRef`. DuckDB y PyIceberg lo leen como lo que es (cotejado en
+   GCS: vigente 1010 filas tras dos refrescos, `snapshot_from_id` del primero → 1000, tipos
+   exactos, `sum(decimal)` exacto). El refresco con clave sigue siendo **fundir y reescribir**
+   —3,8 s para 10 M según la medida— y no un *upsert* con *equality deletes*: eso es lo que
+   0.10 no escribe todavía, y queda como mejora, no como bloqueo.
+3. **El esquema evoluciona con el lote, por id.** No hay promoción de tipos en 0.10, y no hace
+   falta: el esquema deseado se construye entero desde el lote, una columna que conserva
+   nombre y tipo conserva su id y la que cambió de tipo (o es nueva) recibe uno nuevo — la
+   forma legal de Iceberg para un cambio que no es promoción. Como cada sobrescritura
+   reescribe todos los datos, ningún fichero vivo lleva un id con dos tipos, y los snapshots
+   anteriores se leen con su propio esquema. Sin tablas sucesoras.
+
+**El protocolo del almacén, revisado** (`ore-store <verbo>`, y 0015 queda enmendado por esto):
+`buscar {metadata_location}` → `{existe}` (un HEAD: el puntero lo trae el árbol);
+`sellar {dataset, base?, fundir, …cabecera}` + filas → `{metadata_location, snapshot, ubicacion,
+operacion: creada|refrescada|sobrescrita, filas, bytes, ficheros, retirados, columnas,
+sin_estrechar, esquema_cambiado}`; `recoger[-seco] {dataset, metadata_location, edad_ms?}` →
+expira los snapshots superados más viejos que `edad_ms` (sin él, todos) y retira lo que ningún
+snapshot que quede nombra, y devuelve el `metadata_location` nuevo si expiró alguno —**el
+puntero se mueve a él**—; `recoger-huerfanas {datasets, claves}` → los datasets que ningún
+puntero reclama y los sobres `ore/v1/` que ningún puntero nombra; `leer {metadata_location}`
+(o `{clave}`, heredado) → la cabecera sellada (una propiedad del snapshot, `ore.cabecera`) y las
+filas. `anterior` desaparece: sobre qué fundir y desde dónde leer lo dice el puntero.
+
+**El ciclo en `ore materialize`**: ④ lee el puntero; si su `cabecera` (el digest de la de ahora)
+coincide y el `metadata.json` existe, «ya está» sin leer una fila; ⑤ lee el incremento sólo si
+el plan es el mismo, hay clave y el testigo ordena (`desde` = el testigo del puntero), y pide
+`fundir`; con `--rehacer`, o con otro plan, o sin clave, lee entero y sobrescribe; ⑥ escribe el
+puntero, y `--recoger` después (también en «ya está»). Sin `--informe`, los punteros viven en
+`<árbol>/copias`. En seco no se toca el árbol. **Una pasada que falla no borra el puntero**:
+conserva el dataset que había y pone encima `estado: error` y el motivo. Un puntero heredado
+(`clave`, sin `metadata_location`) se trata como «no está»: la primera pasada resella como
+dataset, y `recoger-huerfanas` retira el sobre cuando ningún puntero lo nombre.
+
+**Lo que sale de las pruebas** (`la-pregunta-se-contesta.sh` 0–9 y `la-invocacion-se-decide.sh`
+0–7 contra el S3 de mentira, `refresco.sh` contra GCS, `almacen-r2.sh` contra R2, los tres
+verdes): crear = 4 objetos (`metadata.json`, lista, manifiesto, datos); un refresco = 5 (un
+manifiesto más, el de los retirados); «ya está» = 0; `--recoger` deja el snapshot vigente y los
+`metadata.json` que el registro de la tabla lista (acotado: `previous-versions-max`). Lo que
+pesa: el cierre de `ore-store` pasa de 100 a ~300 crates y `arrow`/`parquet` a 58 (sólo ahí);
+los binarios van con `strip` en la imagen.
+
+**Lo que queda para W3.6b/c**: la política de retención de la historia como declaración (hoy
+`ORE_RECOGER_EDAD` en el Job, siete días) y el CronJob de mantenimiento; el *upsert* con
+*equality deletes* cuando `iceberg-rust` lo escriba; el swap por `ore-serve` para lo que no
+escribe el Job (`write()`); la ficha del dataset con sus snapshots en la consola.
 
 ## Lo que se aparca
 

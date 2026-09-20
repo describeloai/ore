@@ -31,4 +31,6 @@ ore-core = { path = "../ore-core" }
 # `rsa` y `sha2` son Rust puro, sin FFI y sin red. Sólo se usa la mitad de
 # verificar; firmar necesita una clave privada y aquí no hay ninguna.
 rsa = { version = "0.9", default-features = false, features = ["sha2"] }
-sha2.workspace = true
+# La 0.10 y no la del workspace (0.11): `VerifyingKey::<Sha256>` es de `rsa 0.9`,
+# que vive en `digest 0.10`. Este crate no esta en el cierre de `ore`.
+sha2 = "0.10"

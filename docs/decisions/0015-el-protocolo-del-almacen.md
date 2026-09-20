@@ -4,6 +4,17 @@
 **artefacto nombrado por su digest**, con un sobre nuestro y una carga en Parquet, y que subirlo
 es de un programa delegado — porque `ore` no puede abrir un socket
 
+> **Revisado el 2026-09-20 por [0031 §10](0031-el-puesto.md) (W3.6a, «todo es un dataset»).**
+> Lo que sigue en pie: el ciclo de seis pasos, el programa delegado, la cabecera (plan, esquema,
+> testigo, clave, conducto) y Parquet como carga. Lo que cambia: **la copia ya no es un sobre
+> nombrado por su digest sino una tabla Iceberg con su historia**; el estado ya no vive en el
+> bucket (el recibo se retira) sino **en el árbol**, en `copias/<p>_<v>.json` con
+> `metadata_location` —el árbol es el catálogo, el commit del Job es el *swap* y la forja el
+> *compare-and-set*—; la cabecera viaja como propiedad del snapshot; rehacer y refrescar son
+> snapshots de la misma tabla; `--recoger` expira snapshots y retira lo que ninguno nombra. El
+> protocolo revisado está en 0031 («W3.6a hecho») y en `crates/ore-store/src/ciclo.rs`. Los
+> sobres `ORECOPY1` que queden se siguen leyendo hasta que ningún puntero los nombre.
+
 ---
 
 ## El problema

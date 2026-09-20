@@ -18,6 +18,14 @@
 #
 # **Esta prueba nace en rojo, y eso es el diseño.** Cada ✗ nombra el peldaño que
 # lo cierra, así que su salida ES la lista de trabajo del plan.
+#
+# Desde W3.6a (0031 §10) la copia es un DATASET: una tabla Iceberg en el bucket
+# y un puntero en el árbol (`copias/<p>_<v>.json`). Los objetos que se cuentan
+# son los de la tabla —`metadata.json`, lista de manifiestos, manifiestos,
+# ficheros de datos— y el bucket queda acotado por `--recoger`, que expira los
+# snapshots superados y retira lo que ningún snapshot nombra. `ORE_RECOGER_EDAD`
+# (segundos) conserva la historia reciente; aquí no se pone: se expira todo lo
+# superado, que es lo que «recoger» significó siempre.
 set -u
 
 ORE="${ORE:-./target/debug/ore.exe}"
@@ -143,6 +151,7 @@ echo "══ los cinco actos · el trabajo se cuenta en filas, no en segundos �
 antes=$(objetos)
 
 INF="$D/informes"
+export -n ORE_RECOGER_EDAD 2>/dev/null; unset ORE_RECOGER_EDAD
 a1=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 1000 "$(leidas "$a1")" "① primera materialización, filas leídas" "I5 (hecho)"
 cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"
@@ -151,34 +160,47 @@ cmp_n copiada "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia
 cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe cuenta las filas" "P1 I3"
 # y por columna (medida W1 §B): una copia con las filas y sin los valores era `copiada` igual
 cmp_n 1000 "$(tr -d ' \n' < "$INF/ventas_copia.json" | sed -n 's/.*"columnas":{[^}]*"total":\([0-9]*\).*/\1/p' | head -1)" "① el informe cuenta cada columna" "W1 §B"
-n1=$(objetos); cmp_n 2 "$((n1 - antes))" "① objetos nuevos (artefacto + recibo)" "I5 (hecho)"
+cmp_n creada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el puntero dice que el dataset nace" "W3.6a"
+n1=$(objetos); cmp_n 4 "$((n1 - antes))" "① objetos nuevos (metadata.json + lista + manifiesto + datos)" "W3.6a"
 
 a2=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 if grep -q "ya está" <<<"$a2"; then ok "② sin tocar el origen: 0 filas leídas"
-else mal "② releyó el origen sin que cambiara" "el recibo · I5"; fi
-n2=$(objetos); cmp_n 0 "$((n2 - n1))" "② objetos nuevos" "el recibo · I5"
+else mal "② releyó el origen sin que cambiara" "el puntero · I5"; fi
+n2=$(objetos); cmp_n 0 "$((n2 - n1))" "② objetos nuevos" "el puntero · I5"
 cmp_n al-dia "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "② el informe dice al-dia" "P1 I3"
 cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "② y conserva las filas de la copia que ya estaba" "P1 I3"
 
 filas 10 1001 >> "$D/datos/pedidos.jsonl"
-a3=$("$ORE" materialize "$D" 2>&1)
+a3=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 10 "$(leidas "$a3")" "③ +10 filas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a3")" "③ filas EN LA COPIA" "la copia entera, no solo el incremento"
-n3=$(objetos); cmp_n 2 "$((n3 - n2))" "③ objetos nuevos" "R2"
+cmp_n refrescada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "③ el puntero dice refrescada (fundida sobre lo que había)" "W3.6a"
+# un snapshot que sobrescribe: metadata.json + lista + 2 manifiestos (los
+# ficheros nuevos, y los del snapshot anterior como retirados) + datos
+n3=$(objetos); cmp_n 5 "$((n3 - n2))" "③ objetos nuevos (un snapshot más)" "R2"
 
 sed -i '1,3s/"pais":"ES"/"pais":"PT"/; 1,3s/"actualizado_en":"[0-9]*"/"actualizado_en":"0000002000"/' "$D/datos/pedidos.jsonl"
 a4=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
-n4=$(objetos); cmp_n 2 "$((n4 - n3))" "④ objetos nuevos" "R2"
+n4=$(objetos); cmp_n 5 "$((n4 - n3))" "④ objetos nuevos (un snapshot más)" "R2"
 cmp_n 1010 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "④ el informe cuenta la copia entera" "P1 I3"
 
-"$ORE" materialize "$D" --recoger >/dev/null 2>&1
+a5=$("$ORE" materialize "$D" --recoger --informe "$INF" 2>&1)
 n5=$(objetos)
-# **Dos**: el artefacto vigente y su recibo. Las tres copias anteriores
-# siguen siendo ciertas hasta su marca, y por eso recoger es EXPLICITO — pero
-# cuando se pide, el almacen queda acotado y no crece con los refrescos.
-cmp_n 2 "$((n5 - antes))" "⑤ tras recoger, objetos que quedan" "R5"
+# **Ocho**: el snapshot vigente (lista + 2 manifiestos + datos) y los cuatro
+# `metadata.json` que el registro de metadatos de la tabla sigue listando (los
+# tres de los actos y el de expirar). Los dos snapshots anteriores siguen
+# siendo ciertos hasta su marca, y por eso recoger es EXPLICITO — pero cuando
+# se pide, el almacen queda acotado y no crece con los refrescos.
+cmp_n 8 "$((n5 - antes))" "⑤ tras recoger, objetos que quedan" "R5"
+if grep -q "recogidos 2 snapshot(s) superado(s)" <<<"$a5"; then ok "⑤ expiraron los 2 snapshots superados"
+else mal "⑤ no expiró los 2 snapshots superados: $a5" "W3.6a"; fi
+ML5=$(sed -n 's/.*"metadata_location": *"\([^"]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)
+case "$ML5" in */metadata/00003-*) ok "⑤ el puntero se movió al metadata.json de expirar" ;; *) mal "⑤ el puntero no se movió al expirar: $ML5" "W3.6a" ;; esac
+a6=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
+if grep -q "ya está" <<<"$a6"; then ok "⑥ tras recoger, sigue al día: 0 filas leídas"
+else mal "⑥ recoger dejó la copia sin puntero válido" "W3.6a"; fi
 
 echo
 echo "══ las cuatro negativas · valen igual que los actos ══"

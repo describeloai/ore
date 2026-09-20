@@ -4,16 +4,17 @@
 # copia, de punta a punta y sin red de verdad.
 #
 #   `ore materialize` (jsonl → S3 de mentira)  →  `ore invoke`:
-#       `ore-store-r2 leer`   trae las 12 filas de la copia por su nombre
+#       `ore-store-r2 leer`   trae las 12 filas de la copia por su puntero
 #       `ore-invoke`          las lleva al vLLM de mentira, una llamada por fila
-#       `ore-store-r2 sellar` sella el resultado en el mismo almacén
-#       `--informe`           deja los números y una muestra en el árbol
+#       `ore-store-r2 sellar` sella el resultado como un dataset en el mismo bucket
+#       `--informe`           deja los números y una muestra en el árbol, y el
+#                             puntero del dataset de resultados
 #
 # Lo que afirma:
-#   1  la copia se relee por su nombre y vuelve entera (I1)
+#   1  la copia se relee por su puntero y vuelve entera (I1)
 #   2  cada fila va al modelo con `temperature: 0` y la forma de `output` pedida
-#   3  el resultado es un artefacto sellado con la copia leída en su cabecera, y
-#      la segunda corrida NO sube un byte (mismo nombre por digest)
+#   3  el resultado es un dataset (0031 §10: `resultados/<p>_<f>`) con la copia
+#      leída en su cabecera, y la segunda corrida es un snapshot más del mismo
 #   4  una fila que el modelo no contesta bien sale como error, y la corrida sigue
 #   5  el informe dice filas, ok, errores, tokens, ms y la muestra
 #   6  lo que se niega: sin copia hecha, con `effects`, `runtime: wasm`, un
@@ -166,8 +167,8 @@ export FICHEROS_DIR="$TMP/datos"
 
 # ── 0 · la copia, hecha ──────────────────────────────────────────────────────
 salida=$("$ORE" materialize "$A" --informe "$A/copias" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
-CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["clave"])' "$A/copias/olist_copia_productCategoryNameTranslation.json")
-[ -n "$CLAVE" ] || { falla "0 · el informe de la copia no tiene clave"; exit 1; }
+CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/copias/olist_copia_productCategoryNameTranslation.json")
+[ -n "$CLAVE" ] || { falla "0 · el puntero de la copia no tiene metadata_location"; exit 1; }
 # y cuenta por columna (medida W1 §B): en demo una copia «copiada» tenía 2 de 9 columnas
 "$PY" - "$A/copias/olist_copia_productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
 import json, sys
@@ -177,14 +178,14 @@ EOF
 dice "0 · copia hecha · $CLAVE"
 
 # ── 1 · I1: la copia vuelve por su nombre ────────────────────────────────────
-leida=$(printf '{"clave":"%s"}\n' "$CLAVE" | ore-store-r2 leer) || { falla "1 · leer falló"; exit 1; }
+leida=$(printf '{"metadata_location":"%s"}\n' "$CLAVE" | ore-store-r2 leer) || { falla "1 · leer falló"; exit 1; }
 n=$(echo "$leida" | grep -c '^{"productCategoryName"')
 [ "$n" = "12" ] || falla "1 · leer devolvió $n filas, no 12"
 echo "$leida" | head -1 | grep -q '"plan":"sha256:' || falla "1 · la primera línea no es la cabecera: $(echo "$leida" | head -c 120)"
 echo "$leida" | grep -q '"productCategoryName":"perfumaria","productCategoryNameEnglish":"perfumery"' || falla "1 · las filas no llevan los campos de la vista"
 printf '{"clave":"ore/v1/nadie"}\n' | ore-store-r2 leer >/dev/null 2>"$TMP/e" && falla "1 · leer lo que no está no falló"
 grep -q "no está en el almacén" "$TMP/e" || falla "1 · leer lo que no está no lo dice: $(cat "$TMP/e")"
-dice "1 · I1: \`ore-store-r2 leer\` devuelve cabecera + 12 filas; lo que no está se dice"
+dice "1 · I1: \`ore-store-r2 leer\` devuelve cabecera + 12 filas por el puntero; lo que no está se dice"
 
 # ── 2·3·4·5 · la invocación ──────────────────────────────────────────────────
 export MODELO_TOKEN=de-mentira
@@ -192,9 +193,9 @@ salida=$("$ORE" invoke "$A" --funcion olist_copia.traducirCategoria --puerta "$P
 echo "$salida" | grep -q "12 fila(s) de la copia" || falla "2 · no leyó las 12 filas: $salida"
 echo "$salida" | grep -q "11 ok · 1 error(es)" || falla "4 · esperaba 11 ok y 1 error: $salida"
 echo "$salida" | grep -q "no contestó un objeto JSON" || falla "4 · el error de la fila no dice por qué: $salida"
-echo "$salida" | grep -q "sellado · ore/v1/" || falla "3 · no selló: $salida"
-RES=$(echo "$salida" | sed -n 's/.*sellado · \(ore\/v1\/[a-f0-9]*\).*/\1/p')
-[ "$RES" != "$CLAVE" ] || falla "3 · el resultado se llama como la copia"
+echo "$salida" | grep -q "sellado · s3://copia/ore/v2/resultados/olist_copia_traducirCategoria/metadata/00000-.* el dataset nace" || falla "3 · no selló el dataset de resultados: $salida"
+RES=$(echo "$salida" | sed -n 's/.*sellado · \(s3:[^ ]*\.metadata\.json\).*/\1/p')
+[ -n "$RES" ] && [ "$RES" != "$CLAVE" ] || falla "3 · el resultado se llama como la copia"
 llamadas=$(curl -s "http://127.0.0.1:$VLLM_PUERTO/llamadas")
 echo "$llamadas" | grep -q '"llamadas": 12' || falla "2 · el modelo no recibió 12 llamadas: $llamadas"
 echo "$llamadas" | grep -q '"temperature": 0' || falla "2 · no fue con temperature 0: $llamadas"
@@ -202,12 +203,12 @@ echo "$llamadas" | grep -q 'categoriaEs' || falla "2 · el sistema no pidió la 
 dice "2 · 12 llamadas al modelo, temperature 0, la forma de output en el prompt"
 dice "4 · la fila \`rompe_todo\` sale como error y la corrida sigue: 11 ok"
 # el resultado, releído: lleva los campos de la copia + output, y su cabecera nombra la copia
-res=$(printf '{"clave":"%s"}\n' "$RES" | ore-store-r2 leer) || falla "3 · el resultado no se puede releer"
+res=$(printf '{"metadata_location":"%s"}\n' "$RES" | ore-store-r2 leer) || falla "3 · el resultado no se puede releer"
 echo "$res" | head -1 | grep -q "\"conducto\":\"function:olist_copia.traducirCategoria\"" || falla "3 · la cabecera no dice la función: $(echo "$res" | head -1)"
 echo "$res" | head -1 | grep -q "\"valor\":\"$CLAVE\"" || falla "3 · la cabecera no nombra la copia leída: $(echo "$res" | head -1)"
 echo "$res" | grep -q '"categoriaEs":"Perfumería","productCategoryName":"perfumaria"' || falla "3 · el resultado no lleva fila + output: $(echo "$res" | sed -n 2,3p)"
 n=$(echo "$res" | grep -c '^{"categoriaEs"'); [ "$n" = "11" ] || falla "3 · el resultado tiene $n filas, no 11"
-dice "3 · el resultado es un artefacto sellado: fila + output, cabecera con función y copia"
+dice "3 · el resultado es un dataset: fila + output, cabecera con función y copia"
 # el informe
 INF=$(ls "$A"/resultados/olist_copia_traducirCategoria_*.json | head -1)
 [ -n "$INF" ] || falla "5 · no hay informe"
@@ -216,7 +217,8 @@ import json, sys
 i = json.load(open(sys.argv[1]))
 assert i["funcion"] == "olist_copia.traducirCategoria", i
 assert i["filas"] == 12 and i["ok"] == 11 and i["errores"] == 1 and i["estado"] == "parcial", i
-assert i["copia"]["clave"] == sys.argv[2] and i["resultado"]["clave"] == sys.argv[3], i
+assert i["copia"]["metadata_location"] == sys.argv[2] and i["resultado"]["metadata_location"] == sys.argv[3], i
+assert i["resultado"]["dataset"] == "resultados/olist_copia_traducirCategoria" and i["resultado"]["operacion"] == "creada", i["resultado"]
 assert i["tokens"]["entrada"] > 0 and i["tokens"]["salida"] > 0, i["tokens"]
 assert i["ms"]["total"] >= 0 and "por_fila" in i["ms"], i["ms"]
 assert len(i["muestra"]) == 5 and "output" in i["muestra"][0] and "fila" in i["muestra"][0], i["muestra"]
@@ -224,11 +226,20 @@ assert i["modelo"]["nombre"] == "v2-lite" and i["modelo"]["id"] == "de-mentira/v
 assert i["errores_muestra"] and "objeto JSON" in i["errores_muestra"][0], i["errores_muestra"]
 assert i["cuando"].endswith("Z") and len(i["cuando"]) == 20, i["cuando"]
 PY
-dice "5 · informe: 12 filas · 11 ok · 1 error · tokens · ms · muestra de 5 · estado parcial"
-# la segunda corrida: mismo nombre, nada sube
-salida2=$("$ORE" invoke "$A" --funcion olist_copia.traducirCategoria --puerta "$PUERTA" --modelo de-mentira/v2-lite 2>&1) || { echo "$salida2"; falla "3 · la segunda corrida falló"; }
-echo "$salida2" | grep -q "sellado · $RES .* ya estaba" || falla "3 · la segunda corrida no dio el mismo artefacto sin subir: $salida2"
-dice "3 · la segunda corrida: el mismo artefacto, ya estaba"
+# y el puntero del dataset de resultados, al lado de las corridas
+"$PY" - "$A/resultados/olist_copia_traducirCategoria.json" "$RES" <<'PY' || falla "5 · el puntero del dataset de resultados"
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["estado"] == "copiada" and p["metadata_location"] == sys.argv[2] and p["dataset"] == "resultados/olist_copia_traducirCategoria" and p["filas"] == 11, p
+PY
+dice "5 · informe: 12 filas · 11 ok · 1 error · tokens · ms · muestra de 5 · estado parcial · y el puntero del dataset"
+# la segunda corrida: un snapshot más del mismo dataset, y el puntero se mueve
+salida2=$("$ORE" invoke "$A" --funcion olist_copia.traducirCategoria --puerta "$PUERTA" --modelo de-mentira/v2-lite --informe "$A/resultados" 2>&1) || { echo "$salida2"; falla "3 · la segunda corrida falló"; }
+echo "$salida2" | grep -q "sellado · s3://copia/ore/v2/resultados/olist_copia_traducirCategoria/metadata/00001-.* snapshot nuevo sobre la corrida anterior" || falla "3 · la segunda corrida no fue un snapshot sobre el mismo dataset: $salida2"
+RES2=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/resultados/olist_copia_traducirCategoria.json")
+[ "$RES2" != "$RES" ] || falla "3 · el puntero de resultados no se movió"
+n=$(printf '{"metadata_location":"%s"}\n' "$RES" | ore-store-r2 leer | grep -c '^{"categoriaEs"'); [ "$n" = "11" ] || falla "3 · la primera corrida ya no se relee entera ($n)"
+dice "3 · la segunda corrida: un snapshot más del mismo dataset; la primera sigue legible"
 # --limite y --seco
 salida3=$("$ORE" invoke "$A" --funcion olist_copia.traducirCategoria --puerta "$PUERTA" --modelo de-mentira/v2-lite --limite 3 --seco 2>&1) || falla "2 · --seco falló: $salida3"
 echo "$salida3" | grep -q "3 fila(s) de la copia (límite 3)" || falla "2 · --limite no limita: $salida3"

@@ -19,7 +19,7 @@
 //!
 //! # Los códigos
 //!
-//! - `200` la respuesta: `{view, copia{de, clave}, plan, compensacion,
+//! - `200` la respuesta: `{view, copia{de, metadata_location | clave}, plan, compensacion,
 //!   columnas, limite, filas, leidas, trabajo, datos}`;
 //! - `404` la vista no está en el árbol;
 //! - `409` una copia la contesta **pero no está hecha**: es lo accionable

@@ -1,8 +1,14 @@
-//! **El sobre.** Lo decidió el
-//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md):
+//! **La cabecera de la copia, y el sobre heredado.**
 //!
-//! > Una copia es un artefacto: **un sobre nuestro alrededor de una carga en
-//! > Parquet, nombrado por su digest**, inmutable.
+//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md)
+//! decidió: *«una copia es un artefacto: un sobre nuestro alrededor de una carga
+//! en Parquet, nombrado por su digest, inmutable»*. Desde W3.6a (0031 §10,
+//! 2026-09-20) **la copia es un dataset** —una tabla Iceberg con su historia—
+//! y el sobre ya no se escribe: lo que sigue vivo de aquí es **la cabecera**
+//! ([`Cabecera`]: plan, esquema, testigo, clave, conducto), que ahora viaja
+//! como propiedad del snapshot de la tabla, y [`abrir`], que sigue leyendo los
+//! sobres `ORECOPY1` que queden en `ore/v1/` hasta que `recoger-huerfanas` los
+//! retire.
 //!
 //! ```text
 //! "ORECOPY1"        8 bytes
@@ -53,6 +59,11 @@ use ore_core::json::Json;
 use std::collections::BTreeMap;
 
 pub const MAGIA: &[u8; 8] = b"ORECOPY1";
+
+/// El JSON canónico de la cabecera, en una línea: lo que `ore` sella y lo que
+/// `leer` devuelve. Es un tipo de texto porque va a un sitio de texto (la
+/// propiedad `ore.cabecera` del snapshot).
+pub type CabeceraJcs = String;
 
 /// Hasta cuándo fue cierta. El vocabulario es el de `changes.witness` de OOS y
 /// no se inventa otro: `none`, `snapshot`, `log`, `field`.
@@ -117,98 +128,10 @@ impl Cabecera {
     }
 }
 
-fn u32le(v: u32, out: &mut Vec<u8>) {
-    out.extend_from_slice(&v.to_le_bytes());
-}
-
-/// **El artefacto entero.** Determinista: la misma cabecera y la misma carga
-/// dan los mismos bytes, y por tanto el mismo nombre.
-pub fn sellar(c: &Cabecera, carga: &[u8]) -> Vec<u8> {
-    let cab = c.jcs();
-    let mut out = Vec::with_capacity(MAGIA.len() + 4 + cab.len() + carga.len());
-    out.extend_from_slice(MAGIA);
-    u32le(cab.len() as u32, &mut out);
-    out.extend_from_slice(cab.as_bytes());
-    out.extend_from_slice(carga);
-    out
-}
-
-/// **El nombre es el contenido.**
-///
-/// De ahí salen tres cosas que no hay que programar: no hay carrera —dos
-/// escritores que lleguen a la vez escriben los mismos bytes—, re-materializar
-/// es idempotente, y ramificar sale gratis porque una rama nombra otro digest.
-pub fn clave(artefacto: &[u8]) -> String {
-    let d = ore_core::digest::de_bytes(artefacto);
-    format!("ore/v1/{}", d.trim_start_matches("sha256:"))
-}
-
-/// **El recibo**, y por qué hace falta uno.
-///
-/// El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md) dice
-/// del paso 4 del ciclo: *«calcula `digest(plan, testigo)` y hace un `HEAD`. Si
-/// está, termina aquí»*, y promete con ello **saber si hay que copiar sin copiar
-/// nada**.
-///
-/// Eso **no se puede hacer** con el nombre del artefacto y nada más: el nombre
-/// es el digest del artefacto **entero**, carga incluida, y para calcularlo hay
-/// que haber leído ya todas las filas. El paso 4, tal y como estaba escrito,
-/// ahorraba la subida y no la lectura — que es el trabajo caro.
-///
-/// El recibo lo arregla con un objeto minúsculo:
-///
-/// ```text
-/// ore/v1/plan/<sha256 de la cabecera>   →   contiene la clave del artefacto
-/// ```
-///
-/// La cabecera se conoce **antes** de leer una fila —plan, esquema, testigo,
-/// clave y conducto salen todos de la compilación— así que el `HEAD` de verdad
-/// se hace aquí. Y **sigue sin haber puntero mutable**: el nombre del recibo
-/// también es su contenido, y se escribe con `If-None-Match: *`.
-///
-/// # Lo que el recibo mide sin proponérselo
-///
-/// > **Es donde la promesa del testigo se pone a prueba.**
-///
-/// La cabecera determina el artefacto **solo si el origen es determinista dado
-/// el testigo**. Si un testigo no fija de verdad el estado del origen, dos
-/// materializaciones con la misma cabecera producen cargas distintas — y
-/// entonces el mismo recibo apuntaría a dos artefactos. `If-None-Match` deja
-/// ganar al primero, así que la discrepancia queda **detectable** en vez de
-/// silenciosa: el segundo ve que el recibo apunta a otro sitio.
-/// # Y por qué el plan va en la ruta, y no solo en el digest
-///
-/// Porque **agrupa**. `ore/v1/plan/<plan>/<cabecera>` permite enumerar por
-/// prefijo todas las copias de un mismo plan, y sin eso no se puede contestar la
-/// única pregunta que la recogida de basura necesita: *¿cuál de estas es la
-/// vigente y cuáles quedaron atrás?*
-///
-/// No introduce ningún puntero mutable, que era la propiedad a no perder: los
-/// dos segmentos siguen siendo contenido. Lo que añade es **un sitio donde
-/// mirar**, que es exactamente lo que el registro hizo un piso más arriba.
-pub fn recibo(c: &Cabecera) -> String {
-    let d = ore_core::digest::de_bytes(c.jcs().as_bytes());
-    format!(
-        "{}/{}",
-        prefijo_de_plan(&c.plan),
-        d.trim_start_matches("sha256:")
-    )
-}
-
-/// Dónde viven todos los recibos de un plan. Es lo que se enumera para recoger.
-pub fn prefijo_de_plan(plan: &str) -> String {
-    format!("ore/v1/plan/{}", plan.trim_start_matches("sha256:"))
-}
-
-/// Vuelve a abrirlo. Existe para que la prueba de ida y vuelta sea una prueba y
-/// no una inspección a ojo, y para que quien lea una copia no tenga que adivinar
-/// dónde acaba la cabecera.
-///
-/// **La mitad lectora del formato, y todavía no la llama nadie.** Se escribe
-/// junto con la escritora a propósito: un formato cuyo lector se escribe meses
-/// después se descubre ilegible meses después. Quien lea copias —el ejecutor,
-/// cuando las sirva— entra por aquí.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Abre un sobre heredado: la cabecera y la carga. Es la mitad lectora de un
+/// formato que ya no se escribe, y se queda hasta que no quede ningún sobre en
+/// ningún bucket (`recoger-huerfanas` los retira cuando ningún puntero los
+/// nombra).
 pub fn abrir(b: &[u8]) -> Result<(String, &[u8]), String> {
     if b.len() < MAGIA.len() + 4 || &b[..8] != MAGIA {
         return Err("no empieza por `ORECOPY1`: no es una copia de ORE".into());
@@ -229,6 +152,27 @@ pub fn abrir(b: &[u8]) -> Result<(String, &[u8]), String> {
 mod tests {
     use super::*;
 
+    fn u32le(v: u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+
+    /// El sobre, tal como se escribía hasta W3.6a: para probar que `abrir`
+    /// sigue leyéndolo.
+    fn sellar(c: &Cabecera, carga: &[u8]) -> Vec<u8> {
+        let cab = c.jcs();
+        let mut out = Vec::with_capacity(MAGIA.len() + 4 + cab.len() + carga.len());
+        out.extend_from_slice(MAGIA);
+        u32le(cab.len() as u32, &mut out);
+        out.extend_from_slice(cab.as_bytes());
+        out.extend_from_slice(carga);
+        out
+    }
+
+    fn clave(artefacto: &[u8]) -> String {
+        let d = ore_core::digest::de_bytes(artefacto);
+        format!("ore/v1/{}", d.trim_start_matches("sha256:"))
+    }
+
     fn cabecera() -> Cabecera {
         Cabecera {
             plan: "sha256:aaaa".into(),
@@ -246,8 +190,9 @@ mod tests {
         }
     }
 
-    /// **G1, aquí.** Dos sellados de lo mismo dan los mismos bytes — y por tanto
-    /// el mismo nombre. Sin esto, el almacén acumularía una copia por intento.
+    /// **G1, aquí.** Dos cabeceras de lo mismo dan los mismos bytes: es lo que
+    /// hace que `ore` pueda comparar la del puntero con la que construye y
+    /// decir «ya está» sin leer una fila.
     #[test]
     fn dos_sellados_de_lo_mismo_dan_los_mismos_bytes() {
         let a = sellar(&cabecera(), b"carga");

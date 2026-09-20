@@ -41,7 +41,7 @@ pub struct Cuenta {
     pub bucket: String,
     /// Fijo si vino por `ORE_GCS_TOKEN`; si no, se pide al metadata server en la
     /// primera petición y se guarda.
-    token: std::cell::RefCell<Option<String>>,
+    token: std::sync::Mutex<Option<String>>,
 }
 
 impl Cuenta {
@@ -50,7 +50,7 @@ impl Cuenta {
             .map_err(|_| "falta la variable de entorno `ORE_GCS_BUCKET`".to_string())?;
         Ok(Cuenta {
             bucket,
-            token: std::cell::RefCell::new(
+            token: std::sync::Mutex::new(
                 std::env::var("ORE_GCS_TOKEN")
                     .ok()
                     .filter(|t| !t.is_empty()),
@@ -59,7 +59,12 @@ impl Cuenta {
     }
 
     fn token(&self) -> Result<String, String> {
-        if let Some(t) = self.token.borrow().as_ref() {
+        if let Some(t) = self
+            .token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             return Ok(t.clone());
         }
         let cuerpo = cliente()?
@@ -77,7 +82,7 @@ impl Cuenta {
                     .and_then(|(_, v)| v.as_str().map(String::from))
             })
             .ok_or("el metadata server no devolvió `access_token`")?;
-        *self.token.borrow_mut() = Some(t.clone());
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(t.clone());
         Ok(t)
     }
 
@@ -168,6 +173,10 @@ fn campo(json: &str, k: &str) -> Option<String> {
 }
 
 impl Almacen for Cuenta {
+    fn base(&self) -> String {
+        format!("gs://{}", self.bucket)
+    }
+
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {
         Ok(self
             .leer_bytes(clave)?
@@ -175,9 +184,26 @@ impl Almacen for Cuenta {
     }
 
     fn existe(&self, clave: &str) -> Result<bool, String> {
-        match self.pide("GET", &self.objeto(clave))?.call() {
-            Ok(_) => Ok(true),
-            Err(ureq::Error::Status(404, _)) => Ok(false),
+        Ok(self.tamano(clave)?.is_some())
+    }
+
+    /// Los metadatos del objeto (sin `alt=media`): traen `size` sin bajarlo.
+    fn tamano(&self, clave: &str) -> Result<Option<u64>, String> {
+        match self
+            .pide("GET", &format!("{}?fields=size", self.objeto(clave)))?
+            .call()
+        {
+            Ok(resp) => {
+                let texto = resp
+                    .into_string()
+                    .map_err(|e| format!("los metadatos de `{clave}` no se pudieron leer: {e}"))?;
+                Ok(Some(
+                    campo(&texto, "size")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                ))
+            }
+            Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
         }
     }

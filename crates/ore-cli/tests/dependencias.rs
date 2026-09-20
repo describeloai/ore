@@ -93,16 +93,29 @@ const VETADAS: &[(&str, &str)] = &[
 /// Es exactamente la forma de envejecer que este fichero vigila en el árbol de
 /// dependencias y no vigilaba en sí mismo: cada crate nuevo del workspace
 /// entraba en el recuento sin que nada obligara a añadirlo.
-const CIERRE: usize = 33;
+///
+/// **33 → 31 con `sha2 0.11` (W3.6a, 2026-09-20).** Y esta vez el guardián
+/// saltó por lo que existe para saltar: `ore-store` trajo `iceberg`, que trae
+/// `aes-gcm`, que enciende `crypto-common 0.1/rand_core` y con ella `getrandom`
+/// —vetada—, y `sha2 0.10` compartía ese `crypto-common 0.1` con `aes-gcm`. En
+/// un `cargo build` de varios paquetes las *features* se unifican, así que
+/// `ore` habría enlazado `getrandom` sin usarla. La salida no fue levantar el
+/// veto sino **dejar de compartir el nodo**: `sha2 0.11` vive en `digest 0.11`
+/// y `crypto-common 0.2`, que nadie más enciende, y de paso trae dos crates
+/// menos. (`aristas` también aprendió a leer la versión que cargo escribe en
+/// la arista cuando hay dos: sin eso, las dos `sha2` eran un solo nodo y el
+/// cierre medido «crecía» 24 crates que `ore` no enlaza.)
+const CIERRE: usize = 31;
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
     let cierre = cierre_de("ore-cli");
     let mut culpables: Vec<String> = Vec::new();
-    for nombre in &cierre {
+    for nodo in &cierre {
+        let nombre = nombre_de(nodo);
         if let Some((veto, motivo)) = VETADAS
             .iter()
-            .find(|(v, _)| nombre == v || nombre.starts_with(&format!("{v}-")))
+            .find(|(v, _)| nombre == *v || nombre.starts_with(&format!("{v}-")))
         {
             culpables.push(format!("  {nombre} — vetada como `{veto}`: {motivo}"));
         }
@@ -157,7 +170,10 @@ fn el_compilador_no_tiene_reloj() {
     // Lo que de verdad no puede pasar: que el reloj cruce la costura.
     let reloj: Vec<&String> = ore
         .iter()
-        .filter(|n| n.as_str() == "chrono" || n.as_str() == "time" || n.starts_with("time-"))
+        .filter(|n| {
+            let n = nombre_de(n);
+            n == "chrono" || n == "time" || n.starts_with("time-")
+        })
         .collect();
     assert!(
         reloj.is_empty(),
@@ -254,7 +270,7 @@ fn cierre_de(raiz: &str) -> BTreeSet<String> {
             }
         }
     }
-    vistos.retain(|d| !propios.contains(d));
+    vistos.retain(|d| !propios.contains(nombre_de(d)));
     vistos
 }
 
@@ -296,29 +312,60 @@ fn locales(lock: &str) -> BTreeSet<String> {
 /// `Cargo.lock` es TOML, y ORE no lleva un analizador de TOML — ni lo va a llevar
 /// por esto, que sería justo la clase de dependencia que este fichero vigila. La
 /// forma que hace falta leer es diminuta y está fijada por cargo: `[[package]]`,
-/// `name = "…"`, y una lista `dependencies = [ … ]` de cadenas.
+/// `name = "…"`, `version = "…"`, y una lista `dependencies = [ … ]` de cadenas.
+///
+/// **Con la versión cuando hace falta** (2026-09-20). Cargo escribe una arista
+/// como `"sha2"` si en el lock hay una sola `sha2`, y como `"sha2 0.10.9"` si
+/// hay dos. Leerla sólo por nombre fundía las dos versiones en un nodo, y el
+/// día que `ore-store` trajo `iceberg` —con un `sha2 0.10` al lado del `0.11`
+/// que `ore-core` usa— el cierre medido de `ore` «creció» 24 crates que `ore`
+/// no enlaza (el árbol de `digest 0.10` hasta `getrandom` y `wasm-bindgen`). El
+/// nodo es `nombre` si es único y `nombre versión` si no, que es exactamente lo
+/// que cargo escribe en la arista.
 fn aristas(lock: &str) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut nombre = String::new();
-    let mut en_lista = false;
-    for linea in lock.lines() {
-        let l = linea.trim();
-        if en_lista {
-            if l == "]" {
-                en_lista = false;
-            } else if let Some(d) = l.trim_end_matches(',').trim_matches('"').split(' ').next() {
-                out.entry(nombre.clone()).or_default().push(d.to_string());
-            }
-            continue;
+    let mut cuantas: BTreeMap<String, usize> = BTreeMap::new();
+    for bloque in lock.split("[[package]]").skip(1) {
+        if let Some(n) = bloque
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("name = "))
+        {
+            *cuantas.entry(n.trim_matches('"').to_string()).or_default() += 1;
         }
-        if l == "[[package]]" {
-            nombre.clear();
-        } else if let Some(v) = l.strip_prefix("name = ") {
-            nombre = v.trim_matches('"').to_string();
-            out.entry(nombre.clone()).or_default();
-        } else if l == "dependencies = [" {
-            en_lista = true;
+    }
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for bloque in lock.split("[[package]]").skip(1) {
+        let campo = |k: &str| {
+            bloque
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(k))
+                .map(|v| v.trim_matches('"').to_string())
+        };
+        let (Some(nombre), Some(version)) = (campo("name = "), campo("version = ")) else {
+            continue;
+        };
+        let clave = if cuantas.get(&nombre).copied().unwrap_or(0) > 1 {
+            format!("{nombre} {version}")
+        } else {
+            nombre
+        };
+        let deps = out.entry(clave).or_default();
+        let mut en_lista = false;
+        for linea in bloque.lines() {
+            let l = linea.trim();
+            if en_lista {
+                if l == "]" {
+                    break;
+                }
+                deps.push(l.trim_end_matches(',').trim_matches('"').to_string());
+            } else if l == "dependencies = [" {
+                en_lista = true;
+            }
         }
     }
     out
+}
+
+/// El nombre de un nodo, sin la versión que cargo le puso para distinguirlo.
+fn nombre_de(nodo: &str) -> &str {
+    nodo.split(' ').next().unwrap_or(nodo)
 }

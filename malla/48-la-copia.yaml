@@ -5,14 +5,17 @@
 #   `ore source catalog` + `ore discover`, `ore materialize` — los seis pasos del
 #   ADR 0015 sobre las vistas que DECLARAN copia (`materialized`, la decisión de
 #   `POST /paquetes/{n}/vistas/{v}/copia`). Lee el origen con la credencial del
-#   cofre, sella y sube al bucket del inquilino con `ore-store-gcs` y el token de
-#   su cuenta —sin clave estática—, y deja en el árbol un INFORME por vista
-#   (`copias/<paquete>_<vista>.json`) para quien no alcanza ni el origen ni el
-#   almacén: `ore-serve` y la consola.
+#   cofre, sella el DATASET en el bucket del inquilino —una tabla Iceberg, con
+#   su historia (W3.6a, 0031 §10)— con `ore-store-gcs` y el token de su cuenta
+#   —sin clave estática—, y deja en el árbol el PUNTERO de cada vista
+#   (`copias/<paquete>_<vista>.json`: qué `metadata.json` es el vigente, con qué
+#   cabecera, hasta qué testigo, cuántas filas).
 #
-# ⛔ El informe no es el registro. El recibo vive en el almacén y no hay puntero
-#   mutable (0015); esto es lo que la última pasada dijo, como el snapshot del
-#   informador (0026), y el commit dice cuándo y quién.
+# ⭐ El árbol es el catálogo. El puntero es el estado (0031 §10): `ore` lo lee
+#   antes de leer una fila, y lo mueve al terminar. El `git push` de abajo es el
+#   *swap* del puntero, y la forja, al rechazar lo que no avanza en línea recta,
+#   es el *compare-and-set*: una pasada que perdiera la carrera dejaría un
+#   snapshot que ningún puntero nombra, y `--recoger` lo retira en la siguiente.
 #
 # ── Se rinde UNA VEZ POR ÁRBOL CON COPIAS, con el resumen de su lista ──────
 #
@@ -21,9 +24,13 @@
 #   crea otro Job. Rehacer la copia sin que cambie nada (el refresco periódico)
 #   es de la pasada siguiente: un CronJob sobre esta misma plantilla.
 #
-# ⚠️ `--recoger` va puesto: las copias superadas del mismo plan se retiran en
-#   cada pasada. Es explícito en el CLI y aquí lo decide el operador, que es
-#   este fichero: un almacén que crece con los refrescos no es acotado (R5).
+# ⚠️ `--recoger` va puesto: los snapshots superados se expiran y lo que ningún
+#   snapshot nombra se retira en cada pasada. Es explícito en el CLI y aquí lo
+#   decide el operador, que es este fichero: un almacén que crece con los
+#   refrescos no es acotado (R5). `ORE_RECOGER_EDAD` conserva la historia
+#   reciente (siete días): es lo que hace que la copia tenga pasado —un
+#   snapshot anterior se lee por su id— sin que el bucket crezca sin límite.
+#   La política de retención como tal es de W3.6b (el CronJob de mantenimiento).
 #
 # ── ⛔ Lo que este Job NO decide ────────────────────────────────────────────
 #
@@ -157,11 +164,13 @@ spec:
             - { name: VISTAS, value: "olist.customers" }
             # ⭐ REHACER (0030 W1): vacio es la copia de siempre —el recibo
             #   manda—. Con un instante dentro, la pasada es un «rehacer»
-            #   pedido a mano (`POST /paquetes/{n}/copia/rehacer`): no pregunta
-            #   al recibo, lee el origen entero SOLO para `VISTAS`, y deja el
-            #   recibo apuntando a la copia nueva. Dos peticiones son dos Jobs.
+            #   pedido a mano (`POST /paquetes/{n}/copia/rehacer`): no hace caso
+            #   al puntero, lee el origen entero SOLO para `VISTAS`, y sobrescribe
+            #   el dataset (un snapshot nuevo). Dos peticiones son dos Jobs.
             - { name: REHACER, value: "" }
             - { name: ORE_STORE, value: "gcs" }
+            # Cuánta historia conserva `--recoger` (segundos): siete días.
+            - { name: ORE_RECOGER_EDAD, value: "604800" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
             #   sustituye el renderizador con la misma regla que el resto, y la
@@ -248,15 +257,16 @@ spec:
               done
 
               # ⭐ El ciclo. `ore` no abre sockets: canaliza `ore-read-<tipo>` a
-              #   `ore-store-gcs`, que sube con el token de esta cuenta. El
-              #   informe por vista va a `copias/` en el árbol.
+              #   `ore-store-gcs`, que escribe la tabla con el token de esta
+              #   cuenta. El puntero por vista va a `copias/` en el árbol.
               # ⚠️ Y una vista que falla NO tumba la pasada: `materialize` deja
-              #   el informe de cada una (copiada, al día, o error con su motivo)
-              #   y es ESO lo que hay que empujar. Con `set -e` y el código de
-              #   salida, un fallo en una vista perdía los informes de las que
-              #   sí se copiaron, y el Job se reintentaba tres veces leyendo
-              #   los orígenes enteros otra vez. La pasada termina bien si
-              #   informó; lo que no se copió lo dice su informe.
+              #   el puntero de cada una (copiada, al día, o error con su motivo
+              #   —sin perder el dataset que había—) y es ESO lo que hay que
+              #   empujar. Con `set -e` y el código de salida, un fallo en una
+              #   vista perdía los informes de las que sí se copiaron, y el Job
+              #   se reintentaba tres veces leyendo los orígenes enteros otra
+              #   vez. La pasada termina bien si informó; lo que no se copió lo
+              #   dice su puntero.
               if [ -n "$REHACER" ]; then
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done

@@ -1,10 +1,13 @@
-//! **La carga: Parquet.**
+//! **La carga: las filas, tipadas, como un lote de Arrow.**
 //!
-//! El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md) la
-//! eligió por dos cosas que un formato propio no da: **cualquier motor la lee**,
-//! y **algún día la escribe el origen** — Snowflake y Databricks escriben
-//! Parquet a un destino compatible con S3, así que el día que lo hagan cambia
-//! quién produce la carga y no cambia el sobre.
+//! El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md)
+//! eligió Parquet por dos cosas que un formato propio no da: **cualquier motor
+//! lo lee**, y **algún día lo escribe el origen**. Desde W3.6a (0031 §10) la
+//! copia es una **tabla Iceberg** y los ficheros Parquet los escribe `iceberg`
+//! (`lago.rs`); lo que este módulo produce es el `RecordBatch` con el físico de
+//! cada columna, y lo que sigue leyendo es Parquet — el de los ficheros de datos
+//! de la tabla, para fundir y para `leer`, y el de la carga de un sobre
+//! `ORECOPY1` heredado.
 //!
 //! # El mapa de tipos (0032, que revisa 0015)
 //!
@@ -25,9 +28,9 @@
 //! el aviso donde se lee. Determinista —mismos bytes para la misma entrada—,
 //! que es lo que el digest exige.
 //!
-//! El tipo de OOS sigue viajando en la cabecera del sobre, que es donde el
-//! esquema es normativo; el Parquet lleva el físico, que es lo que un motor
-//! lee sin abrir la cabecera.
+//! El tipo de OOS sigue viajando en la cabecera (hoy, una propiedad del
+//! snapshot de la tabla), que es donde el esquema es normativo; el Parquet
+//! lleva el físico, que es lo que un motor lee sin abrir la cabecera.
 
 use arrow_array::builder::{
     BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
@@ -36,11 +39,14 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use ore_core::tipos::{Fisico, Valor};
-use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// La zona de un instante, tal como Iceberg la nombra en Arrow (`timestamptz`
+/// → `+00:00`, y no `UTC`: la misma física, otro nombre). Se escribe así desde
+/// el lote para que el esquema que sale de la tabla y el del lote casen byte a
+/// byte, que es lo que el escritor exige.
+pub const UTC: &str = "+00:00";
 
 /// El físico de una columna, desde el tipo de OOS que la cabecera declara. Un
 /// tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va
@@ -63,7 +69,7 @@ fn arrow_de(f: &Fisico) -> DataType {
         Fisico::Fecha => DataType::Date32,
         Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
         Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
     }
 }
 
@@ -93,18 +99,18 @@ fn fisico_del_arrow(d: &DataType) -> Option<Fisico> {
 /// hueco, y aquí se escribe como nulo.
 pub type Fila = BTreeMap<String, String>;
 
-/// Lo que sale de escribir: los bytes, y lo que no se pudo estrechar.
-pub struct Carga {
-    pub bytes: Vec<u8>,
+/// Lo que sale de tipar: el lote, y lo que no se pudo estrechar.
+pub struct Lote {
+    pub lote: RecordBatch,
     /// Columna → por qué se quedó como texto. Vacío es la copia que el
     /// contrato promete; lo que haya aquí va al informe tal cual.
     pub sin_estrechar: BTreeMap<String, String>,
 }
 
-/// **Escribe el Parquet.** Determinista sobre la misma entrada: mismo esquema,
-/// mismas filas, mismo orden ⟹ mismos bytes. Sin eso el sobre no se podría
-/// nombrar por su digest.
-pub fn escribir(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Carga, String> {
+/// **El lote tipado.** Las columnas van en el orden del esquema (por nombre,
+/// que es el orden de un `BTreeMap`), cada una en el físico de la tabla de
+/// 0032 o como texto si un valor no analizó.
+pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, String> {
     let mut campos: Vec<Field> = Vec::with_capacity(esquema.len());
     let mut columnas: Vec<ArrayRef> = Vec::with_capacity(esquema.len());
     let mut sin_estrechar = BTreeMap::new();
@@ -125,25 +131,10 @@ pub fn escribir(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Ca
         columnas.push(construir(&fisico, nombre, filas, valores));
     }
     let schema = Arc::new(Schema::new(campos));
-
-    let lote = RecordBatch::try_new(schema.clone(), columnas)
+    let lote = RecordBatch::try_new(schema, columnas)
         .map_err(|e| format!("las columnas no cuadran con el esquema: {e}"))?;
-
-    // SNAPPY y no zstd: el nivel de zstd es un parámetro más que tendría que
-    // fijarse para que dos escrituras dieran los mismos bytes, y la compresión
-    // de una copia no es donde se gana. SNAPPY además es Rust puro aquí.
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-    let mut out = Vec::new();
-    let mut w = ArrowWriter::try_new(&mut out, schema, Some(props))
-        .map_err(|e| format!("no se pudo abrir el escritor de Parquet: {e}"))?;
-    w.write(&lote)
-        .map_err(|e| format!("no se pudo escribir el lote: {e}"))?;
-    w.close()
-        .map_err(|e| format!("no se pudo cerrar el Parquet: {e}"))?;
-    Ok(Carga {
-        bytes: out,
+    Ok(Lote {
+        lote,
         sin_estrechar,
     })
 }
@@ -230,17 +221,16 @@ fn construir(
         Fisico::Hora => primitiva!(Time64MicrosecondBuilder::new(), Valor::Hora),
         Fisico::FechaHora => primitiva!(TimestampMicrosecondBuilder::new(), Valor::FechaHora),
         Fisico::Instante => primitiva!(
-            TimestampMicrosecondBuilder::new().with_timezone("UTC"),
+            TimestampMicrosecondBuilder::new().with_timezone(UTC),
             Valor::Instante
         ),
     }
 }
 
-/// **Volver a leer el Parquet.** La mitad que faltaba del formato.
-///
-/// Se escribía desde M0 y no lo leía nadie, y eso estaba bien mientras una copia
-/// solo se poblara. En cuanto se **refresca**, hace falta: fundir un incremento
-/// con lo que ya había exige abrir lo que ya había.
+/// **Volver a leer el Parquet.** Un fichero de datos de la tabla Iceberg (los
+/// escribe `iceberg` con el esquema que sale de [`lote`]), o la carga de un sobre
+/// heredado. Fundir un incremento con lo que ya había exige abrir lo que ya
+/// había, y `leer` devuelve la copia entera por aquí.
 ///
 /// Todo vuelve a texto, que es como entró: cada columna estrechada se escribe
 /// en la forma canónica de su escalar ([`Valor::texto`]), que es la misma que
@@ -410,22 +400,43 @@ mod tests {
         ]
     }
 
-    fn tipos(parquet: &[u8]) -> BTreeMap<String, String> {
-        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-        let b = bytes::Bytes::copy_from_slice(parquet);
-        let r = ParquetRecordBatchReaderBuilder::try_new(b).expect("parquet");
-        r.schema()
+    fn tipos(lote: &RecordBatch) -> BTreeMap<String, String> {
+        lote.schema()
             .fields()
             .iter()
             .map(|f| (f.name().clone(), f.data_type().to_string()))
             .collect()
     }
 
-    /// **Lo que el nombre exige.** Si dos escrituras de las mismas filas dieran
-    /// bytes distintos, cada re-materialización sería otra copia y el almacén
-    /// crecería sin que nada cambiase.
+    /// El Parquet que `iceberg` escribiría del lote, para probar la vuelta.
+    fn parquet(lote: &RecordBatch) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut w =
+            parquet::arrow::ArrowWriter::try_new(&mut out, lote.schema(), None).expect("escritor");
+        w.write(lote).expect("lote");
+        w.close().expect("cierra");
+        out
+    }
+
+    fn escribir(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Carga, String> {
+        let l = lote(esquema, filas)?;
+        Ok(Carga {
+            bytes: parquet(&l.lote),
+            tipos: tipos(&l.lote),
+            sin_estrechar: l.sin_estrechar,
+        })
+    }
+
+    struct Carga {
+        bytes: Vec<u8>,
+        tipos: BTreeMap<String, String>,
+        sin_estrechar: BTreeMap<String, String>,
+    }
+
+    /// El lote es el mismo para la misma entrada, y su Parquet también: lo que
+    /// entra decide lo que sale, sin nada del reloj ni del orden de llegada.
     #[test]
-    fn dos_escrituras_de_las_mismas_filas_dan_los_mismos_bytes() {
+    fn dos_lotes_de_las_mismas_filas_dan_los_mismos_bytes() {
         let a = escribir(&esquema(), &filas()).expect("escribe");
         let b = escribir(&esquema(), &filas()).expect("escribe");
         assert_eq!(a.bytes, b.bytes, "el Parquet no es determinista");
@@ -433,20 +444,20 @@ mod tests {
         assert!(a.sin_estrechar.is_empty(), "{:?}", a.sin_estrechar);
     }
 
-    /// La tabla de 0032 §1, en el Parquet que sale: cada escalar en su físico.
+    /// La tabla de 0032 §1, en el lote que sale: cada escalar en su físico.
     #[test]
     fn la_copia_lleva_el_tipo_de_la_tabla() {
         let c = escribir(&esquema(), &filas()).expect("escribe");
-        let t = tipos(&c.bytes);
+        let t = c.tipos;
         assert_eq!(t["activo"], "Boolean");
         assert_eq!(t["id"], "Int64");
         assert_eq!(t["pais"], "Utf8");
         assert_eq!(t["total"], "Decimal128(38, 18)");
         assert_eq!(t["peso"], "Float64");
         assert_eq!(t["dia"], "Date32");
-        assert_eq!(t["hora"], "Time64(Microsecond)");
-        assert_eq!(t["cuando"], "Timestamp(Microsecond, None)");
-        assert_eq!(t["visto"], "Timestamp(Microsecond, Some(\"UTC\"))");
+        assert_eq!(t["hora"], "Time64(µs)");
+        assert_eq!(t["cuando"], "Timestamp(µs)");
+        assert_eq!(t["visto"], "Timestamp(µs, \"+00:00\")");
         assert_eq!(t["importe"], "Decimal128(38, 2)");
     }
 
@@ -472,7 +483,7 @@ mod tests {
         malas[0].insert("id".to_string(), "uno".to_string());
         malas[1].insert("visto".to_string(), "1.7E9".to_string());
         let c = escribir(&esquema(), &malas).expect("escribe igualmente");
-        let t = tipos(&c.bytes);
+        let t = &c.tipos;
         assert_eq!(t["id"], "Utf8", "la columna entera, no la fila");
         assert_eq!(t["visto"], "Utf8");
         assert_eq!(t["total"], "Decimal128(38, 18)", "las demás no se tocan");

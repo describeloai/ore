@@ -38,6 +38,33 @@ impl Json {
         Json::Str(v.into())
     }
 
+    /// De lo analizado a la forma canonica. El estilo del escalar decide el
+    /// tipo: un `1` sin comillas vuelve como numero y un `"1"` como cadena, y
+    /// `true`/`false` sin comillas como logicos. Es lo que hace que un JSON
+    /// leido del arbol (un puntero de `copias/`) se pueda reescribir igual.
+    pub fn de_node(n: &crate::parse::Node) -> Json {
+        use crate::parse::{Node, Style};
+        match n {
+            Node::Mapping { entries, .. } => Json::Obj(
+                entries
+                    .iter()
+                    .filter_map(|(k, v)| k.as_str().map(|k| (k.to_string(), Json::de_node(v))))
+                    .collect(),
+            ),
+            Node::Sequence { items, .. } => Json::Arr(items.iter().map(Json::de_node).collect()),
+            Node::Scalar {
+                raw,
+                style: Style::Plain,
+                ..
+            } => match raw.as_str() {
+                "true" => Json::Bool(true),
+                "false" => Json::Bool(false),
+                _ => raw.parse::<i64>().map(Json::Int).unwrap_or(Json::s(raw)),
+            },
+            Node::Scalar { raw, .. } => Json::s(raw),
+        }
+    }
+
     /// **La forma canónica**: RFC 8785 (JCS).
     ///
     /// Sin espacios, claves ordenadas por sus unidades de código UTF-16, y

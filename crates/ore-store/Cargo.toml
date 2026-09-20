@@ -22,17 +22,36 @@ path = "src/bin/ore-store-gcs.rs"
 # higiene y pasa a ser la direccion.
 ore-core = { path = "../ore-core" }
 
-# Parquet, que es la carga que el ADR 0015 eligio. No se escribe a mano: es un
-# formato columnar con paginas, diccionarios y estadisticas, y una version
-# aproximada seria ilegible justo para los motores por los que se eligio.
+# **Iceberg** (W3.6a, 2026-09-20): la copia es un dataset —una tabla Iceberg en
+# el bucket, con su historia— y este programa la escribe. Medido antes de
+# entrar (`pruebas-de-fuego/medida-w3-iceberg-rust.py`): 0.10 escribe desde
+# Arrow a 2,6 M filas/s, anexa sin reescribir, y los diez fisicos del contrato
+# de tipos (0032) vuelven exactos por DuckDB. Lo que no trae —sobrescribir,
+# promover tipos— lo pone `lago.rs` con las piezas publicas de la crate.
 #
-# `default-features = false` deja fuera la compresion nativa —zstd, brotli y
-# lz4 arrastran C— y se queda con SNAPPY, que es Rust puro. Un binario delegado
-# puede enlazar C; que no haga falta es mejor, y la compresion de una copia no
-# es donde se gana.
-parquet = { version = "56", default-features = false, features = ["arrow", "snap"] }
-arrow-array  = "56"
-arrow-schema = "56"
+# Sin `iceberg-storage-opendal`: el almacen de este programa YA sabe hablar
+# con GCS y con S3 (`gcs.rs`, `r2.rs`, con la identidad del pod y sin clave), y
+# `lago.rs` se lo presta a Iceberg como su `Storage`. Un solo transporte, y no
+# dos que habria que mantener de acuerdo.
+iceberg = "0.10.1"
+# Parquet y Arrow, en la version que `iceberg` 0.10 exige (58; el arbol iba en
+# 56 hasta W3.6a). `iceberg` escribe los ficheros de datos; aqui se leen —para
+# fundir un incremento con lo que habia, y para `leer`— y se construye el
+# RecordBatch tipado. SNAPPY es Rust puro; zstd entra por `iceberg` (avro).
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+arrow-array  = "58"
+arrow-schema = "58"
+# El escritor de Iceberg es asincrono; este programa no. Un runtime que se
+# arranca una vez y se bloquea hasta que termina cada verbo.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
+async-trait = "0.1"
+futures = "0.3"
+# Lo que `iceberg::io::Storage` exige del suelo que se le presta.
+serde = { version = "1", features = ["derive"] }
+typetag = "0.2"
+# Los nombres de los ficheros de datos y de los manifiestos llevan un UUID, como
+# manda la especificacion: dos escrituras nunca pisan el mismo nombre.
+uuid = { version = "1", features = ["v4"] }
 
 # HTTP con TLS de la plataforma, y bloqueante: este programa hace UNA subida y
 # termina. Es la misma eleccion, y por la misma razon, que `ore-read-postgres`

@@ -6,10 +6,25 @@
 //! | 1 | compilar: el plan, su digest y el conducto que lo autoriza | `ore` |
 //! | 2 | comprobar el flujo | `ore` |
 //! | 3 | preguntarle al origen su testigo | `ore-read-<tipo> testigo` |
-//! | 4 | el recibo: **si está, termina aquí** | `ore-store-<r2|gcs> buscar` |
-//! | 5 | leer, canalizar, sellar y subir | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` |
-//! | 6 | registrar la copia | `ore` |
+//! | 4 | el puntero del árbol: **si la cabecera es la misma, termina aquí** | `ore` (+ `ore-store-<r2|gcs> buscar`, un HEAD) |
+//! | 5 | leer, canalizar y sellar el dataset | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` |
+//! | 6 | mover el puntero: `copias/<p>_<v>.json` | `ore` |
 //! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-<r2|gcs> recoger` |
+//!
+//! # La copia es un dataset (W3.6a, 0031 §10, 2026-09-20)
+//!
+//! Hasta aquí la copia era un sobre nombrado por su digest y **el estado vivía
+//! en el bucket**: un recibo por cabecera decía cuál era la vigente, y `ore`
+//! le preguntaba. Ahora la copia es **una tabla Iceberg con su historia**, y el
+//! estado vive **en el árbol**: `copias/<p>_<v>.json` es el puntero —qué
+//! `metadata.json` es el vigente, con qué cabecera se selló, hasta qué testigo—
+//! y el árbol es el catálogo. El commit del Job es el *swap* del puntero; la
+//! forja, al rechazar lo que no avanza en línea recta, es el *compare-and-set*.
+//! `ore` lee el puntero antes de leer una fila, decide con él si hay que
+//! copiar, desde dónde y sobre qué fundir, y lo reescribe al terminar.
+//!
+//! Sin `--informe`, los punteros viven en `<árbol>/copias`: no hay otro sitio
+//! donde puedan vivir, porque el bucket ya no guarda estado.
 //!
 //! # Lo que `ore` hace y lo que no
 //!
@@ -19,19 +34,13 @@
 //! misma —`tests/dependencias.rs` la hace cumplir leyendo el `Cargo.lock`— pero
 //! aquí se ve entera: **`ore` está en medio de dos procesos y no toca la red.**
 //!
-//! # Por qué el paso 4 va antes que el 5, y qué costó que fuera verdad
+//! # Por qué el paso 4 va antes que el 5
 //!
-//! El ADR prometía *«se sabe si hay que copiar sin copiar nada»* con un `HEAD`
-//! sobre el nombre del artefacto. **Eso no se podía hacer**: el nombre es el
-//! digest del artefacto entero, carga incluida, así que para calcularlo hay que
-//! haber leído ya todas las filas — el `HEAD` ahorraba la subida y no la
-//! lectura, que es el trabajo caro.
-//!
-//! Lo arregla el **recibo**: un objeto de 71 bytes en
-//! `ore/v1/plan/<sha256 de la cabecera>` que contiene la clave del artefacto. La
-//! cabecera se conoce antes de pedirle una fila a nadie, así que ahí sí se puede
-//! preguntar. Sigue sin haber puntero mutable: el nombre del recibo también es
-//! su contenido.
+//! El ADR prometía *«se sabe si hay que copiar sin copiar nada»*. La cabecera
+//! —plan, esquema, testigo, clave, conducto— se conoce antes de pedirle una
+//! fila a nadie, y el puntero guarda su digest: si coinciden, la copia está y
+//! no se lee el origen. Un `HEAD` al `metadata.json` apuntado protege de un
+//! bucket que alguien vació.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -49,18 +58,27 @@ const CONDUCTO: &str = crate::vista::CONDUCTO;
 pub struct Opciones<'a> {
     pub seco: bool,
     pub recoger: bool,
+    /// Dónde viven los punteros (`<DIR>/<paquete>_<vista>.json`). Sin él,
+    /// `<árbol>/copias`.
     pub informe: Option<&'a Path>,
-    /// **Rehacer**: no preguntar al recibo, leer el origen entero, y dejar el
-    /// recibo apuntando a lo nuevo (el artefacto superado se borra). Para
+    /// **Rehacer**: no hacer caso al puntero, leer el origen entero, y
+    /// sobrescribir el dataset (un snapshot nuevo; la historia se queda). Para
     /// cuando cambia CÓMO se lee —un driver corregido— o el testigo no se
-    /// mueve aunque los datos sí. Sin esto, el recibo manda.
+    /// mueve aunque los datos sí. Sin esto, el puntero manda.
     pub rehacer: bool,
     /// Solo estas vistas (`paquete.vista`); vacío es todas las que declaran copia.
     pub solo: &'a [String],
 }
 
 pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    let (seco, recoger, informe) = (op.seco, op.recoger, op.informe);
+    let (seco, recoger) = (op.seco, op.recoger);
+    let punteros = op
+        .informe
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.join("copias"));
+    // En seco no se toca el árbol: el puntero es el estado, y una pasada que
+    // sólo dice qué haría no puede dejarlo diciendo «pendiente».
+    let informe: Option<&Path> = if seco { None } else { Some(&punteros) };
     // ⭐ La copia exige que compile SU paquete —y lo de la raíz del árbol:
     //   conductos, retículos—, no el inquilino entero. Medido en `demo` (P1
     //   I5): una base foránea con `dueno` sin contestar (`owner: cambiame`,
@@ -79,7 +97,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         println!("sin copias · ninguna vista del paquete declara `materialized`");
         // Y lo que quedó de las que hubo: la pasada que limpia.
         if recoger && !seco {
-            match recoger_huerfanas(&[]) {
+            match recoger_huerfanas(&[], &[]) {
                 Ok(l) => println!("  {l}"),
                 Err(e) => println!("  {e}"),
             }
@@ -114,6 +132,17 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     };
     let conductos = ore_core::flow::clearances(&pkg, &lat);
     let bundle = ore_core::digest::bundle(&pkg);
+
+    // Los sobres heredados que los punteros nombran ANTES de esta pasada: una
+    // vista que se resella como dataset deja de nombrar el suyo, y aun así el
+    // sobre se queda hasta la pasada siguiente — el árbol que la consola lee
+    // sigue apuntándolo hasta que el commit de esta pasada se empuje.
+    let heredados: Vec<String> = declaradas
+        .iter()
+        .filter_map(|v| v.qname())
+        .filter_map(|qn| leer_puntero(&punteros, &qn))
+        .filter_map(|p| campo_de(&p, "clave"))
+        .collect();
 
     let mut fallos = 0usize;
     let mut vistas = 0usize;
@@ -155,6 +184,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             seco,
             recoger,
             op.rehacer,
+            &punteros,
         ) {
             Ok((linea, parte)) => {
                 println!("  {linea}");
@@ -190,18 +220,19 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     }
     // ── Lo huérfano (2026-09-18) ─────────────────────────────────────────────
     //
-    // `recoger` (dentro de `una`) borra las copias superadas de CADA plan
-    // vigente. Lo que ningún plan vigente reclama —la base que se retiró, la
-    // vista que dejó de declarar copia— sólo se sabe mirando el árbol entero:
-    // los planes de TODAS las vistas con copia, con o sin `--vista`, porque una
-    // pasada parcial no puede tomar por huérfano lo que no le tocaba.
+    // `recoger` (dentro de `una`) limpia DENTRO de cada dataset vigente. Lo que
+    // ningún puntero reclama —la base que se retiró, la vista que dejó de
+    // declarar copia— sólo se sabe mirando el árbol entero: TODAS las vistas
+    // con copia, con o sin `--vista`, porque una pasada parcial no puede tomar
+    // por huérfano lo que no le tocaba. Y los sobres heredados (`ore/v1/`) que
+    // algún puntero todavía nombre por `clave` se quedan hasta que se resellen.
     let reclamados: Vec<String> = declaradas
         .iter()
         .filter_map(|v| v.qname())
-        .filter_map(|qn| catalogo.expandir(&qn).ok().map(|p| p.digest()))
+        .map(|qn| dataset_de(&qn))
         .collect();
     if recoger && !seco {
-        match recoger_huerfanas(&reclamados) {
+        match recoger_huerfanas(&reclamados, &heredados) {
             Ok(l) => println!("{l}"),
             Err(e) => println!("{e}"),
         }
@@ -238,7 +269,9 @@ fn una(
     seco: bool,
     recoger: bool,
     rehacer: bool,
+    punteros: &Path,
 ) -> Result<(String, ore_core::json::Json), String> {
+    use ore_core::json::Json;
     // ── ① El plan, su digest y su esquema ───────────────────────────────────
     let plan = catalogo
         .expandir(qn)
@@ -284,106 +317,112 @@ fn una(
     let r = vistas::raiz(pkg, v).map_err(|e| format!("sin raíz · {e:?}"))?;
     let testigo = testigo(pkg, raiz_pkg, v, &r)?;
 
-    // ── ④ El recibo ─────────────────────────────────────────────────────────
+    // ── ④ El puntero ────────────────────────────────────────────────────────
+    //
+    // Lo que el árbol dice de esta copia. La cabecera de ahora se compara con
+    // la que el puntero guarda: si es la misma, la copia está y no se lee una
+    // fila. Un HEAD al `metadata.json` apuntado, para no decir «ya está» de un
+    // bucket que alguien vació.
     let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave);
-    let buscado = almacen("buscar", &cabecera, None)?;
-
-    // La recogida va **aquí**, en cuanto se sabe cuál es la cabecera vigente, y
-    // no después de sellar. El motivo salió al probarla: si va al final, el
-    // retorno temprano de *«ya está»* se la salta — y ese es justamente el caso
-    // en el que un almacén lleno de copias viejas no se limpia nunca.
-    let recogidas = if recoger && !seco {
-        let g = almacen("recoger", &cabecera, None)?;
-        g.get("superadas")
-            .and_then(|(_, x)| x.as_str())
-            .filter(|n| *n != "0")
-            .map(|n| format!("\n  recogidas {n} copia(s) superada(s)"))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
-    // Con `rehacer` el recibo no decide: se lee el origen aunque esté.
-    if !rehacer
-        && buscado
-            .get("existe")
-            .and_then(|(_, x)| x.as_str())
-            .is_some_and(|s| s == "true")
-    {
-        let clave = buscado
-            .get("clave")
-            .and_then(|(_, x)| x.as_str())
-            .unwrap_or("?");
+    let huella = ore_core::digest::de_bytes(cabecera.as_bytes());
+    let dataset = dataset_de(qn);
+    let puntero = leer_puntero(punteros, qn);
+    // Con cualquier `estado`: un puntero que dice `error` por una pasada que
+    // falló sigue nombrando el dataset que la anterior dejó, y ese dataset es
+    // sobre el que se construye. Si no, cada fallo transitorio estrenaría uno.
+    let hecho: Option<String> = puntero
+        .as_ref()
+        .and_then(|p| campo_de(p, "metadata_location"));
+    // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
+    let al_dia = !rehacer
+        && hecho.is_some()
+        && puntero
+            .as_ref()
+            .and_then(|p| campo_de(p, "cabecera"))
+            .as_deref()
+            == Some(huella.as_str())
+        && {
+            let b = almacen(
+                "buscar",
+                &Json::obj([("metadata_location", Json::s(hecho.as_deref().unwrap_or("")))]).jcs(),
+                None,
+            )?;
+            campo_de(&b, "existe").as_deref() == Some("true")
+        };
+    if al_dia {
+        let ml = hecho.clone().unwrap_or_default();
+        // El puntero de antes, tal cual, con el estado de hoy. Las filas y las
+        // cuentas son las de la copia que ya estaba: nadie las recontó.
+        let mut m = match puntero.as_ref().map(Json::de_node) {
+            Some(Json::Obj(m)) => m,
+            _ => Default::default(),
+        };
+        m.insert("estado".into(), Json::s("al-dia"));
+        m.insert("bundle".into(), Json::s(bundle));
+        m.insert("leidas".into(), Json::Int(0));
+        m.remove("rehecha");
+        let recogidas = recoger_dataset(recoger && !seco, &dataset, &ml, &mut m)?;
         return Ok((
             format!(
-                "ya está · {clave}\n  el recibo lo dijo sin leer una sola fila del origen{recogidas}"
+                "ya está · {ml}\n  el puntero lo dijo sin leer una sola fila del origen{recogidas}"
             ),
-            ore_core::json::Json::obj([
-                ("estado", ore_core::json::Json::s("al-dia")),
-                ("clave", ore_core::json::Json::s(clave)),
-                ("plan", ore_core::json::Json::s(plan.digest())),
-                ("bundle", ore_core::json::Json::s(bundle)),
-                (
-                    "testigo",
-                    ore_core::json::Json::obj([
-                        ("modo", ore_core::json::Json::s(&testigo.0)),
-                        (
-                            "valor",
-                            ore_core::json::Json::s(testigo.1.clone().unwrap_or_default()),
-                        ),
-                    ]),
-                ),
-                ("leidas", ore_core::json::Json::Int(0)),
-            ]),
+            Json::Obj(m),
         ));
     }
     if seco {
         return Ok((
             format!(
-                "{} · testigo {}\n  el recibo {}: {}",
+                "{} · testigo {}\n  el puntero {}: {}",
                 if rehacer {
                     "se rehará entera"
                 } else {
                     "haría falta copiarla"
                 },
                 testigo.1.as_deref().unwrap_or("sin poblar"),
-                if rehacer { "no decide" } else { "no está" },
-                buscado
-                    .get("recibo")
-                    .and_then(|(_, x)| x.as_str())
-                    .unwrap_or("?")
+                if rehacer {
+                    "no decide"
+                } else if hecho.is_some() {
+                    "es de otra cabecera"
+                } else {
+                    "no está"
+                },
+                hecho.as_deref().unwrap_or("(sin dataset)")
             ),
-            ore_core::json::Json::obj([("estado", ore_core::json::Json::s("pendiente"))]),
+            Json::obj([("estado", Json::s("pendiente"))]),
         ));
     }
 
     // ── ⑤ Leer el INCREMENTO, canalizar, fundir y sellar ────────────────────
     //
-    // Aquí se juntan las dos mitades que estaban separadas. El almacén dice
-    // sobre qué copia se puede construir y hasta dónde llegaba; con eso, al
-    // origen se le pide **solo lo que falta** y al almacén se le dice **sobre
-    // qué fundirlo**.
-    //
-    // Y si no hay anterior —primera vez, o un testigo que no ordena— las dos
-    // salen vacías y esto es exactamente lo que era: una copia entera.
-    // Rehacer es leer entero: sin base sobre la que fundir ni rango desde el
-    // que partir. Lo que se copió antes con un lector que callaba columnas no
-    // es una base, es lo que se está sustituyendo.
-    let previa = if rehacer {
-        ore_core::parse::parse("{}").map_err(|e| format!("{e:?}"))?
+    // El puntero dice sobre qué dataset se construye (`base`) y hasta dónde
+    // llegaba (`testigo`); con eso, al origen se le pide **solo lo que falta**
+    // y al almacén se le dice **que funda**. Sólo si el plan es el mismo —la
+    // misma proyección, los mismos filtros— y el testigo ordena: un plan que
+    // cambió se copia entero y sobrescribe. Rehacer es leer entero: sin rango
+    // desde el que partir. Y si no hay dataset —primera vez, o un puntero
+    // heredado que nombra un sobre— esto es exactamente lo que era: una copia
+    // entera, y el dataset nace.
+    let base = hecho.clone();
+    let mismo_plan = puntero
+        .as_ref()
+        .and_then(|p| campo_de(p, "plan"))
+        .is_some_and(|p| p == plan.digest());
+    let desde: Option<String> = if rehacer || base.is_none() || !mismo_plan || clave.is_empty() {
+        None
     } else {
-        almacen("anterior", &cabecera, None)?
+        puntero
+            .as_ref()
+            .and_then(|p| p.get("testigo").map(|(_, t)| t.clone()))
+            .and_then(|t| campo_de(&t, "valor"))
+            .filter(|v| {
+                // La mayor de las que quedan por debajo de la actual. Un
+                // testigo POSTERIOR no es una base: sería leer hacia atrás.
+                testigo
+                    .1
+                    .as_deref()
+                    .is_some_and(|actual| v.as_str() < actual)
+            })
     };
-    let base = previa
-        .get("clave")
-        .and_then(|(_, x)| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-    let desde = previa
-        .get("testigo")
-        .and_then(|(_, x)| x.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from);
 
     // **Si el testigo del origen ordena.** Se toma del que el origen ACABA DE
     // contestar y no del que la tabla declara: cuando discrepan manda el origen
@@ -391,6 +430,7 @@ fn una(
     // dice no tener sería pedirlo contra el documento en vez de contra el
     // mundo.
     let ordena = testigo.0 == "log";
+    let mut fundir = desde.is_some() && (cursor.is_some() || ordena);
     let filas = match leer(
         raiz_pkg,
         &r,
@@ -416,6 +456,7 @@ fn una(
                     .map(|(t, _)| t)
                     .unwrap_or_default()
             );
+            fundir = false;
             leer(
                 raiz_pkg,
                 &r,
@@ -432,43 +473,32 @@ fn una(
     // las dos cifras se separan — y **esa diferencia es la medida** de si el
     // refresco es proporcional al cambio o al tamaño.
     //
-    // La petición ya sabe llevarlo, por columna y por posición. Lo que queda es
-    // que alguien lo sirva, y hoy no lo hace nadie: `pruebas-de-fuego/
-    // medida-el-rango-por-posicion.py` §D dice por qué, familia por familia.
-    //
     // Se cuenta aquí y no en el banco de pruebas porque es la unidad que
     // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
     let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
-    // La petición del sellado lleva `base`, y la cabecera que se sella **no**:
-    // qué contiene la copia y cómo se construyó son dos cosas.
-    let mut peticion = match &base {
-        Some(b) => cabecera.replacen('{', &format!("{{\"base\":\"{b}\","), 1),
-        None => cabecera.clone(),
-    };
-    if rehacer {
-        peticion = peticion.replacen('{', "{\"rehacer\":true,", 1);
+    // La petición del sellado lleva `dataset`, `base` y `fundir`, y la cabecera
+    // que se sella **no**: qué contiene la copia y cómo se construyó son dos
+    // cosas.
+    let mut extra = format!("{{\"dataset\":\"{dataset}\",\"fundir\":{fundir},");
+    if let Some(b) = &base {
+        extra.push_str(&format!("\"base\":\"{b}\","));
     }
+    let peticion = cabecera.replacen('{', &extra, 1);
     let salida = almacen("sellar", &peticion, Some(&filas))?;
 
-    // ── ⑥ Registrar, y recoger lo que quedó atrás ───────────────────────────
+    // ── ⑥ El puntero nuevo, y recoger lo que quedó atrás ────────────────────
     //
-    // La recogida va **después** de que la copia nueva esté arriba y no antes:
-    // así, si algo se corta en medio, lo que sobra es una copia de más y no una
-    // de menos.
-    let campo = |k: &str| {
-        salida
-            .get(k)
-            .and_then(|(_, x)| x.as_str())
-            .unwrap_or("?")
-            .to_string()
-    };
+    // La recogida va **después** de que el snapshot nuevo esté confirmado y no
+    // antes: así, si algo se corta en medio, lo que sobra es un snapshot de
+    // más y no uno de menos.
+    let campo = |k: &str| campo_de(&salida, k).unwrap_or_else(|| "?".into());
     let entero = |k: &str| campo(k).parse::<i64>().unwrap_or(0);
     // Por columna, cuántas filas la traen: lo que salga vacío se dice aquí y
     // va al informe. Una copia con todas sus filas y sin sus números era
     // `copiada` igual, y nadie lo veía sin abrir el artefacto (medida W1 §B).
-    let columnas: BTreeMap<String, ore_core::json::Json> = salida
+    let columnas: BTreeMap<String, Json> = salida
         .get("columnas")
         .map(|(_, o)| {
             o.entries()
@@ -476,7 +506,7 @@ fn una(
                 .filter_map(|(k, v)| {
                     Some((
                         k.as_str()?.to_string(),
-                        ore_core::json::Json::Int(v.as_str()?.parse().ok()?),
+                        Json::Int(v.as_str()?.parse().ok()?),
                     ))
                 })
                 .collect()
@@ -484,7 +514,7 @@ fn una(
         .unwrap_or_default();
     let vacias: Vec<&str> = columnas
         .iter()
-        .filter(|(_, n)| matches!(n, ore_core::json::Json::Int(0)))
+        .filter(|(_, n)| matches!(n, Json::Int(0)))
         .map(|(c, _)| c.as_str())
         .collect();
     let aviso_columnas = if vacias.is_empty() || entero("filas") == 0 {
@@ -500,17 +530,12 @@ fn una(
     // Las columnas que el contrato de tipos (0032) quería estrechar y se
     // quedaron como texto porque un valor no analizó. La copia está bien y es
     // legible; lo que no está es el tipo, y hay que decirlo donde se lee.
-    let sin_estrechar: BTreeMap<String, ore_core::json::Json> = salida
+    let sin_estrechar: BTreeMap<String, Json> = salida
         .get("sin_estrechar")
         .map(|(_, o)| {
             o.entries()
                 .iter()
-                .filter_map(|(k, v)| {
-                    Some((
-                        k.as_str()?.to_string(),
-                        ore_core::json::Json::s(v.as_str()?),
-                    ))
-                })
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), Json::s(v.as_str()?))))
                 .collect()
         })
         .unwrap_or_default();
@@ -525,7 +550,7 @@ fn una(
                 .map(|(c, p)| format!(
                     "{c} — {}",
                     match p {
-                        ore_core::json::Json::Str(s) => s.as_str(),
+                        Json::Str(s) => s.as_str(),
                         _ => "?",
                     }
                 ))
@@ -533,108 +558,248 @@ fn una(
                 .join("; ")
         )
     };
-    let superada = campo("superada");
-    let superada = if superada == "?" {
-        String::new()
-    } else {
-        superada
-    };
-    // Tres desenlaces de un rehacer, y los tres se dicen: la cabecera cambió
-    // (el testigo se movió: recibo nuevo, y la anterior queda para `recoger`),
-    // la misma cabecera con otros bytes (el recibo se movió y la superada se
-    // borró), o los mismos bytes (nada que mover).
-    let rehecha = if rehacer {
-        if campo("recibo_nuevo") == "true" {
-            "\n  rehecha: bajo una cabecera nueva (el testigo se movió); la anterior queda superada"
-                .to_string()
-        } else if superada.is_empty() {
-            "\n  rehecha: los mismos bytes, el recibo no se movió".to_string()
-        } else {
-            format!("\n  rehecha: el recibo apunta a la nueva y se borró {superada}")
+    let operacion = campo("operacion");
+    let esquema_cambiado = campo("esquema_cambiado") == "true";
+    let como = match operacion.as_str() {
+        "creada" => "el dataset nace".to_string(),
+        "refrescada" => {
+            format!("refrescada: {leidas} filas fundidas sobre las que había · snapshot nuevo")
         }
-    } else {
-        String::new()
+        _ if rehacer => "rehecha: sobrescrita entera · snapshot nuevo, la historia se queda".into(),
+        _ => "sobrescrita entera (otro plan, u otra copia sin clave) · snapshot nuevo".into(),
     };
+    let esquema_txt = if esquema_cambiado {
+        "\n  el esquema de la tabla cambió con el plan"
+    } else {
+        ""
+    };
+    let mut m: BTreeMap<String, Json> = [
+        ("estado", Json::s("copiada")),
+        ("rehecha", Json::Bool(rehacer)),
+        ("operacion", Json::s(&operacion)),
+        ("metadata_location", Json::s(campo("metadata_location"))),
+        ("snapshot", Json::s(campo("snapshot"))),
+        ("ubicacion", Json::s(campo("ubicacion"))),
+        ("dataset", Json::s(&dataset)),
+        ("cabecera", Json::s(&huella)),
+        ("plan", Json::s(plan.digest())),
+        // Procedencia: de qué árbol salió. NO está en la cabecera, y por eso
+        // está aquí.
+        ("bundle", Json::s(bundle)),
+        ("filas", Json::Int(entero("filas"))),
+        ("leidas", Json::Int(leidas as i64)),
+        ("bytes", Json::Int(entero("bytes"))),
+        ("ficheros", Json::Int(entero("ficheros"))),
+        ("columnas", Json::Obj(columnas)),
+        ("columnas_sin_estrechar", Json::Obj(sin_estrechar)),
+        ("esquema_cambiado", Json::Bool(esquema_cambiado)),
+        (
+            "testigo",
+            Json::obj([
+                ("modo", Json::s(&testigo.0)),
+                ("valor", Json::s(testigo.1.clone().unwrap_or_default())),
+            ]),
+        ),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let recogidas = recoger_dataset(
+        recoger && !seco,
+        &dataset,
+        &campo("metadata_location"),
+        &mut m,
+    )?;
     Ok((
         format!(
-            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · subido: {}{recogidas}{aviso_columnas}{aviso_tipos}{rehecha}",
-            campo("clave"),
+            "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · {como}{esquema_txt}{recogidas}{aviso_columnas}{aviso_tipos}",
+            campo("metadata_location"),
             campo("filas"),
             campo("bytes"),
-            campo("subido")
         ),
-        ore_core::json::Json::obj([
-            ("estado", ore_core::json::Json::s("copiada")),
-            ("rehecha", ore_core::json::Json::Bool(rehacer)),
-            ("superada", ore_core::json::Json::s(superada)),
-            ("clave", ore_core::json::Json::s(campo("clave"))),
-            ("digest", ore_core::json::Json::s(campo("digest"))),
-            ("plan", ore_core::json::Json::s(plan.digest())),
-            // Procedencia: de qué árbol salió. NO está en la cabecera del
-            // recibo, y por eso está aquí.
-            ("bundle", ore_core::json::Json::s(bundle)),
-            ("filas", ore_core::json::Json::Int(entero("filas"))),
-            ("leidas", ore_core::json::Json::Int(leidas as i64)),
-            ("bytes", ore_core::json::Json::Int(entero("bytes"))),
-            ("columnas", ore_core::json::Json::Obj(columnas)),
-            (
-                "columnas_sin_estrechar",
-                ore_core::json::Json::Obj(sin_estrechar),
-            ),
-            (
-                "subido",
-                ore_core::json::Json::Bool(campo("subido") == "true"),
-            ),
-            (
-                "testigo",
-                ore_core::json::Json::obj([
-                    ("modo", ore_core::json::Json::s(&testigo.0)),
-                    (
-                        "valor",
-                        ore_core::json::Json::s(testigo.1.clone().unwrap_or_default()),
-                    ),
-                ]),
-            ),
-        ]),
+        Json::Obj(m),
     ))
 }
 
-/// **El informe de la copia** (`--informe DIR`): un JSON por vista, para que
-/// quien no alcanza ni el origen ni el almacén —`ore-serve`, la consola— sepa
-/// qué copia hay y cuánto tiene. Lo escribe el Job de la celda y lo empuja al
-/// árbol, y ahí el commit dice cuándo y quién. No es el registro (0015: el
-/// recibo vive en el almacén y no hay puntero mutable): es lo que la última
-/// pasada dijo, como el snapshot del informador.
+/// **`--recoger` sobre un dataset**: expira los snapshots superados y retira
+/// del bucket lo que ningún snapshot que quede nombra. Si expiró alguno hay un
+/// `metadata.json` nuevo, y el puntero se mueve a él aquí mismo. Va DESPUÉS de
+/// sellar y también en «ya está»: si fuera sólo al sellar, un almacén lleno de
+/// snapshots viejos no se limpiaría nunca mientras nada cambiara.
 ///
-/// Con «ya está» no se conocen las filas —nadie las contó—: se conservan las
-/// del informe anterior si la clave es la misma, y se dice `al-dia`.
-/// `ore-store recoger-huerfanas` con los planes que el árbol reclama.
-fn recoger_huerfanas(planes: &[String]) -> Result<String, String> {
+/// La edad que se conserva la dice `ORE_RECOGER_EDAD` (segundos; sin ella,
+/// todo lo superado): la política de retención de la historia es de W3.6b
+/// (el CronJob de mantenimiento), y hasta entonces recoger es lo que siempre
+/// fue — borrar lo superado cuando alguien lo pide.
+fn recoger_dataset(
+    hacer: bool,
+    dataset: &str,
+    metadata_location: &str,
+    m: &mut BTreeMap<String, ore_core::json::Json>,
+) -> Result<String, String> {
+    use ore_core::json::Json;
+    if !hacer || metadata_location.is_empty() {
+        return Ok(String::new());
+    }
+    let mut peticion = vec![
+        ("dataset", Json::s(dataset)),
+        ("metadata_location", Json::s(metadata_location)),
+    ];
+    if let Some(s) = std::env::var("ORE_RECOGER_EDAD")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+    {
+        peticion.push(("edad_ms", Json::s((s * 1000).to_string())));
+    }
+    let g = almacen("recoger", &Json::obj(peticion).jcs(), None)?;
+    let n = |k: &str| campo_de(&g, k).unwrap_or_else(|| "0".into());
+    if let Some(ml) = campo_de(&g, "metadata_location")
+        && ml != metadata_location
+    {
+        m.insert("metadata_location".into(), Json::s(ml));
+    }
+    let (expirados, ficheros) = (n("expirados"), n("ficheros"));
+    Ok(if expirados == "0" && ficheros == "0" {
+        String::new()
+    } else {
+        format!(
+            "\n  recogidos {expirados} snapshot(s) superado(s) y {ficheros} fichero(s) que nadie nombraba"
+        )
+    })
+}
+
+/// El nombre del dataset de una vista en el bucket: `copias/<paquete>_<vista>`
+/// (bajo `ore/v2/`). El mismo nombre que su puntero en el árbol, sin `.json`.
+pub(crate) fn dataset_de(qn: &str) -> String {
+    format!("copias/{}", qn.replace('.', "_"))
+}
+
+/// **Lo que hace falta para leer una copia hecha**: su puntero. Un dataset
+/// (`metadata_location`) o, mientras quede alguno, un sobre heredado
+/// (`clave`). Lo que `ore ask` e `ore invoke` le piden a `ore-store leer`.
+#[derive(Debug, Clone)]
+pub(crate) struct Puntero {
+    pub vista: String,
+    pub dataset: String,
+    pub metadata_location: Option<String>,
+    pub clave: Option<String>,
+}
+
+impl Puntero {
+    /// El puntero de una vista **si su copia está hecha** (`copiada` o
+    /// `al-dia`, y con algo que leer); si no, por qué no.
+    pub fn hecho(raiz: &Path, vista: &str) -> Result<Puntero, String> {
+        let ruta = raiz
+            .join("copias")
+            .join(format!("{}.json", vista.replace('.', "_")));
+        let n = std::fs::read_to_string(&ruta)
+            .ok()
+            .and_then(|t| ore_core::parse::parse(&t).ok())
+            .ok_or_else(|| {
+                format!(
+                    "su copia no está hecha: no hay `{}` (ore materialize)",
+                    ruta.display()
+                )
+            })?;
+        let estado = campo_de(&n, "estado").unwrap_or_default();
+        let p = Puntero {
+            vista: vista.to_string(),
+            dataset: campo_de(&n, "dataset").unwrap_or_else(|| dataset_de(vista)),
+            metadata_location: campo_de(&n, "metadata_location"),
+            clave: campo_de(&n, "clave"),
+        };
+        if !matches!(estado.as_str(), "copiada" | "al-dia")
+            || (p.metadata_location.is_none() && p.clave.is_none())
+        {
+            return Err(format!("su copia no está: el informe dice `{estado}`"));
+        }
+        Ok(p)
+    }
+
+    /// Cómo se nombra: el `metadata_location` del dataset, o la clave del sobre.
+    pub fn nombre(&self) -> &str {
+        self.metadata_location
+            .as_deref()
+            .or(self.clave.as_deref())
+            .unwrap_or("")
+    }
+
+    /// La petición de `ore-store leer`.
+    pub fn peticion_leer(&self) -> String {
+        use ore_core::json::Json;
+        match &self.metadata_location {
+            Some(ml) => Json::obj([
+                ("dataset", Json::s(&self.dataset)),
+                ("metadata_location", Json::s(ml)),
+            ])
+            .jcs(),
+            None => Json::obj([("clave", Json::s(self.clave.as_deref().unwrap_or("")))]).jcs(),
+        }
+    }
+
+    /// Cómo se cuenta en una cabecera: `{de, metadata_location}` o `{de, clave}`.
+    pub fn como_json(&self) -> ore_core::json::Json {
+        use ore_core::json::Json;
+        let mut pares = vec![("de", Json::s(&self.vista))];
+        match &self.metadata_location {
+            Some(ml) => pares.push(("metadata_location", Json::s(ml))),
+            None => pares.push(("clave", Json::s(self.clave.as_deref().unwrap_or("")))),
+        }
+        Json::obj(pares)
+    }
+}
+
+/// El puntero de una vista, si está: `<dir>/<paquete>_<vista>.json`.
+pub(crate) fn leer_puntero(dir: &Path, qn: &str) -> Option<ore_core::parse::Node> {
+    let ruta = dir.join(format!("{}.json", qn.replace('.', "_")));
+    std::fs::read_to_string(ruta)
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+}
+
+/// Un campo escalar de un nodo, si está y no está vacío.
+pub(crate) fn campo_de(n: &ore_core::parse::Node, k: &str) -> Option<String> {
+    n.get(k)
+        .and_then(|(_, v)| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// **El puntero de la copia** (`copias/<paquete>_<vista>.json`, o `--informe
+/// DIR`): un JSON por vista, y es dos cosas a la vez. **El estado** —qué
+/// `metadata.json` es el vigente, con qué cabecera se selló, hasta qué
+/// testigo—, que `ore` lee antes de leer una fila; y **el informe** para quien
+/// no alcanza ni el origen ni el almacén —`ore-serve`, la consola, el puesto—:
+/// cuántas filas, qué columnas, con qué testigo. Lo escribe el Job de la celda
+/// y lo empuja al árbol, y ahí el commit dice cuándo y quién: es el catálogo.
+///
+/// `ore-store recoger-huerfanas` con los datasets que el árbol reclama y los
+/// sobres heredados que algún puntero todavía nombra.
+fn recoger_huerfanas(datasets: &[String], claves: &[String]) -> Result<String, String> {
     use ore_core::json::Json;
     let entrada = Json::obj([
-        ("planes", Json::Arr(planes.iter().map(Json::s).collect())),
+        (
+            "datasets",
+            Json::Arr(datasets.iter().map(Json::s).collect()),
+        ),
+        ("claves", Json::Arr(claves.iter().map(Json::s).collect())),
         ("seco", Json::Bool(false)),
     ])
     .jcs();
     let r = almacen("recoger-huerfanas", &entrada, None)?;
-    let n = |k: &str| {
-        r.get(k)
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("0")
-            .to_string()
-    };
+    let n = |k: &str| campo_de(&r, k).unwrap_or_else(|| "0".into());
     Ok(format!(
-        "huérfanas: {} copia(s) de planes que ninguna vista reclama y {} artefacto(s) sin recibo, fuera del almacén ({} recibos, {} planes vigentes)",
-        n("huerfanas"),
-        n("sueltos"),
-        n("recibos"),
-        n("planes")
+        "huérfanas: {} dataset(s) que ningún puntero reclama ({} objeto(s)) y {} objeto(s) heredado(s) de `ore/v1/`, fuera del almacén ({} datasets vigentes)",
+        n("huerfanos"),
+        n("objetos"),
+        n("heredados"),
+        n("datasets")
     ))
 }
 
-/// Los informes `copias/<paquete>_<vista>.json` de vistas que ya no están en
-/// el árbol, fuera: un recibo de nadie en el árbol es tan engañoso como una
-/// copia de nadie en el almacén.
+/// Los punteros `copias/<paquete>_<vista>.json` de vistas que ya no están en
+/// el árbol, fuera: un puntero de nadie en el árbol es tan engañoso como un
+/// dataset de nadie en el almacén.
 fn retirar_informes_de_nadie(dir: &Path, vivas: &[String]) {
     let Ok(entradas) = std::fs::read_dir(dir) else {
         return;
@@ -669,30 +834,21 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
         Json::Obj(m) => m.clone(),
         _ => Default::default(),
     };
-    m.insert("vista".into(), Json::s(qn));
-    if m.get("estado") == Some(&Json::s("al-dia"))
+    // Una pasada que falla NO borra el puntero: el dataset de la anterior
+    // sigue ahí y sigue siendo cierto hasta su marca. Se conserva lo que decía
+    // y se le pone encima el estado de hoy y su motivo.
+    if m.get("estado") == Some(&Json::s("error"))
         && let Ok(previo) = std::fs::read_to_string(&ruta)
         && let Ok(n) = ore_core::parse::parse(&previo)
-        && n.get("clave").and_then(|(_, c)| c.as_str())
-            == m.get("clave").and_then(|c| {
-                if let Json::Str(s) = c {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            })
+        && let Json::Obj(mut anterior) = Json::de_node(&n)
     {
-        for k in ["filas", "bytes", "digest"] {
-            if let Some((_, v)) = n.get(k)
-                && let Some(t) = v.as_str()
-            {
-                m.insert(
-                    k.into(),
-                    t.parse::<i64>().map(Json::Int).unwrap_or(Json::s(t)),
-                );
-            }
+        anterior.remove("motivo");
+        for (k, v) in m {
+            anterior.insert(k, v);
         }
+        m = anterior;
     }
+    m.insert("vista".into(), Json::s(qn));
     std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
         .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))
 }
@@ -870,15 +1026,17 @@ fn testigo(
     Ok((modo, valor))
 }
 
-/// La cabecera del sobre, en JSON canónico y en **una** línea, que es lo que el
-/// protocolo del almacén espera.
+/// La cabecera de la copia, en JSON canónico y en **una** línea, que es lo que
+/// el protocolo del almacén espera y lo que el dataset guarda como propiedad
+/// de su snapshot. Su digest va al puntero (`cabecera`), y es lo que decide
+/// «ya está».
 ///
 /// **Sin el bundle** (2026-09-18). Iba, y era el digest del árbol entero: un
-/// commit en cualquier paquete dejaba sin recibo a todas las vistas y se
+/// commit en cualquier paquete cambiaba la cabecera de todas las vistas y se
 /// releían los orígenes sin que nada suyo cambiara (16 de 19 commits en
 /// `victor`; `medida-lo-que-parece-roto.py` §4). Plan, esquema, clave, testigo
 /// y conducto ya nombran lo que la copia contiene; de qué árbol salió es
-/// procedencia y va al informe (`bundle`), no a la llave.
+/// procedencia y va al puntero (`bundle`), no a la llave.
 fn cabecera(
     plan: &str,
     esq: &BTreeMap<String, ore_core::types::Type>,
