@@ -154,6 +154,48 @@ Cotejo con Foundry: sus transforms son declarar+correr (con Spark debajo, que aq
 cuando un dataset no quepa en un nodo); sus Functions son las de baja latencia; su Ontology es la
 promoción que se deja para luego.
 
+### 10 · Todo es un dataset (2026-09-20, tras medir Iceberg)
+
+La distinción «copia = caché por digest, dataset = estado con historia» que 0032 esbozó al
+aparcar Iceberg era una descripción de **cómo está hecha hoy la copia**, no una razón de
+arquitectura. Foundry no la hace —un *sync* y un transform producen la misma cosa, un dataset
+con transacciones— y §4 ya decía «un plano de datos». La regla, pues, es una sola: **dataset =
+bytes en el bucket con historia, con un documento del árbol que los nombra y un puntero que
+dice cuál es el estado vigente**. Lo que no tiene bytes en el bucket no es un dataset, por mucho
+que sea una tabla.
+
+| en ORE | documento (árbol) | bytes (bucket) | ¿dataset? | en Foundry |
+|---|---|---|---|---|
+| **`Table`** de una fuente (`olist.customers` en Postgres) | `Table` con `datasource: pg` | ninguno: un **puntero a un objeto de fuera** | **no** | una *source*: tampoco es dataset hasta que se sincroniza |
+| **`View`** virtual | `View` | ninguno: una consulta | **no** | — |
+| **`View` `materialized` → su copia** | la misma `View` + `copias/<p>_<v>.json` como **puntero** | una tabla Iceberg `datasets/<p>/<v>/{data,metadata}`; cada refresco, un snapshot | **sí** | el dataset de un *sync* (`SNAPSHOT`/`APPEND`) |
+| **`write("p.salida", t)`** desde código | una `Table` con `datasource: lago` (nace con la primera escritura) + `datasets/<p>_<t>.json` como puntero | una tabla Iceberg, igual | **sí** | el dataset de un transform |
+| **pesos de un modelo** (W3.9) | `Model` + puntero | un dataset de ficheros (prefijo con manifiesto) | sí, después | dataset no estructurado |
+| lo que hay **hoy**: `ORECOPY1` | `View` + `copias/*.json` | un objeto sellado por digest | **heredado**: `over()` lo sigue leyendo; se reemplaza en la primera pasada con el escritor nuevo | — |
+
+Lo que se sigue de la regla:
+
+- **La `View` no se «convierte» en nada**: sigue siendo la declaración. Cambia lo que hay
+  detrás: una tabla con snapshots en vez de un objeto que se reescribe entero. La consola ve lo
+  mismo (`copiada · 71 234 filas`) y además la historia. **La `Table` de una fuente no cambia**:
+  sigue apuntando fuera y sigue sin leerse sin copia (0030 W1).
+- **Un lector**: `over("p.x")` resuelve por el nombre —View materializada → `copias/`, Table
+  del lago → `datasets/`, lo demás → 409 «sin copia hecha»— y lee por el puntero con
+  `iceberg_scan`, en los tres lenguajes. El recibo pasa a ser el puntero; el testigo del origen,
+  una propiedad del snapshot; la cadena de sucesoras (0017), los snapshots; el digest, lo que
+  siempre fue de verdad: la idempotencia («mismo testigo → ningún snapshot nuevo»).
+- **Un linaje**: `salida ← transform ← copia de customers ← Table customers ← Postgres`, cada
+  eslabón con bytes fechado por snapshot, y el gobierno bajando por el grafo que ya existe.
+- **El coste medido** (0032): 0,5 s y 5 objetos por copia frente a 30 ms y 1; en 31 copias son
+  15 s dentro de un Job que lee orígenes durante minutos, y los punteros van en el commit que el
+  Job ya empuja. A cambio, el refresco incremental es un `append` en vez de fundir y reescribir.
+
+Lo único que queda de la objeción es **de fases**: la copia la sella `ore-store` en Rust, y el
+escritor de Iceberg en Rust hay que medirlo antes de sustituir el sellado. De ahí los peldaños
+W3.5b–W3.6 de abajo, en ese orden: **primero el lector en el clúster** (todo cuelga de que
+DuckDB lea Iceberg en GCS con la identidad del pod, sin internet), luego el escritor de la copia,
+luego el swap, luego `write()`.
+
 ## Los peldaños de W3
 
 | | qué | acepta |
@@ -164,7 +206,10 @@ promoción que se deja para luego.
 | **W3.3** ✓ 2026-09-19 (SQL) | SQL sobre el bucket **en la sesión**: `sql("select … from hr.espanoles")` (DuckDB en el puesto; cada `paquete.vista` tras FROM/JOIN se resuelve por ore-serve y se baja una vez); un `.sql` del árbol o una celda SQL van enteros a `sql()`. **Medido antes** (`medida-w3-el-sql.py`, 2 CPU · 3 GB): 200 M de filas → `count(*)` 5 ms, `group by` con agregados **1,9 s**, `where` 1 s, top-n 0,9 s; 1,4 GB al bucket en 11 s y de vuelta en 9,5 s. ⇒ un `count(*)` sobre 200 M **no necesita un Job**: cabe en la sesión con segundos de margen; el trabajo encolado queda para lo que no quepa en un nodo (disco de 50 GB, o más de un nodo) y para entrenar (W3.5) | `el-puesto.sh` 7 |
 | **W3.4** ✓ 2026-09-19 (TS y JVM) | **Un puesto por persona y entorno** (`puesto-<persona>-<entorno>`: `python`, `node`, `jvm`; `POST /puestos {lenguaje}` elige la imagen; `sql` corre en los tres). `puesto-node:1` (node 24: los tipos de TS los quita Node, sin transpilador; `@duckdb/node-api`; el agente `puesto/node/agente.mjs` evalúa con el REPL de Node: contexto que dura, `await` arriba; una celda con `import`/`export` —un `.ts` del árbol— se escribe y se importa, y sus exports quedan en el contexto) y `puesto-jvm:1` (JDK 21 sobre noble; `puesto/jvm/ore/Agente.java`: JShell **en proceso**, varios snippets por celda, el valor de la expresión como objeto por `guarda()`, una clase con `main` se declara y se llama; DuckDB por JDBC). El SDK en los tres: `over()`, `sql()`, **`persona()`** (quién abrió el puesto). La plantilla del puesto lleva el hueco del entorno y cada imagen su `CMD`. En la consola, un `.ts`/`.js`/`.java` corre en su sesión; una fila por sesión abierta con su «Stop». **Medido antes** (`medida-w3-ts-jvm.py`): abajo | `el-puesto.sh` 8 (`saludo(persona())` → `hola persona:ana` desde un módulo TS con `export`; `over()`, `sql`) y 9 (lo mismo en Java, y una clase con `main`) en CI; en el clúster, las imágenes salen de `cloudbuild.yaml` |
 | **W3.5** · leer | el verbo **leer**, consistente: Arrow como verdad común en los tres SDK; el contrato de tipos ORE ↔ Parquet ↔ lenguaje escrito y medido (`medida-w3-leer.py`: un Parquet con todos los tipos difíciles leído por los tres `over()`/`sql()`, campo a campo, y el caudal a 10 M de filas) | los tres lenguajes leen la misma copia y ven los mismos valores; lo que no sobrevive está dicho, no escondido |
-| **W3.6** · escribir | `write("p.salida", tabla)` en los tres: un **dataset Iceberg** en el bucket con el árbol de catálogo (0032, «Lo que se aparca hasta W3.6», medido el 20-09: git como catálogo funciona, DuckDB lo lee por el puntero sin catálogo, evoluciona sin reescribir, 19/23 tipos y los 4 restantes los convierte el contrato), informe en el árbol, `over()` lo lee desde los otros dos; la copia sigue `ORECOPY1` | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, y la latencia de un commit en el clúster |
+| **W3.5b** · el lector del lago | **medir primero, en el clúster** (`medida-w3-lago.py`, con `jobs-p`): la extensión `iceberg` de DuckDB **preinstalada** en las tres imágenes (el pod no tiene internet; una extensión por versión de DuckDB: python 1.5.4, node-api 1.5.5, JDBC 1.5.5.1), y **cómo lee DuckDB una tabla Iceberg en `gs://` con la identidad del pod**: secreto GCS por HMAC de la cuenta del puesto, token del servidor de metadatos, o bajar los ficheros que el manifiesto lista (como hoy con el sobre); la latencia de `iceberg_scan` por el puntero desde un puesto. Luego el lector: `GET /puestos/{id}/datos/{x}` contesta `metadata_location` (o `clave`, heredado) y `over()`/`sql()` leen por él en los tres | medido y elegido el camino de lectura; `over("p.v")` lee una tabla Iceberg del bucket de victor desde Python, Node y Java con los mismos 23/23 de 0032 T3; el sobre heredado sigue leyéndose |
+| **W3.6a** · la copia es un dataset | **medir `iceberg-rust`** desde `ore-store` (`append` de 10 M, un catálogo como *trait* sobre el fichero puntero, tipos de 0032); si escribe, el Job de copia sella Iceberg; si no madura, PyIceberg en la imagen del Job mientras tanto. El puntero: `copias/<p>_<v>.json` con `metadata_location`, `snapshot`, `testigo` (el recibo del bucket se retira); rehacer = snapshot nuevo; `--recoger` = `expire_snapshots` + huérfanos; el refresco con clave = `append`/`upsert` en vez de fundir y reescribir | la pasada de copia de victor deja tablas Iceberg; `medida-w3-tipos.py` las lee; una copia rehecha y una refrescada son dos snapshots de la misma tabla; `over()` no distingue |
+| **W3.6b** · el swap y el lago | `ore-serve` hace el CAS sobre el puntero y el commit por la forja (`POST …/datasets/{t}/confirmar {metadata_location, esperado}` → 409 si otro ganó); el `datasource: lago` del inquilino nace en el aprovisionador; la `Table` del lago se valida como cualquier tabla; la consola enseña la ficha del dataset con sus snapshots; un CronJob de mantenimiento (expirar snapshots, huérfanos) | dos escritores concurrentes: uno confirma y otro recibe 409 y reintenta; `git log` de un puntero es la historia de la tabla |
+| **W3.6c** · escribir | `write("p.salida", tabla)` en los tres (Python con PyIceberg primero; Node y Java por DuckDB `COPY … TO` Iceberg cuando lo tenga, o por el trabajo): datos y `metadata.json` al bucket con la identidad del pod (`objectCreator` sobre `datasets/`), el puntero por `ore-serve`, la `Table` del lago escrita con el esquema de Arrow la primera vez; 0032 convierte lo que Iceberg no tiene (ns → µs, zona → UTC) y niega `uint64`/`null` diciéndolo | medido: 10 M de filas escritas desde cada lenguaje y leídas desde los otros dos, fidelidad campo a campo, caudal, latencia de un commit en el clúster |
 | **W3.4b** · dependencias | las capas de Node (`package.json` → `node_modules` en el bucket) y de la JVM (`pom.xml`/`build.gradle` → jars en el bucket, resueltos con Maven en el Job del driver; nunca Gradle del cliente en la malla) | medido como la de Python: resolver, subir, bajar, cargar |
 | **W3.7** · declarar y correr | `transform(inputs, output)` en los tres; el trabajo de código desde un commit (`ore run packages/p/transforms/x.{py,ts,java}`) con entorno + capa; fallback de rama; un `over` no declarado se rechaza | medido: frío del trabajo por entorno, un transform sobre 200 M de filas |
 | **W3.8** · baja latencia | funciones TS y Python residentes (0029 ②): un proceso por función con sus vistas calientes, invocado por `ore-serve` | medido: p50/p99, memoria de las vistas calientes, arranque |
