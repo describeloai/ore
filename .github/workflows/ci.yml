@@ -196,7 +196,7 @@ jobs:
           java-version: '21'
       - name: y una sesion Python, una TS y una Java leen la copia con over() y sql()
         run: |
-          python3 -m pip install --quiet pyarrow pandas duckdb
+          python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]"
           bash pruebas-de-fuego/el-puesto.sh
 
       # Y la puerta OIDC, con tokens acunados en el momento. Lo que fija que no

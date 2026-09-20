@@ -200,9 +200,54 @@ public final class Ore {
         return Path.of(System.getProperty("java.io.tmpdir"), "ore-copias");
     }
 
-    /** La copia de la vista como Parquet local, bajado UNA vez por sesión (la clave es el digest del artefacto). */
-    private static Path parquetDe(String vista) throws IOException, InterruptedException {
+    /**
+     * De qué se lee la vista, como fragmento SQL de DuckDB (0031 §10, todo es un dataset):
+     * {@code iceberg_scan(...)} si el puntero trae {@code metadata_location} —una tabla
+     * Iceberg en el bucket, leída EN SITIO—, {@code read_parquet('…')} si trae {@code clave}
+     * (el sobre heredado, que se baja una vez).
+     */
+    private static String fuenteDe(String vista) throws Exception {
         Map<String, Object> r = resolver(vista);
+        Object m = r.get("metadata_location");
+        if (m != null && !String.valueOf(m).isEmpty()) return iceberg(String.valueOf(m));
+        return "read_parquet('" + rutaSql(parquetDe(vista, r)) + "')";
+    }
+
+    /** Donde la imagen deja las extensiones de DuckDB preinstaladas. */
+    public static final Path EXTENSIONES = Path.of("/opt/ore/duckdb");
+    private static final String[] LAGO = { "json", "icu", "avro", "iceberg" };
+
+    /**
+     * {@code iceberg_scan} sobre la raíz de la tabla y la versión del puntero (con
+     * {@code allow_moved_paths} la raíz es lo que se le pasa, y así no lista nada). En el
+     * bucket, la API XML de GCS por https con el token del pod como <i>bearer</i>.
+     */
+    private static String iceberg(String metadataLocation) throws Exception {
+        int i = metadataLocation.lastIndexOf("/metadata/");
+        String raiz = metadataLocation.substring(0, i);
+        String version = metadataLocation.substring(i + "/metadata/".length()).replaceFirst("\\.metadata\\.json$", "");
+        Connection con = duckdb();
+        // `iceberg` arrastra `avro` (y usa `json` e `icu`); con el autoinstalado apagado
+        // hay que cargarlas por su nombre, en orden. `httpfs` sólo para el bucket.
+        for (String e : LAGO) cargar(con, e);
+        if (raiz.startsWith("gs://")) {
+            cargar(con, "httpfs");
+            try (Statement s = con.createStatement()) { s.execute("create or replace secret ore_gcs (type http, bearer_token '" + tokenDeGoogle().replace("'", "''") + "')"); }
+            raiz = "https://storage.googleapis.com/" + raiz.substring(5);
+        }
+        return "iceberg_scan('" + raiz.replace("\\", "/").replace("'", "''") + "', version='" + version.replace("'", "''") + "', allow_moved_paths=true)";
+    }
+
+    /** {@code LOAD} de una extensión: en la imagen está preinstalada; fuera, si falta, se instala una vez. */
+    private static void cargar(Connection con, String extension) throws SQLException {
+        try (Statement s = con.createStatement()) { s.execute("load " + extension); return; } catch (SQLException e) {
+            if (Files.isDirectory(EXTENSIONES)) throw new SQLException("la imagen no trae la extensión `" + extension + "` de DuckDB: hay que preinstalarla en " + EXTENSIONES, e);
+        }
+        try (Statement s = con.createStatement()) { s.execute("install " + extension); s.execute("load " + extension); }
+    }
+
+    /** La copia de la vista como Parquet local, bajado UNA vez por sesión (la clave es el digest del artefacto). */
+    private static Path parquetDe(String vista, Map<String, Object> r) throws IOException, InterruptedException {
         Path d = copiasPorDefecto();
         Files.createDirectories(d);
         String clave = String.valueOf(r.get("clave"));
@@ -228,7 +273,16 @@ public final class Ore {
             }
             conexion = DriverManager.getConnection("jdbc:duckdb:");
             String hilos = System.getenv("ORE_HILOS");
-            if (hilos != null && !hilos.isEmpty()) try (Statement s = conexion.createStatement()) { s.execute("set threads to " + Integer.parseInt(hilos)); }
+            try (Statement s = conexion.createStatement()) {
+                if (hilos != null && !hilos.isEmpty()) s.execute("set threads to " + Integer.parseInt(hilos));
+                // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
+                // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
+                s.execute("set autoinstall_known_extensions = false");
+                // Un instante es un instante: el contrato (0032 §1) lo quiere en UTC, y
+                // DuckDB enseña un TIMESTAMPTZ en la zona de la sesión. Aquí la sesión ES UTC.
+                s.execute("set TimeZone = 'UTC'");
+                if (Files.isDirectory(EXTENSIONES)) s.execute("set extension_directory = '" + EXTENSIONES + "'");
+            }
             asignador = new RootAllocator();
         }
         return conexion;
@@ -296,10 +350,10 @@ public final class Ore {
         while (m.find()) vistas.add(m.group(1) + "." + m.group(2));
         for (String v : vistas) {
             String[] p = v.split("\\.");
-            Path f = parquetDe(v);
+            String fuente = fuenteDe(v);
             try (Statement s = con.createStatement()) {
                 s.execute("create schema if not exists \"" + p[0] + "\"");
-                s.execute("create or replace view \"" + p[0] + "\".\"" + p[1] + "\" as select * from read_parquet('" + rutaSql(f) + "')");
+                s.execute("create or replace view \"" + p[0] + "\".\"" + p[1] + "\" as select * from " + fuente);
             }
         }
     }
@@ -309,12 +363,12 @@ public final class Ore {
 
     /** La copia como filas, hasta {@code limite}; con {@code estricto}, falla si no cabe. */
     public static Filas over(String vista, int limite, boolean estricto) throws Exception {
-        Path f = parquetDe(vista);
+        String fuente = fuenteDe(vista);
         Connection con = duckdb();
         long total;
-        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery("select count(*) from read_parquet('" + rutaSql(f) + "')")) { rs.next(); total = rs.getLong(1); }
+        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery("select count(*) from " + fuente)) { rs.next(); total = rs.getLong(1); }
         if (estricto && total > limite) throw new IllegalStateException("over(" + vista + "): la copia tiene " + total + " filas y el límite es " + limite + "; sube el límite, agrega en sql(), usa arrow() o quita estricto");
-        return filasDe(exportar(con.createStatement(), "select * from read_parquet('" + rutaSql(f) + "')", 8192), limite, estricto, total, "over(" + vista + ")");
+        return filasDe(exportar(con.createStatement(), "select * from " + fuente, 8192), limite, estricto, total, "over(" + vista + ")");
     }
 
     /** SQL (DuckDB) sobre las copias: cada {@code paquete.vista} tras FROM/JOIN se resuelve, se baja una vez y queda como vista. */
@@ -329,8 +383,8 @@ public final class Ore {
 
     /** La copia entera, por lotes de Arrow: {@code while (r.loadNextBatch()) { VectorSchemaRoot raiz = r.getVectorSchemaRoot(); … }}. Cerrar al acabar. */
     public static ArrowReader arrow(String vista) throws Exception {
-        Path f = parquetDe(vista);
-        return exportar(duckdb().createStatement(), "select * from read_parquet('" + rutaSql(f) + "')", 65_536);
+        String fuente = fuenteDe(vista);
+        return exportar(duckdb().createStatement(), "select * from " + fuente, 65_536);
     }
 
     /** El resultado de una consulta, por lotes de Arrow. Cerrar al acabar. */

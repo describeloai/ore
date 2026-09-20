@@ -128,6 +128,16 @@ spec:
   fields:
     id: { from: id, type: String }
 Y
+cat > "$A/packages/hr/views/lago.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: lago, namespace: hr, labels: { oos.maturity: DRAFT } }
+spec:
+  owner: team:data
+  from: hr.empleados
+  fields:
+    id: { from: id, type: String }
+Y
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "el arbol de partida no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -3)"
 
 # ── la copia: el sobre ORECOPY1 con Parquet, en un almacén de directorio ────
@@ -149,6 +159,47 @@ EOF
 )
 [ -n "$CLAVE" ] || falla "no se pudo escribir la copia de prueba"
 "$PY" -c 'import json,sys; json.dump({"estado":"copiada","clave":sys.argv[1],"plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$CLAVE" "$A/copias/hr_espanoles.json"
+
+# ── el dataset: una tabla Iceberg (0031 §10), y su puntero en el árbol ──────
+# Escrita con PyIceberg (el catálogo es el árbol: `medida-w3-iceberg.py`); el
+# puntero es `copias/hr_lago.json` con `metadata_location`. Los tres SDK la leen
+# EN SITIO con DuckDB por la raíz y la versión. Sin pyiceberg (o sin git) el caso
+# se salta y se dice; el camino https contra GCS está medido en `medida-w3-lago.py`.
+LAGO_OK=no
+if "$PY" -c "import pyiceberg" 2>/dev/null; then
+  META=$("$PY" - "$ALMACEN_PY" "$RAIZ" <<'EOF'
+import datetime as dt, decimal, importlib.util, os, sys, tempfile
+import pyarrow as pa
+sp = importlib.util.spec_from_file_location("ice", os.path.join(sys.argv[2], "pruebas-de-fuego", "medida-w3-iceberg.py"))
+ice = importlib.util.module_from_spec(sp); sp.loader.exec_module(ice)
+Arbol = ice.catalogo_arbol()
+bodega = os.path.join(sys.argv[1], "lago").replace("\\", "/")
+cat = Arbol("prueba", tempfile.mkdtemp(prefix="ore-lago-arbol-").replace("\\", "/"), warehouse=bodega)
+cat.create_namespace("hr")
+utc = dt.timezone.utc
+t = pa.table({
+    "n": pa.array([1, 2, 3], pa.int64()),
+    "letra": pa.array(["a", "b", None], pa.string()),
+    "cuando": pa.array([dt.datetime(2024, 6, 1, 12, 0, tzinfo=utc), None, dt.datetime(2024, 6, 1, 12, 0, 0, 500000, tzinfo=utc)], pa.timestamp("us", tz="UTC")),
+    "importe": pa.array([decimal.Decimal("1.50"), decimal.Decimal("2.25"), None], pa.decimal128(10, 2)),
+})
+tb = cat.create_table("hr.lago", t.schema)
+tb.append(t)
+print(tb.metadata_location)
+EOF
+  )
+  if [ -n "$META" ]; then
+    "$PY" -c 'import json,sys; json.dump({"estado":"copiada","metadata_location":sys.argv[1],"snapshot":"1","plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$META" "$A/copias/hr_lago.json"
+    LAGO_OK=si
+  else
+    echo "  (pyiceberg no pudo escribir la tabla: el dataset Iceberg no se prueba aqui)"
+  fi
+else
+  echo "  (sin pyiceberg: el dataset Iceberg no se prueba aqui — python -m pip install 'pyiceberg[pyarrow]')"
+fi
+# Lo que los tres agentes tienen que enseñar de hr.lago: el MISMO JSON (0032 T3).
+LAGO_COLS="[c['name'] for c in d['salida']['columnas']]==['n','letra','cuando','importe'] and [c['type'] for c in d['salida']['columnas']]==['int64','string','timestamp[us, tz=UTC]','decimal128(10, 2)']"
+LAGO_FILAS="d['salida']['filas']==[[1,'a','2024-06-01T12:00:00Z','1.50'],[2,'b',None,'2.25'],[3,None,'2024-06-01T12:00:00.5Z',None]] and d['salida']['total']==3"
 
 # ── la cola: un repositorio pelado con la plantilla del puesto ─────────────
 COLA="$TMP/cola.git"
@@ -226,14 +277,22 @@ celda 'len(df)' && tiene "d['salida']['texto']=='3'" || falla "4 · len(df): $(c
 celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "4 · hr.nada: $(cuerpo)"
 celda 'over(\"hr.empleados\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError' and 'no est' in d['salida']['mensaje']" || falla "4 · hr.empleados sin copia: $(cuerpo)"
 [ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$AG")" = "200" ] && tiene "d['clave']=='$CLAVE' and d['estado']=='copiada'" || falla "4 · datos: $(cuerpo)"
+if [ "$LAGO_OK" = "si" ]; then
+  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.lago "$AG")" = "200" ] && tiene "d['metadata_location'].endswith('.metadata.json') and d['clave']=='' and d['estado']=='copiada'" || falla "4 · datos de un dataset Iceberg: $(cuerpo)"
+  celda 'over(\"hr.lago\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "4 · over(hr.lago), el dataset Iceberg: $(cuerpo)"
+  celda 'over(\"hr.lago\", como=\"arrow\").num_rows' && tiene "d['salida']['texto']=='3'" || falla "4 · over(hr.lago, arrow): $(cuerpo)"
+fi
 [ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$ANA")" = "403" ] || falla "4 · una persona pidio datos por la ruta del agente: $(cuerpo)"
-dice "4 · over(\"hr.espanoles\") → tabla 3 × 2 desde la copia (ORECOPY1 + Parquet) · hr.nada → LookupError (404) · sin copia → RuntimeError (409) · datos solo para el agente"
+dice "4 · over(\"hr.espanoles\") → tabla 3 × 2 desde la copia (ORECOPY1 + Parquet) · over(\"hr.lago\") → el dataset Iceberg leido en sitio por la raiz y la version del puntero (tipos del contrato) · hr.nada → LookupError (404) · sin copia → RuntimeError (409) · datos solo para el agente"
 
 # ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
 celda_sql() { local l=$LEN; LEN=sql; celda "$1"; local r=$?; LEN=$l; return $r; }
 celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['columnas'][0]['name']=='n' and d['salida']['filas']==[[3]]" || falla "7 · count sobre la copia: $(cuerpo)"
 celda_sql 'select a.id, b.pais from hr.espanoles a join hr.espanoles b on a.id = b.id order by 1' && tiene "d['salida']['tipo']=='tabla' and d['salida']['total']==3 and d['salida']['filas'][0]==['e1','ES']" || falla "7 · el join: $(cuerpo)"
 celda_sql 'select * from hr.nada' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='LookupError'" || falla "7 · una vista que no existe: $(cuerpo)"
+if [ "$LAGO_OK" = "si" ]; then
+  celda_sql 'select count(*) as n, sum(importe) as s from hr.lago' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3,'3.75']]" || falla "7 · sql sobre el dataset Iceberg: $(cuerpo)"
+fi
 celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError'" || falla "7 · una vista sin copia: $(cuerpo)"
 celda_sql 'selec nada' && tiene "d['salida']['tipo']=='error'" || falla "7 · sql roto: $(cuerpo)"
 celda 'sql(\"select sum(1) as s from hr.espanoles\")' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · sql() desde python: $(cuerpo)"
@@ -320,6 +379,10 @@ if [ "$NODE_OK" = "si" ]; then
   celda 'export function saludo(n: string): string { return \"hola \" + n }' && tiene "d['salida']['tipo']=='texto' and 'saludo' in d['salida']['texto']" || falla "8 · un modulo (export) del arbol: $(cuerpo)"
   celda 'saludo(persona())' && tiene "d['salida']['texto']=='hola persona:ana'" || falla "8 · saludo(persona()) — la funcion del arbol con la identidad de la persona: $(cuerpo)"
   celda 'const df = await over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "8 · over(hr.espanoles): $(cuerpo)"
+  if [ "$LAGO_OK" = "si" ]; then
+    celda 'await over(\"hr.lago\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.lago), el dataset Iceberg: $(cuerpo)"
+    celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.lago\")' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "8 · sql sobre el dataset Iceberg: $(cuerpo)"
+  fi
   celda 'await over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "8 · sql en node: $(cuerpo)"
   LEN=javascript; celda 'let z = 5; z * 2' && tiene "d['salida']['texto']=='10'" || falla "8 · javascript: $(cuerpo)"; LEN=typescript
@@ -328,7 +391,7 @@ if [ "$NODE_OK" = "si" ]; then
   for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
   kill -0 "$AGENTE" 2>/dev/null && falla "8 · el agente node no se cerro al 410"
   AGENTE=""
-  dice "8 · TS en el puesto node: 1+1 · const x: number → los tipos fuera · el contexto dura · console.log · ReferenceError · await arriba · interface · un modulo con export · saludo(persona()) → hola persona:ana · over() tabla · sql → [[3]] · javascript · python 422 · cierre"
+  dice "8 · TS en el puesto node: 1+1 · const x: number → los tipos fuera · el contexto dura · console.log · ReferenceError · await arriba · interface · un modulo con export · saludo(persona()) → hola persona:ana · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · javascript · python 422 · cierre"
 else
   dice "8 · (sin node ≥ 22.13: el puesto node no se prueba aqui)"
 fi
@@ -370,6 +433,10 @@ if [ "$JAVA_OK" = "si" ]; then
   celda 'saludo(persona())' && tiene "d['salida']['texto']=='\"hola persona:ana\"'" || falla "9 · saludo(persona()) — con la identidad de la persona: $(cuerpo)"
   celda 'public class Programa { public static void main(String[] a) { System.out.println(\"main de \" + persona()); } }' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='main de persona:ana\n'" || falla "9 · una clase con main (un .java del arbol): $(cuerpo)"
   celda 'var df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "9 · over(hr.espanoles): $(cuerpo)"
+  if [ "$LAGO_OK" = "si" ]; then
+    celda 'over(\"hr.lago\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.lago), el dataset Iceberg: $(cuerpo)"
+    celda 'sql(\"select count(*) as n, sum(importe) as s from hr.lago\")' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "9 · sql sobre el dataset Iceberg: $(cuerpo)"
+  fi
   celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "9 · sql en la jvm: $(cuerpo)"
   [ "$(pide POST /puestos/puesto-ana-jvm/ejecutar "$ANA" '{"texto":"1","lenguaje":"typescript"}')" = "422" ] || falla "9 · typescript en jvm no dio 422: $(cuerpo)"
@@ -377,7 +444,7 @@ if [ "$JAVA_OK" = "si" ]; then
   for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
   kill -0 "$AGENTE" 2>/dev/null && falla "9 · el agente jvm no se cerro al 410"
   AGENTE=""
-  dice "9 · Java en el puesto jvm: 1+1 · int x → vacia · la sesion dura · println · ArithmeticException · no compila → CompilationError · record + stream · un metodo · saludo(persona()) · una clase con main · over() tabla · sql → [[3]] · typescript 422 · cierre"
+  dice "9 · Java en el puesto jvm: 1+1 · int x → vacia · la sesion dura · println · ArithmeticException · no compila → CompilationError · record + stream · un metodo · saludo(persona()) · una clase con main · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · typescript 422 · cierre"
 else
   dice "9 · (sin javac ≥ 21: el puesto jvm no se prueba aqui)"
 fi

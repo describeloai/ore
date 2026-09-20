@@ -20,6 +20,13 @@ pub enum Json {
     /// `BTreeMap`: las claves salen ordenadas siempre. Es gratis aquí y es
     /// obligatorio en la forma canónica.
     Obj(BTreeMap<String, Json>),
+    /// **JSON ya escrito, que se emite tal cual.** Para lo que ORE transporta
+    /// sin interpretar: la salida de una celda (0032 §1), que lleva `null` y
+    /// dobles —`1.5`, `NaN` como cadena— que este tipo no modela a propósito.
+    /// Reanalizarla con `de_node` la degradaba: `null` y `1.5` volvían como las
+    /// cadenas `"null"` y `"1.5"`. **No entra en nada que se firme o se digiera**:
+    /// no tiene forma canónica, tiene la que trajo.
+    Crudo(String),
 }
 
 impl Json {
@@ -56,6 +63,7 @@ impl Json {
                 let _ = write!(out, "{n}");
             }
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Json::Crudo(texto) => out.push_str(texto),
             Json::Arr(items) => {
                 out.push('[');
                 for (i, v) in items.iter().enumerate() {
@@ -103,6 +111,7 @@ impl Json {
                 let _ = write!(out, "{n}");
             }
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Json::Crudo(texto) => out.push_str(texto),
             Json::Arr(items) if items.is_empty() => out.push_str("[]"),
             Json::Arr(items) => {
                 out.push_str("[\n");
@@ -157,6 +166,14 @@ mod tests {
     fn ordena_las_claves() {
         let j = Json::obj([("zeta", Json::Int(1)), ("alfa", Json::Int(2))]);
         assert!(j.pretty().find("alfa").unwrap() < j.pretty().find("zeta").unwrap());
+    }
+
+    /// Lo crudo sale tal cual: `null` y `1.5` —que este tipo no modela— llegan a
+    /// la consola como lo que son, no como cadenas.
+    #[test]
+    fn lo_crudo_se_emite_tal_cual() {
+        let j = Json::obj([("salida", Json::Crudo("{\"a\":null,\"b\":1.5}".into()))]);
+        assert_eq!(j.jcs(), "{\"salida\":{\"a\":null,\"b\":1.5}}");
     }
 
     #[test]

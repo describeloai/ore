@@ -32,6 +32,12 @@
 //
 // Fuera del clúster (las pruebas de fuego) el almacén es un directorio:
 // `ORE_ALMACEN=dir:/ruta` lee `ore/v1/<clave>` de ahí.
+//
+// TODO ES UN DATASET (0031 §10): `datos` contesta o `metadata_location` —el
+// `metadata.json` vigente de una tabla Iceberg en el bucket, que DuckDB lee EN
+// SITIO (`iceberg_scan` sobre la raíz y la versión, con el token del pod como
+// bearer; medido en `medida-w3-lago.py`)— o `clave`, el sobre ORECOPY1 heredado,
+// que se baja una vez. `over()` y `sql()` no distinguen.
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessSync, constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,8 +138,41 @@ async function parquetDe(vista) {
   return [f, r];
 }
 
+/** De qué se lee la vista, como fragmento SQL de DuckDB: `iceberg_scan(...)` si es un
+ *  dataset Iceberg (el puntero trae `metadata_location`), `read_parquet('…')` si es un
+ *  sobre heredado (trae `clave`, y se baja una vez). */
+async function fuenteDe(vista) {
+  const r = await resolver(vista);
+  if (r.metadata_location) return [await iceberg(r.metadata_location), r];
+  const [f] = await parquetDe(vista);
+  return [`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r];
+}
+
+/** `iceberg_scan` sobre la raíz de la tabla y la versión del puntero (con
+ *  `allow_moved_paths` la raíz es lo que se le pasa, y así no lista nada). En el
+ *  bucket, la API XML de GCS por https con el token del pod como bearer. */
+async function iceberg(metadataLocation) {
+  const i = metadataLocation.lastIndexOf("/metadata/");
+  let raiz = metadataLocation.slice(0, i);
+  const version = metadataLocation.slice(i + "/metadata/".length).replace(/\.metadata\.json$/, "");
+  const con = await duckdb();
+  // `iceberg` arrastra `avro` (y usa `json` e `icu`); con el autoinstalado apagado
+  // hay que cargarlas por su nombre, en orden. `httpfs` sólo para el bucket.
+  for (const e of LAGO) await cargar(con, e);
+  if (raiz.startsWith("gs://")) {
+    await cargar(con, "httpfs");
+    await con.run(`create or replace secret ore_gcs (type http, bearer_token '${(await tokenDeGoogle()).replaceAll("'", "''")}')`);
+    raiz = "https://storage.googleapis.com/" + raiz.slice(5);
+  }
+  return `iceberg_scan('${raiz.replaceAll("'", "''").replaceAll("\\", "/")}', version='${version.replaceAll("'", "''")}', allow_moved_paths=true)`;
+}
+
 // ── DuckDB ─────────────────────────────────────────────────────────────────
 let conexion = null;
+
+/** Donde la imagen deja las extensiones de DuckDB preinstaladas. */
+export const EXTENSIONES = "/opt/ore/duckdb";
+const LAGO = ["json", "icu", "avro", "iceberg"];
 
 async function duckdb() {
   if (!conexion) {
@@ -141,8 +180,24 @@ async function duckdb() {
     const inst = await DuckDBInstance.create(":memory:");
     conexion = await inst.connect();
     if (process.env.ORE_HILOS) await conexion.run(`set threads to ${Number(process.env.ORE_HILOS)}`);
+    // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
+    // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
+    await conexion.run("set autoinstall_known_extensions = false");
+    // Un instante es un instante: el contrato (0032 §1) lo quiere en UTC, y DuckDB
+    // enseña un TIMESTAMPTZ en la zona de la sesión. Aquí la sesión ES UTC.
+    await conexion.run("set TimeZone = 'UTC'");
+    if (existsSync(EXTENSIONES)) await conexion.run(`set extension_directory = '${EXTENSIONES}'`);
   }
   return conexion;
+}
+
+/** `LOAD` de una extensión: en la imagen está preinstalada; fuera, si falta, se instala una vez. */
+async function cargar(con, extension) {
+  try { await con.run(`load ${extension}`); }
+  catch (e) {
+    if (existsSync(EXTENSIONES)) throw new Error(`la imagen no trae la extensión \`${extension}\` de DuckDB: hay que preinstalarla en ${EXTENSIONES}`);
+    await con.run(`install ${extension}`); await con.run(`load ${extension}`);
+  }
 }
 
 const VISTAS_EN_SQL = /\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b/gi;
@@ -208,12 +263,11 @@ function opciones(o) {
  *  `limite`, con `.tipos`, `.total` y `.truncada`; o `{ como: "columnas" }`. */
 export async function over(vista, o) {
   const { limite, estricto, como } = opciones(o);
-  const [f] = await parquetDe(vista);
+  const [fuente] = await fuenteDe(vista);
   const con = await duckdb();
-  const ruta = f.replaceAll("'", "''").replaceAll("\\", "/");
-  const total = Number((await con.runAndReadAll(`select count(*) from read_parquet('${ruta}')`)).getColumns()[0][0]);
+  const total = Number((await con.runAndReadAll(`select count(*) from ${fuente}`)).getColumns()[0][0]);
   if (estricto && total > limite) throw new Error(`over(${JSON.stringify(vista)}): la copia tiene ${total} filas y el límite es ${limite}; sube limite, agrega en sql() o quita estricto`);
-  const { r, truncada } = await leerHasta(con, `select * from read_parquet('${ruta}')`, limite);
+  const { r, truncada } = await leerHasta(con, `select * from ${fuente}`, limite);
   return entregar(r, truncada, limite, total, como);
 }
 
@@ -227,9 +281,9 @@ export async function sql(texto, o) {
   const vistas = new Set([...texto.matchAll(VISTAS_EN_SQL)].map((m) => `${m[1]}.${m[2]}`));
   for (const v of [...vistas].sort()) {
     const [esquema, nombre] = v.split(".");
-    const [f] = await parquetDe(v);
+    const [fuente] = await fuenteDe(v);
     await con.run(`create schema if not exists "${esquema}"`);
-    await con.run(`create or replace view "${esquema}"."${nombre}" as select * from read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`);
+    await con.run(`create or replace view "${esquema}"."${nombre}" as select * from ${fuente}`);
   }
   const { r, truncada } = await leerHasta(con, texto, limite);
   if (estricto && truncada) throw new Error(`sql(): el resultado pasa de ${limite} filas; sube limite, agrega más o quita estricto`);

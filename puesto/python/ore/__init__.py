@@ -22,6 +22,13 @@ de sus vistas: cada `paquete.vista` tras FROM/JOIN se resuelve igual que en
 
 Fuera del clúster (las pruebas de fuego) el almacén es un directorio:
 `ORE_ALMACEN=dir:/ruta` lee `ore/v1/<clave>` de ahí.
+
+**Todo es un dataset** (0031 §10): lo que `ore-serve` contesta por `datos` es o bien
+`metadata_location` —el `metadata.json` vigente de una **tabla Iceberg** en el
+bucket: se lee en sitio con DuckDB (`iceberg_scan` sobre la raíz y la versión, con el
+token del pod como *bearer*; medido en `medida-w3-lago.py`: 10 M de filas, filtro con
+poda en 0,5 s sin bajar nada)— o bien `clave`, el sobre `ORECOPY1` heredado, que se
+baja una vez y se lee como Parquet. `over()` y `sql()` no distinguen.
 """
 import io
 import json
@@ -112,10 +119,68 @@ def _resolver(vista):
     return r
 
 
-def _parquet_de(vista):
+def _fuente_de(vista):
+    """De qué se lee la vista, como fragmento SQL de DuckDB: `iceberg_scan(...)` si es
+    un dataset Iceberg (el puntero trae `metadata_location`), `read_parquet('…')` si
+    es un sobre heredado (trae `clave`, y se baja una vez)."""
+    r = _resolver(vista)
+    if r.get("metadata_location"):
+        return _iceberg(r["metadata_location"]), r
+    f, r = _parquet_de(vista, r)
+    r["_parquet"] = f
+    return "read_parquet('%s')" % f.replace("'", "''").replace("\\", "/"), r
+
+
+def _iceberg(metadata_location):
+    """`iceberg_scan` sobre la raíz de la tabla y la versión del puntero. A DuckDB no se
+    le da el fichero: con `allow_moved_paths` la raíz es lo que se le pasa (y con el
+    fichero resolvía `…metadata.json/metadata/snap…`), y así no lista nada. En el
+    bucket, la API XML de GCS por https con el token del pod como *bearer*."""
+    raiz, fichero = metadata_location.rsplit("/metadata/", 1)
+    version = fichero[: -len(".metadata.json")] if fichero.endswith(".metadata.json") else fichero
+    con = _duckdb()
+    # `iceberg` arrastra `avro` (y usa `json` e `icu`); con el autoinstalado apagado
+    # hay que cargarlas por su nombre, en orden. `httpfs` sólo para el bucket.
+    for e in LAGO:
+        _cargar(con, e)
+    if raiz.startswith("gs://"):
+        _cargar(con, "httpfs")
+        con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
+        raiz = "https://storage.googleapis.com/" + raiz[5:]
+    return "iceberg_scan('%s', version='%s', allow_moved_paths=true)" % (raiz.replace("'", "''").replace("\\", "/"), version.replace("'", "''"))
+
+
+EXTENSIONES = "/opt/ore/duckdb"
+LAGO = ("json", "icu", "avro", "iceberg")
+
+
+def _cargar(con, extension):
+    """`LOAD` de una extensión. En la imagen están preinstaladas en `/opt/ore/duckdb`
+    (el pod no tiene internet, y DuckDB tardaría 120 s en rendirse: medido); fuera,
+    si falta, se instala una vez."""
+    try:
+        con.execute("load %s" % extension)
+    except Exception:
+        if os.path.isdir(EXTENSIONES):
+            raise RuntimeError("la imagen no trae la extensión `%s` de DuckDB: hay que preinstalarla en %s" % (extension, EXTENSIONES))
+        con.execute("install %s" % extension)
+        con.execute("load %s" % extension)
+
+
+def _token_de_google():
+    """El token de la identidad del pod (Workload Identity), para leer el bucket."""
+    import google.auth
+    import google.auth.transport.requests
+
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/devstorage.read_only"])
+    creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
+
+
+def _parquet_de(vista, r=None):
     """La copia de la vista como fichero Parquet local, bajado UNA vez por sesión
     (la clave es el digest del artefacto: una clave nueva es otra copia)."""
-    r = _resolver(vista)
+    r = r or _resolver(vista)
     d = os.environ.get("ORE_COPIAS") or _copias_por_defecto()
     os.makedirs(d, exist_ok=True)
     f = os.path.join(d, r["clave"].replace("/", "_") + ".parquet")
@@ -161,10 +226,20 @@ def over(vista, como="pandas"):
     """La copia de `<paquete>.<vista>`: DataFrame con tipos de Arrow
     (`como="pandas"`, por defecto), `pyarrow.Table` (`como="arrow"`) o DataFrame
     de polars (`como="polars"`)."""
-    import pyarrow.parquet as pq
+    fuente, r = _fuente_de(vista)
+    if r.get("_parquet"):
+        # El sobre, ya en local: pyarrow lo lee más deprisa que nadie (13 M filas/s).
+        import pyarrow.parquet as pq
 
-    f, _ = _parquet_de(vista)
-    return _como(pq.read_table(f), como)
+        return _como(pq.read_table(r["_parquet"]), como)
+    return _como(_arrow(_duckdb().sql("select * from %s" % fuente)), como)
+
+
+def _arrow(relacion):
+    """Una relación de DuckDB → `pyarrow.Table` (el nombre del método cambió en 1.5)."""
+    if hasattr(relacion, "to_arrow_table"):
+        return relacion.to_arrow_table()
+    return relacion.fetch_arrow_table()
 
 
 _VISTAS_EN_SQL = re.compile(r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
@@ -180,6 +255,14 @@ def _duckdb():
         hilos = os.environ.get("ORE_HILOS")
         if hilos:
             _con.execute("set threads to %d" % int(hilos))
+        # Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
+        # (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
+        _con.execute("set autoinstall_known_extensions = false")
+        # Un instante es un instante: DuckDB enseña un TIMESTAMPTZ en la zona de la
+        # sesión, y el contrato (0032 §1) lo quiere en UTC. Aquí la sesión ES UTC.
+        _con.execute("set TimeZone = 'UTC'")
+        if os.path.isdir(EXTENSIONES):
+            _con.execute("set extension_directory = '%s'" % EXTENSIONES)
     return _con
 
 
@@ -191,15 +274,15 @@ def sql(texto, como="pandas"):
         raise ValueError("sql() quiere una consulta")
     con = _duckdb()
     for esquema, nombre in sorted(set(_VISTAS_EN_SQL.findall(texto))):
-        f, _ = _parquet_de("%s.%s" % (esquema, nombre))
+        fuente, _ = _fuente_de("%s.%s" % (esquema, nombre))
         con.execute('create schema if not exists "%s"' % esquema)
-        # Sin parámetros: un CREATE VIEW no se prepara. La ruta es nuestra (la
-        # clave del artefacto), sin comillas dentro; se escapa igual.
-        con.execute('create or replace view "%s"."%s" as select * from read_parquet(\'%s\')' % (esquema, nombre, f.replace("'", "''").replace("\\", "/")))
+        # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
+        # clave del artefacto o el puntero), ya escapada.
+        con.execute('create or replace view "%s"."%s" as select * from %s' % (esquema, nombre, fuente))
     r = con.execute(texto)
     if r.description is None:
         return None
-    return _como(r.fetch_arrow_table(), como)
+    return _como(_arrow(r), como)
 
 
 # ── El JSON de la consola (0032 §1) ───────────────────────────────────────
@@ -243,6 +326,15 @@ def tabla(valor, limite=200):
 ENTERO_EXACTO = 2 ** 53
 
 
+def _iso(v):
+    """ISO 8601 con `T`, segundos siempre y la fracción sólo si no es cero, sin
+    ceros de más: `12:00:00.5`, no `12:00:00.500000` — lo mismo que Node y Java."""
+    s = v.isoformat()
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
 def json_de(v, tipo=None):
     """Un valor de Arrow (ya en Python) → el JSON del contrato (0032 §1):
     entero → número si |x| ≤ 2⁵³, si no cadena · decimal → cadena siempre
@@ -277,10 +369,12 @@ def json_de(v, tipo=None):
         return format(v, "f")
     if isinstance(v, dt.datetime):
         if v.tzinfo is not None:
-            return v.astimezone(dt.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+            return _iso(v.astimezone(dt.timezone.utc).replace(tzinfo=None)) + "Z"
+        return _iso(v)
+    if isinstance(v, dt.date):
         return v.isoformat()
-    if isinstance(v, (dt.date, dt.time)):
-        return v.isoformat()
+    if isinstance(v, dt.time):
+        return _iso(v)
     if isinstance(v, (bytes, bytearray)):
         import base64
         return base64.b64encode(bytes(v)).decode("ascii")

@@ -626,11 +626,15 @@ impl Servidor {
         n: u64,
         cuerpo: &str,
     ) -> Respuesta {
-        let salida = match ore_core::parse::parse(cuerpo) {
+        // Se analiza para comprobar `tipo`, y se guarda **tal cual llegó**: la
+        // salida lleva `null` y dobles (0032 §1), y el `Json` del núcleo no los
+        // modela —pasarla por `de_node` los volvía las cadenas `"null"` y `"1.5"`
+        // en la consola—. Lo que el agente escribió es lo que la consola lee.
+        let leida = match ore_core::parse::parse(cuerpo) {
             Ok(v) => crate::rutas::de_node(&v),
             Err(_) => return Respuesta::error(400, "la salida no es JSON"),
         };
-        let tipo_ok = matches!(&salida, Json::Obj(m) if matches!(m.get("tipo"), Some(Json::Str(t)) if ["tabla", "texto", "error", "vacia"].contains(&t.as_str())));
+        let tipo_ok = matches!(&leida, Json::Obj(m) if matches!(m.get("tipo"), Some(Json::Str(t)) if ["tabla", "texto", "error", "vacia"].contains(&t.as_str())));
         if !tipo_ok {
             return Respuesta::error(422, "la salida lleva `tipo`: tabla, texto, error o vacia");
         }
@@ -642,7 +646,7 @@ impl Servidor {
         let Some(c) = p.celdas.get_mut(&n) else {
             return Respuesta::error(404, format!("el puesto no tiene una celda {n}"));
         };
-        c.salida = Some(salida);
+        c.salida = Some(Json::Crudo(cuerpo.trim().to_string()));
         drop(lista);
         self.puestos.campana.notify_all();
         Respuesta::ok(Json::obj([
@@ -802,7 +806,13 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     };
     let estado = campo("estado");
     let clave = campo("clave");
-    if !matches!(estado.as_str(), "copiada" | "al-dia") || clave.is_empty() {
+    // El puntero de un dataset (0031 §10): `metadata_location` es el `metadata.json`
+    // vigente de una tabla Iceberg, y el SDK lo lee por la raíz y la versión. Una
+    // copia heredada trae `clave` (el sobre ORECOPY1); las dos formas conviven.
+    let metadata_location = campo("metadata_location");
+    if !matches!(estado.as_str(), "copiada" | "al-dia")
+        || (clave.is_empty() && metadata_location.is_empty())
+    {
         return Respuesta::error(
             409,
             format!(
@@ -819,6 +829,8 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         ("vista", Json::s(vista)),
         ("estado", Json::s(estado)),
         ("clave", Json::s(clave)),
+        ("metadata_location", Json::s(metadata_location)),
+        ("snapshot", Json::s(campo("snapshot"))),
         ("plan", Json::s(campo("plan"))),
         ("filas", Json::s(campo("filas"))),
         (

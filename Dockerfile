@@ -259,6 +259,14 @@ FROM python:3.12-slim AS puesto-python
 RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
  && pip freeze > /entorno-1.txt \
  && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
+# ⭐ Las extensiones de DuckDB que leen el LAGO (0031 §10, medido en
+#   `medida-w3-lago.py`): `iceberg` (con `avro`, `httpfs`, `json`, `icu` detrás)
+#   PREINSTALADAS aquí, donde hay red, en /opt/ore/duckdb —de la versión exacta
+#   de DuckDB de este enlace—. El pod no sale a internet: sin esto, la primera
+#   celda que las pidiera se colgaría 120 s contra la NetworkPolicy. El SDK abre
+#   DuckDB con `extension_directory` ahí y `autoinstall_known_extensions=false`.
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_directory = '/opt/ore/duckdb'\"); [c.execute('install ' + e) for e in ('iceberg', 'avro', 'httpfs', 'json', 'icu')]; c.execute('load iceberg'); c.execute('load httpfs'); print('lago ·', duckdb.__version__, sorted(r[0] for r in c.execute('select extension_name from duckdb_extensions() where loaded').fetchall()))" \
+ && du -sh /opt/ore/duckdb >> /entorno-1.txt
 
 # El agente y el SDK (`puesto/python/`): lo unico nuestro en la imagen. `ore`
 # se importa desde la celda; el agente lo pone en el `sys.path` por estar al lado.
@@ -284,10 +292,19 @@ CMD ["python3", "/opt/ore/agente.py"]
 # ═══════════════════════════════════════════════════════════════════════════
 FROM node:24-slim AS puesto-node
 
+# ⛔ `node:24-slim` no trae `ca-certificates` (medido en `medida-w3-lago.py`):
+#   Node verifica TLS con su manojo propio, pero DuckDB (OpenSSL) no puede
+#   verificar a `storage.googleapis.com` y `iceberg_scan` por https falla con
+#   «Problem with the SSL CA cert». Se instala; es lo único de apt en la imagen.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/ore
 RUN npm install --no-audit --no-fund --omit=dev @duckdb/node-api@1.5.5-r.5 \
  && npm ls --depth=0 > /entorno-1.txt \
  && node -e "const d=require('@duckdb/node-api'); console.log('entorno 1 · node', process.version, '· duckdb', d.version())"
+# ⭐ Las extensiones de DuckDB del lago, preinstaladas (ver la etapa de Python).
+RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.DuckDBInstance.create();const c=await i.connect();await c.run(\"set extension_directory = '/opt/ore/duckdb'\");for(const e of ['iceberg','avro','httpfs','json','icu'])await c.run('install '+e);await c.run('load iceberg');await c.run('load httpfs');console.log('lago ·',d.version(),(await c.runAndReadAll('select extension_name from duckdb_extensions() where loaded')).getColumns()[0].sort().join(' '))})().catch(e=>{console.error(e);process.exit(1)})" \
+ && du -sh /opt/ore/duckdb >> /entorno-1.txt
 # El SDK al lado del agente (`./ore/index.mjs`, como en `puesto/node/`) y como
 # paquete `ore` para las celdas-módulo (un enlace en node_modules). ⛔ Medido en
 # victor el 2026-09-19: sólo en node_modules, el agente moría al arrancar con
@@ -326,6 +343,10 @@ RUN mkdir -p /opt/ore/lib /opt/ore/clases \
  && grep -v '^#' /opt/ore/src/jars.txt | while read -r g v; do n="${g##*/}-$v.jar"; \
       curl -fsSL -o "/opt/ore/lib/$n" "https://repo1.maven.org/maven2/$g/$v/$n" || exit 1; done \
  && echo "duckdb_jdbc ${DUCKDB_JDBC} · $(ls /opt/ore/lib | wc -l) jars" > /entorno-1.txt && java -version 2>> /entorno-1.txt
+# ⭐ Las extensiones de DuckDB del lago, preinstaladas (ver la etapa de Python):
+#   con el JDBC, que es el DuckDB de este enlace, como programa de un fichero
+#   (un fallo tumba la construcción; JShell se lo tragaría).
+RUN java -cp /opt/ore/lib/duckdb_jdbc.jar /opt/ore/src/preinstalar/Extensiones.java /opt/ore/duckdb  && du -sh /opt/ore/duckdb >> /entorno-1.txt
 RUN javac -Xlint:-options --release 21 -cp "/opt/ore/lib/*" -d /opt/ore/clases /opt/ore/src/ore/*.java \
  && java --add-opens=java.base/java.nio=ALL-UNNAMED -cp "/opt/ore/clases:/opt/ore/lib/*" ore.Agente --comprobar
 

@@ -562,7 +562,7 @@ fn valor_de_json(j: &Json) -> Valor {
         Json::Int(n) => Valor::Escalar(n.to_string()),
         Json::Bool(b) => Valor::Escalar(b.to_string()),
         Json::Arr(v) => Valor::Lista(v.iter().map(|x| valor_de_json(x).texto()).collect()),
-        Json::Obj(_) => Valor::Escalar(j.jcs()),
+        Json::Obj(_) | Json::Crudo(_) => Valor::Escalar(j.jcs()),
     }
 }
 
