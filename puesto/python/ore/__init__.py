@@ -29,6 +29,19 @@ bucket: se lee en sitio con DuckDB (`iceberg_scan` sobre la raíz y la versión,
 token del pod como *bearer*; medido en `medida-w3-lago.py`: 10 M de filas, filtro con
 poda en 0,5 s sin bajar nada)— o bien `clave`, el sobre `ORECOPY1` heredado, que se
 baja una vez y se lee como Parquet. `over()` y `sql()` no distinguen.
+
+**Escribir** (0031 §11, W3.6c): `write("p.t", datos)` deja un dataset —una tabla
+Iceberg en el lago, la `Table` en el árbol, el puntero— desde un DataFrame de pandas
+o polars o una tabla de Arrow. El código no toca el bucket: la tabla va por IPC a
+`ore-store` (el escritor de Rust, el mismo de la copia), que la lleva al físico del
+contrato (0032: `ns` → `µs`, zona → UTC; `uint64` y `null` se niegan con el nombre
+de la columna) y escribe los ficheros **con la credencial que el catálogo prestó**
+—acotada al prefijo de esa tabla—; el commit va al catálogo REST de Iceberg de
+`ore-serve` (`/v1/…`), que valida, escribe el `metadata.json` y mueve el puntero.
+`modo="sobrescribir"` (por defecto) o `"anexar"`. Idempotente: la misma tabla al
+mismo nombre y modo otra vez no deja otro snapshot (la clave de operación).
+Un 409 (alguien escribió mientras tanto) se reintenta sobre lo que hay; un 5xx
+se MIRA antes de reintentar: si el commit entró, entró.
 """
 import io
 import json
@@ -38,7 +51,7 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "persona", "puesto", "tabla", "json_de"]
+__all__ = ["over", "sql", "write", "persona", "puesto", "tabla", "json_de"]
 
 
 class Puesto:
@@ -54,13 +67,18 @@ class Puesto:
         # El token lo pone el agente (`agente.py`) y lo renueva; una celda no lo ve.
         self._cabeceras = {}
 
-    def pedir(self, metodo, ruta, cuerpo=None, plazo=30):
+    def pedir(self, metodo, ruta, cuerpo=None, plazo=30, cabeceras=None):
         datos = None if cuerpo is None else json.dumps(cuerpo).encode("utf-8")
         req = urllib.request.Request(self.servidor + ruta, data=datos, method=metodo)
         req.add_header("accept", "application/json")
         if datos is not None:
             req.add_header("content-type", "application/json")
         for k, v in self._cabeceras.items():
+            req.add_header(k, v)
+        # Desde qué puesto: el catálogo escribe en nombre de quien lo abrió.
+        if self.id:
+            req.add_header("x-ore-puesto", self.id)
+        for k, v in (cabeceras or {}).items():
             req.add_header(k, v)
         try:
             with urllib.request.urlopen(req, timeout=plazo) as r:
@@ -125,6 +143,12 @@ def _fuente_de(vista):
     es un sobre heredado (trae `clave`, y se baja una vez)."""
     r = _resolver(vista)
     if r.get("metadata_location"):
+        global _s3
+        if r["metadata_location"].startswith("s3://") and not _s3:
+            ns, t = vista.split(".")
+            c, l = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+            if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
+                _s3 = l["config"]
         return _iceberg(r["metadata_location"]), r
     f, r = _parquet_de(vista, r)
     r["_parquet"] = f
@@ -147,7 +171,25 @@ def _iceberg(metadata_location):
         _cargar(con, "httpfs")
         con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
         raiz = "https://storage.googleapis.com/" + raiz[5:]
+    elif raiz.startswith("s3://") and _s3:
+        # Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
+        # catálogo prestó al escribir, o la de la tabla que se pidió leer.
+        _cargar(con, "httpfs")
+        _secreto_s3(con, _s3)
     return "iceberg_scan('%s', version='%s', allow_moved_paths=true)" % (raiz.replace("'", "''").replace("\\", "/"), version.replace("'", "''"))
+
+
+_s3 = None
+
+
+def _secreto_s3(con, cfg):
+    ep = cfg.get("s3.endpoint", "")
+    ssl = "true" if ep.startswith("https://") else "false"
+    ep = ep.replace("https://", "").replace("http://", "").rstrip("/")
+    con.execute(
+        "create or replace secret ore_s3 (type s3, key_id '%s', secret '%s', endpoint '%s', url_style 'path', use_ssl %s, region '%s')"
+        % (cfg.get("s3.access-key-id", "").replace("'", "''"), cfg.get("s3.secret-access-key", "").replace("'", "''"), ep, ssl, cfg.get("s3.region", "auto"))
+    )
 
 
 EXTENSIONES = "/opt/ore/duckdb"
@@ -283,6 +325,185 @@ def sql(texto, como="pandas"):
     if r.description is None:
         return None
     return _como(_arrow(r), como)
+
+
+# ── Escribir (0031 §11) ────────────────────────────────────────────────────
+_DELEGAR = {"x-iceberg-access-delegation": "vended-credentials"}
+ICEBERG = {"int8": "long", "int16": "long", "int32": "long", "int64": "long", "uint8": "long", "uint16": "long", "uint32": "long",
+           "halffloat": "double", "float": "double", "double": "double", "bool": "boolean", "string": "string", "large_string": "string",
+           "string_view": "string", "date32[day]": "date", "date64[ms]": "date"}
+
+
+def _tipo_iceberg(columna, t):
+    """El tipo de Iceberg del esquema con el que la tabla se esboza (lo mismo que
+    `ore-store` hace al escribir, 0032): lo que el contrato no tiene se niega aquí,
+    con el nombre de la columna, antes de mandar nada."""
+    import pyarrow as pa
+
+    s = str(t)
+    if s in ICEBERG:
+        return ICEBERG[s]
+    if pa.types.is_decimal128(t):
+        return "decimal(%d, %d)" % (t.precision, t.scale)
+    if pa.types.is_time(t):
+        return "time"
+    if pa.types.is_timestamp(t):
+        return "timestamptz" if t.tz else "timestamp"
+    if pa.types.is_dictionary(t) and pa.types.is_string(t.value_type):
+        return "string"
+    if s == "uint64":
+        raise ValueError("write(): la columna `%s` es uint64, que no cabe en int64 sin mentir (0032); conviértela antes" % columna)
+    if s == "null":
+        raise ValueError("write(): la columna `%s` no tiene tipo (null): dale uno antes (0032)" % columna)
+    raise ValueError("write(): la columna `%s` es `%s`, que el contrato de tipos (0032) no tiene" % (columna, s))
+
+
+def _arrow_de(datos):
+    """Lo que se escribe, como `pyarrow.Table`: pandas, polars, Table o RecordBatch."""
+    import pyarrow as pa
+
+    if isinstance(datos, pa.Table):
+        return datos
+    if isinstance(datos, pa.RecordBatch):
+        return pa.Table.from_batches([datos])
+    if type(datos).__module__.startswith("polars") and hasattr(datos, "to_arrow"):
+        return datos.to_arrow()
+    try:
+        import pandas as pd
+
+        if isinstance(datos, pd.Series):
+            datos = datos.to_frame()
+        if isinstance(datos, pd.DataFrame):
+            return pa.Table.from_pandas(datos, preserve_index=False)
+    except ImportError:
+        pass
+    raise TypeError("write() quiere un DataFrame de pandas o polars, o una Table de Arrow, no %s" % type(datos).__name__)
+
+
+def _ipc(t):
+    import pyarrow as pa
+
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, t.schema) as w:
+        w.write_table(t)
+    return sink.getvalue().to_pybytes()
+
+
+def _ore_store(config, ubicacion):
+    """El escritor y su entorno: `ore-store-gcs` con el token prestado si la tabla
+    vive en `gs://`, `ore-store-r2` con las claves prestadas si en `s3://`."""
+    import shutil
+
+    env = dict(os.environ)
+    if ubicacion.startswith("gs://"):
+        nombre = "ore-store-gcs"
+        env["ORE_GCS_BUCKET"] = ubicacion[5:].split("/", 1)[0]
+        env["ORE_GCS_TOKEN"] = config.get("gcs.oauth2.token", "")
+        if not env["ORE_GCS_TOKEN"]:
+            raise RuntimeError("write(): el catálogo no prestó credencial para `%s`" % ubicacion)
+    elif ubicacion.startswith("s3://"):
+        nombre = "ore-store-r2"
+        env["ORE_R2_BUCKET"] = ubicacion[5:].split("/", 1)[0]
+        env["ORE_R2_S3_ENDPOINT"] = config.get("s3.endpoint", "")
+        env["ORE_R2_ACCESS_KEY_ID"] = config.get("s3.access-key-id", "")
+        env["ORE_R2_SECRET_ACCESS_KEY"] = config.get("s3.secret-access-key", "")
+        env["ORE_R2_REGION"] = config.get("s3.region", "auto")
+    else:
+        raise RuntimeError("write(): la tabla vive en `%s`, que no es un lago que este SDK sepa escribir" % ubicacion)
+    binario = shutil.which(nombre, path=os.environ.get("ORE_STORE_DIR") or None) or shutil.which(nombre)
+    if not binario:
+        raise RuntimeError("write(): no está `%s` en el PATH (la imagen del puesto lo lleva; fuera, ORE_STORE_DIR)" % nombre)
+    return binario, env
+
+
+def _escribir_ficheros(binario, env, peticion, ipc):
+    import subprocess
+
+    p = subprocess.run([binario, "escribir"], input=json.dumps(peticion).encode("utf-8") + b"\n" + ipc, capture_output=True, env=env)
+    if p.returncode != 0:
+        err = p.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError("write(): %s" % (err.replace("error: ", "", 1) or "el escritor falló"))
+    return json.loads(p.stdout.decode("utf-8"))
+
+
+def _mensaje(r):
+    e = (r or {}).get("error")
+    if isinstance(e, dict):
+        return e.get("message", str(e))
+    return str(e or r)
+
+
+def write(nombre, datos, modo="sobrescribir"):
+    """Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
+    Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""
+    import hashlib
+
+    if not isinstance(nombre, str) or nombre.count(".") != 1:
+        raise ValueError("write() quiere `<paquete>.<tabla>`, no %r" % (nombre,))
+    if modo not in ("sobrescribir", "anexar"):
+        raise ValueError("modo=%r: vale `sobrescribir` o `anexar`" % (modo,))
+    ns, t = nombre.split(".")
+    tabla_arrow = _arrow_de(datos)
+    if tabla_arrow.num_rows == 0:
+        raise ValueError("write(): la tabla no tiene filas")
+    esquema = {"type": "struct", "schema-id": 0, "fields": [
+        {"id": i + 1, "name": f.name, "type": _tipo_iceberg(f.name, f.type), "required": False} for i, f in enumerate(tabla_arrow.schema)]}
+    ipc = _ipc(tabla_arrow)
+    # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
+    # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de
+    # lo mismo), con esta semilla: la misma tabla al mismo nombre y modo es la
+    # misma escritura, y el catálogo no la repite.
+    semilla = "%s|%s" % (nombre, modo)
+    clave = None
+    dataset = "datasets/%s_%s" % (ns, t)
+
+    def cargar():
+        c, r = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+        if c == 200:
+            return r["metadata-location"], None, r.get("config", {}), r["metadata"]["location"]
+        if c == 404:
+            c, r = puesto.pedir("POST", "/v1/namespaces/%s/tables" % ns, {"name": t, "stage-create": True, "schema": esquema, "properties": {}}, cabeceras=_DELEGAR)
+            if c != 200:
+                raise RuntimeError("write(%s): %s" % (nombre, _mensaje(r)))
+            return None, r["metadata"], r.get("config", {}), r["metadata"]["location"]
+        raise RuntimeError("write(%s): ore-serve contestó %s: %s" % (nombre, c, _mensaje(r)))
+
+    global _s3
+    for intento in range(4):
+        base, esbozo, config, ubicacion = cargar()
+        if config.get("s3.access-key-id"):
+            _s3 = config
+        binario, env = _ore_store(config, ubicacion)
+        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla}
+        if base:
+            peticion["base"] = base
+        else:
+            peticion["esbozo"] = esbozo
+        escrito = _escribir_ficheros(binario, env, peticion, ipc)
+        clave = escrito.get("operacion") or clave
+        c, r = puesto.pedir("POST", "/v1/namespaces/%s/tables/%s" % (ns, t),
+                            {"identifier": {"namespace": [ns], "name": t}, "requirements": escrito["requirements"], "updates": escrito["updates"]}, plazo=120)
+        if c == 200:
+            snap = ((r or {}).get("metadata") or {}).get("current-snapshot-id")
+            # la misma operación ya estaba: el catálogo contesta con lo que hay
+            # (otro snapshot vigente que el que se preparó) y no deja nada
+            repetida = str(snap or "") != str(escrito.get("snapshot", ""))
+            return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(snap or ""), "metadata_location": (r or {}).get("metadata-location", ""),
+                    "operacion": clave, "repetida": repetida}
+        if c == 409:
+            # alguien escribió mientras tanto (o la tabla nació): otra vez sobre lo que hay
+            continue
+        if c >= 500:
+            # el commit pudo entrar: se MIRA antes de reintentar
+            c2, r2 = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t))
+            if c2 == 200:
+                md = r2["metadata"]
+                vigente = [s for s in md.get("snapshots", []) if s.get("snapshot-id") == md.get("current-snapshot-id")]
+                if vigente and vigente[0].get("summary", {}).get("ore.operacion") == clave:
+                    return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(md.get("current-snapshot-id")), "metadata_location": r2["metadata-location"], "operacion": clave, "repetida": False}
+            raise RuntimeError("write(%s): el catálogo contestó %s y el commit no está: %s" % (nombre, c, _mensaje(r)))
+        raise RuntimeError("write(%s): %s" % (nombre, _mensaje(r)))
+    raise RuntimeError("write(%s): cuatro veces alguien escribió antes; vuelve a intentarlo" % nombre)
 
 
 # ── El JSON de la consola (0032 §1) ───────────────────────────────────────

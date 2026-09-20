@@ -67,7 +67,10 @@
 //!   de idempotencia—, `propiedades` para una tabla que nace) y después **la
 //!   tabla Arrow por IPC**, tal como el SDK la mandó; se lleva al físico de
 //!   0032 (`carga::normalizar`), se escribe, y se devuelven los `requirements`
-//!   y `updates` que un catálogo aplica, con las cuentas;
+//!   y `updates` que un catálogo aplica, con las cuentas. La clave de operación
+//!   la trae la petición (`operacion`) o **sale del contenido**
+//!   (`operacion: "contenido"`, con `semilla`: la huella de los valores, no de
+//!   los bytes del IPC, que cambian entre dos lecturas de lo mismo);
 //! - **`aplicar`**: `{metadata_location?, dataset, requirements, updates}` —de
 //!   `escribir` o de un cliente de fuera— → se validan, se aplican y se
 //!   escribe el `metadata.json` siguiente (desde cero si `assert-create`).
@@ -124,7 +127,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     let n =
         ore_core::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     if verbo == "escribir" {
-        return escribir(&Lago::nuevo(cuenta), &n, lector);
+        return escribir(&Lago::nuevo(cuenta), primera, lector);
     }
     let mut texto = String::new();
     lector
@@ -384,14 +387,13 @@ fn sellar<'a>(
 /// catálogo aplica —`ore-store aplicar` detrás de `ore datasets --commit`, o
 /// cualquier catálogo REST— y las cuentas. `operacion` es la clave de
 /// idempotencia: va al resumen del snapshot y el catálogo la coteja.
-fn escribir(
-    lago: &Lago,
-    n: &ore_core::parse::Node,
-    lector: impl std::io::Read,
-) -> Result<String, String> {
+fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<String, String> {
+    // Con serde: el `esbozo` es un metadata.json entero, con `null` dentro.
+    let n: serde_json::Value = serde_json::from_str(peticion)
+        .map_err(|e| format!("la petición de `escribir` no es JSON: {e}"))?;
     let campo = |k: &str| {
         n.get(k)
-            .and_then(|(_, v)| v.as_str())
+            .and_then(|v| v.as_str())
             .filter(|c| !c.is_empty())
             .map(String::from)
     };
@@ -403,26 +405,53 @@ fn escribir(
         Some("anexar") => Operacion::Anexar,
         Some(otro) => return Err(format!("`modo` es `sobrescribir` o `anexar`, no `{otro}`")),
     };
-    let clave = campo("operacion");
+    let semilla = campo("semilla").unwrap_or_default();
+    let clave_pedida = campo("operacion");
     let propiedades: HashMap<String, String> = n
         .get("propiedades")
-        .map(|(_, p)| {
-            p.entries()
-                .iter()
-                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+        .and_then(|p| p.as_object())
+        .map(|p| {
+            p.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect()
         })
         .unwrap_or_default();
 
-    // La tabla Arrow, lote a lote, al físico del contrato.
-    let flujo = arrow_ipc::reader::StreamReader::try_new(lector, None)
-        .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
+    // La tabla Arrow, lote a lote, al físico del contrato: por IPC (lo que
+    // pyarrow y Arrow Java escriben) o como Parquet (`formato: parquet`: lo que
+    // DuckDB escribe desde Node, que no lleva Arrow).
     let mut lotes = Vec::new();
-    for lote in flujo {
-        let lote = lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
-        if lote.num_rows() > 0 {
-            lotes.push(carga::normalizar(&lote)?);
+    match campo("formato").as_deref() {
+        None | Some("ipc") => {
+            let flujo = arrow_ipc::reader::StreamReader::try_new(lector, None)
+                .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
+            for lote in flujo {
+                let lote = lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
+                if lote.num_rows() > 0 {
+                    lotes.push(carga::normalizar(&lote)?);
+                }
+            }
         }
+        Some("parquet") => {
+            let mut bytes = Vec::new();
+            let mut lector = lector;
+            lector
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("no se pudo leer el Parquet: {e}"))?;
+            let b = bytes::Bytes::from(bytes);
+            let flujo = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(b)
+                .map_err(|e| format!("lo que sigue a la petición no es un Parquet legible: {e}"))?
+                .with_batch_size(1 << 16)
+                .build()
+                .map_err(|e| format!("el Parquet no se pudo abrir: {e}"))?;
+            for lote in flujo {
+                let lote = lote.map_err(|e| format!("un lote del Parquet no se pudo leer: {e}"))?;
+                if lote.num_rows() > 0 {
+                    lotes.push(carga::normalizar(&lote)?);
+                }
+            }
+        }
+        Some(otro) => return Err(format!("`formato` es `ipc` o `parquet`, no `{otro}`")),
     }
     let Some(primero) = lotes.first() else {
         return Err("el flujo IPC no trae ninguna fila: nada que escribir".into());
@@ -431,6 +460,21 @@ fn escribir(
     if columnas.is_empty() {
         return Err("la tabla no tiene columnas: nada que escribir".into());
     }
+    // La clave de operación: la de la petición, o la del contenido.
+    let clave = match clave_pedida.as_deref() {
+        Some("contenido") => {
+            let huella = carga::huella(&lotes);
+            Some(format!("{:.32}", {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(semilla.as_bytes());
+                h.update(b"|");
+                h.update(huella.as_bytes());
+                h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+            }))
+        }
+        otra => otra.map(String::from),
+    };
     for (i, l) in lotes.iter().enumerate().skip(1) {
         if lago::columnas_de(l) != columnas {
             return Err(format!(
@@ -443,15 +487,37 @@ fn escribir(
         Some(b) => Some(lago.abrir(&b, &dataset)?),
         None => None,
     };
+    // Una tabla que nace puede venir ya esbozada por el catálogo
+    // (`stage-create`: uuid, ubicación, esquema con sus ids): se escribe sobre
+    // ESE esbozo, y el commit con `assert-create` la hace nacer tal cual.
+    let esbozo = match n.get("esbozo") {
+        Some(e) if e.is_object() => {
+            let meta: iceberg::spec::TableMetadata = serde_json::from_value(e.clone())
+                .map_err(|e| format!("`esbozo` no es un metadata.json de Iceberg: {e}"))?;
+            Some(lago.esbozada(meta, &dataset)?)
+        }
+        _ => None,
+    };
+    let base_esquema = previa.as_ref().or(esbozo.as_ref());
+    // Un decimal más estrecho que el de la tabla (pandas infiere `decimal(3, 2)`
+    // de `4.00` donde la tabla tiene `decimal(10, 2)`) se ensancha a la misma
+    // escala: no es otro tipo —no pierde nada— y no merece otro id de columna.
+    let lotes = match base_esquema.map(|t| t.metadata().current_schema().clone()) {
+        Some(esquema) => lotes
+            .into_iter()
+            .map(|l| carga::ensanchar(&l, &esquema))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => lotes,
+    };
+    let columnas = lago::columnas_de(&lotes[0]);
     let deseado = lago::esquema_deseado(
         &columnas,
-        previa
-            .as_ref()
-            .map(|t| t.metadata().current_schema().as_ref()),
+        base_esquema.map(|t| t.metadata().current_schema().as_ref()),
     )?;
-    let tabla = match &previa {
-        Some(t) => t.clone(),
-        None => {
+    let tabla = match (&previa, esbozo) {
+        (Some(t), _) => t.clone(),
+        (None, Some(t)) => t,
+        (None, None) => {
             let mut props = propiedades;
             props
                 .entry(lago::PROP_DATASET.into())
@@ -1539,9 +1605,9 @@ mod tests {
         // ① nace: sin base, la petición trae la clave de operación y propiedades
         let e1 = escribir(
             &lago,
-            &nodo(&format!(
+            &format!(
                 "{{\"dataset\":\"{ds}\",\"modo\":\"sobrescribir\",\"operacion\":\"op-1\",\"propiedades\":{{\"history.expire.max-snapshot-age-ms\":\"0\"}}}}"
-            )),
+            ),
             &tabla_ipc(0, 3, false)[..],
         )
         .expect("escribe");
@@ -1644,7 +1710,7 @@ mod tests {
         // ② anexar sobre la base, con otra clave
         let e2 = escribir(
             &lago,
-            &nodo(&format!("{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"base\":\"{ml1}\",\"operacion\":\"op-2\"}}")),
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"base\":\"{ml1}\",\"operacion\":\"op-2\"}}"),
             &tabla_ipc(3, 2, false)[..],
         )
         .expect("anexa");
@@ -1668,9 +1734,7 @@ mod tests {
         // ③ sobrescribir con una columna más: el esquema cambia dentro del commit
         let e3 = escribir(
             &lago,
-            &nodo(&format!(
-                "{{\"dataset\":\"{ds}\",\"base\":\"{ml2}\",\"operacion\":\"op-3\"}}"
-            )),
+            &format!("{{\"dataset\":\"{ds}\",\"base\":\"{ml2}\",\"operacion\":\"op-3\"}}"),
             &tabla_ipc(10, 4, true)[..],
         )
         .expect("sobrescribe");
@@ -1710,7 +1774,32 @@ mod tests {
         assert_eq!(campo(&r, "expirados"), "2", "{r}");
         assert_eq!(campo(&r, "edad_ms"), "0");
 
-        // ⑤ lo que 0032 no tiene se niega con el nombre de la columna
+        // ⑤ esbozada por el catálogo (`stage-create`) y escrita como Parquet:
+        // nace con el uuid del esbozo y `assert-create`
+        let st = esbozar(&lago, &serde_json::json!({"dataset": "datasets/ventas_pq", "peticion": {"name": "pq", "schema": {"type": "struct", "schema-id": 0, "fields": [{"id": 1, "name": "id", "type": "long", "required": false}, {"id": 2, "name": "nombre", "type": "string", "required": false}]}}}).to_string()).unwrap();
+        let stj: serde_json::Value = serde_json::from_str(&st).unwrap();
+        let mut pq = Vec::new();
+        {
+            use arrow_array::{Int32Array, StringArray};
+            let esquema = Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("id", arrow_schema::DataType::Int32, true),
+                arrow_schema::Field::new("nombre", arrow_schema::DataType::Utf8, true),
+            ]));
+            let lote = arrow_array::RecordBatch::try_new(esquema.clone(), vec![Arc::new(Int32Array::from_iter_values([1, 2])), Arc::new(StringArray::from_iter_values(["a", "b"]))]).unwrap();
+            let mut w = parquet::arrow::ArrowWriter::try_new(&mut pq, esquema, None).unwrap();
+            w.write(&lote).unwrap();
+            w.close().unwrap();
+        }
+        let e5 = escribir(&lago, &serde_json::json!({"dataset": "datasets/ventas_pq", "formato": "parquet", "operacion": "op-pq", "esbozo": stj["metadata"]}).to_string(), &pq[..]).expect("escribe parquet sobre el esbozo");
+        let j5: serde_json::Value = serde_json::from_str(&e5).unwrap();
+        assert_eq!(j5["requirements"][0]["type"], "assert-create");
+        assert_eq!(j5["updates"][0]["uuid"], stj["uuid"], "el uuid del esbozo");
+        assert_eq!(j5["columnas"]["id"], "long", "int32 del Parquet → long");
+        let a5 = aplicar_lo_escrito(&lago, &e5, "datasets/ventas_pq", None);
+        assert_eq!(campo(&a5, "uuid"), stj["uuid"].as_str().unwrap());
+        assert_eq!(campo(&a5, "filas"), "2");
+
+        // ⑥ lo que 0032 no tiene se niega con el nombre de la columna
         let mut bytes = Vec::new();
         {
             use arrow_array::UInt64Array;
@@ -1730,7 +1819,7 @@ mod tests {
         }
         let e = escribir(
             &lago,
-            &nodo(&format!("{{\"dataset\":\"{ds}\"}}")),
+            &format!("{{\"dataset\":\"{ds}\"}}"),
             &bytes[..],
         )
         .unwrap_err();

@@ -32,6 +32,14 @@
 #   9  Java en jvm (W3.4)              POST /puestos {java} → puesto-ana-jvm con puesto-jvm:1 · el
 #                                      agente de la JVM (JShell en proceso) · varios snippets por celda
 #                                      · una clase con main · saludo(persona()) · over() · sql
+#  10  write() (W3.6c, 0031 §11)      la celda escribe `hr.lago` como `hr.salida`: la tabla va por
+#                                      IPC a `ore-store-r2` (el S3 de mentira, con la credencial que
+#                                      el catálogo prestó), el commit por `/v1/…`, y `over("hr.salida")`
+#                                      devuelve EL MISMO JSON que hr.lago (los tipos sobreviven la
+#                                      vuelta) · la misma escritura otra vez: `repetida`, un snapshot ·
+#                                      `anexar` un DataFrame → 5 · a una View → error · uint64 → error
+#                                      con la columna; y en 8 y 9, Node y Java escriben lo suyo y leen
+#                                      lo de los demás
 #   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
 #                                      digest capa-<12 hex> · POST /puestos (bea) → 409 y el Job de
 #                                      la capa en la cola con el digest · POST /entorno → 202 la
@@ -55,7 +63,9 @@ falla() {
   [ -s "$TMP/agente.txt" ] && { echo "── lo que dijo el agente ──" >&2; tail -20 "$TMP/agente.txt" >&2; }
   limpiar; exit 1
 }
+S3_PID=""
 limpiar() {
+  [ -n "$S3_PID" ] && kill "$S3_PID" 2>/dev/null
   [ -n "$AGENTE" ] && kill "$AGENTE" 2>/dev/null
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
   [ -n "$SRV2" ] && kill "$SRV2" 2>/dev/null
@@ -92,6 +102,12 @@ kind: OntologyConfig
 metadata: { name: demo, version: 0.1.0 }
 datasources:
   - { name: erp, type: jsonl, connectionEnv: ERP_URL }
+Y
+cat > "$A/packages/hr/package.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: hr, version: 1.0.0, status: active, domain: people }
+spec: { owner: team:hr }
 Y
 cat > "$A/packages/hr/tables/empleados_t.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha8
@@ -214,6 +230,19 @@ en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
 COLA_URL="file://$(cd "$COLA" && pwd | sed 's#^/\([a-zA-Z]\)/#\1:/#')"
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) COLA_URL="file:///$(cd "$COLA" && pwd -W)";; esac
 
+# ── el lago para escribir (W3.6c): el S3 de mentira, y ore-serve como catálogo ──
+# `write()` deja los ficheros ahí con la credencial que `ore-serve` presta (la de
+# siempre: en local no hay acotado) y el commit va por `/v1/…`; el SDK encuentra
+# `ore-store-r2` por ORE_STORE_DIR.
+"$PY" "$RAIZ/pruebas-de-fuego/de-mentira.py" s3 0 > "$TMP/s3.log" 2>&1 & S3_PID=$!
+for _ in $(seq 1 50); do grep -q listo "$TMP/s3.log" 2>/dev/null && break; sleep 0.2; done
+S3_PUERTO=$(awk '{print $2}' "$TMP/s3.log")
+[ -n "$S3_PUERTO" ] || falla "el S3 de mentira no arrancó"
+export ORE_STORE=r2 ORE_R2_S3_ENDPOINT="http://127.0.0.1:$S3_PUERTO" ORE_R2_BUCKET=copia \
+       ORE_R2_ACCESS_KEY_ID=de ORE_R2_SECRET_ACCESS_KEY=mentira LAGO_URL="s3://copia" ORE_RETENCION=7d
+export ORE_STORE_DIR="$(dirname "$ORE")"
+export PATH="$ORE_STORE_DIR:$PATH"   # `ore datasets` corre `ore-store-r2` por el PATH
+
 # ── el servidor (y otro sin cola) ──────────────────────────────────────────
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$A" --ore "$ORE" --bind "127.0.0.1:$PUERTO" --cola "$COLA_URL" \
   --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque.txt" 2>&1 &
@@ -299,6 +328,31 @@ celda 'sql(\"select sum(1) as s from hr.espanoles\")' && tiene "d['salida']['tip
 [ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"java"}')" = "422" ] && grep -q 'abre uno `jvm`' "$TMP/r.json" || falla "7 · java en un puesto python no dio 422: $(cuerpo)"
 [ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"rust"}')" = "422" ] || falla "7 · rust no dio 422: $(cuerpo)"
 dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vistas · vista inexistente → LookupError · sin copia → RuntimeError · sql roto → error · sql() desde python · java en un puesto python 422 (abre uno jvm) · rust 422"
+
+# ── 10 · write() (W3.6c, 0031 §11): la celda escribe un dataset, y los tres lo leen ──
+if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE_DIR/ore-store-r2.exe" ]; then
+  celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); (e[\"filas\"], e[\"repetida\"], e[\"snapshot\"] != \"\")' && tiene "d['salida']['texto']=='(3, False, True)'" || falla "10 · write(hr.salida): $(cuerpo)"
+  [ -f "$A/packages/hr/tables/salida.yaml" ] && grep -q "datasource: lago" "$A/packages/hr/tables/salida.yaml" && grep -q "cuando: { type: DateTimeTz }" "$A/packages/hr/tables/salida.yaml" || falla "10 · la Table del lago no nació tipada en el árbol: $(cat "$A/packages/hr/tables/salida.yaml" 2>/dev/null)"
+  [ -f "$A/datasets/hr_salida.json" ] || falla "10 · el puntero no está en el árbol"
+  grep -q "name: lago" "$A/ontology.config.yaml" || falla "10 · el datasource lago no se declaró"
+  # lo escrito, leído: EL MISMO JSON que hr.lago (los cuatro tipos sobreviven la vuelta)
+  celda 'over(\"hr.salida\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "10 · over(hr.salida) no es el mismo JSON que hr.lago: $(cuerpo)"
+  # la misma escritura otra vez: repetida, y un solo snapshot
+  celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); e[\"repetida\"]' && tiene "d['salida']['texto']=='True'" || falla "10 · la misma escritura tenía que ser repetida: $(cuerpo)"
+  [ "$(pide GET /datasets/hr/salida "$ANA")" = "200" ] && tiene "len(d['snapshots'])==1 and d['escrito_por']=='persona:ana' and d['snapshots'][0]['idempotencia']!=''" || falla "10 · la ficha: $(cuerpo)"
+  # anexar un DataFrame de pandas: 5 filas, y el esquema se respeta
+  celda 'import pandas as pd, datetime as dt, decimal; e = write(\"hr.salida\", pd.DataFrame({\"n\": [4, 5], \"letra\": [\"d\", \"e\"], \"cuando\": [dt.datetime(2024, 6, 2, tzinfo=dt.timezone.utc)] * 2, \"importe\": [decimal.Decimal(\"4.00\"), decimal.Decimal(\"5.00\")]}), modo=\"anexar\"); e[\"filas\"]' && tiene "d['salida']['texto']=='5'" || falla "10 · anexar: $(cuerpo)"
+  celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida\")' && tiene "d['salida']['filas']==[[5,'12.75']]" || falla "10 · sql sobre lo escrito: $(cuerpo)"
+  # lo que no se escribe: una View, y una columna que 0032 no tiene
+  celda 'write(\"hr.espanoles\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "10 · escribir una View: $(cuerpo)"
+  celda 'import pyarrow as pa; write(\"hr.mala\", pa.table({\"grande\": pa.array([1], pa.uint64())}))' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'grande' in d['salida']['mensaje']" || falla "10 · uint64: $(cuerpo)"
+  [ ! -f "$A/datasets/hr_mala.json" ] || falla "10 · lo negado dejó puntero"
+  dice "10 · write(hr.salida) desde la celda: la tabla por IPC a ore-store-r2 con la credencial prestada, el commit por /v1, la Table del lago nace tipada y over() devuelve el mismo JSON que hr.lago · repetida sin snapshot · anexar un DataFrame → 5 y sql lo suma · una View → error · uint64 → ValueError con la columna"
+  ESCRITO_OK=si
+else
+  ESCRITO_OK=no
+  dice "10 · (sin el lago o sin ore-store-r2: write() no se prueba aquí)"
+fi
 
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"

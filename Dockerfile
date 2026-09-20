@@ -272,6 +272,11 @@ RUN python -c "import duckdb; c = duckdb.connect(); c.execute(\"set extension_di
 # se importa desde la celda; el agente lo pone en el `sys.path` por estar al lado.
 COPY puesto/python/agente.py /opt/ore/agente.py
 COPY puesto/python/ore       /opt/ore/ore
+# ⭐ El escritor del lago (W3.6c, 0031 §11 ②): `write()` manda la tabla por IPC a
+#   `ore-store-gcs`, que escribe los ficheros con la credencial que el catálogo
+#   prestó —acotada a la tabla— y devuelve el commit. Es el mismo binario de la
+#   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
+COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
 
 USER 65532:65532
@@ -312,6 +317,7 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 # de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
 COPY puesto/node/ore        /opt/ore/ore
+COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN ln -s ../ore /opt/ore/node_modules/ore \
  && ORE_CELDAS=/tmp/comprobar node /opt/ore/agente.mjs --comprobar
 
@@ -337,6 +343,7 @@ FROM eclipse-temurin:21-jdk-noble AS puesto-jvm
 
 ARG DUCKDB_JDBC=1.5.5.1
 COPY puesto/jvm /opt/ore/src
+COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN mkdir -p /opt/ore/lib /opt/ore/clases \
  && curl -fsSL -o /opt/ore/lib/duckdb_jdbc.jar \
       "https://repo1.maven.org/maven2/org/duckdb/duckdb_jdbc/${DUCKDB_JDBC}/duckdb_jdbc-${DUCKDB_JDBC}.jar" \

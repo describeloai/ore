@@ -574,6 +574,13 @@ impl Lago {
             .map_err(err)
     }
 
+    /// **Una tabla esbozada por el catálogo**, en memoria, sin `metadata_location`:
+    /// lo que `stage-create` devolvió y sobre lo que un escritor deja sus
+    /// ficheros antes del commit con `assert-create`.
+    pub fn esbozada(&self, meta: TableMetadata, dataset: &str) -> Result<Table, String> {
+        self.tabla(meta, None, dataset).map_err(err)
+    }
+
     /// **La tabla que nacería de estos cambios, en memoria** (`stage-create`).
     pub fn esbozar(&self, dataset: &str, cambios: Vec<TableUpdate>) -> Result<Table, String> {
         let meta = Self::desde_cero(self, dataset, cambios)?;

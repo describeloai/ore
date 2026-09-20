@@ -58,6 +58,9 @@ use crate::rutas::{Servidor, token};
 
 /// La cabecera con la que un cliente pide la credencial prestada.
 const DELEGACION: &str = "x-iceberg-access-delegation";
+/// La cabecera con la que el agente de un puesto dice desde qué puesto escribe:
+/// el sujeto pasa a ser la persona que lo abrió (y la rama, la del puesto).
+const PUESTO: &str = "x-ore-puesto";
 
 /// Un error con la forma de la spec REST.
 fn error(codigo: u16, tipo: &str, mensaje: impl Into<String>) -> Respuesta {
@@ -151,6 +154,25 @@ impl Servidor {
             .cabeceras
             .get(DELEGACION)
             .is_some_and(|v| v.contains("vended-credentials"));
+        // Desde un puesto: quien escribe es la persona, no el agente.
+        let (sujeto, rama) = match p.cabeceras.get(PUESTO).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            Some(id) => match self.persona_del_puesto(sujeto, id) {
+                Ok((persona, rama_del_puesto)) => (
+                    Identidad {
+                        persona,
+                        agente: Some(sujeto.persona.clone()),
+                        correo: None,
+                        nombre: None,
+                        tipo: None,
+                    },
+                    rama_del_puesto.or_else(|| rama.map(String::from)),
+                ),
+                Err(r) => return con_forma(r, false),
+            },
+            None => (sujeto.clone(), rama.map(String::from)),
+        };
+        let sujeto = &sujeto;
+        let rama = rama.as_deref();
         match (p.metodo.as_str(), seg) {
             ("GET", ["config"]) => Respuesta::ok(Json::obj([
                 ("defaults", Json::obj([])),

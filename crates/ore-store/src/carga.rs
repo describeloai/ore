@@ -166,6 +166,90 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
         .map_err(|e| format!("el lote no cuadra tras normalizar: {e}"))
 }
 
+/// **Un lote normalizado, a los tipos que la tabla ya tiene donde no se pierde
+/// nada**: un `decimal(p, s)` a un `decimal(P, s)` con `P ≥ p`. Lo demás ya lo
+/// fijó [`normalizar`] (un solo físico por escalar); lo que sí cambia de tipo
+/// (`string` → `long`) es otra columna, con otro id, y eso lo decide el esquema.
+pub fn ensanchar(lote: &RecordBatch, tabla: &iceberg::spec::Schema) -> Result<RecordBatch, String> {
+    let mut campos = Vec::with_capacity(lote.num_columns());
+    let mut columnas = Vec::with_capacity(lote.num_columns());
+    let mut cambio = false;
+    for (campo, col) in lote.schema().fields().iter().zip(lote.columns()) {
+        let destino = match (campo.data_type(), tabla.field_by_name(campo.name()).map(|f| f.field_type.as_ref())) {
+            (
+                DataType::Decimal128(p, e),
+                Some(iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Decimal { precision, scale })),
+            ) if *scale as i8 == *e && *precision as u8 > *p => Some(DataType::Decimal128(*precision as u8, *e)),
+            _ => None,
+        };
+        match destino {
+            Some(d) => {
+                columnas.push(arrow_cast::cast(col, &d).map_err(|e| format!("la columna `{}` no se pudo ensanchar a `{d}`: {e}", campo.name()))?);
+                campos.push(Field::new(campo.name(), d, true));
+                cambio = true;
+            }
+            None => {
+                columnas.push(col.clone());
+                campos.push(campo.as_ref().clone());
+            }
+        }
+    }
+    if !cambio {
+        return Ok(lote.clone());
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(campos)), columnas)
+        .map_err(|e| format!("el lote no cuadra tras ensanchar: {e}"))
+}
+
+/// **La huella del contenido de unos lotes ya normalizados**: los valores, en
+/// orden, columna a columna, por sus bytes de verdad —no los del IPC, que llevan
+/// relleno y bits sin especificar y cambian entre dos lecturas de lo mismo—.
+/// Es lo que hace a la clave de operación (0031 §11 ④) **de la tabla** y no de
+/// cómo llegó: la misma tabla dos veces es la misma escritura.
+pub fn huella(lotes: &[RecordBatch]) -> String {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{
+        Date32Type, Decimal128Type, Float64Type, Int64Type, Time64MicrosecondType,
+        TimestampMicrosecondType,
+    };
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    if let Some(primero) = lotes.first() {
+        for f in primero.schema().fields() {
+            h.update(f.name().as_bytes());
+            h.update(b"\0");
+            h.update(f.data_type().to_string().as_bytes());
+            h.update(b"\0");
+        }
+    }
+    for lote in lotes {
+        for col in lote.columns() {
+            for i in 0..col.len() {
+                if col.is_null(i) {
+                    h.update(b"\x01");
+                    continue;
+                }
+                h.update(b"\x02");
+                match col.data_type() {
+                    DataType::Utf8 => h.update(col.as_string::<i32>().value(i).as_bytes()),
+                    DataType::Int64 => h.update(col.as_primitive::<Int64Type>().value(i).to_le_bytes()),
+                    DataType::Float64 => h.update(col.as_primitive::<Float64Type>().value(i).to_bits().to_le_bytes()),
+                    DataType::Boolean => h.update([col.as_boolean().value(i) as u8]),
+                    DataType::Decimal128(_, _) => h.update(col.as_primitive::<Decimal128Type>().value(i).to_le_bytes()),
+                    DataType::Date32 => h.update(col.as_primitive::<Date32Type>().value(i).to_le_bytes()),
+                    DataType::Time64(TimeUnit::Microsecond) => h.update(col.as_primitive::<Time64MicrosecondType>().value(i).to_le_bytes()),
+                    DataType::Timestamp(TimeUnit::Microsecond, _) => h.update(col.as_primitive::<TimestampMicrosecondType>().value(i).to_le_bytes()),
+                    // tras `normalizar` no queda otro tipo; si quedara, su texto
+                    otro => h.update(format!("{otro}").as_bytes()),
+                }
+                h.update(b"\0");
+            }
+        }
+    }
+    let d = h.finalize();
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Las filas ya leídas: cada una es columna → valor **en texto**, que es como
 /// las entrega el protocolo del driver. Una columna ausente en una fila es un
 /// hueco, y aquí se escribe como nulo.

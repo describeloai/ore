@@ -677,6 +677,27 @@ impl Servidor {
         })
     }
 
+    /// **Quién escribe desde un puesto** (0031 §11): el agente pide en nombre
+    /// de la persona que abrió el puesto, y en la rama del puesto. Sólo el
+    /// agente que lo reclamó; sin tocar su estado.
+    pub(crate) fn persona_del_puesto(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+    ) -> Result<(String, Option<String>), Respuesta> {
+        if !es_agente(sujeto) {
+            return Err(Respuesta::error(403, "`x-ore-puesto` es del agente del puesto"));
+        }
+        let lista = self.puestos.lista.lock().unwrap();
+        let Some(p) = lista.get(id) else {
+            return Err(Respuesta::error(410, format!("no hay ningún puesto `{id}`")));
+        };
+        if p.agente.as_deref() != Some(sujeto.persona.as_str()) {
+            return Err(Respuesta::error(403, "ese puesto no es de este agente"));
+        }
+        Ok((p.persona.clone(), p.rama.clone()))
+    }
+
     // ── la cola ─────────────────────────────────────────────────────────────
 
     fn encolar_puesto(
