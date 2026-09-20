@@ -492,6 +492,22 @@ puesto con `objectCreator` sobre `datasets/` es del aprovisionador— y `confirm
 `ore-serve` con las columnas de Arrow según 0032); la ficha en la consola (`GET /datasets/{ns}/{n}`
 ya la sirve); la retención declarada por dataset.
 
+## Lo mirado para W3.6c · escribir (2026-09-20)
+
+[`w3-escribir-estado-del-arte.md`](../investigacion/w3-escribir-estado-del-arte.md): el catálogo
+REST de Iceberg (`requirements` + `updates`, `CommitStateUnknown`, `Idempotency-Key`,
+credenciales prestadas), Delta 4.1 (*catalog-managed*), Foundry (transacciones), Nessie, lakeFS,
+DuckLake, Polaris y BigLake, y los escritores por lenguaje (Java, PyIceberg, iceberg-rust,
+DuckDB, iceberg-js, Icebird). **Valida** «el árbol es el catálogo y el swap es el commit»
+(`confirmar {metadata_location, esperado}` es un `updateTable` con `assert-ref-snapshot-id`).
+**Corrige** tres cosas para la spec del verbo: el 5xx/*timeout* es «mira antes de reintentar»;
+una clave de operación para que la celda reejecutada no deje dos snapshots; la retención como
+propiedades `history.expire.*` de la tabla y no como variable del CronJob. **Trae** dos ideas:
+`ore-serve` hablando el catálogo REST de Iceberg (así PyIceberg, Java y DuckDB escriben sin SDK
+nuestro, y Node —sin escritor de producción— manda Arrow al agente y escribe `ore-store`), y el
+token acotado a la tabla (*Credential Access Boundary* de GCS) en vez de una cuenta de puesto del
+aprovisionador. Lo que hay que medir está en su §4; la spec del verbo (un §11) viene después.
+
 ## Lo que se aparca
 
 - El motor distribuido para lo masivo (Ray/Spark sobre la cola): el contrato (Parquet en el
