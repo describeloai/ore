@@ -439,7 +439,7 @@ if [ "$ESTADO" = "retirada" ]; then
     ya "la copia gs://$COPIA"
   fi
   # las cuentas
-  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE"; do
+  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE"; do
     if "$GCLOUD" iam service-accounts describe "$c@$PROYECTO.iam.gserviceaccount.com" --format="value(email)" >/dev/null 2>&1; then
       correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada"
     else
@@ -525,11 +525,19 @@ cuenta "ore-forja-$NOMBRE"
 # ⭐ La del informador (0026 E2): solo para que su init traiga el agente del
 #   almacen. Lee dos secretos y nada mas.
 cuenta "ore-informador-$NOMBRE"
+# ⭐ Y la del puesto (0031 §11 ③, medido en «Lo medido fuera del verbo» §4): la
+#   sesion de una persona. SOLO LEE el bucket —la capa, las copias, el lago— y
+#   los dos secretos del agente que su init trae. Lo que escribe (`write()`) lo
+#   escribe con el token que el catalogo le presta, acotado a SU tabla: el pod
+#   no tiene con que escribir nada mas. Hasta hoy corria como `driver`
+#   (`objectAdmin`), y el prestamo era menos de lo que el pod ya tenia.
+cuenta "ore-puesto-$NOMBRE"
 enlace "ore-cofre-$NOMBRE" cofre
 enlace "ore-serve-$NOMBRE" ore-serve
 enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
 enlace "ore-informador-$NOMBRE" informador
+enlace "ore-puesto-$NOMBRE" puesto
 
 # ── ⭐⭐ LA COPIA: UN BUCKET POR INQUILINO, Y DOS PAPELES (0027 P1 I2) ─────
 #
@@ -543,8 +551,11 @@ enlace "ore-informador-$NOMBRE" informador
 #     cifra su cofre. El agente de servicio de Cloud Storage tiene que poder
 #     usarla, igual que el de Secret Manager arriba;
 #   · `ore-driver-<n>` ESCRIBE (`objectAdmin`: sellar, y recoger lo superado);
-#   · `ore-serve-<n>` LEE (`objectViewer`: la ficha de la copia, F5 mañana).
-#     Esa es la separación que 0015 pedía, y sale gratis: son dos cuentas.
+#   · `ore-serve-<n>` LEE (`objectViewer`: la ficha de la copia, F5 mañana) y
+#     CREA (`objectCreator`: el `metadata.json` del catálogo y el préstamo);
+#   · `ore-puesto-<n>` LEE y nada más: lo que un puesto escribe va con el token
+#     prestado por `ore-serve-<n>`, acotado a la tabla (0031 §11 ③).
+#     Esa es la separación que 0015 pedía, y sale gratis: son cuentas.
 #
 # ⛔ Sin clave estática de ningún tipo: la política de la organización lo
 #   prohíbe (`iam.disableServiceAccountKeyCreation`, y las HMAC de la API S3 de
@@ -572,6 +583,9 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/storage.objectCreator && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
+correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer && hecho "\`ore-puesto-$NOMBRE\` lee la copia, y no escribe: escribe con lo que el catálogo le presta"
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #
@@ -1384,8 +1398,9 @@ JSON
           && hecho "$parte del agente guardado en el almacen, y NO en un \`Secret\`"
       fi
       # 3 · quien lo lee: el driver de ESTE inquilino.
-      # Los Jobs (driver) y el informador (0026 E2) piden como el agente: los dos leen.
-      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE"; do
+      # Los Jobs (driver), el informador (0026 E2) y el puesto (0031: su init
+      # trae el testigo del agente) piden como el agente: los tres leen.
+      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE"; do
         correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
           --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \

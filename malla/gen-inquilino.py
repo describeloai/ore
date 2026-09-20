@@ -312,6 +312,9 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
         #   solo puede añadir versiones a `t-<n>-forja-admin`.
         t = t.replace("forja-%s" % MODELO, "forja-%s" % nombre)
         t = t.replace("informador-%s" % MODELO, "informador-%s" % nombre)
+        # ⭐ Y la del puesto (0031 §11 ③): solo lee; lo que escribe lo escribe
+        #   con el token que el catalogo le presta.
+        t = t.replace("puesto-%s" % MODELO, "puesto-%s" % nombre)
         t = t.replace("name: CELDA, value: %s }" % MODELO, "name: CELDA, value: %s }" % nombre)
         t = t.replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre)
         # ⛔⛔ EL NOMBRE DE LA ORGANIZACION EN `ore init`, y no es cosmetico:

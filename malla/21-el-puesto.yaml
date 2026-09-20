@@ -29,6 +29,26 @@
 #   la declara en el árbol y CI la resuelve (0031 §3); una que quiera un
 #   origen no existe: lee la copia.
 # ═══════════════════════════════════════════════════════════════════════════
+# ── Quién es el puesto ──────────────────────────────────────────────────────
+#
+# Su propia cuenta, que SOLO LEE (0031 §11 ③; medido en «Lo medido fuera del
+# verbo» §4): `objectViewer` del bucket —la capa, las copias, el lago— y los
+# dos secretos del agente que el init trae. Lo que una celda escribe con
+# `write()` va con el token que el catálogo (`ore-serve`) le presta, acotado
+# al prefijo de SU tabla: el pod no tiene con qué escribir nada más (el pod
+# escribiendo directo es 403, y el token prestado fuera de su prefijo también).
+# Hasta el 2026-09-20 el puesto corría como `driver` (`objectAdmin`).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: puesto
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: puesto
+  annotations:
+    iam.gke.io/gcp-service-account: ore-puesto-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

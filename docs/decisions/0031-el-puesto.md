@@ -732,7 +732,15 @@ posiciones), no por `total-records` del resumen, que en lo que DuckDB deja al mu
 había 267; si la lista ya no está, lo que diga el resumen. `el-lago.sh` 12b: DuckDB `DELETE` de tres
 filas y `UPDATE` de una por el catálogo → `ore-store leer` da 267 con la fila actualizada y sin las
 borradas, y la ficha cuenta 267. `recoger` ya conservaba los delete files (`alcanzables` recorre
-todos los manifiestos). El nodo de `jobs-p` no baja solo mientras haya un puesto abierto o un
+todos los manifiestos).
+
+**(b, 2026-09-20) La cuenta del puesto**: `ore-puesto-<n>` en el aprovisionador —`objectViewer` del
+bucket y `secretAccessor` de `t-<n>-agente-{cliente,secreto}`, y nada más; enlazada por Workload
+Identity al KSA `puesto` de `21-el-puesto.yaml` (con el rol de red `puesto` que ya había); se
+retira con el inquilino—; la plantilla `51-el-puesto.yaml` corre con `serviceAccountName: puesto`
+en vez de `driver` (`objectAdmin`). El préstamo del catálogo (§11 ③) es desde hoy **lo único con lo
+que un puesto escribe**. Llega a cada inquilino por el aprovisionador (converge cada 5 min desde
+la malla reconciliada); `gen-inquilino.py` rinde `puesto-<n>`. El nodo de `jobs-p` no baja solo mientras haya un puesto abierto o un
 Job reintentando: hoy estuvo 8 h arriba con puestos de victor y Jobs de otras sesiones cada pocos
 minutos; sin nada encima el autoescalador lo retira a los 10 min, y `gcloud container clusters
 resize … --num-nodes 0` lo baja al momento.

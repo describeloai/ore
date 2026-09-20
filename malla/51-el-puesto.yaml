@@ -62,9 +62,11 @@ spec:
         ore.dev/tenant: demo
     spec:
       restartPolicy: Never
-      # La cuenta del driver: Workload Identity con lectura del bucket de copias
-      # y de los secretos del agente. La RED no va por la cuenta sino por el rol.
-      serviceAccountName: driver
+      # La cuenta del puesto (`21-el-puesto.yaml`): Workload Identity con
+      # lectura del bucket de copias y de los secretos del agente, y NADA de
+      # escritura: `write()` escribe con el token que el catálogo le presta.
+      # La RED no va por la cuenta sino por el rol.
+      serviceAccountName: puesto
       volumes:
         - name: puesto
           emptyDir: { medium: Memory }
