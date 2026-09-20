@@ -206,6 +206,75 @@ fn la_cadena_sobre_una_tabla_da_el_mismo_linaje_y_ensena_las_dos_caras() {
     assert!(out.contains("raíz de lectura: la tabla"), "{out}");
 }
 
+/// 0032 §3 · **el escalar llega al árbol por la tabla.** Sin entidad, el plan
+/// de una vista sobre una tabla con `columns.<c>.type` lleva esos tipos —antes
+/// era `String` para todo—; y con entidad, la entidad afina (`Money<EUR, 2>`
+/// sobre el `Decimal` de la tabla) sin que la tabla deje de tipar lo demás.
+#[test]
+fn el_tipo_de_la_tabla_llega_al_esquema_del_plan_y_la_entidad_lo_afina() {
+    const TIPADA: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\n\
+         metadata: { name: employees, namespace: hr }\nspec:\n  datasource: erp\n  \
+         object: public.employees\n  columns:\n    \
+         employee_id: { type: Integer, physicalType: bigint }\n    \
+         country: { type: String, physicalType: \"char(2)\" }\n    \
+         salary: { type: Decimal, physicalType: \"numeric(12,2)\" }\n    \
+         hired_on: { type: Date }\n    \
+         address: { physicalType: address_t }\n  \
+         reads:\n    predicatePushdown: [eq, in]\n    fullScan: cheap\n  \
+         changes: { mode: retract, witness: log }\n";
+    const VISTA: &str = "apiVersion: oos.dev/v1alpha8\nkind: View\n\
+         metadata: { name: nomina, namespace: hr }\nspec:\n  owner: team:hr\n  \
+         from: { table: hr.employees }\n  fields:\n    id: employee_id\n    \
+         pais: country\n    sueldo: salary\n    desde: hired_on\n    donde: address\n";
+
+    // Sin entidad: la tabla tipa.
+    let dir = paquete(
+        "vista-tabla-tipada",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            ("lattices/sensitivity.yaml", RETICULO),
+            ("tables/employees.yaml", TIPADA),
+            ("views/nomina.yaml", VISTA),
+        ],
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    assert!(
+        out.contains(
+            "esquema   desde: Date · donde: String · id: Integer · pais: String · sueldo: Decimal"
+        ),
+        "{out}"
+    );
+
+    // Con entidad: afina `sueldo`, y lo demás sigue viniendo de la tabla.
+    let dir = paquete(
+        "vista-tabla-tipada-entidad",
+        &[
+            ("ontology.config.yaml", CONFIG),
+            ("package.yaml", PAQUETE),
+            ("lattices/sensitivity.yaml", RETICULO),
+            ("tables/employees.yaml", TIPADA),
+            ("views/nomina.yaml", VISTA),
+            (
+                "entities/Employee.yaml",
+                "apiVersion: oos.dev/v1alpha8\nkind: Entity\n\
+                 metadata: { name: Employee, namespace: hr }\nspec:\n  nature: entity\n  \
+                 primaryKey: [id]\n  backedBy: nomina\n  properties:\n    \
+                 id: { type: Integer }\n    sueldo: { type: \"Money<EUR, 2>\" }\n",
+            ),
+        ],
+    );
+    let (ok, out, err) = ver(&dir);
+    assert!(ok, "{err}\n{out}");
+    assert!(
+        out.contains(
+            "esquema   desde: Date · donde: String · id: Integer · pais: String · sueldo: Money<EUR, 2>"
+        ),
+        "{out}"
+    );
+}
+
 /// El criterio de T2, medido sobre el caso de conformidad que lo nombra:
 /// **`reads: none` y la raíz de lectura en la copia.**
 #[test]

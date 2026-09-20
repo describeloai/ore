@@ -129,17 +129,23 @@ bytes para la misma entrada, que es lo que el digest exige.
 
 ### 3 · El escalar llega al árbol
 
-El driver ya traduce; el inductor deja de tirarlo. Dos caminos, y se hacen los dos:
+El driver ya traduce; el inductor deja de tirarlo. Se pensaron dos caminos y se hizo **uno**:
 
-- **Ya**, sin tocar el espec: el compilador deriva el escalar de `physicalType` con la misma
-  tabla del driver (`escalar()` de `ore-read-postgres`, la de BigQuery), sabiendo el `type` del
-  `datasource` que hay en `ontology.config.yaml`. Es la traducción que el driver hizo, rehecha
-  en el mismo sitio con la misma tabla; un `physicalType` que no traduce queda sin tipo (texto).
+- ~~**Ya**, sin tocar el espec: derivar el escalar de `physicalType` en el compilador.~~ Se
+  descartó al mirar el inductor: escribía `physicalType` **sólo** cuando el driver *no* supo
+  traducir (`sourceType`), y tiraba el escalar cuando sí («el tipo es de la entidad»). Así que
+  derivar de la cita habría sido inventar exactamente lo que el driver declinó, y para las
+  columnas traducidas —la mayoría— no había cita de la que derivar.
 - **Como toca**, en OOS: `Table.columns.<c>.type` con el escalar (lo que ODCS llama
-  `logicalType`, con nuestro vocabulario). Es un cambio de espec en `C:\oos` + bump del
-  submódulo; el inductor lo escribe y el compilador lo prefiere sobre la derivación. Con esto una
-  vista **tiene tipo** —el de su columna, o el del agregado (`count()` → `Integer`, `avg()` →
-  `Float`, `sum(Decimal)` → `Decimal`)— y el plan lo lleva sin defaults.
+  `logicalType`, con nuestro vocabulario), **junto a** `physicalType`, la cita del origen (que
+  lleva la precisión y la escala que el escalar no lleva). Cambio de espec en `C:\oos`
+  (`01-table.md` §5.0, `table.schema.json`, conformidad `table-compiles`) + bump del submódulo.
+  El driver de Postgres emite el tipo **y** la cita; el inductor escribe los dos; el compilador
+  tipa la raíz con la tabla y la entidad **afina** encima (`Money<EUR, 2>` sobre un `Decimal`).
+  Con esto una vista **tiene tipo** —el de su columna, o el del agregado (`count()` →
+  `Integer`, `avg()` → `Float`, `sum(Decimal)` → `Decimal`)— y el plan lo lleva sin defaults.
+  Una columna sin `type` es la que el conector no supo traducir: texto para quien la lea, y se
+  sabe que lo es porque nadie dijo otra cosa.
 
 ### 4 · La celda ve columnas
 
@@ -223,6 +229,20 @@ antes de meter nada en una imagen:
   declarados en una entidad (el e2e `la-pregunta-se-contesta.sh`), la copia ya sale con `int64` y
   `decimal128(38, 18)` y `ore ask` contesta lo mismo.
 
+### T2, hecho: el escalar llega al árbol
+
+- **OOS** `65715b8`: `Table.columns.<c>.type` (escalar de OOS, opcional; su ausencia significa
+  «el conector no supo»), `physicalType` pasa a ser la cita que convive con él; `01-table.md`
+  §5.0 «El tipo vive en la tabla»; `table-compiles` lleva las dos formas.
+- **`ore-read-postgres`** emite `type` **y** `sourceType` (antes uno u otro); **el inductor**
+  escribe `id: { type: Integer, physicalType: bigint }`, y `payload: { physicalType: jsonb }`
+  para lo que no tradujo; **`ore-core::vistas::tipos_de_columnas`** lee la tabla;
+  **`tipos_de_raiz`** tipa primero con las tablas y después la entidad afina; **`GET /esquema`**
+  enseña `type` por columna.
+- Lo que falta para que la precisión llegue al Parquet (`numeric(10,2)` → `decimal128(10, 2)`
+  en vez de `(38, 18)`): la cabecera de la copia lleva sólo el escalar. Es cosmético —
+  `decimal128` ocupa 16 bytes con cualquier precisión— y queda para T3 si el SDK lo necesita.
+
 ## Lo que se acepta a cambio
 
 - **Un cambio de espec** (`Table.columns.<c>.type`) y **rehacer las copias** para que lleven
@@ -270,6 +290,6 @@ dataset escrito por código nace Iceberg; la expectativa es que sí.
 | | qué | acepta |
 |---|---|---|
 | **T1** ✓ 2026-09-20 | la tabla de arriba como código: `ore_core::tipos` (escalar ↔ físico ↔ forma canónica del texto) con sus pruebas; `carga.rs` estrecha por ella; el informe de la copia dice lo no estrechado | hecho, abajo; la copia de `olist.products` llevará `price: decimal`, `recorded_at: timestamp[us, UTC]` cuando T2 ponga el escalar en la cabecera (hoy el plan dice `String`); `medida-w3-tipos.py` deja de decir `string×218` con T2 + rehacer |
-| **T2** | el escalar al árbol: derivación desde `physicalType` en el compilador (ya) y `Table.columns.<c>.type` en OOS (como toca) | un `sum(price)` en una vista es `Decimal` en el plan sin defaults |
+| **T2** ✓ 2026-09-20 | el escalar al árbol: `Table.columns.<c>.type` en OOS (`oos@65715b8`), el driver emite tipo y cita, el inductor los escribe, `tipos_de_raiz` tipa con la tabla y la entidad afina | hecho: `ore view` de una vista sobre una tabla tipada sin entidad da `id: Integer · sueldo: Decimal · desde: Date` (prueba `el_tipo_de_la_tabla_llega_al_esquema_del_plan_y_la_entidad_lo_afina`); en el clúster, tras desplegar: re-inducir el paquete (`POST /paquetes/{n}/copia` o rehacer la database) → la cabecera de la copia cambia → la pasada siguiente sella copias tipadas y `medida-w3-tipos.py` deja de decir `string×218` |
 | **T3** | la celda: `over()` columnar en los tres, el JSON único, `estricto` | `medida-w3-leer.py` sin `≠` fuera de lo que la tabla dice |
 | **T4** ✓ 2026-09-20 | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | arriba: Java → Arrow (23/23, 14,6 M filas/s, 5 MB); Node → DuckDB tipado por columnas (22/23, sin añadir nada) y no Arrow JS (11/23, 21 MB); en Node no se materializan 10 M de filas |

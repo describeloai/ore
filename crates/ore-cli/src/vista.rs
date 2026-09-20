@@ -551,12 +551,32 @@ impl Vistas for Package {
 
 /// Tipo de cada columna raíz: `(datasource, objeto, columna) → Type`.
 ///
-/// La vista no tipa —es física— así que el tipo baja de **la entidad**: sus
-/// propiedades se llaman como los campos de su vista, y la cadena los lleva
-/// hasta la columna. Lo que ninguna entidad nombra es `String`, que es lo
-/// único que se puede afirmar de una columna de la que solo se sabe el nombre.
+/// La vista no tipa —es física— así que el tipo viene de dos sitios, y en este
+/// orden (0032 §3):
+///
+/// 1. **La entidad**, que afina: sus propiedades se llaman como los campos de
+///    su vista, y la cadena los lleva hasta la columna. `Money<EUR, 2>` sobre
+///    un `numeric` solo lo sabe ella.
+/// 2. **La tabla**, `columns.<c>.type`: el escalar que el conector tradujo al
+///    descubrir el objeto. Es lo que hace que la copia de una tabla sin
+///    entidad —que es la mayoría al principio— salga con sus tipos y no como
+///    218 columnas de texto (`medida-w3-tipos.py`).
+///
+/// Lo que ni una ni otra nombra es `String`, que es lo único que se puede
+/// afirmar de una columna de la que solo se sabe el nombre.
 pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
     let mut out = BTreeMap::new();
+    for t in pkg.tables() {
+        let (Some(datasource), Some(objeto)) = (
+            t.section("datasource").and_then(|d| d.as_str()),
+            t.section("object").and_then(|o| o.as_str()),
+        ) else {
+            continue;
+        };
+        for (col, tipo) in vistas::tipos_de_columnas(t) {
+            out.insert((datasource.to_string(), objeto.to_string(), col), tipo);
+        }
+    }
     for e in pkg.entities() {
         let Some(v) = vistas::respaldo(pkg, e) else {
             continue;
@@ -592,6 +612,8 @@ pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String),
             else {
                 continue;
             };
+            // La entidad manda sobre la tabla: afina (`Money<EUR, 2>` sobre
+            // un `Decimal`), y si contradice lo dice `OOS3xxx`, no esto.
             out.insert(
                 (raiz.datasource.clone(), raiz.objeto.clone(), col.clone()),
                 t,

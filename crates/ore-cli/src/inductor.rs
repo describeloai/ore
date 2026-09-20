@@ -2006,13 +2006,23 @@ fn tabla_yaml(
         // exactamente el reparto que hace que dos vistas puedan compartir un
         // objeto sin repetir su contrato.
         let _ = write!(s, "    {}:", escalar_yaml(&c.nombre));
-        match &c.origen {
-            // El tipo del ORIGEN, citado. `physicalType` es físico, así que
-            // vive aquí; el tipo de OOS es de la entidad y no se mezcla.
-            Some(o) => {
-                let _ = writeln!(s, " {{ physicalType: {} }}", escalar_yaml(o));
-            }
-            None => s.push_str(" {}\n"),
+        // Las dos cosas que el conector sabe, y las dos se escriben (0032 §3;
+        // `01-table.md` §5.0): `type`, el escalar de OOS que tradujo —antes se
+        // tiraba aquí «porque el tipo es de la entidad», y la copia de una
+        // tabla sin entidad salía entera como texto—, y `physicalType`, el
+        // tipo del origen citado, que lleva la precisión y la escala. Una
+        // columna que el conector no supo traducir lleva solo la cita.
+        let mut partes: Vec<String> = Vec::new();
+        if let Some(t) = &c.tipo {
+            partes.push(format!("type: {}", escalar_yaml(t)));
+        }
+        if let Some(o) = &c.origen {
+            partes.push(format!("physicalType: {}", escalar_yaml(o)));
+        }
+        if partes.is_empty() {
+            s.push_str(" {}\n");
+        } else {
+            let _ = writeln!(s, " {{ {} }}", partes.join(", "));
         }
     }
     match &t.lee {
@@ -2649,6 +2659,42 @@ mod tests {
         assert!(
             vista.contains("from: { table: rubix_demo_ventas_facturas }"),
             "{vista}"
+        );
+    }
+
+    /// La tabla lleva el tipo que el conector tradujo (0032 §3). Antes se tiraba
+    /// aquí «porque el tipo es de la entidad», y una tabla sin entidad se copiaba
+    /// entera como texto. La cita del origen va al lado cuando la hay; una
+    /// columna sin traducir lleva solo la cita.
+    #[test]
+    fn la_tabla_lleva_el_tipo_que_el_conector_tradujo_y_la_cita_del_origen() {
+        const CAT: &str = r#"{
+          "source": "pg",
+          "tables": [
+            { "name": "public.pedidos",
+              "columns": [
+                { "name": "id", "type": "Integer", "sourceType": "bigint" },
+                { "name": "total", "type": "Decimal", "sourceType": "numeric(10,2)" },
+                { "name": "pais", "type": "String" },
+                { "name": "payload", "sourceType": "jsonb" }
+              ],
+              "primaryKey": ["id"] }
+          ]
+        }"#;
+        let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
+        let tabla = &i.ficheros["tables/Pedidos__public_pedidos.yaml"];
+        assert!(
+            tabla.contains("    id: { type: Integer, physicalType: bigint }"),
+            "{tabla}"
+        );
+        assert!(
+            tabla.contains("    total: { type: Decimal, physicalType: \"numeric(10,2)\" }"),
+            "{tabla}"
+        );
+        assert!(tabla.contains("    pais: { type: String }"), "{tabla}");
+        assert!(
+            tabla.contains("    payload: { physicalType: jsonb }"),
+            "{tabla}"
         );
     }
 

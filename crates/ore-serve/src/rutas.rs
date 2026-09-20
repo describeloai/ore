@@ -1389,6 +1389,9 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
                 if let Some(pt) = v.get("physicalType").and_then(|(_, p)| p.as_str()) {
                     campos.push(("physicalType", Json::s(pt)));
                 }
+                if let Some(ty) = v.get("type").and_then(|(_, t)| t.as_str()) {
+                    campos.push(("type", Json::s(ty)));
+                }
                 columnas.push(Json::obj(campos));
             }
         }

@@ -132,9 +132,12 @@ pub struct Columna {
     /// `None` cuando el lector **no supo** traducir el tipo del origen. No es un
     /// hueco a rellenar: es la conjetura que esta pieza no toma.
     pub tipo: Option<String>,
-    /// Lo que dijo el origen cuando `tipo` es `None`. Se **cita**, nunca se
-    /// interpreta: interpretarlo sería saber de BigQuery, y la costura existe
-    /// justo para no saberlo.
+    /// Lo que dijo el origen —`numeric(10,2)`, `timestamptz`—, con `tipo` o
+    /// sin él. Se **cita**, nunca se interpreta: interpretarlo sería saber de
+    /// BigQuery, y la costura existe justo para no saberlo. Con `tipo`, es el
+    /// hecho del que la traducción salió (y lleva la precisión y la escala que
+    /// el escalar no lleva); sin `tipo`, es lo único que hay para que alguien
+    /// decida.
     pub origen: Option<String>,
     pub obligatoria: bool,
     /// Los valores que el origen declara, **en su orden de declaración**: el

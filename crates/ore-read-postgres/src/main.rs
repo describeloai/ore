@@ -441,16 +441,14 @@ fn armar(
 
         let familia = cadena("familia").unwrap_or_default();
         let base = cadena("base");
-        // El tipo o su cita, nunca los dos: `sourceType` se cita aguas abajo y
-        // nunca se interpreta.
-        let (tipo_oos, origen) = match traducir(&tipo, &familia, base.as_deref()) {
-            Some(t) => (Some(t.to_string()), None),
-            None => (None, Some(tipo.clone())),
-        };
+        // El tipo Y su cita (0032 §1): la traducción es lo que el árbol
+        // entiende; la cita es el hecho, y lleva la precisión y la escala
+        // —`numeric(10,2)`— que el escalar no lleva. `sourceType` se cita
+        // aguas abajo (`physicalType`) y nunca se interpreta.
         acc.columnas.push(Columna {
             nombre: columna.clone(),
-            tipo: tipo_oos,
-            origen,
+            tipo: traducir(&tipo, &familia, base.as_deref()),
+            origen: Some(tipo.clone()),
             obligatoria: f.get::<_, Option<bool>>("obligatoria") == Some(true),
             // El orden es el de declaración (`enumsortorder`), y se conserva:
             // el esquema dice que reordenarlos es un cambio observable.

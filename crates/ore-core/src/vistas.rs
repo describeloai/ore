@@ -194,6 +194,11 @@ impl Package {
             .find(|d| d.qname().as_deref() == Some(qname))
     }
 
+    /// Todas las tablas del paquete.
+    pub fn tables(&self) -> impl Iterator<Item = &Loaded> {
+        self.of(Kind::Table)
+    }
+
     /// Resuelve una referencia a tabla con la misma regla que a una vista: la
     /// forma corta vale dentro del mismo espacio de nombres (N1).
     pub fn resolve_table(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
@@ -232,6 +237,32 @@ pub fn columnas(t: &Loaded) -> BTreeSet<String> {
             c.entries()
                 .iter()
                 .filter_map(|(k, _)| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **El tipo de cada columna de una tabla**, el que el conector tradujo:
+/// `columns.<c>.type` (0032 §3; `01-table.md` §5.0). Una columna sin `type` no
+/// está en el mapa —el conector no supo traducirla, y es texto para quien la
+/// lea—, y una con un `type` que no analiza tampoco: eso lo dice `OOS3xxx`, no
+/// esto.
+///
+/// Es la única fuente del tipo para lo que cuelga de la tabla: la vista no tipa,
+/// el agregado se deriva, la entidad afina. Antes el tipo bajaba SOLO de la
+/// entidad, y la copia de una tabla sin entidad salía entera como texto.
+pub fn tipos_de_columnas(t: &Loaded) -> BTreeMap<String, crate::types::Type> {
+    t.section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let tipo = v.get("type").and_then(|(_, t)| t.as_str())?;
+                    Some((
+                        k.as_str()?.to_string(),
+                        crate::types::parse_type(tipo).ok()?,
+                    ))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -2225,6 +2256,34 @@ mod tests {
              reads: { predicatePushdown: [eq, in], fullScan: cheap }\n  \
              changes: { mode: retract, witness: log }\n",
         )
+    }
+
+    /// `columns.<c>.type` es el tipo; la columna sin él no está, y la cita
+    /// (`physicalType`) sola no tipa: es un hecho del origen, no una traducción.
+    #[test]
+    fn el_tipo_de_una_columna_es_el_que_el_conector_tradujo() {
+        let t = tabla(
+            "employees",
+            "  datasource: erp\n  object: public.employees\n  \
+             columns:\n    employee_id: { type: String, physicalType: \"varchar(16)\" }\n    \
+             salary: { type: Decimal, physicalType: \"numeric(12,2)\" }\n    \
+             hired_on: { type: Date }\n    \
+             bonus: { type: \"Money<EUR, 2>\" }\n    \
+             address: { physicalType: address_t }\n    \
+             raw: {}\n    \
+             mal: { type: Numero }\n  \
+             reads: none\n  changes: { mode: append, witness: log }\n",
+        );
+        let tipos = tipos_de_columnas(&t);
+        let s = |n: &str| tipos.get(n).map(|t| t.to_string());
+        assert_eq!(s("employee_id").as_deref(), Some("String"));
+        assert_eq!(s("salary").as_deref(), Some("Decimal"));
+        assert_eq!(s("hired_on").as_deref(), Some("Date"));
+        assert_eq!(s("bonus").as_deref(), Some("Money<EUR, 2>"));
+        assert_eq!(s("address"), None, "la cita sola no tipa");
+        assert_eq!(s("raw"), None);
+        assert_eq!(s("mal"), None, "un tipo que no es de OOS no se inventa");
+        assert_eq!(tipos.len(), 4);
     }
 
     /// Un tema: se escribe, no se pregunta. Y solo anexa, para `OOS2021`.
