@@ -360,6 +360,10 @@ enum AccionCache {
     },
 }
 
+// Un `Command` se construye una vez al arrancar y se consume: que `Datasets`
+// (los verbos del catálogo, W3.6c) pese 460 bytes y `Init` 40 no cuesta nada,
+// y meter sus opciones en una caja sólo por el lint las alejaría de clap.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     // ── Scaffolder ──────── autoría · toca metadatos de producción y, si se pide, un LLM
