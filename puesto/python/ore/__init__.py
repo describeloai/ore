@@ -486,8 +486,8 @@ def write(nombre, datos, modo="sobrescribir"):
         if c == 200:
             snap = ((r or {}).get("metadata") or {}).get("current-snapshot-id")
             # la misma operación ya estaba: el catálogo contesta con lo que hay
-            # (otro snapshot vigente que el que se preparó) y no deja nada
-            repetida = str(snap or "") != str(escrito.get("snapshot", ""))
+            # (el mismo puntero) y no deja nada
+            repetida = base is not None and (r or {}).get("metadata-location") == base
             return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(snap or ""), "metadata_location": (r or {}).get("metadata-location", ""),
                     "operacion": clave, "repetida": repetida}
         if c == 409:

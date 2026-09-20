@@ -204,8 +204,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: y una sesion Python, una TS y una Java leen la copia con over() y sql()
+      # Y write() (W3.6c): desde las tres, por ore-store-r2 contra el S3 de
+      # mentira, con el commit por el catalogo REST de ore-serve.
+      - name: y una sesion Python, una TS y una Java leen la copia con over() y sql(), y escriben con write()
         run: |
+          cargo build --quiet -p ore-store
           python3 -m pip install --quiet pyarrow pandas duckdb "pyiceberg[pyarrow]"
           bash pruebas-de-fuego/el-puesto.sh
 

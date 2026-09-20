@@ -426,7 +426,8 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
             let flujo = arrow_ipc::reader::StreamReader::try_new(lector, None)
                 .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
             for lote in flujo {
-                let lote = lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
+                let lote =
+                    lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
                 if lote.num_rows() > 0 {
                     lotes.push(carga::normalizar(&lote)?);
                 }
@@ -470,7 +471,10 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
                 h.update(semilla.as_bytes());
                 h.update(b"|");
                 h.update(huella.as_bytes());
-                h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                h.finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
             }))
         }
         otra => otra.map(String::from),
@@ -1785,7 +1789,14 @@ mod tests {
                 arrow_schema::Field::new("id", arrow_schema::DataType::Int32, true),
                 arrow_schema::Field::new("nombre", arrow_schema::DataType::Utf8, true),
             ]));
-            let lote = arrow_array::RecordBatch::try_new(esquema.clone(), vec![Arc::new(Int32Array::from_iter_values([1, 2])), Arc::new(StringArray::from_iter_values(["a", "b"]))]).unwrap();
+            let lote = arrow_array::RecordBatch::try_new(
+                esquema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values([1, 2])),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                ],
+            )
+            .unwrap();
             let mut w = parquet::arrow::ArrowWriter::try_new(&mut pq, esquema, None).unwrap();
             w.write(&lote).unwrap();
             w.close().unwrap();
@@ -1817,12 +1828,7 @@ mod tests {
             w.write(&lote).unwrap();
             w.finish().unwrap();
         }
-        let e = escribir(
-            &lago,
-            &format!("{{\"dataset\":\"{ds}\"}}"),
-            &bytes[..],
-        )
-        .unwrap_err();
+        let e = escribir(&lago, &format!("{{\"dataset\":\"{ds}\"}}"), &bytes[..]).unwrap_err();
         assert!(e.contains("`grande`") && e.contains("uint64"), "{e}");
     }
 

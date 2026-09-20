@@ -29,6 +29,18 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.math.BigDecimal;
+import java.time.ZonedDateTime;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.DateUnit;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.TimeUnit;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
@@ -116,8 +128,15 @@ public final class Ore {
 
         /** {@code [código, cuerpo]}: el cuerpo, JSON como mapa (o {@code {error}}). */
         public Respuesta pedir(String metodo, String ruta, Object cuerpo, Duration plazo) throws IOException, InterruptedException {
+            return pedir(metodo, ruta, cuerpo, plazo, Map.of());
+        }
+
+        public Respuesta pedir(String metodo, String ruta, Object cuerpo, Duration plazo, Map<String, String> extra) throws IOException, InterruptedException {
             HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(servidor + ruta)).timeout(plazo).header("accept", "application/json");
             for (Map.Entry<String, String> e : cabeceras.entrySet()) b.header(e.getKey(), e.getValue());
+            // Desde qué puesto: el catálogo escribe en nombre de quien lo abrió.
+            if (!id.isEmpty()) b.header("x-ore-puesto", id);
+            for (Map.Entry<String, String> e : extra.entrySet()) b.header(e.getKey(), e.getValue());
             if (cuerpo == null) b.method(metodo, HttpRequest.BodyPublishers.noBody());
             else b.header("content-type", "application/json").method(metodo, HttpRequest.BodyPublishers.ofString(Json.escribir(cuerpo)));
             HttpResponse<String> r = HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
@@ -209,7 +228,15 @@ public final class Ore {
     private static String fuenteDe(String vista) throws Exception {
         Map<String, Object> r = resolver(vista);
         Object m = r.get("metadata_location");
-        if (m != null && !String.valueOf(m).isEmpty()) return iceberg(String.valueOf(m));
+        if (m != null && !String.valueOf(m).isEmpty()) {
+            if (String.valueOf(m).startsWith("s3://") && s3 == null) {
+                String[] p = vista.split("\\.");
+                Respuesta l = puesto.pedir("GET", "/v1/namespaces/" + p[0] + "/tables/" + p[1], null, Duration.ofSeconds(30), DELEGAR);
+                Object cfg = l.cuerpo().get("config");
+                if (l.codigo() == 200 && cfg instanceof Map<?, ?> c && c.get("s3.access-key-id") != null) s3 = mapa(cfg);
+            }
+            return iceberg(String.valueOf(m));
+        }
         return "read_parquet('" + rutaSql(parquetDe(vista, r)) + "')";
     }
 
@@ -234,6 +261,17 @@ public final class Ore {
             cargar(con, "httpfs");
             try (Statement s = con.createStatement()) { s.execute("create or replace secret ore_gcs (type http, bearer_token '" + tokenDeGoogle().replace("'", "''") + "')"); }
             raiz = "https://storage.googleapis.com/" + raiz.substring(5);
+        } else if (raiz.startsWith("s3://") && s3 != null) {
+            // Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
+            // catálogo prestó al escribir, o la de la tabla que se pidió leer.
+            cargar(con, "httpfs");
+            String ep = String.valueOf(s3.getOrDefault("s3.endpoint", ""));
+            String ssl = ep.startsWith("https://") ? "true" : "false";
+            ep = ep.replaceFirst("^https?://", "").replaceAll("/+$", "");
+            try (Statement s = con.createStatement()) {
+                s.execute("create or replace secret ore_s3 (type s3, key_id '" + q(s3.get("s3.access-key-id")) + "', secret '" + q(s3.get("s3.secret-access-key"))
+                    + "', endpoint '" + q(ep) + "', url_style 'path', use_ssl " + ssl + ", region '" + q(s3.getOrDefault("s3.region", "auto")) + "')");
+            }
         }
         return "iceberg_scan('" + raiz.replace("\\", "/").replace("'", "''") + "', version='" + version.replace("'", "''") + "', allow_moved_paths=true)";
     }
@@ -393,6 +431,273 @@ public final class Ore {
         Connection con = duckdb();
         registrar(con, texto);
         return exportar(con.createStatement(), texto, 65_536);
+    }
+
+    // ── Escribir (0031 §11, W3.6c) ─────────────────────────────────────────
+    //
+    // `write("p.t", datos)` deja un dataset —una tabla Iceberg en el lago, la
+    // `Table` en el árbol, el puntero— desde lo que `over()`/`sql()` devolvieron
+    // (`Filas`, con sus tipos), un `List<Map>` cualquiera, un `VectorSchemaRoot`
+    // o un `ArrowReader`. La tabla se arma como Arrow y va por IPC a `ore-store`
+    // (el escritor de Rust), que la lleva al físico del contrato (0032) y escribe
+    // los ficheros con la credencial que el catálogo prestó —acotada a esa
+    // tabla—; el commit va al catálogo REST de Iceberg de `ore-serve` (`/v1/…`).
+    // Idempotente por la clave de operación (del contenido); un 409 se reintenta
+    // sobre lo que hay; un 5xx se MIRA antes de darlo por perdido.
+    private static final Map<String, String> DELEGAR = Map.of("x-iceberg-access-delegation", "vended-credentials");
+    private static Map<String, String> s3;
+
+    private static String q(Object v) { return String.valueOf(v == null ? "" : v).replace("'", "''"); }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> mapa(Object o) {
+        Map<String, String> m = new LinkedHashMap<>();
+        if (o instanceof Map<?, ?> x) for (Map.Entry<?, ?> e : x.entrySet()) m.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+        return m;
+    }
+
+    /** El tipo de Iceberg del esquema con el que la tabla se esboza (lo mismo que `ore-store` hace al escribir, 0032). */
+    private static String tipoIceberg(String columna, String t) {
+        switch (t) {
+            case "bool": return "boolean";
+            case "int8": case "int16": case "int32": case "int64": case "uint8": case "uint16": case "uint32": return "long";
+            case "float": case "double": return "double";
+            case "string": return "string";
+            case "date32[day]": return "date";
+            case "time64[us]": return "time";
+            case "timestamp[us]": case "timestamp[ms]": case "timestamp[ns]": case "timestamp[s]": return "timestamp";
+            case "timestamp[us, tz=UTC]": case "timestamp[ms, tz=UTC]": return "timestamptz";
+            case "uint64": throw new IllegalArgumentException("write(): la columna `" + columna + "` es uint64, que no cabe en int64 sin mentir (0032); conviértela antes");
+            case "null": throw new IllegalArgumentException("write(): la columna `" + columna + "` no tiene tipo (todo nulo): dale uno antes (0032)");
+            default:
+                Matcher m = Pattern.compile("^decimal128\\((\\d+), (\\d+)\\)$").matcher(t);
+                if (m.matches()) return "decimal(" + m.group(1) + ", " + m.group(2) + ")";
+                throw new IllegalArgumentException("write(): la columna `" + columna + "` es `" + t + "`, que el contrato de tipos (0032) no tiene");
+        }
+    }
+
+    /** El campo de Arrow de un tipo con el nombre de {@code pyarrow}. */
+    private static Field campoArrow(String nombre, String t) {
+        ArrowType tipo;
+        switch (t) {
+            case "bool": tipo = ArrowType.Bool.INSTANCE; break;
+            case "int8": case "int16": case "int32": case "int64": case "uint8": case "uint16": case "uint32": tipo = new ArrowType.Int(64, true); break;
+            case "float": case "double": tipo = new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE); break;
+            case "string": tipo = ArrowType.Utf8.INSTANCE; break;
+            case "date32[day]": tipo = new ArrowType.Date(DateUnit.DAY); break;
+            case "time64[us]": tipo = new ArrowType.Time(TimeUnit.MICROSECOND, 64); break;
+            case "timestamp[us]": case "timestamp[ms]": case "timestamp[ns]": case "timestamp[s]": tipo = new ArrowType.Timestamp(TimeUnit.MICROSECOND, null); break;
+            case "timestamp[us, tz=UTC]": case "timestamp[ms, tz=UTC]": tipo = new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC"); break;
+            default:
+                Matcher m = Pattern.compile("^decimal128\\((\\d+), (\\d+)\\)$").matcher(t);
+                if (!m.matches()) throw new IllegalArgumentException("write(): la columna `" + nombre + "` es `" + t + "`, que el contrato de tipos (0032) no tiene");
+                tipo = new ArrowType.Decimal(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), 128);
+        }
+        return new Field(nombre, FieldType.nullable(tipo), null);
+    }
+
+    private static long micros(Object v) {
+        if (v instanceof Instant i) return Math.multiplyExact(i.getEpochSecond(), 1_000_000L) + i.getNano() / 1000;
+        if (v instanceof ZonedDateTime z) return micros(z.toInstant());
+        if (v instanceof LocalDateTime l) return micros(l.toInstant(ZoneOffset.UTC));
+        if (v instanceof java.util.Date d) return d.getTime() * 1000L;
+        if (v instanceof Number n) return n.longValue();
+        return micros(Instant.parse(String.valueOf(v)));
+    }
+
+    /** Un valor de Java en el vector, en la fila {@code i}. */
+    private static void poner(FieldVector v, int i, Object x, String tipo) {
+        if (x == null) { v.setNull(i); return; }
+        if (v instanceof BigIntVector b) b.setSafe(i, x instanceof Number n ? n.longValue() : Long.parseLong(String.valueOf(x)));
+        else if (v instanceof Float8Vector f) f.setSafe(i, x instanceof Number n ? n.doubleValue() : Double.parseDouble(String.valueOf(x)));
+        else if (v instanceof BitVector b) b.setSafe(i, Boolean.parseBoolean(String.valueOf(x)) ? 1 : 0);
+        else if (v instanceof VarCharVector s) s.setSafe(i, String.valueOf(x).getBytes(StandardCharsets.UTF_8));
+        else if (v instanceof DecimalVector d) d.setSafe(i, (x instanceof BigDecimal bd ? bd : new BigDecimal(String.valueOf(x))).setScale(d.getScale(), java.math.RoundingMode.HALF_UP));
+        else if (v instanceof DateDayVector d) d.setSafe(i, (int) (x instanceof LocalDate l ? l.toEpochDay() : LocalDate.parse(String.valueOf(x)).toEpochDay()));
+        else if (v instanceof TimeMicroVector t) t.setSafe(i, (x instanceof LocalTime l ? l.toNanoOfDay() : LocalTime.parse(String.valueOf(x)).toNanoOfDay()) / 1000L);
+        else if (v instanceof TimeStampMicroTZVector t) t.setSafe(i, micros(x));
+        else if (v instanceof TimeStampMicroVector t) t.setSafe(i, micros(x));
+        else throw new IllegalArgumentException("write(): la columna `" + v.getName() + "` (" + tipo + ") no se sabe rellenar");
+    }
+
+    /** Lo que se escribe, como flujo Arrow IPC: {@code VectorSchemaRoot}, {@code ArrowReader}, {@code Filas} o {@code List<Map>}. */
+    @SuppressWarnings("unchecked")
+    private static byte[] ipcDe(Object datos, List<Map<String, Object>> esquema) throws Exception {
+        duckdb();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (datos instanceof VectorSchemaRoot raiz) {
+            if (raiz.getRowCount() == 0) throw new IllegalArgumentException("write(): la tabla no tiene filas");
+            try (ArrowStreamWriter w = new ArrowStreamWriter(raiz, null, out)) { w.start(); w.writeBatch(); w.end(); }
+            for (Field f : raiz.getSchema().getFields()) esquema.add(campoIceberg(esquema.size() + 1, f.getName(), nombreArrow(f)));
+            return out.toByteArray();
+        }
+        if (datos instanceof ArrowReader r) {
+            boolean alguna = false;
+            try (ArrowStreamWriter w = new ArrowStreamWriter(r.getVectorSchemaRoot(), null, out)) {
+                w.start();
+                while (r.loadNextBatch()) { if (r.getVectorSchemaRoot().getRowCount() > 0) { alguna = true; w.writeBatch(); } }
+                w.end();
+            }
+            if (!alguna) throw new IllegalArgumentException("write(): la tabla no tiene filas");
+            for (Field f : r.getVectorSchemaRoot().getSchema().getFields()) esquema.add(campoIceberg(esquema.size() + 1, f.getName(), nombreArrow(f)));
+            return out.toByteArray();
+        }
+        if (!(datos instanceof List<?> lista)) throw new IllegalArgumentException("write() quiere Filas, List<Map>, VectorSchemaRoot o ArrowReader, no " + (datos == null ? "null" : datos.getClass().getSimpleName()));
+        if (lista.isEmpty()) throw new IllegalArgumentException("write(): la tabla no tiene filas");
+        Map<String, String> tipos = new LinkedHashMap<>(datos instanceof Filas f ? f.tipos : Map.of());
+        Set<String> nombres = new LinkedHashSet<>(tipos.keySet());
+        for (Object o : lista) if (o instanceof Map<?, ?> m) for (Object k : m.keySet()) nombres.add(String.valueOf(k));
+        for (String n : nombres) if (!tipos.containsKey(n)) {
+            Object v = null;
+            for (Object o : lista) { Object x = ((Map<String, Object>) o).get(n); if (x != null) { v = x; break; } }
+            tipos.put(n, tipoInferido(v));
+        }
+        List<Field> campos = new ArrayList<>();
+        for (String n : nombres) campos.add(campoArrow(n, tipos.get(n)));
+        try (VectorSchemaRoot raiz = VectorSchemaRoot.create(new Schema(campos), asignador)) {
+            raiz.allocateNew();
+            int i = 0;
+            for (Object o : lista) {
+                Map<String, Object> fila = (Map<String, Object>) o;
+                int c = 0;
+                for (String n : nombres) poner(raiz.getVector(c++), i, fila.get(n), tipos.get(n));
+                i++;
+            }
+            raiz.setRowCount(i);
+            try (ArrowStreamWriter w = new ArrowStreamWriter(raiz, null, out)) { w.start(); w.writeBatch(); w.end(); }
+        }
+        for (String n : nombres) esquema.add(campoIceberg(esquema.size() + 1, n, tipos.get(n)));
+        return out.toByteArray();
+    }
+
+    private static Map<String, Object> campoIceberg(int id, String nombre, String tipo) {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("id", id); f.put("name", nombre); f.put("type", tipoIceberg(nombre, tipo)); f.put("required", false);
+        return f;
+    }
+
+    /** El escritor y su entorno: `ore-store-gcs` con el token prestado si la tabla vive en `gs://`, `ore-store-r2` si en `s3://`. */
+    private static ProcessBuilder escritor(Map<String, String> config, String ubicacion) {
+        String nombre;
+        Map<String, String> env = new LinkedHashMap<>();
+        if (ubicacion.startsWith("gs://")) {
+            nombre = "ore-store-gcs";
+            env.put("ORE_GCS_BUCKET", ubicacion.substring(5).split("/")[0]);
+            String tok = config.getOrDefault("gcs.oauth2.token", "");
+            if (tok.isEmpty()) throw new IllegalStateException("write(): el catálogo no prestó credencial para `" + ubicacion + "`");
+            env.put("ORE_GCS_TOKEN", tok);
+        } else if (ubicacion.startsWith("s3://")) {
+            nombre = "ore-store-r2";
+            env.put("ORE_R2_BUCKET", ubicacion.substring(5).split("/")[0]);
+            env.put("ORE_R2_S3_ENDPOINT", config.getOrDefault("s3.endpoint", ""));
+            env.put("ORE_R2_ACCESS_KEY_ID", config.getOrDefault("s3.access-key-id", ""));
+            env.put("ORE_R2_SECRET_ACCESS_KEY", config.getOrDefault("s3.secret-access-key", ""));
+            env.put("ORE_R2_REGION", config.getOrDefault("s3.region", "auto"));
+        } else {
+            throw new IllegalStateException("write(): la tabla vive en `" + ubicacion + "`, que no es un lago que este SDK sepa escribir");
+        }
+        List<String> dirs = new ArrayList<>();
+        String d = System.getenv("ORE_STORE_DIR");
+        if (d != null && !d.isEmpty()) dirs.add(d);
+        String path = System.getenv("PATH");
+        if (path != null) dirs.addAll(List.of(path.split(java.io.File.pathSeparator)));
+        for (String dir : dirs) for (String ext : new String[] { "", ".exe" }) {
+            Path b = Path.of(dir, nombre + ext);
+            if (Files.isRegularFile(b)) { ProcessBuilder pb = new ProcessBuilder(b.toString(), "escribir"); pb.environment().putAll(env); return pb; }
+        }
+        throw new IllegalStateException("write(): no está `" + nombre + "` en el PATH (la imagen del puesto lo lleva; fuera, ORE_STORE_DIR)");
+    }
+
+    private static String mensajeDe(Respuesta r) {
+        Object e = r.cuerpo().get("error");
+        if (e instanceof Map<?, ?> m && m.get("message") != null) return String.valueOf(m.get("message"));
+        return e == null ? r.cuerpo().toString() : String.valueOf(e);
+    }
+
+    /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago, sobrescribiendo. */
+    public static Map<String, Object> write(String nombre, Object datos) throws Exception { return write(nombre, datos, "sobrescribir"); }
+
+    /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago; {@code modo} es {@code sobrescribir} o {@code anexar}. */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> write(String nombre, Object datos, String modo) throws Exception {
+        if (nombre == null || nombre.chars().filter(c -> c == '.').count() != 1) throw new IllegalArgumentException("write() quiere `<paquete>.<tabla>`, no " + nombre);
+        if (!modo.equals("sobrescribir") && !modo.equals("anexar")) throw new IllegalArgumentException("modo " + modo + ": vale `sobrescribir` o `anexar`");
+        String[] p = nombre.split("\\.");
+        String ns = p[0], t = p[1];
+        List<Map<String, Object>> campos = new ArrayList<>();
+        byte[] ipc = ipcDe(datos, campos);
+        Map<String, Object> esquema = new LinkedHashMap<>();
+        esquema.put("type", "struct"); esquema.put("schema-id", 0); esquema.put("fields", campos);
+        String dataset = "datasets/" + ns + "_" + t;
+        String semilla = nombre + "|" + modo;
+        String clave = "";
+        for (int intento = 0; intento < 4; intento++) {
+            // 1 · la tabla, con la credencial prestada; o esbozada si no existe
+            String base = null; Object esbozo = null; Map<String, String> config; String ubicacion;
+            Respuesta r = puesto.pedir("GET", "/v1/namespaces/" + ns + "/tables/" + t, null, Duration.ofSeconds(30), DELEGAR);
+            if (r.codigo() == 200) {
+                base = String.valueOf(r.cuerpo().get("metadata-location"));
+                config = mapa(r.cuerpo().get("config"));
+                ubicacion = String.valueOf(((Map<String, Object>) r.cuerpo().get("metadata")).get("location"));
+            } else if (r.codigo() == 404) {
+                Map<String, Object> cuerpo = new LinkedHashMap<>();
+                cuerpo.put("name", t); cuerpo.put("stage-create", true); cuerpo.put("schema", esquema); cuerpo.put("properties", Map.of());
+                Respuesta r2 = puesto.pedir("POST", "/v1/namespaces/" + ns + "/tables", cuerpo, Duration.ofSeconds(30), DELEGAR);
+                if (r2.codigo() != 200) throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(r2));
+                esbozo = r2.cuerpo().get("metadata");
+                config = mapa(r2.cuerpo().get("config"));
+                ubicacion = String.valueOf(((Map<String, Object>) esbozo).get("location"));
+            } else {
+                throw new IllegalStateException("write(" + nombre + "): ore-serve contestó " + r.codigo() + ": " + mensajeDe(r));
+            }
+            if (config.get("s3.access-key-id") != null) s3 = config;
+            // 2 · los ficheros, por ore-store
+            Map<String, Object> peticion = new LinkedHashMap<>();
+            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla);
+            if (base != null) peticion.put("base", base); else peticion.put("esbozo", esbozo);
+            Process proc = escritor(config, ubicacion).start();
+            try (OutputStream in = proc.getOutputStream()) { in.write((Json.escribir(peticion) + "\n").getBytes(StandardCharsets.UTF_8)); in.write(ipc); }
+            byte[] salida = proc.getInputStream().readAllBytes();
+            String err = new String(proc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            if (proc.waitFor() != 0) throw new IllegalStateException("write(): " + (err.isEmpty() ? "el escritor falló" : err.replaceFirst("^error: ", "")));
+            Map<String, Object> escrito = Json.objeto(new String(salida, StandardCharsets.UTF_8));
+            clave = String.valueOf(escrito.getOrDefault("operacion", clave));
+            // 3 · el commit, por el catálogo
+            Map<String, Object> commit = new LinkedHashMap<>();
+            commit.put("identifier", Map.of("namespace", List.of(ns), "name", t));
+            commit.put("requirements", escrito.get("requirements")); commit.put("updates", escrito.get("updates"));
+            Respuesta c = puesto.pedir("POST", "/v1/namespaces/" + ns + "/tables/" + t, commit, Duration.ofSeconds(120));
+            if (c.codigo() == 200) {
+                Map<String, Object> md = (Map<String, Object>) c.cuerpo().get("metadata");
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("tabla", nombre); out.put("filas", escrito.get("filas")); out.put("snapshot", String.valueOf(md == null ? "" : md.get("current-snapshot-id")));
+                out.put("metadata_location", String.valueOf(c.cuerpo().getOrDefault("metadata-location", ""))); out.put("operacion", clave);
+                // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
+                out.put("repetida", base != null && base.equals(String.valueOf(c.cuerpo().get("metadata-location"))));
+                return out;
+            }
+            if (c.codigo() == 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
+            if (c.codigo() >= 500) {
+                // el commit pudo entrar: se MIRA antes de darlo por perdido
+                Respuesta v = puesto.pedir("GET", "/v1/namespaces/" + ns + "/tables/" + t, null, Duration.ofSeconds(30));
+                if (v.codigo() == 200) {
+                    Map<String, Object> md = (Map<String, Object>) v.cuerpo().get("metadata");
+                    Object actual = md.get("current-snapshot-id");
+                    for (Object sn : (List<Object>) md.getOrDefault("snapshots", List.of())) {
+                        Map<String, Object> m = (Map<String, Object>) sn;
+                        if (String.valueOf(m.get("snapshot-id")).equals(String.valueOf(actual)) && m.get("summary") instanceof Map<?, ?> su && clave.equals(String.valueOf(su.get("ore.operacion")))) {
+                            Map<String, Object> out = new LinkedHashMap<>();
+                            out.put("tabla", nombre); out.put("filas", escrito.get("filas")); out.put("snapshot", String.valueOf(actual));
+                            out.put("metadata_location", String.valueOf(v.cuerpo().get("metadata-location"))); out.put("operacion", clave); out.put("repetida", false);
+                            return out;
+                        }
+                    }
+                }
+                throw new IllegalStateException("write(" + nombre + "): el catálogo contestó " + c.codigo() + " y el commit no está: " + mensajeDe(c));
+            }
+            throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(c));
+        }
+        throw new IllegalStateException("write(" + nombre + "): cuatro veces alguien escribió antes; vuelve a intentarlo");
     }
 
     // ── El contrato de tipos (0032 §1) ─────────────────────────────────────

@@ -437,6 +437,16 @@ if [ "$NODE_OK" = "si" ]; then
     celda 'await over(\"hr.lago\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.lago), el dataset Iceberg: $(cuerpo)"
     celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.lago\")' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "8 · sql sobre el dataset Iceberg: $(cuerpo)"
   fi
+  if [ "${ESCRITO_OK:-no}" = "si" ]; then
+    # write() desde Node: lo que Python escribió (5 filas), leído; y lo suyo, escrito y leído
+    celda 'const s = await over(\"hr.salida\"); s.length' && tiene "d['salida']['texto']=='5'" || falla "8 · Node lee lo que Python escribió: $(cuerpo)"
+    celda 'const e = await write(\"hr.salida_node\", await over(\"hr.lago\")); [e.filas, e.repetida]' && tiene "d['salida']['texto']=='[ 3, false ]'" || falla "8 · write(hr.salida_node) desde filas: $(cuerpo)"
+    celda 'await over(\"hr.salida_node\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.salida_node) no es el mismo JSON que hr.lago: $(cuerpo)"
+    celda 'const e2 = await write(\"hr.salida_node\", await over(\"hr.lago\", { como: \"columnas\" })); e2.repetida' && tiene "d['salida']['texto']=='true'" || falla "8 · la misma escritura (por columnas) tenía que ser repetida: $(cuerpo)"
+    celda 'const e3 = await write(\"hr.salida_node\", [{ n: 4, letra: \"d\", cuando: new Date(\"2024-06-02T00:00:00Z\"), importe: 4 }], { modo: \"anexar\" }); e3.filas' && tiene "d['salida']['texto']=='4'" || falla "8 · anexar objetos JS: $(cuerpo)"
+    celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.salida_node\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "8 · sql sobre lo escrito desde Node: $(cuerpo)"
+    celda 'await write(\"hr.espanoles\", [{ a: 1 }])' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · escribir una View desde Node: $(cuerpo)"
+  fi
   celda 'await over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "8 · sql en node: $(cuerpo)"
   LEN=javascript; celda 'let z = 5; z * 2' && tiene "d['salida']['texto']=='10'" || falla "8 · javascript: $(cuerpo)"; LEN=typescript
@@ -445,7 +455,7 @@ if [ "$NODE_OK" = "si" ]; then
   for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
   kill -0 "$AGENTE" 2>/dev/null && falla "8 · el agente node no se cerro al 410"
   AGENTE=""
-  dice "8 · TS en el puesto node: 1+1 · const x: number → los tipos fuera · el contexto dura · console.log · ReferenceError · await arriba · interface · un modulo con export · saludo(persona()) → hola persona:ana · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · javascript · python 422 · cierre"
+  dice "8 · TS en el puesto node: 1+1 · const x: number → los tipos fuera · el contexto dura · console.log · ReferenceError · await arriba · interface · un modulo con export · saludo(persona()) → hola persona:ana · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · write(): lee lo de Python, escribe lo suyo (filas y columnas, DuckDB → Parquet → ore-store) con el mismo JSON de vuelta, repetida, anexa objetos JS, una View se niega · javascript · python 422 · cierre"
 else
   dice "8 · (sin node ≥ 22.13: el puesto node no se prueba aqui)"
 fi
@@ -491,6 +501,16 @@ if [ "$JAVA_OK" = "si" ]; then
     celda 'over(\"hr.lago\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.lago), el dataset Iceberg: $(cuerpo)"
     celda 'sql(\"select count(*) as n, sum(importe) as s from hr.lago\")' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "9 · sql sobre el dataset Iceberg: $(cuerpo)"
   fi
+  if [ "${ESCRITO_OK:-no}" = "si" ]; then
+    # write() desde Java: lo que Python (5) y Node (4) escribieron, leído; y lo suyo, escrito y leído
+    celda 'over(\"hr.salida\").size() + over(\"hr.salida_node\").size()' && tiene "d['salida']['texto']=='9'" || falla "9 · Java lee lo que Python y Node escribieron: $(cuerpo)"
+    celda 'var e = write(\"hr.salida_jvm\", over(\"hr.lago\")); e.get(\"filas\") + \" \" + e.get(\"repetida\")' && tiene "d['salida']['texto']=='\"3 false\"'" || falla "9 · write(hr.salida_jvm) desde Filas: $(cuerpo)"
+    celda 'over(\"hr.salida_jvm\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.salida_jvm) no es el mismo JSON que hr.lago: $(cuerpo)"
+    celda 'var e2 = write(\"hr.salida_jvm\", arrow(\"hr.lago\")); e2.get(\"repetida\")' && tiene "d['salida']['texto']=='true'" || falla "9 · la misma escritura (por Arrow) tenía que ser repetida: $(cuerpo)"
+    celda 'var e3 = write(\"hr.salida_jvm\", List.of(Map.of(\"n\", 4L, \"letra\", \"d\", \"cuando\", java.time.Instant.parse(\"2024-06-02T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"4.00\"))), \"anexar\"); e3.get(\"filas\")' && tiene "d['salida']['texto']=='4'" || falla "9 · anexar un List<Map>: $(cuerpo)"
+    celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida_jvm\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "9 · sql sobre lo escrito desde Java: $(cuerpo)"
+    celda 'write(\"hr.espanoles\", List.of(Map.of(\"a\", 1L)))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · escribir una View desde Java: $(cuerpo)"
+  fi
   celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "9 · sql en la jvm: $(cuerpo)"
   [ "$(pide POST /puestos/puesto-ana-jvm/ejecutar "$ANA" '{"texto":"1","lenguaje":"typescript"}')" = "422" ] || falla "9 · typescript en jvm no dio 422: $(cuerpo)"
@@ -498,10 +518,10 @@ if [ "$JAVA_OK" = "si" ]; then
   for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done
   kill -0 "$AGENTE" 2>/dev/null && falla "9 · el agente jvm no se cerro al 410"
   AGENTE=""
-  dice "9 · Java en el puesto jvm: 1+1 · int x → vacia · la sesion dura · println · ArithmeticException · no compila → CompilationError · record + stream · un metodo · saludo(persona()) · una clase con main · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · typescript 422 · cierre"
+  dice "9 · Java en el puesto jvm: 1+1 · int x → vacia · la sesion dura · println · ArithmeticException · no compila → CompilationError · record + stream · un metodo · saludo(persona()) · una clase con main · over() tabla · over(hr.lago) el dataset Iceberg en sitio con el mismo JSON · sql → [[3]] · write(): lee lo de Python y Node, escribe lo suyo (Filas, Arrow, List<Map>) con el mismo JSON de vuelta, repetida, anexa, una View se niega · typescript 422 · cierre"
 else
   dice "9 · (sin javac ≥ 21: el puesto jvm no se prueba aqui)"
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.4): 1–9 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.6c): 1–10 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

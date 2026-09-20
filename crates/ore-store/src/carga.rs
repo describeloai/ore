@@ -167,24 +167,49 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
 }
 
 /// **Un lote normalizado, a los tipos que la tabla ya tiene donde no se pierde
-/// nada**: un `decimal(p, s)` a un `decimal(P, s)` con `P ≥ p`. Lo demás ya lo
-/// fijó [`normalizar`] (un solo físico por escalar); lo que sí cambia de tipo
+/// nada**: un `decimal(p, s)` a un `decimal(P, s)` con `P ≥ p`; un entero a un
+/// decimal (exacto); un real a un decimal (a la escala de la columna: es lo que
+/// quien escribe `4` o `4.5` en una columna `decimal(10, 2)` está pidiendo, y un
+/// lenguaje sin decimales —JS— no puede pedir otra cosa). Lo demás ya lo fijó
+/// [`normalizar`] (un solo físico por escalar); lo que sí cambia de tipo
 /// (`string` → `long`) es otra columna, con otro id, y eso lo decide el esquema.
 pub fn ensanchar(lote: &RecordBatch, tabla: &iceberg::spec::Schema) -> Result<RecordBatch, String> {
     let mut campos = Vec::with_capacity(lote.num_columns());
     let mut columnas = Vec::with_capacity(lote.num_columns());
     let mut cambio = false;
     for (campo, col) in lote.schema().fields().iter().zip(lote.columns()) {
-        let destino = match (campo.data_type(), tabla.field_by_name(campo.name()).map(|f| f.field_type.as_ref())) {
+        let destino = match (
+            campo.data_type(),
+            tabla
+                .field_by_name(campo.name())
+                .map(|f| f.field_type.as_ref()),
+        ) {
             (
                 DataType::Decimal128(p, e),
-                Some(iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Decimal { precision, scale })),
-            ) if *scale as i8 == *e && *precision as u8 > *p => Some(DataType::Decimal128(*precision as u8, *e)),
+                Some(iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Decimal {
+                    precision,
+                    scale,
+                })),
+            ) if *scale as i8 == *e && *precision as u8 > *p => {
+                Some(DataType::Decimal128(*precision as u8, *e))
+            }
+            (
+                DataType::Int64 | DataType::Float64,
+                Some(iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Decimal {
+                    precision,
+                    scale,
+                })),
+            ) => Some(DataType::Decimal128(*precision as u8, *scale as i8)),
             _ => None,
         };
         match destino {
             Some(d) => {
-                columnas.push(arrow_cast::cast(col, &d).map_err(|e| format!("la columna `{}` no se pudo ensanchar a `{d}`: {e}", campo.name()))?);
+                columnas.push(arrow_cast::cast(col, &d).map_err(|e| {
+                    format!(
+                        "la columna `{}` no se pudo ensanchar a `{d}`: {e}",
+                        campo.name()
+                    )
+                })?);
                 campos.push(Field::new(campo.name(), d, true));
                 cambio = true;
             }
@@ -232,13 +257,32 @@ pub fn huella(lotes: &[RecordBatch]) -> String {
                 h.update(b"\x02");
                 match col.data_type() {
                     DataType::Utf8 => h.update(col.as_string::<i32>().value(i).as_bytes()),
-                    DataType::Int64 => h.update(col.as_primitive::<Int64Type>().value(i).to_le_bytes()),
-                    DataType::Float64 => h.update(col.as_primitive::<Float64Type>().value(i).to_bits().to_le_bytes()),
+                    DataType::Int64 => {
+                        h.update(col.as_primitive::<Int64Type>().value(i).to_le_bytes())
+                    }
+                    DataType::Float64 => h.update(
+                        col.as_primitive::<Float64Type>()
+                            .value(i)
+                            .to_bits()
+                            .to_le_bytes(),
+                    ),
                     DataType::Boolean => h.update([col.as_boolean().value(i) as u8]),
-                    DataType::Decimal128(_, _) => h.update(col.as_primitive::<Decimal128Type>().value(i).to_le_bytes()),
-                    DataType::Date32 => h.update(col.as_primitive::<Date32Type>().value(i).to_le_bytes()),
-                    DataType::Time64(TimeUnit::Microsecond) => h.update(col.as_primitive::<Time64MicrosecondType>().value(i).to_le_bytes()),
-                    DataType::Timestamp(TimeUnit::Microsecond, _) => h.update(col.as_primitive::<TimestampMicrosecondType>().value(i).to_le_bytes()),
+                    DataType::Decimal128(_, _) => {
+                        h.update(col.as_primitive::<Decimal128Type>().value(i).to_le_bytes())
+                    }
+                    DataType::Date32 => {
+                        h.update(col.as_primitive::<Date32Type>().value(i).to_le_bytes())
+                    }
+                    DataType::Time64(TimeUnit::Microsecond) => h.update(
+                        col.as_primitive::<Time64MicrosecondType>()
+                            .value(i)
+                            .to_le_bytes(),
+                    ),
+                    DataType::Timestamp(TimeUnit::Microsecond, _) => h.update(
+                        col.as_primitive::<TimestampMicrosecondType>()
+                            .value(i)
+                            .to_le_bytes(),
+                    ),
                     // tras `normalizar` no queda otro tipo; si quedara, su texto
                     otro => h.update(format!("{otro}").as_bytes()),
                 }

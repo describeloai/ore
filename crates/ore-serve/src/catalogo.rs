@@ -155,7 +155,12 @@ impl Servidor {
             .get(DELEGACION)
             .is_some_and(|v| v.contains("vended-credentials"));
         // Desde un puesto: quien escribe es la persona, no el agente.
-        let (sujeto, rama) = match p.cabeceras.get(PUESTO).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let (sujeto, rama) = match p
+            .cabeceras
+            .get(PUESTO)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             Some(id) => match self.persona_del_puesto(sujeto, id) {
                 Ok((persona, rama_del_puesto)) => (
                     Identidad {

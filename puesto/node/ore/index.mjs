@@ -38,9 +38,19 @@
 // SITIO (`iceberg_scan` sobre la raíz y la versión, con el token del pod como
 // bearer; medido en `medida-w3-lago.py`)— o `clave`, el sobre ORECOPY1 heredado,
 // que se baja una vez. `over()` y `sql()` no distinguen.
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessSync, constants } from "node:fs";
+// **Escribir** (0031 §11, W3.6c): `write("p.t", filas)` deja un dataset —una tabla
+// Iceberg en el lago, la `Table` en el árbol, el puntero— desde lo que `over()` o
+// `sql()` devolvieron (filas tipadas, o `{ nombres, tipos, columnas }`) o desde
+// objetos JS cualquiera. Node no lleva Arrow: la tabla se arma en DuckDB (tipada:
+// el `appendValue` con el tipo de cada columna) y sale como Parquet a `ore-store`,
+// el escritor de Rust, que la lleva al físico del contrato (0032) y escribe los
+// ficheros **con la credencial que el catálogo prestó**, acotada a esa tabla; el
+// commit va al catálogo REST de Iceberg de `ore-serve` (`/v1/…`). Idempotente por
+// la clave de operación (del contenido); un 409 se reintenta; un 5xx se mira.
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessSync, constants, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, delimiter } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const MAGIA = "ORECOPY1";
 
@@ -54,9 +64,11 @@ export const puesto = {
   // El token lo pone el agente (`agente.mjs`) y lo renueva; una celda no lo ve.
   _cabeceras: {},
   /** `[código, cuerpo]` de una petición a ore-serve; el cuerpo, JSON o `{error}`. */
-  async pedir(metodo, ruta, cuerpo, plazoMs = 30_000) {
-    const cab = { accept: "application/json", ...this._cabeceras };
+  async pedir(metodo, ruta, cuerpo, plazoMs = 30_000, cabeceras = {}) {
+    const cab = { accept: "application/json", ...this._cabeceras, ...cabeceras };
     if (cuerpo !== undefined) cab["content-type"] = "application/json";
+    // Desde qué puesto: el catálogo escribe en nombre de quien lo abrió.
+    if (this.id) cab["x-ore-puesto"] = this.id;
     const r = await fetch(this.servidor + ruta, {
       method: metodo,
       headers: cab,
@@ -143,7 +155,14 @@ async function parquetDe(vista) {
  *  sobre heredado (trae `clave`, y se baja una vez). */
 async function fuenteDe(vista) {
   const r = await resolver(vista);
-  if (r.metadata_location) return [await iceberg(r.metadata_location), r];
+  if (r.metadata_location) {
+    if (r.metadata_location.startsWith("s3://") && !s3) {
+      const [ns, t] = vista.split(".");
+      const [c, l] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+      if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
+    }
+    return [await iceberg(r.metadata_location), r];
+  }
   const [f] = await parquetDe(vista);
   return [`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r];
 }
@@ -163,6 +182,11 @@ async function iceberg(metadataLocation) {
     await cargar(con, "httpfs");
     await con.run(`create or replace secret ore_gcs (type http, bearer_token '${(await tokenDeGoogle()).replaceAll("'", "''")}')`);
     raiz = "https://storage.googleapis.com/" + raiz.slice(5);
+  } else if (raiz.startsWith("s3://") && s3) {
+    // Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
+    // catálogo prestó al escribir, o la de la tabla que se pidió leer.
+    await cargar(con, "httpfs");
+    await secretoS3(con, s3);
   }
   return `iceberg_scan('${raiz.replaceAll("'", "''").replaceAll("\\", "/")}', version='${version.replaceAll("'", "''")}', allow_moved_paths=true)`;
 }
@@ -290,6 +314,201 @@ export async function sql(texto, o) {
   return entregar(r, truncada, limite, truncada ? undefined : r.currentRowCount, como);
 }
 
+// ── Escribir (0031 §11) ────────────────────────────────────────────────────
+const DELEGAR = { "x-iceberg-access-delegation": "vended-credentials" };
+let s3 = null;
+
+async function secretoS3(con, cfg) {
+  let ep = cfg["s3.endpoint"] ?? "";
+  const ssl = ep.startsWith("https://") ? "true" : "false";
+  ep = ep.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const q = (v) => String(v ?? "").replaceAll("'", "''");
+  await con.run(`create or replace secret ore_s3 (type s3, key_id '${q(cfg["s3.access-key-id"])}', secret '${q(cfg["s3.secret-access-key"])}', endpoint '${q(ep)}', url_style 'path', use_ssl ${ssl}, region '${q(cfg["s3.region"] ?? "auto")}')`);
+}
+
+/** El tipo de DuckDB de un tipo de Arrow (la vuelta de `nombreArrow`). */
+function tipoDuck(t) {
+  const simples = {
+    bool: "BOOLEAN", int8: "TINYINT", int16: "SMALLINT", int32: "INTEGER", int64: "BIGINT", uint8: "UTINYINT", uint16: "USMALLINT", uint32: "UINTEGER",
+    float: "FLOAT", double: "DOUBLE", string: "VARCHAR", "date32[day]": "DATE", "time64[us]": "TIME", "timestamp[us]": "TIMESTAMP",
+    "timestamp[us, tz=UTC]": "TIMESTAMPTZ", "timestamp[ms, tz=UTC]": "TIMESTAMPTZ", "timestamp[ms]": "TIMESTAMP", "timestamp[ns]": "TIMESTAMP", "timestamp[s]": "TIMESTAMP",
+  };
+  if (simples[t]) return simples[t];
+  const m = /^decimal128\((\d+), (\d+)\)$/.exec(t);
+  if (m) return `DECIMAL(${m[1]},${m[2]})`;
+  return null;
+}
+
+/** El tipo de Iceberg con el que la tabla se esboza (lo mismo que `ore-store`
+ *  hace al escribir, 0032): lo que el contrato no tiene se niega aquí, con el
+ *  nombre de la columna, antes de mandar nada. */
+function tipoIceberg(columna, t) {
+  const simples = {
+    bool: "boolean", int8: "long", int16: "long", int32: "long", int64: "long", uint8: "long", uint16: "long", uint32: "long",
+    float: "double", double: "double", string: "string", "date32[day]": "date", "time64[us]": "time",
+    "timestamp[us]": "timestamp", "timestamp[ms]": "timestamp", "timestamp[ns]": "timestamp", "timestamp[s]": "timestamp",
+    "timestamp[us, tz=UTC]": "timestamptz", "timestamp[ms, tz=UTC]": "timestamptz",
+  };
+  if (simples[t]) return simples[t];
+  const m = /^decimal128\((\d+), (\d+)\)$/.exec(t);
+  if (m) return `decimal(${m[1]}, ${m[2]})`;
+  if (t === "uint64") throw new Error(`write(): la columna \`${columna}\` es uint64, que no cabe en int64 sin mentir (0032); conviértela antes`);
+  if (t === "null") throw new Error(`write(): la columna \`${columna}\` no tiene tipo (todo nulo): dale uno antes (0032)`);
+  throw new Error(`write(): la columna \`${columna}\` es \`${t}\`, que el contrato de tipos (0032) no tiene`);
+}
+
+/** Lo que se escribe, como `{ nombres, tipos, columnas }` con tipos de Arrow. */
+function columnasDe(datos) {
+  if (datos && typeof datos === "object" && Array.isArray(datos.nombres) && Array.isArray(datos.columnas)) {
+    return { nombres: datos.nombres, tipos: datos.tipos ?? {}, columnas: datos.columnas };
+  }
+  if (!Array.isArray(datos)) throw new TypeError("write() quiere filas (objetos) o { nombres, tipos, columnas }");
+  if (datos.length === 0) throw new Error("write(): la tabla no tiene filas");
+  const nombres = [...new Set(datos.flatMap((f) => Object.keys(f ?? {})))];
+  const tipos = { ...(datos.tipos ?? {}) };
+  for (const n of nombres) {
+    if (!tipos[n]) {
+      const v = datos.find((f) => f?.[n] !== undefined && f?.[n] !== null)?.[n];
+      tipos[n] = tipoInferido(v);
+    }
+  }
+  return { nombres, tipos, columnas: nombres.map((n) => datos.map((f) => f?.[n] ?? null)) };
+}
+
+/** La tabla, en DuckDB y de ahí a Parquet (bytes): tipada columna a columna. */
+async function parquetDe_(nombres, tipos, columnas) {
+  const { timestampTZValueFromDate, timestampValueFromDate, dateValueFromDate } = await import("@duckdb/node-api");
+  const con = await duckdb();
+  const t = `escritura_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const decl = nombres.map((n) => {
+    const d = tipoDuck(tipos[n]);
+    if (!d) throw new Error(`write(): la columna \`${n}\` es \`${tipos[n]}\`, que el contrato de tipos (0032) no tiene`);
+    return `"${n.replaceAll('"', '""')}" ${d}`;
+  });
+  await con.run(`create temp table "${t}" (${decl.join(", ")})`);
+  const ap = await con.createAppender(t);
+  const n = columnas[0]?.length ?? 0;
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < nombres.length; c++) {
+      let v = columnas[c][i];
+      const tipo = tipos[nombres[c]];
+      if (v === undefined || v === null || (typeof v === "number" && Number.isNaN(v) && tipo !== "double")) { ap.appendNull(); continue; }
+      if (v?.constructor?.name === "Date") {
+        const d = new Date(v.getTime());
+        v = tipo === "date32[day]" ? dateValueFromDate(d) : tipo.includes("tz") ? timestampTZValueFromDate(d) : timestampValueFromDate(d);
+      } else if (typeof v === "number" && (tipo === "int64" || tipo === "int32")) {
+        v = BigInt(Math.trunc(v));
+      } else if (typeof v === "string" && tipo === "date32[day]") {
+        v = dateValueFromDate(new Date(v + "T00:00:00Z"));
+      }
+      ap.appendValue(v);
+    }
+    ap.endRow();
+  }
+  ap.closeSync();
+  const f = join(tmpdir(), `${t}.parquet`);
+  await con.run(`copy "${t}" to '${f.replaceAll("'", "''").replaceAll("\\", "/")}' (format parquet)`);
+  await con.run(`drop table "${t}"`);
+  const bytes = readFileSync(f);
+  try { unlinkSync(f); } catch {}
+  return bytes;
+}
+
+/** El escritor y su entorno: `ore-store-gcs` con el token prestado si la tabla
+ *  vive en `gs://`, `ore-store-r2` con las claves prestadas si en `s3://`. */
+function escritor(config, ubicacion) {
+  const env = { ...process.env };
+  let nombre;
+  if (ubicacion.startsWith("gs://")) {
+    nombre = "ore-store-gcs";
+    env.ORE_GCS_BUCKET = ubicacion.slice(5).split("/")[0];
+    env.ORE_GCS_TOKEN = config["gcs.oauth2.token"] ?? "";
+    if (!env.ORE_GCS_TOKEN) throw new Error(`write(): el catálogo no prestó credencial para \`${ubicacion}\``);
+  } else if (ubicacion.startsWith("s3://")) {
+    nombre = "ore-store-r2";
+    env.ORE_R2_BUCKET = ubicacion.slice(5).split("/")[0];
+    env.ORE_R2_S3_ENDPOINT = config["s3.endpoint"] ?? "";
+    env.ORE_R2_ACCESS_KEY_ID = config["s3.access-key-id"] ?? "";
+    env.ORE_R2_SECRET_ACCESS_KEY = config["s3.secret-access-key"] ?? "";
+    env.ORE_R2_REGION = config["s3.region"] ?? "auto";
+  } else {
+    throw new Error(`write(): la tabla vive en \`${ubicacion}\`, que no es un lago que este SDK sepa escribir`);
+  }
+  const dirs = [process.env.ORE_STORE_DIR, ...(process.env.PATH ?? "").split(delimiter)].filter(Boolean);
+  for (const d of dirs) {
+    for (const ext of ["", ".exe"]) {
+      const b = join(d, nombre + ext);
+      if (existsSync(b)) return { binario: b, env };
+    }
+  }
+  throw new Error(`write(): no está \`${nombre}\` en el PATH (la imagen del puesto lo lleva; fuera, ORE_STORE_DIR)`);
+}
+
+function mensajeDe(r) {
+  const e = r?.error;
+  return typeof e === "object" && e ? (e.message ?? JSON.stringify(e)) : String(e ?? JSON.stringify(r));
+}
+
+/** Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
+ *  Devuelve `{ tabla, filas, snapshot, metadata_location, operacion, repetida }`. */
+export async function write(nombre, datos, o) {
+  const { modo = "sobrescribir" } = o ?? {};
+  if (typeof nombre !== "string" || nombre.split(".").length !== 2) throw new Error(`write() quiere \`<paquete>.<tabla>\`, no ${JSON.stringify(nombre)}`);
+  if (modo !== "sobrescribir" && modo !== "anexar") throw new Error(`modo: ${JSON.stringify(modo)}: vale "sobrescribir" o "anexar"`);
+  const [ns, t] = nombre.split(".");
+  const { nombres, tipos, columnas } = columnasDe(datos);
+  if (nombres.length === 0 || (columnas[0]?.length ?? 0) === 0) throw new Error("write(): la tabla no tiene filas");
+  const esquema = { type: "struct", "schema-id": 0, fields: nombres.map((n, i) => ({ id: i + 1, name: n, type: tipoIceberg(n, tipos[n]), required: false })) };
+  const parquet = await parquetDe_(nombres, tipos, columnas);
+  const dataset = `datasets/${ns}_${t}`;
+  const semilla = `${nombre}|${modo}`;
+  const cargar = async () => {
+    const [c, r] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+    if (c === 200) return { base: r["metadata-location"], esbozo: null, config: r.config ?? {}, ubicacion: r.metadata.location };
+    if (c === 404) {
+      const [c2, r2] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables`, { name: t, "stage-create": true, schema: esquema, properties: {} }, 30_000, DELEGAR);
+      if (c2 !== 200) throw new Error(`write(${nombre}): ${mensajeDe(r2)}`);
+      return { base: null, esbozo: r2.metadata, config: r2.config ?? {}, ubicacion: r2.metadata.location };
+    }
+    throw new Error(`write(${nombre}): ore-serve contestó ${c}: ${mensajeDe(r)}`);
+  };
+  let clave = "";
+  let escrito = null;
+  for (let intento = 0; intento < 4; intento++) {
+    const { base, esbozo, config, ubicacion } = await cargar();
+    if (config["s3.access-key-id"]) s3 = config;
+    const { binario, env } = escritor(config, ubicacion);
+    const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla };
+    if (base) peticion.base = base; else peticion.esbozo = esbozo;
+    const p = spawnSync(binario, ["escribir"], { input: Buffer.concat([Buffer.from(JSON.stringify(peticion) + "\n"), parquet]), env, maxBuffer: 1 << 26 });
+    if (p.status !== 0) throw new Error(`write(): ${(p.stderr?.toString("utf8") ?? "").trim().replace(/^error: /, "") || "el escritor falló"}`);
+    escrito = JSON.parse(p.stdout.toString("utf8"));
+    clave = escrito.operacion || clave;
+    const [c, r] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables/${t}`, { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, 120_000);
+    if (c === 200) {
+      const snap = r?.metadata?.["current-snapshot-id"];
+      // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
+      // — los ids de snapshot no se comparan: en JS un int64 pierde precisión
+      return { tabla: nombre, filas: escrito.filas, snapshot: String(snap ?? ""), metadata_location: r?.["metadata-location"] ?? "", operacion: clave, repetida: base !== null && r?.["metadata-location"] === base };
+    }
+    if (c === 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
+    if (c >= 500) {
+      // el commit pudo entrar: se MIRA antes de darlo por perdido
+      const [c2, r2] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`);
+      if (c2 === 200) {
+        const md = r2.metadata;
+        const vigente = (md.snapshots ?? []).find((x) => x["snapshot-id"] === md["current-snapshot-id"]);
+        if (vigente?.summary?.["ore.operacion"] === clave) {
+          return { tabla: nombre, filas: escrito.filas, snapshot: String(md["current-snapshot-id"]), metadata_location: r2["metadata-location"], operacion: clave, repetida: false };
+        }
+      }
+      throw new Error(`write(${nombre}): el catálogo contestó ${c} y el commit no está: ${mensajeDe(r)}`);
+    }
+    throw new Error(`write(${nombre}): ${mensajeDe(r)}`);
+  }
+  throw new Error(`write(${nombre}): cuatro veces alguien escribió antes; vuelve a intentarlo`);
+}
+
 // ── El JSON de la consola (0032 §1) ───────────────────────────────────────
 /** Lo que devuelven `over()` y `sql()` —filas (objetos con valores tipados) o
  *  `{ nombres, tipos, columnas }`— → la salida `tabla` del contrato (0032 §1,
@@ -328,8 +547,10 @@ function tipoInferido(v) {
   if (typeof v === "number") return Number.isInteger(v) ? "int64" : "double";
   if (typeof v === "boolean") return "bool";
   if (typeof v === "string") return "string";
-  if (v instanceof Date) return "timestamp[ms, tz=UTC]";
+  // Por el nombre del constructor, no por `instanceof`: una celda corre en su
+  // propio contexto de `vm`, con su propio `Date`.
   const clase = v?.constructor?.name ?? "";
+  if (clase === "Date") return "timestamp[ms, tz=UTC]";
   if (clase === "DuckDBDecimalValue") return `decimal128(${v.width}, ${v.scale})`;
   if (clase === "DuckDBDateValue") return "date32[day]";
   if (clase === "DuckDBTimeValue") return "time64[us]";
@@ -409,4 +630,4 @@ export function jsonDe(v) {
 
 /** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
 
-export default { over, sql, persona, puesto, nombreArrow, LIMITE, tabla, jsonDe };
+export default { over, sql, write, persona, puesto, nombreArrow, LIMITE, tabla, jsonDe };

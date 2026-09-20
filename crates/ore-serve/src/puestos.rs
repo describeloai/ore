@@ -686,11 +686,17 @@ impl Servidor {
         id: &str,
     ) -> Result<(String, Option<String>), Respuesta> {
         if !es_agente(sujeto) {
-            return Err(Respuesta::error(403, "`x-ore-puesto` es del agente del puesto"));
+            return Err(Respuesta::error(
+                403,
+                "`x-ore-puesto` es del agente del puesto",
+            ));
         }
         let lista = self.puestos.lista.lock().unwrap();
         let Some(p) = lista.get(id) else {
-            return Err(Respuesta::error(410, format!("no hay ningún puesto `{id}`")));
+            return Err(Respuesta::error(
+                410,
+                format!("no hay ningún puesto `{id}`"),
+            ));
         };
         if p.agente.as_deref() != Some(sujeto.persona.as_str()) {
             return Err(Respuesta::error(403, "ese puesto no es de este agente"));
