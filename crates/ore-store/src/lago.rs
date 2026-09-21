@@ -666,18 +666,18 @@ impl Lago {
     }
 
     /// **Escribe los ficheros de datos** (Parquet, SNAPPY, con las estadísticas
-    /// que Iceberg pide) y **confirma el snapshot**. El lote llega con las
-    /// columnas en el orden del esquema de la tabla; se reenvuelve con el
-    /// esquema de Arrow que sale de ella para que lleve los ids de campo.
+    /// que Iceberg pide) y **confirma el snapshot**. Los lotes llegan con las
+    /// columnas en el orden del esquema de la tabla; se reenvuelven con el
+    /// esquema de Arrow que sale de ella para que lleven los ids de campo.
     pub fn instantanea(
         &self,
         tabla: &Table,
-        lote: RecordBatch,
+        lotes: Vec<RecordBatch>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Escrito, String> {
         let esquema = tabla.metadata().current_schema().as_ref().clone();
-        let p = self.preparar(tabla, esquema, vec![lote], operacion, propiedades)?;
+        let p = self.preparar(tabla, esquema, lotes, operacion, propiedades)?;
         let nueva = self.confirmar(tabla, p.cambios, p.requisitos)?;
         Ok(Escrito {
             tabla: nueva,

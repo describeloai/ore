@@ -24,6 +24,12 @@ es de un programa delegado — porque `ore` no puede abrir un socket
 > cero con `assert-create`, y el `metadata.json` siguiente escrito). `leer` ya no exige la
 > cabecera de la copia; `recoger` obedece `history.expire.*` de la tabla y **sin edad no expira
 > nada**; `historia` enseña la clave de idempotencia y la retención.
+>
+> **Y el 2026-09-21 por [0031](0031-el-puesto.md) («(d)»): `copiar`.** La copia de una vista
+> cuya raíz es una tabla del lago no pasa por el texto: la cabecera de `sellar` más `origen:
+> {metadata_location, dataset, proyeccion, filtros}`, y el almacén lee la tabla origen en
+> Arrow (position deletes aplicados), filtra, proyecta, tipa como `sellar` y sella con la
+> misma cola. Devuelve lo de `sellar` más `leidas`. No hay `ore-read-lago`.
 
 ---
 

@@ -7,7 +7,7 @@
 //! | 2 | comprobar el flujo | `ore` |
 //! | 3 | preguntarle al origen su testigo | `ore-read-<tipo> testigo` |
 //! | 4 | el puntero del árbol: **si la cabecera es la misma, termina aquí** | `ore` (+ `ore-store-<r2|gcs> buscar`, un HEAD) |
-//! | 5 | leer, canalizar y sellar el dataset | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` |
+//! | 5 | leer, canalizar y sellar el dataset | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` · sobre el lago, `ore-store-<r2|gcs> copiar` |
 //! | 6 | mover el puntero: `copias/<p>_<v>.json` | `ore` |
 //! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-<r2|gcs> recoger` |
 //!
@@ -315,7 +315,21 @@ fn una(
 
     // ── ③ El testigo ────────────────────────────────────────────────────────
     let r = vistas::raiz(pkg, v).map_err(|e| format!("sin raíz · {e:?}"))?;
-    let testigo = testigo(pkg, raiz_pkg, v, &r)?;
+    // **Una raíz del lago no tiene driver** (0031 «(d)»): su puntero está en
+    // el árbol (`datasets/<objeto>.json`) y no en una URL, y se copia en Arrow
+    // por `ore-store copiar`, sin pasar por el protocolo de texto de 0008.
+    let del_lago = lector::declaracion(raiz_pkg, &r.datasource)
+        .map(|(t, _)| t == "lago")
+        .unwrap_or(false);
+    let origen_del_lago = if del_lago {
+        Some(origen_del_lago(pkg, raiz_pkg, v, &r)?)
+    } else {
+        None
+    };
+    let testigo = match &origen_del_lago {
+        Some(o) => o.testigo.clone(),
+        None => testigo(pkg, raiz_pkg, v, &r)?,
+    };
 
     // ── ④ El puntero ────────────────────────────────────────────────────────
     //
@@ -431,6 +445,36 @@ fn una(
     // mundo.
     let ordena = testigo.0 == "log";
     let mut fundir = desde.is_some() && (cursor.is_some() || ordena);
+    // La petición del sellado lleva `dataset`, `base` y `fundir`, y la cabecera
+    // que se sella **no**: qué contiene la copia y cómo se construyó son dos
+    // cosas.
+    let peticion_de = |fundir: bool, extra: &str| {
+        let mut e = format!("{{\"dataset\":\"{dataset}\",\"fundir\":{fundir},");
+        if let Some(b) = &base {
+            e.push_str(&format!("\"base\":\"{b}\","));
+        }
+        e.push_str(extra);
+        cabecera.replacen('{', &e, 1)
+    };
+    if let Some(o) = &origen_del_lago {
+        // Sobre el lago se copia entera: un snapshot es una identidad, no un
+        // orden, y la cabecera igual ya corta el ciclo en ④ sin leer nada.
+        let salida = almacen("copiar", &peticion_de(false, &o.origen_json(&r)?), None)?;
+        let leidas = campo_de(&salida, "leidas")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        return informe_de(
+            &salida,
+            leidas,
+            &dataset,
+            &huella,
+            &plan.digest(),
+            &testigo,
+            bundle,
+            rehacer,
+            recoger && !seco,
+        );
+    }
     let filas = match leer(
         raiz_pkg,
         &r,
@@ -478,22 +522,40 @@ fn una(
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
     let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
-    // La petición del sellado lleva `dataset`, `base` y `fundir`, y la cabecera
-    // que se sella **no**: qué contiene la copia y cómo se construyó son dos
-    // cosas.
-    let mut extra = format!("{{\"dataset\":\"{dataset}\",\"fundir\":{fundir},");
-    if let Some(b) = &base {
-        extra.push_str(&format!("\"base\":\"{b}\","));
-    }
-    let peticion = cabecera.replacen('{', &extra, 1);
-    let salida = almacen("sellar", &peticion, Some(&filas))?;
+    let salida = almacen("sellar", &peticion_de(fundir, ""), Some(&filas))?;
+    informe_de(
+        &salida,
+        leidas,
+        &dataset,
+        &huella,
+        &plan.digest(),
+        &testigo,
+        bundle,
+        rehacer,
+        recoger && !seco,
+    )
+}
 
-    // ── ⑥ El puntero nuevo, y recoger lo que quedó atrás ────────────────────
+/// **⑥ El puntero nuevo, y recoger lo que quedó atrás** — de lo que el almacén
+/// contestó a `sellar` o a `copiar`, que es la misma línea.
+#[allow(clippy::too_many_arguments)]
+fn informe_de(
+    salida: &ore_core::parse::Node,
+    leidas: usize,
+    dataset: &str,
+    huella: &str,
+    plan: &str,
+    testigo: &(String, Option<String>),
+    bundle: &str,
+    rehacer: bool,
+    recoger: bool,
+) -> Result<(String, ore_core::json::Json), String> {
+    use ore_core::json::Json;
     //
     // La recogida va **después** de que el snapshot nuevo esté confirmado y no
     // antes: así, si algo se corta en medio, lo que sobra es un snapshot de
     // más y no uno de menos.
-    let campo = |k: &str| campo_de(&salida, k).unwrap_or_else(|| "?".into());
+    let campo = |k: &str| campo_de(salida, k).unwrap_or_else(|| "?".into());
     let entero = |k: &str| campo(k).parse::<i64>().unwrap_or(0);
     // Por columna, cuántas filas la traen: lo que salga vacío se dice aquí y
     // va al informe. Una copia con todas sus filas y sin sus números era
@@ -580,9 +642,9 @@ fn una(
         ("metadata_location", Json::s(campo("metadata_location"))),
         ("snapshot", Json::s(campo("snapshot"))),
         ("ubicacion", Json::s(campo("ubicacion"))),
-        ("dataset", Json::s(&dataset)),
-        ("cabecera", Json::s(&huella)),
-        ("plan", Json::s(plan.digest())),
+        ("dataset", Json::s(dataset)),
+        ("cabecera", Json::s(huella)),
+        ("plan", Json::s(plan)),
         // Procedencia: de qué árbol salió. NO está en la cabecera, y por eso
         // está aquí.
         ("bundle", Json::s(bundle)),
@@ -604,12 +666,7 @@ fn una(
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect();
-    let recogidas = recoger_dataset(
-        recoger && !seco,
-        &dataset,
-        &campo("metadata_location"),
-        &mut m,
-    )?;
+    let recogidas = recoger_dataset(recoger, dataset, &campo("metadata_location"), &mut m)?;
     Ok((
         format!(
             "copiada · {}\n  {} filas · {leidas} leidas · {} bytes · {como}{esquema_txt}{recogidas}{aviso_columnas}{aviso_tipos}",
@@ -1024,6 +1081,92 @@ fn testigo(
         );
     }
     Ok((modo, valor))
+}
+
+/// **La raíz de una vista cuando es una tabla del lago** (0031 «(d)»): lo que
+/// `ore-read-<tipo> testigo` contestaría, sacado de donde está —el puntero
+/// `datasets/<objeto>.json` que `write()` (o `ore datasets --commit`) dejó en
+/// el árbol— y lo que `ore-store copiar` necesita para abrirla.
+struct OrigenDelLago {
+    /// `(modo, valor)`, como el de un driver: `snapshot` con el id del snapshot
+    /// vigente de la tabla, o `none`.
+    testigo: (String, Option<String>),
+    metadata_location: String,
+    dataset: String,
+}
+
+impl OrigenDelLago {
+    /// El campo `origen` de la petición de `copiar`, ya con la coma final para
+    /// entrar en la cabecera: la tabla, la proyección y los filtros de la vista.
+    fn origen_json(&self, r: &vistas::Raiz) -> Result<String, String> {
+        use ore_core::json::Json;
+        // La misma petición que un driver recibiría (`proyeccion`, `filtros`),
+        // con las mismas negativas: un `where` con varios valores no cabe.
+        let p = peticion("", r, None, None, None, false)?;
+        let n = ore_core::parse::parse(&p).map_err(|e| format!("{e:?}"))?;
+        let mut o = vec![
+            ("dataset", Json::s(&self.dataset)),
+            ("metadata_location", Json::s(&self.metadata_location)),
+        ];
+        if let Some((_, f)) = n.get("filtros") {
+            o.push(("filtros", Json::de_node(f)));
+        }
+        if let Some((_, p)) = n.get("proyeccion") {
+            o.push(("proyeccion", Json::de_node(p)));
+        }
+        Ok(format!("\"origen\":{},", Json::obj(o).jcs()))
+    }
+}
+
+fn origen_del_lago(
+    pkg: &Package,
+    raiz_pkg: &Path,
+    v: &Loaded,
+    r: &vistas::Raiz,
+) -> Result<OrigenDelLago, String> {
+    let dataset = format!("datasets/{}", r.objeto);
+    let ruta = raiz_pkg.join(format!("{dataset}.json"));
+    let nombre = r.tabla.as_deref().unwrap_or(&r.objeto);
+    let puntero = std::fs::read_to_string(&ruta)
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .ok_or_else(|| {
+            format!(
+                "`{nombre}` es una tabla del lago y no tiene puntero (`{}`): nadie la escribió todavía",
+                ruta.display()
+            )
+        })?;
+    let metadata_location = campo_de(&puntero, "metadata_location").ok_or_else(|| {
+        format!(
+            "el puntero de `{nombre}` (`{}`) no dice `metadata_location`",
+            ruta.display()
+        )
+    })?;
+    // La marca sale de la gramática, como en `testigo()`. Una tabla del lago
+    // se fecha por snapshot —cada escritura es uno— o no se fecha; un `log` o
+    // un `field` sobre ella no tienen quién los conteste.
+    let testigo = match crate::registro::marca_de(pkg, v) {
+        ore_view::Marca::Ninguna => ("none".to_string(), None),
+        ore_view::Marca::Instantanea => (
+            "snapshot".to_string(),
+            campo_de(&puntero, "snapshot").filter(|s| s != "0"),
+        ),
+        otra => {
+            return Err(format!(
+                "`{nombre}` es una tabla del lago y declara `witness: {}`: una tabla del lago se fecha con `snapshot` (o `none`)",
+                match otra {
+                    ore_view::Marca::Registro => "log".to_string(),
+                    ore_view::Marca::Campo(c) => format!("field ({c})"),
+                    _ => "?".to_string(),
+                }
+            ));
+        }
+    };
+    Ok(OrigenDelLago {
+        testigo,
+        metadata_location,
+        dataset,
+    })
 }
 
 /// La cabecera de la copia, en JSON canónico y en **una** línea, que es lo que

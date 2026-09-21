@@ -2,6 +2,14 @@
 
 **Estado:** aceptado · **Fecha:** 2026-08-31 · **Decide:** la petición es un fragmento del plan, y traducir es del driver
 
+> **Una excepción con nombre (2026-09-21, [0031](0031-el-puesto.md) «(d)»): el lago no tiene
+> driver.** Una raíz `datasource: lago` —una tabla Iceberg del propio inquilino— no se lee
+> por este protocolo: el puntero está en el árbol y no en una URL, y las filas en texto son
+> el camino lento (medido: 8–14 s por millón frente a 0,4 s en Arrow). La misma petición
+> (`proyeccion`, `filtros`, las mismas negativas) va a `ore-store copiar` ([0015](0015-el-protocolo-del-almacen.md)),
+> que la resuelve en Arrow. Lo que este ADR fija —un fragmento del plan, no SQL— sigue
+> valiendo: cambia quién lo ejecuta, no lo que viaja.
+
 ---
 
 ## El problema

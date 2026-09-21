@@ -50,6 +50,7 @@ arrow-cast   = "58"
 # `modo: upsert` (0031 §11 ⑤): fundir por clave EN ARROW —lo que había menos
 # las claves que llegan, más lo que llega— con `filter`. Ya estaba en el cierre.
 arrow-select = "58"
+arrow-ord    = "58"
 # Los `requirements` y `updates` de un commit viajan en el JSON de la spec REST
 # de Iceberg, que `iceberg` serializa y deserializa con serde; aqui solo se
 # analiza y se imprime ese JSON. Ya estaba en el cierre por `iceberg`.

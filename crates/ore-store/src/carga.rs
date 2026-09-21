@@ -73,6 +73,13 @@ fn arrow_de(f: &Fisico) -> DataType {
     }
 }
 
+/// El `DataType` de Arrow de un tipo de OOS tal como la cabecera lo declara:
+/// lo que `lote` le da a cada columna, para que `copiar` (en Arrow, sin pasar
+/// por el texto) escriba exactamente el mismo esquema que `sellar`.
+pub fn arrow_del_oos(oos: &str) -> DataType {
+    arrow_de(&fisico_de(oos))
+}
+
 /// La vuelta: el físico que un `DataType` leído de la carga representa. Lo que
 /// esta crate no escribe (un Parquet de otro) se lee como texto si es texto, y
 /// se niega si no.

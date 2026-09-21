@@ -167,6 +167,27 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 lineas,
             )
         }
+        // La copia de una vista cuya raíz es una tabla del lago (0031 «(d)»):
+        // sin driver de texto. Se lee la tabla origen en Arrow, se proyecta, se
+        // filtra y se sella igual que `sellar`.
+        "copiar" => {
+            let cab = leer_cabecera(primera)?;
+            let dataset = campo("dataset").ok_or(
+                "a `copiar` le falta `dataset`: bajo qué nombre vive la copia (`copias/<p>_<v>`)",
+            )?;
+            let origen = n
+                .get("origen")
+                .map(|(_, o)| o.clone())
+                .ok_or("a `copiar` le falta `origen`: la tabla del lago que se copia")?;
+            copiar(
+                &lago,
+                &cab,
+                &dataset,
+                campo("base").as_deref(),
+                bandera("fundir"),
+                &origen,
+            )
+        }
         "recoger" | "recoger-seco" => {
             let dataset = campo("dataset").ok_or("a `recoger` le falta `dataset`")?;
             let ml = campo("metadata_location")
@@ -211,8 +232,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             historia(&lago, &ml, campo("dataset").as_deref().unwrap_or("dataset"))
         }
         otro => Err(format!(
-            "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `escribir`, `aplicar`, \
-             `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
+            "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
+             `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
              `recoger-huerfanas`, `leer` e `historia`"
         )),
     }
@@ -293,10 +314,306 @@ fn sellar<'a>(
         lote,
         sin_estrechar,
     } = carga::lote(&cab.esquema, &filas)?;
+    confirmar_copia(
+        lago,
+        cab,
+        dataset,
+        base,
+        fundir,
+        previa,
+        vec![lote],
+        columnas,
+        sin_estrechar,
+        None,
+    )
+}
+
+/// **`copiar`: sellar sin pasar por el texto** (0031 «(d)»). La raíz de la
+/// vista es una tabla del lago —`datasource: lago`, lo que `write()` dejó, o
+/// la copia de otra vista— y no hay `ore-read-lago`: el puntero está en el
+/// árbol y no en una URL, y el protocolo de texto de 0008 es el camino lento
+/// (medido: `ore-store leer` 8,3 s por millón de filas, Arrow 0,4 s). Aquí se
+/// abre la tabla origen por su `metadata_location`, se leen sus lotes vivos
+/// (con los position deletes aplicados), se aplican los filtros de la vista
+/// (`[[columna, "eq", valor]]`, con el literal llevado al tipo de la columna),
+/// se proyecta por nombre (`proyeccion: {campo: columna}`) y cada columna se
+/// lleva al físico que la cabecera declara (`cast`; lo que no convierte se
+/// queda como texto y va a `sin_estrechar`, como en `sellar`). De ahí en
+/// adelante es exactamente `sellar`: la cabecera va como propiedades del
+/// snapshot, la tabla nace o se sobrescribe, y `leer` la devuelve igual.
+///
+/// El orden de las filas es el del origen: no se ordena por clave como hace
+/// `sellar` con el texto, porque aquí la fuente es una tabla —con ficheros y
+/// orden propios— y reordenar un millón de filas para que el Parquet salga
+/// igual no vale lo que cuesta. `fundir` funde por clave en Arrow
+/// (`carga::fundir_lotes`).
+fn copiar(
+    lago: &Lago,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    base: Option<&str>,
+    fundir: bool,
+    origen: &ore_core::parse::Node,
+) -> Result<String, String> {
+    use arrow_array::{Array, RecordBatch, StringArray};
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    let campo = |k: &str| -> Option<String> {
+        origen
+            .get(k)
+            .and_then(|(_, v)| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let ml = campo("metadata_location")
+        .ok_or("a `origen` le falta `metadata_location`: el puntero de la tabla que se copia")?;
+    let nombre_origen = campo("dataset").unwrap_or_else(|| "origen".into());
+    let fuente = lago.abrir(&ml, &nombre_origen)?;
+    let proyeccion: Vec<(String, String)> = origen
+        .get("proyeccion")
+        .map(|(_, p)| {
+            p.entries()
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let filtros: Vec<(String, String)> = origen
+        .get("filtros")
+        .map(|(_, f)| {
+            f.items()
+                .iter()
+                .map(|t| {
+                    let i = t.items();
+                    match (
+                        i.first().and_then(|x| x.as_str()),
+                        i.get(1).and_then(|x| x.as_str()),
+                        i.get(2).and_then(|x| x.as_str()),
+                    ) {
+                        (Some(c), Some("eq"), Some(v)) => Ok((c.to_string(), v.to_string())),
+                        (Some(c), Some(op), _) => Err(format!(
+                            "el filtro sobre `{c}` es `{op}` y `copiar` sólo sabe `eq`"
+                        )),
+                        _ => Err("un filtro no tiene la forma `[columna, \"eq\", valor]`".into()),
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    // Cada campo de la cabecera nombra una columna del origen; lo que no esté
+    // en la proyección no se copia, y una columna que el origen no tiene se
+    // dice con su nombre (la vista se validó contra la Table, pero la tabla
+    // pudo evolucionar desde entonces).
+    for (campo, col) in &proyeccion {
+        if fuente
+            .metadata()
+            .current_schema()
+            .field_by_name(col)
+            .is_none()
+        {
+            return Err(format!(
+                "la vista proyecta `{campo}` desde `{col}`, y la tabla `{nombre_origen}` no tiene esa columna"
+            ));
+        }
+    }
+    for (col, _) in &filtros {
+        if fuente
+            .metadata()
+            .current_schema()
+            .field_by_name(col)
+            .is_none()
+        {
+            return Err(format!(
+                "la vista filtra por `{col}`, y la tabla `{nombre_origen}` no tiene esa columna"
+            ));
+        }
+    }
+
+    // El esquema de la copia: el de la cabecera (en su orden), cada columna en
+    // el físico de 0032 que declara — o como texto si el origen no convierte.
+    let previa = match base {
+        Some(b) => Some(lago.abrir(b, dataset)?),
+        None => None,
+    };
+    let leidos = lago.lotes(&fuente)?;
+    let leidas: usize = leidos.iter().map(|l| l.num_rows()).sum();
+    let mut sin_estrechar: BTreeMap<String, String> = BTreeMap::new();
+    let mut lotes: Vec<RecordBatch> = Vec::with_capacity(leidos.len());
+    let mut destino: Option<Arc<Schema>> = None;
+    for lote in &leidos {
+        // ① los filtros: `eq` sobre la columna del origen, con el literal
+        // llevado al tipo de la columna (un `10.5` contra un decimal es
+        // `10.50`; un instante en texto, el instante). Un nulo no es igual a
+        // nada, y no pasa.
+        let mut lote = lote.clone();
+        for (col, valor) in &filtros {
+            let c = lote
+                .column_by_name(col)
+                .ok_or_else(|| format!("el lote no trae `{col}`"))?;
+            let literal = arrow_cast::cast(&StringArray::from(vec![valor.as_str()]), c.data_type())
+                .map_err(|e| {
+                    format!(
+                        "el filtro `{col} = {valor}` no es un `{}`: {e}",
+                        c.data_type()
+                    )
+                })?;
+            if literal.is_null(0) {
+                return Err(format!(
+                    "el filtro `{col} = {valor}` no es un `{}`",
+                    c.data_type()
+                ));
+            }
+            let igual = arrow_ord::cmp::eq(c, &arrow_array::Scalar::new(literal))
+                .map_err(|e| format!("no se pudo comparar `{col}`: {e}"))?;
+            lote = arrow_select::filter::filter_record_batch(&lote, &igual)
+                .map_err(|e| format!("no se pudo filtrar por `{col}`: {e}"))?;
+        }
+        // ② la proyección, al esquema de la cabecera. El físico se decide con
+        // el primer lote y vale para todos: si una columna no convierte en uno,
+        // se queda texto en todos (los lotes de una tabla llevan el mismo tipo).
+        let esquema = match &destino {
+            Some(d) => d.clone(),
+            None => {
+                let mut campos = Vec::with_capacity(cab.esquema.len());
+                for (nombre, tipo) in &cab.esquema {
+                    let col = proyeccion.iter().find(|(c, _)| c == nombre).map(|(_, o)| o.as_str())
+                        .ok_or_else(|| format!("la cabecera declara `{nombre}` y la proyección no dice de qué columna sale"))?;
+                    let c = lote
+                        .column_by_name(col)
+                        .ok_or_else(|| format!("el lote no trae `{col}`"))?;
+                    let pedido = carga::arrow_del_oos(tipo);
+                    let fisico = if c.data_type() == &pedido
+                        || arrow_cast::can_cast_types(c.data_type(), &pedido)
+                    {
+                        pedido
+                    } else {
+                        sin_estrechar.insert(
+                            nombre.clone(),
+                            format!(
+                                "la columna `{col}` del origen es `{}` y no convierte a `{tipo}`",
+                                c.data_type()
+                            ),
+                        );
+                        arrow_schema::DataType::Utf8
+                    };
+                    campos.push(Field::new(nombre, fisico, true));
+                }
+                let d = Arc::new(Schema::new(campos));
+                destino = Some(d.clone());
+                d
+            }
+        };
+        let mut columnas = Vec::with_capacity(esquema.fields().len());
+        for f in esquema.fields() {
+            let col = proyeccion
+                .iter()
+                .find(|(c, _)| c == f.name())
+                .map(|(_, o)| o.as_str())
+                .unwrap_or(f.name());
+            let c = lote
+                .column_by_name(col)
+                .ok_or_else(|| format!("el lote no trae `{col}`"))?;
+            columnas.push(if c.data_type() == f.data_type() {
+                c.clone()
+            } else {
+                arrow_cast::cast(c, f.data_type()).map_err(|e| {
+                    format!("la columna `{col}` no convierte a `{}`: {e}", f.data_type())
+                })?
+            });
+        }
+        let l = RecordBatch::try_new(esquema, columnas)
+            .map_err(|e| format!("el lote proyectado no construye: {e}"))?;
+        if l.num_rows() > 0 {
+            lotes.push(l);
+        }
+    }
+    let esquema = match destino {
+        Some(d) => d,
+        // Un origen sin filas: la copia nace vacía, con el esquema de la cabecera.
+        None => Arc::new(Schema::new(
+            cab.esquema
+                .iter()
+                .map(|(n, t)| Field::new(n, carga::arrow_del_oos(t), true))
+                .collect::<Vec<_>>(),
+        )),
+    };
+    if lotes.is_empty() {
+        lotes.push(RecordBatch::new_empty(esquema.clone()));
+    }
+    // Las mismas cuentas que `sellar`: cuántas filas traen cada columna.
+    let columnas = Json::Obj(
+        esquema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let n: usize = lotes
+                    .iter()
+                    .map(|l| l.num_rows() - l.column(i).null_count())
+                    .sum();
+                (f.name().clone(), Json::Int(n as i64))
+            })
+            .collect(),
+    );
+    confirmar_copia(
+        lago,
+        cab,
+        dataset,
+        base,
+        fundir,
+        previa,
+        lotes,
+        columnas,
+        sin_estrechar,
+        Some(leidas),
+    )
+}
+
+/// **La cola común de `sellar` y `copiar`**: los lotes ya tipados van a la
+/// tabla de `dataset` —fundidos por clave sobre lo que había si `fundir`—, la
+/// cabecera como propiedades del snapshot, y el puntero nuevo con sus cuentas.
+#[allow(clippy::too_many_arguments)]
+fn confirmar_copia(
+    lago: &Lago,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    base: Option<&str>,
+    fundir: bool,
+    previa: Option<iceberg::table::Table>,
+    lotes: Vec<arrow_array::RecordBatch>,
+    columnas: Json,
+    sin_estrechar: BTreeMap<String, String>,
+    leidas: Option<usize>,
+) -> Result<String, String> {
+    // `sellar` funde en texto antes de tipar; `copiar` funde aquí, en Arrow,
+    // sobre los lotes vivos de la copia anterior llevados al esquema del lote.
+    let lotes = if fundir && leidas.is_some() {
+        if cab.clave.is_empty() {
+            return Err(
+                "se pidió fundir sobre la copia anterior y la cabecera no declara `clave`: sin \
+                 ella no se sabe qué fila sustituye a cuál"
+                    .into(),
+            );
+        }
+        let Some(t) = &previa else {
+            return Err("se pidió fundir y no hay `base` sobre la que fundir".into());
+        };
+        let esquema = lotes[0].schema();
+        let viejos = lago
+            .lotes(t)?
+            .iter()
+            .map(|l| carga::al_esquema(l, &esquema))
+            .collect::<Result<Vec<_>, _>>()?;
+        carga::fundir_lotes(viejos, &lotes, &cab.clave)?
+    } else {
+        lotes
+    };
 
     // El esquema que el lote pide, con los ids de la tabla si la hay.
     let deseado = lago::esquema_deseado(
-        &lago::columnas_de(&lote),
+        &lago::columnas_de(&lotes[0]),
         previa
             .as_ref()
             .map(|t| t.metadata().current_schema().as_ref()),
@@ -330,7 +647,7 @@ fn sellar<'a>(
             (t, Operacion::Anexar, false)
         }
     };
-    let escrito = lago.instantanea(&tabla, lote, operacion, propiedades_snapshot)?;
+    let escrito = lago.instantanea(&tabla, lotes, operacion, propiedades_snapshot)?;
     let t = &escrito.tabla;
 
     Ok(Json::obj([
@@ -339,6 +656,12 @@ fn sellar<'a>(
         ("esquema_cambiado", Json::Bool(esquema_cambiado)),
         ("ficheros", Json::Int(escrito.ficheros as i64)),
         ("filas", Json::Int(escrito.filas as i64)),
+        // Cuántas filas se leyeron del origen (`copiar`): con filtros, más de
+        // las que van a la copia. Es la unidad de 0014, y la dice el que lee.
+        (
+            "leidas",
+            Json::Int(leidas.unwrap_or(escrito.filas as usize) as i64),
+        ),
         (
             "metadata_location",
             Json::s(t.metadata_location().unwrap_or_default()),
@@ -2048,6 +2371,96 @@ mod tests {
         )
         .unwrap_err();
         assert!(mal.contains("`nadie`"), "{mal}");
+    }
+
+    /// `copiar` (0031 «(d)»): la copia de una vista cuya raíz es una tabla del
+    /// lago, en Arrow y sin texto: proyecta por nombre, filtra con el literal
+    /// al tipo de la columna, lleva cada columna al físico de la cabecera, y
+    /// sella igual que `sellar` (la cabecera en el snapshot, `leer` la da).
+    #[test]
+    fn copiar_proyecta_filtra_y_sella_sin_texto() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let ds = "datasets/ventas_origen";
+        // la tabla origen: ids 0..5, n0..n4, totales 0.50..4.50
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"c-1\"}}"),
+            &tabla_ipc(0, 5, false)[..],
+        )
+        .expect("nace");
+        let ml = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, None),
+            "metadata_location",
+        );
+        let peticion = |filtros: &str, base: &str| {
+            format!(
+                "{{\"dataset\":\"copias/ventas_v\",\"fundir\":false{base},\"origen\":{{\"dataset\":\"{ds}\",\"metadata_location\":\"{ml}\",\"proyeccion\":{{\"clave\":\"id\",\"importe\":\"total\",\"quien\":\"nombre\"}},\"filtros\":{filtros}}}}}"
+            )
+        };
+        let cab = sobre::Cabecera {
+            plan: "sha256:plan".into(),
+            esquema: [
+                ("clave".to_string(), "Integer".to_string()),
+                ("importe".to_string(), "Decimal".to_string()),
+                ("quien".to_string(), "String".to_string()),
+            ]
+            .into(),
+            testigo: sobre::Testigo {
+                modo: "snapshot".into(),
+                valor: Some("1".into()),
+            },
+            clave: Vec::new(),
+            conducto: "materialization.payload".into(),
+        };
+        // con un filtro: el literal `2.50` contra el decimal(18,2) del origen
+        let n = nodo(&peticion("[[\"total\",\"eq\",\"2.5\"]]", ""));
+        let origen = n.get("origen").unwrap().1.clone();
+        let c = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).expect("copia");
+        assert_eq!(campo(&c, "operacion"), "creada");
+        assert_eq!(campo(&c, "filas"), "1", "{c}");
+        assert_eq!(
+            campo(&c, "leidas"),
+            "5",
+            "las cinco del origen se leyeron: {c}"
+        );
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{}\",\"dataset\":\"copias/ventas_v\"}}",
+                campo(&c, "metadata_location")
+            )),
+        )
+        .expect("lee");
+        let mut lineas = l.lines();
+        let cabecera: serde_json::Value = serde_json::from_str(lineas.next().unwrap()).unwrap();
+        assert_eq!(cabecera["conducto"], "materialization.payload");
+        assert_eq!(cabecera["testigo"]["valor"], "1");
+        let filas: Vec<serde_json::Value> =
+            lineas.map(|x| serde_json::from_str(x).unwrap()).collect();
+        assert_eq!(filas.len(), 1, "{l}");
+        assert_eq!(filas[0]["clave"], "2");
+        assert_eq!(filas[0]["importe"], "2.5");
+        assert_eq!(filas[0]["quien"], "n2");
+        // sin filtro, sobre la copia anterior: se sobrescribe entera
+        let ml_v = campo(&c, "metadata_location");
+        let n = nodo(&peticion("[]", &format!(",\"base\":\"{ml_v}\"")));
+        let origen = n.get("origen").unwrap().1.clone();
+        let c2 = copiar(&lago, &cab, "copias/ventas_v", Some(&ml_v), false, &origen)
+            .expect("copia entera");
+        assert_eq!(campo(&c2, "operacion"), "sobrescrita");
+        assert_eq!(campo(&c2, "filas"), "5");
+        let j: serde_json::Value = serde_json::from_str(&c2).unwrap();
+        assert_eq!(j["columnas"]["importe"], 5);
+        // una columna que el origen no tiene, y un filtro que no es del tipo: se dicen
+        let n = nodo(&peticion("[]", "").replace("\"quien\":\"nombre\"", "\"quien\":\"apellido\""));
+        let origen = n.get("origen").unwrap().1.clone();
+        let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
+        assert!(e.contains("`apellido`"), "{e}");
+        let n = nodo(&peticion("[[\"id\",\"eq\",\"tres\"]]", ""));
+        let origen = n.get("origen").unwrap().1.clone();
+        let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
+        assert!(e.contains("`id = tres`"), "{e}");
     }
 
     fn aplicar_lo_escrito_err(

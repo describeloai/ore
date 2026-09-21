@@ -59,6 +59,16 @@
 #      tabla que no existe 404, la base vieja 409 `CommitFailedException` con
 #      `actual` — todos con la forma de error de la spec
 #
+# Y materializar SOBRE el lago (0031 «(d)»): una View cuya raíz es una tabla
+# del lago no tiene driver de texto —el puntero está en el árbol, no en una
+# URL— y se copia en Arrow (`ore-store copiar`):
+#  14  `ore materialize` de una View sobre `ventas.py` (267 filas vivas, con
+#      position deletes): el testigo es el snapshot del puntero, la copia se
+#      lee, se proyecta y se filtra en Arrow (`where: { pais: FR }` → 1 fila de
+#      267 leídas; sin where → 267 y sin las borradas), `ore ask` la contesta
+#      tipada, la segunda pasada dice «ya está» sin leer, y una Table del lago
+#      que nadie escribió se dice
+#
 # Necesita `ore`, `ore-serve`, `ore-store-r2` en target/{release,debug}, git y
 # python3 con pyarrow (para 7–10), pyiceberg y duckdb (11–13); sin ellos se
 # saltan y se dice.
@@ -568,4 +578,96 @@ c=$(pide POST /v1/namespaces/ventas/tables/py "{\"requirements\":[{\"type\":\"as
 c=$(pide POST /v1/namespaces/ventas/tables/nadie '{"requirements":[],"updates":[{"action":"set-properties","updates":{"x":"y"}}]}'); [ "$c" = "404" ] || falla "13 · commit sobre lo que no existe: $c"
 ok "13 · la credencial prestada acotada al prefijo (y sin pedirla, nada); 404, 400, 409 con \`actual\` y la forma de error de la spec"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9313\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ── 14 · materializar sobre el lago: Arrow, sin driver ───────────────────────
+( cd "$CL" && git pull -q origin main ) || falla "14 · no se pudo traer el árbol"
+mkdir -p "$CL/packages/ventas/views"
+cat > "$CL/conduits.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: lago }
+spec:
+  owner: team:data
+  conduits:
+    materialization.payload: { oos.maturity: DRAFT }
+Y
+cat > "$CL/packages/ventas/views/francia.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: francia, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { table: ventas.py }
+  fields: { id: id, pais: pais, importe: total }
+  where: { pais: FR }
+  materialized: { datasource: lago, table: "copias.francia" }
+Y
+cat > "$CL/packages/ventas/views/todoPy.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: todoPy, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { table: ventas.py }
+  fields: { id: id, cuando: cuando }
+  materialized: { datasource: lago, table: "copias.todoPy" }
+Y
+cat > "$CL/packages/ventas/tables/nunca.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: nunca, namespace: ventas }
+spec:
+  datasource: lago
+  object: "ventas_nunca"
+  columns: { id: { type: Integer } }
+  reads: { fullScan: cheap }
+  changes: { mode: append, witness: snapshot }
+Y
+cat > "$CL/packages/ventas/views/deNunca.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: deNunca, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { table: ventas.nunca }
+  fields: { id: id }
+  materialized: { datasource: lago, table: "copias.deNunca" }
+Y
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "14 · el árbol con las vistas sobre el lago no compila"; }
+"$ORE" materialize "$CL" --vista ventas.francia --vista ventas.todoPy --vista ventas.deNunca > "$TMP/mat14.txt" 2>&1
+grep -q "ventas_nunca.json" "$TMP/mat14.txt" && grep -q "nadie la escribió todavía" "$TMP/mat14.txt" || falla "14 · una Table del lago sin puntero tenía que decirse: $(cat "$TMP/mat14.txt")"
+grep -q "ore-read-lago" "$TMP/mat14.txt" && falla "14 · sigue pidiendo un driver ore-read-lago: $(cat "$TMP/mat14.txt")"
+[ "$(jq_ "$CL/copias/ventas_francia.json" estado)" = "copiada" ] || falla "14 · francia no se copió: $(cat "$TMP/mat14.txt")"
+[ "$(jq_ "$CL/copias/ventas_francia.json" filas)" = "1" ] && [ "$(jq_ "$CL/copias/ventas_francia.json" leidas)" = "267" ] || falla "14 · francia: 1 fila de 267 leídas: $(cat "$CL/copias/ventas_francia.json")"
+[ "$(jq_ "$CL/copias/ventas_francia.json" testigo.modo)" = "snapshot" ] && [ "$(jq_ "$CL/copias/ventas_francia.json" testigo.valor)" = "$(jq_ "$CL/datasets/ventas_py.json" snapshot)" ] || falla "14 · el testigo tenía que ser el snapshot del puntero de ventas.py: $(cat "$CL/copias/ventas_francia.json")"
+[ "$(jq_ "$CL/copias/ventas_francia.json" columnas.importe)" = "1" ] || falla "14 · las cuentas por columna: $(cat "$CL/copias/ventas_francia.json")"
+[ "$(jq_ "$CL/copias/ventas_todoPy.json" filas)" = "267" ] && [ "$(jq_ "$CL/copias/ventas_todoPy.json" operacion)" = "creada" ] || falla "14 · todoPy: 267 filas: $(cat "$CL/copias/ventas_todoPy.json")"
+"$ORE" ask "$CL" --vista ventas.francia > "$TMP/ask14.txt" 2>"$TMP/ask14.err" || { cat "$TMP/ask14.err"; falla "14 · ore ask francia"; }
+"$PY" - "$TMP/ask14.txt" <<'EOF' || falla "14 · lo que ask contesta de francia: $(cat "$TMP/ask14.txt")"
+import json, sys
+l = [x for x in open(sys.argv[1], encoding="utf-8").read().splitlines() if x.strip()]
+cab = json.loads(l[0]); filas = [json.loads(x) for x in l[1:]]
+assert cab["filas"] == 1 and cab["copia"]["de"] == "ventas.francia", cab
+assert cab["columnas"] == {"id": "Integer", "pais": "String", "importe": "Decimal"}, cab["columnas"]
+assert filas == [{"id": 3, "pais": "FR", "importe": "4.5"}], filas
+EOF
+"$ORE" ask "$CL" --vista ventas.todoPy > "$TMP/ask14.txt" 2>"$TMP/ask14.err" || { cat "$TMP/ask14.err"; falla "14 · ore ask todoPy"; }
+"$PY" - "$TMP/ask14.txt" <<'EOF' || falla "14 · lo que ask contesta de todoPy: $(head -3 "$TMP/ask14.txt")"
+import json, sys
+l = [x for x in open(sys.argv[1], encoding="utf-8").read().splitlines() if x.strip()]
+cab = json.loads(l[0]); filas = [json.loads(x) for x in l[1:]]
+assert cab["filas"] == 267 and len(filas) == 267, cab
+ids = sorted(f["id"] for f in filas)
+assert 1 not in ids and 3 in ids and 309 in ids and len(set(ids)) == 267, ids[:5] + ids[-3:]
+assert cab["columnas"] == {"id": "Integer", "cuando": "DateTimeTz"}, cab["columnas"]
+assert all(f["cuando"].startswith("2023-11-14") for f in filas), filas[0]
+EOF
+# la segunda pasada: la misma cabecera (el mismo snapshot), y no se lee nada
+"$ORE" materialize "$CL" --vista ventas.francia > "$TMP/mat14b.txt" 2>&1 || { cat "$TMP/mat14b.txt"; falla "14 · la segunda pasada"; }
+grep -q "ya está" "$TMP/mat14b.txt" && [ "$(jq_ "$CL/copias/ventas_francia.json" estado)" = "al-dia" ] || falla "14 · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14b.txt")"
+# y en el bucket: la copia es una tabla Iceberg bajo copias/, con su cabecera
+ML14=$(jq_ "$CL/copias/ventas_francia.json" metadata_location)
+case "$ML14" in s3://copia/ore/v2/copias/ventas_francia/*) ;; *) falla "14 · la copia no vive bajo copias/: $ML14";; esac
+printf '{"metadata_location":"%s","dataset":"copias/ventas_francia"}\n' "$ML14" | "$STORE" leer | head -1 | grep -q '"conducto":"' || falla "14 · la copia no lleva su cabecera"
+ok "14 · materializar sobre el lago sin driver: francia 1 fila de 267 leídas (filtro y proyección en Arrow, sin las borradas), todoPy 267, el testigo es el snapshot del puntero, ask las contesta tipadas, la segunda pasada no lee, y una Table que nadie escribió se dice"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9314\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
