@@ -7,9 +7,9 @@
 #   decisión de la base estándar o de `POST /paquetes/{n}/copia`). Lee el origen con la credencial del
 #   cofre, sella el DATASET en el bucket del inquilino —una tabla Iceberg, con
 #   su historia (W3.6a, 0031 §10)— con `ore-store-gcs` y el token de su cuenta
-#   —sin clave estática—, y deja en el árbol el PUNTERO de cada vista
-#   (`copias/<paquete>_<vista>.json`: qué `metadata.json` es el vigente, con qué
-#   cabecera, hasta qué testigo, cuántas filas).
+#   —sin clave estática—, y deja en el árbol el PUNTERO de cada dataset
+#   (`datasets/<paquete>_<dataset>.json`: qué `metadata.json` es el vigente,
+#   con qué cabecera, hasta qué testigo, cuántas filas).
 #
 # ⭐ El árbol es el catálogo. El puntero es el estado (0031 §10): `ore` lo lee
 #   antes de leer una fila, y lo mueve al terminar. El `git push` de abajo es el
@@ -218,17 +218,19 @@ spec:
               git clone --quiet \
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
-              echo "### las vistas con copia: $VISTAS"
-              # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esas
-              # vistas. Se leen de los documentos con awk (no con python: ver
-              # el catálogo), y cada una pide su credencial al cofre.
+              echo "### los datasets con copia: $VISTAS"
+              # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esos
+              # datasets. Lo dice `ore view .` en la línea `raíz` de cada uno
+              # (la cadena entera, dataset → vista → tabla, la sigue el motor y
+              # no un awk sobre los documentos), y cada fuente pide su
+              # credencial al cofre. Una raíz en `lago` (un dataset sobre lo
+              # que `write()` dejó) no pide nada: el bucket es del inquilino.
+              ore view . > /trabajo/vista.txt 2>&1 || { echo "✗ el árbol no compila:"; tail -5 /trabajo/vista.txt; exit 1; }
               FUENTES=""
               for QV in $(echo "$VISTAS" | tr ',' ' '); do
-                P="${QV%%.*}"; V="${QV#*.}"
-                T=$(awk -v n="$V" '/^kind: View/{k=1} k&&/name: *[A-Za-z0-9_]+/&&!m{if(match($0,"name: *"n"[^A-Za-z0-9_]|name: *"n"$")){m=1}} m&&/from:/{if(match($0,/table: *[A-Za-z0-9_.]+/)){s=substr($0,RSTART,RLENGTH);sub(/table: */,"",s);sub(/.*\./,"",s);print s;exit}}' packages/"$P"/views/*.yaml)
-                [ -n "$T" ] || { echo "✗ \`$QV\` no lee una tabla del paquete"; exit 1; }
-                F=$(awk -v n="$T" '/^kind: Table/{k=1} k&&/name: *[A-Za-z0-9_]+/&&!m{if(match($0,"name: *"n"[^A-Za-z0-9_]|name: *"n"$")){m=1}} m&&/datasource: *[A-Za-z0-9_]+/{s=$0;sub(/.*datasource: */,"",s);sub(/[^A-Za-z0-9_].*/,"",s);print s;exit}' packages/"$P"/tables/*.yaml)
-                [ -n "$F" ] || { echo "✗ la tabla \`$T\` de \`$QV\` no dice su fuente"; exit 1; }
+                F=$(awk -v n="$QV" '$0==n{m=1;next} m&&/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s;exit}' /trabajo/vista.txt)
+                [ -n "$F" ] || { echo "✗ \`$QV\` no dice su raíz en \`ore view\`"; exit 1; }
+                [ "$F" = lago ] && continue
                 case ",$FUENTES," in *",$F,"*) ;; *) FUENTES="${FUENTES:+$FUENTES,}$F" ;; esac
               done
               echo "### fuentes que hay que abrir: $FUENTES"
@@ -261,7 +263,7 @@ spec:
 
               # ⭐ El ciclo. `ore` no abre sockets: canaliza `ore-read-<tipo>` a
               #   `ore-store-gcs`, que escribe la tabla con el token de esta
-              #   cuenta. El puntero por vista va a `copias/` en el árbol.
+              #   cuenta. El puntero por dataset va a `datasets/` en el árbol.
               # ⚠️ Y una vista que falla NO tumba la pasada: `materialize` deja
               #   el puntero de cada una (copiada, al día, o error con su motivo
               #   —sin perder el dataset que había—) y es ESO lo que hay que
@@ -274,13 +276,13 @@ spec:
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
-                ore materialize . --rehacer $SOLO --recoger --informe copias                   || echo "⚠️ alguna vista no se rehizo: su informe en copias/ lo dice"
+                ore materialize . --rehacer $SOLO --recoger --informe datasets                   || echo "⚠️ algún dataset no se rehizo: su informe en datasets/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                ore materialize . --recoger --informe copias                   || echo "⚠️ alguna vista no se copió: su informe en copias/ lo dice"
+                ore materialize . --recoger --informe datasets                   || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
               fi
 
-              git add -A copias
+              git add -A datasets
               if git diff --cached --quiet; then
                 echo "· la copia no cambió: nada que empujar"
                 exit 0

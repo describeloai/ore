@@ -3,8 +3,8 @@
 #
 # ⭐ Todo es un dataset: la copia de cada vista materializada y la salida de
 #   cada `write()` son tablas Iceberg en el bucket del inquilino, con historia
-#   (snapshots), y el árbol es el catálogo (un puntero por dataset en `copias/`
-#   y `datasets/`). Cada escritura deja un snapshot más; lo que nadie lee ya
+#   (snapshots), y el árbol es el catálogo (un puntero por dataset en
+#   `datasets/`). Cada escritura deja un snapshot más; lo que nadie lee ya
 #   tiene que retirarse, o el bucket crece con cada refresco (R5).
 #
 #   Esto lo hace UNA pasada diaria de `ore datasets . --recoger --edad 7d`:
@@ -122,7 +122,7 @@ spec:
                   cd arbol
                   echo "### mantenimiento del lago (edad: $EDAD · bucket: $ORE_GCS_BUCKET)"
                   ore datasets . --recoger --edad "$EDAD" || { echo "⚠️ el mantenimiento falló: los punteros no se tocan"; exit 1; }
-                  git add -A copias datasets
+                  git add -A datasets
                   if git diff --cached --quiet; then
                     echo "· ningún puntero se movió: nada que empujar"
                     exit 0
