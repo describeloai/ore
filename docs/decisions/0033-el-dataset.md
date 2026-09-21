@@ -1,6 +1,6 @@
 # 0033 · El dataset: lo que tiene bytes es un documento
 
-**Estado:** propuesto (decidido el 2026-09-21; nada construido ni medido todavía) ·
+**Estado:** hecho (decidido, construido, migrado y medido el 2026-09-21; «Lo construido» abajo) ·
 **Fecha:** 2026-09-21 · **Decide:** que lo que un inquilino **tiene** —bytes en su lago con
 historia— se nombra con **un** documento de su paquete, `kind: Dataset`, y no con dos disfraces
 (una `View` con `materialized` para la copia; una `Table` con `datasource: lago` para lo que
@@ -269,6 +269,47 @@ al lado.
 `retention` como decisiones del documento, la rama como ref del puntero, «tabular» dicho, y la
 calidad fuera. Lo que no cambia: un kind, sin `labels`, el puntero como estado, la `Table`
 intacta, la `View` como sólo la pregunta.
+
+## Lo construido (2026-09-21): de la spec a los árboles reales, en seis pasos
+
+Se construyó con un brief desechable (`docs/dataset.md`, borrado al cerrar esto) y en el
+orden del método: **la conformance antes del código**, la unidad antes del plumazo, la medida
+antes de migrar. Lo que queda de él que vale, aquí.
+
+| paso | qué | lo que quedó |
+|---|---|---|
+| **0** | la conformance v1alpha12 en oos (13 casos), en rojo | oos `9255ad5`; el marcador `borrador_de_v1alpha12` daba 1 / 13 antes del código |
+| **1** | la unidad en ore-core | ORE `5eb8464`: `Kind::Dataset`, `Fuente::Dataset`, `cadena()` sigue por un mantenido y toca suelo en un escrito, `raiz_de_lectura()` = el primer dataset bajando, `suelo()`, `expone_en()`, `backedBy` a View o Dataset, `View.materialized` y `View.freshness` OOS1005 con remedio. 13/13; v1alpha1–11 sin un cambio |
+| **2** | `ore migrate v1alpha12` y la medida | ORE `b43e030`: el verbo, con `--seco`; medido sobre demo (3 → 3, 1 vista queda por su Function) y victor (32 → 32, cero vistas), 0 → 0 diagnósticos, la misma lista de `ore datasets` |
+| **3** | el plumazo (ore-cli, ore-serve, malla, SDK, scripts) | ORE `57f5a39`, `d9bb514`, `e6790c3`: todo lo que buscaba `materialized` / `datasource: lago` busca `Kind::Dataset`; punteros en `datasets/`; el inductor emite Datasets y ninguna vista encima; `write()` deja un Dataset escrito; los SDK dicen «Dataset»; los cinco scripts de fuego verdes con Dataset |
+| **4** | los árboles reales | ORE `81b5104`, `66b8dd4`: `48-la-copia` copia datasets (raíces por `ore view .`); `migrar-a-dataset.py` migró demo (`febfa77 → 97d12b3`) y victor (`d10b1ed → c5a1342`) desde dentro; `GET /datasets` vivo 3 y 32; el aprovisionador convergió solo y la copia corrió por el camino nuevo |
+| **5** | la consola | rubix-platform `e95155a`…`dbfa050` (local): `GET /datasets` por el proxy, una base standard lista Datasets con el estado del puntero, la ficha del Dataset (documento + puntero, tal cual), Create › Dataset encima de View, el flujo `materialized` fuera |
+
+**Lo que salió al construir, y no estaba en la decisión:**
+
+- **Una vista y su dataset pueden llamarse igual** —la pregunta sobre lo que se tiene, que
+  `ore migrate` produce cuando una Function nombra la vista—. En ore-core el ciclo de
+  `cadena()` se mira por (kind, nombre); en ore-cli el catálogo del motor nombra al dataset
+  `dataset:<nombre>` (`vista::nodo_de`) y es la única costura: punteros, registro y lo que el
+  usuario nombra siguen por el nombre cualificado.
+- **`over` sobre un Dataset es OOS7014**: una Function pregunta por una View, y la View lee del
+  dataset. Es lo que la migración deja cuando alguien nombraba la vista.
+- **Un dataset sin `fields` es la identidad** de lo de abajo (`expone_en`), no la nada.
+- **El testigo de un dataset sobre otro dataset** sale del puntero del de abajo, no de la raíz
+  de la cadena.
+- **Los punteros migrados conservan `dataset: copias/<p>_<v>`**: los bytes no se mueven.
+- **Lo declarado sin `apiVersion` es v1alpha12** (ore-serve): una View nueva no admite
+  `materialized`.
+- **La copia resuelve sus fuentes por `ore view .`** (la línea `raíz` de cada dataset), no por
+  un awk sobre `kind: View` + `from.table`, que no seguía dataset → vista → tabla.
+- **Declarar un dataset no es tenerlo.** La consola decía «Copied into this cluster» por tener
+  el documento; ahora dice lo que el puntero dice. En victor, `olyst_standard` nació con 8
+  Datasets y 8 punteros en `error`: el Postgres de origen está sobre cuota.
+
+**Lo que queda fuera de 0033, con dueño:** la página del code workspace de la consola (WIP de
+la sesión de Forge) sigue leyendo `?nuevo=view&materialized=1`; `borradorDeVista` queda de
+puente hasta que lea `?nuevo=dataset`. Y un commit de sólo documentación redespliega
+`ore-serve` con `Recreate` (30–40 s de 503 por inquilino): es de la CI, no de esto.
 
 ## Lo que se acepta a cambio
 
