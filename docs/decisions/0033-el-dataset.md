@@ -125,10 +125,78 @@ Copiar una tabla = escribir su Dataset (identidad: sin `fields` ni `where`). El 
 2. **OOS v1alpha12 se mide antes de escribirse**: la reforma toca al compilador (linaje, el
    conducto, `OOS2025`), a `materialize`, `ask`, `datasets.rs` (`asegurar_table`), al catálogo
    REST de Iceberg, al SDK del puesto (`datos_de` resuelve por View/Table), a la consola (la base
-   *standard* crea Views) y a los árboles que existen (`demo`, `victor`). Un primer recuento a
-   ciegas: `materialized` aparece en 19 ficheros de ORE y 14 de la consola; `"lago"` en 4 de ORE.
-   La medida es ese mapa con precisión, más la migración: un árbol de hoy convertido con `ore
-   migrate` y compilando igual.
+   *standard* crea Views) y a los árboles que existen (`demo`, `victor`). El mapa está medido
+   («Lo medido: cuántos sitios tocan `materialized` y `datasource: lago`»); falta la migración:
+   un árbol de hoy convertido con `ore migrate` y compilando igual.
+
+## Lo medido: cuántos sitios tocan `materialized` y `datasource: lago` (2026-09-21)
+
+`grep` sobre ORE (sin `target/`), `vendor/oos` y la consola (`lib/`, `components/`, `app/`;
+sin `node_modules/`, `.next*`). Se cuenta **ficheros / ocurrencias** y se dice qué es cada
+sitio, porque el número a secas engaña: la mitad son fixtures y prosa.
+
+**`materialized` en ORE, código que decide** (lo que la reforma toca de verdad):
+
+| dónde | ficheros / ocurr. | qué hace con la clave |
+|---|---|---|
+| `ore-core/src/vistas.rs` | 1 / 23 | el compilador: `OOS2004` (`materialized.datasource` sin declarar), `OOS2020` (raíz que no se deja leer sin copia), `OOS2025` (una vista escrita por una Function tiene que ser copia), las dos reglas de stream/tabla (sólo si se copia), «la copia más cercana bajando por la cadena» (`copia_de`), `NEUTRAS` (claves que no cambian el contrato); 8 de las 23 son tests |
+| `ore-core/src/flow.rs` | 1 / 4 | el conducto: `materialization.payload` decide sobre el plan de la vista que copia (`OOS4002`/`OOS4011`) |
+| `ore-core/src/document.rs` | 1 / 3 | la forma de `View` (v1alpha7 y v1alpha8): `materialized` es clave del `spec` |
+| `ore-core/src/normalize.rs`, `diff.rs` | 2 / 3 | `materialized.table` es nombre físico (no se normaliza); el diff «una vista deja de copiarse» |
+| `ore-cli/src/inductor.rs` | 1 / 16 | `ore discover` para una base *standard* **emite** `materialized: { datasource, table: copia.<v> }` en cada vista; 10 de las 16 son tests |
+| `ore-cli/src/materializar.rs` | 1 / 3 | `ore materialize`: filtra «las View del paquete con `materialized`» (dos sitios) |
+| `ore-cli/src/registro.rs` | 1 / 3 | el registro de copias: «las que el paquete declara: una View con `materialized`» |
+| `ore-cli/src/preguntar.rs`, `vista.rs`, `invocar.rs` | 3 / 7 | `ask` (el 422 «no declara `materialized`»), `ore view` (dónde sostener una edición, el linaje), `invoke` (una Function lee la copia: `over` tiene que declararla, 0029 ③) |
+| `ore-cli/src/main.rs`, `autoria.rs` | 2 / 3 | prosa de ayuda |
+| `ore-serve/src/copia.rs` | 1 / 10 | la copia de la consola: pone `materialized` en cada vista de una base *standard*, lista las vistas con `materialized` de un paquete y del árbol, cuenta la clase |
+| `ore-serve/src/rutas.rs`, `funciones.rs`, `puestos.rs`, `cola.rs` | 4 / 4 | `/esquema` marca `copiada` por vista; `/funciones` comprueba que `over` se copia; `datos_del_puesto` (el mensaje); un comentario |
+| `malla/aprovisionar-inquilino.sh` | 1 / 2 | **decide si se rinde el Job de la copia (45)** con `re.search(r"^\s+materialized:")` sobre el árbol |
+| `malla/48-la-copia.yaml`, `.github/workflows/ci.yml`, `README.md` | 3 / 5 | prosa |
+
+Es decir: **13 ficheros de código de ORE** (5 de `ore-core`, 8 de `ore-cli`/`ore-serve`) más
+**1 de la malla** deciden algo por `materialized`; de las ~90 ocurrencias en `crates/*/src`,
+unas 30 son tests dentro del mismo fichero. Los 3 ficheros que dicen `materializedView`
+(`ore-driver/catalogo.rs`, `ore-read-postgres`, `ore-cli/lector.rs`) son la **clase del objeto
+en el origen** y no cambian.
+
+**`datasource: lago` en ORE** (la `Table` que `write()` deja):
+
+| dónde | ocurr. | qué hace |
+|---|---|---|
+| `ore-cli/src/datasets.rs` | ~10 | **el sitio**: `asegurar_lago` (declara el datasource `lago` en `ontology.config.yaml` una vez), `asegurar_table` (escribe la `Table` v1alpha8 con `datasource: lago`), `seguir_esquema` (sus columnas siguen a Iceberg), `puntero_del_lago`; 4 tests |
+| `ore-serve/src/puestos.rs` | 3 | `datos_del_puesto` resuelve una `Table` con `datasource == "lago"` por `datasets/`; 1 test |
+| `ore-cli/src/materializar.rs` | 1 | `copiar`: la View sobre una tabla del lago va por `ore-store copiar` en vez de por el lector |
+| `puesto/{python,node,jvm}` | 5 / 5 / 6 | sólo mensajes («ni Table del lago») |
+| `malla/48-la-copia.yaml`, `53-el-mantenimiento.yaml` | 1 / 1 | `LAGO_URL` (el bucket como fuente); comentarios |
+
+El resto de `"lago"` en `crates/` (`ore-view`, `ore-maintain`, `ore-core/cache.rs`,
+`ore-read-jsonl`: ~60 ocurrencias) es el **nombre de un datasource de fixture** en tests y no
+tiene que ver con el concepto. En la consola `lago` no aparece: la `Table` del lago le llega
+por `/esquema` como una tabla más.
+
+**`materialized` en OOS (`vendor/oos`)**: spec 11 / 31 (`v1alpha7/01-view`, `v1alpha8/02-view`
+y `01-table`, los `00-scope`, `v1alpha1/*` históricos); schemas 2 / 2 (`view.schema.json` de
+v1alpha7 y v1alpha8); conformance **85 ficheros / 97** (casi todo fixtures `views/*.yaml` de
+v1alpha5–v1alpha10 que declaran una copia, y que **no cambian**: cada caso está fijado a su
+`apiVersion`; los que hablan de la clave por nombre son 8 READMEs de v1alpha7/v1alpha8);
+examples 3 / 4 (`acme-retail`).
+
+**`materialized` en la consola**: 14 ficheros / 28 ocurrencias, de tres clases:
+
+| clase | ficheros | qué |
+|---|---|---|
+| el flujo «Create › View › Materialized» | `lib/server/borrador-de-vista.ts` (4), `components/catalog/CatalogClient.tsx` (2), `SchemaDetail.tsx` (4), `DatabaseTypeSelect.tsx` (1), `code-workspace/ramas.tsx` (1), `app/…/workspaces/page.tsx` (2) | el borrador escribe `materialized: { datasource, table: "copia.<n>" }`; la query `?materialized=1`; el tipo de base se deduce de «`materialized` en todas» |
+| la forma de View en el cliente | `lib/server/documentos.ts` (1), `lib/ejecucion/como-sql.ts` (2), `components/ontology/datos.ts` (1), `secciones/Views.tsx` (3), `Explore.tsx` (1) | el tipo `spec.materialized?`, la etiqueta «materializada / virtual», el comentario en el SQL |
+| mock | `lib/banco/arbol.ts` (2), `ejecuciones.ts` (1), `components/ontology/acme.ts` (3) | el árbol y las ejecuciones del banco de pruebas; la ontología de ejemplo |
+
+**Lo que el número dice.** La reforma no es «19 ficheros»: son **14 sitios de decisión en ORE**
+(13 en `crates/*/src` + la malla), **1 sitio en `datasets.rs`** para la Table del lago, **6
+ficheros de flujo** en la consola, y el resto es forma, prosa, fixtures y tests que siguen a
+los primeros. Lo más caro no está en la lista: es la **migración** de los árboles (`demo`,
+`victor`: cada View con `materialized` → `Dataset`; cada Table `datasource: lago` → `Dataset`)
+y que `copia.rs` + `inductor.rs` + `aprovisionar-inquilino.sh` dejen de buscar la clave en la
+View para buscar el `kind`. Lo que no se ha medido: cuántos documentos de cada árbol real
+cambian (requiere el clúster).
 
 ## Lo que se acepta a cambio
 
