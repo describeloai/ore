@@ -1248,6 +1248,15 @@ fn borrador_de_v1alpha11() {
     );
 }
 
+/// v1alpha12: tener. `Dataset`, lo que un inquilino tiene como un documento y
+/// no dos disfraces (0033): la copia con su plan y lo que el código escribe.
+/// Trece casos; los tres de «la costura no se pierde» son los de v1alpha7/8
+/// con un Dataset donde había una View con `materialized`, y el mismo código.
+#[test]
+fn borrador_de_v1alpha12() {
+    marcador("v1alpha12", "tener", "BORRADOR · OOS v1alpha12 · tener");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

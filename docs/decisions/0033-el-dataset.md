@@ -134,10 +134,12 @@ spec:
 
 > ### ② `View` vuelve a ser sólo la pregunta; `Entity` se respalda en una View **o en un Dataset**.
 
-`View.from` y `Entity.backedBy` admiten `dataset`. `View.materialized` **se retira** como se
-retiró `Binding`: un documento que lo declare en v1alpha12 es `OOS1005` —una clave que no es
-de aquí— con el remedio dicho («esto es un `Dataset` con `from: { view }`»); en versiones
-anteriores sigue compilando, acotado y con fin. Escrito: `vendor/oos/spec/v1alpha12/`
+`View.from` y `Entity.backedBy` admiten `dataset`. `View.materialized` **y `View.freshness` se
+retiran** como se retiró `Binding` (la frescura era de la copia, y la copia es el dataset): un
+documento que las declare en v1alpha12 es `OOS1005` —una clave que no es de aquí— con el
+remedio dicho («esto es un `Dataset` con `from: { view }`»); en versiones anteriores siguen
+compilando, acotadas y con fin. Conformance: 13 casos (oos `9255ad5`), marcador
+`borrador_de_v1alpha12` en 1 / 13 antes de construir. Escrito: `vendor/oos/spec/v1alpha12/`
 (`00-scope`, `01-dataset`, `02-la-vista-y-la-entidad`) y `schemas/v1alpha12/dataset.schema.json`
 (21 documentos de prueba, 5 que acepta y 16 que niega, contra el schema).
 

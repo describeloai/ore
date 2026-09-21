@@ -125,7 +125,7 @@ y se aplica por el aprovisionador (un commit firmado `ore migrate`) o a mano.
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **0** | conformance v1alpha12 escrita en oos (13 casos), en rojo | oos empujado, submódulo subido, `conformance.rs` la ve y falla 13 |
+| **0** | conformance v1alpha12 escrita en oos (13 casos), en rojo | **hecho** (oos `9255ad5`): el marcador `borrador_de_v1alpha12` da **1 / 13** (sólo `a-dataset-in-v1alpha11`, que ya es OOS1003), sin regresiones |
 | **1** | la unidad (D1–D7) | conformance 13/13, v1alpha1–11 sin cambio, `cargo test -p ore-core`, clippy `-D warnings` |
 | **2** | `ore migrate v1alpha12` + medida sobre `demo`/`victor` (cuántos documentos cambian, y que compila igual) | el informe con los números en 0033 |
 | **3** | el plumazo en ORE (ore-cli, ore-serve, malla, SDK, store) | `el-lago.sh` 0–14, `el-puesto.sh` 1–11, `la-copia-se-decide.sh`, `refresco.sh`, `la-pregunta-se-contesta.sh` verdes **con Dataset** (los scripts cambian con la gramática: buscan `kind: Dataset`); `gen-inquilino --comprobar`; `grep -rn 'section("materialized")\|datasource: lago\|"copias"' crates/*/src` → **0** fuera de v1alpha7/8 compat y tests de compat |
@@ -150,5 +150,7 @@ nuevo predicado.
 3. **`ore migrate` como verbo del CLI** (y no un script): lo corre el aprovisionador y queda
    como la migración de v1alpha8 debió quedar. Propuesta: **sí**.
 4. **La conformance antes del código** (paso 0 antes del 1). Propuesta: **sí** — es el método.
-5. **`freshness` en la View** se queda (lo que se le pide a su raíz de lectura), o se va con
-   `materialized`. Propuesta: **se queda**, como la spec dice; se revisa si al medir nadie la usa.
+5. **`freshness` en la View se va con `materialized`** (respondido 2026-09-21: el dataset la
+   absorbe; una vista virtual lee en el momento y no tiene retraso que tolerar). En v1alpha12
+   las dos claves son `OOS1005` con el remedio. D6 las retira juntas; la migración lleva
+   `freshness` al Dataset.
