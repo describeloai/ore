@@ -221,6 +221,15 @@ examples 3 / 4 (`acme-retail`).
 | la forma de View en el cliente | `lib/server/documentos.ts` (1), `lib/ejecucion/como-sql.ts` (2), `components/ontology/datos.ts` (1), `secciones/Views.tsx` (3), `Explore.tsx` (1) | el tipo `spec.materialized?`, la etiqueta «materializada / virtual», el comentario en el SQL |
 | mock | `lib/banco/arbol.ts` (2), `ejecuciones.ts` (1), `components/ontology/acme.ts` (3) | el árbol y las ejecuciones del banco de pruebas; la ontología de ejemplo |
 
+**Los árboles reales, medidos con `ore migrate v1alpha12 --seco`** (2026-09-21;
+`pruebas-de-fuego/medida-migrar-dataset.py`, un Job de lectura por forja, sin instancias):
+**demo** (34 documentos): 3 Views con `materialized` → 3 Datasets, 2 Views se van y 1 queda
+como la pregunta sobre su dataset porque una Function la nombra en `over`; `lago` sale del
+manifiesto; `ore validate` 0 → 0 diagnósticos; `ore datasets` la misma lista. **victor** (73
+documentos): **las 32 Views eran copias** —la tabla con otro nombre— y pasan a 32 Datasets y
+**cero Views**; 0 → 0; la misma lista. Ninguno tenía una `Table` del lago. El precio de la
+migración es cero diagnósticos y ningún byte movido.
+
 **Lo que el número dice.** La reforma no es «19 ficheros»: son **14 sitios de decisión en ORE**
 (13 en `crates/*/src` + la malla), **1 sitio en `datasets.rs`** para la Table del lago, **6
 ficheros de flujo** en la consola, y el resto es forma, prosa, fixtures y tests que siguen a

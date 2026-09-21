@@ -21,6 +21,7 @@ mod invocar;
 mod lector;
 mod materializar;
 mod mcp;
+mod migrar;
 mod paquete;
 mod preguntar;
 mod registro;
@@ -727,6 +728,20 @@ enum Command {
         #[arg(long)]
         seco: bool,
     },
+    /// Un arbol de antes pasa a despues (0033 §4): `ore migrate v1alpha12 .`
+    /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
+    /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
+    /// `from` a lo que paso a ser dataset y mueve `copias/` a `datasets/`.
+    /// Con `--seco` dice que haria y no toca nada.
+    Migrate {
+        /// La version de destino. Hoy solo `v1alpha12`.
+        version: String,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Dice que haria y no escribe nada.
+        #[arg(long)]
+        seco: bool,
+    },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
     /// (`datasets/`), que son la misma cosa — una tabla Iceberg en el bucket.
@@ -911,6 +926,17 @@ fn main() -> std::process::ExitCode {
                     seco: *seco,
                 },
             );
+        }
+        Command::Migrate {
+            version,
+            path,
+            seco,
+        } => {
+            if version != "v1alpha12" {
+                eprintln!("ore migrate · solo se migra a `v1alpha12` (pediste `{version}`)");
+                return std::process::ExitCode::from(64);
+            }
+            return migrar::migrar(path, &migrar::Opciones { seco: *seco });
         }
         Command::Datasets {
             path,
@@ -1186,6 +1212,7 @@ fn main() -> std::process::ExitCode {
         | Command::Materialize { .. }
         | Command::Invoke { .. }
         | Command::Datasets { .. }
+        | Command::Migrate { .. }
         | Command::Ask { .. }
         | Command::Review { .. }
         | Command::Model { .. }

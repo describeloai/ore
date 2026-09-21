@@ -631,14 +631,19 @@ pub fn respaldo<'a>(pkg: &'a Package, e: &Loaded) -> Option<&'a Loaded> {
 /// solo seguir `from.view` hasta que deje de haberlo.
 pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, SinRaiz> {
     let mut vistos: Vec<String> = Vec::new();
+    // v1alpha12: una vista y un dataset pueden llamarse igual —la pregunta
+    // sobre su dataset, `from: {dataset: <el mismo nombre>}`—, así que el
+    // ciclo se mira por (kind, nombre) y no por nombre.
+    let mut vistos_con_kind: Vec<(Kind, String)> = Vec::new();
     let mut fila: Vec<&Loaded> = Vec::new();
     let mut actual = v;
     loop {
         let qn = actual.qname().unwrap_or_default();
-        if vistos.contains(&qn) {
+        if vistos_con_kind.contains(&(actual.kind, qn.clone())) {
             vistos.push(qn);
             return Err(SinRaiz::Ciclo(vistos));
         }
+        vistos_con_kind.push((actual.kind, qn.clone()));
         vistos.push(qn.clone());
         fila.push(actual);
         match fuente(actual) {
