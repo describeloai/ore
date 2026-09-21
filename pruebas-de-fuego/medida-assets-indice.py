@@ -1,4 +1,4 @@
-"""0034 · LA FORMA DEL ÍNDICE DE ASSETS, MEDIDA ANTES DEL CÓDIGO (docs/assets.md, paso 0).
+"""0034 · LA FORMA DEL ÍNDICE DE ASSETS, MEDIDA ANTES DEL CÓDIGO (0034, paso 0).
 
 Sobre los árboles reales (demo, victor; un Job de lectura por forja, como
 `medida-migrar-dataset.py`) cuenta LO QUE `ore_core::assets::indice` TIENE QUE DAR:

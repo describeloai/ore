@@ -1,6 +1,6 @@
 # 0034 · El catálogo de assets: el registro del árbol, leído
 
-**Estado:** resuelto (decidido y medido el 2026-09-21; la resolución ⑤ es la visión del producto; nada construido) ·
+**Estado:** hecho (decidido, medido, construido y medido de nuevo el 2026-09-21; «Lo construido» abajo) ·
 **Fecha:** 2026-09-21 · **Decide:** que el Assets Catalog de la consola **es el sistema de
 registro del inquilino** y que ese sistema **es el árbol**: el catálogo lee, no autora; que
 lo que registra son **ítems** —lo que tiene bytes, lo que apunta a fuera, las preguntas, la
@@ -312,6 +312,41 @@ tabla, y su puntero.
 caché por cabeza; (2) la medida; (3) la consola sobre el índice; (4) `Function` y `Action` por
 `/documentos` (dos kinds más en `KINDS`, para la ficha y el texto); (5) las capas que faltan por
 ítem cuando los árboles las tengan (`Ruleset`).
+
+## Lo construido (2026-09-21): el índice de assets, de la resolución a la consola
+
+Con un brief desechable (`docs/assets.md`, borrado al cerrar esto) y en el orden del método:
+la forma medida antes del código, la unidad antes de servirla, la medida antes de pintar.
+
+| paso | qué | lo que quedó |
+|---|---|---|
+| **0** | la forma, medida | `pruebas-de-fuego/medida-assets-indice.py`: los oráculos sobre demo (25 documentos de ②, 8 vistas inducidas, 3 datasets identidad) y victor (77, 19, 19); ningún árbol tiene una carpeta del cliente; `respaldada_por`/`satisface`/`nombra`/`escribe`/`trainedFrom` con cero ejemplares reales. Y la decisión de la carpeta comprobada: un `.yaml` sin `kind` es OOS1002, un `README.md` se ignora y lo movido compila igual → **un schema es una carpeta con `README.md`**, sin tocar OOS |
+| **1** | la unidad | ORE `219f50f`: `ore_core::assets::indice(pkg, punteros, cabeza)` —ítems `kind:namespace.name`, carpeta (las del kind no cuentan, estén donde estén), `define`/`expone`/`detalle` (la vista inducida es detalle de su Table), `puntero`, relaciones tipadas en las dos direcciones (rota → `rota: true`), `acceso` del plano de datos— y `ore assets --json`. Test con los 10 kinds y las 9 relaciones; los oráculos cuadran (demo 17 ítems = 25 − 8, victor 58 = 77 − 19); 14 KB / 304 ms y 70 KB / 355 ms en local |
+| **2** | `GET /assets` | ORE `47a2d75`: la rama por la cabecera (como `/arbol`) y `GET /assets/{commit}` —por el camino, no por la consulta: ningún dato entra por la URL—; `git ls-remote` decide si se sirve de memoria; últimas 4 cabezas por proceso; `version` por fichero en el clon que ya se tiene; `servidor-forja.sh` caso 5 (calcula, memoria, un push recalcula) |
+| **3** | la medida viva | ORE `b178e6f`: demo **815 ms frío / 102 ms caliente** (16 KB, 17 ítems), victor **1 362 / 50 ms** (76 KB, 58 ítems); frente a ~6 llamadas ≈ 3–5 s de la consola de antes. Comprobado: `dataset:standard_test.ai_insights` identidad, `sale_de` su tabla, puntero, `version`; `table:foreign_test.public_ShopifyStore` con su `vistaInducida` |
+| **4** | la consola | rubix-platform `e03128b` (local): una llamada; paquete › carpeta («default» la raíz) › ítems por kind con su icono; `AssetDetail` con Overview, Links, Access, History y Copy; `comoDatabase`, `datasets.ts` y `DatasetDetail` fuera |
+| **5** | Function y Action por `/documentos` | ORE `5fe232d`: dos filas en `KINDS`; `los-documentos.sh` 18b (la función entra y se lista; la Action sin integridad es 422 OOS7005) |
+
+**Lo que salió al construir, y no estaba en la decisión:**
+
+- **La carpeta del kind no cuenta esté donde esté**: `espana/views/x.yaml` es el schema `espana`
+  (⑤ 6 decía «si es la primera»; no bastaba).
+- **Ningún dato por la consulta de la URL**: `ore-entrada` la descarta a propósito, así que la
+  rama va por la cabecera y el commit por el camino (`/assets/{commit}`), no `?rama=`/`?commit=`.
+- **Una propiedad nombra su concepto con `is:`**, `trainedFrom` es una lista y una Action escribe
+  por `sets[].writes`: tres formas que la decisión nombraba de memoria y el árbol no.
+- **La clasificación efectiva de la raíz sigue en ore-cli** (`etiquetas_de_raiz`, para `ore
+  view`); el índice sube las labels del documento, de las columnas que usa y (Entity) las
+  efectivas por propiedad, que es lo que tiene sentido por ítem. Decisión 2 del brief, a medias
+  y dicha.
+- **`version` es lo que más cuesta en frío**: un `git log -1` por fichero (58 en victor) son
+  ≈0,4 s. Se acepta: es una vez por cabeza.
+
+**Lo que queda fuera, con dueño:** la historia git entera y los snapshots bajo demanda desde la
+ficha (`/arbol/historia`, `/datasets/{ns}/{n}`: las rutas existen; la consola las pide cuando
+se mida); crear un schema desde la consola (`README.md` en la carpeta por `PUT /arbol`);
+`Ruleset` cuando algún árbol lo tenga; y quién puede ver qué —ore-iam sobre el plano de
+datos—, que es un producto en sí.
 
 ## Lo que se acepta a cambio
 
