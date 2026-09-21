@@ -27,6 +27,39 @@ una proyección) pero es el mismo método: el resultado esperado antes del códi
 
 **Hecho cuando:** la tabla de números por árbol está en el brief (y luego en 0034).
 
+**Hecho (2026-09-21).** `pruebas-de-fuego/medida-assets-indice.py`, sobre demo `b93ed52` y
+victor `a6e2b0e`. Los oráculos:
+
+| | demo | victor |
+|---|---|---|
+| ítems | **25** · Table 11, View 9, Dataset 3, Function 1, Model 1 | **77** · Table 38, View 19, Dataset 19, Model 1 |
+| por paquete | `olist` Table 8 + View 8; `olist_copia` Dataset 3, Table 3, View 1, Function 1 | `foreign_test` Table 19 + View 19; `standard_test` Table 19 + Dataset 19 |
+| sin paquete | 1 (`Model`) | 1 (`Model`) |
+| carpetas (⑤ 6) | todo en `""` («sin clasificar») | todo en `""` |
+| relaciones (una dirección; ×2 en el índice) | **14** · `sale_de` 12, `lee` 1, `usa` 1 · rotas 0 | **38** · `sale_de` 38 · rotas 0 |
+| datasets identidad | 3 / 3 mantenidos (0 escritos) | 19 / 19 mantenidos (0 escritos) |
+| views inducidas (detalle de su Table) / propias | 8 / 1 (la que quedó por la Function) | 19 / 0 |
+| tables con `vistaInducida` | 8 / 11 | 19 / 38 |
+| punteros | 3 (error 3) · 3/3 datasets con puntero | 19 (copiada 9, error 10) · 19/19 |
+| no ítems | ConduitPolicy 1, OntologyConfig 1, Package 8 | ConduitPolicy 1, Lattice 1, OntologyConfig 1, Package 5 |
+
+Lo que los números dicen: (1) **hoy ningún árbol tiene una carpeta del cliente**: el índice nace
+con todo «sin clasificar», y ④ empieza cuando alguien cree el primer schema; (2) **cada dataset
+de una standard es identidad**, y cada View de una foreign es la inducida: el catálogo de una
+base recién creada lista exactamente sus tablas (foreign) o sus datasets (standard), y una
+View propia sólo aparece cuando alguien la escribe (demo tiene una); (3) las relaciones son
+casi todas `sale_de` (la cadena): `lee`/`usa` sólo donde hay una Function; `respaldada_por`,
+`satisface`, `nombra`, `escribe`, `trainedFrom` tienen **cero** ejemplares en los árboles reales
+y se prueban sólo sobre el árbol de fuego; (4) la mitad de los punteros de victor están en
+`error` (el origen sobre cuota): el índice tiene que enseñar `puntero.estado` y `motivo` desde
+el primer día.
+
+**Y la decisión 3, comprobada:** un `.yaml` sin `kind` en una carpeta del paquete es
+**OOS1002** (`falta apiVersion`: el compilador valida todo `.yaml`); un `README.md` en la
+carpeta se ignora, y un documento movido a `packages/olist/ventas/` compila igual (`ok · sin
+errores`, y `ore datasets` lo sigue viendo). **Un schema es una carpeta con un `README.md`**
+(su descripción, en la primera línea); sin cambio en OOS.
+
 ## 1 · La unidad: `ore_core::assets::indice`
 
 Un módulo nuevo en ore-core, `assets.rs`, con una función pura:
@@ -144,8 +177,7 @@ foreign. Los números van a 0034.
   (`acceso`; el mock de ACP se retira), **History** (`version` del índice + `/arbol/historia`
   al abrirse; en un Dataset, los snapshots por `/datasets/{ns}/{n}` al abrirse).
 - Lo que la consola escribe sigue igual (crear base, descripciones); crear **schema** es nuevo:
-  un commit con `packages/<p>/<schema>/.schema.yaml` (`kind: Schema`? no: un fichero mínimo
-  sin kind, y lo decide 6.3) por `PUT /arbol/{ruta}`.
+  un commit con `packages/<p>/<schema>/README.md` (la descripción; §7.3) por `PUT /arbol/{ruta}`.
 - `tsc` limpio; `next build` no se corre (el `next dev` del usuario ocupa `.next`).
 
 ## 5 · `Function` y `Action` por `/documentos`
@@ -157,7 +189,7 @@ workspace lo abra por la misma puerta que los demás. Test en `los-documentos.sh
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **0** | la forma, medida: los oráculos de demo y victor | la tabla de números en este brief |
+| **0** | la forma, medida: los oráculos de demo y victor | **hecho** 2026-09-21: la tabla en §0; decisión 3 comprobada (schema = carpeta con `README.md`) |
 | **1** | `ore_core::assets::indice` + `ore assets --json` | tests verdes; los oráculos cuadran; workspace verde |
 | **2** | `GET /assets` con caché por cabeza | test de ore-serve; `plano-de-control` con el caso; CI verde |
 | **3** | la medida viva | frío/caliente/bytes en 0034; `identidad`, `sale_de`, `vistaInducida` comprobados en victor |
@@ -176,10 +208,9 @@ llamadas que hace la consola para pintar el catálogo (antes/después).
 2. **La clasificación y los conductos (`acceso`) se calculan en ore-core** moviendo
    `etiquetas_de_raiz` de ore-cli a ore-core (hoy vive en `ore-cli/vista.rs`). Propuesta:
    **sí** — el índice no puede depender del CLI, y `ore view` lo seguirá usando de allí.
-3. **Un schema es una carpeta con un fichero mínimo `.schema.yaml`** (`description`, sin
-   `kind`: el compilador ignora lo que no tiene kind... **hay que comprobarlo**; si no, un
-   documento `kind: Schema` en OOS es una versión nueva, y eso es otro ADR). Propuesta: **sí al
-   fichero sin kind si el compilador lo tolera; si no, se para y se decide**.
+3. **Un schema es una carpeta con un `README.md`** (su descripción). Comprobado en 0: un
+   `.yaml` sin `kind` es OOS1002 (el compilador valida todo `.yaml`); un `README.md` se ignora
+   y lo movido a la carpeta compila igual. Sin cambio en OOS. **Decidido: sí.**
 4. **`ore assets` como verbo del CLI** (lectura, `--json`): para la medida y para mirar el
    índice sin ore-serve. Propuesta: **sí**.
 5. **La caché guarda las últimas N cabezas por rama (N = 4)** y nada persiste. Propuesta:
