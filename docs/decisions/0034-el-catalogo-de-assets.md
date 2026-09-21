@@ -1,6 +1,6 @@
 # 0034 · El catálogo de assets: el registro del árbol, leído
 
-**Estado:** propuesto (decidido el 2026-09-21; nada construido ni medido todavía) ·
+**Estado:** propuesto (decidido el 2026-09-21; medido el mismo día contra `demo` y `victor`: «Lo medido» abajo; nada construido) ·
 **Fecha:** 2026-09-21 · **Decide:** que el Assets Catalog de la consola **es el sistema de
 registro del inquilino** y que ese sistema **es el árbol**: el catálogo lee, no autora; que
 lo que registra son **ítems** —lo que tiene bytes, lo que apunta a fuera, las preguntas, la
@@ -93,6 +93,71 @@ da sólo tablas y sin carpeta), (b) decir de cada dataset **qué lo define y si 
 (la copia que se llama como su tabla), (c) servir las capas de ③ por ítem (hoy no hay ruta de
 «qué aplica sobre X»), y (d) `Function` y `Action` por `/documentos`. El resultado dice el orden
 de las pantallas; nada se pinta con mock.
+
+## Lo medido (2026-09-21): qué sirve hoy el backend, cómo, y qué falta
+
+`pruebas-de-fuego/medida-assets-catalog.py`: un Job por inquilino, con el token del agente,
+pide cada ruta de ② al ore-serve **vivo** y se cruza con `GET /arbol`. demo: 66 ficheros
+(Table 11, View 9, Dataset 3, Function 1, Model 1, ConduitPolicy 1). victor: 125 (Table 38,
+View 19, Dataset 19, Lattice 1, ConduitPolicy 1, Model 1), con dos bases: `foreign_test`
+(19 Tables **y 19 Views**) y `standard_test` (19 Tables y 19 Datasets, 9 copiados).
+
+**Cómo lo sirve.** Cada petición cuesta lo mismo, **~0,5 s en demo y ~0,9 s en victor**, sea
+`/arbol` (5–12 KB) o `/documentos/Concept` (17 B): es el coste fijo de leer el árbol de la
+forja por petición, no del tamaño. `/modelos` cuesta **6 s** (va al registro). La ficha de un
+dataset copiado, 1,3 s (va al almacén por los snapshots). Pintar el catálogo de una celda hoy
+son 1 (`/paquetes`) + N bases × (`/esquema` + `/copias`) + 1 (`/datasets`) llamadas: con 2
+bases, ~6 llamadas ≈ 3–5 s.
+
+| ruta | qué da | forma |
+|---|---|---|
+| `GET /arbol` | **todo** el registro: cada fichero con `ruta`, `bytes` y `kind` (si es documento) | plano; sin `namespace`, sin `name`, sin `spec`, sin carpeta más que la ruta |
+| `GET /paquetes` | por paquete: `name`, `type`, `scoped`, `source`, `tablas`, `copias`, `modeladas`, `decisionesPendientes` | lo que la lista de bases necesita |
+| `GET /paquetes/{n}/esquema` | **sólo `tables`** (+ `entities`, 0 en los dos) con `object`, `datasource`, `columns`, `modeled`, `copied`, `view`, `dataset`, `entity` | en un paquete-fuente (sin scope) devuelve el catálogo entero del origen (48 tablas): no es una base |
+| `GET /documentos/{kind}` | el documento entero (`apiVersion`, `metadata`, `spec`, `fichero`, `paquete`) de **Entity, View, Table, Concept, Interface, TrainedModel, Dataset** | una llamada por kind, del árbol entero; **404** para Function, Action, Model, Ruleset, Lattice, ConduitPolicy |
+| `GET /datasets` | el puntero de cada dataset: copiado → `plan` (digest), `columnas`, `filas`, `snapshot`, `bundle`, `testigo`, `leidas`, `ubicacion`, `esquema_cambiado`…; en error → `clase`, `estado`, `motivo`, `nombre`, `vista` | rico cuando hay bytes; no dice `from` ni `fields` |
+| `GET /datasets/{ns}/{n}` | lo anterior + `snapshots[]` (`id`, `operacion`, `filas`, `bytes`, `cuando_ms`, `idempotencia`) | la capa History de los bytes |
+| `GET /funciones` | cada Function con `over`, `output`, `effects`, `model`, `prompt`, `resultados` | forma propia, no la del documento |
+| `GET /arbol/historia/{ruta}` | `versiones[]` (`hash`, `autor`, `sujeto`, `cuando`, `mensaje`) | la capa History del documento; una llamada por ítem |
+| `GET /arbol/{ruta}` | `texto`, `kind`, `commit`, `cabeza` | el documento, tal cual |
+| `GET /conceptos` | 0 en los dos | |
+
+**Lo que falta, contra (a)–(d):**
+
+- **(a) Todos los ítems de un paquete, por carpeta, en una llamada: no existe.** `/esquema`
+  da sólo tablas (en `olist` faltan 8 Views; en `standard_test`, 19 Datasets; en `olist_copia`,
+  3 Datasets + 1 View + 1 Function); `/documentos/{kind}` es por kind y del árbol entero (7
+  llamadas ≈ 4–6 s para una base); `/arbol` tiene todo pero sin nombre ni namespace. Y **la
+  carpeta hoy es la del kind** (`tables/`, `views/`, `datasets/`, `functions/`): ningún árbol
+  tiene una carpeta elegida por el cliente, así que ④ (schema = carpeta) parte de cero y la
+  consola sigue derivando el schema del nombre físico (`olist.customers` → `olist`).
+- **(b) Qué define un dataset y si es identidad: a medias.** El puntero da `plan` (un digest) y
+  `vista`, no `from` ni `fields`; el documento (`/documentos/Dataset`) da `from` y `fields`,
+  pero decir «identidad» exige cruzarlo con las `columns` de su Table. Nadie lo dice en una
+  respuesta.
+- **(c) Las capas: sólo History.** `/arbol/historia` y los `snapshots` de la ficha existen y
+  cuestan 0,6–1,3 s por ítem. **Access**: `Lattice`, `ConduitPolicy`, `RequestPolicy` están en
+  el árbol (victor: 1 + 1) y `/documentos` los niega (404); no hay «qué clasificación lleva X
+  y por qué conductos sale». **Rules**: `Ruleset` 404 (y 0 en los árboles). **Links**:
+  ninguna ruta dice «de qué sale X» ni «quién usa X»: el linaje por columna sólo lo da `ore
+  view` (CLI), la procedencia (`leidas`) sólo está en el puntero de un escrito, `backedBy` /
+  `trainedFrom` / `reads` sólo dentro de cada documento.
+- **(d) Function y Action por `/documentos`: no.** `/funciones` sirve la Function (demo: 1)
+  con forma propia; `Action` no se sirve por ningún sitio; `Model` sólo por `/modelos`.
+
+**Lo que la medida saca, además:** una base **foreign** deja hoy una View por tabla
+(`foreign_test`: 19 + 19; `olist`: 8 + 8) — la pregunta identidad que `over` necesita — y ② la
+lista como Tables. Hay que decidir si la View inducida de una foreign es un ítem del catálogo
+o un detalle de la Table.
+
+**Lo que esto ordena:** primero **(a)**, una ruta `GET /paquetes/{n}/items` que dé cada
+documento del paquete con `kind`, `namespace`, `name`, `ruta` (la carpeta es lo que hay entre
+el paquete y el fichero), `owner`, `description`, y para un Dataset el resumen de su puntero y
+`define` (`from`, `fields` o `identidad: true`): es (a) y (b) en una llamada, ~0,5 s, y es lo
+que la consola pinta en el árbol y en la ficha del esquema. Después **(d)** (Function y Action
+por `/documentos`, que es dejar entrar dos kinds en `KINDS`), y **(c)** por capas: Access
+(`Lattice`/`ConduitPolicy` por `/documentos` + «qué aplica sobre X»), Links («qué usa X» desde
+el mismo índice de items), History ya está.
 
 ## Lo que se acepta a cambio
 
