@@ -1,5 +1,5 @@
-//! **`ore migrate v1alpha12`** — un árbol de antes pasa a después (ORE 0033 §4,
-//! `docs/dataset.md` §3): lo que se tiene deja de ser dos disfraces y pasa a ser
+//! **`ore migrate v1alpha12`** — un árbol de antes pasa a después (ORE 0033, «Lo
+//! construido»): lo que se tiene deja de ser dos disfraces y pasa a ser
 //! `kind: Dataset`. Mecánico y sin opinión; con `--seco` dice qué haría y no
 //! toca nada, que es la medida sobre un árbol real antes de aplicarlo.
 //!

@@ -1,4 +1,4 @@
-"""0033 · LA MEDIDA DE LA MIGRACIÓN A `kind: Dataset` (docs/dataset.md, paso 2).
+"""0033 · LA MEDIDA DE LA MIGRACIÓN A `kind: Dataset` (ORE 0033, paso 2).
 
 Antes de aplicar `ore migrate v1alpha12` a un árbol real, se mide sobre él:
 cuántos documentos cambian, qué se va, qué se reescribe, y que el árbol migrado

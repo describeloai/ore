@@ -1,4 +1,4 @@
-"""0033 · LA MIGRACIÓN A `kind: Dataset` DE UN ÁRBOL REAL (docs/dataset.md, paso 4).
+"""0033 · LA MIGRACIÓN A `kind: Dataset` DE UN ÁRBOL REAL (ORE 0033, paso 4).
 
 Lo que `medida-migrar-dataset.py` midió, aplicado: un Job por inquilino clona
 el árbol de su forja (con el token de Secret Manager, como la copia de 48),
