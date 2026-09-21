@@ -8,7 +8,7 @@
 //! | 3 | preguntarle al origen su testigo | `ore-read-<tipo> testigo` |
 //! | 4 | el puntero del árbol: **si la cabecera es la misma, termina aquí** | `ore` (+ `ore-store-<r2|gcs> buscar`, un HEAD) |
 //! | 5 | leer, canalizar y sellar el dataset | `ore-read-<tipo> leer` → `ore-store-<r2|gcs> sellar` · sobre el lago, `ore-store-<r2|gcs> copiar` |
-//! | 6 | mover el puntero: `copias/<p>_<v>.json` | `ore` |
+//! | 6 | mover el puntero: `datasets/<p>_<v>.json` | `ore` |
 //! | — | y **recoger** lo que quedó atrás, si se pide | `ore-store-<r2|gcs> recoger` |
 //!
 //! # La copia es un dataset (W3.6a, 0031 §10, 2026-09-20)
@@ -23,8 +23,11 @@
 //! `ore` lee el puntero antes de leer una fila, decide con él si hay que
 //! copiar, desde dónde y sobre qué fundir, y lo reescribe al terminar.
 //!
-//! Sin `--informe`, los punteros viven en `<árbol>/copias`: no hay otro sitio
-//! donde puedan vivir, porque el bucket ya no guarda estado.
+//! Sin `--informe`, los punteros viven en `<árbol>/datasets`: no hay otro
+//! sitio donde puedan vivir, porque el bucket ya no guarda estado. Y desde
+//! 0033 **lo que se copia es un `Dataset` mantenido** —el documento que lleva el
+//! plan— y no una vista con `materialized`; un puntero migrado de `copias/`
+//! sigue nombrando sus bytes donde están (`dataset: copias/<p>_<v>`).
 //!
 //! # Lo que `ore` hace y lo que no
 //!
@@ -59,7 +62,7 @@ pub struct Opciones<'a> {
     pub seco: bool,
     pub recoger: bool,
     /// Dónde viven los punteros (`<DIR>/<paquete>_<vista>.json`). Sin él,
-    /// `<árbol>/copias`.
+    /// `<árbol>/datasets`.
     pub informe: Option<&'a Path>,
     /// **Rehacer**: no hacer caso al puntero, leer el origen entero, y
     /// sobrescribir el dataset (un snapshot nuevo; la historia se queda). Para
@@ -75,7 +78,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let punteros = op
         .informe
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.join("copias"));
+        .unwrap_or_else(|| path.join("datasets"));
     // En seco no se toca el árbol: el puntero es el estado, y una pasada que
     // sólo dice qué haría no puede dejarlo diciendo «pendiente».
     let informe: Option<&Path> = if seco { None } else { Some(&punteros) };
@@ -88,13 +91,11 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         Ok(p) => p,
         Err(c) => return c,
     };
-    let declaradas: Vec<&Loaded> = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == ore_core::document::Kind::View && d.section("materialized").is_some())
-        .collect();
+    // Lo que se copia: los datasets mantenidos (0033), y —mientras queden
+    // documentos de v1alpha7/8— las vistas con `materialized`.
+    let declaradas: Vec<&Loaded> = pkg.docs.iter().filter(|d| vistas::es_copia(d)).collect();
     if declaradas.is_empty() {
-        println!("sin copias · ninguna vista del paquete declara `materialized`");
+        println!("sin copias · ningún `Dataset` del paquete lleva `from` (nada que mantener)");
         // Y lo que quedó de las que hubo: la pasada que limpia.
         if recoger && !seco {
             match recoger_huerfanas(&[], &[]) {
@@ -115,11 +116,10 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // lo mismo divergen en la que ninguna prueba ejerce.
     let lat = ore_core::flow::lattices(&pkg);
     let tipos = crate::vista::tipos_de_raiz(&pkg);
-    let vistas_todas: Vec<&Loaded> = pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == ore_core::document::Kind::View)
-        .collect();
+    let vistas_todas: Vec<&Loaded> = {
+        use crate::vista::Vistas;
+        pkg.of_view()
+    };
     let catalogo = Catalogo::con(vistas_todas.iter().filter_map(|v| {
         Some(Vista::nueva(
             &v.qname()?,
@@ -229,7 +229,11 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let reclamados: Vec<String> = declaradas
         .iter()
         .filter_map(|v| v.qname())
-        .map(|qn| dataset_de(&qn))
+        .map(|qn| {
+            leer_puntero(&punteros, &qn)
+                .and_then(|p| campo_de(&p, "dataset"))
+                .unwrap_or_else(|| dataset_de(&qn))
+        })
         .collect();
     if recoger && !seco {
         match recoger_huerfanas(&reclamados, &heredados) {
@@ -318,13 +322,13 @@ fn una(
     // **Una raíz del lago no tiene driver** (0031 «(d)»): su puntero está en
     // el árbol (`datasets/<objeto>.json`) y no en una URL, y se copia en Arrow
     // por `ore-store copiar`, sin pasar por el protocolo de texto de 0008.
-    let del_lago = lector::declaracion(raiz_pkg, &r.datasource)
-        .map(|(t, _)| t == "lago")
-        .unwrap_or(false);
-    let origen_del_lago = if del_lago {
-        Some(origen_del_lago(pkg, raiz_pkg, v, &r)?)
-    } else {
-        None
+    // 0033: «del lago» es que debajo de esta copia hay OTRO dataset —el primero
+    // bajando, sin contar ella misma—: su puntero está en el árbol, y se copia
+    // en Arrow. Si no, la raíz es una `Table` de fuera y tiene driver.
+    let abajo = dataset_debajo(pkg, v);
+    let origen_del_lago = match abajo {
+        Some(d) => Some(origen_del_lago(raiz_pkg, d)?),
+        None => None,
     };
     let testigo = match &origen_del_lago {
         Some(o) => o.testigo.clone(),
@@ -339,8 +343,13 @@ fn una(
     // bucket que alguien vació.
     let cabecera = cabecera(&plan.digest(), &esq, &testigo, &clave);
     let huella = ore_core::digest::de_bytes(cabecera.as_bytes());
-    let dataset = dataset_de(qn);
     let puntero = leer_puntero(punteros, qn);
+    // El nombre en el bucket: el que el puntero diga (una copia migrada sigue
+    // en `copias/<p>_<v>`), o el de un dataset nuevo.
+    let dataset = puntero
+        .as_ref()
+        .and_then(|p| campo_de(p, "dataset"))
+        .unwrap_or_else(|| dataset_de(qn));
     // Con cualquier `estado`: un puntero que dice `error` por una pasada que
     // falló sigue nombrando el dataset que la anterior dejó, y ese dataset es
     // sobre el que se construye. Si no, cada fallo transitorio estrenaría uno.
@@ -725,10 +734,23 @@ fn recoger_dataset(
     })
 }
 
-/// El nombre del dataset de una vista en el bucket: `copias/<paquete>_<vista>`
+/// El nombre de un dataset nuevo en el bucket: `datasets/<paquete>_<nombre>`
 /// (bajo `ore/v2/`). El mismo nombre que su puntero en el árbol, sin `.json`.
+/// Uno que ya existía lo dice su puntero (`dataset`), y puede seguir en
+/// `copias/…`: los bytes no se mueven al migrar.
 pub(crate) fn dataset_de(qn: &str) -> String {
-    format!("copias/{}", qn.replace('.', "_"))
+    format!("datasets/{}", qn.replace('.', "_"))
+}
+
+/// **El dataset que hay debajo** de un documento que copia: el primero bajando
+/// por la cadena, sin contar el propio documento. `None` si la raíz de lectura
+/// de lo que hay debajo es una `Table` de fuera.
+pub(crate) fn dataset_debajo<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    vistas::cadena(pkg, v)
+        .ok()?
+        .into_iter()
+        .skip(1)
+        .find(|e| e.kind == ore_core::document::Kind::Dataset)
 }
 
 /// **Lo que hace falta para leer una copia hecha**: su puntero. Un dataset
@@ -747,7 +769,7 @@ impl Puntero {
     /// `al-dia`, y con algo que leer); si no, por qué no.
     pub fn hecho(raiz: &Path, vista: &str) -> Result<Puntero, String> {
         let ruta = raiz
-            .join("copias")
+            .join("datasets")
             .join(format!("{}.json", vista.replace('.', "_")));
         let n = std::fs::read_to_string(&ruta)
             .ok()
@@ -926,7 +948,7 @@ fn cargar_para_copiar(
     let con_copia: std::collections::BTreeSet<String> = pkg
         .docs
         .iter()
-        .filter(|d| d.kind == ore_core::document::Kind::View && d.section("materialized").is_some())
+        .filter(|d| vistas::es_copia(d))
         .filter_map(|d| paquete_del_fichero(path, &d.path))
         .collect();
     let diags: Vec<_> = ore_core::validate_package(path)
@@ -1083,10 +1105,10 @@ fn testigo(
     Ok((modo, valor))
 }
 
-/// **La raíz de una vista cuando es una tabla del lago** (0031 «(d)»): lo que
+/// **Lo que hay debajo cuando es un dataset** (0031 «(d)», 0033): lo que
 /// `ore-read-<tipo> testigo` contestaría, sacado de donde está —el puntero
-/// `datasets/<objeto>.json` que `write()` (o `ore datasets --commit`) dejó en
-/// el árbol— y lo que `ore-store copiar` necesita para abrirla.
+/// `datasets/<ns>_<n>.json` que `write()`, `ore datasets --commit` o la copia
+/// anterior dejó en el árbol— y lo que `ore-store copiar` necesita para abrirlo.
 struct OrigenDelLago {
     /// `(modo, valor)`, como el de un driver: `snapshot` con el id del snapshot
     /// vigente de la tabla, o `none`.
@@ -1118,24 +1140,22 @@ impl OrigenDelLago {
     }
 }
 
-fn origen_del_lago(
-    pkg: &Package,
-    raiz_pkg: &Path,
-    v: &Loaded,
-    r: &vistas::Raiz,
-) -> Result<OrigenDelLago, String> {
-    let dataset = format!("datasets/{}", r.objeto);
-    let ruta = raiz_pkg.join(format!("{dataset}.json"));
-    let nombre = r.tabla.as_deref().unwrap_or(&r.objeto);
+fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, String> {
+    let nombre = abajo.qname().unwrap_or_default();
+    let ruta = raiz_pkg
+        .join("datasets")
+        .join(format!("{}.json", nombre.replace('.', "_")));
     let puntero = std::fs::read_to_string(&ruta)
         .ok()
         .and_then(|t| ore_core::parse::parse(&t).ok())
         .ok_or_else(|| {
             format!(
-                "`{nombre}` es una tabla del lago y no tiene puntero (`{}`): nadie la escribió todavía",
+                "`{nombre}` es un dataset y no tiene puntero (`{}`): nadie lo escribió ni lo copió todavía",
                 ruta.display()
             )
         })?;
+    // Dónde están sus bytes: lo que el puntero diga, o el nombre nuevo.
+    let dataset = campo_de(&puntero, "dataset").unwrap_or_else(|| dataset_de(&nombre));
     let metadata_location = campo_de(&puntero, "metadata_location").ok_or_else(|| {
         format!(
             "el puntero de `{nombre}` (`{}`) no dice `metadata_location`",
@@ -1145,22 +1165,12 @@ fn origen_del_lago(
     // La marca sale de la gramática, como en `testigo()`. Una tabla del lago
     // se fecha por snapshot —cada escritura es uno— o no se fecha; un `log` o
     // un `field` sobre ella no tienen quién los conteste.
-    let testigo = match crate::registro::marca_de(pkg, v) {
-        ore_view::Marca::Ninguna => ("none".to_string(), None),
-        ore_view::Marca::Instantanea => (
-            "snapshot".to_string(),
-            campo_de(&puntero, "snapshot").filter(|s| s != "0"),
-        ),
-        otra => {
-            return Err(format!(
-                "`{nombre}` es una tabla del lago y declara `witness: {}`: una tabla del lago se fecha con `snapshot` (o `none`)",
-                match otra {
-                    ore_view::Marca::Registro => "log".to_string(),
-                    ore_view::Marca::Campo(c) => format!("field ({c})"),
-                    _ => "?".to_string(),
-                }
-            ));
-        }
+    // Un dataset se fecha por snapshot, siempre —es Iceberg—, diga lo que diga
+    // la tabla del fondo de la cadena: lo que se lee aquí son sus bytes, no el
+    // origen. Sin snapshot en el puntero (nunca escrito), `none`.
+    let testigo = match campo_de(&puntero, "snapshot").filter(|s| s != "0") {
+        Some(s) => ("snapshot".to_string(), Some(s)),
+        None => ("none".to_string(), None),
     };
     Ok(OrigenDelLago {
         testigo,

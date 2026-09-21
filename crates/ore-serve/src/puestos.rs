@@ -1264,14 +1264,13 @@ fn nombra(texto: &str, nombre: &str) -> bool {
     })
 }
 
-/// Lo que el árbol dice del dataset de un nombre (0031 §10: **un lector**):
-/// una `View` materializada → `copias/<p>_<v>.json`, el puntero que deja `ore
-/// materialize`; una `Table` del lago (`datasource: lago`) →
-/// `datasets/<p>_<t>.json`, el puntero que deja `confirmar`. Con `estado:
-/// copiada|al-dia` y `metadata_location` (o `clave`, heredado), el dataset
-/// está; si no, 409 con lo que el puntero diga. Lo demás —una View virtual,
-/// una Table de otra fuente— es 409 «sin copia»: no hay camino por el que
-/// esta ruta llegue a un origen.
+/// Lo que el árbol dice del dataset de un nombre (0031 §10, 0033: **un
+/// lector, un camino**): el nombre resuelve a un `Dataset` —o a una `View`
+/// cuya raíz de lectura es uno— y su puntero está en `datasets/<p>_<n>.json`.
+/// Con `estado: copiada|al-dia` y `metadata_location` (o `clave`, heredado),
+/// el dataset está; si no, 409 con lo que el puntero diga. Una View virtual o
+/// una Table es 409 «sin dataset»: no hay camino por el que esta ruta llegue a
+/// un origen.
 fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     let hay = |carpeta: &str| {
         std::fs::read_dir(raiz.join("packages").join(ns).join(carpeta))
@@ -1285,37 +1284,52 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             .unwrap_or(None)
     };
     // ¿Existe el documento? El puntero de algo que no está es un 404, no un 409.
-    let informe = if hay("views").is_some() {
-        raiz.join("copias").join(format!("{ns}_{nombre}.json"))
-    } else if let Some(t) = hay("tables") {
-        let del_lago = ore_core::parse::parse(&t)
-            .ok()
-            .and_then(|n| {
-                n.get("spec")
-                    .and_then(|(_, s)| s.get("datasource"))
-                    .and_then(|(_, v)| v.as_str().map(String::from))
+    // Un dataset se lee por su puntero; una vista, por el del primer dataset
+    // que tenga debajo (lo dice el compilador); una tabla, por ninguno.
+    let del_dataset = if hay("datasets").is_some() {
+        format!("{ns}.{nombre}")
+    } else if hay("views").is_some() {
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        let copia = pkg
+            .docs
+            .iter()
+            .find(|d| {
+                d.kind == ore_core::document::Kind::View && d.qname().as_deref() == Some(vista)
             })
-            .is_some_and(|d| d == "lago");
-        if !del_lago {
-            return Respuesta::error(
-                409,
-                format!(
-                    "`{vista}` es una `Table` de una fuente, no un dataset: se lee por una `View` con copia, nunca del origen"
-                ),
-            );
+            .and_then(|v| ore_core::vistas::raiz_de_lectura(&pkg, v))
+            .and_then(|c| c.qname());
+        match copia {
+            Some(c) => c,
+            None => {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "`{vista}` es una `View` virtual: no tiene ningún dataset debajo del que leer. Declara un `Dataset` con `from` sobre ella, o léela como pregunta (sql)"
+                    ),
+                );
+            }
         }
-        raiz.join("datasets").join(format!("{ns}_{nombre}.json"))
+    } else if hay("tables").is_some() {
+        return Respuesta::error(
+            409,
+            format!(
+                "`{vista}` es una `Table` de una fuente, no un dataset: se lee por un `Dataset` que la copie, nunca del origen"
+            ),
+        );
     } else {
         return Respuesta::error(
             404,
-            format!("no hay ninguna `View` ni `Table` `{vista}` en el paquete `{ns}`"),
+            format!("no hay ningún `Dataset`, `View` ni `Table` `{vista}` en el paquete `{ns}`"),
         );
     };
+    let informe = raiz
+        .join("datasets")
+        .join(format!("{}.json", del_dataset.replace('.', "_")));
     let Ok(texto) = std::fs::read_to_string(&informe) else {
         return Respuesta::error(
             409,
             format!(
-                "el dataset de `{vista}` no está: no declara `materialized`, aún no se copió, o nadie lo escribió todavía"
+                "el dataset `{del_dataset}` no está: aún no se copió, o nadie lo escribió todavía"
             ),
         );
     };
@@ -1373,39 +1387,62 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
 mod prueba {
     use super::*;
 
-    /// **Un lector** (0031 §10): una View con copia resuelve por `copias/`, una
-    /// Table del lago por `datasets/`, una Table de otra fuente es 409 y lo
-    /// que no está es 404.
+    /// **Un lector, un camino** (0031 §10, 0033): un dataset resuelve por su
+    /// puntero en `datasets/`; una View, por el del primer dataset que tenga
+    /// debajo; una View virtual y una Table son 409, y lo que no está es 404.
     #[test]
-    fn el_puesto_resuelve_views_con_copia_y_tables_del_lago() {
+    fn el_puesto_resuelve_datasets_y_vistas_con_dataset_debajo() {
         let d = std::env::temp_dir().join(format!("ore-datos-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for sub in [
             "packages/v/views",
             "packages/v/tables",
-            "copias",
+            "packages/v/datasets",
             "datasets",
         ] {
             std::fs::create_dir_all(d.join(sub)).unwrap();
         }
         std::fs::write(
-            d.join("packages/v/views/pedidos.yaml"),
-            "kind: View\nmetadata: { name: pedidos, namespace: v }\n",
+            d.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL }\n",
         )
         .unwrap();
         std::fs::write(
-            d.join("packages/v/tables/salida.yaml"),
-            "kind: Table\nmetadata: { name: salida, namespace: v }\nspec:\n  datasource: lago\n  object: v_salida\n",
+            d.join("packages/v/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: v, version: 0.1.0, status: active, domain: v }\nspec: { owner: team:v }\n",
         )
         .unwrap();
         std::fs::write(
             d.join("packages/v/tables/origen.yaml"),
-            "kind: Table\nmetadata: { name: origen, namespace: v }\nspec:\n  datasource: pg\n  object: public.origen\n",
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: origen, namespace: v }\nspec:\n  datasource: pg\n  object: public.origen\n  columns: { id: { type: Integer } }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n",
+        )
+        .unwrap();
+        // El dataset mantenido (la copia) y la vista que pregunta sobre él.
+        std::fs::write(
+            d.join("packages/v/datasets/pedidos.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: v }\nspec:\n  owner: team:v\n  from: { table: v.origen }\n",
         )
         .unwrap();
         std::fs::write(
-            d.join("copias/v_pedidos.json"),
-            "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"snapshot\":\"1\"}",
+            d.join("packages/v/views/grandes.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: grandes, namespace: v }\nspec:\n  owner: team:v\n  from: { dataset: v.pedidos }\n  fields: { id: id }\n",
+        )
+        .unwrap();
+        // Una vista virtual, sobre la tabla: no hay de dónde leer.
+        std::fs::write(
+            d.join("packages/v/views/virtual.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: virtual, namespace: v }\nspec:\n  owner: team:v\n  from: { table: v.origen }\n  fields: { id: id }\n",
+        )
+        .unwrap();
+        // El dataset escrito, con su puntero.
+        std::fs::write(
+            d.join("packages/v/datasets/salida.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: salida, namespace: v }\nspec:\n  owner: team:v\n  columns: { id: { type: Integer } }\n  changes: { mode: append }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("datasets/v_pedidos.json"),
+            "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"snapshot\":\"1\",\"dataset\":\"copias/v_pedidos\"}",
         )
         .unwrap();
         std::fs::write(
@@ -1413,6 +1450,7 @@ mod prueba {
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/datasets/v_salida/metadata/2.metadata.json\",\"snapshot\":\"2\"}",
         )
         .unwrap();
+        // El dataset mantenido, por su puntero (los bytes siguen en `copias/`).
         let r = datos_de(&d, "v", "pedidos", "v.pedidos");
         assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
         assert!(
@@ -1420,6 +1458,15 @@ mod prueba {
             "{}",
             r.cuerpo.jcs()
         );
+        // La vista sobre el dataset lee el puntero del dataset.
+        let r = datos_de(&d, "v", "grandes", "v.grandes");
+        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        assert!(
+            r.cuerpo.jcs().contains("copias/v_pedidos"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        // El dataset escrito.
         let r = datos_de(&d, "v", "salida", "v.salida");
         assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
         assert!(
@@ -1427,6 +1474,11 @@ mod prueba {
             "{}",
             r.cuerpo.jcs()
         );
+        // La vista virtual: 409, sin dataset debajo.
+        let r = datos_de(&d, "v", "virtual", "v.virtual");
+        assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
+        assert!(r.cuerpo.jcs().contains("virtual"), "{}", r.cuerpo.jcs());
+        // La tabla: 409, no un dataset.
         let r = datos_de(&d, "v", "origen", "v.origen");
         assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
         assert!(
@@ -1436,7 +1488,7 @@ mod prueba {
         );
         let r = datos_de(&d, "v", "nadie", "v.nadie");
         assert_eq!(r.codigo, 404);
-        // la Table del lago sin puntero todavía: 409, no 404
+        // el dataset escrito sin puntero todavía: 409, no 404
         std::fs::remove_file(d.join("datasets/v_salida.json")).unwrap();
         let r = datos_de(&d, "v", "salida", "v.salida");
         assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);

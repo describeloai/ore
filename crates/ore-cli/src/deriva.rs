@@ -394,7 +394,12 @@ fn vistas_de(pkg: &Package, tabla: &Loaded, columna: Option<&str>) -> Vec<String
         .unwrap_or_default()
         .to_string();
     let mut out = Vec::new();
-    for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
+    // 0033: lo que lee una tabla es una vista o un dataset mantenido.
+    for v in pkg
+        .docs
+        .iter()
+        .filter(|d| matches!(d.kind, Kind::View | Kind::Dataset))
+    {
         let de = v
             .section("from")
             .and_then(|n| n.get("table"))

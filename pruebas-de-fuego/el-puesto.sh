@@ -96,7 +96,7 @@ OTRO='x-ore-sujeto: agente:otro'
 
 # ── el árbol: un paquete con una tabla y dos vistas; una con copia ─────────
 A="$TMP/arbol"
-mkdir -p "$A/packages/hr/tables" "$A/packages/hr/views" "$A/copias"
+mkdir -p "$A/packages/hr/tables" "$A/packages/hr/views" "$A/datasets"
 cat > "$A/ontology.config.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha1
 kind: OntologyConfig
@@ -109,6 +109,16 @@ apiVersion: oos.dev/v1alpha1
 kind: Package
 metadata: { name: hr, version: 1.0.0, status: active, domain: people }
 spec: { owner: team:hr }
+Y
+# un dataset mantenido copia datos, y copiar instancia `materialization.payload`
+cat > "$A/conduits.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: demo }
+spec:
+  owner: team:security
+  conduits:
+    materialization.payload: { oos.maturity: DRAFT }
 Y
 cat > "$A/packages/hr/tables/empleados_t.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha8
@@ -124,36 +134,35 @@ spec:
   changes: { mode: append, witness: snapshot }
 Y
 cat > "$A/packages/hr/views/empleados.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
+apiVersion: oos.dev/v1alpha12
 kind: View
 metadata: { name: empleados, namespace: hr, labels: { oos.maturity: DRAFT } }
 spec:
   owner: team:data
-  from: hr.empleados_t
-  fields:
-    id: { from: id, type: String }
-    pais: { from: pais, type: String }
+  from: { table: hr.empleados_t }
+  fields: { id: id, pais: pais }
 Y
-cat > "$A/packages/hr/views/espanoles.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
-metadata: { name: espanoles, namespace: hr, labels: { oos.maturity: DRAFT } }
+# lo que se tiene son DATASETS (0033): `espanoles` y `lago` son copias con su
+# plan sobre la pregunta `empleados`; sus punteros, en `datasets/`
+mkdir -p "$A/packages/hr/datasets" "$A/datasets"
+cat > "$A/packages/hr/datasets/espanoles.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: espanoles, namespace: hr }
 spec:
   owner: team:data
-  from: hr.empleados
+  from: { view: hr.empleados }
   where: { pais: ES }
-  fields:
-    id: { from: id, type: String }
+  fields: { id: id }
 Y
-cat > "$A/packages/hr/views/lago.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
-metadata: { name: lago, namespace: hr, labels: { oos.maturity: DRAFT } }
+cat > "$A/packages/hr/datasets/lago.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: lago, namespace: hr }
 spec:
   owner: team:data
-  from: hr.empleados
-  fields:
-    id: { from: id, type: String }
+  from: { view: hr.empleados }
+  fields: { id: id }
 Y
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "el arbol de partida no compila: $(cd "$A" && "$ORE" validate . 2>&1 | head -3)"
 
@@ -175,11 +184,11 @@ print(clave)
 EOF
 )
 [ -n "$CLAVE" ] || falla "no se pudo escribir la copia de prueba"
-"$PY" -c 'import json,sys; json.dump({"estado":"copiada","clave":sys.argv[1],"plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$CLAVE" "$A/copias/hr_espanoles.json"
+"$PY" -c 'import json,sys; json.dump({"estado":"copiada","clave":sys.argv[1],"plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$CLAVE" "$A/datasets/hr_espanoles.json"
 
 # ── el dataset: una tabla Iceberg (0031 §10), y su puntero en el árbol ──────
 # Escrita con PyIceberg (el catálogo es el árbol: `medida-w3-iceberg.py`); el
-# puntero es `copias/hr_lago.json` con `metadata_location`. Los tres SDK la leen
+# puntero es `datasets/hr_lago.json` con `metadata_location`. Los tres SDK la leen
 # EN SITIO con DuckDB por la raíz y la versión. Sin pyiceberg (o sin git) el caso
 # se salta y se dice; el camino https contra GCS está medido en `medida-w3-lago.py`.
 LAGO_OK=no
@@ -206,7 +215,7 @@ print(tb.metadata_location)
 EOF
   )
   if [ -n "$META" ]; then
-    "$PY" -c 'import json,sys; json.dump({"estado":"copiada","metadata_location":sys.argv[1],"snapshot":"1","plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$META" "$A/copias/hr_lago.json"
+    "$PY" -c 'import json,sys; json.dump({"estado":"copiada","metadata_location":sys.argv[1],"snapshot":"1","plan":"x","filas":"3"}, open(sys.argv[2],"w"))' "$META" "$A/datasets/hr_lago.json"
     LAGO_OK=si
   else
     echo "  (pyiceberg no pudo escribir la tabla: el dataset Iceberg no se prueba aqui)"
@@ -333,9 +342,9 @@ dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vi
 # ── 10 · write() (W3.6c, 0031 §11): la celda escribe un dataset, y los tres lo leen ──
 if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE_DIR/ore-store-r2.exe" ]; then
   celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); (e[\"filas\"], e[\"repetida\"], e[\"snapshot\"] != \"\")' && tiene "d['salida']['texto']=='(3, False, True)'" || falla "10 · write(hr.salida): $(cuerpo)"
-  [ -f "$A/packages/hr/tables/salida.yaml" ] && grep -q "datasource: lago" "$A/packages/hr/tables/salida.yaml" && grep -q "cuando: { type: DateTimeTz }" "$A/packages/hr/tables/salida.yaml" || falla "10 · la Table del lago no nació tipada en el árbol: $(cat "$A/packages/hr/tables/salida.yaml" 2>/dev/null)"
+  [ -f "$A/packages/hr/datasets/salida.yaml" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/salida.yaml" && grep -q "cuando: { type: DateTimeTz }" "$A/packages/hr/datasets/salida.yaml" || falla "10 · el Dataset escrito no nació tipado en el árbol: $(cat "$A/packages/hr/datasets/salida.yaml" 2>/dev/null)"
   [ -f "$A/datasets/hr_salida.json" ] || falla "10 · el puntero no está en el árbol"
-  grep -q "name: lago" "$A/ontology.config.yaml" || falla "10 · el datasource lago no se declaró"
+  grep -q "type: lago" "$A/ontology.config.yaml" && falla "10 · write() declaró un datasource lago, y ya no hay tal cosa (0033)"
   # lo escrito, leído: EL MISMO JSON que hr.lago (los cuatro tipos sobreviven la vuelta)
   celda 'over(\"hr.salida\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "10 · over(hr.salida) no es el mismo JSON que hr.lago: $(cuerpo)"
   # la misma escritura otra vez: repetida, y un solo snapshot
@@ -347,16 +356,17 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   # upsert por clave (0031 §11 ⑤): el 4 cambia (4.00 → 40.00), el 6 es nuevo → 6 filas, 54.75; la Table declara la clave
   celda 'import pandas as pd, datetime as dt, decimal; e = write(\"hr.salida\", pd.DataFrame({\"n\": [4, 6], \"letra\": [\"D\", \"f\"], \"cuando\": [dt.datetime(2024, 6, 3, tzinfo=dt.timezone.utc)] * 2, \"importe\": [decimal.Decimal(\"40.00\"), decimal.Decimal(\"6.00\")]}), modo=\"upsert\", clave=[\"n\"]); e[\"filas\"]' && tiene "d['salida']['texto']=='6'" || falla "10 · upsert: $(cuerpo)"
   celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida\")' && tiene "d['salida']['filas']==[[6,'54.75']]" || falla "10 · sql tras el upsert: $(cuerpo)"
-  grep -q "changes: { mode: upsert, key: \[n\], witness: snapshot }" "$A/packages/hr/tables/salida.yaml" || falla "10 · la Table no declara el upsert: $(grep changes "$A/packages/hr/tables/salida.yaml")"
+  grep -q "changes: { mode: upsert, key: \[n\] }" "$A/packages/hr/datasets/salida.yaml" || falla "10 · el Dataset no declara el upsert: $(grep changes "$A/packages/hr/datasets/salida.yaml")"
   celda 'write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\"), clave=[\"n\"])' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError'" || falla "10 · clave sin upsert tenía que ser ValueError: $(cuerpo)"
   # lo que no se escribe: una View, y una columna que 0032 no tiene
-  celda 'write(\"hr.espanoles\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "10 · escribir una View: $(cuerpo)"
+  celda 'write(\"hr.espanoles\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10 · escribir un dataset mantenido: $(cuerpo)"
+  celda 'write(\"hr.empleados\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "10 · escribir una View: $(cuerpo)"
   celda 'import pyarrow as pa; write(\"hr.mala\", pa.table({\"grande\": pa.array([1], pa.uint64())}))' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'grande' in d['salida']['mensaje']" || falla "10 · uint64: $(cuerpo)"
   [ ! -f "$A/datasets/hr_mala.json" ] || falla "10 · lo negado dejó puntero"
   # declarar (W3.7 ①): una View sobre lo que la celda escribió, por la puerta de Forge
-  celda 'd = declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]\"" || falla "10 · declare(View): $(cuerpo)"
+  celda 'd = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]\"" || falla "10 · declare(View): $(cuerpo)"
   grep -q "groupBy: \[letra\]" "$A/packages/hr/views/porLetra.yaml" || falla "10 · la View declarada no está en el árbol"
-  celda 'declare({\"kind\": \"View\", \"metadata\": {\"name\": \"porLetra\", \"namespace\": \"hr\"}, \"spec\": {\"owner\": \"team:hr\", \"from\": {\"table\": \"hr.salida\"}, \"fields\": {\"letra\": \"letra\", \"n\": \"count()\"}, \"groupBy\": [\"letra\"]}})[\"nueva\"]' && tiene "d['salida']['texto']=='False'" || falla "10 · declare(dict) otra vez: $(cuerpo)"
+  celda 'declare({\"kind\": \"View\", \"metadata\": {\"name\": \"porLetra\", \"namespace\": \"hr\"}, \"spec\": {\"owner\": \"team:hr\", \"from\": {\"dataset\": \"hr.salida\"}, \"fields\": {\"letra\": \"letra\", \"n\": \"count()\"}, \"groupBy\": [\"letra\"]}})[\"nueva\"]' && tiene "d['salida']['texto']=='False'" || falla "10 · declare(dict) otra vez: $(cuerpo)"
   celda 'declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: rota, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.nadie }\\n  fields: { a: a }\\n\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'OOS' in d['salida']['mensaje']" || falla "10 · declare de una View rota tenía que ser ValueError con el diagnóstico: $(cuerpo)"
   [ ! -f "$A/packages/hr/views/rota.yaml" ] || falla "10 · lo negado quedó en el árbol"
   celda 'declare(\"kind: Model\\nmetadata: { name: x, namespace: hr }\\nspec: {}\\n\")' && tiene "d['salida']['tipo']=='error' and 'Model' in d['salida']['mensaje'] and '404' in d['salida']['mensaje']" || falla "10 · declare(Model) tenía que decir que no se sirve: $(cuerpo)"
@@ -527,8 +537,8 @@ if [ "$NODE_OK" = "si" ]; then
     celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.salida_node\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "8 · sql sobre lo escrito desde Node: $(cuerpo)"
     celda 'const e4 = await write(\"hr.salida_node\", [{ n: 4, letra: \"D\", cuando: new Date(\"2024-06-03T00:00:00Z\"), importe: 40 }, { n: 6, letra: \"f\", cuando: null, importe: 6 }], { modo: \"upsert\", clave: [\"n\"] }); e4.filas' && tiene "d['salida']['texto']=='5'" || falla "8 · upsert desde Node: $(cuerpo)"
     celda 'await sql(\"select count(*) as n, sum(importe) as s from hr.salida_node\")' && tiene "d['salida']['filas']==[[5,'49.75']]" || falla "8 · sql tras el upsert desde Node: $(cuerpo)"
-    celda 'await write(\"hr.espanoles\", [{ a: 1 }])' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · escribir una View desde Node: $(cuerpo)"
-    celda 'const dv = await declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: porLetraNode, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.salida_node }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [dv.kind, dv.nombre, dv.nueva].join(\" \")' && tiene "d['salida']['texto']=='View hr.porLetraNode true'" || falla "8 · declare(View) desde Node: $(cuerpo)"
+    celda 'await write(\"hr.empleados\", [{ a: 1 }])' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · escribir una View desde Node: $(cuerpo)"
+    celda 'const dv = await declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetraNode, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida_node }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [dv.kind, dv.nombre, dv.nueva].join(\" \")' && tiene "d['salida']['texto']=='View hr.porLetraNode true'" || falla "8 · declare(View) desde Node: $(cuerpo)"
     [ -f "$A/packages/hr/views/porLetraNode.yaml" ] || falla "8 · la View declarada desde Node no está en el árbol"
     celda 'const resumirNode = transform({ inputs: [\"hr.lago\"], output: \"hr.resumen_node\" }, async function resumirNode() { return write(\"hr.resumen_node\", await over(\"hr.lago\")); }); (await resumirNode()).filas' && tiene "d['salida']['texto']=='3'" || falla "8 · un transform desde Node: $(cuerpo)"
     "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-node","transform":"resumirNode"}, pr' "$A/datasets/hr_resumen_node.json" || falla "8 · la procedencia desde Node: $(cat "$A/datasets/hr_resumen_node.json")"
@@ -599,8 +609,8 @@ if [ "$JAVA_OK" = "si" ]; then
     celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida_jvm\")' && tiene "d['salida']['filas']==[[4,'7.75']]" || falla "9 · sql sobre lo escrito desde Java: $(cuerpo)"
     celda 'var e4 = write(\"hr.salida_jvm\", List.of(Map.of(\"n\", 4L, \"letra\", \"D\", \"cuando\", java.time.Instant.parse(\"2024-06-03T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"40.00\")), Map.of(\"n\", 6L, \"letra\", \"f\", \"cuando\", java.time.Instant.parse(\"2024-06-03T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"6.00\"))), \"upsert\", List.of(\"n\")); e4.get(\"filas\")' && tiene "d['salida']['texto']=='5'" || falla "9 · upsert desde Java: $(cuerpo)"
     celda 'sql(\"select count(*) as n, sum(importe) as s from hr.salida_jvm\")' && tiene "d['salida']['filas']==[[5,'49.75']]" || falla "9 · sql tras el upsert desde Java: $(cuerpo)"
-    celda 'write(\"hr.espanoles\", List.of(Map.of(\"a\", 1L)))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · escribir una View desde Java: $(cuerpo)"
-    celda 'var dv = declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: porLetraJvm, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.salida_jvm }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); dv.get(\"kind\") + \" \" + dv.get(\"nombre\") + \" \" + dv.get(\"nueva\")' && tiene "d['salida']['texto']=='\"View hr.porLetraJvm true\"'" || falla "9 · declare(View) desde Java: $(cuerpo)"
+    celda 'write(\"hr.empleados\", List.of(Map.of(\"a\", 1L)))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · escribir una View desde Java: $(cuerpo)"
+    celda 'var dv = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetraJvm, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida_jvm }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); dv.get(\"kind\") + \" \" + dv.get(\"nombre\") + \" \" + dv.get(\"nueva\")' && tiene "d['salida']['texto']=='\"View hr.porLetraJvm true\"'" || falla "9 · declare(View) desde Java: $(cuerpo)"
     [ -f "$A/packages/hr/views/porLetraJvm.yaml" ] || falla "9 · la View declarada desde Java no está en el árbol"
     celda 'var ej = transform(\"resumirJvm\", List.of(\"hr.lago\"), \"hr.resumen_jvm\", () -> write(\"hr.resumen_jvm\", over(\"hr.lago\"))); ej.get(\"filas\")' && tiene "d['salida']['texto']=='3'" || falla "9 · un transform desde Java: $(cuerpo)"
     "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-jvm","transform":"resumirJvm"}, pr' "$A/datasets/hr_resumen_jvm.json" || falla "9 · la procedencia desde Java: $(cat "$A/datasets/hr_resumen_jvm.json")"

@@ -1390,21 +1390,25 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             .and_then(|(_, v)| v.as_str())
             .map(String::from)
     };
-    // vista → tabla (y si la vista declara copia), y entidad → vista
+    // Lo que lee una tabla: una vista (la pregunta) o un dataset mantenido (la
+    // copia, 0033). `(nombre, es dataset)`, y entidad → lo que la respalda.
     let mut vista_de_tabla: std::collections::BTreeMap<String, (String, bool)> = Default::default();
-    for v in leer("views") {
-        if let (Some(n), Some(t)) = (
-            en(&v, "metadata", "name"),
-            v.get("spec")
-                .and_then(|(_, s)| s.get("from"))
-                .and_then(|(_, f)| f.get("table"))
-                .and_then(|(_, t)| t.as_str().map(String::from)),
-        ) {
-            let copiada = v
-                .get("spec")
-                .and_then(|(_, s)| s.get("materialized"))
-                .is_some();
-            vista_de_tabla.insert(t.rsplit('.').next().unwrap_or(&t).to_string(), (n, copiada));
+    for (carpeta, es_dataset) in [("views", false), ("datasets", true)] {
+        for v in leer(carpeta) {
+            if let (Some(n), Some(t)) = (
+                en(&v, "metadata", "name"),
+                v.get("spec")
+                    .and_then(|(_, s)| s.get("from"))
+                    .and_then(|(_, f)| f.get("table"))
+                    .and_then(|(_, t)| t.as_str().map(String::from)),
+            ) {
+                let clave = t.rsplit('.').next().unwrap_or(&t).to_string();
+                // Un dataset gana a una vista sobre la misma tabla: es lo que se
+                // tiene, y es lo que el catálogo enseña.
+                if es_dataset || !vista_de_tabla.contains_key(&clave) {
+                    vista_de_tabla.insert(clave, (n, es_dataset));
+                }
+            }
         }
     }
     let mut entidad_de_vista: std::collections::BTreeMap<String, String> = Default::default();
@@ -1452,11 +1456,16 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             ),
             ("columns", Json::Arr(columnas)),
             ("modeled", Json::Bool(entidad.is_some())),
-            // ⭐ Si su vista declara copia: por la clase de la base o una a una.
+            // ⭐ Si tiene dataset (0033): por la clase de la base o una a una.
             ("copied", Json::Bool(copiada)),
         ];
         if let Some(v) = &vista {
+            // `view` sigue siendo el nombre de lo que la lee, para quien ya lo
+            // leía; `dataset` dice que es una copia con su documento.
             campos.push(("view", Json::s(v)));
+            if copiada {
+                campos.push(("dataset", Json::s(v)));
+            }
         }
         if let Some(e) = &entidad {
             campos.push(("entity", Json::s(e)));

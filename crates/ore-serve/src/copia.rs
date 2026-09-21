@@ -2,25 +2,26 @@
 //!
 //! # La copia se induce, no se edita
 //!
-//! `ore discover` no propone `materialized` (`inductor.rs`: proponerlo sería
-//! inventarlo), y `ore review` **re-induce el paquete entero** desde el catálogo
+//! `ore discover` no propone la copia (`inductor.rs`: proponerla sería
+//! inventarla), y `ore review` **re-induce el paquete entero** desde el catálogo
 //! y las respuestas — una edición a mano entre las dos se pierde. Así que la
-//! copia no puede ser un campo que alguien escribe en una vista (el verbo por
-//! vista de I2, retirado): tiene que salir de la inducción. Y sale de una
-//! **regla**: la clase de la base, `"type": "standard"` en `discover.scope.json`
-//! —el documento que ya guarda qué entró y de dónde, y que `review` lee y no
-//! reescribe—. Con ella, el inductor emite `materialized` en cada vista cuya
-//! tabla **tiene clave** (la del origen o la contestada en `clave`) y `changes:
-//! mode: upsert, key` en su tabla. Sin clave, la vista espera: una copia que
-//! sólo anexa no puede respaldar una entidad (`OOS2021`), y la decisión `clave`
-//! de la cola dice que la copia la espera. Contestarla la trae.
+//! copia no puede ser un campo que alguien escribe (el verbo por vista de I2,
+//! retirado): tiene que salir de la inducción. Y sale de una **regla**: la
+//! clase de la base, `"type": "standard"` en `discover.scope.json` —el
+//! documento que ya guarda qué entró y de dónde, y que `review` lee y no
+//! reescribe—. Con ella, el inductor emite **un `Dataset` con el plan** (0033,
+//! `packages/<p>/datasets/`) por cada tabla que **tiene clave** (la del origen o
+//! la contestada en `clave`) y `changes: mode: upsert, key` en su tabla. Sin
+//! clave, la tabla sale con su vista y espera: una copia que sólo anexa no
+//! puede respaldar una entidad (`OOS2021`), y la decisión `clave` de la cola
+//! dice que la copia la espera. Contestarla la trae.
 //!
 //! # Lo que queda de este lado
 //!
 //! Lo que NO se induce: `conduits.yaml` (en la raíz del árbol, fuera del
-//! paquete) tiene que autorizar `materialization.payload`, o el `materialized`
-//! no compila (`OOS4011`, medido); y el Job de la copia (I3) hay que encolarlo
-//! cuando la lista de vistas con copia cambia. Las dos cosas las hace
+//! paquete) tiene que autorizar `materialization.payload`, o el dataset no
+//! compila (`OOS4011`, medido); y el Job de la copia (I3) hay que encolarlo
+//! cuando la lista de datasets mantenidos cambia. Las dos cosas las hace
 //! [`Servidor::tras_inducir`], después de cada inducción que `ore-serve`
 //! dispara: el alta (`POST /paquetes {type}`), ascender (`POST /paquetes/{n}/
 //! copia` = la clase al alcance + `review --reinducir`) y contestar decisiones.
@@ -191,10 +192,10 @@ impl Servidor {
         if let Err(e) = std::fs::remove_dir_all(&aparte) {
             return Respuesta::error(500, format!("no se pudo borrar el paquete: {e}"));
         }
-        // ⭐ Sus recibos en el árbol (`copias/<n>_*.json`), fuera en el mismo
+        // ⭐ Sus punteros en el árbol (`datasets/<n>_*.json`), fuera en el mismo
         //   commit: un recibo de una vista que ya no está es un recibo de nadie.
         let mut recibos = 0usize;
-        if let Ok(entradas) = std::fs::read_dir(raiz.join("copias")) {
+        if let Ok(entradas) = std::fs::read_dir(raiz.join("datasets")) {
             let prefijo = format!("{paquete}_");
             for e in entradas.flatten() {
                 let nombre = e.file_name().to_string_lossy().into_owned();
@@ -398,8 +399,8 @@ impl Servidor {
         campos
     }
 
-    /// `GET /paquetes/{n}/copias`: las vistas del paquete que declaran copia, con
-    /// su tabla, su fuente y su clave. Lo que el Job de I3 va a copiar.
+    /// `GET /paquetes/{n}/copias`: los datasets mantenidos del paquete, con su
+    /// tabla y su clave. Lo que el Job de I3 va a copiar.
     pub(crate) fn copias(&self, raiz: &Path, paquete: &str) -> Respuesta {
         if let Err(m) = token(paquete) {
             return Respuesta::error(422, format!("nombre de paquete: {m}"));
@@ -409,7 +410,7 @@ impl Servidor {
             return Respuesta::error(404, "no hay tal paquete");
         }
         let mut lista = Vec::new();
-        if let Ok(es) = std::fs::read_dir(dir.join("views")) {
+        if let Ok(es) = std::fs::read_dir(dir.join("datasets")) {
             let mut rutas: Vec<PathBuf> = es.flatten().map(|e| e.path()).collect();
             rutas.sort();
             for p in rutas {
@@ -419,13 +420,14 @@ impl Servidor {
                 let Ok(n) = parse::parse(&texto) else {
                     continue;
                 };
-                if campo(&n, "kind").as_deref() != Some("View") {
+                if campo(&n, "kind").as_deref() != Some("Dataset") {
                     continue;
                 }
                 let Some((_, spec)) = n.get("spec") else {
                     continue;
                 };
-                let Some((_, mat)) = spec.get("materialized") else {
+                // Un dataset mantenido: lleva `from`. Uno escrito no se copia.
+                let Some((_, de)) = spec.get("from") else {
                     continue;
                 };
                 let nombre = n
@@ -450,9 +452,9 @@ impl Servidor {
                     })
                     .unwrap_or(Json::Arr(Vec::new()));
                 lista.push(Json::obj([
-                    ("view", Json::s(nombre.clone())),
+                    ("dataset", Json::s(nombre.clone())),
                     ("table", tabla.map(Json::s).unwrap_or(Json::Bool(false))),
-                    ("materialized", de_node(mat)),
+                    ("from", de_node(de)),
                     ("key", clave),
                     ("copia", informe_de(raiz, paquete, &nombre)),
                 ]));
@@ -635,7 +637,7 @@ fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Resp
     Ok(())
 }
 
-/// `paquete.vista` de cada vista del árbol que declara `materialized`, en orden.
+/// `paquete.dataset` de cada dataset mantenido del árbol, en orden.
 fn vistas_con_copia(raiz: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(paquetes) = std::fs::read_dir(raiz.join("packages")) else {
@@ -661,7 +663,6 @@ fn vistas_con_copia(raiz: &Path) -> Vec<String> {
     out
 }
 
-/// Las vistas de UN paquete que declaran `materialized`, por nombre y en orden.
 /// Lo que un diagnóstico dice y dónde, junto: para saber si nombra a alguien.
 pub(crate) fn texto_de(d: &Json) -> String {
     let Json::Obj(m) = d else {
@@ -677,9 +678,11 @@ pub(crate) fn texto_de(d: &Json) -> String {
         .join(" ")
 }
 
+/// Los datasets mantenidos de UN paquete (`datasets/*.yaml` con `from`), por
+/// nombre y en orden.
 fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(vistas) = std::fs::read_dir(dir.join("views")) else {
+    let Ok(vistas) = std::fs::read_dir(dir.join("datasets")) else {
         return out;
     };
     let mut rutas: Vec<PathBuf> = vistas.flatten().map(|e| e.path()).collect();
@@ -691,13 +694,10 @@ fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
         let Ok(n) = parse::parse(&texto) else {
             continue;
         };
-        if campo(&n, "kind").as_deref() != Some("View") {
+        if campo(&n, "kind").as_deref() != Some("Dataset") {
             continue;
         }
-        if n.get("spec")
-            .and_then(|(_, s)| s.get("materialized"))
-            .is_none()
-        {
+        if n.get("spec").and_then(|(_, s)| s.get("from")).is_none() {
             continue;
         }
         if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
@@ -725,17 +725,17 @@ pub(crate) fn clase_de(dir: &Path) -> &'static str {
     }
 }
 
-/// **Cuántas copias declara un paquete, y cuántas están hechas.** Las vistas
-/// con `materialized` son la CONSECUENCIA de la clase; esto las cuenta para que
-/// una base estándar con vistas sin copiar se vea como lo que es —una deriva—
-/// y no como una tercera clase.
+/// **Cuántas copias declara un paquete, y cuántas están hechas.** Los datasets
+/// mantenidos son la CONSECUENCIA de la clase; esto los cuenta para que una
+/// base estándar con datasets sin copiar se vea como lo que es —una deriva— y
+/// no como una tercera clase.
 pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     let dir = raiz.join("packages").join(paquete);
     let declaradas = vistas_con_copia_de(&dir);
     let copiadas = declaradas
         .iter()
         .filter(|v| {
-            let rel = format!("copias/{paquete}_{v}.json");
+            let rel = format!("datasets/{paquete}_{v}.json");
             std::fs::read_to_string(raiz.join(rel))
                 .ok()
                 .and_then(|t| parse::parse(&t).ok())
@@ -749,11 +749,11 @@ pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     ])
 }
 
-/// Lo que la última pasada del Job dejó en `copias/<paquete>_<vista>.json`, con
-/// quién y cuándo (el commit). Sin informe: `pendiente` — se decidió y nadie ha
-/// copiado todavía.
+/// Lo que la última pasada del Job dejó en `datasets/<paquete>_<nombre>.json`,
+/// con quién y cuándo (el commit). Sin puntero: `pendiente` — se decidió y
+/// nadie ha copiado todavía.
 fn informe_de(raiz: &Path, paquete: &str, vista: &str) -> Json {
-    let rel = format!("copias/{paquete}_{vista}.json");
+    let rel = format!("datasets/{paquete}_{vista}.json");
     let Ok(texto) = std::fs::read_to_string(raiz.join(&rel)) else {
         return Json::obj([("estado", Json::s("pendiente"))]);
     };

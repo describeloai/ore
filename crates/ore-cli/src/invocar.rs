@@ -4,7 +4,7 @@
 //!
 //! | mitad | quién | cómo |
 //! |---|---|---|
-//! | **traer** | `ore-store-<r2\|gcs> leer` | la copia de `over`, por el nombre que su informe (`copias/<paquete>_<vista>.json`) dejó en el árbol |
+//! | **traer** | `ore-store-<r2\|gcs> leer` | el dataset de `over`, por el nombre que su puntero (`datasets/<paquete>_<nombre>.json`) dejó en el árbol |
 //! | **invocar** | `ore-invoke` | una llamada por fila a la puerta con el token de la celda (`MODELO_TOKEN`), la respuesta ya en la forma de `output` |
 //! | **devolver** | `ore-store-<tipo> sellar` + `--informe DIR` | las filas con su `output` selladas en el bucket del inquilino, y un informe en el árbol con los números y una muestra |
 //!
@@ -147,16 +147,19 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             d.kind == ore_core::document::Kind::View && d.qname().as_deref() == Some(over.as_str())
         })
         .ok_or_else(|| (65, format!("`over: {over}` no es una vista del árbol")))?;
-    if vista.section("materialized").is_none() {
+    // 0033: la copia de `over` es el primer dataset bajando por su cadena
+    // (ella misma incluida si es un dataset).
+    let Some(copia) = ore_core::vistas::raiz_de_lectura(&pkg, vista) else {
         return Err((
             65,
             format!(
-                "`{over}` no declara copia: una función lee la copia, nunca el origen (0029 ③)"
+                "`{over}` no tiene dataset debajo: una función lee la copia, nunca el origen (0029 ③)"
             ),
         ));
-    }
-    let puntero =
-        Puntero::hecho(path, &over).map_err(|e| (65, format!("la copia de `{over}`: {e}")))?;
+    };
+    let copia_qn = copia.qname().unwrap_or_default();
+    let puntero = Puntero::hecho(path, &copia_qn)
+        .map_err(|e| (65, format!("el dataset de `{over}` (`{copia_qn}`): {e}")))?;
     let clave_copia = puntero.nombre().to_string();
 
     // ── ④ La puerta y el id servido ─────────────────────────────────────────

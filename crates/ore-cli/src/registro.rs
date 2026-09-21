@@ -222,15 +222,15 @@ fn meter(
 /// puede decir hasta cuándo era cierto*. Eso es lo que
 /// [`frescura_comprobable`] convierte en una línea de `ore view`.
 pub fn marca_de(pkg: &Package, v: &Loaded) -> Marca {
-    let Ok(r) = vistas::raiz(pkg, v) else {
+    // v1alpha12: el suelo puede ser un dataset escrito, y entonces se fecha por
+    // snapshot siempre —es Iceberg— sin declararlo (`01-dataset` §6).
+    let Some(suelo) = vistas::suelo(pkg, v) else {
         return Marca::Ninguna;
     };
-    let Some(c) = r
-        .tabla
-        .as_deref()
-        .and_then(|qn| pkg.table(qn))
-        .and_then(|t| t.section("changes"))
-    else {
+    if vistas::es_escrito(suelo) {
+        return Marca::Instantanea;
+    }
+    let Some(c) = suelo.section("changes") else {
         return Marca::Ninguna;
     };
     match c.get("witness").and_then(|(_, x)| x.as_str()) {
@@ -258,8 +258,7 @@ pub fn marca_de(pkg: &Package, v: &Loaded) -> Marca {
 /// especificacion lo dice donde declara el campo — *no se inventa, ausente
 /// significa que no se sabe*.
 pub fn retencion_de(pkg: &Package, v: &Loaded) -> Option<String> {
-    let r = vistas::raiz(pkg, v).ok()?;
-    pkg.table(r.tabla.as_deref()?)?
+    vistas::suelo(pkg, v)?
         .section("changes")?
         .get("retention")
         .and_then(|(_, x)| x.as_str())
@@ -281,18 +280,16 @@ pub fn frescura_comprobable(pkg: &Package, v: &Loaded) -> Result<Marca, ()> {
     }
 }
 
-/// Las que el paquete declara: una `View` con `materialized`.
+/// Las que el paquete declara: un `Dataset` mantenido (0033) —o, mientras
+/// haya documentos de v1alpha7/8, una `View` con `materialized`—.
 fn declaradas(
     pkg: &Package,
     catalogo: &Catalogo,
 ) -> Vec<(String, Nodo, Lectura, Testigo, Option<String>)> {
     let mut out = Vec::new();
-    for v in pkg
-        .docs
-        .iter()
-        .filter(|d| d.kind == ore_core::document::Kind::View)
-    {
-        let (Some(qn), Some(m)) = (v.qname(), v.section("materialized")) else {
+    for v in pkg.docs.iter().filter(|d| vistas::es_copia(d)) {
+        let (Some(qn), Some((datasource, objeto))) = (v.qname(), crate::vista::destino_de(v))
+        else {
             continue;
         };
         // Una que no expande o no tipa ya la denuncia `ore view` por su propia
@@ -305,8 +302,8 @@ fn declaradas(
             qn,
             plan,
             Lectura {
-                datasource: cadena(m, "datasource"),
-                objeto: cadena(m, "table"),
+                datasource,
+                objeto,
                 campos,
             },
             // La marca sí; el valor no, y no por falta de sitio: **nada puebla
@@ -383,13 +380,6 @@ fn topologia(
         ));
     }
     out
-}
-
-fn cadena(n: &ore_core::parse::Node, k: &str) -> String {
-    n.get(k)
-        .and_then(|(_, v)| v.as_str())
-        .unwrap_or("?")
-        .to_string()
 }
 
 fn lista(n: Option<&ore_core::parse::Node>) -> Vec<String> {
@@ -675,10 +665,8 @@ pub fn clave_de(pkg: &Package, v: &Loaded) -> Vec<String> {
     let Ok(r) = vistas::raiz(pkg, v) else {
         return Vec::new();
     };
-    let columnas: Vec<String> = r
-        .tabla
-        .as_deref()
-        .and_then(|qn| pkg.table(qn))
+    // v1alpha12: la clave es la del suelo, sea una `Table` o un dataset escrito.
+    let columnas: Vec<String> = vistas::suelo(pkg, v)
         .and_then(|t| t.section("changes"))
         .and_then(|c| c.get("key"))
         .map(|(_, k)| {

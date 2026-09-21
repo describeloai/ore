@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════════════
-# EL LAGO — W3.6b (0031 §10): el swap del puntero por `ore-serve`, el
-# `datasource: lago`, la ficha con la historia, y el mantenimiento — de punta a
+# EL LAGO — W3.6b (0031 §10) y 0033: el swap del puntero por `ore-serve`, el
+# `Dataset` escrito, la ficha con la historia, y el mantenimiento — de punta a
 # punta y sin red de verdad: una forja pelada (`file://`), el S3 de mentira y
 # `ore-store-r2` haciendo de escritor de un puesto.
 #
 # Lo que afirma:
-#   0  el árbol nace con el lago (`ore init` declara `datasource: lago`)
+#   0  el árbol nace sin un `datasource: lago` que declarar (0033: un dataset
+#      es nuestro y sus caras se saben)
 #   1  CONFIRMAR: `POST /datasets/{ns}/{n}/confirmar {metadata_location, columnas}`
-#      deja en UN commit —firmado por el sujeto— la `Table` del lago tipada, el
+#      deja en UN commit —firmado por el sujeto— el `Dataset` escrito tipado, el
 #      puntero `datasets/<ns>_<n>.json`, y el árbol compila
 #   2  la lista y la ficha: `GET /datasets`, `GET /datasets/{ns}/{n}` con los
 #      snapshots de la tabla (`ore-store historia`) y su esquema
@@ -25,18 +26,18 @@
 # Y el verbo escribir sobre el árbol (W3.6c c2, 0031 §11), con `ore-store
 # escribir` (la tabla Arrow por IPC) haciendo de `write()`:
 #   7  `ore datasets --commit`: la tabla NACE del cuerpo que `escribir` devolvió
-#      (`assert-create` + sus cambios): metadata.json, la `Table` del lago con
+#      (`assert-create` + sus cambios): metadata.json, el `Dataset` escrito con
 #      las columnas de OOS traducidas de Iceberg (`Integer`, `String`,
 #      `Decimal`, `DateTimeTz`), el puntero con `uuid` y `operacion`; compila
 #   8  la clave de operación: la MISMA escritura otra vez no deja snapshot ni
 #      mueve nada (`repetida`); otra clave anexa; un cuerpo con la base vieja es
-#      código 75 con `actual`; y una columna nueva regenera la `Table` sin
+#      código 75 con `actual`; y una columna nueva regenera el `Dataset` sin
 #      perder lo que alguien le añadió a mano (descripción, etiquetas)
 #   9  dos tablas en un commit (`table-changes`): las dos nacen o se mueven en
 #      la misma pasada; una `View` como destino se niega sin tocar nada
 #  9b  `modo: upsert` (0031 §11 ⑤): con `clave`, lo que había menos esas claves
 #      más lo que llega, reescrito entero (copy-on-write: un `overwrite`); la
-#      clave queda en la tabla (`ore.clave`) y la `Table` del árbol pasa a
+#      clave queda en la tabla (`ore.clave`) y el `Dataset` del árbol pasa a
 #      `changes: { mode: upsert, key: [id] }`; la siguiente vez no hace falta
 #      repetirla, y nada de antes se pierde
 #  10  la retención declarada en la tabla (`--retencion p.t --edad 0`) es la que
@@ -59,15 +60,15 @@
 #      tabla que no existe 404, la base vieja 409 `CommitFailedException` con
 #      `actual` — todos con la forma de error de la spec
 #
-# Y materializar SOBRE el lago (0031 «(d)»): una View cuya raíz es una tabla
-# del lago no tiene driver de texto —el puntero está en el árbol, no en una
-# URL— y se copia en Arrow (`ore-store copiar`):
-#  14  `ore materialize` de una View sobre `ventas.py` (267 filas vivas, con
+# Y materializar SOBRE el lago (0031 «(d)», 0033): un Dataset mantenido cuyo
+# `from` es un dataset no tiene driver de texto —el puntero está en el árbol,
+# no en una URL— y se copia en Arrow (`ore-store copiar`):
+#  14  `ore materialize` de un Dataset sobre `ventas.py` (267 filas vivas, con
 #      position deletes): el testigo es el snapshot del puntero, la copia se
 #      lee, se proyecta y se filtra en Arrow (`where: { pais: FR }` → 1 fila de
 #      267 leídas; sin where → 267 y sin las borradas), `ore ask` la contesta
-#      tipada, la segunda pasada dice «ya está» sin leer, y una Table del lago
-#      que nadie escribió se dice
+#      tipada, la segunda pasada dice «ya está» sin leer, y un dataset que
+#      nadie escribió se dice
 #
 # Necesita `ore`, `ore-serve`, `ore-store-r2` en target/{release,debug}, git y
 # python3 con pyarrow (para 7–10), pyiceberg y duckdb (11–13); sin ellos se
@@ -117,11 +118,11 @@ git init -q --bare -b main "$FORJA" || { echo "no se pudo crear la forja"; exit 
 git clone -q "$FORJA" "$TMP/semilla" 2>/dev/null
 A="$TMP/semilla"
 ( cd "$A" && "$ORE" init . --name lago >/dev/null 2>&1 ) || { "$ORE" init "$A" --name lago; falla "0 · ore init"; exit 1; }
-grep -q "name: lago" "$A/ontology.config.yaml" && grep -q "connectionEnv: LAGO_URL" "$A/ontology.config.yaml" \
-  || falla "0 · ore init no declaró el datasource lago"
-# una fuente de ficheros, para tener una Table que NO es del lago
-mkdir -p "$A/packages/ventas/tables" "$A/packages/ventas/views"
+grep -q "type: lago" "$A/ontology.config.yaml" && falla "0 · ore init declaró un datasource lago, y ya no hay tal cosa (0033)"
+# una fuente de ficheros, para tener una Table de fuera
+mkdir -p "$A/packages/ventas/tables" "$A/packages/ventas/views" "$A/packages/ventas/datasets"
 cat >> "$A/ontology.config.yaml" <<'Y'
+datasources:
   - { name: ficheros, type: jsonl, connectionEnv: FICHEROS_DIR }
 Y
 cat > "$A/packages/ventas/package.yaml" <<'Y'
@@ -143,7 +144,7 @@ spec:
 Y
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$A"; falla "0 · el árbol semilla no compila"; exit 1; }
 ( cd "$A" && git add -A && git commit -qm "el arbol con su lago" && git push -q origin HEAD:main ) || { falla "0 · no se pudo sembrar la forja"; exit 1; }
-ok "0 · el árbol nace con \`datasource: lago\` (ore init) y compila"
+ok "0 · el árbol nace sin \`datasource: lago\` (ore init) y compila"
 
 # ── el servidor, en modo forja ───────────────────────────────────────────────
 PUERTO=$("$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
@@ -179,25 +180,25 @@ ML1=$(escribe "" 1); [ -n "$ML1" ] || { falla "el escritor no dejó metadata_loc
 COD=$(pide POST /datasets/ventas/salida/confirmar "{\"metadata_location\":\"$ML1\",\"snapshot\":\"1\",\"filas\":2,\"columnas\":{\"id\":\"Integer\",\"pais\":\"String\",\"total\":\"Decimal\"}}")
 [ "$COD" = "201" ] || falla "1 · confirmar no dio 201: $COD $(cat "$TMP/out.json")"
 [ "$(campo tabla_nueva)" = "true" ] && [ "$(campo puntero_nuevo)" = "true" ] || falla "1 · no dijo que la Table y el puntero nacen: $(cat "$TMP/out.json")"
-[ "$(campo lago_declarado)" = "false" ] || falla "1 · el lago ya estaba declarado y dijo que lo declaró"
 COMMIT1=$(campo commit)
 [ -n "$COMMIT1" ] || falla "1 · sin commit"
 git clone -q "$FORJA" "$TMP/mira1"
-[ -f "$TMP/mira1/packages/ventas/tables/salida.yaml" ] || falla "1 · la Table del lago no está en la forja"
-grep -q "datasource: lago" "$TMP/mira1/packages/ventas/tables/salida.yaml" || falla "1 · la Table no es del lago"
-grep -q "total: { type: Decimal }" "$TMP/mira1/packages/ventas/tables/salida.yaml" || falla "1 · la Table no lleva las columnas tipadas: $(cat "$TMP/mira1/packages/ventas/tables/salida.yaml")"
+[ -f "$TMP/mira1/packages/ventas/datasets/salida.yaml" ] || falla "1 · el Dataset escrito no está en la forja"
+grep -q "kind: Dataset" "$TMP/mira1/packages/ventas/datasets/salida.yaml" && grep -q "owner: team:data" "$TMP/mira1/packages/ventas/datasets/salida.yaml" || falla "1 · el documento no es un Dataset con el dueño del paquete: $(cat "$TMP/mira1/packages/ventas/datasets/salida.yaml")"
+grep -q "datasource" "$TMP/mira1/packages/ventas/datasets/salida.yaml" && falla "1 · el Dataset lleva datasource, y un dataset es nuestro"
+grep -q "total: { type: Decimal }" "$TMP/mira1/packages/ventas/datasets/salida.yaml" || falla "1 · el Dataset no lleva las columnas tipadas: $(cat "$TMP/mira1/packages/ventas/datasets/salida.yaml")"
 "$PY" - "$TMP/mira1/datasets/ventas_salida.json" "$ML1" <<'EOF' || falla "1 · el puntero"
 import json, sys
 p = json.load(open(sys.argv[1]))
 assert p["estado"] == "copiada" and p["metadata_location"] == sys.argv[2] and p["dataset"] == "datasets/ventas_salida" and p["tabla"] == "ventas.salida" and p["filas"] == 2 and p["escrito_por"] == "persona:ana", p
 EOF
 [ "$(git --git-dir="$FORJA" log -1 --format='%an' main)" = "persona:ana" ] || falla "1 · el autor del commit no es el sujeto"
-( cd "$TMP/mira1" && "$ORE" validate . >/dev/null 2>&1 ) || falla "1 · el árbol con la Table del lago no compila: $(cd "$TMP/mira1" && "$ORE" validate . 2>&1 | head -3)"
-ok "1 · confirmar: la Table del lago (tipada) y el puntero nacen en UN commit firmado por el sujeto, y el árbol compila"
+( cd "$TMP/mira1" && "$ORE" validate . >/dev/null 2>&1 ) || falla "1 · el árbol con el Dataset escrito no compila: $(cd "$TMP/mira1" && "$ORE" validate . 2>&1 | head -3)"
+ok "1 · confirmar: el Dataset escrito (tipado) y el puntero nacen en UN commit firmado por el sujeto, y el árbol compila"
 
 # ── 2 · la lista y la ficha ──────────────────────────────────────────────────
 [ "$(pide GET /datasets)" = "200" ] || falla "2 · GET /datasets: $(cat "$TMP/out.json")"
-[ "$(campo datasets.0.clase)" = "dataset" ] && [ "$(campo datasets.0.nombre)" = "ventas.salida" ] || falla "2 · la lista no trae ventas.salida como dataset: $(cat "$TMP/out.json")"
+[ "$(campo datasets.0.clase)" = "escrito" ] && [ "$(campo datasets.0.nombre)" = "ventas.salida" ] || falla "2 · la lista no trae ventas.salida como dataset escrito: $(cat "$TMP/out.json")"
 [ "$(pide GET /datasets/ventas/salida)" = "200" ] || falla "2 · GET /datasets/ventas/salida: $(cat "$TMP/out.json")"
 [ "$(campo snapshots.0.operacion)" = "append" ] && [ "$(campo snapshots.0.filas)" = "2" ] && [ "$(campo snapshots.0.vigente)" = "true" ] || falla "2 · la ficha no trae el snapshot: $(cat "$TMP/out.json")"
 [ "$(campo esquema.total)" = "decimal(38, 18)" ] || falla "2 · la ficha no trae el esquema de Iceberg: $(campo esquema.total)"
@@ -222,7 +223,7 @@ COD=$(pide POST /datasets/ventas/salida/confirmar "{\"metadata_location\":\"s3:/
 [ "$COD" = "422" ] || falla "3 · lo que no está en el bucket no dio 422: $COD $(cat "$TMP/out.json")"
 COD=$(pide POST /datasets/ventas/pedidos/confirmar "{\"metadata_location\":\"$ML3\"}")
 [ "$COD" = "422" ] || falla "3 · una Table de otra fuente no dio 422: $COD $(cat "$TMP/out.json")"
-grep -q "no del lago" "$TMP/out.json" || falla "3 · no dijo que pedidos es de otra fuente: $(cat "$TMP/out.json")"
+grep -q "es una Table" "$TMP/out.json" || falla "3 · no dijo que pedidos es una Table (lo de otro, a lo que no se escribe): $(cat "$TMP/out.json")"
 COD=$(pide POST /datasets/ventas/nueva/confirmar "{\"metadata_location\":\"$ML3\"}")
 [ "$COD" = "422" ] || falla "3 · una Table nueva sin columnas no dio 422: $COD"
 COD=$(pide POST /datasets/nadie/x/confirmar "{\"metadata_location\":\"$ML3\"}")
@@ -277,7 +278,7 @@ n=$(printf '{"metadata_location":"%s"}\n' "$MLN" | "$STORE" leer | grep -c '^{"i
 # y el puntero movido se empuja, como hace el CronJob de mantenimiento
 ( cd "$TMP/mant" && git add -A datasets && git commit -qm "mantenimiento" && git push -q origin HEAD:main ) || falla "6 · el mantenimiento no pudo empujar"
 salida=$("$ORE" datasets "$TMP/mant" 2>&1) || falla "6 · ore datasets"
-case "$salida" in *"dataset  ventas.salida"*"copiada"*) ;; *) falla "6 · la lista no enseña el dataset: $salida";; esac
+case "$salida" in *"escrito  ventas.salida"*"copiada"*) ;; *) falla "6 · la lista no enseña el dataset escrito: $salida";; esac
 ok "6 · ore datasets --recoger: en seco no toca; de verdad expira, retira ($ANTES_OBJ → $DESPUES_OBJ objetos) y mueve el puntero; la vigente sigue entera"
 
 # ══ el verbo escribir sobre el árbol (c2) ════════════════════════════════════
@@ -327,8 +328,8 @@ escribe ventas_escrita sobrescribir "" op-1 0 5 || falla "7 · ore-store escribi
 [ "$(jq_ "$TMP/commit.json" tablas.0.puntero_nuevo)" = "true" ] || falla "7 · el puntero tenía que nacer"
 [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "5" ] || falla "7 · 5 filas: $(jq_ "$TMP/commit.json" tablas.0.filas)"
 ML7=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
-grep -q "cuando: { type: DateTimeTz }" "$CL/packages/ventas/tables/escrita.yaml" || falla "7 · la Table no lleva DateTimeTz: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
-grep -q "total: { type: Decimal }" "$CL/packages/ventas/tables/escrita.yaml" || falla "7 · la Table no lleva Decimal"
+grep -q "cuando: { type: DateTimeTz }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "7 · la Table no lleva DateTimeTz: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
+grep -q "total: { type: Decimal }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "7 · la Table no lleva Decimal"
 [ "$(jq_ "$CL/datasets/ventas_escrita.json" operacion)" = "op-1" ] || falla "7 · el puntero no lleva la operación"
 [ -n "$(jq_ "$CL/datasets/ventas_escrita.json" uuid)" ] || falla "7 · el puntero no lleva el uuid"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "7 · el árbol no compila con la Table que nació"; }
@@ -354,15 +355,15 @@ escribe ventas_escrita anexar "$ML7" op-3 100 1 || falla "8 · escribir (base vi
 [ "$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)" = "$ML8" ] || falla "8 · el 75 movió el puntero"
 # una columna más: la Table del árbol sigue el esquema — y lo que alguien le
 # añadió a mano (una descripción, una etiqueta en una columna) se queda
-sed -i 's|^metadata: { name: escrita, namespace: ventas }|metadata: { name: escrita, namespace: ventas, description: "lo que ana escribió" }|; s|^    total: { type: Decimal }|    total: { type: Decimal, labels: { gdpr.sensitivity: high } }|' "$CL/packages/ventas/tables/escrita.yaml"
-grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" && grep -q "gdpr.sensitivity: high" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · no se pudo anotar la Table a mano: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
+sed -i 's|^metadata: { name: escrita, namespace: ventas }|metadata: { name: escrita, namespace: ventas, description: "lo que ana escribió" }|; s|^    total: { type: Decimal }|    total: { type: Decimal, labels: { gdpr.sensitivity: high } }|' "$CL/packages/ventas/datasets/escrita.yaml"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/datasets/escrita.yaml" && grep -q "gdpr.sensitivity: high" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · no se pudo anotar la Table a mano: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 escribe ventas_escrita sobrescribir "$ML8" op-4 0 2 extra || falla "8 · escribir (columna nueva)"
 [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "8 · escribir no vio el esquema nuevo"
 "$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "8 · commit con columna nueva"; }
 [ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "8 · la Table tenía que regenerarse: $(cat "$TMP/commit.json")"
-grep -q "canal: { type: String }" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la Table no lleva la columna nueva"
-grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la regeneración perdió la descripción"
-grep -q "total: { type: Decimal, labels: { gdpr.sensitivity: high } }" "$CL/packages/ventas/tables/escrita.yaml" || falla "8 · la regeneración perdió la etiqueta: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
+grep -q "canal: { type: String }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la Table no lleva la columna nueva"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la regeneración perdió la descripción"
+grep -q "total: { type: Decimal, labels: { gdpr.sensitivity: high } }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la regeneración perdió la etiqueta: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "8 · el árbol no compila con la Table regenerada"; }
 ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 "$ORE" datasets "$CL" --ficha ventas.escrita --json > "$TMP/ficha.json" 2>&1 || falla "8 · ficha"
@@ -380,7 +381,7 @@ json.dump({"table-changes":[cambio("ventas","escrita",e1),cambio("ventas","otra"
 "$ORE" datasets "$CL" --commit --peticion "@$TMP/tx.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9 · commitTransaction"; }
 [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "3" ] || falla "9 · escrita: 3 filas (2 + 1): $(cat "$TMP/commit.json")"
 [ "$(jq_ "$TMP/commit.json" tablas.1.tabla_nueva)" = "true" ] || falla "9 · otra tenía que nacer"
-[ -f "$CL/datasets/ventas_otra.json" ] && [ -f "$CL/packages/ventas/tables/otra.yaml" ] || falla "9 · otra no dejó puntero y Table"
+[ -f "$CL/datasets/ventas_otra.json" ] && [ -f "$CL/packages/ventas/datasets/otra.yaml" ] || falla "9 · otra no dejó puntero y Dataset"
 ( cd "$CL" && git add -A && git commit -qm "dos tablas" && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar"
 # una View como destino: se niega, y no queda nada a medias
 mkdir -p "$CL/packages/ventas/views"
@@ -413,8 +414,8 @@ upserta ventas_escrita "$ML9" up-1 1 2 '["id"]' || falla "9b · upsert"
 "$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9b · commit upsert"; }
 [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "4" ] || falla "9b · tras el upsert, 4 filas: $(cat "$TMP/commit.json")"
 [ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "9b · la Table tenía que regenerarse con la clave: $(cat "$TMP/commit.json")"
-grep -q 'changes: { mode: upsert, key: \[id\], witness: snapshot }' "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la Table no declara el upsert: $(grep changes "$CL/packages/ventas/tables/escrita.yaml")"
-grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la regeneración perdió la descripción"
+grep -q 'changes: { mode: upsert, key: \[id\] }' "$CL/packages/ventas/datasets/escrita.yaml" || falla "9b · el Dataset no declara el upsert: $(grep changes "$CL/packages/ventas/datasets/escrita.yaml")"
+grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/datasets/escrita.yaml" || falla "9b · la regeneración perdió la descripción"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "9b · el árbol no compila con la Table upsert"; }
 ML9b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 n=$(lee9 "$ML9b" | grep -c '^{"'); [ "$n" = "5" ] || falla "9b · leer da $((n - 1)) filas y no 4"
@@ -428,7 +429,7 @@ lee9 "$ML9b" | grep '"id":"1",' | grep -q '"total":"10.5"' || falla "9b · el id
 upserta ventas_escrita "$ML9b" up-2 200 1 '' extra || falla "9b · upsert con la clave de la tabla"
 [ "$(jq_ "$TMP/escrito.json" filas)" = "4" ] && [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "9b · el segundo upsert: $(cat "$TMP/escrito.json")"
 "$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9b · commit del segundo upsert"; }
-grep -q 'changes: { mode: upsert, key: \[id\]' "$CL/packages/ventas/tables/escrita.yaml" && grep -q "canal: { type: String }" "$CL/packages/ventas/tables/escrita.yaml" || falla "9b · la Table tras el segundo upsert: $(cat "$CL/packages/ventas/tables/escrita.yaml")"
+grep -q 'changes: { mode: upsert, key: \[id\]' "$CL/packages/ventas/datasets/escrita.yaml" && grep -q "canal: { type: String }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "9b · la Table tras el segundo upsert: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 ML9c=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 lee9 "$ML9c" | grep '"id":"200"' | grep -q '"canal":"web"' || falla "9b · el id 200 no se actualizó"
 [ "$(lee9 "$ML9c" | grep -c '^{"')" = "5" ] || falla "9b · tras el segundo upsert tenía que haber 4 filas"
@@ -488,7 +489,7 @@ PY
 [ "$(jq_ "$TMP/py11.json" filas2)" = "220" ] || falla "11 · tras la carrera tenía que haber 220 filas: $(cat "$TMP/py11.json")"
 [ "$(jq_ "$TMP/py11.json" snapshots)" = "4" ] || falla "11 · 4 snapshots: $(cat "$TMP/py11.json")"
 grep -q "Commit failed due to a concurrent update, retrying" "$TMP/py11.err" || falla "11 · la segunda mano no vio el 409 ni reintentó: $(tail -3 "$TMP/py11.err")"
-[ "$(pide GET /arbol/packages/ventas/tables/py.yaml)" = "200" ] || falla "11 · la Table no está en el árbol"
+[ "$(pide GET /arbol/packages/ventas/datasets/py.yaml)" = "200" ] || falla "11 · el Dataset no está en el árbol"
 grep -q '"total: { type: Decimal }' "$TMP/out.json" || grep -q 'total: { type: Decimal }' "$TMP/out.json" || falla "11 · la Table no lleva Decimal: $(cat "$TMP/out.json" | head -c 300)"
 [ "$(pide GET /arbol/historia/datasets/ventas_py.json)" = "200" ] || falla "11 · GET /arbol/historia del puntero"
 [ "$(campo versiones.0.autor)" = "persona:ana" ] || falla "11 · el commit no es del sujeto: $(campo versiones.0.autor)"
@@ -517,7 +518,7 @@ PY
 [ "$(jq_ "$TMP/duck12.json" antes)" = "220" ] || falla "12 · DuckDB tenía que leer 220: $(cat "$TMP/duck12.json")"
 [ "$(jq_ "$TMP/duck12.json" despues)" = "270" ] || falla "12 · tras el INSERT, 270: $(cat "$TMP/duck12.json")"
 [ "$(jq_ "$TMP/duck12.json" pato)" = "7" ] || falla "12 · CREATE TABLE AS: 7 filas: $(cat "$TMP/duck12.json")"
-[ "$(pide GET /arbol/packages/ventas/tables/pato.yaml)" = "200" ] || falla "12 · la Table de DuckDB no está en el árbol"
+[ "$(pide GET /arbol/packages/ventas/datasets/pato.yaml)" = "200" ] || falla "12 · el Dataset de DuckDB no está en el árbol"
 "$PY" - "$BASE" > "$TMP/py12.json" 2>&1 <<'PY' || { cat "$TMP/py12.json"; falla "12 · PyIceberg lee lo de DuckDB"; }
 import sys, json
 from pyiceberg.catalog import load_catalog
@@ -590,57 +591,52 @@ spec:
   conduits:
     materialization.payload: { oos.maturity: DRAFT }
 Y
-cat > "$CL/packages/ventas/views/francia.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+cat > "$CL/packages/ventas/datasets/francia.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: francia, namespace: ventas }
 spec:
   owner: team:ventas
-  from: { table: ventas.py }
+  from: { dataset: ventas.py }
   fields: { id: id, pais: pais, importe: total }
   where: { pais: FR }
-  materialized: { datasource: lago, table: "copias.francia" }
 Y
-cat > "$CL/packages/ventas/views/todoPy.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+cat > "$CL/packages/ventas/datasets/todoPy.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: todoPy, namespace: ventas }
 spec:
   owner: team:ventas
-  from: { table: ventas.py }
+  from: { dataset: ventas.py }
   fields: { id: id, cuando: cuando }
-  materialized: { datasource: lago, table: "copias.todoPy" }
 Y
-cat > "$CL/packages/ventas/tables/nunca.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: Table
+cat > "$CL/packages/ventas/datasets/nunca.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: nunca, namespace: ventas }
 spec:
-  datasource: lago
-  object: "ventas_nunca"
+  owner: team:ventas
   columns: { id: { type: Integer } }
-  reads: { fullScan: cheap }
-  changes: { mode: append, witness: snapshot }
+  changes: { mode: append }
 Y
-cat > "$CL/packages/ventas/views/deNunca.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+cat > "$CL/packages/ventas/datasets/deNunca.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: deNunca, namespace: ventas }
 spec:
   owner: team:ventas
-  from: { table: ventas.nunca }
+  from: { dataset: ventas.nunca }
   fields: { id: id }
-  materialized: { datasource: lago, table: "copias.deNunca" }
 Y
-( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "14 · el árbol con las vistas sobre el lago no compila"; }
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "14 · el árbol con los datasets sobre el lago no compila"; }
 "$ORE" materialize "$CL" --vista ventas.francia --vista ventas.todoPy --vista ventas.deNunca > "$TMP/mat14.txt" 2>&1
-grep -q "ventas_nunca.json" "$TMP/mat14.txt" && grep -q "nadie la escribió todavía" "$TMP/mat14.txt" || falla "14 · una Table del lago sin puntero tenía que decirse: $(cat "$TMP/mat14.txt")"
+grep -q "ventas_nunca.json" "$TMP/mat14.txt" && grep -q "nadie lo escribió ni lo copió todavía" "$TMP/mat14.txt" || falla "14 · un dataset sin puntero tenía que decirse: $(cat "$TMP/mat14.txt")"
 grep -q "ore-read-lago" "$TMP/mat14.txt" && falla "14 · sigue pidiendo un driver ore-read-lago: $(cat "$TMP/mat14.txt")"
-[ "$(jq_ "$CL/copias/ventas_francia.json" estado)" = "copiada" ] || falla "14 · francia no se copió: $(cat "$TMP/mat14.txt")"
-[ "$(jq_ "$CL/copias/ventas_francia.json" filas)" = "1" ] && [ "$(jq_ "$CL/copias/ventas_francia.json" leidas)" = "267" ] || falla "14 · francia: 1 fila de 267 leídas: $(cat "$CL/copias/ventas_francia.json")"
-[ "$(jq_ "$CL/copias/ventas_francia.json" testigo.modo)" = "snapshot" ] && [ "$(jq_ "$CL/copias/ventas_francia.json" testigo.valor)" = "$(jq_ "$CL/datasets/ventas_py.json" snapshot)" ] || falla "14 · el testigo tenía que ser el snapshot del puntero de ventas.py: $(cat "$CL/copias/ventas_francia.json")"
-[ "$(jq_ "$CL/copias/ventas_francia.json" columnas.importe)" = "1" ] || falla "14 · las cuentas por columna: $(cat "$CL/copias/ventas_francia.json")"
-[ "$(jq_ "$CL/copias/ventas_todoPy.json" filas)" = "267" ] && [ "$(jq_ "$CL/copias/ventas_todoPy.json" operacion)" = "creada" ] || falla "14 · todoPy: 267 filas: $(cat "$CL/copias/ventas_todoPy.json")"
+[ "$(jq_ "$CL/datasets/ventas_francia.json" estado)" = "copiada" ] || falla "14 · francia no se copió: $(cat "$TMP/mat14.txt")"
+[ "$(jq_ "$CL/datasets/ventas_francia.json" filas)" = "1" ] && [ "$(jq_ "$CL/datasets/ventas_francia.json" leidas)" = "267" ] || falla "14 · francia: 1 fila de 267 leídas: $(cat "$CL/datasets/ventas_francia.json")"
+[ "$(jq_ "$CL/datasets/ventas_francia.json" testigo.modo)" = "snapshot" ] && [ "$(jq_ "$CL/datasets/ventas_francia.json" testigo.valor)" = "$(jq_ "$CL/datasets/ventas_py.json" snapshot)" ] || falla "14 · el testigo tenía que ser el snapshot del puntero de ventas.py: $(cat "$CL/datasets/ventas_francia.json")"
+[ "$(jq_ "$CL/datasets/ventas_francia.json" columnas.importe)" = "1" ] || falla "14 · las cuentas por columna: $(cat "$CL/datasets/ventas_francia.json")"
+[ "$(jq_ "$CL/datasets/ventas_todoPy.json" filas)" = "267" ] && [ "$(jq_ "$CL/datasets/ventas_todoPy.json" operacion)" = "creada" ] || falla "14 · todoPy: 267 filas: $(cat "$CL/datasets/ventas_todoPy.json")"
 "$ORE" ask "$CL" --vista ventas.francia > "$TMP/ask14.txt" 2>"$TMP/ask14.err" || { cat "$TMP/ask14.err"; falla "14 · ore ask francia"; }
 "$PY" - "$TMP/ask14.txt" <<'EOF' || falla "14 · lo que ask contesta de francia: $(cat "$TMP/ask14.txt")"
 import json, sys
@@ -663,11 +659,11 @@ assert all(f["cuando"].startswith("2023-11-14") for f in filas), filas[0]
 EOF
 # la segunda pasada: la misma cabecera (el mismo snapshot), y no se lee nada
 "$ORE" materialize "$CL" --vista ventas.francia > "$TMP/mat14b.txt" 2>&1 || { cat "$TMP/mat14b.txt"; falla "14 · la segunda pasada"; }
-grep -q "ya está" "$TMP/mat14b.txt" && [ "$(jq_ "$CL/copias/ventas_francia.json" estado)" = "al-dia" ] || falla "14 · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14b.txt")"
-# y en el bucket: la copia es una tabla Iceberg bajo copias/, con su cabecera
-ML14=$(jq_ "$CL/copias/ventas_francia.json" metadata_location)
-case "$ML14" in s3://copia/ore/v2/copias/ventas_francia/*) ;; *) falla "14 · la copia no vive bajo copias/: $ML14";; esac
-printf '{"metadata_location":"%s","dataset":"copias/ventas_francia"}\n' "$ML14" | "$STORE" leer | head -1 | grep -q '"conducto":"' || falla "14 · la copia no lleva su cabecera"
+grep -q "ya está" "$TMP/mat14b.txt" && [ "$(jq_ "$CL/datasets/ventas_francia.json" estado)" = "al-dia" ] || falla "14 · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14b.txt")"
+# y en el bucket: la copia es una tabla Iceberg bajo datasets/, con su cabecera
+ML14=$(jq_ "$CL/datasets/ventas_francia.json" metadata_location)
+case "$ML14" in s3://copia/ore/v2/datasets/ventas_francia/*) ;; *) falla "14 · la copia no vive bajo datasets/: $ML14";; esac
+printf '{"metadata_location":"%s","dataset":"datasets/ventas_francia"}\n' "$ML14" | "$STORE" leer | head -1 | grep -q '"conducto":"' || falla "14 · la copia no lleva su cabecera"
 ok "14 · materializar sobre el lago sin driver: francia 1 fila de 267 leídas (filtro y proyección en Arrow, sin las borradas), todoPy 267, el testigo es el snapshot del puntero, ask las contesta tipadas, la segunda pasada no lee, y una Table que nadie escribió se dice"
 
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9314\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

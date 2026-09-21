@@ -3,8 +3,8 @@
 #
 # ⭐⭐ Es la misma figura que `44-el-catalogo.yaml` y cambia el verbo: en vez de
 #   `ore source catalog` + `ore discover`, `ore materialize` — los seis pasos del
-#   ADR 0015 sobre las vistas que DECLARAN copia (`materialized`, la decisión de
-#   `POST /paquetes/{n}/vistas/{v}/copia`). Lee el origen con la credencial del
+#   ADR 0015 sobre los datasets MANTENIDOS (`kind: Dataset` con `from`, 0033: la
+#   decisión de la base estándar o de `POST /paquetes/{n}/copia`). Lee el origen con la credencial del
 #   cofre, sella el DATASET en el bucket del inquilino —una tabla Iceberg, con
 #   su historia (W3.6a, 0031 §10)— con `ore-store-gcs` y el token de su cuenta
 #   —sin clave estática—, y deja en el árbol el PUNTERO de cada vista
@@ -157,8 +157,8 @@ spec:
             - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
             - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
             - { name: GIT_CONFIG_VALUE_1, value: "*" }
-            # ⚠️ LAS VISTAS CON COPIA. Es lo que distingue una pasada de otra, y
-            #   viene del árbol (`materialized`, la decisión) — no de aquí. Y el
+            # ⚠️ LOS DATASETS MANTENIDOS. Es lo que distingue una pasada de otra,
+            #   y viene del árbol (`kind: Dataset` con `from`) — no de aquí. Y el
             #   almacén: el bucket del inquilino (aprovisionador ③b), por
             #   `ore-store-gcs` con el token de esta cuenta.
             - { name: VISTAS, value: "olist.customers" }

@@ -20,7 +20,7 @@
 # lo cierra, así que su salida ES la lista de trabajo del plan.
 #
 # Desde W3.6a (0031 §10) la copia es un DATASET: una tabla Iceberg en el bucket
-# y un puntero en el árbol (`copias/<p>_<v>.json`). Los objetos que se cuentan
+# y un puntero en el árbol (`datasets/<p>_<v>.json`). Los objetos que se cuentan
 # son los de la tabla —`metadata.json`, lista de manifiestos, manifiestos,
 # ficheros de datos— y el bucket queda acotado por `--recoger`, que expira los
 # snapshots superados y retira lo que ningún snapshot nombra. `ORE_RECOGER_EDAD`
@@ -56,7 +56,7 @@ cmp_n() { # esperado real texto peldaño
 
 # ── el terreno ───────────────────────────────────────────────────────────────
 D="${TMPDIR:-/tmp}/ore-r6-$$"
-rm -rf "$D"; mkdir -p "$D/datos" "$D/tables" "$D/views"
+rm -rf "$D"; mkdir -p "$D/datos" "$D/tables" "$D/views" "$D/datasets"
 
 filas() { # n desde
   local n=$1 i=$2
@@ -110,15 +110,15 @@ spec:
   reads: { fullScan: cheap }
   changes: { mode: upsert, key: [order_id], witness: field, field: actualizado_en, retention: 7d }
 X
-cat > "$D/views/copia.yaml" <<'X'
-apiVersion: oos.dev/v1alpha8
-kind: View
+# la copia es un Dataset con el plan (0033), no una View con `materialized`
+cat > "$D/datasets/copia.yaml" <<'X'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: copia, namespace: ventas }
 spec:
   owner: team:ventas
   from: { table: ventas.pedidos }
   fields: { id: order_id, pais: pais, total: total, cuando: actualizado_en }
-  materialized: { datasource: lago, table: "cache.pedidos" }
 X
 export FICHEROS_DIR="$D/datos"
 
@@ -209,11 +209,11 @@ echo "══ las cuatro negativas · valen igual que los actos ══"
 # FUERA de $D, y no es un detalle: creado dentro, `ore view "$D"` cargaba los
 # dos paquetes a la vez y fallaba — y la negativa `d`, que mira su salida,
 # pasaba EN FALSO por no encontrar el texto que buscaba.
-N="$D-neg"; rm -rf "$N"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$N/" 2>/dev/null
+N="$D-neg"; rm -rf "$N"; mkdir -p "$N"; cp -r "$D"/*.yaml "$D/tables" "$D/views" "$D/datasets" "$N/" 2>/dev/null
 sed -i 's/mode: upsert, key: \[order_id\], witness: field/mode: append, witness: field/' \
   "$N/tables/pedidos.yaml"
 if "$ORE" validate "$N" >/dev/null 2>&1; then
-  mal "a · {witness: field, mode: append} con \`materialized\` compila" "R0"
+  mal "a · {witness: field, mode: append} con un dataset encima compila" "R0"
 else
   ok "a · {witness: field, mode: append} no compila"
 fi

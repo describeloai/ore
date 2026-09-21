@@ -179,12 +179,10 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
         "perdió la columna sin tipo de OOS:\n{tabla}"
     );
 
-    // La vista: expone el objeto con nombres de identificador, y **no propone
-    // ni `materialized` ni `freshness`** — son decisiones de operación con
-    // coste, y proponerlas sería inventarlas.
-    // Se mira la CLAVE con su sangría y no la palabra: el documento la nombra
-    // en un comentario, y a propósito — quien lo revise tiene que saber que la
-    // ausencia es una decisión y no un olvido.
+    // La vista: expone el objeto con nombres de identificador, y es sólo la
+    // pregunta (0033): ni `materialized` ni `freshness`, que ya no son suyas.
+    // Lo que se tiene —la copia— es un `Dataset`, y una base foránea no lo
+    // emite: aquí no hay `datasets/`.
     assert!(
         vista.contains("from: { table: public_clientes }"),
         "{vista}"
@@ -192,8 +190,8 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
     assert!(!vista.contains("\n  materialized:"), "{vista}");
     assert!(!vista.contains("\n  freshness:"), "{vista}");
     assert!(
-        vista.contains("proponerlas sería inventarlas"),
-        "la ausencia no se explica, y entonces parece un olvido:\n{vista}"
+        !dir.join("packages/ventas/datasets").exists(),
+        "una base foránea no copia, y un dataset es una copia"
     );
     // Y sale en `DRAFT`, como la entidad: exponer esto es una decisión, y la
     // tomó esta máquina mirando un catálogo. Mientras no pudo decirlo, una

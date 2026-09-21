@@ -446,7 +446,7 @@ pub fn inducir_con(
 /// alguien declaró, y que el inductor aplica en vez de proponer.
 #[derive(Default, Clone)]
 pub struct Regla {
-    /// La base es estándar: cada vista sale con `materialized`.
+    /// La base es estándar: cada tabla sale con su `Dataset` (0033).
     pub estandar: bool,
     /// Qué tablas se modelan (`Entity` y su cola). `None` = todas.
     pub modeladas: Option<BTreeSet<String>>,
@@ -475,15 +475,16 @@ impl Regla {
 /// fila se copia sin identidad; se **modela** con ella.
 ///
 /// **La base estándar** (I4b): `estandar` es «todo lo que entra se copia a la
-/// celda», y el inductor lo APLICA: cada vista sale con `materialized`. Con
+/// celda», y el inductor lo APLICA: cada tabla sale con un **`Dataset`** que
+/// lleva el plan (0033) —y ninguna `View` que sea la misma cosa—. Con
 /// clave —la del origen o la contestada— la tabla pasa a `upsert` y el refresco
 /// puede ser por diferencia; sin ella la copia es una instantánea que se
 /// sustituye entera. La única que espera es la de una tabla **modelada** sin
 /// clave: una copia que sólo anexa no puede respaldar una entidad (`OOS2021`),
 /// y la decisión `clave` lo dice.
 ///
-/// No contradice lo de arriba —«`materialized` no se propone»—: no se propone,
-/// se deriva de una regla que alguien declaró. Y por eso sobrevive a `review`:
+/// No contradice lo de arriba —«la copia no se propone»—: no se propone, se
+/// deriva de una regla que alguien declaró. Y por eso sobrevive a `review`:
 /// lo que sale de aquí es siempre `inducir(catálogo, alcance, respuestas)`.
 pub fn inducir_con_regla(
     cat: &Catalogo,
@@ -564,16 +565,11 @@ pub fn inducir_con_regla(
                 copia.as_ref().and_then(|c| c.as_deref()),
             ),
         );
+        // 0033: lo que se copia es un `Dataset` con el plan de la vista dentro;
+        // la vista sólo existe cuando NO se copia (la pregunta sobre lo de fuera).
         ficheros.insert(
-            format!("views/{sufijo}"),
-            vista_yaml(
-                &vista,
-                paquete,
-                &owner_catalogo,
-                t,
-                objeto,
-                se_copia.then_some(cat.fuente.as_str()),
-            ),
+            format!("{}/{sufijo}", if se_copia { "datasets" } else { "views" }),
+            vista_yaml(&vista, paquete, &owner_catalogo, t, objeto, se_copia),
         );
     }
     let cat = &cat;
@@ -766,15 +762,11 @@ pub fn inducir_con_regla(
             tabla_yaml(paquete, &cat.fuente, t, objeto, copia.as_deref()),
         );
         ficheros.insert(
-            format!("views/{sufijo}"),
-            vista_yaml(
-                &vista,
-                paquete,
-                &owner,
-                t,
-                objeto,
-                copia.is_some().then_some(cat.fuente.as_str()),
+            format!(
+                "{}/{sufijo}",
+                if copia.is_some() { "datasets" } else { "views" }
             ),
+            vista_yaml(&vista, paquete, &owner, t, objeto, copia.is_some()),
         );
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
@@ -2098,7 +2090,7 @@ fn vista_yaml(
     owner: &str,
     t: &Tabla,
     objeto: &Objeto,
-    copia_en: Option<&str>,
+    copia: bool,
 ) -> String {
     let campos: Vec<(String, String)> = t
         .columnas
@@ -2106,21 +2098,19 @@ fn vista_yaml(
         .filter(|c| objeto.columnas.contains(&c.nombre))
         .map(|c| (identificador(&c.nombre), c.nombre.clone()))
         .collect();
-    documento_vista(
-        vista,
-        paquete,
-        owner,
-        &Origen::Tabla(identificador(&objeto.nombre)),
-        &campos,
-        &[],
-        copia_en,
-    )
+    let de = Origen::Tabla(identificador(&objeto.nombre));
+    if copia {
+        documento_dataset(vista, paquete, owner, &de, &campos, &[])
+    } else {
+        documento_vista(vista, paquete, owner, &de, &campos, &[])
+    }
 }
 
-/// De dónde sale una vista. Los dos casos del vocabulario, y no hay un tercero.
+/// De dónde sale una vista o un dataset: los tres casos del vocabulario.
 pub enum Origen {
     Tabla(String),
     Vista(String),
+    Dataset(String),
 }
 
 /// **El emisor de una `View`, y es el único.**
@@ -2136,9 +2126,8 @@ pub enum Origen {
 /// pidió quien la autora cuando es a mano. Reordenar aquí sería decidir por
 /// ellos.
 ///
-/// `copia_en`: la fuente cuando la vista tiene copia (base estándar con clave):
-/// sale `materialized { datasource, table: "copia.<vista>" }`; sin ella, el
-/// comentario que dice por qué no.
+/// Una vista es sólo la pregunta (0033): ni `freshness` ni copia. Lo que se
+/// tiene lo dice un `Dataset` (`documento_dataset`), que lleva el mismo plan.
 pub fn documento_vista(
     vista: &str,
     paquete: &str,
@@ -2146,16 +2135,16 @@ pub fn documento_vista(
     de: &Origen,
     campos: &[(String, String)],
     recorte: &[(String, Vec<String>)],
-    copia_en: Option<&str>,
 ) -> String {
     let (clave, valor) = match de {
         Origen::Tabla(t) => ("table", t),
         Origen::Vista(v) => ("view", v),
+        Origen::Dataset(d) => ("dataset", d),
     };
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha8\n\
+        "apiVersion: oos.dev/v1alpha12\n\
          kind: View\n\
          metadata:\n  \
            name: {vista}\n  \
@@ -2165,20 +2154,49 @@ pub fn documento_vista(
            owner: \"{owner}\"\n  \
            from: {{ {clave}: {valor} }}\n"
     );
-    match copia_en {
-        Some(fuente) => {
-            let _ = writeln!(
-                s,
-                "  # La copia en la celda: la base es estándar y la tabla tiene clave.\n  \
-                 materialized: {{ datasource: {fuente}, table: \"copia.{vista}\" }}"
-            );
-        }
-        None => s.push_str(
-            "  # Ni `freshness` ni `materialized`: son decisiones de operación con\n  \
-             # coste, y proponerlas sería inventarlas.\n",
-        ),
-    }
     s.push_str("  fields:\n");
+    plan_yaml(&mut s, campos, recorte);
+    s
+}
+
+/// **El dataset con su plan** (0033): lo que hasta aquí era una `View` con
+/// `materialized`. El mismo plan que `documento_vista` —los mismos campos, en
+/// el mismo orden, el mismo recorte— con el documento que el registro lista.
+/// Sin `labels`: un dataset no tiene madurez que acordar, tiene bytes.
+pub fn documento_dataset(
+    nombre: &str,
+    paquete: &str,
+    owner: &str,
+    de: &Origen,
+    campos: &[(String, String)],
+    recorte: &[(String, Vec<String>)],
+) -> String {
+    let (clave, valor) = match de {
+        Origen::Tabla(t) => ("table", t),
+        Origen::Vista(v) => ("view", v),
+        Origen::Dataset(d) => ("dataset", d),
+    };
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        "apiVersion: oos.dev/v1alpha12\n\
+         kind: Dataset\n\
+         metadata:\n  \
+           name: {nombre}\n  \
+           namespace: {paquete}\n\
+         # La copia en la celda: la base es estándar. El plan es el de la vista\n\
+         # que sería; aquí vive porque es lo que se tiene (0033).\n\
+         spec:\n  \
+           owner: \"{owner}\"\n  \
+           from: {{ {clave}: {valor} }}\n"
+    );
+    s.push_str("  fields:\n");
+    plan_yaml(&mut s, campos, recorte);
+    s
+}
+
+/// Los campos y el recorte, tal cual, para una vista o un dataset.
+fn plan_yaml(s: &mut String, campos: &[(String, String)], recorte: &[(String, Vec<String>)]) {
     for (prop, col) in campos {
         let _ = writeln!(s, "    {prop}: {}", escalar_yaml(col));
     }
@@ -2199,7 +2217,6 @@ pub fn documento_vista(
             };
         }
     }
-    s
 }
 
 // ── Nombres ─────────────────────────────────────────────────────────────────
@@ -2303,12 +2320,17 @@ pub fn informe(ind: &Induccion, destino: &Path) -> String {
         .keys()
         .filter(|k| k.starts_with("views/"))
         .count();
+    let datasets = ind
+        .ficheros
+        .keys()
+        .filter(|k| k.starts_with("datasets/"))
+        .count();
     // Decía «entidades y sus bindings», y hacía años que no emitía ninguno: los
     // bindings se retiraron en v1alpha8. Un mensaje que nombra lo que ya no se
     // escribe es peor que uno que calla, porque enseña el paradigma anterior a
     // quien está viendo el paquete por primera vez.
     let mut s = format!(
-        "  ✓ {entidades} entidades, {tablas} tablas y {vistas} vistas en {}\n\
+        "  ✓ {entidades} entidades, {tablas} tablas, {vistas} vistas y {datasets} datasets en {}\n\
          \x20 ✓ todas en DRAFT: nada de esto es verdad todavía\n\n",
         destino.display()
     );
@@ -2395,10 +2417,11 @@ pub fn informe_json(ind: &Induccion) -> Json {
 mod tests {
     use super::*;
 
-    /// La regla de la base estándar: la vista de una tabla CON clave sale con
-    /// `materialized` y su tabla en `upsert` por esa clave; la de una tabla sin
-    /// clave, no — y la decisión `clave` dice que la copia la espera. Con la
-    /// clave contestada, la copia aparece en la re-inducción.
+    /// La regla de la base estándar (0033): una tabla CON clave sale con su
+    /// `Dataset` (en `datasets/`, con el plan) y su tabla en `upsert` por esa
+    /// clave; una sin clave sale con su `View` (en `views/`, sin copia) — y la
+    /// decisión `clave` dice que la copia la espera. Con la clave contestada,
+    /// el dataset aparece en la re-inducción.
     #[test]
     fn la_base_estandar_copia_lo_que_tiene_clave_y_espera_lo_demas() {
         let cat = Catalogo::leer(CATALOGO).unwrap();
@@ -2416,7 +2439,7 @@ mod tests {
         );
         for (k, t) in &sin.ficheros {
             assert!(
-                !t.contains("materialized:"),
+                !k.starts_with("datasets/") && !t.contains("kind: Dataset"),
                 "foránea con copia en {k}:
 {t}"
             );
@@ -2428,10 +2451,16 @@ mod tests {
             &Vocabulario::default(),
             &todas(true),
         );
-        let vista = &con.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let vista = &con.ficheros["datasets/Facturas__rubix_demo_ventas_facturas.yaml"];
         assert!(
-            vista.contains("materialized: { datasource: bq_ventas, table: \"copia.facturas\" }"),
+            vista.contains("kind: Dataset")
+                && vista.contains("from: { table: rubix_demo_ventas_facturas }"),
             "{vista}"
+        );
+        assert!(
+            !con.ficheros
+                .contains_key("views/Facturas__rubix_demo_ventas_facturas.yaml"),
+            "la copia no deja una vista que sea la misma cosa"
         );
         let tabla = &con.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
         assert!(
@@ -2443,7 +2472,7 @@ mod tests {
         );
         let clientes = &con.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
         assert!(
-            !clientes.contains("materialized:"),
+            clientes.contains("kind: View"),
             "sin clave y con copia:
 {clientes}"
         );
@@ -2466,8 +2495,8 @@ mod tests {
         .unwrap();
         let despues =
             inducir_con_regla(&cat, "ventas", &dec, &Vocabulario::default(), &todas(true));
-        let clientes = &despues.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
-        assert!(clientes.contains("copia.clientes"), "{clientes}");
+        let clientes = &despues.ficheros["datasets/Clientes__rubix_demo_ventas_clientes.yaml"];
+        assert!(clientes.contains("kind: Dataset"), "{clientes}");
         let tabla = &despues.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
         assert!(
             tabla.contains(
@@ -2506,19 +2535,23 @@ mod tests {
             "{:?}",
             i.ficheros.keys()
         );
-        let vistas: Vec<&String> = i
+        let datasets: Vec<&String> = i
             .ficheros
             .keys()
-            .filter(|k| k.starts_with("views/"))
+            .filter(|k| k.starts_with("datasets/"))
             .collect();
         assert_eq!(
-            vistas.len(),
+            datasets.len(),
             7,
-            "una vista por tabla del catálogo: {vistas:?}"
+            "un dataset por tabla del catálogo: {datasets:?}"
         );
-        for k in &vistas {
+        assert!(
+            !i.ficheros.keys().any(|k| k.starts_with("views/")),
+            "estándar y sin modelar: se copia sin esperar, y sin vistas que sean la misma cosa"
+        );
+        for k in &datasets {
             assert!(
-                i.ficheros[*k].contains("materialized:"),
+                i.ficheros[*k].contains("kind: Dataset"),
                 "estándar y sin modelar: se copia sin esperar · {k}"
             );
         }
@@ -2533,7 +2566,7 @@ mod tests {
         // la colisión de nombres (Pedidos / pedidos) se resuelve con el físico, sin preguntar
         assert!(
             i.ficheros
-                .contains_key("views/Rubix_demo_ventas_pedidos__rubix_demo_ventas_pedidos.yaml"),
+                .contains_key("datasets/Rubix_demo_ventas_pedidos__rubix_demo_ventas_pedidos.yaml"),
             "{:?}",
             i.ficheros.keys()
         );
@@ -2567,12 +2600,11 @@ mod tests {
             &suelta,
         );
         assert!(
-            f.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"]
-                .contains("copia.facturas")
+            f.ficheros["datasets/Facturas__rubix_demo_ventas_facturas.yaml"]
+                .contains("kind: Dataset")
         );
         assert!(
-            !f.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"]
-                .contains("materialized:")
+            f.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"].contains("kind: View")
         );
         let m = inducir_con_regla(
             &cat,
@@ -2592,8 +2624,7 @@ mod tests {
                 .any(|p| p.id == "clave/rubix_demo_ventas.clientes")
         );
         assert!(
-            !m.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"]
-                .contains("materialized:"),
+            m.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"].contains("kind: View"),
             "modelada sin clave: la copia espera"
         );
     }
@@ -3598,17 +3629,29 @@ mod emisor {
                 ("pais".into(), "cod_pais".into()),
             ],
             &[],
-            None,
         );
         assert!(s.contains("kind: View"), "{s}");
         assert!(s.contains("labels: { oos.maturity: DRAFT }"), "{s}");
         assert!(s.contains("from: { table: clientes }"), "{s}");
         assert!(s.contains("    id: id\n    pais: cod_pais\n"), "{s}");
-        // Ni `freshness` ni `materialized`: son decisiones de operación con
-        // coste, y proponerlas sería inventarlas.
+        // Una vista es sólo la pregunta (0033): ni `freshness` ni copia.
         assert!(!s.contains("freshness:"), "{s}");
         assert!(!s.contains("materialized:"), "{s}");
         assert!(!s.contains("where:"), "{s}");
+        // Y el dataset con el mismo plan es el mismo texto de plan.
+        let d = documento_dataset(
+            "clientes_eu",
+            "ventas",
+            "team:ventas",
+            &Origen::Tabla("clientes".into()),
+            &[
+                ("id".into(), "id".into()),
+                ("pais".into(), "cod_pais".into()),
+            ],
+            &[],
+        );
+        assert!(d.contains("kind: Dataset") && !d.contains("labels"), "{d}");
+        assert!(d.contains("    id: id\n    pais: cod_pais\n"), "{d}");
     }
 
     /// Una vista **sobre otra vista** usa la otra clave de `from`, que es el
@@ -3622,7 +3665,6 @@ mod emisor {
             &Origen::Vista("clientes".into()),
             &[("id".into(), "id".into())],
             &[],
-            None,
         );
         assert!(s.contains("from: { view: clientes }"), "{s}");
     }
@@ -3641,7 +3683,6 @@ mod emisor {
                 ("borrado".into(), vec!["false".into()]),
                 ("pais".into(), vec!["ES".into(), "PT".into()]),
             ],
-            None,
         );
         assert!(s.contains("    borrado: false\n"), "{s}");
         assert!(s.contains("    pais: [ES, PT]\n"), "{s}");
@@ -3659,7 +3700,6 @@ mod emisor {
             &Origen::Tabla("t".into()),
             &[("ref".into(), "Worker_Reference.ID".into())],
             &[],
-            None,
         );
         assert!(s.contains("ref: \"Worker_Reference.ID\""), "{s}");
     }

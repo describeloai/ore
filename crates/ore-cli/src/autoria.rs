@@ -67,11 +67,11 @@ pub fn anadir(
     let pkg = ore_core::validate::cargar_paquete(raiz).0;
 
     let Some(origen) = buscar(&pkg.docs, de) else {
-        eprintln!("error: `{de}` no es una tabla ni una vista de este paquete");
+        eprintln!("error: `{de}` no es una tabla, una vista ni un dataset de este paquete");
         let mut hay: Vec<String> = pkg
             .docs
             .iter()
-            .filter(|d| matches!(d.kind, Kind::Table | Kind::View))
+            .filter(|d| matches!(d.kind, Kind::Table | Kind::View | Kind::Dataset))
             .filter_map(|d| d.qname())
             .collect();
         hay.sort();
@@ -83,8 +83,17 @@ pub fn anadir(
         return ExitCode::from(65); // EX_DATAERR
     };
 
+    // 0033: se pregunta a una tabla, a una vista o a un dataset. Lo que un
+    // dataset expone lo dice el paquete (columnas si es escrito; lo de su
+    // `from` si es mantenido sin `fields`).
     let (fuente, disponibles) = match origen.kind {
         Kind::Table => (Origen::Tabla(corto(origen)), columnas_de(origen, "columns")),
+        Kind::Dataset => (
+            Origen::Dataset(corto(origen)),
+            ore_core::vistas::expone_en(&pkg, origen)
+                .into_keys()
+                .collect(),
+        ),
         _ => (Origen::Vista(corto(origen)), campos_de(origen)),
     };
     if disponibles.is_empty() {
@@ -145,7 +154,6 @@ pub fn anadir(
         &fuente,
         &elegidos,
         &donde,
-        None,
     );
 
     // Al lado de las demás: `views/` hermano del directorio del origen. El

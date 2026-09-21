@@ -12,8 +12,8 @@
 #   1  POST /paquetes {type: raro}      422 · nada escrito · y un nombre con guion (no puede ser
 #                                       espacio de nombres, OOS2030): 422 antes de escribir nada
 #   2  POST /paquetes {type: standard}  200 · la regla en discover.scope.json · EL CATALOGO NO
-#                                       MODELA (C1): 0 entidades, 2 tablas, 2 vistas, y las DOS
-#                                       con `materialized` — la copia no espera a ninguna clave;
+#                                       MODELA (C1): 0 entidades, 2 tablas, 0 vistas y 2 DATASETS
+#                                       (0033) — la copia no espera a ninguna clave;
 #                                       orders (con clave en el origen) en `upsert`, customers
 #                                       como el origen la dijo · EL DUEÑO ES LA ORGANIZACION:
 #                                       `owner: team:demo` (ore-serve --organizacion → discover
@@ -199,7 +199,8 @@ asc() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/paqu
 decidir() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' "$BASE/paquetes/$1/decisiones" -d "$2"; }
 paquete() { curl -sf -H "$SUJ" "$BASE/paquetes" | "$PY" -c 'import json,sys; print(json.dumps([p for p in json.load(sys.stdin)["packages"] if p["name"]==sys.argv[1]][0], sort_keys=True))' "$1"; }
 copias() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/copias"; }
-vista()  { cat "$REPO"/packages/$1/views/*__olist_$2.yaml; }
+vista()  { cat "$REPO"/packages/$1/views/*__olist_$2.yaml 2>/dev/null; }
+dataset() { cat "$REPO"/packages/$1/datasets/*__olist_$2.yaml 2>/dev/null; }
 tabla()  { cat "$REPO"/packages/$1/tables/*__olist_$2.yaml; }
 
 # ── 0 ───────────────────────────────────────────────────────────────────────
@@ -233,7 +234,7 @@ COD=$(alta '{"name":"tienda","source":"pg","only":["olist.customers","olist.orde
 [ "$COD" = "200" ] || falla "2 · la base estandar devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"type":"standard"' || falla "2 · la respuesta no dice la clase: $(cuerpo)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "2 · la respuesta no cuenta las dos copias: $(cuerpo)"
-cuerpo | grep -q '0 entidades, 2 tablas y 2 vistas' || falla "2 · el catalogo modelo algo: $(cuerpo)"
+cuerpo | grep -q '0 entidades, 2 tablas, 0 vistas y 2 datasets' || falla "2 · el catalogo modelo algo, o no copio: $(cuerpo)"
 [ ! -d "$REPO/packages/tienda/entities" ] || [ -z "$(ls -A "$REPO/packages/tienda/entities" 2>/dev/null)" ] || falla "2 · el catalogo escribio entidades: $(ls "$REPO/packages/tienda/entities")"
 grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no dice que ninguna esta modelada: $(cat "$REPO/packages/tienda/discover.scope.json")"
 cuerpo | grep -q '"owner":"team:demo"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
@@ -241,10 +242,11 @@ grep -q 'owner: "team:demo"' "$REPO/packages/tienda/package.yaml" || falla "2 ·
 grep -q '"dueno/tienda": "team:demo"' "$REPO/packages/tienda/discover.answers.json" || falla "2 · discover no guardo el dueño con las respuestas: $(cat "$REPO/packages/tienda/discover.answers.json" 2>&1)"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "2 · con dueño de nacimiento, no encolo el Job: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no lleva la regla: $(cat "$REPO/packages/tienda/discover.scope.json")"
-vista tienda orders | grep -q 'materialized: { datasource: pg, table: "copia.orders" }' || falla "2 · orders (con clave) nacio sin copia: $(vista tienda orders)"
+dataset tienda orders | grep -q 'kind: Dataset' || falla "2 · orders (con clave) nacio sin dataset: $(dataset tienda orders)"
+[ -z "$(vista tienda orders)" ] || falla "2 · orders dejo una vista que es la misma cosa que su dataset"
 tabla tienda orders | grep -q "mode: upsert" || falla "2 · la tabla orders no esta en upsert: $(tabla tienda orders)"
 tabla tienda orders | grep -q "key: \[order_id\]" || falla "2 · la tabla orders no lleva la clave: $(tabla tienda orders)"
-vista tienda customers | grep -q 'materialized: { datasource: pg, table: "copia.customers" }' || falla "2 · customers (sin clave, sin modelar) no se copia: $(vista tienda customers)"
+dataset tienda customers | grep -q 'kind: Dataset' || falla "2 · customers (sin clave, sin modelar) no se copia: $(dataset tienda customers)"
 tabla tienda customers | grep -q "mode: append" || falla "2 · customers sin clave no se queda como el origen la dijo: $(tabla tienda customers)"
 grep -q '"clave/' "$REPO/packages/tienda/discover.pending.json" && falla "2 · el catalogo pregunta por la clave: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 [ -z "$(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")" ] || falla "2 · la cola del catalogo no esta vacia: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
@@ -257,9 +259,9 @@ paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
 esquema() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
 esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entidades que no hay: $(esquema tienda)"
-esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"datasource":"pg","modeled":false,"name":"olist_customers","object":"olist.customers","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
-copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\["order_id"\],.*"view":"orders"' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
-copias tienda | grep -q '"copia":{"estado":"pendiente"},"key":\[\],.*"view":"customers"' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
+esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"olist_customers","object":"olist.customers","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
+copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"orders",.*"key":\["order_id"\]' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
+copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers",.*"key":\[\]' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es la organizacion (team:demo): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
 
 # ── 2b · Run mientras la copia esta en marcha: el 409 dice que ESTA EN MARCHA ─
@@ -273,19 +275,19 @@ cuerpo | grep -q '"copia":{[^}]*"estado":"encolada"' || falla "2b · el 409 no d
 cuerpo | grep -q '"fichero":"48-la-copia.yaml"' || falla "2b · el 409 no nombra el Job de la cola: $(cuerpo)"
 cuerpo | grep -q '"vista":"tienda.customers"' || falla "2b · el 409 no dice de que vista es la copia: $(cuerpo)"
 # el informe de una pasada que fallo, y ningun Job mas nuevo (el arbol es un directorio: sin fechas, el informe manda)
-mkdir -p "$REPO/copias"
-printf '{"estado":"error","motivo":"`ore-read-postgres` fallo (1)","vista":"tienda.customers"}\n' > "$REPO/copias/tienda_customers.json"
+mkdir -p "$REPO/datasets"
+printf '{"estado":"error","motivo":"`ore-read-postgres` fallo (1)","vista":"tienda.customers"}\n' > "$REPO/datasets/tienda_customers.json"
 [ "$(correr tienda/customers)" = "409" ] || falla "2b · Run con informe de error no dio 409: $(cuerpo)"
 cuerpo | grep -q '"estado":"fallida"' || falla "2b · el 409 no dice fallida: $(cuerpo)"
 cuerpo | grep -q '"motivo":"`ore-read-postgres` fallo (1)"' || falla "2b · el 409 no trae el motivo del informe: $(cuerpo)"
-rm -f "$REPO/copias/tienda_customers.json"
+rm -f "$REPO/datasets/tienda_customers.json"
 dice "2b · Run con la copia en marcha: 409 con copia.estado=encolada y el Job de la cola · con informe de error y nada mas nuevo: fallida con su motivo"
 
 # ── 3 ───────────────────────────────────────────────────────────────────────
 COD=$(decidir tienda '{"answers":{"dueno/tienda":"team:data"}}')
 [ "$COD" = "200" ] || falla "3 · contestar devolvio $COD: $(cuerpo)"
-vista tienda customers | grep -q 'copia.customers' || falla "3 · la re-induccion perdio la copia de customers: $(vista tienda customers)"
-vista tienda orders | grep -q 'copia.orders' || falla "3 · la re-induccion perdio la copia de orders: $(vista tienda orders)"
+dataset tienda customers | grep -q 'kind: Dataset' || falla "3 · la re-induccion perdio la copia de customers: $(dataset tienda customers)"
+dataset tienda orders | grep -q 'kind: Dataset' || falla "3 · la re-induccion perdio la copia de orders: $(dataset tienda orders)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "3 · la respuesta no cuenta las dos: $(cuerpo)"
 grep -q 'owner: "team:data"' "$REPO/packages/tienda/package.yaml" || falla "3 · la propiedad no se transfirio: $(cat "$REPO/packages/tienda/package.yaml")"
 cuerpo | grep -q '"encolado":"ya encolado como `48-la-copia.yaml`' || falla "3 · transferir cambio el Job (misma lista): $(cuerpo)"
@@ -312,15 +314,16 @@ grep -q '"entities": \[' "$REPO/packages/tienda/discover.scope.json" && grep -q 
 [ ! -f "$REPO/packages/tienda/entities/Orders.yaml" ] || falla "3b · modelar customers modelo tambien orders"
 grep -q '"clave/olist.customers"' "$REPO/packages/tienda/discover.pending.json" || falla "3b · la cola no pregunta la clave de la modelada"
 grep -q "la COPIA de esta tabla espera" "$REPO/packages/tienda/discover.pending.json" || falla "3b · la decision clave no dice que la copia la espera"
-vista tienda customers | grep -q "materialized:" && falla "3b · modelada sin clave, la copia no espera: $(vista tienda customers)"
-vista tienda orders | grep -q 'copia.orders' || falla "3b · modelar customers toco la copia de orders"
+[ -n "$(dataset tienda customers)" ] && falla "3b · modelada sin clave, la copia no espera: $(dataset tienda customers)"
+vista tienda customers | grep -q "kind: View" || falla "3b · modelada sin clave, customers tenia que quedar como vista: $(vista tienda customers)"
+dataset tienda orders | grep -q 'kind: Dataset' || falla "3b · modelar customers toco la copia de orders"
 COD=$(modelar tienda olist.customers)
 [ "$COD" = "409" ] || falla "3b · modelar dos veces devolvio $COD: $(cuerpo)"
 paquete tienda | grep -q '"modeladas": 1' || falla "3b · GET /paquetes no cuenta la modelada: $(paquete tienda)"
 esquema tienda | grep -q '"entity":"Customers".*"modeled":true,"name":"olist_customers"' || falla "3b · el esquema no dice que customers esta modelada: $(esquema tienda)"
 COD=$(decidir tienda '{"answers":{"clave/olist.customers":["customer_id"]}}')
 [ "$COD" = "200" ] || falla "3b · contestar la clave devolvio $COD: $(cuerpo)"
-vista tienda customers | grep -q 'copia.customers' || falla "3b · con la clave contestada, la copia no vuelve: $(vista tienda customers)"
+dataset tienda customers | grep -q 'kind: Dataset' || falla "3b · con la clave contestada, la copia no vuelve: $(dataset tienda customers)"
 tabla tienda customers | grep -q "key: \[customer_id\]" || falla "3b · la tabla no lleva la clave contestada: $(tabla tienda customers)"
 tabla tienda customers | grep -q "mode: upsert" || falla "3b · la tabla no paso a upsert"
 grep -q "primaryKey: \[customer_id\]" "$REPO/packages/tienda/entities/Customers.yaml" || falla "3b · la entidad no lleva la clave: $(cat "$REPO/packages/tienda/entities/Customers.yaml")"
@@ -337,16 +340,16 @@ COD=$(asc nadie)
 dice "4 · ascender: 409 si ya es estandar · 422 sin alcance · 404 si no esta"
 
 # ── 5 · el informe que el Job deja, y la ficha lo trae ──────────────────────
-mkdir -p "$REPO/copias"
-printf '{\n  "estado": "copiada",\n  "vista": "tienda.orders",\n  "clave": "ore/v1/abc",\n  "digest": "sha256:abc",\n  "plan": "sha256:def",\n  "filas": 99441,\n  "leidas": 99441,\n  "bytes": 1234567,\n  "subido": true,\n  "testigo": { "modo": "log", "valor": "0/1A2B3C" }\n}\n' > "$REPO/copias/tienda_orders.json"
+mkdir -p "$REPO/datasets"
+printf '{\n  "estado": "copiada",\n  "vista": "tienda.orders",\n  "clave": "ore/v1/abc",\n  "digest": "sha256:abc",\n  "plan": "sha256:def",\n  "filas": 99441,\n  "leidas": 99441,\n  "bytes": 1234567,\n  "subido": true,\n  "testigo": { "modo": "log", "valor": "0/1A2B3C" }\n}\n' > "$REPO/datasets/tienda_orders.json"
 ( cd "$REPO" && git add -A && GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido git -c user.name=copiador -c user.email=copiador@invalido commit -q -m "Copia: tienda.orders" ) || falla "5 · no se pudo firmar el informe"
-copias tienda | grep -q '"estado":"copiada".*"view":"orders"' || falla "5 · la ficha no trae el estado del informe: $(copias tienda)"
+copias tienda | grep -q '"estado":"copiada".*"dataset":"orders"' || falla "5 · la ficha no trae el estado del informe: $(copias tienda)"
 copias tienda | grep -q '"filas":99441' || falla "5 · la ficha no trae las filas: $(copias tienda)"
 copias tienda | grep -q '"copiado_por":"copiador"' || falla "5 · la ficha no dice quien copio: $(copias tienda)"
 copias tienda | grep -q '"cuando":"20' || falla "5 · la ficha no dice cuando: $(copias tienda)"
-copias tienda | grep -q '"copia":{"estado":"pendiente"},.*"view":"customers"' || falla "5 · customers, sin informe, no sale pendiente: $(copias tienda)"
+copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers"' || falla "5 · customers, sin informe, no sale pendiente: $(copias tienda)"
 paquete tienda | grep -q '"copias": {"copiadas": 1, "declaradas": 2}' || falla "5 · GET /paquetes no cuenta la copiada: $(paquete tienda)"
-( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "5 · el arbol no compila con copias/ dentro"
+( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "5 · el arbol no compila con datasets/ dentro"
 dice "5 · el informe del Job: copiada · 99441 filas · copiado_por copiador · cuando · customers pendiente · GET /paquetes 2/1"
 
 # ── 6 · una foranea, y ascenderla ───────────────────────────────────────────
@@ -354,7 +357,7 @@ COD=$(alta '{"name":"espejo","source":"pg","only":["olist.customers","olist.orde
 [ "$COD" = "200" ] || falla "6 · la base foranea devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"type":"foreign"' || falla "6 · sin type no es foreign: $(cuerpo)"
 grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · una foranea escribe type en el alcance (no hace falta: es lo que significa no decir nada)"
-( vista espejo orders; vista espejo customers ) | grep -q "materialized:" && falla "6 · una foranea nacio con copia"
+[ -n "$(dataset espejo orders)$(dataset espejo customers)" ] && falla "6 · una foranea nacio con copia"
 [ -z "$(ls -A "$REPO/packages/espejo/entities" 2>/dev/null)" ] || falla "6 · una foranea del catalogo modelo algo"
 paquete espejo | grep -q '"type": "foreign"' || falla "6 · GET /paquetes no dice foreign: $(paquete espejo)"
 # una tabla, una a una: la base sigue foranea
@@ -365,8 +368,8 @@ cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":1}' || falla "6 · copiar 
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "6 · copiar una tabla no encolo el Job: $(cuerpo)"
 grep -q '"copies": \[' "$REPO/packages/espejo/discover.scope.json" && grep -q '"olist.orders"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · el alcance no lleva copies: $(cat "$REPO/packages/espejo/discover.scope.json")"
 grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · copiar una tabla cambio la clase"
-vista espejo orders | grep -q 'copia.orders' || falla "6 · la tabla copiada no lleva la copia: $(vista espejo orders)"
-vista espejo customers | grep -q "materialized:" && falla "6 · copiar orders copio tambien customers"
+dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · la tabla copiada no lleva la copia: $(dataset espejo orders)"
+[ -n "$(dataset espejo customers)" ] && falla "6 · copiar orders copio tambien customers"
 paquete espejo | grep -q '"type": "foreign"' && paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 1}' || falla "6 · GET /paquetes: sigue foreign con 1 copia: $(paquete espejo)"
 esquema espejo | grep -q '"copied":true,.*"name":"olist_orders"' && esquema espejo | grep -q '"copied":false,.*"name":"olist_customers"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.orders,tienda.customers,tienda.orders"' || falla "6 · el Job no lleva espejo.orders: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
@@ -377,8 +380,8 @@ COD=$(copiar espejo olist.nadie)
 COD=$(asc espejo)
 [ "$COD" = "201" ] || falla "6 · ascender espejo devolvio $COD: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/espejo/discover.scope.json" || falla "6 · ascender no escribio la regla"
-vista espejo orders | grep -q 'copia.orders' || falla "6 · ascender no trajo la copia de orders: $(vista espejo orders)"
-vista espejo customers | grep -q 'copia.customers' || falla "6 · ascender no copio customers (sin modelar, no espera a nada)"
+dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · ascender no trajo la copia de orders: $(dataset espejo orders)"
+dataset espejo customers | grep -q 'kind: Dataset' || falla "6 · ascender no copio customers (sin modelar, no espera a nada)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "6 · la respuesta no cuenta 2/0: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.customers,espejo.orders,tienda.customers,tienda.orders"' || falla "6 · el Job no lleva las cuatro vistas: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 paquete espejo | grep -q '"type": "standard"' || falla "6 · GET /paquetes no dice standard tras ascender: $(paquete espejo)"
@@ -476,6 +479,19 @@ spec:
 $3
 Y
 }
+# una funcion lee PREGUNTAS (OOS7014), y customers es un dataset (0033): la
+# pregunta sobre su dataset, con el mismo nombre y distinto kind, es lo que la
+# funcion nombra en `over`; su raiz de lectura es el dataset
+mkdir -p "$REPO/packages/tienda/views"
+cat > "$REPO/packages/tienda/views/customers.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: customers, namespace: tienda }
+spec:
+  owner: team:data
+  from: { dataset: tienda.customers }
+  fields: { customer_id: customer_id, customer_city: customer_city }
+Y
 funcion8 segmentar tienda.customers ""
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$REPO" 2>&1 | head -5; falla "8 · el arbol con la funcion no compila"; }
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
@@ -495,29 +511,29 @@ COD=$(invocar tienda/segmentar); [ "$COD" = "409" ] || falla "8 · sin la copia 
 cuerpo | grep -q "no está hecha" || falla "8 · sin la copia hecha no lo dice: $(cuerpo)"
 [ -z "$(en_cola 49-la-invocacion-tienda-segmentar.yaml)" ] || falla "8 · encolo sin la copia hecha"
 cat > "$REPO/packages/tienda/views/libre.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
+apiVersion: oos.dev/v1alpha12
 kind: View
 metadata: { name: libre, namespace: tienda }
 spec:
   owner: team:data
-  from: { view: orders }
+  from: { table: olist_orders }
   fields: { id: order_id }
 Y
 funcion8 sinCopia tienda.libre ""
 COD=$(invocar tienda/sinCopia); [ "$COD" = "409" ] || falla "8 · over sin copia declarada devolvio $COD: $(cuerpo)"
-cuerpo | grep -q "no declara copia" || falla "8 · over sin copia declarada no lo dice: $(cuerpo)"
-funcion8 conEfectos tienda.orders "  effects:
+cuerpo | grep -q "no tiene dataset debajo" || falla "8 · over sin dataset debajo no lo dice: $(cuerpo)"
+funcion8 conEfectos tienda.customers "  effects:
     - writes: tienda.Orders.segmento"
 COD=$(invocar tienda/conEfectos); [ "$COD" = "422" ] || falla "8 · con effects devolvio $COD: $(cuerpo)"
 rm "$REPO/packages/tienda/functions/conEfectos.yaml" "$REPO/packages/tienda/functions/sinCopia.yaml" "$REPO/packages/tienda/views/libre.yaml"
-funcion8 sinModelo tienda.orders ""
+funcion8 sinModelo tienda.customers ""
 sed -i 's|modelo/v2-lite|modelo/nadie|' "$REPO/packages/tienda/functions/sinModelo.yaml"
 COD=$(invocar tienda/sinModelo); [ "$COD" = "422" ] || falla "8 · un Model que no existe devolvio $COD: $(cuerpo)"
 rm "$REPO/packages/tienda/functions/sinModelo.yaml"
 dice "8 · se niega: 404 inventada · 409 copia no hecha · 409 over sin copia · 422 effects · 422 Model que no resuelve"
 
 # con la copia hecha: 202, y el Job en la cola con la funcion, la puerta, el id y la corrida
-printf '{\n  "estado": "copiada",\n  "vista": "tienda.customers",\n  "clave": "ore/v1/c0ffee",\n  "digest": "sha256:c0ffee",\n  "plan": "sha256:0",\n  "filas": 99441,\n  "bytes": 1\n}\n' > "$REPO/copias/tienda_customers.json"
+printf '{\n  "estado": "copiada",\n  "vista": "tienda.customers",\n  "clave": "ore/v1/c0ffee",\n  "digest": "sha256:c0ffee",\n  "plan": "sha256:0",\n  "filas": 99441,\n  "bytes": 1\n}\n' > "$REPO/datasets/tienda_customers.json"
 COD=$(invocar tienda/segmentar); [ "$COD" = "202" ] || falla "8 · invocar devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"job":"invocar-tienda-segmentar-[a-f0-9]\{8\}"' || falla "8 · la respuesta no nombra el Job: $(cuerpo)"
 cuerpo | grep -q '"copia":"ore/v1/c0ffee"' || falla "8 · la respuesta no dice que copia se leera: $(cuerpo)"
@@ -588,15 +604,15 @@ grep -q "name: pg" "$REPO/ontology.config.yaml" && [ -d "$REPO/packages/pg" ] ||
 # un Job de catalogo en la cola, como si el reconciliador lo hubiera dejado
 cp "$TMP/rendido/plantilla-catalogo.txt" "$TMP/cola-semilla/44-el-catalogo-pg.yaml"
 ( cd "$TMP/cola-semilla" && git -c user.name=banco -c user.email=banco@invalido pull -q --rebase origin main; git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el catalogo de pg, encolado" && git push -q origin HEAD:main ) || falla "10 · no se pudo encolar el catalogo de pg"
-[ -f "$REPO/copias/tienda_orders.json" ] || falla "10 · falta el recibo de tienda.orders que dejo el caso 5"
+[ -f "$REPO/datasets/tienda_orders.json" ] || falla "10 · falta el recibo de tienda.orders que dejo el caso 5"
 COD=$(borrar tienda)
 [ "$COD" = "200" ] || falla "10 · retirar tienda devolvio $COD: $(cuerpo)"
 # lo huerfano (2026-09-18): su recibo fuera del arbol en el mismo acto, y la
 # pasada de la copia encolada AUNQUE no quede ninguna vista con copia — es la
 # que recoge del almacen lo que la base dejo
 cuerpo | grep -q '"recibos":2' || falla "10 · no retiro los dos recibos de tienda (orders del caso 5, customers del 5b): $(cuerpo)"
-[ ! -e "$REPO/copias/tienda_customers.json" ] || falla "10 · copias/tienda_customers.json sigue en el arbol"
-[ ! -e "$REPO/copias/tienda_orders.json" ] || falla "10 · copias/tienda_orders.json sigue en el arbol"
+[ ! -e "$REPO/datasets/tienda_customers.json" ] || falla "10 · copias/tienda_customers.json sigue en el arbol"
+[ ! -e "$REPO/datasets/tienda_orders.json" ] || falla "10 · copias/tienda_orders.json sigue en el arbol"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml` .*sin vistas: la pasada que recoge lo huérfano' || falla "10 · sin vistas no encolo la pasada que recoge: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: ""' || falla "10 · el Job no lleva VISTAS vacio: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 # olist es la base A MANO sobre pg (sin alcance): no se retira por la API; se

@@ -157,19 +157,11 @@ impl Puntero {
     pub fn campo(&self, k: &str) -> Option<String> {
         campo_de(&self.nodo, k)
     }
-    /// El nombre del dataset en el bucket (`copias/p_v`, `datasets/p_t`).
+    /// El nombre del dataset en el bucket: lo que el puntero diga (uno migrado
+    /// sigue en `copias/p_v`: los bytes no se mueven), o `datasets/p_n`.
     pub fn dataset(&self) -> String {
-        self.campo("dataset").unwrap_or_else(|| {
-            format!(
-                "{}/{}",
-                if self.clase == "copia" {
-                    "copias"
-                } else {
-                    "datasets"
-                },
-                self.nombre.replace('.', "_")
-            )
-        })
+        self.campo("dataset")
+            .unwrap_or_else(|| format!("datasets/{}", self.nombre.replace('.', "_")))
     }
     pub fn como_json(&self) -> Json {
         let mut m = match Json::de_node(&self.nodo) {
@@ -183,32 +175,34 @@ impl Puntero {
     }
 }
 
-/// Los punteros de las dos clases. El nombre `<p>.<x>` sale del campo `vista`
-/// o `tabla` del puntero y, si no lo trae, del nombre del fichero
-/// (`<p>_<x>.json`: la primera `_` separa el paquete, que no lleva ninguna).
-pub(crate) fn punteros(path: &Path, copias: &Path) -> Vec<Puntero> {
+/// Los punteros, de **una** carpeta (0033: un kind, un puntero). El nombre
+/// `<p>.<x>` sale del campo `nombre`, `tabla` o `vista` del puntero y, si no lo
+/// trae, del nombre del fichero (`<p>_<x>.json`: la primera `_` separa el
+/// paquete, que no lleva ninguna). La clase la dice el documento del árbol:
+/// **mantenido** si `packages/<p>/datasets/<x>.yaml` lleva `from`, **escrito**
+/// si no; sin documento, escrito (nació de un `write()` y aún no se declaró).
+pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
     let mut out = Vec::new();
-    for (clase, dir, campo) in [
-        ("copia", copias.to_path_buf(), "vista"),
-        ("dataset", path.join("datasets"), "tabla"),
-    ] {
-        let Ok(entradas) = std::fs::read_dir(&dir) else {
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    let mut rutas: Vec<PathBuf> = entradas
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+        .collect();
+    rutas.sort();
+    for ruta in rutas {
+        let Ok(t) = std::fs::read_to_string(&ruta) else {
             continue;
         };
-        let mut rutas: Vec<PathBuf> = entradas
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-            .collect();
-        rutas.sort();
-        for ruta in rutas {
-            let Ok(t) = std::fs::read_to_string(&ruta) else {
-                continue;
-            };
-            let Ok(nodo) = ore_core::parse::parse(&t) else {
-                continue;
-            };
-            let nombre = campo_de(&nodo, campo).unwrap_or_else(|| {
+        let Ok(nodo) = ore_core::parse::parse(&t) else {
+            continue;
+        };
+        let nombre = ["nombre", "tabla", "vista"]
+            .into_iter()
+            .find_map(|k| campo_de(&nodo, k))
+            .unwrap_or_else(|| {
                 let stem = ruta
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -218,13 +212,31 @@ pub(crate) fn punteros(path: &Path, copias: &Path) -> Vec<Puntero> {
                     None => stem.to_string(),
                 }
             });
-            out.push(Puntero {
-                clase,
-                nombre,
-                ruta,
-                nodo,
-            });
-        }
+        let clase = match nombre.split_once('.') {
+            Some((ns, n)) => {
+                let doc = path
+                    .join("packages")
+                    .join(ns)
+                    .join("datasets")
+                    .join(format!("{n}.yaml"));
+                match std::fs::read_to_string(&doc)
+                    .ok()
+                    .and_then(|t| ore_core::parse::parse(&t).ok())
+                {
+                    Some(d) if d.get("spec").is_some_and(|(_, s)| s.get("from").is_some()) => {
+                        "mantenido"
+                    }
+                    _ => "escrito",
+                }
+            }
+            None => "escrito",
+        };
+        out.push(Puntero {
+            clase,
+            nombre,
+            ruta,
+            nodo,
+        });
     }
     out
 }
@@ -232,7 +244,7 @@ pub(crate) fn punteros(path: &Path, copias: &Path) -> Vec<Puntero> {
 fn dir_copias(path: &Path, op: &Opciones) -> PathBuf {
     op.informe
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.join("copias"))
+        .unwrap_or_else(|| path.join("datasets"))
 }
 
 fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
@@ -249,7 +261,7 @@ fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         return Ok(());
     }
     if ps.is_empty() {
-        println!("sin datasets · ningún puntero en `copias/` ni en `datasets/`");
+        println!("sin datasets · ningún puntero en `datasets/`");
         return Ok(());
     }
     for p in &ps {
@@ -292,7 +304,7 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let Some(p) = ps.iter().find(|p| p.nombre == nombre) else {
         return Err((
             65,
-            format!("no hay ningún dataset `{nombre}`: ni en `copias/` ni en `datasets/`"),
+            format!("no hay ningún dataset `{nombre}` en `datasets/`"),
         ));
     };
     let mut m = match p.como_json() {
@@ -444,33 +456,9 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     Ok(())
 }
 
-/// El bloque de `datasources` que declara el lago del inquilino. `connectionEnv`
-/// es obligatorio en el esquema y aquí no guarda ningún secreto: la «conexión»
-/// del lago es la raíz de su bucket (`gs://<bucket>`), que ya sabe todo pod.
-pub(crate) const LAGO: &str = "  # El lago del inquilino (0031 §10): donde viven los datasets — la copia de\n  # cada vista materializada y la salida de cada `write()` — como tablas\n  # Iceberg. No es un secreto: `LAGO_URL` es la raíz del bucket de la celda.\n  - name: lago\n    type: lago\n    connectionEnv: LAGO_URL\n";
-
-/// Declara el `datasource: lago` en `ontology.config.yaml` si no está. `Ok(true)`
-/// si lo escribió.
-pub(crate) fn asegurar_lago(path: &Path) -> Result<bool, String> {
-    let ruta = path.join("ontology.config.yaml");
-    let texto = std::fs::read_to_string(&ruta)
-        .map_err(|e| format!("no se pudo leer `{}`: {e}", ruta.display()))?;
-    let n = ore_core::parse::parse(&texto)
-        .map_err(|e| format!("`ontology.config.yaml` no analiza: {e:?}"))?;
-    let hay = n
-        .get("datasources")
-        .map(|(_, v)| v.items())
-        .unwrap_or(&[])
-        .iter()
-        .any(|d| d.get("name").and_then(|(_, v)| v.as_str()) == Some("lago"));
-    if hay {
-        return Ok(false);
-    }
-    let nuevo = crate::fuente::insertar(&texto, LAGO)?;
-    std::fs::write(&ruta, nuevo)
-        .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))?;
-    Ok(true)
-}
+// 0033: el lago ya no es un `datasource` del manifiesto. Un dataset es nuestro
+// y sus caras se saben; lo que `LAGO_URL` dice —la raíz del bucket— lo sabe
+// todo pod, y no hay ninguna `Table` que lo nombre.
 
 fn bien(s: &str) -> bool {
     !s.is_empty()
@@ -494,50 +482,58 @@ fn partes(nombre: &str) -> Result<(&str, &str), Fallo> {
 
 /// La marca de los documentos que este verbo escribe: sólo esos se regeneran
 /// cuando el esquema de la tabla evoluciona; uno escrito a mano se respeta.
-const MARCA: &str = "# Una tabla del lago (0031 §10)";
+const MARCA: &str = "# Un dataset escrito (0033)";
 
-/// Qué hay del documento de la `Table`: `Ok(None)` si no existe, `Ok(Some(texto))`
-/// si es del lago, `Err` si es de otra fuente.
-fn documento_de_la_tabla(path: &Path, ns: &str, tabla: &str) -> Result<Option<String>, Fallo> {
-    // Una View con ese nombre: se escribe en una tabla del lago, no en una consulta.
-    if path
-        .join("packages")
-        .join(ns)
-        .join("views")
-        .join(format!("{tabla}.yaml"))
-        .is_file()
-    {
+/// Qué hay del documento del dataset: `Ok(None)` si no existe, `Ok(Some(texto))`
+/// si es un dataset escrito, `Err` si con ese nombre hay otra cosa.
+fn documento_del_dataset(path: &Path, ns: &str, tabla: &str) -> Result<Option<String>, Fallo> {
+    let pkg = path.join("packages").join(ns);
+    // Una View o una Table con ese nombre: una consulta no se escribe, y a lo
+    // que es de otro no se le escribe.
+    if pkg.join("views").join(format!("{tabla}.yaml")).is_file() {
         return Err((
             65,
             format!(
-                "`{ns}.{tabla}` es una View: una consulta no se escribe; escribe en una tabla del lago"
+                "`{ns}.{tabla}` es una View: una consulta no se escribe; escribe en un dataset"
             ),
         ));
     }
-    let doc = path
-        .join("packages")
-        .join(ns)
-        .join("tables")
-        .join(format!("{tabla}.yaml"));
+    if pkg.join("tables").join(format!("{tabla}.yaml")).is_file() {
+        return Err((
+            65,
+            format!(
+                "`{ns}.{tabla}` es una Table: apunta a lo que es de otro, y a eso no se escribe; escribe en un dataset"
+            ),
+        ));
+    }
+    let doc = pkg.join("datasets").join(format!("{tabla}.yaml"));
     let Some(t) = std::fs::read_to_string(&doc).ok() else {
         return Ok(None);
     };
     let n = ore_core::parse::parse(&t)
         .map_err(|e| (65, format!("`{}` no analiza: {e:?}", doc.display())))?;
-    let ds = n
-        .get("spec")
-        .and_then(|(_, s)| s.get("datasource"))
-        .and_then(|(_, v)| v.as_str())
-        .unwrap_or("");
-    if ds != "lago" {
+    if n.get("spec").is_some_and(|(_, s)| s.get("from").is_some()) {
         return Err((
             65,
             format!(
-                "`{ns}.{tabla}` es una Table de `{ds}`, no del lago: un dataset no puede apuntar a una tabla de otra fuente"
+                "`{ns}.{tabla}` es un dataset mantenido: lo cumple el sistema desde `from`, y no se escribe por debajo"
             ),
         ));
     }
     Ok(Some(t))
+}
+
+/// El `owner` de un paquete (`packages/<ns>/package.yaml`), o `team:<ns>`.
+fn dueno_del_paquete(path: &Path, ns: &str) -> String {
+    std::fs::read_to_string(path.join("packages").join(ns).join("package.yaml"))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("spec")
+                .and_then(|(_, s)| s.get("owner"))
+                .and_then(|(_, o)| o.as_str().map(String::from))
+        })
+        .unwrap_or_else(|| format!("team:{ns}"))
 }
 
 /// Las columnas que un documento del lago declara (`spec.columns`).
@@ -565,12 +561,12 @@ fn columnas_del_documento(texto: &str) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// **La `Table` del lago nace, o sigue el esquema de la tabla.** Sin documento:
+/// **El dataset escrito nace, o sigue el esquema de la tabla.** Sin documento:
 /// nace con `columnas`. Con documento nuestro y otras columnas: se regenera
 /// (el esquema evolucionó con una escritura). Con documento ajeno: se deja, y
 /// se dice si difiere. Compila sólo lo que este documento dice; si no compila,
 /// se revierte. Devuelve `(nueva, regenerada)`.
-fn asegurar_table(
+fn asegurar_dataset(
     path: &Path,
     ns: &str,
     tabla: &str,
@@ -579,7 +575,7 @@ fn asegurar_table(
 ) -> Result<(bool, bool), Fallo> {
     let nombre = format!("{ns}.{tabla}");
     if columnas.is_empty() {
-        return Err((64, format!("la Table `{nombre}` no tiene columnas")));
+        return Err((64, format!("el dataset `{nombre}` no tiene columnas")));
     }
     for (c, t) in columnas {
         if !bien(c) {
@@ -595,18 +591,16 @@ fn asegurar_table(
     let doc = path
         .join("packages")
         .join(ns)
-        .join("tables")
+        .join("datasets")
         .join(format!("{tabla}.yaml"));
-    let texto_previo = documento_de_la_tabla(path, ns, tabla)?;
-    // Lo que `changes` tiene que decir: `upsert` con su clave si la escritura
-    // fue un upsert (y entonces una Entity puede respaldarse de esta tabla:
-    // OOS2021 no lo permite de una que «solo anexa»), y si no, lo que diga.
-    let cambios = clave.filter(|c| !c.is_empty()).map(|c| {
-        format!(
-            "  changes: {{ mode: upsert, key: [{}], witness: snapshot }}",
-            c.join(", ")
-        )
-    });
+    let texto_previo = documento_del_dataset(path, ns, tabla)?;
+    // Lo que `changes` tiene que decir (0033: QUÉ ESCRITURAS ADMITE): `upsert`
+    // con su clave si la escritura fue un upsert (y entonces una Entity puede
+    // respaldarse de este dataset: OOS2021 no lo permite de uno que «solo
+    // anexa»), y si no, lo que diga.
+    let cambios = clave
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("  changes: {{ mode: upsert, key: [{}] }}", c.join(", ")));
     let (nueva, regenerar) = match &texto_previo {
         None => (true, true),
         Some(t) => (
@@ -627,7 +621,7 @@ fn asegurar_table(
         .and_then(|t| seguir_esquema(t, columnas))
     {
         Some(s) => s,
-        None => documento_nuevo(ns, tabla, columnas),
+        None => documento_nuevo(&dueno_del_paquete(path, ns), ns, tabla, columnas),
     };
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
@@ -657,7 +651,7 @@ fn asegurar_table(
         return Err((
             65,
             format!(
-                "la Table `{nombre}` no compila con esas columnas:\n{}",
+                "el dataset `{nombre}` no compila con esas columnas:\n{}",
                 malos.join("\n")
             ),
         ));
@@ -665,15 +659,20 @@ fn asegurar_table(
     Ok((nueva, !nueva))
 }
 
-/// La `Table` del lago desde cero: lo que `write()` sabe de ella.
-fn documento_nuevo(ns: &str, tabla: &str, columnas: &BTreeMap<String, String>) -> String {
+/// El dataset escrito desde cero: lo que `write()` sabe de él.
+fn documento_nuevo(
+    owner: &str,
+    ns: &str,
+    tabla: &str,
+    columnas: &BTreeMap<String, String>,
+) -> String {
     let mut s = format!(
-        "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: la escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}_{tabla}.json`; su\n# historia, los snapshots de la tabla.\nspec:\n  datasource: lago\n  object: \"{ns}_{tabla}\"\n  columns:\n"
+        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}_{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
     );
     for (c, t) in columnas {
         s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
     }
-    s.push_str("  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n");
+    s.push_str("  changes: { mode: append }\n");
     s
 }
 
@@ -827,7 +826,7 @@ fn con_cambios(texto: &str, linea: &str) -> String {
     out
 }
 
-/// El puntero de un dataset del lago, leído del árbol (`datasets/<ns>_<t>.json`).
+/// El puntero de un dataset, leído del árbol (`datasets/<ns>_<t>.json`).
 fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>) {
     let ruta = path.join("datasets").join(format!("{ns}_{tabla}.json"));
     let previo = std::fs::read_to_string(&ruta)
@@ -1080,7 +1079,6 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         return Err((64, "la petición no trae ningún cambio".into()));
     }
     let defecto = retencion_defecto(op)?;
-    let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
 
     // ── primero, todos: ¿a qué tabla, existe, cuál es la base, ya se hizo? ──
     struct Plan<'a> {
@@ -1116,7 +1114,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         {
             return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
         }
-        documento_de_la_tabla(path, ns, tabla)?;
+        documento_del_dataset(path, ns, tabla)?;
         let (ruta, previo) = puntero_del_lago(path, ns, tabla);
         let base = previo
             .as_ref()
@@ -1254,7 +1252,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         };
         let clave = p.cambio.clave();
         let (tabla_nueva, regenerada) =
-            asegurar_table(path, &p.ns, &p.tabla, &a.columnas_oos, clave.as_deref())?;
+            asegurar_dataset(path, &p.ns, &p.tabla, &a.columnas_oos, clave.as_deref())?;
         let mut campos = vec![
             ("estado", Json::s("copiada")),
             ("tabla", Json::s(&p.nombre)),
@@ -1287,10 +1285,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ("tabla_regenerada", Json::Bool(regenerada)),
         ]));
     }
-    let j = Json::obj([
-        ("lago_declarado", Json::Bool(lago_nuevo)),
-        ("tablas", Json::Arr(lineas.clone())),
-    ]);
+    let j = Json::obj([("tablas", Json::Arr(lineas.clone()))]);
     if op.json {
         println!("{}", j.jcs());
     } else {
@@ -1305,7 +1300,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 _ => String::new(),
             };
             println!(
-                "{} · {}{}{} · {} filas\n  {}",
+                "{} · {}{} · {} filas\n  {}",
                 g("tabla"),
                 if g("repetida") == "true" {
                     "ya estaba (misma operación)"
@@ -1315,14 +1310,9 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                     "puntero movido"
                 },
                 if g("tabla_nueva") == "true" {
-                    " · la Table del lago nace"
+                    " · el dataset nace"
                 } else if g("tabla_regenerada") == "true" {
-                    " · la Table sigue el esquema nuevo"
-                } else {
-                    ""
-                },
-                if lago_nuevo {
-                    " · `datasource: lago` declarado"
+                    " · el dataset sigue el esquema nuevo"
                 } else {
                     ""
                 },
@@ -1348,7 +1338,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
-    documento_de_la_tabla(path, ns, tabla)?;
+    documento_del_dataset(path, ns, tabla)?;
     let (ruta, previo) = puntero_del_lago(path, ns, tabla);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
@@ -1362,7 +1352,6 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             format!("`{nombre}` ya existe: `{base}`"),
         ));
     }
-    let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
     let defecto = retencion_defecto(op)?;
     let pet = format!(
         "{{\"dataset\":{},\"crear\":true,\"peticion\":{texto},\"retencion_defecto\":{defecto}}}",
@@ -1376,7 +1365,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_table(path, ns, tabla, &a.columnas_oos, None)?;
+    let (tabla_nueva, _) = asegurar_dataset(path, ns, tabla, &a.columnas_oos, None)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -1392,7 +1381,6 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     escribir_puntero(&ruta, previo.as_ref(), campos)?;
     let j = Json::obj([
         ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
-        ("lago_declarado", Json::Bool(lago_nuevo)),
         ("metadata_location", Json::s(&a.metadata_location)),
         ("puntero_nuevo", Json::Bool(true)),
         ("tabla", Json::s(nombre)),
@@ -1405,7 +1393,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         println!(
             "{nombre} · nace{}\n  {}",
             if tabla_nueva {
-                " · la Table del lago nace"
+                " · el dataset nace"
             } else {
                 ""
             },
@@ -1447,7 +1435,7 @@ fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
 /// `ore` no modela—, con la credencial prestada si se pide.
 fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let (ns, tabla) = partes(nombre)?;
-    documento_de_la_tabla(path, ns, tabla)?;
+    documento_del_dataset(path, ns, tabla)?;
     let (_, previo) = puntero_del_lago(path, ns, tabla);
     let ml = previo
         .as_ref()
@@ -1480,7 +1468,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
-    documento_de_la_tabla(path, ns, tabla)?;
+    documento_del_dataset(path, ns, tabla)?;
     let (_, previo) = puntero_del_lago(path, ns, tabla);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
@@ -1635,11 +1623,10 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
     if actual == ml {
         // El mismo puntero: nada que mover. Idempotente, como el push.
-        return salida(op, nombre, ns, tabla, ml, false, false, false);
+        return salida(op, nombre, ns, tabla, ml, false, false);
     }
 
     // ── la fuente y el documento ────────────────────────────────────────────
-    let lago_nuevo = asegurar_lago(path).map_err(|m| (65, m))?;
     let columnas: Option<BTreeMap<String, String>> = match op.columnas {
         Some(c) => {
             let n = ore_core::parse::parse(c).map_err(|e| {
@@ -1660,18 +1647,18 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         }
         None => None,
     };
-    let hay_doc = documento_de_la_tabla(path, ns, tabla)?.is_some();
+    let hay_doc = documento_del_dataset(path, ns, tabla)?.is_some();
     let tabla_nueva = match (&columnas, hay_doc) {
         (None, false) => {
             return Err((
                 65,
                 format!(
-                    "la Table `{nombre}` no existe y no se dieron `--columnas`: el documento del lago nace con el esquema de la primera escritura"
+                    "el dataset `{nombre}` no existe y no se dieron `--columnas`: el documento nace con el esquema de la primera escritura"
                 ),
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_table(path, ns, tabla, cols, None)?.0,
+        (Some(cols), _) => asegurar_dataset(path, ns, tabla, cols, None)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -1689,16 +1676,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         campos.push(("escrito_por", Json::s(s)));
     }
     escribir_puntero(&ruta, previo.as_ref(), campos)?;
-    salida(
-        op,
-        nombre,
-        ns,
-        tabla,
-        ml,
-        previo.is_none(),
-        tabla_nueva,
-        lago_nuevo,
-    )
+    salida(op, nombre, ns, tabla, ml, previo.is_none(), tabla_nueva)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1710,11 +1688,9 @@ fn salida(
     ml: &str,
     puntero_nuevo: bool,
     tabla_nueva: bool,
-    lago_nuevo: bool,
 ) -> Result<(), Fallo> {
     let j = Json::obj([
         ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
-        ("lago_declarado", Json::Bool(lago_nuevo)),
         ("metadata_location", Json::s(ml)),
         ("puntero_nuevo", Json::Bool(puntero_nuevo)),
         ("tabla", Json::s(nombre)),
@@ -1724,22 +1700,17 @@ fn salida(
         println!("{}", j.jcs());
     } else {
         println!(
-            "{nombre} · {}{}{}\n  {ml}",
+            "{nombre} · {}{}\n  {ml}",
             if puntero_nuevo {
                 "puntero nuevo"
             } else {
                 "puntero movido"
             },
             if tabla_nueva {
-                " · la Table del lago nace"
+                " · el dataset nace"
             } else {
                 ""
             },
-            if lago_nuevo {
-                " · `datasource: lago` declarado"
-            } else {
-                ""
-            }
         );
     }
     Ok(())
@@ -1850,33 +1821,45 @@ spec:
         assert!(edad_ms("una semana").is_err());
     }
 
-    /// Los punteros de las dos clases, con el nombre del campo o del fichero.
+    /// Los punteros de una carpeta, con el nombre del campo o del fichero, y
+    /// la clase del documento del árbol: mantenido con `from`, escrito sin él.
     #[test]
-    fn los_punteros_se_leen_de_las_dos_carpetas() {
+    fn los_punteros_se_leen_de_una_carpeta_y_la_clase_del_documento() {
         let d = std::env::temp_dir().join(format!("ore-datasets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("copias")).unwrap();
         std::fs::create_dir_all(d.join("datasets")).unwrap();
+        std::fs::create_dir_all(d.join("packages/ventas/datasets")).unwrap();
+        // Un puntero migrado: dice `vista`, `tabla` y dónde siguen sus bytes.
         std::fs::write(
-            d.join("copias/ventas_pedidos.json"),
-            "{\"estado\":\"copiada\",\"vista\":\"ventas.pedidos\",\"metadata_location\":\"gs://b/x\",\"filas\":5}",
+            d.join("datasets/ventas_pedidos.json"),
+            "{\"estado\":\"copiada\",\"vista\":\"ventas.pedidos\",\"tabla\":\"ventas.pedidos\",\"dataset\":\"copias/ventas_pedidos\",\"metadata_location\":\"gs://b/x\",\"filas\":5}",
         )
         .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/datasets/pedidos.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.orders }\n",
+        )
+        .unwrap();
+        // Uno de un `write()`: sin documento todavía.
         std::fs::write(
             d.join("datasets/ventas_salida.json"),
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/y\"}",
         )
         .unwrap();
-        let ps = punteros(&d, &d.join("copias"));
+        let ps = punteros(&d, &d.join("datasets"));
         assert_eq!(ps.len(), 2);
         assert_eq!(
             (ps[0].clase, ps[0].nombre.as_str()),
-            ("copia", "ventas.pedidos")
+            ("mantenido", "ventas.pedidos")
         );
-        assert_eq!(ps[0].dataset(), "copias/ventas_pedidos");
+        assert_eq!(
+            ps[0].dataset(),
+            "copias/ventas_pedidos",
+            "los bytes no se mueven"
+        );
         assert_eq!(
             (ps[1].clase, ps[1].nombre.as_str()),
-            ("dataset", "ventas.salida")
+            ("escrito", "ventas.salida")
         );
         assert_eq!(
             ps[1].dataset(),
@@ -1886,28 +1869,54 @@ spec:
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// `asegurar_lago` escribe el bloque una vez y no dos.
+    /// El documento de un dataset escrito nace como `kind: Dataset` con el
+    /// dueño del paquete, y sigue el esquema sin perder lo demás.
     #[test]
-    fn el_lago_se_declara_una_vez() {
-        let d = std::env::temp_dir().join(format!("ore-lago-{}", std::process::id()));
+    fn el_dataset_escrito_nace_y_sigue_el_esquema() {
+        let d = std::env::temp_dir().join(format!("ore-escrito-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(d.join("packages/ventas")).unwrap();
         std::fs::write(
             d.join("ontology.config.yaml"),
             "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: x, version: 0.1.0 }\n",
         )
         .unwrap();
-        assert!(asegurar_lago(&d).unwrap());
-        let t = std::fs::read_to_string(d.join("ontology.config.yaml")).unwrap();
+        std::fs::write(
+            d.join("packages/ventas/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: ventas, version: 0.1.0, status: active, domain: ventas }\nspec: { owner: team:ventas }\n",
+        )
+        .unwrap();
+        let cols: BTreeMap<String, String> = [("id", "Integer"), ("pais", "String")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, None).unwrap();
+        assert!(nueva && !regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(
-            t.contains("name: lago") && t.contains("connectionEnv: LAGO_URL"),
+            t.contains("kind: Dataset") && t.contains("owner: team:ventas"),
             "{t}"
         );
-        assert!(!asegurar_lago(&d).unwrap(), "ya estaba");
-        assert_eq!(
-            t,
-            std::fs::read_to_string(d.join("ontology.config.yaml")).unwrap()
+        assert!(
+            t.contains("changes: { mode: append }") && !t.contains("datasource"),
+            "{t}"
         );
+        assert!(ore_core::validate_package(&d).is_empty());
+        // Un upsert por `pais`: `changes` dice lo que admite.
+        let clave = vec!["pais".to_string()];
+        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, Some(&clave)).unwrap();
+        assert!(!nueva && regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
+        // Con una Table del mismo nombre no se escribe.
+        std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
+        std::fs::write(
+            d.join("packages/ventas/tables/orders.yaml"),
+            "kind: Table\n",
+        )
+        .unwrap();
+        let e = asegurar_dataset(&d, "ventas", "orders", &cols, None).unwrap_err();
+        assert!(e.1.contains("es una Table"), "{}", e.1);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -145,9 +145,7 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
             // Las dos caras del objeto, y **qué regla las usa**. Una vista
             // v1alpha7 no las tiene: su puntero no es un documento, así que no
             // hay nada que enseñar — y esa ausencia también dice algo.
-            if let Some(tqn) = r.tabla.as_deref()
-                && let Some(tabla) = pkg.table(tqn)
-            {
+            if let Some(tabla) = vistas::suelo(&pkg, v) {
                 println!("  caras     {}", caras(tabla));
                 println!("            {}", raiz_de_lectura(&pkg, v, tabla));
             }
@@ -305,16 +303,13 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
         // El flujo. Virtual: no hay copia, nada que autorizar. Materializada:
         // la copia lleva lo que llevan sus columnas raíz, por derivación Y por
         // influencia.
-        match v.section("materialized") {
+        match destino_de(v).filter(|_| vistas::es_copia(v)) {
+            None if vistas::es_escrito(v) => {
+                println!("  flujo     escrito — lo llena código; el linaje está en el puntero")
+            }
             None => println!("  flujo     virtual — cada lectura va al origen; nada que copiar"),
-            Some(m) => {
-                let destino = format!(
-                    "{}·{}",
-                    m.get("datasource")
-                        .and_then(|(_, x)| x.as_str())
-                        .unwrap_or("?"),
-                    m.get("table").and_then(|(_, x)| x.as_str()).unwrap_or("?")
-                );
+            Some((ds, ob)) => {
+                let destino = format!("{ds}·{ob}");
                 let autoriza: BTreeMap<String, String> = conductos
                     .get(CONDUCTO)
                     .map(|ls| {
@@ -413,6 +408,13 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
 /// traducidos: quien lee esto tiene el documento delante, y un segundo
 /// vocabulario para lo mismo obligaría a traducir de vuelta para arreglarlo.
 fn caras(tabla: &Loaded) -> String {
+    // 0033: las caras de un dataset escrito se saben, no se declaran.
+    if vistas::es_escrito(tabla) {
+        return format!(
+            "reads: eq, neq, in, range, isNull · fullScan: cheap (el lago) · changes: {} · witness: snapshot",
+            vistas::modo(tabla).as_str()
+        );
+    }
     let lista = |n: &Node| -> String {
         n.items()
             .iter()
@@ -475,11 +477,11 @@ fn caras(tabla: &Loaded) -> String {
 /// tiene nada que contestar aquí, y decir «no» sobre ella sería enseñar un
 /// defecto donde solo hay un espejo.
 fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
-    let materializada = v.section("materialized").is_some();
-    let clave: Vec<String> = r
-        .tabla
-        .as_deref()
-        .and_then(|qn| pkg.table(qn))
+    // v1alpha12: «tiene dónde sostener una edición» es «hay un dataset en su
+    // cadena», y la clave es la del suelo (una `Table` o un dataset escrito).
+    let materializada = vistas::raiz_de_lectura(pkg, v).is_some();
+    let suelo = vistas::suelo(pkg, v);
+    let clave: Vec<String> = suelo
         .and_then(|t| t.section("changes"))
         .and_then(|c| c.get("key"))
         .map(|(_, k)| {
@@ -498,7 +500,10 @@ fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
         }
         (true, true) => format!(
             "no · `{}` no declara `changes.key`, así que nada dice qué fila toca un edit · OOS2024",
-            r.tabla.as_deref().unwrap_or("la raíz")
+            suelo
+                .and_then(|t| t.qname())
+                .or_else(|| r.tabla.clone())
+                .unwrap_or_else(|| "la raíz".to_string())
         ),
     }
 }
@@ -511,15 +516,9 @@ fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
 /// tener que provocarlo.
 fn raiz_de_lectura(pkg: &Package, v: &Loaded, tabla: &Loaded) -> String {
     let copia = vistas::raiz_de_lectura(pkg, v);
-    let donde = copia.and_then(|c| c.section("materialized")).map(|m| {
-        format!(
-            "{}·{}",
-            m.get("datasource")
-                .and_then(|(_, x)| x.as_str())
-                .unwrap_or("?"),
-            m.get("table").and_then(|(_, x)| x.as_str()).unwrap_or("?")
-        )
-    });
+    let donde = copia
+        .and_then(destino_de)
+        .map(|(ds, ob)| format!("{ds}·{ob}"));
     let modo = vistas::modo(tabla);
     match (donde, vistas::se_lee(tabla), modo) {
         (Some(d), false, _) => format!(
@@ -540,11 +539,42 @@ pub(crate) trait Vistas {
 }
 
 impl Vistas for Package {
+    /// Las vistas **y los datasets** (0033): los dos son nodos del IR —un
+    /// mantenido tiene plan; un escrito es una hoja del lago— y los dos se
+    /// expanden, se cotejan y se copian por el mismo camino.
     fn of_view(&self) -> Vec<&Loaded> {
-        let mut v: Vec<&Loaded> = self.docs.iter().filter(|d| d.kind == Kind::View).collect();
+        let mut v: Vec<&Loaded> = self
+            .docs
+            .iter()
+            .filter(|d| matches!(d.kind, Kind::View | Kind::Dataset))
+            .collect();
         v.sort_by_key(|d| d.qname());
         v
     }
+}
+
+/// **Dónde vive la copia** de un documento que copia: `(datasource, objeto)`.
+/// Un dataset vive en el lago con el nombre que su puntero le da
+/// (`<ns>_<n>`); una vista de v1alpha7/8 con `materialized`, donde ella dijo.
+pub(crate) fn destino_de(d: &Loaded) -> Option<(String, String)> {
+    if d.kind == Kind::Dataset {
+        return Some(("lago".to_string(), objeto_del_lago(d)));
+    }
+    let m = d.section("materialized")?;
+    Some((
+        m.get("datasource")?.1.as_str()?.to_string(),
+        m.get("table")?.1.as_str()?.to_string(),
+    ))
+}
+
+/// El nombre físico de un dataset en el lago: `<ns>_<n>`, el mismo que su
+/// puntero (`datasets/<ns>_<n>.json`) y que `write()` le dio.
+pub(crate) fn objeto_del_lago(d: &Loaded) -> String {
+    format!(
+        "{}_{}",
+        d.meta("namespace").and_then(|n| n.as_str()).unwrap_or(""),
+        d.meta("name").and_then(|n| n.as_str()).unwrap_or("")
+    )
 }
 
 // ── El paquete → el IR ──────────────────────────────────────────────────────
@@ -575,6 +605,13 @@ pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String),
         };
         for (col, tipo) in vistas::tipos_de_columnas(t) {
             out.insert((datasource.to_string(), objeto.to_string(), col), tipo);
+        }
+    }
+    // v1alpha12: y las de un dataset escrito, bajo `(lago, <ns>_<n>)`.
+    for d in pkg.datasets().filter(|d| vistas::es_escrito(d)) {
+        let objeto = objeto_del_lago(d);
+        for (col, tipo) in vistas::tipos_de_columnas(d) {
+            out.insert(("lago".to_string(), objeto.clone(), col), tipo);
         }
     }
     for e in pkg.entities() {
@@ -638,6 +675,11 @@ type Tipador<'a> = Box<dyn Fn(&str) -> Type + 'a>;
 /// `None` si la vista sale de otra vista, o si la tabla que nombra no existe —
 /// eso lo dice `OOS2018` y aquí no se repite.
 fn objeto_fisico(pkg: &Package, v: &Loaded) -> Option<(String, String)> {
+    // v1alpha12: un dataset escrito no sale de nada de fuera. Es nuestro, y
+    // vive en el lago con su nombre.
+    if vistas::es_escrito(v) {
+        return Some(("lago".to_string(), objeto_del_lago(v)));
+    }
     match vistas::fuente(v)? {
         vistas::Fuente::Datasource { datasource, objeto } => Some((datasource, objeto)),
         vistas::Fuente::Tabla(qn) => {
@@ -662,7 +704,14 @@ pub(crate) fn cuerpo(
     v: &Loaded,
     tipos: &BTreeMap<(String, String, String), Type>,
 ) -> Nodo {
-    let campos = vistas::campos(v);
+    // 0033: un dataset sin `fields` expone todo lo de abajo con sus nombres
+    // (el escrito, sus columnas; el mantenido, lo que `from` expone): la
+    // proyeccion es la identidad, y no la nada.
+    let campos = if v.kind == Kind::Dataset && v.section("fields").is_none() {
+        vistas::expone_en(pkg, v)
+    } else {
+        vistas::campos(v)
+    };
     let filtros = vistas::filtros(v);
 
     // La hoja, y con qué nombre se ve cada cosa desde esta vista.
@@ -728,6 +777,37 @@ pub(crate) fn cuerpo(
             // por eso existe la arista INDIRECT.
             for (c, _) in &filtros {
                 columnas.entry(c.clone()).or_insert_with(|| tipo(c));
+            }
+            let ds = datasource.clone();
+            let ob = objeto.clone();
+            let tipos = tipos.clone();
+            let f = move |c: &str| -> Type {
+                tipos
+                    .get(&(ds.clone(), ob.clone(), c.to_string()))
+                    .cloned()
+                    .unwrap_or_else(|| Type::Scalar("String".into()))
+            };
+            (
+                Nodo::Lee(Lectura {
+                    datasource,
+                    objeto,
+                    campos: columnas,
+                }),
+                Box::new(f),
+            )
+        }
+        // v1alpha12: un dataset escrito es una hoja del lago: sus `columns`,
+        // con sus tipos, bajo `(lago, <ns>_<n>)`.
+        None if vistas::es_escrito(v) => {
+            let (datasource, objeto) = ("lago".to_string(), objeto_del_lago(v));
+            let mut columnas: BTreeMap<String, Type> = BTreeMap::new();
+            let de_columna = vistas::tipos_de_columnas(v);
+            for c in vistas::columnas(v) {
+                let t = de_columna
+                    .get(&c)
+                    .cloned()
+                    .unwrap_or_else(|| Type::Scalar("String".into()));
+                columnas.insert(c, t);
             }
             let ds = datasource.clone();
             let ob = objeto.clone();
@@ -934,7 +1014,7 @@ pub(crate) fn etiquetas_de_raiz(
 
     // Las columnas raíz que existen: las de cada hoja, por campos y por filtros.
     let mut hojas: Vec<(String, String, BTreeSet<String>)> = Vec::new();
-    for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
+    for v in pkg.of_view() {
         let Some((datasource, objeto)) = objeto_fisico(pkg, v) else {
             continue;
         };
@@ -1064,8 +1144,26 @@ fn subir(
 /// precisamente el medio contrato que `changes` vino a completar, así que una
 /// hoja v1alpha7 se queda **fuera del mapa**, que es como se dice *no lo
 /// declaró* sin decir *no emite*.
+/// La cara `I` del lago, como si fuera un `reads` de tabla: lo que Iceberg
+/// sabe hacer, escrito una vez. Un dataset no lo declara: se sabe.
+pub(crate) fn lago_reads() -> Node {
+    ore_core::parse::parse(
+        "predicatePushdown: [eq, neq, in, range, isNull]\nfullScan: cheap\nprojectionPushdown: true\n",
+    )
+    .expect("las caras del lago son un YAML fijo")
+}
+
 fn cambios_por_fuente(pkg: &Package) -> BTreeMap<(String, String), Emite> {
     let mut out = BTreeMap::new();
+    // v1alpha12: un dataset escrito emite lo que admite, con testigo snapshot.
+    for d in pkg.datasets().filter(|d| vistas::es_escrito(d)) {
+        let e = match vistas::modo(d) {
+            vistas::Modo::Anexa => Emite::Altas,
+            vistas::Modo::Upsert => Emite::Upserts,
+            _ => Emite::Nada,
+        };
+        out.insert(("lago".to_string(), objeto_del_lago(d)), e);
+    }
     for t in pkg.docs.iter().filter(|d| d.kind == Kind::Table) {
         let (Some(ds), Some(ob)) = (
             t.section("datasource").and_then(|v| v.as_str()),
@@ -1086,7 +1184,13 @@ fn cambios_por_fuente(pkg: &Package) -> BTreeMap<(String, String), Emite> {
 
 fn capacidades_por_fuente(pkg: &Package) -> BTreeMap<String, Capacidades> {
     let mut out: BTreeMap<String, Capacidades> = BTreeMap::new();
-    for v in pkg.docs.iter().filter(|d| d.kind == Kind::View) {
+    // v1alpha12: el lago tiene las caras que Iceberg tiene, y no se declaran
+    // (`01-dataset` §6): recorrido barato, igualdad, pertenencia, rango y
+    // nulos empujables, proyección empujada.
+    if pkg.datasets().any(vistas::es_escrito) {
+        out.insert("lago".to_string(), Capacidades::de_oos(&lago_reads()));
+    }
+    for v in pkg.of_view() {
         let Some((datasource, _)) = objeto_fisico(pkg, v) else {
             continue;
         };

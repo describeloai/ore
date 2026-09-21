@@ -183,11 +183,6 @@ fn intentar(raiz: &Path, r: &Respuestas) -> Result<String, (u8, Vec<String>)> {
     };
 
     escribir(&config, &manifiesto(&nombre, &dependencias, &claves, &logs))?;
-    // El lago del inquilino (0031 §10, W3.6b) nace con el árbol: el
-    // `datasource` bajo el que viven los datasets. No es un secreto y no
-    // pasa por `source add`.
-    crate::datasets::asegurar_lago(raiz).map_err(|e| (73, vec![e]))?;
-
     // El directorio de paquetes existe aunque esté vacío: `workspace.members`
     // vale `packages/*` por convención y un directorio ausente convierte esa
     // convención en una sorpresa.

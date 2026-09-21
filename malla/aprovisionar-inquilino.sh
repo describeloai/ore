@@ -1030,8 +1030,9 @@ print(",".join(sorted(hechos)))
 fi
 [ -n "$FUENTES" ] && hecho "fuentes sin paquete: $FUENTES"
 
-# ⭐ Y las vistas que declaran copia (0027 P1): `paquete.vista` de cada
-#   `materialized` del arbol. Con alguna, se rinde el Job de la copia (45).
+# ⭐ Y los datasets mantenidos (0027 P1, 0033): `paquete.dataset` de cada
+#   `kind: Dataset` con `from` del arbol (`packages/<p>/datasets/`). Con
+#   alguno, se rinde el Job de la copia (45).
 COPIAS=""
 if [ -z "$SECO" ] && [ -n "$INQ" ]; then
   COPIAS=$(for P in $(crudo "contents/packages" | "$PY" -c 'import json,sys
@@ -1039,20 +1040,20 @@ try:
     print(" ".join(e["name"] for e in json.load(sys.stdin) if e.get("type") == "dir"))
 except Exception:
     pass'); do
-    for V in $(crudo "contents/packages/$P/views" | "$PY" -c 'import json,sys
+    for V in $(crudo "contents/packages/$P/datasets" | "$PY" -c 'import json,sys
 try:
     print(" ".join(e["name"] for e in json.load(sys.stdin) if e.get("type") == "file" and e["name"].endswith(".yaml")))
 except Exception:
     pass'); do
-      crudo "raw/packages/$P/views/$V" | "$PY" -c 'import re,sys
+      crudo "raw/packages/$P/datasets/$V" | "$PY" -c 'import re,sys
 t = sys.stdin.read()
-if re.search(r"^\s+materialized:", t, re.M):
+if re.search(r"^kind:\s*Dataset\s*$", t, re.M) and re.search(r"^\s+from:", t, re.M):
     m = re.search(r"^\s*name:\s*([A-Za-z0-9_]+)", t.split("metadata", 1)[1] if "metadata" in t else t, re.M)
     if m: print(sys.argv[1] + "." + m.group(1))' "$P"
     done
   done | sort -u | paste -sd, -)
 fi
-[ -n "$COPIAS" ] && hecho "vistas con copia: $COPIAS"
+[ -n "$COPIAS" ] && hecho "datasets mantenidos: $COPIAS"
 
 # ⭐ Se rinde POR CELDA, y la organizacion va aparte: es lo que `ore-serve` le
 #   dice al custodio y lo que `ore init --name` graba en el arbol.

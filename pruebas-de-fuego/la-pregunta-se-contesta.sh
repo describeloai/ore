@@ -24,9 +24,10 @@
 #      dataset (snapshot nuevo, la historia se queda) y `ask` contesta lo nuevo
 #   9  LO HUÉRFANO: la vista se va y su dataset sale del bucket con `--recoger`
 #
-# La copia es un DATASET (W3.6a, 0031 §10): una tabla Iceberg en el bucket y un
-# puntero en el árbol (`copias/<p>_<v>.json` → `metadata_location`). El S3 de
-# mentira no sabe nada de Iceberg y no le hace falta: son objetos con nombre.
+# La copia es un DATASET (W3.6a, 0031 §10; 0033: `kind: Dataset` con `from`,
+# el documento que lleva el plan): una tabla Iceberg en el bucket y un puntero
+# en el árbol (`datasets/<p>_<n>.json` → `metadata_location`). El S3 de mentira
+# no sabe nada de Iceberg y no le hace falta: son objetos con nombre.
 #
 # Necesita `ore`, `ore-serve`, `ore-store-r2` y `ore-read-jsonl` en el PATH o en
 # target/{release,debug}, y python3.
@@ -132,16 +133,16 @@ spec:
   reads: { fullScan: cheap }
   changes: { mode: append, witness: snapshot }
 Y
-# la copia: la tabla entera, con sus nombres
-cat > "$A/packages/ventas/views/pedidos.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+# la copia: el dataset con el plan (0033), la tabla entera con sus nombres
+mkdir -p "$A/packages/ventas/datasets"
+cat > "$A/packages/ventas/datasets/pedidos.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: pedidos, namespace: ventas }
 spec:
   owner: team:data
   from: { table: ventas.pedidos_t }
   fields: { id: order_id, pais: pais, total: total, unidades: unidades }
-  materialized: { datasource: copia, table: "copia.pedidos" }
 Y
 # la entidad tipa las columnas raíz: total es Decimal, unidades Integer
 cat > "$A/packages/ventas/entities/Pedido.yaml" <<'Y'
@@ -220,31 +221,30 @@ spec:
   from: { table: ventas.proveedores_t }
   fields: { id: proveedor_id }
 Y
-cat > "$A/packages/ventas/views/declarada.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+cat > "$A/packages/ventas/datasets/declarada.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: declarada, namespace: ventas }
 spec:
   owner: team:data
   from: { table: ventas.clientes_t }
   fields: { id: cliente_id, pais: pais }
-  materialized: { datasource: copia, table: "copia.clientes" }
 Y
 export FICHEROS_DIR="$TMP/datos"
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$A"; falla "el árbol no compila"; exit 1; }
 
 # la copia de `pedidos`, y solo esa
-salida=$("$ORE" materialize "$A" --informe "$A/copias" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
-rm -f "$A/copias/ventas_declarada.json"
-puntero() { "$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$A/copias/ventas_pedidos.json" "$1"; }
+salida=$("$ORE" materialize "$A" --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
+rm -f "$A/datasets/ventas_declarada.json"
+puntero() { "$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$A/datasets/ventas_pedidos.json" "$1"; }
 ML=$(puntero metadata_location)
 [ -n "$ML" ] || { falla "0 · el puntero de la copia no tiene metadata_location"; exit 1; }
-case "$ML" in s3://copia/ore/v2/copias/ventas_pedidos/metadata/00000-*.metadata.json) ;; *) falla "0 · el puntero no apunta a la tabla del dataset: $ML";; esac
+case "$ML" in s3://copia/ore/v2/datasets/ventas_pedidos/metadata/00000-*.metadata.json) ;; *) falla "0 · el puntero no apunta a la tabla del dataset: $ML";; esac
 [ "$(puntero operacion)" = "creada" ] || falla "0 · la primera copia tenía que decir creada: $(puntero operacion)"
-[ "$(puntero dataset)" = "copias/ventas_pedidos" ] || falla "0 · el puntero no nombra el dataset"
+[ "$(puntero dataset)" = "datasets/ventas_pedidos" ] || falla "0 · el puntero no nombra el dataset"
 # lo que hay en el bucket es una tabla Iceberg: metadata.json, la lista de
 # manifiestos, un manifiesto y un fichero de datos — y NADA de ore/v1/
-OBJETOS=$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/copias/ventas_pedidos/" | grep -o '<Key>[^<]*</Key>' | sed 's/<[^>]*>//g')
+OBJETOS=$(curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/datasets/ventas_pedidos/" | grep -o '<Key>[^<]*</Key>' | sed 's/<[^>]*>//g')
 [ "$(echo "$OBJETOS" | grep -c '/metadata/.*\.metadata\.json$')" = "1" ] || falla "0 · no hay UN metadata.json: $OBJETOS"
 [ "$(echo "$OBJETOS" | grep -c '/metadata/snap-.*\.avro$')" = "1" ] || falla "0 · no hay UNA lista de manifiestos: $OBJETOS"
 [ "$(echo "$OBJETOS" | grep -c '/data/.*\.parquet$')" = "1" ] || falla "0 · no hay UN fichero de datos: $OBJETOS"
@@ -300,7 +300,7 @@ cumple "len(filas)==0 and cab['copia']['de']=='ventas.pedidos' and cab['plan'].s
 
 # ── 6 · lo que se niega ──────────────────────────────────────────────────────
 s=$("$ORE" ask "$A" --vista ventas.proveedores 2>&1) && falla "6 · sin copia que conteste no falló: $s"
-case "$s" in *"ninguna copia contesta"*) ;; *) falla "6 · no dijo que ninguna copia contesta: $s";; esac
+case "$s" in *"ningún dataset contesta"*) ;; *) falla "6 · no dijo que ningún dataset contesta: $s";; esac
 s=$("$ORE" ask "$A" --vista ventas.declarada 2>&1) && falla "6 · con copia declarada y no hecha no falló: $s"
 case "$s" in *"no está hecha"*) ;; *) falla "6 · no dijo que la copia no está hecha: $s";; esac
 s=$("$ORE" ask "$A" --vista ventas.clientes 2>&1) && falla "6 · con una vecina declarada y no hecha no falló: $s"
@@ -317,7 +317,7 @@ ok "6 · se niega: sin copia que conteste · declarada y no hecha (propia, y vec
 # nuevo, la historia se queda, y `ask` ve las 5.
 CAB=$(printf '{"metadata_location":"%s"}
 ' "$ML" | ore-store-r2 leer | head -1)
-MALA=$( { printf '{"dataset":"copias/ventas_pedidos","base":"%s","fundir":false,%s' "$ML" "${CAB#\{}"; echo; printf '{"id":"p1","pais":"ES","total":"10.50","unidades":"2"}
+MALA=$( { printf '{"dataset":"datasets/ventas_pedidos","base":"%s","fundir":false,%s' "$ML" "${CAB#\{}"; echo; printf '{"id":"p1","pais":"ES","total":"10.50","unidades":"2"}
 {"id":"p2","pais":"ES","total":"4.25","unidades":"1"}
 {"id":"p3","pais":"PT","total":"7","unidades":"3"}
 {"id":"p4","pais":"FR","total":"1.10","unidades":"1"}
@@ -325,22 +325,22 @@ MALA=$( { printf '{"dataset":"copias/ventas_pedidos","base":"%s","fundir":false,
 ML_MALA=$("$PY" -c 'import json,sys;print(json.loads(sys.argv[1])["metadata_location"])' "$MALA")
 [ -n "$ML_MALA" ] && [ "$ML_MALA" != "$ML" ] || falla "8 · la copia mala no se selló: $MALA"
 # el puntero pasa a nombrarla, como si el Job la hubiera confirmado
-"$PY" - "$A/copias/ventas_pedidos.json" "$ML_MALA" <<'EOF'
+"$PY" - "$A/datasets/ventas_pedidos.json" "$ML_MALA" <<'EOF'
 import json, sys
 p = json.load(open(sys.argv[1])); p["metadata_location"] = sys.argv[2]; p["filas"] = 4
 json.dump(p, open(sys.argv[1], "w"), indent=2)
 EOF
-salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · materialize"; }
+salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "8 · materialize"; }
 case "$salida" in *"ya está · $ML_MALA"*) ;; *) falla "8 · sin --rehacer tenía que decir «ya está» con la mala: $salida";; esac
 pregunta --vista ventas.pedidos > "$TMP/out.txt" || { cat "$TMP/err.txt"; falla "8 · ask con la mala"; }
 cumple "cab['copia']['metadata_location']=='$ML_MALA' and cab['filas']==4" "8 · ask sirve la copia que hay: 4 filas (la mentira)"
 salida=$("$ORE" materialize "$A" --seco --rehacer --vista ventas.pedidos 2>&1) || { echo "$salida"; falla "8 · --seco --rehacer"; }
 case "$salida" in *"se rehará entera"*) ;; *) falla "8 · --seco --rehacer no dijo que se rehará: $salida";; esac
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$ORE_R2_S3_ENDPOINT/copia/${ML_MALA#s3://copia/}")" = "200" ] || falla "8 · --seco tocó el almacén"
-salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · --rehacer"; }
+salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "8 · --rehacer"; }
 case "$salida" in *"rehecha: sobrescrita entera"*) ;; *) falla "8 · --rehacer no sobrescribió: $salida";; esac
 ML2=$(puntero metadata_location)
-"$PY" - "$A/copias/ventas_pedidos.json" "$ML_MALA" "$ML" <<'EOF' || falla "8 · el puntero de la rehecha"
+"$PY" - "$A/datasets/ventas_pedidos.json" "$ML_MALA" "$ML" <<'EOF' || falla "8 · el puntero de la rehecha"
 import json, sys
 i = json.load(open(sys.argv[1]))
 assert i["estado"] == "copiada" and i["rehecha"] is True and i["operacion"] == "sobrescrita", i
@@ -349,7 +349,7 @@ assert i["metadata_location"].split("/metadata/")[1].startswith("00002-"), i["me
 EOF
 # la historia se queda: el snapshot de la mentira sigue siendo legible tal cual
 n=$(printf '{"metadata_location":"%s"}\n' "$ML_MALA" | ore-store-r2 leer | grep -c '^{"id"'); [ "$n" = "4" ] || falla "8 · el snapshot anterior ya no se lee entero ($n)"
-salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8 · --rehacer otra vez"; }
+salida=$("$ORE" materialize "$A" --rehacer --vista ventas.pedidos --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "8 · --rehacer otra vez"; }
 case "$salida" in *"rehecha: sobrescrita entera"*) ;; *) falla "8 · rehacer otra vez tenía que sobrescribir otra vez: $salida";; esac
 [ "$(puntero metadata_location)" != "$ML2" ] || falla "8 · rehacer otra vez no movió el puntero"
 ML=$(puntero metadata_location)
@@ -384,9 +384,9 @@ spec:
   changes: { mode: append, witness: snapshot }
 Y
 "$ORE" validate "$A" >/dev/null 2>&1 || falla "8b · el árbol con el paquete nuevo no compila"
-salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/copias" 2>&1) || { echo "$salida"; falla "8b · materialize tras el paquete nuevo"; }
+salida=$("$ORE" materialize "$A" --vista ventas.pedidos --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "8b · materialize tras el paquete nuevo"; }
 case "$salida" in *"ya está · $ML"*) ;; *) falla "8b · otro paquete en el árbol cambió la cabecera de ventas.pedidos: $salida";; esac
-"$PY" - "$A/copias/ventas_pedidos.json" <<'EOF' || falla "8b · el informe no dice de qué árbol salió"
+"$PY" - "$A/datasets/ventas_pedidos.json" <<'EOF' || falla "8b · el informe no dice de qué árbol salió"
 import json, sys
 i = json.load(open(sys.argv[1]))
 assert i["estado"] == "al-dia" and i["bundle"].startswith("sha256:"), i
@@ -425,31 +425,42 @@ kill "$SRV" 2>/dev/null; SRV=""
 en_bucket() { curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=$1" | grep -c '<Key>'; }
 # un sobre heredado que nadie nombra, y un dataset de una vista que no existe
 curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v1/deadbeef" -d "bytes de nadie"
-curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v2/copias/nadie_nada/metadata/00000-x.metadata.json" -d "{}"
+curl -s -o /dev/null -X PUT "$ORE_R2_S3_ENDPOINT/copia/ore/v2/datasets/nadie_nada/metadata/00000-x.metadata.json" -d "{}"
 # y con --recoger DENTRO del dataset vigente: los snapshots superados (8 dejó
 # tres tras el vigente) se expiran y sus ficheros se van; el puntero se mueve al metadata nuevo
 # Sin edad —ni en la tabla ni en `ORE_RECOGER_EDAD`— no se expira nada (0031 §11
 # ⑥, W3.6c): aquí se pide expirar todo lo superado.
-salida=$(ORE_RECOGER_EDAD=0 "$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger con todo vigente"; }
+salida=$(ORE_RECOGER_EDAD=0 "$ORE" materialize "$A" --recoger --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger con todo vigente"; }
 case "$salida" in *"recogidos 3 snapshot(s) superado(s)"*) ;; *) falla "9 · tenía que expirar los 3 snapshots superados de pedidos: $salida";; esac
 case "$salida" in *"huérfanas: 1 dataset(s)"*"1 objeto(s) heredado(s)"*) ;; *) falla "9 · con todo vigente tenía que recoger 1 dataset huérfano y 1 heredado: $salida";; esac
 [ "$(en_bucket ore/v1/deadbeef)" = "0" ] || falla "9 · el sobre heredado sigue"
-[ "$(en_bucket ore/v2/copias/nadie_nada/)" = "0" ] || falla "9 · el dataset huérfano sigue"
+[ "$(en_bucket ore/v2/datasets/nadie_nada/)" = "0" ] || falla "9 · el dataset huérfano sigue"
 [ "$(puntero metadata_location)" != "$ML" ] || falla "9 · expirar tenía que mover el puntero a un metadata.json nuevo"
 ML=$(puntero metadata_location)
-[ "$(en_bucket ore/v2/copias/ventas_pedidos/data/)" = "1" ] || falla "9 · tras recoger tenía que quedar UN fichero de datos: $(en_bucket ore/v2/copias/ventas_pedidos/data/)"
+[ "$(en_bucket ore/v2/datasets/ventas_pedidos/data/)" = "1" ] || falla "9 · tras recoger tenía que quedar UN fichero de datos: $(en_bucket ore/v2/datasets/ventas_pedidos/data/)"
 pregunta --vista ventas.pedidos > "$TMP/out.txt" || { cat "$TMP/err.txt"; falla "9 · ask tras recoger"; }
 cumple "cab['copia']['metadata_location']=='$ML' and cab['filas']==5" "9 · ask sigue contestando las 5 tras recoger"
 # la vista deja de declarar copia (la entidad la respalda: quitarla rompería
 # OOS2018); para el almacén es lo mismo que si su base se hubiera retirado
-grep -v '^  materialized:' "$A/packages/ventas/views/pedidos.yaml" > "$TMP/pedidos.sin" && mv "$TMP/pedidos.sin" "$A/packages/ventas/views/pedidos.yaml"
-grep -q materialized "$A/packages/ventas/views/pedidos.yaml" && falla "9 · pedidos sigue declarando copia"
+# el dataset se retira y en su lugar queda la pregunta (una View con el mismo
+# plan), para que la entidad que lo respaldaba siga teniendo de dónde salir
+rm -f "$A/packages/ventas/datasets/pedidos.yaml"
+cat > "$A/packages/ventas/views/pedidos.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: pedidos, namespace: ventas }
+spec:
+  owner: team:data
+  from: { table: ventas.pedidos_t }
+  fields: { id: order_id, pais: pais, total: total, unidades: unidades }
+Y
+[ -f "$A/packages/ventas/datasets/pedidos.yaml" ] && falla "9 · pedidos sigue siendo un dataset"
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "9 · el árbol sin pedidos no compila: $(cd "$A" && "$ORE" validate . 2>&1 | grep -A1 '^error' | head -4)"
-salida=$("$ORE" materialize "$A" --recoger --informe "$A/copias" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger sin pedidos"; }
+salida=$("$ORE" materialize "$A" --recoger --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "9 · materialize --recoger sin pedidos"; }
 case "$salida" in *"huérfanas: 1 dataset(s)"*) ;; *) falla "9 · sin pedidos tenía que recoger 1 dataset huérfano: $salida";; esac
 case "$salida" in *"informe de \`ventas.pedidos\` retirado"*) ;; *) falla "9 · no retiró el puntero de la vista que ya no está: $salida";; esac
-[ ! -f "$A/copias/ventas_pedidos.json" ] || falla "9 · copias/ventas_pedidos.json sigue en el árbol"
-[ "$(en_bucket ore/v2/copias/ventas_pedidos/)" = "0" ] || falla "9 · el dataset de la vista retirada sigue en el almacén"
+[ ! -f "$A/datasets/ventas_pedidos.json" ] || falla "9 · datasets/ventas_pedidos.json sigue en el árbol"
+[ "$(en_bucket ore/v2/datasets/ventas_pedidos/)" = "0" ] || falla "9 · el dataset de la vista retirada sigue en el almacén"
 ok "9 · lo huérfano: con todo vigente, recoger expira los snapshots superados y borra lo que nadie nombra; retirada la vista, su dataset sale del almacén y su puntero del árbol"
 
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 la pregunta se contesta: 0\xe2\x80\x939\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

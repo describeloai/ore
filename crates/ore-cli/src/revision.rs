@@ -78,7 +78,9 @@ const RESPUESTAS: &str = "discover.answers.json";
 /// mismo: en un paquete descubierto con la versión anterior, la primera
 /// revisión retira los que quedaron. Sacarlo de aquí los dejaría al lado de las
 /// tablas que los sustituyen, diciendo lo mismo dos veces.
-const GOBERNADOS: [&str; 5] = ["entities", "bindings", "concepts", "tables", "views"];
+const GOBERNADOS: [&str; 6] = [
+    "entities", "bindings", "concepts", "tables", "views", "datasets",
+];
 
 pub struct Fallo {
     pub codigo: u8,
@@ -377,6 +379,23 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
                 continue;
             };
             let rel = format!("{dir}/{base}");
+            // 0033: en `datasets/` conviven los que el inductor emite (la copia
+            // de una tabla del alcance, `<X>__<objeto>.yaml` con `from`) y los
+            // que `write()` deja (escritos, sin `from`, con el nombre que el
+            // código eligió). Sólo se retiran los primeros: lo escrito no es
+            // del inductor y no se toca.
+            if dir == "datasets" {
+                let del_inductor = base.contains("__")
+                    && std::fs::read_to_string(&ruta)
+                        .ok()
+                        .and_then(|t| ore_core::parse::parse(&t).ok())
+                        .is_some_and(|n| {
+                            n.get("spec").is_some_and(|(_, s)| s.get("from").is_some())
+                        });
+                if !del_inductor {
+                    continue;
+                }
+            }
             if !nuevos.contains(&rel) {
                 std::fs::remove_file(&ruta).map_err(|e| {
                     fallo(

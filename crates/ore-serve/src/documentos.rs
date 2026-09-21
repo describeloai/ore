@@ -100,7 +100,9 @@ use ore_core::parse::{self, Node, Style};
 use ore_entrada::http::Respuesta;
 use std::path::{Path, PathBuf};
 
-const API: &str = "oos.dev/v1alpha8";
+// 0033: lo que se declara sin decir su version es de la version vigente, que
+// es la del dataset. Una View de v1alpha12 no admite `materialized`.
+const API: &str = "oos.dev/v1alpha12";
 
 /// Lo que cambia de un `kind` a otro, y es **todo** lo que cambia: dónde se
 /// escribe uno nuevo, qué exige el verbo antes de compilar, y con qué
@@ -164,6 +166,16 @@ pub(crate) const KINDS: &[Kind] = &[
         nombre: "TrainedModel",
         carpeta: "models",
         articulo: "el modelo entrenado",
+        exige: sin_exigencias,
+    },
+    // v1alpha12 (0033). Lo que se tiene: el dataset mantenido (`from`, y el
+    // sistema lo cumple) o escrito (`columns` + `changes`). `declare()` desde
+    // un puesto lo deja en `packages/<ns>/datasets/`; el compilador exige la
+    // forma (OOS1004), que `from` resuelva (OOS2018) y el conducto (OOS4011).
+    Kind {
+        nombre: "Dataset",
+        carpeta: "datasets",
+        articulo: "el dataset",
         exige: sin_exigencias,
     },
 ];

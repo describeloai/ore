@@ -320,40 +320,42 @@ impl Servidor {
         let Some((paquete, vista)) = over.split_once('.') else {
             return Respuesta::error(422, format!("`over: {over}` no es `<paquete>.<vista>`"));
         };
-        let dir_vistas = raiz.join("packages").join(paquete).join("views");
-        let declara = std::fs::read_dir(&dir_vistas)
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-            .filter_map(|t| parse::parse(&t).ok())
-            .any(|n| {
-                n.get("metadata")
-                    .and_then(|(_, m)| campo(m, "name"))
-                    .as_deref()
-                    == Some(vista)
-                    && n.get("spec")
-                        .and_then(|(_, s)| s.get("materialized"))
-                        .is_some()
-            });
-        if !declara {
+        // 0033: la copia de `over` es el primer dataset bajando por su cadena
+        // (ella misma incluida si es un dataset). Se mira con el compilador, que
+        // es quien sabe qué hay debajo; sin dataset no hay de dónde leer.
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        let doc = pkg.docs.iter().find(|d| {
+            matches!(
+                d.kind,
+                ore_core::document::Kind::View | ore_core::document::Kind::Dataset
+            ) && d.qname().as_deref() == Some(over.as_str())
+        });
+        let copia_qn = doc
+            .and_then(|d| ore_core::vistas::raiz_de_lectura(&pkg, d))
+            .and_then(|c| c.qname());
+        let Some(copia_qn) = copia_qn else {
             return Respuesta::error(
                 409,
                 format!(
-                    "`{over}` no declara copia: una función lee la copia, nunca el origen (0029 ③). Decide la copia primero"
+                    "`{over}` no tiene dataset debajo: una función lee la copia, nunca el origen (0029 ③). Decide la copia primero"
                 ),
             );
-        }
-        let informe = raiz.join("copias").join(format!("{paquete}_{vista}.json"));
+        };
+        let informe = raiz
+            .join("datasets")
+            .join(format!("{}.json", copia_qn.replace('.', "_")));
         let copia = std::fs::read_to_string(&informe)
             .ok()
             .and_then(|t| parse::parse(&t).ok());
+        // Con qué se lee: el `metadata_location` del dataset o, mientras quede
+        // alguno, la `clave` de un sobre heredado.
         let clave = copia.as_ref().and_then(|n| {
             let estado = campo(n, "estado").unwrap_or_default();
-            campo(n, "clave")
+            campo(n, "metadata_location")
+                .or_else(|| campo(n, "clave"))
                 .filter(|c| !c.is_empty() && matches!(estado.as_str(), "copiada" | "al-dia"))
         });
+        let _ = (paquete, vista);
         let Some(clave) = clave else {
             let estado = copia
                 .as_ref()

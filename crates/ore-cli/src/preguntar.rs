@@ -9,7 +9,7 @@
 //! |---|---|---|
 //! | 1 | compilar la vista: el plan, con identidad | `ore` (`vista::cuerpo`, el catálogo expande la cadena) |
 //! | 2 | decidir quién contesta: de las copias registradas, cuál sirve este plan y con qué compensación | `ore` (View Matcher, `registro::cotejos`) |
-//! | 3 | traer la copia por su nombre | `ore-store-<r2\|gcs> leer` (el nombre lo dejó `copias/<paquete>_<vista>.json`) |
+//! | 3 | traer la copia por su nombre | `ore-store-<r2\|gcs> leer` (el nombre lo dejó `datasets/<paquete>_<nombre>.json`) |
 //! | 4 | tipar las filas por la cabecera | `ore-view::hoja` |
 //! | 5 | ejecutar el plan reescrito sobre ellas | `ore-view::delta_compiler::recomputar` |
 //!
@@ -80,16 +80,23 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         return Err((66, format!("`{}` no es un directorio", path.display())));
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(path);
+    // Se pregunta a una vista, o a un dataset (0033): los dos tienen plan.
     let v: &Loaded = pkg
         .docs
         .iter()
         .find(|d| {
-            d.kind == ore_core::document::Kind::View && d.qname().as_deref() == Some(op.vista)
+            matches!(
+                d.kind,
+                ore_core::document::Kind::View | ore_core::document::Kind::Dataset
+            ) && d.qname().as_deref() == Some(op.vista)
         })
         .ok_or_else(|| {
             (
                 65,
-                format!("no hay ninguna `View` `{}` en el árbol", op.vista),
+                format!(
+                    "no hay ninguna `View` ni `Dataset` `{}` en el árbol",
+                    op.vista
+                ),
             )
         })?;
     let mio = crate::materializar::paquete_del_fichero(path, &v.path);
@@ -231,7 +238,7 @@ fn elegir(
             format!(
                 "ninguna copia hecha contesta a `{vista}`:
 {}
-  Copia (ore materialize --informe copias) y vuelve a preguntar",
+  Copia (ore materialize) y vuelve a preguntar",
                 sin_hacer.join(
                     "
 "
@@ -240,7 +247,7 @@ fn elegir(
         ));
     }
     let mut msg = format!(
-        "ninguna copia contesta a `{vista}`: la vista no declara `materialized`, y ninguna copia registrada sirve su plan"
+        "ningún dataset contesta a `{vista}`: no hay un dataset en su cadena, y ninguno de los registrados sirve su plan"
     );
     for (n, r) in &cotejos {
         if let Err(e) = r {
@@ -259,7 +266,7 @@ fn elegir(
     }
     msg.push_str(
         "
-  Declara `materialized` en la vista, o en una que la implique, y copia (ore materialize)",
+  Declara un `Dataset` con `from` sobre ella —o sobre una que la implique— y copia (ore materialize)",
     );
     Err((65, msg))
 }

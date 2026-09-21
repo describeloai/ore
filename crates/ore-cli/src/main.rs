@@ -436,8 +436,8 @@ enum Command {
         #[arg(long = "only-file", value_name = "FICHERO")]
         solo_de: Option<PathBuf>,
         /// **La clase de la base** (ORE 0027 P1 I4): `standard` copia a la celda
-        /// todo lo que entra —cada vista cuya tabla tiene clave sale con
-        /// `materialized`—; `foreign` (lo de siempre, y lo que se entiende si
+        /// todo lo que entra —cada tabla sale con su `Dataset` (0033)—;
+        /// `foreign` (lo de siempre, y lo que se entiende si
         /// falta) es un espejo. Pide un alcance (`--only`): una base es lo que
         /// se elige.
         #[arg(long = "type", value_name = "standard|foreign")]
@@ -644,7 +644,7 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Puebla las vistas `materialized`: el ciclo entero del ADR 0015.
+    /// Puebla los datasets mantenidos (0033): el ciclo entero del ADR 0015.
     ///
     /// Compila el plan, comprueba el flujo, pregunta al almacen si la copia ya
     /// esta —y si esta, **no lee ni una fila del origen**—, y si no, canaliza

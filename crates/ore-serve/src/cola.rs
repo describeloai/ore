@@ -113,7 +113,7 @@ pub const PLANTILLA_COPIA: &str = "plantilla-copia.txt";
 const VISTAS_MODELO: &str = "olist.customers";
 
 /// Rinde el Job de la copia con la lista de vistas —`paquete.vista`, las que
-/// declaran `materialized` en todo el árbol— y el resumen del contenido en el
+/// son datasets mantenidos en todo el árbol (0033)— y el resumen del contenido en el
 /// nombre. Es lo mismo que hace `gen-inquilino.py` con `--copias`, y por eso el
 /// fichero se llama igual: dos rendidos de la misma lista son el mismo Job.
 pub fn rendir_copia(plantilla: &str, vistas: &[String]) -> Result<(String, String), String> {

@@ -176,7 +176,7 @@ impl Servidor {
         let Some(vista) = vista else {
             return Json::obj([("estado", Json::s("desconocido"))]);
         };
-        let fichero_informe = format!("copias/{}.json", vista.replace('.', "_"));
+        let fichero_informe = format!("datasets/{}.json", vista.replace('.', "_"));
         let informe = std::fs::read_to_string(raiz.join(&fichero_informe))
             .ok()
             .and_then(|t| ore_core::parse::parse(&t).ok());
