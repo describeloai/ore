@@ -96,9 +96,12 @@ spec:
 - Con `from` es un dataset **mantenido**: el documento lleva el plan y el sistema lo cumple
   (la copia con plan; fuera: la *materialized view* de Databricks, la *dynamic table* de
   Snowflake, el modelo `table`/`incremental` de dbt). La costura del gobierno y el refresco viven
-  aquí. `from` nombra una `Table` **o otro `Dataset`** (una copia derivada de una copia, que es lo
-  que un transform hace). `freshness` (cada cuánto se cumple el plan; el *target lag*) y
-  `changes` (**cómo se refresca**: `mode`, `key`, `witness`) son suyos, como hoy de la View.
+  aquí. `from` nombra una `Table`, **una `View`** (sus filas guardadas: la pregunta sigue siendo
+  la vista, y es la migración directa de `View + materialized` sin fundir el plan) **o otro
+  `Dataset`** (una copia derivada de una copia, que es lo que un transform hace). `freshness`
+  (cada cuánto se cumple el plan; el *target lag*) es suyo, como hoy de la View. `changes` **no
+  lo lleva**: lo deriva de su raíz (`mode` y `key` los de ella, `witness: snapshot`), igual que
+  hoy la View no lo lleva y el refresco lo lee de la `Table` raíz (v1alpha8 `OOS2024`).
 - Sin `from` es un dataset **escrito**: lo llena código (`write()`, un transform, un trabajo) y
   el sistema registra lo que llegó. Su esquema (`columns`) **sigue a la tabla Iceberg** —nace
   con la primera escritura, cambia cuando ella cambia, y lo que se le añada a mano (descripción,
@@ -124,16 +127,19 @@ spec:
   calidad**: las reglas son un `Ruleset` que apunta al dataset (0034 ③, Rules), como los *asset
   checks* de Dagster viven al lado del asset y no dentro. **Sí `owner`** (obligatorio) y
   `description`: quién responde y qué es.
-- `retention` (**opcional**, `{age, min}`): la decisión de cuánta historia se guarda, que hoy
-  vive sólo en las propiedades de la tabla (`history.expire.*`, `--retencion`) y que es del
-  documento por la misma razón que `freshness`: es una decisión, no un estado. Sin ella, la
-  del inquilino.
+- `history` (**opcional**, `{maxAge, minSnapshots}`; no `retention`, que en `Table.changes`
+  ya significa otra cosa): la decisión de cuánta historia se guarda, que hoy vive sólo en las
+  propiedades de la tabla (`history.expire.*`, `--retencion`) y que es del documento por la
+  misma razón que `freshness`: es una decisión, no un estado. Sin ella, la del inquilino.
 
 > ### ② `View` vuelve a ser sólo la pregunta; `Entity` se respalda en una View **o en un Dataset**.
 
 `View.from` y `Entity.backedBy` admiten `dataset`. `View.materialized` **se retira** como se
-retiró `Binding`: un documento que lo declare en v1alpha12 es `OOS1003` con el remedio dicho
-(«esto es un `Dataset`»); en versiones anteriores sigue compilando, acotado y con fin.
+retiró `Binding`: un documento que lo declare en v1alpha12 es `OOS1005` —una clave que no es
+de aquí— con el remedio dicho («esto es un `Dataset` con `from: { view }`»); en versiones
+anteriores sigue compilando, acotado y con fin. Escrito: `vendor/oos/spec/v1alpha12/`
+(`00-scope`, `01-dataset`, `02-la-vista-y-la-entidad`) y `schemas/v1alpha12/dataset.schema.json`
+(21 documentos de prueba, 5 que acepta y 16 que niega, contra el schema).
 
 > ### ③ La `Table` no cambia. Una base *standard* es Tables + Datasets; una *foreign*, Tables.
 
