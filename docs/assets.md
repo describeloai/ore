@@ -82,8 +82,8 @@ tres primeros alimentan `acceso`; el último, `paquetes[].source/type`).
   `interface:`, `concept:`, `function:`, `action:`, `trainedmodel:`, `model:`).
 - Del documento: `kind`, `namespace`, `name`, `displayName` (`x-rubix-displayName` si está),
   `description`, `owner`, `labels` (`metadata.labels`), `ruta`.
-- Derivado: `paquete`, `carpeta` (⑤ 6: entre `packages/<p>/` y el fichero, quitando la carpeta
-  del kind si es la primera), `version` (**no** en ore-core: lo pone ore-serve desde
+- Derivado: `paquete`, `carpeta` (⑤ 6: entre `packages/<p>/` y el fichero, quitando las carpetas
+  del kind estén donde estén), `version` (**no** en ore-core: lo pone ore-serve desde
   `/arbol/historia`, ver D6).
 
 **D2 · `define` y `expone`.** Para lo que tiene plan (View, Dataset mantenido):
@@ -190,7 +190,7 @@ workspace lo abra por la misma puerta que los demás. Test en `los-documentos.sh
 | paso | qué | hecho cuando |
 |---|---|---|
 | **0** | la forma, medida: los oráculos de demo y victor | **hecho** 2026-09-21: la tabla en §0; decisión 3 comprobada (schema = carpeta con `README.md`) |
-| **1** | `ore_core::assets::indice` + `ore assets --json` | tests verdes; los oráculos cuadran; workspace verde |
+| **1** | `ore_core::assets::indice` + `ore assets --json` | **hecho** 2026-09-21: `crates/ore-core/src/assets.rs` (D1–D5, D7; D6 `version: null` para ore-serve) y `crates/ore-cli/src/activos.rs`; test `tests/assets.rs` sobre un árbol de fuego con los 10 kinds, las 9 relaciones en las dos direcciones, una carpeta del cliente, una vista inducida, un enlace roto (`rota: true`), dos punteros y la clasificación por columna. Los oráculos cuadran: demo **17 ítems** (25 − 8 inducidas), 12 relaciones (6×2), identidad 4 (3 datasets + la vista sobre su dataset), 8 tablas con `vistaInducida`; victor **58** (77 − 19), 38 (19×2), 19, 19. `ore assets --json`: demo 14 KB / 304 ms, victor 70 KB / 355 ms en local (cargar + proyectar, proceso incluido). Lo que salió: la carpeta del kind se quita **esté donde esté** (`espana/views/x.yaml` es el schema `espana`), no sólo si es la primera; una propiedad nombra su concepto con `is:`, no `concept:`; `trainedFrom` es una lista; una Action escribe por `sets[].writes`. La clasificación efectiva de la raíz (`etiquetas_de_raiz`) sigue en ore-cli: el índice sube las labels del documento, de las columnas que usa y (Entity) las efectivas por propiedad, que es lo que tiene sentido por ítem |
 | **2** | `GET /assets` con caché por cabeza | test de ore-serve; `plano-de-control` con el caso; CI verde |
 | **3** | la medida viva | frío/caliente/bytes en 0034; `identidad`, `sale_de`, `vistaInducida` comprobados en victor |
 | **4** | la consola sobre el índice | el catálogo se pinta de una llamada; `comoDatabase` fuera; fichas por kind; `tsc` limpio |

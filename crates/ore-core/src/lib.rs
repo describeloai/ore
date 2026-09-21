@@ -28,6 +28,7 @@
 
 pub mod actuar;
 pub mod aristas;
+pub mod assets;
 pub mod cache;
 pub mod canonical;
 pub mod cedar;

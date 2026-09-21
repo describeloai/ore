@@ -7,6 +7,7 @@
 //! delegan son `discover --source`, `lock` y `pack --sign/--log` — y ninguno de
 //! los tres abre el socket: lo abre el programa que llaman.
 
+mod activos;
 mod alcance;
 mod autoria;
 mod cache;
@@ -728,6 +729,16 @@ enum Command {
         #[arg(long)]
         seco: bool,
     },
+    /// El indice de assets del arbol (0034): cada documento como un item
+    /// (`kind:namespace.name`) con su carpeta, lo que define y expone, su
+    /// puntero, sus relaciones en las dos direcciones y su acceso. Es lo que
+    /// el catalogo de la consola lee; `--json` es el indice entero.
+    Assets {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Un arbol de antes pasa a despues (0033 §4): `ore migrate v1alpha12 .`
     /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
     /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
@@ -926,6 +937,9 @@ fn main() -> std::process::ExitCode {
                     seco: *seco,
                 },
             );
+        }
+        Command::Assets { path, json } => {
+            return activos::assets(path, &activos::Opciones { json: *json });
         }
         Command::Migrate {
             version,
@@ -1213,6 +1227,7 @@ fn main() -> std::process::ExitCode {
         | Command::Invoke { .. }
         | Command::Datasets { .. }
         | Command::Migrate { .. }
+        | Command::Assets { .. }
         | Command::Ask { .. }
         | Command::Review { .. }
         | Command::Model { .. }
