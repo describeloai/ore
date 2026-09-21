@@ -103,6 +103,11 @@ pub const PROP_OPERACION: &str = "ore.operacion";
 /// El modo de la escritura, en el resumen del snapshot (`upsert` es el que
 /// cambia algo: el catálogo declara la clave en la `Table`).
 pub const PROP_MODO: &str = "ore.modo";
+/// La procedencia de lo escrito (0031 W3.7 ③): de qué salió —`inputs` (lo
+/// que un transform declaró) o `leidas` (lo que la sesión leyó)—, qué código
+/// y desde qué puesto. JSON canónico en una sola propiedad del resumen: el
+/// resumen de un snapshot es `string → string`, y esto es un objeto.
+pub const PROP_PROCEDENCIA: &str = "ore.procedencia";
 /// Las columnas que identifican una fila (`modo: upsert`), separadas por
 /// comas: en el resumen del snapshot que las usó y como propiedad de la
 /// tabla, para que la siguiente escritura no tenga que repetirlas.

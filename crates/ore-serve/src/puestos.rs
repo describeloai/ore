@@ -677,9 +677,23 @@ impl Servidor {
             return Respuesta::error(422, m);
         }
         let (ns, nombre, vista) = (ns.to_string(), nombre.to_string(), vista.to_string());
-        self.leyendo_en(rama.as_deref(), move |raiz| {
-            datos_de(raiz, &ns, &nombre, &vista)
-        })
+        let r = self.leyendo_en(rama.as_deref(), |raiz| datos_de(raiz, &ns, &nombre, &vista));
+        // **El fallback de rama** (0031 §4, W3.7 ③): una rama lee las copias
+        // de `main` mientras no tenga las suyas. Lo que la rama no tiene —ni
+        // el documento (404) ni el dataset (409)— se busca en `main`, y la
+        // respuesta lo dice (`rama: main`); lo que la rama sí tiene manda.
+        // Medido antes: sin esto, lo que `main` ganaba tras abrir la rama era
+        // «no hay ninguna View» desde ella.
+        if rama.is_some() && matches!(r.codigo, 404 | 409) {
+            let mut de_main = self.leyendo_en(None, |raiz| datos_de(raiz, &ns, &nombre, &vista));
+            if de_main.codigo == 200 {
+                if let Json::Obj(m) = &mut de_main.cuerpo {
+                    m.insert("rama".into(), Json::s("main"));
+                }
+                return de_main;
+            }
+        }
+        r
     }
 
     /// **Quién escribe desde un puesto** (0031 §11): el agente pide en nombre

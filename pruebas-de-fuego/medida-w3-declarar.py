@@ -348,7 +348,7 @@ def local(tmp, procs):
         p = json.load(open(m + "/datasets/ventas_salida.json"))
         fila("el puntero de ventas.salida", "%d claves" % len(p), ", ".join(sorted(p)))
         c, r = pide(base, "GET", "/datasets/ventas/salida")
-        fila("la ficha", "", "de qué salió: %s · conducto: %s" % (r.get("origen", "no lo dice"), r.get("conducto", "no lo dice")))
+        fila("la ficha", "", "de qué salió: %s · conducto: %s" % (json.dumps(r.get("procedencia")) if r.get("procedencia") else "no lo dice", r.get("conducto", "no lo dice")))
         r = subprocess.run([STORE, "metadatos"], input=json.dumps({"metadata_location": p["metadata_location"]}) + "\n", capture_output=True, text=True, encoding="utf-8", env=env)
         props = json.loads(r.stdout).get("properties", {}) if r.returncode == 0 else {}
         fila("las propiedades de la tabla Iceberg", "%d" % len(props), ", ".join(sorted(props))[:100])

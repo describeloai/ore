@@ -744,6 +744,13 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         })
         .unwrap_or_default();
     let semilla = campo("semilla").unwrap_or_default();
+    // La procedencia va al resumen del snapshot tal cual llegó (JCS): es del
+    // que escribe, y el catálogo la lleva al puntero sin interpretarla.
+    let procedencia = n
+        .get("procedencia")
+        .filter(|p| p.is_object())
+        .and_then(|p| ore_core::parse::parse(&p.to_string()).ok())
+        .map(|p| Json::de_node(&p).jcs());
     let clave_pedida = campo("operacion");
     let propiedades: HashMap<String, String> = n
         .get("propiedades")
@@ -931,6 +938,9 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     if modo == "upsert" {
         resumen.insert(lago::PROP_MODO.to_string(), modo.clone());
         resumen.insert(lago::PROP_CLAVE.to_string(), clave_upsert.join(","));
+    }
+    if let Some(p) = &procedencia {
+        resumen.insert(lago::PROP_PROCEDENCIA.to_string(), p.clone());
     }
     let mut p = lago.preparar(&tabla, deseado, lotes, operacion, resumen)?;
     // La clave queda declarada en la tabla, para la siguiente escritura.
@@ -1326,6 +1336,14 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                     ("retiradas", n("deleted-records")),
                     ("plan", prop(lago::PROP_PLAN)),
                     ("idempotencia", prop(lago::PROP_OPERACION)),
+                    // De qué salió, si quien escribió lo dijo (W3.7 ③).
+                    (
+                        "procedencia",
+                        p.get(lago::PROP_PROCEDENCIA)
+                            .and_then(|s| ore_core::parse::parse(s).ok())
+                            .map(|n| Json::de_node(&n))
+                            .unwrap_or_else(|| Json::obj([])),
+                    ),
                     (
                         "testigo",
                         Json::obj([

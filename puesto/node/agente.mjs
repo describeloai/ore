@@ -94,7 +94,7 @@ class Kernel {
     this.pendiente = null;
     this.repl._domain.removeAllListeners("error");
     this.repl._domain.on("error", (e) => { const p = this.pendiente; this.pendiente = null; if (p) p({ e }); });
-    Object.assign(this.repl.context, { ore, over: ore.over, sql: ore.sql, write: ore.write, declare: ore.declare, persona: ore.persona });
+    Object.assign(this.repl.context, { ore, over: ore.over, sql: ore.sql, write: ore.write, declare: ore.declare, transform: ore.transform, persona: ore.persona });
     // Las celdas-módulo viven en /trabajo/celdas y resuelven `ore` por este enlace.
     this.celdas = null;
     try {

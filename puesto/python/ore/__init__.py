@@ -54,6 +54,15 @@ lo que la escritura añade de malo). El commit lo firma **quien abrió el puesto
 y va a **su rama** si el puesto tiene una. `documento` es el YAML tal cual (str) o
 un dict `{kind, metadata, spec}`. Devuelve `{kind, nombre, fichero, commit, nueva}`;
 un 422 es `ValueError` con los diagnósticos.
+
+**Un transform** (0031 §9, W3.7 ③): `@transform(inputs=["p.a", "p.b"], output="p.c")`
+sobre una función. Dentro, `over()`/`sql()` de algo que no está en `inputs` y `write()`
+a algo que no es `output` son `PermissionError`: lo declarado es lo único que el
+código puede leer y escribir. Y lo que `write()` deja lleva su **procedencia** en el
+snapshot y en el puntero: `{inputs, transform, codigo?, puesto}` dentro de un
+transform, o `{leidas, puesto}` fuera (lo que la sesión leyó hasta ese momento). Es
+el linaje `salida ← código ← inputs`, escrito por quien lo produjo. `codigo` viene de
+`ORE_CODIGO` (`<ruta>@<commit>`), que `ore run` pone.
 """
 import io
 import json
@@ -63,7 +72,7 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "write", "declare", "persona", "puesto", "tabla", "json_de"]
+__all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de"]
 
 
 class Puesto:
@@ -192,15 +201,76 @@ def _desenvolver(crudo):
     return cabecera, crudo[12 + n:]
 
 
+# Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
+_leidas = []
+_transform = None
+
+
+class _Transform:
+    def __init__(self, nombre, inputs, output):
+        self.nombre, self.inputs, self.output = nombre, list(inputs), output
+
+
+def transform(inputs, output):
+    """`@transform(inputs=[…], output="p.t")`: lo declarado es lo único que la
+    función puede leer (`over`, `sql`) y escribir (`write`); lo demás es
+    `PermissionError`. Lo escrito lleva `procedencia: {inputs, transform, …}`."""
+    if isinstance(inputs, str) or not all(isinstance(i, str) and i.count(".") == 1 for i in inputs):
+        raise ValueError("transform(): `inputs` es una lista de `<paquete>.<vista>`")
+    if not isinstance(output, str) or output.count(".") != 1:
+        raise ValueError("transform(): `output` es `<paquete>.<tabla>`")
+    if output in inputs:
+        raise ValueError("transform(): `%s` no puede ser input y output a la vez" % output)
+
+    def decora(f):
+        import functools
+
+        @functools.wraps(f)
+        def corre(*a, **kw):
+            global _transform
+            if _transform is not None:
+                raise RuntimeError("transform(): `%s` ya está corriendo; un transform no llama a otro" % _transform.nombre)
+            _transform = _Transform(getattr(f, "__name__", "transform"), inputs, output)
+            try:
+                return f(*a, **kw)
+            finally:
+                _transform = None
+        corre.inputs, corre.output = list(inputs), output
+        return corre
+    return decora
+
+
+def _lee(vista):
+    """Anota una lectura, y dentro de un transform la acota a sus `inputs`."""
+    if _transform is not None and vista not in _transform.inputs:
+        raise PermissionError("`%s` no está en los inputs de `%s` (%s): un transform sólo lee lo que declara" % (vista, _transform.nombre, ", ".join(_transform.inputs)))
+    if vista not in _leidas:
+        _leidas.append(vista)
+
+
+def _procedencia():
+    """Lo que `write()` deja dicho de sí: de qué salió, qué código, desde qué puesto."""
+    p = {"puesto": puesto.id}
+    if _transform is not None:
+        p["inputs"] = sorted(_transform.inputs)
+        p["transform"] = _transform.nombre
+    else:
+        p["leidas"] = sorted(_leidas)
+    if os.environ.get("ORE_CODIGO"):
+        p["codigo"] = os.environ["ORE_CODIGO"]
+    return p
+
+
 def _resolver(vista):
     """Qué copia es `<paquete>.<vista>`, según ore-serve (en nombre de la persona)."""
     if not isinstance(vista, str) or vista.count(".") != 1:
         raise ValueError("se quiere `<paquete>.<vista>`, no %r" % (vista,))
+    _lee(vista)
     codigo, r = puesto.pedir("GET", "/puestos/%s/datos/%s" % (puesto.id, vista))
     if codigo == 409:
         raise RuntimeError("la copia de `%s` no está hecha: %s" % (vista, (r or {}).get("error", "")))
     if codigo == 404:
-        raise LookupError("no hay ninguna `View` `%s` en el árbol" % vista)
+        raise LookupError("no hay ninguna `View` ni `Table` del lago `%s` en el árbol" % vista)
     if codigo != 200:
         raise RuntimeError("ore-serve contestó %s por `%s`: %s" % (codigo, vista, (r or {}).get("error", r)))
     return r
@@ -516,6 +586,8 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     if clave is not None and modo != "upsert":
         raise ValueError("`clave` es de modo=\"upsert\"")
     clave_upsert = list(clave) if clave else None
+    if _transform is not None and nombre != _transform.output:
+        raise PermissionError("`%s` no es el output de `%s` (%s): un transform sólo escribe lo que declara" % (nombre, _transform.nombre, _transform.output))
     ns, t = nombre.split(".")
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
@@ -548,7 +620,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
         if config.get("s3.access-key-id"):
             _s3 = config
         binario, env = _ore_store(config, ubicacion)
-        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla}
+        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia()}
         if clave_upsert:
             peticion["clave"] = clave_upsert
         if base:

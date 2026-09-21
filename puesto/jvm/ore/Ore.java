@@ -201,12 +201,43 @@ public final class Ore {
         return carga;
     }
 
+    // Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
+    private static final List<String> leidas = new ArrayList<>();
+    private record Transform(String nombre, List<String> inputs, String output) {}
+    private static Transform transformActivo = null;
+
+    /** Un transform (0031 §9, W3.7 ③): corre {@code cuerpo} con {@code inputs} como lo único que puede leer ({@code over}, {@code sql}) y {@code output} como lo único que puede escribir ({@code write}); lo demás lanza. Lo escrito lleva {@code procedencia: {inputs, transform, …}}. */
+    public static <T> T transform(String nombre, List<String> inputs, String output, java.util.concurrent.Callable<T> cuerpo) throws Exception {
+        if (inputs == null || inputs.stream().anyMatch(i -> i == null || i.chars().filter(c -> c == '.').count() != 1)) throw new IllegalArgumentException("transform(): `inputs` es una lista de `<paquete>.<vista>`");
+        if (output == null || output.chars().filter(c -> c == '.').count() != 1) throw new IllegalArgumentException("transform(): `output` es `<paquete>.<tabla>`");
+        if (inputs.contains(output)) throw new IllegalArgumentException("transform(): `" + output + "` no puede ser input y output a la vez");
+        if (transformActivo != null) throw new IllegalStateException("transform(): `" + transformActivo.nombre() + "` ya está corriendo; un transform no llama a otro");
+        transformActivo = new Transform(nombre == null || nombre.isEmpty() ? "transform" : nombre, List.copyOf(inputs), output);
+        try { return cuerpo.call(); } finally { transformActivo = null; }
+    }
+
+    private static void lee(String vista) {
+        if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` no está en los inputs de `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): un transform sólo lee lo que declara");
+        if (!leidas.contains(vista)) leidas.add(vista);
+    }
+
+    private static Map<String, Object> procedencia() {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("puesto", puesto.id);
+        if (transformActivo != null) { p.put("inputs", transformActivo.inputs().stream().sorted().toList()); p.put("transform", transformActivo.nombre()); }
+        else p.put("leidas", leidas.stream().sorted().toList());
+        String codigo = System.getenv("ORE_CODIGO");
+        if (codigo != null && !codigo.isEmpty()) p.put("codigo", codigo);
+        return p;
+    }
+
     private static Map<String, Object> resolver(String vista) throws IOException, InterruptedException {
         if (vista == null || vista.chars().filter(c -> c == '.').count() != 1)
             throw new IllegalArgumentException("se quiere `<paquete>.<vista>`, no " + vista);
+        lee(vista);
         Respuesta r = puesto.pedir("GET", "/puestos/" + puesto.id + "/datos/" + vista, null, Duration.ofSeconds(30));
         if (r.codigo() == 409) throw new IllegalStateException("la copia de `" + vista + "` no está hecha: " + r.error());
-        if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` `" + vista + "` en el árbol");
+        if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` ni `Table` del lago `" + vista + "` en el árbol");
         if (r.codigo() != 200) throw new IOException("ore-serve contestó " + r.codigo() + " por `" + vista + "`: " + r.error());
         return r.cuerpo();
     }
@@ -680,6 +711,7 @@ public final class Ore {
         Map<String, Object> esquema = new LinkedHashMap<>();
         esquema.put("type", "struct"); esquema.put("schema-id", 0); esquema.put("fields", campos);
         String dataset = "datasets/" + ns + "_" + t;
+        if (transformActivo != null && !nombre.equals(transformActivo.output())) throw new IllegalStateException("`" + nombre + "` no es el output de `" + transformActivo.nombre() + "` (" + transformActivo.output() + "): un transform sólo escribe lo que declara");
         String semilla = nombre + "|" + modo + (clave != null && !clave.isEmpty() ? "|" + String.join(",", clave) : "");
         String claveOperacion = "";
         for (int intento = 0; intento < 4; intento++) {
@@ -704,7 +736,7 @@ public final class Ore {
             if (config.get("s3.access-key-id") != null) s3 = config;
             // 2 · los ficheros, por ore-store
             Map<String, Object> peticion = new LinkedHashMap<>();
-            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla);
+            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla); peticion.put("procedencia", procedencia());
             if (clave != null && !clave.isEmpty()) peticion.put("clave", clave);
             if (base != null) peticion.put("base", base); else peticion.put("esbozo", esbozo);
             Process proc = escritor(config, ubicacion).start();

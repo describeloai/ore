@@ -157,11 +157,50 @@ function desenvolver(crudo) {
   return { cabecera: JSON.parse(crudo.subarray(12, 12 + n).toString("utf8")), carga: crudo.subarray(12 + n) };
 }
 
+// Lo que la sesión leyó (por nombre), y el transform activo si lo hay.
+const leidas = [];
+let transformActivo = null;
+
+/**
+ * `transform({ inputs, output }, fn)` (0031 §9, W3.7 ③): devuelve una función que
+ * corre `fn` con lo declarado como lo único que puede leer (`over`, `sql`) y
+ * escribir (`write`); lo demás lanza. Lo escrito lleva `procedencia: {inputs,
+ * transform, …}`.
+ */
+export function transform({ inputs, output }, fn) {
+  if (!Array.isArray(inputs) || !inputs.every((i) => typeof i === "string" && i.split(".").length === 2)) throw new Error("transform(): `inputs` es una lista de `<paquete>.<vista>`");
+  if (typeof output !== "string" || output.split(".").length !== 2) throw new Error("transform(): `output` es `<paquete>.<tabla>`");
+  if (inputs.includes(output)) throw new Error(`transform(): \`${output}\` no puede ser input y output a la vez`);
+  if (typeof fn !== "function") throw new Error("transform(): quiere una función");
+  const nombre = fn.name || "transform";
+  const corre = async (...a) => {
+    if (transformActivo) throw new Error(`transform(): \`${transformActivo.nombre}\` ya está corriendo; un transform no llama a otro`);
+    transformActivo = { nombre, inputs: [...inputs], output };
+    try { return await fn(...a); } finally { transformActivo = null; }
+  };
+  corre.inputs = [...inputs]; corre.output = output;
+  return corre;
+}
+
+function lee(vista) {
+  if (transformActivo && !transformActivo.inputs.includes(vista)) throw new Error(`\`${vista}\` no está en los inputs de \`${transformActivo.nombre}\` (${transformActivo.inputs.join(", ")}): un transform sólo lee lo que declara`);
+  if (!leidas.includes(vista)) leidas.push(vista);
+}
+
+function procedencia() {
+  const p = { puesto: puesto.id };
+  if (transformActivo) { p.inputs = [...transformActivo.inputs].sort(); p.transform = transformActivo.nombre; }
+  else p.leidas = [...leidas].sort();
+  if (process.env.ORE_CODIGO) p.codigo = process.env.ORE_CODIGO;
+  return p;
+}
+
 async function resolver(vista) {
   if (typeof vista !== "string" || vista.split(".").length !== 2) throw new Error(`se quiere \`<paquete>.<vista>\`, no ${JSON.stringify(vista)}`);
+  lee(vista);
   const [codigo, r] = await puesto.pedir("GET", `/puestos/${puesto.id}/datos/${vista}`);
   if (codigo === 409) throw new Error(`la copia de \`${vista}\` no está hecha: ${r?.error ?? ""}`);
-  if (codigo === 404) throw new Error(`no hay ninguna \`View\` \`${vista}\` en el árbol`);
+  if (codigo === 404) throw new Error(`no hay ninguna \`View\` ni \`Table\` del lago \`${vista}\` en el árbol`);
   if (codigo !== 200) throw new Error(`ore-serve contestó ${codigo} por \`${vista}\`: ${r?.error ?? JSON.stringify(r)}`);
   return r;
 }
@@ -499,6 +538,7 @@ export async function write(nombre, datos, o) {
   const esquema = { type: "struct", "schema-id": 0, fields: nombres.map((n, i) => ({ id: i + 1, name: n, type: tipoIceberg(n, tipos[n]), required: false })) };
   const parquet = await parquetDe_(nombres, tipos, columnas);
   const dataset = `datasets/${ns}_${t}`;
+  if (transformActivo && nombre !== transformActivo.output) throw new Error(`\`${nombre}\` no es el output de \`${transformActivo.nombre}\` (${transformActivo.output}): un transform sólo escribe lo que declara`);
   const semilla = `${nombre}|${modo}` + (clave?.length ? `|${clave.join(",")}` : "");
   const cargar = async () => {
     const [c, r] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
@@ -516,7 +556,7 @@ export async function write(nombre, datos, o) {
     const { base, esbozo, config, ubicacion } = await cargar();
     if (config["s3.access-key-id"]) s3 = config;
     const { binario, env } = escritor(config, ubicacion);
-    const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla };
+    const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla, procedencia: procedencia() };
     if (clave?.length) peticion.clave = clave;
     if (base) peticion.base = base; else peticion.esbozo = esbozo;
     const p = spawnSync(binario, ["escribir"], { input: Buffer.concat([Buffer.from(JSON.stringify(peticion) + "\n"), parquet]), env, maxBuffer: 1 << 26 });

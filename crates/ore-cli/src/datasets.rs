@@ -955,6 +955,26 @@ impl Cambio<'_> {
             })
             .next_back()
     }
+    /// La procedencia (`ore.procedencia` en el resumen del snapshot, JSON):
+    /// de qué salió lo escrito, según quien lo escribió (W3.7 ③).
+    fn procedencia(&self) -> Option<Json> {
+        self.nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                let m = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
+                let p = m.get("ore.procedencia").and_then(|(_, v)| v.as_str())?;
+                let n = ore_core::parse::parse(p).ok()?;
+                match Json::de_node(&n) {
+                    j @ Json::Obj(_) => Some(j),
+                    _ => None,
+                }
+            })
+            .next_back()
+    }
     /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
     fn clave(&self) -> Option<Vec<String>> {
         self.nodo
@@ -1247,6 +1267,11 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ];
         if let Some(s) = op.sujeto {
             campos.push(("escrito_por", Json::s(s)));
+        }
+        // La procedencia de ESTE snapshot; una escritura sin ella deja la de
+        // antes, que sigue siendo lo último que alguien dijo del dataset.
+        if let Some(pr) = p.cambio.procedencia() {
+            campos.push(("procedencia", pr));
         }
         escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
         lineas.push(Json::obj([
