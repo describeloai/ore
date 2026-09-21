@@ -81,6 +81,42 @@ export const puesto = {
   },
 };
 
+/** `[kind, namespace, name]` de un documento YAML, sin analizador. */
+function cabeza(texto) {
+  const k = /^kind:\s*([A-Za-z]+)\s*$/m.exec(texto);
+  if (!k) throw new Error("declare(): el documento no dice `kind:`");
+  const m = /^metadata:[ \t]*(.*)$/m.exec(texto);
+  if (!m) throw new Error("declare(): el documento no tiene `metadata:`");
+  const campos = {};
+  const resto = m[1].trim();
+  const par = (s) => { const i = s.indexOf(":"); if (i > 0) campos[s.slice(0, i).trim()] = s.slice(i + 1).trim().replace(/^["']|["']$/g, ""); };
+  if (resto.startsWith("{")) resto.replace(/^\{|\}$/g, "").split(",").forEach(par);
+  else for (const l of texto.slice(m.index + m[0].length).split("\n").slice(1)) { if (!/^[ \t]/.test(l)) break; par(l); }
+  if (!campos.name) throw new Error("declare(): `metadata.name` no está");
+  return [k[1], campos.namespace ?? "", campos.name];
+}
+
+/**
+ * Declara un documento de la ontología desde la celda (0031 §9, W3.7 ①): el YAML
+ * (string) o un objeto `{kind, metadata, spec}` → `PUT /documentos/{kind}/{ns}/{n}`
+ * (la puerta de Forge: compila antes de empujar). Lo firma quien abrió el puesto,
+ * en su rama. Devuelve `{kind, nombre, fichero, commit, nueva}`; un 422 lanza con
+ * los diagnósticos.
+ */
+export async function declare(documento) {
+  let kind, ns, nombre, cuerpo;
+  if (typeof documento === "string") { [kind, ns, nombre] = cabeza(documento); cuerpo = { yaml: documento }; }
+  else if (documento && typeof documento === "object") {
+    kind = documento.kind; ns = documento.metadata?.namespace ?? ""; nombre = documento.metadata?.name ?? ""; cuerpo = documento;
+    if (!kind || !nombre) throw new Error("declare(): el documento quiere `kind` y `metadata.name`");
+  } else throw new Error(`declare() quiere el YAML del documento o un objeto, no ${typeof documento}`);
+  if (!ns) throw new Error("declare(): `metadata.namespace` no está: un documento vive en un paquete");
+  const [c, r] = await puesto.pedir("PUT", `/documentos/${kind}/${ns}/${nombre}`, cuerpo, 120_000);
+  if (c === 200 || c === 201) return { kind: r?.kind ?? kind, nombre: `${r?.namespace ?? ns}.${r?.name ?? nombre}`, fichero: r?.fichero ?? "", commit: r?.commit ?? "", nueva: Boolean(r?.nueva ?? c === 201) };
+  if (r?.diagnosticos?.length) throw new Error(`declare(${ns}.${nombre}): ${r.diagnosticos.map((d) => `${d.codigo ?? "?"}: ${d.mensaje ?? ""}`).join("; ")}`);
+  throw new Error(`declare(${ns}.${nombre}): ${r?.error ?? "?"} (${c})`);
+}
+
 /** Quién abrió el puesto (`persona:…`). Lo sabe el agente desde que reclama. */
 export function persona() {
   if (!puesto.persona) throw new Error("persona(): el agente aún no sabe quién abrió el puesto");

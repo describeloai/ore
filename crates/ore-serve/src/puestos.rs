@@ -51,6 +51,11 @@
 
 use crate::cola;
 use crate::rutas::Servidor;
+
+/// La cabecera con la que el agente de un puesto dice desde qué puesto
+/// escribe: el sujeto pasa a ser la persona que lo abrió (y la rama, la del
+/// puesto).
+pub(crate) const PUESTO: &str = "x-ore-puesto";
 use ore_core::json::Json;
 use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
@@ -680,6 +685,41 @@ impl Servidor {
     /// **Quién escribe desde un puesto** (0031 §11): el agente pide en nombre
     /// de la persona que abrió el puesto, y en la rama del puesto. Sólo el
     /// agente que lo reclamó; sin tocar su estado.
+    /// **Desde un puesto, quien escribe es la persona que lo abrió, y en su
+    /// rama.** Lo que `/v1` (el catálogo) hace desde W3.6c y `/documentos`
+    /// no hacía (medido en «Lo medido para W3.7» §1: la View que una celda
+    /// declaraba la firmaba `agente:local`, en `main`). Con `x-ore-puesto`,
+    /// el sujeto pasa a ser la persona (el agente queda como `agente`) y la
+    /// rama, la del puesto si tiene; sin la cabecera, lo que llegó.
+    pub(crate) fn sujeto_del_puesto(
+        &self,
+        p: &ore_entrada::http::Peticion,
+        sujeto: &Identidad,
+        rama: Option<&str>,
+    ) -> Result<(Identidad, Option<String>), Respuesta> {
+        match p
+            .cabeceras
+            .get(PUESTO)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            Some(id) => {
+                let (persona, rama_del_puesto) = self.persona_del_puesto(sujeto, id)?;
+                Ok((
+                    Identidad {
+                        persona,
+                        agente: Some(sujeto.persona.clone()),
+                        correo: None,
+                        nombre: None,
+                        tipo: None,
+                    },
+                    rama_del_puesto.or_else(|| rama.map(String::from)),
+                ))
+            }
+            None => Ok((sujeto.clone(), rama.map(String::from))),
+        }
+    }
+
     pub(crate) fn persona_del_puesto(
         &self,
         sujeto: &Identidad,

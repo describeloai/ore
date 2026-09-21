@@ -45,6 +45,15 @@ para la siguiente vez). Idempotente: la misma tabla al mismo nombre y modo otra
 vez no deja otro snapshot (la clave de operación).
 Un 409 (alguien escribió mientras tanto) se reintenta sobre lo que hay; un 5xx
 se MIRA antes de reintentar: si el commit entró, entró.
+
+**Declarar** (0031 §9, W3.7 ①): `declare(documento)` deja un documento de la
+ontología en el árbol desde la celda —una `View` sobre lo que acabas de escribir,
+una `Entity`, una `Interface`, un `Concept`, una `Table`— por la puerta de Forge
+(`PUT /documentos/{kind}/{ns}/{n}`: se compila antes de empujar, y se rechaza sólo
+lo que la escritura añade de malo). El commit lo firma **quien abrió el puesto**,
+y va a **su rama** si el puesto tiene una. `documento` es el YAML tal cual (str) o
+un dict `{kind, metadata, spec}`. Devuelve `{kind, nombre, fichero, commit, nueva}`;
+un 422 es `ValueError` con los diagnósticos.
 """
 import io
 import json
@@ -54,7 +63,7 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "write", "persona", "puesto", "tabla", "json_de"]
+__all__ = ["over", "sql", "write", "declare", "persona", "puesto", "tabla", "json_de"]
 
 
 class Puesto:
@@ -96,6 +105,63 @@ class Puesto:
 
 
 puesto = Puesto()
+
+
+def _cabeza(texto):
+    """`(kind, namespace, name)` de un documento YAML, sin analizador: la línea
+    `kind:` y el `metadata:` (en línea `{ name: x, namespace: y }` o en bloque)."""
+    m = re.search(r"^kind:\s*([A-Za-z]+)\s*$", texto, re.M)
+    if not m:
+        raise ValueError("declare(): el documento no dice `kind:`")
+    kind = m.group(1)
+    m = re.search(r"^metadata:[ \t]*(.*)$", texto, re.M)
+    if not m:
+        raise ValueError("declare(): el documento no tiene `metadata:`")
+    resto = m.group(1).strip()
+    campos = {}
+    if resto.startswith("{"):
+        for par in resto.strip("{} ").split(","):
+            if ":" in par:
+                k, v = par.split(":", 1)
+                campos[k.strip()] = v.strip().strip("\"'")
+    else:
+        for linea in texto[m.end():].splitlines():
+            if not linea.startswith((" ", "\t")):
+                break
+            if ":" in linea:
+                k, v = linea.strip().split(":", 1)
+                campos[k.strip()] = v.strip().strip("\"'")
+    if not campos.get("name"):
+        raise ValueError("declare(): `metadata.name` no está")
+    return kind, campos.get("namespace", ""), campos["name"]
+
+
+def declare(documento):
+    """Declara un documento de la ontología desde la celda (ver arriba): el YAML
+    (str) o un dict `{kind, metadata, spec}`. Lo firma quien abrió el puesto, en
+    su rama. Devuelve `{kind, nombre, fichero, commit, nueva}`."""
+    if isinstance(documento, str):
+        kind, ns, nombre = _cabeza(documento)
+        cuerpo = {"yaml": documento}
+    elif isinstance(documento, dict):
+        kind = documento.get("kind")
+        meta = documento.get("metadata") or {}
+        ns, nombre = meta.get("namespace", ""), meta.get("name", "")
+        if not kind or not nombre:
+            raise ValueError("declare(): el documento quiere `kind` y `metadata.name`")
+        cuerpo = documento
+    else:
+        raise ValueError("declare() quiere el YAML del documento o un dict, no %r" % (type(documento).__name__,))
+    if not ns:
+        raise ValueError("declare(): `metadata.namespace` no está: un documento vive en un paquete")
+    c, r = puesto.pedir("PUT", "/documentos/%s/%s/%s" % (kind, ns, nombre), cuerpo, plazo=120)
+    if c in (200, 201):
+        return {"kind": r.get("kind", kind), "nombre": "%s.%s" % (r.get("namespace", ns), r.get("name", nombre)),
+                "fichero": r.get("fichero", ""), "commit": r.get("commit", ""), "nueva": bool(r.get("nueva", c == 201))}
+    r = r or {}
+    if r.get("diagnosticos"):
+        raise ValueError("declare(%s.%s): %s" % (ns, nombre, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
+    raise RuntimeError("declare(%s.%s): %s (%s)" % (ns, nombre, r.get("error", "?"), c))
 
 
 def persona():

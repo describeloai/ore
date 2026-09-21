@@ -429,33 +429,17 @@ impl Servidor {
             // El kind se resuelve contra `documentos::KINDS`: un kind que no
             // esté en la tabla es 404 con la lista de los que sí. La medida
             // lee la misma tabla, así que lo que no se sirve no cuenta.
-            ("GET", ["documentos", kind]) => {
-                let kind = kind.to_string();
-                self.leyendo(move |r| documentos::listar(r, &kind))
-            }
-            // Los conceptos del árbol y los importados de `vendor/*.oob`, con
-            // quién los habla: lo que la sección Concepts pinta.
-            ("GET", ["conceptos"]) => self.leyendo(documentos::conceptos),
-            ("GET", ["documentos", kind, ns, n]) => {
-                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
-                self.leyendo(move |r| documentos::uno(r, &kind, &ns, &n))
-            }
-            ("PUT", ["documentos", kind, ns, n]) => {
-                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
-                let cuerpo = p.cuerpo.clone();
-                let si_commit = p.cabeceras.get("if-match").cloned();
-                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
-                self.escribiendo(sujeto, &format!("escribir {que} `{ns}.{n}`"), |r| {
-                    self.escribir_documento(r, &kind, &ns, &n, &cuerpo, si_commit.as_deref())
-                })
-            }
-            ("DELETE", ["documentos", kind, ns, n]) => {
-                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
-                let si_commit = p.cabeceras.get("if-match").cloned();
-                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
-                self.escribiendo(sujeto, &format!("retirar {que} `{ns}.{n}`"), |r| {
-                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref())
-                })
+            //
+            // **Y desde un puesto** (W3.7 ①, «declarar»): con `x-ore-puesto`
+            // el sujeto es la persona que lo abrió y la rama la del puesto,
+            // como en `/v1` y `/datasets`; lo que una celda declara lo firma
+            // quien la escribió, y va a su rama.
+            ("GET" | "PUT" | "DELETE", ["documentos", ..]) | ("GET", ["conceptos"]) => {
+                let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
+                    Ok(x) => x,
+                    Err(r) => return r,
+                };
+                self.documentos(p, &sujeto, rama.as_deref(), seg)
             }
             ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
                 Respuesta::error(404, "no hay nada en ese camino")
@@ -484,6 +468,51 @@ impl Servidor {
     /// deja el clon a medias, y el clon se tira. Es lo que hace que un error no
     /// pueda dejar el árbol a medio escribir — no hay nada que deshacer porque
     /// no se llegó a escribir en ningún sitio duradero.
+    /// Las rutas de los documentos por kind, ya con el sujeto y la rama
+    /// resueltos (los del puesto, si la petición viene de uno).
+    fn documentos(
+        &self,
+        p: &Peticion,
+        sujeto: &Identidad,
+        rama: Option<&str>,
+        seg: &[&str],
+    ) -> Respuesta {
+        match (p.metodo.as_str(), seg) {
+            ("GET", ["documentos", kind]) => {
+                let kind = kind.to_string();
+                self.leyendo_en(rama, move |r| documentos::listar(r, &kind))
+            }
+            // Los conceptos del árbol y los importados de `vendor/*.oob`, con
+            // quién los habla: lo que la sección Concepts pinta.
+            ("GET", ["conceptos"]) => self.leyendo_en(rama, documentos::conceptos),
+            ("GET", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
+                self.leyendo_en(rama, move |r| documentos::uno(r, &kind, &ns, &n))
+            }
+            ("PUT", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
+                let cuerpo = p.cuerpo.clone();
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
+                self.escribiendo_en(rama, sujeto, &format!("escribir {que} `{ns}.{n}`"), |r| {
+                    self.escribir_documento(r, &kind, &ns, &n, &cuerpo, si_commit.as_deref())
+                })
+            }
+            ("DELETE", ["documentos", kind, ns, n]) => {
+                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
+                let si_commit = p.cabeceras.get("if-match").cloned();
+                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
+                self.escribiendo_en(rama, sujeto, &format!("retirar {que} `{ns}.{n}`"), |r| {
+                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref())
+                })
+            }
+            ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
+                Respuesta::error(404, "no hay nada en ese camino")
+            }
+            _ => Respuesta::error(405, "método no admitido"),
+        }
+    }
+
     pub(crate) fn escribiendo(
         &self,
         sujeto: &Identidad,

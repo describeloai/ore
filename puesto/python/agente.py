@@ -78,7 +78,7 @@ class Testigo:
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
-        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "persona": ore.persona, "ore": ore}
+        self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "persona": ore.persona, "ore": ore}
 
     def correr(self, texto, lenguaje="python"):
         t0 = time.time()

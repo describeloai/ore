@@ -615,6 +615,53 @@ public final class Ore {
     }
 
     /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago, sobrescribiendo. */
+    /** Declara un documento de la ontología desde la celda (0031 §9, W3.7 ①): el YAML tal cual → {@code PUT /documentos/{kind}/{ns}/{n}} (la puerta de Forge: compila antes de empujar). Lo firma quien abrió el puesto, en su rama. Devuelve {@code {kind, nombre, fichero, commit, nueva}}; un 422 es {@link IllegalArgumentException} con los diagnósticos. */
+    public static Map<String, Object> declare(String yaml) throws Exception {
+        java.util.regex.Matcher k = java.util.regex.Pattern.compile("^kind:\\s*([A-Za-z]+)\\s*$", java.util.regex.Pattern.MULTILINE).matcher(yaml);
+        if (!k.find()) throw new IllegalArgumentException("declare(): el documento no dice `kind:`");
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^metadata:[ \\t]*(.*)$", java.util.regex.Pattern.MULTILINE).matcher(yaml);
+        if (!m.find()) throw new IllegalArgumentException("declare(): el documento no tiene `metadata:`");
+        Map<String, String> campos = new LinkedHashMap<>();
+        java.util.function.Consumer<String> par = (s) -> { int i = s.indexOf(':'); if (i > 0) campos.put(s.substring(0, i).trim(), s.substring(i + 1).trim().replaceAll("^[\"']|[\"']$", "")); };
+        String resto = m.group(1).trim();
+        if (resto.startsWith("{")) { for (String s : resto.replaceAll("^\\{|\\}$", "").split(",")) par.accept(s); }
+        else { for (String l : yaml.substring(m.end()).split("\n")) { if (l.isEmpty()) continue; if (!Character.isWhitespace(l.charAt(0))) break; par.accept(l); } }
+        if (campos.get("name") == null) throw new IllegalArgumentException("declare(): `metadata.name` no está");
+        Map<String, Object> cuerpo = new LinkedHashMap<>(); cuerpo.put("yaml", yaml);
+        return declarar(k.group(1), campos.getOrDefault("namespace", ""), campos.get("name"), cuerpo);
+    }
+
+    /** Lo mismo, con el documento como mapa {@code {kind, metadata, spec}}. */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> declare(Map<String, Object> documento) throws Exception {
+        Object kind = documento.get("kind");
+        Map<String, Object> meta = documento.get("metadata") instanceof Map<?, ?> mm ? (Map<String, Object>) mm : Map.of();
+        if (kind == null || meta.get("name") == null) throw new IllegalArgumentException("declare(): el documento quiere `kind` y `metadata.name`");
+        return declarar(kind.toString(), String.valueOf(meta.getOrDefault("namespace", "")), meta.get("name").toString(), documento);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> declarar(String kind, String ns, String nombre, Map<String, Object> cuerpo) throws Exception {
+        if (ns.isEmpty()) throw new IllegalArgumentException("declare(): `metadata.namespace` no está: un documento vive en un paquete");
+        Respuesta r = puesto.pedir("PUT", "/documentos/" + kind + "/" + ns + "/" + nombre, cuerpo, Duration.ofSeconds(120));
+        Map<String, Object> c = r.cuerpo();
+        if (r.codigo() == 200 || r.codigo() == 201) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("kind", c.getOrDefault("kind", kind));
+            out.put("nombre", c.getOrDefault("namespace", ns) + "." + c.getOrDefault("name", nombre));
+            out.put("fichero", c.getOrDefault("fichero", ""));
+            out.put("commit", c.getOrDefault("commit", ""));
+            out.put("nueva", Boolean.TRUE.equals(c.get("nueva")) || (c.get("nueva") == null && r.codigo() == 201));
+            return out;
+        }
+        if (c.get("diagnosticos") instanceof List<?> ds && !ds.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (Object d : ds) { if (d instanceof Map<?, ?> dm) { if (sb.length() > 0) sb.append("; "); sb.append(dm.get("codigo")).append(": ").append(dm.get("mensaje")); } }
+            throw new IllegalArgumentException("declare(" + ns + "." + nombre + "): " + sb);
+        }
+        throw new RuntimeException("declare(" + ns + "." + nombre + "): " + c.getOrDefault("error", "?") + " (" + r.codigo() + ")");
+    }
+
     public static Map<String, Object> write(String nombre, Object datos) throws Exception { return write(nombre, datos, "sobrescribir"); }
 
     /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago; {@code modo} es {@code sobrescribir} o {@code anexar}. */

@@ -320,6 +320,14 @@ def local(tmp, procs):
         fila("  el puntero datasets/ventas_enRama.json", "en la rama: %s" % ("sí" if rama_tiene else "no"), "en main: %s" % ("sí" if main_tiene else "no"))
         a, n = autor("datasets/ventas_enRama.json")
         fila("  GET /arbol/historia (main)", a, "%d versiones" % n)
+        # declarar desde la rama (W3.7 ①): la View va a la rama, firmada por bea
+        s = celda(bea, 'd = declare("apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: enRama, namespace: ventas }\\nspec:\\n  owner: team:ventas\\n  from: { table: ventas.enRama }\\n  fields: { n: n, pais: pais }\\n"); d["commit"]', persona="persona:bea")
+        fila("declare(View) desde la rama", "%d ms" % s["_ms"], texto(s)[:80])
+        git("fetch", "-q", "origin", cwd=r2)
+        rama_tiene = git("cat-file", "-e", "origin/bea/w37:packages/ventas/views/enRama.yaml", cwd=r2) == ""
+        main_tiene = git("cat-file", "-e", "origin/main:packages/ventas/views/enRama.yaml", cwd=r2) == ""
+        firma = git("log", "-1", "--format=%an", "origin/bea/w37", cwd=r2)
+        fila("  packages/ventas/views/enRama.yaml", "en la rama: %s" % ("sí" if rama_tiene else "no"), "en main: %s · firma %s" % ("sí" if main_tiene else "no", firma))
         # lo que sólo está en main, desde la rama: el fallback de §4
         s = celda(ana, TRES + '; write("ventas.despues", t3)["filas"]')
         fila("write() de ana en main, tras abrir la rama", "%d ms" % s["_ms"], texto(s)[:80])

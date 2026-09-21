@@ -817,6 +817,15 @@ parte del puente ya está y qué no:
 
 Lo que sale de la medida, en una frase: **el registro ya es uno (el árbol), la puerta ya existe para cuatro kinds y el trabajo ya corre; lo que no existe es la firma de la persona desde la celda, la rama como unidad de publicación, el linaje de lo escrito, y dos kinds (`Function` con código, `Model` con pesos)**. Eso es lo que **declarar** tiene que poner, y es donde empieza W3.7.
 
+### Los pasos de W3.7
+
+| paso | qué | estado |
+|---|---|---|
+| **①** la firma y la rama | `/documentos` (y `/conceptos`) resuelven el puesto como `/v1` y `/datasets`: con `x-ore-puesto` el sujeto es la persona que lo abrió y la rama la del puesto (`Servidor::sujeto_del_puesto`, compartido con el catálogo). **`declare(documento)`** en los tres SDK: el YAML tal cual o `{kind, metadata, spec}` → `PUT /documentos/{kind}/{ns}/{n}`; devuelve `{kind, nombre, fichero, commit, nueva}`; un 422 lleva los diagnósticos (`ValueError` / `Error` / `IllegalArgumentException`); un kind que no se sirve lo dice con la lista | **hecho** 2026-09-21: `el-puesto.sh` 10, 8 y 9 (Python, Node y Java declaran una View sobre lo que escribieron; otra vez no es nueva; una rota es error con el `OOS` y no queda en el árbol; `Model` no se sirve); la medida §1 pasa de `firma agente:local` a **`firma persona:ana`** en los cuatro kinds, y §2: `declare()` desde el puesto de bea deja la View **en `bea/w37` y no en `main`, firmada por bea** |
+| **②** los dos kinds | `Function` de código (`transform(inputs, output)`: su forma en OOS, distinta de la `Function` wasm de 0029) y `Model` con pesos (0031 §6) en `C:\oos`, y sus filas en `KINDS` | pendiente |
+| **③** el linaje y la rama | `inputs` y `conducto` en el puntero y en la ficha; el fallback de rama (§4) y el error que lo diga | pendiente |
+| **④** `ore run` | el Job de §5 con el guion desde el commit y el informe al árbol; el testigo del init por HTTP | pendiente |
+
 ## Lo que se aparca
 
 - El motor distribuido para lo masivo (Ray/Spark sobre la cola): el contrato (Parquet en el
