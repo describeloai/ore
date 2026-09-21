@@ -284,7 +284,7 @@ cumple "{x['name'] for x in d['documentos']} == {'empleados','envios'}" "11 · a
 cumple "[x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['from']=={'table':'workday_worker'} and len([x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['fields'])==12" "11 · la vista trae from y fields enteros"
 [ "$(pide GET /documentos/Table)" = "200" ] || falla "11 · GET /documentos/Table · $(cat "$TMP/r.json")"
 cumple "len(d['documentos']) == 2 and [x for x in d['documentos'] if x['name']=='workday_worker'][0]['spec']['reads']['fullScan']=='forbidden' and 'physicalType' in json.dumps(d['documentos'])" "11 · la tabla trae sus dos caras y sus columnas"
-[ "$(pide GET /documentos/Function)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
+[ "$(pide GET /documentos/Ruleset)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
 grep -q "Entity · View · Table · Concept · Interface" "$TMP/r.json" || falla "11 · el 404 no dice los kinds servidos · $(cat "$TMP/r.json")"
 [ "$(pide GET /documentos/Table/hr/workday_worker)" = "200" ] && cumple "d['yaml'].startswith('apiVersion: oos.dev/v1alpha8') and 'kind: Table' in d['yaml'] and d['commit']['autor']=='semilla'" "11 · una tabla con su YAML y su commit"
 dice "11 · View y Table se leen enteras por el mismo motor; un kind fuera de la tabla es 404 con la lista"
@@ -399,6 +399,25 @@ cumple "d['sinHablar']==['hr.personalEmail']" "18 · la entidad dice que deja hr
 [ "$(asunto)" = 'retirar el concepto `hr.personalEmail`' ] || falla "18 · el asunto: $(asunto)"
 [ "$(pide GET /conceptos)" = "200" ] && cumple "len(d['conceptos'])==2 and all(c['importado'] for c in d['conceptos'])" "18 · quedan los dos importados"
 dice "18 · deshecho en orden: libres, 200; el arbol vuelve a ser acme-retail mas el vocabulario iso"
+
+# ── 18b · Function y Action por la misma puerta (0034 paso 5) ────────────────
+#
+# La funcion de solo lectura sobre `hr.empleados` entra (el compilador no exige
+# el .wasm en disco: lo que exige es la forma y que `over` resuelva); se lista
+# por su kind; y una Action que escribe una propiedad sin integridad es un 422
+# con su OOS7005: la puerta compila la Action, no solo la guarda.
+[ "$(pide GET /documentos/Function)" = "200" ] && cumple "d['documentos'] == []" "18b · sin funciones al principio"
+FUNCION='{"spec":{"runtime":"wasm","entrypoint":"dist/contar.wasm","over":"hr.empleados","output":{"n":{"type":"Integer"}}}}'
+[ "$(pide PUT /documentos/Function/hr/contar "$FUNCION")" = "201" ] || falla "18b · PUT Function no dio 201 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'escribir la función `hr.contar`' ] || falla "18b · el asunto: $(asunto)"
+[ "$(pide GET /documentos/Function)" = "200" ] && cumple "[d['name'] for d in d['documentos']] == ['contar'] and d['documentos'][0]['fichero'] == 'packages/hr/functions/contar.yaml'" "18b · la funcion se lista por su kind, en functions/"
+[ "$(pide GET /documentos/Function/hr/contar)" = "200" ] && cumple "d['spec']['over'] == 'hr.empleados'" "18b · y se lee entera"
+ACCION='{"spec":{"over":"hr.empleados","input":{"nota":{"type":"String","required":true}},"sets":[{"writes":"hr.Employee.fullName","from":"input.nota"}]}}'
+[ "$(pide PUT /documentos/Action/hr/anotar "$ACCION")" = "422" ] || falla "18b · una Action sobre una propiedad sin integridad tenia que ser 422 · $(cat "$TMP/r.json")"
+grep -q "OOS7005" "$TMP/r.json" || falla "18b · el 422 no dice OOS7005 · $(cat "$TMP/r.json")"
+[ "$(pide GET /documentos/Action)" = "200" ] && cumple "d['documentos'] == []" "18b · y la Action que no compila no queda"
+[ "$(pide DELETE /documentos/Function/hr/contar)" = "200" ] || falla "18b · retirar la funcion no dio 200 · $(cat "$TMP/r.json")"
+dice "18b · Function y Action por /documentos: la funcion entra, se lista en functions/ y se retira; la Action que escribe sin integridad es 422 con OOS7005"
 # ── 19 · /arbol: el arbol por ruta, lo que el editor abre (0030 W0) ──────────
 pon() { # ruta fichero-con-el-texto [cabecera-extra]
   curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$SUJ" -H "${3:-x-nada: 1}" \
@@ -427,7 +446,7 @@ spec:
 Y
 [ "$(pon packages/hr/views/porRuta.yaml "$TMP/porRuta.yaml")" = "201" ] || falla "19 · PUT /arbol de una vista nueva · $(cat "$TMP/r.json")"
 cumple "d['nueva'] is True and d['kind']=='View' and d['diagnosticos']==[] and d['commit']" "19 · 201 con kind, commit y sin diagnosticos"
-[ "$(asunto)" = 'escribir `packages/hr/views/porRuta.yaml`' ] || falla "19 · el asunto: $(asunto)"
+[ "$(asunto)" = 'escribir `packages/hr/views/porRuta.yaml`' ] || falla "18b · el asunto: $(asunto)"
 git --git-dir="$FORJA" log -1 --format='%an' main | grep -q "ana" || falla "19 · el commit no es del sujeto: $(git --git-dir="$FORJA" log -1 --format='%an' main)"
 # el mismo texto otra vez: 200, igual, y ningun commit
 ANTES=$(cabeza)
@@ -454,4 +473,4 @@ sed 's/id: Worker_Reference.ID/id: Worker_Reference.ID\n    nombre: Legal_Name/'
 dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, igual, 422 con marcador fichero:linea:columna, 409 If-Match) · lo inducido y .git no se editan · DELETE"
 
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface — y /conceptos; /arbol por ruta (0030 W0); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); escribir es un commit del sujeto que no empeora el arbol"

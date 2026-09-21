@@ -178,6 +178,25 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "el dataset",
         exige: sin_exigencias,
     },
+    // v1alpha10 (0034 paso 5). La lógica con contrato y la invocación sin
+    // código entran por la misma puerta que los demás: la ficha del catálogo
+    // pide el texto por aquí y el workspace lo abre por aquí. Lo que exigen
+    // ya lo exige el compilador (`runtime`/`entrypoint`/`over` por OOS1004;
+    // `over` y `reads` que resuelvan; un efecto sobre una propiedad con
+    // integridad, OOS7005). `GET /funciones` sigue dando la forma con los
+    // resultados de sus Jobs, que es otra cosa.
+    Kind {
+        nombre: "Function",
+        carpeta: "functions",
+        articulo: "la función",
+        exige: sin_exigencias,
+    },
+    Kind {
+        nombre: "Action",
+        carpeta: "actions",
+        articulo: "la acción",
+        exige: sin_exigencias,
+    },
 ];
 
 /// El único diagnóstico nuevo que la puerta deja pasar: «el concepto `hr.x`
