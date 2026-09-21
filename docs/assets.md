@@ -140,13 +140,13 @@ ore-cli, para la medida y para mirar) da los números del oráculo sobre demo y 
 
 ## 2 · `GET /assets` en ore-serve
 
-- `assets.rs` en ore-serve: `GET /assets` (`?rama=`, `?commit=`). Con identidad, como todo.
+- `assets.rs` en ore-serve: `GET /assets` (la rama por la cabecera, como `/arbol`) y `GET /assets/{commit}`. Con identidad, como todo. Ningún dato por la consulta de la URL (regla de la casa).
 - **La caché por cabeza.** `Api::ramas()` ya da `(rama, cabeza)` sin clonar: una llamada HTTP a
   la forja (ms). Si `cabeza` es la cacheada, se sirve de memoria; si no, `leyendo` (clon),
   `cargar_paquete`, leer `datasets/*.json`, `indice()`, `version` por fichero, y a la caché
   (`Mutex<HashMap<(rama, cabeza), Arc<Json>>>`, con un tope: las últimas N cabezas). Con
   `Arbol::Directorio` (los tests, el banco) no hay caché: siempre se calcula.
-- `?commit=h`: `git checkout h` en el clon, y se cachea igual por `(rama, h)`.
+- `/assets/{commit}`: `git checkout h` en el clon, y se cachea igual por `(rama, h)`.
 - La respuesta lleva `cabeza`, `rama`, `generado`, `desde_cache: bool` (para la medida).
 
 **Hecho cuando:** un test de ore-serve con `Arbol::Directorio` sobre el árbol de fuego de 1
@@ -191,7 +191,7 @@ workspace lo abra por la misma puerta que los demás. Test en `los-documentos.sh
 |---|---|---|
 | **0** | la forma, medida: los oráculos de demo y victor | **hecho** 2026-09-21: la tabla en §0; decisión 3 comprobada (schema = carpeta con `README.md`) |
 | **1** | `ore_core::assets::indice` + `ore assets --json` | **hecho** 2026-09-21: `crates/ore-core/src/assets.rs` (D1–D5, D7; D6 `version: null` para ore-serve) y `crates/ore-cli/src/activos.rs`; test `tests/assets.rs` sobre un árbol de fuego con los 10 kinds, las 9 relaciones en las dos direcciones, una carpeta del cliente, una vista inducida, un enlace roto (`rota: true`), dos punteros y la clasificación por columna. Los oráculos cuadran: demo **17 ítems** (25 − 8 inducidas), 12 relaciones (6×2), identidad 4 (3 datasets + la vista sobre su dataset), 8 tablas con `vistaInducida`; victor **58** (77 − 19), 38 (19×2), 19, 19. `ore assets --json`: demo 14 KB / 304 ms, victor 70 KB / 355 ms en local (cargar + proyectar, proceso incluido). Lo que salió: la carpeta del kind se quita **esté donde esté** (`espana/views/x.yaml` es el schema `espana`), no sólo si es la primera; una propiedad nombra su concepto con `is:`, no `concept:`; `trainedFrom` es una lista; una Action escribe por `sets[].writes`. La clasificación efectiva de la raíz (`etiquetas_de_raiz`) sigue en ore-cli: el índice sube las labels del documento, de las columnas que usa y (Entity) las efectivas por propiedad, que es lo que tiene sentido por ítem |
-| **2** | `GET /assets` con caché por cabeza | test de ore-serve; `plano-de-control` con el caso; CI verde |
+| **2** | `GET /assets` con caché por cabeza | **hecho** 2026-09-21: `crates/ore-serve/src/assets.rs`. `GET /assets` (la rama por la cabecera de 0030 W2, como `/arbol`) y `GET /assets/{commit}` —por el camino, no por la consulta: ningún dato entra por la URL—; `git::Forja::cabeza_de(rama)` = `git ls-remote` (ms, sin clonar) decide si se sirve de memoria; caché de las últimas 4 cabezas por proceso, `desde_cache` en la respuesta; `version` por fichero con `git log -1` en el clon que ya se tiene; un directorio no se cachea. Tests: el índice de un directorio con su puntero y sin `version`, la caché olvida la más vieja y no duplica, la fecha civil. `servidor-forja.sh` caso 5: calcula una vez, la segunda de memoria, un push mueve la cabeza y recalcula con el dataset, sus dos direcciones, su `version` (sujeto `persona:ana`) y la clase del paquete |
 | **3** | la medida viva | frío/caliente/bytes en 0034; `identidad`, `sale_de`, `vistaInducida` comprobados en victor |
 | **4** | la consola sobre el índice | el catálogo se pinta de una llamada; `comoDatabase` fuera; fichas por kind; `tsc` limpio |
 | **5** | `Function`/`Action` por `/documentos` | `los-documentos.sh` verde |

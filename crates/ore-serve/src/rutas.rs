@@ -110,6 +110,8 @@ pub struct Servidor {
     pub forja_api: Option<crate::forja::Api>,
     /// Los puestos vivos (0031 W3.1): todo el estado de las sesiones, en memoria.
     pub puestos: crate::puestos::Puestos,
+    /// El índice de assets, por cabeza (0034 ⑤): `GET /assets` de memoria.
+    pub assets_cache: crate::assets::Cache,
 }
 
 impl Servidor {
@@ -387,6 +389,9 @@ impl Servidor {
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
             (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
             // ── 0031 §10 · los datasets (`datasets.rs`): la lista, la ficha y el swap ──
+            // ── 0034 ⑤ · el índice de assets: el árbol compilado, de memoria por cabeza ──
+            ("GET", ["assets"]) => self.assets(rama, None),
+            ("GET", ["assets", commit]) => self.assets(rama, Some(commit)),
             ("GET", ["datasets"]) => self.datasets(rama),
             ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),
             ("POST", ["datasets", ns, n, "confirmar"]) => {

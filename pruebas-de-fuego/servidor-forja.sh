@@ -126,5 +126,38 @@ dice "4 · un empujon rechazado es un 409, y dice que nada se perdio"
   || falla "4 · la forja cambio pese al rechazo"
 dice "4 · y la forja no cambio: lo que falla no deja el arbol a medias"
 
+# ── 5 · El indice de assets, de memoria por cabeza (0034 ⑤) ──────────────────
+#
+# `GET /assets` clona UNA vez por cabeza: la primera vez calcula (`desde_cache:
+# false`), la segunda se sirve de memoria (`true`), y un push a la forja cambia
+# la cabeza y el siguiente GET vuelve a calcular. Y el indice dice lo que el
+# arbol tiene: la fuente dada de alta no es un item (es de Data Origins), asi
+# que `items` esta vacio y `paquetes` tambien — hasta que haya un paquete.
+rm -f "$FORJA/hooks/pre-receive"
+curl -s -o "$TMP/a1.json" -H "$SUJ" "$BASE/assets" || falla "5 · GET /assets no contesto"
+grep -q '"desde_cache":false' "$TMP/a1.json" || falla "5 · el primer GET /assets tenia que calcular: $(head -c 300 "$TMP/a1.json")"
+grep -q '"cabeza":"' "$TMP/a1.json" || falla "5 · el indice no dice su cabeza: $(head -c 300 "$TMP/a1.json")"
+grep -q '"items":{}' "$TMP/a1.json" || falla "5 · un arbol sin paquetes tenia que dar items vacios: $(head -c 300 "$TMP/a1.json")"
+curl -s -o "$TMP/a2.json" -H "$SUJ" "$BASE/assets" || falla "5 · el segundo GET /assets no contesto"
+grep -q '"desde_cache":true' "$TMP/a2.json" || falla "5 · el segundo GET /assets tenia que salir de memoria: $(head -c 300 "$TMP/a2.json")"
+CAB1=$(grep -o '"cabeza":"[0-9a-f]*"' "$TMP/a1.json")
+# un push mueve la cabeza: un paquete con una tabla y su dataset
+( cd "$TMP/semilla" && git pull -q origin main 2>/dev/null; mkdir -p packages/v/tables packages/v/datasets \
+  && printf 'apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: v, version: 0.1.0, status: active, domain: v }\nspec: { owner: team:v }\n' > packages/v/package.yaml \
+  && printf 'apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: origen, namespace: v }\nspec:\n  datasource: bq\n  object: "un-proyecto.ventas.origen"\n  columns: { id: { type: Integer } }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n' > packages/v/tables/origen.yaml \
+  && printf 'apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: v }\nspec:\n  owner: team:v\n  from: { table: v.origen }\n' > packages/v/datasets/pedidos.yaml \
+  && git add -A && GIT_AUTHOR_NAME=ana GIT_AUTHOR_EMAIL=persona:ana@sujeto.invalid git commit -qm "un paquete" && git push -q origin HEAD:main ) \
+  || falla "5 · no se pudo empujar el paquete a la forja"
+curl -s -o "$TMP/a3.json" -H "$SUJ" "$BASE/assets" || falla "5 · el tercer GET /assets no contesto"
+grep -q '"desde_cache":false' "$TMP/a3.json" || falla "5 · tras el push tenia que recalcular: $(head -c 300 "$TMP/a3.json")"
+CAB3=$(grep -o '"cabeza":"[0-9a-f]*"' "$TMP/a3.json")
+[ "$CAB1" != "$CAB3" ] || falla "5 · la cabeza no cambio tras el push: $CAB1"
+grep -q '"dataset:v.pedidos":{' "$TMP/a3.json" || falla "5 · el indice no tiene el dataset: $(head -c 400 "$TMP/a3.json")"
+grep -q '"identidad":true' "$TMP/a3.json" || falla "5 · el dataset identidad no lo dice"
+grep -q '"tipo":"produce"' "$TMP/a3.json" && grep -q '"tipo":"sale_de"' "$TMP/a3.json" || falla "5 · faltan las dos direcciones de la relacion"
+grep -q '"sujeto":"persona:ana"' "$TMP/a3.json" || falla "5 · la version del fichero no dice quien: $(grep -o '"version":[^}]*}' "$TMP/a3.json" | head -1)"
+grep -q '"type":"foreign"' "$TMP/a3.json" || falla "5 · el paquete no dice su clase"
+dice "5 · GET /assets: calcula una vez por cabeza ($CAB1), la segunda de memoria, y un push ($CAB3) lo recalcula con el dataset, sus dos direcciones, su version y su clase"
+
 echo
 echo "ok · el arbol vive en la forja, y la historia dice quien decidio que"

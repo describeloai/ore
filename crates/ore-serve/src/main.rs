@@ -40,6 +40,7 @@
 //! abierto, lo CIERRA*.
 
 mod arbol;
+mod assets;
 mod catalogo;
 mod cola;
 mod copia;
@@ -343,6 +344,7 @@ fn main() -> ExitCode {
         perfiles: o.perfiles,
         forja_api,
         puestos: puestos::Puestos::default(),
+        assets_cache: assets::Cache::default(),
     };
 
     match http::servir(escucha, move |p| servidor.atender(p)) {

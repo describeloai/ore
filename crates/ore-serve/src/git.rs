@@ -145,6 +145,20 @@ impl Forja {
         })
     }
 
+    /// La cabeza de una rama **sin clonar**: `git ls-remote`, milisegundos. Es
+    /// lo que decide si `GET /assets` se sirve de memoria (0034 ⑤). `None` si
+    /// la forja no contesta o la rama no está: entonces se clona y se calcula.
+    pub fn cabeza_de(&self, rama: &str) -> Option<String> {
+        let s = self
+            .git(None, &["ls-remote", "--heads", &self.url, rama])
+            .ok()?;
+        let linea = s
+            .lines()
+            .find(|l| l.trim_end().ends_with(&format!("refs/heads/{rama}")))?;
+        let hash = linea.split_whitespace().next()?.to_string();
+        (!hash.is_empty()).then_some(hash)
+    }
+
     /// Un clon fresco de la rama por defecto, en un directorio que se borra solo.
     pub fn clonar(&self) -> Result<Prestado, Fallo> {
         self.clonar_rama(None)
