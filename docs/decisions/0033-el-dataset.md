@@ -230,14 +230,22 @@ documentos): **las 32 Views eran copias** —la tabla con otro nombre— y pasan
 **cero Views**; 0 → 0; la misma lista. Ninguno tenía una `Table` del lago. El precio de la
 migración es cero diagnósticos y ningún byte movido.
 
+**Y aplicada** (2026-09-21; `pruebas-de-fuego/migrar-a-dataset.py`: el mismo Job, con el
+`ore` de la imagen, firmando `ore migrate`): demo `febfa77 → 97d12b3`, victor `d10b1ed →
+c5a1342`, exactamente lo que la medida dijo. `GET /datasets` del ore-serve vivo: 3 y 32, los
+mismos. El aprovisionador convergió solo (los datasets mantenidos salen de
+`packages/*/datasets/`), rindió la copia, y la copia corrió por el camino nuevo hasta empujar
+los punteros a `datasets/`. Lo que la migración no cambia: el Postgres de origen de los dos
+inquilinos está sobre cuota y las copias que ya fallaban siguen fallando por lo mismo.
+
 **Lo que el número dice.** La reforma no es «19 ficheros»: son **14 sitios de decisión en ORE**
 (13 en `crates/*/src` + la malla), **1 sitio en `datasets.rs`** para la Table del lago, **6
 ficheros de flujo** en la consola, y el resto es forma, prosa, fixtures y tests que siguen a
 los primeros. Lo más caro no está en la lista: es la **migración** de los árboles (`demo`,
 `victor`: cada View con `materialized` → `Dataset`; cada Table `datasource: lago` → `Dataset`)
 y que `copia.rs` + `inductor.rs` + `aprovisionar-inquilino.sh` dejen de buscar la clave en la
-View para buscar el `kind`. Lo que no se ha medido: cuántos documentos de cada árbol real
-cambian (requiere el clúster).
+View para buscar el `kind`. Cuántos documentos de cada árbol real cambian está medido
+arriba: 12 en demo, 111 en victor.
 
 ## Lo cotejado: qué es un dataset fuera, y qué es aquí (2026-09-21)
 
