@@ -1722,7 +1722,7 @@ mod tests {
     fn el_documento_sigue_el_esquema_sin_perder_lo_demas() {
         use super::seguir_esquema;
         use std::collections::BTreeMap;
-        let doc = "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Una tabla del lago (0031 §10): la escribió `write()`\nspec:\n  datasource: lago\n  object: \"ventas_salida\"\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: Integer }\n    pais: {}\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    vieja:\n      type: String\n      labels: { gdpr.sensitivity: low }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n";
+        let doc = "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Un dataset escrito (0033): lo escribió `write()`\nspec:\n  owner: team:ventas\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: Integer }\n    pais: {}\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    vieja:\n      type: String\n      labels: { gdpr.sensitivity: low }\n  history: { maxAge: 7d }\n  changes: { mode: append }\n";
         let cols: BTreeMap<String, String> = [
             ("cuando", "DateTimeTz"),
             ("id", "String"),     // cambia de tipo
@@ -1737,24 +1737,24 @@ mod tests {
         let s = seguir_esquema(doc, &cols).unwrap();
         assert_eq!(
             s,
-            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Una tabla del lago (0031 §10): la escribió `write()`\nspec:\n  datasource: lago\n  object: \"ventas_salida\"\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: String }\n    pais: { type: String }\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    nota: { type: String }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n"
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: salida, namespace: ventas, description: \"lo que ana escribió\" }\n# Un dataset escrito (0033): lo escribió `write()`\nspec:\n  owner: team:ventas\n  columns:\n    cuando: { type: DateTimeTz }\n    id: { type: String }\n    pais: { type: String }\n    total: { type: Decimal, labels: { gdpr.sensitivity: high } }\n    nota: { type: String }\n  history: { maxAge: 7d }\n  changes: { mode: append }\n"
         );
         // lo que compila: las columnas del resultado son exactamente las pedidas
         assert_eq!(super::columnas_del_documento(&s), cols);
         // un documento sin `columns` no se edita: desde cero
-        assert!(seguir_esquema("kind: Table\nspec: { datasource: lago }\n", &cols).is_none());
+        assert!(seguir_esquema("kind: Dataset\nspec: { owner: team:ventas }\n", &cols).is_none());
         // `changes` con la clave del upsert, en el sitio de la línea de antes
-        let c = super::con_cambios(
-            &s,
-            "  changes: { mode: upsert, key: [id], witness: snapshot }",
+        let c = super::con_cambios(&s, "  changes: { mode: upsert, key: [id] }");
+        assert!(
+            c.ends_with("  history: { maxAge: 7d }\n  changes: { mode: upsert, key: [id] }\n"),
+            "{c}"
         );
-        assert!(c.ends_with("  reads: { fullScan: cheap }\n  changes: { mode: upsert, key: [id], witness: snapshot }\n"), "{c}");
         assert_eq!(
             super::con_cambios(
-                "spec:\n  changes:\n    mode: append\n    witness: snapshot\n  reads: {}\n",
-                "  changes: { mode: upsert, key: [a], witness: snapshot }"
+                "spec:\n  changes:\n    mode: append\n  history: {}\n",
+                "  changes: { mode: upsert, key: [a] }"
             ),
-            "spec:\n  changes: { mode: upsert, key: [a], witness: snapshot }\n  reads: {}\n"
+            "spec:\n  changes: { mode: upsert, key: [a] }\n  history: {}\n"
         );
         // un mapa con otras claves y sin `type` recibe el suyo
         let s = seguir_esquema(
@@ -1799,9 +1799,9 @@ mod tests {
         assert!(!c.crea());
         assert_eq!(c.operacion(), None);
         let cols = columnas_del_documento(
-            "kind: Table
+            "kind: Dataset
 spec:
-  datasource: lago
+  owner: team:ventas
   columns:
     id: { type: Integer }
     pais: {}

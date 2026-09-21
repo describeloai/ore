@@ -239,7 +239,7 @@ public final class Ore {
         lee(vista);
         Respuesta r = puesto.pedir("GET", "/puestos/" + puesto.id + "/datos/" + vista, null, Duration.ofSeconds(30));
         if (r.codigo() == 409) throw new IllegalStateException("la copia de `" + vista + "` no está hecha: " + r.error());
-        if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` ni `Table` del lago `" + vista + "` en el árbol");
+        if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` ni `Dataset` `" + vista + "` en el árbol");
         if (r.codigo() != 200) throw new IOException("ore-serve contestó " + r.codigo() + " por `" + vista + "`: " + r.error());
         return r.cuerpo();
     }
@@ -468,8 +468,8 @@ public final class Ore {
 
     // ── Escribir (0031 §11, W3.6c) ─────────────────────────────────────────
     //
-    // `write("p.t", datos)` deja un dataset —una tabla Iceberg en el lago, la
-    // `Table` en el árbol, el puntero— desde lo que `over()`/`sql()` devolvieron
+    // `write("p.t", datos)` deja un dataset —una tabla Iceberg en el lago, el
+    // `Dataset` escrito en el árbol, el puntero— desde lo que `over()`/`sql()` devolvieron
     // (`Filas`, con sus tipos), un `List<Map>` cualquiera, un `VectorSchemaRoot`
     // o un `ArrowReader`. La tabla se arma como Arrow y va por IPC a `ore-store`
     // (el escritor de Rust), que la lleva al físico del contrato (0032) y escribe

@@ -39,7 +39,7 @@
 // bearer; medido en `medida-w3-lago.py`)— o `clave`, el sobre ORECOPY1 heredado,
 // que se baja una vez. `over()` y `sql()` no distinguen.
 // **Escribir** (0031 §11, W3.6c): `write("p.t", filas)` deja un dataset —una tabla
-// Iceberg en el lago, la `Table` en el árbol, el puntero— desde lo que `over()` o
+// Iceberg en el lago, el `Dataset` escrito en el árbol, el puntero— desde lo que `over()` o
 // `sql()` devolvieron (filas tipadas, o `{ nombres, tipos, columnas }`) o desde
 // objetos JS cualquiera. Node no lleva Arrow: la tabla se arma en DuckDB (tipada:
 // el `appendValue` con el tipo de cada columna) y sale como Parquet a `ore-store`,
@@ -200,7 +200,7 @@ async function resolver(vista) {
   lee(vista);
   const [codigo, r] = await puesto.pedir("GET", `/puestos/${puesto.id}/datos/${vista}`);
   if (codigo === 409) throw new Error(`la copia de \`${vista}\` no está hecha: ${r?.error ?? ""}`);
-  if (codigo === 404) throw new Error(`no hay ninguna \`View\` ni \`Table\` del lago \`${vista}\` en el árbol`);
+  if (codigo === 404) throw new Error(`no hay ninguna \`View\` ni \`Dataset\` \`${vista}\` en el árbol`);
   if (codigo !== 200) throw new Error(`ore-serve contestó ${codigo} por \`${vista}\`: ${r?.error ?? JSON.stringify(r)}`);
   return r;
 }

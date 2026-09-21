@@ -329,8 +329,8 @@ fn sellar<'a>(
 }
 
 /// **`copiar`: sellar sin pasar por el texto** (0031 «(d)»). La raíz de la
-/// vista es una tabla del lago —`datasource: lago`, lo que `write()` dejó, o
-/// la copia de otra vista— y no hay `ore-read-lago`: el puntero está en el
+/// vista es un dataset del lago —un escrito, lo que `write()` dejó, o el
+/// mantenido de otra pregunta— y no hay `ore-read-lago`: el puntero está en el
 /// árbol y no en una URL, y el protocolo de texto de 0008 es el camino lento
 /// (medido: `ore-store leer` 8,3 s por millón de filas, Arrow 0,4 s). Aquí se
 /// abre la tabla origen por su `metadata_location`, se leen sus lotes vivos

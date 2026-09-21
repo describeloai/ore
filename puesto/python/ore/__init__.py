@@ -31,7 +31,7 @@ poda en 0,5 s sin bajar nada)— o bien `clave`, el sobre `ORECOPY1` heredado, q
 baja una vez y se lee como Parquet. `over()` y `sql()` no distinguen.
 
 **Escribir** (0031 §11, W3.6c): `write("p.t", datos)` deja un dataset —una tabla
-Iceberg en el lago, la `Table` en el árbol, el puntero— desde un DataFrame de pandas
+Iceberg en el lago, el `Dataset` escrito en el árbol, el puntero— desde un DataFrame de pandas
 o polars o una tabla de Arrow. El código no toca el bucket: la tabla va por IPC a
 `ore-store` (el escritor de Rust, el mismo de la copia), que la lleva al físico del
 contrato (0032: `ns` → `µs`, zona → UTC; `uint64` y `null` se niegan con el nombre
@@ -270,7 +270,7 @@ def _resolver(vista):
     if codigo == 409:
         raise RuntimeError("la copia de `%s` no está hecha: %s" % (vista, (r or {}).get("error", "")))
     if codigo == 404:
-        raise LookupError("no hay ninguna `View` ni `Table` del lago `%s` en el árbol" % vista)
+        raise LookupError("no hay ninguna `View` ni `Dataset` `%s` en el árbol" % vista)
     if codigo != 200:
         raise RuntimeError("ore-serve contestó %s por `%s`: %s" % (codigo, vista, (r or {}).get("error", r)))
     return r

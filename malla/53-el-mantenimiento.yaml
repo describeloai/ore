@@ -103,7 +103,7 @@ spec:
                 - { name: GIT_CONFIG_VALUE_1, value: "*" }
                 - { name: ORE_STORE, value: "gcs" }
                 - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
-                # El lago del inquilino, como fuente (`datasource: lago`): la
+                # El lago del inquilino, como fuente (donde viven los datasets): la
                 # raíz de su bucket. No es un secreto.
                 - { name: LAGO_URL, value: "gs://project-8853a180-450d-47be-b83-t-demo-copia" }
                 # Cuánta historia se conserva.
