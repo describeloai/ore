@@ -89,6 +89,9 @@ if fs:
     anota(pide("/arbol/historia/" + fs[0]["ruta"]))
     anota(pide("/arbol/" + fs[0]["ruta"]))
 anota(pide("/arbol/diagnosticos"))
+# ── 0034 ⑤ · GET /assets: en frio (calcula) y en caliente (de memoria) ──
+frio = pide("/assets"); frio["ruta"] = "/assets (frio)"; anota(frio)
+caliente = pide("/assets"); caliente["ruta"] = "/assets (caliente)"; anota(caliente)
 print("-----FIN-----")
 EOF
 """
@@ -251,6 +254,46 @@ def informe(celda, medidas):
         fila("   /funciones", m["codigo"], forma(m["cuerpo"]))
 
 
+def informe_assets(celda, medidas):
+    """0034 ⑤ · lo que GET /assets da frente a lo que el catalogo pedia hasta hoy."""
+    por_ruta = {m["ruta"]: m for m in medidas}
+    frio, caliente = por_ruta.get("/assets (frio)"), por_ruta.get("/assets (caliente)")
+    if not frio:
+        return
+    print()
+    fila("GET /assets (0034 ⑤)")
+    for m in (frio, caliente):
+        c = m["cuerpo"]
+        n = len(c.get("items") or {}) if isinstance(c, dict) else "?"
+        fila("   %-20s" % m["ruta"], m["codigo"], "%5d ms" % m["ms"], "%7d B" % m["bytes"], "items=%s" % n, "desde_cache=%s" % (c.get("desde_cache") if isinstance(c, dict) else "?"), "cabeza=%s" % str(c.get("cabeza", "?"))[:7] if isinstance(c, dict) else "")
+    # lo que costaba pintar el catalogo hasta hoy: /paquetes + por base (/esquema + /copias) + /datasets
+    viejas = [m for m in medidas if m["ruta"] == "/paquetes" or m["ruta"] == "/datasets" or m["ruta"].endswith("/esquema") or m["ruta"].endswith("/copias")]
+    fila("   hasta hoy (el catalogo de la consola):", "%d llamadas" % len(viejas), "%d ms" % sum(m["ms"] for m in viejas), "%d B" % sum(m["bytes"] for m in viejas))
+    c = frio["cuerpo"]
+    if not isinstance(c, dict) or not c.get("items"):
+        return
+    items = c["items"]
+    kinds = Counter(i.get("kind") for i in items.values())
+    fila("   items por kind:", ", ".join("%s=%d" % kv for kv in sorted(kinds.items())))
+    rel = sum(len(i.get("relaciones") or []) for i in items.values())
+    rotas = sum(1 for i in items.values() for r in (i.get("relaciones") or []) if r.get("rota"))
+    ident = sum(1 for i in items.values() if (i.get("define") or {}).get("identidad"))
+    inducidas = sum(1 for i in items.values() if "vistaInducida" in (i.get("detalle") or {}))
+    con_version = sum(1 for i in items.values() if i.get("version"))
+    fila("   relaciones (dos direcciones): %d · rotas %d · identidad %d · tablas con vistaInducida %d · con version %d / %d" % (rel, rotas, ident, inducidas, con_version, len(items)))
+    for p in c.get("paquetes") or []:
+        fila("   paquete %-26s" % p.get("name"), p.get("type"), "scoped=%s" % p.get("scoped"), "items=%s" % p.get("items"), "carpetas=%s" % p.get("carpetas"))
+    # los tres hechos del criterio del paso 3, sobre lo que haya
+    ds = [i for i in items.values() if i.get("kind") == "Dataset"]
+    if ds:
+        d = ds[0]
+        fila("   un dataset:", d["ref"], "identidad=%s" % (d.get("define") or {}).get("identidad"), "sale_de=%s" % [r["ref"] for r in d.get("relaciones") or [] if r["tipo"] == "sale_de"], "puntero=%s" % {k: (d.get("puntero") or {}).get(k) for k in ("estado", "filas", "motivo")}, "version=%s" % ((d.get("version") or {}).get("commit")))
+    ts = [i for i in items.values() if i.get("kind") == "Table" and "vistaInducida" in (i.get("detalle") or {})]
+    if ts:
+        t = ts[0]
+        fila("   una table foreign:", t["ref"], "vistaInducida=%s" % t["detalle"]["vistaInducida"], "produce=%s" % [r["ref"] for r in t.get("relaciones") or [] if r["tipo"] == "produce"])
+
+
 def main():
     celdas = [a for a in sys.argv[1:] if not a.startswith("--")] or ["demo", "victor"]
     print("0034 · el catálogo de assets, medido contra el ore-serve vivo")
@@ -258,6 +301,7 @@ def main():
         medidas = medir_dentro(c)
         if medidas:
             informe(c, medidas)
+            informe_assets(c, medidas)
             with open(os.path.join(os.environ.get("TEMP", "."), "medida-assets-%s.json" % c), "w", encoding="utf-8") as f:
                 json.dump(medidas, f, ensure_ascii=False, indent=1)
     print("  (el clúster, como estaba: el Job y su ConfigMap se retiraron)")

@@ -153,6 +153,18 @@ bases, ~6 llamadas ≈ 3–5 s.
 (`foreign_test`: 19 + 19; `olist`: 8 + 8) — la pregunta identidad que `over` necesita — y ② la
 lista como Tables. Resuelto en ⑤: es un **detalle de la Table**, no un ítem.
 
+**Y `GET /assets`, medido vivo** (2026-09-21, tras construir ⑤, pasos 1–2): demo **815 ms en
+frío y 102 ms en caliente**, 16 KB, 17 ítems con `version` en todos; victor **1 362 ms en frío
+y 50 ms en caliente**, 76 KB, 58 ítems, `version` en 58/58. El frío es el clon más `indice()`
+más 58 `git log -1` (≈0,4 s más que un `/arbol`); el caliente es `git ls-remote` más servir de
+memoria. Frente a lo que el catálogo pedía hasta hoy —`/paquetes` + `/esquema` y `/copias` por
+base + `/datasets`—, la medida hizo 14 llamadas en 7,4 s (demo) y 12 en 11,2 s (victor); la
+consola, con sólo las bases elegidas, ~6 llamadas ≈ 3–5 s. **Una llamada, y de 3–5 s a 0,05–0,1
+s en caliente.** Comprobado sobre victor: `dataset:standard_test.ai_insights` dice
+`identidad: true`, `sale_de table:standard_test.public_ai_insights`, puntero `copiada · 4
+filas`, `version 073d54f`; `table:foreign_test.public_ShopifyStore` dice `vistaInducida:
+view:foreign_test.shopifyStore`.
+
 **Lo que esto ordena:** primero **(a)**, una ruta `GET /paquetes/{n}/items` que dé cada
 documento del paquete con `kind`, `namespace`, `name`, `ruta` (la carpeta es lo que hay entre
 el paquete y el fichero), `owner`, `description`, y para un Dataset el resumen de su puntero y
