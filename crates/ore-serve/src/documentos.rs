@@ -1,5 +1,6 @@
 //! Los documentos del árbol, por `kind` (Ontology Forge): un motor y una
-//! tabla de kinds — hoy `Entity`, `View`, `Table`, `Concept` e `Interface`.
+//! tabla de kinds — hoy `Entity`, `View`, `Table`, `Concept`, `Interface` y
+//! `TrainedModel` (v1alpha11, W3.7 ②).
 //!
 //! `GET /documentos/{kind}` · `GET|PUT|DELETE /documentos/{kind}/{ns}/{n}` ·
 //! `GET /conceptos`.
@@ -154,6 +155,15 @@ pub(crate) const KINDS: &[Kind] = &[
         nombre: "Interface",
         carpeta: "interfaces",
         articulo: "la interfaz",
+        exige: sin_exigencias,
+    },
+    // v1alpha11 (0031 W3.7 ②). El modelo entrenado, publicado desde una
+    // sesion: el compilador ya exige `owner`, `framework`, `version`,
+    // `artifacts` y `digest` (OOS1004) y que `trainedFrom` resuelva (OOS2005).
+    Kind {
+        nombre: "TrainedModel",
+        carpeta: "models",
+        articulo: "el modelo entrenado",
         exige: sin_exigencias,
     },
 ];

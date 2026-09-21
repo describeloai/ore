@@ -1233,6 +1233,21 @@ fn borrador_de_v1alpha10() {
     marcador("v1alpha10", "actuar", "BORRADOR · OOS v1alpha10 · actuar");
 }
 
+/// v1alpha11: publicar. `TrainedModel`, el modelo entrenado como asset del
+/// registro: un documento de un paquete que nombra sus ficheros del lago por
+/// prefijo y digest, con que se carga, que version es y de que vistas salio.
+/// Distinto del `Model` de v1alpha9 (un perfil servido). Ningun codigo nuevo.
+/// Salio de la medida de W3.7 para ORE 0031 (2026-09-21): un modelo con pesos
+/// era `OOS1005`.
+#[test]
+fn borrador_de_v1alpha11() {
+    marcador(
+        "v1alpha11",
+        "publicar",
+        "BORRADOR · OOS v1alpha11 · publicar",
+    );
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

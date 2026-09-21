@@ -73,6 +73,9 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // v1alpha10. La accion es del paquete como la funcion: alguien la posee,
     // y lo que causa es de una entidad del paquete.
     Kind::Action,
+    // v1alpha11. El modelo entrenado es del paquete que lo entreno: alguien
+    // lo posee, y salio de vistas del paquete.
+    Kind::TrainedModel,
     Kind::Resolution,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo

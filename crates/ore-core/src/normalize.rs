@@ -112,6 +112,9 @@ const CONJUNTOS: &[&str] = &[
     // `Action`— por lo mismo que `effects`: se cumplen todos y ninguno gana.
     "reads",
     "sets",
+    // v1alpha11: `trainedFrom` es un conjunto por lo mismo que `reads`: las
+    // vistas de las que salio un modelo no van una antes que otra.
+    "trainedFrom",
     // v1alpha1, y esto es lo que había que ver: **la lista nunca estuvo
     // completa, ni siquiera para la versión con la que se escribió**. Tres de
     // estos se midieron dando dos digests para el mismo contenido —`reserved`,

@@ -891,6 +891,7 @@ fn provides_de(pkg: &Package, miembro: &Path) -> BTreeMap<String, Vec<String>> {
             Kind::Entity => "entities",
             Kind::Function => "functions",
             Kind::Action => "actions",
+            Kind::TrainedModel => "models",
             Kind::Resolution => "resolutions",
             // `Binding`, `Package` y el manifiesto no se aportan: el primero
             // dice dónde está el dato de QUIEN LO PUBLICA, y los otros dos son

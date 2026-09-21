@@ -304,6 +304,7 @@ pub fn link(pkg: &Package) -> Vec<Diagnostic> {
     dependencies(pkg, &mut d);
     entities(pkg, &mut d);
     modelos(pkg, &mut d);
+    modelos_entrenados(pkg, &mut d);
     // v1alpha10: la superficie de una funcion en los dos sentidos —`over` y
     // `reads` resuelven a vistas, `writes` a propiedades— y la forma y las
     // referencias de una `Action`. Vive en su modulo porque es la regla de
@@ -696,6 +697,46 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 // La forma del nombre la comprueba la regla de forma; aqui solo si resuelve.
 // El codigo es el de siempre para una referencia que no resuelve, porque el
 // remedio es el de siempre: escribir el documento que falta, o el nombre bueno.
+// ── v1alpha11 · `TrainedModel.trainedFrom` → `View`, y su `owner` ──────────
+//
+// El linaje de un modelo entrenado son vistas del arbol, y cada una tiene que
+// estar: es la misma regla que `from` en una vista o `reads` en una funcion,
+// con el codigo de siempre para una referencia que no resuelve. Y `owner` es
+// `owner` lo declare quien lo declare: el mismo handle y el mismo codigo.
+fn modelos_entrenados(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    for m in pkg.of(Kind::TrainedModel) {
+        if let Some(v) = m.section("owner") {
+            let s = v.as_str().unwrap_or("");
+            if !es_handle(s) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2009,
+                        &m.path,
+                        format!("`owner: {s}` no es un handle"),
+                    )
+                    .at(v.pos())
+                    .help(
+                        "usa `team:<handle>` o `user:<handle>`: es lo que se alinea con \
+                         CODEOWNERS, que es quien hace cumplir la revision",
+                    ),
+                );
+            }
+        }
+        for nodo in m.section("trainedFrom").map(|n| n.items()).unwrap_or(&[]) {
+            let Some(referencia) = nodo.as_str() else {
+                continue;
+            };
+            if pkg.resolve_view(referencia, m).is_none() {
+                out.push(
+                    referencia_rota(&m.path, nodo, referencia, "trainedFrom").help(format!(
+                        "`trainedFrom` nombra las vistas de las que salio el modelo, y `{referencia}` no es ninguna vista del arbol: escribe la vista, o el nombre bueno"
+                    )),
+                );
+            }
+        }
+    }
+}
+
 fn modelos(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for f in pkg.of(Kind::Function) {
         let Some(nodo) = f.section("model") else {

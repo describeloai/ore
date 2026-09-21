@@ -63,6 +63,14 @@ pub enum ApiVersion {
     /// funcion no podia entrar sola, la copia ya no se decide vista a vista, y
     /// lo que una funcion leia no se declaraba.
     V1Alpha10,
+    /// v1alpha11. **Publicar.** Anade `TrainedModel`: el modelo entrenado
+    /// como asset del registro —un documento de un paquete que nombra sus
+    /// ficheros del lago por prefijo y digest, con que se cargan, que version
+    /// son y de que vistas salieron—. Distinto del `Model` de v1alpha9 (un
+    /// perfil servido, sin namespace, en la raiz): son dos cosas que se usan
+    /// de dos maneras. Lo midio `pruebas-de-fuego/medida-w3-declarar.py`
+    /// (2026-09-21, ORE 0031 W3.7): un modelo con pesos era `OOS1005`.
+    V1Alpha11,
 }
 
 impl ApiVersion {
@@ -75,6 +83,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha8,
         ApiVersion::V1Alpha9,
         ApiVersion::V1Alpha10,
+        ApiVersion::V1Alpha11,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -87,6 +96,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha8 => "oos.dev/v1alpha8",
             ApiVersion::V1Alpha9 => "oos.dev/v1alpha9",
             ApiVersion::V1Alpha10 => "oos.dev/v1alpha10",
+            ApiVersion::V1Alpha11 => "oos.dev/v1alpha11",
         }
     }
 
@@ -181,6 +191,13 @@ pub enum Kind {
     /// tiene codigo que atestar: la carencia de integridad la cierra quien la
     /// aplica, o la funcion que llama.
     Action,
+    /// v1alpha11. **El modelo entrenado como asset del registro**: un
+    /// documento de un paquete que nombra sus ficheros del lago por prefijo y
+    /// digest, con que se cargan (`framework`), que version son y de que
+    /// vistas salieron (`trainedFrom`). No es el `Model` de v1alpha9 —aquel
+    /// nombra un perfil servido, sin namespace, en la raiz; este nombra
+    /// pesos, en el paquete que lo entreno— y no se invoca: lo carga codigo.
+    TrainedModel,
 }
 
 impl Kind {
@@ -201,6 +218,7 @@ impl Kind {
         Kind::Table,
         Kind::Model,
         Kind::Action,
+        Kind::TrainedModel,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -221,6 +239,7 @@ impl Kind {
             Kind::Table => "Table",
             Kind::Model => "Model",
             Kind::Action => "Action",
+            Kind::TrainedModel => "TrainedModel",
         }
     }
 
@@ -237,6 +256,7 @@ impl Kind {
             Kind::Table => ApiVersion::V1Alpha8,
             Kind::Model => ApiVersion::V1Alpha9,
             Kind::Action => ApiVersion::V1Alpha10,
+            Kind::TrainedModel => ApiVersion::V1Alpha11,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -335,6 +355,11 @@ impl Kind {
             // reticulo por los endosos de la funcion que lo invoca, no por una
             // etiqueta que el modelo se ponga a si mismo.
             Kind::Model => &["name", "description"],
+            // v1alpha11. El modelo entrenado vive en un paquete (lleva
+            // `namespace`) y no admite `labels`: lo que produce llega al
+            // reticulo por los endosos de la funcion que lo use, y su
+            // clasificacion de entrada ya esta en las vistas de `trainedFrom`.
+            Kind::TrainedModel => &["name", "namespace", "description"],
             // La vista admite `labels`, y la restriccion a `oos.maturity` la
             // pone `validate::labels_de_vista` porque es sobre la CLAVE, no
             // sobre el campo.
@@ -573,6 +598,20 @@ impl Kind {
             // se cobra, `task` lo que una funcion puede pedirle. Ni `runtime`,
             // ni `resources`, ni `weights.repo`: todo eso es del perfil.
             Kind::Model => &["profile", "digest", "tier", "task"],
+            // v1alpha11. El modelo entrenado: quien responde, con que se
+            // carga, que version, donde estan sus ficheros y su digest, y de
+            // que vistas salio. Ni metricas ni hiperparametros: sin un
+            // vocabulario comparable, un campo libre adquiere un significado
+            // que nadie escribio (`00-scope` §5).
+            Kind::TrainedModel => &[
+                "owner",
+                "framework",
+                "task",
+                "version",
+                "artifacts",
+                "digest",
+                "trainedFrom",
+            ],
             // v1alpha10. La invocacion sin codigo: sobre que filas, que pide,
             // con que criterios, que causa (`sets` o `call`, exactamente uno,
             // y eso lo comprueba `actuar`), y quien puede.
@@ -841,6 +880,119 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         }
                         _ => {}
                     }
+                }
+                None
+            },
+        },
+        // ── v1alpha11 · el modelo entrenado ─────────────────────────────────
+        //
+        // Sin dueno nadie responde; sin framework nadie sabe cargarlo; sin
+        // version, artefactos o digest no nombra nada que se pueda cargar.
+        // `framework` y `task` son texto libre pero no vacio.
+        ShapeRule {
+            kind: Kind::TrainedModel,
+            path: &["spec"],
+            check: |n| {
+                for (clave, ayuda) in [
+                    (
+                        "owner",
+                        "quien responde por el modelo: `team:<n>` o `user:<n>`",
+                    ),
+                    (
+                        "framework",
+                        "con que se carga: el nombre de la libreria que el codigo importa (`sklearn`, `xgboost`, `torch`…)",
+                    ),
+                    (
+                        "artifacts",
+                        "el prefijo del lago bajo el que estan sus ficheros (`models/<ns>_<n>/v<k>`)",
+                    ),
+                    (
+                        "digest",
+                        "el digest del manifiesto de los artefactos: lo que se carga es esto, o no se carga",
+                    ),
+                ] {
+                    match n.get(clave).and_then(|(_, v)| v.as_str()) {
+                        None => {
+                            return Some((
+                                format!("un modelo entrenado sin `{clave}`"),
+                                Some(ayuda.to_string()),
+                            ));
+                        }
+                        Some(v) if v.trim().is_empty() => {
+                            return Some((
+                                format!("`{clave}` esta vacio"),
+                                Some(ayuda.to_string()),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(t) = n.get("task").and_then(|(_, v)| v.as_str())
+                    && t.trim().is_empty()
+                {
+                    return Some((
+                        "`task` esta vacio".to_string(),
+                        Some("que hace (`forecast`, `classify`, `embed`…), o quitalo".to_string()),
+                    ));
+                }
+                match n.get("version").and_then(|(_, v)| v.as_str()) {
+                    None => {
+                        return Some((
+                            "un modelo entrenado sin `version`".to_string(),
+                            Some("un entero >= 1; publicar otra version es cambiar este numero, `artifacts` y `digest` en el mismo commit".to_string()),
+                        ));
+                    }
+                    Some(v) if !v.parse::<u64>().is_ok_and(|k| k >= 1) => {
+                        return Some((
+                            format!("`version: {v}` no es un entero >= 1"),
+                            Some("la primera version publicada es la 1".to_string()),
+                        ));
+                    }
+                    _ => {}
+                }
+                let a = n
+                    .get("artifacts")
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("");
+                let segmento_ok = |s: &str| {
+                    s.chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                        && s.chars().all(|c| {
+                            c.is_ascii_lowercase()
+                                || c.is_ascii_digit()
+                                || c == '_'
+                                || c == '.'
+                                || c == '-'
+                        })
+                };
+                if !a.split('/').all(segmento_ok) {
+                    return Some((
+                        format!("`artifacts: {a}` no tiene la forma de un prefijo del lago"),
+                        Some(
+                            "minusculas, digitos, `_`, `.`, `-` y `/`; sin barra inicial ni final"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                let d = n.get("digest").and_then(|(_, v)| v.as_str()).unwrap_or("");
+                let hex = d.strip_prefix("sha256:").unwrap_or("");
+                if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some((
+                        "`digest` no es `sha256:<64 hex>`".to_string(),
+                        Some(
+                            "el digest del manifiesto de los artefactos, en forma canonica"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if let Some((_, t)) = n.get("trainedFrom")
+                    && t.items().is_empty()
+                {
+                    return Some((
+                        "`trainedFrom` esta vacio".to_string(),
+                        Some("las vistas de las que salio, o quitalo".to_string()),
+                    ));
                 }
                 None
             },
