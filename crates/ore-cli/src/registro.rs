@@ -294,7 +294,7 @@ fn declaradas(
         };
         // Una que no expande o no tipa ya la denuncia `ore view` por su propia
         // línea, con el desajuste entero. Aquí solo no entra.
-        let Ok(plan) = catalogo.expandir(&qn) else {
+        let Ok(plan) = catalogo.expandir(&crate::vista::nodo_de(v).unwrap_or_default()) else {
             continue;
         };
         let Ok(campos) = esquema(&plan) else { continue };

@@ -122,7 +122,7 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     };
     let catalogo = Catalogo::con(vistas_todas.iter().filter_map(|v| {
         Some(Vista::nueva(
-            &v.qname()?,
+            &crate::vista::nodo_de(v)?,
             crate::vista::cuerpo(&pkg, v, &tipos),
         ))
     }));
@@ -278,7 +278,7 @@ fn una(
     use ore_core::json::Json;
     // ── ① El plan, su digest y su esquema ───────────────────────────────────
     let plan = catalogo
-        .expandir(qn)
+        .expandir(&crate::vista::nodo_de(v).unwrap_or_default())
         .map_err(|e| format!("el plan no se expande · {}", e.como_texto()))?;
     let esq = esquema(&plan).map_err(|d| format!("el esquema no tipa · {}", d.como_texto()))?;
 

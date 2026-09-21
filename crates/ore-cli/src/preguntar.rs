@@ -81,15 +81,11 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(path);
     // Se pregunta a una vista, o a un dataset (0033): los dos tienen plan.
+    // Si una vista y su dataset se llaman igual, se pregunta a la vista: es
+    // la pregunta sobre lo que se tiene, y lee de su dataset.
     let v: &Loaded = pkg
-        .docs
-        .iter()
-        .find(|d| {
-            matches!(
-                d.kind,
-                ore_core::document::Kind::View | ore_core::document::Kind::Dataset
-            ) && d.qname().as_deref() == Some(op.vista)
-        })
+        .view(op.vista)
+        .or_else(|| pkg.dataset(op.vista))
         .ok_or_else(|| {
             (
                 65,
@@ -120,20 +116,22 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let tipos = crate::vista::tipos_de_raiz(&pkg);
     let catalogo = Catalogo::con(pkg.of_view().iter().filter_map(|d| {
         Some(Vista::nueva(
-            &d.qname()?,
+            &crate::vista::nodo_de(d)?,
             crate::vista::cuerpo(&pkg, d, &tipos),
         ))
     }));
-    let plan = catalogo.expandir(op.vista).map_err(|e| {
-        (
-            65,
-            format!(
-                "el plan de `{}` no se expande: {}",
-                op.vista,
-                e.como_texto()
-            ),
-        )
-    })?;
+    let plan = catalogo
+        .expandir(&crate::vista::nodo_de(v).unwrap_or_default())
+        .map_err(|e| {
+            (
+                65,
+                format!(
+                    "el plan de `{}` no se expande: {}",
+                    op.vista,
+                    e.como_texto()
+                ),
+            )
+        })?;
     let lat = ore_core::flow::lattices(&pkg);
     let clasificacion = Clasificacion {
         reticulos: lat.clone(),

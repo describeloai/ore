@@ -43,7 +43,7 @@ use ore_core::link::Loaded;
 use ore_core::propuesta::{Propuesta, cotejar};
 use ore_view::catalog::{Catalogo, Vista};
 
-use crate::vista::{Vistas, cuerpo, tipos_de_raiz};
+use crate::vista::{Vistas, cuerpo, nodo_de, tipos_de_raiz};
 
 pub fn verificar(paquete: &Path, propuesta: &Path) -> ExitCode {
     let texto = match std::fs::read_to_string(propuesta) {
@@ -147,14 +147,16 @@ fn por_donde_entra(pkg: &ore_core::link::Package, p: &Propuesta) -> Option<Strin
         d.kind == ore_core::document::Kind::Entity && d.qname().as_deref() == Some(entidad_qn)
     })?;
     let v = ore_core::vistas::respaldo(pkg, e)?;
-    let qn = v.qname()?;
 
     let tipos = tipos_de_raiz(pkg);
     let vistas: Vec<&Loaded> = pkg.of_view();
     let catalogo = Catalogo::con(
         vistas
             .iter()
-            .filter_map(|v| Some(Vista::nueva(&v.qname()?, cuerpo(pkg, v, &tipos)))),
+            .filter_map(|v| Some(Vista::nueva(&nodo_de(v)?, cuerpo(pkg, v, &tipos)))),
     );
-    catalogo.expandir(&qn).ok().map(|plan| plan.digest())
+    catalogo
+        .expandir(&nodo_de(v)?)
+        .ok()
+        .map(|plan| plan.digest())
 }

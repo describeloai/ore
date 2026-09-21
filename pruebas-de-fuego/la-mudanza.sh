@@ -59,7 +59,7 @@ mkdir -p "$REPO"
 
 cat > "$REPO/catalogo.json" <<'JSON'
 {
-  "source": "lago",
+  "source": "bq",
   "tables": [
     { "name": "public.clientes",
       "columns": [ { "name": "id", "type": "Integer" },

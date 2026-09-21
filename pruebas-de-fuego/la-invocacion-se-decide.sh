@@ -124,9 +124,12 @@ spec:
   reads: { fullScan: cheap }
   changes: { mode: append, witness: snapshot }
 Y
-cat > "$A/packages/olist_copia/views/productCategoryNameTranslation.yaml" <<'Y'
-apiVersion: oos.dev/v1alpha8
-kind: View
+# la copia es un Dataset con su plan (0033); la Function pregunta por la View
+# del mismo nombre sobre el dataset (`over` sobre un Dataset es OOS7014)
+mkdir -p "$A/packages/olist_copia/datasets"
+cat > "$A/packages/olist_copia/datasets/productCategoryNameTranslation.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
 metadata: { name: productCategoryNameTranslation, namespace: olist_copia }
 spec:
   owner: team:data
@@ -134,7 +137,17 @@ spec:
   fields:
     productCategoryName: product_category_name
     productCategoryNameEnglish: product_category_name_english
-  materialized: { datasource: copia, table: "copia.productCategoryNameTranslation" }
+Y
+cat > "$A/packages/olist_copia/views/productCategoryNameTranslation.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: productCategoryNameTranslation, namespace: olist_copia }
+spec:
+  owner: team:data
+  from: { dataset: olist_copia.productCategoryNameTranslation }
+  fields:
+    productCategoryName: productCategoryName
+    productCategoryNameEnglish: productCategoryNameEnglish
 Y
 cat > "$A/packages/olist_copia/views/sinCopia.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha8
@@ -166,11 +179,11 @@ export FICHEROS_DIR="$TMP/datos"
 ( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$A"; falla "el árbol no compila"; exit 1; }
 
 # ── 0 · la copia, hecha ──────────────────────────────────────────────────────
-salida=$("$ORE" materialize "$A" --informe "$A/copias" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
-CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/copias/olist_copia_productCategoryNameTranslation.json")
+salida=$("$ORE" materialize "$A" --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
+CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/datasets/olist_copia_productCategoryNameTranslation.json")
 [ -n "$CLAVE" ] || { falla "0 · el puntero de la copia no tiene metadata_location"; exit 1; }
 # y cuenta por columna (medida W1 §B): en demo una copia «copiada» tenía 2 de 9 columnas
-"$PY" - "$A/copias/olist_copia_productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
+"$PY" - "$A/datasets/olist_copia_productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
 import json, sys
 i = json.load(open(sys.argv[1]))
 assert i["columnas"] == {"productCategoryName": i["filas"], "productCategoryNameEnglish": i["filas"]}, i.get("columnas")
@@ -254,14 +267,13 @@ niega() { # nombre grep
   echo "$s" | grep -q "$2" || falla "6 · $1 no dice por qué ($2): $s"
 }
 funcion sobreSinCopia olist_copia.sinCopia ""
-niega sobreSinCopia "no declara copia"
-sed -i 's/materialized:.*//' "$A/packages/olist_copia/views/productCategoryNameTranslation.yaml"
+niega sobreSinCopia "no tiene dataset debajo"
 cp "$A/packages/olist_copia/functions/traducirCategoria.yaml" "$TMP/f.bak"
-# la vista sí declara copia pero el informe no está: se restaura la declaración y se esconde el informe
-git -C "$A" init -q 2>/dev/null; sed -i 's/^  fields:/  materialized: { datasource: copia, table: "copia.productCategoryNameTranslation" }\n  fields:/' "$A/packages/olist_copia/views/productCategoryNameTranslation.yaml"
-mv "$A/copias" "$A/copias.aparte"
+# la vista sí tiene su dataset debajo pero el informe no está: se esconde el informe
+git -C "$A" init -q 2>/dev/null
+mv "$A/datasets" "$A/datasets.aparte"
 niega traducirCategoria "no está hecha"
-mv "$A/copias.aparte" "$A/copias"
+mv "$A/datasets.aparte" "$A/datasets"
 funcion conEfectos olist_copia.productCategoryNameTranslation "  effects:
     - writes: olist_copia.Nadie.x"
 s=$("$ORE" invoke "$A" --funcion olist_copia.conEfectos --puerta "$PUERTA" --modelo x 2>&1) && falla "6 · con effects no se negó"

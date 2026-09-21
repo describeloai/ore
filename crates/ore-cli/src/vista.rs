@@ -83,7 +83,7 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
     let catalogo = Catalogo::con(
         vistas
             .iter()
-            .filter_map(|v| Some(Vista::nueva(&v.qname()?, cuerpo(&pkg, v, &tipos)))),
+            .filter_map(|v| Some(Vista::nueva(&nodo_de(v)?, cuerpo(&pkg, v, &tipos)))),
     );
     let clasificacion = Clasificacion {
         reticulos: lat.clone(),
@@ -122,7 +122,7 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
             println!("  estado    {nivel}");
         }
 
-        let plan = match catalogo.expandir(&qn) {
+        let plan = match catalogo.expandir(&nodo_de(v).unwrap_or_default()) {
             Ok(p) => p,
             Err(e) => {
                 println!("  plan      no se expande · {}", e.como_texto());
@@ -553,6 +553,25 @@ impl Vistas for Package {
     }
 }
 
+/// **Cómo se llama un documento en el catálogo del motor** (0033). El
+/// catálogo de ore-view nombra sus nodos por un texto, y una vista y su
+/// dataset pueden llamarse igual —la pregunta sobre lo que se tiene, con el
+/// mismo nombre y distinto kind—: la vista va por su nombre y el dataset por
+/// `dataset:<nombre>`. Es la única costura: los punteros, el registro y lo
+/// que el usuario nombra siguen por el nombre cualificado.
+pub(crate) fn nodo_de(d: &Loaded) -> Option<String> {
+    let qn = d.qname()?;
+    Some(if d.kind == Kind::Dataset {
+        nodo_del_dataset(&qn)
+    } else {
+        qn
+    })
+}
+
+pub(crate) fn nodo_del_dataset(qn: &str) -> String {
+    format!("dataset:{qn}")
+}
+
 /// **Dónde vive la copia** de un documento que copia: `(datasource, objeto)`.
 /// Un dataset vive en el lago con el nombre que su puntero le da
 /// (`<ns>_<n>`); una vista de v1alpha7/8 con `materialized`, donde ella dijo.
@@ -719,12 +738,17 @@ pub(crate) fn cuerpo(
         // v1alpha12: un dataset de abajo es una referencia por nombre, como
         // una vista. Lo que el plumazo de ore-cli decide de verdad —leer del
         // puntero— es de 0033 §2; aqui solo se compila.
-        Some(vistas::Fuente::Vista(abajo)) | Some(vistas::Fuente::Dataset(abajo)) => {
+        Some(fuente @ (vistas::Fuente::Vista(_) | vistas::Fuente::Dataset(_))) => {
+            // El documento de abajo y su nombre en el catálogo (`nodo_de`).
+            let (abajo_doc, nodo) = match fuente {
+                vistas::Fuente::Vista(a) => (pkg.view(&a), a),
+                vistas::Fuente::Dataset(a) => (pkg.dataset(&a), nodo_del_dataset(&a)),
+                _ => unreachable!(),
+            };
             // Los tipos de la de abajo son los de su esquema; se resuelven al
             // expandir. Para tipar el literal de un filtro se mira la raíz.
             let raiz = vistas::raiz(pkg, v).ok();
             let tipos = tipos.clone();
-            let abajo_doc = pkg.view(&abajo).or_else(|| pkg.dataset(&abajo));
             let f = move |campo_abajo: &str| -> Type {
                 // Campo de la vista de abajo → su columna raíz → su tipo.
                 let col = abajo_doc
@@ -738,7 +762,7 @@ pub(crate) fn cuerpo(
                     _ => Type::Scalar("String".into()),
                 }
             };
-            (Nodo::Referencia(abajo), Box::new(f))
+            (Nodo::Referencia(nodo), Box::new(f))
         }
         // Las dos versiones convergen aquí, y **`Lectura` no cambia**: `Lectura`
         // YA ERA la tabla —datasource, objeto y columnas—, escrita antes de que
