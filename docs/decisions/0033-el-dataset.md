@@ -93,17 +93,41 @@ spec:
   changes: { mode: upsert, key: [pais], witness: snapshot }
 ```
 
-- Con `from` es **una copia con plan**: la costura del gobierno y el refresco viven aquí. `from`
-  nombra una `Table` **o otro `Dataset`** (una copia derivada de una copia, que es lo que un
-  transform hace).
-- Sin `from` es **una salida de código**: su esquema sigue a la tabla Iceberg (como hoy la
-  `Table` del lago) y **su linaje no está en el documento sino en el puntero**
-  (`procedencia: {inputs, transform, codigo@commit}`, 0031 W3.7 ③), porque lo escribe quien lo
-  produjo y cambia con cada escritura.
+- Con `from` es un dataset **mantenido**: el documento lleva el plan y el sistema lo cumple
+  (la copia con plan; fuera: la *materialized view* de Databricks, la *dynamic table* de
+  Snowflake, el modelo `table`/`incremental` de dbt). La costura del gobierno y el refresco viven
+  aquí. `from` nombra una `Table` **o otro `Dataset`** (una copia derivada de una copia, que es lo
+  que un transform hace). `freshness` (cada cuánto se cumple el plan; el *target lag*) y
+  `changes` (**cómo se refresca**: `mode`, `key`, `witness`) son suyos, como hoy de la View.
+- Sin `from` es un dataset **escrito**: lo llena código (`write()`, un transform, un trabajo) y
+  el sistema registra lo que llegó. Su esquema (`columns`) **sigue a la tabla Iceberg** —nace
+  con la primera escritura, cambia cuando ella cambia, y lo que se le añada a mano (descripción,
+  tipo declarado) se conserva; es el «schema inferido, editable» de Foundry— y **su linaje no
+  está en el documento sino en el puntero** (`procedencia: {inputs, transform, codigo@commit}`,
+  0031 W3.7 ③), porque lo escribe quien lo produjo y cambia con cada escritura. Aquí `changes`
+  no dice cómo se refresca sino **qué escrituras admite**: `mode: append` niega un upsert,
+  `mode: upsert` exige `key` y es lo que `write()` funde por ella; es la costura de la escritura
+  desde un puesto (0031 W3.7 gobierno), que la `Table` del lago no tenía.
 - El puntero (`datasets/<ns>_<n>.json`: `metadata_location`, `snapshot`, `filas`, `procedencia`,
   `escrito_por`) sigue siendo **el estado** y no entra en el documento: dos sitios que dicen lo
-  mismo son dos sitios que discrepan.
-- **No lleva `labels`**: la clasificación baja de la `Entity` por la pregunta, como hoy.
+  mismo son dos sitios que discrepan. **Sus versiones son sus snapshots** (Foundry: las
+  transacciones; Iceberg: la historia): `historia`, leer a un snapshot, `revert` del puntero.
+- **Vive en la rama**: el puntero es de la rama del árbol (Foundry: «dataset branches follow
+  code branches», con *fallback* a `master`; aquí 0031 §4, ya hecho). La tabla Iceberg es una
+  y la rama apunta a su snapshot, como una *ref* de Iceberg. (Se comprueba en la medida: hoy
+  dos ramas que escriben el mismo dataset comparten la tabla del lago.)
+- **Es tabular**: una tabla Iceberg, con columnas. Lo que son ficheros con digest es un
+  `TrainedModel` (v1alpha11), y si un día hace falta «dataset de ficheros» a secas, se abre
+  entonces. Foundry hace de los ficheros la base y del esquema una capa; aquí el esquema es
+  la base porque **el gobierno cuelga de las columnas** (0008, la `Entity`).
+- **No lleva `labels`**: la clasificación baja de la `Entity` por la pregunta, como hoy. **Ni
+  calidad**: las reglas son un `Ruleset` que apunta al dataset (0034 ③, Rules), como los *asset
+  checks* de Dagster viven al lado del asset y no dentro. **Sí `owner`** (obligatorio) y
+  `description`: quién responde y qué es.
+- `retention` (**opcional**, `{age, min}`): la decisión de cuánta historia se guarda, que hoy
+  vive sólo en las propiedades de la tabla (`history.expire.*`, `--retencion`) y que es del
+  documento por la misma razón que `freshness`: es una decisión, no un estado. Sin ella, la
+  del inquilino.
 
 > ### ② `View` vuelve a ser sólo la pregunta; `Entity` se respalda en una View **o en un Dataset**.
 
@@ -197,6 +221,29 @@ los primeros. Lo más caro no está en la lista: es la **migración** de los ár
 y que `copia.rs` + `inductor.rs` + `aprovisionar-inquilino.sh` dejen de buscar la clave en la
 View para buscar el `kind`. Lo que no se ha medido: cuántos documentos de cada árbol real
 cambian (requiere el clúster).
+
+## Lo cotejado: qué es un dataset fuera, y qué es aquí (2026-09-21)
+
+Antes de fijar el kind se miró cómo lo nombran los sistemas de los que viene el cliente, y qué
+de eso vale aquí. Lo que sale: **el asset es la cosa, no cómo se produce**; el plan puede ir
+dentro; el linaje va por transacción; las ramas siguen al código; el gobierno y la calidad van
+al lado.
+
+| fuera | qué es su «dataset» | qué confirma o cambia aquí |
+|---|---|---|
+| **Foundry** (datasets) | ficheros + transacciones (`SNAPSHOT`, `APPEND`, `UPDATE`, `DELETE`), cada una un registro inmutable; el esquema es metadato «que se puede inferir o editar»; «dataset branches follow code repository branches», con *fallback* a `master`; el linaje se registra por *build*: cada ejecución deja una transacción con el trabajo, las entradas y la salida; *virtual tables* para lo que se queda fuera | **confirma el modelo entero**: un documento por lo que se tiene, sin importar quién lo llenó; transacción = snapshot Iceberg (`changes.mode` append/upsert ≈ APPEND/UPDATE; el `sellar` de la copia ≈ SNAPSHOT); esquema que sigue a los bytes; la rama del puesto con fallback (0031 §4); la `procedencia` por snapshot = el *build record*; la `Table` = la *virtual table*. Lo que no se copia: los ficheros como base (aquí el esquema es la base) |
+| **Dagster** (software-defined assets) | «An `AssetKey`, a set of upstream asset keys, and a Python function»: el asset es la tabla o el fichero; la función lo calcula; las dependencias se declaran en el asset (`deps`) o por los parámetros; los *asset checks* van al lado | confirma **inputs declarados** (`transform(inputs, output)`) y que la función no es el asset (0031 W3.7 ②: un transform no es un documento); confirma la calidad como capa (Ruleset), no como campo |
+| **dbt** (models + materializations) | «a model is defined by its query while the materialization is a config»: `view`, `table`, `incremental`, `materialized view`; los *contracts* fijan el esquema | es el argumento **del modelo de hoy** (`View` + `materialized` como config), y se responde: dbt es una herramienta de construcción y su objeto es la consulta; aquí el catálogo es el registro de lo que el cliente **tiene**, y lo que tiene es el dataset. La pregunta sigue existiendo (`View`), y `from` en el Dataset es la consulta que lo produce; `incremental` ≈ `changes` con `key`/`witness`. Lo que se toma prestado con nombre: **`columns` como contrato exigible** es una opción futura (hoy sigue a Iceberg) |
+| **Snowflake** (dynamic tables) | «materializes the results of a SELECT query and keeps them up to date»; *target lag*; refresco incremental o completo; «when dynamic tables read from each other, they form a pipeline» y la dependencia se infiere de la consulta | confirma el dataset **mantenido**: plan dentro, `freshness` = *target lag*, incremental por el testigo (0015/0017), y `from: { dataset }` para encadenar copias |
+| **Databricks / Unity Catalog** | tipos: *managed*, *external*, *foreign* («read-only tables managed by a foreign catalog»), *view*, *materialized view* («datasets … that materialize query results using managed flow logic»), *streaming table*; **MV y ST son ambas tablas gestionadas** del catálogo, distintas por la semántica del flujo (batch / streaming), no por ser objetos de otra clase | confirma **un kind con dos formas**: lo que las distingue es cómo se llenan (plan mantenido / código), no qué son; la `Table` ≈ *foreign table*; `paquete.carpeta.nombre` ≈ `catalog.schema.table` (0034 ④) |
+| **Iceberg** (branches y tags) | «named references to snapshots with their own independent lifecycles»; retención por rama (`min-snapshots-to-keep`, `max-snapshot-age`, `max-ref-age`); *write-audit-publish*: escribir en una rama, validar, `fast_forward` a `main` | confirma que **el puntero es una ref**: la rama del árbol apunta a un snapshot de la misma tabla; `retention` en el documento con los mismos dos ejes; y WAP es exactamente escribir en una rama del árbol y fundir (0030/0031) |
+| **ODCS** (Open Data Contract Standard) | un contrato por dataset: *fundamentals*, *schema*, *quality*, *SLA*, *team/roles*, *servers*, *tags* | confirma `owner` y `description` en el documento; el resto son capas aquí (Access, Rules) o estado (el puntero). Lo que no se toma: el contrato como documento aparte del dataset |
+
+**Lo que el cotejo cambia en ①**: el nombre de las dos formas (**mantenido** / **escrito**),
+`changes` con un sentido por forma (cómo se refresca / qué escrituras admite), `freshness` y
+`retention` como decisiones del documento, la rama como ref del puntero, «tabular» dicho, y la
+calidad fuera. Lo que no cambia: un kind, sin `labels`, el puntero como estado, la `Table`
+intacta, la `View` como sólo la pregunta.
 
 ## Lo que se acepta a cambio
 
