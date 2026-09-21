@@ -248,6 +248,9 @@ const PUESTO_MODELO: &str = "puesto-modelo";
 const RAMA_MODELO: &str = "rama-modelo";
 const CAPA_MODELO: &str = "capa-modelo";
 const ABIERTO_MODELO: &str = "abierto-modelo";
+/// El hueco del trabajo (W3.7 ④): `<ruta>@<commit>` del fichero que el Job
+/// corre como una sola celda y termina; vacío es una sesión.
+const TRABAJO_MODELO: &str = "trabajo-modelo";
 /// El hueco de la imagen del puesto: `puesto-entorno-modelo:1` →
 /// `puesto-<entorno>:1` (W3.4: python, node o jvm; las tres con el agente
 /// dentro y su `CMD`, por eso la plantilla no lleva `command`).
@@ -267,6 +270,7 @@ pub fn rendir_puesto(
     capa: &str,
     abierto: &str,
     entorno: &str,
+    trabajo: &str,
 ) -> Result<(String, String, String), String> {
     if !plantilla.contains(&format!("puesto-{RESUMEN_MODELO}")) {
         return Err(format!(
@@ -282,6 +286,11 @@ pub fn rendir_puesto(
     if plantilla.matches(ENTORNO_MODELO).count() != 1 {
         return Err(format!(
             "`{PLANTILLA_PUESTO}` no trae (una vez) el hueco `{ENTORNO_MODELO}`: `malla/51-el-puesto.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if !trabajo.is_empty() && !plantilla.contains(&format!("value: \"{TRABAJO_MODELO}\"")) {
+        return Err(format!(
+            "`{PLANTILLA_PUESTO}` no trae el hueco `value: \"{TRABAJO_MODELO}\"`: hay que converger este inquilino para correr un trabajo"
         ));
     }
     for (de, a) in [
@@ -316,9 +325,20 @@ pub fn rendir_puesto(
             &format!("value: \"{ABIERTO_MODELO}\""),
             &format!("value: \"{abierto}\""),
         )
-        .replace(ENTORNO_MODELO, &format!("puesto-{entorno}:1"));
+        .replace(ENTORNO_MODELO, &format!("puesto-{entorno}:1"))
+        .replace(
+            &format!("value: \"{TRABAJO_MODELO}\""),
+            &format!("value: \"{trabajo}\""),
+        );
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
+    // Un trabajo (`trabajo-<persona>-<hex>`) se llama por su id: no es «el
+    // puesto de ana en python», es una corrida, y cada una es un fichero.
+    if let Some(quien) = id.strip_prefix("trabajo-") {
+        let job = format!("trabajo-{quien}-{h}");
+        let t = t.replace(&format!("puesto-{RESUMEN_MODELO}"), &job);
+        return Ok((format!("54-el-trabajo-{quien}.yaml"), t, job));
+    }
     let quien = id.strip_prefix("puesto-").unwrap_or(id);
     let job = format!("puesto-{quien}-{h}");
     let t = t.replace(&format!("puesto-{RESUMEN_MODELO}"), &job);
@@ -408,6 +428,7 @@ env:
             "capa-0123456789ab",
             "1",
             "python",
+            "",
         )
         .unwrap();
         assert_eq!(f, "51-el-puesto-ana-python.yaml");
@@ -421,7 +442,7 @@ env:
                 && t.contains("image: registro/ore/puesto-python:1")
         );
         assert!(t.contains(&format!("name: {job}")));
-        let (_, t2, _) = rendir_puesto(p, "puesto-ana-python", "", "", "1", "python").unwrap();
+        let (_, t2, _) = rendir_puesto(p, "puesto-ana-python", "", "", "1", "python", "").unwrap();
         assert!(t2.contains("value: \"\""));
         // Reabrir en otro instante es OTRO Job (Flux retira el viejo): el fichero, el mismo.
         let (f3, _, job3) = rendir_puesto(
@@ -431,19 +452,40 @@ env:
             "capa-0123456789ab",
             "2",
             "python",
+            "",
         )
         .unwrap();
         assert_eq!(f3, f);
         assert_ne!(job3, job);
         // Otro entorno (W3.4): otra imagen, otro fichero, otro Job.
-        let (f4, t4, job4) = rendir_puesto(p, "puesto-ana-node", "", "", "1", "node").unwrap();
+        let (f4, t4, job4) = rendir_puesto(p, "puesto-ana-node", "", "", "1", "node", "").unwrap();
         assert_eq!(f4, "51-el-puesto-ana-node.yaml");
         assert!(
             t4.contains("image: registro/ore/puesto-node:1")
                 && job4.starts_with("puesto-ana-node-")
         );
-        assert!(rendir_puesto(p, "puesto-ana-rust", "", "", "1", "rust").is_err());
-        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "", "1", "python").is_err());
+        assert!(rendir_puesto(p, "puesto-ana-rust", "", "", "1", "rust", "").is_err());
+        assert!(rendir_puesto("name: otra-cosa", "puesto-ana", "", "", "1", "python", "").is_err());
+        // Un trabajo pide el hueco `TRABAJO`; con él, el Job se llama por su id
+        // y el fichero es `54-el-trabajo-…`
+        assert!(
+            rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").is_err()
+        );
+        let pt = format!("{p}  - {{ name: TRABAJO, value: \"trabajo-modelo\" }}\n");
+        let (f5, t5, job5) = rendir_puesto(
+            &pt,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "",
+            "1",
+            "python",
+            "packages/p/transforms/x.py@abc123",
+        )
+        .unwrap();
+        assert_eq!(f5, "54-el-trabajo-ana-1a2b3c4d.yaml");
+        assert!(job5.starts_with("trabajo-ana-1a2b3c4d-"), "{job5}");
+        assert!(t5.contains("value: \"packages/p/transforms/x.py@abc123\""));
+        assert!(t5.contains(&format!("name: {job5}")));
     }
 
     #[test]

@@ -115,6 +115,20 @@ pub(crate) struct Celda {
     pub salida: Option<Json>,
 }
 
+/// **Un trabajo** (0031 §9, W3.7 ④): un fichero del árbol corrido como una
+/// sola celda en un Job que termina. Es un puesto con `trabajo` puesto: la
+/// misma cola, la misma plantilla (con `TRABAJO`), el mismo agente (que sale
+/// tras la celda), y el informe en `trabajos/<id>.json` del árbol.
+#[derive(Debug, Clone)]
+pub(crate) struct Trabajo {
+    /// La ruta del fichero en el árbol (`packages/<p>/transforms/x.py`).
+    pub codigo: String,
+    /// El commit del que se leyó (`local` sobre un directorio).
+    pub commit: String,
+    /// El informe, cuando la celda terminó: qué quedó en `trabajos/`.
+    pub informe: Option<Json>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Puesto {
     pub persona: String,
@@ -130,6 +144,7 @@ pub(crate) struct Puesto {
     pub siguiente: u64,
     pub pendientes: VecDeque<u64>,
     pub celdas: BTreeMap<u64, Celda>,
+    pub trabajo: Option<Trabajo>,
 }
 
 /// Todo lo vivo, bajo un candado, y una campana para las esperas.
@@ -187,6 +202,28 @@ fn ficha(id: &str, p: &Puesto) -> Json {
     } else {
         p.estado.dice()
     };
+    let mut f = ficha_base(id, p, estado);
+    if let (Some(t), Json::Obj(m)) = (&p.trabajo, &mut f) {
+        m.insert("codigo".into(), Json::s(&t.codigo));
+        m.insert("commit".into(), Json::s(&t.commit));
+        m.insert(
+            "trabajo".into(),
+            Json::s(match (&t.informe, estado) {
+                (Some(_), _) => "hecho",
+                (None, "cerrado") => "cerrado",
+                (None, "perdido") => "perdido",
+                (None, "vivo") => "corriendo",
+                _ => "encolado",
+            }),
+        );
+        if let Some(i) = &t.informe {
+            m.insert("informe".into(), i.clone());
+        }
+    }
+    f
+}
+
+fn ficha_base(id: &str, p: &Puesto, estado: &str) -> Json {
     Json::obj([
         ("id", Json::s(id)),
         ("persona", Json::s(&p.persona)),
@@ -359,7 +396,7 @@ impl Servidor {
         };
         // A la cola: Flux rinde el Job.
         let (fichero, job, dicho) =
-            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno) {
+            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "") {
                 Ok(v) => v,
                 Err(r) => return r,
             };
@@ -376,6 +413,7 @@ impl Servidor {
             siguiente: 1,
             pendientes: VecDeque::new(),
             celdas: BTreeMap::new(),
+            trabajo: None,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -392,10 +430,370 @@ impl Servidor {
         let lista = self.puestos.lista.lock().unwrap();
         let mios: Vec<Json> = lista
             .iter()
-            .filter(|(_, p)| p.persona == sujeto.persona)
+            .filter(|(_, p)| p.persona == sujeto.persona && p.trabajo.is_none())
             .map(|(id, p)| ficha(id, p))
             .collect();
         Respuesta::ok(Json::obj([("puestos", Json::Arr(mios))]))
+    }
+
+    // ── el trabajo (0031 §9, W3.7 ④) ────────────────────────────────────────
+
+    /// `POST /trabajos {codigo, rama?}`: corre `codigo` —un fichero del árbol,
+    /// `.py`, `.ts`/`.js`/`.mjs` o `.java`— como un Job que termina, con el
+    /// entorno de su extensión, la capa del árbol y la identidad de la
+    /// persona (en su rama). Es un puesto de una sola celda: el fichero, tal
+    /// como está en el commit; el agente sale al terminarla y el informe va
+    /// a `trabajos/<id>.json`. 202 con `{id, job, codigo, commit}`.
+    pub(crate) fn abrir_trabajo(&self, sujeto: &Identidad, cuerpo: &str) -> Respuesta {
+        if es_agente(sujeto) {
+            return Respuesta::error(403, "un agente no lanza trabajos: los lanza una persona");
+        }
+        let n = match ore_core::parse::parse(cuerpo) {
+            Ok(n) if !cuerpo.trim().is_empty() => n,
+            _ => return Respuesta::error(400, "el cuerpo no es JSON"),
+        };
+        let Some(codigo) = n
+            .get("codigo")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+        else {
+            return Respuesta::error(
+                422,
+                "falta `codigo`: la ruta del fichero en el árbol (`packages/<p>/transforms/x.py`)",
+            );
+        };
+        if codigo.starts_with('/') || codigo.split('/').any(|s| s == ".." || s.is_empty()) {
+            return Respuesta::error(422, format!("`{codigo}` no es una ruta del árbol"));
+        }
+        let (entorno, lenguaje) = match codigo.rsplit_once('.').map(|(_, e)| e) {
+            Some("py") => ("python", "python"),
+            Some("ts" | "js" | "mjs") => ("node", "typescript"),
+            Some("java") => ("jvm", "java"),
+            _ => {
+                return Respuesta::error(
+                    422,
+                    format!(
+                        "`{codigo}` no es de ningún entorno: `.py`, `.ts`/`.js`/`.mjs` o `.java`"
+                    ),
+                );
+            }
+        };
+        let rama = n
+            .get("rama")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if let Some(r) = &rama
+            && let Err(m) = crate::propuestas::nombre_de_rama_valido(r)
+        {
+            return Respuesta::error(422, m);
+        }
+        // El fichero, tal como está en el commit de la rama: lo que corre es
+        // exactamente eso, y el commit va al informe y a la procedencia de lo
+        // que escriba (`ORE_CODIGO=<ruta>@<commit>`).
+        let (texto, commit) = match self.leyendo_en(rama.as_deref(), |raiz| {
+            let ruta = raiz.join(&codigo);
+            let Ok(texto) = std::fs::read_to_string(&ruta) else {
+                return Respuesta::error(404, format!("no hay `{codigo}` en el árbol"));
+            };
+            if texto.len() > TEXTO_MAXIMO {
+                return Respuesta::error(422, format!("`{codigo}` pasa de {TEXTO_MAXIMO} bytes"));
+            }
+            let commit = std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(raiz)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "local".into());
+            Respuesta::ok(Json::obj([
+                ("texto", Json::s(&texto)),
+                ("commit", Json::s(commit)),
+            ]))
+        }) {
+            r if r.codigo != 200 => return r,
+            r => match &r.cuerpo {
+                Json::Obj(m) => (
+                    match m.get("texto") {
+                        Some(Json::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    match m.get("commit") {
+                        Some(Json::Str(s)) => s.clone(),
+                        _ => "local".into(),
+                    },
+                ),
+                _ => return Respuesta::error(500, "el árbol no contestó"),
+            },
+        };
+        // La capa, como al abrir un puesto (W3.2): la del árbol si está lista;
+        // si no, se encola y 409 para que se vuelva a pedir.
+        let capa = match self.capa_para(entorno, rama.as_deref(), sujeto) {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let h = ore_core::digest::de_bytes(format!("{codigo}|{commit}|{ahora}").as_bytes());
+        let quien = id_de(&sujeto.persona, entorno);
+        let quien = quien
+            .strip_prefix("puesto-")
+            .and_then(|q| q.strip_suffix(&format!("-{entorno}")))
+            .unwrap_or("x");
+        let id = format!(
+            "trabajo-{quien}-{}",
+            &h["sha256:".len().."sha256:".len() + 8]
+        );
+        let (fichero, job, dicho) = match self.encolar_puesto(
+            &id,
+            sujeto,
+            rama.as_deref(),
+            &capa,
+            entorno,
+            &format!("{codigo}@{commit}"),
+        ) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let mut p = Puesto {
+            persona: sujeto.persona.clone(),
+            entorno: entorno.to_string(),
+            rama,
+            fichero,
+            job,
+            creado: Instant::now(),
+            estado: Estado::Encolado,
+            agente: None,
+            latido: None,
+            siguiente: 2,
+            pendientes: VecDeque::from([1]),
+            celdas: BTreeMap::new(),
+            trabajo: Some(Trabajo {
+                codigo: codigo.clone(),
+                commit: commit.clone(),
+                informe: None,
+            }),
+        };
+        p.celdas.insert(
+            1,
+            Celda {
+                texto,
+                lenguaje: lenguaje.to_string(),
+                enviada: Instant::now(),
+                empezada: None,
+                salida: None,
+            },
+        );
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let mut f = ficha(&id, &p);
+        lista.insert(id, p);
+        if let Json::Obj(m) = &mut f {
+            m.insert("cola".into(), Json::s(dicho));
+        }
+        Respuesta {
+            codigo: 202,
+            cuerpo: f,
+        }
+    }
+
+    /// `GET /trabajos`: los de la persona, del más reciente al más viejo.
+    pub(crate) fn trabajos_de(&self, sujeto: &Identidad) -> Respuesta {
+        let lista = self.puestos.lista.lock().unwrap();
+        let mut mios: Vec<(Instant, Json)> = lista
+            .iter()
+            .filter(|(_, p)| p.persona == sujeto.persona && p.trabajo.is_some())
+            .map(|(id, p)| (p.creado, ficha(id, p)))
+            .collect();
+        mios.sort_by_key(|(c, _)| std::cmp::Reverse(*c));
+        Respuesta::ok(Json::obj([(
+            "trabajos",
+            Json::Arr(mios.into_iter().map(|(_, f)| f).collect()),
+        )]))
+    }
+
+    /// `GET /trabajos/{id}`: la ficha, con el informe si ya terminó.
+    pub(crate) fn trabajo(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        let lista = self.puestos.lista.lock().unwrap();
+        match lista.get(id) {
+            Some(p) if p.trabajo.is_some() => {
+                if p.persona != sujeto.persona && !es_agente(sujeto) {
+                    return Respuesta::error(403, "ese trabajo es de otra persona");
+                }
+                Respuesta::ok(ficha(id, p))
+            }
+            _ => Respuesta::error(404, format!("no hay ningún trabajo `{id}`")),
+        }
+    }
+
+    /// La capa con la que nace un puesto o un trabajo: la del árbol si está
+    /// lista (o ninguna, fuera de python); pendiente o con error, se encola y
+    /// 409 con el motivo.
+    fn capa_para(
+        &self,
+        entorno: &str,
+        rama: Option<&str>,
+        sujeto: &Identidad,
+    ) -> Result<String, Respuesta> {
+        if entorno != "python" {
+            return Ok(String::new());
+        }
+        let e = match self.leyendo_en(rama, |raiz| {
+            let e = crate::entorno::entorno_de(raiz);
+            Respuesta::ok(Json::obj([
+                ("estado", Json::s(e.estado)),
+                ("digest", Json::s(&e.digest)),
+            ]))
+        }) {
+            r if r.codigo != 200 => return Err(r),
+            r => r.cuerpo,
+        };
+        let campo = |k: &str| match &e {
+            Json::Obj(m) => match m.get(k) {
+                Some(Json::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        match campo("estado").as_str() {
+            "lista" => Ok(campo("digest")),
+            "sin-dependencias" => Ok(String::new()),
+            estado => {
+                let intento = if estado == "error" {
+                    format!(
+                        "r{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    )
+                } else {
+                    "1".to_string()
+                };
+                let dicho =
+                    match self.encolar_capa(&campo("digest"), rama.unwrap_or(""), sujeto, &intento)
+                    {
+                        Ok((job, d)) => format!("{d} · Job {job}"),
+                        Err(r) => return Err(r),
+                    };
+                Err(Respuesta {
+                    codigo: 409,
+                    cuerpo: Json::obj([
+                        (
+                            "error",
+                            Json::s(format!(
+                                "la capa del árbol no está lista ({estado}): se resuelve ahora; vuelve a pedirlo en un minuto"
+                            )),
+                        ),
+                        ("capa", Json::s(campo("digest"))),
+                        ("cola", Json::s(dicho)),
+                    ]),
+                })
+            }
+        }
+    }
+
+    /// El informe de un trabajo, al terminar su celda: `trabajos/<id>.json`
+    /// en el árbol (en la rama del trabajo), firmado por la persona; el
+    /// puesto se cierra y sale de la cola. Lo que la consola enseña en Data ›
+    /// Jobs es el Job (por el informador); lo que queda es esto.
+    fn informar_trabajo(&self, agente: &Identidad, id: &str, n: u64) {
+        let (persona, rama, fichero, mut informe) = {
+            let lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get(id) else { return };
+            let Some(t) = &p.trabajo else { return };
+            let Some(c) = p.celdas.get(&n) else { return };
+            let salida = c.salida.clone().unwrap_or(Json::obj([]));
+            let (tipo, ms) = match ore_core::parse::parse(&salida.jcs()) {
+                Ok(s) => (
+                    s.get("tipo")
+                        .and_then(|(_, v)| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    s.get("ms")
+                        .and_then(|(_, v)| v.as_str())
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(0),
+                ),
+                Err(_) => (String::new(), 0),
+            };
+            let ahora = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (
+                p.persona.clone(),
+                p.rama.clone(),
+                p.fichero.clone(),
+                Json::obj([
+                    ("id", Json::s(id)),
+                    ("codigo", Json::s(&t.codigo)),
+                    ("commit", Json::s(&t.commit)),
+                    ("persona", Json::s(&p.persona)),
+                    ("rama", Json::s(p.rama.clone().unwrap_or_default())),
+                    ("entorno", Json::s(&p.entorno)),
+                    ("job", Json::s(&p.job)),
+                    (
+                        "estado",
+                        Json::s(if tipo == "error" { "error" } else { "hecho" }),
+                    ),
+                    ("ms", Json::Int(ms)),
+                    ("terminado_s", Json::Int(ahora)),
+                    ("salida", salida),
+                ]),
+            )
+        };
+        let quien = Identidad {
+            persona: persona.clone(),
+            agente: Some(agente.persona.clone()),
+            correo: None,
+            nombre: None,
+            tipo: None,
+        };
+        let ruta = format!("trabajos/{id}.json");
+        let texto = informe.pretty() + "\n";
+        let r = self.escribiendo_en(rama.as_deref(), &quien, &format!("Trabajo {id}"), |raiz| {
+            let f = raiz.join(&ruta);
+            if let Some(d) = f.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            match std::fs::write(&f, &texto) {
+                Ok(()) => Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))])),
+                Err(e) => Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}")),
+            }
+        });
+        if let Json::Obj(m) = &mut informe {
+            m.insert("fichero".into(), Json::s(&ruta));
+            if let Json::Obj(c) = &r.cuerpo
+                && let Some(Json::Str(commit)) = c.get("commit")
+            {
+                m.insert("informe_commit".into(), Json::s(commit));
+            }
+            if r.codigo >= 300 {
+                m.insert(
+                    "informe_error".into(),
+                    Json::s(format!("{}: {}", r.codigo, r.cuerpo.jcs())),
+                );
+            }
+        }
+        {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            if let Some(p) = lista.get_mut(id) {
+                if let Some(t) = &mut p.trabajo {
+                    t.informe = Some(informe);
+                }
+                p.estado = Estado::Cerrado;
+                p.pendientes.clear();
+            }
+        }
+        self.puestos.campana.notify_all();
+        let _ = self.desencolar_puesto(&fichero, &quien);
     }
 
     /// `GET /puestos/{id}`.
@@ -652,8 +1050,12 @@ impl Servidor {
             return Respuesta::error(404, format!("el puesto no tiene una celda {n}"));
         };
         c.salida = Some(Json::Crudo(cuerpo.trim().to_string()));
+        let es_trabajo = p.trabajo.is_some();
         drop(lista);
         self.puestos.campana.notify_all();
+        if es_trabajo {
+            self.informar_trabajo(sujeto, id, n);
+        }
         Respuesta::ok(Json::obj([
             ("celda", Json::Int(n as i64)),
             ("estado", Json::s("hecha")),
@@ -767,6 +1169,7 @@ impl Servidor {
         rama: Option<&str>,
         capa: &str,
         entorno: &str,
+        trabajo: &str,
     ) -> Result<(String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
@@ -794,9 +1197,16 @@ impl Servidor {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_default();
-        let (fichero, texto, job) =
-            cola::rendir_puesto(&plantilla, id, rama.unwrap_or(""), capa, &abierto, entorno)
-                .map_err(|e| Respuesta::error(500, e))?;
+        let (fichero, texto, job) = cola::rendir_puesto(
+            &plantilla,
+            id,
+            rama.unwrap_or(""),
+            capa,
+            &abierto,
+            entorno,
+            trabajo,
+        )
+        .map_err(|e| Respuesta::error(500, e))?;
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {
@@ -806,7 +1216,12 @@ impl Servidor {
                 format!("ya encolado como `{fichero}`"),
             ));
         }
-        match forja.publicar(dir, sujeto, &format!("Abrir el puesto {id}")) {
+        let que = if id.starts_with("trabajo-") {
+            "Lanzar el trabajo"
+        } else {
+            "Abrir el puesto"
+        };
+        match forja.publicar(dir, sujeto, &format!("{que} {id}")) {
             Ok(c) => Ok((
                 fichero.clone(),
                 job,

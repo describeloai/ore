@@ -367,6 +367,10 @@ impl Servidor {
             ("POST", ["entorno"]) => self.resolver_entorno(sujeto, rama),
             ("GET", ["puestos"]) => self.puestos_de(sujeto),
             ("POST", ["puestos"]) => self.abrir_puesto(sujeto, &p.cuerpo),
+            // ── el trabajo (0031 §9, W3.7 ④): un fichero del árbol como Job ──
+            ("GET", ["trabajos"]) => self.trabajos_de(sujeto),
+            ("POST", ["trabajos"]) => self.abrir_trabajo(sujeto, &p.cuerpo),
+            ("GET", ["trabajos", id]) => self.trabajo(sujeto, id),
             ("GET", ["puestos", id]) => self.puesto(sujeto, id),
             ("DELETE", ["puestos", id]) => self.cerrar_puesto(sujeto, id),
             ("POST", ["puestos", id, "ejecutar"]) => self.ejecutar_en_puesto(sujeto, id, &p.cuerpo),

@@ -79,27 +79,44 @@ spec:
       initContainers:
         # El testigo del agente de la celda: con él el agente pide tokens al
         # emisor (client credentials) y habla con `ore-serve` como agente.
+        #
+        # ⭐ Por HTTP y no por `gcloud` (W3.7 ④). Medido en «Lo medido para
+        #   W3.7» §5: `gcloud secrets versions access` en la imagen de drivers
+        #   tardaba **31 s** de los 48 del trabajo entero — el arranque de
+        #   gcloud, no la red—. El token del pod (Workload Identity, por el
+        #   servidor de metadatos) contra la API REST de Secret Manager
+        #   (`private.googleapis.com`, que este rol alcanza) es la misma
+        #   llamada sin el arranque: la imagen del puesto ya trae python.
         - name: traer-el-testigo
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: Always
           env:
             - { name: HOME, value: /tmp }
-            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: PROYECTO, value: "project-8853a180-450d-47be-b83" }
+            - { name: CELDA, value: t-demo }
           volumeMounts: [{ name: puesto, mountPath: /puesto }]
-          command: ["/bin/sh", "-c"]
+          command: ["python3", "-c"]
           args:
             - |
-              set -e
-              for p in cliente secreto; do
-                gcloud secrets versions access latest \
-                  --secret=t-demo-agente-$p --out-file=/puesto/agente-$p
-                chmod 0444 /puesto/agente-$p
-              done
-              echo "agente puesto · $(cat /puesto/agente-cliente)"
+              import base64, json, os, time, urllib.request
+              t0 = time.time()
+              r = urllib.request.Request("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", headers={"Metadata-Flavor": "Google"})
+              token = json.load(urllib.request.urlopen(r, timeout=10))["access_token"]
+              for p in ("cliente", "secreto"):
+                  u = "https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s-agente-%s/versions/latest:access" % (os.environ["PROYECTO"], os.environ["CELDA"], p)
+                  d = json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"Authorization": "Bearer " + token}), timeout=20))
+                  with open("/puesto/agente-" + p, "wb") as f:
+                      f.write(base64.b64decode(d["payload"]["data"]))
+                  os.chmod("/puesto/agente-" + p, 0o444)
+              print("agente puesto · %s · %d ms" % (open("/puesto/agente-cliente").read().strip(), (time.time() - t0) * 1000), flush=True)
           resources:
             requests: {cpu: "50m", memory: 128Mi}
             limits:   {cpu: "500m", memory: 256Mi}
           securityContext:
             allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
             capabilities: { drop: [ALL] }
         # ⭐ La capa: sin `pip` contra internet (esta red no lo alcanza). Baja
         #   `ore/puesto/<capa>/` del bucket y lo instala en /capa con
@@ -170,6 +187,11 @@ spec:
             # El instante de apertura: reabrir tras un TTL, un tope o un relevo
             # es OTRO Job (otro nombre), y Flux retira el viejo. Lo pone ore-serve.
             - { name: ABIERTO, value: "abierto-modelo" }
+            # ⭐ El trabajo (0031 §9, W3.7 ④): con `TRABAJO` (`<ruta>@<commit>`)
+            #   este mismo Job corre UN fichero del árbol como una sola celda y
+            #   termina; el agente sale con el resultado, y `ore-serve` deja
+            #   el informe en `trabajos/`. Vacío es una sesión.
+            - { name: TRABAJO, value: "trabajo-modelo" }
             - { name: PYTHONPATH, value: /capa }
             - { name: TTL, value: "1800" }
             - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }

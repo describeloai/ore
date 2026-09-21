@@ -205,6 +205,8 @@ public final class Ore {
     private static final List<String> leidas = new ArrayList<>();
     private record Transform(String nombre, List<String> inputs, String output) {}
     private static Transform transformActivo = null;
+    /** El trabajo que corre (W3.7 ④): `<ruta>@<commit>`, para la procedencia; lo pone el agente (la JVM no cambia su entorno). */
+    public static String CODIGO = null;
 
     /** Un transform (0031 §9, W3.7 ③): corre {@code cuerpo} con {@code inputs} como lo único que puede leer ({@code over}, {@code sql}) y {@code output} como lo único que puede escribir ({@code write}); lo demás lanza. Lo escrito lleva {@code procedencia: {inputs, transform, …}}. */
     public static <T> T transform(String nombre, List<String> inputs, String output, java.util.concurrent.Callable<T> cuerpo) throws Exception {
@@ -226,7 +228,7 @@ public final class Ore {
         p.put("puesto", puesto.id);
         if (transformActivo != null) { p.put("inputs", transformActivo.inputs().stream().sorted().toList()); p.put("transform", transformActivo.nombre()); }
         else p.put("leidas", leidas.stream().sorted().toList());
-        String codigo = System.getenv("ORE_CODIGO");
+        String codigo = CODIGO != null ? CODIGO : System.getenv("ORE_CODIGO");
         if (codigo != null && !codigo.isEmpty()) p.put("codigo", codigo);
         return p;
     }

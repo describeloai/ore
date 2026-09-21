@@ -296,6 +296,10 @@ public final class Agente {
         Ore.Puesto p = Ore.puesto;
         if (p.id.isEmpty()) { log("sin PUESTO en el entorno"); System.exit(2); }
         long ttl = Long.parseLong(Ore.env("TTL", "1800"));
+        // Un trabajo (W3.7 ④): `TRABAJO=<ruta>@<commit>` → una sola celda (el
+        // fichero) y fuera, con el resultado como código de salida.
+        String trabajo = Ore.env("TRABAJO", "").trim();
+        if (!trabajo.isEmpty()) Ore.CODIGO = trabajo;
         Testigo testigo = new Testigo();
         Kernel kernel = new Kernel();
         log("puesto " + p.id + " · ore-serve " + p.servidor + " · TTL " + ttl + "s · almacén " + p.almacen + " · java " + Runtime.version());
@@ -337,6 +341,11 @@ public final class Agente {
                 log("no pude entregar la salida de la celda " + n + ": " + e.getMessage());
             }
             log("celda " + n + " · " + salida.get("tipo") + " · " + salida.get("ms") + " ms");
+            if (!trabajo.isEmpty()) {
+                boolean error = "error".equals(salida.get("tipo"));
+                log("trabajo " + trabajo + ": " + (error ? "error" : "hecho"));
+                System.exit(error ? 1 : 0);
+            }
         }
     }
 

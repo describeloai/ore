@@ -142,9 +142,15 @@ def main():
     if not p.id:
         raise SystemExit("agente · sin PUESTO en el entorno")
     ttl = int(os.environ.get("TTL", "1800"))
+    # Un trabajo (W3.7 ④): `TRABAJO=<ruta>@<commit>` → una sola celda (el
+    # fichero) y fuera, con el resultado como código de salida. El SDK lo
+    # deja como `codigo` en la procedencia de lo que escriba.
+    trabajo = os.environ.get("TRABAJO", "").strip()
+    if trabajo:
+        os.environ["ORE_CODIGO"] = trabajo
     testigo = Testigo()
     kernel = Kernel()
-    log("puesto %s · ore-serve %s · TTL %ds · almacén %s" % (p.id, p.servidor, ttl, p.almacen))
+    log("%s %s · ore-serve %s · TTL %ds · almacén %s" % ("trabajo" if trabajo else "puesto", p.id, p.servidor, ttl, p.almacen))
     ultimo = time.time()
     while True:
         if time.time() - ultimo > ttl:
@@ -186,6 +192,9 @@ def main():
         except Exception as e:  # noqa: BLE001
             log("no pude entregar la salida de la celda %s: %s" % (n, e))
         log("celda %s · %s · %d ms" % (n, salida.get("tipo"), salida.get("ms", 0)))
+        if trabajo:
+            log("trabajo %s: %s" % (trabajo, "error" if salida.get("tipo") == "error" else "hecho"))
+            return 1 if salida.get("tipo") == "error" else 0
 
 
 if __name__ == "__main__":

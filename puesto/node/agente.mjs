@@ -177,6 +177,10 @@ async function main() {
   const p = ore.puesto;
   if (!p.id) { log("sin PUESTO en el entorno"); return 2; }
   const ttl = Number(process.env.TTL ?? "1800");
+  // Un trabajo (W3.7 ④): `TRABAJO=<ruta>@<commit>` → una sola celda (el fichero)
+  // y fuera, con el resultado como código de salida.
+  const trabajo = (process.env.TRABAJO ?? "").trim();
+  if (trabajo) process.env.ORE_CODIGO = trabajo;
   const testigo = new Testigo();
   const kernel = new Kernel();
   log(`puesto ${p.id} · ore-serve ${p.servidor} · TTL ${ttl}s · almacén ${p.almacen} · node ${process.version}`);
@@ -206,6 +210,7 @@ async function main() {
       if (c3 !== 200 && c3 !== 201) log(`la salida de la celda ${n} no se aceptó: ${c3} ${JSON.stringify(r3)}`);
     } catch (e) { log(`no pude entregar la salida de la celda ${n}: ${e.message}`); }
     log(`celda ${n} · ${salida.tipo} · ${salida.ms} ms`);
+    if (trabajo) { log(`trabajo ${trabajo}: ${salida.tipo === "error" ? "error" : "hecho"}`); return salida.tipo === "error" ? 1 : 0; }
   }
 }
 

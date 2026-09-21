@@ -383,6 +383,57 @@ else
   dice "10 · (sin el lago o sin ore-store-r2: write() no se prueba aquí)"
 fi
 
+
+# ── 11 · el trabajo (W3.7 ④): un fichero del árbol como Job que termina ──────
+if [ "$ESCRITO_OK" = si ]; then
+  mkdir -p "$A/packages/hr/transforms"
+  cat > "$A/packages/hr/transforms/resumir.py" <<'PY'
+# Un transform del árbol: lee hr.lago y deja hr.trabajo
+@transform(inputs=["hr.lago"], output="hr.trabajo")
+def resumir():
+    t = over("hr.lago", como="arrow")
+    return write("hr.trabajo", t)
+
+e = resumir()
+print("filas", e["filas"])
+PY
+  printf 'raise RuntimeError("se rompe a propósito")\n' > "$A/packages/hr/transforms/roto.py"
+  [ "$(pide POST /trabajos "$AG" '{"codigo":"packages/hr/transforms/resumir.py"}')" = "403" ] || falla "11 · un agente lanzó un trabajo: $(cuerpo)"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/transforms/nadie.py"}')" = "404" ] || falla "11 · un fichero que no está: $(cuerpo)"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/package.yaml"}')" = "422" ] || falla "11 · un .yaml no es de ningún entorno: $(cuerpo)"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"../fuera.py"}')" = "422" ] || falla "11 · una ruta fuera del árbol: $(cuerpo)"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/transforms/resumir.py"}')" = "202" ] || falla "11 · lanzar: $(cuerpo)"
+  T=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+  tiene "d['id'].startswith('trabajo-ana-') and d['entorno']=='python' and d['codigo']=='packages/hr/transforms/resumir.py' and d['commit']=='local' and d['trabajo']=='encolado' and d['job'].startswith(d['id']+'-') and d['fichero']=='54-el-trabajo-'+d['id'][8:]+'.yaml'" || falla "11 · la ficha del trabajo: $(cuerpo)"
+  F=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["fichero"])' "$TMP/r.json")
+  en_cola "$F" | grep -q 'name: TRABAJO, value: "packages/hr/transforms/resumir.py@local"' || falla "11 · el Job no lleva TRABAJO: $(en_cola "$F" | grep -n TRABAJO)"
+  en_cola "$F" | grep -q 'image: .*/puesto-python:1' || falla "11 · el Job no lleva la imagen de python"
+  [ "$(pide GET /trabajos "$ANA")" = "200" ] && tiene "[t['id'] for t in d['trabajos']]==['$T']" || falla "11 · GET /trabajos: $(cuerpo)"
+  [ "$(pide GET /trabajos/$T "$BEA")" = "403" ] || falla "11 · bea ve el trabajo de ana: $(cuerpo)"
+  [ "$(pide GET /puestos "$ANA")" = "200" ] && tiene "all(not p['id'].startswith('trabajo-') for p in d['puestos'])" || falla "11 · un trabajo no es un puesto de la lista: $(cuerpo)"
+  # el agente, como en el Job: con TRABAJO corre la celda y sale con el resultado
+  ORE_SERVE="$BASE" PUESTO="$T" TRABAJO="packages/hr/transforms/resumir.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo.txt" 2>&1; CODIGO=$?
+  [ "$CODIGO" = 0 ] || falla "11 · el agente del trabajo salió con $CODIGO: $(tail -5 "$TMP/trabajo.txt")"
+  grep -q "trabajo packages/hr/transforms/resumir.py@local: hecho" "$TMP/trabajo.txt" || falla "11 · el agente no dijo que terminó: $(tail -3 "$TMP/trabajo.txt")"
+  [ "$(pide GET /trabajos/$T "$ANA")" = "200" ] && tiene "d['trabajo']=='hecho' and d['estado']=='cerrado' and d['informe']['estado']=='hecho' and d['informe']['fichero']=='trabajos/$T.json' and 'filas 3' in d['informe']['salida']['texto']" || falla "11 · la ficha tras correr: $(cuerpo)"
+  "$PY" -c 'import json,sys; i=json.load(open(sys.argv[1])); assert i["codigo"]=="packages/hr/transforms/resumir.py" and i["persona"]=="persona:ana" and i["estado"]=="hecho" and i["ms"]>0, i' "$A/trabajos/$T.json" || falla "11 · el informe en el árbol: $(cat "$A/trabajos/$T.json")"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/resumir.py@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"resumir"}, pr' "$A/datasets/hr_trabajo.json" "$T" || falla "11 · la procedencia de lo que el trabajo escribió: $(cat "$A/datasets/hr_trabajo.json")"
+  [ "$(pide GET /datasets/hr/trabajo "$ANA")" = "200" ] && tiene "d['escrito_por']=='persona:ana' and d['procedencia']['codigo']=='packages/hr/transforms/resumir.py@local'" || falla "11 · la ficha del dataset del trabajo: $(cuerpo)"
+  en_cola "$F" >/dev/null && falla "11 · el trabajo sigue en la cola tras terminar"
+  # uno que se rompe: el agente sale con 1 y el informe dice error
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/transforms/roto.py"}')" = "202" ] || falla "11 · lanzar el roto: $(cuerpo)"
+  T2=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+  ORE_SERVE="$BASE" PUESTO="$T2" TRABAJO="packages/hr/transforms/roto.py@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo2.txt" 2>&1; CODIGO=$?
+  [ "$CODIGO" = 1 ] || falla "11 · el trabajo roto tenía que salir con 1 y salió con $CODIGO"
+  [ "$(pide GET /trabajos/$T2 "$ANA")" = "200" ] && tiene "d['trabajo']=='hecho' and d['informe']['estado']=='error' and 'se rompe' in d['informe']['salida']['mensaje']" || falla "11 · el informe del roto: $(cuerpo)"
+  [ "$(pide GET /trabajos "$ANA")" = "200" ] && tiene "[t['id'] for t in d['trabajos']]==['$T2','$T']" || falla "11 · los trabajos, del más reciente al más viejo: $(cuerpo)"
+  dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"
+else
+  dice "11 · (sin el lago: el trabajo no se prueba aquí)"
+fi
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -569,4 +620,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.6c): 1–10 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–11 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

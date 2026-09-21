@@ -476,6 +476,31 @@ print("### " + json.dumps({"que": "paquete", "ns": ns}), flush=True)
 '''
 
 
+# El testigo: por gcloud (lo que la plantilla hacía hasta W3.7 ④: 31 s medidos)
+# o por HTTP contra Secret Manager con el token del pod (lo que hace ahora).
+TESTIGO_HTTP = "--testigo-gcloud" not in sys.argv
+
+
+def testigo_init():
+    if not TESTIGO_HTTP:
+        return {"name": "traer-el-testigo", "image": REGISTRO + "/ore-drivers:main",
+                "env": [{"name": "HOME", "value": "/tmp"}, {"name": "CLOUDSDK_CONFIG", "value": "/tmp/.gcloud"}],
+                "volumeMounts": [{"name": "puesto", "mountPath": "/puesto"}], "command": ["/bin/sh", "-c"],
+                "args": ["set -e\nfor p in cliente secreto; do gcloud secrets versions access latest --secret=t-demo-agente-$p --out-file=/puesto/agente-$p; chmod 0444 /puesto/agente-$p; done\necho testigo puesto"],
+                "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+                "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}}
+    # el mismo python que lleva `malla/51-el-puesto.yaml`
+    plantilla = open(RAIZ + "/malla/51-el-puesto.yaml", encoding="utf-8").read()
+    i = plantilla.index("              import base64, json, os, time, urllib.request")
+    j = plantilla.index("          resources:", i)
+    codigo = "\n".join(l[14:] for l in plantilla[i:j].rstrip().splitlines())
+    return {"name": "traer-el-testigo", "image": "%s/puesto-python:%s" % (REGISTRO, SHA), "imagePullPolicy": "Always",
+            "env": [{"name": "HOME", "value": "/tmp"}, {"name": "PROYECTO", "value": PROYECTO}, {"name": "CELDA", "value": NS}],
+            "volumeMounts": [{"name": "puesto", "mountPath": "/puesto"}], "command": ["python3", "-c"], "args": [codigo],
+            "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
+            "securityContext": {"allowPrivilegeEscalation": False, "runAsNonRoot": True, "runAsUser": 65532, "seccompProfile": {"type": "RuntimeDefault"}, "capabilities": {"drop": ["ALL"]}}}
+
+
 def job(nombre, mando, guion, filas):
     cont = {
         "name": "python", "image": "%s/puesto-python:%s" % (REGISTRO, SHA), "imagePullPolicy": "Always",
@@ -493,12 +518,7 @@ def job(nombre, mando, guion, filas):
                   "template": {"metadata": {"labels": {"ore.dev/rol": "puesto", "ore.dev/tenant": "demo"}},
                                "spec": {"restartPolicy": "Never", "serviceAccountName": "puesto",
                                         "volumes": [{"name": "puesto", "emptyDir": {"medium": "Memory"}}, {"name": "trabajo", "emptyDir": {}}, {"name": "guiones", "configMap": {"name": nombre}}],
-                                        "initContainers": [{"name": "traer-el-testigo", "image": REGISTRO + "/ore-drivers:main",
-                                                            "env": [{"name": "HOME", "value": "/tmp"}, {"name": "CLOUDSDK_CONFIG", "value": "/tmp/.gcloud"}],
-                                                            "volumeMounts": [{"name": "puesto", "mountPath": "/puesto"}], "command": ["/bin/sh", "-c"],
-                                                            "args": ["set -e\nfor p in cliente secreto; do gcloud secrets versions access latest --secret=t-demo-agente-$p --out-file=/puesto/agente-$p; chmod 0444 /puesto/agente-$p; done\necho testigo puesto"],
-                                                            "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
-                                                            "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}}],
+                                        "initContainers": [testigo_init()],
                                         "containers": [cont]}}}}
     cm = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": nombre, "namespace": NS}, "data": {"guion.py": guion}}
     return json.dumps(cm) + "\n---\n" + json.dumps(j)
@@ -532,14 +552,14 @@ def linea_de_tiempo(nombre):
     cont = (p["status"].get("containerStatuses") or [{}])[0].get("state", {}).get("terminated", {})
     return {"nodo (creado → programado)": (cond.get("PodScheduled") or creado) - creado,
             "imagen del testigo (programado → testigo empieza)": (t(init.get("startedAt")) or 0) - (cond.get("PodScheduled") or creado),
-            "el testigo (gcloud secrets)": (t(init.get("finishedAt")) or 0) - (t(init.get("startedAt")) or 0),
+            "el testigo (el init)": (t(init.get("finishedAt")) or 0) - (t(init.get("startedAt")) or 0),
             "imagen del puesto (testigo acaba → python empieza)": (t(cont.get("startedAt")) or 0) - (t(init.get("finishedAt")) or 0),
             "el guion (python)": (t(cont.get("finishedAt")) or 0) - (t(cont.get("startedAt")) or 0),
             "total": (t(cont.get("finishedAt")) or 0) - creado, "nodo": p["spec"].get("nodeName", "?")}
 
 
 def cluster():
-    print("§5 · correr en el clúster (t-demo, jobs-p 0 → 1 → 0): el frío de un trabajo de código con puesto-python:%s" % SHA)
+    print("§5 · correr en el clúster (t-demo, jobs-p 0 → 1 → 0): el frío de un trabajo de código con puesto-python:%s · testigo por %s" % (SHA, "gcloud" if not TESTIGO_HTTP else "HTTP"))
     nombre = "medida-w37-" + SHA[:8]
     k("delete", "job", nombre, "--ignore-not-found"); k("delete", "configmap", nombre, "--ignore-not-found")
     t0 = time.time()
@@ -554,6 +574,8 @@ def cluster():
             fila("  " + kk, ("%.0f s" % v) if isinstance(v, float) else str(v))
     except Exception as e:
         fila("  la línea de tiempo", "", str(e)[:120])
+    c, log, _ = k("logs", "job/" + nombre, "-c", "traer-el-testigo")
+    fila("  el testigo dijo", "", log.strip().splitlines()[-1][:120] if log.strip() else "(nada)")
     c, log, _ = k("logs", "job/" + nombre, "-c", "python")
     for l in log.splitlines():
         if l.startswith("### "):
