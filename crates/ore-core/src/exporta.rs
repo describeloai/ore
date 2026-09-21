@@ -137,7 +137,9 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                 }
             }
         }
-        Kind::View => {
+        // v1alpha12: el dataset mantenido sale de lo mismo que una vista, y
+        // los dos pueden salir de un dataset.
+        Kind::View | Kind::Dataset => {
             if let Some(from) = d.section("from") {
                 if let Some((_, v)) = from.get("view")
                     && let Some(s) = v.as_str()
@@ -148,6 +150,11 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                     && let Some(s) = v.as_str()
                 {
                     push(s, Kind::Table, "from.table", v.pos());
+                }
+                if let Some((_, v)) = from.get("dataset")
+                    && let Some(s) = v.as_str()
+                {
+                    push(s, Kind::Dataset, "from.dataset", v.pos());
                 }
             }
         }

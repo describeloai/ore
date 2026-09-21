@@ -647,7 +647,8 @@ fn objeto_fisico(pkg: &Package, v: &Loaded) -> Option<(String, String)> {
                 t.section("object")?.as_str()?.to_string(),
             ))
         }
-        vistas::Fuente::Vista(_) => None,
+        // v1alpha12: un dataset es un nodo del IR por su nombre, como una vista.
+        vistas::Fuente::Vista(_) | vistas::Fuente::Dataset(_) => None,
     }
 }
 
@@ -666,12 +667,15 @@ pub(crate) fn cuerpo(
 
     // La hoja, y con qué nombre se ve cada cosa desde esta vista.
     let (hoja, tipo_de): (Nodo, Tipador<'_>) = match vistas::fuente(v) {
-        Some(vistas::Fuente::Vista(abajo)) => {
+        // v1alpha12: un dataset de abajo es una referencia por nombre, como
+        // una vista. Lo que el plumazo de ore-cli decide de verdad —leer del
+        // puntero— es de 0033 §2; aqui solo se compila.
+        Some(vistas::Fuente::Vista(abajo)) | Some(vistas::Fuente::Dataset(abajo)) => {
             // Los tipos de la de abajo son los de su esquema; se resuelven al
             // expandir. Para tipar el literal de un filtro se mira la raíz.
             let raiz = vistas::raiz(pkg, v).ok();
             let tipos = tipos.clone();
-            let abajo_doc = pkg.view(&abajo);
+            let abajo_doc = pkg.view(&abajo).or_else(|| pkg.dataset(&abajo));
             let f = move |campo_abajo: &str| -> Type {
                 // Campo de la vista de abajo → su columna raíz → su tipo.
                 let col = abajo_doc

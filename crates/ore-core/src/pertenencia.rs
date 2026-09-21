@@ -76,6 +76,10 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // v1alpha11. El modelo entrenado es del paquete que lo entreno: alguien
     // lo posee, y salio de vistas del paquete.
     Kind::TrainedModel,
+    // v1alpha12. El dataset es del paquete: lo que se tiene tiene dueno, y
+    // sale de una tabla, una vista o un dataset del paquete, o lo escribe
+    // codigo del paquete.
+    Kind::Dataset,
     Kind::Resolution,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo

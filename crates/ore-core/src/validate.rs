@@ -292,17 +292,34 @@ fn check_keys(
         if prefijo.is_empty() && matches!(name, "apiVersion" | "kind" | "metadata" | "spec") {
             continue;
         }
+        // v1alpha12: `materialized` y `freshness` se retiran de la vista, y
+        // una clave retirada no es una errata: tiene remedio, y el mensaje lo
+        // dice. Solo llega aqui una vista de v1alpha12 (la de v1alpha8 las
+        // admite, y el dataset admite `freshness`), asi que no hace falta
+        // preguntar por el kind.
+        let retirada = prefijo == "spec." && matches!(name, "materialized" | "freshness");
         out.push(
             Diagnostic::new(
                 Code::Oos1005,
                 file,
-                format!("clave desconocida `{prefijo}{name}`"),
+                if retirada {
+                    format!("`spec.{name}` se retiró de la vista en v1alpha12")
+                } else {
+                    format!("clave desconocida `{prefijo}{name}`")
+                },
             )
             .at(k.pos())
-            .help(format!(
-                "si es una extensión de proveedor, declárala como `x-<proveedor>-{name}`; \
-                 si no, revisa si es una errata"
-            )),
+            .help(if retirada {
+                "lo que se tiene es un documento: escribe un `kind: Dataset` con \
+                 `from: { view: <ésta> }` —y ahí `freshness` y `history`—, y deja la vista como \
+                 la pregunta. Una vista virtual lee en el momento y no tiene retraso que tolerar"
+                    .to_string()
+            } else {
+                format!(
+                    "si es una extensión de proveedor, declárala como `x-<proveedor>-{name}`; \
+                     si no, revisa si es una errata"
+                )
+            }),
         );
     }
 }

@@ -560,10 +560,17 @@ fn vistas_materializadas(
     out: &mut Vec<Diagnostic>,
 ) {
     let conducto = "materialization.payload";
-    for v in pkg.of(Kind::View) {
-        let Some(mat) = v.section("materialized") else {
+    // v1alpha12: la copia es un dataset mantenido —o una vista de v1alpha7/8
+    // con `materialized`, que sigue compilando—. La clave cambió de documento;
+    // la regla de flujo, no: es la afirmación de 0033.
+    for v in pkg.of(Kind::View).chain(pkg.of(Kind::Dataset)) {
+        if !crate::vistas::es_copia(v) {
             continue;
-        };
+        }
+        let mat = v
+            .section("materialized")
+            .or_else(|| v.section("from"))
+            .expect("una copia declara `materialized` o `from`");
         let vqn = v.qname().unwrap_or_default();
 
         // OOS4011 · omitir un conducto no es dejarlo abierto: es cerrarlo.
@@ -576,7 +583,8 @@ fn vistas_materializadas(
                 )
                 .at(mat.pos())
                 .help(format!(
-                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}`                      en la política de conductos, o quita `materialized` de la vista"
+                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}`                      en la política de conductos, o no copies: quita el dataset, o el \
+                     `materialized` de la vista"
                 )),
             );
             continue;

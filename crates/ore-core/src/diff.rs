@@ -589,6 +589,12 @@ fn shape(pkg: &Package) -> Shape {
                         .or_insert(nuevos);
                 }
                 let lectura = match crate::vistas::raiz_de_lectura(pkg, d) {
+                    // v1alpha12: si la copia es un dataset, se lee de él por
+                    // su nombre; una vista de v1alpha7/8 con `materialized`
+                    // sigue diciendo dónde vive.
+                    Some(m) if m.kind == crate::document::Kind::Dataset => {
+                        format!("dataset·{}", m.qname().unwrap_or_default())
+                    }
                     Some(m) => m
                         .section("materialized")
                         .map(|n| {

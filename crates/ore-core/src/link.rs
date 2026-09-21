@@ -704,7 +704,8 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 // con el codigo de siempre para una referencia que no resuelve. Y `owner` es
 // `owner` lo declare quien lo declare: el mismo handle y el mismo codigo.
 fn modelos_entrenados(pkg: &Package, out: &mut Vec<Diagnostic>) {
-    for m in pkg.of(Kind::TrainedModel) {
+    // v1alpha12: y el dataset, que tambien tiene dueno y con el mismo handle.
+    for m in pkg.of(Kind::TrainedModel).chain(pkg.of(Kind::Dataset)) {
         if let Some(v) = m.section("owner") {
             let s = v.as_str().unwrap_or("");
             if !es_handle(s) {

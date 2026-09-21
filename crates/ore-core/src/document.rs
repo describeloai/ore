@@ -71,6 +71,16 @@ pub enum ApiVersion {
     /// de dos maneras. Lo midio `pruebas-de-fuego/medida-w3-declarar.py`
     /// (2026-09-21, ORE 0031 W3.7): un modelo con pesos era `OOS1005`.
     V1Alpha11,
+    /// v1alpha12. **Tener.** Anade `Dataset`: lo que un inquilino tiene
+    /// —bytes en su lago, con historia— como UN documento de su paquete, se
+    /// llene como se llene: el sistema cumpliendo un plan (`from`) o codigo
+    /// escribiendolo (`columns` + `changes`). Retira `View.materialized` y
+    /// `View.freshness` (eran de la copia, y la copia es el dataset) y abre
+    /// `View.from: {dataset}` y `Entity.backedBy` sobre un dataset. Lo
+    /// decidio ORE 0033 (2026-09-21): la copia era una `View` con una nota al
+    /// pie y lo escrito una `Table` que apuntaba a lo nuestro; la costura del
+    /// gobierno cuelga del plan, no del nombre del documento.
+    V1Alpha12,
 }
 
 impl ApiVersion {
@@ -84,6 +94,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha9,
         ApiVersion::V1Alpha10,
         ApiVersion::V1Alpha11,
+        ApiVersion::V1Alpha12,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -97,6 +108,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha9 => "oos.dev/v1alpha9",
             ApiVersion::V1Alpha10 => "oos.dev/v1alpha10",
             ApiVersion::V1Alpha11 => "oos.dev/v1alpha11",
+            ApiVersion::V1Alpha12 => "oos.dev/v1alpha12",
         }
     }
 
@@ -198,6 +210,16 @@ pub enum Kind {
     /// nombra un perfil servido, sin namespace, en la raiz; este nombra
     /// pesos, en el paquete que lo entreno— y no se invoca: lo carga codigo.
     TrainedModel,
+    /// v1alpha12. **Lo que se tiene**: una tabla en el lago del inquilino,
+    /// con historia, nombrada por un documento de su paquete. Dos formas bajo
+    /// un kind, y la clave que las distingue es `from`: MANTENIDO (el sistema
+    /// cumple el plan —`from`, `fields`, `where`, `groupBy`, `having`,
+    /// `freshness`—; lo que era una `View` con `materialized`) o ESCRITO
+    /// (codigo lo llena y el sistema registra: `columns` que siguen a Iceberg
+    /// y `changes` como QUE ESCRITURAS ADMITE; lo que era una `Table` con
+    /// `datasource: lago`). Sin `labels`, sin calidad, sin el puntero: el
+    /// estado vive en `datasets/<ns>_<n>.json` y no aqui.
+    Dataset,
 }
 
 impl Kind {
@@ -219,6 +241,7 @@ impl Kind {
         Kind::Model,
         Kind::Action,
         Kind::TrainedModel,
+        Kind::Dataset,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -240,6 +263,7 @@ impl Kind {
             Kind::Model => "Model",
             Kind::Action => "Action",
             Kind::TrainedModel => "TrainedModel",
+            Kind::Dataset => "Dataset",
         }
     }
 
@@ -257,6 +281,7 @@ impl Kind {
             Kind::Model => ApiVersion::V1Alpha9,
             Kind::Action => ApiVersion::V1Alpha10,
             Kind::TrainedModel => ApiVersion::V1Alpha11,
+            Kind::Dataset => ApiVersion::V1Alpha12,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -360,6 +385,12 @@ impl Kind {
             // reticulo por los endosos de la funcion que lo use, y su
             // clasificacion de entrada ya esta en las vistas de `trainedFrom`.
             Kind::TrainedModel => &["name", "namespace", "description"],
+            // v1alpha12. El dataset vive en un paquete y no admite `labels`,
+            // ni en `metadata` ni en sus columnas: la clasificacion de un dato
+            // la declara la Entity que lo respalda y baja por el plan. Un
+            // dataset que se etiquetara a si mismo seria el segundo sitio que
+            // dice que es una columna.
+            Kind::Dataset => &["name", "namespace", "description"],
             // La vista admite `labels`, y la restriccion a `oos.maturity` la
             // pone `validate::labels_de_vista` porque es sobre la CLAVE, no
             // sobre el campo.
@@ -612,6 +643,24 @@ impl Kind {
                 "digest",
                 "trainedFrom",
             ],
+            // v1alpha12. Las dos formas bajo un kind, y exactamente una (la
+            // regla de forma, abajo): con `from` el plan de la vista tal cual
+            // —es la misma gramatica, `01-dataset` §4— y `freshness`; con
+            // `columns` lo que Iceberg tiene y `changes` como lo que se admite.
+            // `history` es de las dos: cuanta historia se guarda es una
+            // decision, no un estado, por lo mismo que `freshness`.
+            Kind::Dataset => &[
+                "owner",
+                "from",
+                "fields",
+                "where",
+                "groupBy",
+                "having",
+                "freshness",
+                "columns",
+                "changes",
+                "history",
+            ],
             // v1alpha10. La invocacion sin codigo: sobre que filas, que pide,
             // con que criterios, que causa (`sets` o `call`, exactamente uno,
             // y eso lo comprueba `actuar`), y quien puede.
@@ -681,6 +730,15 @@ impl Kind {
                 "idempotency",
                 "model",
                 "prompt",
+            ],
+            // v1alpha12: la vista pierde `materialized` y `freshness`, que
+            // eran de la copia —y la copia es ahora un `Dataset` con
+            // `from: {view}`—. Comprobar contra la lista de v1alpha8 dejaria
+            // compilar una vista que dice «y ademas se guarda» sin que nadie
+            // la guarde: el registro listaria datasets que no existen. Es
+            // `OOS1005` con el remedio en el mensaje (`validate::check_keys`).
+            Kind::View if version >= ApiVersion::V1Alpha12 => &[
+                "owner", "from", "fields", "where", "moved", "reserved", "groupBy", "having",
             ],
             Kind::View if version >= ApiVersion::V1Alpha8 => &[
                 "owner",
@@ -993,6 +1051,186 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         "`trainedFrom` esta vacio".to_string(),
                         Some("las vistas de las que salio, o quitalo".to_string()),
                     ));
+                }
+                None
+            },
+        },
+        // ── v1alpha12 · el dataset ──────────────────────────────────────────
+        //
+        // Exactamente una de dos formas, y lo dice `from`: con el, el plan y
+        // nada de `columns`/`changes`; sin el, `columns` y `changes` y nada
+        // del plan. Lo que el esquema JSON ya niega con 21 documentos, negado
+        // aqui con el mismo codigo (`OOS1004`) y el remedio dicho.
+        ShapeRule {
+            kind: Kind::Dataset,
+            path: &["spec"],
+            check: |n| {
+                let tiene = |k: &str| n.get(k).is_some();
+                match n.get("owner").and_then(|(_, v)| v.as_str()) {
+                    None => {
+                        return Some((
+                            "un dataset sin `owner`".to_string(),
+                            Some("quien responde por el: `team:<n>` o `user:<n>`".to_string()),
+                        ));
+                    }
+                    Some(v) if v.trim().is_empty() => {
+                        return Some((
+                            "`owner` esta vacio".to_string(),
+                            Some("quien responde por el: `team:<n>` o `user:<n>`".to_string()),
+                        ));
+                    }
+                    _ => {}
+                }
+                let mantenido = tiene("from");
+                let escrito = tiene("columns");
+                if mantenido && escrito {
+                    return Some((
+                        "un dataset con `from` y con `columns` a la vez".to_string(),
+                        Some(
+                            "o el sistema cumple un plan (`from`, y las columnas se derivan) o \
+                             codigo lo escribe (`columns` + `changes`, y el linaje va en el \
+                             puntero). Las dos formas son la misma cosa con dos procedencias, \
+                             y un documento dice una"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if !mantenido && !escrito {
+                    return Some((
+                        "un dataset sin `from` y sin `columns`".to_string(),
+                        Some(
+                            "no dice de que sale ni que tiene. Con `from: { table | view | \
+                             dataset }` es una copia que el sistema mantiene; con `columns` y \
+                             `changes` es lo que codigo escribe"
+                                .to_string(),
+                        ),
+                    ));
+                }
+                if mantenido {
+                    if let Some(k) = ["changes"].into_iter().find(|k| tiene(k)) {
+                        return Some((
+                            format!("un dataset mantenido con `{k}`"),
+                            Some(
+                                "un dataset con `from` deriva sus cambios de su raiz (`mode` y \
+                                 `key` los de ella, `witness: snapshot`): no se declaran"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    if let Some((_, f)) = n.get("from") {
+                        let formas = ["table", "view", "dataset"];
+                        let cuantas = formas.iter().filter(|k| f.get(k).is_some()).count();
+                        if cuantas != 1 {
+                            return Some((
+                                "`from` no es exactamente una de `{ table }`, `{ view }` o `{ dataset }`".to_string(),
+                                Some("una copia sale de UNA cosa: el vocabulario no tiene junta".to_string()),
+                            ));
+                        }
+                    }
+                } else {
+                    if let Some(k) = ["fields", "where", "groupBy", "having", "freshness"]
+                        .into_iter()
+                        .find(|k| tiene(k))
+                    {
+                        return Some((
+                            format!("un dataset escrito con `{k}`"),
+                            Some(
+                                "`fields`, `where`, `groupBy`, `having` y `freshness` son del \
+                                 plan, y un dataset sin `from` no tiene plan: lo llena codigo. Si \
+                                 quieres una copia con plan, declara `from`"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    if n.get("columns")
+                        .is_some_and(|(_, c)| c.entries().is_empty())
+                    {
+                        return Some((
+                            "`columns` esta vacio".to_string(),
+                            Some("las columnas de la tabla Iceberg, al menos una".to_string()),
+                        ));
+                    }
+                    let Some((_, ch)) = n.get("changes") else {
+                        return Some((
+                            "un dataset escrito sin `changes`".to_string(),
+                            Some(
+                                "que escrituras admite: `{ mode: append }` (solo altas) o \
+                                 `{ mode: upsert, key: [...] }` (se funde por la clave)"
+                                    .to_string(),
+                            ),
+                        ));
+                    };
+                    let modo = ch.get("mode").and_then(|(_, m)| m.as_str());
+                    match modo {
+                        Some("append") => {
+                            if ch.get("key").is_some() {
+                                return Some((
+                                    "`changes: { mode: append }` con `key`".to_string(),
+                                    Some(
+                                        "solo altas no funden por nada: quita `key`, o di `upsert`"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                        }
+                        Some("upsert") => {
+                            if ch.get("key").is_none_or(|(_, k)| k.items().is_empty()) {
+                                return Some((
+                                    "`changes: { mode: upsert }` sin `key`".to_string(),
+                                    Some(
+                                        "un upsert funde por una clave: `key: [<columna>, ...]`"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                        }
+                        Some(otro) => {
+                            return Some((
+                                format!("`changes.mode: {otro}` no es `append` ni `upsert`"),
+                                Some(
+                                    "son las dos escrituras que un dataset admite. `retract` y \
+                                     `none` son de una tabla que espeja un origen, y aqui no hay \
+                                     origen: lo escribe codigo"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        None => {
+                            return Some((
+                                "`changes` sin `mode`".to_string(),
+                                Some("`append` o `upsert`".to_string()),
+                            ));
+                        }
+                    }
+                    if let Some((_, w)) = ch.get("witness") {
+                        let _ = w;
+                        return Some((
+                            "`changes.witness` en un dataset".to_string(),
+                            Some(
+                                "es `snapshot`, siempre, porque es Iceberg: no se declara"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                }
+                if let Some((_, h)) = n.get("history") {
+                    if h.entries().is_empty() {
+                        return Some((
+                            "`history` esta vacio".to_string(),
+                            Some(
+                                "`maxAge: <duracion>` y/o `minSnapshots: <entero >= 1>`, o quitalo"
+                                    .to_string(),
+                            ),
+                        ));
+                    }
+                    if let Some(m) = h.get("minSnapshots").and_then(|(_, v)| v.as_str())
+                        && !m.parse::<u64>().is_ok_and(|k| k >= 1)
+                    {
+                        return Some((
+                            format!("`history.minSnapshots: {m}` no es un entero >= 1"),
+                            Some("cuantos snapshots se conservan como minimo".to_string()),
+                        ));
+                    }
                 }
                 None
             },

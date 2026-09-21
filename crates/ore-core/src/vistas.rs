@@ -74,6 +74,10 @@ pub enum Fuente {
     /// v1alpha8: `from: {table}`, el nombre cualificado de un `kind: Table`.
     Tabla(String),
     Vista(String),
+    /// v1alpha12: `from: {dataset}`, el nombre cualificado de un
+    /// `kind: Dataset`. Un mantenido es un eslabón más (tiene `from`); un
+    /// escrito es suelo (no lo tiene): es nuestro, y ahí terminan las cadenas.
+    Dataset(String),
 }
 
 /// Cómo codifica una tabla los cambios que emite: la cara `D`.
@@ -205,6 +209,51 @@ impl Package {
         let ns = desde.meta("namespace").and_then(|n| n.as_str());
         self.table(&qualify(referencia, ns))
     }
+
+    /// v1alpha12. El dataset con este nombre cualificado.
+    pub fn dataset(&self, qname: &str) -> Option<&Loaded> {
+        self.of(Kind::Dataset)
+            .find(|d| d.qname().as_deref() == Some(qname))
+    }
+
+    /// Todos los datasets del paquete.
+    pub fn datasets(&self) -> impl Iterator<Item = &Loaded> {
+        self.of(Kind::Dataset)
+    }
+
+    /// Resuelve una referencia a dataset con la misma regla (N1).
+    pub fn resolve_dataset(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        let ns = desde.meta("namespace").and_then(|n| n.as_str());
+        self.dataset(&qualify(referencia, ns))
+    }
+
+    /// Lo que una vista o un dataset tiene debajo por nombre: una vista **o un
+    /// dataset**. Es la búsqueda de `backedBy` y de la cadena, y es UNA para
+    /// que las dos no diverjan en qué admiten.
+    pub fn resolve_lectura(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        self.resolve_view(referencia, desde)
+            .or_else(|| self.resolve_dataset(referencia, desde))
+    }
+}
+
+/// v1alpha12. **Un dataset mantenido**: tiene `from`, el sistema cumple su
+/// plan. Es lo que hasta v1alpha11 era una vista con `materialized`.
+pub fn es_mantenido(d: &Loaded) -> bool {
+    d.kind == Kind::Dataset && d.section("from").is_some()
+}
+
+/// v1alpha12. **Un dataset escrito**: sin `from`, lo llena código y sus
+/// `columns` siguen a la tabla Iceberg. Es suelo: la cadena termina en él.
+pub fn es_escrito(d: &Loaded) -> bool {
+    d.kind == Kind::Dataset && d.section("from").is_none()
+}
+
+/// **Copia datos**: un dataset mantenido, o una vista de v1alpha7/8 con
+/// `materialized`. Es el predicado que instancia el conducto
+/// `materialization.payload` y el que mira el mantenimiento (`OOS2023`,
+/// `OOS2029`): cambió de documento en v1alpha12 y no de regla.
+pub fn es_copia(d: &Loaded) -> bool {
+    es_mantenido(d) || (d.kind == Kind::View && d.section("materialized").is_some())
 }
 
 /// `spec.from` de una vista.
@@ -216,6 +265,9 @@ pub fn fuente(v: &Loaded) -> Option<Fuente> {
     }
     if let Some((_, tabla)) = from.get("table") {
         return Some(Fuente::Tabla(qualify(tabla.as_str()?, ns)));
+    }
+    if let Some((_, dataset)) = from.get("dataset") {
+        return Some(Fuente::Dataset(qualify(dataset.as_str()?, ns)));
     }
     let datasource = from.get("datasource")?.1.as_str()?.to_string();
     let objeto = from
@@ -231,6 +283,8 @@ pub fn fuente(v: &Loaded) -> Option<Fuente> {
 /// Es lo único verdaderamente nuevo de v1alpha8, y lo que hace comprobable lo
 /// que antes no lo era. El nombre es **opaco** —puede llevar puntos si el
 /// origen es anidado— y por eso no es un identificador.
+///
+/// v1alpha12: las de un dataset escrito también, y con la misma forma.
 pub fn columnas(t: &Loaded) -> BTreeSet<String> {
     t.section("columns")
         .map(|c| {
@@ -240,6 +294,11 @@ pub fn columnas(t: &Loaded) -> BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Alias de [`columnas`] para donde una variable local se llama igual.
+fn columnas_de(t: &Loaded) -> BTreeSet<String> {
+    columnas(t)
 }
 
 /// **El tipo de cada columna de una tabla**, el que el conector tradujo:
@@ -415,6 +474,46 @@ pub fn expone(v: &Loaded) -> BTreeMap<String, String> {
     out
 }
 
+/// v1alpha12. **Lo que un documento expone, sabido con el paquete.**
+///
+/// Una vista lo dice sola (`expone`): sus `fields`. Un dataset **escrito** expone
+/// sus `columns` con sus nombres; un **mantenido** sin `fields` expone **todo lo
+/// que `from` expone, con sus nombres** —la copia identidad, que hoy no existe
+/// porque una vista exige `fields`—, y con `fields` lo que ellos digan, como
+/// una vista. Es contra lo que se resuelven `fields`, `where`, `groupBy` y
+/// `backedBy` de quien lo lea (`OOS2018`, `OOS2011`, `OOS2022`).
+pub fn expone_en(pkg: &Package, d: &Loaded) -> BTreeMap<String, String> {
+    if d.kind != Kind::Dataset {
+        return expone(d);
+    }
+    if es_escrito(d) {
+        return columnas(d).into_iter().map(|c| (c.clone(), c)).collect();
+    }
+    if d.section("fields").is_some() {
+        return expone(d);
+    }
+    match fuente(d) {
+        Some(Fuente::Tabla(qn)) => pkg
+            .table(&qn)
+            .map(|t| columnas(t).into_iter().map(|c| (c.clone(), c)).collect())
+            .unwrap_or_default(),
+        Some(Fuente::Vista(qn)) => pkg
+            .view(&qn)
+            .map(|v| expone(v).into_keys().map(|k| (k.clone(), k)).collect())
+            .unwrap_or_default(),
+        Some(Fuente::Dataset(qn)) => pkg
+            .dataset(&qn)
+            .map(|x| {
+                expone_en(pkg, x)
+                    .into_keys()
+                    .map(|k| (k.clone(), k))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => BTreeMap::new(),
+    }
+}
+
 /// **Los seis comparadores de `having`.** Vocabulario cerrado, y el orden
 /// importa al leerlo: los de dos caracteres van primero, o `>=` se leería como
 /// `>` con un `=` colgando.
@@ -522,7 +621,7 @@ pub fn filtros(v: &Loaded) -> Vec<(String, Vec<String>)> {
 /// La entidad nombra a su vista: `spec.backedBy`, resuelta.
 pub fn respaldo<'a>(pkg: &'a Package, e: &Loaded) -> Option<&'a Loaded> {
     let r = e.section("backedBy")?.as_str()?;
-    pkg.resolve_view(r, e)
+    pkg.resolve_lectura(r, e)
 }
 
 /// La cadena de una vista hasta su raíz, en orden: ella primero.
@@ -543,6 +642,9 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
         vistos.push(qn.clone());
         fila.push(actual);
         match fuente(actual) {
+            // v1alpha12: un dataset escrito no tiene `from` y no le falta: es
+            // suelo por derecho. Lo que se tiene no sale de nada de fuera.
+            None if es_escrito(actual) => return Ok(fila),
             None => return Err(SinRaiz::SinFrom(qn)),
             // Las dos formas de tocar el suelo. Una vista NO sale de una tabla
             // y de otra vista a la vez: `from` es exactamente una de dos, y por
@@ -553,6 +655,18 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
                 None => {
                     return Err(SinRaiz::NoExiste {
                         vista: otra,
+                        desde: qn,
+                    });
+                }
+            },
+            // v1alpha12: un dataset es un eslabón más. Si es mantenido se
+            // sigue por su `from`; si es escrito, la vuelta siguiente toca
+            // suelo arriba.
+            Some(Fuente::Dataset(otro)) => match pkg.dataset(&otro) {
+                Some(n) => actual = n,
+                None => {
+                    return Err(SinRaiz::NoExiste {
+                        vista: otro,
                         desde: qn,
                     });
                 }
@@ -812,17 +926,65 @@ pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
                 Some(qn),
             )
         }
+        // v1alpha12: la hoja es un dataset escrito. Es nuestro: vive en el lago
+        // del inquilino con el nombre físico que `write()` le dio, y no tiene
+        // `Table` (sus caras se saben, no se declaran). Quien necesite las dos
+        // caras pregunta por `suelo()`.
+        None if es_escrito(hoja) => (
+            "lago".to_string(),
+            format!(
+                "{}_{}",
+                hoja.meta("namespace")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(""),
+                hoja.meta("name").and_then(|n| n.as_str()).unwrap_or("")
+            ),
+            None,
+        ),
         _ => unreachable!("la cadena termina en una tabla o en una fuente por construcción"),
     };
 
     // De abajo arriba: la hoja nombra columnas físicas; cada eslabón de encima
     // nombra campos del de abajo, y se sustituyen.
-    let mut columnas: BTreeMap<String, String> = campos(hoja);
+    //
+    // v1alpha12: un dataset escrito como hoja nombra SUS columnas, con sus
+    // nombres —identidad—; y un mantenido sin `fields` expone todo lo del
+    // eslabón de abajo, con sus nombres: la copia identidad no renombra nada.
+    let mut columnas: BTreeMap<String, String> = if es_escrito(hoja) {
+        columnas_de(hoja)
+            .into_iter()
+            .map(|c| (c.clone(), c))
+            .collect()
+    } else if es_mantenido(hoja) && hoja.section("fields").is_none() {
+        // Un mantenido sobre una tabla, sin `fields`: expone las columnas de
+        // la tabla tal cual.
+        match fuente(hoja) {
+            Some(Fuente::Tabla(qn)) => pkg
+                .table(&qn)
+                .map(|t| columnas_de(t).into_iter().map(|c| (c.clone(), c)).collect())
+                .unwrap_or_default(),
+            _ => BTreeMap::new(),
+        }
+    } else {
+        campos(hoja)
+    };
     let mut agrega: BTreeMap<String, Agregado> = agregados(hoja);
     let mut filtros_fisicos: Vec<(String, Vec<String>)> = filtros(hoja);
     for eslabon in fila.iter().rev().skip(1) {
         let de_abajo = columnas;
         let agrega_abajo = agrega;
+        // v1alpha12: un dataset mantenido sin `fields` es la identidad sobre lo
+        // de abajo: mismas columnas, mismos agregados, y sus filtros se suman.
+        if es_mantenido(eslabon) && eslabon.section("fields").is_none() {
+            columnas = de_abajo.clone();
+            agrega = agrega_abajo.clone();
+            for (campo, valores) in filtros(eslabon) {
+                if let Some(c) = de_abajo.get(&campo) {
+                    filtros_fisicos.push((c.clone(), valores));
+                }
+            }
+            continue;
+        }
         // Un eslabón de encima nombra campos del de abajo. Si el que nombra era
         // un agregado allí, **sigue siéndolo aquí**: renombrar una suma no la
         // convierte en una columna.
@@ -873,10 +1035,31 @@ pub fn raiz(pkg: &Package, v: &Loaded) -> Result<Raiz, SinRaiz> {
 /// materializada sobre un flujo fallaría, y obligaría a materializar dos veces
 /// lo mismo. Hay dónde preguntar; está un eslabón más abajo.
 pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    // v1alpha12: es **el primer dataset bajando** —mantenido o escrito, ella
+    // misma incluida—; y sigue siendo la vista con `materialized` para los
+    // documentos de v1alpha7/8, que siguen compilando. Misma operación, otro
+    // predicado: `es_copia` más el suelo escrito.
     cadena(pkg, v)
         .ok()?
         .into_iter()
-        .find(|e| e.section("materialized").is_some())
+        .find(|e| e.kind == Kind::Dataset || e.section("materialized").is_some())
+}
+
+/// v1alpha12. **El suelo de una cadena, como documento**: la `Table` en la que
+/// termina, o el dataset **escrito** en el que termina. Es donde están las dos
+/// caras —`changes.mode`, `changes.key`, `witness`— para quien las necesite
+/// (`OOS2021`, `OOS2023`, `OOS2024`): la tabla las declara porque espeja; el
+/// dataset escrito las declara porque las admite.
+pub fn suelo<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    let fila = cadena(pkg, v).ok()?;
+    let hoja = fila.last().copied()?;
+    if es_escrito(hoja) {
+        return Some(hoja);
+    }
+    match fuente(hoja)? {
+        Fuente::Tabla(qn) => pkg.table(&qn),
+        _ => None,
+    }
 }
 
 /// Las fuentes físicas de una entidad: la raíz de la vista que la respalda.
@@ -915,11 +1098,21 @@ pub fn proyectar(
         .iter()
         .position(|v| v.qname().as_deref() == Some(objetivo))?;
     // Identidad en `desde`, y se compone bajando hasta `objetivo`.
-    let mut mapa: BTreeMap<String, String> = campos(desde)
-        .keys()
-        .map(|k| (k.clone(), k.clone()))
-        .collect();
+    // Una vista proyecta sus `campos` (los agregados no salen de una columna
+    // y los sella la derivacion, no esto); un dataset, lo que expone.
+    let mut mapa: BTreeMap<String, String> = if desde.kind == Kind::Dataset {
+        expone_en(pkg, desde)
+    } else {
+        campos(desde)
+    }
+    .keys()
+    .map(|k| (k.clone(), k.clone()))
+    .collect();
     for eslabon in &fila[..pos] {
+        // v1alpha12: un dataset sin `fields` no renombra nada.
+        if eslabon.kind == Kind::Dataset && eslabon.section("fields").is_none() {
+            continue;
+        }
         let renombres = campos(eslabon);
         mapa = mapa
             .into_iter()
@@ -1008,6 +1201,14 @@ fn no_es_columna(
         })
 }
 
+/// Dónde señalar en un documento que copia: `materialized` en una vista de
+/// v1alpha7/8, `from` en un dataset mantenido.
+fn donde_copia(v: &Loaded) -> Option<crate::diag::Pos> {
+    v.section("materialized")
+        .or_else(|| v.section("from"))
+        .map(|n| n.pos())
+}
+
 /// Las comprobaciones de enlazado de las tablas, las vistas y `backedBy`.
 pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     let declarados = datasources_declarados(pkg);
@@ -1090,7 +1291,36 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
     }
 
-    for v in pkg.of(Kind::View) {
+    // ── v1alpha12 · el dataset escrito se sostiene solo, como una tabla ─────
+    //
+    // Sus `columns` son lo que tiene; `changes.key` tiene que nombrarlas. Es
+    // la regla de `changes.key` de la tabla con el sujeto cambiado.
+    for d in pkg.of(Kind::Dataset).filter(|d| es_escrito(d)) {
+        let dqn = d.qname().unwrap_or_default();
+        let cols = columnas(d);
+        if let Some((_, k)) = d.section("changes").and_then(|c| c.get("key")) {
+            for i in k.items() {
+                let Some(c) = i.as_str() else { continue };
+                if !cols.contains(c) {
+                    out.push(no_es_columna(
+                        &d.path,
+                        i,
+                        format!("`{dqn}` declara `changes.key: {c}`, que no es columna suya"),
+                        &dqn,
+                        &cols,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Las vistas y, desde v1alpha12, los datasets mantenidos: el mismo plan,
+    // las mismas reglas. Lo que es solo de la vista (`OOS2025`, `version`)
+    // pregunta por el kind.
+    for v in pkg
+        .of(Kind::View)
+        .chain(pkg.of(Kind::Dataset).filter(|d| es_mantenido(d)))
+    {
         let qn = v.qname().unwrap_or_default();
 
         // ── OOS2032 y OOS2033 · la agrupación cuadra consigo misma ──────────
@@ -1194,8 +1424,12 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         // Y es lo que decide si una vista es ESPEJO o REGISTRO, por vista y no
         // por producto: sin una función que la escriba, esta misma vista
         // compila virtual y refleja el origen exactamente.
-        if escritas_por_la_ontologia.contains(&qn) {
-            if v.section("materialized").is_none() {
+        // v1alpha12: «es virtual» es «no hay dataset en su cadena» —ella misma
+        // incluida—, y el remedio es un dataset. Un `backedBy` sobre un dataset
+        // escrito no llega aquí: `escritas()` devuelve lo que respalda, y un
+        // dataset no es una vista.
+        if v.kind == Kind::View && escritas_por_la_ontologia.contains(&qn) {
+            if raiz_de_lectura(pkg, v).is_none() {
                 out.push(
                     Diagnostic::new(
                         Code::Oos2025,
@@ -1205,9 +1439,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     .at(v.root.pos())
                     .help(
                         "una vista virtual no tiene dónde sostener una edición, y el origen no \
-                         se toca: el puntero es de solo lectura. Declara `materialized` con la \
-                         fuente y la tabla donde vive la copia — es el gemelo de `OOS2020`, que \
-                         exige lo mismo cuando lo que no se puede es leer",
+                         se toca: el puntero es de solo lectura. Respáldala en un dataset —un \
+                         `kind: Dataset` con `from: { view }`, o sácala de uno— — es el gemelo \
+                         de `OOS2020`, que exige lo mismo cuando lo que no se puede es leer",
                     ),
                 );
             }
@@ -1215,14 +1449,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             //
             // Remedio distinto que el de arriba —aquél se arregla en la vista,
             // este en la tabla— y por eso son dos códigos y no uno.
-            if let Ok(r) = raiz(pkg, v)
-                && let Some(tqn) = r.tabla.as_deref()
-                && let Some(tabla) = pkg.table(tqn)
+            // v1alpha12: el suelo puede ser un dataset escrito, y entonces la
+            // clave es la suya (`changes.key`).
+            if let Some(tabla) = suelo(pkg, v)
                 && tabla
                     .section("changes")
                     .and_then(|c| c.get("key"))
                     .is_none()
             {
+                let tqn = tabla.qname().unwrap_or_default();
                 out.push(
                     Diagnostic::new(
                         Code::Oos2024,
@@ -1352,21 +1587,41 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
 
         // OOS2018 · la vista de abajo existe, y expone lo que esta le pide.
         // OOS2019 · y la cadena no vuelve sobre sí misma.
-        if let Some((_, nodo)) = from.get("view") {
+        //
+        // v1alpha12: y el dataset de abajo igual. Es la misma rama con el
+        // sujeto cambiado —lo que el de abajo EXPONE—, y `expone_en` sabe
+        // decirlo de los dos.
+        let de_abajo = match (from.get("view"), from.get("dataset")) {
+            (Some((_, nodo)), _) => Some((
+                "view",
+                nodo,
+                pkg.resolve_view(nodo.as_str().unwrap_or(""), v),
+            )),
+            (None, Some((_, nodo))) => Some((
+                "dataset",
+                nodo,
+                pkg.resolve_dataset(nodo.as_str().unwrap_or(""), v),
+            )),
+            _ => None,
+        };
+        if let Some((clave, nodo, resuelto)) = de_abajo {
             let referencia = nodo.as_str().unwrap_or("");
-            let Some(abajo) = pkg.resolve_view(referencia, v) else {
+            let Some(abajo) = resuelto else {
                 out.push(
                     Diagnostic::new(
                         Code::Oos2018,
                         &v.path,
-                        format!("`from.view: {referencia}` no existe"),
+                        format!("`from.{clave}: {referencia}` no existe"),
                     )
                     .at(nodo.pos())
-                    .help(
+                    .help(if clave == "view" {
                         "una vista sobre otra necesita que la otra esté en el paquete o en \
                          una dependencia. Resolver un nombre exige el paquete entero: es lo \
-                         que un esquema JSON no alcanza",
-                    ),
+                         que un esquema JSON no alcanza"
+                    } else {
+                        "leer de un dataset exige que el dataset esté en el paquete o en una \
+                         dependencia: es lo que se tiene, y lo que no se tiene no se lee"
+                    }),
                 );
                 continue;
             };
@@ -1393,7 +1648,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 Err(_) => continue,
                 Ok(_) => {}
             }
-            let expone = expone(abajo);
+            let expone = expone_en(pkg, abajo);
             let abajo_qn = abajo.qname().unwrap_or_default();
             let mios = campos(v);
             // OOS2018 · lo que agrega, y por lo que agrupa, también son campos
@@ -1489,7 +1744,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         }
 
         // OOS2018 · el testigo por campo nombra un campo de la vista.
-        if let Some(ver) = v.section("version")
+        if v.kind == Kind::View
+            && let Some(ver) = v.section("version")
             && let Some((_, f)) = ver.get("field")
         {
             let campo = f.as_str().unwrap_or("");
@@ -1578,8 +1834,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // cabecera y lo prueba `ore-sql`—, así que un lector que no lo haga está
     // incumpliendo el contrato, no ejerciendo una opción. `false` es una
     // **confesión**, y por eso hay que escribirla.
-    for v in pkg.of(Kind::View) {
-        if v.section("materialized").is_none() {
+    for v in pkg.of(Kind::View).chain(pkg.of(Kind::Dataset)) {
+        if !es_copia(v) {
             continue;
         }
         let Ok(r) = raiz(pkg, v) else { continue };
@@ -1611,7 +1867,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
              clasificación de los campos de la vista, que no es lo que se movió. Léela virtual, o \
              cópiala desde un objeto que sí proyecte",
         );
-        if let Some(p) = v.section("materialized").map(|m| m.pos()) {
+        if let Some(p) = donde_copia(v) {
             d = d.at(p);
         }
         out.push(d);
@@ -1634,10 +1890,12 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // `OOS2021`, y como ellas **es sobre la copia y no sobre la tabla**: un log
     // de eventos fechado por una columna de tiempo es legítimo y existe. Lo que
     // no se puede es **mantener una copia suya**.
-    for v in pkg.of(Kind::View) {
+    for v in pkg.of(Kind::View).chain(pkg.of(Kind::Dataset)) {
         // Solo si esta vista es la que se copia. Una virtual encima de una copia
         // no declara nada, y la de abajo ya se comprueba por su cuenta.
-        if v.section("materialized").is_none() {
+        // v1alpha12: «la que se copia» es el dataset mantenido, o la vista de
+        // v1alpha7/8 con `materialized`.
+        if !es_copia(v) {
             continue;
         }
         let Ok(r) = raiz(pkg, v) else { continue };
@@ -1670,20 +1928,20 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
              `mode: upsert`, o fecha por `witness: log` o `snapshot`, que nombran una posición \
              replayable",
         );
-        if let Some(p) = v.section("materialized").map(|m| m.pos()) {
+        if let Some(p) = donde_copia(v) {
             d = d.at(p);
         }
         out.push(d);
     }
 
-    // `backedBy` · la entidad nombra a su vista.
+    // `backedBy` · la entidad nombra a su vista, o a su dataset (v1alpha12).
     for e in pkg.entities() {
         let Some(b) = e.section("backedBy") else {
             continue;
         };
         let referencia = b.as_str().unwrap_or("");
         let qn = e.qname().unwrap_or_default();
-        let Some(v) = pkg.resolve_view(referencia, e) else {
+        let Some(v) = pkg.resolve_lectura(referencia, e) else {
             out.push(
                 Diagnostic::new(
                     Code::Oos2018,
@@ -1692,14 +1950,14 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 )
                 .at(b.pos())
                 .help(
-                    "la entidad nombra a la vista que la respalda, y no al revés: la vista \
-                     tiene que existir antes. Es lo que permite descubrir y exponer una \
+                    "la entidad nombra a la vista —o al dataset— que la respalda, y no al \
+                     revés: tiene que existir antes. Es lo que permite descubrir y exponer una \
                      fuente antes de modelar nada sobre ella",
                 ),
             );
             continue;
         };
-        let expone = expone(v);
+        let expone = expone_en(pkg, v);
         let vista_qn = v.qname().unwrap_or_default();
 
         // OOS2011 · lo que necesita columna: la clave y los `via`. La misma
@@ -1814,13 +2072,15 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         // respalda de un `append`—; hay una COPIA en la cadena —una vista
         // virtual lee del origen, que sí tiene el estado presente—; y la raíz
         // SOLO ANEXA.
+        // v1alpha12: el suelo puede ser un dataset escrito, y entonces «solo
+        // anexa» es su propio `changes.mode: append`. Mismo código, mismo
+        // mensaje: lo que se tiene copiando altas no es el estado presente.
         if e.section("nature").and_then(|n| n.as_str()) == Some("entity")
             && raiz_de_lectura(pkg, v).is_some()
-            && let Ok(r) = raiz(pkg, v)
-            && let Some(tqn) = r.tabla.as_deref()
-            && let Some(tabla) = pkg.table(tqn)
+            && let Some(tabla) = suelo(pkg, v)
             && modo(tabla) == Modo::Anexa
         {
+            let tqn = tabla.qname().unwrap_or_default();
             out.push(
                 Diagnostic::new(
                     Code::Oos2021,
