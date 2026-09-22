@@ -157,6 +157,45 @@ Y sobre el árbol de verdad (demo `b93ed52`), con dos repos anidados y una carpe
 
 `ore validate` sigue saliendo **0**. **Medida** §3: «0 carpetas de cliente» → las que se creen.
 
+### ② Los verbos: nacer entero, y el sitio que ya está cogido
+
+**Dónde**: `crates/ore-core/src/clases.rs` (la tabla) y `crates/ore-serve/src/repositorios.rs`.
+
+**La tabla del producto, estrenada**: `clases.rs` trae las cinco con su `titulo`, su `version` y
+su **semilla** —`transforms/ejemplo.py`, `analisis/ejemplo.py`, `modelos/entrenar.py`,
+`funciones/ejemplo.py`, y `semantics` **sin semilla**, porque lo suyo son documentos del árbol y
+sembrar una `Entity` a medias sería sembrar algo que no compila—. La tabla **no está en el
+árbol**: si lo estuviera, cada cliente tendría su versión del producto y «actualizar la
+plantilla» no querría decir nada. (El **techo** de capacidades y el perfil de máquina son de ⑤;
+aquí la tabla sólo nombra y siembra.)
+
+**`POST /repositorios {paquete, carpeta, nombre, plantilla, proyecto?}`** → 201, y:
+
+- **nace entero**: el manifiesto **y la semilla** en **un solo commit** —una plantilla que deja
+  los ficheros a medias no es una plantilla—;
+- con `proyecto`, su `contiene` se actualiza **en ese mismo commit** (y **conservando la prosa**
+  del proyecto): «creado pero no nombrado» es un estado que nadie pidió;
+- **409** si esa carpeta ya es un repositorio: dos instancias sobre la misma carpeta serían dos
+  sesiones y dos ramas sobre los mismos ficheros;
+- **422** si la clase no está en la tabla, **con las que sí están** — así la consola no puede
+  ofrecer algo que el servidor rechazaría;
+- **404** si no hay paquete: un repositorio vive dentro de uno.
+
+**`PUT /repositorios/{ruta}`** reescribe el manifiesto y **conserva la prosa**: lo que una
+persona escribió no lo borra un `PUT`. **404** si esa carpeta no es un repositorio — crear es
+`POST`. Y **borrar no estrena verbo**: `DELETE /arbol/<carpeta>` (0035 ③b) se lleva la carpeta
+entera en un commit y **el manifiesto se va con ella**.
+
+En ore-serve, el `version` de un repositorio sale de `git log -1 -- <carpeta>`, como el de un
+fichero: es el «last edited by» de la lista, sin inventar nada (§2 lo midió en 59–60 ms).
+
+La prueba (`los-documentos.sh` 22, contra un `ore-serve` de verdad): crear deja **un solo commit**
+—y `git show --name-only` enseña dentro el manifiesto, la semilla y el README del proyecto—;
+`/assets` trae el repositorio con su clase y con quién lo creó, y el proyecto ya lo nombra;
+repetir la carpeta es 409 **sin commit**; una clase inventada es 422 **con la lista**; `PUT`
+renombra y la prosa sigue; **desde un puesto es 403**; y borrar la carpeta se lleva el
+manifiesto y el índice deja de traerlo.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

@@ -457,6 +457,25 @@ impl Servidor {
                     self.escribir_proyecto(r, &id, &cuerpo)
                 })
             }
+            // ── 0035 ⑥ · 0036 ② · los repositorios: la unidad de trabajo ────
+            // Leerlos va en `/assets` (①) y borrarlos, en `DELETE /arbol/<carpeta>`
+            // (0035 ③b): aquí sólo nacer entero —manifiesto + semilla en UN
+            // commit— y reescribir el manifiesto.
+            ("POST", ["repositorios"]) => {
+                let cuerpo = p.cuerpo.clone();
+                self.escribiendo_en(rama, sujeto, "crear un repositorio", |r| {
+                    self.crear_repositorio(r, &cuerpo)
+                })
+            }
+            ("PUT", ["repositorios", resto @ ..]) if !resto.is_empty() => {
+                let (ruta, cuerpo) = (resto.join("/"), p.cuerpo.clone());
+                self.escribiendo_en(
+                    rama,
+                    sujeto,
+                    &format!("escribir el repositorio `{ruta}`"),
+                    |r| self.escribir_repositorio(r, &ruta, &cuerpo),
+                )
+            }
             ("DELETE", ["proyectos", id]) => {
                 let id = id.to_string();
                 self.escribiendo_en(rama, sujeto, &format!("retirar el proyecto `{id}`"), |r| {
@@ -2138,6 +2157,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
             con_identidad,
         ),
         ("POST", "/proyectos", con_identidad),
+        ("POST", "/repositorios", con_identidad),
+        ("PUT", "/repositorios/{ruta}", con_identidad),
         ("PUT", "/proyectos/{id}", con_identidad),
         ("DELETE", "/proyectos/{id}", con_identidad),
         ("GET", "/perfiles", con_identidad),

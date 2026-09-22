@@ -56,6 +56,7 @@ mod preguntar;
 mod propuestas;
 mod proyectos;
 mod puestos;
+mod repositorios;
 mod rutas;
 
 use ore_entrada::{http, identidad};

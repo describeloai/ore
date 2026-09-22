@@ -61,6 +61,12 @@
 #                                     PUT reescribe el manifiesto entero;
 #                                     DELETE se lleva la LENTE y lo que nombraba
 #                                     SIGUE en el arbol; y desde un puesto, 403
+#  22  /repositorios (0036 ②)      nacer ENTERO: el manifiesto y la semilla de
+#                                     la clase en UN commit, y el proyecto que
+#                                     lo nombra en ese mismo; 409 si esa carpeta
+#                                     ya es uno; una clase inventada, 422 con
+#                                     las que hay; PUT conserva la prosa; y
+#                                     borrar su carpeta se lleva el manifiesto
 #  21  carpetas (0035 ③b)          una carpeta es un fichero dentro (README);
 #                                     el indice la nombra en cuanto cae un
 #                                     documento; `DELETE /arbol/<carpeta>` se la
@@ -569,5 +575,49 @@ cumple "d['carpeta'] is True and d['retirado'] is True and sorted(d['ficheros'])
 [ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' not in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · el indice ya no la nombra"
 dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra cuando cae un documento · DELETE de la carpeta se la lleva entera en UN commit diciendo que ficheros · si al irse el arbol empeora, 422 y nada se pierde"
 
+# ── 22 · /repositorios: la unidad de trabajo (0036 ②) ───────────────────────
+[ "$(pide POST /proyectos '{"nombre":"Personas","contiene":[]}')" = "201" ] || falla "22 · el proyecto de la prueba no entro · $(cat "$TMP/r.json")"
+ANTES=$(cabeza)
+[ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"New Pipelines Java Transform","plantilla":"transforms","proyecto":"personas"}')" = "201" ] \
+  || falla "22 · POST /repositorios · $(cat "$TMP/r.json")"
+cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms' and d['plantillaVersion']==1 and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase, su version y el proyecto"
+cumple "d['semilla']==['packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla de la clase"
+[ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
+[ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"
+# el manifiesto, la semilla y el proyecto, en ESE commit
+git --git-dir="$FORJA" show --name-only --format= main > "$TMP/tocados.txt"
+grep -q "packages/hr/raw/README.md" "$TMP/tocados.txt" || falla "22 · el manifiesto no esta en el commit"
+grep -q "packages/hr/raw/transforms/ejemplo.py" "$TMP/tocados.txt" || falla "22 · la semilla no esta en el commit"
+grep -q "proyectos/personas/README.md" "$TMP/tocados.txt" || falla "22 · el proyecto no se actualizo en el mismo commit"
+# el indice lo trae, con su clase, y el proyecto lo nombra
+[ "$(pide GET /assets)" = "200" ] || falla "22 · GET /assets · $(cat "$TMP/r.json")"
+cumple "[r['ruta'] for r in d['repositorios']] == ['packages/hr/raw']" "22 · /assets trae el repositorio"
+cumple "d['repositorios'][0]['plantilla']=='transforms' and d['repositorios'][0]['version']['sujeto']=='persona.ana'" "22 · con su clase y quien lo creo"
+cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['hr/raw']" "22 · el proyecto lo nombra"
+# el sitio ya esta cogido
+ANTES=$(cabeza)
+[ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"Otro","plantilla":"models"}')" = "409" ] || falla "22 · la carpeta cogida no dio 409 · $(cat "$TMP/r.json")"
+[ "$(cabeza)" = "$ANTES" ] || falla "22 · un 409 hizo commit"
+# una clase inventada, y un paquete que no esta
+[ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"otro","nombre":"X","plantilla":"lo-que-sea"}')" = "422" ] || falla "22 · una clase inventada no dio 422"
+grep -q "transforms, analytics, models, functions, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
+[ "$(pide POST /repositorios '{"paquete":"noexiste","carpeta":"x","nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · un paquete que no esta no dio 404"
+# PUT: el manifiesto entero, conservando la prosa
+[ "$(pide PUT /repositorios/packages/hr/raw '{"nombre":"Renombrado","plantilla":"analytics","plantillaVersion":1}')" = "200" ] \
+  || falla "22 · PUT /repositorios · $(cat "$TMP/r.json")"
+cumple "d['nombre']=='Renombrado' and d['plantilla']=='analytics' and d['nueva'] is False and d['commit']" "22 · el manifiesto reescrito"
+[ "$(pide GET /arbol/packages/hr/raw/README.md)" = "200" ] && cumple "'Lo que este repositorio hace' in d['texto']" "22 · la prosa se conserva"
+[ "$(pide PUT /repositorios/packages/hr/noexiste '{"nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · PUT de uno que no esta no dio 404"
+# desde un puesto, no: un repositorio lo crea una persona
+CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-ana-python' \
+  -H 'Content-Type: application/json' -d '{"paquete":"hr","carpeta":"z","nombre":"X","plantilla":"models"}' "$BASE/repositorios")
+[ "$CODIGO" = "403" ] || falla "22 · un agente creo un repositorio ($CODIGO)"
+# y borrar su carpeta se lleva el manifiesto: no hay verbo nuevo
+[ "$(pide DELETE /arbol/packages/hr/raw)" = "200" ] || falla "22 · DELETE de la carpeta del repositorio · $(cat "$TMP/r.json")"
+cumple "d['carpeta'] is True and 'packages/hr/raw/README.md' in d['ficheros']" "22 · el manifiesto se va con la carpeta"
+[ "$(pide GET /assets)" = "200" ] && cumple "d['repositorios']==[]" "22 · y el indice ya no lo trae"
+[ "$(pide DELETE /proyectos/personas)" = "200" ] || falla "22 · no se pudo retirar el proyecto de la prueba"
+dice "22 · /repositorios: nace ENTERO (manifiesto + semilla + el proyecto que lo nombra, en UN commit) · la carpeta cogida 409 · la clase inventada 422 con las que hay · PUT conserva la prosa · desde un puesto 403 · borrar la carpeta se lleva el manifiesto"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); escribir es un commit del sujeto que no empeora el arbol"

@@ -54,7 +54,7 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
   `ore assets`. Sobre demo: dos repos anidados listados con su clase, la carpeta con README
   ignorada, y `validate` 0.
 
-## ② Los verbos: crear y reescribir la instancia
+## ② Los verbos: crear y reescribir la instancia ✓
 
 **Dónde**: `crates/ore-serve/src/repositorios.rs` (nuevo) + `rutas.rs`.
 
@@ -72,6 +72,9 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
   desde un puesto es **403**. Un repositorio lo crea una persona.
 - **Prueba**: `los-documentos.sh` gana un caso: crear (201 con su semilla), repetir (409), verlo
   en `/assets`, renombrar, borrar su carpeta y que **el manifiesto se vaya con ella**.
+- **Hecho**: `clases.rs` (la tabla, con la semilla de cada una; el techo y el perfil son de ⑤) y
+  `ore-serve/src/repositorios.rs`. El caso 22 en verde, incluido que **crear deja un solo
+  commit** con el manifiesto, la semilla y el proyecto dentro.
 
 ## ③ La capa por repositorio — el cambio con más valor por línea
 

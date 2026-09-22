@@ -97,6 +97,19 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
                 }
             }
         }
+        // Un repositorio es una CARPETA, y `git log -1 -- <carpeta>` dice lo
+        // mismo de ella que de un fichero: quien la tocó y cuándo (medido,
+        // 0035 ⑥ §2). Es el «last edited by» de la lista, sin inventar nada.
+        if let Some(Json::Arr(rs)) = m.get_mut("repositorios") {
+            for r in rs.iter_mut() {
+                if let Json::Obj(r) = r
+                    && let Some(Json::Str(ruta)) = r.get("ruta")
+                    && let Some(v) = version_de(raiz, ruta)
+                {
+                    r.insert("version".into(), v);
+                }
+            }
+        }
     }
     j
 }

@@ -33,6 +33,7 @@ pub mod cache;
 pub mod canonical;
 pub mod cedar;
 pub mod cedar_schema;
+pub mod clases;
 pub mod code;
 pub mod derivacion;
 pub mod diag;
