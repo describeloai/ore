@@ -307,6 +307,10 @@ impl Servidor {
         {
             return Respuesta::error(422, m);
         }
+        let rama = match self.rama_del_puesto(sujeto, rama) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
         let id = id_de(&sujeto.persona, entorno);
         {
             let lista = self.puestos.lista.lock().unwrap();
@@ -491,6 +495,10 @@ impl Servidor {
         {
             return Respuesta::error(422, m);
         }
+        let rama = match self.rama_del_puesto(sujeto, rama) {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
         // El fichero, tal como está en el commit de la rama: lo que corre es
         // exactamente eso, y el commit va al informe y a la procedencia de lo
         // que escriba (`ORE_CODIGO=<ruta>@<commit>`).
@@ -1060,6 +1068,34 @@ impl Servidor {
             ("celda", Json::Int(n as i64)),
             ("estado", Json::s("hecha")),
         ]))
+    }
+
+    /// **Un puesto sin rama nace en `<persona>/puesto`** (0031 W3.7 gobierno ④,
+    /// regla 4): lo que una persona escribe o declara desde código vive en su
+    /// rama hasta que lo publica por propuesta; `main` no se toca desde una
+    /// celda. Medido antes: todo lo de bob (anexar, retirar, redeclarar la
+    /// Entity de ana y desclasificarla) caía en `main`. La rama la crea el
+    /// servidor por git si no está; con rama dicha, la dicha; y sobre un
+    /// directorio (el banco, las pruebas) no hay ramas y se sigue en él.
+    fn rama_del_puesto(
+        &self,
+        sujeto: &Identidad,
+        rama: Option<String>,
+    ) -> Result<Option<String>, Respuesta> {
+        if rama.is_some() {
+            return Ok(rama);
+        }
+        let crate::rutas::Arbol::Forja(forja) = &self.arbol else {
+            return Ok(None);
+        };
+        let nombre = format!("{}/puesto", crate::propuestas::prefijo_de(&sujeto.persona));
+        match forja.asegurar_rama(&nombre) {
+            Ok(_) => Ok(Some(nombre)),
+            Err(e) => Err(Respuesta::error(
+                502,
+                format!("no se pudo abrir la rama `{nombre}` del puesto: {e}"),
+            )),
+        }
     }
 
     /// `GET /puestos/{id}/datos/{vista}`: qué copia es `<paquete>.<vista>`, en

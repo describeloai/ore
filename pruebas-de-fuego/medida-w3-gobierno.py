@@ -317,13 +317,27 @@ def local(tmp, procs):
             return r.get("error") or ((r.get("diagnosticos") or [{}])[0].get("codigo", "") + " " + (r.get("diagnosticos") or [{}])[0].get("mensaje", "")).strip() or ", ".join("%s=%s" % (k, str(v)[:24]) for k, v in sorted(r.items()))
         return str(r)
 
+    def publica(rama):
+        """Lo que una propuesta aceptada haría (0030 W2): la rama del puesto entra en `main`.
+        Aquí por git, que la forja pelada no tiene API de propuestas."""
+        m = clon("publica-%d" % int(time.time() * 1000))
+        out = [git("fetch", "-q", "origin", rama, cwd=m), git("merge", "-q", "--no-edit", "FETCH_HEAD", cwd=m), git("push", "-q", "origin", "HEAD:main", cwd=m)]
+        if any(o for o in out):
+            fila("  (publicar %s)" % rama, "", " | ".join(o for o in out if o)[:150])
+
     ana = abre_puesto("persona:ana")
-    bob = abre_puesto("persona:bob")
     # el material: ana escribe `ventas.salida`, la vista identidad encima y la Entity que clasifica `total` como high
     s = celda(ana, TRES + '; e = write("ventas.salida", t3); e["filas"]')
     assert texto(s) == "3", s
     s = celda(ana, 'd = declare(%r); d["commit"]' % VISTA); assert s.get("tipo") != "error", s
     s = celda(ana, 'd = declare(%r); d["commit"]' % (ENTIDAD % "high")); assert s.get("tipo") != "error", s
+    # Desde W3.7 gobierno ④ un puesto sin rama nace en `<persona>/puesto`: lo de ana está en
+    # `ana/puesto` hasta que lo publica. Se publica (como haría una propuesta aceptada), y bob
+    # abre DESPUÉS, con lo que su rama nace de un `main` que ya tiene lo de ana.
+    c, r = pide(base, "GET", "/puestos/" + ana)
+    fila("el puesto de ana, sin rama dicha", "", "rama %s" % r.get("rama"))
+    publica(r.get("rama") or "main")
+    bob = abre_puesto("persona:bob")
 
     # ── §1 · leer ────────────────────────────────────────────────────────────
     if "1" in SOLO:
@@ -365,8 +379,11 @@ def local(tmp, procs):
         s = celda(bob, TRES + '; e = write("nadie.x", t3); e["filas"]', persona="persona:bob")
         fila("bob escribe nadie.x (paquete que no existe)", "%s" % s.get("tipo"), texto(s)[:100])
         s = celda(ana, TRES + '; write("ventas.deAna", t3)["filas"]')
+        publica("ana/puesto")
         c, r, t = pedir_desde(bob, "persona:bob", "DELETE", "/documentos/Dataset/ventas/deAna")
         fila("bob retira ventas.deAna por DELETE /documentos", "HTTP %s · %d ms" % (c, t), ("queda: %s" % ("sí" if arbol("packages/ventas/datasets/deAna.yaml") else "no; puntero: %s" % ("sí" if arbol("datasets/ventas_deAna.json") else "no"))) if c == 200 else diag(r)[:100])
+        c, r = pide(base, "DELETE", "/documentos/Dataset/ventas/deAna", sujeto="persona:bob")
+        fila("bob (persona, en main) retira ventas.deAna por DELETE /documentos", "HTTP %s" % c, ("queda: %s" % ("sí" if arbol("packages/ventas/datasets/deAna.yaml") else "no")) if c == 200 else diag(r)[:100])
         c, r, t = pedir_desde(bob, "persona:bob", "DELETE", "/arbol/datasets/ventas_salida.json")
         fila("bob retira el puntero de ventas.salida por DELETE /arbol", "HTTP %s" % c, ("puntero queda: %s" % ("sí" if arbol("datasets/ventas_salida.json") else "no")) if c == 200 else diag(r)[:100])
         if c == 200:
@@ -391,8 +408,9 @@ def local(tmp, procs):
         fila("bob deja el retículo en un nivel por PUT /arbol", "HTTP %s" % c, diag(r)[:100] if c not in (200, 201) else "aceptado")
         if c in (200, 201):
             texto_desde(bob, "persona:bob", "PUT", "/arbol/lattice.yaml", "apiVersion: oos.dev/v1alpha3\nkind: Lattice\nmetadata: { name: sensitivity, namespace: gdpr }\nspec:\n  levels: [none, low, high]\n")
+        c, r = pide(base, "GET", "/puestos/" + bob, sujeto="persona:bob")
         a, n = autor("datasets/ventas_salida.json")
-        fila("dónde quedó todo esto", "en main", "el puesto de bob no tiene rama; último commit del puntero: %s" % a)
+        fila("dónde quedó todo esto", "rama del puesto de bob: %s" % r.get("rama"), "último commit del puntero en main: %s" % a)
         print()
 
     # ── §3 · declarar ────────────────────────────────────────────────────────
@@ -402,8 +420,9 @@ def local(tmp, procs):
         fila("bob redeclara la View ventas.ventas de ana (un campo más)", "%s · %d ms" % (s.get("tipo"), s["_ms"]), texto(s)[:40] + " · firma " + autor("packages/ventas/views/ventas.yaml")[0])
         s = celda(bob, 'd = declare(%r); [d["nueva"], d["commit"]]' % (ENTIDAD % "low"), persona="persona:bob")
         m = clon("mira3")
-        fila("bob redeclara la Entity: total high → low", "%s · %d ms" % (s.get("tipo"), s["_ms"]), "firma %s · índice: %s" % (autor("packages/ventas/entities/venta.yaml")[0], clasificacion(m, "entity:ventas.venta")))
-        celda(ana, 'declare(%r)["commit"]' % (ENTIDAD % "high"))
+        fila("bob redeclara la Entity: total high → low", "%s · %d ms" % (s.get("tipo"), s["_ms"]), "en main: firma %s · índice de main: %s" % (autor("packages/ventas/entities/venta.yaml")[0], clasificacion(m, "entity:ventas.venta")))
+        c, r = pide(base, "GET", "/arbol/packages/ventas/entities/venta.yaml", cabeceras={"x-ore-rama": "bob/puesto"})
+        fila("  y en la rama bob/puesto", "HTTP %s" % c, ("total: low" if "sensitivity: low" in (r or {}).get("texto", "") else "?") if c == 200 else str(r)[:80])
         s = celda(bob, 'd = declare(%r); [d["nueva"], d["commit"]]' % ("apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: nominas, namespace: rrhh }\nspec:\n  owner: team:ventas\n  from: { table: rrhh.pedidos }\n  fields: { id: order_id }\n"), persona="persona:bob")
         fila("bob declara una View en rrhh (team:rrhh) con owner team:ventas", "%s" % s.get("tipo"), texto(s)[:60])
         s = celda(bob, 'd = declare(%r); d' % (CONDUCTO % "high"), persona="persona:bob")

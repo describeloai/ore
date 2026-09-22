@@ -104,7 +104,15 @@ una `Function` (conducto `datasource`, 0029: otra costura).
   sobre lo derivado es OOS4002 con el conducto `low`). **Medida** §5: «compila» → OOS4002;
   `{}` → `{"gdpr.sensitivity": "high"}`; la cadena sin ciclo.
 
-## ④ Quién reescribe, y la rama
+## ④ Quién reescribe, y la rama · hecho (2026-09-22)
+
+Lo que quedó: 403 (`ForbiddenException`, código 77 de `ore`) en la credencial, en el commit y
+en retirar, decidido por `escrito_por`; `rama_del_puesto` + `Forja::asegurar_rama` (por git,
+sin API; el trabajo igual; un directorio no tiene ramas); «Publish» en la fila de la sesión
+(rubix-platform `a8e406c`, local); `el-puesto.sh` 15, `git.rs`. Lo que cambió respecto al plan:
+**403 y no 409** (no es un conflicto; no es suyo). Lo que salió: una rama nace de `main` y no lo
+sigue después —publicar y volver a abrir es cómo se recoge lo nuevo—; y la medida necesita
+«publicar» (merge por git) entre lo de ana y lo de bob, porque ya no se ven sin eso.
 
 **Dónde**: `crates/ore-cli/src/datasets.rs` (`--commit`, `--confirmar`), `crates/ore-serve/src/
 {catalogo,puestos,documentos}.rs`, `puesto/*/ore`, rubix-platform (publicar desde el puesto).

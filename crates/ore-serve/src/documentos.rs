@@ -783,6 +783,7 @@ impl Servidor {
         ns: &str,
         n: &str,
         si_commit: Option<&str>,
+        sujeto: &ore_entrada::identidad::Identidad,
     ) -> Respuesta {
         let k = match kind_o_404(kind) {
             Ok(k) => k,
@@ -790,6 +791,23 @@ impl Servidor {
         };
         if let Err(r) = nombres(ns, n) {
             return r;
+        }
+        // Lo escrito es de quien lo escribió (W3.7 gobierno ④): retirar un
+        // Dataset con puntero de otra persona es 403 con quién.
+        if k.nombre == "Dataset"
+            && let Ok(t) =
+                std::fs::read_to_string(raiz.join("datasets").join(format!("{ns}_{n}.json")))
+            && let Ok(p) = ore_core::parse::parse(&t)
+            && let Some(e) = p.get("escrito_por").and_then(|(_, v)| v.as_str())
+            && !e.is_empty()
+            && e != sujeto.persona
+        {
+            return Respuesta::error(
+                403,
+                format!(
+                    "el dataset `{ns}.{n}` lo escribió `{e}`: retirarlo es suyo; lo tuyo va por una propuesta"
+                ),
+            );
         }
         let (lista, _) = documentos_de(raiz);
         let Some(d) = buscar(&lista, k, ns, n) else {

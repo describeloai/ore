@@ -532,6 +532,28 @@ spec:
   dice "14 · lo escrito lleva lo que leyó: hr.derivado dice derivedFrom (la sesion entera, con hr.salida) y lleva high; la copia mantenida encima es OOS4002 por materialization.payload low; anexar de sí mismo no se nombra, y un transform deja exactamente sus inputs"
 fi
 
+# ── 15 · lo escrito es de quien lo escribió (W3.7 gobierno ④) ─────────────────
+#
+# Medido antes: bob anexaba, sobrescribía y retiraba lo de ana con 200. Ahora la
+# credencial para escribir (`--prestar`), el commit y retirar el Dataset son de
+# la persona del puntero (`escrito_por`); otra recibe 403 con quién. Aquí como
+# personas, contra el catálogo: es la misma puerta que el SDK usa.
+if [ "${ESCRITO_OK:-no}" = si ]; then
+  grep -q '"escrito_por": "persona:ana"' "$A/datasets/hr_derivadoT.json" || grep -q 'escrito_por.*persona:ana' "$A/datasets/hr_derivadoT.json" || falla "15 · hr.derivadoT no dice escrito_por ana: $(cat "$A/datasets/hr_derivadoT.json")"
+  [ "$(pide GET /v1/namespaces/hr/tables/derivadoT "$BEA")" = "200" ] || falla "15 · bea no puede ni cargar la tabla sin pedir credencial: $(cuerpo)"
+  DELEGAR='x-iceberg-access-delegation: vended-credentials'
+  CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$BEA" -H "$DELEGAR" "$BASE/v1/namespaces/hr/tables/derivadoT")
+  [ "$CODIGO" = "403" ] && grep -q "persona:ana" "$TMP/r.json" && grep -q "ForbiddenException" "$TMP/r.json" || falla "15 · la credencial para escribir lo de ana se le prestó a bea ($CODIGO): $(cuerpo)"
+  CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$ANA" -H "$DELEGAR" "$BASE/v1/namespaces/hr/tables/derivadoT")
+  [ "$CODIGO" = "200" ] || falla "15 · a ana sí se le presta ($CODIGO): $(cuerpo)"
+  [ "$(pide POST /v1/namespaces/hr/tables/derivadoT "$BEA" '{"identifier":{"namespace":["hr"],"name":"derivadoT"},"requirements":[],"updates":[]}')" = "403" ] && grep -q "persona:ana" "$TMP/r.json" || falla "15 · el commit de bea sobre lo de ana no dio 403: $(cuerpo)"
+  [ "$(pide DELETE /documentos/Dataset/hr/derivadoT "$BEA")" = "403" ] && grep -q "persona:ana" "$TMP/r.json" || falla "15 · bea retiró el dataset de ana: $(cuerpo)"
+  [ -f "$A/packages/hr/datasets/derivadoT.yaml" ] || falla "15 · el dataset de ana se fue"
+  [ "$(pide DELETE /documentos/Dataset/hr/derivadoT "$ANA")" = "200" ] || falla "15 · ana no pudo retirar lo suyo: $(cuerpo)"
+  [ ! -f "$A/packages/hr/datasets/derivadoT.yaml" ] && [ ! -f "$A/datasets/hr_derivadoT.json" ] || falla "15 · lo de ana no se retiró entero"
+  dice "15 · lo escrito es de quien lo escribió: a bea no se le presta la credencial de hr.derivadoT (403 con persona:ana), su commit es 403 y no lo retira; ana sí"
+fi
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -718,4 +740,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–14 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–15 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

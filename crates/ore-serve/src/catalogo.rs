@@ -80,6 +80,8 @@ fn de_ore(codigo: i32, stderr: &str, commit: bool) -> Respuesta {
     let m = primera_de(stderr);
     match codigo {
         75 => error(409, "CommitFailedException", m),
+        // Lo escrito es de quien lo escribió (W3.7 gobierno ④).
+        77 => error(403, "ForbiddenException", m),
         64 => error(400, "BadRequestException", m),
         65 if m.contains("no hay ningún dataset") || m.contains("no hay ningún paquete") => {
             error(404, "NoSuchTableException", m)
@@ -213,9 +215,10 @@ impl Servidor {
                 }
                 let nombre = format!("{ns}.{t}");
                 let cabeza = p.metodo == "HEAD";
+                let sujeto_s = sujeto.persona.clone();
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        let r = self.cargar(raiz, &nombre, prestar);
+                        let r = self.cargar(raiz, &nombre, prestar, &sujeto_s);
                         if cabeza && r.codigo == 200 {
                             Respuesta::sin_contenido()
                         } else {
@@ -296,7 +299,7 @@ impl Servidor {
                                 if r.codigo >= 300 {
                                     return r;
                                 }
-                                self.cargar(raiz, &nombre, prestar)
+                                self.cargar(raiz, &nombre, prestar, &sujeto_s)
                             },
                         ),
                         true,
@@ -342,7 +345,7 @@ impl Servidor {
                             }
                             // `{"metadata-location", "metadata"}`: lo que la spec
                             // devuelve tras un commit, sin credencial.
-                            self.cargar(raiz, &nombre, false)
+                            self.cargar(raiz, &nombre, false, "")
                         },
                     ),
                     true,
@@ -422,10 +425,12 @@ impl Servidor {
     }
 
     /// El `LoadTableResult` de una tabla.
-    fn cargar(&self, raiz: &Path, nombre: &str, prestar: bool) -> Respuesta {
+    fn cargar(&self, raiz: &Path, nombre: &str, prestar: bool, sujeto: &str) -> Respuesta {
         let mut args = vec!["datasets", ".", "--cargar", nombre];
         if prestar {
-            args.push("--prestar");
+            // La credencial para escribir es de quien escribió: `ore` decide
+            // con el sujeto (W3.7 gobierno ④).
+            args.extend(["--prestar", "--sujeto", sujeto]);
         }
         self.ore_crudo(raiz, &args, false)
     }

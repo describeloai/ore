@@ -912,6 +912,31 @@ fn derived_from_del_documento(texto: &str) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+/// **Lo escrito es de quien lo escribió** (0031 W3.7 gobierno ④). Sobrescribir,
+/// anexar, fundir y la credencial para hacerlo son de la persona del puntero
+/// (`escrito_por`); otra recibe 77 con quién, y lo suyo va por propuesta. Sin
+/// sujeto (un `ore` a mano sobre un clon) o sin `escrito_por` (una copia, un
+/// dataset de antes de W3.6c) no hay a quién negárselo. Medido antes: bob
+/// anexaba, sobrescribía y retiraba lo de ana con 200.
+fn de_quien_lo_escribio(
+    previo: Option<&Node>,
+    nombre: &str,
+    sujeto: Option<&str>,
+) -> Result<(), Fallo> {
+    let (Some(p), Some(s)) = (previo, sujeto) else {
+        return Ok(());
+    };
+    match campo_de(p, "escrito_por") {
+        Some(e) if !e.is_empty() && e != s => Err((
+            77,
+            format!(
+                "el dataset `{nombre}` lo escribió `{e}`: sobrescribirlo, anexarle o fundirlo es suyo; lo tuyo va por una propuesta, o a un dataset con tu nombre"
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// El puntero de un dataset, leído del árbol (`datasets/<ns>_<t>.json`).
 fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>) {
     let ruta = path.join("datasets").join(format!("{ns}_{tabla}.json"));
@@ -1235,6 +1260,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         }
         documento_del_dataset(path, ns, tabla)?;
         let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+        de_quien_lo_escribio(previo.as_ref(), &nombre, op.sujeto)?;
         let base = previo
             .as_ref()
             .and_then(|p| campo_de(p, "metadata_location"))
@@ -1567,6 +1593,10 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
         .ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
+    // La credencial para escribir sólo se presta a quien lo escribió.
+    if op.prestar {
+        de_quien_lo_escribio(previo.as_ref(), nombre, op.sujeto)?;
+    }
     let metadatos = almacen_crudo(
         "metadatos",
         &format!("{{\"metadata_location\":{}}}", lit(&ml)),

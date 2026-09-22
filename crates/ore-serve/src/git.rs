@@ -159,6 +159,21 @@ impl Forja {
         (!hash.is_empty()).then_some(hash)
     }
 
+    /// **La rama existe, o nace de `main`** (0031 W3.7 gobierno ④): un puesto
+    /// sin rama escribe en `<persona>/puesto`, y esa rama la crea el servidor
+    /// por git —`push main:refs/heads/<rama>`— sin pedirle nada a la API de la
+    /// forja, que en local no está. Idempotente: si `ls-remote` la ve, nada.
+    /// Devuelve `true` si la creó.
+    pub fn asegurar_rama(&self, rama: &str) -> Result<bool, Fallo> {
+        if self.cabeza_de(rama).is_some() {
+            return Ok(false);
+        }
+        let clon = self.clonar()?;
+        let destino = format!("HEAD:refs/heads/{rama}");
+        self.git(Some(clon.ruta()), &["push", "--quiet", "origin", &destino])?;
+        Ok(true)
+    }
+
     /// Un clon fresco de la rama por defecto, en un directorio que se borra solo.
     pub fn clonar(&self) -> Result<Prestado, Fallo> {
         self.clonar_rama(None)
@@ -420,5 +435,70 @@ mod pruebas {
             assert!(camino.exists());
         }
         assert!(!camino.exists(), "el clon sobrevivió a quien lo pidió");
+    }
+
+    /// **La rama del puesto nace de `main` por git** (W3.7 gobierno ④): una
+    /// forja pelada sin API; la primera vez se crea, la segunda ya está.
+    #[test]
+    fn la_rama_del_puesto_nace_de_main_y_una_vez() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let semilla = d.join("semilla");
+        std::fs::create_dir_all(&semilla).unwrap();
+        let corre = |args: &[&str], cwd: &Path| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        corre(
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                pelada.to_str().unwrap(),
+            ],
+            &d,
+        );
+        corre(&["init", "-q", "-b", "main"], &semilla);
+        std::fs::write(
+            semilla.join("README.md"),
+            "hola
+",
+        )
+        .unwrap();
+        corre(&["add", "-A"], &semilla);
+        corre(&["commit", "-qm", "semilla"], &semilla);
+        corre(
+            &["push", "-q", pelada.to_str().unwrap(), "HEAD:main"],
+            &semilla,
+        );
+        let f = Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        };
+        assert!(f.cabeza_de("ana/puesto").is_none());
+        assert!(
+            f.asegurar_rama("ana/puesto").unwrap(),
+            "la primera vez se crea"
+        );
+        assert_eq!(f.cabeza_de("ana/puesto"), f.cabeza_de("main"));
+        assert!(
+            !f.asegurar_rama("ana/puesto").unwrap(),
+            "la segunda ya está"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

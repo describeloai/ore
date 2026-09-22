@@ -554,7 +554,7 @@ impl Servidor {
                 let si_commit = p.cabeceras.get("if-match").cloned();
                 let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
                 self.escribiendo_en(rama, sujeto, &format!("retirar {que} `{ns}.{n}`"), |r| {
-                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref())
+                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref(), sujeto)
                 })
             }
             ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
