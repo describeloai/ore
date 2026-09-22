@@ -826,6 +826,100 @@ Lo que sale de la medida, en una frase: **el registro ya es uno (el árbol), la 
 | **③** el linaje y la rama | **hecho** 2026-09-21. **La procedencia**: `write()` manda `procedencia` en la petición de `ore-store escribir`, que la deja en el resumen del snapshot como `ore.procedencia` (JCS: el resumen es `string → string`); `ore datasets --commit` la lee del `add-snapshot` y la pone en el puntero (`procedencia`), y `historia` la enseña por snapshot, con lo que la ficha (`GET /datasets/{ns}/{n}`) la trae dos veces: la vigente y la de cada versión. Qué lleva: `{puesto, leidas: […]}` fuera de un transform —**lo que la sesión leyó** hasta ese momento, observado en `_resolver`, el único paso por el que `over()`/`sql()` resuelven—, o `{puesto, inputs: […], transform: <nombre>}` dentro; y `codigo: <ruta>@<commit>` si `ORE_CODIGO` está (④ lo pondrá). **El transform** (§9), en los tres: `@transform(inputs=[…], output="p.t")` (Python), `transform({ inputs, output }, fn)` (Node), `Ore.transform(nombre, inputs, output, () -> …)` (Java): dentro, leer algo que no está en `inputs` o escribir algo que no es `output` es `PermissionError`/`Error`/`IllegalStateException` **en el SDK** —el 403 de §9, hoy del lado del código; el del servidor es de ④, cuando el Job corra con lo declarado—; un transform no llama a otro; input = output se niega. **El fallback de rama** (§4): `datos_del_puesto` busca en `main` lo que la rama no tiene (404 o 409) y la respuesta lo dice (`rama: main`); lo que la rama sí tiene manda. Y el error del SDK ya dice «ni `Table` del lago». Lo que **no** está: el **conducto** de una escritura desde un puesto —hoy no hay concesión que la niegue (medido en «Lo medido fuera del verbo» §2: bob anexa a la tabla de ana)—: es el gobierno de lo escrito, y va con ④/W3.7 gobierno, no con el linaje. Pruebas: `el-puesto.sh` 10, 8 y 9 (el puntero de lo escrito a mano lleva `leidas` con `hr.lago` y `hr.salida`; `resumir`/`resumirNode`/`resumirJvm` dejan `{inputs: [hr.lago], transform, puesto}` en el puntero y la ficha lo enseña vigente y por snapshot; leer `hr.salida` o escribir `hr.otro` desde dentro se niega sin dejar puntero); la medida §2 pasa de «no hay ninguna View» a **3 filas** para lo que `main` ganó tras abrir la rama, y §3 de «no lo dice» a la procedencia en el puntero |
 | **④** el trabajo | **hecho** 2026-09-21. **`POST /trabajos {codigo, rama?}`** (una persona; un agente 403): `codigo` es un fichero del árbol (`packages/<p>/transforms/x.py`; `.ts`/`.js`/`.mjs` → node, `.java` → jvm; otra cosa 422; fuera del árbol 422; no está 404), leído **tal como está en el commit** de la rama; con la capa del árbol como un puesto (pendiente → 409 y se encola). Es **un puesto de una sola celda**: la misma cola, la misma plantilla (`51-el-puesto.yaml` gana el hueco `TRABAJO=<ruta>@<commit>`; el fichero es `54-el-trabajo-<persona>-<hex>.yaml` y el Job `trabajo-<persona>-<hex>-<hex>`, que es lo que Data › Jobs enseña por el informador), el mismo agente en los tres lenguajes (con `TRABAJO` corre la celda —el fichero— y **sale con el resultado como código de salida**, dejando `ORE_CODIGO` para la procedencia). Al llegar la salida, `ore-serve` deja el **informe en `trabajos/<id>.json`** del árbol (en la rama, firmado por la persona: `codigo`, `commit`, `estado: hecho\|error`, `ms`, `salida`, `job`), cierra el puesto y lo saca de la cola. `GET /trabajos` (los de la persona, del más reciente al más viejo) y `GET /trabajos/{id}` (la ficha con el informe). Lo que el trabajo escribe lleva **`procedencia: {codigo: <ruta>@<commit>, inputs, transform, puesto}`**: el linaje `salida ← código@commit ← inputs` que 0031 §10 prometía, cerrado. **El testigo del init por HTTP**: `traer-el-testigo` deja `gcloud` (31 s medidos) por el token del pod contra la API REST de Secret Manager desde la imagen del puesto: **414 ms**; el trabajo de §5 pasa de **48 s a 17 s**, y los 14 restantes son el guion (1 M de filas escritas dos veces y agregadas). Pruebas: `el-puesto.sh` 11 (lanzar, la cola con `TRABAJO` y la imagen de python, 403/404/422/422, el agente con `TRABAJO` sale 0, la ficha `hecho`, el informe en el árbol firmado por ana, la procedencia con `codigo`, fuera de la cola; uno roto sale 1 y el informe dice `error`; los trabajos no salen en `GET /puestos`); `medida-w3-declarar.py --solo 5 --cluster` con el init nuevo en `t-demo` (retirado todo). Lo que queda fuera, con nombre: el 403 **del servidor** sobre lo declarado (hoy el transform se acota en el SDK; el Job corre con la identidad de la persona y podría leer lo que ella puede); y el conducto de la escritura desde un puesto (W3.7 gobierno). Y `POST /trabajos` en `t-demo` de punta a punta no lo probé yo: lo lanza una persona por OIDC, que no puedo abrir; lo que sí corrió en el clúster es el Job idéntico con el init nuevo |
 
+## Lo medido para W3.7 gobierno · el gobierno de lo escrito (`pruebas-de-fuego/medida-w3-gobierno.py`, 2026-09-22; en local con una forja pelada, el S3 de mentira y `agente.py` de verdad)
+
+Los cuatro verbos están. Lo que 0031 («Lo medido fuera del verbo» §2, W3.7 ③ y ④), 0033
+(«Lo que esto no decide») y 0034 (la capa Access) dejan apuntando al mismo sitio es **quién
+puede hacer cada verbo sobre qué, y qué lleva consigo lo que sale de un verbo**. Medido verbo
+a verbo, con dos personas (ana y bob, cada una en su puesto, ninguno con rama), dos paquetes
+de dos equipos (`ventas` de `team:data`, `rrhh` de `team:rrhh`), un retículo `gdpr.sensitivity`
+y un conducto `materialization.payload: low`; ana escribe `ventas.salida`, declara la View
+identidad y una Entity que clasifica `total` como `high`:
+
+| | medido | lo que se sigue |
+|---|---|---|
+| **§1 leer** | El conducto **sí** decide sobre lo declarado: un Dataset mantenido `from: {view: ventas.ventas}` con el conducto `low` es `OOS4002`. Y **no** decide sobre el código: `over("ventas.salida")` desde el puesto de bob devuelve la columna `high` entera (`[1.50, 2.25, None]`, 2,8 s), igual `over()` de la View y `sql()`. `GET /puestos/{id}/datos/…` contesta 9 claves (`metadata_location`, `snapshot`, `plan`…) y **ninguna** es clasificación, conducto ni concesión. En el índice, `entity:ventas.venta` es `high` y `dataset:ventas.salida` y su View, `{}` | La lectura desde código es **un conducto que no existe**: OOS ya nombra `contextSurface` («superficie servida a consumidores: MCP, GraphQL, **SDK**») y `datos_del_puesto` no lo evalúa. La clasificación efectiva de un dataset por lo que lo respalda existe en el índice a nivel de Entity, no baja al dataset |
+| **§2 escribir** | bob **anexa** al dataset de ana (200, `escrito_por: persona:bob`, `owner: team:data` intacto), lo **sobrescribe entero** (200), escribe uno nuevo en el paquete de `team:data` y otro en el de `team:rrhh` (200 y 200; el `owner` que nace es el del paquete); sólo un paquete inexistente niega. bob **retira** el dataset de ana por `DELETE /documentos/Dataset` (200, y **el puntero se queda huérfano**) y el puntero de `ventas.salida` por `DELETE /arbol` (200). Desde una celda, `PUT /arbol/conduits.yaml` (`low` → `high`) es **200, firmado `agente:local`**, y la copia que §1 negaba compila; `PUT /arbol/packages/ventas/package.yaml` con `owner: user:bob`: **200**; sólo el retículo de un nivel lo para el compilador (`OOS1004`). Todo en `main`: ningún puesto tiene rama | **Escribir es del inquilino entero** (ya medido) y **el gobierno mismo se reescribe desde una celda**: `/arbol` no resuelve el puesto (firma el agente, no la persona: W3.7 ① lo hizo para `/documentos` y `/conceptos`, no para `/arbol`) y no niega nada. `DELETE /documentos/Dataset` deja el puntero: un hueco propio |
+| **§3 declarar** | bob **redeclara** la View de ana (200, firma bob) y **su Entity con `total: low`** (200; el índice pasa de `high` a `low`: **desclasificado desde un puesto**); declara en `rrhh` con `owner: team:ventas` (201). Lo único que niega es el compilador (`OOS2018`). `declare(ConduitPolicy)` no entra (no tiene namespace), pero `/arbol` sí (§2). Y **persona → team: 0 líneas** en `ore-serve` | El `owner` (`team:…`) de paquetes y datasets **no nombra a nadie que el plano de datos conozca**: no puede decidir. Lo que sí sabe el plano de datos es **quién** (la persona, por el puesto) y **dónde** (la rama). La única puerta que hoy revisa algo antes de `main` es la propuesta (0030 W2), y ningún verbo pasa por ella |
+| **§4 correr** | Dentro de `@transform(inputs=[ventas.salida], output=ventas.resumen)`: `over("ventas.otro")` es `PermissionError` (SDK) y **`ore.puesto.pedir("GET", "/puestos/{id}/datos/ventas.otro")` a pelo es 200**; `PUT /arbol/notas/…` desde dentro, **201**. `GET /puestos/{id}` no sabe del transform (`transform`/`inputs`/`output`: no). La procedencia que queda: `{inputs: [ventas.salida], transform: resumir}` — **no dice lo que se leyó rodeando el SDK**. `POST /trabajos` con el testigo del agente: 403 (bien) | El 403 de lo declarado **vive en el SDK**; el servidor no sabe qué declaró el código y el testigo del puesto alcanza **todo** lo que la persona alcanza (`/arbol` incluido). La procedencia es honesta con lo que el SDK vio, y ciega a lo demás |
+| **§5 el grafo** | `write("ventas.derivado", over("ventas.salida"))`: procedencia `{leidas: [ventas.salida]}`, el índice le pone `sale_de dataset:ventas.salida`, y su clasificación es **`{}`**. Una View sobre `derivado` + un Dataset mantenido encima **compilan con el conducto `low`** (lo que §1 negaba sobre `ventas.ventas`); una `Function` con `reads: [ventas.derivadoV]` compila. Y dos cosas de `leidas`: es **la sesión entera** (lo reescrito lleva `sale_de` de sí mismo: ciclo en el índice) y ventas.salida acaba con 6 relaciones de datasets que sólo la leyeron | La etiqueta **muere en `write()`**: el linaje está (el índice ya sigue `sale_de`), la clasificación no lo recorre. Las dos mitades existen y nadie las junta. `leidas` sirve como sobreaproximación (P4: más etiqueta, no menos) si se quita el propio nombre y se cierra al transform cuando lo hay |
+| **§6 en la fuente** | `concesion|permitid`: 12 líneas en código, todas `mando.rs` (los verbos de `ore` que el servidor puede correr: otra cosa). `flow::check|conducto`: 4, todas `copia.rs` (`autorizar_conducto`: **hace nacer** `materialization.payload: { oos.maturity: DRAFT }` con el dueño del paquete; no decide). `owner`: 31 en siete ficheros, ninguna decide una escritura. `persona_del_puesto`/`escrito_por`: 5 (quién hizo). `flow::check` en ore-core/ore-cli: `validate.rs` y `assets.rs` | Hoy el plano de datos **registra** (quién, cuándo, de qué) y **no decide** nada sobre un verbo salvo lo que el compilador niega sobre lo declarado. Los árboles reales nacen con un conducto que admite `DRAFT` y **sin retículo propio**: hasta que un cliente declare uno, no hay nada que fluya mal porque nada está clasificado |
+
+Y una cosa que salió al medir, fuera del gobierno: una de tres veces, `over()` desde el puesto
+de bob dio `Out of Range Error: Overflow in timestamp subtraction` (DuckDB, `iceberg_scan` sobre
+una columna `timestamp("us", "UTC")`); no se reprodujo. Anotado, no medido.
+
+**Lo mirado, de memoria y sin ir a la fuente** (para no decidir a ciegas; se coteja si hace
+falta): Foundry **propaga las markings** de un dataset a todo lo derivado de él por transform, y
+quien no las tiene no ve el derivado; los permisos de escritura van por roles de proyecto
+(viewer/editor/owner). Unity Catalog decide por **owner + privilegios** (`SELECT`, `MODIFY`,
+`CREATE TABLE` sobre el schema) y su linaje es informativo: no baja etiquetas. dbt sólo aplica
+`grants` al construir; Dagster no gobierna. La forma que casa con lo nuestro es la de Foundry
+—la etiqueta viaja con el dato—, y aquí el vehículo ya existe: la procedencia del puntero.
+
+### La decisión de W3.7 gobierno (2026-09-22, tras medir; se construye en los pasos de abajo)
+
+El plano de datos gobierna con lo que tiene —**quién** (la persona, por el puesto), **dónde**
+(la rama), **qué lleva** (la clasificación por el grafo) y **por dónde sale** (el conducto)— y
+no con lo que no tiene (a qué equipo pertenece una persona: eso es de ore-iam, que es otro
+producto y **niega, no concede**). Cinco reglas:
+
+1. **Desde un puesto sólo entran los verbos.** El testigo del agente, con `x-ore-puesto`,
+   alcanza `/puestos/{id}/datos`, `/v1` (el catálogo), `/datasets/…/confirmar`, `/documentos`
+   y `/conceptos`; **`/arbol`, `/ramas`, `/trabajos`, `/propuestas` niegan al agente (403)**.
+   Lo que hoy se puede hacer desde una celda por `/arbol` (reescribir el conducto, el dueño de
+   un paquete, un fichero cualquiera, firmado por el agente) deja de poderse. Y lo que sí entra
+   lo firma la persona: ya es así.
+2. **La lectura desde código es un conducto: `contextSurface.workspace`.** `datos_del_puesto`
+   calcula la clasificación efectiva del dataset (la de sus columnas de raíz, la que le
+   declaran las Entities que lo respaldan y —regla 3— la de su procedencia) y la coteja con
+   `contextSurface.workspace` de `conduits.yaml` con `flow::check`; lo que no cabe es **403
+   con el `OOS4002`** y la etiqueta que sobra, en la celda. P4 manda: sin conducto declarado,
+   ⊥; por eso, como `materialization.payload`, **nace** con el dueño del paquete admitiendo
+   `oos.maturity: DRAFT` (`autorizar_conducto`), y un retículo propio lo estrecha el día que
+   el cliente lo declare. Es un instancia más de un conducto que OOS ya nombra: no toca la spec.
+3. **La clasificación baja por el grafo hasta lo escrito.** Un dataset escrito lleva la
+   clasificación de lo que su procedencia dice que leyó: el **join** en el retículo de las
+   clasificaciones efectivas de `inputs` (dentro de un transform) o de `leidas` (fuera, sin el
+   propio nombre). La calcula el índice (`acceso.clasificacion`, siguiendo `sale_de`) y la
+   aplica el compilador donde ya aplica la de una raíz: un Dataset mantenido, una Function y
+   una Entity encima de lo escrito ven lo que fluyó. Es una regla de OOS (01-dataset §5: «la
+   clasificación la declara la Entity que lo respalda y baja por el plan» gana «y, en un
+   escrito, la de su procedencia»): **se escribe en la spec**, y ORE la aplica leyendo el
+   puntero, que ya lee. Lo que el código lee rodeando el SDK no está en la procedencia y no
+   baja: la regla 1 acota el rodeo a los datos del puesto, y la regla 2 los gobierna a la
+   entrada.
+4. **Lo escrito es de quien lo escribió; lo demás, por propuesta.** Sobrescribir, `upsert` y
+   retirar un dataset escrito los hace **la persona que lo escribió** (`escrito_por`) o una
+   propuesta aceptada en `main`; otra persona recibe **409 con quién**. `anexar` también: un
+   dataset no es un buzón. Redeclarar un documento que otra persona firmó (la View, la Entity
+   —y con ella la clasificación—) **va a la rama de quien lo hace**, nunca a `main` directo:
+   un puesto que no nació con rama escribe en `<persona>/puesto` y publica por propuesta
+   (0030 W2). El `owner: team:…` sigue siendo documentación hasta que ore-iam diga quién es
+   de qué equipo; entonces será él quien acepte la propuesta.
+5. **Lo declarado en un transform lo conoce el servidor.** El SDK registra el transform al
+   entrar (`POST /puestos/{id}/transform {inputs, output}`) y lo retira al salir; mientras
+   está, `datos_del_puesto` sólo resuelve `inputs` y el catálogo sólo confirma `output`
+   (403 con lo declarado). Un trabajo (`POST /trabajos`) lo mismo, y su informe dice qué
+   declaró. Sigue siendo el código quien declara —no hay otro sitio donde esté—, pero la
+   negación pasa **al servidor**, y la procedencia deja de poder mentir por omisión.
+
+Lo que se acepta: un notebook que hasta hoy escribía en `main` escribe en su rama y publica;
+`DELETE /documentos/Dataset` retira también el puntero (y el `--recoger` del mantenimiento,
+los bytes); una lectura que hoy pasa puede pasar a 403 cuando un cliente declare un retículo
+—que es exactamente lo que el retículo es para—.
+
+### Los pasos de W3.7 gobierno
+
+| paso | qué | estado |
+|---|---|---|
+| **①** la puerta del puesto | regla 1: `/arbol`, `/ramas`, `/trabajos`, `/propuestas` niegan al agente con `x-ore-puesto` (403 «desde un puesto sólo entran los verbos»); `el-puesto.sh` lo prueba desde la celda. `DELETE /documentos/Dataset` retira el puntero. La medida §2 pasa de 200/200/201 a 403/403/403 | pendiente |
+| **②** el conducto de la lectura | regla 2: `contextSurface.workspace` nace con `autorizar_conducto`; `datos_del_puesto` calcula la clasificación efectiva (compartida con `assets::clasificacion_de`, que se mueve a ore-core) y niega con `OOS4002`; el SDK lo dice en la celda con la etiqueta. La medida §1 pasa de «la columna high, entera» a 403 | pendiente |
+| **③** la clasificación por el grafo | regla 3: OOS 01-dataset §5 (una frase, `C:\oos`, bump del submódulo); `ore validate` y el índice bajan la clasificación por `procedencia` (`inputs` o `leidas` sin el propio nombre); `leidas` se cierra al transform cuando lo hay. La medida §5 pasa de «compila» a `OOS4002` y el índice de `{}` a `high` | pendiente |
+| **④** quién reescribe, y la rama | regla 4: 409 con `escrito_por` a quien no escribió (sobrescribir, anexar, upsert, retirar); un puesto sin rama nace en `<persona>/puesto`; la consola sabe publicar desde el puesto (propuesta). La medida §2/§3 pasa de 200 a 409 y de `main` a la rama | pendiente |
+| **⑤** lo declarado, en el servidor | regla 5: `POST/DELETE /puestos/{id}/transform`; `datos_del_puesto` y el catálogo lo aplican; el trabajo lo lleva en el informe. La medida §4 pasa de 200 a 403 a pelo | pendiente |
+| **⑥** medido de nuevo, y 0031 | `medida-w3-gobierno.py` otra vez; los números en esta ADR; el brief se va | pendiente |
+
 ## Lo que se aparca
 
 - El motor distribuido para lo masivo (Ray/Spark sobre la cola): el contrato (Parquet en el
