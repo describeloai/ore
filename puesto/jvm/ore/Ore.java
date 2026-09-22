@@ -269,7 +269,7 @@ public final class Ore {
         if (m != null && !String.valueOf(m).isEmpty()) {
             // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).
             Object cred = r.get("credencial");
-            Map<String, Object> credencial = cred instanceof Map<?, ?> ? mapa(cred) : Map.of();
+            Map<String, String> credencial = cred instanceof Map<?, ?> ? mapa(cred) : Map.of();
             if (String.valueOf(m).startsWith("s3://") && s3 == null) {
                 if (credencial.get("s3.access-key-id") != null) s3 = credencial;
                 else {
