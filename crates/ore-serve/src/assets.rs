@@ -71,17 +71,30 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     let punteros = punteros_de(raiz);
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
-    // `version` por fichero, sólo si el árbol tiene historia.
+    // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
+    // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que
+    // quién lo creó y cuándo sale del mismo sitio y sin pedirle nada al árbol.
     if crate::documentos::cabeza_de(raiz).is_some()
         && let Json::Obj(m) = &mut j
-        && let Some(Json::Obj(items)) = m.get_mut("items")
     {
-        for it in items.values_mut() {
-            if let Json::Obj(it) = it
-                && let Some(Json::Str(ruta)) = it.get("ruta")
-                && let Some(v) = version_de(raiz, ruta)
-            {
-                it.insert("version".into(), v);
+        if let Some(Json::Obj(items)) = m.get_mut("items") {
+            for it in items.values_mut() {
+                if let Json::Obj(it) = it
+                    && let Some(Json::Str(ruta)) = it.get("ruta")
+                    && let Some(v) = version_de(raiz, ruta)
+                {
+                    it.insert("version".into(), v);
+                }
+            }
+        }
+        if let Some(Json::Arr(ps)) = m.get_mut("proyectos") {
+            for p in ps.iter_mut() {
+                if let Json::Obj(p) = p
+                    && let Some(Json::Str(ruta)) = p.get("ruta")
+                    && let Some(v) = version_de(raiz, ruta)
+                {
+                    p.insert("version".into(), v);
+                }
             }
         }
     }

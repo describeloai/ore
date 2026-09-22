@@ -216,6 +216,44 @@ Y lo que hacía falta comprobar en un árbol de verdad y no en el de juguete:
 índice tiene que poder decir tres cosas que el compilador nunca dirá — qué proyecto hay, qué
 resuelve cada uno, y cuál está roto.
 
+### ① El proyecto en el índice (`ore_core::proyectos` + `assets::indice`)
+
+`crates/ore-core/src/proyectos.rs`: `leer(raiz)` → los `proyectos/*/README.md`, por nombre de
+carpeta. El encabezado se analiza **con el analizador del árbol** (`parse.rs`): ni dependencia
+nueva ni formato nuevo. Y tres reglas, que son la decisión hecha código:
+
+- **No falla nunca.** Lo que no se entiende se devuelve con `roto: <por qué>` —«sin `nombre`»,
+  «el encabezado no cierra», «sin encabezado»— y **se lista igual**. Un proyecto roto no alcanza
+  nada, pero tampoco desaparece: es la misma regla que una relación `rota: true` del índice.
+- **`contiene` nombra, no contiene.** `alcanza(paquete, carpeta)`: `ventas` alcanza el paquete
+  entero; `ventas/churn`, la carpeta **y lo que cuelga de ella** (`churn/v2` sí, `churnalot`
+  no). Un proyecto vacío es legal.
+- **El proyecto no es un ítem**, y no cambia nada de lo que ya había: mismos ítems, mismas
+  relaciones, mismo `validate`.
+
+El índice gana **dos cosas** (0034): `proyectos: [{nombre, titulo, descripcion, contiene, items,
+ruta, version, roto?}]` en la raíz, y **`proyectos: []` en cada ítem** —en plural, porque se
+solapan—. En ore-serve, un proyecto tiene `version` como cualquier otro fichero: **quién lo
+creó y cuándo sale de su propio manifiesto**, sin preguntarle nada al árbol.
+
+La prueba (`crates/ore-core/tests/assets.rs`): cinco manifiestos sobre el árbol de fuego —el
+paquete entero (11 ítems), la carpeta del cliente (1), **otro que la nombra también** (1), uno
+vacío (0) y uno roto (0)—, `view:ventas.pedidosEs` con **tres proyectos a la vez**, el modelo de
+la raíz **fuera de todos**, y los ítems sin cambiar.
+
+Y sobre el árbol de verdad, `ore assets` en demo (`b93ed52`) con `churn` (`contiene: [olist]`) y
+uno roto dentro:
+
+```text
+2 proyectos · 17 ítems · 9 fuera
+  churn                          8 ítems · olist
+  roto                         ROTO: sin `nombre`
+```
+
+**8 de 17**, que es exactamente el oráculo de ⓪, y `ore validate` sigue saliendo 0.
+**Medida §6 contestada**: «todo el árbol sería un proyecto» → los ítems se reparten, y lo que
+queda fuera se cuenta en vez de esconderse.
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).

@@ -31,6 +31,7 @@
 //! | `relaciones` | tipadas y **en las dos direcciones**, de lo que el documento dice: `from` → `sale_de`/`produce`; `backedBy` → `respaldada_por`/`respalda`; `over`/`reads` → `lee`/`leido_por`; `effects.writes` → `escribe`/`escrito_por`; `trainedFrom` → `sale_de`/`produce`; `implements` → `satisface`/`satisfecha_por`; `is` (el concepto de una propiedad) → `nombra`/`nombrado_por`; `model` → `usa`/`usado_por`. Una ref que no resuelve va con `rota: true`: el índice enseña lo que hay, no lo arregla |
 //! | `acceso` | del plano de datos: `clasificacion` (las labels del documento; en una Entity, las efectivas de sus propiedades; en lo que lee una tabla, las de las columnas que usa) y `conductos` (si `materialization.payload` compila para lo que copia, por [`flow::check`]). La concesión de `ore-iam` **no** entra: es del plano de control |
 //! | `version` | `null` aquí: la pone quien tiene la forja (ore-serve), por fichero |
+//! | `proyectos` | **en plural** (0035 ⑤ 4): qué proyectos NOMBRAN a este ítem, de `proyectos/*/README.md` ([`crate::proyectos`]). Se solapan a propósito: un proyecto es una lente, no una caja, y un ítem puede estar en varias o en ninguna |
 use crate::document::Kind;
 use crate::json::Json;
 use crate::link::{Loaded, Package};
@@ -666,6 +667,10 @@ fn clasificacion_de(
 /// extensión. Los lee quien llama (ore-serve, el CLI): el núcleo no sabe de
 /// ficheros de estado.
 pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza) -> Json {
+    let proyectos = crate::proyectos::leer(&pkg.root);
+    // Qué ítems nombra cada proyecto, y qué proyectos nombran a cada ítem. Lo
+    // roto no alcanza nada: un manifiesto que no se entiende no reparte.
+    let mut de_proyecto: BTreeMap<String, i64> = BTreeMap::new();
     let lat = crate::flow::lattices(pkg);
     let efectivas = crate::flow::efectivas(pkg, &lat);
     let con_origen = crate::flow::efectivas_con_origen(pkg, &lat);
@@ -752,6 +757,17 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                 .unwrap_or(Json::Crudo("null".into())),
         );
         it.insert("carpeta".into(), Json::s(&carpeta));
+        let suyos: Vec<Json> = proyectos
+            .iter()
+            .filter(|p| {
+                p.roto.is_none() && p.alcanza(paquete.as_deref().unwrap_or_default(), &carpeta)
+            })
+            .map(|p| {
+                *de_proyecto.entry(p.nombre.clone()).or_default() += 1;
+                Json::s(&p.nombre)
+            })
+            .collect();
+        it.insert("proyectos".into(), Json::Arr(suyos));
         it.insert("ruta".into(), Json::s(ruta_de(pkg, d)));
         if let Some(def) = define_de(pkg, d) {
             it.insert("define".into(), def);
@@ -840,6 +856,44 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         paquetes.push(Json::obj(m));
     }
 
+    // Los proyectos (0035 ①): lo que cada uno nombra y cuántos ítems le tocan.
+    let proyectos: Vec<Json> = proyectos
+        .iter()
+        .map(|p| {
+            let mut m = vec![
+                ("nombre", Json::s(&p.nombre)),
+                (
+                    "titulo",
+                    p.titulo
+                        .as_deref()
+                        .map(Json::s)
+                        .unwrap_or(Json::Crudo("null".into())),
+                ),
+                (
+                    "descripcion",
+                    p.descripcion
+                        .as_deref()
+                        .map(Json::s)
+                        .unwrap_or(Json::Crudo("null".into())),
+                ),
+                (
+                    "contiene",
+                    Json::Arr(p.contiene.iter().map(Json::s).collect()),
+                ),
+                (
+                    "items",
+                    Json::Int(de_proyecto.get(&p.nombre).copied().unwrap_or(0)),
+                ),
+                ("ruta", Json::s(&p.ruta)),
+                ("version", Json::Crudo("null".into())),
+            ];
+            if let Some(r) = &p.roto {
+                m.push(("roto", Json::s(r)));
+            }
+            Json::obj(m)
+        })
+        .collect();
+
     Json::obj([
         (
             "cabeza",
@@ -866,6 +920,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                 .unwrap_or(Json::Crudo("null".into())),
         ),
         ("paquetes", Json::Arr(paquetes)),
+        ("proyectos", Json::Arr(proyectos)),
         (
             "items",
             Json::Obj(items.into_iter().map(|(k, v)| (k, Json::Obj(v))).collect()),

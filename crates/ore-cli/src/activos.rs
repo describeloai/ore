@@ -1,7 +1,9 @@
 //! **`ore assets`** — el índice de assets de un árbol (0034 ⑤), desde el CLI:
 //! para mirarlo sin ore-serve y para medirlo (`--json`). El índice lo proyecta
 //! ore-core (`assets::indice`); aquí sólo se leen los punteros de `datasets/`
-//! y se imprime un resumen, o el JSON entero.
+//! y se imprime un resumen, o el JSON entero. Desde 0035 ① el resumen acaba
+//! con los proyectos: cuántos hay, qué nombra cada uno y cuánto queda **fuera**
+//! de todos — que es lo normal, porque un proyecto es una lente y no una caja.
 use ore_core::json::Json;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -125,6 +127,43 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
                     String::new()
                 }
             );
+        }
+    }
+    // Los proyectos (0035 ①): la lente, y cuánto queda fuera de todas.
+    if let Some(Json::Arr(ps)) = m.get("proyectos")
+        && !ps.is_empty()
+    {
+        let fuera = items
+            .values()
+            .filter(|it| matches!(it, Json::Obj(o) if matches!(o.get("proyectos"), Some(Json::Arr(a)) if a.is_empty())))
+            .count();
+        println!(
+            "{} proyectos · {} ítems · {fuera} fuera",
+            ps.len(),
+            items.len()
+        );
+        for p in ps {
+            let Json::Obj(p) = p else { continue };
+            let s = |k: &str| match p.get(k) {
+                Some(Json::Str(v)) => v.clone(),
+                Some(Json::Int(v)) => v.to_string(),
+                _ => "-".into(),
+            };
+            let contiene = match p.get("contiene") {
+                Some(Json::Arr(c)) if !c.is_empty() => c
+                    .iter()
+                    .filter_map(|x| match x {
+                        Json::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => "nada todavía".into(),
+            };
+            match p.get("roto") {
+                Some(Json::Str(r)) => println!("  {:<28} ROTO: {r}", s("nombre")),
+                _ => println!("  {:<28} {:>3} ítems · {contiene}", s("nombre"), s("items")),
+            }
         }
     }
     std::process::ExitCode::SUCCESS

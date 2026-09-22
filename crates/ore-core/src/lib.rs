@@ -57,6 +57,7 @@ pub mod parse;
 pub mod pertenencia;
 pub mod politica;
 pub mod propuesta;
+pub mod proyectos;
 pub mod significado;
 pub mod sync;
 pub mod tipos;

@@ -27,7 +27,11 @@ impl Drop for Arbol {
 }
 
 fn arbol() -> Arbol {
-    let t = Arbol(std::env::temp_dir().join(format!("ore-assets-{}", std::process::id())));
+    arbol_en("uno")
+}
+
+fn arbol_en(caso: &str) -> Arbol {
+    let t = Arbol(std::env::temp_dir().join(format!("ore-assets-{}-{caso}", std::process::id())));
     let _ = fs::remove_dir_all(&t.0);
     let r = t.path();
     escribe(
@@ -384,5 +388,106 @@ fn el_indice_proyecta_cada_kind_con_su_carpeta_su_define_y_sus_relaciones() {
     assert_eq!(
         p["carpetas"],
         Json::Arr(vec![Json::s(""), Json::s("espana")])
+    );
+}
+
+/// 0035 ① · el proyecto en el índice: una lente sobre el mismo árbol.
+///
+/// Cuatro manifiestos sobre el árbol de fuego —uno que nombra el paquete
+/// entero, otro la carpeta del cliente, otro que **se solapa** con ése, uno
+/// vacío y uno roto— y lo que el índice tiene que decir de ellos: cuántos
+/// ítems toca cada uno, que un ítem lleva `proyectos` **en plural**, que lo
+/// roto se lista igual sin alcanzar nada, y que el resto del índice **no
+/// cambia** (el proyecto organiza; no compila ni gobierna).
+#[test]
+fn el_indice_reparte_los_items_por_proyecto_y_se_solapan() {
+    let t = arbol_en("proyectos");
+    let r = t.path();
+    let sin = {
+        let (pkg, _) = ore_core::validate::cargar_paquete(r);
+        indice(&pkg, &punteros(r), &Cabeza::default())
+    };
+    for (n, texto) in [
+        (
+            "todo-ventas",
+            "---\nnombre: Todo Ventas\ndescripcion: El paquete entero.\ncontiene: [ventas]\n---\nProsa.\n",
+        ),
+        (
+            "espana",
+            "---\nnombre: España\ncontiene: [ventas/espana]\n---\n",
+        ),
+        (
+            "espana-bis",
+            "---\nnombre: España, otra vez\ncontiene: [ventas/espana]\n---\n",
+        ),
+        (
+            "nuevo",
+            "---\nnombre: Nuevo\n---\nUn propósito sin nada todavía.\n",
+        ),
+        ("roto", "---\ndescripcion: sin nombre\n---\n"),
+    ] {
+        escribe(r, &format!("proyectos/{n}/README.md"), texto);
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+    let Json::Obj(m) = &j else { panic!() };
+
+    // El árbol no se entera: los mismos ítems, las mismas relaciones.
+    let Json::Obj(a) = &sin else { panic!() };
+    let Json::Obj(antes) = &a["items"] else {
+        panic!()
+    };
+    let Json::Obj(ahora) = &m["items"] else {
+        panic!()
+    };
+    assert_eq!(antes.len(), ahora.len(), "el manifiesto no es un ítem");
+
+    // Cada proyecto, con lo que nombra y cuántos ítems le tocan.
+    let Json::Arr(ps) = &m["proyectos"] else {
+        panic!()
+    };
+    let dicho: Vec<(String, String, String)> = ps
+        .iter()
+        .map(|p| {
+            let Json::Obj(p) = p else { panic!() };
+            let s = |k: &str| match p.get(k) {
+                Some(Json::Str(v)) => v.clone(),
+                Some(Json::Int(v)) => v.to_string(),
+                _ => "-".into(),
+            };
+            (s("nombre"), s("items"), s("roto"))
+        })
+        .collect();
+    assert_eq!(
+        dicho,
+        vec![
+            ("espana".into(), "1".into(), "-".into()),
+            ("espana-bis".into(), "1".into(), "-".into()),
+            ("nuevo".into(), "0".into(), "-".into()),
+            ("roto".into(), "0".into(), "sin `nombre`".into()),
+            ("todo-ventas".into(), "11".into(), "-".into()),
+        ],
+        "los proyectos, por nombre de carpeta"
+    );
+
+    // Un ítem está en VARIOS: `proyectos` es plural, y el solape se dice.
+    assert_eq!(
+        item(&j, "view:ventas.pedidosEs")["proyectos"],
+        Json::Arr(vec![
+            Json::s("espana"),
+            Json::s("espana-bis"),
+            Json::s("todo-ventas"),
+        ])
+    );
+    // Lo que sólo alcanza el paquete entero.
+    assert_eq!(
+        item(&j, "dataset:ventas.pedidos")["proyectos"],
+        Json::Arr(vec![Json::s("todo-ventas")])
+    );
+    // Y lo que queda FUERA de todos: el modelo de la raíz, que no es de nadie.
+    assert_eq!(
+        item(&j, "model:v2-lite")["proyectos"],
+        Json::Arr(Vec::new()),
+        "un ítem sin paquete no cae en ningún proyecto"
     );
 }

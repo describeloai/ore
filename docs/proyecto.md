@@ -49,7 +49,7 @@ Lo que este proyecto hace, en prosa.
   sin encabezado— **no rompe el árbol**; `contiene` que no resuelve resuelve 0 y no es
   error; y dos proyectos que nombran la misma carpeta se solapan sin que el árbol se entere.
 
-## ① La unidad: el proyecto en el índice
+## ① La unidad: el proyecto en el índice ✓
 
 **Dónde**: `crates/ore-core/src/proyectos.rs` (nuevo) + `assets.rs`; `crates/ore-cli/src/activos.rs`.
 
@@ -65,6 +65,9 @@ Lo que este proyecto hace, en prosa.
 - **Prueba**: `crates/ore-core/tests/assets.rs` gana dos proyectos —uno que nombra un paquete
   entero, otro una carpeta—, uno que se solapa con el anterior, uno vacío y uno roto.
   **Medida** §6: «todo el árbol sería un proyecto» → los ítems se reparten.
+- **Hecho**: `proyectos.rs` (`leer`, `Proyecto::alcanza`, 5 pruebas), el índice con `proyectos`
+  en la raíz y en cada ítem, `version` del manifiesto en ore-serve y el resumen de `ore assets`.
+  Sobre demo: «2 proyectos · 17 ítems · 9 fuera», `churn` con **8** — el oráculo de ⓪.
 
 ## ② Servirlo y escribirlo
 
