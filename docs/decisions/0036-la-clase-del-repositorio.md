@@ -298,6 +298,64 @@ Y §7 de la medida, en local: `transforms` → puesto con `escribe: true`; `anal
 false`; `semantics` → 422; y los tres repositorios con `v1` frente a la `v1` del producto,
 `actualizable: false`.
 
+### ⑥ La consola (rubix-platform, commit local `1ff602e`)
+
+- **La lista** (`/repositories`): cada fila es **una instancia**, del índice. Nombre y ruta, el
+  **icono por clase**, «last edited by» y «last edited» **de git**, y la columna **UPGRADE**, que
+  dice la verdad o no se enseña: compara `plantillaVersion` con `plantillaActual`, y si el
+  producto **no conoce** la clase dice «—», no «Up to date». Abrir una fila abre el workspace
+  **acotado**; el menú ofrece **subir la plantilla** y **borrar** (la carpeta entera, en un
+  commit, avisando antes).
+- **«Save» escribe**: una llamada y un commit (manifiesto + semilla + el `contiene` del
+  proyecto), y después `/workspaces?repositorio=…`. La ubicación sale **del árbol**: lo que el
+  proyecto nombra, o los paquetes de la celda; **una carpeta vive dentro de un paquete**, y con
+  más de uno **se elige**. El nombre **es la carpeta** —su alfabeto ya cabe en el del servidor—,
+  y un 409 se enseña sin perder lo escrito.
+- **El árbol acotado llega a la consola**: `X-Ore-Raiz` viaja **por cabecera** desde `query.ts`
+  (ningún dato entra por la URL) y el editor abre su carpeta; la cabeza sigue siendo la del árbol.
+- **El detalle del proyecto** deja de pintar `SAMPLE_PROJECT_FILES`: `contenidoDelProyecto` cruza
+  lo que el proyecto **nombra** con lo que el árbol tiene —sus carpetas, sus repositorios y sus
+  ítems—, y **el `id` de cada entrada es su ruta**, así que abrir una carpeta es abrir esa ruta y
+  borrarla es borrar esa ruta. Crear una carpeta **escribe**; y **«Move to trash» deja de ser una
+  mentira**: no hay papelera, es un commit que se lleva la carpeta entera y lo dice antes.
+  Favoritos y «compartido conmigo» llegan **vacíos siempre**: en un árbol no existen, y lo que no
+  se hace es fingir que guardan algo.
+
+**Lo que queda fuera de ⑥, y con dueño**: la pestaña *Pull requests* de la lista (el servidor ya
+filtra por ruta desde ④; falta la pantalla), y el aviso de que una clase que **no ejecuta** no
+enseñe el botón de ejecutar en su workspace. Y la verificación es `tsc --noEmit` limpio: **no
+puedo abrir sesión OIDC**, así que la consola no se probó a mano — el backend sí, de punta a
+punta, en `los-documentos.sh` y `el-puesto.sh`.
+
+### ⑥ La consola (rubix-platform, commit local `1ff602e`)
+
+- **La lista** (`/repositories`): cada fila es **una instancia**, del índice. Nombre y ruta, el
+  **icono por clase**, «last edited by» y «last edited» **de git**, y la columna **UPGRADE**, que
+  dice la verdad o no se enseña: compara `plantillaVersion` con `plantillaActual`, y si el
+  producto **no conoce** la clase dice «—», no «Up to date». Abrir una fila abre el workspace
+  **acotado**; el menú ofrece **subir la plantilla** y **borrar** (la carpeta entera, en un
+  commit, avisando antes).
+- **«Save» escribe**: una llamada y un commit (manifiesto + semilla + el `contiene` del
+  proyecto), y después `/workspaces?repositorio=…`. La ubicación sale **del árbol**: lo que el
+  proyecto nombra, o los paquetes de la celda; **una carpeta vive dentro de un paquete**, y con
+  más de uno **se elige**. El nombre **es la carpeta** —su alfabeto ya cabe en el del servidor—,
+  y un 409 se enseña sin perder lo escrito.
+- **El árbol acotado llega a la consola**: `X-Ore-Raiz` viaja **por cabecera** desde `query.ts`
+  (ningún dato entra por la URL) y el editor abre su carpeta; la cabeza sigue siendo la del árbol.
+- **El detalle del proyecto** deja de pintar `SAMPLE_PROJECT_FILES`: `contenidoDelProyecto` cruza
+  lo que el proyecto **nombra** con lo que el árbol tiene —sus carpetas, sus repositorios y sus
+  ítems—, y **el `id` de cada entrada es su ruta**, así que abrir una carpeta es abrir esa ruta y
+  borrarla es borrar esa ruta. Crear una carpeta **escribe**; y **«Move to trash» deja de ser una
+  mentira**: no hay papelera, es un commit que se lleva la carpeta entera y lo dice antes.
+  Favoritos y «compartido conmigo» llegan **vacíos siempre**: en un árbol no existen, y lo que no
+  se hace es fingir que guardan algo.
+
+**Lo que queda fuera de ⑥, y con dueño**: la pestaña *Pull requests* de la lista (el servidor ya
+filtra por ruta desde ④; falta la pantalla), y el aviso de que una clase que **no ejecuta** no
+enseñe el botón de ejecutar en su workspace. Y la verificación es `tsc --noEmit` limpio: **no
+puedo abrir sesión OIDC**, así que la consola no se probó a mano — el backend sí, de punta a
+punta, en `los-documentos.sh` y `el-puesto.sh`.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

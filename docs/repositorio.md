@@ -138,7 +138,7 @@ Son **tres cosas y ninguna cara** (§4 las midió):
   repositorio y su clase; y `plantillaActual`/`actualizable` en el índice. `el-puesto.sh` 17 en
   verde con agentes de verdad: el `analytics` lee y **no** escribe, ni a pelo ni declarándolo.
 
-## ⑥ La consola: muchos sitios donde trabajar, en vez de uno
+## ⑥ La consola: muchos sitios donde trabajar, en vez de uno ✓ ✓
 
 **Dónde**: rubix-platform — `lib/server/repositorios.ts` (nuevo), `components/code-workspace/BuildPicker.tsx`,
 la lista nueva de *Code repositories*, `components/projects/detail/ProjectDetailView.tsx` y
@@ -152,6 +152,11 @@ la lista nueva de *Code repositories*, `components/projects/detail/ProjectDetail
   carpetas con `crearCarpetaEnElArbol` / `borrarCarpetaDelArbol` (ya escritas en 0035 ③b): lo
   que queda es **una línea por acción**. Se van `pinned`, `tags`, `sharedBy` y `Trash` —no tienen
   dónde vivir—, y la portada pasa a ser el **manifiesto** del proyecto.
+- **Hecho** (local `1ff602e`): la lista `/repositories` con la columna UPGRADE de verdad, «Save»
+  que crea en un commit y abre el workspace acotado, `X-Ore-Raiz` desde la consola, y el detalle
+  del proyecto contra el índice (crear carpeta escribe; «trash» pasa a ser el borrado real).
+  **Falta**: la pestaña *Pull requests* de la lista y esconder «ejecutar» en una clase que no
+  ejecuta. La portada como manifiesto se deja para cuando `PUT /proyectos` acepte la prosa.
 - **Prueba**: `tsc --noEmit` y a mano contra un `ore-serve` local. **Medida** §5: «dos columnas
   no existen» → existen; «Save navega» → crea; «la ruta del workspace es una sola» → una por repo.
 
