@@ -91,22 +91,60 @@ Lo que este proyecto hace, en prosa.
 
 ## ③ La consola deja de ser un mock
 
-**Dónde**: rubix-platform — `lib/projects/` (fuera `mock.ts`), `components/projects/*`,
-`lib/server/query.ts`, `components/projects/detail/*`.
+**La medida que manda**: `pruebas-de-fuego/medida-la-consola-de-proyectos.py` (2026-09-22), en
+0035 («Lo medido para ③»). **Tres cosas, y sólo tres**: el listado real, crear y borrar un
+proyecto, y crear y borrar carpetas dentro. Los artefactos de code workspace con persistencia
+real son **la iteración siguiente**, y este paso no los toca.
 
-- `ProjectsHome` lee los proyectos **del índice** (`indiceDeAssets()`, ya se llama en el
-  catálogo): nombre, descripción, cuántos ítems, cuándo se tocó (`version`). Crear →
-  `POST /proyectos`; el `id` es el nombre de la carpeta.
-- El detalle lista **lo que el proyecto nombra**, agrupado por paquete y carpeta, con los iconos
-  por kind que 0034 ④ ya puso.
-- «Create ▸ Code Repository» deja de ser una tarjeta muerta: crea la carpeta en el paquete que
-  se elija, la añade a `contiene` y abre el workspace **acotado a ella**; la plantilla **siembra
-  ficheros de verdad** (los 7 del `BuildPicker`, cada una con su semilla mínima que compile).
-- `collaborators` **no se inventa**: la ficha lo dice («quién puede ver esto lo decide ore-iam»)
-  y el campo se va del modelo hasta que exista.
-- **Prueba**: `tsc --noEmit` y a mano contra `demo` con un proyecto de verdad. **Medida** §1:
-  «crear añade a una lista en memoria» → crea un commit; «7 plantillas que no escriben nada» →
-  escriben.
+**Lo que la medida obliga a respetar**:
+
+- El listado **no necesita llamada nueva**: `GET /assets` ya da 5 de los 6 campos. El sexto,
+  `collaborators`, **no existe**: se va de la tabla (§1).
+- No hay papelera: **borrar es un commit**, y lo que el proyecto nombraba **no se borra** (§2).
+- Una carpeta **es un fichero dentro** —`README.md`, que el editor ve y el compilador ignora—,
+  y `DELETE /arbol/<carpeta>` **hoy es 404**: sólo hay verbo de fichero (§3).
+- **`ProjectDetailView.tsx` y `CreateResourceModal.tsx` tienen WIP de otra sesión**: ③b no los
+  edita — lo suyo entra por un módulo nuevo que el detalle llamará en una línea cuando aquello
+  aterrice (§4).
+
+### ③a · El listado, crear y borrar (ficheros libres)
+
+**Dónde**: `lib/server/query.ts`, `lib/projects/proyectos.ts` (nuevo, sustituye a `mock.ts`),
+`components/projects/ProjectsHome.tsx`, `ProjectCreateModal.tsx`, `ProjectContextMenu.tsx`,
+`app/(workspace)/clusters/[celda]/projects/page.tsx`.
+
+- `query.ts` gana tres filas: `POST /proyectos`, `PUT /proyectos/{id}`, `DELETE /proyectos/{id}`
+  (la figura ya existe: 26 llamadas de escritura declaradas).
+- `ProjectsHome` lee **del índice** (`assets`, la llamada del catálogo): `id`←`nombre`,
+  `name`←`titulo`, `description`, `updatedAt`←`version.cuando`, y **cuántos ítems** nombra.
+  La columna **Collaborators se va** y en su sitio va **Items**; la ficha dice que quién lo ve lo
+  decide ore-iam.
+- Crear: el modal gana **`contiene`** (los paquetes y carpetas del índice, a elegir) → `POST`;
+  el `id` lo da el servidor. Renombrar → `PUT`. «Move to trash» pasa a **«Delete project»**, con
+  el aviso de lo que **sigue en el árbol**.
+- Un proyecto **roto** se lista con su porqué (el índice ya lo trae) en vez de desaparecer.
+- **Prueba**: `tsc --noEmit`, y a mano contra un `ore-serve` local con acme-retail: crear →
+  aparece → renombrar → borrar → `hr` sigue. **Medida** §1/§2: «3 filas en memoria» → las del
+  árbol; «4 acciones sin handler» → 1 (Copy link).
+
+### ③b · Las carpetas dentro de un proyecto
+
+**Dónde**: ORE (`crates/ore-serve/src/arbol.rs`) y la consola
+(`lib/projects/carpetas.ts`, nuevo).
+
+- **ORE primero**: `DELETE /arbol/<ruta>` aprende **directorios** — borra lo que cuelga en **un
+  commit**, y la respuesta dice **qué ficheros se llevó**. Hoy es 404 (§3), y la alternativa es
+  N llamadas desde la consola, que no es una operación: es una racha.
+- `lib/projects/carpetas.ts`: `crearCarpeta(paquete, ruta, nombre)` → `PUT /arbol/<…>/README.md`
+  (una carpeta es un fichero dentro), `borrarCarpeta(ruta)` → `DELETE /arbol/<…>`, y
+  `carpetasDe(proyecto)` a partir del índice. **Ninguna toca los ficheros con WIP ajeno.**
+- Cuando el proyecto nombra **más de un paquete**, crear una carpeta **pregunta en cuál**; con
+  uno solo, no pregunta (§3).
+- **Prueba**: un caso más en `los-documentos.sh` (crear la carpeta, que `/arbol` la vea, que el
+  índice la nombre en cuanto cae un documento, borrarla entera en un commit). **Medida** §3:
+  «`DELETE /arbol/<carpeta>` 404» → 200 con lo que se llevó.
+- **Y el cableado en el detalle** (`ProjectDetailView.tsx`) espera a que la otra sesión suelte
+  el fichero: es **una línea por acción** contra `carpetas.ts`.
 
 ## ④ La sesión y el diagnóstico, por proyecto
 

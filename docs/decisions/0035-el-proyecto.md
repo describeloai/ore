@@ -287,6 +287,21 @@ con el `version` de **su propio manifiesto** (`persona.ana`) y con cada ítem di
 `proyectos`; `PUT` reescribe el manifiesto entero; y al borrar, `hr` y `sales` **siguen en el
 árbol** —`GET /documentos/Entity/hr/Employee` sigue dando 200 y el índice, los mismos ítems—.
 
+## Lo medido para ③ (`pruebas-de-fuego/medida-la-consola-de-proyectos.py`, 2026-09-22)
+
+La consola es lo que queda, y no se toca entera de una vez. Esta iteración son **tres cosas**:
+el **listado real**, **crear y borrar un proyecto**, y **crear y borrar carpetas dentro**. Lo
+de crear artefactos de code workspace con persistencia real se mide aquí sólo para saber dónde
+acaba ésta. Lo que sale:
+
+| | medido | lo que se sigue |
+|---|---|---|
+| **§1 el listado** | `Project` tiene 6 campos y la tabla 4 columnas (Name, Collaborators, Last updated, Actions). **Cinco de los seis los da ya `GET /assets`**: `id`←`proyectos[].nombre`, `name`←`titulo`, `description`, `createdAt`/`updatedAt`←`version.cuando`. El sexto, `collaborators`, **no existe en ningún sitio**. 3 filas de ejemplo en memoria; 4 acciones sin handler (Open, Rename, Copy link, Move to trash) y lo único cableado es «New project» → `setCreatedProjects` | el listado **no necesita una llamada nueva**: es la del catálogo. Y la columna Collaborators **se va** (o se queda diciendo que la decide ore-iam): inventarla sería el único campo del producto que no responde a nada |
+| **§2 crear y borrar** | El modal recoge **2 campos** (`name`, `description`) y `POST /proyectos` pide 3: falta **`contiene`** — tal cual, un proyecto nacería vacío. El `id` de hoy es `proj-1`/`local-0-<nombre>`; el servidor da `customer-churn`. **«Papelera» no existe en ORE**: 0 ficheros en `crates/` la nombran — en un árbol, borrar es un commit | crear y borrar son dos llamadas que ya existen; lo que falta es **preguntar qué nombra** el proyecto, y **decir la verdad al borrar**: no hay papelera, y lo que el proyecto nombraba **no se borra** (`siguenEnElArbol`) |
+| **§3 las carpetas** | **Git no guarda una carpeta vacía** (commit con `packages/hr/ingesta/` dentro: 1 fichero, la carpeta no está). `PUT /arbol/packages/hr/ingesta/README.md` **entra (201)** y `GET /arbol` la ve (23 ficheros), pero el **índice no la nombra** (`carpetas: ['']`): el índice cuenta **ítems**, no carpetas. En cuanto cae un documento dentro, sí (`['', 'ingesta']`), y **la hondura se guarda entera** (`['', 'ingesta', 'ingesta/2026']`). **`DELETE /arbol/<carpeta>` es 404**: sólo hay verbo de fichero. Y un proyecto que nombra **dos paquetes** (`['hr','sales']`, 5 ítems) no dice en cuál va la carpeta nueva | una carpeta **es un fichero dentro** —y el fichero natural es un `README.md`, que el editor ve y el compilador ignora: el mismo truco que el manifiesto del proyecto—. Borrarla es borrar lo que tiene dentro: **o N llamadas, o `DELETE /arbol/<carpeta>` aprende directorios** (una llamada, un commit). Y «Create ▸ Folder» **tiene que preguntar en qué paquete** cuando el proyecto nombra más de uno; con uno solo, no hay nada que preguntar |
+| **§4 el coste** | 11 ficheros, **2 103 líneas**. `query.ts` ya declara `assets` y `arbol` y tiene **26 llamadas de escritura**: una más es una fila de la tabla. Pero **`ProjectDetailView.tsx` (753 líneas) y `CreateResourceModal.tsx` tienen WIP de otra sesión** | (a) y (b) —el listado y crear/borrar— caen en ficheros **libres**; (c), las carpetas, cae **justo en el fichero que otra sesión tiene a medias**. Se parte la iteración por ahí: lo de fuera se cablea, y lo de dentro espera o entra por un módulo nuevo que el detalle llame en una línea |
+| **§5 el viaje** | Contra un `ore-serve` de verdad, los seis pasos **funcionan hoy**: crear 201 · listar 200 (`proyectos: ['customer-churn']`) · la carpeta 201 · listar 200 · borrar la carpeta 200 · borrar el proyecto 200 con `siguenEnElArbol: ['hr']`. Entre **1,3 y 1,8 s** cada uno (clon por petición, forja local) | no falta backend para las tres cosas: falta **cablear**. Y el tiempo dice que la consola tiene que enseñar que está trabajando, no fingir que fue instantáneo |
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).
