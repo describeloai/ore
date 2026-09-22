@@ -554,6 +554,25 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   dice "15 · lo escrito es de quien lo escribió: a bea no se le presta la credencial de hr.derivadoT (403 con persona:ana), su commit es 403 y no lo retira; ana sí"
 fi
 
+# ── 16 · lo declarado, en el servidor (W3.7 gobierno ⑤) ──────────────────────
+#
+# Medido antes: dentro de `@transform(inputs, output)`, `over()` de lo no
+# declarado era PermissionError del SDK, pero `ore.puesto.pedir()` a pelo era
+# 200 y `PUT /arbol` desde dentro, 201. Ahora el SDK declara al servidor
+# (`POST /puestos/{id}/transform`) y el servidor acota: `datos` sólo resuelve
+# `inputs`, el catálogo sólo el `output`.
+if [ "${ESCRITO_OK:-no}" = si ]; then
+  P=puesto-ana-python; LEN=python
+  A_PELO='import json, ore\ndef a_pelo(m, ruta):\n    c, r = ore.puesto.pedir(m, ruta)\n    return c\n'
+  celda "$A_PELO"'print(json.dumps([a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.lago\"), a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.salida\")]))' && tiene "d['salida']['texto'].strip()=='[200, 200]'" || falla "16 · fuera de un transform se resuelve todo: $(cuerpo)"
+  celda "$A_PELO"'@transform(inputs=[\"hr.lago\"], output=\"hr.declarado\")\ndef t():\n    c1, _ = ore.puesto.pedir(\"GET\", \"/puestos/\" + ore.puesto.id)\n    return [a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.lago\"), a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.salida\"), a_pelo(\"GET\", \"/v1/namespaces/hr/tables/salida\"), a_pelo(\"GET\", \"/v1/namespaces/hr/tables/declarado\")]\nprint(json.dumps(t()))' && tiene "d['salida']['texto'].strip()=='[200, 403, 403, 404]'" || falla "16 · dentro del transform el servidor no acotó (se esperaba [200, 403, 403, 404]): $(cuerpo)"
+  celda 'import json; c, r = ore.puesto.pedir(\"GET\", \"/puestos/\" + ore.puesto.id); print(json.dumps([c, r.get(\"transform\"), r.get(\"inputs\")]))' && tiene "d['salida']['texto'].strip()=='[200, null, null]'" || falla "16 · el transform no se retiró al salir: $(cuerpo)"
+  celda "$A_PELO"'print(json.dumps([a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.salida\")]))' && tiene "d['salida']['texto'].strip()=='[200]'" || falla "16 · fuera del transform se vuelve a resolver: $(cuerpo)"
+  celda '@transform(inputs=[\"hr.lago\"], output=\"hr.declarado\")\ndef t2():\n    return write(\"hr.declarado\", over(\"hr.lago\", como=\"arrow\"))\nt2()[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "16 · el transform declarado sí escribe lo suyo: $(cuerpo)"
+  [ -f "$A/datasets/hr_declarado.json" ] || falla "16 · hr.declarado no quedó"
+  dice "16 · lo declarado, en el servidor: dentro de @transform, GET datos de lo no declarado es 403 y el catálogo de otra tabla también (a pelo, rodeando el SDK); GET /puestos lo dice; al salir se retira y todo vuelve a resolverse; lo declarado se escribe"
+fi
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -740,4 +759,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–15 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–16 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

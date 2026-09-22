@@ -92,6 +92,24 @@ fn de_ore(codigo: i32, stderr: &str, commit: bool) -> Respuesta {
     }
 }
 
+/// Qué tabla toca esta petición del catálogo, como `<ns>.<tabla>`; `None` si
+/// no toca ninguna (`config`, `namespaces`) o si es un `commitTransaction`,
+/// que las trae en el cuerpo y las mira `ore datasets --commit`.
+fn tabla_de(p: &Peticion, seg: &[&str]) -> Option<String> {
+    match seg {
+        ["namespaces", ns, "tables", t] => Some(format!("{ns}.{t}")),
+        // Crear una tabla: el nombre va en el cuerpo.
+        ["namespaces", ns, "tables"] if p.metodo == "POST" => ore_core::parse::parse(&p.cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("name")
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            })
+            .map(|t| format!("{ns}.{t}")),
+        _ => None,
+    }
+}
+
 /// Una respuesta que ya venía con `{"error": "…"}` (la forja adelantada, un
 /// 401, un 422 de la rama) pasa a la forma de la spec.
 fn con_forma(r: Respuesta, commit: bool) -> Respuesta {
@@ -160,6 +178,27 @@ impl Servidor {
         };
         let sujeto = &sujeto;
         let rama = rama.as_deref();
+        // **Lo declarado manda** (0031 W3.7 gobierno ⑤): mientras un transform
+        // corre en este puesto, el catálogo sólo carga, esboza o confirma su
+        // `output`. Lo demás —cargar otra tabla para escribirla, crearla,
+        // commitear sobre ella— es 403 con lo declarado, en el servidor y no
+        // en el SDK. Leer va por `datos`, que lo acota igual.
+        if let Some(id) = p.cabeceras.get(crate::puestos::PUESTO)
+            && let Some(t) = self.transform_de(id.trim())
+            && let Some(tabla) = tabla_de(p, seg)
+            && tabla != t.output
+        {
+            return con_forma(
+                Respuesta::error(
+                    403,
+                    format!(
+                        "`{tabla}` no es el output de `{}` (`{}`): un transform sólo escribe lo que declara",
+                        t.nombre, t.output
+                    ),
+                ),
+                false,
+            );
+        }
         match (p.metodo.as_str(), seg) {
             ("GET", ["config"]) => Respuesta::ok(Json::obj([
                 ("defaults", Json::obj([])),

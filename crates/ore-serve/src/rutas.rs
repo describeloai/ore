@@ -428,6 +428,11 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "la celda es un número"),
             },
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
+            // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
+            ("POST", ["puestos", id, "transform"]) => {
+                self.declarar_transform(sujeto, id, &p.cuerpo)
+            }
+            ("DELETE", ["puestos", id, "transform"]) => self.retirar_transform(sujeto, id),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
             (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
             // ── 0031 §10 · los datasets (`datasets.rs`): la lista, la ficha y el swap ──

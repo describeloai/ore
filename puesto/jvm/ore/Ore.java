@@ -215,12 +215,23 @@ public final class Ore {
         if (inputs.contains(output)) throw new IllegalArgumentException("transform(): `" + output + "` no puede ser input y output a la vez");
         if (transformActivo != null) throw new IllegalStateException("transform(): `" + transformActivo.nombre() + "` ya está corriendo; un transform no llama a otro");
         transformActivo = new Transform(nombre == null || nombre.isEmpty() ? "transform" : nombre, List.copyOf(inputs), output);
-        try { return cuerpo.call(); } finally { transformActivo = null; }
+        decirTransform(transformActivo);
+        try { return cuerpo.call(); } finally { transformActivo = null; decirTransform(null); }
     }
 
     private static void lee(String vista) {
         if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` no está en los inputs de `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): un transform sólo lee lo que declara");
         if (!leidas.contains(vista)) leidas.add(vista);
+    }
+
+    /** Lo declarado, dicho al servidor (W3.7 gobierno ⑤): mientras corre, resuelve sólo
+     *  {@code inputs} y deja escribir sólo {@code output}. Un ore-serve viejo no contesta y
+     *  el SDK sigue acotando por su cuenta. */
+    private static void decirTransform(Transform t) {
+        try {
+            if (t != null) puesto.pedir("POST", "/puestos/" + puesto.id + "/transform", Map.of("nombre", t.nombre(), "inputs", t.inputs(), "output", t.output()), Duration.ofSeconds(30));
+            else puesto.pedir("DELETE", "/puestos/" + puesto.id + "/transform", null, Duration.ofSeconds(30));
+        } catch (Exception e) { /* el servidor no lo sabe: el SDK sigue acotando */ }
     }
 
     private static Map<String, Object> procedencia(String nombre) {

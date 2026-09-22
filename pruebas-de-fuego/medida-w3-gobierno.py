@@ -317,6 +317,18 @@ def local(tmp, procs):
             return r.get("error") or ((r.get("diagnosticos") or [{}])[0].get("codigo", "") + " " + (r.get("diagnosticos") or [{}])[0].get("mensaje", "")).strip() or ", ".join("%s=%s" % (k, str(v)[:24]) for k, v in sorted(r.items()))
         return str(r)
 
+    def abre_el_conducto():
+        """`contextSurface.workspace: high` en `main` Y en la rama del puesto de ana: lo que
+        una celda lee se resuelve en SU rama (0031 §4), así que el conducto tiene que estar
+        ahí. `materialization.payload` sigue en `low`."""
+        texto_c = CONDUCTO % "low" + "    contextSurface.workspace:\n      gdpr.sensitivity: high\n"
+        c, _ = pide(base, "PUT", "/arbol/conduits.yaml", texto_c)
+        c2, r2 = pide(base, "GET", "/puestos/" + ana)
+        rama = (r2 or {}).get("rama")
+        if rama:
+            pide(base, "PUT", "/arbol/conduits.yaml", texto_c, {"x-ore-rama": rama})
+        return c
+
     def publica(rama):
         """Lo que una propuesta aceptada haría (0030 W2): la rama del puesto entra en `main`.
         Aquí por git, que la forja pelada no tiene API de propuestas."""
@@ -438,25 +450,28 @@ def local(tmp, procs):
     # ── §4 · correr: lo declarado y el servidor ──────────────────────────────
     if "4" in SOLO:
         print("§4 · correr: lo que un transform declara, y lo que el servidor sabe de ello")
+        # Desde ② la lectura pasa por un conducto: aquí se abre (por el árbol) para
+        # medir lo de ⑤ y no lo de ②.
+        c = abre_el_conducto()
+        fila("contextSurface.workspace: high por el árbol", "HTTP %s" % c, "para medir ⑤ y no ②")
         s = celda(ana, TRES + '; write("ventas.otro", t3)["filas"]')
-        s = celda(ana, '''
+        s = celda(ana, """
 @transform(inputs=["ventas.salida"], output="ventas.resumen")
 def resumir():
+    import ore
     try:
         over("ventas.otro"); a = "leyó"
-    except PermissionError as e:
+    except PermissionError:
         a = "PermissionError"
-    import ore
     c, r = ore.puesto.pedir("GET", "/puestos/%s/datos/ventas.otro" % ore.puesto.id)
-    c2, r2 = ore.puesto.pedir("GET", "/arbol/packages/ventas/datasets/otro.yaml")
+    c2, r2 = ore.puesto.pedir("GET", "/v1/namespaces/ventas/tables/otro")
+    c3, ficha = ore.puesto.pedir("GET", "/puestos/%s" % ore.puesto.id)
     t = sql("select pais, count(*) n from ventas.salida group by pais", como="arrow")
     e = write("ventas.resumen", t)
-    return [a, c, c2, e["filas"]]
-resumir()''')
-        fila("dentro del transform: over() de lo no declarado", "%s · %d ms" % (s.get("tipo"), s["_ms"]), texto(s)[:100])
-        fila("  … y puesto.pedir(GET /puestos/{id}/datos/ventas.otro) a pelo", "", "(el segundo valor: HTTP)")
-        c, r = pide(base, "GET", "/puestos/" + ana)
-        fila("lo que GET /puestos/{id} sabe del transform", "", ", ".join(sorted(r)) [:90] + " → transform/inputs/output: %s" % ("sí" if any(k in r for k in ("transform", "inputs", "output", "declarado")) else "no"))
+    return [a, c, c2, ficha.get("transform"), ficha.get("inputs"), e["filas"]]
+resumir()""")
+        fila("dentro del transform: over() de lo no declarado", "%s · %d ms" % (s.get("tipo"), s["_ms"]), texto(s)[:110])
+        fila("  [SDK, datos a pelo, catálogo a pelo, lo que GET /puestos dice, filas]", "", "")
         c, r = pide(base, "GET", "/datasets/ventas/resumen")
         fila("la procedencia de ventas.resumen", "", json.dumps(r.get("procedencia"))[:120])
         fila("  ¿dice que también leyó ventas.otro a pelo?", "", "no: la procedencia es lo que el SDK vio" if "otro" not in json.dumps(r.get("procedencia")) else "sí")
@@ -480,9 +495,13 @@ escapa()''')
         # Desde ② la lectura desde un puesto también pasa por un conducto: aquí se abre
         # (`contextSurface.workspace: high`, por el árbol) para medir sólo lo que la
         # escritura deja y lo que compila encima con `materialization.payload: low`.
-        c, r = pide(base, "PUT", "/arbol/conduits.yaml", CONDUCTO % "low" + "    contextSurface.workspace:\n      gdpr.sensitivity: high\n")
+        c = abre_el_conducto()
         fila("contextSurface.workspace: high por el árbol (una persona)", "HTTP %s" % c, "materialization.payload sigue en low")
         s = celda(ana, 'e = write("ventas.derivado", over("ventas.salida", como="arrow")); e["filas"]')
+        # Desde ④ lo que ana escribe vive en su rama: se publica (lo que una propuesta
+        # aceptada haría) para mirarlo en `main` con el índice y el compilador.
+        c, r = pide(base, "GET", "/puestos/" + ana)
+        publica(r.get("rama") or "main")
         c, r = pide(base, "GET", "/datasets/ventas/derivado")
         fila("ana: write(\"ventas.derivado\", over(\"ventas.salida\"))", "%s · %d ms" % (s.get("tipo"), s["_ms"]), "procedencia " + json.dumps(r.get("procedencia"))[:80])
         m = clon("mira5")

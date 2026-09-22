@@ -145,6 +145,20 @@ pub(crate) struct Puesto {
     pub pendientes: VecDeque<u64>,
     pub celdas: BTreeMap<u64, Celda>,
     pub trabajo: Option<Trabajo>,
+    /// **Lo que el transform que corre declaró** (0031 W3.7 gobierno ⑤). El
+    /// SDK lo dice al entrar en `@transform(inputs, output)` y lo retira al
+    /// salir; mientras está, el servidor sólo resuelve sus `inputs` y sólo
+    /// deja escribir su `output`. Hasta ⑤ el 403 vivía sólo en el SDK y
+    /// `ore.puesto.pedir()` a pelo lo rodeaba (medido).
+    pub transform: Option<Transform>,
+}
+
+/// Lo declarado por el transform que corre en este puesto.
+#[derive(Debug, Clone)]
+pub(crate) struct Transform {
+    pub nombre: String,
+    pub inputs: Vec<String>,
+    pub output: String,
 }
 
 /// Todo lo vivo, bajo un candado, y una campana para las esperas.
@@ -203,6 +217,16 @@ fn ficha(id: &str, p: &Puesto) -> Json {
         p.estado.dice()
     };
     let mut f = ficha_base(id, p, estado);
+    // Lo declarado, mientras corre (⑤): quien mire el puesto ve qué transform
+    // hay dentro y qué dijo que iba a leer y escribir.
+    if let (Some(t), Json::Obj(m)) = (&p.transform, &mut f) {
+        m.insert("transform".into(), Json::s(&t.nombre));
+        m.insert(
+            "inputs".into(),
+            Json::Arr(t.inputs.iter().map(Json::s).collect()),
+        );
+        m.insert("output".into(), Json::s(&t.output));
+    }
     if let (Some(t), Json::Obj(m)) = (&p.trabajo, &mut f) {
         m.insert("codigo".into(), Json::s(&t.codigo));
         m.insert("commit".into(), Json::s(&t.commit));
@@ -418,6 +442,7 @@ impl Servidor {
             pendientes: VecDeque::new(),
             celdas: BTreeMap::new(),
             trabajo: None,
+            transform: None,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -588,6 +613,7 @@ impl Servidor {
                 commit: commit.clone(),
                 informe: None,
             }),
+            transform: None,
         };
         p.celdas.insert(
             1,
@@ -753,6 +779,19 @@ impl Servidor {
                     ),
                     ("ms", Json::Int(ms)),
                     ("terminado_s", Json::Int(ahora)),
+                    // Lo que el transform declaró, si lo hubo (⑤): el informe
+                    // dice qué se dejó leer y escribir, no sólo qué salió.
+                    (
+                        "declarado",
+                        match &p.transform {
+                            Some(t) => Json::obj([
+                                ("transform", Json::s(&t.nombre)),
+                                ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
+                                ("output", Json::s(&t.output)),
+                            ]),
+                            None => Json::obj([]),
+                        },
+                    ),
                     ("salida", salida),
                 ]),
             )
@@ -1114,6 +1153,20 @@ impl Servidor {
         if let Err(m) = crate::rutas::token(ns).and(crate::rutas::token(nombre)) {
             return Respuesta::error(422, m);
         }
+        // Lo declarado manda (⑤): mientras un transform corre, este puesto sólo
+        // resuelve sus `inputs`. El mismo 403 que el SDK da, en el servidor.
+        if let Some(t) = self.transform_de(id)
+            && !t.inputs.iter().any(|i| i == vista)
+        {
+            return Respuesta::error(
+                403,
+                format!(
+                    "`{vista}` no está en los inputs de `{}` ({}): un transform sólo lee lo que declara",
+                    t.nombre,
+                    t.inputs.join(", ")
+                ),
+            );
+        }
         let (ns, nombre, vista) = (ns.to_string(), nombre.to_string(), vista.to_string());
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             self.con_credencial(raiz, datos_de(raiz, &ns, &nombre, &vista))
@@ -1136,6 +1189,100 @@ impl Servidor {
             }
         }
         r
+    }
+
+    /// `POST /puestos/{id}/transform {nombre, inputs, output}` y
+    /// `DELETE /puestos/{id}/transform` (0031 W3.7 gobierno ⑤): el agente
+    /// **declara al servidor** lo que el transform de la celda va a leer y
+    /// escribir, y lo retira al salir. Mientras está, `datos` sólo resuelve
+    /// `inputs` y el catálogo sólo carga o confirma `output`: el 403 pasa del
+    /// SDK al servidor, y la procedencia deja de poder mentir por omisión.
+    /// Dos transforms a la vez en el mismo puesto: 409 (un transform no llama
+    /// a otro, y el SDK ya lo niega).
+    pub(crate) fn declarar_transform(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let Ok(n) = ore_core::parse::parse(cuerpo) else {
+            return Respuesta::error(400, "el cuerpo no es JSON");
+        };
+        let campo = |k: &str| {
+            n.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let Some(output) = campo("output") else {
+            return Respuesta::error(422, "un transform declara `output`: `<paquete>.<tabla>`");
+        };
+        let inputs: Vec<String> = n
+            .get("inputs")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|i| i.as_str().map(str::to_string))
+            .collect();
+        if inputs
+            .iter()
+            .chain([&output])
+            .any(|x| x.split('.').count() != 2)
+        {
+            return Respuesta::error(422, "`inputs` y `output` son `<paquete>.<nombre>`");
+        }
+        let nombre = campo("nombre").unwrap_or_else(|| "transform".into());
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        if let Some(t) = &p.transform {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{}` ya está corriendo en este puesto: un transform no llama a otro",
+                    t.nombre
+                ),
+            );
+        }
+        p.transform = Some(Transform {
+            nombre: nombre.clone(),
+            inputs: inputs.clone(),
+            output: output.clone(),
+        });
+        Respuesta::ok(Json::obj([
+            ("transform", Json::s(nombre)),
+            ("inputs", Json::Arr(inputs.iter().map(Json::s).collect())),
+            ("output", Json::s(output)),
+        ]))
+    }
+
+    pub(crate) fn retirar_transform(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        let habia = p.transform.take();
+        Respuesta::ok(Json::obj([(
+            "transform",
+            match habia {
+                Some(t) => Json::s(t.nombre),
+                None => Json::Bool(false),
+            },
+        )]))
+    }
+
+    /// Lo declarado por el transform que corre en un puesto, si corre alguno.
+    pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|p| p.transform.clone())
     }
 
     /// **La credencial de lectura** (0031 W3.7 gobierno ②b): lo que `datos`

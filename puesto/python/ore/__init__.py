@@ -231,10 +231,15 @@ def transform(inputs, output):
             if _transform is not None:
                 raise RuntimeError("transform(): `%s` ya está corriendo; un transform no llama a otro" % _transform.nombre)
             _transform = _Transform(getattr(f, "__name__", "transform"), inputs, output)
+            # Y se le dice al servidor (W3.7 gobierno ⑤): mientras corre, él
+            # resuelve sólo `inputs` y deja escribir sólo `output`. Si no
+            # contesta (un ore-serve viejo), el SDK sigue acotando por su cuenta.
+            puesto.pedir("POST", "/puestos/%s/transform" % puesto.id, {"nombre": _transform.nombre, "inputs": list(inputs), "output": output})
             try:
                 return f(*a, **kw)
             finally:
                 _transform = None
+                puesto.pedir("DELETE", "/puestos/%s/transform" % puesto.id)
         corre.inputs, corre.output = list(inputs), output
         return corre
     return decora

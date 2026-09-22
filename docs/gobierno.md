@@ -139,7 +139,14 @@ sigue después —publicar y volver a abrir es cómo se recoge lo nuevo—; y la
   → 409 con `persona:ana`; «en main» → «en bob/puesto». §3: la Entity desclasificada queda en
   la rama de bob y el índice de `main` sigue `high`.
 
-## ⑤ Lo declarado, en el servidor
+## ⑤ Lo declarado, en el servidor · hecho (2026-09-22)
+
+Lo que quedó: `POST`/`DELETE /puestos/{id}/transform` (del agente; dos a la vez 409), `datos`
+sólo `inputs`, el catálogo sólo `output` (`tabla_de`), `GET /puestos` lo dice, el informe gana
+`declarado`, los tres SDK lo llaman al entrar y salir (y siguen acotando si el servidor no
+contesta); `el-puesto.sh` 16. Medida §4: `[PermissionError, 403, 403, 'resumir',
+['ventas.salida'], 3]`. Lo que se dice y no se tapa: la procedencia sigue siendo lo que el SDK
+vio, y un `commitTransaction` de varias tablas lo miran las tablas en `--commit`.
 
 **Dónde**: `crates/ore-serve/src/puestos.rs`, `catalogo.rs`; `puesto/*/ore` (`transform`).
 

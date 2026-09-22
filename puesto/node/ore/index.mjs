@@ -176,7 +176,8 @@ export function transform({ inputs, output }, fn) {
   const corre = async (...a) => {
     if (transformActivo) throw new Error(`transform(): \`${transformActivo.nombre}\` ya está corriendo; un transform no llama a otro`);
     transformActivo = { nombre, inputs: [...inputs], output };
-    try { return await fn(...a); } finally { transformActivo = null; }
+    await decirTransform(transformActivo);
+    try { return await fn(...a); } finally { transformActivo = null; await decirTransform(null); }
   };
   corre.inputs = [...inputs]; corre.output = output;
   return corre;
@@ -185,6 +186,16 @@ export function transform({ inputs, output }, fn) {
 function lee(vista) {
   if (transformActivo && !transformActivo.inputs.includes(vista)) throw new Error(`\`${vista}\` no está en los inputs de \`${transformActivo.nombre}\` (${transformActivo.inputs.join(", ")}): un transform sólo lee lo que declara`);
   if (!leidas.includes(vista)) leidas.push(vista);
+}
+
+/** Lo declarado, dicho al servidor (W3.7 gobierno ⑤): mientras corre, resuelve
+ *  sólo `inputs` y deja escribir sólo `output`. Un ore-serve viejo no contesta
+ *  y el SDK sigue acotando por su cuenta. */
+async function decirTransform(t) {
+  try {
+    if (t) await puesto.pedir("POST", `/puestos/${puesto.id}/transform`, { nombre: t.nombre, inputs: t.inputs, output: t.output });
+    else await puesto.pedir("DELETE", `/puestos/${puesto.id}/transform`);
+  } catch { /* el servidor no lo sabe: el SDK sigue acotando */ }
 }
 
 function procedencia(nombre) {
