@@ -209,10 +209,16 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
             String::from_utf8(bytes).map_err(|_| format!("`{ml}` no es texto"))
         }
         // La credencial prestada para escribir SÓLO bajo un dataset (0031 §11 ③).
+        // Con `modo: leer` (②b), sólo para leer: lo que el puesto usa en
+        // `over()`/`sql()` en vez de la identidad del pod.
         "prestar" => {
             let dataset = campo("dataset").ok_or("a `prestar` le falta `dataset`")?;
             let prefijo = format!("{}/{dataset}/", lago::RAIZ);
-            let p = cuenta.prestar(&prefijo)?;
+            let p = if campo("modo").as_deref() == Some("leer") {
+                cuenta.prestar_lectura(&prefijo)?
+            } else {
+                cuenta.prestar(&prefijo)?
+            };
             Ok(Json::obj([
                 ("acotada", Json::Bool(p.acotada)),
                 ("caduca_ms", Json::Int(p.caduca_ms.unwrap_or(-1))),

@@ -188,56 +188,15 @@ impl Almacen for Cuenta {
     /// sobrescribir ni salir. Caduca cuando caduque el de la cuenta (STS lo
     /// dice; si no, se asume una hora menos un margen).
     fn prestar(&self, prefijo: &str) -> Result<crate::almacen::Prestamo, String> {
-        let regla = format!(
-            "{{\"accessBoundary\":{{\"accessBoundaryRules\":[{{\"availableResource\":\"//storage.googleapis.com/projects/_/buckets/{b}\",\"availablePermissions\":[\"inRole:roles/storage.objectCreator\",\"inRole:roles/storage.objectViewer\"],\"availabilityCondition\":{{\"expression\":\"resource.name.startsWith('projects/_/buckets/{b}/objects/{p}')\"}}}}]}}}}",
-            b = self.bucket,
-            p = prefijo
-        );
-        let cuerpo = format!(
-            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&subject_token={}&options={}",
-            codificar(&self.token()?),
-            codificar(&regla)
-        );
-        let r = cliente()?
-            .post(STS)
-            .set("content-type", "application/x-www-form-urlencoded")
-            .set("user-agent", AGENTE)
-            .timeout(std::time::Duration::from_secs(20))
-            .send_string(&cuerpo);
-        let texto = match r {
-            Ok(r) => r
-                .into_string()
-                .map_err(|e| format!("STS contestó algo ilegible: {e}"))?,
-            Err(ureq::Error::Status(c, r)) => {
-                let t = r.into_string().unwrap_or_default();
-                return Err(format!(
-                    "STS no acotó el token ({c}): {}",
-                    t.chars().take(200).collect::<String>()
-                ));
-            }
-            Err(e) => return Err(format!("STS no contesta: {e}")),
-        };
-        let n = ore_core::parse::parse(&texto).map_err(|_| "STS no devolvió JSON".to_string())?;
-        let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
-        let token = campo("access_token").ok_or("STS no devolvió `access_token`")?;
-        let segundos: i64 = campo("expires_in")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600 - 300);
-        let caduca = crate::lago::ahora_ms() + segundos * 1000;
-        Ok(crate::almacen::Prestamo {
-            config: [
-                ("gcs.oauth2.token".to_string(), token),
-                (
-                    "gcs.oauth2.token-expires-at".to_string(),
-                    caduca.to_string(),
-                ),
-            ]
-            .into(),
-            caduca_ms: Some(caduca),
-            acotada: true,
-        })
+        self.acotar(prefijo, &["objectCreator", "objectViewer"])
     }
 
+    /// Sólo `objectViewer` bajo el prefijo (②b): lee dentro y nada más.
+    /// Medido en victor: STS acota en 50–60 ms; con ella se lee la tabla
+    /// (200), otra tabla no (403), y no se lista nada (ni con prefijo).
+    fn prestar_lectura(&self, prefijo: &str) -> Result<crate::almacen::Prestamo, String> {
+        self.acotar(prefijo, &["objectViewer"])
+    }
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {
         Ok(self
             .leer_bytes(clave)?
@@ -356,6 +315,65 @@ impl Almacen for Cuenta {
             Err(ureq::Error::Status(404, _)) => Ok(None),
             Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
         }
+    }
+}
+
+impl Cuenta {
+    /// El token de esta cuenta, acotado a `prefijo` con esos roles.
+    fn acotar(&self, prefijo: &str, roles: &[&str]) -> Result<crate::almacen::Prestamo, String> {
+        let permisos = roles
+            .iter()
+            .map(|r| format!("\"inRole:roles/storage.{r}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let regla = format!(
+            "{{\"accessBoundary\":{{\"accessBoundaryRules\":[{{\"availableResource\":\"//storage.googleapis.com/projects/_/buckets/{b}\",\"availablePermissions\":[{permisos}],\"availabilityCondition\":{{\"expression\":\"resource.name.startsWith('projects/_/buckets/{b}/objects/{p}')\"}}}}]}}}}",
+            b = self.bucket,
+            p = prefijo
+        );
+        let cuerpo = format!(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token&subject_token={}&options={}",
+            codificar(&self.token()?),
+            codificar(&regla)
+        );
+        let r = cliente()?
+            .post(STS)
+            .set("content-type", "application/x-www-form-urlencoded")
+            .set("user-agent", AGENTE)
+            .timeout(std::time::Duration::from_secs(20))
+            .send_string(&cuerpo);
+        let texto = match r {
+            Ok(r) => r
+                .into_string()
+                .map_err(|e| format!("STS contestó algo ilegible: {e}"))?,
+            Err(ureq::Error::Status(c, r)) => {
+                let t = r.into_string().unwrap_or_default();
+                return Err(format!(
+                    "STS no acotó el token ({c}): {}",
+                    t.chars().take(200).collect::<String>()
+                ));
+            }
+            Err(e) => return Err(format!("STS no contesta: {e}")),
+        };
+        let n = ore_core::parse::parse(&texto).map_err(|_| "STS no devolvió JSON".to_string())?;
+        let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        let token = campo("access_token").ok_or("STS no devolvió `access_token`")?;
+        let segundos: i64 = campo("expires_in")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600 - 300);
+        let caduca = crate::lago::ahora_ms() + segundos * 1000;
+        Ok(crate::almacen::Prestamo {
+            config: [
+                ("gcs.oauth2.token".to_string(), token),
+                (
+                    "gcs.oauth2.token-expires-at".to_string(),
+                    caduca.to_string(),
+                ),
+            ]
+            .into(),
+            caduca_ms: Some(caduca),
+            acotada: true,
+        })
     }
 }
 

@@ -61,4 +61,13 @@ pub trait Almacen: Send + Sync {
             "este almacén no presta credenciales acotadas (se pidió `{prefijo}`)"
         ))
     }
+
+    /// **Presta una credencial acotada a `prefijo` sólo para leer** (0031
+    /// W3.7 gobierno ②b): lo que `datos_del_puesto` devuelve para que el SDK
+    /// lea el dataset con ella y no con la identidad del pod, que desde ②b no
+    /// ve los datasets del bucket. Por defecto, la misma que para escribir:
+    /// un almacén que no distingue presta lo que tiene.
+    fn prestar_lectura(&self, prefijo: &str) -> Result<Prestamo, String> {
+        self.prestar(prefijo)
+    }
 }

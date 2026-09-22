@@ -146,15 +146,22 @@ spec:
               [ -n "$CAPA" ] || { echo "· sin capa: el árbol no declara dependencias"; exit 0; }
               mkdir -p /trabajo/ruedas
               python3 - <<'PY'
+              # ⭐ Por su nombre, sin listar (0031 W3.7 gobierno ②b): la cuenta del
+              #   puesto sólo es objectViewer bajo `ore/puesto/`, y una condición
+              #   IAM sobre el nombre del objeto NO da `objects.list` (medido: 403
+              #   con prefijo y sin él). `requirements.lock` dice qué ruedas hay, y
+              #   cada una se baja por su nombre.
               import os, time
               from google.cloud import storage
               t = time.time(); cli = storage.Client(); b = cli.bucket(os.environ["BUCKET"]); pre = "ore/puesto/" + os.environ["CAPA"] + "/"
+              try:
+                  lock = b.blob(pre + "requirements.lock").download_as_text()
+              except Exception as e:
+                  raise SystemExit("✗ la caja de la capa no está en el bucket (%s): ¿la resolvió 52-la-capa?" % str(e)[:120])
               n = 0
-              for o in cli.list_blobs(b, prefix=pre):
-                  o.download_to_filename("/trabajo/ruedas/" + o.name[len(pre):]); n += 1
-              print("### capa %s: %d objeto(s) en %d ms" % (os.environ["CAPA"], n, (time.time() - t) * 1000), flush=True)
-              if n == 0:
-                  raise SystemExit("✗ la caja de la capa no está en el bucket: ¿la resolvió 52-la-capa?")
+              for nombre in ["requirements.lock"] + [l.strip() for l in lock.splitlines() if l.strip() and l.strip() != "requirements.lock"]:
+                  b.blob(pre + nombre).download_to_filename("/trabajo/ruedas/" + nombre); n += 1
+              print("### capa %s: %d objeto(s) por su nombre en %d ms" % (os.environ["CAPA"], n, (time.time() - t) * 1000), flush=True)
               PY
               T0=$(cut -d. -f1 /proc/uptime)
               python3 -m pip install --disable-pip-version-check -q --no-index --no-deps --target /capa /trabajo/ruedas/*.whl

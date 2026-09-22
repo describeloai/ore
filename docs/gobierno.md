@@ -45,7 +45,15 @@ niega con el código; el índice clasifica View y Dataset por su carga; los tres
 frase; `el-puesto.sh` 13. Lo que salió: **sin `contextSurface.workspace`, se coteja con
 `materialization.payload`** (nada cambia en demo/victor hasta que declaren un retículo).
 
-> ⚠️ **②b · la credencial de lectura** (queda, con nombre): en el clúster, `over()` lee el
+> ✅ **②b · hecho en demo (2026-09-22)**; en victor, la condición IAM espera go (sus
+> puestos abiertos leen con el token del pod y se romperían hasta reabrirse). Lo que quedó:
+> `prestar {modo: leer}`, `--prestar --leer`, `datos` con `credencial`, los tres SDK con un
+> secreto por raíz y `scope`, la capa por su nombre (una condición IAM sobre el nombre no da
+> `objects.list`), el aprovisionador con la condición, `empujar-plantilla.py` (demo y victor
+> ya llevan la plantilla nueva). Medido: STS 50–60 ms, DuckDB con la prestada 558 ms/4 filas,
+> el pod bajo la condición 403 a todo menos la capa por su nombre.
+>
+> Lo que era: en el clúster, `over()` lee el
 > bucket **con el token del pod** (W3.5b, camino (b): la cuenta `puesto` es `objectViewer` del
 > bucket entero), así que ② sólo gobierna a quien pasa por `datos`; la celda puede pedir el
 > objeto a GCS por su cuenta con un `metadata_location` que `GET /arbol/datasets/…json` le da.

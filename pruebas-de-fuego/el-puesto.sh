@@ -509,7 +509,7 @@ spec:
     contextSurface.workspace: { oos.maturity: DRAFT, gdpr.sensitivity: high }
 ')" = "200" ] || falla "13 · contextSurface.workspace a high: $(cuerpo)"
   celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · con contextSurface.workspace high, hr.salida se lee: $(cuerpo)"
-  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'}" || falla "13 · datos no trae la clasificacion: $(cuerpo)"
+  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'} and d['dataset']=='hr.salida' and 's3.access-key-id' in d.get('credencial', {})" || falla "13 · datos no trae la clasificacion, el dataset y la credencial de lectura (2b): $(cuerpo)"
   dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo; contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
 
   # ── 14 · lo escrito lleva lo que leyó (W3.7 gobierno ③, OOS 01-dataset §5) ──

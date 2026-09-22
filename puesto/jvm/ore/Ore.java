@@ -267,13 +267,20 @@ public final class Ore {
         Map<String, Object> r = resolver(vista);
         Object m = r.get("metadata_location");
         if (m != null && !String.valueOf(m).isEmpty()) {
+            // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).
+            Object cred = r.get("credencial");
+            Map<String, Object> credencial = cred instanceof Map<?, ?> ? mapa(cred) : Map.of();
             if (String.valueOf(m).startsWith("s3://") && s3 == null) {
-                String[] p = vista.split("\\.");
-                Respuesta l = puesto.pedir("GET", "/v1/namespaces/" + p[0] + "/tables/" + p[1], null, Duration.ofSeconds(30), DELEGAR);
-                Object cfg = l.cuerpo().get("config");
-                if (l.codigo() == 200 && cfg instanceof Map<?, ?> c && c.get("s3.access-key-id") != null) s3 = mapa(cfg);
+                if (credencial.get("s3.access-key-id") != null) s3 = credencial;
+                else {
+                    String[] p = vista.split("\\.");
+                    Respuesta l = puesto.pedir("GET", "/v1/namespaces/" + p[0] + "/tables/" + p[1], null, Duration.ofSeconds(30), DELEGAR);
+                    Object cfg = l.cuerpo().get("config");
+                    if (l.codigo() == 200 && cfg instanceof Map<?, ?> c && c.get("s3.access-key-id") != null) s3 = mapa(cfg);
+                }
             }
-            return iceberg(String.valueOf(m));
+            Object tok = credencial.get("gcs.oauth2.token");
+            return iceberg(String.valueOf(m), tok == null ? null : String.valueOf(tok));
         }
         return "read_parquet('" + rutaSql(parquetDe(vista, r)) + "')";
     }
@@ -287,7 +294,7 @@ public final class Ore {
      * {@code allow_moved_paths} la raíz es lo que se le pasa, y así no lista nada). En el
      * bucket, la API XML de GCS por https con el token del pod como <i>bearer</i>.
      */
-    private static String iceberg(String metadataLocation) throws Exception {
+    private static String iceberg(String metadataLocation, String prestada) throws Exception {
         int i = metadataLocation.lastIndexOf("/metadata/");
         String raiz = metadataLocation.substring(0, i);
         String version = metadataLocation.substring(i + "/metadata/".length()).replaceFirst("\\.metadata\\.json$", "");
@@ -297,8 +304,15 @@ public final class Ore {
         for (String e : LAGO) cargar(con, e);
         if (raiz.startsWith("gs://")) {
             cargar(con, "httpfs");
-            try (Statement s = con.createStatement()) { s.execute("create or replace secret ore_gcs (type http, bearer_token '" + tokenDeGoogle().replace("'", "''") + "')"); }
             raiz = "https://storage.googleapis.com/" + raiz.substring(5);
+            // Con la credencial prestada para este dataset (②b): un secreto por raíz,
+            // con `scope`; sin ella, el token del pod (lo de antes).
+            if (prestada != null && !prestada.isEmpty()) {
+                String n = Integer.toHexString(raiz.hashCode());
+                try (Statement s = con.createStatement()) { s.execute("create or replace secret ore_gcs_" + n + " (type http, bearer_token '" + prestada.replace("'", "''") + "', scope '" + raiz.replace("'", "''") + "')"); }
+            } else {
+                try (Statement s = con.createStatement()) { s.execute("create or replace secret ore_gcs (type http, bearer_token '" + tokenDeGoogle().replace("'", "''") + "')"); }
+            }
         } else if (raiz.startsWith("s3://") && s3 != null) {
             // Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
             // catálogo prestó al escribir, o la de la tabla que se pidió leer.

@@ -838,6 +838,9 @@ enum Command {
         /// Con `--cargar`/`--esbozar`: la credencial acotada a la tabla, prestada por el almacen.
         #[arg(long)]
         prestar: bool,
+        /// Con `--prestar`: solo para leer (lo que el puesto usa en over()).
+        #[arg(long)]
+        leer: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -977,6 +980,7 @@ fn main() -> std::process::ExitCode {
             retencion_defecto,
             cargar,
             prestar,
+            leer,
         } => {
             return datasets::datasets(
                 path,
@@ -1004,6 +1008,7 @@ fn main() -> std::process::ExitCode {
                     retencion_defecto: retencion_defecto.as_deref(),
                     cargar: cargar.as_deref(),
                     prestar: *prestar,
+                    leer: *leer,
                 },
             );
         }

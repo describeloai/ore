@@ -289,22 +289,30 @@ def _fuente_de(vista):
     r = _resolver(vista)
     if r.get("metadata_location"):
         global _s3
+        # La credencial de lectura que `datos` presta (W3.7 gobierno ②b): acotada
+        # a este dataset; con ella se lee, y no con la identidad del pod.
+        cred = r.get("credencial") or {}
         if r["metadata_location"].startswith("s3://") and not _s3:
-            ns, t = vista.split(".")
-            c, l = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
-            if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
-                _s3 = l["config"]
-        return _iceberg(r["metadata_location"]), r
+            if cred.get("s3.access-key-id"):
+                _s3 = cred
+            else:
+                ns, t = vista.split(".")
+                c, l = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+                if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
+                    _s3 = l["config"]
+        return _iceberg(r["metadata_location"], cred.get("gcs.oauth2.token")), r
     f, r = _parquet_de(vista, r)
     r["_parquet"] = f
     return "read_parquet('%s')" % f.replace("'", "''").replace("\\", "/"), r
 
 
-def _iceberg(metadata_location):
+def _iceberg(metadata_location, prestada=None):
     """`iceberg_scan` sobre la raíz de la tabla y la versión del puntero. A DuckDB no se
     le da el fichero: con `allow_moved_paths` la raíz es lo que se le pasa (y con el
     fichero resolvía `…metadata.json/metadata/snap…`), y así no lista nada. En el
-    bucket, la API XML de GCS por https con el token del pod como *bearer*."""
+    bucket, la API XML de GCS por https con **la credencial prestada** para este
+    dataset como *bearer* (un secreto por raíz, con `scope`: un `sql()` que junta dos
+    datasets lleva dos); sin prestada, el token del pod (lo de antes de ②b)."""
     raiz, fichero = metadata_location.rsplit("/metadata/", 1)
     version = fichero[: -len(".metadata.json")] if fichero.endswith(".metadata.json") else fichero
     con = _duckdb()
@@ -314,8 +322,12 @@ def _iceberg(metadata_location):
         _cargar(con, e)
     if raiz.startswith("gs://"):
         _cargar(con, "httpfs")
-        con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
         raiz = "https://storage.googleapis.com/" + raiz[5:]
+        if prestada:
+            import hashlib
+            con.execute("create or replace secret ore_gcs_%s (type http, bearer_token '%s', scope '%s')" % (hashlib.sha1(raiz.encode()).hexdigest()[:12], prestada.replace("'", "''"), raiz.replace("'", "''")))
+        else:
+            con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
     elif raiz.startswith("s3://") and _s3:
         # Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
         # catálogo prestó al escribir, o la de la tabla que se pidió leer.

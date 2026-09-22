@@ -1115,7 +1115,9 @@ impl Servidor {
             return Respuesta::error(422, m);
         }
         let (ns, nombre, vista) = (ns.to_string(), nombre.to_string(), vista.to_string());
-        let r = self.leyendo_en(rama.as_deref(), |raiz| datos_de(raiz, &ns, &nombre, &vista));
+        let r = self.leyendo_en(rama.as_deref(), |raiz| {
+            self.con_credencial(raiz, datos_de(raiz, &ns, &nombre, &vista))
+        });
         // **El fallback de rama** (0031 §4, W3.7 ③): una rama lee las copias
         // de `main` mientras no tenga las suyas. Lo que la rama no tiene —ni
         // el documento (404) ni el dataset (409)— se busca en `main`, y la
@@ -1123,13 +1125,74 @@ impl Servidor {
         // Medido antes: sin esto, lo que `main` ganaba tras abrir la rama era
         // «no hay ninguna View» desde ella.
         if rama.is_some() && matches!(r.codigo, 404 | 409) {
-            let mut de_main = self.leyendo_en(None, |raiz| datos_de(raiz, &ns, &nombre, &vista));
+            let mut de_main = self.leyendo_en(None, |raiz| {
+                self.con_credencial(raiz, datos_de(raiz, &ns, &nombre, &vista))
+            });
             if de_main.codigo == 200 {
                 if let Json::Obj(m) = &mut de_main.cuerpo {
                     m.insert("rama".into(), Json::s("main"));
                 }
                 return de_main;
             }
+        }
+        r
+    }
+
+    /// **La credencial de lectura** (0031 W3.7 gobierno ②b): lo que `datos`
+    /// resolvió lleva, si el almacén sabe acotar, una credencial **sólo para
+    /// leer** ese dataset (`ore datasets --cargar --prestar --leer` →
+    /// `ore-store prestar {modo: leer}`: `objectViewer` bajo su prefijo,
+    /// STS 50–60 ms medidos). El SDK lee con ella y no con la identidad del
+    /// pod, que desde ②b no ve los datasets del bucket: la única forma de leer
+    /// es pasar por aquí, y aquí decide el conducto. Un almacén que no acota
+    /// (el S3 de mentira) presta lo que tiene; sin almacén, nada, y el SDK
+    /// sigue como antes.
+    fn con_credencial(&self, raiz: &Path, mut r: Respuesta) -> Respuesta {
+        if r.codigo != 200 {
+            return r;
+        }
+        let Json::Obj(m) = &r.cuerpo else { return r };
+        let Some(Json::Str(ml)) = m.get("metadata_location") else {
+            return r;
+        };
+        if ml.is_empty() {
+            return r;
+        }
+        let Some(Json::Str(ds)) = m.get("dataset") else {
+            return r;
+        };
+        let args: Vec<String> = [
+            "datasets",
+            ".",
+            "--cargar",
+            ds.as_str(),
+            "--prestar",
+            "--leer",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let Ok(s) = crate::mando::correr(&self.binario, raiz, &args) else {
+            return r;
+        };
+        if s.codigo != 0 {
+            return r;
+        }
+        let Some(j) = s
+            .stdout
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with('{'))
+            .and_then(|l| ore_core::parse::parse(l).ok())
+        else {
+            return r;
+        };
+        if let Some((_, c)) = j.get("config")
+            && let Json::Obj(cfg) = Json::de_node(c)
+            && !cfg.is_empty()
+            && let Json::Obj(m) = &mut r.cuerpo
+        {
+            m.insert("credencial".into(), Json::Obj(cfg));
         }
         r
     }
@@ -1422,6 +1485,7 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     }
     Respuesta::ok(Json::obj([
         ("vista", Json::s(vista)),
+        ("dataset", Json::s(&del_dataset)),
         ("estado", Json::s(estado)),
         ("clave", Json::s(clave)),
         ("metadata_location", Json::s(metadata_location)),

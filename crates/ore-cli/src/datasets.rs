@@ -103,6 +103,9 @@ pub struct Opciones<'a> {
     pub cargar: Option<&'a str>,
     /// Con `--cargar`/`--esbozar`: la credencial acotada a la tabla, prestada.
     pub prestar: bool,
+    /// Con `--prestar`: sólo para leer (`objectViewer` bajo la tabla), lo que
+    /// el puesto usa en `over()` (②b). Nadie tiene que haberlo escrito.
+    pub leer: bool,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -1563,7 +1566,11 @@ fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
     }
     let salida = almacen_crudo(
         "prestar",
-        &format!("{{\"dataset\":{}}}", lit(&format!("datasets/{ns}_{tabla}"))),
+        &format!(
+            "{{\"dataset\":{}{}}}",
+            lit(&format!("datasets/{ns}_{tabla}")),
+            if op.leer { ",\"modo\":\"leer\"" } else { "" }
+        ),
     )?;
     let n = ore_core::parse::parse(&salida).map_err(|e| {
         (
@@ -1593,8 +1600,9 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
         .ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
-    // La credencial para escribir sólo se presta a quien lo escribió.
-    if op.prestar {
+    // La credencial para escribir sólo se presta a quien lo escribió; la de
+    // leer, a quien pase el conducto (eso lo decide ore-serve antes).
+    if op.prestar && !op.leer {
         de_quien_lo_escribio(previo.as_ref(), nombre, op.sujeto)?;
     }
     let metadatos = almacen_crudo(

@@ -553,8 +553,12 @@ enlace "ore-puesto-$NOMBRE" puesto
 #   · `ore-driver-<n>` ESCRIBE (`objectAdmin`: sellar, y recoger lo superado);
 #   · `ore-serve-<n>` LEE (`objectViewer`: la ficha de la copia, F5 mañana) y
 #     CREA (`objectCreator`: el `metadata.json` del catálogo y el préstamo);
-#   · `ore-puesto-<n>` LEE y nada más: lo que un puesto escribe va con el token
-#     prestado por `ore-serve-<n>`, acotado a la tabla (0031 §11 ③).
+#   · `ore-puesto-<n>` LEE **la capa** (`ore/puesto/`) y nada más (0031 W3.7
+#     gobierno ②b): los datasets los lee con la credencial que `ore-serve-<n>`
+#     le presta al resolver `datos` —acotada al dataset y sólo para leer—, y
+#     escribe con la que le presta el catálogo, acotada a la tabla (0031 §11 ③).
+#     Medido: con la condición IAM sobre el nombre, el token del pod lee un
+#     fichero de la capa por su nombre (200) y no lista ni lee nada más (403).
 #     Esa es la separación que 0015 pedía, y sale gratis: son cuentas.
 #
 # ⛔ Sin clave estática de ningún tipo: la política de la organización lo
@@ -583,9 +587,18 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/storage.objectCreator && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
+# ⭐ ②b: el puesto ya no ve el bucket entero. Si venía de antes con el
+#   `objectViewer` sin condición, se le quita; la condición va por el nombre
+#   del objeto (`ore/puesto/`) y no da `objects.list`: la capa se baja por su
+#   nombre (`51-el-puesto.yaml`).
+"$GCLOUD" storage buckets remove-iam-policy-binding "gs://$COPIA" \
+  --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer --quiet >/dev/null 2>&1 || true
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer && hecho "\`ore-puesto-$NOMBRE\` lee la copia, y no escribe: escribe con lo que el catálogo le presta"
+  --role=roles/storage.objectViewer \
+  --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/puesto/\"),title=solo-la-capa,description=W3.7 gobierno 2b: el puesto lee la capa por su nombre y nada mas; los datasets con la credencial prestada por ore-serve" \
+  && hecho "\`ore-puesto-$NOMBRE\` lee la capa y nada más: los datasets con la credencial que ore-serve le presta, y escribe con la del catálogo"
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #

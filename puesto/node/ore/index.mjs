@@ -237,11 +237,15 @@ async function fuenteDe(vista) {
   const r = await resolver(vista);
   if (r.metadata_location) {
     if (r.metadata_location.startsWith("s3://") && !s3) {
-      const [ns, t] = vista.split(".");
-      const [c, l] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
-      if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
+      // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).
+      if (r.credencial?.["s3.access-key-id"]) s3 = r.credencial;
+      else {
+        const [ns, t] = vista.split(".");
+        const [c, l] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+        if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
+      }
     }
-    return [await iceberg(r.metadata_location), r];
+    return [await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]), r];
   }
   const [f] = await parquetDe(vista);
   return [`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r];
@@ -250,7 +254,7 @@ async function fuenteDe(vista) {
 /** `iceberg_scan` sobre la raíz de la tabla y la versión del puntero (con
  *  `allow_moved_paths` la raíz es lo que se le pasa, y así no lista nada). En el
  *  bucket, la API XML de GCS por https con el token del pod como bearer. */
-async function iceberg(metadataLocation) {
+async function iceberg(metadataLocation, prestada) {
   const i = metadataLocation.lastIndexOf("/metadata/");
   let raiz = metadataLocation.slice(0, i);
   const version = metadataLocation.slice(i + "/metadata/".length).replace(/\.metadata\.json$/, "");
@@ -260,8 +264,16 @@ async function iceberg(metadataLocation) {
   for (const e of LAGO) await cargar(con, e);
   if (raiz.startsWith("gs://")) {
     await cargar(con, "httpfs");
-    await con.run(`create or replace secret ore_gcs (type http, bearer_token '${(await tokenDeGoogle()).replaceAll("'", "''")}')`);
     raiz = "https://storage.googleapis.com/" + raiz.slice(5);
+    // Con la credencial prestada para este dataset (②b): un secreto por raíz,
+    // con `scope`; sin ella, el token del pod (lo de antes).
+    if (prestada) {
+      const { createHash } = await import("node:crypto");
+      const n = createHash("sha1").update(raiz).digest("hex").slice(0, 12);
+      await con.run(`create or replace secret ore_gcs_${n} (type http, bearer_token '${prestada.replaceAll("'", "''")}', scope '${raiz.replaceAll("'", "''")}')`);
+    } else {
+      await con.run(`create or replace secret ore_gcs (type http, bearer_token '${(await tokenDeGoogle()).replaceAll("'", "''")}')`);
+    }
   } else if (raiz.startsWith("s3://") && s3) {
     // Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
     // catálogo prestó al escribir, o la de la tabla que se pidió leer.
