@@ -444,6 +444,29 @@ else
   dice "11 · (sin el lago: el trabajo no se prueba aquí)"
 fi
 
+# ── 12 · la puerta del puesto (W3.7 gobierno ①): desde un puesto sólo entran los verbos ──
+#
+# Medido antes: desde una celda, `PUT /arbol/conduits.yaml` era 200 firmado por
+# el agente. Lo que decide es el sujeto (agente), no la cabecera: un agente no
+# escribe fuera de los verbos —leer, escribir, declarar— ni con `x-ore-puesto`
+# ni sin ella. Leer sigue abierto.
+P=puesto-ana-python; LEN=python
+CRUDO='import json, ore, urllib.request, urllib.error\ndef a_pelo(m, ruta, texto=None, con=True):\n    q = urllib.request.Request(ore.puesto.servidor + ruta, data=(texto or \"\").encode() if texto is not None else None, method=m)\n    [q.add_header(k, v) for k, v in ore.puesto._cabeceras.items()]\n    con and q.add_header(\"x-ore-puesto\", ore.puesto.id)\n    try:\n        return urllib.request.urlopen(q, timeout=30).status\n    except urllib.error.HTTPError as e:\n        return e.code\n'
+celda "$CRUDO"'[a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\"), a_pelo(\"PUT\", \"/arbol/conduits.yaml\", \"x: 1\", con=False), a_pelo(\"DELETE\", \"/arbol/packages/hr/tables/empleados_t.yaml\"), a_pelo(\"POST\", \"/ramas\", \"{}\"), a_pelo(\"POST\", \"/propuestas\", \"{}\"), a_pelo(\"POST\", \"/paquetes\", \"{}\"), a_pelo(\"GET\", \"/arbol/conduits.yaml\")]' && tiene "d['salida']['texto']=='[403, 403, 403, 403, 403, 403, 200]'" || falla "12 · la puerta del puesto: $(cuerpo)"
+grep -q "^x: 1" "$A/conduits.yaml" 2>/dev/null && falla "12 · el conducto se reescribió desde la celda"
+[ -f "$A/packages/hr/tables/empleados_t.yaml" ] || falla "12 · la tabla se retiró desde la celda"
+[ "$(pide PUT /arbol/notas/persona.md "$ANA" 'una persona si')" = "201" ] || falla "12 · una persona no escribe en /arbol: $(cuerpo)"
+[ "$(pide DELETE /arbol/notas/persona.md "$ANA")" = "200" ] || falla "12 · una persona no retira en /arbol: $(cuerpo)"
+if [ "${ESCRITO_OK:-no}" = si ]; then
+  # un Dataset se va con su puntero (antes quedaba huérfano)
+  [ -f "$A/datasets/hr_otro.json" ] && falla "12 · hr.otro tenía puntero antes de empezar"
+  celda 'write(\"hr.huerfano\", over(\"hr.lago\", como=\"arrow\"))[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "12 · write(hr.huerfano): $(cuerpo)"
+  [ -f "$A/datasets/hr_huerfano.json" ] || falla "12 · hr.huerfano sin puntero"
+  celda 'ore.puesto.pedir(\"DELETE\", \"/documentos/Dataset/hr/huerfano\")' && tiene "d['salida']['texto'].startswith('(200,') and \"'puntero': True\" in d['salida']['texto']" || falla "12 · DELETE /documentos/Dataset desde la celda: $(cuerpo)"
+  [ ! -f "$A/packages/hr/datasets/huerfano.yaml" ] && [ ! -f "$A/datasets/hr_huerfano.json" ] || falla "12 · el Dataset o su puntero siguen en el árbol"
+fi
+dice "12 · desde un puesto sólo entran los verbos: PUT/DELETE /arbol, POST /ramas, /propuestas y /paquetes son 403 para el agente (con y sin x-ore-puesto), GET sigue; una persona escribe en /arbol; DELETE /documentos/Dataset retira también el puntero"
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -630,4 +653,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–11 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–12 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

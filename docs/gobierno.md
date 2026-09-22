@@ -14,7 +14,13 @@ la forma del puntero (la procedencia ya está); la consola más allá de publica
 
 ---
 
-## ① La puerta del puesto — «desde un puesto sólo entran los verbos»
+## ① La puerta del puesto — «desde un puesto sólo entran los verbos» · hecho (2026-09-22)
+
+Lo que quedó: `rutas.rs::puerta_del_agente` decide por el **sujeto** (agente) y no por la
+cabecera —quitarla desde la celda dejaba el mismo testigo—; leer sigue abierto; `DELETE
+/documentos/Dataset` retira el puntero; `el-puesto.sh` 12. Lo que salió: `la-escritura-en-demo.py`
+limpiaba por `DELETE /arbol` con el agente y desde hoy sería 403 —si se vuelve a correr, la
+limpieza va por git con el testigo de la forja, que el Job ya tiene—.
 
 **Dónde**: `crates/ore-serve/src/rutas.rs` (`con_sujeto`), `puestos.rs`, `documentos.rs`.
 
@@ -32,6 +38,14 @@ la forma del puntero (la procedencia ya está); la consola más allá de publica
   `PUT /arbol` desde el transform 201 → 403.
 
 ## ② El conducto de la lectura — `contextSurface.workspace`
+
+> ⚠️ Lo que ① dejó a la vista para ②: en el clúster, `over()` lee el bucket **con el token del
+> pod** (W3.5b, camino (b): la cuenta `puesto` es `objectViewer` del bucket entero), así que
+> negar en `datos_del_puesto` no basta si la celda puede pedir el objeto a GCS por su cuenta
+> con un `metadata_location` que `GET /arbol/datasets/…json` le da. ② tiene que medir esto
+> primero: o la lectura va con credencial prestada por tabla (como la escritura: CAB, `objectViewer`
+> sobre `ore/v2/datasets/<p>_<t>/`) y la cuenta del puesto deja de ver el bucket, o el conducto
+> es una sugerencia. Es el mismo movimiento que «fuera del verbo (b)» hizo con la escritura.
 
 **Dónde**: `crates/ore-core/src/assets.rs` → la clasificación efectiva se mueve a
 `ore_core::clasificacion` (la usan el índice y ore-serve); `crates/ore-serve/src/puestos.rs`

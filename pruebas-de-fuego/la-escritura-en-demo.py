@@ -31,7 +31,8 @@ el bucket; lo que escribe va con el token prestado) y el testigo del agente
 uno corre un guion que hace lo que una celda haría. Los datasets nacen bajo
 `<paquete>.medida_escrito_<lenguaje>` en el primer paquete del árbol y se
 retiran al final: los documentos y punteros por `DELETE /arbol/…` (un segundo
-Job) y los objetos del bucket, SÓLO bajo `ore/v2/datasets/<paquete>_medida_escrito_*`,
+Job; ⚠️ desde W3.7 gobierno ① un agente no escribe en `/arbol`: si esto se
+vuelve a correr, esa limpieza va por git con el testigo de la forja) y los objetos del bucket, SÓLO bajo `ore/v2/datasets/<paquete>_medida_escrito_*`,
 desde esta máquina.
 
 Uso:  python pruebas-de-fuego/la-escritura-en-demo.py [--sha <12 hex>] [--sin-limpiar] [--solo-limpiar]

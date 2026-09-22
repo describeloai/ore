@@ -828,11 +828,25 @@ impl Servidor {
             r.codigo = 409;
             return r;
         }
+        // Un Dataset se va con su puntero (0031 W3.7 gobierno ①): medido
+        // antes, retirar el documento dejaba `datasets/<ns>_<n>.json` huérfano
+        // —un estado sin nada que lo nombre—. Los bytes los expira el
+        // mantenimiento (`--recoger`), como siempre.
+        let puntero = raiz.join("datasets").join(format!("{ns}_{n}.json"));
+        let con_puntero = k.nombre == "Dataset" && puntero.is_file();
+        if con_puntero && let Err(e) = std::fs::remove_file(&puntero) {
+            let _ = std::fs::write(&fichero, &texto);
+            return Respuesta::error(
+                500,
+                format!("no se pudo retirar `datasets/{ns}_{n}.json`: {e}"),
+            );
+        }
         Respuesta::ok(Json::obj([
             ("kind", Json::s(k.nombre)),
             ("name", Json::s(n)),
             ("namespace", Json::s(ns)),
             ("retirada", Json::Bool(true)),
+            ("puntero", Json::Bool(con_puntero)),
         ]))
     }
 

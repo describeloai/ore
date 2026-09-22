@@ -114,6 +114,45 @@ pub struct Servidor {
     pub assets_cache: crate::assets::Cache,
 }
 
+/// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
+///
+/// Medido antes: desde una celda, `PUT /arbol/conduits.yaml` (`low` → `high`)
+/// era 200 firmado por el agente, y el `owner` de un paquete, otro 200: el
+/// gobierno mismo se reescribía desde un puesto. El testigo que una celda
+/// tiene es el del agente, y lo que un agente escribe en este servidor es lo
+/// que los verbos dicen —leer (`/puestos/{id}/datos`), escribir (`/v1`, el
+/// catálogo; `confirmar`), declarar (`/documentos`)— más lo suyo del puesto
+/// (`pendiente`, `salida`). Todo lo demás que no sea leer, un agente no lo
+/// hace: 403. Se decide AQUÍ y no ruta a ruta, en una lista de permitidos
+/// como la de `mando.rs`: el verbo que se añada mañana llega negado (P4).
+/// Leer sigue abierto: el árbol se lee por el agente (las medidas, el índice)
+/// y quitar la cabecera `x-ore-puesto` no cambia nada, porque lo que decide
+/// es el sujeto.
+fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<Respuesta> {
+    if p.metodo == "GET" || !crate::puestos::es_agente(sujeto) {
+        return None;
+    }
+    let entra = matches!(
+        seg,
+        ["puestos", ..]
+            | ["v1", ..]
+            | ["documentos", ..]
+            | ["conceptos", ..]
+            | ["datasets", _, _, "confirmar"]
+    );
+    if entra {
+        return None;
+    }
+    Some(Respuesta::error(
+        403,
+        format!(
+            "desde un puesto sólo entran los verbos —leer, escribir, declarar— por `/puestos/{{id}}/datos`, `/v1`, `/documentos` y `/conceptos`; `{} /{}` no",
+            p.metodo,
+            seg.join("/")
+        ),
+    ))
+}
+
 impl Servidor {
     pub fn atender(&self, p: &Peticion) -> Respuesta {
         let seg = p.segmentos();
@@ -149,6 +188,9 @@ impl Servidor {
     }
 
     fn con_sujeto(&self, p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Respuesta {
+        if let Some(r) = puerta_del_agente(p, sujeto, seg) {
+            return r;
+        }
         // La rama en la que el editor lee o escribe el árbol (0030 W2); sin
         // cabecera, `main`. Sólo las rutas del árbol la miran.
         let rama = p

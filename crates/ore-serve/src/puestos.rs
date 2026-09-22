@@ -192,7 +192,7 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
     lenguaje == "sql" || entorno_de(lenguaje) == Some(entorno)
 }
 
-fn es_agente(sujeto: &Identidad) -> bool {
+pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
     sujeto.tipo.as_deref() == Some("agente") || sujeto.persona.starts_with("agente:")
 }
 
