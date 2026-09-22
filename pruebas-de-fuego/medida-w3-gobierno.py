@@ -458,6 +458,11 @@ escapa()''')
     # ── §5 · el grafo: la clasificación por el linaje ────────────────────────
     if "5" in SOLO:
         print("§5 · el grafo: lo que write(over(alto)) deja, y lo que compila encima")
+        # Desde ② la lectura desde un puesto también pasa por un conducto: aquí se abre
+        # (`contextSurface.workspace: high`, por el árbol) para medir sólo lo que la
+        # escritura deja y lo que compila encima con `materialization.payload: low`.
+        c, r = pide(base, "PUT", "/arbol/conduits.yaml", CONDUCTO % "low" + "    contextSurface.workspace:\n      gdpr.sensitivity: high\n")
+        fila("contextSurface.workspace: high por el árbol (una persona)", "HTTP %s" % c, "materialization.payload sigue en low")
         s = celda(ana, 'e = write("ventas.derivado", over("ventas.salida", como="arrow")); e["filas"]')
         c, r = pide(base, "GET", "/datasets/ventas/derivado")
         fila("ana: write(\"ventas.derivado\", over(\"ventas.salida\"))", "%s · %d ms" % (s.get("tipo"), s["_ms"]), "procedencia " + json.dumps(r.get("procedencia"))[:80])
@@ -466,6 +471,9 @@ escapa()''')
         fila("  en el índice: relaciones", "", ", ".join("%s %s" % (x["tipo"], x["ref"]) for x in it.get("relaciones", []))[:100] or "ninguna")
         fila("  en el índice: clasificación", "", clasificacion(m, "dataset:ventas.derivado") + "  ← la de ventas.salida era " + clasificacion(m, "dataset:ventas.salida"))
         fila("  el documento Dataset escrito", "", "labels: %s · columns: %s" % ("no (OOS1005)" if "labels" not in (arbol("packages/ventas/datasets/derivado.yaml") or "") else "sí", ", ".join(re.findall(r"^\s{4}(\w+):", arbol("packages/ventas/datasets/derivado.yaml") or "", re.M))))
+        doc = arbol("packages/ventas/datasets/derivado.yaml") or ""
+        m5 = re.search(r"derivedFrom: \[[^\]]*\]", doc)
+        fila("  derivedFrom en el documento", "", m5.group(0) if m5 else "no lo dice")
         os.makedirs(m + "/packages/ventas/views", exist_ok=True)
         open(m + "/packages/ventas/views/derivadoV.yaml", "w").write("apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: derivadoV, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { dataset: ventas.derivado }\n  fields: { n: n, total: total }\n")
         os.makedirs(m + "/packages/ventas/datasets", exist_ok=True)

@@ -649,6 +649,8 @@ impl Kind {
             // `columns` lo que Iceberg tiene y `changes` como lo que se admite.
             // `history` es de las dos: cuanta historia se guarda es una
             // decision, no un estado, por lo mismo que `freshness`.
+            // `derivedFrom` (W3.7 gobierno ③): lo que el codigo leyo para
+            // escribirlo; por ahi baja la clasificacion a lo escrito.
             Kind::Dataset => &[
                 "owner",
                 "from",
@@ -659,6 +661,7 @@ impl Kind {
                 "freshness",
                 "columns",
                 "changes",
+                "derivedFrom",
                 "history",
             ],
             // v1alpha10. La invocacion sin codigo: sobre que filas, que pide,
@@ -1107,14 +1110,18 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     ));
                 }
                 if mantenido {
-                    if let Some(k) = ["changes"].into_iter().find(|k| tiene(k)) {
+                    if let Some(k) = ["changes", "derivedFrom"].into_iter().find(|k| tiene(k)) {
                         return Some((
                             format!("un dataset mantenido con `{k}`"),
-                            Some(
+                            Some(if k == "changes" {
                                 "un dataset con `from` deriva sus cambios de su raiz (`mode` y \
                                  `key` los de ella, `witness: snapshot`): no se declaran"
-                                    .to_string(),
-                            ),
+                                    .to_string()
+                            } else {
+                                "un dataset con `from` ya dice de donde sale; `derivedFrom` es \
+                                 del escrito: lo que el codigo leyo para escribirlo"
+                                    .to_string()
+                            }),
                         ));
                     }
                     if let Some((_, f)) = n.get("from") {

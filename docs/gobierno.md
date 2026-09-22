@@ -76,7 +76,16 @@ frase; `el-puesto.sh` 13. Lo que salió: **sin `contextSurface.workspace`, se co
   403 con el código; se ensancha el conducto por el árbol (no desde el puesto) y `over()` lee.
   **Medida** §1: «la columna high, entera» → 403 OOS4002; `datos` trae `clasificacion`.
 
-## ③ La clasificación por el grafo, hasta lo escrito
+## ③ La clasificación por el grafo, hasta lo escrito · hecho (2026-09-22)
+
+Lo que quedó: `derivedFrom` en el Dataset escrito (OOS `5d54854`: spec, esquema, tres casos de
+conformance); `ore datasets --commit` lo escribe de la procedencia (`Leyo`: sobrescribir dice de
+nuevo, anexar/upsert suman; nunca él mismo; sólo lo que el árbol tiene); `flow::carga_de` vía 3
+(recursiva, con guarda); el índice saca `sale_de` del documento; los tres SDK quitan el propio
+nombre de `leidas`; `el-puesto.sh` 14. Lo que cambió respecto al plan: **el compilador no lee
+punteros** —la carga se ve con el árbol solo, y por eso va en el documento—, y `leidas` sigue
+siendo la sesión entera fuera de un transform (sobreaproximar es P4). Lo que no baja: `reads` de
+una `Function` (conducto `datasource`, 0029: otra costura).
 
 **Dónde**: `C:\oos` `spec/v1alpha12/01-dataset.md` §5 (una frase y un ejemplo; bump de
 `vendor/oos`); `crates/ore-core/src/{flow,assets,validate}.rs`; `puesto/*/ore` (`leidas`).

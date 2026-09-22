@@ -187,10 +187,12 @@ function lee(vista) {
   if (!leidas.includes(vista)) leidas.push(vista);
 }
 
-function procedencia() {
+function procedencia(nombre) {
   const p = { puesto: puesto.id };
   if (transformActivo) { p.inputs = [...transformActivo.inputs].sort(); p.transform = transformActivo.nombre; }
-  else p.leidas = [...leidas].sort();
+  // Fuera de un transform, lo que la sesión leyó SIN lo que se está escribiendo
+  // (W3.7 gobierno ③: un dataset no sale de sí mismo).
+  else p.leidas = leidas.filter((l) => l !== nombre).sort();
   if (process.env.ORE_CODIGO) p.codigo = process.env.ORE_CODIGO;
   return p;
 }
@@ -559,7 +561,7 @@ export async function write(nombre, datos, o) {
     const { base, esbozo, config, ubicacion } = await cargar();
     if (config["s3.access-key-id"]) s3 = config;
     const { binario, env } = escritor(config, ubicacion);
-    const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla, procedencia: procedencia() };
+    const peticion = { dataset, modo, formato: "parquet", operacion: "contenido", semilla, procedencia: procedencia(nombre) };
     if (clave?.length) peticion.clave = clave;
     if (base) peticion.base = base; else peticion.esbozo = esbozo;
     const p = spawnSync(binario, ["escribir"], { input: Buffer.concat([Buffer.from(JSON.stringify(peticion) + "\n"), parquet]), env, maxBuffer: 1 << 26 });

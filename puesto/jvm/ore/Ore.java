@@ -223,11 +223,13 @@ public final class Ore {
         if (!leidas.contains(vista)) leidas.add(vista);
     }
 
-    private static Map<String, Object> procedencia() {
+    private static Map<String, Object> procedencia(String nombre) {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("puesto", puesto.id);
         if (transformActivo != null) { p.put("inputs", transformActivo.inputs().stream().sorted().toList()); p.put("transform", transformActivo.nombre()); }
-        else p.put("leidas", leidas.stream().sorted().toList());
+        // Fuera de un transform, lo que la sesión leyó SIN lo que se está escribiendo
+        // (W3.7 gobierno ③: un dataset no sale de sí mismo).
+        else p.put("leidas", leidas.stream().filter(l -> !l.equals(nombre)).sorted().toList());
         String codigo = CODIGO != null ? CODIGO : System.getenv("ORE_CODIGO");
         if (codigo != null && !codigo.isEmpty()) p.put("codigo", codigo);
         return p;
@@ -741,7 +743,7 @@ public final class Ore {
             if (config.get("s3.access-key-id") != null) s3 = config;
             // 2 · los ficheros, por ore-store
             Map<String, Object> peticion = new LinkedHashMap<>();
-            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla); peticion.put("procedencia", procedencia());
+            peticion.put("dataset", dataset); peticion.put("modo", modo); peticion.put("operacion", "contenido"); peticion.put("semilla", semilla); peticion.put("procedencia", procedencia(nombre));
             if (clave != null && !clave.isEmpty()) peticion.put("clave", clave);
             if (base != null) peticion.put("base", base); else peticion.put("esbozo", esbozo);
             Process proc = escritor(config, ubicacion).start();

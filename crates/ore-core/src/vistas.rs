@@ -1303,6 +1303,46 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for d in pkg.of(Kind::Dataset).filter(|d| es_escrito(d)) {
         let dqn = d.qname().unwrap_or_default();
         let cols = columnas(d);
+        // OOS2018 · OOS2019 · `derivedFrom` (W3.7 gobierno ③): lo que el código
+        // leyó para escribirlo, vistas o datasets, y no él mismo. Por aquí baja
+        // la clasificación (`flow::carga_de`), así que un nombre que no
+        // resuelve es una carga que nadie ve.
+        if let Some(df) = d.section("derivedFrom") {
+            for i in df.items() {
+                let Some(nombre) = i.as_str() else { continue };
+                if nombre == dqn {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2019,
+                            &d.path,
+                            format!("`{dqn}` dice `derivedFrom` de sí mismo"),
+                        )
+                        .at(i.pos())
+                        .help(
+                            "lo que un dataset leyó para escribirse no puede ser él: sería \
+                             llevar lo que ya lleva, y la cadena volvería sobre sí",
+                        ),
+                    );
+                    continue;
+                }
+                if pkg.resolve_view(nombre, d).is_none() && pkg.resolve_dataset(nombre, d).is_none()
+                {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos2018,
+                            &d.path,
+                            format!("`derivedFrom: {nombre}` no existe"),
+                        )
+                        .at(i.pos())
+                        .help(
+                            "lo que el código leyó tiene que ser una vista o un dataset del \
+                             paquete o de una dependencia: es por donde baja la clasificación a \
+                             lo escrito, y lo que no está no clasifica nada",
+                        ),
+                    );
+                }
+            }
+        }
         if let Some((_, k)) = d.section("changes").and_then(|c| c.get("key")) {
             for i in k.items() {
                 let Some(c) = i.as_str() else { continue };

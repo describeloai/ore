@@ -377,7 +377,7 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: sin, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  version: 1\\n  artifacts: models/hr_sin/v1\\n\")' && tiene "d['salida']['tipo']=='error' and 'OOS1004' in d['salida']['mensaje'] and 'digest' in d['salida']['mensaje']" || falla "10 · un TrainedModel sin digest tenía que ser OOS1004: $(cuerpo)"
   [ ! -f "$A/packages/hr/models/rota.yaml" ] && [ ! -f "$A/packages/hr/models/sin.yaml" ] || falla "10 · lo negado quedó en el árbol"
   # la procedencia (W3.7 ③): lo escrito fuera de un transform dice lo que la sesión leyó; dentro, sus inputs
-  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr["puesto"]=="puesto-ana-python" and "hr.lago" in pr["leidas"] and "hr.salida" in pr["leidas"], pr' "$A/datasets/hr_salida.json" || falla "10 · el puntero no lleva la procedencia (leidas): $(cat "$A/datasets/hr_salida.json")"
+  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr["puesto"]=="puesto-ana-python" and "hr.lago" in pr["leidas"] and "hr.salida" not in pr["leidas"], pr' "$A/datasets/hr_salida.json" || falla "10 · el puntero no lleva la procedencia (leidas, sin él mismo): $(cat "$A/datasets/hr_salida.json")"
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.resumen\")\ndef resumir():\n    t = over(\"hr.lago\", como=\"arrow\")\n    return write(\"hr.resumen\", t)\ne = resumir(); e[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "10 · un transform: $(cuerpo)"
   "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"resumir"}, pr' "$A/datasets/hr_resumen.json" || falla "10 · el puntero del transform no lleva inputs y transform: $(cat "$A/datasets/hr_resumen.json")"
   [ "$(pide GET /datasets/hr/resumen "$ANA")" = "200" ] && tiene "d['procedencia']['transform']=='resumir' and d['snapshots'][0]['procedencia']['inputs']==['hr.lago']" || falla "10 · la ficha no enseña la procedencia: $(cuerpo)"
@@ -511,6 +511,25 @@ spec:
   celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · con contextSurface.workspace high, hr.salida se lee: $(cuerpo)"
   [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'}" || falla "13 · datos no trae la clasificacion: $(cuerpo)"
   dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo; contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
+
+  # ── 14 · lo escrito lleva lo que leyó (W3.7 gobierno ③, OOS 01-dataset §5) ──
+  #
+  # Medido antes: la etiqueta moría en write(). Ahora el Dataset escrito dice
+  # `derivedFrom` (de la procedencia: `leidas` sin él mismo, o los `inputs` del
+  # transform), cada columna lleva el join de lo leído, y baja por la cadena.
+  celda 'e = write(\"hr.derivado\", over(\"hr.salida\", como=\"arrow\")); e[\"filas\"]' && tiene "d['salida']['texto'] in ('3','6')" || falla "14 · write(hr.derivado): $(cuerpo)"
+  grep -E "derivedFrom: \[.*hr\.salida.*\]" "$A/packages/hr/datasets/derivado.yaml" | grep -qv "hr.derivado" || falla "14 · el documento no dice derivedFrom con hr.salida (la sesion entera, sin el mismo): $(cat "$A/packages/hr/datasets/derivado.yaml")"
+  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.derivado "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'}" || falla "14 · hr.derivado no lleva high: $(cuerpo)"
+  # una copia mantenida de lo derivado sale por materialization.payload (low): OOS4002, y no queda
+  celda 'declare(\"apiVersion: oos.dev/v1alpha12\\nkind: Dataset\\nmetadata: { name: derivadoCopia, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.derivado }\\n\")' && tiene "d['salida']['tipo']=='error' and 'OOS4002' in d['salida']['mensaje'] and 'gdpr.sensitivity:high' in d['salida']['mensaje']" || falla "14 · la copia de lo derivado tenía que ser OOS4002: $(cuerpo)"
+  [ ! -f "$A/packages/hr/datasets/derivadoCopia.yaml" ] || falla "14 · la copia negada quedó en el árbol"
+  # fuera de un transform es la sesion entera (sobreaproximar es P4), y nunca el mismo
+  celda 'e = write(\"hr.derivado\", over(\"hr.derivado\", como=\"arrow\"), modo=\"anexar\"); e[\"filas\"]' && tiene "d['salida']['texto'] in ('6','12')" || falla "14 · anexar hr.derivado a sí mismo: $(cuerpo)"
+  grep -q "hr.derivado" "$A/packages/hr/datasets/derivado.yaml" && grep "derivedFrom" "$A/packages/hr/datasets/derivado.yaml" | grep -q "hr.derivado" && falla "14 · anexar de sí mismo no puede nombrarse: $(grep derivedFrom "$A/packages/hr/datasets/derivado.yaml")"
+  # dentro de un transform, derivedFrom son los inputs
+  celda '@transform(inputs=[\"hr.salida\"], output=\"hr.derivadoT\")\ndef t():\n    return write(\"hr.derivadoT\", over(\"hr.salida\", como=\"arrow\"))\nt()[\"filas\"]' && tiene "d['salida']['texto'] in ('3','6')" || falla "14 · el transform: $(cuerpo)"
+  grep -q "derivedFrom: \[hr.salida\]" "$A/packages/hr/datasets/derivadoT.yaml" || falla "14 · derivedFrom del transform: $(grep derivedFrom "$A/packages/hr/datasets/derivadoT.yaml")"
+  dice "14 · lo escrito lleva lo que leyó: hr.derivado dice derivedFrom (la sesion entera, con hr.salida) y lleva high; la copia mantenida encima es OOS4002 por materialization.payload low; anexar de sí mismo no se nombra, y un transform deja exactamente sus inputs"
 fi
 
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
@@ -599,7 +618,7 @@ if [ "$NODE_OK" = "si" ]; then
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
     # write() desde Node: lo que Python escribió (5 filas), leído; y lo suyo, escrito y leído
     celda 'const s = await over(\"hr.salida\"); s.length' && tiene "d['salida']['texto']=='6'" || falla "8 · Node lee lo que Python escribió: $(cuerpo)"
-    celda 'const e = await write(\"hr.salida_node\", await over(\"hr.lago\")); [e.filas, e.repetida]' && tiene "d['salida']['texto']=='[ 3, false ]'" || falla "8 · write(hr.salida_node) desde filas: $(cuerpo)"
+    celda 'const e = await write(\"hr.salida_node\", await over(\"hr.lago\")); [e.filas, e.repetida]' && tiene "d['salida']['texto']=='[ 3, false ]'" && grep -Eq "derivedFrom: \[.*hr\.lago.*\]" "$A/packages/hr/datasets/salida_node.yaml" || falla "8 · write(hr.salida_node) desde filas: $(cuerpo)"
     celda 'await over(\"hr.salida_node\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.salida_node) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'const e2 = await write(\"hr.salida_node\", await over(\"hr.lago\", { como: \"columnas\" })); e2.repetida' && tiene "d['salida']['texto']=='true'" || falla "8 · la misma escritura (por columnas) tenía que ser repetida: $(cuerpo)"
     celda 'const e3 = await write(\"hr.salida_node\", [{ n: 4, letra: \"d\", cuando: new Date(\"2024-06-02T00:00:00Z\"), importe: 4 }], { modo: \"anexar\" }); e3.filas' && tiene "d['salida']['texto']=='4'" || falla "8 · anexar objetos JS: $(cuerpo)"
@@ -671,7 +690,7 @@ if [ "$JAVA_OK" = "si" ]; then
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
     # write() desde Java: lo que Python (6) y Node (5) escribieron, leído; y lo suyo, escrito y leído
     celda 'over(\"hr.salida\").size() + over(\"hr.salida_node\").size()' && tiene "d['salida']['texto']=='11'" || falla "9 · Java lee lo que Python y Node escribieron: $(cuerpo)"
-    celda 'var e = write(\"hr.salida_jvm\", over(\"hr.lago\")); e.get(\"filas\") + \" \" + e.get(\"repetida\")' && tiene "d['salida']['texto']=='\"3 false\"'" || falla "9 · write(hr.salida_jvm) desde Filas: $(cuerpo)"
+    celda 'var e = write(\"hr.salida_jvm\", over(\"hr.lago\")); e.get(\"filas\") + \" \" + e.get(\"repetida\")' && grep -Eq "derivedFrom: \[.*hr\.lago.*\]" "$A/packages/hr/datasets/salida_jvm.yaml" && tiene "d['salida']['texto']=='\"3 false\"'" || falla "9 · write(hr.salida_jvm) desde Filas: $(cuerpo)"
     celda 'over(\"hr.salida_jvm\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.salida_jvm) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'var e2 = write(\"hr.salida_jvm\", arrow(\"hr.lago\")); e2.get(\"repetida\")' && tiene "d['salida']['texto']=='true'" || falla "9 · la misma escritura (por Arrow) tenía que ser repetida: $(cuerpo)"
     celda 'var e3 = write(\"hr.salida_jvm\", List.of(Map.of(\"n\", 4L, \"letra\", \"d\", \"cuando\", java.time.Instant.parse(\"2024-06-02T00:00:00Z\"), \"importe\", new java.math.BigDecimal(\"4.00\"))), \"anexar\"); e3.get(\"filas\")' && tiene "d['salida']['texto']=='4'" || falla "9 · anexar un List<Map>: $(cuerpo)"
@@ -699,4 +718,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–13 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–14 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

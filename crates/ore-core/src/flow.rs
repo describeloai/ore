@@ -740,6 +740,56 @@ pub fn carga_de(
             }
         }
 
+        // Vía 3 · **lo escrito lleva lo que leyó** (W3.7 gobierno ③, spec
+        // 01-dataset §5). Si el suelo de la cadena es un dataset escrito con
+        // `derivedFrom`, CADA campo lleva el join de lo que llevan TODOS los
+        // campos de lo que leyó: el código no declara qué columna salió de
+        // cuál, y quedarse corto no produce ningún síntoma (P4). Medido antes:
+        // sin esto la etiqueta moría en `write()`. Recursivo (lo leído puede
+        // ser otro escrito), con guarda de ciclo.
+        if let Some(suelo) = crate::vistas::suelo(pkg, v)
+            && crate::vistas::es_escrito(suelo)
+            && let Some(df) = suelo.section("derivedFrom")
+        {
+            let sqn = suelo.qname().unwrap_or_default();
+            let mut vistos: BTreeSet<String> = BTreeSet::new();
+            vistos.insert(vqn.clone());
+            vistos.insert(sqn);
+            let mut herencia: Labels = BTreeMap::new();
+            for i in df.items() {
+                let Some(nombre) = i.as_str() else { continue };
+                let Some(leido) = pkg
+                    .resolve_view(nombre, suelo)
+                    .or_else(|| pkg.resolve_dataset(nombre, suelo))
+                else {
+                    continue;
+                };
+                let lqn = leido.qname().unwrap_or_default();
+                if !vistos.insert(lqn) {
+                    continue;
+                }
+                for labels in carga_de(pkg, lat, efectivas, leido).values() {
+                    for (ret, (nivel, _)) in labels {
+                        subir(&mut herencia, ret, nivel, Origin::Inherited);
+                    }
+                }
+            }
+            if !herencia.is_empty()
+                && let Ok(raiz) = crate::vistas::raiz(pkg, v)
+            {
+                for campo in raiz.columnas.keys().chain(raiz.agrega.keys()) {
+                    for (ret, (nivel, _)) in &herencia {
+                        subir(
+                            por_campo.entry(campo.clone()).or_default(),
+                            ret,
+                            nivel,
+                            Origin::Inherited,
+                        );
+                    }
+                }
+            }
+        }
+
         // Vía 2 · cada entidad **de la misma cadena**, esté arriba o abajo.
         //
         // # Las dos direcciones, y por qué las dos

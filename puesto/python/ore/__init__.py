@@ -248,14 +248,16 @@ def _lee(vista):
         _leidas.append(vista)
 
 
-def _procedencia():
-    """Lo que `write()` deja dicho de sí: de qué salió, qué código, desde qué puesto."""
+def _procedencia(nombre=None):
+    """Lo que `write()` deja dicho de sí: de qué salió, qué código, desde qué puesto.
+    Fuera de un transform es lo que la sesión leyó, **sin lo que se está escribiendo**
+    (W3.7 gobierno ③: un dataset no sale de sí mismo)."""
     p = {"puesto": puesto.id}
     if _transform is not None:
         p["inputs"] = sorted(_transform.inputs)
         p["transform"] = _transform.nombre
     else:
-        p["leidas"] = sorted(_leidas)
+        p["leidas"] = sorted(l for l in _leidas if l != nombre)
     if os.environ.get("ORE_CODIGO"):
         p["codigo"] = os.environ["ORE_CODIGO"]
     return p
@@ -624,7 +626,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
         if config.get("s3.access-key-id"):
             _s3 = config
         binario, env = _ore_store(config, ubicacion)
-        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia()}
+        peticion = {"dataset": dataset, "modo": modo, "operacion": "contenido", "semilla": semilla, "procedencia": _procedencia(nombre)}
         if clave_upsert:
             peticion["clave"] = clave_upsert
         if base:

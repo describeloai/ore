@@ -53,7 +53,7 @@
 //! la de la forja (el empujón que no avanza en línea recta → 409, en
 //! `ore-serve`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use ore_core::json::Json;
@@ -572,6 +572,7 @@ fn asegurar_dataset(
     tabla: &str,
     columnas: &BTreeMap<String, String>,
     clave: Option<&[String]>,
+    leyo: Option<&Leyo>,
 ) -> Result<(bool, bool), Fallo> {
     let nombre = format!("{ns}.{tabla}");
     if columnas.is_empty() {
@@ -601,13 +602,50 @@ fn asegurar_dataset(
     let cambios = clave
         .filter(|c| !c.is_empty())
         .map(|c| format!("  changes: {{ mode: upsert, key: [{}] }}", c.join(", ")));
+    // `derivedFrom` (W3.7 gobierno ③, spec 01-dataset §5): lo que el código
+    // leyó para escribirlo, de la procedencia de ESTA escritura. Sobrescribir
+    // lo dice de nuevo; anexar y upsert se suman a lo que ya decía. Nunca él
+    // mismo. Sin procedencia (un motor de fuera por el catálogo REST) se
+    // deja lo que hay.
+    // Y sólo lo que el árbol tiene: lo que la sesión leyó y ya no está no
+    // lleva etiqueta que nadie pueda ver (y el compilador negaría la
+    // escritura por un nombre que no resuelve, que no es culpa de quien
+    // escribió).
+    let existe = |n: &str| {
+        n.split_once('.').is_some_and(|(ns, x)| {
+            ["views", "datasets"].iter().any(|carpeta| {
+                path.join("packages")
+                    .join(ns)
+                    .join(carpeta)
+                    .join(format!("{x}.yaml"))
+                    .is_file()
+            })
+        })
+    };
+    let derivado: Option<BTreeSet<String>> = leyo.map(|l| {
+        let mut s: BTreeSet<String> = l
+            .nombres
+            .iter()
+            .filter(|n| *n != &nombre && existe(n))
+            .cloned()
+            .collect();
+        if !l.reemplaza
+            && let Some(t) = &texto_previo
+        {
+            s.extend(derived_from_del_documento(t));
+        }
+        s
+    });
     let (nueva, regenerar) = match &texto_previo {
         None => (true, true),
         Some(t) => (
             false,
             t.contains(MARCA)
                 && (columnas_del_documento(t) != *columnas
-                    || cambios.as_ref().is_some_and(|c| !t.contains(c.trim()))),
+                    || cambios.as_ref().is_some_and(|c| !t.contains(c.trim()))
+                    || derivado
+                        .as_ref()
+                        .is_some_and(|d| *d != derived_from_del_documento(t))),
         ),
     };
     if !regenerar {
@@ -625,6 +663,20 @@ fn asegurar_dataset(
     };
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
+    }
+    if let Some(d) = &derivado {
+        s = con_clave(
+            &s,
+            "  derivedFrom:",
+            (!d.is_empty())
+                .then(|| {
+                    format!(
+                        "  derivedFrom: [{}]",
+                        d.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                })
+                .as_deref(),
+        );
     }
     if let Some(padre) = doc.parent() {
         std::fs::create_dir_all(padre)
@@ -808,8 +860,16 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
 /// La línea `changes:` de `spec`, sustituida (con el bloque que tuviera
 /// debajo, si iba en varias líneas); si no la hay, se añade al final de `spec`.
 fn con_cambios(texto: &str, linea: &str) -> String {
+    con_clave(texto, "  changes:", Some(linea))
+}
+
+/// **El documento sigue lo que la escritura dice, sin perder lo demás**: la
+/// entrada `clave` de `spec` (con su bloque anidado, si lo tiene) se
+/// sustituye por `linea`, se añade al final si no estaba, o se quita si
+/// `linea` es `None`.
+fn con_clave(texto: &str, clave: &str, linea: Option<&str>) -> String {
     let mut lineas: Vec<String> = texto.lines().map(String::from).collect();
-    if let Some(i) = lineas.iter().position(|l| l.starts_with("  changes:")) {
+    if let Some(i) = lineas.iter().position(|l| l.starts_with(clave)) {
         let mut fin = i + 1;
         while fin < lineas.len()
             && (lineas[fin].trim().is_empty()
@@ -817,13 +877,39 @@ fn con_cambios(texto: &str, linea: &str) -> String {
         {
             fin += 1;
         }
-        lineas.splice(i..fin, [linea.to_string()]);
-    } else {
-        lineas.push(linea.to_string());
+        lineas.splice(i..fin, linea.map(String::from));
+    } else if let Some(l) = linea {
+        lineas.push(l.to_string());
     }
     let mut out = lineas.join("\n");
     out.push('\n');
     out
+}
+
+/// Lo que el código leyó para escribir un dataset (W3.7 gobierno ③), de la
+/// procedencia de la escritura: los `inputs` del transform, o lo que la
+/// sesión leyó. `reemplaza`: la escritura sobrescribió (lo de antes ya no
+/// está), y no anexó ni fundió.
+pub(crate) struct Leyo {
+    pub nombres: Vec<String>,
+    pub reemplaza: bool,
+}
+
+/// `spec.derivedFrom` de un documento de dataset escrito.
+fn derived_from_del_documento(texto: &str) -> BTreeSet<String> {
+    ore_core::parse::parse(texto)
+        .ok()
+        .and_then(|n| {
+            n.get("spec")
+                .and_then(|(_, s)| s.get("derivedFrom"))
+                .map(|(_, d)| {
+                    d.items()
+                        .iter()
+                        .filter_map(|i| i.as_str().map(String::from))
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
 }
 
 /// El puntero de un dataset, leído del árbol (`datasets/<ns>_<t>.json`).
@@ -973,6 +1059,39 @@ impl Cambio<'_> {
                 }
             })
             .next_back()
+    }
+    /// Lo que el código leyó (`inputs` de un transform, o `leidas` de la
+    /// sesión) y si la escritura sobrescribió (`ore.modo`): para `derivedFrom`.
+    fn leyo(&self) -> Option<Leyo> {
+        let pr = self.procedencia()?;
+        let Json::Obj(m) = pr else { return None };
+        let lista = m.get("inputs").or_else(|| m.get("leidas"))?;
+        let Json::Arr(items) = lista else { return None };
+        let nombres = items
+            .iter()
+            .filter_map(|i| match i {
+                Json::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        let modo = self
+            .nodo
+            .get("updates")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter(|u| u.get("action").and_then(|(_, v)| v.as_str()) == Some("add-snapshot"))
+            .filter_map(|u| {
+                let s = u.get("snapshot").and_then(|(_, s)| s.get("summary"))?.1;
+                s.get("ore.modo")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
+            .next_back();
+        Some(Leyo {
+            nombres,
+            reemplaza: modo.as_deref() != Some("anexar") && modo.as_deref() != Some("upsert"),
+        })
     }
     /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
     fn clave(&self) -> Option<Vec<String>> {
@@ -1251,8 +1370,15 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             continue;
         };
         let clave = p.cambio.clave();
-        let (tabla_nueva, regenerada) =
-            asegurar_dataset(path, &p.ns, &p.tabla, &a.columnas_oos, clave.as_deref())?;
+        let leyo = p.cambio.leyo();
+        let (tabla_nueva, regenerada) = asegurar_dataset(
+            path,
+            &p.ns,
+            &p.tabla,
+            &a.columnas_oos,
+            clave.as_deref(),
+            leyo.as_ref(),
+        )?;
         let mut campos = vec![
             ("estado", Json::s("copiada")),
             ("tabla", Json::s(&p.nombre)),
@@ -1365,7 +1491,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_dataset(path, ns, tabla, &a.columnas_oos, None)?;
+    let (tabla_nueva, _) = asegurar_dataset(path, ns, tabla, &a.columnas_oos, None, None)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -1658,7 +1784,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_dataset(path, ns, tabla, cols, None)?.0,
+        (Some(cols), _) => asegurar_dataset(path, ns, tabla, cols, None, None)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -1890,7 +2016,7 @@ spec:
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
-        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, None).unwrap();
+        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, None, None).unwrap();
         assert!(nueva && !regen);
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(
@@ -1904,9 +2030,95 @@ spec:
         assert!(ore_core::validate_package(&d).is_empty());
         // Un upsert por `pais`: `changes` dice lo que admite.
         let clave = vec!["pais".to_string()];
-        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, Some(&clave)).unwrap();
+        let (nueva, regen) =
+            asegurar_dataset(&d, "ventas", "salida", &cols, Some(&clave), None).unwrap();
         assert!(!nueva && regen);
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
+        // `derivedFrom` (W3.7 gobierno): lo que leyo, sin el mismo; anexar suma,
+        // sobrescribir dice de nuevo, y sin nada leido la clave se va.
+        let leyo = |n: &[&str], reemplaza: bool| Leyo {
+            nombres: n.iter().map(|x| x.to_string()).collect(),
+            reemplaza,
+        };
+        for n in ["pedidos", "clientes"] {
+            std::fs::write(
+                d.join(format!("packages/ventas/datasets/{n}.yaml")),
+                format!(
+                    "apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: {{ name: {n}, namespace: ventas }}
+spec:
+  owner: team:ventas
+  columns: {{ id: {{ type: Integer }} }}
+  changes: {{ mode: append }}
+"
+                ),
+            )
+            .unwrap();
+        }
+        let (_, regen) = asegurar_dataset(
+            &d,
+            "ventas",
+            "salida",
+            &cols,
+            Some(&clave),
+            Some(&leyo(
+                &["ventas.pedidos", "ventas.salida", "ventas.nadie"],
+                true,
+            )),
+        )
+        .unwrap();
+        assert!(regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(
+            t.contains(
+                "derivedFrom: [ventas.pedidos]
+"
+            ),
+            "{t}"
+        );
+        assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
+        let (_, regen) = asegurar_dataset(
+            &d,
+            "ventas",
+            "salida",
+            &cols,
+            Some(&clave),
+            Some(&leyo(&["ventas.clientes"], false)),
+        )
+        .unwrap();
+        assert!(regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(
+            t.contains(
+                "derivedFrom: [ventas.clientes, ventas.pedidos]
+"
+            ),
+            "{t}"
+        );
+        let (_, regen) = asegurar_dataset(
+            &d,
+            "ventas",
+            "salida",
+            &cols,
+            Some(&clave),
+            Some(&leyo(&["ventas.clientes"], false)),
+        )
+        .unwrap();
+        assert!(!regen, "lo mismo otra vez no regenera");
+        let (_, regen) = asegurar_dataset(
+            &d,
+            "ventas",
+            "salida",
+            &cols,
+            Some(&clave),
+            Some(&leyo(&[], true)),
+        )
+        .unwrap();
+        assert!(regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(!t.contains("derivedFrom"), "{t}");
         assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
         // Con una Table del mismo nombre no se escribe.
         std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
@@ -1915,7 +2127,7 @@ spec:
             "kind: Table\n",
         )
         .unwrap();
-        let e = asegurar_dataset(&d, "ventas", "orders", &cols, None).unwrap_err();
+        let e = asegurar_dataset(&d, "ventas", "orders", &cols, None, None).unwrap_err();
         assert!(e.1.contains("es una Table"), "{}", e.1);
         let _ = std::fs::remove_dir_all(&d);
     }

@@ -461,27 +461,47 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 }
                 _ => {}
             }
-            // Un escrito: de dónde salió lo lee su puntero (procedencia.leidas).
+            // Un escrito: de dónde salió lo dice su documento (`derivedFrom`,
+            // W3.7 gobierno ③: es por donde baja la clasificación) y, si no lo
+            // dice, su puntero (procedencia.leidas: lo escrito antes de que el
+            // documento lo llevara). Nunca de sí mismo.
             if d.kind == Kind::Dataset && vistas::es_escrito(d) {
-                let clave = format!(
-                    "{}_{}",
-                    ns.unwrap_or_default(),
-                    meta_str(d, "name").unwrap_or_default()
-                );
-                if let Some(Json::Obj(p)) = punteros.get(&clave)
-                    && let Some(Json::Obj(pr)) = p.get("procedencia")
-                    && let Some(Json::Arr(leidas)) = pr.get("leidas")
-                {
-                    for l in leidas {
-                        if let Json::Str(qn) = l {
-                            let destino = if pkg.dataset(qn).is_some() {
-                                ref_qn(Kind::Dataset, qn, ns)
-                            } else {
-                                ref_qn(Kind::View, qn, ns)
-                            };
-                            a("sale_de", "produce", destino);
-                        }
+                let propio = d.qname().unwrap_or_default();
+                let mut leidos: Vec<String> = d
+                    .section("derivedFrom")
+                    .map(|df| {
+                        df.items()
+                            .iter()
+                            .filter_map(|i| i.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if leidos.is_empty() {
+                    let clave = format!(
+                        "{}_{}",
+                        ns.unwrap_or_default(),
+                        meta_str(d, "name").unwrap_or_default()
+                    );
+                    if let Some(Json::Obj(p)) = punteros.get(&clave)
+                        && let Some(Json::Obj(pr)) = p.get("procedencia")
+                        && let Some(Json::Arr(leidas)) = pr.get("leidas")
+                    {
+                        leidos = leidas
+                            .iter()
+                            .filter_map(|l| match l {
+                                Json::Str(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .collect();
                     }
+                }
+                for qn in leidos.iter().filter(|q| **q != propio) {
+                    let destino = if pkg.dataset(qn).is_some() {
+                        ref_qn(Kind::Dataset, qn, ns)
+                    } else {
+                        ref_qn(Kind::View, qn, ns)
+                    };
+                    a("sale_de", "produce", destino);
                 }
             }
         }
