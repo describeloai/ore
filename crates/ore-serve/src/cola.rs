@@ -348,15 +348,20 @@ pub fn rendir_puesto(
 // ── La capa (0031 §3, W3.2): las dependencias del árbol, resueltas ──────────
 pub const PLANTILLA_CAPA: &str = "plantilla-capa.txt";
 const INTENTO_MODELO: &str = "intento-modelo";
+const ALCANCE_MODELO: &str = "alcance-modelo";
 
 /// Rinde el Job que resuelve la capa `digest` (`capa-<12 hex>`, de
-/// `entorno::digest_de`) en `rama`. `intento` distingue un reintento tras un
-/// error (un Job con el mismo nombre no se vuelve a correr): `"1"` la primera
-/// vez. Devuelve `(fichero, texto, nombre del Job)`.
+/// `entorno::digest_de`) en `rama`. `alcance` es la carpeta del repositorio
+/// (0036 ③) o vacío para la celda entera: el Job suma los `pyproject.toml` que
+/// le tocan y **escribe el informe con el nombre del digest**, para que dos
+/// alcances no se pisen. `intento` distingue un reintento tras un error (un Job
+/// con el mismo nombre no se vuelve a correr): `"1"` la primera vez. Devuelve
+/// `(fichero, texto, nombre del Job)`.
 pub fn rendir_capa(
     plantilla: &str,
     digest: &str,
     rama: &str,
+    alcance: &str,
     intento: &str,
 ) -> Result<(String, String, String), String> {
     if !plantilla.contains(&format!("la-capa-{RESUMEN_MODELO}")) {
@@ -375,6 +380,7 @@ pub fn rendir_capa(
     for (de, a) in [
         (CAPA_MODELO, digest),
         (RAMA_MODELO, rama),
+        (ALCANCE_MODELO, alcance),
         (INTENTO_MODELO, intento),
     ] {
         if !plantilla.contains(&format!("value: \"{de}\"")) {
@@ -394,6 +400,10 @@ pub fn rendir_capa(
         .replace(
             &format!("value: \"{RAMA_MODELO}\""),
             &format!("value: \"{rama}\""),
+        )
+        .replace(
+            &format!("value: \"{ALCANCE_MODELO}\""),
+            &format!("value: \"{alcance}\""),
         )
         .replace(
             &format!("value: \"{INTENTO_MODELO}\""),
@@ -489,23 +499,28 @@ env:
     }
 
     #[test]
-    fn la_capa_lleva_digest_rama_e_intento_y_se_llama_por_el_digest() {
+    fn la_capa_lleva_digest_rama_alcance_e_intento_y_se_llama_por_el_digest() {
         let p = "name: la-capa-00000000
 env:
   - { name: CAPA, value: \"capa-modelo\" }
   - { name: RAMA, value: \"rama-modelo\" }
+  - { name: ALCANCE, value: \"alcance-modelo\" }
   - { name: INTENTO, value: \"intento-modelo\" }
 ";
-        let (f, t, job) = rendir_capa(p, "capa-0123456789ab", "", "1").unwrap();
+        let (f, t, job) = rendir_capa(p, "capa-0123456789ab", "", "", "1").unwrap();
         assert_eq!(f, "52-la-capa-0123456789ab.yaml");
         assert!(
             job.starts_with("la-capa-0123456789ab-")
                 && job.len() == "la-capa-0123456789ab-".len() + 8
         );
         assert!(t.contains("value: \"capa-0123456789ab\"") && t.contains(&format!("name: {job}")));
-        let (_, _, job2) = rendir_capa(p, "capa-0123456789ab", "", "r2").unwrap();
+        let (_, _, job2) = rendir_capa(p, "capa-0123456789ab", "", "", "r2").unwrap();
         assert_ne!(job, job2);
-        assert!(rendir_capa(p, "no-es-un-digest", "", "1").is_err());
+        assert!(rendir_capa(p, "no-es-un-digest", "", "", "1").is_err());
+        // El alcance viaja al Job (0036 ③): es lo que hace que el Job sume los
+        // `pyproject.toml` del repositorio y no los de toda la celda.
+        let (_, t, _) = rendir_capa(p, "capa-0123456789ab", "", "packages/hr/raw", "1").unwrap();
+        assert!(t.contains("value: \"packages/hr/raw\""), "{t}");
     }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de

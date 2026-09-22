@@ -22,8 +22,11 @@ sobre los árboles de verdad.
                       sesión del puesto, la rama y las propuestas
   §5  LA CONSOLA      la lista de la captura, columna a columna: qué campo la
                       llena y cuál no existe; y qué queda mock en el BuildPicker
+  §6  LA CAPA         lo que 0036 ③ rompe: hoy la capa es la unión del árbol
+                      entero —el `torch` de un repositorio lo bajan todas las
+                      sesiones—; con alcance, cada repositorio tiene la suya
 
-Uso:  python pruebas-de-fuego/medida-el-repositorio.py [--solo 1,2,3,4,5]
+Uso:  python pruebas-de-fuego/medida-el-repositorio.py [--solo 1,2,3,4,5,6]
       [--celdas demo,victor] [--consola C:/rubix-platform]
 Necesita target/debug (ore, ore-serve), git. §1–§3 leen las celdas; el resto, local.
 """
@@ -46,7 +49,7 @@ ORE = "%s/ore%s" % (BIN, EXE)
 SERVE = "%s/ore-serve%s" % (BIN, EXE)
 CONSOLA = sys.argv[sys.argv.index("--consola") + 1] if "--consola" in sys.argv else "C:/rubix-platform"
 CELDAS = sys.argv[sys.argv.index("--celdas") + 1].split(",") if "--celdas" in sys.argv else ["demo", "victor"]
-SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5"}
+SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6"}
 _ENVOLTURAS = [sys.stdout]
 
 MANIFIESTO = """---
@@ -332,6 +335,80 @@ def la_consola():
     print()
 
 
+# ── §6 · la capa: de la celda al repositorio ───────────────────────────────
+def la_capa(tmp, procs):
+    print("§6 · la capa: hoy es de la celda; con alcance, de cada repositorio")
+    forja = tmp + "/capa.git"
+    git("init", "-q", "--bare", "-b", "main", forja)
+    semilla = tmp + "/capa-semilla"
+    git("clone", "-q", forja, semilla)
+    for x in os.listdir(RAIZ + "/vendor/oos/examples/acme-retail"):
+        o = RAIZ + "/vendor/oos/examples/acme-retail/" + x
+        (shutil.copytree if os.path.isdir(o) else shutil.copy)(o, semilla + "/" + x)
+    # Lo de todos, lo del paquete, y lo de cada repositorio.
+    open(semilla + "/pyproject.toml", "w").write("[project]\ndependencies = ['polars']\n")
+    open(semilla + "/packages/hr/pyproject.toml", "w").write("[project]\ndependencies = ['duckdb']\n")
+    for n, deps in (("modelos", "['torch']"), ("analisis", "[]")):
+        d = semilla + "/packages/hr/" + n
+        os.makedirs(d, exist_ok=True)
+        open(d + "/README.md", "w", encoding="utf-8").write(
+            MANIFIESTO.replace("New Pipelines Java Transform", "Repo " + n))
+        open(d + "/pyproject.toml", "w").write("[project]\ndependencies = %s\n" % deps)
+    git("add", "-A", cwd=semilla); git("commit", "-qm", "acme + dos repos con sus deps", cwd=semilla)
+    git("push", "-q", "origin", "HEAD:main", cwd=semilla)
+    puerto = puerto_libre()
+    base = "http://127.0.0.1:%d" % puerto
+    srv = subprocess.Popen([SERVE, "--forja", "file://" + forja, "--ore", ORE, "--bind", "127.0.0.1:%d" % puerto,
+                            "--identidad", "cabecera", "--no-es-produccion"],
+                           env=dict(os.environ, FORJA_TOKEN="no-hace-falta"),
+                           stdout=open(tmp + "/capa-serve.log", "w"), stderr=subprocess.STDOUT)
+    procs.append(srv)
+    for _ in range(80):
+        try:
+            if pide(base, "GET", "/salud")[0] == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(0.25)
+
+    def entorno(alcance=None):
+        r = urllib.request.Request(base + "/entorno", method="GET")
+        r.add_header("x-ore-sujeto", "persona:ana")
+        if alcance:
+            r.add_header("x-ore-raiz", alcance)
+        t0 = time.time()
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8")), int((time.time() - t0) * 1000)
+
+    celda, ms = entorno()
+    fila("`GET /entorno` sin alcance (la celda)", "%d ms" % ms,
+         "%s → %s" % (celda.get("declarado"), celda.get("digest")))
+    uno, _ = entorno("packages/hr/modelos")
+    dos, _ = entorno("packages/hr/analisis")
+    fila("  el repositorio de modelos", uno.get("digest"), "%s" % uno.get("declarado"))
+    fila("  el de análisis, al lado", dos.get("digest"), "%s" % dos.get("declarado"))
+    fila("  ¿carga con el `torch` del vecino?",
+         "NO" if "torch" not in (dos.get("declarado") or []) else "SÍ",
+         "dos alcances, dos capas: %s" % ("distintas" if uno.get("digest") != dos.get("digest") else "LA MISMA"))
+    c, r, _ = pide(base, "GET", "/entorno")
+    fila("  y la de la celda sigue estando", celda.get("digest"), "lo de la raíz y el paquete es común a propósito")
+    fila("  lo que esto arregla", "",
+         "sin alcance, el `pyproject.toml` de un repositorio NO SE LEE (%s): sus deps tenían que subir al paquete, y ahí las baja todo el mundo"
+         % ("torch fuera" if "torch" not in (celda.get("declarado") or []) else "?"))
+    # Un alcance que no es una carpeta de paquete, y uno que no existe.
+    for que, a in (("un alcance que no es una carpeta", "otra/cosa/aqui"), ("una carpeta que no está", "packages/hr/noexiste")):
+        r2 = urllib.request.Request(base + "/entorno", method="GET")
+        r2.add_header("x-ore-sujeto", "persona:ana")
+        r2.add_header("x-ore-raiz", a)
+        try:
+            with urllib.request.urlopen(r2, timeout=60) as resp:
+                cod = resp.status
+        except urllib.error.HTTPError as e:
+            cod = e.code
+        fila("  %s" % que, "%s" % cod, a)
+    print()
+
+
 def main():
     for b in (ORE, SERVE):
         if not os.path.exists(b):
@@ -355,6 +432,8 @@ def main():
             lo_que_acota(tmp, procs)
         if "5" in SOLO:
             la_consola()
+        if "6" in SOLO:
+            la_capa(tmp, procs)
     finally:
         for p in procs:
             try:

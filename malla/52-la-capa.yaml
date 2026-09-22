@@ -7,7 +7,8 @@
 #   resuelve ESTE Job, con la red del driver (que sí alcanza PyPI): baja las
 #   ruedas para el intérprete del entorno 1 (cp312, manylinux x86_64), las
 #   sube al bucket del inquilino como `ore/puesto/<capa>/`, y deja en el árbol
-#   el informe `entorno/python.json`. El puesto, al arrancar, baja esa caja del
+#   el informe `entorno/<digest>.json` (uno por capa desde 0036 ③, que las hay
+#   por repositorio). El puesto, al arrancar, baja esa caja del
 #   bucket y la instala en `/capa` (51-el-puesto.yaml, `traer-la-capa`).
 #
 # ── Por qué una caja de ruedas y no una imagen ─────────────────────────────
@@ -89,6 +90,11 @@ spec:
             - { name: GIT_CONFIG_VALUE_1, value: "*" }
             - { name: CAPA, value: "capa-modelo" }
             - { name: RAMA, value: "rama-modelo" }
+            # ⭐ 0036 ③: la carpeta del repositorio, o vacío para la celda entera.
+            #   La capa es SUYA —la raíz, su paquete y él—, no la unión del árbol:
+            #   si no, el `torch` de un repositorio de modelos lastraría todas las
+            #   sesiones del cliente.
+            - { name: ALCANCE, value: "alcance-modelo" }
             - { name: INTENTO, value: "intento-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # El intérprete del entorno 1 (`puesto-python:1`): las ruedas se
@@ -108,10 +114,22 @@ spec:
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
               # ── 1 · la declaración: la unión de los pyproject, como la lee ore-serve ──
-              python3 - <<'PY'
-              import glob, hashlib, json, tomllib
+              python3 - "$ALCANCE" <<'PY'
+              import glob, hashlib, json, os, sys, tomllib
+              alcance = (sys.argv[1] if len(sys.argv) > 1 else "").strip("/")
+              # Los mismos ficheros que `entorno::declaracion_en`: sin alcance, la
+              # celda entera; con alcance, la raíz, su paquete y cada nivel hasta él.
+              if alcance:
+                  partes = alcance.split("/")
+                  ficheros = ["pyproject.toml"]
+                  acc = ""
+                  for p in partes[1:]:
+                      acc = os.path.join(acc, p) if acc else p
+                      ficheros.append(os.path.join("packages", acc, "pyproject.toml"))
+              else:
+                  ficheros = ["pyproject.toml"] + sorted(glob.glob("packages/*/pyproject.toml"))
               deps = set()
-              for f in ["pyproject.toml"] + sorted(glob.glob("packages/*/pyproject.toml")):
+              for f in ficheros:
                   try:
                       with open(f, "rb") as fh:
                           deps.update(str(d).strip() for d in tomllib.load(fh).get("project", {}).get("dependencies", []))
@@ -121,6 +139,7 @@ spec:
               digest = "capa-" + hashlib.sha256("\n".join(deps).encode()).hexdigest()[:12] if deps else ""
               open("/trabajo/deps.txt", "w").write("\n".join(deps) + "\n")
               open("/trabajo/digest.txt", "w").write(digest)
+              print("### alcance:", alcance or "(la celda)")
               print("### declarado:", ", ".join(deps) or "(nada)", "→", digest or "(sin capa)")
               PY
               DIGEST=$(cat /trabajo/digest.txt)
@@ -128,7 +147,9 @@ spec:
               [ "$DIGEST" = "$CAPA" ] || echo "⚠️ se pidió $CAPA y el árbol declara $DIGEST (cambió entre medias): se resuelve lo que hay"
               # ── 2 · resolver para el entorno 1 y subir la caja ──
               mkdir -p /trabajo/ruedas
-              INFORME="entorno/python.json"; mkdir -p entorno
+              # ⭐ 0036 ③: un informe POR DIGEST. Dos alcances son dos capas, y un
+              #   fichero único haría que la segunda borrara a la primera.
+              INFORME="entorno/$DIGEST.json"; mkdir -p entorno
               CUANDO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
               if python3 -m pip download --disable-pip-version-check -q \
                    --only-binary=:all: --python-version "$PY" --implementation cp \
@@ -163,7 +184,7 @@ spec:
               git add -A entorno
               if git diff --cached --quiet; then echo "· el informe no cambió"; exit 0; fi
               git -c user.name=la-capa -c user.email=la-capa@invalido \
-                commit -q -m "La capa $DIGEST: $(python3 -c 'import json;print(json.load(open("entorno/python.json"))["estado"])')"
+                commit -q -m "La capa $DIGEST: $(python3 -c 'import json,os,sys;print(json.load(open(sys.argv[1]))["estado"])' "$INFORME")"
               git push -q origin HEAD:${RAMA:-main}
               echo "✓ informe empujado · $(git rev-parse --short HEAD)"
           resources:

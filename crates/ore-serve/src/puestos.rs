@@ -297,8 +297,8 @@ impl Servidor {
         if es_agente(sujeto) {
             return Respuesta::error(403, "un agente no abre puestos: los abre una persona");
         }
-        let (lenguaje, rama) = if cuerpo.trim().is_empty() {
-            ("python".to_string(), None)
+        let (lenguaje, rama, repositorio) = if cuerpo.trim().is_empty() {
+            ("python".to_string(), None, None)
         } else {
             let n = match ore_core::parse::parse(cuerpo) {
                 Ok(n) => n,
@@ -315,7 +315,19 @@ impl Servidor {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            (l, r)
+            // ⭐ El repositorio (0036 ③): la capa con la que nace el puesto es
+            //   LA SUYA —la raíz, su paquete y él—, no la unión de la celda.
+            let rep = n
+                .get("repositorio")
+                .and_then(|(_, v)| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            (l, r, rep)
+        };
+        let repositorio = match crate::entorno::alcance_valido(repositorio.as_deref()) {
+            Ok(a) => a,
+            Err(r) => return r,
         };
         let Some(entorno) = entorno_de(&lenguaje) else {
             return Respuesta::error(
@@ -357,7 +369,12 @@ impl Servidor {
             Json::obj([("estado", Json::s("sin-dependencias"))])
         } else {
             match self.leyendo_en(rama.as_deref(), |raiz| {
-                let e = crate::entorno::entorno_de(raiz);
+                if let Some(a) = &repositorio
+                    && !raiz.join(a).is_dir()
+                {
+                    return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
+                }
+                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref());
                 Respuesta::ok(Json::obj([
                     ("estado", Json::s(e.estado)),
                     ("digest", Json::s(&e.digest)),
@@ -397,6 +414,7 @@ impl Servidor {
                 let dicho = match self.encolar_capa(
                     &campo("digest"),
                     rama.as_deref().unwrap_or(""),
+                    repositorio.as_deref().unwrap_or(""),
                     sujeto,
                     &intento,
                 ) {
@@ -566,7 +584,7 @@ impl Servidor {
         };
         // La capa, como al abrir un puesto (W3.2): la del árbol si está lista;
         // si no, se encola y 409 para que se vuelva a pedir.
-        let capa = match self.capa_para(entorno, rama.as_deref(), sujeto) {
+        let capa = match self.capa_para(entorno, rama.as_deref(), None, sujeto) {
             Ok(c) => c,
             Err(r) => return r,
         };
@@ -673,13 +691,14 @@ impl Servidor {
         &self,
         entorno: &str,
         rama: Option<&str>,
+        alcance: Option<&str>,
         sujeto: &Identidad,
     ) -> Result<String, Respuesta> {
         if entorno != "python" {
             return Ok(String::new());
         }
         let e = match self.leyendo_en(rama, |raiz| {
-            let e = crate::entorno::entorno_de(raiz);
+            let e = crate::entorno::entorno_de_en(raiz, alcance);
             Respuesta::ok(Json::obj([
                 ("estado", Json::s(e.estado)),
                 ("digest", Json::s(&e.digest)),
@@ -710,12 +729,16 @@ impl Servidor {
                 } else {
                     "1".to_string()
                 };
-                let dicho =
-                    match self.encolar_capa(&campo("digest"), rama.unwrap_or(""), sujeto, &intento)
-                    {
-                        Ok((job, d)) => format!("{d} · Job {job}"),
-                        Err(r) => return Err(r),
-                    };
+                let dicho = match self.encolar_capa(
+                    &campo("digest"),
+                    rama.unwrap_or(""),
+                    alcance.unwrap_or(""),
+                    sujeto,
+                    &intento,
+                ) {
+                    Ok((job, d)) => format!("{d} · Job {job}"),
+                    Err(r) => return Err(r),
+                };
                 Err(Respuesta {
                     codigo: 409,
                     cuerpo: Json::obj([

@@ -196,6 +196,41 @@ repetir la carpeta es 409 **sin commit**; una clase inventada es 422 **con la li
 renombra y la prosa sigue; **desde un puesto es 403**; y borrar la carpeta se lleva el
 manifiesto y el índice deja de traerlo.
 
+### ③ La capa por repositorio — el acoplamiento que se rompe
+
+**Dónde**: `crates/ore-serve/src/entorno.rs`, `cola.rs`, `puestos.rs`, `rutas.rs` y
+`malla/52-la-capa.yaml`.
+
+`declaracion_en(raiz, alcance)`: sin alcance, la unión de la celda —la raíz y todos los
+paquetes, como siempre—; con alcance `packages/<p>/<carpeta>`, **la raíz, su paquete y cada
+nivel hasta él**. Lo de la raíz y lo del paquete siguen siendo comunes **a propósito**: lo de
+todos, para todos. Lo que deja de ser común es **lo de al lado**.
+
+El alcance viaja por **cabecera** (`X-Ore-Raiz`) en `GET`/`POST /entorno`, y en el cuerpo de
+`POST /puestos` (`{repositorio}`) — nunca por la URL: ningún dato entra por ahí. Un alcance que
+no sea la carpeta de un paquete es **422**; una que no exista, **404**.
+
+Y **el informe pasa a ser uno por digest** (`entorno/<digest>.json`): dos alcances son dos capas,
+y un fichero único haría que la segunda borrara a la primera. El de antes
+(`entorno/python.json`) se sigue leyendo —un árbol ya resuelto no tiene por qué volver a
+resolverse— **sólo si habla del mismo digest**. El Job de la capa (`52-la-capa.yaml`) gana
+`ALCANCE` y suma los mismos ficheros que el servidor.
+
+Medido después, contra un `ore-serve` de verdad (§6 de la medida):
+
+```text
+GET /entorno sin alcance (la celda)   ['duckdb','polars'] → capa-fd59afa41442
+  el repositorio de modelos           ['duckdb','polars','torch'] → capa-cafe46ed3e46
+  el de análisis, al lado             ['duckdb','polars']         → capa-fd59afa41442
+  ¿carga con el `torch` del vecino?   NO · dos alcances, dos capas
+```
+
+Y el matiz que la medida deja claro, y que es **peor** de lo que la ADR decía: sin alcance, el
+`pyproject.toml` de un repositorio **ni siquiera se lee** —`torch` no aparece en la declaración
+de la celda—. Es decir, hasta hoy un repositorio **no podía declarar nada**: sus dependencias
+tenían que subir al paquete o a la raíz, y **ahí las baja todo el mundo**. Lo que ③ arregla no
+es sólo que no pesen: es que **puedan existir donde tienen que existir**.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

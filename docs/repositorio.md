@@ -76,7 +76,7 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
   `ore-serve/src/repositorios.rs`. El caso 22 en verde, incluido que **crear deja un solo
   commit** con el manifiesto, la semilla y el proyecto dentro.
 
-## ③ La capa por repositorio — el cambio con más valor por línea
+## ③ La capa por repositorio — el cambio con más valor por línea ✓
 
 **Dónde**: `crates/ore-serve/src/entorno.rs`, `puestos.rs`.
 
@@ -91,6 +91,11 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
 - **Prueba**: un caso en `el-puesto.sh` —un repo declara una dependencia que el otro no; dos
   capas, dos digests, y la sesión del segundo **no la baja**—. **Medida** nueva en §6 (la que
   este paso añade): «una capa para la celda» → una por repositorio.
+- **Hecho**: `declaracion_en(raiz, alcance)`, el informe **por digest**, `X-Ore-Raiz` en
+  `/entorno`, `{repositorio}` en `POST /puestos` y `ALCANCE` en el Job de la capa. §6 de la
+  medida: `modelos` trae `torch` y `analisis`, **no** — dos alcances, dos capas. Y lo que
+  descubre: sin alcance el `pyproject.toml` de un repositorio **no se leía**, así que sus
+  dependencias tenían que subir al paquete, donde las baja todo el mundo.
 
 ## ④ Lo acotado: el editor, la sesión, la rama y las propuestas
 

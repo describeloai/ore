@@ -3,8 +3,8 @@
 //!
 //! # La declaración
 //!
-//! `pyproject.toml` en la raíz del árbol y/o en `packages/<p>/pyproject.toml`,
-//! con lo de siempre:
+//! `pyproject.toml` en la raíz del árbol, en `packages/<p>/pyproject.toml` y
+//! —desde 0036 ③— en el del **repositorio**, con lo de siempre:
 //!
 //! ```text
 //! [project]
@@ -12,8 +12,32 @@
 //! ```
 //!
 //! Se lee **sólo** `[project].dependencies` (una lista de cadenas); lo demás
-//! del fichero se ignora. La unión de todos, ordenada y sin repetidos, es la
-//! declaración del árbol, y su digest nombra la capa: `capa-<12 hex>`.
+//! del fichero se ignora. La unión, ordenada y sin repetidos, es la
+//! declaración, y su digest nombra la capa: `capa-<12 hex>`.
+//!
+//! # El alcance (0036 ③): la capa es del repositorio, no de la celda
+//!
+//! Hasta 0036, la declaración era **la unión del árbol entero** —la raíz y
+//! todos los paquetes—, de modo que **una** capa servía a todas las sesiones
+//! del cliente. Medido el efecto: el día que un repositorio de modelos
+//! declarara `torch`, **todas** las sesiones —las de análisis, las de
+//! funciones— arrancarían bajándolo. El entorno único no es una incomodidad de
+//! pantalla: es un acoplamiento que crece con el cliente.
+//!
+//! Desde 0036 la declaración se resuelve **por alcance**:
+//!
+//! | alcance | qué suma |
+//! |---|---|
+//! | ninguno (la celda) | la raíz **y todos** los paquetes — como siempre |
+//! | `packages/<p>/<carpeta>` | la raíz, **su** paquete y **su** repositorio |
+//!
+//! La raíz y el paquete siguen siendo comunes **a propósito**: lo de todos,
+//! para todos. Lo que deja de ser común es lo de al lado.
+//!
+//! El alcance viaja por **cabecera** (`X-Ore-Raiz`), no por la URL: ningún dato
+//! entra por la URL (`ore-entrada` la descarta). Y el informe deja de ser uno
+//! solo: es **uno por digest** (`entorno/<digest>.json`), porque dos alcances
+//! son dos capas y un único fichero haría que la segunda borrara a la primera.
 //!
 //! # La capa
 //!
@@ -49,15 +73,45 @@ use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::path::Path;
 
+/// El informe de antes de 0036, cuando la capa era una sola. Se sigue leyendo
+/// —un árbol ya resuelto no tiene por qué volver a resolverse— pero no se
+/// escribe: los nuevos van a `entorno/<digest>.json`.
 pub(crate) const INFORME: &str = "entorno/python.json";
 
-/// La declaración del árbol: la unión de los `dependencies` de cada
-/// `pyproject.toml`, ordenada y sin repetidos.
-pub(crate) fn declaracion(raiz: &Path) -> Vec<String> {
+/// El informe de una capa: uno por digest, que es lo que permite que dos
+/// alcances convivan.
+pub(crate) fn informe_ruta(digest: &str) -> String {
+    format!("entorno/{digest}.json")
+}
+
+/// La declaración de un alcance: la unión de los `dependencies` de los
+/// `pyproject.toml` que le tocan, ordenada y sin repetidos.
+///
+/// Sin alcance, la de la celda (la raíz y todos los paquetes). Con alcance
+/// —`packages/<p>/<carpeta>`—, la raíz, **su** paquete y **su** repositorio:
+/// lo común sigue siendo común, y lo de al lado deja de pesar.
+pub(crate) fn declaracion_en(raiz: &Path, alcance: Option<&str>) -> Vec<String> {
     let mut ficheros = vec![raiz.join("pyproject.toml")];
-    if let Ok(d) = std::fs::read_dir(raiz.join("packages")) {
-        for e in d.flatten() {
-            ficheros.push(e.path().join("pyproject.toml"));
+    match alcance.map(str::trim).filter(|s| !s.is_empty()) {
+        None => {
+            if let Ok(d) = std::fs::read_dir(raiz.join("packages")) {
+                for e in d.flatten() {
+                    ficheros.push(e.path().join("pyproject.toml"));
+                }
+            }
+        }
+        Some(a) => {
+            let partes: Vec<&str> = a.trim_matches('/').split('/').collect();
+            // `packages/<p>/<carpeta…>`: el paquete, y después cada nivel hasta
+            // el repositorio — una carpeta honda hereda de la de encima.
+            if partes.len() >= 2 && partes[0] == "packages" {
+                let mut acc = raiz.join("packages").join(partes[1]);
+                ficheros.push(acc.join("pyproject.toml"));
+                for p in &partes[2..] {
+                    acc = acc.join(p);
+                    ficheros.push(acc.join("pyproject.toml"));
+                }
+            }
         }
     }
     let mut deps: Vec<String> = ficheros
@@ -156,11 +210,25 @@ pub(crate) fn digest_de(deps: &[String]) -> String {
     format!("capa-{}", &d["sha256:".len().."sha256:".len() + 12])
 }
 
-/// El informe del árbol, si lo hay.
-pub(crate) fn informe_de(raiz: &Path) -> Option<Json> {
-    let t = std::fs::read_to_string(raiz.join(INFORME)).ok()?;
-    let n = ore_core::parse::parse(&t).ok()?;
-    Some(crate::rutas::de_node(&n))
+/// El informe de una capa: el suyo (`entorno/<digest>.json`) o, si no está, el
+/// de antes de 0036 **sólo si habla de este mismo digest**.
+pub(crate) fn informe_de(raiz: &Path, digest: &str) -> Option<Json> {
+    let leer = |ruta: std::path::PathBuf| -> Option<Json> {
+        let t = std::fs::read_to_string(ruta).ok()?;
+        let n = ore_core::parse::parse(&t).ok()?;
+        Some(crate::rutas::de_node(&n))
+    };
+    if !digest.is_empty()
+        && let Some(j) = leer(raiz.join(informe_ruta(digest)))
+    {
+        return Some(j);
+    }
+    let viejo = leer(raiz.join(INFORME))?;
+    let suyo = match &viejo {
+        Json::Obj(m) => matches!(m.get("digest"), Some(Json::Str(d)) if d == digest),
+        _ => false,
+    };
+    suyo.then_some(viejo)
 }
 
 pub(crate) struct Entorno {
@@ -171,10 +239,11 @@ pub(crate) struct Entorno {
     pub estado: &'static str,
 }
 
-pub(crate) fn entorno_de(raiz: &Path) -> Entorno {
-    let declarado = declaracion(raiz);
+/// El entorno de un alcance (0036 ③): su declaración, su digest y su informe.
+pub(crate) fn entorno_de_en(raiz: &Path, alcance: Option<&str>) -> Entorno {
+    let declarado = declaracion_en(raiz, alcance);
     let digest = digest_de(&declarado);
-    let informe = informe_de(raiz);
+    let informe = informe_de(raiz, &digest);
     let campo = |k: &str| match &informe {
         Some(Json::Obj(m)) => match m.get(k) {
             Some(Json::Str(s)) => s.clone(),
@@ -216,16 +285,70 @@ fn ficha(e: &Entorno) -> Json {
     ])
 }
 
+/// El alcance de `X-Ore-Raiz`, comprobado: `packages/<p>/<carpeta…>`, sin
+/// salirse y sin `..`. Vacío o ausente es la celda entera, como siempre.
+pub(crate) fn alcance_valido(a: Option<&str>) -> Result<Option<String>, Respuesta> {
+    let Some(a) = a.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let limpio = a.trim_matches('/');
+    let partes: Vec<&str> = limpio.split('/').collect();
+    let bien = partes.len() >= 3
+        && partes[0] == "packages"
+        && partes.iter().all(|p| {
+            !p.is_empty()
+                && *p != ".."
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        });
+    if !bien {
+        return Err(Respuesta::error(
+            422,
+            format!(
+                "`{a}` no es un alcance: `X-Ore-Raiz` es `packages/<paquete>/<carpeta>` (la carpeta de un repositorio)"
+            ),
+        ));
+    }
+    Ok(Some(limpio.to_string()))
+}
+
 impl Servidor {
-    /// `GET /entorno`, en la rama de `X-Ore-Rama`.
-    pub(crate) fn entorno(&self, rama: Option<&str>) -> Respuesta {
-        self.leyendo_en(rama, |raiz| Respuesta::ok(ficha(&entorno_de(raiz))))
+    /// `GET /entorno`, en la rama de `X-Ore-Rama` y en el alcance de
+    /// `X-Ore-Raiz` (0036 ③): sin alcance, el de la celda.
+    pub(crate) fn entorno(&self, rama: Option<&str>, alcance: Option<&str>) -> Respuesta {
+        let alcance = match alcance_valido(alcance) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        self.leyendo_en(rama, |raiz| {
+            if let Some(a) = &alcance
+                && !raiz.join(a).is_dir()
+            {
+                return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
+            }
+            let mut r = Respuesta::ok(ficha(&entorno_de_en(raiz, alcance.as_deref())));
+            if let (Json::Obj(m), Some(a)) = (&mut r.cuerpo, &alcance) {
+                m.insert("alcance".into(), Json::s(a));
+            }
+            r
+        })
     }
 
     /// `POST /entorno`: encolar la capa. 200 si ya está lista, 202 encolada,
     /// 422 sin dependencias.
-    pub(crate) fn resolver_entorno(&self, sujeto: &Identidad, rama: Option<&str>) -> Respuesta {
-        let e = match self.leyendo_en(rama, |raiz| Respuesta::ok(ficha(&entorno_de(raiz)))) {
+    pub(crate) fn resolver_entorno(
+        &self,
+        sujeto: &Identidad,
+        rama: Option<&str>,
+        alcance: Option<&str>,
+    ) -> Respuesta {
+        let alcance = match alcance_valido(alcance) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let e = match self.leyendo_en(rama, |raiz| {
+            Respuesta::ok(ficha(&entorno_de_en(raiz, alcance.as_deref())))
+        }) {
             r if r.codigo != 200 => return r,
             r => r.cuerpo,
         };
@@ -239,12 +362,18 @@ impl Servidor {
         match campo("estado").as_str() {
             "sin-dependencias" => Respuesta::error(
                 422,
-                "el árbol no declara dependencias: nada que resolver (`[project].dependencies` de un `pyproject.toml`)",
+                match &alcance {
+                    Some(a) => format!(
+                        "`{a}` no declara dependencias, ni su paquete ni la raíz: nada que resolver (`[project].dependencies` de un `pyproject.toml`)"
+                    ),
+                    None => "el árbol no declara dependencias: nada que resolver (`[project].dependencies` de un `pyproject.toml`)".to_string(),
+                },
             ),
             "lista" => Respuesta::ok(e),
             estado => match self.encolar_capa(
                 &campo("digest"),
                 rama.unwrap_or(""),
+                alcance.as_deref().unwrap_or(""),
                 sujeto,
                 &if estado == "error" {
                     format!(
@@ -279,6 +408,7 @@ impl Servidor {
         &self,
         digest: &str,
         rama: &str,
+        alcance: &str,
         sujeto: &Identidad,
         intento: &str,
     ) -> Result<(String, String), Respuesta> {
@@ -301,7 +431,7 @@ impl Servidor {
                 ),
             )
         })?;
-        let (fichero, texto, job) = cola::rendir_capa(&plantilla, digest, rama, intento)
+        let (fichero, texto, job) = cola::rendir_capa(&plantilla, digest, rama, alcance, intento)
             .map_err(|e| Respuesta::error(500, e))?;
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
@@ -359,26 +489,123 @@ dependencies = ["no-esta"]
             "[project]\ndependencies = ['polars', 'duckdb']\n",
         )
         .unwrap();
-        let deps = declaracion(&d);
+        let deps = declaracion_en(&d, None);
         assert_eq!(deps, vec!["duckdb", "pandas", "polars"]);
         let h = digest_de(&deps);
         assert!(h.starts_with("capa-") && h.len() == 17);
         assert_eq!(digest_de(&[]), "");
-        assert_eq!(entorno_de(&d).estado, "pendiente");
+        assert_eq!(entorno_de_en(&d, None).estado, "pendiente");
         std::fs::create_dir_all(d.join("entorno")).unwrap();
         std::fs::write(
             d.join(INFORME),
             format!("{{\"digest\":\"{h}\",\"estado\":\"lista\"}}"),
         )
         .unwrap();
-        assert_eq!(entorno_de(&d).estado, "lista");
+        assert_eq!(entorno_de_en(&d, None).estado, "lista");
         std::fs::write(
             d.join(INFORME),
             "{\"digest\":\"capa-otra\",\"estado\":\"lista\"}",
         )
         .unwrap();
-        assert_eq!(entorno_de(&d).estado, "pendiente");
+        assert_eq!(entorno_de_en(&d, None).estado, "pendiente");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0036 ③: la capa es del repositorio, no de la celda.
+    ///
+    /// Tres repositorios en dos paquetes: lo de la raíz y lo del paquete llegan
+    /// a los suyos, y **lo de al lado no llega a nadie**. Es el acoplamiento que
+    /// este paso rompe: sin esto, el `torch` de uno lo bajarían todos.
+    #[test]
+    fn la_capa_de_un_repositorio_no_carga_con_la_del_de_al_lado() {
+        let d = tempfile_dir2("alcance");
+        std::fs::write(
+            d.join("pyproject.toml"),
+            "[project]\ndependencies = ['polars']\n",
+        )
+        .unwrap();
+        for (ruta, deps) in [
+            ("packages/hr", "['duckdb']"),
+            ("packages/hr/modelos", "['torch']"),
+            ("packages/hr/analisis", "[]"),
+            ("packages/ventas", "['pyarrow']"),
+        ] {
+            std::fs::create_dir_all(d.join(ruta)).unwrap();
+            std::fs::write(
+                d.join(ruta).join("pyproject.toml"),
+                format!("[project]\ndependencies = {deps}\n"),
+            )
+            .unwrap();
+        }
+        // La celda: todo junto, como hasta 0036.
+        assert_eq!(
+            declaracion_en(&d, None),
+            vec!["duckdb", "polars", "pyarrow"],
+            "sin alcance, la unión de la raíz y los paquetes"
+        );
+        // Un repositorio: la raíz, su paquete y él. Lo de al lado, no.
+        assert_eq!(
+            declaracion_en(&d, Some("packages/hr/modelos")),
+            vec!["duckdb", "polars", "torch"]
+        );
+        let al_lado = declaracion_en(&d, Some("packages/hr/analisis"));
+        assert_eq!(al_lado, vec!["duckdb", "polars"]);
+        assert!(
+            !al_lado.contains(&"torch".to_string()),
+            "el `torch` del de al lado NO lastra a este"
+        );
+        assert!(
+            !al_lado.contains(&"pyarrow".to_string()),
+            "ni lo de otro paquete"
+        );
+        // Dos alcances, dos digests: por eso el informe es uno por digest.
+        let a = digest_de(&declaracion_en(&d, Some("packages/hr/modelos")));
+        let b = digest_de(&al_lado);
+        assert_ne!(a, b);
+        std::fs::create_dir_all(d.join("entorno")).unwrap();
+        std::fs::write(
+            d.join(informe_ruta(&a)),
+            format!("{{\"digest\":\"{a}\",\"estado\":\"lista\"}}"),
+        )
+        .unwrap();
+        assert_eq!(
+            entorno_de_en(&d, Some("packages/hr/modelos")).estado,
+            "lista"
+        );
+        assert_eq!(
+            entorno_de_en(&d, Some("packages/hr/analisis")).estado,
+            "pendiente",
+            "la capa del vecino no vale por la suya"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn un_alcance_es_una_carpeta_de_un_paquete_y_nada_mas() {
+        let bien = |a: Option<&str>| match alcance_valido(a) {
+            Ok(v) => v,
+            Err(_) => panic!("`{a:?}` tenía que valer"),
+        };
+        assert_eq!(bien(None), None);
+        assert_eq!(bien(Some("  ")), None);
+        assert_eq!(
+            bien(Some("packages/hr/raw")).as_deref(),
+            Some("packages/hr/raw")
+        );
+        assert!(
+            alcance_valido(Some("packages/hr")).is_err(),
+            "el paquete no"
+        );
+        assert!(alcance_valido(Some("../etc")).is_err());
+        assert!(alcance_valido(Some("packages/hr/../../etc")).is_err());
+        assert!(alcance_valido(Some("otra/cosa/aqui")).is_err());
+    }
+
+    fn tempfile_dir2(caso: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ore-entorno-{}-{caso}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

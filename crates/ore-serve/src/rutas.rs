@@ -407,8 +407,14 @@ impl Servidor {
             // pod pide trabajo, entrega salidas y resuelve datos. Sin árbol
             // salvo `datos`, que lee el informe de la copia en la rama.
             // ── 0031 W3.2 · el entorno: lo que el árbol declara, y su capa ──
-            ("GET", ["entorno"]) => self.entorno(rama),
-            ("POST", ["entorno"]) => self.resolver_entorno(sujeto, rama),
+            ("GET", ["entorno"]) => {
+                self.entorno(rama, p.cabeceras.get("x-ore-raiz").map(String::as_str))
+            }
+            ("POST", ["entorno"]) => self.resolver_entorno(
+                sujeto,
+                rama,
+                p.cabeceras.get("x-ore-raiz").map(String::as_str),
+            ),
             ("GET", ["puestos"]) => self.puestos_de(sujeto),
             ("POST", ["puestos"]) => self.abrir_puesto(sujeto, &p.cuerpo),
             // ── el trabajo (0031 §9, W3.7 ④): un fichero del árbol como Job ──
