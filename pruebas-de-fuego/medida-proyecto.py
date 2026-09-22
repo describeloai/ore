@@ -33,9 +33,16 @@ proyecto es un segundo registro o una segunda vista del mismo árbol**:
                       de una persona, el índice— y qué costaría acotarlo
   §6  EL TAMAÑO       cuántos ítems y ficheros tendría un proyecto si fuera una
                       carpeta: lo que el índice de demo y victor ya dice
+  §8  LA FORMA        la forma resuelta (0035 ⑤) sobre los árboles DE VERDAD
+                      (demo y victor, por un Job de lectura): que
+                      `proyectos/<n>/README.md` compila y es INVISIBLE al
+                      compilador y al índice, cómo se reparten los ítems si los
+                      proyectos se hacen de las carpetas que ya hay, y qué pasa
+                      cuando el manifiesto está roto o dos se solapan
 
-Uso:  python pruebas-de-fuego/medida-proyecto.py [--solo 1,2,3,4,5,6,7] [--consola C:/rubix-platform]
-Necesita target/debug (ore, ore-serve), git. Todo en local; no toca el clúster.
+Uso:  python pruebas-de-fuego/medida-proyecto.py [--solo 1,2,3,4,5,6,7,8] [--consola C:/rubix-platform]
+      §8 trae los árboles reales: --celdas demo,victor (o --local <dir> para uno de disco).
+Necesita target/debug (ore, ore-serve), git. §1–§7 en local; §8 lee las celdas.
 No imprime ningún token.
 """
 import json
@@ -58,6 +65,8 @@ SERVE = "%s/ore-serve%s" % (BIN, EXE)
 PY = sys.executable
 CONSOLA = sys.argv[sys.argv.index("--consola") + 1] if "--consola" in sys.argv else "C:/rubix-platform"
 SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6", "7"}
+CELDAS = (sys.argv[sys.argv.index("--celdas") + 1].split(",") if "--celdas" in sys.argv else ["demo", "victor"])
+LOCAL = sys.argv[sys.argv.index("--local") + 1] if "--local" in sys.argv else None
 
 
 def fila(a, b="", c=""):
@@ -154,6 +163,8 @@ def main():
             el_tamano()
         if "7" in SOLO:
             el_aislamiento(tmp, procs)
+        if "8" in SOLO:
+            la_forma(tmp)
     finally:
         for p in procs:
             try:
@@ -511,6 +522,146 @@ def el_aislamiento(tmp, procs):
         fila("el índice de assets", "%d ítems" % len(items), "carpetas: %s · una cabeza, un índice: no hay `proyecto`" % ", ".join(repr(x) for x in carp))
     src = lee(RAIZ + "/crates/ore-serve/src/puestos.rs")
     fila("la lectura desde un puesto (`datos`)", "", "resuelve cualquier `<paquete>.<nombre>` del árbol: el conducto decide POR ETIQUETA, no por proyecto")
+    print()
+
+
+# ── §8 · la forma resuelta, sobre los árboles de verdad ─────────────────────
+MANIFIESTO = """---
+nombre: %s
+descripcion: %s
+contiene: [%s]
+---
+Lo que este proyecto hace, en prosa.
+"""
+
+
+def encabezado(texto):
+    """El encabezado de un README: entre la primera y la segunda raya. Lo que
+    ore-core tendrá que hacer con `parse.rs`; aquí con yaml, para medir la forma."""
+    import yaml
+    lineas = texto.splitlines()
+    if not lineas or lineas[0].strip() != "---":
+        return None, "sin encabezado"
+    try:
+        fin = lineas.index("---", 1)
+    except ValueError:
+        return None, "el encabezado no cierra"
+    try:
+        d = yaml.safe_load("\n".join(lineas[1:fin]))
+    except Exception as e:
+        return None, "yaml roto: %s" % str(e).split("\n")[0][:50]
+    if not isinstance(d, dict):
+        return None, "el encabezado no es un mapa"
+    if not d.get("nombre"):
+        return None, "sin `nombre`"
+    return d, ""
+
+
+# La medida de la migracion vuelve a envolver stdout al importarse: se guardan
+# las envolturas para que ninguna cierre el buffer al recogerse.
+_ENVOLTURAS = [sys.stdout]
+
+
+def trae_arbol(celda, destino):
+    if LOCAL:
+        return LOCAL
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mm", RAIZ + "/pruebas-de-fuego/medida-migrar-dataset.py")
+    m = importlib.util.module_from_spec(spec)
+    _ENVOLTURAS.append(m)
+    mio = sys.stdout
+    mio.flush()
+    spec.loader.exec_module(m)
+    _ENVOLTURAS.append(sys.stdout)
+    sys.stdout = mio  # que lo suyo salga por donde sale lo nuestro, y en orden
+    return m.traer_arbol(celda, destino)
+
+
+def indice_de(d, env):
+    c, s1 = corre([ORE, "assets", d, "--json"], env)
+    if c != 0:
+        return None, s1[:120]
+    i = s1.find("{")
+    try:
+        return json.loads(s1[i:]), ""
+    except ValueError as e:
+        return None, str(e)[:80]
+
+
+def la_forma(tmp):
+    print("§8 · la forma resuelta (0035 ⑤), sobre los árboles de verdad")
+    for celda in CELDAS:
+        print("  · %s" % celda)
+        d = trae_arbol(celda, tmp + "/arbol-" + celda)
+        if not d:
+            fila("  el árbol", "no llegó", "se salta")
+            continue
+        env = os.environ.copy()
+        ind, err = indice_de(d, env)
+        if ind is None:
+            fila("  el índice", "no compila", err)
+            continue
+        items = ind.get("items") or {}
+        # (a) los oráculos: cómo se repartirían los ítems por las carpetas que YA hay
+        por_carpeta = {}
+        for k, it in items.items():
+            clave = (it.get("paquete") or "", it.get("carpeta") or "")
+            por_carpeta.setdefault(clave, []).append(k)
+        con_carpeta = {k: v for k, v in por_carpeta.items() if k[1]}
+        fuera = sum(len(v) for k, v in por_carpeta.items() if not k[1])
+        paquetes = {k[0] for k in por_carpeta if k[0]}
+        sin_pkg = sum(len(v) for k, v in por_carpeta.items() if not k[0])
+        fila("  ítems del índice", "%d" % len(items),
+             "%d paquetes · %d ítems fuera de `packages/`" % (len(paquetes), sin_pkg))
+        fila("  carpetas de cliente (candidatas a proyecto)", "%d" % len(con_carpeta),
+             ", ".join("%s/%s (%d)" % (k[0], k[1], len(v)) for k, v in sorted(con_carpeta.items())[:4]) or "ninguna")
+        fila("  ítems que quedarían FUERA de todo proyecto", "%d" % fuera,
+             "si el proyecto se hiciera de las carpetas que ya hay")
+        nombres = sorted({(k[1].split("/")[0] if k[1] else k[0]) for k in por_carpeta if k[0]})
+        fila("  los nombres que saldrían", "%d" % len(nombres), ", ".join(nombres[:6]) or "—")
+
+        # (b) el manifiesto: ¿compila y es invisible?
+        os.makedirs(d + "/proyectos/churn", exist_ok=True)
+        dentro = sorted(con_carpeta) [:1]
+        nombra = ("%s/%s" % dentro[0]) if dentro else (sorted({k[0] for k in por_carpeta if k[0]}) or [""])[0]
+        open(d + "/proyectos/churn/README.md", "w", encoding="utf-8").write(
+            MANIFIESTO % ("Customer Churn", "Predicción de abandono.", nombra))
+        c, s1 = corre([ORE, "validate", d], env)
+        fila("  con `proyectos/churn/README.md`, `ore validate`", "código %d" % c,
+             ("lo nombra: " + s1[:70]) if "proyectos" in s1 else "no lo nombra: INVISIBLE al compilador")
+        ind2, err2 = indice_de(d, env)
+        n2 = len((ind2 or {}).get("items") or {})
+        fila("  y el índice", "%d ítems" % n2, "igual" if n2 == len(items) else "CAMBIA (%d antes)" % len(items))
+
+        # (c) el encabezado: qué resuelve `contiene`, y qué pasa si está roto
+        m, e = encabezado(lee(d + "/proyectos/churn/README.md"))
+        resuelve = [k for k, it in items.items()
+                    if any((it.get("paquete") or "") + "/" + (it.get("carpeta") or "") == x or (it.get("paquete") or "") == x
+                           for x in (m or {}).get("contiene", []))]
+        fila("  el encabezado se analiza", "sí" if m else "NO: " + e,
+             "`contiene: [%s]` resuelve %d ítems" % (nombra, len(resuelve)))
+        for que, texto in (
+            ("sin `nombre`", "---\ndescripcion: x\n---\n"),
+            ("el encabezado no cierra", "---\nnombre: x\n"),
+            ("sin encabezado", "# Churn\n"),
+            ("`contiene` que no resuelve", MANIFIESTO % ("X", "x", "no/existe")),
+        ):
+            open(d + "/proyectos/churn/README.md", "w", encoding="utf-8").write(texto)
+            m2, e2 = encabezado(texto)
+            c2, s2 = corre([ORE, "validate", d], env)
+            n = [k for k, it in items.items()
+                 if any((it.get("paquete") or "") + "/" + (it.get("carpeta") or "") == x or (it.get("paquete") or "") == x
+                        for x in (m2 or {}).get("contiene", []))] if m2 else []
+            fila("    %s" % que, "validate %d" % c2,
+                 ("roto: %s" % e2) if not m2 else "analiza · resuelve %d ítems" % len(n))
+        # (d) dos proyectos que nombran lo mismo
+        for n_, t_ in (("churn", "Customer Churn"), ("abandono", "Abandono")):
+            os.makedirs(d + "/proyectos/" + n_, exist_ok=True)
+            open(d + "/proyectos/%s/README.md" % n_, "w", encoding="utf-8").write(MANIFIESTO % (t_, "x", nombra))
+        c3, s3 = corre([ORE, "validate", d], env)
+        fila("  dos proyectos que nombran la MISMA carpeta", "validate %d" % c3,
+             "se solapan: el árbol no se entera (lo dirá el índice, `proyectos` en plural)")
+        shutil.rmtree(d + "/proyectos", ignore_errors=True)
     print()
 
 

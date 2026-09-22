@@ -1,7 +1,7 @@
 # 0035 · El proyecto: el alcance que falta entre la celda y el asset
 
-**Estado:** medido y cotejado (2026-09-23; **sin decidir**: la resolución se escribe sobre
-estos números) · **Fecha:** 2026-09-23 · **Decide** (cuando se resuelva): qué es un proyecto
+**Estado:** resuelto, en construcción (⓪ hecho; los pasos en
+[`docs/proyecto.md`](../proyecto.md)) · **Fecha:** 2026-09-23 · **Decide** (cuando se resuelva): qué es un proyecto
 —el sitio donde un cliente construye sobre sus conjuntos de datos, con código, pipelines,
 linaje y mapas—, dónde persiste, y si es **un segundo registro o una segunda vista del mismo
 árbol**. Sigue a [`0030`](0030-el-arbol-en-el-editor.md) (el árbol en el editor),
@@ -177,6 +177,44 @@ misma carpeta: se solapan, y el índice lo dice en vez de impedirlo.
    no bloquea — la resolución sirve para el producto que sí está entero (el repositorio de
    código) y admite los otros el día que existan, porque el proyecto los **nombra** en vez de
    contenerlos.
+
+## Lo construido
+
+### ⓪ La forma, medida sobre los árboles de verdad (§8 de `medida-proyecto.py`)
+
+Antes de escribir una línea de `proyectos.rs`, la forma resuelta —
+`proyectos/<nombre>/README.md` con encabezado— se puso **sobre demo (`b93ed52`, 66 ficheros)
+y victor (`a6e2b0e`, 125)**, traídos por un Job de lectura como en 0034. Los oráculos del
+paso ①:
+
+| | demo | victor |
+|---|---|---|
+| ítems del índice | **17** (2 paquetes, 1 ítem fuera de `packages/`) | **58** (2 paquetes, 1 fuera) |
+| carpetas de cliente (candidatas a proyecto hoy) | **0** | **0** |
+| ítems que quedarían fuera de todo proyecto | **17** (todos) | **58** (todos) |
+| los nombres que saldrían de lo que ya hay | `olist`, `olist_copia` | `foreign_test`, `standard_test` |
+| `contiene: [<el primero>]` resolvería | **8 de 17** | **19 de 58** |
+
+Y lo que hacía falta comprobar en un árbol de verdad y no en el de juguete:
+
+- **El manifiesto es invisible.** Con `proyectos/churn/README.md` dentro, `ore validate`
+  **sale 0 y no lo nombra** en los dos árboles, y el índice da **los mismos ítems que antes**
+  (17 y 58). La forma no toca al compilador ni al catálogo: es exactamente lo que §2 predijo
+  del `README.md`, ahora sobre 125 ficheros reales.
+- **El encabezado se analiza**, y roto **no rompe el árbol**: sin `nombre`, sin cerrar la raya
+  y sin encabezado, el manifiesto no se entiende —«sin `nombre`», «el encabezado no cierra»,
+  «sin encabezado»— y **`ore validate` sigue saliendo 0**. Un proyecto roto es un proyecto que
+  el índice tendrá que marcar (`roto:`), nunca un árbol que no compila.
+- **`contiene` que no resuelve resuelve 0 ítems**, y no es un error: un proyecto puede nombrar
+  algo que todavía no existe, y un proyecto vacío es legal (⑤ 2).
+- **Dos proyectos que nombran la misma carpeta**: `validate` sale 0 y **el árbol no se entera**.
+  El solape existe y no lo impide nadie — por eso el índice lo dirá con `proyectos` **en
+  plural** (⑤ 4), en vez de prohibirlo.
+
+**Lo que ⓪ deja dicho para ①**: hoy **todo queda fuera** (17 y 58, confirmando §6 sobre los
+árboles reales), así que el primer proyecto de un cliente **no reparte nada**: nombra. Y el
+índice tiene que poder decir tres cosas que el compilador nunca dirá — qué proyecto hay, qué
+resuelve cada uno, y cuál está roto.
 
 ## Lo que esto no decide
 

@@ -29,7 +29,7 @@ Lo que este proyecto hace, en prosa.
 
 ---
 
-## ⓪ La forma, medida
+## ⓪ La forma, medida ✓
 
 **Dónde**: `pruebas-de-fuego/medida-proyecto.py` (§8 nuevo), sobre los árboles de demo y victor.
 
@@ -42,6 +42,12 @@ Lo que este proyecto hace, en prosa.
   mal**: sin `nombre`, con `contiene` que no resuelve, con dos proyectos que nombran la misma
   carpeta (se solapan: el índice lo dice, no lo impide).
 - **Prueba**: la medida corre y sus números entran en 0035 («Lo construido», ⓪).
+- **Hecho**: §8 de `medida-proyecto.py`, sobre demo (`b93ed52`) y victor (`a6e2b0e`).
+  Los oráculos de ①: 17 y 58 ítems, **0 carpetas de cliente**, **todos fuera**, y
+  `contiene: [olist]` resolvería 8 de 17 (`[foreign_test]`, 19 de 58). El manifiesto es
+  invisible (`validate` 0, no lo nombra, el índice igual); roto —sin `nombre`, sin cerrar,
+  sin encabezado— **no rompe el árbol**; `contiene` que no resuelve resuelve 0 y no es
+  error; y dos proyectos que nombran la misma carpeta se solapan sin que el árbol se entere.
 
 ## ① La unidad: el proyecto en el índice
 
