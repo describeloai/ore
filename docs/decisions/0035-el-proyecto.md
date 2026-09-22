@@ -302,6 +302,58 @@ acaba ésta. Lo que sale:
 | **§4 el coste** | 11 ficheros, **2 103 líneas**. `query.ts` ya declara `assets` y `arbol` y tiene **26 llamadas de escritura**: una más es una fila de la tabla. Pero **`ProjectDetailView.tsx` (753 líneas) y `CreateResourceModal.tsx` tienen WIP de otra sesión** | (a) y (b) —el listado y crear/borrar— caen en ficheros **libres**; (c), las carpetas, cae **justo en el fichero que otra sesión tiene a medias**. Se parte la iteración por ahí: lo de fuera se cablea, y lo de dentro espera o entra por un módulo nuevo que el detalle llame en una línea |
 | **§5 el viaje** | Contra un `ore-serve` de verdad, los seis pasos **funcionan hoy**: crear 201 · listar 200 (`proyectos: ['customer-churn']`) · la carpeta 201 · listar 200 · borrar la carpeta 200 · borrar el proyecto 200 con `siguenEnElArbol: ['hr']`. Entre **1,3 y 1,8 s** cada uno (clon por petición, forja local) | no falta backend para las tres cosas: falta **cablear**. Y el tiempo dice que la consola tiene que enseñar que está trabajando, no fingir que fue instantáneo |
 
+### ③a La consola deja de ser un mock: el listado, crear, editar y borrar
+
+**Dónde** (rubix-platform, commit local `a8983e3`): `lib/server/proyectos.ts` (nuevo),
+`lib/server/query.ts`, `components/catalog/assets-types.ts`, `ProjectsHome.tsx`,
+`ProjectCreateModal.tsx`, `ProjectContextMenu.tsx`, `projects/page.tsx`, `projects/[id]/page.tsx`
+y `projects/acciones.ts` (nuevo).
+
+- **Las filas son los proyectos del árbol**, de la llamada que el catálogo ya hace
+  (`GET /assets`). Un proyecto es una lente y no un segundo registro, así que **no tiene lectura
+  propia** — una ruta `GET /proyectos` habría sido un segundo sitio donde mirar, y dos sitios
+  pueden diferir.
+- **La columna «Collaborators» se fue**, y es la decisión más visible de 0035 en pantalla: quién
+  ve un proyecto lo decide ore-iam, que no existe. En su sitio va lo que el árbol **sí** sabe:
+  **cuántos ítems nombra**. En la ficha, `collaborators` lleva sólo **quién lo creó** (el commit
+  de su manifiesto), que es cierto.
+- **El modal gana `contiene`**: qué nombra el proyecto, **elegido de lo que hay** (no se escribe
+  a mano, para no nombrar lo que no existe sin querer); se puede dejar vacío a propósito, y lo
+  que aún no está se dice (`sinResolver`) y entra igual.
+- **«Move to trash» pasa a «Delete project…»** con el aviso de lo que **no** se borra. No hay
+  papelera: en un árbol, borrar es un commit (§2).
+- Un manifiesto **roto se lista con su porqué** en vez de desaparecer, y **lo que queda fuera de
+  todo proyecto se cuenta al pie**: un atlas, no una partición.
+- `query.ts` gana tres mandatos y, con ellos, `Plan.metodo` aprende **`PUT`** — «reescribe lo
+  que ya existe», frente al `POST` que lo crea.
+
+### ③b Las carpetas: una llamada, un commit, y dice qué se llevó
+
+**Dónde**: `crates/ore-serve/src/arbol.rs` (ORE) y, en la consola, `lib/server/carpetas.ts` y
+`lib/server/arbol.ts` (commit local `eb874a3`).
+
+- **`DELETE /arbol/{ruta}` aprende carpetas.** En un árbol **no hay carpetas vacías** —git no
+  las guarda—, así que una carpeta **es lo que tiene dentro**: se la lleva **en un commit**, por
+  la misma puerta de siempre («el árbol no empeora»), y la respuesta dice **qué ficheros se
+  llevó** (`carpeta: true`, `ficheros: [...]`). Borrar sin decir qué es lo que nadie puede
+  revisar después. Si al irse algo deja de compilar: **422 y no se borra nada** —lo de dentro se
+  devuelve entero desde memoria—.
+- **Crear una carpeta es escribir un `README.md` dentro**: el editor lo ve, el compilador lo
+  ignora. El mismo truco que el manifiesto del proyecto, por la misma razón. Y se avisa de que
+  **no aparecerá en el catálogo hasta que tenga un documento**, porque el índice cuenta ítems y
+  no carpetas (§3) — decirlo es la diferencia entre «no se creó» y «aún no hay nada dentro».
+- **Una carpeta vive dentro de un paquete**, no «en el proyecto»: el proyecto nombra, no
+  contiene. `paquetesDe(proyecto)` da en cuáles puede caer; con más de uno, **se pregunta**.
+- **Lo que no se hizo, y por qué**: `ProjectDetailView.tsx` y `CreateResourceModal.tsx` tienen
+  trabajo a medias de otra sesión (§4) y **no se han tocado**. Las dos acciones están escritas y
+  probadas por debajo; cablearlas allí es una línea por acción.
+
+La prueba (`los-documentos.sh` 21): el `README` entra y compila; con sólo él, el índice **no**
+nombra la carpeta; con un documento dentro, **sí**; borrar la carpeta cuando otra vista usa lo
+de dentro es **422 sin commit y sin perder nada**; y quitada esa vista, la carpeta se va con
+**sus dos ficheros en un solo commit** («retirar `packages/hr/ingesta`»), el índice deja de
+nombrarla y repetir el borrado es 404.
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).

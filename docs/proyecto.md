@@ -107,7 +107,7 @@ real son **la iteración siguiente**, y este paso no los toca.
   edita — lo suyo entra por un módulo nuevo que el detalle llamará en una línea cuando aquello
   aterrice (§4).
 
-### ③a · El listado, crear y borrar (ficheros libres)
+### ③a · El listado, crear y borrar (ficheros libres) ✓
 
 **Dónde**: `lib/server/query.ts`, `lib/projects/proyectos.ts` (nuevo, sustituye a `mock.ts`),
 `components/projects/ProjectsHome.tsx`, `ProjectCreateModal.tsx`, `ProjectContextMenu.tsx`,
@@ -127,7 +127,7 @@ real son **la iteración siguiente**, y este paso no los toca.
   aparece → renombrar → borrar → `hr` sigue. **Medida** §1/§2: «3 filas en memoria» → las del
   árbol; «4 acciones sin handler» → 1 (Copy link).
 
-### ③b · Las carpetas dentro de un proyecto
+### ③b · Las carpetas dentro de un proyecto ✓ (salvo el cableado en el detalle)
 
 **Dónde**: ORE (`crates/ore-serve/src/arbol.rs`) y la consola
 (`lib/projects/carpetas.ts`, nuevo).

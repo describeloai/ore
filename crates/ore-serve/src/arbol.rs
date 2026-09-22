@@ -30,6 +30,21 @@ use ore_core::json::Json;
 use ore_entrada::http::Respuesta;
 use std::path::{Path, PathBuf};
 
+/// Todo lo que cuelga de un directorio, con sus bytes: lo que se va, y lo que
+/// habría que devolver si la puerta dijera que no.
+fn recoger(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) -> std::io::Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let p = e?.path();
+        if p.is_dir() {
+            recoger(&p, out)?;
+        } else {
+            let bytes = std::fs::read(&p)?;
+            out.push((p, bytes));
+        }
+    }
+    Ok(())
+}
+
 /// La ruta, comprobada: relativa, dentro del árbol, y no lo que se induce.
 fn ruta_valida(ruta: &str) -> Result<PathBuf, Respuesta> {
     let limpia = ruta.trim().trim_start_matches('/');
@@ -279,6 +294,14 @@ impl Servidor {
     }
 
     /// `DELETE /arbol/{ruta}`: fuera si el árbol no empeora.
+    ///
+    /// **Y una CARPETA también** (0035 ③b). Medido antes: en un árbol no hay
+    /// carpetas vacías —git no las guarda—, así que una carpeta **es lo que
+    /// tiene dentro**, y borrarla desde la consola era una racha de N llamadas
+    /// con N commits, cualquiera de los cuales podía quedarse a medias. Aquí es
+    /// **un commit**, pasa por la misma puerta («el árbol no empeora») y la
+    /// respuesta dice **qué ficheros se llevó**: borrar sin decir qué es
+    /// exactamente lo que nadie puede revisar después.
     pub(crate) fn retirar_fichero(
         &self,
         raiz: &Path,
@@ -290,6 +313,9 @@ impl Servidor {
             Err(r) => return r,
         };
         let p = raiz.join(&rel);
+        if p.is_dir() {
+            return self.retirar_carpeta(raiz, ruta, &p, si_commit);
+        }
         let Ok(texto) = std::fs::read_to_string(&p) else {
             return Respuesta::error(404, format!("no hay `{ruta}` en el árbol"));
         };
@@ -318,6 +344,65 @@ impl Servidor {
         Respuesta::ok(Json::obj([
             ("ruta", Json::s(relativo(raiz, &p))),
             ("retirado", Json::Bool(true)),
+        ]))
+    }
+
+    /// Una carpeta entera, en un commit (0035 ③b). Lo que hay dentro se guarda
+    /// en memoria para poder devolverlo si la puerta la rechaza: un `DELETE`
+    /// que empeora el árbol **no deja nada a medias**.
+    fn retirar_carpeta(
+        &self,
+        raiz: &Path,
+        ruta: &str,
+        dir: &Path,
+        si_commit: Option<&str>,
+    ) -> Respuesta {
+        let mut dentro: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        if let Err(e) = recoger(dir, &mut dentro) {
+            return Respuesta::error(500, format!("no se pudo leer `{ruta}`: {e}"));
+        }
+        // Una carpeta sin ficheros no existe para git: no hay nada que retirar.
+        if dentro.is_empty() {
+            return Respuesta::error(404, format!("no hay `{ruta}` en el árbol"));
+        }
+        // Lo que `.git/` guarda no se toca, y `ruta_valida` ya lo negó arriba.
+        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+            return r;
+        }
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let mut ficheros: Vec<String> = dentro.iter().map(|(f, _)| relativo(raiz, f)).collect();
+        ficheros.sort();
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
+        }
+        if let Err(mut r) = self.empeora(raiz, &antes, &format!("retirar `{ruta}/`")) {
+            for (f, bytes) in &dentro {
+                if let Some(padre) = f.parent() {
+                    let _ = std::fs::create_dir_all(padre);
+                }
+                let _ = std::fs::write(f, bytes);
+            }
+            if let Json::Obj(m) = &mut r.cuerpo
+                && let Some(Json::Arr(ds)) = m.get("diagnosticos").cloned()
+            {
+                m.insert(
+                    "diagnosticos".into(),
+                    Json::Arr(ds.iter().map(con_posicion).collect()),
+                );
+            }
+            return r;
+        }
+        Respuesta::ok(Json::obj([
+            ("ruta", Json::s(ruta.trim_matches('/'))),
+            ("retirado", Json::Bool(true)),
+            ("carpeta", Json::Bool(true)),
+            (
+                "ficheros",
+                Json::Arr(ficheros.iter().map(Json::s).collect()),
+            ),
         ]))
     }
 

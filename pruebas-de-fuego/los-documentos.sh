@@ -61,6 +61,12 @@
 #                                     PUT reescribe el manifiesto entero;
 #                                     DELETE se lleva la LENTE y lo que nombraba
 #                                     SIGUE en el arbol; y desde un puesto, 403
+#  21  carpetas (0035 ③b)          una carpeta es un fichero dentro (README);
+#                                     el indice la nombra en cuanto cae un
+#                                     documento; `DELETE /arbol/<carpeta>` se la
+#                                     lleva ENTERA en UN commit diciendo que
+#                                     ficheros; y si al irse el arbol empeora,
+#                                     422 y no se pierde nada
 #
 # Uso:  bash pruebas-de-fuego/los-documentos.sh
 set -u
@@ -517,5 +523,51 @@ CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: ag
 [ "$CODIGO" = "403" ] || falla "20 · un agente creo un proyecto ($CODIGO) · $(cat "$TMP/r.json")"
 dice "20 · /proyectos: crear es un commit del sujeto (id del titulo) · nombre repetido 409 · lo que no resuelve entra y se dice · /assets los trae con sus items y cada item en plural · PUT el manifiesto entero · DELETE se lleva la lente y NO lo que nombraba"
 
+# ── 21 · las carpetas de un proyecto (0035 ③b) ──────────────────────────────
+printf '# Ingesta\n' > "$TMP/carpeta.md"
+[ "$(pon packages/hr/ingesta/README.md "$TMP/carpeta.md")" = "201" ] || falla "21 · el README de la carpeta no entro · $(cat "$TMP/r.json")"
+cumple "d['diagnosticos']==[] and d['commit']" "21 · una carpeta se crea con un fichero dentro, y compila"
+[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' not in [p['carpetas'] for p in d['paquetes']][0]" "21 · con solo un README, el indice NO la nombra (cuenta items, no carpetas)"
+cat > "$TMP/enIngesta.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: enIngesta, namespace: hr }
+spec:
+  owner: team:people-data
+  from: { view: empleados }
+  fields:
+    id: employeeId
+Y
+[ "$(pon packages/hr/ingesta/views/enIngesta.yaml "$TMP/enIngesta.yaml")" = "201" ] || falla "21 · el documento dentro de la carpeta no entro · $(cat "$TMP/r.json")"
+[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · con un documento dentro, el indice SI la nombra"
+# una carpeta que al irse rompe el arbol: 422/409 y no se pierde nada
+cat > "$TMP/laQueUsa.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: laQueUsa, namespace: hr }
+spec:
+  owner: team:people-data
+  from: { view: enIngesta }
+  fields:
+    id: id
+Y
+[ "$(pon packages/hr/views/laQueUsa.yaml "$TMP/laQueUsa.yaml")" = "201" ] || falla "21 · la vista que usa la de dentro no entro · $(cat "$TMP/r.json")"
+ANTES=$(cabeza)
+CODIGO=$(pide DELETE /arbol/packages/hr/ingesta)
+[ "$CODIGO" = "422" ] || [ "$CODIGO" = "409" ] || falla "21 · borrar una carpeta que rompe el arbol dio $CODIGO · $(cat "$TMP/r.json")"
+[ "$(cabeza)" = "$ANTES" ] || falla "21 · un borrado rechazado hizo commit"
+[ "$(pide GET /arbol/packages/hr/ingesta/views/enIngesta.yaml)" = "200" ] || falla "21 · el rechazo se llevo lo de dentro"
+[ "$(pide DELETE /arbol/packages/hr/views/laQueUsa.yaml)" = "200" ] || falla "21 · no se pudo quitar la que usaba"
+# y ahora la carpeta entera, en UN commit, diciendo que ficheros
+ANTES=$(cabeza)
+[ "$(pide DELETE /arbol/packages/hr/ingesta)" = "200" ] || falla "21 · DELETE de la carpeta · $(cat "$TMP/r.json")"
+cumple "d['carpeta'] is True and d['retirado'] is True and sorted(d['ficheros'])==['packages/hr/ingesta/README.md','packages/hr/ingesta/views/enIngesta.yaml']" "21 · se lleva los dos ficheros y los dice"
+[ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "21 · la carpeta se fue en mas de un commit"
+[ "$(asunto)" = 'retirar `packages/hr/ingesta`' ] || falla "21 · el asunto: $(asunto)"
+[ "$(pide GET /arbol/packages/hr/ingesta/README.md)" = "404" ] || falla "21 · el README sigue"
+[ "$(pide DELETE /arbol/packages/hr/ingesta)" = "404" ] || falla "21 · una carpeta que no esta no dio 404"
+[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' not in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · el indice ya no la nombra"
+dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra cuando cae un documento · DELETE de la carpeta se la lleva entera en UN commit diciendo que ficheros · si al irse el arbol empeora, 422 y nada se pierde"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); escribir es un commit del sujeto que no empeora el arbol"
