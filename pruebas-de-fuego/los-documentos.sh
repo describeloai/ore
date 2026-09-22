@@ -67,6 +67,11 @@
 #                                     ya es uno; una clase inventada, 422 con
 #                                     las que hay; PUT conserva la prosa; y
 #                                     borrar su carpeta se lleva el manifiesto
+#  23  lo acotado (0036 ④)         `X-Ore-Raiz` en `GET /arbol`: el editor abre
+#                                     SU carpeta y no la celda; la cabeza del
+#                                     arbol no cambia; un alcance que no es una
+#                                     carpeta de paquete, 422, y una que no
+#                                     esta, 404
 #  21  carpetas (0035 ③b)          una carpeta es un fichero dentro (README);
 #                                     el indice la nombra en cuanto cae un
 #                                     documento; `DELETE /arbol/<carpeta>` se la
@@ -619,5 +624,38 @@ cumple "d['carpeta'] is True and 'packages/hr/raw/README.md' in d['ficheros']" "
 [ "$(pide DELETE /proyectos/personas)" = "200" ] || falla "22 · no se pudo retirar el proyecto de la prueba"
 dice "22 · /repositorios: nace ENTERO (manifiesto + semilla + el proyecto que lo nombra, en UN commit) · la carpeta cogida 409 · la clase inventada 422 con las que hay · PUT conserva la prosa · desde un puesto 403 · borrar la carpeta se lleva el manifiesto"
 
+# ── 23 · lo acotado: el editor abre SU carpeta (0036 ④) ─────────────────────
+[ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"Raw","plantilla":"transforms"}')" = "201" ] \
+  || falla "23 · el repositorio de la prueba no entro · $(cat "$TMP/r.json")"
+[ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"clean","nombre":"Clean","plantilla":"analytics"}')" = "201" ] \
+  || falla "23 · el segundo repositorio no entro · $(cat "$TMP/r.json")"
+[ "$(pide GET /arbol)" = "200" ] || falla "23 · GET /arbol · $(cat "$TMP/r.json")"
+TODOS=$(campo "len(d['ficheros'])")
+CABEZA_ARBOL=$(campo "d['cabeza']")
+acotado() { # ruta-raiz
+  curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" -H "x-ore-raiz: $1" "$BASE/arbol"
+}
+[ "$(acotado packages/hr/raw)" = "200" ] || falla "23 · GET /arbol acotado · $(cat "$TMP/r.json")"
+cumple "d['raiz']=='packages/hr/raw' and d['cabeza']=='$CABEZA_ARBOL'" "23 · dice su raiz, y la cabeza es la del arbol (el arbol es uno)"
+cumple "all(f['ruta'].startswith('packages/hr/raw/') for f in d['ficheros'])" "23 · solo lo suyo"
+cumple "0 < len(d['ficheros']) < $TODOS" "23 · menos que la celda entera ($TODOS)"
+cumple "any(f['ruta']=='packages/hr/raw/README.md' for f in d['ficheros']) and any(f['ruta']=='packages/hr/raw/transforms/ejemplo.py' for f in d['ficheros'])" "23 · el manifiesto y la semilla, dentro"
+[ "$(acotado packages/hr/clean)" = "200" ] && cumple "all('clean' in f['ruta'] for f in d['ficheros'])" "23 · el de al lado ve lo suyo, no lo de este"
+[ "$(acotado otra/cosa/aqui)" = "422" ] || falla "23 · un alcance que no es una carpeta de paquete no dio 422"
+[ "$(acotado packages/hr/noexiste)" = "404" ] || falla "23 · una carpeta que no esta no dio 404"
+[ "$(pide GET /arbol)" = "200" ] && cumple "len(d['ficheros'])==$TODOS and 'raiz' not in d" "23 · sin cabecera, la celda entera como siempre"
+# y las propuestas, acotadas (aqui el arbol es solo main: la lista esta vacia,
+# pero el alcance viaja y se dice)
+CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" -H "x-ore-raiz: packages/hr/raw" "$BASE/propuestas")
+# (este arbol es `file://`, sin API de forja: 422 «no sabe de propuestas». Lo que
+#  se comprueba aqui es que la CABECERA no rompe la ruta; el filtro de verdad lo
+#  mide `medida-el-repositorio.py` §4 contra una forja con API.)
+case "$CODIGO" in 200|422|501|502) ;; *) falla "23 · GET /propuestas acotado dio $CODIGO · $(cat "$TMP/r.json")";; esac
+CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" -H "x-ore-raiz: otra/cosa" "$BASE/propuestas")
+[ "$CODIGO" = "422" ] || falla "23 · un alcance invalido en /propuestas no dio 422"
+[ "$(pide DELETE /arbol/packages/hr/raw)" = "200" ] || falla "23 · no se pudo retirar el repositorio de la prueba"
+[ "$(pide DELETE /arbol/packages/hr/clean)" = "200" ] || falla "23 · no se pudo retirar el segundo"
+dice "23 · lo acotado: GET /arbol con X-Ore-Raiz trae SOLO su carpeta (la cabeza sigue siendo la del arbol) · el de al lado ve lo suyo · sin cabecera, la celda entera · 422 lo que no es carpeta de paquete, 404 lo que no esta"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); el arbol acotado a un repositorio (0036 ④); escribir es un commit del sujeto que no empeora el arbol"

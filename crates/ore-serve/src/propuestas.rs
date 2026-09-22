@@ -425,18 +425,50 @@ impl Servidor {
     // ── Propuestas ─────────────────────────────────────────────────────────
 
     /// `GET /propuestas`: todas, con su estado (`abierta`, `fusionada`, `cerrada`).
-    pub(crate) fn propuestas(&self) -> Respuesta {
+    /// `GET /propuestas`, y con `alcance` (0036 ④) **sólo las de un
+    /// repositorio**: las que tocan algún fichero bajo su carpeta.
+    ///
+    /// El filtro mira **los ficheros**, no el nombre de la rama: una rama se
+    /// llama como quien la abrió quiera, y la pregunta es «¿esta propuesta
+    /// cambia lo mío?». Cuesta una llamada por propuesta abierta, así que sólo
+    /// se paga cuando se pide, y se dice en la respuesta (`alcance`).
+    pub(crate) fn propuestas(&self, alcance: Option<&str>) -> Respuesta {
         let api = match self.api() {
             Ok(a) => a,
             Err(r) => return r,
         };
-        match api.pulls("all") {
-            Ok(prs) => Respuesta::ok(Json::obj([(
+        let prs = match api.pulls("all") {
+            Ok(p) => p,
+            Err(e) => return de_la_forja(e),
+        };
+        let Some(dentro) = alcance.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Respuesta::ok(Json::obj([(
                 "propuestas",
                 Json::Arr(prs.iter().map(propuesta_de).collect()),
-            )])),
-            Err(e) => de_la_forja(e),
+            )]));
+        };
+        let prefijo = format!("{}/", dentro.trim_matches('/'));
+        let mut suyas = Vec::new();
+        for pr in &prs {
+            let n = numero(pr, "number").unwrap_or(0) as u64;
+            // Si la forja no sabe decir qué ficheros toca, la propuesta NO se
+            // esconde: es mejor enseñar de más que callar un cambio que sí es
+            // tuyo. Se dice cuál no se pudo mirar.
+            let toca = match api.ficheros(n) {
+                Ok(fs) => fs.iter().any(|f| {
+                    campo(f, "filename")
+                        .is_some_and(|r| r.starts_with(&prefijo) || r == dentro.trim_matches('/'))
+                }),
+                Err(_) => true,
+            };
+            if toca {
+                suyas.push(propuesta_de(pr));
+            }
         }
+        Respuesta::ok(Json::obj([
+            ("propuestas", Json::Arr(suyas)),
+            ("alcance", Json::s(dentro.trim_matches('/'))),
+        ]))
     }
 
     /// `POST /propuestas {rama, titulo, descripcion?}`: la PR de la rama a `main`,

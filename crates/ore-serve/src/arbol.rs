@@ -131,13 +131,33 @@ pub(crate) fn con_posicion(d: &Json) -> Json {
     Json::Obj(m)
 }
 
-/// `GET /arbol`: el índice, de `git ls-files`, con el kind de cada YAML.
-pub(crate) fn indice(raiz: &Path) -> Respuesta {
+/// **`GET /arbol`: el índice, de `git ls-files`, con el kind de cada YAML** — y,
+/// desde 0036 ④, el de un alcance** (0036 ④): lo que el editor abre cuando está
+/// dentro de un repositorio. `raiz_rel` es su carpeta
+/// (`packages/<p>/<carpeta>`, de `X-Ore-Raiz`); sin ella, la celda entera,
+/// como siempre.
+///
+/// Medido antes (0035 ⑥ §4): el editor pedía el árbol de la celda —24 ficheros
+/// en acme-retail— para enseñar **uno** del repositorio. Acotar no es una
+/// comodidad de pantalla: es dejar de traer lo que no es tuyo.
+///
+/// La **cabeza no cambia**: es la del árbol, porque el árbol es uno. Lo que se
+/// acota es qué ficheros se listan, no de qué commit se habla.
+pub(crate) fn indice_en(raiz: &Path, raiz_rel: Option<&str>) -> Respuesta {
     let Some(lista) = git(raiz, &["ls-files"]) else {
         return Respuesta::error(500, "no se pudo listar el árbol");
     };
+    let dentro = raiz_rel
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("{}/", s.trim_matches('/')));
     let mut ficheros = Vec::new();
     for rel in lista.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(p) = &dentro
+            && !rel.starts_with(p.as_str())
+        {
+            continue;
+        }
         let p = raiz.join(rel);
         let bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
         let mut f = vec![("ruta", Json::s(rel)), ("bytes", Json::Int(bytes as i64))];
@@ -152,13 +172,17 @@ pub(crate) fn indice(raiz: &Path) -> Respuesta {
         }
         ficheros.push(Json::obj(f));
     }
-    Respuesta::ok(Json::obj([
+    let mut m = vec![
         (
             "cabeza",
             cabeza_de(raiz).map(Json::s).unwrap_or(Json::Bool(false)),
         ),
         ("ficheros", Json::Arr(ficheros)),
-    ]))
+    ];
+    if let Some(p) = &dentro {
+        m.push(("raiz", Json::s(p.trim_end_matches('/'))));
+    }
+    Respuesta::ok(Json::obj(m))
 }
 
 /// `GET /arbol/{ruta}`: el texto y el commit que lo trajo.

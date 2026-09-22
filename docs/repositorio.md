@@ -97,7 +97,7 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
   descubre: sin alcance el `pyproject.toml` de un repositorio **no se leía**, así que sus
   dependencias tenían que subir al paquete, donde las baja todo el mundo.
 
-## ④ Lo acotado: el editor, la sesión, la rama y las propuestas
+## ④ Lo acotado: el editor, la sesión, la rama y las propuestas ✓
 
 **Dónde**: `crates/ore-serve/src/{arbol,puestos,propuestas}.rs`.
 
@@ -113,6 +113,10 @@ Son **tres cosas y ninguna cara** (§4 las midió):
   y `los-documentos.sh` (el árbol acotado, y las propuestas de un prefijo). **Medida** §4: «24
   ficheros de la celda / el MISMO puesto / `ana/puesto` / no filtra» → «los suyos / dos /
   `ana/<repo>` / filtra».
+- **Hecho**: `indice_en(raiz, alcance)` con `X-Ore-Raiz` (la **cabeza no cambia**: se acota qué
+  se lista, no de qué commit se habla), `id_de(persona, entorno, repositorio)` con rama
+  `<persona>/<repo>`, y `/propuestas` filtrando **por ficheros** (no por nombre de rama), que
+  sólo se paga cuando se pide. Un `POST /trabajos` sigue sin repositorio: no es una sesión.
 
 ## ⑤ La clase: la tabla del producto, con techo y versión
 

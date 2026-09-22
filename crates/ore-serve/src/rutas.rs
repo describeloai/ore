@@ -345,7 +345,24 @@ impl Servidor {
             // ── 0030 W0 · el árbol por ruta (`arbol.rs`): lo que el editor abre ──
             //   Y desde W2, EN LA RAMA que diga `X-Ore-Rama` (`propuestas.rs`);
             //   sin cabecera, `main`, como siempre.
-            ("GET", ["arbol"]) => self.leyendo_en(rama, arbol::indice),
+            // ⭐ 0036 ④: `X-Ore-Raiz` acota el índice a la carpeta de un
+            //   repositorio. Sin ella, la celda entera, como siempre.
+            ("GET", ["arbol"]) => {
+                let raiz = match crate::entorno::alcance_valido(
+                    p.cabeceras.get("x-ore-raiz").map(String::as_str),
+                ) {
+                    Ok(a) => a,
+                    Err(r) => return r,
+                };
+                self.leyendo_en(rama, move |d| {
+                    if let Some(a) = &raiz
+                        && !d.join(a).is_dir()
+                    {
+                        return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
+                    }
+                    arbol::indice_en(d, raiz.as_deref())
+                })
+            }
             ("GET", ["arbol", "diagnosticos"]) => {
                 self.leyendo_en(rama, |r| self.diagnosticos_del_arbol(r))
             }
@@ -493,7 +510,16 @@ impl Servidor {
             ("POST", ["datasets", ns, n, "confirmar"]) => {
                 self.confirmar_dataset(sujeto, ns, n, &p.cuerpo)
             }
-            ("GET", ["propuestas"]) => self.propuestas(),
+            // ⭐ 0036 ④: con `X-Ore-Raiz`, sólo las que tocan SUS ficheros —la
+            //   pestaña «Pull requests» de un repositorio—.
+            ("GET", ["propuestas"]) => {
+                match crate::entorno::alcance_valido(
+                    p.cabeceras.get("x-ore-raiz").map(String::as_str),
+                ) {
+                    Ok(a) => self.propuestas(a.as_deref()),
+                    Err(r) => r,
+                }
+            }
             ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
             ("GET", ["propuestas", n]) => match n.parse::<u64>() {
                 Ok(n) => self.propuesta(n),

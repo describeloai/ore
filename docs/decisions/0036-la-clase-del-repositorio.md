@@ -231,6 +231,40 @@ de la celda—. Es decir, hasta hoy un repositorio **no podía declarar nada**: 
 tenían que subir al paquete o a la raíz, y **ahí las baja todo el mundo**. Lo que ③ arregla no
 es sólo que no pesen: es que **puedan existir donde tienen que existir**.
 
+### ④ Lo acotado: el editor, la sesión, la rama y las propuestas
+
+Tres cosas, y ninguna cara — como la medida prometía:
+
+- **El editor** (`arbol.rs`): `GET /arbol` acepta `X-Ore-Raiz: packages/<p>/<carpeta>` y devuelve
+  **sólo lo suyo**, diciendo en `raiz` a qué se acotó. **La cabeza no cambia**: es la del árbol,
+  porque el árbol es uno — se acota **qué se lista**, no de qué commit se habla.
+- **La sesión** (`puestos.rs`): `id_de(persona, entorno, repositorio)` toma **la última carpeta**
+  del alcance, que es como se llama el repositorio para quien trabaja, y la rama por defecto pasa
+  a `<persona>/<repo>`. Sin repositorio, todo como antes.
+- **Las propuestas** (`propuestas.rs`): con `X-Ore-Raiz`, sólo las que **tocan sus ficheros**. Se
+  mira **los ficheros y no el nombre de la rama**: una rama se llama como quien la abrió quiera,
+  y la pregunta es «¿esto cambia lo mío?». Cuesta una llamada por propuesta, así que **sólo se
+  paga cuando se pide**, y si la forja no sabe decir qué ficheros toca una, **no se esconde**:
+  más vale enseñar de más que callar un cambio que sí es tuyo.
+
+Un `POST /trabajos` **sigue sin repositorio**: no es una sesión, corre y termina. Acotarlo por la
+carpeta de su fichero sería otra decisión, y se toma cuando una medida la pida.
+
+**Medida §4, antes y ahora**:
+
+| | antes | ahora |
+|---|---|---|
+| `GET /arbol` | **24 ficheros** de la celda; del repo, 1 | con `X-Ore-Raiz`, **sólo los suyos**, y `raiz` dicha |
+| la cabeza | — | **la misma**: el árbol es uno |
+| dos repos, misma persona | **el mismo** `puesto-ana-python` | **dos**: `puesto-ana-python-raw` y `…-clean` |
+| la rama | `ana/puesto` para los dos | `ana/raw` y `ana/clean` |
+| `/propuestas` | **no filtraba** | filtra por ruta, y dice el `alcance` |
+| un alcance inválido · uno que no existe | — | **422** · **404** |
+
+La prueba (`los-documentos.sh` 23): dos repositorios en el mismo paquete; el acotado trae el
+manifiesto y la semilla **y nada más**, el de al lado ve lo suyo, sin cabecera vuelve la celda
+entera, y los dos errores salen con su código.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

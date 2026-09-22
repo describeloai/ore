@@ -175,16 +175,31 @@ impl std::fmt::Debug for Puestos {
 }
 
 /// `persona:ana` + `node` → `puesto-ana-node`; un `sub` opaco, recortado y en
-/// minúsculas. Uno por persona y entorno.
-pub(crate) fn id_de(persona: &str, entorno: &str) -> String {
-    let s = persona.rsplit(':').next().unwrap_or(persona);
-    let s = cola::nombre_de_objeto(s);
-    let s = if s.len() > 24 {
-        s[..24].trim_end_matches('-').to_string()
-    } else {
-        s
+/// minúsculas. Uno por persona, entorno **y repositorio** (0036 ④).
+///
+/// Hasta 0036 era uno por persona y entorno: dos repositorios de la misma
+/// persona recibían **el mismo puesto** (medido, 0035 ⑥ §4), y con él la misma
+/// capa, la misma rama y el mismo «lo mío». El repositorio es la unidad de
+/// trabajo, así que la sesión es suya: del alcance se toma **la última
+/// carpeta**, que es como se llama el repositorio para quien trabaja.
+pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> String {
+    let corto = |s: &str, n: usize| {
+        let s = cola::nombre_de_objeto(s);
+        if s.len() > n {
+            s[..n].trim_end_matches('-').to_string()
+        } else {
+            s
+        }
     };
-    format!("puesto-{s}-{entorno}")
+    let quien = corto(persona.rsplit(':').next().unwrap_or(persona), 24);
+    match repositorio
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|r| r.trim_matches('/').rsplit('/').next().map(str::to_string))
+    {
+        Some(repo) => format!("puesto-{quien}-{entorno}-{}", corto(&repo, 20)),
+        None => format!("puesto-{quien}-{entorno}"),
+    }
 }
 
 /// Los lenguajes que una celda puede llevar.
@@ -343,11 +358,11 @@ impl Servidor {
         {
             return Respuesta::error(422, m);
         }
-        let rama = match self.rama_del_puesto(sujeto, rama) {
+        let rama = match self.rama_del_puesto(sujeto, rama, repositorio.as_deref()) {
             Ok(r) => r,
             Err(r) => return r,
         };
-        let id = id_de(&sujeto.persona, entorno);
+        let id = id_de(&sujeto.persona, entorno, repositorio.as_deref());
         {
             let lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
@@ -538,7 +553,11 @@ impl Servidor {
         {
             return Respuesta::error(422, m);
         }
-        let rama = match self.rama_del_puesto(sujeto, rama) {
+        // Un trabajo (`POST /trabajos`) no es una sesión: corre y termina. Por
+        // eso sigue sin repositorio —su rama y su nombre son los de antes—;
+        // acotarlo por la carpeta del fichero sería otra decisión, y se toma
+        // cuando haya una medida que la pida.
+        let rama = match self.rama_del_puesto(sujeto, rama, None) {
             Ok(r) => r,
             Err(r) => return r,
         };
@@ -593,7 +612,7 @@ impl Servidor {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let h = ore_core::digest::de_bytes(format!("{codigo}|{commit}|{ahora}").as_bytes());
-        let quien = id_de(&sujeto.persona, entorno);
+        let quien = id_de(&sujeto.persona, entorno, None);
         let quien = quien
             .strip_prefix("puesto-")
             .and_then(|q| q.strip_suffix(&format!("-{entorno}")))
@@ -1143,6 +1162,7 @@ impl Servidor {
         &self,
         sujeto: &Identidad,
         rama: Option<String>,
+        repositorio: Option<&str>,
     ) -> Result<Option<String>, Respuesta> {
         if rama.is_some() {
             return Ok(rama);
@@ -1150,7 +1170,17 @@ impl Servidor {
         let crate::rutas::Arbol::Forja(forja) = &self.arbol else {
             return Ok(None);
         };
-        let nombre = format!("{}/puesto", crate::propuestas::prefijo_de(&sujeto.persona));
+        // 0036 ④: `<persona>/<repo>` cuando se trabaja en uno. Dos repositorios
+        // de la misma persona dejan de pisarse la rama; sin repositorio, la de
+        // siempre (`<persona>/puesto`).
+        let donde = repositorio
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|r| r.trim_matches('/').rsplit('/').next())
+            .map(cola::nombre_de_objeto)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "puesto".to_string());
+        let nombre = format!("{}/{donde}", crate::propuestas::prefijo_de(&sujeto.persona));
         match forja.asegurar_rama(&nombre) {
             Ok(_) => Ok(Some(nombre)),
             Err(e) => Err(Respuesta::error(
@@ -1787,15 +1817,34 @@ mod prueba {
     }
 
     #[test]
-    fn el_id_sale_de_la_persona_y_del_entorno() {
-        assert_eq!(id_de("persona:ana", "python"), "puesto-ana-python");
+    fn el_id_sale_de_la_persona_del_entorno_y_del_repositorio() {
+        assert_eq!(id_de("persona:ana", "python", None), "puesto-ana-python");
         assert_eq!(
-            id_de("persona:Ana García", "node"),
+            id_de("persona:Ana García", "node", None),
             "puesto-ana-garc-a-node"
         );
         assert_eq!(
-            id_de("4f0a9c2e-1b2c-4d5e-8f90-1234567890ab", "jvm"),
+            id_de("4f0a9c2e-1b2c-4d5e-8f90-1234567890ab", "jvm", None),
             "puesto-4f0a9c2e-1b2c-4d5e-8f90-jvm"
+        );
+        // 0036 ④: dos repositorios de la misma persona son DOS sesiones.
+        assert_eq!(
+            id_de("persona:ana", "python", Some("packages/hr/raw")),
+            "puesto-ana-python-raw"
+        );
+        assert_ne!(
+            id_de("persona:ana", "python", Some("packages/hr/raw")),
+            id_de("persona:ana", "python", Some("packages/hr/clean"))
+        );
+        // El nombre del repositorio también se acorta y se limpia.
+        assert_eq!(
+            id_de("persona:ana", "python", Some("packages/hr/Con Espacios")),
+            "puesto-ana-python-con-espacios"
+        );
+        assert_eq!(
+            id_de("persona:ana", "python", Some("  ")),
+            "puesto-ana-python",
+            "sin repositorio, el de siempre"
         );
     }
 

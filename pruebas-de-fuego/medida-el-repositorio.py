@@ -18,8 +18,8 @@ sobre los árboles de verdad.
                       «last edited by / last edited» de la lista sale del árbol
                       tal cual, o hay que inventarlo
   §3  CUÁNTOS         cuántas carpetas serían repositorio hoy, y de qué tamaño
-  §4  LO QUE ACOTA    qué NO está acotado hoy, contado: el índice del editor, la
-                      sesión del puesto, la rama y las propuestas
+  §4  LO QUE ACOTA    el índice del editor, la sesión del puesto, la rama y las
+                      propuestas: medido sin acotar, y ahora con `X-Ore-Raiz`
   §5  LA CONSOLA      la lista de la captura, columna a columna: qué campo la
                       llena y cuál no existe; y qué queda mock en el BuildPicker
   §6  LA CAPA         lo que 0036 ③ rompe: hoy la capa es la unión del árbol
@@ -241,7 +241,7 @@ def cuantos(arboles):
 
 # ── §4 · lo que hoy NO está acotado ────────────────────────────────────────
 def lo_que_acota(tmp, procs):
-    print("§4 · lo que hoy NO está acotado: el editor, la sesión, la rama, las propuestas")
+    print("§4 · lo acotado (0036 ④): el editor, la sesión, la rama y las propuestas")
     forja = tmp + "/rep.git"
     git("init", "-q", "--bare", "-b", "main", forja)
     semilla = tmp + "/rep-semilla"
@@ -282,30 +282,53 @@ def lo_que_acota(tmp, procs):
             pass
         time.sleep(0.25)
 
-    # (a) el editor: ¿se puede pedir el árbol de UNA carpeta?
+    def con_raiz(ruta, alcance):
+        r = urllib.request.Request(base + ruta, method="GET")
+        r.add_header("x-ore-sujeto", "persona:ana")
+        if alcance:
+            r.add_header("x-ore-raiz", alcance)
+        try:
+            with urllib.request.urlopen(r, timeout=60) as resp:
+                t = resp.read().decode("utf-8")
+                return resp.status, (json.loads(t) if t.strip().startswith(("{", "[")) else t)
+        except urllib.error.HTTPError as e:
+            return e.code, {"error": e.read().decode("utf-8", "replace")[:120]}
+
+    # (a) el editor: el árbol de UNA carpeta
     c, r, ms = pide(base, "GET", "/arbol")
     todos = [f["ruta"] for f in (r or {}).get("ficheros", [])]
     dentro = [x for x in todos if x.startswith("packages/hr/raw/")]
-    fila("`GET /arbol` (lo que el editor abre)", "%d ficheros · %d ms" % (len(todos), ms),
-         "del repositorio `hr/raw`: %d  ← el editor ve la CELDA entera" % len(dentro))
-    c2, r2, _ = pide(base, "GET", "/arbol/packages/hr/raw")
-    fila("  ¿y pedir sólo su carpeta?", "%s" % c2, (r2.get("error") or str(r2))[:70])
+    fila("`GET /arbol` sin cabecera (la celda)", "%d ficheros · %d ms" % (len(todos), ms),
+         "del repositorio `hr/raw`: %d" % len(dentro))
+    c2, r2 = con_raiz("/arbol", "packages/hr/raw")
+    suyos = [f["ruta"] for f in (r2 or {}).get("ficheros", [])]
+    fila("  con `X-Ore-Raiz: packages/hr/raw`", "%s · %d ficheros" % (c2, len(suyos)),
+         "sólo lo suyo: %s · raíz dicha: %s" % (all(x.startswith("packages/hr/raw/") for x in suyos), (r2 or {}).get("raiz")))
+    fila("  la cabeza", "%s" % str((r2 or {}).get("cabeza"))[:12],
+         "la del árbol: %s  ← se acota QUÉ se lista, no de qué commit se habla" % ((r2 or {}).get("cabeza") == (r or {}).get("cabeza")))
+    c2b, r2b = con_raiz("/arbol", "otra/cosa/aqui")
+    c2c, r2c = con_raiz("/arbol", "packages/hr/noexiste")
+    fila("  un alcance que no es carpeta de paquete · una que no está", "%s · %s" % (c2b, c2c), "422 y 404")
 
-    # (b) la sesión: dos repos, ¿dos puestos?
-    c3, p1, _ = pide(base, "POST", "/puestos", {"lenguaje": "python"})
-    c4, p2, _ = pide(base, "POST", "/puestos", {"lenguaje": "python"})
+    # (b) la sesión: dos repos, dos puestos
+    c3, p1, _ = pide(base, "POST", "/puestos", {"lenguaje": "python", "repositorio": "packages/hr/raw"})
+    c4, p2, _ = pide(base, "POST", "/puestos", {"lenguaje": "python", "repositorio": "packages/hr/clean"})
     fila("ana abre un puesto en `hr/raw` y otro en `hr/clean`", "%s / %s" % (c3, c4),
-         "ids: %s vs %s  ← %s" % (p1.get("id"), p2.get("id"), "el MISMO" if p1.get("id") == p2.get("id") else "dos"))
-    fila("  la rama por defecto", "%s" % p1.get("rama"), "una por persona, no una por repositorio")
+         "ids: %s vs %s  ← %s" % (p1.get("id"), p2.get("id"), "el MISMO" if p1.get("id") == p2.get("id") else "DOS"))
+    fila("  las ramas", "%s / %s" % (p1.get("rama"), p2.get("rama")),
+         "una por persona y repositorio" if p1.get("rama") != p2.get("rama") else "la MISMA")
+    c3b, p3, _ = pide(base, "POST", "/puestos", {"lenguaje": "python"})
+    fila("  y sin repositorio", "%s" % p3.get("id"), "como siempre: uno por persona y entorno")
 
-    # (c) las propuestas: ¿se pueden pedir las de una carpeta?
+    # (c) las propuestas, acotadas
     c5, r5, _ = pide(base, "GET", "/propuestas")
-    claves = sorted((r5 or {}).get("propuestas", [{}])[0].keys()) if (r5 or {}).get("propuestas") else []
-    fila("`GET /propuestas`", "%d abiertas" % len((r5 or {}).get("propuestas", [])),
-         "campos: %s" % (", ".join(claves) or "—"))
+    c6, r6 = con_raiz("/propuestas", "packages/hr/raw")
+    fila("`GET /propuestas`", "%s" % c5,
+         "con `X-Ore-Raiz`: %s · alcance dicho: %s" % (c6, (r6 or {}).get("alcance") if isinstance(r6, dict) else "—"))
     src = lee(RAIZ + "/crates/ore-serve/src/propuestas.rs")
-    fila("  ¿filtran por ruta?", "no" if "ruta" not in src.split("pub(crate) fn propuestas")[-1][:1200] else "quizá",
-         "la pestaña «Pull requests» de un repo son las que tocan SUS rutas")
+    filtra = "api.ficheros(n)" in src.split("pub(crate) fn propuestas")[-1][:2000]
+    fila("  ¿filtra por ruta?", "sí" if filtra else "no",
+         "mira LOS FICHEROS, no el nombre de la rama: la pregunta es «¿esto cambia lo mío?»")
     print()
 
 
