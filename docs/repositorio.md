@@ -118,7 +118,7 @@ Son **tres cosas y ninguna cara** (§4 las midió):
   `<persona>/<repo>`, y `/propuestas` filtrando **por ficheros** (no por nombre de rama), que
   sólo se paga cuando se pide. Un `POST /trabajos` sigue sin repositorio: no es una sesión.
 
-## ⑤ La clase: la tabla del producto, con techo y versión
+## ⑤ La clase: la tabla del producto, con techo y versión ✓
 
 **Dónde**: `crates/ore-core/src/clases.rs` (nuevo, la tabla) + `puestos.rs` (el techo) + el índice.
 
@@ -133,6 +133,10 @@ Son **tres cosas y ninguna cara** (§4 las midió):
   columna «UPGRADE · Up to date» significa de verdad (0036, cotejado con Foundry).
 - **Prueba**: `el-puesto.sh`: desde un repo `analytics`, escribir es **403** aunque el transform
   declare `output`; desde el `transforms` de al lado, **201**.
+- **Hecho**: `escribe`/`ejecuta`/`perfil` en `clases.rs`; el techo al **abrir** (un `semantics`
+  es 422) y al **escribir** (el catálogo y `confirmar`, 403), con el puesto recordando su
+  repositorio y su clase; y `plantillaActual`/`actualizable` en el índice. `el-puesto.sh` 17 en
+  verde con agentes de verdad: el `analytics` lee y **no** escribe, ni a pelo ni declarándolo.
 
 ## ⑥ La consola: muchos sitios donde trabajar, en vez de uno
 

@@ -145,6 +145,14 @@ pub(crate) struct Puesto {
     pub pendientes: VecDeque<u64>,
     pub celdas: BTreeMap<u64, Celda>,
     pub trabajo: Option<Trabajo>,
+    /// **Dónde vive** (0036 ④): la carpeta del repositorio, si se dijo. De ella
+    /// salen su capa, su rama y su clase.
+    pub repositorio: Option<String>,
+    /// **La clase de su repositorio** (0036 ⑤), resuelta al abrir contra la
+    /// tabla del producto. Es un **techo**: lo que la clase no deja, no se
+    /// hace —aunque el código lo declare—, y lo que deja lo sigue decidiendo
+    /// el gobierno de siempre.
+    pub clase: Option<&'static ore_core::clases::Clase>,
     /// **Lo que el transform que corre declaró** (0031 W3.7 gobierno ⑤). El
     /// SDK lo dice al entrar en `@transform(inputs, output)` y lo retira al
     /// salir; mientras está, el servidor sólo resuelve sus `inputs` y sólo
@@ -232,6 +240,17 @@ fn ficha(id: &str, p: &Puesto) -> Json {
         p.estado.dice()
     };
     let mut f = ficha_base(id, p, estado);
+    // Dónde vive y de qué clase es (0036 ④ y ⑤): quien mire el puesto ve el
+    // repositorio, su plantilla y si esa clase deja escribir datos.
+    if let Json::Obj(m) = &mut f {
+        if let Some(r) = &p.repositorio {
+            m.insert("repositorio".into(), Json::s(r));
+        }
+        if let Some(c) = p.clase {
+            m.insert("plantilla".into(), Json::s(c.id));
+            m.insert("escribe".into(), Json::Bool(c.escribe));
+        }
+    }
     // Lo declarado, mientras corre (⑤): quien mire el puesto ve qué transform
     // hay dentro y qué dijo que iba a leer y escribir.
     if let (Some(t), Json::Obj(m)) = (&p.transform, &mut f) {
@@ -358,6 +377,54 @@ impl Servidor {
         {
             return Respuesta::error(422, m);
         }
+        // ⭐ La clase del repositorio (0036 ⑤): se lee de SU manifiesto y se
+        //   guarda con el puesto. Una clase que no ejecuta —`semantics`— no
+        //   abre sesión: lo suyo son documentos del árbol, y decirlo aquí
+        //   ahorra abrir un pod para nada.
+        let clase = match &repositorio {
+            None => None,
+            Some(a) => {
+                let r = self.leyendo_en(
+                    rama.as_deref(),
+                    |raiz| match ore_core::repositorios::leer(raiz)
+                        .into_iter()
+                        .find(|r| r.ruta == *a)
+                    {
+                        None => Respuesta::error(404, format!("`{a}` no es un repositorio")),
+                        Some(r) => Respuesta::ok(Json::obj([(
+                            "plantilla",
+                            r.plantilla
+                                .as_deref()
+                                .map(Json::s)
+                                .unwrap_or(Json::Crudo("null".into())),
+                        )])),
+                    },
+                );
+                if r.codigo != 200 {
+                    return r;
+                }
+                let id = match &r.cuerpo {
+                    Json::Obj(m) => match m.get("plantilla") {
+                        Some(Json::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                let c = ore_core::clases::de(&id);
+                if let Some(c) = c
+                    && !c.ejecuta
+                {
+                    return Respuesta::error(
+                        422,
+                        format!(
+                            "un repositorio `{}` no ejecuta: lo suyo son documentos del árbol, que se escriben por `/documentos` y `/arbol`",
+                            c.id
+                        ),
+                    );
+                }
+                c
+            }
+        };
         let rama = match self.rama_del_puesto(sujeto, rama, repositorio.as_deref()) {
             Ok(r) => r,
             Err(r) => return r,
@@ -475,6 +542,8 @@ impl Servidor {
             pendientes: VecDeque::new(),
             celdas: BTreeMap::new(),
             trabajo: None,
+            repositorio: repositorio.clone(),
+            clase,
             transform: None,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -650,6 +719,9 @@ impl Servidor {
                 commit: commit.clone(),
                 informe: None,
             }),
+            // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
+            repositorio: None,
+            clase: None,
             transform: None,
         };
         p.celdas.insert(
@@ -1329,6 +1401,17 @@ impl Servidor {
     }
 
     /// Lo declarado por el transform que corre en un puesto, si corre alguno.
+    /// La clase del repositorio donde vive un puesto, si vive en uno (0036 ⑤).
+    /// Es lo que el catálogo mira antes de dejar escribir.
+    pub(crate) fn clase_de(&self, id: &str) -> Option<&'static ore_core::clases::Clase> {
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|p| p.clase)
+    }
+
     pub(crate) fn transform_de(&self, id: &str) -> Option<Transform> {
         self.puestos
             .lista

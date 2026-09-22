@@ -507,6 +507,19 @@ impl Servidor {
             }
             ("GET", ["datasets"]) => self.datasets(rama),
             ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),
+            // El techo de la clase también aquí (0036 ⑤): `confirmar` mueve el
+            // puntero de un dataset, que es escribir.
+            ("POST", ["datasets", ns, n, "confirmar"])
+                if p.cabeceras
+                    .get(crate::puestos::PUESTO)
+                    .and_then(|id| self.clase_de(id.trim()))
+                    .is_some_and(|c| !c.escribe) =>
+            {
+                Respuesta::error(
+                    403,
+                    "este puesto vive en un repositorio que no escribe datos (0036 ⑤): confirmar mueve el puntero de un dataset",
+                )
+            }
             ("POST", ["datasets", ns, n, "confirmar"]) => {
                 self.confirmar_dataset(sujeto, ns, n, &p.cuerpo)
             }

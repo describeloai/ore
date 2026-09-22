@@ -578,6 +578,25 @@ fn el_indice_dice_en_que_repositorio_vive_cada_item() {
         "un README sin `plantilla` no es un repositorio, y lo roto se lista igual"
     );
 
+    // 0036 ⑤: la versión de la clase, comparada con la del producto.
+    let Json::Obj(uno) = &rs[0] else { panic!() };
+    assert_eq!(
+        uno["plantillaActual"],
+        Json::Int(ore_core::clases::de("transforms").unwrap().version)
+    );
+    assert_eq!(
+        uno["actualizable"],
+        Json::Bool(2 < ore_core::clases::de("transforms").unwrap().version),
+        "el manifiesto dice 2: actualizable si el producto va por más"
+    );
+    assert_eq!(uno["escribe"], Json::Bool(true), "un transforms escribe");
+    let Json::Obj(dos) = &rs[1] else { panic!() };
+    assert_eq!(
+        dos["actualizable"],
+        Json::Bool(true),
+        "sin `plantillaVersion`, se puede actualizar"
+    );
+
     // El ítem de la carpeta del cliente vive en SU repositorio; los demás, en ninguno.
     assert_eq!(
         item(&j, "view:ventas.pedidosEs")["repositorio"],

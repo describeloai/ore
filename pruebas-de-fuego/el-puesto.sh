@@ -56,7 +56,7 @@ PUERTO="${PUERTO:-8921}"
 PUERTO_SIN="${PUERTO_SIN:-8922}"
 BASE="http://127.0.0.1:$PUERTO"
 TMP="$(mktemp -d)"
-SRV=""; SRV2=""; AGENTE=""
+SRV=""; SRV2=""; AGENTE=""; AGENTE2=""
 
 falla() {
   echo "✗ $*" >&2
@@ -68,6 +68,7 @@ S3_PID=""
 limpiar() {
   [ -n "$S3_PID" ] && kill "$S3_PID" 2>/dev/null
   [ -n "$AGENTE" ] && kill "$AGENTE" 2>/dev/null
+  [ -n "${AGENTE2:-}" ] && kill "$AGENTE2" 2>/dev/null
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
   [ -n "$SRV2" ] && kill "$SRV2" 2>/dev/null
   rm -rf "$TMP"
@@ -573,6 +574,47 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   dice "16 · lo declarado, en el servidor: dentro de @transform, GET datos de lo no declarado es 403 y el catálogo de otra tabla también (a pelo, rodeando el SDK); GET /puestos lo dice; al salir se retira y todo vuelve a resolverse; lo declarado se escribe"
 fi
 
+# ── 17 · el techo de la clase (0036 ⑤) ──────────────────────────────────────
+#
+# Un repositorio `analytics` NO escribe datos, aunque su código lo declare: el
+# techo se aplica donde ya se decide quién escribe —el catálogo—, y no en el
+# SDK, que se rodea pidiendo a pelo. Y un `semantics` ni siquiera abre sesión.
+if [ "${ESCRITO_OK:-no}" = si ]; then
+  [ "$(pide POST /repositorios "$ANA" '{"paquete":"hr","carpeta":"mirar","nombre":"Mirar","plantilla":"analytics"}')" = "201" ] \
+    || falla "17 · crear el repositorio analytics: $(cuerpo)"
+  [ "$(pide POST /repositorios "$ANA" '{"paquete":"hr","carpeta":"semantica","nombre":"Semantica","plantilla":"semantics"}')" = "201" ] \
+    || falla "17 · crear el repositorio semantics: $(cuerpo)"
+  # el que no ejecuta no abre sesión
+  [ "$(pide POST /puestos "$ANA" '{"lenguaje":"python","repositorio":"packages/hr/semantica"}')" = "422" ] \
+    && grep -q "no ejecuta" "$TMP/r.json" || falla "17 · un semantics abrió puesto: $(cuerpo)"
+  # el analytics abre, y su ficha lo dice
+  [ "$(pide POST /puestos "$ANA" '{"lenguaje":"python","repositorio":"packages/hr/mirar"}')" = "201" ] \
+    || falla "17 · abrir el puesto del analytics: $(cuerpo)"
+  tiene "d['id']=='puesto-ana-python-mirar' and d['plantilla']=='analytics' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
+    || falla "17 · la ficha del puesto no dice su clase: $(cuerpo)"
+  ORE_SERVE="$BASE" PUESTO=puesto-ana-python-mirar ORE_SUJETO=agente:mirar ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente-mirar.txt" 2>&1 &
+  AGENTE2=$!
+  for _ in $(seq 1 40); do pide GET /puestos/puesto-ana-python-mirar "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
+  tiene "d['estado']=='vivo'" || falla "17 · el puesto del analytics no pasa a vivo: $(cuerpo)"
+  P=puesto-ana-python-mirar; LEN=python
+  # leer, sí
+  celda 'import json; c, _ = ore.puesto.pedir(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.lago\"); print(json.dumps(c))' \
+    && tiene "d['salida']['texto'].strip()=='200'" || falla "17 · un analytics no pudo LEER: $(cuerpo)"
+  # escribir, no: ni por el SDK ni a pelo, ni aunque lo declare un transform
+  celda 'import json; c, _ = ore.puesto.pedir(\"POST\", \"/v1/namespaces/hr/tables\", {\"name\": \"prohibida\"}); print(json.dumps(c))' \
+    && tiene "d['salida']['texto'].strip()=='403'" || falla "17 · el catálogo dejó crear una tabla desde un analytics: $(cuerpo)"
+  celda '@transform(inputs=[\"hr.lago\"], output=\"hr.prohibida\")\ndef t():\n    return write(\"hr.prohibida\", over(\"hr.lago\", como=\"arrow\"))\ntry:\n    t()\n    print(\"ESCRIBIO\")\nexcept Exception as e:\n    print(type(e).__name__)' \
+    && tiene "'ESCRIBIO' not in d['salida'].get('texto','') and d['salida']['tipo'] in ('texto','error')" \
+    || falla "17 · un analytics escribió aunque el transform lo declaraba: $(cuerpo)"
+  [ ! -f "$A/datasets/hr_prohibida.json" ] || falla "17 · quedó el puntero de lo que no se podía escribir"
+  [ "$(pide DELETE /puestos/puesto-ana-python-mirar "$ANA")" = "200" ] || falla "17 · cerrar el puesto del analytics: $(cuerpo)"
+  for _ in $(seq 1 100); do kill -0 "$AGENTE2" 2>/dev/null || break; sleep 0.25; done
+  AGENTE2=""
+  P=puesto-ana-python; LEN=python
+  dice "17 · el techo de la clase: un semantics no abre sesión (422); un analytics abre, LEE (200) y NO escribe —el catálogo es 403 a pelo y el transform que lo declara tampoco escribe—, y no queda puntero"
+fi
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -635,7 +677,7 @@ if [ "$NODE_OK" = "si" ]; then
   tiene "d['id']=='puesto-ana-node' and d['entorno']=='node' and d['fichero']=='51-el-puesto-ana-node.yaml'" || falla "8 · la ficha node: $(cuerpo)"
   en_cola 51-el-puesto-ana-node.yaml | grep -q 'image: .*/puesto-node:1' || falla "8 · el Job no lleva puesto-node:1"
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"javascript"}')" = "200" ] && tiene "d['id']=='puesto-ana-node'" || falla "8 · javascript no es el mismo puesto node: $(cuerpo)"
-  pide GET /puestos "$ANA" >/dev/null; tiene "sorted(p['id'] for p in d['puestos'])==['puesto-ana-node','puesto-ana-python']" || falla "8 · GET /puestos no lista los dos: $(cuerpo)"
+  pide GET /puestos "$ANA" >/dev/null; tiene "sorted(p['id'] for p in d['puestos'] if p['estado']!='cerrado')==['puesto-ana-node','puesto-ana-python']" || falla "8 · GET /puestos no lista los dos: $(cuerpo)"
   ORE_SERVE="$BASE" PUESTO=puesto-ana-node ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" ORE_CELDAS="$TMP/node-trabajo" TTL=600 \
     "$NODE" --no-warnings "$TMP/node/agente.mjs" >"$TMP/agente.txt" 2>&1 &
   AGENTE=$!
@@ -759,4 +801,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–16 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7 y 0036 ⑤): 1–17 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"

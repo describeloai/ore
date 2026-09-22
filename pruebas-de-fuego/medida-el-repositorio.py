@@ -22,11 +22,14 @@ sobre los árboles de verdad.
                       propuestas: medido sin acotar, y ahora con `X-Ore-Raiz`
   §5  LA CONSOLA      la lista de la captura, columna a columna: qué campo la
                       llena y cuál no existe; y qué queda mock en el BuildPicker
+  §7  LA CLASE        el techo y la versión (0036 ⑤): qué clase deja escribir,
+                      cuál no abre sesión siquiera, y qué dice el índice de la
+                      versión de la plantilla
   §6  LA CAPA         lo que 0036 ③ rompe: hoy la capa es la unión del árbol
                       entero —el `torch` de un repositorio lo bajan todas las
                       sesiones—; con alcance, cada repositorio tiene la suya
 
-Uso:  python pruebas-de-fuego/medida-el-repositorio.py [--solo 1,2,3,4,5,6]
+Uso:  python pruebas-de-fuego/medida-el-repositorio.py [--solo 1,2,3,4,5,6,7]
       [--celdas demo,victor] [--consola C:/rubix-platform]
 Necesita target/debug (ore, ore-serve), git. §1–§3 leen las celdas; el resto, local.
 """
@@ -49,7 +52,7 @@ ORE = "%s/ore%s" % (BIN, EXE)
 SERVE = "%s/ore-serve%s" % (BIN, EXE)
 CONSOLA = sys.argv[sys.argv.index("--consola") + 1] if "--consola" in sys.argv else "C:/rubix-platform"
 CELDAS = sys.argv[sys.argv.index("--celdas") + 1].split(",") if "--celdas" in sys.argv else ["demo", "victor"]
-SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6"}
+SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6", "7"}
 _ENVOLTURAS = [sys.stdout]
 
 MANIFIESTO = """---
@@ -432,6 +435,71 @@ def la_capa(tmp, procs):
     print()
 
 
+# ── §7 · la clase: el techo y la versión ───────────────────────────────────
+def la_clase(tmp, procs):
+    print("§7 · la clase: el techo (quién escribe, quién ni siquiera abre) y la versión")
+    forja = tmp + "/clase.git"
+    git("init", "-q", "--bare", "-b", "main", forja)
+    semilla = tmp + "/clase-semilla"
+    git("clone", "-q", forja, semilla)
+    for x in os.listdir(RAIZ + "/vendor/oos/examples/acme-retail"):
+        o = RAIZ + "/vendor/oos/examples/acme-retail/" + x
+        (shutil.copytree if os.path.isdir(o) else shutil.copy)(o, semilla + "/" + x)
+    git("add", "-A", cwd=semilla); git("commit", "-qm", "acme-retail", cwd=semilla)
+    git("push", "-q", "origin", "HEAD:main", cwd=semilla)
+    # La cola, para que `POST /puestos` no sea 503.
+    cola = tmp + "/clase-cola.git"
+    git("init", "-q", "--bare", "-b", "main", cola)
+    cw = tmp + "/clase-cola"
+    git("clone", "-q", cola, cw)
+    subprocess.run([sys.executable, RAIZ + "/malla/gen-inquilino.py", "demo", "--a", tmp + "/rendido-clase"], capture_output=True)
+    for f in ("plantilla-puesto.txt", "plantilla-capa.txt"):
+        if os.path.exists(tmp + "/rendido-clase/" + f):
+            shutil.copy(tmp + "/rendido-clase/" + f, cw + "/" + f)
+    git("add", "-A", cwd=cw); git("commit", "-qm", "plantilla", cwd=cw); git("push", "-q", "origin", "HEAD:main", cwd=cw)
+    puerto = puerto_libre()
+    base = "http://127.0.0.1:%d" % puerto
+    srv = subprocess.Popen([SERVE, "--forja", "file://" + forja, "--cola", "file://" + cola, "--ore", ORE,
+                            "--bind", "127.0.0.1:%d" % puerto, "--identidad", "cabecera", "--no-es-produccion",
+                            "--organizacion", "demo"],
+                           env=dict(os.environ, FORJA_TOKEN="no-hace-falta", PATH=BIN + os.pathsep + os.environ["PATH"]),
+                           stdout=open(tmp + "/clase-serve.log", "w"), stderr=subprocess.STDOUT)
+    procs.append(srv)
+    for _ in range(80):
+        try:
+            if pide(base, "GET", "/salud")[0] == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(0.25)
+
+    # Un repositorio de cada clase que importa aquí.
+    for carpeta, plantilla in (("raw", "transforms"), ("mirar", "analytics"), ("modelo", "semantics")):
+        c, r, _ = pide(base, "POST", "/repositorios",
+                       {"paquete": "hr", "carpeta": carpeta, "nombre": carpeta.title(), "plantilla": plantilla})
+        fila("crear `hr/%s` (%s)" % (carpeta, plantilla), "%s" % c, (r.get("error") or r.get("ruta") or "")[:60])
+
+    # (a) el techo al abrir: la clase que no ejecuta no abre sesión
+    for carpeta, que in (("raw", "transforms"), ("mirar", "analytics"), ("modelo", "semantics")):
+        c, r, _ = pide(base, "POST", "/puestos", {"lenguaje": "python", "repositorio": "packages/hr/" + carpeta})
+        fila("  abrir un puesto en `hr/%s` (%s)" % (carpeta, que), "%s" % c,
+             ("id %s · escribe %s" % (r.get("id"), r.get("escribe"))) if c in (200, 201) else (r.get("error") or "")[:90])
+
+    # (b) el techo al escribir: lo dice la ficha del puesto, y lo aplica el catálogo
+    c, r, _ = pide(base, "GET", "/puestos")
+    for p in (r or {}).get("puestos", []):
+        fila("  %s" % p.get("id"), "%s" % p.get("plantilla"),
+             "escribe: %s · repositorio: %s" % (p.get("escribe"), p.get("repositorio")))
+    fila("  dónde se aplica", "", "`/v1` (el catálogo) y `datasets/…/confirmar`: donde ya se decide quién escribe")
+
+    # (c) la versión: lo que el índice dice de la plantilla
+    c, r, _ = pide(base, "GET", "/assets")
+    for x in (r or {}).get("repositorios", []):
+        fila("  %s" % x.get("ruta"), "%s v%s" % (x.get("plantilla"), x.get("plantillaVersion")),
+             "la del producto: v%s · actualizable: %s" % (x.get("plantillaActual"), x.get("actualizable")))
+    print()
+
+
 def main():
     for b in (ORE, SERVE):
         if not os.path.exists(b):
@@ -457,6 +525,8 @@ def main():
             la_consola()
         if "6" in SOLO:
             la_capa(tmp, procs)
+        if "7" in SOLO:
+            la_clase(tmp, procs)
     finally:
         for p in procs:
             try:

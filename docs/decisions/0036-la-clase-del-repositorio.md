@@ -265,6 +265,39 @@ La prueba (`los-documentos.sh` 23): dos repositorios en el mismo paquete; el aco
 manifiesto y la semilla **y nada más**, el de al lado ve lo suyo, sin cabecera vuelve la celda
 entera, y los dos errores salen con su código.
 
+### ⑤ La clase: el techo y la versión
+
+**El techo** (`clases.rs` gana `escribe`, `ejecuta`, `perfil`): una clase **quita, nunca
+concede**. `transforms` y `models` escriben datos; `analytics` y `functions`, **no**;
+`semantics` **ni siquiera ejecuta**. Y se aplica en dos sitios, los dos **donde ya se decide
+quién escribe**:
+
+- al **abrir**: pedir un puesto en un repositorio `semantics` es **422** con el porqué —lo suyo
+  son documentos del árbol—, y abrir un pod para eso sería abrirlo para nada;
+- al **escribir**: el catálogo (`/v1`, todo lo que no es `GET`) y `datasets/…/confirmar` miran la
+  clase del puesto y contestan **403**. En el servidor, **no en el SDK**: lo que se comprueba en
+  el cliente se rodea pidiendo a pelo, y eso ya se midió en W3.7 ⑤.
+
+El puesto recuerda **dónde vive** (`repositorio`) y **de qué clase es**, y su ficha lo dice
+(`plantilla`, `escribe`): quien mire la sesión ve el techo que tiene.
+
+**La versión**: el índice añade a cada repositorio `plantillaActual` (la del producto) y
+`actualizable` (`plantillaVersion` < la actual). Es lo que hace verdadera la columna
+**«UPGRADE · Up to date»**, y subirla será **una propuesta con su diff**. Una clase que este
+producto no conoce **no rompe nada**: se lista, con `plantillaActual: null` — el árbol de un
+cliente puede venir de una versión posterior.
+
+La prueba de fuego (`el-puesto.sh` **17**, con agentes de verdad y sin clúster): se crean un
+`analytics` y un `semantics`; el `semantics` **no abre sesión** (422 «no ejecuta»); el
+`analytics` abre, su ficha dice `plantilla: analytics · escribe: false`, **lee** (`datos` →
+200) y **no escribe**: `POST /v1/namespaces/hr/tables` a pelo es **403**, y un
+`@transform(inputs, output)` que lo declara **tampoco** escribe — y **no queda puntero**. El
+script entero sigue verde (1–17, python, node y jvm).
+
+Y §7 de la medida, en local: `transforms` → puesto con `escribe: true`; `analytics` → `escribe:
+false`; `semantics` → 422; y los tres repositorios con `v1` frente a la `v1` del producto,
+`actualizable: false`.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

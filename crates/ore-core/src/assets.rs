@@ -948,6 +948,24 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                 ("manifiesto", Json::s(&r.manifiesto)),
                 ("version", Json::Crudo("null".into())),
             ];
+            // **La versión de la clase** (0036 ⑤): lo que el repositorio dice
+            // frente a lo que el producto trae hoy. Es lo que hace verdadera la
+            // columna «UPGRADE · Up to date» — y subirla es una propuesta con su
+            // diff, no un commit a la brava.
+            if let Some(c) = r.plantilla.as_deref().and_then(crate::clases::de) {
+                m.push(("plantillaActual", Json::Int(c.version)));
+                m.push((
+                    "actualizable",
+                    Json::Bool(r.plantilla_version.unwrap_or(0) < c.version),
+                ));
+                m.push(("escribe", Json::Bool(c.escribe)));
+                m.push(("ejecuta", Json::Bool(c.ejecuta)));
+            } else if r.plantilla.is_some() {
+                // Una clase que este producto no conoce: se lista, y se dice.
+                // El árbol de un cliente puede venir de una versión posterior.
+                m.push(("plantillaActual", Json::Crudo("null".into())));
+                m.push(("actualizable", Json::Bool(false)));
+            }
             if let Some(x) = &r.roto {
                 m.push(("roto", Json::s(x)));
             }

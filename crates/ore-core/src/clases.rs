@@ -32,6 +32,18 @@ pub struct Clase {
     /// Con qué ficheros nace, relativos a la carpeta del repositorio. El
     /// manifiesto no está aquí: lo escribe quien crea.
     pub semilla: &'static [(&'static str, &'static str)],
+    /// **El techo** (0036 ⑤): ¿lo que corre aquí puede **escribir datos**?
+    ///
+    /// `false` no concede nada nuevo a nadie: **quita**. Un `analytics` no
+    /// escribe aunque su código lo declare, y eso se aplica donde ya se aplica
+    /// el gobierno —el catálogo y el `confirmar`—, no en el SDK.
+    pub escribe: bool,
+    /// ¿Hay sesión que abrir? `semantics` edita documentos del árbol: no
+    /// ejecuta, y pedirle un puesto es un 422 que lo dice.
+    pub ejecuta: bool,
+    /// El perfil de máquina que pide la clase (0027). `None`: el de hoy.
+    /// Todavía no lo usa nadie — lo dice la ADR, no el código.
+    pub perfil: Option<&'static str>,
 }
 
 const TRANSFORMS: &str = "\
@@ -82,24 +94,36 @@ const FUNCTIONS: &str = "\
 pub const CLASES: &[Clase] = &[
     Clase {
         id: "transforms",
+        escribe: true,
+        ejecuta: true,
+        perfil: None,
         titulo: "Transforms",
         version: 1,
         semilla: &[("transforms/ejemplo.py", TRANSFORMS)],
     },
     Clase {
         id: "analytics",
+        escribe: false,
+        ejecuta: true,
+        perfil: None,
         titulo: "Analytics",
         version: 1,
         semilla: &[("analisis/ejemplo.py", ANALYTICS)],
     },
     Clase {
         id: "models",
+        escribe: true,
+        ejecuta: true,
+        perfil: None,
         titulo: "Models",
         version: 1,
         semilla: &[("modelos/entrenar.py", MODELS)],
     },
     Clase {
         id: "functions",
+        escribe: false,
+        ejecuta: true,
+        perfil: None,
         titulo: "Functions",
         version: 1,
         semilla: &[("funciones/ejemplo.py", FUNCTIONS)],
@@ -108,6 +132,9 @@ pub const CLASES: &[Clase] = &[
     // sembrar una `Entity` a medias sería sembrar algo que no compila.
     Clase {
         id: "semantics",
+        escribe: false,
+        ejecuta: false,
+        perfil: None,
         titulo: "Semantics",
         version: 1,
         semilla: &[],
@@ -126,6 +153,19 @@ pub fn nombres() -> String {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn el_techo_quita_y_nunca_concede() {
+        // Lo que escribe datos es lo que produce un Dataset o un modelo; leer y
+        // publicar una `Function` no escriben.
+        assert!(de("transforms").unwrap().escribe);
+        assert!(de("models").unwrap().escribe);
+        assert!(!de("analytics").unwrap().escribe);
+        assert!(!de("functions").unwrap().escribe);
+        // Y lo que no ejecuta es lo que sólo edita documentos.
+        assert!(!de("semantics").unwrap().ejecuta);
+        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 4);
+    }
 
     #[test]
     fn las_cinco_clases_estan_y_ninguna_siembra_fuera_de_su_carpeta() {

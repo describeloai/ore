@@ -178,6 +178,28 @@ impl Servidor {
         };
         let sujeto = &sujeto;
         let rama = rama.as_deref();
+        // **El techo de la clase** (0036 ⑤): un repositorio de una clase que no
+        // escribe datos —`analytics`, `functions`— no escribe **aunque su
+        // código lo declare**. Va aquí, donde ya se decide quién escribe, y no
+        // en el SDK: lo que se comprueba en el cliente se rodea pidiendo a
+        // pelo (medido en W3.7 ⑤). Y **sólo quita**: una clase nunca concede.
+        if p.metodo != "GET"
+            && p.metodo != "HEAD"
+            && let Some(id) = p.cabeceras.get(crate::puestos::PUESTO)
+            && let Some(c) = self.clase_de(id.trim())
+            && !c.escribe
+        {
+            return con_forma(
+                Respuesta::error(
+                    403,
+                    format!(
+                        "este puesto vive en un repositorio `{}`, y esa clase no escribe datos: para escribir, un repositorio `transforms` o `models`",
+                        c.id
+                    ),
+                ),
+                false,
+            );
+        }
         // **Lo declarado manda** (0031 W3.7 gobierno ⑤): mientras un transform
         // corre en este puesto, el catálogo sólo carga, esboza o confirma su
         // `output`. Lo demás —cargar otra tabla para escribirla, crearla,
