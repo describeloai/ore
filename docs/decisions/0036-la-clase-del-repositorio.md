@@ -1,6 +1,6 @@
 # 0036 · La clase del repositorio: productos dedicados sobre un solo árbol
 
-**Estado:** resuelto (la visión; los pasos van en el brief de 0035 ④) · **Fecha:** 2026-09-22 ·
+**Estado:** resuelto (la visión; los siete pasos, en el entregable desechable [`docs/repositorio.md`](../repositorio.md)) · **Fecha:** 2026-09-22 ·
 **Decide:** qué es la **clase** de un repositorio (`transforms`, `analytics`, `models`,
 `functions`, `semantics`), qué varía con ella —entorno, capacidades, interfaz— y **dónde vive
 cada cosa**, para que la partición por instancia sea limpia **desde el primer momento**. Sigue a
