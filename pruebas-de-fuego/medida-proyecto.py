@@ -27,10 +27,14 @@ proyecto es un segundo registro o una segunda vista del mismo árbol**:
   §5  LO DE DENTRO    los cinco productos de la tarjeta (Folder, Code
                       Repository, Pipeline, Lineage, Map): qué tiene backend hoy
                       y qué es lienzo
+  §7  EL AISLAMIENTO  hasta dónde llega hoy si un proyecto fuera una carpeta:
+                      qué es del árbol entero y no del proyecto —compilar, el
+                      gobierno (conductos y retículos), los nombres, la sesión
+                      de una persona, el índice— y qué costaría acotarlo
   §6  EL TAMAÑO       cuántos ítems y ficheros tendría un proyecto si fuera una
                       carpeta: lo que el índice de demo y victor ya dice
 
-Uso:  python pruebas-de-fuego/medida-proyecto.py [--solo 1,2,3,4,5,6] [--consola C:/rubix-platform]
+Uso:  python pruebas-de-fuego/medida-proyecto.py [--solo 1,2,3,4,5,6,7] [--consola C:/rubix-platform]
 Necesita target/debug (ore, ore-serve), git. Todo en local; no toca el clúster.
 No imprime ningún token.
 """
@@ -53,7 +57,7 @@ ORE = "%s/ore%s" % (BIN, EXE)
 SERVE = "%s/ore-serve%s" % (BIN, EXE)
 PY = sys.executable
 CONSOLA = sys.argv[sys.argv.index("--consola") + 1] if "--consola" in sys.argv else "C:/rubix-platform"
-SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6"}
+SOLO = set(sys.argv[sys.argv.index("--solo") + 1].split(",")) if "--solo" in sys.argv else {"1", "2", "3", "4", "5", "6", "7"}
 
 
 def fila(a, b="", c=""):
@@ -148,6 +152,8 @@ def main():
             lo_de_dentro()
         if "6" in SOLO:
             el_tamano()
+        if "7" in SOLO:
+            el_aislamiento(tmp, procs)
     finally:
         for p in procs:
             try:
@@ -398,6 +404,113 @@ def el_tamano():
     m = re.search(r"el árbol de demo \| \*\*(\d+) ficheros, (\d+) KB\*\*", lee(RAIZ + "/docs/decisions/0030-el-arbol-en-el-editor.md"))
     fila("el árbol de demo (0030)", (m.group(1) + " ficheros") if m else "?", (m.group(2) + " KB") if m else "")
     fila("  si el proyecto fuera una carpeta", "", "hoy demo tiene 1 carpeta de cliente (la raíz): TODO sería un proyecto")
+    print()
+
+
+# ── §7 · el aislamiento: hasta dónde llega ──────────────────────────────────
+def el_aislamiento(tmp, procs):
+    print("§7 · el aislamiento: qué es del árbol entero y no del proyecto")
+    d = tmp + "/ais"
+    os.makedirs(d, exist_ok=True)
+    arbol_semilla(d)
+    # dos proyectos, cada uno en su paquete
+    for ns, pr in (("ventas", "churn"), ("rrhh", "nomina")):
+        os.makedirs(d + "/packages/%s/%s/views" % (ns, pr), exist_ok=True)
+        shutil.move(d + "/packages/%s/views/es.yaml" % ns, d + "/packages/%s/%s/views/es.yaml" % (ns, pr))
+        open(d + "/packages/%s/%s/README.md" % (ns, pr), "w").write("# %s\n" % pr)
+    env = dict(os.environ, FICHEROS_DIR=d + "/datos")
+
+    # (a) COMPILAR: ¿se puede compilar sólo un proyecto?
+    c, s1 = corre([ORE, "validate", d], env)
+    fila("compilar el árbol entero", "código %d" % c, s1[:80] or "compila")
+    c, s1 = corre([ORE, "validate", d + "/packages/ventas"], env)
+    fila("compilar SÓLO el paquete del proyecto", "código %d" % c, s1[:110])
+    c, s1 = corre([ORE, "validate", d + "/packages/ventas/churn"], env)
+    fila("compilar SÓLO la carpeta del proyecto", "código %d" % c, s1[:110])
+    fila("  la unidad de compilación", "", "el árbol: la config, el retículo y los conductos están en la raíz")
+
+    # (b) EL GOBIERNO: ¿puede un proyecto tener el suyo, y qué alcance tiene?
+    open(d + "/lattice.yaml", "w").write("apiVersion: oos.dev/v1alpha3\nkind: Lattice\nmetadata: { name: sensitivity, namespace: gdpr }\nspec:\n  levels: [none, low, high]\n")
+    open(d + "/conduits.yaml", "w").write(
+        "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: { name: raiz }\nspec:\n  owner: team:security\n"
+        "  conduits:\n    materialization.payload: { oos.maturity: DRAFT, gdpr.sensitivity: high }\n")
+    # el proyecto A pone SU política, más estrecha, dentro de su carpeta
+    open(d + "/packages/ventas/churn/conduits.yaml", "w").write(
+        "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: { name: churn }\nspec:\n  owner: team:ventas\n"
+        "  conduits:\n    materialization.payload: { oos.maturity: DRAFT, gdpr.sensitivity: none }\n")
+    # y los dos proyectos copian algo etiquetado `low` por su datasource
+    open(d + "/ontology.config.yaml", "w").write(
+        "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: medida, version: 0.1.0 }\n"
+        "datasources:\n  - { name: ficheros, type: jsonl, connectionEnv: FICHEROS_DIR, labels: { gdpr.sensitivity: low } }\n")
+    for ns, pr in (("ventas", "churn"), ("rrhh", "nomina")):
+        os.makedirs(d + "/packages/%s/%s/datasets" % (ns, pr), exist_ok=True)
+        open(d + "/packages/%s/%s/datasets/copia.yaml" % (ns, pr), "w").write(
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: copia, namespace: %s }\nspec:\n  owner: team:%s\n  from: { table: %s.pedidos }\n" % (ns, ns, ns))
+    c, s1 = corre([ORE, "validate", d], env)
+    cods = sorted(set(re.findall(r"OOS\d{4}", s1)))
+    quien = sorted({m for m in re.findall(r"packages/(\w+)/(\w+)/datasets/copia.yaml", s1.replace("\\", "/"))})
+    fila("una política MÁS ESTRECHA en la carpeta del proyecto A", "código %d · %s" % (c, ", ".join(cods) or "compila"),
+         "a quién alcanza: %s" % (", ".join("/".join(x) for x in quien) if quien else "a nadie"))
+    fila("  la regla de `clearances`", "", "las políticas se COMBINAN por el mínimo en TODO el árbol: una política de proyecto no acota, estrecha a todos")
+    os.remove(d + "/packages/ventas/churn/conduits.yaml")
+
+    # (c) LOS NOMBRES: dos proyectos, el mismo nombre
+    os.makedirs(d + "/packages/ventas/otro/views", exist_ok=True)
+    open(d + "/packages/ventas/otro/views/es.yaml", "w").write(
+        "apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: es, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.pedidos }\n  fields: { id: id }\n")
+    c, s1 = corre([ORE, "validate", d], env)
+    cod = re.search(r"OOS\d{4}", s1)
+    fila("dos proyectos del mismo paquete con una View `es` cada uno", "código %d" % c, (cod.group(0) + " · " + s1[s1.find("error"):][:80]) if cod else "compila: se pisan sin avisar")
+    shutil.rmtree(d + "/packages/ventas/otro")
+    fila("  el espacio de nombres", "", "`<paquete>.<nombre>` es del árbol: el proyecto NO lo parte (y el puntero es `datasets/<p>_<n>.json`, plano)")
+
+    # (d) LA SESIÓN: ¿una por persona, o una por proyecto?
+    forja = tmp + "/ais.git"
+    git("init", "-q", "--bare", "-b", "main", forja)
+    w = tmp + "/ais-semilla"
+    git("clone", "-q", forja, w)
+    for x in os.listdir(d):
+        (shutil.copytree if os.path.isdir(d + "/" + x) else shutil.copy)(d + "/" + x, w + "/" + x)
+    git("add", "-A", cwd=w); git("commit", "-qm", "semilla", cwd=w); git("push", "-q", "origin", "HEAD:main", cwd=w)
+    cola = tmp + "/ais-cola.git"
+    git("init", "-q", "--bare", "-b", "main", cola)
+    cw = tmp + "/ais-cola"
+    git("clone", "-q", cola, cw)
+    subprocess.run([PY, RAIZ + "/malla/gen-inquilino.py", "demo", "--a", tmp + "/rendido"], capture_output=True)
+    for f in ("plantilla-puesto.txt", "plantilla-capa.txt"):
+        if os.path.exists(tmp + "/rendido/" + f):
+            shutil.copy(tmp + "/rendido/" + f, cw + "/" + f)
+    git("add", "-A", cwd=cw); git("commit", "-qm", "plantilla", cwd=cw); git("push", "-q", "origin", "HEAD:main", cwd=cw)
+    puerto = puerto_libre()
+    base = "http://127.0.0.1:%d" % puerto
+    srv = subprocess.Popen([SERVE, "--forja", "file://" + forja, "--cola", "file://" + cola, "--ore", ORE, "--bind", "127.0.0.1:%d" % puerto,
+                            "--identidad", "cabecera", "--no-es-produccion", "--organizacion", "demo"],
+                           env=dict(env, FORJA_TOKEN="no-hace-falta", PATH=BIN + os.pathsep + os.environ["PATH"]),
+                           stdout=open(tmp + "/ais-serve.log", "w"), stderr=subprocess.STDOUT)
+    procs.append(srv)
+    for _ in range(80):
+        try:
+            if pide(base, "GET", "/salud")[0] == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(0.25)
+    c1, r1 = pide(base, "POST", "/puestos", {"lenguaje": "python"})
+    c2, r2 = pide(base, "POST", "/puestos", {"lenguaje": "python"})
+    fila("ana abre un puesto para el proyecto A, y otro para el B", "%s / %s" % (c1, c2),
+         "ids: %s vs %s  ← %s" % (r1.get("id"), r2.get("id"), "el MISMO puesto" if r1.get("id") == r2.get("id") else "dos"))
+    fila("  la regla", "", "`id_de(persona, entorno)`: una sesión por persona y lenguaje, no por proyecto")
+    c3, r3 = pide(base, "POST", "/puestos", {"lenguaje": "python", "rama": "ana/churn"})
+    fila("  y con rama dicha", "%s" % c3, "id %s · rama %s  ← la rama no cambia el id" % (r3.get("id"), r3.get("rama")))
+
+    # (e) EL ÍNDICE Y LA LECTURA: alcance del árbol
+    c, r = pide(base, "GET", "/assets")
+    if c == 200:
+        items = r.get("items") or {}
+        carp = sorted({i.get("carpeta", "") for i in items.values()})
+        fila("el índice de assets", "%d ítems" % len(items), "carpetas: %s · una cabeza, un índice: no hay `proyecto`" % ", ".join(repr(x) for x in carp))
+    src = lee(RAIZ + "/crates/ore-serve/src/puestos.rs")
+    fila("la lectura desde un puesto (`datos`)", "", "resuelve cualquier `<paquete>.<nombre>` del árbol: el conducto decide POR ETIQUETA, no por proyecto")
     print()
 
 
