@@ -146,19 +146,39 @@ real son **la iteración siguiente**, y este paso no los toca.
 - **Y el cableado en el detalle** (`ProjectDetailView.tsx`) espera a que la otra sesión suelte
   el fichero: es **una línea por acción** contra `carpetas.ts`.
 
-## ④ La sesión y el diagnóstico, por proyecto
+## ④ El repositorio: la instancia, y la sesión acotada a ella
 
-**Dónde**: `crates/ore-serve/src/puestos.rs`, `rutas.rs`; la consola (`lib/server/puestos.ts`,
-`components/code-workspace/*`).
+> Reescrito tras **0035 ⑥** (y su medida): la sesión no es «por proyecto» sino **por
+> repositorio** — una persona no trabaja en un proyecto, trabaja en uno de sus repos. El
+> proyecto se queda con nombrar y con el diagnóstico atribuido.
 
-- `id_de(persona, entorno, proyecto)` y `x-ore-proyecto` (o `{proyecto}` en el cuerpo de
-  `POST /puestos`): una sesión por persona, lenguaje **y proyecto**. Sin proyecto, como hoy.
-  La rama por defecto pasa a `<persona>/<proyecto>` cuando lo hay (W3.7 ④ puso `<persona>/puesto`).
-- El diagnóstico atribuido (⑤ 5, «compilar»): `GET /assets` ya sabe qué ficheros no compilan;
-  con `proyectos` en cada ítem, la consola dice **«tu proyecto compila; el árbol no, por X»**.
-  Sin partir la compilación y sin tocar `ore validate`.
-- **Prueba**: `el-puesto.sh` gana un caso (dos proyectos, dos puestos de la misma persona, ids
-  distintos y ramas distintas). **Medida** §7: «el MISMO puesto» → dos.
+**④a · La instancia.** `ore_core::repositorios` (el mismo motor que `proyectos.rs`: encabezado
+con `parse.rs`, uno roto se lista con su porqué) sobre `packages/<pkg>/<carpeta>/README.md` con
+`nombre` + `plantilla`; el índice gana `repositorios: [{nombre, plantilla, ruta, paquete,
+carpeta, proyectos[], items, version}]`. Y los verbos: `POST /repositorios` (escribe el
+manifiesto, 409 si esa carpeta ya es uno), `PUT` y —borrar ya está: es el `DELETE /arbol/<carpeta>`
+de ③b—. **Medida** §3: «0 carpetas» → las que se creen.
+
+**④b · Lo acotado**, que son tres cosas y ninguna cara (§4):
+- `GET /arbol?raiz=<carpeta>` —o su equivalente sin query, que **ningún dato entra por la URL**:
+  cabecera `X-Ore-Raiz`— para que el editor abra **su** carpeta y no las 24 de la celda.
+- `id_de(persona, entorno, repositorio)` y la rama por defecto `<persona>/<repo>`: dos repos de
+  la misma persona dejan de compartir puesto. **Medida** §4: «el MISMO» → dos.
+- `/propuestas` filtra por ruta: la pestaña *Pull requests* de un repo son **las suyas**.
+
+**④c · Las dos pantallas.** «Save» del BuildPicker crea la instancia de verdad (nombre +
+plantilla + dónde) y abre `/workspaces/<repo>`; la lista de *Code repositories* lee del índice
+—una llamada, la del catálogo— con las cinco columnas que el árbol ya da. Las 5 plantillas se
+diferencian **sólo en `plantilla`**: no siembran documentos que tengan que compilar, y el
+Dataset o la Function que salgan después vienen por su camino.
+
+**④d · El diagnóstico atribuido** (⑤ 5, «compilar»): con `proyectos` y `repositorios` en cada
+ítem, la consola dice **«tu repositorio compila; el árbol no, por X»**. Sin partir la
+compilación y sin tocar `ore validate`.
+
+**Prueba** de ④: `el-puesto.sh` gana un caso (dos repositorios, dos puestos de la misma
+persona, ids distintos y ramas distintas) y `los-documentos.sh` otro (crear la instancia,
+listarla por `/assets`, y que borrar su carpeta se la lleve con su manifiesto).
 
 ## ⑤ Medido de nuevo, y 0035
 

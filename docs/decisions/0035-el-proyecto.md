@@ -354,6 +354,83 @@ de dentro es **422 sin commit y sin perder nada**; y quitada esa vista, la carpe
 **sus dos ficheros en un solo commit** («retirar `packages/hr/ingesta`»), el índice deja de
 nombrarla y repetir el borrado es 404.
 
+> ### ⑥ El repositorio: la unidad de trabajo, y por eso hay que persistir la instancia
+
+**Hoy el code workspace es un entorno único sobre el árbol entero**: una sesión por persona, una
+rama, y un editor que abre la celda completa. Lo que el producto pide —y lo que Foundry
+enseña en su pantalla de *Code repositories*— es **un conjunto de repositorios acotados**: muchos,
+con nombre y clase, cada uno sobre su carpeta. Y **para acotar hay que persistir la instancia**:
+sin instancia no hay a qué acotar.
+
+**1 · Qué es una instancia.** Lo que la lista pinta, y nada más: **`{nombre, ruta, plantilla,
+version}`**. De eso, el árbol ya sabe la ruta (0035 ①) y el `version` (git); lo que **no** guarda
+hoy es **cómo se llama de verdad** —una carpeta no tiene nombre bonito— y **de qué plantilla
+nació**. Eso es todo lo que falta.
+
+**2 · La forma, que es la tercera vez que se usa la misma.** Un repositorio es **una carpeta con
+nombre y clase**: `packages/<paquete>/<carpeta>/README.md` con encabezado.
+
+```markdown
+---
+nombre: New Pipelines Java Transform
+plantilla: transforms
+---
+Lo que este repositorio hace, en prosa.
+```
+
+Medido sobre los árboles de verdad: con él dentro, `ore validate` **sale 0 y no lo nombra** en
+demo (122 ms) y en victor (287 ms), **el índice da los mismos ítems** (17 y 58), y recorrer el
+árbol buscándolos cuesta **25–36 ms** (7 README en total en cada uno). El manifiesto del
+proyecto, la carpeta de ③b y el repositorio son **el mismo truco**, por la misma razón: el
+editor lo ve, el compilador lo ignora, git lo atribuye y **OOS no se entera**.
+
+**3 · Un repositorio NO es otro git.** Sigue siendo el mismo árbol, el mismo índice y el mismo
+linaje — eso es 0035 ⑤ y no se toca. Lo que acota es **el trabajo**:
+
+| plano | con repositorios | hoy (medido) |
+|---|---|---|
+| **el editor** | se abre **en su carpeta** | `GET /arbol` da **24 ficheros de la celda**; del repositorio, **1**. Y pedir sólo su carpeta es **404**: no hay verbo |
+| **la sesión** | `id_de(persona, entorno, **repositorio**)` | ana pide un puesto en `hr/raw` y otro en `hr/clean` y recibe **el mismo** (`puesto-ana-python`) |
+| **la rama** | `<persona>/<repo>` | `ana/puesto`: una por persona, no una por repositorio |
+| **las propuestas** | la pestaña *Pull requests* = las que tocan **sus rutas** | `/propuestas` existe y **no filtra por ruta** |
+| **compilar** | **igual**: el árbol entero, con el error **atribuido** | ya decidido en ⑤ |
+| **leer, gobernar, nombrar** | **igual**: manda el conducto y la etiqueta | ya decidido en ⑤ |
+
+**4 · La jerarquía, completa.** Faltaba un escalón, y es el que hacía que el proyecto pareciera
+tener que gobernar:
+
+```
+organización → celda → proyecto → repositorio → assets y código
+(la cuenta)    (la      (el        (la UNIDAD     (lo que hay y
+                verdad:  PROPÓSITO:  DE TRABAJO:    lo que se está
+                un árbol, una lente  sesión, rama,  construyendo)
+                un índice) que nombra) PR, editor)
+```
+
+**El proyecto organiza y atribuye; el repositorio es donde se trabaja.** Por eso un proyecto
+podía ser una lente sin dueño de sesión y **un repositorio no puede**: tiene que existir como
+instancia para que haya una sesión suya, una rama suya y unas propuestas suyas.
+
+**5 · Y esto corrige el paso ④ del plan.** «La sesión y el diagnóstico **por proyecto**» pasa a
+ser **por repositorio**: una persona no trabaja «en un proyecto», trabaja en uno de sus repos.
+El proyecto se queda con **nombrar** y con **el diagnóstico atribuido**; la sesión y la rama
+bajan un escalón.
+
+**6 · Lo que se acepta a cambio.** Que un repositorio **no proteja** (como el proyecto: quien
+alcanza la celda alcanza lo suyo según la etiqueta), que dos repositorios del mismo paquete
+compartan espacio de nombres —`<paquete>.<nombre>` sigue siendo del árbol—, y que el «compila»
+siga siendo de la celda. Se gana lo que faltaba: **muchos sitios donde trabajar en vez de uno**.
+
+## Lo medido para ⑥ (`pruebas-de-fuego/medida-el-repositorio.py`, 2026-09-22)
+
+| | medido | lo que se sigue |
+|---|---|---|
+| **§1 la forma** | Con `packages/<pkg>/raw/README.md` dentro: `validate` **0 y no lo nombra** en demo (122 ms) y victor (287 ms); el índice, **17 y 58 ítems, igual**; recorrer el árbol buscando manifiestos, **36 y 25 ms** (7 README por árbol, 1 con `plantilla:`) | la forma **no cuesta nada** y no toca al compilador. Buscarlos es barato: no hace falta un registro aparte |
+| **§2 quién y cuándo** | `git log -1 -- <carpeta>` da commit, fecha y autor de una **carpeta** en **59–60 ms**. `version_de` de ore-serve hace exactamente eso, con `%h%x1f%aI%x1f%ae` | «LAST EDITED BY / LAST EDITED» salen del árbol **tal cual**. Un matiz: hoy se guarda el **correo** (`%ae`) y la lista enseña un **nombre** (`%an`) — hay que dar los dos, o decir el correo |
+| **§3 cuántos** | En demo y victor, **0 carpetas de cliente**: hoy no hay ningún repositorio que listar | la lista nace vacía, y eso está bien: se crea el primero desde el asistente. Es el mismo punto de partida que los proyectos |
+| **§4 lo que acota** | `GET /arbol` da **24 ficheros** (la celda) y del repositorio hay **1**; pedir su carpeta es **404**. Dos repos de la misma persona dan **el mismo puesto** y la rama es `ana/puesto`. `/propuestas` **no filtra por ruta** | acotar cuesta **tres cosas y ninguna es cara**: una raíz en `GET /arbol`, `id_de(…, repositorio)` con rama `<persona>/<repo>`, y un filtro por ruta en `/propuestas` |
+| **§5 la consola** | De las 7 columnas de la lista, **cinco salen del árbol** (ruta, last edited by, last edited, PRs, y el propio listado); **dos no existen**: `nombre` y `plantilla`. «Save» del BuildPicker hoy **navega** (`router.push('/workspaces')`) y saca proyecto y carpeta de la URL sobre `SAMPLE_PROJECT_FILES`; la ruta del workspace es **una sola, sin repositorio** | lo que falta en la consola es exactamente lo que falta en el árbol: **nombre y plantilla**. Y una ruta `/workspaces/<repo>` |
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).
