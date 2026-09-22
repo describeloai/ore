@@ -84,21 +84,99 @@ cruza sistemas. Nosotros hicimos lo contrario en 0033, 0034 y 0031: **un árbol,
 linaje**. Copiar su frontera entera nos costaría exactamente eso; copiar su *idea* —que el
 trabajo tenga un sitio con dueño— no.
 
-## Lo que queda por decidir (y con qué se decide)
+> ### ⑤ La resolución: un proyecto es un propósito con dueño, un sitio en el árbol y unas ramas donde se trabaja — **una lente, no una caja**.
 
-1. **Dónde vive el proyecto.** `packages/<ns>/<proyecto>/` con `README.md` (§2 dice que
-   compila y que el índice ya lo nombra) frente a un `kind` propio (§2: exige tocar OOS) o un
-   objeto del plano de control (§1: sólo `collaborators` lo pide).
-2. **Si un proyecto tiene su propio aislamiento, y en qué plano.** §7 dice que hoy es cero en
-   cinco (compilar, gobernar, nombrar, ejecutar, leer) y los separa: **nombrar y gobernar son
-   del árbol a propósito** (un nombre cualificado es único; una política que estrecha protege a
-   todos) y no habría que tocarlos; **la sesión** es barata (`id_de(persona, entorno,
-   proyecto)`); **compilar por proyecto** y **el alcance de lectura** son las dos caras. Y
-   encima, ramas y propuestas del árbol entero (§4). Un repositorio por proyecto compra las
-   cinco y **paga la unidad del registro**, que es lo que Foundry paga.
-3. **Qué se paga por el alcance.** §3 dice el tamaño: 38 rutas, 76 ficheros, 33 llamadas.
-4. **Qué es «Create ▸ Pipeline» y «Map»** cuando dejen de ser lienzo (§5) — porque el
-   contenedor no puede decidirse contra contenidos que no existen.
+**Un proyecto no es un registro, es un recorte con nombre del único que hay.** Y no es una
+frontera: **organiza y atribuye, no gobierna**. Lo que gobierna sigue siendo la etiqueta (el
+conducto), la declaración (`@transform`, `derivedFrom`) y quién escribió (`escrito_por`), y las
+tres cruzan proyectos **a propósito** — como las *markings* de Foundry cruzan los suyos. Es la
+misma frase que el producto ya tiene para la concesión («niega, no concede»), dicha en el plano
+de la organización del trabajo.
+
+**1 · De qué se compone.** Tres partes, cada una en su plano, y la medida obliga a separarlas:
+
+| parte | qué es | dónde vive |
+|---|---|---|
+| **el sitio** | `proyectos/<nombre>/README.md`: el manifiesto, y lo que el proyecto **nombra** | el árbol |
+| **la obra** | las ramas donde se trabaja y la propuesta con la que se publica | el árbol (git) |
+| **la gente** | colaboradores y roles | el plano de control (**ore-iam**), nunca el árbol |
+
+**2 · El manifiesto, y por qué un `README.md`.** Medido (§2): un `.yaml` sin kind es `OOS1002`,
+un `kind: Project` es `OOS1003` —habría que tocar OOS, que es vocabulario de **significado**, no
+de organización del trabajo—, y un `README.md` **se ignora y compila en cualquier sitio**. Así
+que el manifiesto es un README con encabezado, legible por una persona en el editor y por el
+índice sin analizador nuevo:
+
+```markdown
+---
+nombre: Customer Churn
+descripcion: Predicción de abandono sobre los pedidos y la plantilla.
+contiene: [ventas/churn, rrhh/nomina]
+---
+Lo que este proyecto hace, en prosa.
+```
+
+`contiene` nombra **paquetes o carpetas de paquete** (`<paquete>` o `<paquete>/<carpeta>`), que
+es lo que el índice ya sabe decir de cada ítem (0034 ④). Un proyecto **vacío** es legal: un
+propósito antes de que haya nada.
+
+**3 · Lo que el proyecto NO es** —y se dice para que no vuelva—: no es un espacio de nombres
+(eso es el paquete), no es una unidad de compilación (eso es el árbol: `OOS2004`/`OOS2018`), no
+es una frontera de seguridad (eso es ore-iam), y no es un repositorio. «Create ▸ Code
+Repository» **no crea otro git**: crea la carpeta dentro del árbol, la añade a `contiene` y abre
+el workspace acotado a ella; la plantilla es **una semilla de ficheros** en el commit de
+creación.
+
+**4 · Un conjunto de proyectos es un atlas, no una partición.** Los proyectos **no parten el
+árbol: lo recorren**. Pueden solaparse, compartir paquetes, leerse entre sí y dejar cosas fuera
+de todos —hoy, de hecho, está todo fuera (§6)—. Por eso cada ítem del índice lleva
+`proyectos: [...]` **en plural**, y por eso la jerarquía queda así:
+
+```
+organización   →   celda              →   proyecto            →   assets y código
+(la cuenta)        un árbol,              un propósito,           lo que hay y lo que
+                   un índice,             un recorte,             se está construyendo
+                   un gobierno            ramas y gente
+```
+
+La celda garantiza que haya **una** verdad; el proyecto hace que un equipo pueda trabajar sin
+verla entera. Y el catálogo y el proyecto son las dos caras del mismo árbol: **Assets es el
+árbol idealizado** (qué hay, compilado, gobernado, de solo lectura) y **Project es el árbol en
+obra** (qué se construye, por quién, en qué rama). A la par, y con un solo registro debajo.
+
+**5 · El aislamiento, plano por plano** (lo que §7 midió, contestado):
+
+| plano | qué se hace |
+|---|---|
+| **nombrar** | **nada**: `<paquete>.<nombre>` es del árbol a propósito; es lo que hace que el catálogo y el linaje sean uno |
+| **gobernar** | **nada**: una política que estrecha protege a todos (`clearances` combina por el mínimo). Es la propiedad, no el defecto |
+| **compilar** | **no se parte**: se **atribuye**. `ore validate` ya da la ruta de cada error y la ruta dice el proyecto: la consola puede decir «tu proyecto compila; el árbol no, por `rrhh/nomina`» sin cambiar la unidad de compilación. Lo caro se vuelve innecesario |
+| **ejecutar** | **se acota, y es barato**: `id_de(persona, entorno, proyecto)` — hoy la misma persona en dos proyectos recibe el mismo puesto |
+| **leer** | **no se acota por pertenencia**: el alcance sigue siendo el conducto. Si la pertenencia negara, el linaje dejaría de ser uno. Es lo contrario de Foundry, y es deliberado |
+
+**6 · Lo que se acepta a cambio.** Que un proyecto **no proteja**: quien alcanza la celda
+alcanza sus datos según la etiqueta, no según el proyecto —y quien quiera lo contrario lo pedirá
+a ore-iam, que es donde se concede—. Que el «compila» siga siendo del árbol, y que un proyecto
+roto se vea desde los demás (atribuido, pero visible). Y que dos proyectos puedan nombrar la
+misma carpeta: se solapan, y el índice lo dice en vez de impedirlo.
+
+## Lo que la resolución contesta de lo que quedaba abierto
+
+1. **Dónde vive** → `proyectos/<nombre>/README.md` con encabezado, y lo que contiene lo
+   **nombra** en vez de contenerlo: un `kind` propio exigiría tocar OOS (`OOS1003`) y una
+   carpeta dentro del paquete ataría el proyecto a un solo paquete. Los colaboradores, a
+   ore-iam.
+2. **Qué aislamiento tiene** → ⑤ 5, plano por plano: nombrar y gobernar no se tocan, compilar
+   se **atribuye** en vez de partirse, ejecutar se acota (barato) y leer **no** se acota por
+   pertenencia. Un repositorio por proyecto compraría las cinco y pagaría la unidad del
+   registro: es lo que Foundry paga, y no lo pagamos.
+3. **Qué se paga por el alcance** → lo que §3 mide (38 rutas, 76 ficheros, 33 llamadas) se paga
+   **sólo donde hace falta**: el índice trae `proyectos` en la misma llamada que ya se hace
+   (0034), y el único sitio que gana un identificador nuevo es la sesión (`x-ore-proyecto`).
+4. **Qué es «Create ▸ Pipeline» y «Map»** cuando dejen de ser lienzo (§5): **sigue abierto**, y
+   no bloquea — la resolución sirve para el producto que sí está entero (el repositorio de
+   código) y admite los otros el día que existan, porque el proyecto los **nombra** en vez de
+   contenerlos.
 
 ## Lo que esto no decide
 
