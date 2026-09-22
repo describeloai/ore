@@ -116,6 +116,47 @@ bien en cada plano**, porque nadie lo hace por nosotros.
 6. **La clase se actualiza**: `plantillaVersion` contra la del producto, y una propuesta —no un
    commit a la brava— para subirla. La columna «Up to date» dice la verdad o no se enseña.
 
+## Lo construido
+
+### ① La instancia en el índice (`ore_core::repositorios`)
+
+**Lo común, factorizado**: `manifiesto.rs` (nuevo) tiene el encabezado —`encabezado`, `campo`,
+`lista`— y lo usan **el proyecto y el repositorio**. Era la tercera vez que se escribía el mismo
+`---`…`---`, y copiarlo habría sido tener dos sitios donde arreglar el mismo error.
+
+`repositorios::leer(raiz)` recorre `packages/<pkg>/**/README.md` y se queda **los que dicen
+`plantilla`**. Cuatro reglas, y cada una es una decisión:
+
+- **La clave `plantilla` es lo que hace un repositorio.** Un README sin ella es **una carpeta con
+  README** —las que `ore init` deja en cada directorio— y no se lista: no es un error, es lo
+  normal en un árbol.
+- **El README del propio paquete no lo es.** Un repositorio es un sitio **dentro**; hacer del
+  paquete entero uno borraría la diferencia entre «el paquete» y «donde se trabaja».
+- **Lo roto se lista con su porqué** (`sin `nombre``) y **no se queda ningún ítem**. Misma regla
+  que el proyecto y que una relación `rota: true`.
+- **`plantillaVersion` se lee como número** y viaja tal cual: es lo que ⑥ comparará.
+
+**En el índice**: `repositorios: [{ruta, nombre, plantilla, plantillaVersion, paquete, carpeta,
+items, manifiesto, version, roto?}]` en la raíz, y en cada ítem **`repositorio` en SINGULAR** —o
+`null`—. Es el contraste con `proyectos`, que es plural, y no es un capricho: **un proyecto es
+una lente y se solapa; un repositorio es el sitio donde se trabaja**, y dos anidados no se
+reparten un ítem — **se lo queda el más hondo**, que es donde alguien lo está tocando.
+
+La prueba (`tests/assets.rs`): cuatro READMEs sobre el árbol de fuego —uno repositorio, otro
+anidado dentro, uno roto y uno que no lo es porque no dice `plantilla`—, la lista con su clase y
+su versión, `view:ventas.pedidosEs` en **su** repositorio y `dataset:ventas.pedidos` en
+**ninguno**, y **los ítems sin cambiar**. Más 6 unitarias en `repositorios.rs`.
+
+Y sobre el árbol de verdad (demo `b93ed52`), con dos repos anidados y una carpeta con README:
+
+```text
+2 repositorios
+  packages/olist/raw                       transforms     0 ítems · New Pipelines Java Transform
+  packages/olist/raw/modelo                models         0 ítems · Churn Model
+```
+
+`ore validate` sigue saliendo **0**. **Medida** §3: «0 carpetas de cliente» → las que se creen.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

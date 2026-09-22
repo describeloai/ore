@@ -491,3 +491,100 @@ fn el_indice_reparte_los_items_por_proyecto_y_se_solapan() {
         "un ítem sin paquete no cae en ningún proyecto"
     );
 }
+
+/// 0035 ⑥ · el repositorio en el índice: dónde se trabaja.
+///
+/// Cuatro READMEs sobre el árbol de fuego —uno que es repositorio, otro
+/// anidado dentro de él, uno roto y uno que NO lo es porque no dice
+/// `plantilla`— y lo que el índice tiene que decir: la lista con su clase y su
+/// versión, cada ítem con **su** repositorio (singular, el más hondo), lo roto
+/// listado sin quedarse nada, y **los ítems sin cambiar**.
+#[test]
+fn el_indice_dice_en_que_repositorio_vive_cada_item() {
+    let t = arbol_en("repositorios");
+    let r = t.path();
+    let sin = {
+        let (pkg, _) = ore_core::validate::cargar_paquete(r);
+        indice(&pkg, &punteros(r), &Cabeza::default())
+    };
+    for (ruta, texto) in [
+        (
+            "packages/ventas/espana/README.md",
+            "---\nnombre: New Pipelines Java Transform\nplantilla: transforms\nplantillaVersion: 2\n---\nProsa.\n",
+        ),
+        (
+            "packages/ventas/espana/modelo/README.md",
+            "---\nnombre: Churn Model\nplantilla: models\n---\n",
+        ),
+        (
+            "packages/ventas/roto/README.md",
+            "---\nplantilla: functions\n---\n",
+        ),
+        ("packages/ventas/notas/README.md", "# Sólo una carpeta\n"),
+    ] {
+        escribe(r, ruta, texto);
+    }
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+    let Json::Obj(m) = &j else { panic!() };
+
+    // El árbol no se entera: los mismos ítems que antes.
+    let Json::Obj(a) = &sin else { panic!() };
+    let Json::Obj(antes) = &a["items"] else {
+        panic!()
+    };
+    let Json::Obj(ahora) = &m["items"] else {
+        panic!()
+    };
+    assert_eq!(antes.len(), ahora.len(), "un manifiesto no es un ítem");
+
+    let Json::Arr(rs) = &m["repositorios"] else {
+        panic!()
+    };
+    let dicho: Vec<(String, String, String, String)> = rs
+        .iter()
+        .map(|x| {
+            let Json::Obj(x) = x else { panic!() };
+            let s = |k: &str| match x.get(k) {
+                Some(Json::Str(v)) => v.clone(),
+                Some(Json::Int(v)) => v.to_string(),
+                _ => "-".into(),
+            };
+            (s("ruta"), s("plantilla"), s("items"), s("roto"))
+        })
+        .collect();
+    assert_eq!(
+        dicho,
+        vec![
+            (
+                "packages/ventas/espana".into(),
+                "transforms".into(),
+                "1".into(),
+                "-".into()
+            ),
+            (
+                "packages/ventas/espana/modelo".into(),
+                "models".into(),
+                "0".into(),
+                "-".into()
+            ),
+            (
+                "packages/ventas/roto".into(),
+                "functions".into(),
+                "0".into(),
+                "sin `nombre`".into()
+            ),
+        ],
+        "un README sin `plantilla` no es un repositorio, y lo roto se lista igual"
+    );
+
+    // El ítem de la carpeta del cliente vive en SU repositorio; los demás, en ninguno.
+    assert_eq!(
+        item(&j, "view:ventas.pedidosEs")["repositorio"],
+        Json::s("packages/ventas/espana")
+    );
+    assert_eq!(
+        item(&j, "dataset:ventas.pedidos")["repositorio"],
+        Json::Crudo("null".into())
+    );
+}

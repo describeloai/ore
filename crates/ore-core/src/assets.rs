@@ -31,6 +31,7 @@
 //! | `relaciones` | tipadas y **en las dos direcciones**, de lo que el documento dice: `from` → `sale_de`/`produce`; `backedBy` → `respaldada_por`/`respalda`; `over`/`reads` → `lee`/`leido_por`; `effects.writes` → `escribe`/`escrito_por`; `trainedFrom` → `sale_de`/`produce`; `implements` → `satisface`/`satisfecha_por`; `is` (el concepto de una propiedad) → `nombra`/`nombrado_por`; `model` → `usa`/`usado_por`. Una ref que no resuelve va con `rota: true`: el índice enseña lo que hay, no lo arregla |
 //! | `acceso` | del plano de datos: `clasificacion` (las labels del documento; en una Entity, las efectivas de sus propiedades; en lo que lee una tabla, las de las columnas que usa) y `conductos` (si `materialization.payload` compila para lo que copia, por [`flow::check`]). La concesión de `ore-iam` **no** entra: es del plano de control |
 //! | `version` | `null` aquí: la pone quien tiene la forja (ore-serve), por fichero |
+//! | `repositorio` | **en singular** (0035 ⑥): el repositorio donde vive, o `null`. Un proyecto es una lente y se solapa; un repositorio es **el sitio donde se trabaja**, y anidarlos es hondura —se lo queda el más hondo—, no solape |
 //! | `proyectos` | **en plural** (0035 ⑤ 4): qué proyectos NOMBRAN a este ítem, de `proyectos/*/README.md` ([`crate::proyectos`]). Se solapan a propósito: un proyecto es una lente, no una caja, y un ítem puede estar en varias o en ninguna |
 use crate::document::Kind;
 use crate::json::Json;
@@ -668,6 +669,8 @@ fn clasificacion_de(
 /// ficheros de estado.
 pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza) -> Json {
     let proyectos = crate::proyectos::leer(&pkg.root);
+    let repositorios = crate::repositorios::leer(&pkg.root);
+    let mut de_repositorio: BTreeMap<String, i64> = BTreeMap::new();
     // Qué ítems nombra cada proyecto, y qué proyectos nombran a cada ítem. Lo
     // roto no alcanza nada: un manifiesto que no se entiende no reparte.
     let mut de_proyecto: BTreeMap<String, i64> = BTreeMap::new();
@@ -768,6 +771,22 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
             })
             .collect();
         it.insert("proyectos".into(), Json::Arr(suyos));
+        // El repositorio donde vive el ítem: el más hondo que lo contiene.
+        let suyo = crate::repositorios::de_item(
+            &repositorios,
+            paquete.as_deref().unwrap_or_default(),
+            &carpeta,
+        );
+        it.insert(
+            "repositorio".into(),
+            match suyo {
+                Some(r) => {
+                    *de_repositorio.entry(r.ruta.clone()).or_default() += 1;
+                    Json::s(&r.ruta)
+                }
+                None => Json::Crudo("null".into()),
+            },
+        );
         it.insert("ruta".into(), Json::s(ruta_de(pkg, d)));
         if let Some(def) = define_de(pkg, d) {
             it.insert("define".into(), def);
@@ -894,6 +913,48 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         })
         .collect();
 
+    // Los repositorios (0035 ⑥): dónde se trabaja, con su clase y su versión.
+    let repositorios: Vec<Json> = repositorios
+        .iter()
+        .map(|r| {
+            let mut m = vec![
+                ("ruta", Json::s(&r.ruta)),
+                (
+                    "nombre",
+                    r.nombre
+                        .as_deref()
+                        .map(Json::s)
+                        .unwrap_or(Json::Crudo("null".into())),
+                ),
+                (
+                    "plantilla",
+                    r.plantilla
+                        .as_deref()
+                        .map(Json::s)
+                        .unwrap_or(Json::Crudo("null".into())),
+                ),
+                (
+                    "plantillaVersion",
+                    r.plantilla_version
+                        .map(Json::Int)
+                        .unwrap_or(Json::Crudo("null".into())),
+                ),
+                ("paquete", Json::s(&r.paquete)),
+                ("carpeta", Json::s(&r.carpeta)),
+                (
+                    "items",
+                    Json::Int(de_repositorio.get(&r.ruta).copied().unwrap_or(0)),
+                ),
+                ("manifiesto", Json::s(&r.manifiesto)),
+                ("version", Json::Crudo("null".into())),
+            ];
+            if let Some(x) = &r.roto {
+                m.push(("roto", Json::s(x)));
+            }
+            Json::obj(m)
+        })
+        .collect();
+
     Json::obj([
         (
             "cabeza",
@@ -921,6 +982,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         ),
         ("paquetes", Json::Arr(paquetes)),
         ("proyectos", Json::Arr(proyectos)),
+        ("repositorios", Json::Arr(repositorios)),
         (
             "items",
             Json::Obj(items.into_iter().map(|(k, v)| (k, Json::Obj(v))).collect()),

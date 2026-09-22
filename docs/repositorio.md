@@ -32,7 +32,7 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
 
 ---
 
-## ① La instancia: el repositorio en el índice
+## ① La instancia: el repositorio en el índice ✓
 
 **Dónde**: `crates/ore-core/src/repositorios.rs` (nuevo) + `assets.rs`; `crates/ore-cli/src/activos.rs`.
 
@@ -49,6 +49,10 @@ el índice da los mismos ítems, y recorrer el árbol buscándolos cuesta 25–3
 - **Prueba**: `crates/ore-core/tests/assets.rs` gana un caso —dos repositorios en el mismo
   paquete, uno anidado dentro de otro, uno roto y uno sin `plantilla`— y fija que **los ítems no
   cambian**. **Medida** §3: «0 carpetas de cliente» → las que se creen; §1 sigue en `validate 0`.
+- **Hecho**: `manifiesto.rs` (el encabezado, compartido con `proyectos.rs`), `repositorios.rs`
+  (6 pruebas), el índice con `repositorios[]` y `repositorio` singular, y el resumen de
+  `ore assets`. Sobre demo: dos repos anidados listados con su clase, la carpeta con README
+  ignorada, y `validate` 0.
 
 ## ② Los verbos: crear y reescribir la instancia
 

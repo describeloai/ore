@@ -27,7 +27,7 @@
 //!    (0034 ④). Dos proyectos pueden nombrar lo mismo —se solapan, y por eso un
 //!    ítem lleva `proyectos` en **plural**—, y `contiene` puede no resolver
 //!    todavía: un proyecto vacío es un propósito antes de que haya nada.
-use crate::parse;
+use crate::manifiesto;
 use std::path::Path;
 
 /// Un proyecto, leído de su manifiesto.
@@ -65,42 +65,6 @@ impl Proyecto {
     }
 }
 
-/// El encabezado de un manifiesto: lo que hay entre la primera raya y la
-/// segunda, analizado con el analizador del árbol. La prosa se ignora.
-fn encabezado(texto: &str) -> Result<parse::Node, String> {
-    let mut lineas = texto.lines();
-    if lineas.next().map(str::trim) != Some("---") {
-        return Err("sin encabezado".into());
-    }
-    let mut dentro = String::new();
-    let mut cerro = false;
-    for l in lineas {
-        if l.trim() == "---" {
-            cerro = true;
-            break;
-        }
-        dentro.push_str(l);
-        dentro.push('\n');
-    }
-    if !cerro {
-        return Err("el encabezado no cierra".into());
-    }
-    let n =
-        parse::parse(&dentro).map_err(|e| format!("el encabezado no se analiza: {}", e.message))?;
-    if n.entries().is_empty() {
-        return Err("el encabezado no es un mapa".into());
-    }
-    Ok(n)
-}
-
-fn texto(n: &parse::Node, clave: &str) -> Option<String> {
-    n.get(clave)
-        .and_then(|(_, v)| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 /// Los proyectos de un árbol: `proyectos/*/README.md`, por nombre de carpeta.
 ///
 /// No falla nunca: lo que no se entiende se devuelve con `roto`.
@@ -121,7 +85,7 @@ pub fn leer(raiz: &Path) -> Vec<Proyecto> {
             let manifiesto = dir.join(&nombre).join("README.md");
             let texto_md = std::fs::read_to_string(&manifiesto).ok()?;
             let ruta = format!("proyectos/{nombre}/README.md");
-            Some(match encabezado(&texto_md) {
+            Some(match manifiesto::encabezado(&texto_md) {
                 Err(e) => Proyecto {
                     nombre,
                     titulo: None,
@@ -131,23 +95,13 @@ pub fn leer(raiz: &Path) -> Vec<Proyecto> {
                     roto: Some(e),
                 },
                 Ok(n) => {
-                    let titulo = texto(&n, "nombre");
-                    let contiene: Vec<String> = n
-                        .get("contiene")
-                        .map(|(_, v)| {
-                            v.items()
-                                .iter()
-                                .filter_map(|i| i.as_str())
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let titulo = manifiesto::campo(&n, "nombre");
+                    let contiene = manifiesto::lista(&n, "contiene");
                     Proyecto {
                         roto: titulo.is_none().then(|| "sin `nombre`".to_string()),
                         nombre,
                         titulo,
-                        descripcion: texto(&n, "descripcion"),
+                        descripcion: manifiesto::campo(&n, "descripcion"),
                         contiene,
                         ruta,
                     }

@@ -4,6 +4,7 @@
 //! y se imprime un resumen, o el JSON entero. Desde 0035 ① el resumen acaba
 //! con los proyectos: cuántos hay, qué nombra cada uno y cuánto queda **fuera**
 //! de todos — que es lo normal, porque un proyecto es una lente y no una caja.
+//! Y desde 0035 ⑥, con los **repositorios**: dónde se trabaja, con su clase.
 use ore_core::json::Json;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -163,6 +164,30 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
             match p.get("roto") {
                 Some(Json::Str(r)) => println!("  {:<28} ROTO: {r}", s("nombre")),
                 _ => println!("  {:<28} {:>3} ítems · {contiene}", s("nombre"), s("items")),
+            }
+        }
+    }
+    // Los repositorios (0035 ⑥): dónde se trabaja, con su clase.
+    if let Some(Json::Arr(rs)) = m.get("repositorios")
+        && !rs.is_empty()
+    {
+        println!("{} repositorios", rs.len());
+        for r in rs {
+            let Json::Obj(r) = r else { continue };
+            let s = |k: &str| match r.get(k) {
+                Some(Json::Str(v)) => v.clone(),
+                Some(Json::Int(v)) => v.to_string(),
+                _ => "-".into(),
+            };
+            match r.get("roto") {
+                Some(Json::Str(x)) => println!("  {:<40} ROTO: {x}", s("ruta")),
+                _ => println!(
+                    "  {:<40} {:<12} {:>3} ítems · {}",
+                    s("ruta"),
+                    s("plantilla"),
+                    s("items"),
+                    s("nombre")
+                ),
             }
         }
     }
