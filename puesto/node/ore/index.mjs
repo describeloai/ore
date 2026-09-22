@@ -201,6 +201,9 @@ async function resolver(vista) {
   const [codigo, r] = await puesto.pedir("GET", `/puestos/${puesto.id}/datos/${vista}`);
   if (codigo === 409) throw new Error(`la copia de \`${vista}\` no está hecha: ${r?.error ?? ""}`);
   if (codigo === 404) throw new Error(`no hay ninguna \`View\` ni \`Dataset\` \`${vista}\` en el árbol`);
+  // El conducto de la lectura (0031 W3.7 gobierno ②): lo que el dataset lleva
+  // no cabe por `contextSurface.workspace`. Se dice tal cual.
+  if (codigo === 403) throw new Error(r?.error ?? `ore-serve no deja leer \`${vista}\` desde un puesto`);
   if (codigo !== 200) throw new Error(`ore-serve contestó ${codigo} por \`${vista}\`: ${r?.error ?? JSON.stringify(r)}`);
   return r;
 }

@@ -271,6 +271,10 @@ def _resolver(vista):
         raise RuntimeError("la copia de `%s` no está hecha: %s" % (vista, (r or {}).get("error", "")))
     if codigo == 404:
         raise LookupError("no hay ninguna `View` ni `Dataset` `%s` en el árbol" % vista)
+    if codigo == 403:
+        # El conducto de la lectura (0031 W3.7 gobierno ②): lo que el dataset
+        # lleva no cabe por `contextSurface.workspace`. Se dice tal cual.
+        raise PermissionError((r or {}).get("error") or "ore-serve no deja leer `%s` desde un puesto" % vista)
     if codigo != 200:
         raise RuntimeError("ore-serve contestó %s por `%s`: %s" % (codigo, vista, (r or {}).get("error", r)))
     return r

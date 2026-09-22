@@ -240,6 +240,9 @@ public final class Ore {
         Respuesta r = puesto.pedir("GET", "/puestos/" + puesto.id + "/datos/" + vista, null, Duration.ofSeconds(30));
         if (r.codigo() == 409) throw new IllegalStateException("la copia de `" + vista + "` no está hecha: " + r.error());
         if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` ni `Dataset` `" + vista + "` en el árbol");
+        // El conducto de la lectura (0031 W3.7 gobierno ②): lo que el dataset lleva
+        // no cabe por `contextSurface.workspace`. Se dice tal cual.
+        if (r.codigo() == 403) throw new SecurityException(r.error() == null || r.error().isEmpty() ? "ore-serve no deja leer `" + vista + "` desde un puesto" : r.error());
         if (r.codigo() != 200) throw new IOException("ore-serve contestó " + r.codigo() + " por `" + vista + "`: " + r.error());
         return r.cuerpo();
     }

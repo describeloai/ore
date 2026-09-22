@@ -37,6 +37,16 @@ fn arbol() -> Arbol {
     );
     escribe(
         r,
+        "lattice.yaml",
+        "apiVersion: oos.dev/v1alpha3
+kind: Lattice
+metadata: { name: sensitivity, namespace: gdpr }
+spec:
+  levels: [none, low, high]
+",
+    );
+    escribe(
+        r,
         "conduits.yaml",
         "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: { name: fuego }\nspec:\n  owner: team:fuego\n  conduits:\n    materialization.payload: { gdpr.sensitivity: high, oos.maturity: DRAFT }\n",
     );

@@ -593,15 +593,26 @@ impl Servidor {
 /// (I2): sin esto un `materialized` no compila (`OOS4011`); y medido (I4b):
 /// con `{}` la autorización es ⊥ —sólo `STABLE`— y una vista inducida es
 /// `DRAFT` (`OOS4002`), así que admite `oos.maturity: DRAFT`.
+///
+/// Y con él, **`contextSurface.workspace`** (0031 W3.7 gobierno ②): por dónde
+/// sale un dataset hacia el código de un puesto. Nace igual, con lo mismo; un
+/// árbol que ya tenía el uno gana el otro. Mientras no esté, la lectura se
+/// coteja con `materialization.payload` (`flow::lectura_desde_puesto`).
 fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Respuesta> {
     let conduits = raiz.join("conduits.yaml");
     match std::fs::read_to_string(&conduits) {
         Ok(t) => {
-            if !t.contains("materialization.payload") {
-                let nuevo = format!(
-                    "{}\n    materialization.payload: {{ oos.maturity: DRAFT }}\n",
-                    t.trim_end()
-                );
+            let mut nuevo = t.trim_end().to_string();
+            for c in [
+                "materialization.payload",
+                ore_core::flow::CONDUCTO_DEL_PUESTO,
+            ] {
+                if !t.contains(c) {
+                    nuevo.push_str(&format!("\n    {c}: {{ oos.maturity: DRAFT }}"));
+                }
+            }
+            if nuevo != t.trim_end() {
+                nuevo.push('\n');
                 std::fs::write(&conduits, &nuevo).map_err(|e| {
                     Respuesta::error(500, format!("no se pudo escribir `conduits.yaml`: {e}"))
                 })?;
@@ -627,7 +638,8 @@ fn autorizar_conducto(raiz: &Path, dir: &Path, paquete: &str) -> Result<(), Resp
                 ));
             };
             let texto = format!(
-                "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: {{ name: {paquete} }}\nspec:\n  owner: {owner}\n  conduits:\n    # 0027 P1: la copia en la celda de las vistas que lo declaren. Admite\n    # DRAFT porque una vista recién inducida lo es y la copia es el registro\n    # del inquilino, no una superficie de consumo. Con retículos propios\n    # (sensibilidad, residencia) aquí se dice hasta qué etiqueta — y eso lo\n    # decide alguien, no esto.\n    materialization.payload: {{ oos.maturity: DRAFT }}\n"
+                "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: {{ name: {paquete} }}\nspec:\n  owner: {owner}\n  conduits:\n    # 0027 P1: la copia en la celda de las vistas que lo declaren. Admite\n    # DRAFT porque una vista recién inducida lo es y la copia es el registro\n    # del inquilino, no una superficie de consumo. Con retículos propios\n    # (sensibilidad, residencia) aquí se dice hasta qué etiqueta — y eso lo\n    # decide alguien, no esto.\n    materialization.payload: {{ oos.maturity: DRAFT }}\n    # W3.7 gobierno: por dónde sale un dataset hacia el código de un puesto.\n    {}: {{ oos.maturity: DRAFT }}\n",
+                ore_core::flow::CONDUCTO_DEL_PUESTO
             );
             std::fs::write(&conduits, &texto).map_err(|e| {
                 Respuesta::error(500, format!("no se pudo escribir `conduits.yaml`: {e}"))

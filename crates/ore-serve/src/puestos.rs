@@ -1286,10 +1286,10 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     // ¿Existe el documento? El puntero de algo que no está es un 404, no un 409.
     // Un dataset se lee por su puntero; una vista, por el del primer dataset
     // que tenga debajo (lo dice el compilador); una tabla, por ninguno.
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     let del_dataset = if hay("datasets").is_some() {
         format!("{ns}.{nombre}")
     } else if hay("views").is_some() {
-        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
         let copia = pkg
             .docs
             .iter()
@@ -1322,6 +1322,26 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             format!("no hay ningún `Dataset`, `View` ni `Table` `{vista}` en el paquete `{ns}`"),
         );
     };
+    // **El conducto de la lectura** (0031 W3.7 gobierno ②): lo que el dataset
+    // lleva en cada campo —por su raíz y por las entidades de su cadena—
+    // contra `contextSurface.workspace` (o `materialization.payload` si el
+    // árbol no lo declara). Medido antes: un dataset que una Entity
+    // clasificaba `high` salía entero por `over()` con un conducto de `low`.
+    // Se decide sobre los bytes que se van a leer (el dataset), no sobre la
+    // vista pedida: es lo que el SDK trae.
+    if let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &del_dataset) {
+        let mut r = Respuesta::error(403, format!("{}: {}", n.codigo, n.mensaje));
+        if let Json::Obj(m) = &mut r.cuerpo {
+            m.insert("codigo".into(), Json::s(n.codigo));
+        }
+        return r;
+    }
+    let clasificacion: Json = Json::Obj(
+        ore_core::flow::clasificacion_de(&pkg, &del_dataset)
+            .into_iter()
+            .map(|(k, v)| (k, Json::s(v)))
+            .collect(),
+    );
     let informe = raiz
         .join("datasets")
         .join(format!("{}.json", del_dataset.replace('.', "_")));
@@ -1372,6 +1392,7 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         ("snapshot", Json::s(campo("snapshot"))),
         ("plan", Json::s(campo("plan"))),
         ("filas", Json::s(campo("filas"))),
+        ("clasificacion", clasificacion),
         (
             "bucket",
             Json::s(std::env::var("ORE_GCS_BUCKET").unwrap_or_default()),

@@ -184,7 +184,7 @@ pub enum Origin {
 pub type Labels = BTreeMap<String, (String, Origin)>;
 
 /// Etiquetas efectivas de **una entidad**: propiedad → sus etiquetas.
-type EntityLabels = BTreeMap<String, Labels>;
+pub type EntityLabels = BTreeMap<String, Labels>;
 
 /// Etiquetas efectivas de todo el paquete: `entidad.propiedad` → retículo →
 /// nivel.
@@ -590,9 +590,91 @@ fn vistas_materializadas(
             continue;
         };
 
-        // Qué lleva puesto cada campo. Se acumula por `join` —el más
-        // restrictivo— porque dos entidades pueden nombrar el mismo campo con
-        // clasificaciones distintas, y la copia es una.
+        let por_campo = carga_de(pkg, lat, efectivas, v);
+        for f in fugas(lat, Some(autorizacion), &por_campo) {
+            let (code, como) = match f.origen {
+                Origin::Computed => (Code::Oos4001, "computada por join"),
+                Origin::Declared => (Code::Oos4002, "declarada"),
+                Origin::Inherited => (Code::Oos4002, "heredada"),
+            };
+            out.push(
+                Diagnostic::new(
+                    code,
+                    &v.path,
+                    format!(
+                        "`{vqn}.{}` lleva `{}:{}` ({como}) y `{conducto}`                              solo admite `{}:{}`",
+                        f.campo, f.reticulo, f.nivel, f.reticulo, f.permitido
+                    ),
+                )
+                .at(mat.pos())
+                .help(
+                    "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
+                ),
+            );
+        }
+    }
+}
+
+/// Lo que un campo lleva y el conducto no admite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fuga {
+    pub campo: String,
+    pub reticulo: String,
+    pub nivel: String,
+    /// El nivel que el conducto admite (el suelo del retículo si no dice nada).
+    pub permitido: String,
+    pub origen: Origin,
+}
+
+/// Coteja la carga de una copia con la autorización de un conducto. `None`
+/// es un conducto sin declarar: ⊥, y todo lo etiquetado fuga (P4).
+pub fn fugas(
+    lat: &BTreeMap<String, Lattice>,
+    autorizacion: Option<&Labels>,
+    por_campo: &BTreeMap<String, Labels>,
+) -> Vec<Fuga> {
+    let mut out = Vec::new();
+    for (campo, labels) in por_campo {
+        for (ret, (nivel, origen)) in labels {
+            let Some(l) = lat.get(ret) else { continue };
+            let permitido = autorizacion
+                .and_then(|a| a.get(ret))
+                .and_then(|(n, _)| l.index(n))
+                .unwrap_or(0);
+            let Some(tiene) = l.index(nivel) else {
+                continue;
+            };
+            if tiene <= permitido {
+                continue;
+            }
+            out.push(Fuga {
+                campo: campo.clone(),
+                reticulo: ret.clone(),
+                nivel: nivel.clone(),
+                permitido: autorizacion
+                    .and_then(|a| a.get(ret))
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| l.levels[0].clone()),
+                origen: *origen,
+            });
+        }
+    }
+    out
+}
+
+/// **Qué lleva puesto cada campo** de una copia —o de un dataset que se va a
+/// leer entero—. Se acumula por `join` —el más restrictivo— porque dos
+/// entidades pueden nombrar el mismo campo con clasificaciones distintas, y
+/// la copia es una. Dos vías: el datasource raíz, y cada entidad de la misma
+/// cadena, esté arriba o abajo.
+pub fn carga_de(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    v: &Loaded,
+) -> BTreeMap<String, Labels> {
+    let vqn = v.qname().unwrap_or_default();
+    {
         let mut por_campo: BTreeMap<String, Labels> = BTreeMap::new();
         let subir = |ls: &mut Labels, ret: &str, nivel: &str, origen: Origin| {
             let sube = match (ls.get(ret), lat.get(ret)) {
@@ -628,6 +710,32 @@ fn vistas_materializadas(
                             );
                         }
                     }
+                }
+            }
+        }
+
+        // Vía 1b · las columnas de la `Table` raíz (0032: una columna se
+        // etiqueta en la tabla). Lo que la copia lee de ellas lo lleva puesto,
+        // como lo del datasource. Sólo las que usa: la máscara más fuerte
+        // sigue siendo no pedir la columna.
+        if let Ok(raiz) = crate::vistas::raiz(pkg, v)
+            && let Some(t) = pkg.tables().find(|t| {
+                t.section("datasource").and_then(|d| d.as_str()) == Some(raiz.datasource.as_str())
+                    && t.section("object").and_then(|o| o.as_str()) == Some(raiz.objeto.as_str())
+            })
+            && let Some(cols) = t.section("columns")
+        {
+            for (campo, fisica) in &raiz.columnas {
+                let Some((_, col)) = cols.get(fisica) else {
+                    continue;
+                };
+                for (r, n, _) in read_labels(col) {
+                    subir(
+                        por_campo.entry(campo.clone()).or_default(),
+                        &r,
+                        &n,
+                        Origin::Inherited,
+                    );
                 }
             }
         }
@@ -698,43 +806,142 @@ fn vistas_materializadas(
             }
         }
 
-        for (campo, labels) in por_campo {
-            for (ret, (nivel, origen)) in labels {
-                let Some(l) = lat.get(&ret) else { continue };
-                let permitido = autorizacion
-                    .get(&ret)
-                    .and_then(|(n, _)| l.index(n))
-                    .unwrap_or(0);
-                let Some(tiene) = l.index(&nivel) else {
-                    continue;
-                };
-                if tiene <= permitido {
-                    continue;
-                }
-                let (code, como) = match origen {
-                    Origin::Computed => (Code::Oos4001, "computada por join"),
-                    Origin::Declared => (Code::Oos4002, "declarada"),
-                    Origin::Inherited => (Code::Oos4002, "heredada"),
-                };
-                let permitido_txt = autorizacion
-                    .get(&ret)
-                    .map(|(n, _)| n.clone())
-                    .unwrap_or_else(|| l.levels[0].clone());
-                out.push(
-                    Diagnostic::new(
-                        code,
-                        &v.path,
-                        format!(
-                            "`{vqn}.{campo}` lleva `{ret}:{nivel}` ({como}) y `{conducto}`                              solo admite `{ret}:{permitido_txt}`"
-                        ),
-                    )
-                    .at(mat.pos())
-                    .help(
-                        "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
-                    ),
-                );
+        por_campo
+    }
+}
+
+/// El conducto por el que un dataset sale hacia el código de un puesto
+/// (0031 W3.7 gobierno ②): `contextSurface.workspace` —OOS ya nombra
+/// `contextSurface` como «la superficie servida a consumidores: MCP, GraphQL,
+/// SDK»— y, si el árbol no lo declara, **`materialization.payload`**: la copia
+/// ya salió por él al bucket del inquilino, y leerla desde un puesto del
+/// mismo inquilino no la lleva más lejos de lo que ese conducto admitió. Sin
+/// ninguno de los dos, ⊥ (P4).
+pub const CONDUCTO_DEL_PUESTO: &str = "contextSurface.workspace";
+
+/// Por qué una lectura desde un puesto no pasa.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LecturaNegada {
+    /// `OOS4011` (ningún conducto), `OOS4002` (declarada o heredada) u
+    /// `OOS4001` (computada).
+    pub codigo: &'static str,
+    pub mensaje: String,
+}
+
+/// Las etiquetas efectivas de cada entidad **con su origen**, para quien va
+/// a cotejar una carga ([`carga_de`]) fuera de `check`: el índice de assets,
+/// la lectura desde un puesto.
+pub fn efectivas_con_origen(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+) -> BTreeMap<String, EntityLabels> {
+    let mut sin_uso = Vec::new();
+    let mut out: BTreeMap<String, EntityLabels> = BTreeMap::new();
+    for e in pkg.entities() {
+        let eqn = e.qname().unwrap_or_default();
+        out.insert(eqn, propagar(pkg, e, lat, &mut sin_uso));
+    }
+    out
+}
+
+/// La clasificación de una copia entera: por retículo, el nivel más alto que
+/// lleva alguno de sus campos.
+pub fn clasificacion_de_carga(
+    lat: &BTreeMap<String, Lattice>,
+    carga: &BTreeMap<String, Labels>,
+) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for labels in carga.values() {
+        for (ret, (nivel, _)) in labels {
+            let sube = match (out.get(ret), lat.get(ret)) {
+                (Some(actual), Some(l)) => l.index(nivel) > l.index(actual),
+                (None, _) => true,
+                _ => false,
+            };
+            if sube {
+                out.insert(ret.clone(), nivel.clone());
             }
         }
+    }
+    out
+}
+
+/// La clasificación de un dataset o una vista, entera: por retículo, el
+/// nivel más alto que lleva alguno de sus campos ([`carga_de`]). Es lo que la
+/// ficha del puesto enseña al lado de lo que resuelve.
+pub fn clasificacion_de(pkg: &Package, qn: &str) -> BTreeMap<String, String> {
+    let Some(d) = pkg
+        .docs
+        .iter()
+        .find(|d| matches!(d.kind, Kind::Dataset | Kind::View) && d.qname().as_deref() == Some(qn))
+    else {
+        return BTreeMap::new();
+    };
+    let lat = lattices(pkg);
+    let efectivas = efectivas_con_origen(pkg, &lat);
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for labels in carga_de(pkg, &lat, &efectivas, d).values() {
+        for (ret, (nivel, _)) in labels {
+            let sube = match (out.get(ret), lat.get(ret)) {
+                (Some(actual), Some(l)) => l.index(nivel) > l.index(actual),
+                (None, _) => true,
+                _ => false,
+            };
+            if sube {
+                out.insert(ret.clone(), nivel.clone());
+            }
+        }
+    }
+    out
+}
+
+/// **¿Puede el código de un puesto leer `qn` entero?** Lo que un dataset lleva
+/// en cada campo (las dos vías de [`carga_de`]) contra el conducto de lectura.
+/// Medido antes (0031 «Lo medido para W3.7 gobierno» §1): sin esto, un dataset
+/// que una Entity clasificaba `high` salía entero por `over()` con un conducto
+/// de `low`. Los diagnósticos de flujo del árbol (`OOS4003`, herencia) no se
+/// repiten aquí: los da `check`; si el árbol no compila, nada se lee.
+pub fn lectura_desde_puesto(pkg: &Package, qn: &str) -> Result<(), LecturaNegada> {
+    let Some(d) = pkg
+        .docs
+        .iter()
+        .find(|d| matches!(d.kind, Kind::Dataset | Kind::View) && d.qname().as_deref() == Some(qn))
+    else {
+        return Ok(());
+    };
+    let lat = lattices(pkg);
+    let efectivas = efectivas_con_origen(pkg, &lat);
+    let conductos = clearances(pkg, &lat);
+    let (conducto, autorizacion) = match conductos.get(CONDUCTO_DEL_PUESTO) {
+        Some(a) => (CONDUCTO_DEL_PUESTO, Some(a)),
+        None => (
+            "materialization.payload",
+            conductos.get("materialization.payload"),
+        ),
+    };
+    let carga = carga_de(pkg, &lat, &efectivas, d);
+    if autorizacion.is_none() && carga.values().any(|l| !l.is_empty()) {
+        return Err(LecturaNegada {
+            codigo: "OOS4011",
+            mensaje: format!(
+                "`{qn}` lleva etiquetas y ni `{CONDUCTO_DEL_PUESTO}` ni `materialization.payload` tienen autorización declarada: un conducto sin autorización es ⊥ y no admite nada"
+            ),
+        });
+    }
+    let fugas = fugas(&lat, autorizacion, &carga);
+    match fugas.first() {
+        None => Ok(()),
+        Some(f) => Err(LecturaNegada {
+            codigo: if f.origen == Origin::Computed {
+                "OOS4001"
+            } else {
+                "OOS4002"
+            },
+            mensaje: format!(
+                "`{qn}.{}` lleva `{}:{}` y `{conducto}` solo admite `{}:{}`: el código de un puesto no lo lee. Eleva la autorización del conducto en `conduits.yaml` (por el árbol, no desde el puesto), o lee una vista que no lo exponga",
+                f.campo, f.reticulo, f.nivel, f.reticulo, f.permitido
+            ),
+        }),
     }
 }
 

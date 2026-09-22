@@ -580,6 +580,7 @@ fn clasificacion_de(
     d: &Loaded,
     lat: &BTreeMap<String, crate::flow::Lattice>,
     efectivas: &BTreeMap<String, BTreeMap<String, String>>,
+    con_origen: &BTreeMap<String, crate::flow::EntityLabels>,
 ) -> BTreeMap<String, Json> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     let mut sube = |eje: &str, nivel: &str| {
@@ -623,21 +624,15 @@ fn clasificacion_de(
             }
         }
         Kind::View | Kind::Dataset => {
-            // Las de las columnas de la raíz que usa.
-            if let Ok(r) = vistas::raiz(pkg, d)
-                && let Some(t) = tabla_fisica(pkg, &r.datasource, &r.objeto)
-                && let Some(c) = t.section("columns")
-            {
-                let usadas: BTreeSet<&String> = r.columnas.values().collect();
-                for (k, v) in c.entries() {
-                    if k.as_str().is_some_and(|k| usadas.contains(&k.to_string())) {
-                        for (eje, nivel) in labels_de(v) {
-                            if let Json::Str(n) = nivel {
-                                sube(&eje, &n);
-                            }
-                        }
-                    }
-                }
+            // Lo que lleva su carga: las columnas de la raíz que usa, lo que
+            // el datasource etiqueta y lo que las entidades de su cadena
+            // declaran (`flow::carga_de`, las mismas vías que el conducto de
+            // la copia y el de la lectura desde un puesto: W3.7 gobierno ②).
+            for (eje, nivel) in crate::flow::clasificacion_de_carga(
+                lat,
+                &crate::flow::carga_de(pkg, lat, con_origen, d),
+            ) {
+                sube(&eje, &nivel);
             }
         }
         _ => {}
@@ -653,6 +648,7 @@ fn clasificacion_de(
 pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza) -> Json {
     let lat = crate::flow::lattices(pkg);
     let efectivas = crate::flow::efectivas(pkg, &lat);
+    let con_origen = crate::flow::efectivas_con_origen(pkg, &lat);
     // Lo que copia y no compila: por fichero, desde el chequeo de flujo.
     let flujo_roto: BTreeSet<std::path::PathBuf> = crate::flow::check(pkg)
         .into_iter()
@@ -750,7 +746,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         // acceso
         let mut acceso: Vec<(&'static str, Json)> = vec![(
             "clasificacion",
-            Json::Obj(clasificacion_de(pkg, d, &lat, &efectivas)),
+            Json::Obj(clasificacion_de(pkg, d, &lat, &efectivas, &con_origen)),
         )];
         if vistas::es_copia(d) {
             acceso.push((

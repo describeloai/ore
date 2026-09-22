@@ -37,15 +37,26 @@ limpieza va por git con el testigo de la forja, que el Job ya tiene—.
   puntero. **Medida** §2: `PUT /arbol` 200/200 → 403/403; «puntero: sí» → «no». §4:
   `PUT /arbol` desde el transform 201 → 403.
 
-## ② El conducto de la lectura — `contextSurface.workspace`
+## ② El conducto de la lectura — `contextSurface.workspace` · hecho en ore-serve (2026-09-22); ②b pendiente
 
-> ⚠️ Lo que ① dejó a la vista para ②: en el clúster, `over()` lee el bucket **con el token del
-> pod** (W3.5b, camino (b): la cuenta `puesto` es `objectViewer` del bucket entero), así que
-> negar en `datos_del_puesto` no basta si la celda puede pedir el objeto a GCS por su cuenta
-> con un `metadata_location` que `GET /arbol/datasets/…json` le da. ② tiene que medir esto
-> primero: o la lectura va con credencial prestada por tabla (como la escritura: CAB, `objectViewer`
-> sobre `ore/v2/datasets/<p>_<t>/`) y la cuenta del puesto deja de ver el bucket, o el conducto
-> es una sugerencia. Es el mismo movimiento que «fuera del verbo (b)» hizo con la escritura.
+Lo que quedó: `flow::carga_de` + `flow::fugas` (extraídas de `vistas_materializadas`, con la
+vía nueva de las columnas de la `Table` raíz) y `flow::lectura_desde_puesto`; `datos_del_puesto`
+niega con el código; el índice clasifica View y Dataset por su carga; los tres SDK dicen la
+frase; `el-puesto.sh` 13. Lo que salió: **sin `contextSurface.workspace`, se coteja con
+`materialization.payload`** (nada cambia en demo/victor hasta que declaren un retículo).
+
+> ⚠️ **②b · la credencial de lectura** (queda, con nombre): en el clúster, `over()` lee el
+> bucket **con el token del pod** (W3.5b, camino (b): la cuenta `puesto` es `objectViewer` del
+> bucket entero), así que ② sólo gobierna a quien pasa por `datos`; la celda puede pedir el
+> objeto a GCS por su cuenta con un `metadata_location` que `GET /arbol/datasets/…json` le da.
+> Lo que hay que hacer: `datos` presta una credencial CAB `objectViewer` acotada a
+> `ore/v2/datasets/<p>_<t>/` (`ore-store prestar`, lo que `/v1` ya hace al escribir), los tres
+> SDK leen con ella (`_iceberg`: el secreto de DuckDB con la prestada y no con la del pod;
+> el sobre heredado `clave`, igual), y la cuenta del puesto **deja de ver el bucket**
+> (`aprovisionar-inquilino.sh`: quitar `objectViewer` de `ore-puesto-<n>`). Se mide antes en
+> `t-demo` con `jobs-p` 0 → 1 → 0 (con go): que un puesto lee con la prestada y que, sin
+> `objectViewer`, el token del pod no lee nada. Es el mismo movimiento que «fuera del verbo (b)»
+> hizo con la escritura.
 
 **Dónde**: `crates/ore-core/src/assets.rs` → la clasificación efectiva se mueve a
 `ore_core::clasificacion` (la usan el índice y ore-serve); `crates/ore-serve/src/puestos.rs`

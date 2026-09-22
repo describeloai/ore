@@ -467,6 +467,52 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
 fi
 dice "12 · desde un puesto sólo entran los verbos: PUT/DELETE /arbol, POST /ramas, /propuestas y /paquetes son 403 para el agente (con y sin x-ore-puesto), GET sigue; una persona escribe en /arbol; DELETE /documentos/Dataset retira también el puntero"
 
+# ── 13 · el conducto de la lectura (W3.7 gobierno ②): lo que un dataset lleva, contra contextSurface.workspace ──
+#
+# Medido antes: un dataset que una Entity clasificaba `high` salía entero por
+# `over()` con un conducto de `low`. Ahora `datos_del_puesto` coteja la carga
+# del dataset (su raíz y las entidades de su cadena) con
+# `contextSurface.workspace` —o con `materialization.payload` si el árbol no
+# lo declara— y niega con el OOS.
+if [ "${ESCRITO_OK:-no}" = si ]; then
+  P=puesto-ana-python; LEN=python
+  [ "$(pide PUT /arbol/lattice.yaml "$ANA" 'apiVersion: oos.dev/v1alpha3
+kind: Lattice
+metadata: { name: sensitivity, namespace: gdpr }
+spec:
+  levels: [none, low, high]
+')" = "201" ] || falla "13 · el reticulo: $(cuerpo)"
+  [ "$(pide PUT /arbol/conduits.yaml "$ANA" 'apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: demo }
+spec:
+  owner: team:security
+  conduits:
+    materialization.payload: { oos.maturity: DRAFT, gdpr.sensitivity: low }
+')" = "200" ] || falla "13 · el conducto a low: $(cuerpo)"
+  celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · sin etiqueta, hr.salida se lee: $(cuerpo)"
+  celda 'declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: salidaV, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { n: n, letra: letra, cuando: cuando, importe: importe }\\n\")[\"nueva\"]' && tiene "d['salida']['texto']=='True'" || falla "13 · la View sobre hr.salida: $(cuerpo)"
+  celda 'declare(\"apiVersion: oos.dev/v1alpha8\\nkind: Entity\\nmetadata: { name: Salida, namespace: hr }\\nspec:\\n  nature: event\\n  backedBy: hr.salidaV\\n  primaryKey: [n]\\n  timeKey: cuando\\n  properties:\\n    n: { type: Integer }\\n    letra: { type: String }\\n    cuando: { type: DateTimeTz }\\n    importe: { type: Decimal, labels: { gdpr.sensitivity: high } }\\n\")[\"nueva\"]' && tiene "d['salida']['texto']=='True'" || falla "13 · la Entity que clasifica importe high: $(cuerpo)"
+  celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='PermissionError' and 'OOS4002' in d['salida']['mensaje'] and 'materialization.payload' in d['salida']['mensaje'] and 'gdpr.sensitivity:high' in d['salida']['mensaje']" || falla "13 · over(hr.salida) con importe high y el conducto low tenía que ser PermissionError con OOS4002: $(cuerpo)"
+  celda 'over(\"hr.salidaV\", como=\"arrow\").num_rows' && tiene "d['salida']['tipo']=='error' and 'OOS4002' in d['salida']['mensaje']" || falla "13 · la View encima tampoco: $(cuerpo)"
+  celda 'sql(\"select count(*) n from hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['tipo']=='error' and 'OOS4002' in d['salida']['mensaje']" || falla "13 · sql() tampoco: $(cuerpo)"
+  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "403" ] && tiene "d['codigo']=='OOS4002'" || falla "13 · GET datos no dio 403 con el codigo: $(cuerpo)"
+  celda 'over(\"hr.lago\", como=\"arrow\").num_rows' && tiene "d['salida']['texto']=='3'" || falla "13 · hr.lago, sin etiqueta, se sigue leyendo: $(cuerpo)"
+  # el árbol (una persona, no el puesto) declara por dónde sale hacia el código
+  [ "$(pide PUT /arbol/conduits.yaml "$ANA" 'apiVersion: oos.dev/v1alpha1
+kind: ConduitPolicy
+metadata: { name: demo }
+spec:
+  owner: team:security
+  conduits:
+    materialization.payload: { oos.maturity: DRAFT, gdpr.sensitivity: low }
+    contextSurface.workspace: { oos.maturity: DRAFT, gdpr.sensitivity: high }
+')" = "200" ] || falla "13 · contextSurface.workspace a high: $(cuerpo)"
+  celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · con contextSurface.workspace high, hr.salida se lee: $(cuerpo)"
+  [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'}" || falla "13 · datos no trae la clasificacion: $(cuerpo)"
+  dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo; contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
+fi
+
 # ── 5 · cerrar ─────────────────────────────────────────────────────────────
 [ "$(pide DELETE /puestos/puesto-ana-python "$BEA")" = "403" ] || falla "5 · bea cerro el puesto de ana"
 [ "$(pide DELETE /puestos/puesto-ana-python "$ANA")" = "200" ] && tiene "d['estado']=='cerrado' and 'fuera de la cola' in d['cola']" || falla "5 · cerrar: $(cuerpo)"
@@ -653,4 +699,4 @@ else
 fi
 
 limpiar
-echo "✓ el puesto (0031 W3.1–W3.7): 1–12 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
+echo "✓ el puesto (0031 W3.1–W3.7): 1–13 · la sesión viva en python, node y jvm, el agente de verdad, over() y sql() sobre las copias, write() al lago desde los tres (y cada uno lee lo de los otros), persona(), la capa declarada en el árbol"
