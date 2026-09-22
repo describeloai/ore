@@ -439,6 +439,30 @@ impl Servidor {
             // ── 0034 ⑤ · el índice de assets: el árbol compilado, de memoria por cabeza ──
             ("GET", ["assets"]) => self.assets(rama, None),
             ("GET", ["assets", commit]) => self.assets(rama, Some(commit)),
+            // ── 0035 ② · los proyectos: escribirlos ─────────────────────────
+            // Leerlos NO tiene ruta: `GET /assets` ya los trae (0035 ①). Aquí
+            // sólo lo que el árbol desnudo no sabe: la forma del manifiesto, el
+            // nombre cogido (409) y borrar la LENTE sin borrar lo que nombraba.
+            // Un proyecto lo crea una persona: `/proyectos` no está en la
+            // puerta del agente, así que desde un puesto es 403.
+            ("POST", ["proyectos"]) => {
+                let cuerpo = p.cuerpo.clone();
+                self.escribiendo_en(rama, sujeto, "crear un proyecto", |r| {
+                    self.crear_proyecto(r, &cuerpo)
+                })
+            }
+            ("PUT", ["proyectos", id]) => {
+                let (id, cuerpo) = (id.to_string(), p.cuerpo.clone());
+                self.escribiendo_en(rama, sujeto, &format!("escribir el proyecto `{id}`"), |r| {
+                    self.escribir_proyecto(r, &id, &cuerpo)
+                })
+            }
+            ("DELETE", ["proyectos", id]) => {
+                let id = id.to_string();
+                self.escribiendo_en(rama, sujeto, &format!("retirar el proyecto `{id}`"), |r| {
+                    self.retirar_proyecto(r, &id)
+                })
+            }
             ("GET", ["datasets"]) => self.datasets(rama),
             ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),
             ("POST", ["datasets", ns, n, "confirmar"]) => {
@@ -2113,6 +2137,9 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
             "/paquetes/{nombre}/tablas/{objeto}/copiar",
             con_identidad,
         ),
+        ("POST", "/proyectos", con_identidad),
+        ("PUT", "/proyectos/{id}", con_identidad),
+        ("DELETE", "/proyectos/{id}", con_identidad),
         ("GET", "/perfiles", con_identidad),
         ("GET", "/modelos", con_identidad),
         ("POST", "/modelos", con_identidad),

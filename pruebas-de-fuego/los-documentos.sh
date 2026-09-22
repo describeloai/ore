@@ -55,6 +55,12 @@
 #                                        forja se queda en el primero
 #   8  DELETE referenciada (Department)  409 con quien la nombra · sigue ahi
 #   9  DELETE sin nadie que la nombre    200 · commit · GET 404 despues
+#  20  /proyectos (0035 ②)         crear es un commit del sujeto y el `id` sale
+#                                     del titulo; el nombre repetido 409; el
+#                                     indice de assets los trae con sus items;
+#                                     PUT reescribe el manifiesto entero;
+#                                     DELETE se lleva la LENTE y lo que nombraba
+#                                     SIGUE en el arbol; y desde un puesto, 403
 #
 # Uso:  bash pruebas-de-fuego/los-documentos.sh
 set -u
@@ -472,5 +478,44 @@ sed 's/id: Worker_Reference.ID/id: Worker_Reference.ID\n    nombre: Legal_Name/'
 [ "$(pide GET /arbol/packages/hr/views/porRuta.yaml)" = "404" ] || falla "19 · retirada y sigue"
 dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, igual, 422 con marcador fichero:linea:columna, 409 If-Match) · lo inducido y .git no se editan · DELETE"
 
+# ── 20 · /proyectos: la lente, escrita (0035 ②) ─────────────────────────────
+ANTES_ITEMS=$(pide GET /assets >/dev/null; campo "len(d['items'])")
+[ "$(pide POST /proyectos '{"nombre":"Customer Churn","descripcion":"Abandono sobre la plantilla.","contiene":["hr"]}')" = "201" ] \
+  || falla "20 · POST /proyectos · $(cat "$TMP/r.json")"
+cumple "d['id']=='customer-churn' and d['nombre']=='Customer Churn' and d['contiene']==['hr'] and d['nueva'] is True and d['commit'] and 'sinResolver' not in d" "20 · 201 con el id del titulo, lo que nombra y el commit"
+[ "$(asunto)" = 'crear un proyecto' ] || falla "20 · el asunto: $(asunto)"
+git --git-dir="$FORJA" log -1 --format='%an' main | grep -q "ana" || falla "20 · el commit no es del sujeto"
+# el mismo nombre otra vez: 409, y nada escrito
+ANTES=$(cabeza)
+[ "$(pide POST /proyectos '{"nombre":"Customer  Churn"}')" = "409" ] || falla "20 · el nombre repetido no dio 409 · $(cat "$TMP/r.json")"
+[ "$(cabeza)" = "$ANTES" ] || falla "20 · un 409 hizo commit"
+[ "$(pide POST /proyectos '{"descripcion":"sin nombre"}')" = "422" ] || falla "20 · sin nombre no dio 422"
+# un proyecto que nombra lo que aun no existe: entra, y lo dice
+[ "$(pide POST /proyectos '{"nombre":"Nomina 2026","contiene":["hr/nomina"]}')" = "201" ] || falla "20 · un proyecto que nombra lo que no existe no entro · $(cat "$TMP/r.json")"
+cumple "d['id']=='nomina-2026' and d['sinResolver']==['hr/nomina']" "20 · lo que no resuelve se dice y no impide"
+# el indice de assets los trae, sin ruta nueva y sin cambiar los items
+[ "$(pide GET /assets)" = "200" ] || falla "20 · GET /assets · $(cat "$TMP/r.json")"
+cumple "len(d['items']) == $ANTES_ITEMS" "20 · los proyectos no son items: el indice no cambia"
+cumple "[p['nombre'] for p in d['proyectos']] == ['customer-churn','nomina-2026']" "20 · /assets los trae, por nombre de carpeta"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='customer-churn')['items'] > 0" "20 · el que nombra el paquete hr tiene items"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='nomina-2026')['items'] == 0" "20 · el que no resuelve, cero"
+cumple "next(p for p in d['proyectos'] if p['nombre']=='customer-churn')['version']['sujeto']=='persona.ana'" "20 · quien lo creo sale de su propio manifiesto"
+cumple "any(it['proyectos']==['customer-churn'] for it in d['items'].values())" "20 · y cada item dice en que proyectos esta, en plural"
+# PUT: el manifiesto entero
+[ "$(pide PUT /proyectos/customer-churn '{"nombre":"Customer Churn","descripcion":"Otra cosa.","contiene":["hr","sales"]}')" = "200" ] \
+  || falla "20 · PUT /proyectos/{id} · $(cat "$TMP/r.json")"
+cumple "d['descripcion']=='Otra cosa.' and d['contiene']==['hr','sales'] and d['nueva'] is False and d['commit']" "20 · el manifiesto entero, reescrito"
+[ "$(pide PUT /proyectos/no-existe '{"nombre":"X"}')" = "404" ] || falla "20 · PUT de uno que no esta no dio 404"
+# DELETE: se va la lente, NO lo que nombraba
+[ "$(pide DELETE /proyectos/customer-churn)" = "200" ] || falla "20 · DELETE /proyectos/{id} · $(cat "$TMP/r.json")"
+cumple "d['retirado'] is True and d['siguenEnElArbol']==['hr','sales']" "20 · lo que nombraba se dice, y sigue"
+[ "$(pide GET /documentos/Entity/hr/Employee)" = "200" ] || falla "20 · borrar el proyecto se llevo lo que nombraba"
+[ "$(pide GET /assets)" = "200" ] && cumple "len(d['items']) == $ANTES_ITEMS and [p['nombre'] for p in d['proyectos']] == ['nomina-2026']" "20 · el arbol entero sigue; la lente se fue"
+[ "$(pide DELETE /proyectos/customer-churn)" = "404" ] || falla "20 · retirado y sigue"
+# y desde un puesto, no: un proyecto lo crea una persona (W3.7 gobierno ①)
+CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-ana-python'   -H 'Content-Type: application/json' -d '{"nombre":"Desde el puesto"}' "$BASE/proyectos")
+[ "$CODIGO" = "403" ] || falla "20 · un agente creo un proyecto ($CODIGO) · $(cat "$TMP/r.json")"
+dice "20 · /proyectos: crear es un commit del sujeto (id del titulo) · nombre repetido 409 · lo que no resuelve entra y se dice · /assets los trae con sus items y cada item en plural · PUT el manifiesto entero · DELETE se lleva la lente y NO lo que nombraba"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); escribir es un commit del sujeto que no empeora el arbol"

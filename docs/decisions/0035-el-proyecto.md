@@ -254,6 +254,39 @@ uno roto dentro:
 **Medida §6 contestada**: «todo el árbol sería un proyecto» → los ítems se reparten, y lo que
 queda fuera se cuenta en vez de esconderse.
 
+### ② Servirlo y escribirlo (`ore-serve/src/proyectos.rs`)
+
+**Leerlos no tiene ruta.** `GET /assets` ya los trae desde ①: una llamada, la que la consola ya
+hace. Lo nuevo es sólo lo que el árbol desnudo no sabe hacer:
+
+| verbo | qué hace |
+|---|---|
+| `POST /proyectos {nombre, descripcion?, contiene?}` | 201 con el `id` **sacado del título** (`Customer Churn` → `customer-churn`), o **409** si ese nombre ya está |
+| `PUT /proyectos/{id}` | el manifiesto **entero**, como un documento; **404** si no está (crear es `POST`, y así el verbo dice cuál de las dos cosas pasó) |
+| `DELETE /proyectos/{id}` | se va **la lente, no lo que nombraba**, y la respuesta lo dice: `siguenEnElArbol: [hr, sales]` |
+
+Y tres cosas que **no** hace, cada una por una razón de la resolución:
+
+- **No compila antes de escribir.** Un documento pasa por `empeora` porque puede romper el
+  árbol; un proyecto **no puede** —⓪ lo midió—. No hay puerta que poner.
+- **No exige que `contiene` resuelva.** Lo que todavía no existe se **dice**
+  (`sinResolver: [hr/nomina]`), como `sinHablar` en los documentos, y entra igual: un proyecto es
+  un propósito, no un inventario.
+- **No sabe quién colabora.** Eso es ore-iam.
+
+El manifiesto lo escribe el servidor, así que los escalares van entre comillas y de una línea:
+un título con `---` dentro **no puede cerrar el encabezado** ni abrir otra clave (prueba en el
+módulo). Y **un proyecto lo crea una persona**: `/proyectos` no está en la puerta del agente
+(W3.7 gobierno ①), así que desde un puesto es **403** — la lista de permitidos hizo su trabajo
+sin tocarla, que era la promesa de P4.
+
+La prueba (`los-documentos.sh` 20, contra un `ore-serve` de verdad con forja): crear es un commit
+del sujeto con asunto «crear un proyecto»; el nombre repetido es 409 **y no hay commit**; el que
+nombra lo que no existe entra y lo dice; `GET /assets` los trae en orden con sus ítems (4 y 0),
+con el `version` de **su propio manifiesto** (`persona.ana`) y con cada ítem diciendo sus
+`proyectos`; `PUT` reescribe el manifiesto entero; y al borrar, `hr` y `sales` **siguen en el
+árbol** —`GET /documentos/Entity/hr/Employee` sigue dando 200 y el índice, los mismos ítems—.
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).

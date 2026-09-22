@@ -54,6 +54,7 @@ mod mando;
 mod modelos;
 mod preguntar;
 mod propuestas;
+mod proyectos;
 mod puestos;
 mod rutas;
 

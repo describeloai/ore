@@ -69,7 +69,7 @@ Lo que este proyecto hace, en prosa.
   en la raíz y en cada ítem, `version` del manifiesto en ore-serve y el resumen de `ore assets`.
   Sobre demo: «2 proyectos · 17 ítems · 9 fuera», `churn` con **8** — el oráculo de ⓪.
 
-## ② Servirlo y escribirlo
+## ② Servirlo y escribirlo ✓
 
 **Dónde**: `crates/ore-serve/src/proyectos.rs` (nuevo) + `rutas.rs`.
 
@@ -85,6 +85,9 @@ Lo que este proyecto hace, en prosa.
 - **Prueba**: `pruebas-de-fuego/los-documentos.sh` gana un caso: crear, listar por `/assets`,
   renombrar la descripción, un nombre repetido 409, borrar y que **lo que nombraba siga en el
   árbol**.
+- **Hecho**: `ore-serve/src/proyectos.rs` (el `id` del título, el manifiesto escrito por el
+  servidor con los escalares entre comillas, `sinResolver`, `siguenEnElArbol`) y el caso 20 de
+  `los-documentos.sh` — incluido que desde un puesto `POST /proyectos` es **403**.
 
 ## ③ La consola deja de ser un mock
 
