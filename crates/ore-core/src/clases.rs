@@ -51,6 +51,9 @@ pub struct Clase {
     pub lenguaje: &'static str,
     /// Cómo se llama en la consola.
     pub titulo: &'static str,
+    /// Qué se hace aquí, en una frase. La consola la enseña en su tarjeta: la
+    /// tenía escrita a mano, y así había dos descripciones de lo mismo.
+    pub descripcion: &'static str,
     /// La versión de la plantilla en **este** producto. Sube cuando la semilla
     /// o lo que la clase promete cambian.
     pub version: i64,
@@ -113,40 +116,79 @@ const PYPROJECT_PY: &str = "\
 # resuelve sola y la sesión nace con ella.
 
 [project]
-name = \"transforms\"
+name = \"repositorio\"
 version = \"0.1.0\"
 dependencies = []
 # dependencies = [\"polars\"]
 ";
 
-const ANALYTICS: &str = "\
-# Un análisis: lee, y no declara nada — leer no escribe.
-#
-#   from ore import datos
-#
-#   pedidos = datos(\"ventas.pedidos\")
-#   print(pedidos.head())
-#
-# Lo que esta sesión alcanza lo decide el conducto por la etiqueta del dato,
-# no esta carpeta.
+/// El mismo transform, en Java: `Ore.transform(nombre, inputs, output, cuerpo)`
+/// con `over` y `write` estáticos, como los usa la sesión de la JVM
+/// (`el-puesto.sh` 9). Un `.java` del árbol se puede correr igual que un `.py`.
+const TRANSFORMS_JAVA: &str = "\
+// Un transform DECLARA qué lee y qué escribe, y el servidor lo hace cumplir
+// (ADR 0031 · W3.7): mientras corre, la sesión sólo resuelve sus `inputs` y
+// sólo escribe su `output`.
+//
+// `transform`, `over` y `write` los pone la sesión: aquí no se importa nada.
+// Cambia las dos referencias por las tuyas y dale a Run.
+
+var ENTRADA = \"<paquete>.<dataset>\";
+var SALIDA = \"<paquete>.<resumen>\";
+
+var escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA, () -> write(SALIDA, over(ENTRADA)));
+System.out.println(\"filas \" + escrito.get(\"filas\"));
 ";
 
-const MODELS: &str = "\
+const ANALYTICS_PY: &str = "\
+# Un análisis LEE, y no declara nada: leer no escribe. Y su clase lo hace
+# cumplir — un `analytics` no escribe datos aunque el código lo pida (0036 ⑤),
+# así que aquí se mira, se cuenta y se decide qué hacer después.
+#
+# `over` y `sql` los pone la sesión: aquí no se importa nada.
+
+FUENTE = \"<paquete>.<dataset>\"
+
+filas = over(FUENTE)
+print(FUENTE, \"→\", len(filas), \"filas\")
+print(sql(f\"select count(*) as n from {FUENTE}\"))
+";
+
+const MODELS_PY: &str = "\
 # El entrenamiento de un modelo. Lo que salga se declara como `TrainedModel`
-# con su `trainedFrom`, que es lo que hace que el linaje no se corte.
+# con su `trainedFrom`: es lo que hace que el linaje no se corte (ADR 0029).
 #
-#   from ore import datos
-#
-#   filas = datos(\"ventas.pedidos\")
-#   # ... entrenar ...
+# `over` y `declare` los pone la sesión: aquí no se importa nada.
+
+ENTRADA = \"<paquete>.<dataset>\"
+MODELO = \"<paquete>.<modelo>\"
+
+filas = over(ENTRADA)
+# ... entrenar con lo que declares en el pyproject.toml de este repositorio ...
+digest = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"
+
+print(declare({
+    \"kind\": \"TrainedModel\",
+    \"metadata\": {\"name\": MODELO.split(\".\")[-1], \"namespace\": MODELO.split(\".\")[0]},
+    \"spec\": {\"owner\": \"team:cambiame\", \"trainedFrom\": [ENTRADA], \"digest\": digest},
+}))
 ";
 
-const FUNCTIONS: &str = "\
-# Una función de lectura: `over`, `output`, y sin efectos. Se declara como
-# `Function` en `functions/` y se invoca con `ore invoke` (ADR 0029).
-#
-#   def clasificar(fila):
-#       return {\"etiqueta\": \"alta\" if fila[\"total\"] > 100 else \"baja\"}
+const FUNCTIONS_PY: &str = "\
+# Una función de lectura: entra una fila, sale un valor, y sin efectos. Se
+# declara como `Function` en `functions/` y se invoca con `ore invoke` (ADR
+# 0029); su clase no escribe datos (0036 ⑤), y eso no es un aviso: es el techo.
+
+
+FUENTE = \"<paquete>.<dataset>\"
+
+
+def clasificar(fila):
+    return {\"etiqueta\": \"alta\" if fila[\"total\"] > 100 else \"baja\"}
+
+
+for fila in over(FUENTE)[:5]:
+    print(fila, \"→\", clasificar(fila))
 ";
 
 /// Las cinco clases de hoy. Añadir una es una fila más, y subir su `version`
@@ -160,6 +202,7 @@ pub const CLASES: &[Clase] = &[
         ejecuta: true,
         perfil: None,
         titulo: "Transforms",
+        descripcion: "Transform and integrate datasets using Python.",
         // 2 porque la plantilla CAMBIÓ (⑧a): lo escrito con la de antes —un
         // comentario y sin `pyproject.toml`— sale `actualizable: true`, que es
         // lo que la columna «UPGRADE» existe para decir.
@@ -170,37 +213,64 @@ pub const CLASES: &[Clase] = &[
         ],
     },
     Clase {
-        id: "analytics",
+        id: "transforms-java",
+        familia: "transforms",
+        lenguaje: "java",
+        escribe: true,
+        ejecuta: true,
+        perfil: None,
+        titulo: "Transforms",
+        descripcion: "Transform and integrate datasets using Java on the JVM.",
+        version: 1,
+        // ⛔ Sin fichero de entorno: la capa (0036 ③) lee `pyproject.toml` y
+        //   hoy no sabe de la JVM. Sembrar un `build.gradle` que nadie resuelve
+        //   sería sembrar una promesa.
+        semilla: &[("transforms/Ejemplo.java", TRANSFORMS_JAVA)],
+    },
+    Clase {
+        id: "analytics-python",
         familia: "analytics",
         lenguaje: "python",
         escribe: false,
         ejecuta: true,
         perfil: None,
         titulo: "Analytics",
-        version: 1,
-        semilla: &[("analisis/ejemplo.py", ANALYTICS)],
+        descripcion: "Analyze your datasets using your preferred data science environment.",
+        version: 2,
+        semilla: &[
+            ("pyproject.toml", PYPROJECT_PY),
+            ("analisis/ejemplo.py", ANALYTICS_PY),
+        ],
     },
     Clase {
-        id: "models",
+        id: "models-python",
         familia: "models",
         lenguaje: "python",
         escribe: true,
         ejecuta: true,
         perfil: None,
         titulo: "Models",
-        version: 1,
-        semilla: &[("modelos/entrenar.py", MODELS)],
+        descripcion: "Create, test and train models for machine learning, forecasting and more.",
+        version: 2,
+        semilla: &[
+            ("pyproject.toml", PYPROJECT_PY),
+            ("modelos/entrenar.py", MODELS_PY),
+        ],
     },
     Clase {
-        id: "functions",
+        id: "functions-python",
         familia: "functions",
         lenguaje: "python",
         escribe: false,
         ejecuta: true,
         perfil: None,
         titulo: "Functions",
-        version: 1,
-        semilla: &[("funciones/ejemplo.py", FUNCTIONS)],
+        descripcion: "Write reusable code for pipelines, transforms and applications.",
+        version: 2,
+        semilla: &[
+            ("pyproject.toml", PYPROJECT_PY),
+            ("funciones/ejemplo.py", FUNCTIONS_PY),
+        ],
     },
     // `semantics` no siembra código: lo suyo son documentos del árbol, y
     // sembrar una `Entity` a medias sería sembrar algo que no compila.
@@ -208,6 +278,7 @@ pub const CLASES: &[Clase] = &[
         id: "semantics",
         familia: "semantics",
         lenguaje: "",
+        descripcion: "Define object types, links and actions: the semantic layer over your data.",
         escribe: false,
         ejecuta: false,
         perfil: None,
@@ -221,7 +292,12 @@ pub const CLASES: &[Clase] = &[
 /// de un cliente puede tener `plantilla: transforms` escrito ayer, y no se
 /// rompe por haberle puesto el lenguaje al nombre. No es una clase más —no se
 /// lista ni se ofrece—: es una clave vieja que apunta a la de hoy.
-const ANTIGUAS: &[(&str, &str)] = &[("transforms", "transforms-python")];
+const ANTIGUAS: &[(&str, &str)] = &[
+    ("transforms", "transforms-python"),
+    ("analytics", "analytics-python"),
+    ("models", "models-python"),
+    ("functions", "functions-python"),
+];
 
 pub fn de(id: &str) -> Option<&'static Clase> {
     let id = ANTIGUAS
@@ -229,6 +305,18 @@ pub fn de(id: &str) -> Option<&'static Clase> {
         .find(|(viejo, _)| *viejo == id)
         .map_or(id, |(_, nuevo)| *nuevo);
     CLASES.iter().find(|c| c.id == id)
+}
+
+/// El entorno de puesto que pide una clase por su lenguaje: `python`, `node`
+/// o `jvm`. `None` cuando no hay código (`semantics`) o el lenguaje no corre
+/// en ninguno — y entonces manda lo que pida quien abre, como antes de ⑧b.
+pub fn entorno_de(clase: &Clase) -> Option<&'static str> {
+    match clase.lenguaje {
+        "python" | "sql" => Some("python"),
+        "typescript" | "javascript" | "node" => Some("node"),
+        "java" | "jvm" => Some("jvm"),
+        _ => None,
+    }
 }
 
 /// Los nombres, para decirlos en un error.
@@ -245,12 +333,13 @@ mod pruebas {
         // Lo que escribe datos es lo que produce un Dataset o un modelo; leer y
         // publicar una `Function` no escriben.
         assert!(de("transforms-python").unwrap().escribe);
-        assert!(de("models").unwrap().escribe);
-        assert!(!de("analytics").unwrap().escribe);
-        assert!(!de("functions").unwrap().escribe);
+        assert!(de("transforms-java").unwrap().escribe);
+        assert!(de("models-python").unwrap().escribe);
+        assert!(!de("analytics-python").unwrap().escribe);
+        assert!(!de("functions-python").unwrap().escribe);
         // Y lo que no ejecuta es lo que sólo edita documentos.
         assert!(!de("semantics").unwrap().ejecuta);
-        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 4);
+        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 5);
     }
 
     /// ⭐ Una plantilla trae su entorno y CÓDIGO, no un comentario (⑧a).
@@ -280,13 +369,51 @@ mod pruebas {
     #[test]
     fn la_clave_vieja_sigue_resolviendo() {
         assert_eq!(de("transforms").unwrap().id, "transforms-python");
+        assert_eq!(de("models").unwrap().id, "models-python");
         assert!(!nombres().split(", ").any(|n| n == "transforms"));
         assert!(nombres().split(", ").any(|n| n == "transforms-python"));
     }
 
+    /// ⭐ Ninguna plantilla es ya un cartel: todas traen código (⑧b), y las de
+    ///   Python traen además el fichero donde se declara su entorno.
     #[test]
-    fn las_cinco_clases_estan_y_ninguna_siembra_fuera_de_su_carpeta() {
-        assert_eq!(CLASES.len(), 5);
+    fn ninguna_plantilla_es_un_cartel() {
+        for c in CLASES {
+            if c.semilla.is_empty() {
+                assert_eq!(c.id, "semantics", "sólo `semantics` nace sin ficheros");
+                continue;
+            }
+            let codigo: usize = c
+                .semilla
+                .iter()
+                .filter(|(r, _)| !r.ends_with(".toml"))
+                .flat_map(|(_, t)| t.lines())
+                .filter(|l| {
+                    let l = l.trim();
+                    !l.is_empty() && !l.starts_with('#') && !l.starts_with("//")
+                })
+                .count();
+            assert!(codigo >= 4, "{} tiene {codigo} líneas de código", c.id);
+            if c.lenguaje == "python" {
+                assert!(
+                    c.semilla.iter().any(|(r, _)| *r == "pyproject.toml"),
+                    "{} no trae dónde declarar su entorno",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn el_entorno_sale_del_lenguaje() {
+        assert_eq!(entorno_de(de("transforms-python").unwrap()), Some("python"));
+        assert_eq!(entorno_de(de("transforms-java").unwrap()), Some("jvm"));
+        assert_eq!(entorno_de(de("semantics").unwrap()), None);
+    }
+
+    #[test]
+    fn las_clases_estan_y_ninguna_siembra_fuera_de_su_carpeta() {
+        assert_eq!(CLASES.len(), 6);
         for c in CLASES {
             assert!(de(c.id).is_some());
             for (ruta, _) in c.semilla {

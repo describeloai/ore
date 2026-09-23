@@ -90,7 +90,7 @@ fn del_cuerpo(cuerpo: &str, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str().map(String::from))
 }
 
-fn de_la_forja(e: Fallo) -> Respuesta {
+pub(crate) fn de_la_forja(e: Fallo) -> Respuesta {
     let codigo = match e.codigo {
         404 => 404,
         409 | 422 => e.codigo,
@@ -134,7 +134,7 @@ fn estado_de(pr: &Json) -> &'static str {
 }
 
 /// La propuesta como la consola la quiere: sin la forja dentro.
-fn propuesta_de(pr: &Json) -> Json {
+pub(crate) fn propuesta_de(pr: &Json) -> Json {
     let rama = hijo(pr, "head")
         .and_then(|h| campo(h, "ref"))
         .unwrap_or_default();
@@ -186,7 +186,7 @@ fn revision_de(r: &Json) -> Option<Json> {
 }
 
 impl Servidor {
-    fn api(&self) -> Result<&Api, Respuesta> {
+    pub(crate) fn api(&self) -> Result<&Api, Respuesta> {
         self.forja_api.as_ref().ok_or_else(|| {
             Respuesta::error(
                 422,

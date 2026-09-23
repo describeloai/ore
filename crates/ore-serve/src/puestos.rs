@@ -411,6 +411,23 @@ impl Servidor {
                     _ => String::new(),
                 };
                 let c = ore_core::clases::de(&id);
+                // ⭐ EL ENTORNO LO PIDE LA CLASE (⑧b): un `transforms-java` abre
+                //   un puesto jvm y no uno de python — su código no corre en el
+                //   otro. Se dice con su nombre en vez de abrir el que no es, y
+                //   la consola lo manda ya resuelto: las clases viajan en el
+                //   índice (`clases[]`) con su `lenguaje`.
+                if let Some(c) = c
+                    && let Some(suyo) = ore_core::clases::entorno_de(c)
+                    && suyo != entorno
+                {
+                    return Respuesta::error(
+                        422,
+                        format!(
+                            "`{}` es un repositorio `{}`: su puesto es `{suyo}`, no `{entorno}` (pide `lenguaje: {}`)",
+                            a, c.id, c.lenguaje
+                        ),
+                    );
+                }
                 if let Some(c) = c
                     && !c.ejecuta
                 {

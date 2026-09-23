@@ -441,6 +441,59 @@ lenguaje, que hoy están escritas a mano en `BuildPicker`—; el **422** de crea
 un paquete de datos (`discover.*`) en vez de en el de un proyecto; y el upgrade como propuesta
 con su diff.
 
+### ⑧b · Las seis clases, el sitio y el upgrade (hecho)
+
+**Las clases, con el lenguaje dentro.** La tabla pasa a seis: `transforms-python`,
+`transforms-java`, `analytics-python`, `models-python`, `functions-python` y `semantics`. Las
+claves de antes (`transforms`, `analytics`, `models`, `functions`) **siguen resolviendo** y no
+se listan ni se ofrecen: un árbol escrito ayer no se rompe porque hoy le pongamos el lenguaje
+al nombre.
+
+**Y ninguna es ya un cartel.** Medido con la misma medida, sobre el árbol de victor:
+
+| clase | ficheros | líneas de código | antes |
+|---|---|---|---|
+| `transforms-python` | 3 | **12** | 2 · 0 |
+| `transforms-java` | 2 | **5** | *no existía* |
+| `analytics-python` | 3 | **8** | 2 · 0 |
+| `models-python` | 3 | **13** | 2 · 0 |
+| `functions-python` | 3 | **9** | 2 · 0 |
+| `semantics` | 1 | 0 | 1 · 0 |
+
+`semantics` sigue sin semilla **a propósito**: lo suyo son documentos del árbol, y sembrar una
+Entity a medias sería sembrar algo que no compila. Y `transforms-java` nace **sin fichero de
+entorno**: la capa (③) lee `pyproject.toml` y hoy no sabe de la JVM — un `build.gradle` que
+nadie resuelve sería sembrar una promesa, y eso se dice en la tabla en vez de fingirlo.
+
+**El entorno lo pide la clase.** Un `transforms-java` abre un puesto **jvm**: pedirle uno de
+python es **422** con el porqué, porque su código no corre ahí. La consola lo manda ya
+resuelto: las clases viajan en el índice (`clases[]`) con su `lenguaje`.
+
+**Un repositorio no va en un paquete de datos.** Si el paquete tiene `discover.*` —lo que trajo
+una fuente—, crear ahí es **422**: *«ahí vive lo que trajo una fuente; un repositorio va en el
+paquete de un proyecto»*. Es lo que hacía que la consola ofreciera guardar dentro de una
+ingesta. Medido sobre victor: en `foreign_test`, 422; en el paquete del proyecto, 201.
+
+**El upgrade, que era una mentira.** «Upgrade to v2» llamaba a un `PUT` que reescribía el
+número del manifiesto **y no traía ni un fichero**: el repositorio *decía* v2 y *era* v1. Ahora
+`POST /repositorios/{ruta}/actualizar` escribe la semilla de hoy **en una rama** —con el
+manifiesto y su versión en el mismo commit— y **abre una propuesta**: lo que se revisa es el
+**diff**, porque esos ficheros los ha editado alguien y pisarlos sin enseñar qué cambia sería
+borrar trabajo. 409 si ya está al día o si el producto no conoce su clase; 404 si esa carpeta
+no es un repositorio; 422 sin forja, que sin forja no hay rama ni propuesta.
+
+Caso **8d** de `la-propuesta.sh`, con la forja de mentira y dos personas: se crea un repositorio
+y se le deja la v1; el índice lo da por `actualizable`; actualizar abre la **propuesta #4** en
+`ana/plantilla-…-v2` con el manifiesto y el `pyproject.toml` dentro; **`main` sigue en la v1**
+hasta que bea revisa y fusiona; después el índice dice v2 y deja de ofrecerla; y volver a
+pedirlo es 409.
+
+**La consola** (commit local): las tarjetas del asistente salen del índice (`clases[]`) en vez
+de estar escritas a mano —eran una segunda copia de la tabla del producto, y la que se quedara
+vieja ofrecería algo que el servidor rechazaría—; lo único que se queda en la consola es la
+ilustración, que es un fichero suyo. El menú dice ahora **«Propose upgrade to v2»** y el aviso
+dice la verdad: *«Propuesta #N abierta … no se aplica hasta que se fusione»*.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

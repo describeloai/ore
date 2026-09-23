@@ -490,6 +490,12 @@ impl Servidor {
                     self.crear_repositorio(r, &cuerpo)
                 })
             }
+            // ⭐ Actualizar la plantilla (⑧b): una RAMA y una PROPUESTA con su
+            //   diff, nunca un pisotón — esos ficheros los ha editado alguien.
+            ("POST", ["repositorios", resto @ .., "actualizar"]) if !resto.is_empty() => {
+                let ruta = resto.join("/");
+                self.actualizar_plantilla(sujeto, &ruta)
+            }
             ("PUT", ["repositorios", resto @ ..]) if !resto.is_empty() => {
                 let (ruta, cuerpo) = (resto.join("/"), p.cuerpo.clone());
                 self.escribiendo_en(

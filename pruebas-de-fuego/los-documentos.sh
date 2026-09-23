@@ -658,12 +658,12 @@ ANTES=$(cabeza)
 [ "$(cabeza)" = "$ANTES" ] || falla "22 · un 409 hizo commit"
 # una clase inventada, y un paquete que no esta
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"otro","nombre":"X","plantilla":"lo-que-sea"}')" = "422" ] || falla "22 · una clase inventada no dio 422"
-grep -q "transforms-python, analytics, models, functions, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
+grep -q "transforms-python, transforms-java, analytics-python, models-python, functions-python, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
 [ "$(pide POST /repositorios '{"paquete":"noexiste","carpeta":"x","nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · un paquete que no esta no dio 404"
 # PUT: el manifiesto entero, conservando la prosa
 [ "$(pide PUT /repositorios/packages/hr/raw '{"nombre":"Renombrado","plantilla":"analytics","plantillaVersion":1}')" = "200" ] \
   || falla "22 · PUT /repositorios · $(cat "$TMP/r.json")"
-cumple "d['nombre']=='Renombrado' and d['plantilla']=='analytics' and d['nueva'] is False and d['commit']" "22 · el manifiesto reescrito"
+cumple "d['nombre']=='Renombrado' and d['plantilla']=='analytics-python' and d['nueva'] is False and d['commit']" "22 · el manifiesto reescrito"
 [ "$(pide GET /arbol/packages/hr/raw/README.md)" = "200" ] && cumple "'Lo que este repositorio hace' in d['texto']" "22 · la prosa se conserva"
 [ "$(pide PUT /repositorios/packages/hr/noexiste '{"nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · PUT de uno que no esta no dio 404"
 # desde un puesto, no: un repositorio lo crea una persona

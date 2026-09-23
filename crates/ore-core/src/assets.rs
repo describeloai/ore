@@ -976,6 +976,23 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         })
         .collect();
 
+    // Las clases del producto (0036 ⑧b): lo que se puede crear, con su versión.
+    let clases: Vec<Json> = crate::clases::CLASES
+        .iter()
+        .map(|c| {
+            Json::obj([
+                ("id", Json::s(c.id)),
+                ("familia", Json::s(c.familia)),
+                ("lenguaje", Json::s(c.lenguaje)),
+                ("titulo", Json::s(c.titulo)),
+                ("descripcion", Json::s(c.descripcion)),
+                ("version", Json::Int(c.version)),
+                ("escribe", Json::Bool(c.escribe)),
+                ("ejecuta", Json::Bool(c.ejecuta)),
+            ])
+        })
+        .collect();
+
     // Los repositorios (0035 ⑥): dónde se trabaja, con su clase y su versión.
     let repositorios: Vec<Json> = repositorios
         .iter()
@@ -1064,6 +1081,12 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         ("paquetes", Json::Arr(paquetes)),
         ("proyectos", Json::Arr(proyectos)),
         ("repositorios", Json::Arr(repositorios)),
+        // ⭐ LAS CLASES QUE ESTE PRODUCTO TRAE (0036 ⑧b). No salen del árbol
+        //   —son del producto, como `plantillaActual`— y viajan aquí para que
+        //   la consola no tenga su propia copia de las cinco tarjetas escrita
+        //   a mano: dos descripciones de lo mismo divergen, y la que se quede
+        //   vieja ofrecerá algo que el servidor rechazaría.
+        ("clases", Json::Arr(clases)),
         (
             "items",
             Json::Obj(items.into_iter().map(|(k, v)| (k, Json::Obj(v))).collect()),

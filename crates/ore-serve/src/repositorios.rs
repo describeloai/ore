@@ -21,12 +21,23 @@
 //!    lo que hace que la consola no pueda ofrecer algo que el servidor
 //!    rechazaría.
 //!
+//! 4. **Actualizar la plantilla** (⑧b): `POST /repositorios/{ruta}/actualizar`
+//!    escribe la semilla de la versión de hoy **en una rama** y abre una
+//!    **propuesta con su diff**. No es un `PUT`: esos ficheros los ha editado
+//!    alguien, y pisarlos sin enseñar qué cambia sería borrar trabajo. Es lo
+//!    que Foundry hace con sus upgrade PRs, y aquí ya estaba todo —ramas,
+//!    propuestas y diff (0030 W2), y propuestas acotadas por ficheros (④)—:
+//!    faltaba el verbo que las junta.
+//!
 //! Lo que **no** hace, y es de 0036: no guarda configuración. El manifiesto
 //! lleva `nombre`, `plantilla` y `plantillaVersion`; las dependencias van en el
-//! `pyproject.toml` del repositorio, donde el ecosistema las pone.
+//! `pyproject.toml` del repositorio, donde el ecosistema las pone — y desde ⑧a
+//! **la plantilla lo siembra**, que sin ese fichero un repositorio no podía
+//! declarar nada.
 use crate::rutas::Servidor;
 use ore_core::json::Json;
 use ore_entrada::http::Respuesta;
+use ore_entrada::identidad::Identidad;
 use std::path::Path;
 
 /// Un segmento de ruta del árbol: sin `/`, sin `..`, y del alfabeto de siempre.
@@ -196,6 +207,21 @@ impl Servidor {
                 format!("no hay paquete `{paquete}`: un repositorio vive dentro de uno"),
             );
         }
+        // ⛔ Y no dentro de un paquete de DATOS (⑧b): ahí vive lo que trajo una
+        //   fuente —`discover.*` lo dice— y meter código dentro es lo que hacía
+        //   que la consola ofreciera guardar en una ingesta. Un repositorio va
+        //   en el paquete de un proyecto, que nace con él (0035 ⑦.1).
+        if ["discover.scope.json", "discover.catalog.json"]
+            .iter()
+            .any(|f| dir_paquete.join(f).is_file())
+        {
+            return Respuesta::error(
+                422,
+                format!(
+                    "`{paquete}` es un paquete de datos: ahí vive lo que trajo una fuente. Un repositorio va en el paquete de un proyecto"
+                ),
+            );
+        }
         let ruta = format!("packages/{paquete}/{carpeta}");
         let dir = raiz.join("packages").join(&paquete).join(&carpeta);
         if dir.join("README.md").is_file()
@@ -300,6 +326,142 @@ impl Servidor {
                 format!("no se pudo escribir el proyecto `{proyecto}`: {e}"),
             )
         })
+    }
+
+    /// `POST /repositorios/{ruta}/actualizar`: **la plantilla de hoy, en una
+    /// rama y como propuesta** (⑧b).
+    ///
+    /// ⭐⭐ No se aplica: se PROPONE. Los ficheros de la semilla los ha podido
+    ///   editar quien trabaja ahí, así que lo que se revisa es el **diff** —qué
+    ///   trae la versión nueva y qué pisa de lo suyo—, y fusionar es aceptar.
+    ///   Antes de esto, «Upgrade to v2» reescribía el número del manifiesto y
+    ///   nada más: el repositorio DECÍA v2 y ERA v1.
+    ///
+    /// 404 si esa carpeta no es un repositorio; 409 si ya está en la versión
+    /// del producto o si el producto no conoce su clase (no se inventa a qué
+    /// actualizar); 422 si este árbol no tiene forja, porque sin forja no hay
+    /// rama ni propuesta que abrir.
+    pub(crate) fn actualizar_plantilla(&self, sujeto: &Identidad, ruta: &str) -> Respuesta {
+        let ruta = ruta.trim_matches('/').to_string();
+        let api = match self.api() {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        // Qué clase es y en qué versión está, leído en la rama por defecto.
+        let mut clase: Option<&'static ore_core::clases::Clase> = None;
+        let mut tenia: Option<i64> = None;
+        let mut nombre = String::new();
+        let mut prosa: Option<String> = None;
+        let leido = self.leyendo(|r| {
+            let Some(rep) = ore_core::repositorios::leer(r)
+                .into_iter()
+                .find(|x| x.ruta == ruta)
+            else {
+                return Respuesta::error(404, format!("`{ruta}` no es un repositorio"));
+            };
+            clase = rep.plantilla.as_deref().and_then(ore_core::clases::de);
+            tenia = rep.plantilla_version;
+            nombre = rep.nombre.clone().unwrap_or_else(|| rep.carpeta.clone());
+            prosa = std::fs::read_to_string(r.join(&rep.manifiesto))
+                .ok()
+                .and_then(|t| prosa_de(&t));
+            Respuesta::ok(Json::obj([("ruta", Json::s(&ruta))]))
+        });
+        if leido.codigo >= 300 {
+            return leido;
+        }
+        let Some(clase) = clase else {
+            return Respuesta::error(
+                409,
+                format!(
+                    "este producto no conoce la clase de `{ruta}`: no hay a qué actualizarlo. Las que trae: {}",
+                    ore_core::clases::nombres()
+                ),
+            );
+        };
+        if tenia.unwrap_or(0) >= clase.version {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{ruta}` ya está en la v{} de `{}`: no hay nada que traer",
+                    clase.version, clase.id
+                ),
+            );
+        }
+        // La rama: de quien la pide, y dice lo que es.
+        let base = api.rama_por_defecto().unwrap_or_else(|_| "main".into());
+        let tramo = ruta.replace('/', "-");
+        let rama = format!(
+            "{}/plantilla-{tramo}-v{}",
+            crate::propuestas::prefijo_de(&sujeto.persona),
+            clase.version
+        );
+        if let Err(e) = api.crear_rama(&rama, &base) {
+            return crate::propuestas::de_la_forja(e);
+        }
+        // La semilla de hoy y el manifiesto con su versión, en ESA rama.
+        let (id, version) = (clase.id, clase.version);
+        let semilla = clase.semilla;
+        let nombre_del_commit = nombre.clone();
+        let prosa_de_antes = prosa.clone();
+        let ruta_r = ruta.clone();
+        let mut escrito: Vec<String> = Vec::new();
+        let resp = self.escribiendo_en(
+            Some(&rama),
+            sujeto,
+            &format!("actualizar `{ruta}` a la v{version} de `{id}`"),
+            |r| {
+                let dir = r.join(ruta_r.replace('/', std::path::MAIN_SEPARATOR_STR));
+                for (rel, contenido) in semilla {
+                    let f = dir.join(rel);
+                    if let Some(padre) = f.parent()
+                        && let Err(e) = std::fs::create_dir_all(padre)
+                    {
+                        return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
+                    }
+                    if let Err(e) = std::fs::write(&f, contenido) {
+                        return Respuesta::error(500, format!("no se pudo escribir `{rel}`: {e}"));
+                    }
+                    escrito.push(format!("{ruta_r}/{rel}"));
+                }
+                let texto = manifiesto(&nombre_del_commit, id, version, prosa_de_antes.as_deref());
+                if let Err(e) = std::fs::write(dir.join("README.md"), texto) {
+                    return Respuesta::error(
+                        500,
+                        format!("no se pudo escribir el manifiesto: {e}"),
+                    );
+                }
+                escrito.push(format!("{ruta_r}/README.md"));
+                Respuesta::ok(Json::obj([("ruta", Json::s(&ruta_r))]))
+            },
+        );
+        if resp.codigo >= 300 {
+            return resp;
+        }
+        // Y la propuesta, que es lo que se revisa.
+        let titulo = format!("Actualizar `{ruta}` a la v{version} de `{id}`");
+        let cuerpo = format!(
+            "sub: {}\n\nLa plantilla `{id}` del producto va por la v{version} y este repositorio estaba en la v{}.\nEsto trae sus ficheros tal como los trae hoy: lo que hayas cambiado sale en el diff, y fusionar es aceptarlo.",
+            sujeto.persona,
+            tenia.unwrap_or(0)
+        );
+        match api.abrir_pull(&rama, &base, &titulo, &cuerpo) {
+            Ok(pr) => {
+                let mut ficha = crate::propuestas::propuesta_de(&pr);
+                if let Json::Obj(m) = &mut ficha {
+                    m.insert("ruta".into(), Json::s(&ruta));
+                    m.insert("rama".into(), Json::s(&rama));
+                    m.insert("plantilla".into(), Json::s(id));
+                    m.insert("plantillaVersion".into(), Json::Int(version));
+                    m.insert(
+                        "ficheros".into(),
+                        Json::Arr(escrito.iter().map(Json::s).collect()),
+                    );
+                }
+                Respuesta::creado(ficha)
+            }
+            Err(e) => crate::propuestas::de_la_forja(e),
+        }
     }
 
     /// `PUT /repositorios/{ruta}`: el manifiesto entero —`nombre`, `plantilla`

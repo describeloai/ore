@@ -50,7 +50,7 @@ ORE = os.path.join(RAIZ, "target", "debug", "ore" + EXE)
 PUERTO = 18211
 BASE = "http://127.0.0.1:%d" % PUERTO
 SUJETO = "persona:medida"
-CLASES = ["transforms-python", "analytics", "models", "functions", "semantics"]
+CLASES = ["transforms-python", "transforms-java", "analytics-python", "models-python", "functions-python", "semantics"]
 
 
 def traer(celda, destino):
@@ -199,6 +199,24 @@ def mide(nombre, arbol):
             d = json.loads(cuerpo) if cod == 200 else {}
             fs = [f if isinstance(f, str) else f.get("ruta") for f in (d.get("ficheros") or [])]
             print("     %-12s %d fichero(s): %s" % (clase, len(fs), ", ".join(x.split("/")[-1] for x in fs)))
+
+        # ── §3b · dónde NO va una instancia (⑧b) ─────────────────────────
+        print("\n§3b DÓNDE NO VA (un paquete de datos no es sitio para código)")
+        datos = None
+        praiz = os.path.join(arbol, "packages")
+        for p_ in sorted(os.listdir(praiz)) if os.path.isdir(praiz) else []:
+            if any(os.path.isfile(os.path.join(praiz, p_, f))
+                   for f in ("discover.scope.json", "discover.catalog.json")):
+                datos = p_
+                break
+        if not datos:
+            print("     (este árbol no tiene paquetes de datos)")
+        else:
+            cod, cuerpo = pide("POST", "/repositorios", json.dumps(
+                {"paquete": datos, "carpeta": "medida_no", "nombre": "no", "plantilla": "transforms-python"}))
+            print("     en `%s` (lo trajo una fuente) → %s" % (datos, cod))
+            print("       %s" % cuerpo[:200])
+            print("     en `%s` (el paquete del proyecto) → 201, como arriba" % paquete)
 
         # ── §4 cuántas instancias reales hay ─────────────────────────────
         print("\n  §4 CUÁNTAS HAY DE VERDAD (antes de esta medida)")
