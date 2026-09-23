@@ -358,13 +358,18 @@ dice "8c · POST /ramas/{rama}/fusionar {desde}: git merge de la persona en la r
 [ "$(pide POST /repositorios "$ANA" '{"paquete":"hr","carpeta":"pipelines","nombre":"Pipelines","plantilla":"transforms-python"}')" = "201" ] \
   || falla "8d · el repositorio de la prueba: $(cuerpo)"
 # y lo dejamos en la version de antes, como uno creado ayer
+# ⭐ La version de hoy se PREGUNTA (0037 iii.a): una semilla que cambia sube
+#   la version, y una prueba que persiga el numero se pone roja por decir la
+#   verdad. Lo que se comprueba es que el upgrade lleva a la de hoy.
+pide GET /assets "$ANA" >/dev/null
+VER=$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([c["version"] for c in d["clases"] if c["id"]=="transforms-python"][0])' "$TMP/r.json")
 [ "$(pide PUT /repositorios/packages/hr/pipelines "$ANA" '{"nombre":"Pipelines","plantilla":"transforms-python","plantillaVersion":1}')" = "200" ] \
   || falla "8d · no se pudo dejarlo en la v1: $(cuerpo)"
 [ "$(pide GET /assets "$ANA")" = "200" ] \
   && tiene "[r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['actualizable'] is True" \
   || falla "8d · el indice no lo da por actualizable: $(cuerpo)"
 [ "$(pide POST /repositorios/packages/hr/pipelines/actualizar "$ANA")" = "201" ] \
-  && tiene "d['numero']==4 and d['plantillaVersion']==2 and d['rama'].startswith('ana/plantilla-') and 'packages/hr/pipelines/README.md' in d['ficheros'] and 'packages/hr/pipelines/pyproject.toml' in d['ficheros']" \
+  && tiene "d['numero']==4 and d['plantillaVersion']==$VER and d['rama'].startswith('ana/plantilla-') and 'packages/hr/pipelines/README.md' in d['ficheros'] and 'packages/hr/pipelines/pyproject.toml' in d['ficheros']" \
   || falla "8d · el upgrade no abrio propuesta: $(cuerpo)"
 # main SIGUE en la v1: proponer no es aplicar
 [ "$(pide GET /assets "$ANA")" = "200" ] \
@@ -374,14 +379,14 @@ dice "8c · POST /ramas/{rama}/fusionar {desde}: git merge de la persona en la r
 [ "$(pide POST /propuestas/4/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8d · bea no pudo aprobar: $(cuerpo)"
 [ "$(pide POST /propuestas/4/fusionar "$BEA")" = "200" ] || falla "8d · bea no pudo fusionar: $(cuerpo)"
 [ "$(pide GET /assets "$ANA")" = "200" ] \
-  && tiene "[r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['plantillaVersion']==2 and [r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['actualizable'] is False" \
-  || falla "8d · fusionar no lo dejo en la v2: $(cuerpo)"
+  && tiene "[r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['plantillaVersion']==$VER and [r for r in d['repositorios'] if r['ruta']=='packages/hr/pipelines'][0]['actualizable'] is False" \
+  || falla "8d · fusionar no lo dejo en la v$VER: $(cuerpo)"
 # ya no hay nada que traer
 [ "$(pide POST /repositorios/packages/hr/pipelines/actualizar "$ANA")" = "409" ] \
   || falla "8d · actualizar uno que ya esta al dia no dio 409: $(cuerpo)"
 [ "$(pide POST /repositorios/packages/hr/nada/actualizar "$ANA")" = "404" ] \
   || falla "8d · actualizar lo que no es un repositorio no dio 404: $(cuerpo)"
-dice "8d · el upgrade de la plantilla: trae los ficheros de la version de hoy EN UNA RAMA y abre propuesta (con el manifiesto dentro) · main sigue en la v1 hasta que se fusiona · fusionada, el indice dice v2 y deja de ofrecerla · al dia, 409 · lo que no es un repositorio, 404"
+dice "8d · el upgrade de la plantilla: trae los ficheros de la version de hoy EN UNA RAMA y abre propuesta (con el manifiesto dentro) · main sigue en la v1 hasta que se fusiona · fusionada, el indice dice la de hoy y deja de ofrecerla · al dia, 409 · lo que no es un repositorio, 404"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"

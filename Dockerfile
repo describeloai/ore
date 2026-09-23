@@ -254,6 +254,20 @@ ENTRYPOINT ["/usr/local/bin/ore-cofre"]
 # ⚠️ Los nodos de `jobs-p` no alcanzan Docker Hub (privados, sin NAT): TODO lo
 #   que corra ahí sale de nuestro registro, y por eso esta imagen existe antes
 #   que la medida de W3 — no hay forma de medir un puesto Python sin ella.
+# ═══════════════════════════════════════════════════════════════════════════
+# EL SERVIDOR DE LENGUAJE DE PYTHON (0037 ③a) — se trae aquí, donde hay npm
+#
+# `pyright` es un programa de Node (no hay versión nativa), y se instala con el
+# npm de esta etapa para no meter npm en la imagen del puesto: de aquí sólo
+# viajan el paquete y, abajo, el binario `node`.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM node:24-slim AS pyright
+# ⛔ FIJADA. Un servidor de lenguaje que se actualiza solo cambia lo que el
+#   editor subraya sin que nadie lo decida.
+ARG PYRIGHT=1.1.414
+RUN npm install --no-audit --no-fund --omit=dev --prefix /opt/p pyright@${PYRIGHT} \
+ && node /opt/p/node_modules/pyright/index.js --version
+
 FROM python:3.12-slim AS puesto-python
 
 RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
@@ -278,6 +292,41 @@ COPY puesto/python/ore       /opt/ore/ore
 #   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
 COPY --from=build /src/target/release/ore-store-gcs /usr/local/bin/ore-store-gcs
 RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast; ast.parse(open('/opt/ore/agente.py').read()); print('agente y sdk listos')"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⭐ EL SERVIDOR DE LENGUAJE, DENTRO (0037 ③a)
+#
+# Medido antes de meterlo (`medida-los-servidores-de-lenguaje.py`, corriendo los
+# servidores de verdad con un cliente LSP): pyright arranca en 0,5 s, da el
+# primer diagnóstico en 3,8 s, propone 46 cosas en 0,10 s y pide 210 MB. La
+# alternativa sin Node —`jedi-language-server`, 10 MB de memoria— propone UNA en
+# 3,7 s y sólo ve errores de sintaxis. El pod pide 1 CPU / 2 GiB: cabe.
+#
+# ⛔ Y EL PRECIO ESTÁ DICHO: el binario `node` son ~127 MB, porque esta imagen
+#   sale de `python:3.12-slim` y ahí no hay Node. Es lo que cuesta el mejor de
+#   los dos, y se paga una vez por imagen, no por sesión.
+#
+# ⭐ LO QUE ESTO COMPRA, Y QUE EL NAVEGADOR NO PUEDE TENER: aquí están **el SDK**
+#   (`/opt/ore/ore`) y **la capa del repositorio** (`/capa`, el PYTHONPATH con lo
+#   que el árbol declara en su `pyproject.toml`). Monaco puede colorear; saber
+#   qué devuelve `over()` sólo se puede saber donde vive `over`.
+COPY --from=node:24-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=pyright /opt/p/node_modules/pyright /opt/ore/pyright
+
+# ⭐⭐ Y LA CONSTRUCCIÓN LO DEMUESTRA, que es la diferencia entre meter un
+#   programa y meter una promesa: se analiza una semilla como la que siembra
+#   `transforms-python` —con su `from ore import …`— contra el SDK de ESTA
+#   imagen, y se exige CERO errores. El día que el SDK deje de resolverse, la
+#   imagen no se construye; sin esto nos enteraríamos por un subrayado rojo en
+#   la pantalla de alguien.
+RUN mkdir -p /tmp/lsp && cd /tmp/lsp \
+ && printf '{"extraPaths":["/opt/ore"],"typeCheckingMode":"basic"}' > pyrightconfig.json \
+ && printf 'from ore import over, write, transform\n\n\n@transform(inputs=["a.b"], output="a.c")\ndef f():\n    return write("a.c", over("a.b"))\n' > ejemplo.py \
+ && node /opt/ore/pyright/index.js --outputjson ejemplo.py > /tmp/lsp/salida.json \
+ && python -c "import json; d=json.load(open('/tmp/lsp/salida.json'))['summary']; assert d['errorCount']==0, d; print('pyright ·', d)" \
+ && node /opt/ore/pyright/index.js --version >> /entorno-1.txt \
+ && du -sh /opt/ore/pyright /usr/local/bin/node >> /entorno-1.txt \
+ && rm -rf /tmp/lsp
 
 USER 65532:65532
 WORKDIR /trabajo

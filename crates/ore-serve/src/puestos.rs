@@ -72,6 +72,10 @@ const SIN_LATIDO: Duration = Duration::from_secs(90);
 /// Cada cuánto escribe algo un flujo que no tiene nada que contar. Por debajo
 /// de lo que cualquier intermediario da por muerta una conexión callada.
 const LATIDO: Duration = Duration::from_secs(10);
+/// Cuántos mensajes de vuelta se guardan sin que nadie los recoja. Un editor
+/// cerrado no puede hacer crecer la memoria de este servidor: lo más viejo se
+/// tira, y quien vuelva lo notará porque su número saltó.
+const LSP_RETENIDOS: usize = 500;
 /// Lo que vive un flujo antes de despedirse él mismo. No es un límite técnico:
 /// es que **el balanceador corta igualmente** (0037 ②, plazo de backend), y
 /// más vale terminar diciendo «vuelve» —con el número por el que ibas— que
@@ -161,6 +165,17 @@ pub(crate) struct Puesto {
     /// hace —aunque el código lo declare—, y lo que deja lo sigue decidiendo
     /// el gobierno de siempre.
     pub clase: Option<&'static ore_core::clases::Clase>,
+    /// **El servidor de lenguaje** (0037 ③a), en las dos direcciones.
+    ///
+    /// Lo que el editor manda (`textDocument/didChange`, `completion`…) espera
+    /// aquí a que el agente lo recoja; lo que el servidor contesta espera aquí
+    /// a que el editor lo recoja. Son mensajes de LSP tal cual, sin mirarlos:
+    /// este servidor es el CONDUCTO, no el que entiende.
+    pub lsp_al_servidor: VecDeque<Json>,
+    /// Lo de vuelta, cada uno con su número —para que un editor que reconecta
+    /// diga por dónde iba y no repita ni pierda.
+    pub lsp_a_la_consola: VecDeque<(u64, Json)>,
+    pub lsp_siguiente: u64,
     /// **Lo que el transform que corre declaró** (0031 W3.7 gobierno ⑤). El
     /// SDK lo dice al entrar en `@transform(inputs, output)` y lo retira al
     /// salir; mientras está, el servidor sólo resuelve sus `inputs` y sólo
@@ -566,6 +581,9 @@ impl Servidor {
             siguiente: 1,
             pendientes: VecDeque::new(),
             celdas: BTreeMap::new(),
+            lsp_al_servidor: VecDeque::new(),
+            lsp_a_la_consola: VecDeque::new(),
+            lsp_siguiente: 0,
             trabajo: None,
             repositorio: repositorio.clone(),
             clase,
@@ -739,6 +757,9 @@ impl Servidor {
             siguiente: 2,
             pendientes: VecDeque::from([1]),
             celdas: BTreeMap::new(),
+            lsp_al_servidor: VecDeque::new(),
+            lsp_a_la_consola: VecDeque::new(),
+            lsp_siguiente: 0,
             trabajo: Some(Trabajo {
                 codigo: codigo.clone(),
                 commit: commit.clone(),
@@ -1171,6 +1192,127 @@ impl Servidor {
         Salida::Flujo(Flujo {
             tipo: "text/event-stream",
             escribir: Box::new(move |e: &mut Emisor<'_>| emitir_puesto(&puestos, &id, desde, e)),
+        })
+    }
+
+    // ── el servidor de lenguaje (0037 ③a) ───────────────────────────────────
+    //
+    // ⭐ ESTE SERVIDOR NO ENTIENDE LSP, Y ES A PROPÓSITO. Lo que viaja son los
+    //   mensajes tal cual: el editor los escribe, el agente los da al servidor
+    //   de lenguaje que corre en el puesto, y lo que conteste vuelve por el
+    //   mismo sitio. Interpretarlos aquí sería poner a este proceso —el que
+    //   guarda el árbol de todo el mundo— a analizar código de alguien.
+    //
+    // ⛔ Y el puesto es de UNA persona: el editor que manda es el suyo, y el
+    //   agente que recoge es el que reclamó el puesto. Las dos puertas son las
+    //   mismas que ya tenían las celdas.
+
+    /// `POST /puestos/{id}/lsp {mensajes: [...]}`: lo que el editor le dice al
+    /// servidor de lenguaje. 202 y el número de los que quedan por recoger.
+    pub(crate) fn lsp_de_la_consola(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let mensajes = match mensajes_de(cuerpo) {
+            Ok(m) => m,
+            Err(r) => return r,
+        };
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let Some(p) = lista.get_mut(id) else {
+            return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
+        };
+        if p.persona != sujeto.persona {
+            return Respuesta::error(403, "ese puesto es de otra persona");
+        }
+        if p.estado == Estado::Cerrado {
+            return Respuesta::error(410, "el puesto está cerrado");
+        }
+        for m in mensajes {
+            p.lsp_al_servidor.push_back(m);
+        }
+        let quedan = p.lsp_al_servidor.len();
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta {
+            codigo: 202,
+            cuerpo: Json::obj([("pendientes", Json::Int(quedan as i64))]),
+        }
+    }
+
+    /// `POST /puestos/{id}/lsp/salida {mensajes: [...]}`: lo que el servidor de
+    /// lenguaje contesta. Lo manda el agente.
+    pub(crate) fn lsp_del_servidor(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let mensajes = match mensajes_de(cuerpo) {
+            Ok(m) => m,
+            Err(r) => return r,
+        };
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        for m in mensajes {
+            p.lsp_siguiente += 1;
+            let n = p.lsp_siguiente;
+            p.lsp_a_la_consola.push_back((n, m));
+            while p.lsp_a_la_consola.len() > LSP_RETENIDOS {
+                p.lsp_a_la_consola.pop_front();
+            }
+        }
+        let ultimo = p.lsp_siguiente;
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta::ok(Json::obj([("ultimo", Json::Int(ultimo as i64))]))
+    }
+
+    /// `GET /puestos/{id}/lsp/agente`: el flujo por el que el agente RECIBE lo
+    /// que el editor manda. Un mensaje por evento, en cuanto llega.
+    pub(crate) fn flujo_lsp_del_agente(&self, sujeto: &Identidad, id: &str) -> Salida {
+        {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            if let Err(r) = Self::reclamar(&mut lista, sujeto, id) {
+                return Salida::Una(r);
+            }
+        }
+        let puestos = Arc::clone(&self.puestos);
+        let id = id.to_string();
+        Salida::Flujo(Flujo {
+            tipo: "text/event-stream",
+            escribir: Box::new(move |e: &mut Emisor<'_>| {
+                emitir_lsp(&puestos, &id, e, true, 0);
+            }),
+        })
+    }
+
+    /// `GET /puestos/{id}/lsp/consola`: el flujo por el que el editor RECIBE lo
+    /// que el servidor de lenguaje contesta. Se retoma con `last-event-id`.
+    pub(crate) fn flujo_lsp_de_la_consola(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        desde: u64,
+    ) -> Salida {
+        {
+            let lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get(id) else {
+                return Salida::Una(Respuesta::error(
+                    404,
+                    format!("no hay ningún puesto `{id}`"),
+                ));
+            };
+            if p.persona != sujeto.persona {
+                return Salida::Una(Respuesta::error(403, "ese puesto es de otra persona"));
+            }
+        }
+        let puestos = Arc::clone(&self.puestos);
+        let id = id.to_string();
+        Salida::Flujo(Flujo {
+            tipo: "text/event-stream",
+            escribir: Box::new(move |e: &mut Emisor<'_>| {
+                emitir_lsp(&puestos, &id, e, false, desde);
+            }),
         })
     }
 
@@ -1848,6 +1990,109 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             Json::s(std::env::var("ORE_STORE").unwrap_or_default()),
         ),
     ]))
+}
+
+/// Los mensajes de un cuerpo `{mensajes: ["<json>", ...]}`.
+///
+/// ⛔⛔ CADA MENSAJE VIAJA COMO UNA CADENA, Y NO ES UN CAPRICHO. Un mensaje de
+///   LSP lleva `null`, dobles y anidamiento, y el `Json` de este árbol **no los
+///   modela a propósito**: pasarlos por `de_node` devolvería las cadenas
+///   `"null"` y `"1.5"` (está medido y escrito en `json.rs`). Así que aquí no
+///   se analizan: se comprueba que son cadenas, se guardan tal cual y se emiten
+///   tal cual (`Json::Crudo`). Este servidor es el CONDUCTO, no el que entiende
+///   — interpretarlos sería poner al proceso que guarda el árbol de todo el
+///   mundo a leer el código de alguien.
+fn mensajes_de(cuerpo: &str) -> Result<Vec<Json>, Respuesta> {
+    let Ok(nodo) = ore_core::parse::parse(cuerpo) else {
+        return Err(Respuesta::error(400, "el cuerpo no es JSON"));
+    };
+    let Json::Obj(m) = crate::rutas::de_node(&nodo) else {
+        return Err(Respuesta::error(422, "el cuerpo no es un objeto JSON"));
+    };
+    let Some(Json::Arr(ms)) = m.get("mensajes") else {
+        return Err(Respuesta::error(422, "falta `mensajes`, y es una lista"));
+    };
+    if ms.len() > 200 {
+        return Err(Respuesta::error(
+            413,
+            "demasiados mensajes de golpe (máximo 200)",
+        ));
+    }
+    let mut fuera = Vec::with_capacity(ms.len());
+    for m in ms {
+        let Json::Str(t) = m else {
+            return Err(Respuesta::error(
+                422,
+                "cada mensaje es una CADENA con el JSON dentro: este servidor no lo abre",
+            ));
+        };
+        fuera.push(Json::Crudo(t.clone()));
+    }
+    Ok(fuera)
+}
+
+/// El cuerpo de los dos flujos de LSP. `del_agente` dice en qué dirección:
+/// el agente recoge lo que el editor manda (y se CONSUME), el editor recoge lo
+/// que el servidor contesta (y se RETIENE con su número, para poder volver).
+///
+/// ⛔ Sin el candado cogido mientras se escribe, como el flujo del puesto.
+fn emitir_lsp(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, del_agente: bool, desde: u64) {
+    let fin = Instant::now() + VIDA;
+    let mut visto = desde;
+    loop {
+        let (mensajes, fuera) = {
+            let mut lista = puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(id) else {
+                drop(lista);
+                e.evento(
+                    "fin",
+                    None,
+                    &Json::obj([("motivo", Json::s("el puesto ya no está"))]),
+                );
+                return;
+            };
+            let fuera = p.estado == Estado::Cerrado || perdido(p);
+            let mensajes: Vec<(Option<u64>, Json)> = if del_agente {
+                p.lsp_al_servidor.drain(..).map(|m| (None, m)).collect()
+            } else {
+                p.lsp_a_la_consola
+                    .iter()
+                    .filter(|(n, _)| *n > visto)
+                    .map(|(n, m)| (Some(*n), m.clone()))
+                    .collect()
+            };
+            (mensajes, fuera)
+        };
+        for (n, m) in mensajes {
+            if !e.evento("lsp", n, &m) {
+                return;
+            }
+            if let Some(n) = n {
+                visto = n;
+            }
+        }
+        if fuera {
+            e.evento(
+                "fin",
+                None,
+                &Json::obj([("motivo", Json::s("el puesto se acabó"))]),
+            );
+            return;
+        }
+        if Instant::now() >= fin {
+            e.evento(
+                "fin",
+                Some(visto),
+                &Json::obj([("motivo", Json::s("vuelve"))]),
+            );
+            return;
+        }
+        if !e.latido() {
+            return;
+        }
+        let lista = puestos.lista.lock().unwrap();
+        let _ = puestos.campana.wait_timeout(lista, LATIDO).unwrap();
+    }
 }
 
 /// El cuerpo del flujo: mira, suelta el candado, escribe, espera la campana.

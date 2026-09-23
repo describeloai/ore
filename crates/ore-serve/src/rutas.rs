@@ -165,7 +165,13 @@ impl Servidor {
     /// lo único distinto es la forma de contestar.
     pub fn atender_flujo(&self, p: &Peticion) -> Salida {
         let seg = p.segmentos();
-        if let ("GET", ["puestos", id, "flujo"]) = (p.metodo.as_str(), seg.as_slice()) {
+        let es_flujo = matches!(
+            (p.metodo.as_str(), seg.as_slice()),
+            ("GET", ["puestos", _, "flujo"])
+                | ("GET", ["puestos", _, "lsp", "agente"])
+                | ("GET", ["puestos", _, "lsp", "consola"])
+        );
+        if es_flujo {
             let sujeto = match self.quien(p) {
                 Ok(s) => s,
                 Err(r) => return Salida::Una(r),
@@ -181,7 +187,16 @@ impl Servidor {
                 .get("last-event-id")
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or(0);
-            return self.flujo_del_puesto(&sujeto, id, desde);
+            return match seg.as_slice() {
+                ["puestos", id, "flujo"] => self.flujo_del_puesto(&sujeto, id, desde),
+                // El agente recoge lo que el editor manda; no hay nada que
+                // retomar, porque lo que recoge SE CONSUME.
+                ["puestos", id, "lsp", "agente"] => self.flujo_lsp_del_agente(&sujeto, id),
+                ["puestos", id, "lsp", "consola"] => {
+                    self.flujo_lsp_de_la_consola(&sujeto, id, desde)
+                }
+                _ => Salida::Una(Respuesta::error(404, "esa ruta no existe")),
+            };
         }
         Salida::Una(self.atender(p))
     }
@@ -478,6 +493,12 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "la celda es un número"),
             },
             ("GET", ["puestos", id, "pendiente"]) => self.pendiente_del_puesto(sujeto, id),
+            // ⭐ El servidor de lenguaje (0037 ③a): el editor manda por aquí y
+            //   el agente entrega por aquí; los dos flujos van en `atender_flujo`.
+            ("POST", ["puestos", id, "lsp"]) => self.lsp_de_la_consola(sujeto, id, &p.cuerpo),
+            ("POST", ["puestos", id, "lsp", "salida"]) => {
+                self.lsp_del_servidor(sujeto, id, &p.cuerpo)
+            }
             ("POST", ["puestos", id, "celdas", n, "salida"]) => match n.parse::<u64>() {
                 Ok(n) => self.salida_del_puesto(sujeto, id, n, &p.cuerpo),
                 Err(_) => Respuesta::error(422, "la celda es un número"),

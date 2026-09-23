@@ -620,10 +620,20 @@ dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra PO
 
 # ── 22 · /repositorios: la unidad de trabajo (0036 ②) ───────────────────────
 [ "$(pide POST /proyectos '{"nombre":"Personas","contiene":[]}')" = "201" ] || falla "22 · el proyecto de la prueba no entro · $(cat "$TMP/r.json")"
+# ⭐ La version NO se escribe aqui: se pregunta al producto. Una semilla
+#   cambia y la version sube (0037 iii.a le puso el `from ore import ...` a las
+#   cinco plantillas de Python), y una prueba que persiga el numero se pone roja
+#   por decir la verdad. Lo que importa es que nace con LA DE HOY.
+pide GET /assets >/dev/null
+VER=$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([c["version"] for c in d["clases"] if c["id"]=="transforms-python"][0])' "$TMP/r.json")
 ANTES=$(cabeza)
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"New Pipelines Java Transform","plantilla":"transforms","proyecto":"personas"}')" = "201" ] \
   || falla "22 · POST /repositorios · $(cat "$TMP/r.json")"
-cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==2 and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja `transforms` resuelve a `transforms-python`), su version y el proyecto"
+# ⭐ La version NO se escribe aqui: se pregunta. Una semilla cambia y la
+#   version sube (0037 iii.a le puso el `from ore import ...` a las cinco de
+#   Python), y una prueba que persiga el numero se pone roja por decir la
+#   verdad. Lo que importa es que el repositorio nace con LA DE HOY.
+cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==$VER and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja `transforms` resuelve a `transforms-python`), su version y el proyecto"
 cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
 [ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
 [ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"

@@ -10,6 +10,16 @@ texto, error, vacía— al mismo sitio. La consola nunca habla con este proceso.
   GET  /puestos/{id}/pendiente            → 200 {pendiente, celda, lenguaje, texto}
   POST /puestos/{id}/celdas/{n}/salida    ← {tipo, ms, …}
 
+Y desde 0037 ③a también lleva **el servidor de lenguaje** de su entorno —pyright
+para Python— y hace de correa entre él y el editor:
+
+  GET  /puestos/{id}/lsp/agente           → flujo de eventos: lo que el editor manda
+  POST /puestos/{id}/lsp/salida           ← lo que el servidor de lenguaje contesta
+
+El servidor de lenguaje corre AQUÍ y no en el navegador porque aquí están el SDK
+(`/opt/ore/ore`) y la capa del repositorio (`/capa`): saber qué devuelve `over()`
+sólo se puede saber donde vive `over`.
+
 Quién es: dentro del clúster, el agente de la celda (`ore-agente-<n>`, client
 credentials contra el IdP, `rubix_tipo: agente`); en las pruebas, la cabecera
 `x-ore-sujeto: agente:…` (`ORE_SUJETO`). `ore-serve` ata el puesto al primer
@@ -24,7 +34,10 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.parse
@@ -137,6 +150,146 @@ def llano(v):
 
 
 # ── El bucle ───────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# EL SERVIDOR DE LENGUAJE, Y LA CORREA (0037 ③a)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ⭐ Aquí no se entiende LSP tampoco. Lo que llega por el flujo se escribe tal
+#   cual en la entrada del servidor de lenguaje —con su cabecera
+#   `Content-Length`, que es como se enmarca un mensaje de LSP— y lo que el
+#   servidor escribe se manda tal cual. La correa no opina.
+#
+# ⛔ Y NO ARRANCA SOLO. Un pyright son ~210 MB medidos: si nadie abre un fichero
+#   en el editor, esta sesión no los paga. El primer mensaje lo enciende.
+
+# Lo que se arranca, y cómo. Se puede cambiar por el entorno: es lo que deja que
+# la prueba de fuego ponga un servidor de mentira y ejercite LA CORREA sin
+# descargar nada.
+LSP = os.environ.get("ORE_LSP", "node /opt/ore/pyright/langserver.index.js --stdio")
+
+
+class Correa:
+    """Entre el flujo de `ore-serve` y el servidor de lenguaje del puesto."""
+
+    def __init__(self, puesto, testigo):
+        self.p = puesto
+        self.testigo = testigo
+        self.proceso = None
+        self.salientes = []
+        self.candado = threading.Lock()
+        self.vivo = False
+
+    # ── el proceso ──────────────────────────────────────────────────────────
+    def encender(self):
+        if self.proceso is not None:
+            return self.proceso.poll() is None
+        orden = LSP.split()
+        if not shutil.which(orden[0]):
+            log("no hay servidor de lenguaje (`%s`): el editor se queda sin ayuda" % orden[0])
+            self.proceso = False
+            return False
+        try:
+            self.proceso = subprocess.Popen(
+                orden, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, cwd=os.environ.get("TRABAJO_DIR", "/trabajo"))
+        except OSError as e:
+            log("el servidor de lenguaje no arranca (%s)" % e)
+            self.proceso = False
+            return False
+        log("servidor de lenguaje arrancado: %s" % LSP)
+        threading.Thread(target=self._leer_del_servidor, daemon=True).start()
+        threading.Thread(target=self._entregar, daemon=True).start()
+        return True
+
+    def escribir(self, mensaje):
+        """Un mensaje del editor, hacia el servidor de lenguaje."""
+        if not self.encender():
+            return
+        b = mensaje.encode("utf-8")
+        try:
+            self.proceso.stdin.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+            self.proceso.stdin.flush()
+        except OSError as e:
+            log("el servidor de lenguaje se fue (%s)" % e)
+            self.proceso = None
+
+    def _leer_del_servidor(self):
+        """Lo que el servidor contesta, a la cola de salida."""
+        f = self.proceso.stdout
+        while True:
+            largo = None
+            while True:
+                linea = f.readline()
+                if not linea:
+                    log("el servidor de lenguaje cerró su salida")
+                    return
+                linea = linea.strip()
+                if not linea:
+                    break
+                if linea.lower().startswith(b"content-length:"):
+                    largo = int(linea.split(b":")[1])
+            if largo is None:
+                continue
+            cuerpo = f.read(largo).decode("utf-8", "replace")
+            with self.candado:
+                self.salientes.append(cuerpo)
+
+    def _entregar(self):
+        """Cada 20 ms, lo que haya, DE GOLPE.
+
+        ⛔ Un mensaje por petición serían decenas de conexiones por segundo
+          —`ore-entrada` no tiene keep-alive y admite 64 a la vez—: teclear
+          dejaría al inquilino sin plazas. Se agrupan.
+        """
+        while True:
+            time.sleep(0.02)
+            with self.candado:
+                lote, self.salientes = self.salientes, []
+            if not lote:
+                continue
+            self.p._cabeceras = self.testigo.cabeceras()
+            try:
+                codigo, r = self.p.pedir(
+                    "POST", "/puestos/%s/lsp/salida" % self.p.id, cuerpo={"mensajes": lote})
+                if codigo not in (200, 201, 202):
+                    log("la salida del servidor de lenguaje no se aceptó: %s %s" % (codigo, r))
+            except Exception as e:  # noqa: BLE001 — la red se cae; se sigue
+                log("no pude entregar %d mensajes del servidor de lenguaje: %s" % (len(lote), e))
+
+    # ── el flujo de entrada ─────────────────────────────────────────────────
+    def escuchar(self):
+        """El flujo de `ore-serve`: lo que el editor manda, según lo manda.
+
+        Se reconecta sola: el servidor se despide a los 240 s («vuelve») y lo
+        que se recoge por aquí SE CONSUME, así que no hay nada que retomar.
+        """
+        self.vivo = True
+        while self.vivo:
+            try:
+                self._una_vuelta()
+            except Exception as e:  # noqa: BLE001
+                log("el flujo del servidor de lenguaje se cortó (%s): vuelvo en 3 s" % e)
+                time.sleep(3)
+
+    def _una_vuelta(self):
+        req = urllib.request.Request(
+            "%s/puestos/%s/lsp/agente" % (self.p.servidor, self.p.id), method="GET")
+        req.add_header("accept", "text/event-stream")
+        for k, v in self.testigo.cabeceras().items():
+            req.add_header(k, v)
+        with urllib.request.urlopen(req, timeout=300) as r:
+            evento = None
+            for linea in r:
+                linea = linea.decode("utf-8", "replace").rstrip("\n").rstrip("\r")
+                if linea.startswith("event: "):
+                    evento = linea[7:]
+                elif linea.startswith("data: "):
+                    if evento == "lsp":
+                        self.escribir(linea[6:])
+                    elif evento == "fin":
+                        return
+
+
 def main():
     p = ore.puesto
     if not p.id:
@@ -150,6 +303,12 @@ def main():
         os.environ["ORE_CODIGO"] = trabajo
     testigo = Testigo()
     kernel = Kernel()
+    # La correa escucha desde el principio; el servidor de lenguaje no arranca
+    # hasta que llega el primer mensaje (un pyright son ~210 MB).
+    correa = None
+    if not trabajo:
+        correa = Correa(p, testigo)
+        threading.Thread(target=correa.escuchar, daemon=True).start()
     log("%s %s · ore-serve %s · TTL %ds · almacén %s" % ("trabajo" if trabajo else "puesto", p.id, p.servidor, ttl, p.almacen))
     ultimo = time.time()
     while True:

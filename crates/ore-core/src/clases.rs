@@ -83,8 +83,12 @@ const TRANSFORMS_PY: &str = "\
 # (ADR 0031 · W3.7): mientras corre, la sesión sólo resuelve sus `inputs` y
 # sólo escribe su `output`. Pedir otra cosa es un PermissionError, no un aviso.
 #
-# `transform`, `over` y `write` los pone la sesión: aquí no se importa nada.
+# `transform`, `over` y `write` son del SDK del puesto y ADEMAS los pone la
+# sesión en el espacio de la celda: el import no cambia lo que corre — hace que
+# el editor sepa de qué hablas (ADR 0037 ③a).
 # Cambia las dos referencias por las tuyas y dale a Run.
+
+from ore import transform, over, write
 
 ENTRADA = \"<paquete>.<dataset>\"
 SALIDA = \"<paquete>.<resumen>\"
@@ -151,8 +155,12 @@ const TRANSFORMS_SQL: &str = "\
 # Sigue DECLARANDO qué lee y qué escribe, y el servidor lo hace cumplir
 # (ADR 0031 · W3.7).
 #
-# `transform`, `sql` y `write` los pone la sesión: aquí no se importa nada.
+# `transform`, `sql` y `write` son del SDK del puesto y ADEMAS los pone la
+# sesión en el espacio de la celda: el import no cambia lo que corre — hace que
+# el editor sepa de qué hablas (ADR 0037 ③a).
 # Cambia las referencias por las tuyas y dale a Run.
+
+from ore import transform, sql, write
 
 ENTRADA = \"mi_paquete.mi_dataset\"
 SALIDA = \"mi_paquete.mi_resumen\"
@@ -178,7 +186,11 @@ const ANALYTICS_PY: &str = "\
 # cumplir — un `analytics` no escribe datos aunque el código lo pida (0036 ⑤),
 # así que aquí se mira, se cuenta y se decide qué hacer después.
 #
-# `over` y `sql` los pone la sesión: aquí no se importa nada.
+# `over` y `sql` son del SDK del puesto y ADEMAS los pone la sesión en el
+# espacio de la celda: el import no cambia lo que corre — hace que el editor
+# sepa de qué hablas (ADR 0037 ③a).
+
+from ore import over, sql
 
 FUENTE = \"<paquete>.<dataset>\"
 
@@ -191,7 +203,11 @@ const MODELS_PY: &str = "\
 # El entrenamiento de un modelo. Lo que salga se declara como `TrainedModel`
 # con su `trainedFrom`: es lo que hace que el linaje no se corte (ADR 0029).
 #
-# `over` y `declare` los pone la sesión: aquí no se importa nada.
+# `over` y `declare` son del SDK del puesto y ADEMAS los pone la sesión en el
+# espacio de la celda: el import no cambia lo que corre — hace que el editor
+# sepa de qué hablas (ADR 0037 ③a).
+
+from ore import over, declare
 
 ENTRADA = \"<paquete>.<dataset>\"
 MODELO = \"<paquete>.<modelo>\"
@@ -211,6 +227,12 @@ const FUNCTIONS_PY: &str = "\
 # Una función de lectura: entra una fila, sale un valor, y sin efectos. Se
 # declara como `Function` en `functions/` y se invoca con `ore invoke` (ADR
 # 0029); su clase no escribe datos (0036 ⑤), y eso no es un aviso: es el techo.
+#
+# `over` es del SDK del puesto y ADEMAS lo pone la sesión en el espacio de la
+# celda: el import no cambia lo que corre — hace que el editor sepa de qué
+# hablas (ADR 0037 ③a).
+
+from ore import over
 
 
 FUENTE = \"<paquete>.<dataset>\"
@@ -239,7 +261,7 @@ pub const CLASES: &[Clase] = &[
         // 2 porque la plantilla CAMBIÓ (⑧a): lo escrito con la de antes —un
         // comentario y sin `pyproject.toml`— sale `actualizable: true`, que es
         // lo que la columna «UPGRADE» existe para decir.
-        version: 2,
+        version: 3,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("transforms/ejemplo.py", TRANSFORMS_PY),
@@ -269,7 +291,7 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets writing SQL.",
-        version: 1,
+        version: 2,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("transforms/ejemplo.py", TRANSFORMS_SQL),
@@ -284,7 +306,7 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Analytics",
         descripcion: "Analyze your datasets using your preferred data science environment.",
-        version: 2,
+        version: 3,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("analisis/ejemplo.py", ANALYTICS_PY),
@@ -299,7 +321,7 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Models",
         descripcion: "Create, test and train models for machine learning, forecasting and more.",
-        version: 2,
+        version: 3,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("modelos/entrenar.py", MODELS_PY),
@@ -314,7 +336,7 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Functions",
         descripcion: "Write reusable code for pipelines, transforms and applications.",
-        version: 2,
+        version: 3,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
@@ -468,6 +490,56 @@ mod pruebas {
         assert_eq!(de("models").unwrap().id, "models-python");
         assert!(!nombres().split(", ").any(|n| n == "transforms"));
         assert!(nombres().split(", ").any(|n| n == "transforms-python"));
+    }
+
+    /// ⭐ LO QUE LA SEMILLA USA, LA SEMILLA LO IMPORTA (0037 ③a).
+    ///
+    /// La sesión pone `over`, `write`, `transform`, `sql` y `declare` en el
+    /// espacio de la celda —son literalmente `ore.over`, `ore.write`… (lo hace
+    /// `Kernel.__init__` del agente)—, así que durante mucho tiempo la semilla
+    /// no importó nada y corría igual.
+    ///
+    /// ⛔ Pero un fichero que usa nombres que no declara **no lo entiende
+    ///   ningún editor**. Medido con pyright sobre esta misma semilla: tres
+    ///   errores —«"transform" is not defined», «"over" is not defined»,
+    ///   «"write" is not defined»— sobre nuestra propia plantilla, que es el
+    ///   primer regalo que recibiría quien la abre. Con el import: cero.
+    ///
+    /// Y el atajo de enseñarle al editor lo que la sesión inyecta NO existe:
+    /// un `builtins.pyi` en el `stubPath` de pyright no añade a typeshed, lo
+    /// reemplaza (medido: acto seguido `print` deja de existir).
+    #[test]
+    fn la_semilla_importa_lo_que_usa() {
+        // Lo que la sesión pone, y que por tanto podría no importarse.
+        const PUESTOS: [&str; 5] = ["over", "write", "transform", "sql", "declare"];
+        for c in CLASES {
+            if c.lenguaje != "python" {
+                continue;
+            }
+            for (ruta, texto) in c.semilla {
+                if !ruta.ends_with(".py") {
+                    continue;
+                }
+                let importado: Vec<&str> = texto
+                    .lines()
+                    .filter(|l| l.starts_with("from ore import "))
+                    .flat_map(|l| l.trim_start_matches("from ore import ").split(", "))
+                    .map(str::trim)
+                    .collect();
+                for nombre in PUESTOS {
+                    // Usado como llamada o como decorador, no en la prosa.
+                    let usa = texto.contains(&format!("{nombre}("))
+                        || texto.contains(&format!("@{nombre}("));
+                    if usa {
+                        assert!(
+                            importado.contains(&nombre),
+                            "{} usa `{nombre}` y no lo importa: un editor lo subrayaría en rojo",
+                            c.id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// ⭐ Ninguna plantilla es ya un cartel: todas traen código (⑧b), y las de

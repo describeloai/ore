@@ -280,7 +280,54 @@ en_cola 51-el-puesto-ana-python.yaml | grep -q 'puesto-entorno-modelo' && falla 
 dice "1 · POST /puestos: 201 puesto-ana-python encolado, el fichero en la cola con id, Job puesto-ana-python-<8 hex>, rol puesto e imagen puesto-python:1 · repetido 200 · bea 403 · un agente 403 · rust 422 · sin cola 503"
 
 # ── 2 · el agente reclama el puesto ────────────────────────────────────────
+# ⭐ `ORE_LSP` (0037 ③a): el servidor de lenguaje que el agente arrancará
+#   cuando llegue el primer mensaje. Aquí, uno DE MENTIRA —cuarenta líneas que
+#   hablan LSP— porque lo que esta prueba ejercita es LA CORREA, no pyright:
+#   pyright lo prueba la construcción de la imagen, que lo corre contra el SDK.
+#
+# ⛔ Sin rutas absolutas en `ORE_LSP`: en Git Bash, un valor con `C:\` dentro lo
+#   convierte MSYS y el agente acaba arrancando `C;C:\Program Files\Git\...`
+#   (medido). El servidor se llama por su nombre y se resuelve desde el
+#   directorio de trabajo del agente.
+TMP_PY="$TMP"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) TMP_PY="$(cd "$TMP" && pwd -W)";; esac
+cat > "$TMP/lsp-de-mentira.py" <<'FIN_LSP'
+import json
+import sys
+
+e, sal = sys.stdin.buffer, sys.stdout.buffer
+
+
+def manda(m):
+    b = json.dumps(m).encode("utf-8")
+    sal.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+    sal.flush()
+
+
+while True:
+    largo = None
+    while True:
+        linea = e.readline()
+        if not linea:
+            sys.exit(0)
+        linea = linea.strip()
+        if not linea:
+            break
+        if linea.lower().startswith(b"content-length:"):
+            largo = int(linea.split(b":")[1])
+    if largo is None:
+        continue
+    m = json.loads(e.read(largo).decode("utf-8"))
+    if "id" in m:
+        manda({"jsonrpc": "2.0", "id": m["id"], "result": {"eco": m.get("method"), "nulo": None}})
+    if m.get("method") == "textDocument/didOpen":
+        manda({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+               "params": {"uri": m["params"]["textDocument"]["uri"],
+                          "diagnostics": [{"message": "asi no", "severity": 1,
+                                           "range": {"start": {"line": 0, "character": 0},
+                                                     "end": {"line": 0, "character": 3}}}]}})
+FIN_LSP
 ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+  ORE_LSP="$(basename "$PY") lsp-de-mentira.py" TRABAJO_DIR="$TMP_PY" \
   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.txt" 2>&1 &
 AGENTE=$!
 for _ in $(seq 1 40); do pide GET /puestos/puesto-ana-python "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
@@ -344,6 +391,35 @@ grep -q "^id: $N" "$TMP/flujo2.txt" && falla "3b · al retomar repitio la celda 
 [ "$(pide GET /puestos/$P/flujo "$BEA")" = "403" ] || falla "3b · bea abrio el flujo de ana: $(cuerpo)"
 [ "$(pide GET /puestos/no-existe/flujo "$ANA")" = "404" ] || falla "3b · un puesto que no existe no dio 404: $(cuerpo)"
 dice "3b · el flujo: text/event-stream troceado y sin content-length · abre con el estado del puesto y las $N celdas que ya habia · la ultima llega SOLA con su salida · se retoma con last-event-id (ni repite ni pierde) · bea 403 · uno que no existe 404"
+
+# ── 3c · el servidor de lenguaje, de punta a punta (0037 ③a) ───────────────
+# El editor manda un mensaje de LSP, `ore-serve` lo pasa SIN ABRIRLO, el agente
+# se lo da al servidor de lenguaje de su puesto, y lo que conteste vuelve por el
+# flujo hasta el editor. Aquí el servidor es de mentira; la correa es de verdad.
+curl -sN --max-time 8 -H "$ANA" "$BASE/puestos/$P/lsp/consola" >"$TMP/lsp.txt" 2>/dev/null &
+CURL=$!
+sleep 1
+MSG='{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"raiz":null}}'
+[ "$(pide POST /puestos/$P/lsp "$ANA" "{\"mensajes\":[$("$PY" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$MSG")]}")" = "202" ] || falla "3c · mandar un mensaje de LSP no dio 202: $(cuerpo)"
+ABRIR='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///transforms/ejemplo.py","languageId":"python","version":1,"text":"x = 1\n"}}}'
+[ "$(pide POST /puestos/$P/lsp "$ANA" "{\"mensajes\":[$("$PY" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ABRIR")]}")" = "202" ] || falla "3c · el didOpen no dio 202: $(cuerpo)"
+wait $CURL 2>/dev/null || true
+grep -q "^event: lsp" "$TMP/lsp.txt" || falla "3c · no volvió ni un mensaje del servidor de lenguaje: $(cat "$TMP/lsp.txt")"
+grep -qE '"id": *7' "$TMP/lsp.txt" || falla "3c · la respuesta no trae el id que se mandó: $(cat "$TMP/lsp.txt")"
+grep -qE '"eco": *"initialize"' "$TMP/lsp.txt" || falla "3c · el servidor no vio el método: $(cat "$TMP/lsp.txt")"
+# ⛔ Y el `null` sigue siendo `null`: los mensajes viajan como cadenas porque el
+#   `Json` de este árbol no modela `null` ni los dobles — pasarlos por él los
+#   volvería las cadenas "null" y "1.5" (está medido y escrito en `json.rs`).
+grep -qE '"nulo": *null' "$TMP/lsp.txt" || falla "3c · el null llegó degradado: $(cat "$TMP/lsp.txt")"
+grep -q "publishDiagnostics" "$TMP/lsp.txt" || falla "3c · el aviso del servidor (sin id) no llegó: $(cat "$TMP/lsp.txt")"
+grep -q "asi no" "$TMP/lsp.txt" || falla "3c · el diagnóstico no llegó entero: $(cat "$TMP/lsp.txt")"
+# Las dos puertas: el puesto es de una persona, y el flujo del agente es del agente.
+[ "$(pide POST /puestos/$P/lsp "$BEA" '{"mensajes":["{}"]}')" = "403" ] || falla "3c · bea le habló al servidor de lenguaje de ana: $(cuerpo)"
+[ "$(pide GET /puestos/$P/lsp/consola "$BEA")" = "403" ] || falla "3c · bea escuchó el flujo de ana: $(cuerpo)"
+[ "$(pide GET /puestos/$P/lsp/agente "$ANA")" = "403" ] || falla "3c · una persona se puso en el sitio del agente: $(cuerpo)"
+[ "$(pide POST /puestos/$P/lsp "$ANA" '{"mensajes":[{"jsonrpc":"2.0"}]}')" = "422" ] || falla "3c · un mensaje que no es cadena no dio 422: $(cuerpo)"
+[ "$(pide POST /puestos/$P/lsp "$ANA" '{}')" = "422" ] || falla "3c · sin mensajes no dio 422: $(cuerpo)"
+dice "3c · el servidor de lenguaje: el editor manda y vuelve por el flujo (id, metodo y el null INTACTO), el aviso sin id tambien · bea 403 en los dos sentidos · una persona no es el agente 403 · un mensaje que no es cadena 422"
 
 # ── 4 · over() ─────────────────────────────────────────────────────────────
 celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "4 · over(hr.espanoles): $(cuerpo)"
