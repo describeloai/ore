@@ -435,6 +435,66 @@ siga siendo de la celda. Se gana lo que faltaba: **muchos sitios donde trabajar 
 | **§4 lo que acota** | `GET /arbol` da **24 ficheros** (la celda) y del repositorio hay **1**; pedir su carpeta es **404**. Dos repos de la misma persona dan **el mismo puesto** y la rama es `ana/puesto`. `/propuestas` **no filtra por ruta** | acotar cuesta **tres cosas y ninguna es cara**: una raíz en `GET /arbol`, `id_de(…, repositorio)` con rama `<persona>/<repo>`, y un filtro por ruta en `/propuestas` |
 | **§5 la consola** | De las 7 columnas de la lista, **cinco salen del árbol** (ruta, last edited by, last edited, PRs, y el propio listado); **dos no existen**: `nombre` y `plantilla`. «Save» del BuildPicker hoy **navega** (`router.push('/workspaces')`) y saca proyecto y carpeta de la URL sobre `SAMPLE_PROJECT_FILES`; la ruta del workspace es **una sola, sin repositorio** | lo que falta en la consola es exactamente lo que falta en el árbol: **nombre y plantilla**. Y una ruta `/workspaces/<repo>` |
 
+## ⑦ La corrección: un proyecto necesita SITIO, no sólo nombre (2026-09-23)
+
+**Cómo se vio.** Delante de la pantalla, con un proyecto recién creado y vacío: *«¿por qué en
+Location veo estas carpetas, si el proyecto está vacío?»* y, después, *«no puedo guardar ni un
+solo item en el proyecto»*. Las dos preguntas tienen **la misma respuesta**, y la respuesta es
+un fallo de esta decisión, no de quien preguntaba.
+
+**Lo medido** (`pruebas-de-fuego/medida-el-sitio-del-proyecto.py`, sobre el árbol de **victor**
+—commit `579d2e7`, traído con el Job de lectura de siempre—, 2026-09-23):
+
+| | medido | lo que dice |
+|---|---|---|
+| **§1 el árbol** | `proyectos/test-project/README.md` existe y lo escribió la consola: `nombre: "test project"`, **sin `contiene`**. Cinco paquetes (`foreign_test`, tres `postgresql_*`, `standard_test`) y **ni una sola carpeta** en todo el árbol: lo único que parece carpeta son las del kind (`tables/`, `views/`, `datasets/`), que el índice esconde desde 0034 ④ | el proyecto es **real** y no nombra nada. Y no hay dónde guardar: no existe una sola carpeta de cliente |
+| **§2 el índice** | `carpetas` de cada paquete = `['']` o `[]` — exactamente los ítems que hay | «Location» sacaba su lista de aquí, así que con un proyecto sin `contiene` sólo podía ofrecer **los paquetes de la celda**. Eso es lo que se veía, y por eso parecían carpetas del proyecto sin serlo |
+| **§3 la carpeta** | «Create ▸ Folder» (`PUT /arbol/packages/standard_test/mi_carpeta/README.md`) → **201**, commit `53e0282`, y `GET /arbol` la trae. `GET /assets` seguía diciendo `carpetas = ['']` | **el recorrido estaba roto de punta a punta**: la carpeta se escribía de verdad en la forja y el asistente no podía ofrecerla nunca. De ahí «no puedo guardar ni un item» |
+| **§4 guardar** | `POST /repositorios {paquete: standard_test, carpeta: mi_transform, plantilla: transforms, proyecto: test-project}` → **201**, un commit (`2a44a8d`) con el manifiesto, la semilla y el README del proyecto; el índice después trae el repositorio con su clase, su versión y su techo | **el servidor funciona sobre su árbol**. Lo que no existía era el camino para llegar a esa llamada |
+| **§4 el daño de rebote** | el proyecto queda con `contiene: [standard_test/mi_transform]` | el proyecto pasa a vivir **dentro de su propio repositorio**, y el siguiente nacería anidado en el primero |
+
+**Los tres fallos, dichos por su nombre.**
+
+1. **El índice contaba ítems, no carpetas.** `carpetas` salía de los documentos, así que **la
+   carpeta vacía no existía** — y la carpeta vacía es justo la que hace falta para guardar **lo
+   primero**. Estaba hasta escrito como nota al pie en la consola («aparecerá en el catálogo
+   cuando tenga algo dentro»): eso no era una nota al pie, era el fallo.
+2. **Un proyecto no tiene sitio propio.** «Una lente, no una caja» vale para **mirar**; para
+   **crear** no basta. `contiene` apunta a rutas que **tienen que existir ya**, así que un
+   proyecto recién nacido no tiene suelo y lo primero que se guarde en él sólo puede ir a un
+   paquete prestado. Foundry —de donde viene la pantalla— tiene un proyecto que **es una
+   carpeta**: un sitio.
+3. **Al guardar, el proyecto nombra el repositorio y no el sitio.** `nombrar_en_proyecto`
+   añade `<paquete>/<carpeta>`, que es la carpeta **del repositorio**.
+
+**Lo decidido.** La lente se queda —un proyecto sigue sin gobernar, sigue solapándose y sigue
+siendo un atlas y no una partición—, pero **gana un sitio propio desde que nace**: el sitio no
+se presta del árbol, se crea con él. Y el índice deja de confundir «existe» con «tiene algo
+dentro».
+
+### ⑦.2 · Una carpeta existe POR ESTAR (hecho)
+
+`ore_core::assets` suma a las carpetas que los ítems nombran **las que están en el árbol**
+(`carpetas_del_paquete`): las del kind (`tables/`, `views/`…) siguen sin contar y la raíz
+(`""`) se sigue ganando con ítems, no por existir. Es una unión, así que nada de lo que ya se
+listaba deja de listarse.
+
+No es sólo el asistente: el explorador entero enseñaba de menos. Medido después, sobre el mismo
+árbol de victor: `PUT packages/standard_test/mi_carpeta/README.md` → 201 y
+`carpetas = ['', 'mi_carpeta']`; la carpeta se puede elegir, y dentro cabe un repositorio.
+
+Y la prueba de fuego lo fija donde no se puede olvidar: el caso **21** de `los-documentos.sh`
+**afirmaba el fallo** («con sólo un README, el índice NO la nombra: cuenta ítems, no
+carpetas»). Ahora afirma lo contrario, y sigue comprobando que con un documento dentro la
+nombra igual y que al borrarla desaparece.
+
+### Lo que queda de ⑦
+
+- **⑦.1 · El proyecto nace con su sitio.** `POST /proyectos` crea el lugar en el árbol y
+  `contiene` arranca nombrándolo. Un proyecto vacío deja de ser un cartel sin suelo.
+- **⑦.3 · `contiene` nombra el sitio, no el repositorio.** Al guardar, el proyecto se queda con
+  el paquete/carpeta **donde** cae, no con la carpeta del repositorio.
+
 ## Lo que esto no decide
 
 - Quién puede ver un proyecto: **ore-iam**, que es un producto aparte (0034 lo dejó anotado).

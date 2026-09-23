@@ -72,9 +72,13 @@
 #                                     arbol no cambia; un alcance que no es una
 #                                     carpeta de paquete, 422, y una que no
 #                                     esta, 404
-#  21  carpetas (0035 ③b)          una carpeta es un fichero dentro (README);
-#                                     el indice la nombra en cuanto cae un
-#                                     documento; `DELETE /arbol/<carpeta>` se la
+#  21  carpetas (0035 ③b, ⑦)       una carpeta es un fichero dentro (README);
+#                                     el indice la nombra POR ESTAR, sin
+#                                     esperar a que caiga un documento (0035 ⑦:
+#                                     contarlas por items dejaba invisible la
+#                                     carpeta recien creada, que es justo donde
+#                                     se guarda lo primero); `DELETE
+#                                     /arbol/<carpeta>` se la
 #                                     lleva ENTERA en UN commit diciendo que
 #                                     ficheros; y si al irse el arbol empeora,
 #                                     422 y no se pierde nada
@@ -538,7 +542,7 @@ dice "20 · /proyectos: crear es un commit del sujeto (id del titulo) · nombre 
 printf '# Ingesta\n' > "$TMP/carpeta.md"
 [ "$(pon packages/hr/ingesta/README.md "$TMP/carpeta.md")" = "201" ] || falla "21 · el README de la carpeta no entro · $(cat "$TMP/r.json")"
 cumple "d['diagnosticos']==[] and d['commit']" "21 · una carpeta se crea con un fichero dentro, y compila"
-[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' not in [p['carpetas'] for p in d['paquetes']][0]" "21 · con solo un README, el indice NO la nombra (cuenta items, no carpetas)"
+[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · con solo un README, el indice YA la nombra (0035 vii: una carpeta existe por estar)"
 cat > "$TMP/enIngesta.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha8
 kind: View
@@ -550,7 +554,7 @@ spec:
     id: employeeId
 Y
 [ "$(pon packages/hr/ingesta/views/enIngesta.yaml "$TMP/enIngesta.yaml")" = "201" ] || falla "21 · el documento dentro de la carpeta no entro · $(cat "$TMP/r.json")"
-[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · con un documento dentro, el indice SI la nombra"
+[ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · y con un documento dentro, sigue nombrandola"
 # una carpeta que al irse rompe el arbol: 422/409 y no se pierde nada
 cat > "$TMP/laQueUsa.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha8
@@ -578,7 +582,7 @@ cumple "d['carpeta'] is True and d['retirado'] is True and sorted(d['ficheros'])
 [ "$(pide GET /arbol/packages/hr/ingesta/README.md)" = "404" ] || falla "21 · el README sigue"
 [ "$(pide DELETE /arbol/packages/hr/ingesta)" = "404" ] || falla "21 · una carpeta que no esta no dio 404"
 [ "$(pide GET /assets)" = "200" ] && cumple "'ingesta' not in [p for p in d['paquetes'] if p['name']=='hr'][0]['carpetas']" "21 · el indice ya no la nombra"
-dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra cuando cae un documento · DELETE de la carpeta se la lleva entera en UN commit diciendo que ficheros · si al irse el arbol empeora, 422 y nada se pierde"
+dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra POR ESTAR, vacia o no (0035 vii) · DELETE de la carpeta se la lleva entera en UN commit diciendo que ficheros · si al irse el arbol empeora, 422 y nada se pierde"
 
 # ── 22 · /repositorios: la unidad de trabajo (0036 ②) ───────────────────────
 [ "$(pide POST /proyectos '{"nombre":"Personas","contiene":[]}')" = "201" ] || falla "22 · el proyecto de la prueba no entro · $(cat "$TMP/r.json")"

@@ -32,6 +32,7 @@
 //! | `acceso` | del plano de datos: `clasificacion` (las labels del documento; en una Entity, las efectivas de sus propiedades; en lo que lee una tabla, las de las columnas que usa) y `conductos` (si `materialization.payload` compila para lo que copia, por [`flow::check`]). La concesión de `ore-iam` **no** entra: es del plano de control |
 //! | `version` | `null` aquí: la pone quien tiene la forja (ore-serve), por fichero |
 //! | `repositorio` | **en singular** (0035 ⑥): el repositorio donde vive, o `null`. Un proyecto es una lente y se solapa; un repositorio es **el sitio donde se trabaja**, y anidarlos es hondura —se lo queda el más hondo—, no solape |
+//! | `carpetas` (del paquete) | **las que existen**, tengan ítems dentro o no (0035 ⑦): la unión de las que los ítems nombran y los directorios que están en el árbol, quitando las del kind. Contarlas por ítems dejaba invisible justo la carpeta que más importa —la recién creada, o la que sólo tiene un repositorio—, y con ella no se puede elegir dónde se guarda lo primero |
 //! | `proyectos` | **en plural** (0035 ⑤ 4): qué proyectos NOMBRAN a este ítem, de `proyectos/*/README.md` ([`crate::proyectos`]). Se solapan a propósito: un proyecto es una lente, no una caja, y un ítem puede estar en varias o en ninguna |
 use crate::document::Kind;
 use crate::json::Json;
@@ -143,6 +144,47 @@ fn labels_de(n: &Node) -> BTreeMap<String, Json> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Las carpetas que **existen** dentro de un paquete, tengan ítems o no.
+///
+/// ⭐⭐ El índice las contaba por ítems, y eso dejaba fuera **la carpeta vacía**
+///   —que es exactamente la que hace falta para guardar lo PRIMERO—: crearla
+///   escribía un commit de verdad y aun así no se podía elegir en ninguna
+///   parte. Medido en el árbol de victor (0035 ⑦): `PUT
+///   packages/standard_test/mi_carpeta/README.md` daba 201 y salía en
+///   `GET /arbol`, y `carpetas` seguía diciendo `[""]`.
+///
+/// ⛔ Las del kind (`tables/`, `views/`…) no cuentan, igual que en la ruta de
+///   un ítem: `espana/views/` es la carpeta `espana`. Y la raíz (`""`) no se
+///   añade por estar: la nombran los ítems que caen en ella, como siempre.
+fn carpetas_del_paquete(dir: &Path) -> BTreeSet<String> {
+    fn anda(dir: &Path, tramo: &[String], hondo: usize, out: &mut BTreeSet<String>) {
+        if hondo > 12 {
+            return;
+        }
+        let Ok(entradas) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entradas.flatten() {
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let nombre = e.file_name().to_string_lossy().into_owned();
+            if nombre.starts_with('.') {
+                continue;
+            }
+            let mut suyo = tramo.to_vec();
+            if !CARPETAS_DE_KIND.contains(&nombre.as_str()) {
+                suyo.push(nombre);
+                out.insert(suyo.join("/"));
+            }
+            anda(&e.path(), &suyo, hondo + 1, out);
+        }
+    }
+    let mut out = BTreeSet::new();
+    anda(dir, &[], 0, &mut out);
+    out
 }
 
 /// `packages/<p>/<carpeta…>/<fichero>` → (paquete, carpeta).
@@ -852,7 +894,9 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         let Some(nombre) = nombre else { continue };
         let dir = pkg.root.join("packages").join(&nombre);
         let (fuente, elegido, clase) = scope_de(&dir);
-        let (carpetas, n) = por_paquete.get(&nombre).cloned().unwrap_or_default();
+        let (mut carpetas, n) = por_paquete.get(&nombre).cloned().unwrap_or_default();
+        // ⭐ Y las que están en el árbol sin tener ítems todavía (0035 ⑦).
+        carpetas.extend(carpetas_del_paquete(&dir));
         let mut m = vec![
             ("name", Json::s(&nombre)),
             ("type", Json::s(clase)),
@@ -1033,4 +1077,53 @@ fn scope_de(dir: &Path) -> (Option<String>, bool, &'static str) {
             .map(str::to_string)
     });
     (fuente, false, "foreign")
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    /// Un árbol de mentira que se borra solo.
+    struct Arbol(std::path::PathBuf);
+    impl Drop for Arbol {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn arbol(caso: &str, ficheros: &[&str]) -> Arbol {
+        let d =
+            Arbol(std::env::temp_dir().join(format!("ore-assets-{}-{caso}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&d.0);
+        for ruta in ficheros {
+            let p = d.0.join(ruta);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        d
+    }
+
+    /// ⭐ Una carpeta **existe por estar**, no por tener ítems: es lo que hace
+    ///   que se pueda elegir dónde se guarda lo primero (0035 ⑦).
+    #[test]
+    fn las_carpetas_que_estan() {
+        let d = arbol(
+            "carpetas",
+            &[
+                "packages/hr/package.yaml",
+                "packages/hr/views/empleados.yaml",
+                "packages/hr/ingesta/README.md",
+                "packages/hr/raw/limpio/README.md",
+                "packages/hr/espana/views/x.yaml",
+                "packages/hr/.oculta/nada.txt",
+            ],
+        );
+        let c = carpetas_del_paquete(&d.0.join("packages").join("hr"));
+        assert_eq!(
+            c.iter().map(String::as_str).collect::<Vec<_>>(),
+            // `views/` es del kind y no cuenta; `espana/views` es `espana`;
+            // lo oculto no se lista; y la raíz no se añade por estar.
+            vec!["espana", "ingesta", "raw", "raw/limpio"]
+        );
+    }
 }
