@@ -993,6 +993,17 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         })
         .collect();
 
+    let familias: Vec<Json> = crate::clases::FAMILIAS
+        .iter()
+        .map(|f| {
+            Json::obj([
+                ("id", Json::s(f.id)),
+                ("titulo", Json::s(f.titulo)),
+                ("descripcion", Json::s(f.descripcion)),
+            ])
+        })
+        .collect();
+
     // Los repositorios (0035 ⑥): dónde se trabaja, con su clase y su versión.
     let repositorios: Vec<Json> = repositorios
         .iter()
@@ -1087,6 +1098,10 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         //   a mano: dos descripciones de lo mismo divergen, y la que se quede
         //   vieja ofrecerá algo que el servidor rechazaría.
         ("clases", Json::Arr(clases)),
+        // ⭐ Y cómo se agrupan (⑧b): la tarjeta que junta a las que hacen lo
+        //   mismo en distintos lenguajes, con su frase — que tampoco la
+        //   escribe la consola.
+        ("familias", Json::Arr(familias)),
         (
             "items",
             Json::Obj(items.into_iter().map(|(k, v)| (k, Json::Obj(v))).collect()),

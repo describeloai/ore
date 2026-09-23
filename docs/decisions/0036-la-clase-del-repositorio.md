@@ -488,11 +488,33 @@ y se le deja la v1; el índice lo da por `actualizable`; actualizar abre la **pr
 hasta que bea revisa y fusiona; después el índice dice v2 y deja de ofrecerla; y volver a
 pedirlo es 409.
 
+**Y una tercera en transforms: SQL.** `transforms-sql` —misma familia, mismo techo, su propia
+versión— con la consulta escrita en SQL y ejecutada por `sql()`, declarando `inputs` y `output`
+como cualquier transform.
+
+⛔ Y con una limitación dicha en la propia semilla: **la consulta vive en una cadena, no en un
+`.sql` aparte**. Un trabajo del árbol se ejecuta como **una celda**, así que no hay fichero de
+al lado que leer; y una celda SQL a secas **lee pero no escribe**. Un `.sql` suelto que dijera
+ser un transform sería un cartel. Darle al árbol un ejecutor de `.sql` que sepa escribir es un
+peldaño aparte, y así queda anotado.
+
+**Las familias, también del producto.** `FAMILIAS` (id, título y **una frase que no nombra
+lenguaje**) viaja en el índice junto a las clases. Es lo que hace que la tarjeta que agrupa
+—«Transforms», con tres plantillas detrás— tenga descripción sin que la consola se la invente:
+la misma razón por la que las clases viajan, una vuelta más arriba.
+
 **La consola** (commit local): las tarjetas del asistente salen del índice (`clases[]`) en vez
 de estar escritas a mano —eran una segunda copia de la tabla del producto, y la que se quedara
 vieja ofrecería algo que el servidor rechazaría—; lo único que se queda en la consola es la
 ilustración, que es un fichero suyo. El menú dice ahora **«Propose upgrade to v2»** y el aviso
 dice la verdad: *«Propuesta #N abierta … no se aplica hasta que se fusione»*.
+
+Y se agrupan: **una tarjeta por familia**, con la frase del servidor y, debajo, en cuántos
+lenguajes hay plantilla. Una familia con varias **abre en el mismo paso** —sin añadir uno
+nuevo— una vista con una tarjeta por lenguaje, cada una con **el icono de su lenguaje** en vez
+del prisma, que sería el mismo en todas y no distinguiría nada. Y el lenguaje **sólo se dice
+cuando hay más de uno**: «Analytics · Python», con una sola plantilla de análisis, no informa —
+decora, y sugiere que hay otra que elegir.
 
 ## Lo que esto no decide
 

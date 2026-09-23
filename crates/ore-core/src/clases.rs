@@ -140,6 +140,39 @@ var escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA, () -> write(SALID
 System.out.println(\"filas \" + escrito.get(\"filas\"));
 ";
 
+/// El transform escrito en SQL. La consulta manda; lo que sale, se escribe.
+///
+/// ⛔ La consulta vive en una cadena y no en un `.sql` aparte, y no por gusto:
+///   un trabajo del árbol se ejecuta como **una celda** —no hay fichero desde
+///   el que leer al lado— y una celda SQL a secas **lee pero no escribe**. Un
+///   `.sql` suelto que dijera ser un transform sería un cartel.
+const TRANSFORMS_SQL: &str = "\
+# Un transform escrito en SQL: la consulta manda, y lo que sale se escribe.
+# Sigue DECLARANDO qué lee y qué escribe, y el servidor lo hace cumplir
+# (ADR 0031 · W3.7).
+#
+# `transform`, `sql` y `write` los pone la sesión: aquí no se importa nada.
+# Cambia las referencias por las tuyas y dale a Run.
+
+ENTRADA = \"mi_paquete.mi_dataset\"
+SALIDA = \"mi_paquete.mi_resumen\"
+
+CONSULTA = f\"\"\"
+select pais, count(*) as n
+from {ENTRADA}
+group by pais
+\"\"\"
+
+
+@transform(inputs=[ENTRADA], output=SALIDA)
+def resumir():
+    return write(SALIDA, sql(CONSULTA, como=\"arrow\"))
+
+
+escrito = resumir()
+print(\"filas\", escrito[\"filas\"])
+";
+
 const ANALYTICS_PY: &str = "\
 # Un análisis LEE, y no declara nada: leer no escribe. Y su clase lo hace
 # cumplir — un `analytics` no escribe datos aunque el código lo pida (0036 ⑤),
@@ -228,6 +261,21 @@ pub const CLASES: &[Clase] = &[
         semilla: &[("transforms/Ejemplo.java", TRANSFORMS_JAVA)],
     },
     Clase {
+        id: "transforms-sql",
+        familia: "transforms",
+        lenguaje: "sql",
+        escribe: true,
+        ejecuta: true,
+        perfil: None,
+        titulo: "Transforms",
+        descripcion: "Transform and integrate datasets writing SQL.",
+        version: 1,
+        semilla: &[
+            ("pyproject.toml", PYPROJECT_PY),
+            ("transforms/ejemplo.py", TRANSFORMS_SQL),
+        ],
+    },
+    Clase {
         id: "analytics-python",
         familia: "analytics",
         lenguaje: "python",
@@ -299,6 +347,54 @@ const ANTIGUAS: &[(&str, &str)] = &[
     ("functions", "functions-python"),
 ];
 
+/// Una familia de plantillas: lo que agrupa a las clases que hacen lo mismo
+/// en distintos lenguajes. **No es una clase**: no se crea, no tiene versión y
+/// no se guarda en ningún manifiesto — es cómo se dice el grupo.
+///
+/// ⭐ Vive aquí, y no en la consola, por lo mismo que las clases: la consola
+///   tenía las cinco descripciones escritas a mano, y el día que cambiara una
+///   habría dos textos para lo mismo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Familia {
+    pub id: &'static str,
+    pub titulo: &'static str,
+    /// Qué se hace en esta familia, **sin nombrar lenguaje**: es la frase de
+    /// la tarjeta que agrupa, y detrás hay una plantilla por lenguaje.
+    pub descripcion: &'static str,
+}
+
+pub const FAMILIAS: &[Familia] = &[
+    Familia {
+        id: "transforms",
+        titulo: "Transforms",
+        descripcion: "Transform and integrate datasets using Python, SQL or Java.",
+    },
+    Familia {
+        id: "analytics",
+        titulo: "Analytics",
+        descripcion: "Analyze your datasets using your preferred data science environment.",
+    },
+    Familia {
+        id: "models",
+        titulo: "Models",
+        descripcion: "Create, test and train models for machine learning, forecasting and more.",
+    },
+    Familia {
+        id: "functions",
+        titulo: "Functions",
+        descripcion: "Write reusable code for pipelines, transforms and applications.",
+    },
+    Familia {
+        id: "semantics",
+        titulo: "Semantics",
+        descripcion: "Define object types, links and actions: the semantic layer over your data.",
+    },
+];
+
+pub fn familia(id: &str) -> Option<&'static Familia> {
+    FAMILIAS.iter().find(|f| f.id == id)
+}
+
 pub fn de(id: &str) -> Option<&'static Clase> {
     let id = ANTIGUAS
         .iter()
@@ -339,7 +435,7 @@ mod pruebas {
         assert!(!de("functions-python").unwrap().escribe);
         // Y lo que no ejecuta es lo que sólo edita documentos.
         assert!(!de("semantics").unwrap().ejecuta);
-        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 5);
+        assert!(CLASES.iter().filter(|c| c.ejecuta).count() == 6);
     }
 
     /// ⭐ Una plantilla trae su entorno y CÓDIGO, no un comentario (⑧a).
@@ -404,16 +500,34 @@ mod pruebas {
         }
     }
 
+    /// Cada clase pertenece a una familia que existe, y cada familia tiene
+    /// al menos una clase: una tarjeta que agrupa nada no se puede pintar.
+    #[test]
+    fn las_familias_y_las_clases_se_corresponden() {
+        for c in CLASES {
+            assert!(familia(c.familia).is_some(), "{} sin familia", c.id);
+        }
+        for f in FAMILIAS {
+            assert!(
+                CLASES.iter().any(|c| c.familia == f.id),
+                "la familia `{}` no tiene ninguna clase",
+                f.id
+            );
+        }
+    }
+
     #[test]
     fn el_entorno_sale_del_lenguaje() {
         assert_eq!(entorno_de(de("transforms-python").unwrap()), Some("python"));
         assert_eq!(entorno_de(de("transforms-java").unwrap()), Some("jvm"));
+        // `sql` corre donde corre python: no hay imagen de SQL.
+        assert_eq!(entorno_de(de("transforms-sql").unwrap()), Some("python"));
         assert_eq!(entorno_de(de("semantics").unwrap()), None);
     }
 
     #[test]
     fn las_clases_estan_y_ninguna_siembra_fuera_de_su_carpeta() {
-        assert_eq!(CLASES.len(), 6);
+        assert_eq!(CLASES.len(), 7);
         for c in CLASES {
             assert!(de(c.id).is_some());
             for (ruta, _) in c.semilla {

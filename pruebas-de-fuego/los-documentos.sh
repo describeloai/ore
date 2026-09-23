@@ -658,7 +658,7 @@ ANTES=$(cabeza)
 [ "$(cabeza)" = "$ANTES" ] || falla "22 · un 409 hizo commit"
 # una clase inventada, y un paquete que no esta
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"otro","nombre":"X","plantilla":"lo-que-sea"}')" = "422" ] || falla "22 · una clase inventada no dio 422"
-grep -q "transforms-python, transforms-java, analytics-python, models-python, functions-python, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
+grep -q "transforms-python, transforms-java, transforms-sql, analytics-python, models-python, functions-python, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
 [ "$(pide POST /repositorios '{"paquete":"noexiste","carpeta":"x","nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · un paquete que no esta no dio 404"
 # PUT: el manifiesto entero, conservando la prosa
 [ "$(pide PUT /repositorios/packages/hr/raw '{"nombre":"Renombrado","plantilla":"analytics","plantillaVersion":1}')" = "200" ] \
