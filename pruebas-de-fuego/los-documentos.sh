@@ -623,8 +623,8 @@ dice "21 · carpetas: una carpeta es un fichero dentro · el indice la nombra PO
 ANTES=$(cabeza)
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"New Pipelines Java Transform","plantilla":"transforms","proyecto":"personas"}')" = "201" ] \
   || falla "22 · POST /repositorios · $(cat "$TMP/r.json")"
-cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms' and d['plantillaVersion']==1 and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase, su version y el proyecto"
-cumple "d['semilla']==['packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla de la clase"
+cumple "d['ruta']=='packages/hr/raw' and d['plantilla']=='transforms-python' and d['plantillaVersion']==2 and d['nombre']=='New Pipelines Java Transform' and d['nueva'] is True and d['proyecto']=='personas' and d['commit']" "22 · 201 con su ruta, su clase (la clave vieja `transforms` resuelve a `transforms-python`), su version y el proyecto"
+cumple "d['semilla']==['packages/hr/raw/pyproject.toml','packages/hr/raw/transforms/ejemplo.py']" "22 · la semilla es un ARBOL de ficheros: su entorno y su ejemplo (0036 viii.a)"
 [ "$(git --git-dir="$FORJA" rev-list --count "$ANTES..$(cabeza)")" = "1" ] || falla "22 · nacer entero costo mas de un commit"
 [ "$(asunto)" = 'crear un repositorio' ] || falla "22 · el asunto: $(asunto)"
 # el manifiesto, la semilla y el proyecto, en ESE commit
@@ -635,20 +635,30 @@ grep -q "proyectos/personas/README.md" "$TMP/tocados.txt" || falla "22 · el pro
 # el indice lo trae, con su clase, y el proyecto lo nombra
 [ "$(pide GET /assets)" = "200" ] || falla "22 · GET /assets · $(cat "$TMP/r.json")"
 cumple "[r['ruta'] for r in d['repositorios']] == ['packages/hr/raw']" "22 · /assets trae el repositorio"
-cumple "d['repositorios'][0]['plantilla']=='transforms' and d['repositorios'][0]['version']['sujeto']=='persona.ana'" "22 · con su clase y quien lo creo"
+cumple "d['repositorios'][0]['plantilla']=='transforms-python' and d['repositorios'][0]['version']['sujeto']=='persona.ana'" "22 · con su clase y quien lo creo"
 cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['personas','hr/raw']" "22 · el proyecto lo nombra — ESTE repositorio y no el paquete entero (0035 vii.3), detras de su propio sitio"
 cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['sitio']=='packages/personas'" "22 · y el indice dice cual es SU raiz, aparte de lo que nombra"
 # uno DENTRO de su propio sitio no anade nada: ya lo alcanza
 [ "$(pide POST /repositorios '{"paquete":"personas","carpeta":"mio","nombre":"Mio","plantilla":"models","proyecto":"personas"}')" = "201" ]   || falla "22 · un repositorio en el sitio del proyecto no entro · $(cat "$TMP/r.json")"
 [ "$(pide GET /assets)" = "200" ] && cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['personas','hr/raw']" "22 · lo que cae en su sitio NO se dice dos veces (0035 vii.3)"
 [ "$(pide DELETE /arbol/packages/personas/mio)" = "200" ] || falla "22 · no se pudo retirar el repositorio de dentro"
+# viii.a · el ejemplo CORRE (no es un comentario) y el entorno se declara EN la instancia
+[ "$(pide GET /arbol/packages/hr/raw/transforms/ejemplo.py)" = "200" ]   && cumple "len([l for l in d['texto'].splitlines() if l.strip() and not l.strip().startswith('#')]) >= 5 and '@transform(' in d['texto']" "22 · el ejemplo es codigo, no un comentario"
+[ "$(pide GET /entorno "" "x-ore-raiz: packages/hr/raw")" = "200" ]   && cumple "d['alcance']=='packages/hr/raw' and d['declarado']==[]" "22 · nace sin dependencias: declarar lo que nadie usa seria una capa para nada"
+printf '[project]
+name = "x"
+version = "0.1.0"
+dependencies = ["polars"]
+' > "$TMP/py.toml"
+[ "$(pon packages/hr/raw/pyproject.toml "$TMP/py.toml")" = "200" ] || falla "22 · no se pudo declarar en el pyproject de la instancia · $(cat "$TMP/r.json")"
+[ "$(pide GET /entorno "" "x-ore-raiz: packages/hr/raw")" = "200" ]   && cumple "d['declarado']==['polars'] and d['digest']" "22 · y declarar AHI le da capa propia (0036 iii): el fichero sembrado es lo que lo enciende"
 # el sitio ya esta cogido
 ANTES=$(cabeza)
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"Otro","plantilla":"models"}')" = "409" ] || falla "22 · la carpeta cogida no dio 409 · $(cat "$TMP/r.json")"
 [ "$(cabeza)" = "$ANTES" ] || falla "22 · un 409 hizo commit"
 # una clase inventada, y un paquete que no esta
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"otro","nombre":"X","plantilla":"lo-que-sea"}')" = "422" ] || falla "22 · una clase inventada no dio 422"
-grep -q "transforms, analytics, models, functions, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
+grep -q "transforms-python, analytics, models, functions, semantics" "$TMP/r.json" || falla "22 · el 422 no dice las clases que hay · $(cat "$TMP/r.json")"
 [ "$(pide POST /repositorios '{"paquete":"noexiste","carpeta":"x","nombre":"X","plantilla":"models"}')" = "404" ] || falla "22 · un paquete que no esta no dio 404"
 # PUT: el manifiesto entero, conservando la prosa
 [ "$(pide PUT /repositorios/packages/hr/raw '{"nombre":"Renombrado","plantilla":"analytics","plantillaVersion":1}')" = "200" ] \

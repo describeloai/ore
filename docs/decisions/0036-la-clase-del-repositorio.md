@@ -400,6 +400,47 @@ o el fichero de construcción que toque—, que es lo que enciende la capa de �
 plantillas con dos versiones, y con una sola clase, el día que cambie una, o subes las dos o
 mientes en la columna «UPGRADE».
 
+### ⑧a · `transforms-python`: una plantilla es un árbol de ficheros (hecho)
+
+**El lenguaje pasa a ser una clase**: `transforms` es ahora `transforms-python`. `familia`
+(«transforms») y `lenguaje` («python») están para **agrupar en la consola** y no identifican
+nada — identifica `id`, como siempre. Y la clave de antes **sigue resolviendo** (`ANTIGUAS`):
+un árbol escrito ayer no se rompe porque hoy le pongamos el lenguaje al nombre. No es una clase
+más: no se lista ni se ofrece.
+
+**La semilla deja de ser un cartel.** `transforms-python` nace con:
+
+- `transforms/ejemplo.py` — **código que corre**: es el mismo `@transform(inputs, output)` que
+  la prueba de fuego ejercita contra agentes de verdad (`el-puesto.sh` 10 y 11), con dos
+  referencias de marcador que hay que cambiar, como el `SOURCE_DATASET_PATH` de Foundry.
+- `pyproject.toml` — **el sitio donde declarar**, y nace **vacío a propósito**. Lo que faltaba
+  no era una dependencia: era el fichero. Sin él un repositorio no puede declarar nada y se
+  come la capa de la celda (③); con él, añadir una línea le da la suya. Sembrar `polars` «por
+  si acaso» costaría construir una capa para algo que el ejemplo no usa.
+
+**Versión 2**, porque la plantilla cambió: lo escrito con la de antes sale `actualizable: true`,
+que es exactamente para lo que existe la columna «UPGRADE» (⑤).
+
+**Medido después** (la misma medida, sobre el árbol de victor):
+
+| | antes de ⑧a | después |
+|---|---|---|
+| ficheros de una instancia nueva | 2 | **3** |
+| líneas de código | **0** | **12** |
+| bytes | 477 | 1 289 |
+| su capa al declarar en SU `pyproject.toml` | *no había dónde* | `sin-dependencias` → **`capa-c20f431674d8`** |
+
+Y el caso **22** de `los-documentos.sh` lo fija: la semilla trae su entorno y su ejemplo, el
+ejemplo **es código** (≥5 líneas que hacen algo, y `@transform(` dentro), la instancia nace
+`sin-dependencias`, y declarar en su `pyproject.toml` le da **capa propia** — el fichero
+sembrado es lo que lo enciende.
+
+**Lo que queda para ⑧b**: las otras cuatro clases siguen en **0 líneas de código**;
+`transforms-java` (la de tu captura); la consola —las tarjetas agrupadas por familia y
+lenguaje, que hoy están escritas a mano en `BuildPicker`—; el **422** de crear una instancia en
+un paquete de datos (`discover.*`) en vez de en el de un proyecto; y el upgrade como propuesta
+con su diff.
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí

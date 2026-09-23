@@ -50,7 +50,7 @@ ORE = os.path.join(RAIZ, "target", "debug", "ore" + EXE)
 PUERTO = 18211
 BASE = "http://127.0.0.1:%d" % PUERTO
 SUJETO = "persona:medida"
-CLASES = ["transforms", "analytics", "models", "functions", "semantics"]
+CLASES = ["transforms-python", "analytics", "models", "functions", "semantics"]
 
 
 def traer(celda, destino):
@@ -172,11 +172,11 @@ def mide(nombre, arbol):
         cod, cuerpo = pide("GET", "/entorno")
         celda = json.loads(cuerpo) if cod == 200 else {}
         print("     la celda        → %s" % json.dumps(celda, ensure_ascii=False)[:160])
-        ruta = nacidas.get("transforms")
+        ruta = nacidas.get("transforms-python")
         if ruta:
             cod, cuerpo = pide("GET", "/entorno", None, {"x-ore-raiz": ruta})
             print("     la instancia    → %s" % json.dumps(json.loads(cuerpo) if cod == 200 else cuerpo, ensure_ascii=False)[:160])
-            # Y con una declaración sembrada a mano: lo que la plantilla NO hace.
+            # Y declarando EN el pyproject que la plantilla ya siembra (⑧a).
             cod, _ = pide("PUT", "/arbol/%s/pyproject.toml" % ruta, None)
             texto = '[project]\nname = "x"\nversion = "0.1.0"\ndependencies = ["polars", "torch"]\n'
             req = urllib.request.Request(BASE + "/arbol/%s/pyproject.toml" % ruta, method="PUT",
@@ -188,7 +188,7 @@ def mide(nombre, arbol):
                     cod = r.status
             except urllib.error.HTTPError as e:
                 cod = e.code
-            print("     sembrando `pyproject.toml` a mano → %s" % cod)
+            print("     declarando `polars`+`torch` en SU pyproject → %s" % cod)
             cod, cuerpo = pide("GET", "/entorno", None, {"x-ore-raiz": ruta})
             print("     la instancia    → %s" % json.dumps(json.loads(cuerpo) if cod == 200 else cuerpo, ensure_ascii=False)[:160])
 
