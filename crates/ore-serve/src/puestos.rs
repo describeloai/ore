@@ -57,11 +57,11 @@ use crate::rutas::Servidor;
 /// puesto).
 pub(crate) const PUESTO: &str = "x-ore-puesto";
 use ore_core::json::Json;
-use ore_entrada::http::Respuesta;
+use ore_entrada::http::{Emisor, Flujo, Respuesta, Salida};
 use ore_entrada::identidad::Identidad;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Cuánto se retiene una espera (el agente pidiendo trabajo, la consola
@@ -69,6 +69,14 @@ use std::time::{Duration, Instant};
 const ESPERA: Duration = Duration::from_secs(20);
 /// Sin latido del agente durante esto, el puesto está perdido.
 const SIN_LATIDO: Duration = Duration::from_secs(90);
+/// Cada cuánto escribe algo un flujo que no tiene nada que contar. Por debajo
+/// de lo que cualquier intermediario da por muerta una conexión callada.
+const LATIDO: Duration = Duration::from_secs(10);
+/// Lo que vive un flujo antes de despedirse él mismo. No es un límite técnico:
+/// es que **el balanceador corta igualmente** (0037 ②, plazo de backend), y
+/// más vale terminar diciendo «vuelve» —con el número por el que ibas— que
+/// dejar que lo corten en medio de un evento.
+const VIDA: Duration = Duration::from_secs(240);
 /// Encolado sin que ningún agente lo reclame durante esto, el puesto está
 /// perdido (el Job no llegó a arrancar, o alguien se lo llevó de la cola: en
 /// frío el nodo tarda ~2 min; esto es cinco veces eso).
@@ -1128,6 +1136,44 @@ impl Servidor {
         }
     }
 
+    /// `GET /puestos/{id}/flujo`: lo que le pasa a este puesto, **mientras
+    /// pasa**, como eventos (`text/event-stream`).
+    ///
+    /// ⭐ Es la tubería de 0037 ②. Hasta hoy la consola preguntaba una vez por
+    ///   celda (`GET …/celdas/{n}`, 20 s retenidos) y una conexión por
+    ///   pregunta: sirve para una celda cada pocos segundos y no sirve para lo
+    ///   que viene —un servicio de lenguaje son 84 mensajes por segundo—.
+    ///
+    /// Se retoma con `last-event-id`, que es lo que un `EventSource` manda solo
+    /// al reconectar: se emiten las celdas con número mayor que ese, así que
+    /// una conexión cortada no pierde ni repite nada.
+    ///
+    /// ⛔ NADA SE ESCRIBE CON EL CANDADO COGIDO. Escribir puede bloquear hasta
+    ///   el plazo de escritura, y hacerlo con `lista` en la mano pararía a
+    ///   TODOS los puestos —agentes incluidos— mientras un navegador lento lee.
+    pub(crate) fn flujo_del_puesto(&self, sujeto: &Identidad, id: &str, desde: u64) -> Salida {
+        // Lo que es un error se contesta como un error: con su código y su
+        // motivo, antes de abrir nada.
+        {
+            let lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get(id) else {
+                return Salida::Una(Respuesta::error(
+                    404,
+                    format!("no hay ningún puesto `{id}`"),
+                ));
+            };
+            if p.persona != sujeto.persona {
+                return Salida::Una(Respuesta::error(403, "ese puesto es de otra persona"));
+            }
+        }
+        let puestos = Arc::clone(&self.puestos);
+        let id = id.to_string();
+        Salida::Flujo(Flujo {
+            tipo: "text/event-stream",
+            escribir: Box::new(move |e: &mut Emisor<'_>| emitir_puesto(&puestos, &id, desde, e)),
+        })
+    }
+
     // ── el agente ───────────────────────────────────────────────────────────
 
     fn reclamar<'a>(
@@ -1802,6 +1848,83 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             Json::s(std::env::var("ORE_STORE").unwrap_or_default()),
         ),
     ]))
+}
+
+/// El cuerpo del flujo: mira, suelta el candado, escribe, espera la campana.
+fn emitir_puesto(puestos: &Puestos, id: &str, desde: u64, e: &mut Emisor<'_>) {
+    let fin = Instant::now() + VIDA;
+    let mut visto = desde;
+    let mut dicho = String::new();
+    loop {
+        // ── lo que hay que contar, copiado bajo el candado y nada más ──
+        let (ficha_ahora, estado, nuevas, acabado) = {
+            let lista = puestos.lista.lock().unwrap();
+            let Some(p) = lista.get(id) else {
+                // El puesto desapareció de la lista: se dice y se cierra.
+                drop(lista);
+                e.evento(
+                    "fin",
+                    None,
+                    &Json::obj([("motivo", Json::s("el puesto ya no está"))]),
+                );
+                return;
+            };
+            let estado = if perdido(p) {
+                "perdido"
+            } else {
+                p.estado.dice()
+            };
+            let nuevas: Vec<(u64, Json)> = p
+                .celdas
+                .iter()
+                .filter(|(n, c)| **n > visto && c.salida.is_some())
+                .map(|(n, c)| (*n, ficha_de_celda(*n, c)))
+                .collect();
+            (
+                ficha(id, p),
+                estado.to_string(),
+                nuevas,
+                estado == "cerrado" || estado == "perdido",
+            )
+        };
+
+        // ── y ahora, sin candado, se escribe ──
+        if estado != dicho {
+            if !e.evento("puesto", None, &ficha_ahora) {
+                return;
+            }
+            dicho = estado;
+        }
+        for (n, f) in nuevas {
+            if !e.evento("celda", Some(n), &f) {
+                return;
+            }
+            visto = n;
+        }
+        if acabado {
+            e.evento(
+                "fin",
+                None,
+                &Json::obj([("motivo", Json::s(format!("el puesto está {dicho}")))]),
+            );
+            return;
+        }
+        if Instant::now() >= fin {
+            // Se despide él, y dice por dónde iba: quien lea vuelve con
+            // `last-event-id` y no se pierde nada.
+            e.evento(
+                "fin",
+                Some(visto),
+                &Json::obj([("motivo", Json::s("vuelve"))]),
+            );
+            return;
+        }
+        if !e.latido() {
+            return;
+        }
+        let lista = puestos.lista.lock().unwrap();
+        let _ = puestos.campana.wait_timeout(lista, LATIDO).unwrap();
+    }
 }
 
 #[cfg(test)]

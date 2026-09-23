@@ -345,11 +345,11 @@ fn main() -> ExitCode {
         }),
         perfiles: o.perfiles,
         forja_api,
-        puestos: puestos::Puestos::default(),
+        puestos: std::sync::Arc::new(puestos::Puestos::default()),
         assets_cache: assets::Cache::default(),
     };
 
-    match http::servir(escucha, move |p| servidor.atender(p)) {
+    match http::servir_con_flujos(escucha, move |p| servidor.atender_flujo(p)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("✗ el servidor terminó: {e}");

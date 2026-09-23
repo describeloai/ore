@@ -60,7 +60,7 @@ use crate::git;
 use crate::mando;
 use ore_core::json::Json;
 use ore_core::parse::{self, Node, Style};
-use ore_entrada::http::{self, Peticion, Respuesta};
+use ore_entrada::http::{self, Peticion, Respuesta, Salida};
 use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -109,7 +109,11 @@ pub struct Servidor {
     /// las rutas de ramas y propuestas contestan 422 y el árbol es sólo `main`.
     pub forja_api: Option<crate::forja::Api>,
     /// Los puestos vivos (0031 W3.1): todo el estado de las sesiones, en memoria.
-    pub puestos: crate::puestos::Puestos,
+    ///
+    /// ⭐ En un `Arc` desde 0037 ②: un flujo abierto (`GET …/flujo`) sigue
+    ///   escribiendo después de que la petición que lo abrió haya vuelto, así
+    ///   que lo que mira tiene que poder vivir por su cuenta.
+    pub puestos: std::sync::Arc<crate::puestos::Puestos>,
     /// El índice de assets, por cabeza (0034 ⑤): `GET /assets` de memoria.
     pub assets_cache: crate::assets::Cache,
 }
@@ -154,6 +158,34 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
 }
 
 impl Servidor {
+    /// Como [`Servidor::atender`], pero dejando que una ruta conteste con un
+    /// flujo abierto en vez de con una respuesta que termina (0037 ②).
+    ///
+    /// La identidad se resuelve igual y la puerta del agente se cruza igual:
+    /// lo único distinto es la forma de contestar.
+    pub fn atender_flujo(&self, p: &Peticion) -> Salida {
+        let seg = p.segmentos();
+        if let ("GET", ["puestos", id, "flujo"]) = (p.metodo.as_str(), seg.as_slice()) {
+            let sujeto = match self.quien(p) {
+                Ok(s) => s,
+                Err(r) => return Salida::Una(r),
+            };
+            if let Some(r) = puerta_del_agente(p, &sujeto, &seg) {
+                return Salida::Una(r);
+            }
+            // ⛔ Por cabecera y no por la URL: esta entrada tira la cadena de
+            //   consulta a propósito (ningún dato entra por la URL), y
+            //   `last-event-id` es justo lo que un `EventSource` manda solo.
+            let desde = p
+                .cabeceras
+                .get("last-event-id")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            return self.flujo_del_puesto(&sujeto, id, desde);
+        }
+        Salida::Una(self.atender(p))
+    }
+
     pub fn atender(&self, p: &Peticion) -> Respuesta {
         let seg = p.segmentos();
         match (p.metodo.as_str(), seg.as_slice()) {

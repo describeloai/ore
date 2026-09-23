@@ -311,6 +311,40 @@ celda '1/0' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='Z
 pide GET /puestos/puesto-ana-python "$ANA" >/dev/null; tiene "d['celdas']==5 and d['pendientes']==0" || falla "3 · la ficha no cuenta las celdas: $(cuerpo)"
 dice "3 · las celdas: 1+1 → 2 · print → texto · x = 3 → vacia · x * 2 → 6 (el espacio dura) · 1/0 → error con traza · bea 403 · sin texto 422"
 
+# ── 3b · el flujo: una respuesta que no termina (0037 ②) ───────────────────
+# La consola no pregunta una vez por celda: abre UNA respuesta y lo que le pasa
+# al puesto le llega SEGUN PASA. Aqui se abre con curl, se manda una celda
+# mientras esta abierta, y se comprueba que el evento sale solo.
+FLU="$TMP/flujo.txt"
+curl -sN -D "$TMP/flujo.cab" --max-time 6 -H "$ANA" "$BASE/puestos/$P/flujo" >"$FLU" 2>/dev/null &
+CURL=$!
+sleep 1
+[ "$(pide POST /puestos/$P/ejecutar "$ANA" '{"texto":"40+2","lenguaje":"python"}')" = "202" ] || falla "3b · ejecutar no dio 202: $(cuerpo)"
+N=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
+wait $CURL 2>/dev/null || true
+grep -qi "^transfer-encoding: chunked" "$TMP/flujo.cab" || falla "3b · el flujo no vino troceado: $(cat "$TMP/flujo.cab")"
+grep -qi "^content-type: text/event-stream" "$TMP/flujo.cab" || falla "3b · el flujo no dice que es de eventos: $(cat "$TMP/flujo.cab")"
+grep -qi "^content-length" "$TMP/flujo.cab" && falla "3b · un flujo con content-length: $(cat "$TMP/flujo.cab")"
+grep -q "^event: puesto" "$FLU" || falla "3b · el flujo no abrio diciendo como esta el puesto: $(cat "$FLU")"
+grep -q "^id: $N" "$FLU" || falla "3b · la celda $N no llego por el flujo: $(cat "$FLU")"
+grep -qE '"texto": *"42"' "$FLU" || falla "3b · la salida no viajo con la celda: $(cat "$FLU")"
+# Abierto desde cero, el flujo cuenta primero lo que ya habia: quien acaba de
+# abrir el editor quiere el estado, no solo lo que pase de ahora en adelante.
+[ "$(grep -c "^event: celda" "$FLU")" = "$N" ] || falla "3b · el flujo no puso al dia las $N celdas: $(cat "$FLU")"
+
+# Y se retoma: con `last-event-id` NO se repite lo ya visto, y sí llega lo nuevo.
+curl -sN --max-time 6 -H "$ANA" -H "last-event-id: $N" "$BASE/puestos/$P/flujo" >"$TMP/flujo2.txt" 2>/dev/null &
+CURL=$!
+sleep 1
+[ "$(pide POST /puestos/$P/ejecutar "$ANA" '{"texto":"6*7","lenguaje":"python"}')" = "202" ] || falla "3b · la segunda celda no dio 202: $(cuerpo)"
+M=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
+wait $CURL 2>/dev/null || true
+grep -q "^id: $M" "$TMP/flujo2.txt" || falla "3b · al retomar no llego la celda $M: $(cat "$TMP/flujo2.txt")"
+grep -q "^id: $N" "$TMP/flujo2.txt" && falla "3b · al retomar repitio la celda $N: $(cat "$TMP/flujo2.txt")"
+[ "$(pide GET /puestos/$P/flujo "$BEA")" = "403" ] || falla "3b · bea abrio el flujo de ana: $(cuerpo)"
+[ "$(pide GET /puestos/no-existe/flujo "$ANA")" = "404" ] || falla "3b · un puesto que no existe no dio 404: $(cuerpo)"
+dice "3b · el flujo: text/event-stream troceado y sin content-length · abre con el estado del puesto y las $N celdas que ya habia · la ultima llega SOLA con su salida · se retoma con last-event-id (ni repite ni pierde) · bea 403 · uno que no existe 404"
+
 # ── 4 · over() ─────────────────────────────────────────────────────────────
 celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "4 · over(hr.espanoles): $(cuerpo)"
 celda 'len(df)' && tiene "d['salida']['texto']=='3'" || falla "4 · len(df): $(cuerpo)"

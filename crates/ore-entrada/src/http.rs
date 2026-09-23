@@ -14,6 +14,29 @@
 //! solapan en el mismo flujo— por un precio que en un plano de control no se
 //! nota.
 //!
+//! # Y una respuesta que no termina (0037 ②)
+//!
+//! Lo anterior sigue valiendo para **una petición y su respuesta**. Pero un
+//! editor que quiere saber lo que pasa mientras pasa no puede preguntar una vez
+//! por cosa: medido con el servicio de lenguaje de Monaco, teclear 32
+//! caracteres son **296 mensajes en 3,5 s** —84 por segundo, 9,2 por
+//! pulsación—, y una petición por mensaje serían 296 conexiones contra un techo
+//! de [`CONEXIONES`]. Escribir una línea dejaría al inquilino sin plazas.
+//!
+//! Así que un manejador puede devolver, en vez de una [`Respuesta`], un
+//! [`Flujo`]: la respuesta se abre, se trocea (`transfer-encoding: chunked`) y
+//! **sigue escribiendo eventos** hasta que el que emite termina o el que lee se
+//! va. No es un websocket a propósito —no hay saludo que firmar, ni marcos, ni
+//! máscara, y el sentido de vuelta viaja como lo que ya viaja: una petición con
+//! su cuerpo—.
+//!
+//! ⛔ Y **no comparte presupuesto con las peticiones**. Un flujo dura minutos;
+//!   una petición, milisegundos. Contarlos juntos significaría que unos
+//!   editores abiertos dejan al plano de control sin conexiones para trabajar,
+//!   que es exactamente el fallo que [`CONEXIONES`] existe para no tener. Son
+//!   dos techos, [`CONEXIONES`] y [`FLUJOS`], y la plaza **se cambia** —no se
+//!   suma— en cuanto la respuesta resulta ser un flujo.
+//!
 //! # Los tres límites, y por qué son parte del contrato
 //!
 //! Un servidor sin límites no es un servidor: es una forma de quedarse sin
@@ -40,6 +63,11 @@ pub const CUERPO_MAXIMO: usize = 1 << 20;
 
 /// Cuántas conexiones se atienden a la vez. Cada una es un hilo.
 const CONEXIONES: usize = 64;
+
+/// Cuántos flujos abiertos a la vez, **aparte** de las peticiones. La mitad:
+/// un flujo es un hilo parado casi todo el tiempo, pero es un hilo, y quien
+/// los abre es un editor por persona y repositorio, no cada clic.
+const FLUJOS: usize = 32;
 
 /// Lo que se espera a que un cliente hable, y a que lea.
 const PLAZO: Duration = Duration::from_secs(30);
@@ -104,6 +132,72 @@ impl Respuesta {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// UNA RESPUESTA QUE NO TERMINA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Lo que un manejador contesta: una respuesta, o un flujo de eventos.
+pub enum Salida {
+    Una(Respuesta),
+    Flujo(Flujo),
+}
+
+impl From<Respuesta> for Salida {
+    fn from(r: Respuesta) -> Salida {
+        Salida::Una(r)
+    }
+}
+
+/// Una respuesta abierta: el tipo que declara y quién escribe dentro.
+///
+/// ⭐ Lo que decide **cuándo termina** es la propia función: vuelve cuando no
+///   tiene más que decir, o en cuanto [`Emisor::evento`] devuelve `false`
+///   —que es como se entera de que el que leía se fue—.
+pub struct Flujo {
+    /// `text/event-stream` para eventos; cualquier otro tipo también vale.
+    pub tipo: &'static str,
+    pub escribir: Box<dyn FnOnce(&mut Emisor<'_>) + Send>,
+}
+
+/// Por donde se escribe un flujo. Cada evento es un trozo y sale **ya**.
+pub struct Emisor<'a> {
+    flujo: &'a mut TcpStream,
+}
+
+impl Emisor<'_> {
+    /// Un evento con su nombre, su número y su dato.
+    ///
+    /// El número viaja como `id:`, que es lo que un `EventSource` devuelve en
+    /// `last-event-id` al reconectar: **así se retoma donde se dejó**, y hace
+    /// falta, porque un balanceador corta la conexión cada tanto y reconectar
+    /// sin saber por dónde ibas es repetir o perderse cosas.
+    ///
+    /// `false` si el que leía se fue: **hay que parar**.
+    pub fn evento(&mut self, nombre: &str, id: Option<u64>, dato: &Json) -> bool {
+        let mut t = String::new();
+        if let Some(i) = id {
+            t.push_str(&format!("id: {i}\n"));
+        }
+        // `jcs()` es UNA línea, que es justo lo que `data:` admite.
+        t.push_str(&format!("event: {nombre}\ndata: {}\n\n", dato.jcs()));
+        self.trozo(&t)
+    }
+
+    /// Un comentario: no lo ve quien lee, pero mueve bytes. Sirve para saber
+    /// que el otro lado sigue ahí sin inventarse un evento que no pasó.
+    pub fn latido(&mut self) -> bool {
+        self.trozo(": latido\n\n")
+    }
+
+    fn trozo(&mut self, t: &str) -> bool {
+        let cabeza = format!("{:x}\r\n", t.len());
+        self.flujo.write_all(cabeza.as_bytes()).is_ok()
+            && self.flujo.write_all(t.as_bytes()).is_ok()
+            && self.flujo.write_all(b"\r\n").is_ok()
+            && self.flujo.flush().is_ok()
+    }
+}
+
 fn texto(codigo: u16) -> &'static str {
     match codigo {
         200 => "OK",
@@ -128,8 +222,17 @@ pub fn servir<F>(escucha: TcpListener, manejador: F) -> std::io::Result<()>
 where
     F: Fn(&Peticion) -> Respuesta + Send + Sync + 'static,
 {
+    servir_con_flujos(escucha, move |p| Salida::Una(manejador(p)))
+}
+
+/// Como [`servir`], pero el manejador puede contestar con un [`Flujo`].
+pub fn servir_con_flujos<F>(escucha: TcpListener, manejador: F) -> std::io::Result<()>
+where
+    F: Fn(&Peticion) -> Salida + Send + Sync + 'static,
+{
     let manejador = Arc::new(manejador);
     let vivas = Arc::new(AtomicUsize::new(0));
+    let abiertos = Arc::new(AtomicUsize::new(0));
 
     for flujo in escucha.incoming() {
         let Ok(flujo) = flujo else { continue };
@@ -150,6 +253,7 @@ where
         vivas.fetch_add(1, Ordering::Relaxed);
         let manejador = Arc::clone(&manejador);
         let vivas_hilo = Arc::clone(&vivas);
+        let abiertos_hilo = Arc::clone(&abiertos);
         let _ = std::thread::Builder::new()
             .name("ore-serve".into())
             .spawn(move || {
@@ -169,8 +273,8 @@ where
                 // ⭐ Es la misma figura que `ore-serve/git.rs` usa para el préstamo
                 //   del repositorio: lo que hay que deshacer pase lo que pase se
                 //   deshace en `Drop`, no en la última línea del camino feliz.
-                let _viva = Viva(vivas_hilo);
-                atender(flujo, manejador.as_ref());
+                let plaza = Viva(vivas_hilo);
+                atender(flujo, manejador.as_ref(), plaza, abiertos_hilo);
             });
     }
     Ok(())
@@ -185,15 +289,60 @@ impl Drop for Viva {
     }
 }
 
-fn atender<F>(mut flujo: TcpStream, manejador: &F)
+fn atender<F>(mut flujo: TcpStream, manejador: &F, plaza: Viva, abiertos: Arc<AtomicUsize>)
 where
-    F: Fn(&Peticion) -> Respuesta,
+    F: Fn(&Peticion) -> Salida,
 {
-    let respuesta = match leer(&mut flujo) {
+    let salida = match leer(&mut flujo) {
         Ok(p) => manejador(&p),
-        Err(r) => r,
+        Err(r) => Salida::Una(r),
     };
-    responder(&mut flujo, &respuesta);
+    match salida {
+        Salida::Una(r) => responder(&mut flujo, &r),
+        Salida::Flujo(f) => {
+            if abiertos.load(Ordering::Relaxed) >= FLUJOS {
+                responder(
+                    &mut flujo,
+                    &Respuesta::error(503, "servidor al límite de flujos abiertos"),
+                );
+                return;
+            }
+            abiertos.fetch_add(1, Ordering::Relaxed);
+            let _abierto = Viva(abiertos);
+            // ⭐ LA PLAZA SE CAMBIA, NO SE SUMA. A partir de aquí esto ya no es
+            //   una petición en curso: es un flujo abierto, y cuenta en el techo
+            //   de los flujos. Soltarla es lo que impide que unos cuantos
+            //   editores abiertos dejen al plano de control sin conexiones.
+            drop(plaza);
+            emitir(&mut flujo, f);
+        }
+    }
+}
+
+/// Abre la respuesta, deja escribir dentro y la cierra.
+fn emitir(flujo: &mut TcpStream, f: Flujo) {
+    let cabeza = format!(
+        "HTTP/1.1 200 OK\r\n\
+         content-type: {}\r\n\
+         transfer-encoding: chunked\r\n\
+         connection: close\r\n\
+         cache-control: no-store\r\n\
+         x-content-type-options: nosniff\r\n\
+         x-accel-buffering: no\r\n\
+         \r\n",
+        f.tipo
+    );
+    // Troceada y NO `content-length`: lo que se va a escribir no se sabe aún.
+    // `x-accel-buffering` es para el que haya en medio: que no junte trozos,
+    // porque un evento que llega tarde es un evento que no sirve.
+    if flujo.write_all(cabeza.as_bytes()).is_err() || flujo.flush().is_err() {
+        return;
+    }
+    let mut emisor = Emisor { flujo };
+    (f.escribir)(&mut emisor);
+    // El trozo vacío es el punto final. Si el otro lado ya se fue, da igual.
+    let _ = flujo.write_all(b"0\r\n\r\n");
+    let _ = flujo.flush();
 }
 
 fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
@@ -455,5 +604,93 @@ mod pruebas_de_pedir {
             "tardó {:?}",
             t0.elapsed()
         );
+    }
+}
+
+#[cfg(test)]
+mod pruebas_del_flujo {
+    use super::*;
+
+    /// Lo que un cliente recibe de un flujo: la cabeza, y el cuerpo troceado.
+    fn pedir_crudo(puerto: u16, camino: &str) -> String {
+        let mut c = TcpStream::connect(("127.0.0.1", puerto)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        c.write_all(format!("GET {camino} HTTP/1.1\r\nhost: p\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut t = String::new();
+        let _ = c.read_to_string(&mut t);
+        t
+    }
+
+    /// Una respuesta que no termina: tres eventos, con su `id`, y el punto
+    /// final. Y los eventos salen **según se escriben**, no al cerrar.
+    #[test]
+    fn un_flujo_sale_troceado_y_con_sus_eventos() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, |_p| {
+                Salida::Flujo(Flujo {
+                    tipo: "text/event-stream",
+                    escribir: Box::new(|e| {
+                        for n in 1..=3u64 {
+                            assert!(e.evento(
+                                "celda",
+                                Some(n),
+                                &Json::obj([("n", Json::Int(n as i64))])
+                            ));
+                        }
+                        assert!(e.latido());
+                    }),
+                })
+            });
+        });
+        let t = pedir_crudo(puerto, "/flujo");
+        assert!(t.contains("transfer-encoding: chunked"), "{t}");
+        assert!(t.contains("content-type: text/event-stream"), "{t}");
+        assert!(!t.contains("content-length"), "{t}");
+        let cuerpo = destrocear(t.split_once("\r\n\r\n").unwrap().1);
+        assert!(
+            cuerpo.contains("id: 2\nevent: celda\ndata: {\"n\":2}"),
+            "{cuerpo:?}"
+        );
+        assert_eq!(cuerpo.matches("event: celda").count(), 3, "{cuerpo:?}");
+        assert!(cuerpo.contains(": latido"), "{cuerpo:?}");
+        assert!(t.ends_with("0\r\n\r\n"), "{t:?}");
+    }
+
+    /// Y si el que leía se va, `evento` lo dice y el que emite para. Sin esto,
+    /// un editor cerrado dejaría un hilo escribiendo contra nadie.
+    #[test]
+    fn cuando_el_que_lee_se_va_el_que_emite_se_entera() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        let (avisa, espera) = std::sync::mpsc::channel::<u64>();
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, move |_p| {
+                let avisa = avisa.clone();
+                Salida::Flujo(Flujo {
+                    tipo: "text/event-stream",
+                    escribir: Box::new(move |e| {
+                        // Un dato gordo: el que se va deja de leer y el buffer
+                        // se llena, que es como se nota que no hay nadie.
+                        let gordo = Json::s("x".repeat(64 * 1024));
+                        let mut n = 0u64;
+                        while e.evento("ruido", Some(n), &gordo) && n < 10_000 {
+                            n += 1;
+                        }
+                        let _ = avisa.send(n);
+                    }),
+                })
+            });
+        });
+        let mut c = TcpStream::connect(("127.0.0.1", puerto)).unwrap();
+        c.write_all(b"GET /flujo HTTP/1.1\r\nhost: p\r\n\r\n")
+            .unwrap();
+        let mut algo = [0u8; 64];
+        let _ = c.read(&mut algo);
+        drop(c);
+        let n = espera.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(n < 10_000, "siguió escribiendo contra nadie: {n} eventos");
     }
 }
