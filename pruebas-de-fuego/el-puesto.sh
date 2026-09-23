@@ -830,8 +830,13 @@ en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q 'name: TOPE_MB' || falla "6b 
 tiene "d['capa']=='$JVM_DIGEST' and 'Job la-capa-jvm-' in d['cola']" || falla "6b · el 409 del puesto jvm no dice la capa ni su Job: $(cuerpo)"
 # el informe que 55-la-capa-jvm deja en el arbol: uno POR DIGEST
 mkdir -p "$A/entorno"
-"$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["org.apache.commons:commons-lang3:3.17.0"],"jars":["commons-lang3-3.17.0.jar"],"lock":["org.apache.commons:commons-lang3:3.17.0"],"mb":"1","avisos":[],"cuando":"2026-09-23T00:00:00Z","entorno":"puesto-jvm:1"}, open(sys.argv[2],"w"))' "$JVM_DIGEST" "$A/entorno/$JVM_DIGEST.json"
+# ⭐ Con UN AVISO dentro (0037 iii.c · d): la capa esta LISTA y ademas dice
+#   que version se quedo fuera. Ese es el viaje que la consola pinta.
+AVISO="pediste com.fasterxml.jackson.core:jackson-databind 2.19.0, y esta sesion trae la 2.18.2: gana la de la sesion"
+"$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["org.apache.commons:commons-lang3:3.17.0"],"jars":["commons-lang3-3.17.0.jar"],"lock":["org.apache.commons:commons-lang3:3.17.0"],"mb":"1","avisos":[sys.argv[3]],"cuando":"2026-09-23T00:00:00Z","entorno":"puesto-jvm:1"}, open(sys.argv[2],"w"))' "$JVM_DIGEST" "$A/entorno/$JVM_DIGEST.json" "$AVISO"
 [ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='lista' and d['informe']['jars']==['commons-lang3-3.17.0.jar']" || falla "6b · el informe de la JVM no puso la capa lista: $(cuerpo)"
+# el aviso llega ENTERO y sin interpretar: la capa esta lista, no es un error
+tiene "d['informe']['avisos']==['$AVISO'] and d['estado']=='lista'" || falla "6b · el aviso del choque no llego a quien lo tiene que pintar: $(cuerpo)"
 [ "$(pide POST /entorno/jvm "$ANA")" = "200" ] || falla "6b · resolver con la capa de la JVM lista no dio 200: $(cuerpo)"
 # y con la capa lista, el puesto nace CON ella y quien la baja sabe que son jars
 [ "$(pide POST /puestos "$BEA" '{"lenguaje":"java"}')" = "201" ] && tiene "d['id']=='puesto-bea-jvm'" || falla "6b · abrir jvm con la capa lista: $(cuerpo)"
@@ -841,7 +846,7 @@ pide DELETE /puestos/puesto-bea-jvm "$BEA" >/dev/null
 # y la de Python sigue pendiente: el informe de uno no vale para el otro
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente'" || falla "6b · el informe de la JVM se colo como el de Python: $(cuerpo)"
 rm -f "$A/packages/hr/pom.xml"
-dice "6b · la capa de la JVM: /entorno/jvm sin dependencias · un pom.xml → pendiente con SU digest (y sin lo que no se honra: dependencyManagement, test, sin version) · POST → 202 y 55-la-capa-jvm-<corto>.yaml con capa-jvm:1 y su tope · abrir jvm con la capa pendiente → 409 · informe → lista, el puesto nace con ella (ENTORNO=jvm: jars, no ruedas), y la de Python sigue pendiente"
+dice "6b · la capa de la JVM: /entorno/jvm sin dependencias · un pom.xml → pendiente con SU digest (y sin lo que no se honra: dependencyManagement, test, sin version) · POST → 202 y 55-la-capa-jvm-<corto>.yaml con capa-jvm:1 y su tope · abrir jvm con la capa pendiente → 409 · informe → lista CON SU AVISO del choque (pediste X, esta sesion trae Y), el puesto nace con ella (ENTORNO=jvm: jars, no ruedas), y la de Python sigue pendiente"
 
 # ── 8 · TS en el puesto node (W3.4): el agente de Node, celdas TS, un módulo del árbol, persona() ──
 NODE=$(command -v node || true)

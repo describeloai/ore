@@ -257,6 +257,26 @@ public final class Capa {
      * `pruebas-de-fuego/medida-la-capa-de-la-jvm.py` §7.
      */
     private static void pom(Path trabajo, Path provisto) throws Exception {
+        // La lista de la imagen viaja al trabajo: el informe la necesita para
+        // decir qué se quedó fuera y por qué.
+        Files.writeString(trabajo.resolve("provisto.txt"), String.join("\n", lineas(provisto)) + "\n");
+        // ⭐ Y UN SEGUNDO POM, con SÓLO lo que el árbol declara. No se usa para
+        //   bajar nada: se resuelve aparte para saber QUÉ QUERÍA el repositorio
+        //   si el contenedor no pusiera nada. Cruzando las dos listas sale el
+        //   aviso del choque SIEMPRE —lo pidiera él o lo arrastrara otra—, en
+        //   vez de depender de que Maven lo grite, que sólo grita en el caso
+        //   directo (medido: el arrastre se resuelve en silencio).
+        StringBuilder suyo = new StringBuilder();
+        suyo.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        suyo.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
+        suyo.append("  <modelVersion>4.0.0</modelVersion>\n");
+        suyo.append("  <groupId>dev.ore</groupId><artifactId>suyo</artifactId><version>0</version>\n");
+        suyo.append("  <dependencies>\n");
+        for (String gav : lineas(trabajo.resolve("deps.txt"))) {
+            suyo.append(dependencia(gav, ""));
+        }
+        suyo.append("  </dependencies>\n</project>\n");
+        Files.writeString(trabajo.resolve("pom-suyo.xml"), suyo.toString());
         StringBuilder s = new StringBuilder();
         s.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         s.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
@@ -377,27 +397,11 @@ public final class Capa {
         // El conjunto exacto que Maven resolvió, un GAV por línea
         // (`dependency:list -DoutputFile`), que es lo que hace repetible «la
         // capa `capa-…`» aunque Central cambie mañana.
-        List<String> lock = new ArrayList<>();
-        for (String l : lineas(trabajo.resolve("lista.txt"))) {
-            String[] p = l.split(":");
-            if (p.length >= 5 && !p[4].equals("provided") && !p[4].equals("test")) {
-                lock.add(p[0] + ":" + p[1] + ":" + p[3]);
-            }
-        }
+        List<String> lock = resuelto(trabajo.resolve("lista.txt"));
+        avisos.addAll(choques(deps, resuelto(trabajo.resolve("lista-suya.txt")),
+                lineas(trabajo.resolve("provisto.txt"))));
         // ⭐ EL CHOQUE, EN UNA FRASE. Maven lo grita en su registro; si se queda
         //   ahí, quien declaró una versión que no ganó no se entera nunca.
-        var choque = java.util.regex.Pattern.compile(
-                "must be unique: ([^\\s:]+):([^\\s:]+):[^\\s]* -> version (\\S+) vs (\\S+)");
-        for (String l : leerLog(trabajo.resolve("mvn.log"))) {
-            var m = choque.matcher(l);
-            if (m.find()) {
-                String frase = "pediste " + m.group(1) + ":" + m.group(2) + " " + m.group(3)
-                        + ", y esta sesión trae la " + m.group(4) + ": gana la de la sesión";
-                if (!avisos.contains(frase)) {
-                    avisos.add(frase);
-                }
-            }
-        }
         long mb = (bytes + 1048575) / 1048576;
         long tope = Long.parseLong(System.getenv().getOrDefault("TOPE_MB", "512"));
         String error = "";
@@ -440,6 +444,73 @@ public final class Capa {
         for (String a : avisos) {
             System.out.println("    ⚠️ " + a);
         }
+    }
+
+    /** Lo que `dependency:list -DoutputFile` dejó, como `g:a:v`. Sus líneas
+     *  son `g:a:jar:v:ámbito` y a veces acaban en ` -- module …`. */
+    private static List<String> resuelto(Path f) throws Exception {
+        List<String> fuera = new ArrayList<>();
+        for (String l : lineas(f)) {
+            String[] p = l.split(":");
+            if (p.length >= 5 && !p[4].startsWith("provided") && !p[4].startsWith("test")) {
+                fuera.add(p[0] + ":" + p[1] + ":" + p[3]);
+            }
+        }
+        return fuera;
+    }
+
+    /**
+     * EL CHOQUE, EN UNA FRASE (0037 ③c · d).
+     *
+     * <p>Lo que el repositorio tendría si el contenedor no pusiera nada
+     * (`pom-suyo.xml`, resuelto aparte) contra lo que el contenedor pone. Donde
+     * la misma biblioteca sale con otra versión, la sesión se queda con la
+     * suya —es la decisión de ③c, y el SDK está compilado contra ella— y aquí
+     * se dice, que es lo único que evita que alguien pase una tarde buscando
+     * por qué su método no existe.
+     *
+     * <p>Se distinguen los dos caminos porque no se arreglan igual: lo que
+     * pediste TÚ lo puedes bajar de versión; lo que ARRASTRA otra cosa, no.
+     */
+    static List<String> choques(List<String> declarado, List<String> queria, List<String> provisto) {
+        Map<String, String> pone = new LinkedHashMap<>();
+        for (String gav : provisto) {
+            int corte = gav.lastIndexOf(':');
+            if (corte > 0) {
+                pone.put(gav.substring(0, corte), gav.substring(corte + 1));
+            }
+        }
+        var suyas = new TreeSet<String>();
+        for (String gav : declarado) {
+            int corte = gav.lastIndexOf(':');
+            if (corte > 0) {
+                suyas.add(gav.substring(0, corte));
+            }
+        }
+        // Lo que pediste TÚ va primero: es lo único que puedes cambiar.
+        List<String> tuyas = new ArrayList<>();
+        List<String> arrastradas = new ArrayList<>();
+        for (String gav : new TreeSet<>(queria)) {
+            int corte = gav.lastIndexOf(':');
+            if (corte <= 0) {
+                continue;
+            }
+            String ga = gav.substring(0, corte);
+            String suya = gav.substring(corte + 1);
+            String nuestra = pone.get(ga);
+            if (nuestra == null || nuestra.equals(suya)) {
+                continue;
+            }
+            if (suyas.contains(ga)) {
+                tuyas.add("pediste " + ga + " " + suya + ", y esta sesión trae la " + nuestra
+                        + ": gana la de la sesión");
+            } else {
+                arrastradas.add(ga + " " + suya + " lo arrastra algo que declaraste, y esta sesión"
+                        + " trae la " + nuestra + ": gana la de la sesión");
+            }
+        }
+        tuyas.addAll(arrastradas);
+        return tuyas;
     }
 
     private static List<String> leerLog(Path f) throws Exception {

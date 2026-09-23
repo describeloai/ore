@@ -485,9 +485,30 @@ RUN set -e; mkdir -p /tmp/p/arbol; \
     test -f /tmp/p/t/jars/commons-lang3-3.17.0.jar; \
     ! ls /tmp/p/t/jars | grep -q jackson; \
     grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
-    grep -q 'gana la de la sesión' /tmp/p/t/informe.json; \
+    grep -q 'pediste com.fasterxml.jackson.core:jackson-databind 2.19.0, y esta sesión trae la 2.18.2' /tmp/p/t/informe.json; \
     grep -q '"sumas"' /tmp/p/t/informe.json; \
     cat /tmp/p/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/p
+
+# ── ⭐ Y EL OTRO CAMINO DEL MISMO CHOQUE (0037 ③c · d) ─────────────────────
+#
+# Aquí el repositorio NO pide jackson: pide `jackson-dataformat-yaml 2.19.0`,
+# que ARRASTRA jackson 2.19.0. Maven resuelve esto EN SILENCIO —medido—, así
+# que el aviso no puede salir de su registro: sale de resolver aparte lo que el
+# repositorio querría sin contenedor y cruzarlo con lo que el contenedor pone.
+# Si eso deja de funcionar, la construcción falla aquí y no en el árbol de un
+# cliente seis meses después.
+RUN set -e; mkdir -p /tmp/q/arbol; \
+    printf '%s\n' '<project xmlns="http://maven.apache.org/POM/4.0.0">' \
+      '<modelVersion>4.0.0</modelVersion><dependencies>' \
+      '<dependency><groupId>com.fasterxml.jackson.dataformat</groupId><artifactId>jackson-dataformat-yaml</artifactId><version>2.19.0</version></dependency>' \
+      '</dependencies></project>' > /tmp/q/arbol/pom.xml; \
+    TRABAJO=/tmp/q/t /opt/ore/resolver.sh /tmp/q/arbol ""; \
+    ls /tmp/q/t/jars; \
+    test -f /tmp/q/t/jars/jackson-dataformat-yaml-2.19.0.jar; \
+    test -f /tmp/q/t/jars/snakeyaml-2.4.jar; \
+    ! ls /tmp/q/t/jars | grep -q 'jackson-databind'; \
+    grep -q 'jackson-databind 2.19.0 lo arrastra algo que declaraste' /tmp/q/t/informe.json; \
+    cat /tmp/q/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/q
 
 USER 65532:65532
 WORKDIR /trabajo

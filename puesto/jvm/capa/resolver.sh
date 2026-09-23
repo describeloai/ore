@@ -68,6 +68,14 @@ if mvn -B -C -U --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local=
   mvn -B -C --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local="$REPO" \
       "$PLUGIN:list" -DincludeScope=runtime -DoutputFile="$TRABAJO/lista.txt" \
       >> "$TRABAJO/mvn.log" 2>&1 || echo "⚠️ el lock no se pudo listar"
+  # ⭐ Y LO QUE EL REPOSITORIO QUERRÍA SIN CONTENEDOR (0037 ③c · d): no baja
+  #   nada, sólo resuelve `pom-suyo.xml` para poder decir qué versión pedía.
+  #   Cruzar esto con lo que la imagen pone da el aviso del choque SIEMPRE,
+  #   también cuando lo arrastra una dependencia de otra —que es el caso que
+  #   Maven resuelve en silencio—. Si falla, se pierde el aviso y no la capa.
+  mvn -B -C --no-transfer-progress -f "$TRABAJO/pom-suyo.xml" -Dmaven.repo.local="$REPO" \
+      "$PLUGIN:list" -DincludeScope=runtime -DoutputFile="$TRABAJO/lista-suya.txt" \
+      >> "$TRABAJO/mvn.log" 2>&1 || echo "⚠️ no se pudo saber qué versiones pedía el repositorio"
 else
   ESTADO=error
   echo "✗ Maven no pudo resolver: $(tail -c 600 "$TRABAJO/mvn.log")"
