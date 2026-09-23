@@ -34,6 +34,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -183,7 +184,12 @@ class Correa:
     def encender(self):
         if self.proceso is not None:
             return self.proceso.poll() is None
-        orden = LSP.split()
+        # ⛔ `shlex` y no `split()`: la orden puede traer una ruta entrecomillada
+        #   —`node "/opt/ore/pyright/langserver.index.js" --stdio`— y partir por
+        #   espacios le deja las comillas dentro. Medido: el servidor arrancaba
+        #   y se moria al instante, y el editor se quedaba sin ayuda sin decir
+        #   por que.
+        orden = shlex.split(LSP)
         if not shutil.which(orden[0]):
             log("no hay servidor de lenguaje (`%s`): el editor se queda sin ayuda" % orden[0])
             self.proceso = False
