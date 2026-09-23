@@ -885,6 +885,28 @@ def comprobar():
             fallos.append("`%s`: abre la IP del gateway de modelos; solo 11 puede, y por clase" % f.name)
     print("  ⭐ ⑭ la celda sale al gateway de modelos por clase: driver→%s:8000, control→%s:9000, y nadie mas" % (MODELOS, MODELOS))
 
+    # ── ⑮ LA PUERTA DEJA VIVIR UN FLUJO MAS DE LO QUE EL FLUJO DURA (0037 ②)
+    #
+    # El plazo del backend es, para una conexion en streaming, LO QUE VIVE LA
+    # CONEXION. Si baja de lo que el flujo tarda en despedirse el solo, quien
+    # corta es la puerta — y la puerta no sabe por donde iba: el que sabe es el
+    # servidor, que termina diciendo «vuelve» con el numero del ultimo evento.
+    # Dos numeros en dos repositorios distintos que tienen que ir juntos: eso es
+    # justo lo que una comprobacion existe para vigilar.
+    t43 = (MALLA / "43-la-entrada.yaml").read_text(encoding="utf-8")
+    m = re.search(r"kind: GCPBackendPolicy.*?timeoutSec: (\d+)", t43, re.S)
+    v = re.search(r"const VIDA: Duration = Duration::from_secs\((\d+)\)",
+                  (MALLA.parent / "crates/ore-serve/src/puestos.rs").read_text(encoding="utf-8"))
+    if not m:
+        fallos.append("`43-la-entrada.yaml`: sin `GCPBackendPolicy`, la puerta corta cualquier flujo a los 30 s")
+    elif v and int(m.group(1)) <= int(v.group(1)):
+        fallos.append(
+            "`43-la-entrada.yaml`: la puerta deja %s s y el flujo dura %s s: cortaria ella, y en medio de un evento"
+            % (m.group(1), v.group(1)))
+    else:
+        print("  ⭐ ⑮ la puerta deja vivir %s s y el flujo se despide a los %s: cierra el que sabe por donde iba"
+              % (m.group(1), v.group(1) if v else "?"))
+
     return veredicto(fallos)
 
 
