@@ -347,6 +347,18 @@ pub fn rendir_puesto(
 
 // ── La capa (0031 §3, W3.2): las dependencias del árbol, resueltas ──────────
 pub const PLANTILLA_CAPA: &str = "plantilla-capa.txt";
+/// Y la de la JVM (0037 ③c): otro Job, otra imagen y otro resolvedor —Maven,
+/// no `pip`—, así que otra plantilla. Lo que comparten es todo lo demás: el
+/// digest, el alcance, el informe y el bucket.
+pub const PLANTILLA_CAPA_JVM: &str = "plantilla-capa-jvm.txt";
+
+/// La plantilla que resuelve la capa de un entorno.
+pub fn plantilla_capa_de(entorno: &str) -> &'static str {
+    match entorno {
+        "jvm" => PLANTILLA_CAPA_JVM,
+        _ => PLANTILLA_CAPA,
+    }
+}
 const INTENTO_MODELO: &str = "intento-modelo";
 const ALCANCE_MODELO: &str = "alcance-modelo";
 
@@ -359,14 +371,21 @@ const ALCANCE_MODELO: &str = "alcance-modelo";
 /// `(fichero, texto, nombre del Job)`.
 pub fn rendir_capa(
     plantilla: &str,
+    entorno: &str,
     digest: &str,
     rama: &str,
     alcance: &str,
     intento: &str,
 ) -> Result<(String, String, String), String> {
-    if !plantilla.contains(&format!("la-capa-{RESUMEN_MODELO}")) {
+    // Cada entorno, su plantilla, su mote y su número en la malla: dos Jobs
+    // con el mismo nombre serían el mismo Job.
+    let (nombre, mote, numero) = match entorno {
+        "jvm" => (PLANTILLA_CAPA_JVM, "la-capa-jvm", "54"),
+        _ => (PLANTILLA_CAPA, "la-capa", "52"),
+    };
+    if !plantilla.contains(&format!("{mote}-{RESUMEN_MODELO}")) {
         return Err(format!(
-            "`{PLANTILLA_CAPA}` no trae el hueco `la-capa-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/52-la-capa.yaml` cambió sin que esto se enterara"
+            "`{nombre}` no trae el hueco `{mote}-{RESUMEN_MODELO}`: o no es la plantilla, o `malla/{numero}-{mote}.yaml` cambió sin que esto se enterara"
         ));
     }
     if !digest.starts_with("capa-")
@@ -385,7 +404,7 @@ pub fn rendir_capa(
     ] {
         if !plantilla.contains(&format!("value: \"{de}\"")) {
             return Err(format!(
-                "`{PLANTILLA_CAPA}` no trae el hueco `value: \"{de}\"`: `malla/52-la-capa.yaml` cambió sin que esto se enterara"
+                "`{nombre}` no trae el hueco `value: \"{de}\"`: `malla/{numero}-{mote}.yaml` cambió sin que esto se enterara"
             ));
         }
         if a.contains('"') || a.contains('\n') {
@@ -412,9 +431,9 @@ pub fn rendir_capa(
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
     let corto = &digest[5..];
-    let job = format!("la-capa-{corto}-{h}");
-    let t = t.replace(&format!("la-capa-{RESUMEN_MODELO}"), &job);
-    Ok((format!("52-la-capa-{corto}.yaml"), t, job))
+    let job = format!("{mote}-{corto}-{h}");
+    let t = t.replace(&format!("{mote}-{RESUMEN_MODELO}"), &job);
+    Ok((format!("{numero}-{mote}-{corto}.yaml"), t, job))
 }
 
 #[cfg(test)]
@@ -507,19 +526,20 @@ env:
   - { name: ALCANCE, value: \"alcance-modelo\" }
   - { name: INTENTO, value: \"intento-modelo\" }
 ";
-        let (f, t, job) = rendir_capa(p, "capa-0123456789ab", "", "", "1").unwrap();
+        let (f, t, job) = rendir_capa(p, "python", "capa-0123456789ab", "", "", "1").unwrap();
         assert_eq!(f, "52-la-capa-0123456789ab.yaml");
         assert!(
             job.starts_with("la-capa-0123456789ab-")
                 && job.len() == "la-capa-0123456789ab-".len() + 8
         );
         assert!(t.contains("value: \"capa-0123456789ab\"") && t.contains(&format!("name: {job}")));
-        let (_, _, job2) = rendir_capa(p, "capa-0123456789ab", "", "", "r2").unwrap();
+        let (_, _, job2) = rendir_capa(p, "python", "capa-0123456789ab", "", "", "r2").unwrap();
         assert_ne!(job, job2);
-        assert!(rendir_capa(p, "no-es-un-digest", "", "", "1").is_err());
+        assert!(rendir_capa(p, "python", "no-es-un-digest", "", "", "1").is_err());
         // El alcance viaja al Job (0036 ③): es lo que hace que el Job sume los
         // `pyproject.toml` del repositorio y no los de toda la celda.
-        let (_, t, _) = rendir_capa(p, "capa-0123456789ab", "", "packages/hr/raw", "1").unwrap();
+        let (_, t, _) =
+            rendir_capa(p, "python", "capa-0123456789ab", "", "packages/hr/raw", "1").unwrap();
         assert!(t.contains("value: \"packages/hr/raw\""), "{t}");
     }
 

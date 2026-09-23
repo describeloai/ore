@@ -126,6 +126,52 @@ dependencies = []
 # dependencies = [\"polars\"]
 ";
 
+/// El `pom.xml` de una instancia de Java: **el sitio donde declarar** (0037 ③c).
+///
+/// ⭐ Nace VACÍO, por lo mismo que el de Python: lo que faltaba no era una
+///   biblioteca, era el fichero. Hasta ③c un repositorio de Java no podía usar
+///   ni una, porque la capa (0036 ③) leía sólo `pyproject.toml`.
+///
+/// ⛔ Y dice lo que NO hace: de aquí se lee `<dependencies>` y nada más. Un pom
+///   trae `<build>`, `<plugins>`, `<profiles>`; no se honran, y por eso se
+///   avisa en el propio fichero en vez de dejar que alguien lo descubra cuando
+///   su plugin no corra.
+const POM_JVM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Las dependencias de ESTE repositorio (ADR 0036 iii, 0037 iii.c). Lo que
+  declares aqui es SUYO: se resuelve en su propia capa y no la cargan sus
+  vecinos. Lo que esta en el paquete o en la raiz del arbol lo sigue teniendo
+  todo el mundo.
+
+  Nace vacio: declarar algo que nadie usa seria construir una capa para nada.
+  Descomenta el ejemplo de abajo, guarda y abre el repositorio - la capa se
+  resuelve sola y la sesion nace con ella.
+
+  DE ESTE FICHERO SE LEE "dependencies" Y NADA MAS. Ni "dependencyManagement",
+  ni "build", ni "plugins", ni "profiles": no se honran y no se finge que si.
+  Cada dependencia necesita su "version" -sin ella no hay quien la fije- y el
+  ambito "test" no baja al puesto, que la capa es lo que hace falta para CORRER.
+
+  Y LO QUE TRAE LA IMAGEN, MANDA: Arrow, Jackson, slf4j y el resto del SDK
+  llegan con la sesion. Si declaras otra version de algo de eso, gana la de la
+  sesion y el informe de la capa te lo dice.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>repositorio</groupId>
+  <artifactId>repositorio</artifactId>
+  <version>0.1.0</version>
+
+  <dependencies>
+    <!-- <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.17.0</version>
+    </dependency> -->
+  </dependencies>
+</project>
+"#;
+
 /// El mismo transform, en Java, y **como un fichero Java de verdad** (0037 ③b):
 /// un import estático y una clase con `main`.
 ///
@@ -300,11 +346,14 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets using Java on the JVM.",
-        version: 2,
-        // ⛔ Sin fichero de entorno: la capa (0036 ③) lee `pyproject.toml` y
-        //   hoy no sabe de la JVM. Sembrar un `build.gradle` que nadie resuelve
-        //   sería sembrar una promesa.
-        semilla: &[("transforms/Ejemplo.java", TRANSFORMS_JAVA)],
+        // 3 porque la plantilla CAMBIÓ (0037 ③c): lo escrito con la de antes
+        // —sin `pom.xml`— sale `actualizable: true`, que es lo que la columna
+        // «UPGRADE» existe para decir.
+        version: 3,
+        semilla: &[
+            ("pom.xml", POM_JVM),
+            ("transforms/Ejemplo.java", TRANSFORMS_JAVA),
+        ],
     },
     Clase {
         id: "transforms-sql",
@@ -605,7 +654,7 @@ mod pruebas {
             let codigo: usize = c
                 .semilla
                 .iter()
-                .filter(|(r, _)| !r.ends_with(".toml"))
+                .filter(|(r, _)| !r.ends_with(".toml") && !r.ends_with(".xml"))
                 .flat_map(|(_, t)| t.lines())
                 .filter(|l| {
                     let l = l.trim();
@@ -613,10 +662,17 @@ mod pruebas {
                 })
                 .count();
             assert!(codigo >= 4, "{} tiene {codigo} líneas de código", c.id);
-            if c.lenguaje == "python" {
+            // ⭐ 0037 ③c: y en Java lo mismo, con su fichero. Un repositorio
+            //   sin dónde declarar se come la capa de la celda, o —como pasaba
+            //   en la JVM hasta ③c— no puede usar ni una biblioteca.
+            if let Some(donde) = match c.lenguaje {
+                "python" | "sql" => Some("pyproject.toml"),
+                "java" => Some("pom.xml"),
+                _ => None,
+            } {
                 assert!(
-                    c.semilla.iter().any(|(r, _)| *r == "pyproject.toml"),
-                    "{} no trae dónde declarar su entorno",
+                    c.semilla.iter().any(|(r, _)| *r == donde),
+                    "{} no trae `{donde}`: dónde declarar su entorno",
                     c.id
                 );
             }

@@ -496,7 +496,7 @@ impl Servidor {
                 {
                     return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
                 }
-                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref());
+                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref(), entorno);
                 Respuesta::ok(Json::obj([
                     ("estado", Json::s(e.estado)),
                     ("digest", Json::s(&e.digest)),
@@ -539,6 +539,7 @@ impl Servidor {
                     repositorio.as_deref().unwrap_or(""),
                     sujeto,
                     &intento,
+                    entorno,
                 ) {
                     Ok((job, d)) => format!("{d} · Job {job}"),
                     Err(r) => return r,
@@ -835,7 +836,7 @@ impl Servidor {
             return Ok(String::new());
         }
         let e = match self.leyendo_en(rama, |raiz| {
-            let e = crate::entorno::entorno_de_en(raiz, alcance);
+            let e = crate::entorno::entorno_de_en(raiz, alcance, entorno);
             Respuesta::ok(Json::obj([
                 ("estado", Json::s(e.estado)),
                 ("digest", Json::s(&e.digest)),
@@ -872,6 +873,7 @@ impl Servidor {
                     alcance.unwrap_or(""),
                     sujeto,
                     &intento,
+                    entorno,
                 ) {
                     Ok((job, d)) => format!("{d} · Job {job}"),
                     Err(r) => return Err(r),
