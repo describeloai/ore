@@ -52,6 +52,12 @@ ESCENARIOS = [
      "la firma Y NUESTRO JAVADOC", 580),
     ("el fichero renombrado y la clase no", "1 error: «The public type Ejemplo must be defined in its own file»",
      "NINGUNA", "sigue resolviendo", 493),
+    # ⭐ Y APRETADO A TOPE: -Xmx256m con SerialGC, sin importador de Maven ni de
+    #   Gradle, sin construccion automatica, sin codelens ni signatureHelp, y el
+    #   autocompletado limitado a 30. Hace LO MISMO… y pesa casi lo mismo.
+    ("jdtls APRETADO (-Xmx256m, sin Maven/Gradle/autobuild)",
+     "los 3 de siempre sobre una linea a medias", "write(String nombre, Object datos)",
+     "la firma Y NUESTRO JAVADOC", 514),
 ]
 ARRANQUE = "5,6-6,6 s hasta `ServiceReady` (22,2 s la primerisima vez, con el disco frio)"
 
@@ -221,6 +227,13 @@ def seccion_una_o_dos():
           % (UNA_JVM["javac_frio_ms"], UNA_JVM["javac_caliente_ms"]))
     print("         y lo que dice: «%s»" % UNA_JVM["javac_dice"])
     print("       memoria del proceso entero al acabar: %d-%d MB" % UNA_JVM["memoria_total_mb"])
+    print("")
+    print("     ⛔ Y APRETAR jdtls NO SIRVE, que era la salida evidente: con -Xmx256m,")
+    print("       SerialGC y los importadores de Maven y Gradle apagados ofrece")
+    print("       EXACTAMENTE LO MISMO y baja de 580 a 514 MB, con el mismo arranque de")
+    print("       6,5 s. Lo que pesa no es el monton de Java —por eso bajar el -Xmx no")
+    print("       lo toca—: son las clases del framework OSGi, el metaspace y el indice")
+    print("       del JDK. jdtls apretado sigue pidiendo EL DOBLE que el agente entero.")
     print("")
     print("     ⇒ DIAGNOSTICOS Y AUTOCOMPLETADO SALEN SIN SEGUNDA JVM, sin 53 MB de")
     print("       imagen y sin 6 s de arranque. Lo que se pierde es lo que jdtls hace")
