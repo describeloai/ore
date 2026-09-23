@@ -356,6 +356,50 @@ enseñe el botón de ejecutar en su workspace. Y la verificación es `tsc --noEm
 puedo abrir sesión OIDC**, así que la consola no se probó a mano — el backend sí, de punta a
 punta, en `los-documentos.sh` y `el-puesto.sh`.
 
+## Lo medido para ⑧ (`pruebas-de-fuego/medida-la-plantilla.py`, 2026-09-23, sobre el árbol de victor)
+
+La pregunta viene de una pantalla de Foundry puesta al lado de la nuestra: allí una instancia
+nueva de transforms nace con un árbol de ficheros que **compila y corre**
+(`src/main/java/<p>/datasets/*.java`, `resources/`, `test/`, seis ejemplos). ¿Con qué nace la
+nuestra? Medido creando una de cada clase en el paquete de un proyecto (0035 ⑦.1):
+
+| clase | ficheros | bytes | líneas de **código** | de comentario |
+|---|---|---|---|---|
+| `transforms` | 2 | 477 | **0** | 10 |
+| `analytics` | 2 | 367 | **0** | 9 |
+| `models` | 2 | 344 | **0** | 7 |
+| `functions` | 2 | 359 | **0** | 5 |
+| `semantics` | 1 | 114 | **0** | 0 |
+
+**Cero líneas de código en las cinco.** Lo que sembramos no es una plantilla: es el manifiesto
+y un fichero que *describe* lo que habría que escribir. Al abrir la instancia, el editor enseña
+exactamente eso — dos ficheros (`§3`), uno de ellos un comentario.
+
+Y lo que más duele, porque el motor ya está hecho (`§2`):
+
+```
+la celda          → {"declarado": [], "estado": "sin-dependencias"}
+la instancia      → {"alcance": "packages/<proyecto>/transforms_uno",
+                     "declarado": [], "estado": "sin-dependencias"}     ← la semilla no declara nada
+sembrando un `pyproject.toml` A MANO:
+la instancia      → {"declarado": ["polars","torch"], "digest": "capa-c20f431674d8",
+                     "estado": "pendiente"}                            ← ③ funciona
+```
+
+La capa **por repositorio** de ③ está construida y medida, y **la plantilla no la usa**: no
+siembra ninguna declaración, así que toda instancia nace heredando la capa de la celda — que es
+justo lo que ③ existía para romper. Hicimos el motor y no sembramos nada que lo arrancara.
+
+Y lo barato: **hoy no hay ni un repositorio en ningún árbol real** (`§4`), así que la plantilla
+puede crecer sin migrar a nadie.
+
+**Lo que ⑧ tiene que construir**, entonces, y en este orden: que una plantilla sea **un árbol de
+ficheros** (disposición, ejemplos que **corren**, y su declaración de entorno —`pyproject.toml`
+o el fichero de construcción que toque—, que es lo que enciende la capa de ③), y que el
+**lenguaje sea una clase y no un campo**: `transforms-python` y `transforms-java` son dos
+plantillas con dos versiones, y con una sola clase, el día que cambie una, o subes las dos o
+mientes en la columna «UPGRADE».
+
 ## Lo que esto no decide
 
 - **Qué máquina pide cada clase** (CPU/GPU, tamaño): es 0027 y su lista de certificación; aquí
