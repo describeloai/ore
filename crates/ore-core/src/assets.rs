@@ -920,6 +920,12 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
     }
 
     // Los proyectos (0035 ①): lo que cada uno nombra y cuántos ítems le tocan.
+    let nombres_de_paquete: BTreeSet<String> = pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == Kind::Package)
+        .filter_map(|d| paquete_y_carpeta(pkg, d).0)
+        .collect();
     let proyectos: Vec<Json> = proyectos
         .iter()
         .map(|p| {
@@ -948,6 +954,19 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                     Json::Int(de_proyecto.get(&p.nombre).copied().unwrap_or(0)),
                 ),
                 ("ruta", Json::s(&p.ruta)),
+                // ⭐⭐ SU SITIO (0035 ⑦.1): el paquete que lleva su nombre, si
+                //   está. Es **la raíz del proyecto** —donde nacen sus cosas—,
+                //   y va aparte de `contiene` a propósito: lo demás que nombra
+                //   es de otros, y ofrecerlo como sitio donde crear fue el
+                //   error que ⑦ arregla.
+                (
+                    "sitio",
+                    if nombres_de_paquete.contains(&p.nombre) {
+                        Json::s(format!("packages/{}", p.nombre))
+                    } else {
+                        Json::Crudo("null".into())
+                    },
+                ),
                 ("version", Json::Crudo("null".into())),
             ];
             if let Some(r) = &p.roto {

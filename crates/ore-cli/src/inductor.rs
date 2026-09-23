@@ -1550,12 +1550,10 @@ fn estructural(nombre: &str) -> bool {
 /// deja como está: cambiarlo mueve la madurez efectiva de todo lo inducido, que
 /// es otra medida.
 pub fn documento_paquete(nombre: &str, owner: &str, estado: &str, dominio: &str) -> String {
-    format!(
-        "apiVersion: oos.dev/v1alpha1\n\
-         kind: Package\n\
-         metadata: {{ name: {nombre}, version: 0.1.0, status: {estado}, domain: {dominio} }}\n\
-         spec: {{ owner: \"{owner}\" }}\n"
-    )
+    // El texto vive en el núcleo (`ore_core::paquetes`): desde 0035 ⑦.1 lo
+    // escribe también `ore-serve`, al darle sitio a un proyecto, y dos copias
+    // de la misma forma divergen en el caso que ninguna prueba ejerce.
+    ore_core::paquetes::documento(nombre, owner, estado, dominio)
 }
 
 fn paquete_yaml(paquete: &str, dec: &Decisiones) -> (String, Vec<Pendiente>) {

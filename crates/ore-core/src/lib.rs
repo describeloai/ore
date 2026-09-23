@@ -55,6 +55,7 @@ pub mod link;
 pub mod manifiesto;
 pub mod normalize;
 pub mod odcs;
+pub mod paquetes;
 pub mod parse;
 pub mod pertenencia;
 pub mod politica;

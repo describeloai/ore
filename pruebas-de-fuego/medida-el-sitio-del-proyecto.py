@@ -15,6 +15,10 @@ item?». Se contesta sin opinar, sobre su árbol:
   §4  GUARDAR           `POST /repositorios` tal cual lo manda el botón «Save»:
                         el código, el commit, la semilla y el `contiene` del
                         proyecto después.
+  §5  EL SITIO          ⑦.1: un proyecto nuevo, y si NACE CON SITIO — su
+                        `packages/<id>/package.yaml` en el mismo commit, el
+                        árbol compilando con él dentro, y lo primero que se
+                        guarda cayendo en su sitio sin que nadie preste nada.
 
 Lectura y local: el árbol se trae con el Job de siempre (`traer_arbol`) o se
 pasa ya en disco; el servidor es un `target/debug/ore-serve` contra una forja
@@ -188,6 +192,36 @@ def mide(nombre, arbol):
                         print("       %s" % l)
             else:
                 print("     %s" % cuerpo[:300])
+        # ── §5 el sitio que nace (⑦.1) ───────────────────────────────────
+        print("\n  §5 EL SITIO QUE NACE (`POST /proyectos`, ⑦.1)")
+        cod, cuerpo = pide("POST", "/proyectos", json.dumps({"nombre": "Medida Del Sitio"}))
+        print("     POST /proyectos {nombre: Medida Del Sitio} → %s" % cod)
+        if cod == 201:
+            r = json.loads(cuerpo)
+            print("     id = %s · sitio = %s · contiene = %s" % (r["id"], r.get("sitio"), r["contiene"]))
+            print("     commit: %s" % git("--git-dir=" + forja, "log", "-1", "--format=%h %an · %s", "main"))
+            for f in git("--git-dir=" + forja, "show", "--name-only", "--format=", "main").splitlines():
+                print("       %s" % f)
+            print("     package.yaml:")
+            for l in git("--git-dir=" + forja, "show", "main:packages/%s/package.yaml" % r["id"]).splitlines():
+                print("       %s" % l)
+            # Y lo primero que se guarda cae en SU sitio, sin prestar nada.
+            cod2, cuerpo2 = pide("POST", "/repositorios", json.dumps(
+                {"paquete": r["id"], "carpeta": "mi_transform", "nombre": "mi_transform",
+                 "plantilla": "transforms", "proyecto": r["id"]}))
+            print("     POST /repositorios en su sitio → %s" % cod2)
+            if cod2 == 201:
+                print("     ruta = %s" % json.loads(cuerpo2)["ruta"])
+            cod3, cuerpo3 = pide("GET", "/assets")
+            d3 = json.loads(cuerpo3) if cod3 == 200 else {}
+            suyo = next((p for p in d3.get("proyectos", []) if p["nombre"] == r["id"]), None)
+            print("     el índice después: sitio = %s · contiene = %s · repositorios = %s"
+                  % (suyo and suyo.get("sitio"), suyo and suyo.get("contiene"),
+                     [x["ruta"] for x in d3.get("repositorios", [])]))
+            print("     ⇒ lo que nombra NO se dice dos veces: %s"
+                  % (suyo is not None and suyo.get("contiene") == [r["id"]]))
+        else:
+            print("     %s" % cuerpo[:300])
     finally:
         srv.terminate()
         try:

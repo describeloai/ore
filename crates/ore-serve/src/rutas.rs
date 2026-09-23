@@ -471,13 +471,13 @@ impl Servidor {
             ("POST", ["proyectos"]) => {
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo_en(rama, sujeto, "crear un proyecto", |r| {
-                    self.crear_proyecto(r, &cuerpo)
+                    self.crear_proyecto(r, sujeto, &cuerpo)
                 })
             }
             ("PUT", ["proyectos", id]) => {
                 let (id, cuerpo) = (id.to_string(), p.cuerpo.clone());
                 self.escribiendo_en(rama, sujeto, &format!("escribir el proyecto `{id}`"), |r| {
-                    self.escribir_proyecto(r, &id, &cuerpo)
+                    self.escribir_proyecto(r, sujeto, &id, &cuerpo)
                 })
             }
             // ── 0035 ⑥ · 0036 ② · los repositorios: la unidad de trabajo ────

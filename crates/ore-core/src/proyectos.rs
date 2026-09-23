@@ -52,17 +52,24 @@ impl Proyecto {
     /// `ventas` alcanza a todo el paquete; `ventas/churn`, a la carpeta y a lo
     /// que cuelga de ella.
     pub fn alcanza(&self, paquete: &str, carpeta: &str) -> bool {
-        self.contiene.iter().any(|c| {
-            let c = c.trim_matches('/');
-            if c == paquete {
-                return true;
-            }
-            let Some(resto) = c.strip_prefix(paquete).and_then(|r| r.strip_prefix('/')) else {
-                return false;
-            };
-            carpeta == resto || carpeta.starts_with(&format!("{resto}/"))
-        })
+        alcanza_en(&self.contiene, paquete, carpeta)
     }
+}
+
+/// La misma regla, sin tener que construir un proyecto para preguntarla: la
+/// usa quien está **escribiendo** un `contiene` y quiere saber si lo que iba a
+/// añadir ya está dicho (0035 ⑦.3).
+pub fn alcanza_en(contiene: &[String], paquete: &str, carpeta: &str) -> bool {
+    contiene.iter().any(|c| {
+        let c = c.trim_matches('/');
+        if c == paquete {
+            return true;
+        }
+        let Some(resto) = c.strip_prefix(paquete).and_then(|r| r.strip_prefix('/')) else {
+            return false;
+        };
+        carpeta == resto || carpeta.starts_with(&format!("{resto}/"))
+    })
 }
 
 /// Los proyectos de un árbol: `proyectos/*/README.md`, por nombre de carpeta.

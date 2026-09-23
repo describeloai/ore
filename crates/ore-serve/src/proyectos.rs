@@ -18,11 +18,33 @@
 //! 3. **No decide quién lo ve.** Eso es `ore-iam`, que es plano de control. El
 //!    árbol no lleva colaboradores.
 //!
+//! # El sitio (0035 ⑦.1)
+//!
+//! ⭐⭐ **Un proyecto nace con sitio propio**: `POST /proyectos` escribe, en el
+//! mismo commit que su manifiesto, `packages/<id>/package.yaml` — y `contiene`
+//! arranca nombrándolo. La lente se queda (sigue nombrando lo de otros, sigue
+//! solapándose, sigue sin gobernar); lo que deja de pasar es que un proyecto
+//! recién creado **no tenga suelo**: medido en ⑦, lo primero que se guardaba en
+//! él sólo podía ir a un paquete prestado, y la consola acababa ofreciendo los
+//! paquetes de la celda como si fueran carpetas suyas.
+//!
+//! ⛔ Y no se **adopta** el paquete de otro: si `packages/<id>` ya está, es 409
+//! con el porqué. Nacer dentro de algo que ya existía sería fingir que el
+//! proyecto lo creó.
+//!
+//! ⛔ El `owner` del paquete no se inventa: es `team:<organización>` —quien
+//! RESPONDE, como en el alta de una fuente (rutas.rs `dueno_del_arbol`)— y, si
+//! este servidor no sabe de quién es el árbol, `user:<persona>`. Si ninguno de
+//! los dos da un handle, **el proyecto se crea igual y sin sitio**, y la
+//! respuesta lo dice (`sitio: null`): más vale un proyecto sin suelo que un
+//! `owner: cambiame` que no compila (medido en ⑦.1: OOS2009, 1 error).
+//!
 //! Y la escritura es la de siempre: el commit lo firma el sujeto y va a **su**
 //! rama (`escribiendo_en`), como todo lo demás desde 0031 W3.7 ④.
 use crate::rutas::Servidor;
 use ore_core::json::Json;
 use ore_entrada::http::Respuesta;
+use ore_entrada::identidad::Identidad;
 use std::path::Path;
 
 /// El identificador de un proyecto: el nombre de su carpeta.
@@ -157,6 +179,10 @@ fn manifiesto(c: &Cuerpo) -> String {
 
 /// Los paquetes y carpetas del árbol, para decir qué de `contiene` no resuelve
 /// **todavía**. No impide nada: el proyecto es un propósito.
+///
+/// ⭐ Mira los **paquetes y sus carpetas**, no los ítems (0035 ⑦): un paquete
+///   vacío EXISTE —el sitio de un proyecto recién nacido lo es—, y decir que no
+///   resuelve sería decir que no está.
 fn sin_resolver(raiz: &Path, contiene: &[String]) -> Vec<String> {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     let indice = ore_core::assets::indice(
@@ -167,39 +193,43 @@ fn sin_resolver(raiz: &Path, contiene: &[String]) -> Vec<String> {
     let Json::Obj(m) = &indice else {
         return Vec::new();
     };
-    let Some(Json::Obj(items)) = m.get("items") else {
+    let Some(Json::Arr(paquetes)) = m.get("paquetes") else {
         return Vec::new();
     };
-    let sitios: Vec<(String, String)> = items
-        .values()
-        .filter_map(|it| {
-            let Json::Obj(it) = it else { return None };
-            let p = match it.get("paquete") {
-                Some(Json::Str(p)) => p.clone(),
-                _ => return None,
-            };
-            let c = match it.get("carpeta") {
-                Some(Json::Str(c)) => c.clone(),
-                _ => String::new(),
-            };
-            Some((p, c))
-        })
-        .collect();
+    let mut sitios: Vec<(String, String)> = Vec::new();
+    for p in paquetes {
+        let Json::Obj(p) = p else { continue };
+        let Some(Json::Str(nombre)) = p.get("name") else {
+            continue;
+        };
+        sitios.push((nombre.clone(), String::new()));
+        if let Some(Json::Arr(cs)) = p.get("carpetas") {
+            for c in cs {
+                if let Json::Str(c) = c {
+                    sitios.push((nombre.clone(), c.clone()));
+                }
+            }
+        }
+    }
     contiene
         .iter()
         .filter(|c| {
-            let p = ore_core::proyectos::Proyecto {
-                nombre: String::new(),
-                titulo: None,
-                descripcion: None,
-                contiene: vec![(*c).clone()],
-                ruta: String::new(),
-                roto: None,
-            };
-            !sitios.iter().any(|(pq, ca)| p.alcanza(pq, ca))
+            let uno = [(*c).clone()];
+            !sitios
+                .iter()
+                .any(|(pq, ca)| ore_core::proyectos::alcanza_en(&uno, pq, ca))
         })
         .cloned()
         .collect()
+}
+
+/// `packages/<id>`, si ese paquete está: el sitio propio del proyecto (⑦.1).
+fn sitio_de(raiz: &Path, id: &str) -> Option<String> {
+    raiz.join("packages")
+        .join(id)
+        .join("package.yaml")
+        .is_file()
+        .then(|| format!("packages/{id}"))
 }
 
 fn ficha(raiz: &Path, id: &str, c: &Cuerpo, nueva: bool) -> Json {
@@ -218,6 +248,14 @@ fn ficha(raiz: &Path, id: &str, c: &Cuerpo, nueva: bool) -> Json {
             Json::Arr(c.contiene.iter().map(Json::s).collect()),
         ),
         ("ruta", Json::s(format!("proyectos/{id}/README.md"))),
+        // ⭐ Dónde vive (⑦.1): su paquete, si lo tiene. La consola lo enseña
+        //   como LA RAÍZ del proyecto, y no como una cosa más que nombra.
+        (
+            "sitio",
+            sitio_de(raiz, id)
+                .map(Json::s)
+                .unwrap_or(Json::Crudo("null".into())),
+        ),
         ("nueva", Json::Bool(nueva)),
     ];
     let falta = sin_resolver(raiz, &c.contiene);
@@ -233,8 +271,13 @@ fn ficha(raiz: &Path, id: &str, c: &Cuerpo, nueva: bool) -> Json {
 impl Servidor {
     /// `POST /proyectos {nombre, descripcion?, contiene?}`: 201 con el `id` (el
     /// nombre de la carpeta, del título), o 409 si ese nombre ya está cogido.
-    pub(crate) fn crear_proyecto(&self, raiz: &Path, cuerpo: &str) -> Respuesta {
-        let c = match del_cuerpo(cuerpo) {
+    pub(crate) fn crear_proyecto(
+        &self,
+        raiz: &Path,
+        sujeto: &Identidad,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let mut c = match del_cuerpo(cuerpo) {
             Ok(c) => c,
             Err(r) => return r,
         };
@@ -249,6 +292,24 @@ impl Servidor {
                 format!("ya hay un proyecto `{id}`: los proyectos se nombran una vez"),
             );
         }
+        // ⭐⭐ EL SITIO (⑦.1): su paquete, en ESTE commit, y `contiene` lo
+        //   nombra el primero. Sin esto un proyecto nace sin suelo y lo primero
+        //   que se guarde en él tiene que ir a un paquete prestado.
+        let suyo = raiz.join("packages").join(&id);
+        if suyo.join("package.yaml").is_file() {
+            return Respuesta::error(
+                409,
+                format!(
+                    "ya hay un paquete `{id}` en el árbol: el sitio de un proyecto es suyo, y adoptar el de otro sería fingir que nació aquí. Dale otro nombre"
+                ),
+            );
+        }
+        if let Err(r) = self.dar_sitio(raiz, &id, sujeto) {
+            return r;
+        }
+        if sitio_de(raiz, &id).is_some() && !c.contiene.iter().any(|x| x == &id) {
+            c.contiene.insert(0, id.clone());
+        }
         if let Err(e) = std::fs::create_dir_all(&dir)
             .and_then(|_| std::fs::write(dir.join("README.md"), manifiesto(&c)))
         {
@@ -260,10 +321,70 @@ impl Servidor {
         Respuesta::creado(ficha(raiz, &id, &c, true))
     }
 
+    /// Le da a un proyecto su sitio: `packages/<id>/package.yaml`, si no lo
+    /// tiene ya y hay de quién sea. No falla si no hay dueño: el proyecto se
+    /// queda sin suelo y la ficha lo dice (`sitio: null`).
+    fn dar_sitio(&self, raiz: &Path, id: &str, sujeto: &Identidad) -> Result<(), Respuesta> {
+        let suyo = raiz.join("packages").join(id);
+        if suyo.join("package.yaml").is_file() {
+            return Ok(());
+        }
+        let Some(dueno) = self.dueno_de_un_sitio(sujeto) else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(&suyo)
+            .and_then(|_| {
+                std::fs::write(
+                    suyo.join("package.yaml"),
+                    ore_core::paquetes::documento(id, &dueno, "draft", id),
+                )
+            })
+            .map_err(|e| {
+                Respuesta::error(
+                    500,
+                    format!("no se pudo escribir `packages/{id}/package.yaml`: {e}"),
+                )
+            })
+    }
+
+    /// De quién es el paquete de un proyecto: `team:<organización>` —quien
+    /// RESPONDE, igual que en el alta de una fuente— o, si este servidor no
+    /// sabe de quién es el árbol, `user:<persona>`.
+    ///
+    /// ⛔ `None` antes que `cambiame`: un `owner` que no es handle es `OOS2009`
+    ///   y el commit no entraría (medido en ⑦.1). Sin dueño, el proyecto nace
+    ///   sin sitio y la respuesta lo dice, que es peor pero es verdad.
+    fn dueno_de_un_sitio(&self, sujeto: &Identidad) -> Option<String> {
+        self.dueno_del_arbol().or_else(|| {
+            // El sujeto viene con su clase delante (`persona:ana`); el handle
+            // es quien es, no de qué clase es.
+            let quien = sujeto.persona.rsplit(':').next().unwrap_or(&sujeto.persona);
+            let h: String = quien
+                .to_lowercase()
+                .chars()
+                .map(|x| {
+                    if x.is_ascii_lowercase() || x.is_ascii_digit() {
+                        x
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            let h = format!("user:{}", h.trim_matches('-'));
+            ore_core::pertenencia::es_handle(&h).then_some(h)
+        })
+    }
+
     /// `PUT /proyectos/{id}`: el manifiesto **entero**, como se escribe un
     /// documento. 404 si no está: crear es `POST`, y así el verbo dice cuál de
     /// las dos cosas pasó.
-    pub(crate) fn escribir_proyecto(&self, raiz: &Path, id: &str, cuerpo: &str) -> Respuesta {
+    pub(crate) fn escribir_proyecto(
+        &self,
+        raiz: &Path,
+        sujeto: &Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
         if let Err(m) = id_valido(id) {
             return Respuesta::error(422, m);
         }
@@ -271,10 +392,23 @@ impl Servidor {
         if !dir.join("README.md").is_file() {
             return Respuesta::error(404, format!("no hay proyecto `{id}`"));
         }
-        let c = match del_cuerpo(cuerpo) {
+        let mut c = match del_cuerpo(cuerpo) {
             Ok(c) => c,
             Err(r) => return r,
         };
+        // ⭐ Y si no lo tiene —un proyecto creado ANTES de ⑦.1—, se le da aquí:
+        //   editarlo es el sitio natural para arreglarlo, y sin suelo no se le
+        //   puede crear nada dentro. Es la única forma de recuperar los que ya
+        //   estaban escritos cuando un proyecto era sólo un nombre.
+        if let Err(r) = self.dar_sitio(raiz, id, sujeto) {
+            return r;
+        }
+        // ⛔ Y el sitio no se quita con un PUT (⑦.1): un proyecto puede dejar de
+        //   nombrar lo de otros, pero no el suelo donde nacen sus cosas —
+        //   quitárselo dejaría sus repositorios fuera de él sin moverlos.
+        if sitio_de(raiz, id).is_some() && !c.contiene.iter().any(|x| x == id) {
+            c.contiene.insert(0, id.to_string());
+        }
         if let Err(e) = std::fs::write(dir.join("README.md"), manifiesto(&c)) {
             return Respuesta::error(
                 500,
@@ -306,6 +440,15 @@ impl Servidor {
         Respuesta::ok(Json::obj([
             ("id", Json::s(id)),
             ("retirado", Json::Bool(true)),
+            // ⛔ Su sitio TAMBIÉN se queda (⑦.1): quitar la lente no borra el
+            //   suelo ni lo que hay encima. Va aparte de lo demás porque es lo
+            //   único que el proyecto creó, y quien lo lea tiene que verlo.
+            (
+                "sitio",
+                sitio_de(raiz, id)
+                    .map(Json::s)
+                    .unwrap_or(Json::Crudo("null".into())),
+            ),
             (
                 "siguenEnElArbol",
                 Json::Arr(nombraba.iter().map(Json::s).collect()),

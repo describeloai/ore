@@ -55,11 +55,18 @@
 #                                        forja se queda en el primero
 #   8  DELETE referenciada (Department)  409 con quien la nombra · sigue ahi
 #   9  DELETE sin nadie que la nombre    200 · commit · GET 404 despues
-#  20  /proyectos (0035 ②)         crear es un commit del sujeto y el `id` sale
-#                                     del titulo; el nombre repetido 409; el
-#                                     indice de assets los trae con sus items;
-#                                     PUT reescribe el manifiesto entero;
-#                                     DELETE se lleva la LENTE y lo que nombraba
+#  20  /proyectos (0035 ②, ⑦.1)    crear es un commit del sujeto y el `id` sale
+#                                     del titulo; NACE CON SITIO — su
+#                                     `packages/<id>/package.yaml` en el MISMO
+#                                     commit, y `contiene` lo nombra el primero
+#                                     (0035 ⑦.1: sin suelo, lo primero que se
+#                                     guarde en el proyecto tiene que ir a un
+#                                     paquete prestado); el paquete de otro NO
+#                                     se adopta (409); el nombre repetido 409;
+#                                     el indice de assets los trae con sus
+#                                     items; PUT reescribe el manifiesto entero
+#                                     y NO le quita el sitio; DELETE se lleva la
+#                                     LENTE y lo que nombraba —su sitio tambien—
 #                                     SIGUE en el arbol; y desde un puesto, 403
 #  22  /repositorios (0036 ②)      nacer ENTERO: el manifiesto y la semilla de
 #                                     la clase en UN commit, y el proyecto que
@@ -503,9 +510,23 @@ dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, 
 ANTES_ITEMS=$(pide GET /assets >/dev/null; campo "len(d['items'])")
 [ "$(pide POST /proyectos '{"nombre":"Customer Churn","descripcion":"Abandono sobre la plantilla.","contiene":["hr"]}')" = "201" ] \
   || falla "20 · POST /proyectos · $(cat "$TMP/r.json")"
-cumple "d['id']=='customer-churn' and d['nombre']=='Customer Churn' and d['contiene']==['hr'] and d['nueva'] is True and d['commit'] and 'sinResolver' not in d" "20 · 201 con el id del titulo, lo que nombra y el commit"
+cumple "d['id']=='customer-churn' and d['nombre']=='Customer Churn' and d['contiene']==['customer-churn','hr'] and d['nueva'] is True and d['commit'] and 'sinResolver' not in d" "20 · 201 con el id del titulo, SU SITIO el primero de lo que nombra, y el commit"
+cumple "d['sitio']=='packages/customer-churn'" "20 · nace con sitio propio (0035 vii.1)"
 [ "$(asunto)" = 'crear un proyecto' ] || falla "20 · el asunto: $(asunto)"
 git --git-dir="$FORJA" log -1 --format='%an' main | grep -q "ana" || falla "20 · el commit no es del sujeto"
+# el sitio y el manifiesto, en EL MISMO commit: un proyecto sin suelo es el fallo que vii arregla
+[ "$(git --git-dir="$FORJA" show --name-only --format='' main | sort | tr '\n' ' ')" = "packages/customer-churn/package.yaml proyectos/customer-churn/README.md " ] \
+  || falla "20 · el sitio no nacio con el proyecto: $(git --git-dir="$FORJA" show --name-only --format='' main | tr '\n' ' ')"
+git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml | grep -q 'status: draft' \
+  || falla "20 · el paquete del proyecto no nace en draft: $(git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml)"
+git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml | grep -q 'owner: "user:ana"' \
+  || falla "20 · el owner del sitio no es quien lo creo: $(git --git-dir="$FORJA" show main:packages/customer-churn/package.yaml)"
+# y el arbol sigue compilando CON el paquete vacio dentro (si no, el commit no habria entrado)
+[ "$(pide GET /arbol/diagnosticos)" = "200" ] && cumple "[x for x in d['diagnosticos'] if x['severidad']=='error']==[]" "20 · con el sitio dentro, el arbol compila igual"
+# el paquete de otro NO se adopta: nacer dentro de algo que ya estaba seria fingir que lo creo
+ANTES=$(cabeza)
+[ "$(pide POST /proyectos '{"nombre":"hr"}')" = "409" ] || falla "20 · adoptar el paquete `hr` no dio 409 · $(cat "$TMP/r.json")"
+[ "$(cabeza)" = "$ANTES" ] || falla "20 · el 409 del paquete ajeno hizo commit"
 # el mismo nombre otra vez: 409, y nada escrito
 ANTES=$(cabeza)
 [ "$(pide POST /proyectos '{"nombre":"Customer  Churn"}')" = "409" ] || falla "20 · el nombre repetido no dio 409 · $(cat "$TMP/r.json")"
@@ -513,7 +534,19 @@ ANTES=$(cabeza)
 [ "$(pide POST /proyectos '{"descripcion":"sin nombre"}')" = "422" ] || falla "20 · sin nombre no dio 422"
 # un proyecto que nombra lo que aun no existe: entra, y lo dice
 [ "$(pide POST /proyectos '{"nombre":"Nomina 2026","contiene":["hr/nomina"]}')" = "201" ] || falla "20 · un proyecto que nombra lo que no existe no entro · $(cat "$TMP/r.json")"
-cumple "d['id']=='nomina-2026' and d['sinResolver']==['hr/nomina']" "20 · lo que no resuelve se dice y no impide"
+cumple "d['id']=='nomina-2026' and d['contiene']==['nomina-2026','hr/nomina'] and d['sinResolver']==['hr/nomina']" "20 · lo que no resuelve se dice y no impide; SU SITIO si resuelve, aunque este vacio"
+# un proyecto de ANTES de vii.1 (escrito a mano, sin sitio): editarlo se lo da
+printf -- '---
+nombre: "Legado"
+---
+
+De antes.
+' > "$TMP/legado.md"
+[ "$(pon proyectos/legado/README.md "$TMP/legado.md")" = "201" ] || falla "20 · el proyecto legado no entro · $(cat "$TMP/r.json")"
+[ "$(pide GET /assets)" = "200" ] && cumple "[p for p in d['proyectos'] if p['nombre']=='legado'][0]['sitio'] is None" "20 · un proyecto de antes de vii.1 no tiene sitio"
+[ "$(pide PUT /proyectos/legado '{"nombre":"Legado"}')" = "200" ] || falla "20 · PUT del legado · $(cat "$TMP/r.json")"
+cumple "d['sitio']=='packages/legado' and d['contiene']==['legado']" "20 · editar un proyecto sin sitio SE LO DA (0035 vii.1)"
+[ "$(pide DELETE /proyectos/legado)" = "200" ] || falla "20 · no se pudo retirar el legado"
 # el indice de assets los trae, sin ruta nueva y sin cambiar los items
 [ "$(pide GET /assets)" = "200" ] || falla "20 · GET /assets · $(cat "$TMP/r.json")"
 cumple "len(d['items']) == $ANTES_ITEMS" "20 · los proyectos no son items: el indice no cambia"
@@ -525,18 +558,19 @@ cumple "any(it['proyectos']==['customer-churn'] for it in d['items'].values())" 
 # PUT: el manifiesto entero
 [ "$(pide PUT /proyectos/customer-churn '{"nombre":"Customer Churn","descripcion":"Otra cosa.","contiene":["hr","sales"]}')" = "200" ] \
   || falla "20 · PUT /proyectos/{id} · $(cat "$TMP/r.json")"
-cumple "d['descripcion']=='Otra cosa.' and d['contiene']==['hr','sales'] and d['nueva'] is False and d['commit']" "20 · el manifiesto entero, reescrito"
+cumple "d['descripcion']=='Otra cosa.' and d['contiene']==['customer-churn','hr','sales'] and d['nueva'] is False and d['commit']" "20 · el manifiesto entero, reescrito — y el PUT NO le quita el sitio"
 [ "$(pide PUT /proyectos/no-existe '{"nombre":"X"}')" = "404" ] || falla "20 · PUT de uno que no esta no dio 404"
 # DELETE: se va la lente, NO lo que nombraba
 [ "$(pide DELETE /proyectos/customer-churn)" = "200" ] || falla "20 · DELETE /proyectos/{id} · $(cat "$TMP/r.json")"
-cumple "d['retirado'] is True and d['siguenEnElArbol']==['hr','sales']" "20 · lo que nombraba se dice, y sigue"
+cumple "d['retirado'] is True and d['siguenEnElArbol']==['customer-churn','hr','sales'] and d['sitio']=='packages/customer-churn'" "20 · lo que nombraba se dice y sigue — SU SITIO tambien, y se dice aparte"
+[ "$(pide GET /arbol/packages/customer-churn/package.yaml)" = "200" ] || falla "20 · borrar la lente se llevo su sitio"
 [ "$(pide GET /documentos/Entity/hr/Employee)" = "200" ] || falla "20 · borrar el proyecto se llevo lo que nombraba"
 [ "$(pide GET /assets)" = "200" ] && cumple "len(d['items']) == $ANTES_ITEMS and [p['nombre'] for p in d['proyectos']] == ['nomina-2026']" "20 · el arbol entero sigue; la lente se fue"
 [ "$(pide DELETE /proyectos/customer-churn)" = "404" ] || falla "20 · retirado y sigue"
 # y desde un puesto, no: un proyecto lo crea una persona (W3.7 gobierno ①)
 CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H 'x-ore-sujeto: agente:puesto-ana-python'   -H 'Content-Type: application/json' -d '{"nombre":"Desde el puesto"}' "$BASE/proyectos")
 [ "$CODIGO" = "403" ] || falla "20 · un agente creo un proyecto ($CODIGO) · $(cat "$TMP/r.json")"
-dice "20 · /proyectos: crear es un commit del sujeto (id del titulo) · nombre repetido 409 · lo que no resuelve entra y se dice · /assets los trae con sus items y cada item en plural · PUT el manifiesto entero · DELETE se lleva la lente y NO lo que nombraba"
+dice "20 · /proyectos: crear es un commit del sujeto (id del titulo) y NACE CON SITIO (su package.yaml en el mismo commit, en draft y con dueno; el ajeno no se adopta: 409) · nombre repetido 409 · lo que no resuelve entra y se dice · /assets los trae con sus items y cada item en plural · PUT el manifiesto entero y no le quita el sitio · DELETE se lleva la lente y NO lo que nombraba, su sitio incluido"
 
 # ── 21 · las carpetas de un proyecto (0035 ③b) ──────────────────────────────
 printf '# Ingesta\n' > "$TMP/carpeta.md"
@@ -602,7 +636,12 @@ grep -q "proyectos/personas/README.md" "$TMP/tocados.txt" || falla "22 · el pro
 [ "$(pide GET /assets)" = "200" ] || falla "22 · GET /assets · $(cat "$TMP/r.json")"
 cumple "[r['ruta'] for r in d['repositorios']] == ['packages/hr/raw']" "22 · /assets trae el repositorio"
 cumple "d['repositorios'][0]['plantilla']=='transforms' and d['repositorios'][0]['version']['sujeto']=='persona.ana'" "22 · con su clase y quien lo creo"
-cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['hr/raw']" "22 · el proyecto lo nombra"
+cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['personas','hr/raw']" "22 · el proyecto lo nombra — ESTE repositorio y no el paquete entero (0035 vii.3), detras de su propio sitio"
+cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['sitio']=='packages/personas'" "22 · y el indice dice cual es SU raiz, aparte de lo que nombra"
+# uno DENTRO de su propio sitio no anade nada: ya lo alcanza
+[ "$(pide POST /repositorios '{"paquete":"personas","carpeta":"mio","nombre":"Mio","plantilla":"models","proyecto":"personas"}')" = "201" ]   || falla "22 · un repositorio en el sitio del proyecto no entro · $(cat "$TMP/r.json")"
+[ "$(pide GET /assets)" = "200" ] && cumple "[p for p in d['proyectos'] if p['nombre']=='personas'][0]['contiene']==['personas','hr/raw']" "22 · lo que cae en su sitio NO se dice dos veces (0035 vii.3)"
+[ "$(pide DELETE /arbol/packages/personas/mio)" = "200" ] || falla "22 · no se pudo retirar el repositorio de dentro"
 # el sitio ya esta cogido
 ANTES=$(cabeza)
 [ "$(pide POST /repositorios '{"paquete":"hr","carpeta":"raw","nombre":"Otro","plantilla":"models"}')" = "409" ] || falla "22 · la carpeta cogida no dio 409 · $(cat "$TMP/r.json")"

@@ -488,12 +488,79 @@ Y la prueba de fuego lo fija donde no se puede olvidar: el caso **21** de `los-d
 carpetas»). Ahora afirma lo contrario, y sigue comprobando que con un documento dentro la
 nombra igual y que al borrarla desaparece.
 
-### Lo que queda de ⑦
+### ⑦.1 · El proyecto nace con su sitio (hecho)
 
-- **⑦.1 · El proyecto nace con su sitio.** `POST /proyectos` crea el lugar en el árbol y
-  `contiene` arranca nombrándolo. Un proyecto vacío deja de ser un cartel sin suelo.
-- **⑦.3 · `contiene` nombra el sitio, no el repositorio.** Al guardar, el proyecto se queda con
-  el paquete/carpeta **donde** cae, no con la carpeta del repositorio.
+`POST /proyectos` escribe **en el mismo commit** que su manifiesto
+`packages/<id>/package.yaml`, y `contiene` arranca nombrándolo. Eso es todo lo
+que hacía falta para que lo primero que se guarda en un proyecto tenga dónde
+caer sin pedirle nada a nadie.
+
+**Medido antes de escribirlo** (§5 de `medida-el-sitio-del-proyecto.py`, sobre
+el árbol de victor): un paquete vacío **no cuesta nada** —`ore validate` sale
+**0**, ningún diagnóstico lo nombra y `ore datasets --json` da lo mismo—, y con
+un repositorio dentro (manifiesto + semilla) sigue saliendo **0**. Lo único que
+sí importa es el dueño: con `owner: cambiame` —lo que escribe la inducción
+cuando no lo sabe— son **`OOS2009`, 1 error**, y el commit no entraría.
+
+Por eso el dueño **no se inventa**, en este orden: `team:<organización>` —quien
+RESPONDE, el mismo `dueno_del_arbol()` del alta de una fuente— y, si este
+servidor no sabe de quién es el árbol, `user:<persona>`. Si ninguno de los dos
+da un handle, **el proyecto se crea igual y sin sitio**, y la ficha lo dice
+(`sitio: null`): más vale un proyecto sin suelo que un commit que no entra.
+
+Y lo demás que decide ⑦.1:
+
+- **`status: draft`.** La razón ya estaba escrita en `ore package new`: un
+  paquete recién creado no contiene nada, y llamarlo `active` sería afirmar
+  `STABLE` sobre lo que no existe.
+- **Un emisor.** El texto del `package.yaml` se muda al núcleo
+  (`ore_core::paquetes::documento`): lo escriben `ore package new`, la inducción
+  y ahora `ore-serve`, y dos copias de la misma forma divergen en el caso que
+  ninguna prueba ejerce.
+- **El paquete de otro no se adopta.** Si `packages/<id>` ya está, es **409**:
+  nacer dentro de algo que existía sería fingir que el proyecto lo creó.
+- **El `PUT` no se lo quita, y al que no lo tiene se lo da.** Un proyecto puede
+  dejar de nombrar lo de otros, pero no el suelo donde nacen sus cosas. Y
+  editar un proyecto **escrito antes de ⑦.1** le da su sitio: es la única forma
+  de recuperar los que ya estaban cuando un proyecto era sólo un nombre.
+- **El `DELETE` tampoco.** Quitar la lente no borra el suelo ni lo que hay
+  encima; la respuesta lo dice aparte (`sitio`), porque es lo único que el
+  proyecto creó.
+- **El índice lo publica** (`proyectos[].sitio`), y de ahí —y no de `contiene`—
+  saca la consola su «Location».
+
+Medido después, sobre el árbol de victor: `POST /proyectos {nombre: "Medida Del
+Sitio"}` → **201**, `sitio: packages/medida-del-sitio`, `contiene:
+["medida-del-sitio"]`, **un commit** con `packages/medida-del-sitio/package.yaml`
+y `proyectos/medida-del-sitio/README.md`, el paquete en `draft` y con dueño; y
+`POST /repositorios` en su sitio → **201**, `packages/medida-del-sitio/mi_transform`.
+
+### ⑦.3 · `contiene` atribuye, y no se dice dos veces (hecho)
+
+Al guardar, el proyecto nombra **ese repositorio** y no su paquete: `contiene`
+es lo que el proyecto **atribuye** —de ahí sale el `proyectos` de cada ítem—, y
+nombrar el paquete entero le colgaría los ítems de los vecinos. Y si el
+proyecto **ya alcanza** ese sitio —lo normal desde ⑦.1, porque el repositorio
+cae en su propio paquete— no se añade nada: un `contiene` con `p` y `p/x`
+dentro dice lo mismo dos veces y la segunda sobra.
+
+Lo que arregla de verdad «el proyecto vive dentro de su propio repositorio» no
+es el texto de `contiene`: es que **la raíz dejó de ser “lo primero que
+nombra”**. La raíz es `sitio`, y es lo único que la consola ofrece como sitio
+donde crear.
+
+### La consola (commit local en rubix-platform)
+
+- **«Location» es el sitio del proyecto** y las carpetas de dentro. Nada
+  prestado: lo que un proyecto nombra puede ser de otros, y ofrecerlo como
+  sitio donde crear es exactamente lo que hacía parecer suyas carpetas que no
+  lo eran. La raíz se dice («· project root») para que se vea cuál es.
+- **El modal de crear ya no pide sitio**: vuelve a ser opcional y a servir para
+  lo que era —nombrar lo que ya existe—, porque el sitio ahora nace con el
+  proyecto. Pedirlo era el parche de cuando no tenía suelo.
+- Un proyecto **sin sitio** (de antes de ⑦.1) sigue cayendo a lo que nombra, y
+  si tampoco nombra nada, a los paquetes de la celda con la pregunta cambiada.
+  Se arregla **editándolo**: el `PUT` le da su sitio.
 
 ## Lo que esto no decide
 

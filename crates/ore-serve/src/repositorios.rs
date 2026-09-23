@@ -235,6 +235,11 @@ impl Servidor {
         // Y si se dijo el proyecto, que lo nombre — en ESTE commit.
         let mut en_proyecto = Json::Crudo("null".into());
         if let Some(p) = ore_core::manifiesto::campo(&n, "proyecto") {
+            // ⭐ Lo que se añade es ESTE repositorio y no su paquete (0035
+            //   ⑦.3): `contiene` es lo que el proyecto ATRIBUYE, y nombrar el
+            //   paquete entero le colgaría los ítems de los vecinos. Y si el
+            //   proyecto ya alcanza este sitio —lo normal, porque nace con su
+            //   paquete (⑦.1) y ahí es donde cae—, no se añade nada.
             match self.nombrar_en_proyecto(raiz, &p, &format!("{paquete}/{carpeta}")) {
                 Err(r) => return r,
                 Ok(()) => en_proyecto = Json::s(&p),
@@ -268,7 +273,12 @@ impl Servidor {
             ));
         };
         let mut contiene = ore_core::manifiesto::lista(&n, "contiene");
-        if contiene.iter().any(|x| x == que) {
+        // ⭐ Y no se dice dos veces lo mismo (⑦.3): si el proyecto ya alcanza
+        //   este sitio —porque es su paquete, o una carpeta de arriba—, no hay
+        //   nada que añadir. Un `contiene` con `p` y `p/x` dentro dice lo mismo
+        //   dos veces y la segunda sobra.
+        let (pq, ca) = que.split_once('/').unwrap_or((que, ""));
+        if ore_core::proyectos::alcanza_en(&contiene, pq, ca) {
             return Ok(());
         }
         contiene.push(que.to_string());
