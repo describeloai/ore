@@ -236,6 +236,14 @@ pub(crate) fn id_de(persona: &str, entorno: &str, repositorio: Option<&str>) -> 
 /// Los lenguajes que una celda puede llevar.
 const LENGUAJES: [&str; 5] = ["python", "sql", "typescript", "javascript", "java"];
 
+/// ¿Este entorno declara sus dependencias en el árbol? `python` desde W3.2
+/// (`pyproject.toml`) y `jvm` desde 0037 ③c (`pom.xml`). `node` no: su sesión
+/// nace con lo que trae su imagen, y sembrar un `package.json` que nadie
+/// resuelve sería sembrar una promesa.
+pub(crate) fn declara_capa(entorno: &str) -> bool {
+    entorno == crate::entorno::PYTHON || entorno == crate::entorno::JVM
+}
+
 /// En qué entorno corre un lenguaje (`sql`: en el que haya → `python` si hay que
 /// abrir uno). Un nombre de entorno vale como lenguaje al abrir.
 pub(crate) fn entorno_de(lenguaje: &str) -> Option<&'static str> {
@@ -485,9 +493,9 @@ impl Servidor {
         // ⭐ La capa (0031 W3.2): lo que el árbol declara, resuelto. Lista →
         //   el puesto nace con ella; pendiente → se encola y 409 para que la
         //   consola espere; error → 409 con el motivo (y se reintenta la capa).
-        //   Hoy la capa es de Python (`pyproject.toml` → ruedas); `node` y `jvm`
-        //   nacen con lo que trae su imagen (W3.4; la suya, cuando se mida).
-        let e = if entorno != "python" {
+        //   Desde 0037 ③c son DOS: `python` (`pyproject.toml` → ruedas) y `jvm`
+        //   (`pom.xml` → jars). `node` sigue naciendo con lo que trae su imagen.
+        let e = if !declara_capa(entorno) {
             Json::obj([("estado", Json::s("sin-dependencias"))])
         } else {
             match self.leyendo_en(rama.as_deref(), |raiz| {
@@ -823,8 +831,8 @@ impl Servidor {
     }
 
     /// La capa con la que nace un puesto o un trabajo: la del árbol si está
-    /// lista (o ninguna, fuera de python); pendiente o con error, se encola y
-    /// 409 con el motivo.
+    /// lista (o ninguna, en un entorno que no declara); pendiente o con error,
+    /// se encola y 409 con el motivo.
     fn capa_para(
         &self,
         entorno: &str,
@@ -832,7 +840,7 @@ impl Servidor {
         alcance: Option<&str>,
         sujeto: &Identidad,
     ) -> Result<String, Respuesta> {
-        if entorno != "python" {
+        if !declara_capa(entorno) {
             return Ok(String::new());
         }
         let e = match self.leyendo_en(rama, |raiz| {

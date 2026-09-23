@@ -955,6 +955,41 @@ def comprobar():
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
 
+    # ── ⑰ LA CAPA DE LA JVM VA DETRÁS EN EL CLASSPATH (0037 ③c) ───────────
+    #
+    # Cuando una clase está en dos sitios del classpath, QUIEN GANA LO DECIDE
+    # EL ORDEN y no la versión —medido en los dos sentidos
+    # (`medida-la-capa-de-la-jvm.py` §6)—. El SDK está compilado contra los
+    # jars de `/opt/ore/lib`, así que manda el contenedor y `/capa/*` va EL
+    # ÚLTIMO. Son dos ficheros de dos mundos distintos —el `Dockerfile` que
+    # ordena y la plantilla que baja la capa— que tienen que ir juntos: eso es
+    # lo que una comprobación existe para vigilar.
+    dockerfile = MALLA.parent / "Dockerfile"
+    if dockerfile.is_file():
+        cmd = [l for l in dockerfile.read_text(encoding="utf-8").splitlines()
+               if l.startswith("CMD [") and "ore.Agente" in l]
+        if not cmd:
+            fallos.append("`Dockerfile`: `puesto-jvm` ya no arranca `ore.Agente` con su classpath")
+        else:
+            orden = re.search(r'"-cp", "([^"]+)"', cmd[-1])
+            partes = orden.group(1).split(":") if orden else []
+            if "/capa/*" not in partes:
+                fallos.append(
+                    "`Dockerfile`: el puesto de la JVM no lleva `/capa/*` en el classpath: "
+                    "la capa que el Job resuelve no la vería nadie")
+            elif partes[-1] != "/capa/*":
+                fallos.append(
+                    "`Dockerfile`: `/capa/*` NO va el último (%s): lo que la capa traiga "
+                    "taparía a lo de la imagen, y el SDK está compilado contra lo de la imagen"
+                    % " · ".join(partes))
+            else:
+                print("  ⭐ ⑰ el puesto de la JVM pone la capa la última: %s" % " ← ".join(partes))
+    # Y quien la baja tiene que saber de qué entorno es: ruedas o jars.
+    t51 = render(MODELO)[PLANTILLA_PUESTO]
+    trae = re.search(r"- name: traer-la-capa\n(.*?)(?=\n      containers:)", t51, re.S)
+    if not trae or "name: ENTORNO" not in trae.group(1):
+        fallos.append("`%s`: `traer-la-capa` no sabe de qué entorno es la capa que baja" % POR_PUESTO)
+
     return veredicto(fallos)
 
 

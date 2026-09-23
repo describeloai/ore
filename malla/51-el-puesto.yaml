@@ -122,6 +122,11 @@ spec:
         #   `ore/puesto/<capa>/` del bucket y lo instala en /capa con
         #   `--no-index`; medido: ~1 s de bajada y ~3 s de instalación (polars).
         #   Sin capa (`CAPA` vacía) no hace nada.
+        #
+        # ⭐ 0037 ③c: y también la de la JVM, que son jars y no ruedas —se dejan
+        #   en `/capa` y ya está—. Lo hace ESTE contenedor y no el del entorno
+        #   porque el cliente de la nube vive aquí: `puesto-jvm:1` no lo lleva,
+        #   y metérselo sería una segunda forma de hacer lo mismo.
         - name: traer-la-capa
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
           # ⛔ `Always`, y no es descuido: `:1` es el ENTORNO (lo que una celda
@@ -133,6 +138,9 @@ spec:
           imagePullPolicy: Always
           env:
             - { name: CAPA, value: "capa-modelo" }
+            # El entorno del puesto: qué clase de capa hay que bajar (ruedas o
+            # jars). Lo pone `ore-serve` con la imagen.
+            - { name: ENTORNO, value: "entorno-modelo" }
             - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             - { name: HOME, value: /tmp }
             - { name: PIP_CACHE_DIR, value: /tmp/pip }
@@ -144,6 +152,41 @@ spec:
             - |
               set -e
               [ -n "$CAPA" ] || { echo "· sin capa: el árbol no declara dependencias"; exit 0; }
+              # ── la capa de la JVM (0037 ③c): jars por su nombre, y con SUS SUMAS ──
+              if [ "$ENTORNO" = "jvm" ]; then
+                python3 - <<'PY'
+              # ⭐ EL LOCK DEL INFORME SE HONRA, no se guarda de adorno: cada jar
+              #   se comprueba contra el `sha256` que escribió quien lo resolvió
+              #   (`55-la-capa-jvm.yaml`). Un jar que no cuadre PARA EL ARRANQUE
+              #   en vez de correr: una capa que dice llamarse `capa-abc123` y
+              #   trae otra cosa es exactamente lo que el digest existe para
+              #   impedir.
+              import hashlib, json, os, time
+              from google.cloud import storage
+              t = time.time(); cli = storage.Client(); b = cli.bucket(os.environ["BUCKET"])
+              pre = "ore/puesto/" + os.environ["CAPA"] + "/"
+              try:
+                  informe = json.loads(b.blob(pre + "informe.json").download_as_text())
+              except Exception as e:
+                  raise SystemExit("✗ la caja de la capa no está en el bucket (%s): ¿la resolvió 55-la-capa-jvm?" % str(e)[:120])
+              if informe.get("estado") != "lista":
+                  raise SystemExit("✗ la capa %s no está lista: %s" % (os.environ["CAPA"], informe.get("estado")))
+              sumas, n = informe.get("sumas", {}), 0
+              for nombre in informe.get("jars", []):
+                  if "/" in nombre or not nombre.endswith(".jar"):
+                      raise SystemExit("✗ `%s` no es el nombre de un jar" % nombre[:80])
+                  destino = "/capa/" + nombre
+                  b.blob(pre + nombre).download_to_filename(destino)
+                  with open(destino, "rb") as fh:
+                      suma = hashlib.sha256(fh.read()).hexdigest()
+                  if suma != sumas.get(nombre):
+                      raise SystemExit("✗ `%s` no es el que se resolvió (sha256 distinto del informe)" % nombre)
+                  n += 1
+              print("### capa %s: %d jar(s) con su suma en %d ms" % (os.environ["CAPA"], n, (time.time() - t) * 1000), flush=True)
+              PY
+                echo "### $(du -sm /capa | cut -f1) MB en /capa · van DETRÁS de los de la imagen en el classpath"
+                exit 0
+              fi
               mkdir -p /trabajo/ruedas
               python3 - <<'PY'
               # ⭐ Por su nombre, sin listar (0031 W3.7 gobierno ②b): la cuenta del

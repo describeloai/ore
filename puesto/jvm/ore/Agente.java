@@ -128,11 +128,45 @@ public final class Agente {
 
         Kernel() {
             js = JShell.builder().executionEngine("local").build();
-            for (String p : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
-                if (!p.isBlank()) js.addToClasspath(p);
+            for (String p : classpath()) {
+                js.addToClasspath(p);
             }
             analisis = js.sourceCodeAnalysis();
             for (String s : List.of("import java.util.*;", "import java.util.stream.*;", "import static ore.Ore.*;")) js.eval(s);
+        }
+
+        /**
+         * El classpath de este proceso, CON LOS COMODINES EXPANDIDOS.
+         *
+         * <p>⚠️ `-cp /opt/ore/lib/*:/capa/*` lo expande el lanzador de Java al
+         * arrancar, pero `System.getProperty("java.class.path")` devuelve la
+         * cadena TAL CUAL, y `JShell.addToClasspath` no expande nada: una celda
+         * que usara una biblioteca de la capa compilaría mal aunque la clase
+         * estuviera cargada. Se expande aquí, y EN EL MISMO ORDEN —lo de la
+         * imagen antes que lo de `/capa` (0037 ③c)—, porque cuando una clase
+         * está en dos sitios gana la primera.
+         */
+        private static List<String> classpath() {
+            List<String> fuera = new ArrayList<>();
+            for (String p : System.getProperty("java.class.path", "").split(java.io.File.pathSeparator)) {
+                if (p.isBlank()) {
+                    continue;
+                }
+                if (!p.endsWith("*")) {
+                    fuera.add(p);
+                    continue;
+                }
+                java.io.File dir = new java.io.File(p.substring(0, p.length() - 1));
+                java.io.File[] jars = dir.listFiles((d, n) -> n.endsWith(".jar") || n.endsWith(".JAR"));
+                if (jars == null) {
+                    continue; // sin capa, `/capa/*` no aporta nada y no estorba.
+                }
+                java.util.Arrays.sort(jars);
+                for (java.io.File j : jars) {
+                    fuera.add(j.getPath());
+                }
+            }
+            return fuera;
         }
 
         Map<String, Object> correr(String texto, String lenguaje) {

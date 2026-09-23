@@ -255,6 +255,10 @@ const TRABAJO_MODELO: &str = "trabajo-modelo";
 /// `puesto-<entorno>:1` (W3.4: python, node o jvm; las tres con el agente
 /// dentro y su `CMD`, por eso la plantilla no lleva `command`).
 const ENTORNO_MODELO: &str = "puesto-entorno-modelo:1";
+/// Y el NOMBRE del entorno, que `traer-la-capa` necesita para saber si baja
+/// ruedas o jars (0037 ③c): el contenedor que baja la capa es el mismo para
+/// los tres, porque el cliente de la nube vive en él.
+const ENTORNO_VALOR_MODELO: &str = "entorno-modelo";
 /// Los entornos que tienen imagen (`Dockerfile`, `cloudbuild.yaml`).
 pub const ENTORNOS: [&str; 3] = ["python", "node", "jvm"];
 
@@ -298,6 +302,7 @@ pub fn rendir_puesto(
         (RAMA_MODELO, rama),
         (CAPA_MODELO, capa),
         (ABIERTO_MODELO, abierto),
+        (ENTORNO_VALOR_MODELO, entorno),
     ] {
         if !plantilla.contains(&format!("value: \"{de}\"")) {
             return Err(format!(
@@ -324,6 +329,10 @@ pub fn rendir_puesto(
         .replace(
             &format!("value: \"{ABIERTO_MODELO}\""),
             &format!("value: \"{abierto}\""),
+        )
+        .replace(
+            &format!("value: \"{ENTORNO_VALOR_MODELO}\""),
+            &format!("value: \"{entorno}\""),
         )
         .replace(ENTORNO_MODELO, &format!("puesto-{entorno}:1"))
         .replace(
@@ -449,6 +458,7 @@ env:
   - { name: RAMA, value: \"rama-modelo\" }
   - { name: CAPA, value: \"capa-modelo\" }
   - { name: ABIERTO, value: \"abierto-modelo\" }
+  - { name: ENTORNO, value: \"entorno-modelo\" }
 ";
         let (f, t, job) = rendir_puesto(
             p,
@@ -469,6 +479,9 @@ env:
                 && t.contains("value: \"ana/x\"")
                 && t.contains("value: \"capa-0123456789ab\"")
                 && t.contains("image: registro/ore/puesto-python:1")
+                // ⭐ 0037 ③c: y el NOMBRE del entorno, que es lo que
+                //   `traer-la-capa` mira para bajar ruedas o jars.
+                && t.contains("{ name: ENTORNO, value: \"python\" }")
         );
         assert!(t.contains(&format!("name: {job}")));
         let (_, t2, _) = rendir_puesto(p, "puesto-ana-python", "", "", "1", "python", "").unwrap();

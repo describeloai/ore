@@ -32,6 +32,8 @@
 #   9  Java en jvm (W3.4)              POST /puestos {java} → puesto-ana-jvm con puesto-jvm:1 · el
 #                                      agente de la JVM (JShell en proceso) · varios snippets por celda
 #                                      · una clase con main · saludo(persona()) · over() · sql
+#  9c  la capa de la JVM (0037 iii.c) una biblioteca de /capa se ve desde la celda, y lo que
+#                                      TAMBIEN trae la imagen lo sigue poniendo la imagen
 #  10  write() (W3.6c, 0031 §11)      la celda escribe `hr.lago` como `hr.salida`: la tabla va por
 #                                      IPC a `ore-store-r2` (el S3 de mentira, con la credencial que
 #                                      el catálogo prestó), el commit por `/v1/…`, y `over("hr.salida")`
@@ -821,15 +823,25 @@ en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q "name: CAPA, value: \"$JVM_DI
 en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q 'ore.dev/rol: driver' || falla "6b · el Job no lleva el rol driver (Maven Central)"
 en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q '/capa-jvm:1' || falla "6b · el Job no resuelve con la imagen capa-jvm:1"
 en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q 'name: TOPE_MB' || falla "6b · el Job no lleva tope de tamano"
+# ⭐ Y abrir un puesto de Java con la capa pendiente ESPERA, igual que el de
+#   Python desde W3.2: si naciera sin ella, la primera celda no compilaria y
+#   nadie sabria por que.
+[ "$(pide POST /puestos "$BEA" '{"lenguaje":"java"}')" = "409" ] || falla "6b · abrir jvm con la capa pendiente no dio 409: $(cuerpo)"
+tiene "d['capa']=='$JVM_DIGEST' and 'Job la-capa-jvm-' in d['cola']" || falla "6b · el 409 del puesto jvm no dice la capa ni su Job: $(cuerpo)"
 # el informe que 55-la-capa-jvm deja en el arbol: uno POR DIGEST
 mkdir -p "$A/entorno"
 "$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["org.apache.commons:commons-lang3:3.17.0"],"jars":["commons-lang3-3.17.0.jar"],"lock":["org.apache.commons:commons-lang3:3.17.0"],"mb":"1","avisos":[],"cuando":"2026-09-23T00:00:00Z","entorno":"puesto-jvm:1"}, open(sys.argv[2],"w"))' "$JVM_DIGEST" "$A/entorno/$JVM_DIGEST.json"
 [ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='lista' and d['informe']['jars']==['commons-lang3-3.17.0.jar']" || falla "6b · el informe de la JVM no puso la capa lista: $(cuerpo)"
 [ "$(pide POST /entorno/jvm "$ANA")" = "200" ] || falla "6b · resolver con la capa de la JVM lista no dio 200: $(cuerpo)"
+# y con la capa lista, el puesto nace CON ella y quien la baja sabe que son jars
+[ "$(pide POST /puestos "$BEA" '{"lenguaje":"java"}')" = "201" ] && tiene "d['id']=='puesto-bea-jvm'" || falla "6b · abrir jvm con la capa lista: $(cuerpo)"
+en_cola 51-el-puesto-bea-jvm.yaml | grep -q "name: CAPA, value: \"$JVM_DIGEST\"" || falla "6b · el puesto jvm de bea no lleva la capa"
+en_cola 51-el-puesto-bea-jvm.yaml | grep -q 'name: ENTORNO, value: "jvm"' || falla "6b · traer-la-capa no sabe que la capa es de la JVM (bajaria ruedas)"
+pide DELETE /puestos/puesto-bea-jvm "$BEA" >/dev/null
 # y la de Python sigue pendiente: el informe de uno no vale para el otro
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente'" || falla "6b · el informe de la JVM se colo como el de Python: $(cuerpo)"
 rm -f "$A/packages/hr/pom.xml"
-dice "6b · la capa de la JVM: /entorno/jvm sin dependencias · un pom.xml → pendiente con SU digest (y sin lo que no se honra: dependencyManagement, test, sin version) · POST → 202 y 55-la-capa-jvm-<corto>.yaml con capa-jvm:1 y su tope · informe → lista, y la de Python sigue pendiente"
+dice "6b · la capa de la JVM: /entorno/jvm sin dependencias · un pom.xml → pendiente con SU digest (y sin lo que no se honra: dependencyManagement, test, sin version) · POST → 202 y 55-la-capa-jvm-<corto>.yaml con capa-jvm:1 y su tope · abrir jvm con la capa pendiente → 409 · informe → lista, el puesto nace con ella (ENTORNO=jvm: jars, no ruedas), y la de Python sigue pendiente"
 
 # ── 8 · TS en el puesto node (W3.4): el agente de Node, celdas TS, un módulo del árbol, persona() ──
 NODE=$(command -v node || true)
@@ -910,12 +922,27 @@ if [ "$JAVA_OK" = "si" ]; then
   SEP=":"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";";; esac
   ABRE="--add-opens=java.base/java.nio=ALL-UNNAMED"
   "$JAVAC" -Xlint:-options --release 21 -cp "$JAR_CP" -d "$CLASES_CP" "$RAIZ"/puesto/jvm/ore/*.java 2>"$TMP/javac.txt" || falla "9 · el agente no compila: $(head -20 "$TMP/javac.txt")"
-  "$JAVA" $ABRE -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente --comprobar >"$TMP/comprobar.txt" 2>&1 || falla "9 · --comprobar: $(tail -5 "$TMP/comprobar.txt")"
+  # ── la capa de la JVM (0037 ③c), montada como en el puesto ───────────────
+  # Un jar en `/capa` con DOS clases: una que sólo está ahí (tiene que verse) y
+  # otra que TAMBIÉN trae la imagen (no tiene que verse: gana la imagen). La
+  # marca es un METODO y no una constante a propósito — un `static final
+  # String` se incrusta al compilar y la prueba saldría verde sin probar nada.
+  JAR=$(dirname "$JAVAC")/jar
+  CAPA_DIR="$TMP/capa"; mkdir -p "$CAPA_DIR" "$TMP/src-imagen/ore" "$TMP/src-capa/ore" "$TMP/src-capa/capa" "$TMP/c-capa"
+  printf 'package ore;\npublic class Marca { public static String quien() { return "IMAGEN"; } }\n' > "$TMP/src-imagen/ore/Marca.java"
+  printf 'package ore;\npublic class Marca { public static String quien() { return "CAPA"; } }\n' > "$TMP/src-capa/ore/Marca.java"
+  printf 'package capa;\npublic class Saludo { public static String hola() { return "desde la capa"; } }\n' > "$TMP/src-capa/capa/Saludo.java"
+  "$JAVAC" -Xlint:-options --release 21 -d "$CLASES_CP" "$TMP/src-imagen/ore/Marca.java" 2>>"$TMP/javac.txt" || falla "9 · la marca de la imagen no compila"
+  "$JAVAC" -Xlint:-options --release 21 -d "$TMP/c-capa" "$TMP/src-capa/ore/Marca.java" "$TMP/src-capa/capa/Saludo.java" 2>>"$TMP/javac.txt" || falla "9 · la marca de la capa no compila"
+  "$JAR" --create --file "$CAPA_DIR/la-capa.jar" -C "$TMP/c-capa" . || falla "9 · no se pudo empaquetar la capa"
+  CAPA_CP="$CAPA_DIR"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) CAPA_CP="$(cd "$CAPA_DIR" && pwd -W)";; esac
+  CP_JVM="$CLASES_CP$SEP$JAR_CP$SEP$CAPA_CP/*"
+  "$JAVA" $ABRE -cp "$CP_JVM" ore.Agente --comprobar >"$TMP/comprobar.txt" 2>&1 || falla "9 · --comprobar: $(tail -5 "$TMP/comprobar.txt")"
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"java"}')" = "201" ] || falla "9 · abrir jvm: $(cuerpo)"
   tiene "d['id']=='puesto-ana-jvm' and d['entorno']=='jvm'" || falla "9 · la ficha jvm: $(cuerpo)"
   en_cola 51-el-puesto-ana-jvm.yaml | grep -q 'image: .*/puesto-jvm:1' || falla "9 · el Job no lleva puesto-jvm:1"
   ORE_SERVE="$BASE" PUESTO=puesto-ana-jvm ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
-    "$JAVA" $ABRE -cp "$CLASES_CP$SEP$JAR_CP" ore.Agente >"$TMP/agente.txt" 2>&1 &
+    "$JAVA" $ABRE -cp "$CP_JVM" ore.Agente >"$TMP/agente.txt" 2>&1 &
   AGENTE=$!
   for _ in $(seq 1 120); do pide GET /puestos/puesto-ana-jvm "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
   tiene "d['estado']=='vivo'" || falla "9 · el puesto jvm no pasa a vivo: $(cuerpo)"
@@ -928,6 +955,18 @@ if [ "$JAVA_OK" = "si" ]; then
   celda 'int y = \"a\";' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='CompilationError'" || falla "9 · no compila: $(cuerpo)"
   celda 'record C(String pais) {}\nvar cs = List.of(new C(\"ES\"), new C(\"PT\"));\ncs.stream().filter(c -> c.pais().equals(\"ES\")).count()' && tiene "d['salida']['texto']=='1'" || falla "9 · record + stream (varios snippets): $(cuerpo)"
   celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
+
+  # ── 9c · la capa de la JVM en el classpath (0037 ③c) ─────────────────────
+  #
+  # ⭐ Dos cosas, y la segunda es la que importa: que una biblioteca de `/capa`
+  #   SE VEA desde una celda (y por tanto que el comodín `/capa/*` llegue a
+  #   JShell, que no lo expande solo), y que cuando una clase está en los dos
+  #   sitios GANE LA DE LA IMAGEN — el SDK está compilado contra los jars de la
+  #   imagen, y una capa que los tapara rompería `over()` de una forma
+  #   imposible de explicar.
+  celda 'capa.Saludo.hola()' && tiene "d['salida']['texto']=='\"desde la capa\"'" || falla "9c · la capa no se ve desde la celda (¿el comodin no llego a JShell?): $(cuerpo)"
+  celda 'ore.Marca.quien()' && tiene "d['salida']['texto']=='\"IMAGEN\"'" || falla "9c · la capa TAPA a la imagen: el orden del classpath esta al reves: $(cuerpo)"
+  dice "9c · la capa de la JVM: una biblioteca de /capa se ve desde la celda, y lo que tambien trae la imagen lo sigue poniendo LA IMAGEN (el orden manda)"
 
   # ── 9b · el servidor de lenguaje de Java, EN LA MISMA JVM (0037 ③b) ──────
   # No hay segundo proceso: el agente contesta con el compilador del JDK

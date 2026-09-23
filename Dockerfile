@@ -408,7 +408,19 @@ RUN javac -Xlint:-options --release 21 -cp "/opt/ore/lib/*" -d /opt/ore/clases /
 
 USER 65532:65532
 WORKDIR /trabajo
-CMD ["java", "-XX:+UseSerialGC", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*", "ore.Agente"]
+# ⭐⭐ Y LA CAPA VA LA ÚLTIMA (0037 ③c): `/capa/*` son las bibliotecas que el
+#   repositorio declaró en su `pom.xml`, y van DETRÁS de las de la imagen a
+#   propósito. Medido (`medida-la-capa-de-la-jvm.py` §6): cuando una clase está
+#   en dos sitios del classpath, QUIEN GANA LO DECIDE EL ORDEN, no la versión.
+#   El SDK está compilado contra los jars de `/opt/ore/lib`, así que manda el
+#   contenedor; el Job que resuelve ya evita el duplicado con `provided`, y
+#   esto es el cinturón por si algo se colara igual.
+#
+# ⚠️ Un `dir/*` en el classpath lo expande el LANZADOR (aquí) pero NO lo
+#   expanden ni `JShell.addToClasspath` ni `System.getProperty`: por eso
+#   `Agente.java` lo expande él cuando se lo pasa a JShell. Sin capa, `/capa/*`
+#   no aporta nada y no estorba.
+CMD ["java", "-XX:+UseSerialGC", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*:/capa/*", "ore.Agente"]
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Etapa 9 · capa-jvm:1 — QUIEN RESUELVE LA CAPA DE LA JVM (0037 ③c)
