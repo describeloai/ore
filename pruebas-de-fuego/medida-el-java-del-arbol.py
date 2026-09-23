@@ -17,6 +17,9 @@ cuesta todo eso.
   §4  DONDE PUEDE VIVIR EL FICHERO      la carpeta, el paquete y el nombre.
   §5  QUE CUESTA                        disco, arranque y memoria, contra lo
                                         que el pod pide.
+  §6  ¿UNA JVM O DOS?                   la pregunta que ③b existe para
+                                        contestar: que sabe hacer YA la JVM del
+                                        agente, y que anadiria una segunda.
 
     python pruebas-de-fuego/medida-el-java-del-arbol.py
 """
@@ -51,6 +54,31 @@ ESCENARIOS = [
      "NINGUNA", "sigue resolviendo", 493),
 ]
 ARRANQUE = "5,6-6,6 s hasta `ServiceReady` (22,2 s la primerisima vez, con el disco frio)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §6 · medido el 2026-09-23 en UNA SOLA JVM (la que el agente ya abre), con el
+# mismo JDK 21 y el mismo SDK de mentira. `completionSuggestions` y
+# `documentation` son del API que el agente YA USA para partir la celda en
+# snippets (`SourceCodeAnalysis`); `javac` es el compilador del propio JDK,
+# llamado en proceso con el texto del editor en memoria (sin fichero en disco).
+#
+# Y la memoria del agente DE VERDAD sale de la prueba de fuego entera, muestreada
+# cada 3 s mientras el caso 9 corre Java contra agentes reales (`over()`, `sql()`
+# y `write()` con DuckDB y Arrow dentro).
+# ─────────────────────────────────────────────────────────────────────────────
+UNA_JVM = {
+    "jshell_listo_ms": 992,
+    "memoria_jshell_mb": 108,
+    "completion": [("wr", 1, 232, "write("), ("ov", 1, 12, "over("),
+                   ("escrito.", 32, 68, "clear(), compute(, containsKey(…"),
+                   ("String.fo", 2, 25, "format(, format(")],
+    "documentation": "la FIRMA de lo nuestro (`Map<String,Object> ore.Ore.write(String, Object)`) "
+                     "y el javadoc ENTERO del JDK; el javadoc NUESTRO no",
+    "javac_frio_ms": 249, "javac_caliente_ms": 68,
+    "javac_dice": "linea 12:39 · ERROR · cannot find symbol  symbol: variable escrit",
+    "memoria_total_mb": (249, 270),
+}
+AGENTE_REAL_MB = (140, 265)
 COMPLETION_S = 0.61
 TAMANO_MB = 53
 
@@ -169,6 +197,44 @@ def seccion_coste():
     print("       `language/status ServiceReady`.")
 
 
+def seccion_una_o_dos():
+    titulo("  §6 ¿UNA JVM O DOS?")
+    print("     Por que serian dos: jdtls es una aplicacion de Eclipse (OSGi/Equinox)")
+    print("     que habla LSP por su entrada y su salida — un proceso aparte por")
+    print("     diseno—, y el agente ya es otra JVM con JShell dentro.")
+    print("")
+    print("     LO QUE PIDE CADA UNA:")
+    print("       el agente, medido en la prueba de fuego mientras corre Java de")
+    print("       verdad (over, sql y write con DuckDB y Arrow): %d-%d MB" % AGENTE_REAL_MB)
+    print("       jdtls, al lado: %d-%d MB mas, en otro proceso"
+          % (min(e[4] for e in ESCENARIOS), max(e[4] for e in ESCENARIOS)))
+    print("")
+    print("     ⭐⭐ PERO LA JVM DEL AGENTE YA SABE HACER LA MAYOR PARTE, y con el API")
+    print("       QUE YA USA. Medido en un solo proceso:")
+    print("       JShell listo en %d ms (memoria %d MB)"
+          % (UNA_JVM["jshell_listo_ms"], UNA_JVM["memoria_jshell_mb"]))
+    for texto, n, ms, muestra in UNA_JVM["completion"]:
+        print("         completion `%-9s` %3d propuestas en %3d ms · %s" % (texto, n, ms, muestra))
+    print("       documentation: %s" % UNA_JVM["documentation"])
+    print("       javac EN PROCESO, con el texto del editor en memoria:")
+    print("         %d ms en frio, %d ms CALIENTE — que es lo que costaria cada vez"
+          % (UNA_JVM["javac_frio_ms"], UNA_JVM["javac_caliente_ms"]))
+    print("         y lo que dice: «%s»" % UNA_JVM["javac_dice"])
+    print("       memoria del proceso entero al acabar: %d-%d MB" % UNA_JVM["memoria_total_mb"])
+    print("")
+    print("     ⇒ DIAGNOSTICOS Y AUTOCOMPLETADO SALEN SIN SEGUNDA JVM, sin 53 MB de")
+    print("       imagen y sin 6 s de arranque. Lo que se pierde es lo que jdtls hace")
+    print("       ADEMAS: ir a la definicion, renombrar, buscar referencias, arreglos")
+    print("       rapidos, organizar imports, y ver el repositorio ENTERO (javac ve el")
+    print("       fichero que se le da).")
+    print("     ⛔ Y una cosa que hoy NO sale por ningun lado: NUESTRO javadoc. JShell")
+    print("       lo saca del `src.zip` del JDK para lo suyo, pero de un jar del")
+    print("       classpath no lo lee; jdtls SI, si al lado del jar va un")
+    print("       `ore-sources.jar`. Es la unica ventaja de jdtls que se nota al")
+    print("       escribir — y es una que podriamos dar nosotros, que para eso")
+    print("       conocemos las nueve funciones del SDK.")
+
+
 def main():
     print("=== 0037 ③b · el Java del arbol, medido")
     seccion_que_es_hoy()
@@ -176,6 +242,7 @@ def main():
     seccion_jdtls()
     seccion_donde_vive()
     seccion_coste()
+    seccion_una_o_dos()
     return 0
 
 
