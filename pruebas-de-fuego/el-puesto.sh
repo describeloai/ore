@@ -590,7 +590,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   # el analytics abre, y su ficha lo dice
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"python","repositorio":"packages/hr/mirar"}')" = "201" ] \
     || falla "17 · abrir el puesto del analytics: $(cuerpo)"
-  tiene "d['id']=='puesto-ana-python-mirar' and d['plantilla']=='analytics' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
+  tiene "d['id']=='puesto-ana-python-mirar' and d['plantilla']=='analytics-python' and d['escribe'] is False and d['repositorio']=='packages/hr/mirar'" \
     || falla "17 · la ficha del puesto no dice su clase: $(cuerpo)"
   ORE_SERVE="$BASE" PUESTO=puesto-ana-python-mirar ORE_SUJETO=agente:mirar ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente-mirar.txt" 2>&1 &
