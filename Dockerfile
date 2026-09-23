@@ -409,3 +409,74 @@ RUN javac -Xlint:-options --release 21 -cp "/opt/ore/lib/*" -d /opt/ore/clases /
 USER 65532:65532
 WORKDIR /trabajo
 CMD ["java", "-XX:+UseSerialGC", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*", "ore.Agente"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Etapa 9 · capa-jvm:1 — QUIEN RESUELVE LA CAPA DE LA JVM (0037 ③c)
+#
+# ⭐ Una imagen aparte, y por lo que NO lleva. El puesto no alcanza Central
+#   (21-el-puesto.yaml) y esta imagen sí, pero a cambio no tiene ni testigo de
+#   la forja ni credencial de la nube: lo que resuelve no puede publicar nada,
+#   y lo que publica —el contenedor `ore-drivers` del Job— no sale a Central.
+#   Dos capacidades que hoy nadie tiene juntas.
+#
+# ⛔ Y NO va dentro de `puesto-jvm:1`: Maven en el puesto serían 9 MB y una
+#   herramienta de construcción en todas las sesiones para algo que sólo hace
+#   un Job. Ni dentro de `ore-drivers`: un JDK de 180 MB en la imagen que
+#   arrastran TODOS los Jobs del driver.
+#
+# El JDK ya lo trae la base —la misma que `puesto-jvm:1`, para que lo que se
+# resuelve y lo que lo corre sean la misma versión— y Maven se baja del
+# archivo canónico de Apache CON SU SHA-512 ESCRITO AQUÍ: un tarball que no
+# cuadre rompe la construcción en vez de entrar en la imagen.
+# ═══════════════════════════════════════════════════════════════════════════
+FROM eclipse-temurin:21-jdk-noble AS capa-jvm
+
+ARG MAVEN=3.9.9
+ARG MAVEN_SHA512=a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b
+# ⚠️ LA MISMA que `puesto-jvm`, y tiene que seguir siéndolo: es uno de los jars
+#   que la imagen del puesto pone, así que entra en la lista de `provided`.
+ARG DUCKDB_JDBC=1.5.5.1
+
+RUN curl -fsSL -o /tmp/maven.tar.gz \
+      "https://archive.apache.org/dist/maven/maven-3/${MAVEN}/binaries/apache-maven-${MAVEN}-bin.tar.gz" \
+ && echo "${MAVEN_SHA512}  /tmp/maven.tar.gz" | sha512sum -c - \
+ && mkdir -p /opt/maven && tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 \
+ && rm /tmp/maven.tar.gz && ln -s /opt/maven/bin/mvn /usr/local/bin/mvn && mvn -v
+
+# La lista de jars de la imagen del puesto: UNA LISTA, Y AHORA CUATRO LECTORES
+# —el Dockerfile del puesto, `el-puesto.sh`, las medidas y esto—. Que el que
+# resuelve y el que corre lean el MISMO fichero es lo que evita que el
+# `provided` se quede corto el día que se añada un jar.
+COPY puesto/jvm/jars.txt /opt/ore/jars.txt
+COPY puesto/jvm/capa /opt/ore/capa-src
+RUN mkdir -p /opt/ore/capa \
+ && javac -Xlint:-options --release 21 -d /opt/ore/capa /opt/ore/capa-src/Capa.java \
+ && cp /opt/ore/capa-src/resolver.sh /opt/ore/resolver.sh && chmod 0755 /opt/ore/resolver.sh \
+ && java -cp /opt/ore/capa Capa provisto /opt/ore/jars.txt "${DUCKDB_JDBC}" > /opt/ore/provisto.txt \
+ && test "$(wc -l < /opt/ore/provisto.txt)" -ge 14 \
+ && echo "maven ${MAVEN} · $(wc -l < /opt/ore/provisto.txt) jars provistos por el puesto" > /capa-jvm.txt
+
+# ── ⭐ Y SE PRUEBA AQUÍ, donde hay alguien mirando ─────────────────────────
+#
+# Un repositorio que declara `jackson-databind 2.19.0` cuando la imagen lleva
+# la 2.18.2 es EL caso difícil de ③c, y la construcción falla si deja de
+# comportarse como se midió: no se copia ni un jackson —gana el contenedor—,
+# se copia lo que sí es suyo, y el choque sale como una frase en el informe.
+RUN set -e; mkdir -p /tmp/p/arbol; \
+    printf '%s\n' '<project xmlns="http://maven.apache.org/POM/4.0.0">' \
+      '<modelVersion>4.0.0</modelVersion><dependencies>' \
+      '<dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>2.19.0</version></dependency>' \
+      '<dependency><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><version>3.17.0</version></dependency>' \
+      '</dependencies></project>' > /tmp/p/arbol/pom.xml; \
+    TRABAJO=/tmp/p/t /opt/ore/resolver.sh /tmp/p/arbol ""; \
+    ls /tmp/p/t/jars; \
+    test -f /tmp/p/t/jars/commons-lang3-3.17.0.jar; \
+    ! ls /tmp/p/t/jars | grep -q jackson; \
+    grep -q '"estado": "lista"' /tmp/p/t/informe.json; \
+    grep -q 'gana la de la sesión' /tmp/p/t/informe.json; \
+    grep -q '"sumas"' /tmp/p/t/informe.json; \
+    cat /tmp/p/t/informe.json >> /capa-jvm.txt; rm -rf /tmp/p
+
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/opt/ore/resolver.sh"]

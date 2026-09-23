@@ -60,6 +60,12 @@ steps:
   - id: puesto-jvm
     name: gcr.io/cloud-builders/docker
     args: [build, --target, puesto-jvm, -t, '${_REGISTRO}/puesto-jvm:1', -t, '${_REGISTRO}/puesto-jvm:${_SHA}', .]
+  # ⭐ Y quien resuelve la capa de la JVM (0037 ③c): el mismo JDK que el puesto
+  #   y Maven, sin testigo ni credencial. Su etiqueta va con la del puesto
+  #   porque comparten `jars.txt`: lo que una provee es lo que la otra lleva.
+  - id: capa-jvm
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target, capa-jvm, -t, '${_REGISTRO}/capa-jvm:1', -t, '${_REGISTRO}/capa-jvm:${_SHA}', .]
 
 images:
   - '${_REGISTRO}/ore:main'
@@ -80,6 +86,8 @@ images:
   - '${_REGISTRO}/puesto-node:${_SHA}'
   - '${_REGISTRO}/puesto-jvm:1'
   - '${_REGISTRO}/puesto-jvm:${_SHA}'
+  - '${_REGISTRO}/capa-jvm:1'
+  - '${_REGISTRO}/capa-jvm:${_SHA}'
 
 options:
   machineType: E2_HIGHCPU_8

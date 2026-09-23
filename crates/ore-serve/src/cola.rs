@@ -380,7 +380,7 @@ pub fn rendir_capa(
     // Cada entorno, su plantilla, su mote y su número en la malla: dos Jobs
     // con el mismo nombre serían el mismo Job.
     let (nombre, mote, numero) = match entorno {
-        "jvm" => (PLANTILLA_CAPA_JVM, "la-capa-jvm", "54"),
+        "jvm" => (PLANTILLA_CAPA_JVM, "la-capa-jvm", "55"),
         _ => (PLANTILLA_CAPA, "la-capa", "52"),
     };
     if !plantilla.contains(&format!("{mote}-{RESUMEN_MODELO}")) {

@@ -380,10 +380,16 @@ fn gav_de(campos: &[(String, String)]) -> Option<String> {
     if !matches!(v("scope"), "" | "compile" | "runtime") {
         return None;
     }
-    if [g, a, version]
-        .iter()
-        .any(|s| s.contains("${") || s.chars().any(char::is_whitespace))
-    {
+    // ⭐ El alfabeto de una coordenada, estricto A PROPÓSITO: de esto sale un
+    //   `pom.xml` generado en el Job que resuelve, y lo que entra lo escribe el
+    //   cliente en su árbol. Deja fuera de paso lo que no se puede resolver
+    //   —`${arrow.version}`, que no copiamos `<properties>`—, y es el MISMO
+    //   alfabeto que comprueba `Capa.java` para que los dos digests coincidan.
+    let letra = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
+    if !g.chars().all(letra) || !a.chars().all(letra) {
+        return None;
+    }
+    if !version.chars().all(|c| letra(c) || c == '+') {
         return None;
     }
     Some(format!("{g}:{a}:{version}"))

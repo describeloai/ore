@@ -1,0 +1,202 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA CAPA DE LA JVM — las bibliotecas que un repositorio de Java declara,
+# resueltas (ADR 0037 ③c)
+#
+# ⭐ Hasta ③c un repositorio de Java NO PODÍA USAR NI UNA BIBLIOTECA de
+#   terceros, y no era una limitación del lenguaje: la capa (0036 ③) entendía
+#   sólo `pyproject.toml`. Esto es su gemelo: lo que el árbol declara en
+#   `<dependencies>` de un `pom.xml`, resuelto por un Job con red, subido al
+#   bucket del inquilino como `ore/puesto/<capa>/` y anotado en el árbol como
+#   `entorno/<digest>.json`. El puesto, sin red, lo baja al arrancar.
+#
+# ── ⛔ EL PROBLEMA NO ES RESOLVER: ES EL CHOQUE ────────────────────────────
+#   La imagen del puesto YA LLEVA 14 jars (Arrow 19, Jackson 2.18.2, slf4j,
+#   commons-codec, duckdb_jdbc) y el SDK está compilado contra ellos. Si la
+#   capa trajera otro `jackson-databind` habría DOS en el classpath, y quien
+#   gana lo decide EL ORDEN, no la versión (medido en los dos sentidos:
+#   `medida-la-capa-de-la-jvm.py` §6).
+#
+#   La decisión es que MANDA EL CONTENEDOR, y la pieza que lo implementa no la
+#   inventamos: es `provided` —«el contenedor ya lo pone»— más
+#   `-DincludeScope=runtime`, que no copia lo provisto. Medido (§7): si el
+#   repositorio trae algo que ARRASTRA lo de la imagen, se copia sólo lo suyo;
+#   si PIDE otra versión de lo que la imagen pone, no se copia nada de eso,
+#   Maven avisa («must be unique … 2.19.0 vs 2.18.2») y ese aviso SE CONVIERTE
+#   EN UNA FRASE DEL INFORME, para que quien lo declaró se entere.
+#
+# ── Quién hace qué, y por qué en tres contenedores ────────────────────────
+#   traer-el-testigo · `ore-drivers`: el token de la forja del secreto.
+#   traer-el-arbol   · `ore-drivers`: clona el árbol en `/trabajo/arbol`.
+#   resolver         · `capa-jvm`: Maven contra Central. NO tiene el testigo ni
+#                      credencial de nube: lo que resuelve no puede publicar.
+#   subir-e-informar · `ore-drivers`: sube los jars y empuja el informe. NO
+#                      sale a Central.
+#   Dos capacidades que hoy nadie tiene juntas, y es a propósito.
+#
+# ── Quién lo rinde ────────────────────────────────────────────────────────
+#   `ore-serve` escribe `55-la-capa-jvm-<12 hex>.yaml` en la cola (rendido de
+#   `plantilla-capa-jvm.txt`, ⚠️ esta plantilla) al `POST /entorno/jvm`. `CAPA`
+#   es el digest de la declaración; el Job la recalcula del árbol y, si cambió
+#   entre medias, resuelve lo que hay y lo dice.
+#
+# ── Lo que este Job NO decide ─────────────────────────────────────────────
+#   Qué versión gana cuando hay choque: gana la del contenedor, siempre.
+#   Cambiar lo que el contenedor pone es cambiar `puesto/jvm/jars.txt`, que es
+#   una lista con cuatro lectores y no una decisión de un Job.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: la-capa-jvm-00000000
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 1200
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: puesto
+          emptyDir: { medium: Memory }
+        - name: trabajo
+          emptyDir: {}
+      initContainers:
+        - name: traer-el-testigo
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+          volumeMounts: [{ name: puesto, mountPath: /puesto }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              gcloud secrets versions access latest \
+                --secret=t-demo-forja-token --out-file=/puesto/forja
+              chmod 0400 /puesto/forja
+              echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+        - name: traer-el-arbol
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            - { name: RAMA, value: "rama-modelo" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              cd /trabajo
+              git clone --quiet ${RAMA:+--branch "$RAMA"} \
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              echo "árbol clonado · $(git -C arbol rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "100m", memory: 256Mi}
+            limits:   {cpu: "1000m", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+        # ⭐ El que sale a Central, y sólo él: sin el testigo montado y sin
+        #   cuenta de servicio que valga para la nube.
+        - name: resolver
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/capa-jvm:1
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: TRABAJO, value: /trabajo }
+            - { name: CAPA, value: "capa-modelo" }
+            # ⭐ 0036 ③: la carpeta del repositorio, o vacío para la celda entera.
+            #   La capa es SUYA —la raíz, su paquete y él—, no la unión del árbol.
+            - { name: ALCANCE, value: "alcance-modelo" }
+            - { name: INTENTO, value: "intento-modelo" }
+            # ⭐ El tope, con su mensaje. Una dependencia de Java puede ser
+            #   enorme (un Spark son cientos de MB): más vale un «no cabe» en el
+            #   informe que un puesto que tarda dos minutos en arrancar.
+            - { name: TOPE_MB, value: "512" }
+          volumeMounts:
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              exec /opt/ore/resolver.sh /trabajo/arbol "$ALCANCE"
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "2000m", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: subir-e-informar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            - { name: RAMA, value: "rama-modelo" }
+            - { name: BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              [ -f /trabajo/informe.json ] || { echo "· el árbol no declara dependencias de la JVM: nada que subir"; exit 0; }
+              DIGEST=$(cat /trabajo/digest.txt)
+              # ── 1 · la caja de jars al bucket, con el nombre de la capa ──
+              if [ -n "$(ls -A /trabajo/jars 2>/dev/null)" ]; then
+                gcloud storage cp -q /trabajo/jars/* "gs://$BUCKET/ore/puesto/$DIGEST/"
+                echo "### $(ls /trabajo/jars | wc -l) jar(s) en gs://$BUCKET/ore/puesto/$DIGEST/"
+              else
+                echo "### ni un jar que subir: todo lo declarado lo pone ya el contenedor"
+              fi
+              # ── 2 · el informe al árbol, uno POR DIGEST (0036 ③) ──
+              cd /trabajo/arbol
+              mkdir -p entorno
+              # El informe se sube CON LOS JARS y no después: si el commit
+              # fallara, la caja ya está y el siguiente intento la reusa.
+              gcloud storage cp -q /trabajo/informe.json "gs://$BUCKET/ore/puesto/$DIGEST/informe.json"
+              cp /trabajo/informe.json "entorno/$DIGEST.json"
+              git add -A entorno
+              if git diff --cached --quiet; then echo "· el informe no cambió"; exit 0; fi
+              ESTADO=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["estado"])' "entorno/$DIGEST.json")
+              git -c user.name=la-capa-jvm -c user.email=la-capa-jvm@invalido \
+                commit -q -m "La capa $DIGEST (JVM): $ESTADO"
+              git push -q origin HEAD:${RAMA:-main}
+              echo "✓ informe empujado · $(git rev-parse --short HEAD)"
+          resources:
+            requests: {cpu: "200m", memory: 512Mi}
+            limits:   {cpu: "1000m", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

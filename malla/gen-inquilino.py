@@ -246,6 +246,12 @@ PLANTILLA_PUESTO = "plantilla-puesto.txt"
 POR_CAPA = "52-la-capa.yaml"
 PLANTILLA_CAPA = "plantilla-capa.txt"
 
+# ⭐ Y la de la JVM (0037 ③c): el mismo camino con otro resolvedor —Maven, no
+#   `pip`— y con un contenedor más, porque el que sale a Central no lleva el
+#   testigo de la forja ni credencial de nube.
+POR_CAPA_JVM = "55-la-capa-jvm.yaml"
+PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -444,6 +450,11 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    capa_jvm = (MALLA / POR_CAPA_JVM).read_text(encoding="utf-8")
+    salida[PLANTILLA_CAPA_JVM] = (capa_jvm
+             .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -510,6 +521,7 @@ def comprobar_plantillas():
                           else POR_INVOCACION if f == PLANTILLA_INVOCACION
                           else POR_PUESTO if f == PLANTILLA_PUESTO
                           else POR_CAPA if f == PLANTILLA_CAPA
+                          else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -665,7 +677,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -737,7 +749,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -786,7 +798,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):
@@ -895,8 +907,13 @@ def comprobar():
     # justo lo que una comprobacion existe para vigilar.
     t43 = (MALLA / "43-la-entrada.yaml").read_text(encoding="utf-8")
     m = re.search(r"kind: GCPBackendPolicy.*?timeoutSec: (\d+)", t43, re.S)
-    v = re.search(r"const VIDA: Duration = Duration::from_secs\((\d+)\)",
-                  (MALLA.parent / "crates/ore-serve/src/puestos.rs").read_text(encoding="utf-8"))
+    # ⛔ Y el crate puede NO estar: el que converge monta un `ConfigMap` con las
+    #   plantillas, no con el repositorio. Sin el fichero se comprueba lo que
+    #   se puede —que la política existe— y se dice cuál de las dos mitades se
+    #   miró, que es distinto de callar.
+    puestos = MALLA.parent / "crates/ore-serve/src/puestos.rs"
+    v = (re.search(r"const VIDA: Duration = Duration::from_secs\((\d+)\)",
+                   puestos.read_text(encoding="utf-8")) if puestos.is_file() else None)
     if not m:
         fallos.append("`43-la-entrada.yaml`: sin `GCPBackendPolicy`, la puerta corta cualquier flujo a los 30 s")
     elif v and int(m.group(1)) <= int(v.group(1)):
@@ -905,7 +922,38 @@ def comprobar():
             % (m.group(1), v.group(1)))
     else:
         print("  ⭐ ⑮ la puerta deja vivir %s s y el flujo se despide a los %s: cierra el que sabe por donde iba"
-              % (m.group(1), v.group(1) if v else "?"))
+              % (m.group(1), v.group(1) if v else "? (sin el crate delante)"))
+
+    # ── ⑯ LA CAPA DE LA JVM: EL QUE RESUELVE NO PUEDE PUBLICAR (0037 ③c) ───
+    #
+    # El Job tiene las dos capacidades que nadie debe tener juntas: salir a
+    # Maven Central y escribir en el árbol y en el bucket del inquilino. Las
+    # separa EN CONTENEDORES, y eso no es un detalle de estilo — es lo único
+    # que hace que un `pom.xml` de un cliente no sea una forma de pedirle al
+    # Job que se lleve el testigo de la forja a donde sea.
+    #
+    # ⛔ Se comprueba aquí, sobre la plantilla rendida, porque es lo que de
+    #   verdad se aplica: un comentario que lo diga no lo impide.
+    t = render(MODELO)[PLANTILLA_CAPA_JVM]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA_JVM)
+    else:
+        if "capa-jvm:1" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no corre `capa-jvm:1`" % POR_CAPA_JVM)
+        if "/puesto" in resolver.group(1):
+            fallos.append("`%s`: EL QUE SALE A CENTRAL LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_JVM)
+        if "TOPE_MB" not in resolver.group(1):
+            fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_JVM)
+        if "/capa-jvm:" in publica.group(1):
+            fallos.append("`%s`: el que publica sale a Central" % POR_CAPA_JVM)
+        if "gcloud storage cp" not in publica.group(1):
+            fallos.append("`%s`: el que publica no sube la caja al bucket" % POR_CAPA_JVM)
+        if not [x for x in fallos if POR_CAPA_JVM in x]:
+            print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
+                  "y el que sube al bucket no sale a Central")
 
     return veredicto(fallos)
 

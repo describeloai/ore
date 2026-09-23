@@ -1165,11 +1165,11 @@ else
       #   fichero — ⛔ medido en victor el 2026-09-19: sin esto, esta pasada
       #   borraba el puesto recien abierto y Flux se llevaba el Job antes de
       #   que el nodo arrancara: «the session did not start in 5 minutes»)
-      #   y los `52-la-capa-*` (la capa que un puesto espera). Lo que si se
+      #   y los `52-la-capa-*` y `55-la-capa-jvm-*` (la capa que un puesto espera). Lo que si se
       #   retira es un catalogo cuya fuente YA tiene paquete: ese Job termino,
       #   y Flux no debe volver a crearlo.
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(44-.*|48-la-copia(-rehacer-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|55-la-capa-jvm-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
@@ -1201,7 +1201,7 @@ else
       # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
       # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
       # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
-      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-puesto.txt|plantilla-capa.txt) cp "$f" "$TMP/cola/" ;;
+      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-puesto.txt|plantilla-capa.txt|plantilla-capa-jvm.txt) cp "$f" "$TMP/cola/" ;;
       *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done

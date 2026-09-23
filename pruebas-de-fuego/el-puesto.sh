@@ -41,6 +41,10 @@
 #                                      declara `mode: upsert, key: [n]` · a una View → error · uint64 → error
 #                                      con la columna; y en 8 y 9, Node y Java escriben lo suyo y leen
 #                                      lo de los demás
+#  6b  la capa de la JVM (0037 iii.c)  GET /entorno/jvm sin-dependencias · un pom.xml ->
+#                                      pendiente con SU digest (no el de python) · POST ->
+#                                      202 y 55-la-capa-jvm-<corto>.yaml en la cola, con
+#                                      capa-jvm:1 y sin el testigo · informe -> lista
 #   6  la capa (W3.2)                  GET /entorno sin-dependencias · un pyproject → pendiente con
 #                                      digest capa-<12 hex> · POST /puestos (bea) → 409 y el Job de
 #                                      la capa en la cola con el digest · POST /entorno → 202 la
@@ -234,7 +238,8 @@ git init -q --bare -b main "$COLA"
 mkdir -p "$TMP/cola-semilla" && ( cd "$TMP/cola-semilla" && git init -q -b main && git config core.autocrlf false )
 "$PY" "$RAIZ/malla/gen-inquilino.py" demo --a "$TMP/rendido" >/dev/null 2>&1 || falla "no se pudo rendir la plantilla del puesto"
 [ -f "$TMP/rendido/plantilla-puesto.txt" ] || falla "gen-inquilino no rinde plantilla-puesto.txt"
-cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" "$TMP/cola-semilla/"
+cp "$TMP/rendido/plantilla-puesto.txt" "$TMP/rendido/plantilla-capa.txt" \
+   "$TMP/rendido/plantilla-capa-jvm.txt" "$TMP/cola-semilla/"
 ( cd "$TMP/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
   && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "no se pudo sembrar la cola"
 en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
@@ -775,6 +780,56 @@ dependencies = ["polars>=1.40", "scikit-learn"]
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['digest']!='$DIGEST'" || falla "6 · otra declaracion no vuelve a pendiente: $(cuerpo)"
 pide DELETE /puestos/puesto-bea-python "$BEA" >/dev/null
 dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa y /capa en el PYTHONPATH · otra declaracion → pendiente"
+
+
+# ── 6b · la capa de la JVM (0037 ③c): el mismo camino, otro fichero ───────
+#
+# ⭐ Lo que se prueba aquí no es Maven —eso lo prueba la imagen al construirse—
+#   sino que el servidor sabe LEER lo que un repositorio de Java declara, que
+#   su capa NO es la de Python aunque el árbol tenga las dos, y que el Job que
+#   encola es el suyo.
+[ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='sin-dependencias' and d['entorno']=='jvm' and d['declarado']==[]" || falla "6b · entorno jvm sin dependencias: $(cuerpo)"
+[ "$(pide GET /entorno/node "$ANA")" = "404" ] || falla "6b · /entorno/node deberia ser 404 (node nace con su imagen): $(cuerpo)"
+# Un pom con de todo: lo que cuenta y lo que NO se honra.
+printf '<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <!-- <dependency> en un comentario no es una dependencia -->
+  <dependencyManagement><dependencies><dependency>
+    <groupId>no.entra</groupId><artifactId>gestionada</artifactId><version>1.0</version>
+  </dependency></dependencies></dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><version>3.17.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId>
+      <version>5.11.0</version><scope>test</scope>
+    </dependency>
+    <dependency><groupId>sin.version</groupId><artifactId>quien-sabe</artifactId></dependency>
+  </dependencies>
+</project>
+' > "$A/packages/hr/pom.xml"
+[ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['declarado']==['org.apache.commons:commons-lang3:3.17.0'] and d['digest'].startswith('capa-') and len(d['digest'])==17" || falla "6b · el pom no se leyo como se escribio: $(cuerpo)"
+JVM_DIGEST=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$TMP/r.json")
+# ⭐ Y NO es la capa de Python: el mismo árbol, dos lenguajes, dos capas.
+pide GET /entorno "$ANA" >/dev/null
+tiene "d['digest']!='$JVM_DIGEST'" || falla "6b · la capa de la JVM y la de Python comparten digest"
+JVM_CORTO=${JVM_DIGEST#capa-}
+[ "$(pide POST /entorno/jvm "$ANA")" = "202" ] && tiene "d['job'].startswith('la-capa-jvm-$JVM_CORTO-')" || falla "6b · POST /entorno/jvm no dio 202 con su Job: $(cuerpo)"
+en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q "name: CAPA, value: \"$JVM_DIGEST\"" || falla "6b · el Job de la capa de la JVM no esta en la cola con el digest"
+en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q 'ore.dev/rol: driver' || falla "6b · el Job no lleva el rol driver (Maven Central)"
+en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q '/capa-jvm:1' || falla "6b · el Job no resuelve con la imagen capa-jvm:1"
+en_cola "55-la-capa-jvm-$JVM_CORTO.yaml" | grep -q 'name: TOPE_MB' || falla "6b · el Job no lleva tope de tamano"
+# el informe que 55-la-capa-jvm deja en el arbol: uno POR DIGEST
+mkdir -p "$A/entorno"
+"$PY" -c 'import json,sys; json.dump({"estado":"lista","digest":sys.argv[1],"declarado":["org.apache.commons:commons-lang3:3.17.0"],"jars":["commons-lang3-3.17.0.jar"],"lock":["org.apache.commons:commons-lang3:3.17.0"],"mb":"1","avisos":[],"cuando":"2026-09-23T00:00:00Z","entorno":"puesto-jvm:1"}, open(sys.argv[2],"w"))' "$JVM_DIGEST" "$A/entorno/$JVM_DIGEST.json"
+[ "$(pide GET /entorno/jvm "$ANA")" = "200" ] && tiene "d['estado']=='lista' and d['informe']['jars']==['commons-lang3-3.17.0.jar']" || falla "6b · el informe de la JVM no puso la capa lista: $(cuerpo)"
+[ "$(pide POST /entorno/jvm "$ANA")" = "200" ] || falla "6b · resolver con la capa de la JVM lista no dio 200: $(cuerpo)"
+# y la de Python sigue pendiente: el informe de uno no vale para el otro
+[ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente'" || falla "6b · el informe de la JVM se colo como el de Python: $(cuerpo)"
+rm -f "$A/packages/hr/pom.xml"
+dice "6b · la capa de la JVM: /entorno/jvm sin dependencias · un pom.xml → pendiente con SU digest (y sin lo que no se honra: dependencyManagement, test, sin version) · POST → 202 y 55-la-capa-jvm-<corto>.yaml con capa-jvm:1 y su tope · informe → lista, y la de Python sigue pendiente"
 
 # ── 8 · TS en el puesto node (W3.4): el agente de Node, celdas TS, un módulo del árbol, persona() ──
 NODE=$(command -v node || true)
