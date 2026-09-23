@@ -873,6 +873,33 @@ if [ "$JAVA_OK" = "si" ]; then
   celda 'int y = \"a\";' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='CompilationError'" || falla "9 · no compila: $(cuerpo)"
   celda 'record C(String pais) {}\nvar cs = List.of(new C(\"ES\"), new C(\"PT\"));\ncs.stream().filter(c -> c.pais().equals(\"ES\")).count()' && tiene "d['salida']['texto']=='1'" || falla "9 · record + stream (varios snippets): $(cuerpo)"
   celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
+
+  # ── 9b · el servidor de lenguaje de Java, EN LA MISMA JVM (0037 ③b) ──────
+  # No hay segundo proceso: el agente contesta con el compilador del JDK
+  # (diagnosticos) y con `Trees` (lo que se ve desde esa posicion). Aqui se
+  # abre un fichero con un fallo, se espera el subrayado, y se pide una
+  # propuesta donde el editor la pediria.
+  MAL='public class Ejemplo {\n    public static void main(String[] args) {\n        String saludo = \"hola\";\n        int n = saludo.longitud();\n        wr\n    }\n}\n'
+  curl -sN --max-time 10 -H "$ANA" "$BASE/puestos/$P/lsp/consola" >"$TMP/lspj.txt" 2>/dev/null &
+  CURL=$!
+  sleep 1
+  mensaje() { "$PY" -c 'import json,sys; print(json.dumps({"mensajes":[sys.argv[1]]}))' "$1"; }
+  ABRIR_J="$("$PY" -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java","languageId":"java","version":1,"text":sys.argv[1]}}}))' "$(printf "$MAL")")"
+  [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$ABRIR_J")")" = "202" ] || falla "9b · el didOpen no dio 202: $(cuerpo)"
+  sleep 3
+  COMP_J='{"jsonrpc":"2.0","id":31,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java"},"position":{"line":4,"character":11}}}'
+  [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$COMP_J")")" = "202" ] || falla "9b · el completion no dio 202: $(cuerpo)"
+  HOV_J='{"jsonrpc":"2.0","id":32,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///trabajo/transforms/Ejemplo.java"},"position":{"line":2,"character":16}}}'
+  [ "$(pide POST /puestos/$P/lsp "$ANA" "$(mensaje "$HOV_J")")" = "202" ] || falla "9b · el hover no dio 202: $(cuerpo)"
+  wait $CURL 2>/dev/null || true
+  grep -q "publishDiagnostics" "$TMP/lspj.txt" || falla "9b · no llego ni un diagnostico: $(cat "$TMP/lspj.txt")"
+  grep -q "cannot find symbol" "$TMP/lspj.txt" || falla "9b · el diagnostico no es el de javac: $(cat "$TMP/lspj.txt")"
+  grep -q '"source": *"javac"' "$TMP/lspj.txt" || falla "9b · el diagnostico no dice quien lo firma: $(cat "$TMP/lspj.txt")"
+  grep -qE '"id": *31' "$TMP/lspj.txt" || falla "9b · el completion no volvio: $(cat "$TMP/lspj.txt")"
+  grep -q '"label": *"saludo"' "$TMP/lspj.txt" || falla "9b · el completion no ve las variables LOCALES del fichero: $(cat "$TMP/lspj.txt")"
+  grep -qE '"id": *32' "$TMP/lspj.txt" || falla "9b · el hover no volvio: $(cat "$TMP/lspj.txt")"
+  grep -q "String saludo" "$TMP/lspj.txt" || falla "9b · el hover no dice el tipo: $(cat "$TMP/lspj.txt")"
+  dice "9b · el servidor de lenguaje de Java EN LA MISMA JVM: javac firma los diagnosticos (cannot find symbol, con su linea), el autocompletado ve las variables LOCALES del fichero y el hover dice el tipo — sin segundo proceso"
   celda 'saludo(persona())' && tiene "d['salida']['texto']=='\"hola persona:ana\"'" || falla "9 · saludo(persona()) — con la identidad de la persona: $(cuerpo)"
   celda 'public class Programa { public static void main(String[] a) { System.out.println(\"main de \" + persona()); } }' && tiene "d['salida']['tipo']=='texto' and d['salida']['texto']=='main de persona:ana\n'" || falla "9 · una clase con main (un .java del arbol): $(cuerpo)"
   celda 'var df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "9 · over(hr.espanoles): $(cuerpo)"

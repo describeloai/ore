@@ -41,6 +41,18 @@ import jdk.jshell.VarSnippet;
  *   POST /puestos/{id}/celdas/{n}/salida    ← {tipo, ms, …}
  * </pre>
  *
+ * <h2>Y el servidor de lenguaje (0037 ③b)</h2>
+ *
+ * <p>A diferencia del de Python —que ARRANCA pyright y hace de correa—, aquí
+ * el servidor de lenguaje es esta misma JVM: {@link Lenguaje} contesta con el
+ * compilador del JDK y con {@code Trees}, que ya están dentro. Lo que llega por
+ * el flujo se atiende y lo que salga se devuelve agrupado.
+ *
+ * <pre>
+ *   GET  /puestos/{id}/lsp/agente           → flujo de eventos: lo que el editor manda
+ *   POST /puestos/{id}/lsp/salida           ← lo que este servidor contesta
+ * </pre>
+ *
  * <h2>El kernel</h2>
  *
  * <p>Medido antes de escribirlo ({@code medida-w3-ts-jvm.py}, en victor sobre
@@ -265,6 +277,72 @@ public final class Agente {
     /** La salida {@code tabla} del contrato: la hace el SDK ({@link Ore#tabla}); aquí sólo se le pone el límite de la consola. */
     static Map<String, Object> comoTabla(Object valor) { return Ore.tabla(valor, FILAS_MAXIMAS); }
 
+    // ── El servidor de lenguaje, y su correa (0037 ③b) ──────────────────────
+
+    /**
+     * Escucha el flujo del editor, atiende con {@link Lenguaje} y devuelve.
+     *
+     * <p>⛔ AGRUPANDO, y no de uno en uno: teclear son decenas de mensajes por
+     * segundo, {@code ore-entrada} admite 64 conexiones a la vez y no tiene
+     * keep-alive. Una petición por mensaje dejaría al inquilino sin plazas.
+     *
+     * <p>Se reconecta sola: el servidor se despide a los 240 s («vuelve») y lo
+     * que se recoge por ahí SE CONSUME, así que no hay nada que retomar.
+     */
+    static void correa(Ore.Puesto p, Testigo testigo) {
+        Lenguaje lenguaje = new Lenguaje();
+        List<String> salientes = new ArrayList<>();
+        Thread entrega = new Thread(() -> {
+            while (true) {
+                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                List<String> lote;
+                synchronized (salientes) {
+                    if (salientes.isEmpty()) continue;
+                    lote = new ArrayList<>(salientes);
+                    salientes.clear();
+                }
+                try {
+                    p.cabeceras = testigo.cabeceras();
+                    Ore.Respuesta r = p.pedir("POST", "/puestos/" + p.id + "/lsp/salida",
+                        Map.of("mensajes", lote), Duration.ofSeconds(30));
+                    if (r.codigo() != 200 && r.codigo() != 202) log("la salida del servidor de lenguaje no se aceptó: " + r.codigo() + " " + r.error());
+                } catch (Exception e) {
+                    log("no pude entregar " + lote.size() + " mensajes del servidor de lenguaje: " + e);
+                }
+            }
+        }, "lsp-entrega");
+        entrega.setDaemon(true);
+        entrega.start();
+
+        while (true) {
+            try {
+                HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(p.servidor + "/puestos/" + p.id + "/lsp/agente"))
+                    .timeout(Duration.ofMinutes(5)).header("accept", "text/event-stream");
+                for (Map.Entry<String, String> e : testigo.cabeceras().entrySet()) b.header(e.getKey(), e.getValue());
+                b.header("x-ore-puesto", p.id);
+                HttpResponse<java.util.stream.Stream<String>> r =
+                    Ore.HTTP.send(b.GET().build(), HttpResponse.BodyHandlers.ofLines());
+                if (r.statusCode() != 200) { log("el flujo del servidor de lenguaje contestó " + r.statusCode() + ": vuelvo en 3 s"); dormir(3000); continue; }
+                String[] evento = {""};
+                r.body().forEach(linea -> {
+                    if (linea.startsWith("event: ")) evento[0] = linea.substring(7);
+                    else if (linea.startsWith("data: ") && evento[0].equals("lsp")) {
+                        for (Map<String, Object> salida : lenguaje.atender(Json.objeto(linea.substring(6)))) {
+                            synchronized (salientes) { salientes.add(Json.escribir(salida)); }
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                log("el flujo del servidor de lenguaje se cortó (" + e + "): vuelvo en 3 s");
+                dormir(3000);
+            }
+        }
+    }
+
+    static void dormir(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
     // ── El bucle ────────────────────────────────────────────────────────────
     public static void main(String[] args) {
         try {
@@ -302,6 +380,13 @@ public final class Agente {
         if (!trabajo.isEmpty()) Ore.CODIGO = trabajo;
         Testigo testigo = new Testigo();
         Kernel kernel = new Kernel();
+        // El servidor de lenguaje escucha desde el principio; no compila nada
+        // hasta que el editor abre un fichero. Un trabajo no tiene editor.
+        if (trabajo.isEmpty()) {
+            Thread t = new Thread(() -> correa(p, testigo), "lsp");
+            t.setDaemon(true);
+            t.start();
+        }
         log("puesto " + p.id + " · ore-serve " + p.servidor + " · TTL " + ttl + "s · almacén " + p.almacen + " · java " + Runtime.version());
         long ultimo = System.currentTimeMillis();
         while (true) {

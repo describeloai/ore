@@ -126,22 +126,46 @@ dependencies = []
 # dependencies = [\"polars\"]
 ";
 
-/// El mismo transform, en Java: `Ore.transform(nombre, inputs, output, cuerpo)`
-/// con `over` y `write` estáticos, como los usa la sesión de la JVM
-/// (`el-puesto.sh` 9). Un `.java` del árbol se puede correr igual que un `.py`.
+/// El mismo transform, en Java, y **como un fichero Java de verdad** (0037 ③b):
+/// un import estático y una clase con `main`.
+///
+/// ⭐ No es un capricho de estilo: era un SNIPPET DE JSHELL —`var` y llamadas
+///   sueltas en el tope— y ningún editor entiende eso. Medido con jdtls sobre
+///   esta misma semilla: cuatro errores de sintaxis sobre nuestra propia
+///   plantilla. Como unidad de compilación, cero.
+///
+/// ⛔ Y el ejecutor no cambia: el agente ya parte la celda en snippets y, si
+///   declara una clase con `static void main(`, la llama — lo dice su propio
+///   comentario desde W3.4. Medido con un JShell 21 de verdad: esto corre e
+///   imprime, con el `public` y el import estático dentro.
 const TRANSFORMS_JAVA: &str = "\
 // Un transform DECLARA qué lee y qué escribe, y el servidor lo hace cumplir
 // (ADR 0031 · W3.7): mientras corre, la sesión sólo resuelve sus `inputs` y
 // sólo escribe su `output`.
 //
-// `transform`, `over` y `write` los pone la sesión: aquí no se importa nada.
+// `transform`, `over` y `write` son del SDK del puesto (`ore.Ore`) y ADEMÁS los
+// pone la sesión: el import estático no cambia lo que corre — hace que el
+// editor sepa de qué hablas (ADR 0037 ③b).
+//
+// ⛔ El nombre del fichero ES el nombre de la clase pública: si renombras uno,
+//   renombra el otro.
+//
 // Cambia las dos referencias por las tuyas y dale a Run.
+import static ore.Ore.*;
 
-var ENTRADA = \"<paquete>.<dataset>\";
-var SALIDA = \"<paquete>.<resumen>\";
+import java.util.List;
+import java.util.Map;
 
-var escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA, () -> write(SALIDA, over(ENTRADA)));
-System.out.println(\"filas \" + escrito.get(\"filas\"));
+public class Ejemplo {
+    static final String ENTRADA = \"<paquete>.<dataset>\";
+    static final String SALIDA = \"<paquete>.<resumen>\";
+
+    public static void main(String[] args) throws Exception {
+        Map<String, Object> escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA,
+                () -> write(SALIDA, over(ENTRADA)));
+        System.out.println(\"filas \" + escrito.get(\"filas\"));
+    }
+}
 ";
 
 /// El transform escrito en SQL. La consulta manda; lo que sale, se escribe.
@@ -276,7 +300,7 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets using Java on the JVM.",
-        version: 1,
+        version: 2,
         // ⛔ Sin fichero de entorno: la capa (0036 ③) lee `pyproject.toml` y
         //   hoy no sabe de la JVM. Sembrar un `build.gradle` que nadie resuelve
         //   sería sembrar una promesa.
@@ -512,7 +536,34 @@ mod pruebas {
     fn la_semilla_importa_lo_que_usa() {
         // Lo que la sesión pone, y que por tanto podría no importarse.
         const PUESTOS: [&str; 5] = ["over", "write", "transform", "sql", "declare"];
+        // ⭐ Y en Java lo mismo, con su forma: un import estático de `ore.Ore`
+        //   trae los cinco de golpe. Sin él, jdtls y `javac` no los resuelven.
         for c in CLASES {
+            if c.lenguaje == "java" {
+                for (ruta, texto) in c.semilla {
+                    if !ruta.ends_with(".java") {
+                        continue;
+                    }
+                    let usa = PUESTOS.iter().any(|n| texto.contains(&format!("{n}(")));
+                    if usa {
+                        assert!(
+                            texto.contains("import static ore.Ore.*;"),
+                            "{} usa el SDK y no lo importa: un editor lo subrayaría en rojo",
+                            c.id
+                        );
+                    }
+                    assert!(
+                        texto.contains("public class ") && texto.contains("static void main("),
+                        "{} no es una unidad de compilación: jdtls y javac no entienden un snippet",
+                        c.id
+                    );
+                    assert!(
+                        !texto.contains("package "),
+                        "{} declara `package`: JShell no lo acepta y el árbol no tiene carpetas de paquete",
+                        c.id
+                    );
+                }
+            }
             if c.lenguaje != "python" {
                 continue;
             }
