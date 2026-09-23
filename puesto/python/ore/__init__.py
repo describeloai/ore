@@ -449,6 +449,53 @@ def _arrow(relacion):
 _VISTAS_EN_SQL = re.compile(r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
 _con = None
 
+# ⛔ EL REPARTO DEL POD (medido en `medida-la-celda-que-no-cabe.py`).
+#
+# Sin esto, DuckDB se pone un `memory_limit` sacado de LA MAQUINA y no del pod
+# —25 GiB medidos en una de 32 GB—, y en un contenedor de 4 GiB eso es pedirle
+# al kernel que mate la sesión: SIGKILL, sin excepción, sin mensaje y sin
+# informe. Con tope, lo que no quepa se derrama a disco y «no cabe» pasa a
+# significar «tarda»: medido, 12 M de claves agrupadas con 200 MB son 12,2 s.
+#
+# En Python el reparto es distinto que en la JVM: aquí no hay heap aparte, así
+# que la mitad del pod es para DuckDB y la otra mitad para lo que la celda
+# tenga en memoria (pandas, polars, lo suyo).
+_DUCKDB_POR_CIENTO = 50
+
+
+def _tropo_mb():
+    """Los MB que le tocan a DuckDB. `ORE_MEMORIA_MB` lo pone la plantilla del
+    Job junto a `limits.memory`. Sin él —las pruebas, un portátil— se usa un
+    suelo conservador: un tope equivocado da un error legible; ninguno da un
+    proceso muerto."""
+    try:
+        pod = int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
+    except ValueError:
+        pod = 0
+    return max(256, pod * _DUCKDB_POR_CIENTO // 100) if pod > 0 else 512
+
+
+def _derrame():
+    """Dónde derrama DuckDB lo que no le cabe.
+
+    En el pod, el volumen de trabajo (`/trabajo`, un `emptyDir`), que es donde
+    se puede escribir y muere con la sesión. Fuera del clúster, el temporal del
+    sistema — ⛔ y NO el directorio actual, que en las pruebas es el
+    repositorio: un motor derramando gigabytes dentro del árbol de fuentes es
+    un susto que no hace falta darse."""
+    import tempfile
+
+    for base in ("/trabajo", tempfile.gettempdir()):
+        if not os.path.isdir(base):
+            continue
+        d = os.path.join(base, ".duckdb-derrame")
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except OSError:
+            pass
+    return tempfile.gettempdir()
+
 
 def _duckdb():
     global _con
@@ -461,6 +508,9 @@ def _duckdb():
             _con.execute("set threads to %d" % int(hilos))
         # Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
         # (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
+        # ⭐ Lo que le toca, y dónde derramar lo que no quepa (ver arriba).
+        _con.execute("set memory_limit='%dMB'" % _tropo_mb())
+        _con.execute("set temp_directory='%s'" % _derrame().replace("'", "''"))
         _con.execute("set autoinstall_known_extensions = false")
         # Un instante es un instante: DuckDB enseña un TIMESTAMPTZ en la zona de la
         # sesión, y el contrato (0032 §1) lo quiere en UTC. Aquí la sesión ES UTC.

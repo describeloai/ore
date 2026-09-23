@@ -990,6 +990,35 @@ def comprobar():
     if not trae or "name: ENTORNO" not in trae.group(1):
         fallos.append("`%s`: `traer-la-capa` no sabe de qué entorno es la capa que baja" % POR_PUESTO)
 
+    # ── ⑱ EL POD DICE CUANTO MIDE, Y DICE LA VERDAD (0031 W3) ─────────────
+    #
+    # La sesión se reparte el pod: la JVM la mitad, Arrow y DuckDB un quinto
+    # cada uno. Ese reparto se calcula sobre `ORE_MEMORIA_MB`, y si esa cifra
+    # no es la del pod el reparto es peor que no tenerlo: un tope por encima
+    # del contenedor deja los dos caminos que matan (Arrow sin freno, DuckDB
+    # creyéndose el dueño) exactamente igual de sueltos.
+    #
+    # ⇒ Dos números en el mismo fichero que tienen que ir juntos. Eso es lo que
+    #   una comprobación existe para vigilar.
+    t51 = render(MODELO)[PLANTILLA_PUESTO]
+    dicho = re.search(r'name: ORE_MEMORIA_MB, value: "(\d+)"', t51)
+    tope = re.findall(r"limits:\s+\{cpu: \"[^\"]+\", memory: (\d+)([GM])i\}", t51)
+    if not dicho:
+        fallos.append("`%s`: el pod no dice cuánto mide (`ORE_MEMORIA_MB`): Arrow nace sin tope "
+                      "y DuckDB se cree el dueño de la máquina" % POR_PUESTO)
+    elif not tope:
+        fallos.append("`%s`: no se pudo leer `limits.memory` del contenedor del puesto" % POR_PUESTO)
+    else:
+        n, unidad = tope[-1]
+        mb = int(n) * (1024 if unidad == "G" else 1)
+        if int(dicho.group(1)) != mb:
+            fallos.append("`%s`: el pod dice que mide %s MB y su `limits.memory` es %d MB: "
+                          "el reparto de la sesión se calcularía sobre una cifra falsa"
+                          % (POR_PUESTO, dicho.group(1), mb))
+        else:
+            print("  ⭐ ⑱ el pod dice cuánto mide y dice la verdad: %s MB = `limits.memory`"
+                  % dicho.group(1))
+
     return veredicto(fallos)
 
 

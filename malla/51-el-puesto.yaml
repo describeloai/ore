@@ -252,6 +252,24 @@ spec:
             - { name: PUESTO_DIR, value: /puesto }
             - { name: HOME, value: /tmp }
             - { name: PYTHONUNBUFFERED, value: "1" }
+            # ⭐⭐ CUANTO MIDE ESTE POD, para que la sesión se lo reparta
+            #   (0031 W3, `medida-la-celda-que-no-cabe.py`). Sin esta cifra, el
+            #   asignador de Arrow nace SIN TOPE y DuckDB se pone uno sacado de
+            #   la MAQUINA —25 GiB medidos en una de 32 GB—: los dos terminan en
+            #   un SIGKILL del kernel, que no deja excepción, ni mensaje, ni
+            #   informe. Con ella, lo que no cabe es una celda con error y la
+            #   sesión sigue viva.
+            #
+            # ⛔ TIENE QUE DECIR LO MISMO QUE `limits.memory` de aquí abajo, y
+            #   lo exige `gen-inquilino.py ⑱`: un reparto calculado sobre una
+            #   cifra que no es la del pod es peor que no repartir.
+            #
+            # ⚠️ Y lo que DuckDB derrame cuando no le quepa va a `/trabajo`, que
+            #   es un `emptyDir` SIN tope: un agrupado enorme podría llenar el
+            #   disco del nodo. No se le pone `sizeLimit` aquí porque no está
+            #   medido cuánto derrama de verdad una consulta grande —y un tope
+            #   inventado expulsa pods buenos—; queda dicho para medirlo.
+            - { name: ORE_MEMORIA_MB, value: "4096" }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }

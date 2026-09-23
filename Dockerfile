@@ -420,7 +420,13 @@ WORKDIR /trabajo
 #   expanden ni `JShell.addToClasspath` ni `System.getProperty`: por eso
 #   `Agente.java` lo expande él cuando se lo pasa a JShell. Sin capa, `/capa/*`
 #   no aporta nada y no estorba.
-CMD ["java", "-XX:+UseSerialGC", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*:/capa/*", "ore.Agente"]
+# ⭐ Y EL REPARTO DEL POD SE DECIDE, no se hereda. Medido
+#   (`medida-la-celda-que-no-cabe.py` §1): en un contenedor de 4 GiB la JVM se
+#   queda por defecto con el 25% —989 MB— y las otras tres cuartas partes no
+#   las reclama nadie explícitamente. Aquí se dice la mitad, que es donde vive
+#   lo que `over()` materializa; Arrow y DuckDB tienen lo suyo con su propio
+#   tope (`Ore.tropoMb`), y el resto queda para metaspace, hilos y el JDK.
+CMD ["java", "-XX:+UseSerialGC", "-XX:MaxRAMPercentage=50", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-cp", "/opt/ore/clases:/opt/ore/lib/*:/capa/*", "ore.Agente"]
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Etapa 9 · capa-jvm:1 — QUIEN RESUELVE LA CAPA DE LA JVM (0037 ③c)

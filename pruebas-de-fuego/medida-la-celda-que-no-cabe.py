@@ -16,6 +16,8 @@ error, la sesión viva) o que mate (el pod fuera, el trabajo perdido).
                                significa cada uno para «no cabe».
   §6  Y SPARK                  qué compraría, qué costaría, y qué pregunta hay
                                que contestar antes.
+  §7  LO QUE SE PUSO           los tres topes que salieron de esto, y qué los
+                               vigila.
 
     python pruebas-de-fuego/medida-la-celda-que-no-cabe.py
 """
@@ -231,6 +233,30 @@ def seccion_spark():
     print("       masivo se declara y se manda.")
 
 
+def seccion_lo_que_se_puso():
+    titulo("  §7 LO QUE SE PUSO DESPUES DE MEDIR")
+    print("     ① EL REPARTO SE DECIDE. `puesto-jvm:1` arranca con")
+    print("       `-XX:MaxRAMPercentage=50` en vez de heredar el 25%, y la plantilla")
+    print("       del Job dice cuánto mide el pod (`ORE_MEMORIA_MB`, junto a")
+    print("       `limits.memory`). De ahí sale todo lo demás:")
+    print("         heap 50%  ·  Arrow 20%  ·  DuckDB 20%  ·  el resto 10%")
+    print("     ② ARROW CON TOPE. `new RootAllocator(tope)` en vez de sin límite: el")
+    print("       camino rápido pasa de matar el pod a devolver una celda con error.")
+    print("     ③ DUCKDB CON TOPE Y CON DONDE DERRAMAR. `memory_limit` sale del POD y")
+    print("       no de la máquina, y `temp_directory` apunta a `/trabajo`, así que")
+    print("       «no cabe» significa «tarda».")
+    print("")
+    print("     Y lo vigilan, para que no se descuadre solo:")
+    print("       `gen-inquilino.py ⑱`  el pod dice cuánto mide y dice LA VERDAD")
+    print("                             (`ORE_MEMORIA_MB` == `limits.memory`).")
+    print("       `el-puesto.sh 4b/9d`  con el agente de verdad y un pod fingido de")
+    print("                             1 GiB, la celda pregunta a DuckDB qué tope")
+    print("                             tiene: sale el del pod, no el de la máquina.")
+    print("     ⚠️ Sin medir todavía: cuánto derrama de verdad una consulta grande.")
+    print("       `/trabajo` es un `emptyDir` sin tope, así que eso decide si hace")
+    print("       falta un `sizeLimit` — y un tope inventado expulsa pods buenos.")
+
+
 def main():
     print("=== 0031 W3 · la celda que no cabe, medida")
     print("    (una sesión = una JVM en un pod; esto dice dónde está el borde)")
@@ -240,6 +266,7 @@ def main():
     seccion_la_salida()
     seccion_al_subir()
     seccion_spark()
+    seccion_lo_que_se_puso()
     print("")
     print("  ⇒ EN UNA FRASE: el borde no es «la celda no cabe» —eso se cuenta y la")
     print("    sesión sobrevive—, es QUE HAY DOS CAMINOS QUE NO SE CUENTAN: el")

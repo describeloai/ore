@@ -333,7 +333,10 @@ while True:
                                            "range": {"start": {"line": 0, "character": 0},
                                                      "end": {"line": 0, "character": 3}}}]}})
 FIN_LSP
-ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+# ⭐ `ORE_MEMORIA_MB` es lo que en el clúster pone la plantilla junto a
+#   `limits.memory`: aquí se finge un pod de 1 GiB para poder comprobar que el
+#   reparto se aplica de verdad (0031 W3, `medida-la-celda-que-no-cabe.py`).
+ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 ORE_MEMORIA_MB=1024 \
   ORE_LSP="$(basename "$PY") lsp-de-mentira.py" TRABAJO_DIR="$TMP_PY" \
   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.txt" 2>&1 &
 AGENTE=$!
@@ -441,6 +444,26 @@ if [ "$LAGO_OK" = "si" ]; then
 fi
 [ "$(pide GET /puestos/puesto-ana-python/datos/hr.espanoles "$ANA")" = "403" ] || falla "4 · una persona pidio datos por la ruta del agente: $(cuerpo)"
 dice "4 · over(\"hr.espanoles\") → tabla 3 × 2 desde la copia (ORECOPY1 + Parquet) · over(\"hr.lago\") → el dataset Iceberg leido en sitio por la raiz y la version del puntero (tipos del contrato) · hr.nada → LookupError (404) · sin copia → RuntimeError (409) · datos solo para el agente"
+
+
+# ── 4b · el reparto del pod (0031 W3): lo que NO cabe se cuenta, no mata ──
+#
+# ⭐ Medido antes de escribirlo (`medida-la-celda-que-no-cabe.py`): sin tope,
+#   DuckDB se pone un `memory_limit` sacado de LA MAQUINA —25 GiB en una de
+#   32 GB— y en un pod de 4 GiB eso es pedirle al kernel que mate la sesión:
+#   SIGKILL, sin excepción y sin informe. Con tope, lo que no quepa se derrama
+#   a disco y «no cabe» pasa a significar «tarda».
+#
+# Aquí el agente corre con `ORE_MEMORIA_MB=1024`, así que a DuckDB le toca la
+# mitad en Python (~512 MB) y un quinto en la JVM (~204 MB). Lo que se
+# comprueba es que la cifra que ve DuckDB SALE DEL POD y no de esta máquina.
+P=puesto-ana-python; LEN=python
+celda 'sql(\"select current_setting($$memory_limit$$) as m, current_setting($$temp_directory$$) as t\")' \
+  && tiene "d['salida']['tipo']=='tabla'" || falla "4b · no se pudo leer el reparto de DuckDB: $(cuerpo)"
+tiene "float(d['salida']['filas'][0][0].split()[0]) < 600 and 'iB' in d['salida']['filas'][0][0]" \
+  || falla "4b · DuckDB no tiene el tope del pod (se cree el dueño de la maquina): $(cuerpo)"
+tiene "d['salida']['filas'][0][1] != ''" || falla "4b · DuckDB no tiene donde derramar: no podria salir a disco · $(cuerpo)"
+dice "4b · el reparto del pod: DuckDB se pone el tope que le toca de ORE_MEMORIA_MB (y no el de la maquina) y tiene donde derramar"
 
 # ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
 celda_sql() { local l=$LEN; LEN=sql; celda "$1"; local r=$?; LEN=$l; return $r; }
@@ -946,7 +969,7 @@ if [ "$JAVA_OK" = "si" ]; then
   [ "$(pide POST /puestos "$ANA" '{"lenguaje":"java"}')" = "201" ] || falla "9 · abrir jvm: $(cuerpo)"
   tiene "d['id']=='puesto-ana-jvm' and d['entorno']=='jvm'" || falla "9 · la ficha jvm: $(cuerpo)"
   en_cola 51-el-puesto-ana-jvm.yaml | grep -q 'image: .*/puesto-jvm:1' || falla "9 · el Job no lleva puesto-jvm:1"
-  ORE_SERVE="$BASE" PUESTO=puesto-ana-jvm ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+  ORE_SERVE="$BASE" PUESTO=puesto-ana-jvm ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 ORE_MEMORIA_MB=1024 \
     "$JAVA" $ABRE -cp "$CP_JVM" ore.Agente >"$TMP/agente.txt" 2>&1 &
   AGENTE=$!
   for _ in $(seq 1 120); do pide GET /puestos/puesto-ana-jvm "$ANA" >/dev/null; tiene "d['estado']=='vivo'" && break; sleep 0.25; done
@@ -960,6 +983,18 @@ if [ "$JAVA_OK" = "si" ]; then
   celda 'int y = \"a\";' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='CompilationError'" || falla "9 · no compila: $(cuerpo)"
   celda 'record C(String pais) {}\nvar cs = List.of(new C(\"ES\"), new C(\"PT\"));\ncs.stream().filter(c -> c.pais().equals(\"ES\")).count()' && tiene "d['salida']['texto']=='1'" || falla "9 · record + stream (varios snippets): $(cuerpo)"
   celda 'String saludo(String n) { return \"hola \" + n; }' && tiene "d['salida']['tipo']=='vacia'" || falla "9 · un metodo: $(cuerpo)"
+
+  # ── 9d · el reparto del pod, en la JVM (0031 W3) ─────────────────────────
+  #
+  # ⭐ Aquí hay DOS topes y no uno: el de DuckDB y el del asignador de Arrow,
+  #   que nacía con `Long.MAX_VALUE` y al que NO se le aplica el tope de
+  #   memoria directa de la JVM (medido: con `-XX:MaxDirectMemorySize=64m`
+  #   reservó 200 MB sin rechistar). Sin tope, el camino rápido no falla: mata
+  #   el pod.
+  celda 'sql(\"select current_setting($$memory_limit$$) m\").get(0).get(\"m\")' \
+    && tiene "'iB' in d['salida']['texto'] and float(d['salida']['texto'].strip('\"').split()[0]) < 300" \
+    || falla "9d · DuckDB no tiene el tope del pod en la JVM: $(cuerpo)"
+  dice "9d · el reparto del pod en la JVM: DuckDB con el tope que le toca de ORE_MEMORIA_MB (y Arrow con el suyo, que antes era Long.MAX_VALUE)"
 
   # ── 9c · la capa de la JVM en el classpath (0037 ③c) ─────────────────────
   #

@@ -363,6 +363,54 @@ public final class Ore {
         return f;
     }
 
+    // ── El reparto del pod (medido en `medida-la-celda-que-no-cabe.py`) ────
+    //
+    // ⛔ SIN ESTO, DOS DE LOS TRES CAMINOS MATAN EL POD EN VEZ DE CONTARLO:
+    //   el asignador de Arrow nace con `Long.MAX_VALUE` y NO se le aplica el
+    //   tope de memoria directa de la JVM —medido: con
+    //   `-XX:MaxDirectMemorySize=64m` reservó 200 MB sin rechistar, porque
+    //   `arrow-memory-unsafe` le pide al sistema operativo—, y DuckDB se pone
+    //   un `memory_limit` sacado de LA MAQUINA (25 GiB medidos en una de 32 GB),
+    //   no del pod. Los dos acaban en un SIGKILL del kernel: sin excepción, sin
+    //   mensaje y sin informe. Con tope, los dos acaban en una celda con error
+    //   y la sesión sigue viva.
+    //
+    // El reparto de un pod de 4 GiB, y por qué:
+    //
+    //   heap        50 %   lo que `over()` materializa vive aquí (`-XX:MaxRAMPercentage`)
+    //   Arrow       20 %   lotes en vuelo; con `arrow()` se sueltan según se leen
+    //   DuckDB      20 %   y lo que no le quepa lo derrama a disco
+    //   el resto    10 %   metaspace, hilos, el propio JDK
+    //
+    // `ORE_MEMORIA_MB` lo pone la plantilla del Job JUNTO A `limits.memory`, y
+    // `gen-inquilino.py ⑱` exige que digan lo mismo: un reparto calculado sobre
+    // una cifra que no es la del pod es peor que no tener reparto.
+    static final int ARROW_POR_CIENTO = 20;
+    static final int DUCKDB_POR_CIENTO = 20;
+
+    /** Los MB del pod, o 0 si nadie lo dijo (fuera del clúster). */
+    static long memoriaDelPuestoMb() {
+        String m = System.getenv("ORE_MEMORIA_MB");
+        try {
+            return m == null || m.isBlank() ? 0 : Math.max(0, Long.parseLong(m.trim()));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Lo que le toca a una parte, en MB.
+     *
+     * <p>⭐ Sin `ORE_MEMORIA_MB` —las pruebas, un portátil— se reparte sobre EL
+     * HEAP, que siempre se sabe. Nunca se devuelve «sin límite»: un tope
+     * equivocado da un error legible; ninguno da un proceso muerto.
+     */
+    static long tropoMb(int porCiento) {
+        long pod = memoriaDelPuestoMb();
+        long base = pod > 0 ? pod : Runtime.getRuntime().maxMemory() / 1048576;
+        return Math.max(64, base * porCiento / 100);
+    }
+
     // ── DuckDB → Arrow ─────────────────────────────────────────────────────
     private static Connection conexion;
     private static BufferAllocator asignador;
@@ -376,6 +424,12 @@ public final class Ore {
             String hilos = System.getenv("ORE_HILOS");
             try (Statement s = conexion.createStatement()) {
                 if (hilos != null && !hilos.isEmpty()) s.execute("set threads to " + Integer.parseInt(hilos));
+                // ⭐ LO QUE LE TOCA, Y DONDE DERRAMAR LO QUE NO QUEPA. Medido:
+                //   agrupando 12 M de claves con 200 MB, sin sitio donde derramar
+                //   es «Out of Memory Error … cannot be offloaded to disk» y con
+                //   sitio son 12,2 s. La diferencia entre «no se puede» y «tarda».
+                s.execute("set memory_limit='" + tropoMb(DUCKDB_POR_CIENTO) + "MB'");
+                s.execute("set temp_directory='" + rutaSql(derrame()) + "'");
                 // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
                 // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
                 s.execute("set autoinstall_known_extensions = false");
@@ -384,9 +438,35 @@ public final class Ore {
                 s.execute("set TimeZone = 'UTC'");
                 if (Files.isDirectory(EXTENSIONES)) s.execute("set extension_directory = '" + EXTENSIONES + "'");
             }
-            asignador = new RootAllocator();
+            // Con tope, y no `new RootAllocator()`: ver arriba.
+            asignador = new RootAllocator(tropoMb(ARROW_POR_CIENTO) * 1048576L);
         }
         return conexion;
+    }
+
+    /**
+     * Dónde derrama DuckDB lo que no le cabe.
+     *
+     * <p>En el pod, el volumen de trabajo (`/trabajo`, un `emptyDir`), que es
+     * donde se puede escribir y muere con la sesión. Fuera del clúster, el
+     * temporal del sistema — ⛔ y NO el directorio actual, que en las pruebas
+     * es el repositorio: un motor derramando gigabytes dentro del árbol de
+     * fuentes es un susto que no hace falta darse.
+     */
+    private static Path derrame() {
+        for (Path base : new Path[] {Path.of("/trabajo"), Path.of(System.getProperty("java.io.tmpdir", "."))}) {
+            Path d = base.resolve(".duckdb-derrame");
+            if (!Files.isDirectory(base)) {
+                continue;
+            }
+            try {
+                Files.createDirectories(d);
+                return d;
+            } catch (IOException e) {
+                // el siguiente
+            }
+        }
+        return Path.of(System.getProperty("java.io.tmpdir", "."));
     }
 
     private static final Pattern VISTAS_EN_SQL = Pattern.compile("(?i)\\b(?:from|join)\\s+([a-z_][a-z0-9_]*)\\.([a-z_][a-z0-9_]*)\\b");
