@@ -243,6 +243,13 @@ def seccion_duckdb():
         b, s = i % 20, (i // 20) % 5
         con2.execute("create view b%d.s%d.v%d as select %d as n" % (b, s, i, i))
     t2 = time.time()
+    con.execute("create schema ventas.\"default\"")
+    con.execute("create view ventas.\"default\".pedidos_d as select 3 as id")
+    print("     el schema `default` (el de Unity) en DuckDB:")
+    for q in ("select * from ventas.default.pedidos_d", "select * from ventas.pedidos_d"):
+        print("       %-52s %s" % (q, prueba(q)))
+    print("       ⇒ `default` se escribe sin comillas; pero dos partes van a `main`, no a `default`:")
+    print("         mientras se admitan, cada vista de `default` necesita su alias en `main`.")
     print("     coste: 20 bases × 5 schemas = %.0f ms; 5000 vistas de tres niveles = %.0f ms (%.2f ms/vista)"
           % ((t1 - t0) * 1000, (t2 - t1) * 1000, (t2 - t1) * 1000 / 5000))
     print("     ⇒ `ventas.x` (dos partes) resuelve a ventas.main.x: con el schema \"\" = `main`, lo")
@@ -260,9 +267,13 @@ def seccion_rest():
     print("       con 0x1F (`ventas%1Fespana`); Spark 3.5 + Iceberg lo nombra `ore.ventas.espana.pedidos`")
     print("     ore-serve hoy: namespaces de un nivel (%d sitios arman `[ns]`), separador 0x1F %s"
           % (un_nivel, "presente" if sep else "AUSENTE"))
-    print("     ⇒ base.schema en /v1 es un namespace de dos niveles: listNamespaces con `parent`,")
-    print("       loadTable/loadView en `ventas%1Fespana`, y los dialectos de la View con tres")
-    print("       identificadores (ore-view `ident_en`).")
+    print("     ⛔ y no podria: ore-entrada tira la query (`?parent=`), no decodifica `%1F` y `token()`")
+    print("       lo rechaza (http.rs:396, rutas.rs:2113)")
+    print("     UNITY (su Iceberg REST, de su documentacion): el CATALOGO va en `warehouse` (el")
+    print("       `prefix`) y el namespace es el SCHEMA, de un nivel; Spark nombra")
+    print("       `<catalogo>.<schema>.<tabla>` — el mismo nombre que en su SQL.")
+    print("     ⇒ igual aqui: base = `prefix` (/v1/{prefix}/…, que ENDPOINTS ya anuncia), schema = el")
+    print("       namespace de un nivel: sin 0x1F ni `parent`, y Spark dice `ventas.espana.pedidos`.")
 
 
 # ── §7 ──────────────────────────────────────────────────────────────────────
