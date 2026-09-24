@@ -680,6 +680,9 @@ spec:
   celda 'over(\"hr.salidaV\", como=\"arrow\").num_rows' && tiene "d['salida']['tipo']=='error' and 'OOS4002' in d['salida']['mensaje']" || falla "13 · la View encima tampoco: $(cuerpo)"
   celda 'sql(\"select count(*) n from hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['tipo']=='error' and 'OOS4002' in d['salida']['mensaje']" || falla "13 · sql() tampoco: $(cuerpo)"
   [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "403" ] && tiene "d['codigo']=='OOS4002'" || falla "13 · GET datos no dio 403 con el codigo: $(cuerpo)"
+  # la otra puerta de lectura: loadTable del catálogo (/v1). Medido antes: 200 con
+  # credencial y la columna high entera por DuckDB (medida-el-catalogo-como-resolutor.py §4)
+  celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/tables/salida\"); print(c, \"OOS4002\" in str(b))' && tiene "d['salida']['texto'].strip()=='403 True'" || falla "13 · loadTable de hr.salida con el conducto low tenía que ser 403 OOS4002: $(cuerpo)"
   celda 'over(\"hr.lago\", como=\"arrow\").num_rows' && tiene "d['salida']['texto']=='3'" || falla "13 · hr.lago, sin etiqueta, se sigue leyendo: $(cuerpo)"
   # el árbol (una persona, no el puesto) declara por dónde sale hacia el código
   [ "$(pide PUT /arbol/conduits.yaml "$ANA" 'apiVersion: oos.dev/v1alpha1
@@ -692,6 +695,7 @@ spec:
     contextSurface.workspace: { oos.maturity: DRAFT, gdpr.sensitivity: high }
 ')" = "200" ] || falla "13 · contextSurface.workspace a high: $(cuerpo)"
   celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · con contextSurface.workspace high, hr.salida se lee: $(cuerpo)"
+  celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/tables/salida\"); print(c)' && tiene "d['salida']['texto'].strip()=='200'" || falla "13 · con el conducto abierto, loadTable de hr.salida: $(cuerpo)"
   [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'} and d['dataset']=='hr.salida' and 's3.access-key-id' in d.get('credencial', {})" || falla "13 · datos no trae la clasificacion, el dataset y la credencial de lectura (2b): $(cuerpo)"
   dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo; contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
 

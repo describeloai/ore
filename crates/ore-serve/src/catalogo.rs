@@ -277,8 +277,34 @@ impl Servidor {
                 let nombre = format!("{ns}.{t}");
                 let cabeza = p.metodo == "HEAD";
                 let sujeto_s = sujeto.persona.clone();
+                // **El conducto de la lectura, también aquí** (0031 W3.7
+                // gobierno ②). `loadTable` devuelve dónde están los ficheros y,
+                // con `vended-credentials`, con qué leerlos: es una puerta de
+                // lectura tanto como `datos`, y hasta ahora no preguntaba.
+                // Medido (`medida-el-catalogo-como-resolutor.py` §4): con el
+                // conducto en `low`, `datos` era 403 OOS4002 y `loadTable` 200
+                // con credencial, y DuckDB leía la columna `high` entera. Desde
+                // un puesto —o un agente sin él— decide lo mismo que `datos`,
+                // con el mismo código. Y es para leer Y para escribir: DuckDB y
+                // `write()` hacen un solo `loadTable`, y la credencial que da
+                // lee; no se escribe encima de lo que no se puede leer.
+                let desde_puesto = p
+                    .cabeceras
+                    .get(crate::puestos::PUESTO)
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || crate::puestos::es_agente(sujeto);
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
+                        if desde_puesto {
+                            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                            if let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre) {
+                                return error(
+                                    403,
+                                    "ForbiddenException",
+                                    format!("{}: {}", n.codigo, n.mensaje),
+                                );
+                            }
+                        }
                         let r = self.cargar(raiz, &nombre, prestar, &sujeto_s);
                         if cabeza && r.codigo == 200 {
                             Respuesta::sin_contenido()
