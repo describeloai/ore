@@ -108,6 +108,12 @@ pub struct Unidad {
     pub lee: Vec<Nombre>,
     /// `None` si es un análisis.
     pub escribe: Option<Escritura>,
+    /// **La consulta que produce lo que sale**, tal como está escrita: la
+    /// frase entera si es un análisis, y lo que sigue a `… as` o a `insert
+    /// into p.t` si escribe. Es lo que se le pasa a `sql()`; el destino y el
+    /// modo van a `write()`. Se corta del texto —no se reimprime desde el
+    /// árbol sintáctico— para que corra exactamente lo que se escribió.
+    pub consulta: String,
 }
 
 /// Por qué la frase no es una unidad, y dónde mirar.
@@ -210,8 +216,24 @@ pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
         );
     }
 
+    let consulta = match &s {
+        Statement::Query(_) => Some(sin_punto_y_coma(texto)),
+        Statement::CreateTable(c) => c.query.as_deref().and_then(|q| desde(texto, q)),
+        Statement::Insert(i) => i.source.as_deref().and_then(|q| desde(texto, q)),
+        _ => None,
+    };
     if fallos.is_empty() {
-        Ok(Unidad { lee, escribe })
+        let Some(consulta) = consulta else {
+            return Err(vec![Fallo::new(
+                "no se encuentra dónde empieza la consulta de la frase",
+                pos_de_sentencia(&s),
+            )]);
+        };
+        Ok(Unidad {
+            lee,
+            escribe,
+            consulta,
+        })
     } else {
         Err(fallos)
     }
@@ -274,6 +296,16 @@ fn escritura_de_insert(i: &Insert, fallos: &mut Vec<Fallo>) -> Option<Escritura>
             return None;
         }
     };
+    if i.returning.is_some() || i.on.is_some() {
+        fallos.push(
+            Fallo::new(
+                "un `insert` del árbol termina en su `select`: sin `returning` ni `on conflict`",
+                pos,
+            )
+            .ayuda("`insert or replace into p.t select …` para el upsert"),
+        );
+        return None;
+    }
     if !i.columns.is_empty() {
         fallos.push(
             Fallo::new(
@@ -437,6 +469,42 @@ fn pos_de(l: sqlparser::tokenizer::Location) -> Option<Pos> {
         line: l.line as usize,
         col: l.column as usize,
     })
+}
+
+/// Lo que va desde donde empieza `q` hasta el final de la frase. En las dos
+/// formas que escriben (`create or replace table p.t as <q>` e `insert into
+/// p.t <q>`) la consulta es lo último, así que basta con saber dónde EMPIEZA:
+/// el final que `sqlparser` da a algunos nodos es aproximado, el comienzo no.
+fn desde(texto: &str, q: &Query) -> Option<String> {
+    use sqlparser::ast::Spanned;
+    let l = q.span().start;
+    let linea = texto
+        .split_inclusive('\n')
+        .nth((l.line as usize).checked_sub(1)?)?;
+    let antes: usize = texto
+        .split_inclusive('\n')
+        .take(l.line as usize - 1)
+        .map(str::len)
+        .sum();
+    let col = linea
+        .char_indices()
+        .nth((l.column as usize).checked_sub(1)?)?
+        .0;
+    // `insert into p.t (select …)`: el nodo empieza DENTRO del paréntesis, y
+    // cortar ahí deja un `)` suelto al final. Se retrocede sobre los que abren.
+    let mut inicio = antes + col;
+    loop {
+        let previo = texto[..inicio].trim_end();
+        match previo.strip_suffix('(') {
+            Some(resto) => inicio = resto.len(),
+            None => break,
+        }
+    }
+    Some(sin_punto_y_coma(&texto[inicio..]))
+}
+
+fn sin_punto_y_coma(t: &str) -> String {
+    t.trim().trim_end_matches(';').trim_end().to_string()
 }
 
 fn pos_de_sentencia(s: &Statement) -> Option<Pos> {
@@ -702,6 +770,33 @@ mod tests {
                 .contains("lista de columnas")
         );
         assert!(falla("   ")[0].mensaje.contains("vacío"));
+    }
+
+    /// Lo que se le pasa a `sql()`: el `select` tal como se escribió, con sus
+    /// comentarios y su dialecto, sin el envoltorio que escribe.
+    #[test]
+    fn la_consulta_se_corta_del_texto() {
+        let c = |q: &str| analizar(q).unwrap().consulta;
+        assert_eq!(c("select 1;\n"), "select 1");
+        assert_eq!(
+            c(
+                "create or replace table hr.s as\n-- lo de España\nselect * exclude (x)\nfrom hr.a\nqualify row_number() over () = 1;"
+            ),
+            "select * exclude (x)\nfrom hr.a\nqualify row_number() over () = 1"
+        );
+        assert_eq!(
+            c("insert or replace into hr.s with t as (select * from hr.a) from t select *"),
+            "with t as (select * from hr.a) from t select *"
+        );
+        assert_eq!(
+            c("insert into hr.s (select ñ from hr.a)"),
+            "(select ñ from hr.a)"
+        );
+        assert!(
+            falla("insert into hr.s select 1 returning *")[0]
+                .mensaje
+                .contains("returning")
+        );
     }
 
     #[test]

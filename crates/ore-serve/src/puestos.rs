@@ -654,11 +654,14 @@ impl Servidor {
             Some("py") => ("python", "python"),
             Some("ts" | "js" | "mjs") => ("node", "typescript"),
             Some("java") => ("jvm", "java"),
+            // `sql` corre donde corre python: no hay imagen de SQL. Lo que
+            // corre de verdad lo decide `celda_de_sql` con la frase delante.
+            Some("sql") => ("python", "sql"),
             _ => {
                 return Respuesta::error(
                     422,
                     format!(
-                        "`{codigo}` no es de ningún entorno: `.py`, `.ts`/`.js`/`.mjs` o `.java`"
+                        "`{codigo}` no es de ningún entorno: `.py`, `.ts`/`.js`/`.mjs`, `.java` o `.sql`"
                     ),
                 );
             }
@@ -685,7 +688,7 @@ impl Servidor {
         // El fichero, tal como está en el commit de la rama: lo que corre es
         // exactamente eso, y el commit va al informe y a la procedencia de lo
         // que escriba (`ORE_CODIGO=<ruta>@<commit>`).
-        let (texto, commit) = match self.leyendo_en(rama.as_deref(), |raiz| {
+        let (texto, commit, lenguaje) = match self.leyendo_en(rama.as_deref(), |raiz| {
             let ruta = raiz.join(&codigo);
             let Ok(texto) = std::fs::read_to_string(&ruta) else {
                 return Respuesta::error(404, format!("no hay `{codigo}` en el árbol"));
@@ -693,6 +696,17 @@ impl Servidor {
             if texto.len() > TEXTO_MAXIMO {
                 return Respuesta::error(422, format!("`{codigo}` pasa de {TEXTO_MAXIMO} bytes"));
             }
+            // Un `.sql` se analiza y se coteja con el árbol DE ESTE COMMIT antes
+            // de encolar nada: lo que no es una unidad es 422 con su sitio, no
+            // un Job que falla a los dos minutos.
+            let (texto, lenguaje) = if lenguaje == "sql" {
+                match celda_de_sql(raiz, &codigo, &texto) {
+                    Ok(c) => c,
+                    Err(r) => return r,
+                }
+            } else {
+                (texto, lenguaje)
+            };
             let commit = std::process::Command::new("git")
                 .args(["rev-parse", "--short", "HEAD"])
                 .current_dir(raiz)
@@ -704,6 +718,7 @@ impl Servidor {
                 .unwrap_or_else(|| "local".into());
             Respuesta::ok(Json::obj([
                 ("texto", Json::s(&texto)),
+                ("lenguaje", Json::s(lenguaje)),
                 ("commit", Json::s(commit)),
             ]))
         }) {
@@ -717,6 +732,11 @@ impl Servidor {
                     match m.get("commit") {
                         Some(Json::Str(s)) => s.clone(),
                         _ => "local".into(),
+                    },
+                    // un `.sql` que escribe corre como python (`celda_de_sql`)
+                    match m.get("lenguaje") {
+                        Some(Json::Str(s)) if s == "python" => "python",
+                        _ => lenguaje,
                     },
                 ),
                 _ => return Respuesta::error(500, "el árbol no contestó"),
@@ -1861,6 +1881,114 @@ fn nombra(texto: &str, nombre: &str) -> bool {
     })
 }
 
+/// **Un `.sql` del árbol como la celda de un trabajo** (el SQL del árbol).
+///
+/// La frase se analiza y se coteja con el árbol de este commit
+/// (`ore_core::sql_del_arbol`): lo que no es una unidad —o lee lo que no se
+/// lee, o escribe lo que no se escribe— es 422 con los fallos en la forma de
+/// los diagnósticos del árbol (`fichero`, `linea`, `columna`), que es lo que el
+/// editor ya sabe pintar.
+///
+/// - Un `select` es un análisis: la celda es la consulta, en `sql`, y lo que
+///   devuelve va al informe.
+/// - Una frase que escribe se corre con **el mismo `@transform` que un `.py`**,
+///   con lo que la frase declara: el servidor deja leer sólo eso y escribir
+///   sólo eso (W3.7 gobierno ⑤), y lo escrito lleva la misma procedencia
+///   `{codigo, inputs, transform}`. La celda la escribe este proceso a partir
+///   del análisis, no el cliente: la declaración no puede mentir.
+fn celda_de_sql(
+    raiz: &Path,
+    codigo: &str,
+    texto: &str,
+) -> Result<(String, &'static str), Respuesta> {
+    use ore_core::sql_del_arbol::{Fallo, analizar, cotejar};
+    let fallos: Vec<Fallo> = match analizar(texto) {
+        Ok(u) => {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            let f = cotejar(&pkg, &u);
+            if f.is_empty() {
+                return Ok(celda_de_unidad(codigo, &u));
+            }
+            f
+        }
+        Err(f) => f,
+    };
+    let diagnosticos = fallos
+        .iter()
+        .map(|f| {
+            let mut m = vec![
+                ("codigo", Json::s("")),
+                ("mensaje", Json::s(&f.mensaje)),
+                ("fichero", Json::s(codigo)),
+                ("severidad", Json::s("error")),
+            ];
+            if let Some(p) = f.pos {
+                m.push(("linea", Json::Int(p.line as i64)));
+                m.push(("columna", Json::Int(p.col as i64)));
+            }
+            if let Some(a) = &f.ayuda {
+                m.push(("ayuda", Json::s(a)));
+            }
+            Json::obj(m)
+        })
+        .collect();
+    Err(Respuesta {
+        codigo: 422,
+        cuerpo: Json::obj([
+            (
+                "error",
+                Json::s(format!(
+                    "`{codigo}` no es una unidad que se pueda correr: {}",
+                    fallos[0].mensaje
+                )),
+            ),
+            ("diagnosticos", Json::Arr(diagnosticos)),
+        ]),
+    })
+}
+
+/// La celda que corre una unidad ya cotejada. El nombre del transform es el
+/// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
+fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String, &'static str) {
+    let Some(e) = &u.escribe else {
+        return (u.consulta.clone(), "sql");
+    };
+    let base = codigo
+        .rsplit('/')
+        .next()
+        .and_then(|f| f.strip_suffix(".sql"))
+        .unwrap_or("");
+    let nombre = if !base.is_empty()
+        && !base.starts_with(|c: char| c.is_ascii_digit())
+        && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        base.to_string()
+    } else {
+        "consulta".to_string()
+    };
+    // Las cadenas van como JSON, que Python lee igual: comillas, saltos y
+    // no-ASCII quedan escapados o tal cual, nunca abiertos.
+    let cadena = |s: &str| Json::s(s).jcs();
+    let inputs = Json::Arr(u.lee.iter().map(|n| Json::s(n.referencia())).collect()).jcs();
+    let salida = cadena(&e.destino.referencia());
+    let celda = format!(
+        "# `{codigo}`: la frase declara lo que lee y lo que escribe, y corre con el\n\
+         # mismo `@transform` que un `.py` (lo escribe ore-serve, no el cliente).\n\
+         from ore import transform, sql, write\n\
+         \n\
+         \n\
+         @transform(inputs={inputs}, output={salida})\n\
+         def {nombre}():\n    \
+             return write({salida}, sql({consulta}, como=\"arrow\"), modo={modo})\n\
+         \n\
+         \n\
+         print(\"filas\", {nombre}()[\"filas\"])\n",
+        consulta = cadena(&u.consulta),
+        modo = cadena(e.modo.como_en_write()),
+    );
+    (celda, "python")
+}
+
 /// Lo que el árbol dice del dataset de un nombre (0031 §10, 0033: **un
 /// lector, un camino**): el nombre resuelve a un `Dataset` —o a una `View`
 /// cuya raíz de lectura es uno— y su puntero está en `datasets/<p>_<n>.json`.
@@ -2291,6 +2419,91 @@ mod prueba {
         std::fs::remove_file(d.join("datasets/v_salida.json")).unwrap();
         let r = datos_de(&d, "v", "salida", "v.salida");
         assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// **Un `.sql` como trabajo** (el SQL del árbol): un `select` corre tal
+    /// cual en `sql`; lo que escribe corre con el `@transform` que su frase
+    /// declara, escrito por el servidor; lo que no es una unidad es 422 con los
+    /// fallos en la forma de los diagnósticos del árbol.
+    #[test]
+    fn un_sql_del_arbol_es_la_celda_de_un_trabajo() {
+        let d = std::env::temp_dir().join(format!("ore-celda-sql-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let escribe = |rel: &str, t: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        };
+        escribe(
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL }\n",
+        );
+        escribe(
+            "packages/v/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: v, version: 0.1.0, status: active, domain: v }\nspec: { owner: team:v }\n",
+        );
+        escribe(
+            "packages/v/tables/origen.yaml",
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: origen, namespace: v }\nspec:\n  datasource: pg\n  object: public.origen\n  columns: { id: { type: Integer } }\n  reads: { fullScan: cheap }\n  changes: { mode: append, witness: snapshot }\n",
+        );
+        escribe(
+            "packages/v/datasets/pedidos.yaml",
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: v }\nspec:\n  owner: team:v\n  from: { table: v.origen }\n",
+        );
+
+        let (celda, lenguaje) = celda_de_sql(
+            &d,
+            "packages/v/transforms/mira.sql",
+            "select count(*) from v.pedidos;\n",
+        )
+        .unwrap_or_else(|r| panic!("{}", r.cuerpo.jcs()));
+        assert_eq!(
+            (celda.as_str(), lenguaje),
+            ("select count(*) from v.pedidos", "sql")
+        );
+
+        let (celda, lenguaje) = celda_de_sql(
+            &d,
+            "packages/v/transforms/resumen.sql",
+            "insert or replace into v.resumen\n-- los \"grandes\"\nselect id from v.pedidos where id > 1\n",
+        )
+        .unwrap_or_else(|r| panic!("{}", r.cuerpo.jcs()));
+        assert_eq!(lenguaje, "python");
+        for trozo in [
+            "@transform(inputs=[\"v.pedidos\"], output=\"v.resumen\")",
+            "def resumen():",
+            "return write(\"v.resumen\", sql(\"select id from v.pedidos where id > 1\", como=\"arrow\"), modo=\"upsert\")",
+            "print(\"filas\", resumen()[\"filas\"])",
+        ] {
+            assert!(celda.contains(trozo), "falta {trozo:?} en:\n{celda}");
+        }
+        // un nombre de fichero que no es un identificador no rompe la celda
+        let (celda, _) = celda_de_sql(
+            &d,
+            "packages/v/transforms/1-resumen.sql",
+            "create or replace table v.r as select * from v.pedidos",
+        )
+        .unwrap_or_else(|r| panic!("{}", r.cuerpo.jcs()));
+        assert!(celda.contains("def consulta():"), "{celda}");
+
+        let r = celda_de_sql(
+            &d,
+            "packages/v/transforms/malo.sql",
+            "select *\nfrom v.origen join v.nadie using (id)",
+        )
+        .unwrap_err();
+        assert_eq!(r.codigo, 422);
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains("`Table` de una fuente") && j.contains("v.nadie"),
+            "{j}"
+        );
+        assert!(
+            j.contains("\"fichero\":\"packages/v/transforms/malo.sql\",\"linea\":2")
+                || (j.contains("\"linea\":2") && j.contains("\"columna\":6")),
+            "{j}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

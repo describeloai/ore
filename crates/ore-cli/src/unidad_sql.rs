@@ -96,8 +96,13 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
             .as_ref()
             .map(|u| u.lee.iter().map(nombre_json).collect())
             .unwrap_or_default();
+        let consulta = unidad
+            .as_ref()
+            .map(|u| Json::s(&u.consulta))
+            .unwrap_or(Json::Bool(false));
         let j = Json::obj([
             ("fichero", Json::s(fichero.to_string_lossy())),
+            ("consulta", consulta),
             ("cotejado", Json::Bool(arbol.is_some())),
             ("lee", Json::Arr(lee)),
             ("escribe", escribe),

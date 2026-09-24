@@ -609,6 +609,19 @@ PY
   [ "$CODIGO" = 1 ] || falla "11 · el trabajo roto tenía que salir con 1 y salió con $CODIGO"
   [ "$(pide GET /trabajos/$T2 "$ANA")" = "200" ] && tiene "d['trabajo']=='hecho' and d['informe']['estado']=='error' and 'se rompe' in d['informe']['salida']['mensaje']" || falla "11 · el informe del roto: $(cuerpo)"
   [ "$(pide GET /trabajos "$ANA")" = "200" ] && tiene "[t['id'] for t in d['trabajos']]==['$T2','$T']" || falla "11 · los trabajos, del más reciente al más viejo: $(cuerpo)"
+  # 11b · un `.sql` del árbol (el SQL del árbol): la frase declara lo que lee y
+  # lo que escribe, y corre con el mismo @transform que un .py
+  printf 'create or replace table hr.trabajo_sql as\n-- lo de hr.lago, contado\nselect count(*) as n from hr.lago\n' > "$A/packages/hr/transforms/contar.sql"
+  printf 'select *\nfrom hr.lago join hr.nadie using (n)\n' > "$A/packages/hr/transforms/malo.sql"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/transforms/malo.sql"}')" = "422" ] && tiene "any(x.get('linea')==2 and 'hr.nadie' in x['mensaje'] for x in d['diagnosticos'])" || falla "11b · un .sql que nombra lo que no hay: $(cuerpo)"
+  [ "$(pide POST /trabajos "$ANA" '{"codigo":"packages/hr/transforms/contar.sql"}')" = "202" ] && tiene "d['entorno']=='python'" || falla "11b · lanzar un .sql: $(cuerpo)"
+  T3=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP/r.json")
+  ORE_SERVE="$BASE" PUESTO="$T3" TRABAJO="packages/hr/transforms/contar.sql@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
+    "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo3.txt" 2>&1; CODIGO=$?
+  [ "$CODIGO" = 0 ] || falla "11b · el agente del .sql salió con $CODIGO: $(tail -5 "$TMP/trabajo3.txt")"
+  [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and 'filas 1' in d['informe']['salida']['texto']" || falla "11b · el informe del .sql: $(cuerpo)"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/contar.sql@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"contar"}, pr' "$A/datasets/hr_trabajo_sql.json" "$T3" || falla "11b · la procedencia de lo que escribió el .sql: $(cat "$A/datasets/hr_trabajo_sql.json")"
+  dice "11b · un .sql como trabajo: lo que nombra lo que no hay es 422 con la línea; create or replace table hr.trabajo_sql as select … corre con @transform(inputs=[hr.lago], output=hr.trabajo_sql) y lo escrito lleva la procedencia de un .py"
   dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"
 else
   dice "11 · (sin el lago: el trabajo no se prueba aquí)"
