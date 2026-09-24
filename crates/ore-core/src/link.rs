@@ -61,12 +61,33 @@ impl Loaded {
             .and_then(crate::document::ApiVersion::parse)
     }
 
-    /// `<namespace>.<name>`, o solo `<name>` si el documento no lleva espacio de
-    /// nombres.
+    /// v1alpha13. El schema del documento, si es de los que se ordenan en
+    /// schemas (`Kind::CON_SCHEMA`): el que declara, o `default`. `None` en el
+    /// vocabulario compartido y en lo estructural.
+    pub fn schema(&self) -> Option<&str> {
+        if !self.kind.con_schema() {
+            return None;
+        }
+        Some(
+            self.meta("schema")
+                .and_then(|s| s.as_str())
+                .unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO),
+        )
+    }
+
+    /// Su nombre cualificado **en forma corta** —la clave del motor—:
+    /// `<namespace>.<name>` si esta en `default` (o no se ordena en schemas),
+    /// `<namespace>.<schema>.<name>` si no; o solo `<name>` si no lleva
+    /// espacio de nombres. La completa, con `normalize::completo`.
     pub fn qname(&self) -> Option<String> {
         let name = self.meta("name")?.as_str()?;
         Some(match self.meta("namespace").and_then(|n| n.as_str()) {
-            Some(ns) => format!("{ns}.{name}"),
+            Some(ns) => crate::normalize::corto(
+                ns,
+                self.schema()
+                    .unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO),
+                name,
+            ),
             None => name.to_string(),
         })
     }
@@ -175,17 +196,32 @@ impl Package {
         self.of(Kind::RequestPolicy).next()
     }
 
+    /// La entidad con este nombre cualificado (en tres partes o en la corta).
     pub fn entity(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
         self.of(Kind::Entity)
-            .find(|d| d.qname().as_deref() == Some(qname))
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
     }
 
     /// Resuelve una referencia **tal como la escribió el autor**: la forma
-    /// corta es legal dentro del mismo espacio de nombres (N1).
+    /// corta es legal dentro del mismo espacio de nombres (N1), y desde
+    /// v1alpha13, dentro del mismo schema.
     pub fn resolve_entity(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
-        let ns = desde.meta("namespace").and_then(|n| n.as_str());
-        self.entity(&crate::normalize::qualify(referencia, ns))
+        self.entity(&cualificar(referencia, desde))
     }
+}
+
+/// v1alpha13 01 §5. Una referencia a contenido del catalogo, escrita desde
+/// `desde`, a su forma corta: una parte es su paquete y su schema; dos,
+/// `<paquete>.<nombre>` en `default`; tres, completa.
+pub fn cualificar(referencia: &str, desde: &Loaded) -> String {
+    crate::normalize::qualify_catalogo(
+        referencia,
+        desde.meta("namespace").and_then(|n| n.as_str()),
+        desde
+            .schema()
+            .unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO),
+    )
 }
 
 /// Nombres de las propiedades declaradas por una entidad.

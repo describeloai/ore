@@ -80,6 +80,9 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // sale de una tabla, una vista o un dataset del paquete, o lo escribe
     // codigo del paquete.
     Kind::Dataset,
+    // v1alpha13. El schema es del paquete: su `namespace` es el paquete, y su
+    // nombre, `<paquete>.<schema>`.
+    Kind::Schema,
     Kind::Resolution,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo

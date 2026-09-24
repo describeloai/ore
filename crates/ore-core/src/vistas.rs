@@ -52,7 +52,6 @@ use crate::code::Code;
 use crate::diag::Diagnostic;
 use crate::document::Kind;
 use crate::link::{Loaded, Package};
-use crate::normalize::qualify;
 use crate::parse::Node;
 
 /// De dónde sale una vista: de una tabla, de otra vista, o —v1alpha7— del
@@ -180,22 +179,23 @@ pub enum SinRaiz {
 impl Package {
     /// La vista con este nombre cualificado.
     pub fn view(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
         self.of(Kind::View)
-            .find(|d| d.qname().as_deref() == Some(qname))
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
     }
 
     /// Resuelve una referencia a vista **tal como la escribió el autor**: la
     /// forma corta vale dentro del mismo espacio de nombres (N1), igual que
     /// para una entidad.
     pub fn resolve_view(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
-        let ns = desde.meta("namespace").and_then(|n| n.as_str());
-        self.view(&qualify(referencia, ns))
+        self.view(&crate::link::cualificar(referencia, desde))
     }
 
     /// La tabla con este nombre cualificado.
     pub fn table(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
         self.of(Kind::Table)
-            .find(|d| d.qname().as_deref() == Some(qname))
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
     }
 
     /// Todas las tablas del paquete.
@@ -206,14 +206,14 @@ impl Package {
     /// Resuelve una referencia a tabla con la misma regla que a una vista: la
     /// forma corta vale dentro del mismo espacio de nombres (N1).
     pub fn resolve_table(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
-        let ns = desde.meta("namespace").and_then(|n| n.as_str());
-        self.table(&qualify(referencia, ns))
+        self.table(&crate::link::cualificar(referencia, desde))
     }
 
     /// v1alpha12. El dataset con este nombre cualificado.
     pub fn dataset(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
         self.of(Kind::Dataset)
-            .find(|d| d.qname().as_deref() == Some(qname))
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
     }
 
     /// Todos los datasets del paquete.
@@ -223,8 +223,7 @@ impl Package {
 
     /// Resuelve una referencia a dataset con la misma regla (N1).
     pub fn resolve_dataset(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
-        let ns = desde.meta("namespace").and_then(|n| n.as_str());
-        self.dataset(&qualify(referencia, ns))
+        self.dataset(&crate::link::cualificar(referencia, desde))
     }
 
     /// Lo que una vista o un dataset tiene debajo por nombre: una vista **o un
@@ -259,15 +258,15 @@ pub fn es_copia(d: &Loaded) -> bool {
 /// `spec.from` de una vista.
 pub fn fuente(v: &Loaded) -> Option<Fuente> {
     let from = v.section("from")?;
-    let ns = v.meta("namespace").and_then(|n| n.as_str());
+    let q = |r: &str| crate::link::cualificar(r, v);
     if let Some((_, vista)) = from.get("view") {
-        return Some(Fuente::Vista(qualify(vista.as_str()?, ns)));
+        return Some(Fuente::Vista(q(vista.as_str()?)));
     }
     if let Some((_, tabla)) = from.get("table") {
-        return Some(Fuente::Tabla(qualify(tabla.as_str()?, ns)));
+        return Some(Fuente::Tabla(q(tabla.as_str()?)));
     }
     if let Some((_, dataset)) = from.get("dataset") {
-        return Some(Fuente::Dataset(qualify(dataset.as_str()?, ns)));
+        return Some(Fuente::Dataset(q(dataset.as_str()?)));
     }
     let datasource = from.get("datasource")?.1.as_str()?.to_string();
     let objeto = from

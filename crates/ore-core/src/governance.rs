@@ -1236,7 +1236,8 @@ fn deberes(pkg: &Package, r: &Loaded, out: &mut Vec<Diagnostic>) {
         let Some(nombre) = nodo.as_str() else {
             continue;
         };
-        let q = normalize::qualify(nombre, ns);
+        // v1alpha13: la funcion es del catalogo; una parte, en `default`.
+        let q = normalize::qualify_catalogo(nombre, ns, normalize::SCHEMA_POR_DEFECTO);
         let resuelve = pkg
             .docs
             .iter()
@@ -1331,7 +1332,7 @@ fn aporta(pkg: &Package, r: &Loaded) -> BTreeSet<&'static str> {
         .any(|d| {
             d.get("call")
                 .and_then(|(_, v)| v.as_str())
-                .map(|n| normalize::qualify(n, ns))
+                .map(|n| normalize::qualify_catalogo(n, ns, normalize::SCHEMA_POR_DEFECTO))
                 .is_some_and(|q| {
                     pkg.docs
                         .iter()

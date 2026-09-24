@@ -313,6 +313,64 @@ pub fn qualify(nombre: &str, namespace: Option<&str>) -> String {
     }
 }
 
+/// v1alpha13. El schema de lo que no dice otro: existe en todo paquete sin
+/// declararse, como el `default` de cada catalogo de Unity.
+pub const SCHEMA_POR_DEFECTO: &str = "default";
+
+/// v1alpha13 · **La forma CORTA de un nombre del catalogo** —la clave con la
+/// que el motor lo guarda y lo busca—: `<paquete>.<nombre>` si esta en
+/// `default`, `<paquete>.<schema>.<nombre>` si no.
+///
+/// Es biyectiva con la completa (lo de `default` tiene dos partes, lo demas
+/// tres), asi que dos documentos distintos nunca comparten clave. Y es la que
+/// todo el que ya habla con el motor escribe —`hr.empleados`—: lo de antes de
+/// v1alpha13 sigue llamandose lo mismo.
+pub fn corto(paquete: &str, schema: &str, nombre: &str) -> String {
+    if schema == SCHEMA_POR_DEFECTO {
+        format!("{paquete}.{nombre}")
+    } else {
+        format!("{paquete}.{schema}.{nombre}")
+    }
+}
+
+/// v1alpha13 · Un nombre cualificado, a su forma corta: `p.default.n` es
+/// `p.n`; lo demas no cambia.
+pub fn a_corto(nombre: &str) -> std::borrow::Cow<'_, str> {
+    let mut partes = nombre.split('.');
+    match (partes.next(), partes.next(), partes.next(), partes.next()) {
+        (Some(p), Some(SCHEMA_POR_DEFECTO), Some(n), None) => format!("{p}.{n}").into(),
+        _ => nombre.into(),
+    }
+}
+
+/// v1alpha13 · La forma COMPLETA —tres partes, `default` incluido— de una
+/// forma corta: la de la forma canonica de un documento de v1alpha13 (N1) y
+/// su `docId` (§5.2).
+pub fn completo(corto: &str) -> String {
+    let mut partes = corto.split('.');
+    match (partes.next(), partes.next(), partes.next()) {
+        (Some(p), Some(n), None) => format!("{p}.{SCHEMA_POR_DEFECTO}.{n}"),
+        _ => corto.to_string(),
+    }
+}
+
+/// v1alpha13 01 §5 · **Una referencia a contenido del catalogo**, escrita
+/// desde un documento de `namespace` y `schema`, a su forma corta:
+///
+/// - una parte: el mismo paquete y **el mismo schema** (`pedidos`);
+/// - dos: `<paquete>.<nombre>` en `default` —la forma de antes, que significa
+///   lo que significaba—;
+/// - tres: completa (`ventas.francia.pedidos`; `ventas.default.x` es `ventas.x`).
+///
+/// Distinta de [`qualify`], que sigue siendo la del vocabulario compartido: un
+/// concepto no esta en un schema.
+pub fn qualify_catalogo(nombre: &str, namespace: Option<&str>, schema: &str) -> String {
+    match namespace {
+        Some(ns) if !nombre.contains('.') => corto(ns, schema, nombre),
+        _ => a_corto(nombre).into_owned(),
+    }
+}
+
 /// N3 · Las formas en que YAML escribe «nada».
 fn es_nulo(raw: &str, style: Style) -> bool {
     style == Style::Plain && matches!(raw, "" | "~" | "null" | "Null" | "NULL")
@@ -325,6 +383,20 @@ fn nfc(s: &str) -> String {
 struct Ctx {
     /// El espacio de nombres del documento, para N1.
     namespace: Option<String>,
+    /// v1alpha13. El schema del documento, para N1: una referencia de una
+    /// parte es del mismo schema.
+    schema: String,
+    /// v1alpha13. N1 expande a las TRES partes (`default` incluido); antes,
+    /// a dos, como siempre.
+    completo: bool,
+}
+
+impl Ctx {
+    /// N1 sobre una referencia a contenido del catalogo.
+    fn referencia(&self, nombre: &str) -> String {
+        let q = qualify_catalogo(nombre, self.namespace.as_deref(), &self.schema);
+        if self.completo { completo(&q) } else { q }
+    }
 }
 
 fn escalar(raw: &str, style: Style, clave: &str, ctx: &Ctx) -> Json {
@@ -345,7 +417,7 @@ fn escalar(raw: &str, style: Style, clave: &str, ctx: &Ctx) -> Json {
 
     // N1 · un nombre sin punto en un campo de referencia es la forma corta.
     if es_referencia(clave) {
-        return Json::Str(nfc(&qualify(raw, ctx.namespace.as_deref())));
+        return Json::Str(nfc(&ctx.referencia(raw)));
     }
     Json::Str(nfc(raw))
 }
@@ -373,10 +445,14 @@ fn valor(n: &Node, clave: &str, ctx: &Ctx) -> Option<Json> {
                         xs.sort_by_key(|x| x.jcs());
                     }
                     // N1 · la referencia que la clave sola no distingue.
-                    if REFERENCIAS_POR_MAPA.contains(&(clave, nombre))
+                    // v1alpha13: y `from.dataset`, que v1alpha12 abrio sin
+                    // anadirla aqui. Solo desde v1alpha13, para que la forma
+                    // canonica de lo de antes no cambie.
+                    let de_dataset = ctx.completo && (clave, nombre) == ("from", "dataset");
+                    if (REFERENCIAS_POR_MAPA.contains(&(clave, nombre)) || de_dataset)
                         && let Json::Str(ref s) = j
                     {
-                        j = Json::Str(qualify(s, ctx.namespace.as_deref()));
+                        j = Json::Str(ctx.referencia(s));
                     }
                     m.insert(nfc(nombre), j);
                 }
@@ -453,23 +529,39 @@ fn defaults(kind: crate::document::Kind, doc: &mut Json) {
 /// cambia lo que el documento dice, y por tanto no debe cambiar su digest ni
 /// invalidar una firma (`90-canonical-form` §5.2).
 pub fn doc_id(d: &Loaded) -> String {
-    format!(
-        "{}:{}",
-        d.kind.as_str(),
-        d.qname().unwrap_or_else(|| "<sin nombre>".into())
-    )
+    let qn = d.qname().unwrap_or_else(|| "<sin nombre>".into());
+    // v1alpha13 01 §6: el de un documento de v1alpha13 del catalogo es de TRES
+    // partes; el de uno anterior, el de dos de siempre (su digest no cambia).
+    let qn = if d.kind.con_schema() && d.version() >= Some(crate::document::ApiVersion::V1Alpha13) {
+        completo(&qn)
+    } else {
+        qn
+    };
+    format!("{}:{qn}", d.kind.as_str())
 }
 
 /// La forma canónica de un documento.
 pub fn document(d: &Loaded) -> Json {
+    let v13 = d.version() >= Some(crate::document::ApiVersion::V1Alpha13);
     let ctx = Ctx {
         namespace: d
             .meta("namespace")
             .and_then(|n| n.as_str())
             .map(str::to_string),
+        schema: d.schema().unwrap_or(SCHEMA_POR_DEFECTO).to_string(),
+        completo: v13,
     };
     let mut j = valor(&d.root, "", &ctx).unwrap_or(Json::Obj(BTreeMap::new()));
     defaults(d.kind, &mut j);
+    // v1alpha13 · N2: `metadata.schema` se escribe aunque sea `default`.
+    if v13
+        && d.kind.con_schema()
+        && let Json::Obj(raiz) = &mut j
+        && let Some(Json::Obj(meta)) = raiz.get_mut("metadata")
+    {
+        meta.entry("schema".to_string())
+            .or_insert_with(|| Json::s(SCHEMA_POR_DEFECTO));
+    }
     j
 }
 
@@ -480,7 +572,11 @@ pub fn document(d: &Loaded) -> Json {
 /// que `01-package` §4.3 prohíbe. Lo que sí se aplica es lo que no depende del
 /// perfil: nulos fuera, NFC, comentarios y formato descartados.
 pub fn foreign(root: &Node) -> Json {
-    let ctx = Ctx { namespace: None };
+    let ctx = Ctx {
+        namespace: None,
+        schema: SCHEMA_POR_DEFECTO.to_string(),
+        completo: false,
+    };
     valor(root, "", &ctx).unwrap_or(Json::Obj(BTreeMap::new()))
 }
 
@@ -645,6 +741,54 @@ mod tests {
             "metadata: { name: v, namespace: hr }\nspec: { from: { table: hr.empleados } }\n",
         ));
         assert_eq!(corto.jcs(), largo.jcs());
+    }
+
+    /// v1alpha13 01 §6: en un documento de v1alpha13, N1 expande a TRES partes
+    /// —con el schema de quien escribe, y `default` incluido—, N2 escribe
+    /// `metadata.schema` y el `docId` es de tres partes. Uno de v1alpha12 no
+    /// cambia: dos partes y sin la clave.
+    #[test]
+    fn v1alpha13_escribe_los_tres_niveles_y_lo_de_antes_no_cambia() {
+        let v13 = |meta: &str, from: &str| {
+            doc(
+                Kind::View,
+                &format!(
+                    "apiVersion: oos.dev/v1alpha13\nmetadata: {{ name: v, namespace: ventas{meta} }}\nspec: {{ from: {{ {from} }} }}\n"
+                ),
+            )
+        };
+        // una parte, desde `espana`: su schema
+        let d = v13(", schema: espana", "dataset: pedidos");
+        assert!(
+            document(&d)
+                .jcs()
+                .contains(r#""dataset":"ventas.espana.pedidos""#),
+            "{}",
+            document(&d).jcs()
+        );
+        assert_eq!(doc_id(&d), "View:ventas.espana.v");
+        // dos partes: `default`, escrito entero; y `metadata.schema` materializado
+        let d = v13("", "table: ventas.clientes");
+        let j = document(&d).jcs();
+        assert!(j.contains(r#""table":"ventas.default.clientes""#), "{j}");
+        assert!(j.contains(r#""schema":"default""#), "{j}");
+        assert_eq!(doc_id(&d), "View:ventas.default.v");
+        // tres partes con `default`, y dos: el mismo documento
+        assert_eq!(
+            document(&v13("", "table: ventas.default.clientes")).jcs(),
+            document(&v13("", "table: ventas.clientes")).jcs()
+        );
+        // v1alpha12: como siempre
+        let d = doc(
+            Kind::View,
+            "apiVersion: oos.dev/v1alpha12\nmetadata: { name: v, namespace: ventas }\nspec: { from: { table: clientes } }\n",
+        );
+        let j = document(&d).jcs();
+        assert!(
+            j.contains(r#""table":"ventas.clientes""#) && !j.contains("schema"),
+            "{j}"
+        );
+        assert_eq!(doc_id(&d), "View:ventas.v");
     }
 
     #[test]

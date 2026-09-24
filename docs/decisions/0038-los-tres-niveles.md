@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0 hecho: la gramática, OOS v1alpha13; P1–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido (P0 y P1 hechos; P2–P7 pendientes) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
@@ -80,7 +80,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | # | Paso | Tamaño |
 |---|---|---|
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
-| **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | medio |
+| **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | medio |
 | **P3** | SQL de tres partes: analizador, `sql()`, `write()`, los tres SDK (ATTACH + alias), el LSP, `ore datasets`; las dos partes con aviso | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace), crear y listar schemas | medio |
@@ -89,6 +89,37 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P7** | Las semillas (SQL, Python, Java) escribiendo en la base y el schema que el asistente pregunte | pequeño |
 
 Cada paso termina en verde de punta a punta antes del siguiente.
+
+## P1, hecho: la identidad en el núcleo
+
+**La clave del motor es la forma CORTA** (`normalize::corto`): `p.n` en `default`, `p.s.n` en
+otro schema. Es biyectiva con la completa —lo de `default` tiene dos partes y lo demás tres—, así
+que dos documentos nunca comparten clave, y es la que todo el que ya habla con el motor escribe:
+`qname()`, las búsquedas, `OOS2035`, el índice y los consumidores de fuera (ore-serve, los SDK, la
+consola) ven lo mismo que antes para todo lo de hoy. La **completa** (`completo`, tres partes con
+`default`) es la de la forma canónica de un documento de v1alpha13 y su `docId`.
+
+- `Loaded::schema()` (lo declarado o `default`, en los siete kinds del catálogo) y `qname()` corto;
+  las búsquedas (`entity/view/table/dataset`) aceptan las dos formas (`a_corto`).
+- `normalize::qualify_catalogo` / `link::cualificar`: una parte = su paquete **y su schema**; dos =
+  `default`; tres = completa. `qualify` sigue siendo la del vocabulario compartido. Cambiadas donde
+  lo nombrado es del catálogo: enlazado, vistas, `fuente`, `actuar` (`call`), `cedar_schema`,
+  `governance` (la función de un deber), `exporta` (según el kind de destino) y el índice
+  (`ref_doc`, `ref_qn` con el schema de quien enlaza).
+- `sin_propiedad`: la propiedad es **siempre** el último segmento (con tres niveles, adivinar por
+  el número de puntos cortaba `hr.rrhh.Employee` a `hr.rrhh`; y `Employee.salary` no se cortaba).
+- `ApiVersion::V1Alpha13`, `Kind::Schema` (en `DEL_PAQUETE`: su namespace es el paquete),
+  `metadata.schema` desde v1alpha13 (antes, o en el vocabulario, `OOS1005` con su porqué) y
+  `schema.rs` (`OOS2036`, `OOS2037`, `default`/`information_schema`, el `owner`), tras la
+  pertenencia y antes del enlazado.
+- Forma canónica de v1alpha13: N1 a tres partes (y `from.dataset`, que v1alpha12 no expandía),
+  N2 escribe `schema: default`, `docId` de tres partes. Lo anterior, igual.
+- El índice lleva `schema` en cada ítem (`null` en el vocabulario).
+
+**Medido**: conformidad v1alpha13 **15/15** (OOS `d0f2628`, los `expects` medidos antes de
+escribirse) y las demás versiones enteras; sobre el árbol de victor el binario de antes y el de
+después dan el mismo `validate`, los mismos 58 ítems con las mismas refs y **el mismo digest de
+bundle**; el índice sólo gana el campo `schema`.
 
 ## Lo que no cambia
 

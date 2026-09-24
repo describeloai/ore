@@ -76,11 +76,14 @@ fn ns(d: &Loaded) -> Option<&str> {
 
 /// La entidad de una referencia a propiedad: `hr.Employee.baseSalary` es una
 /// referencia a `hr.Employee`. Quien se acopla, se acopla a la entidad.
+///
+/// La propiedad es **siempre el ultimo segmento** —el campo (`derivedFrom`,
+/// `writes`) dice que nombra una propiedad—, y lo de delante es la entidad en
+/// una, dos o tres partes (v1alpha13 01 §5). Antes se adivinaba por el numero
+/// de puntos, y con tres niveles `hr.rrhh.Employee` se habria cortado a
+/// `hr.rrhh`; y `Employee.baseSalary`, sin paquete, no se cortaba.
 fn sin_propiedad(r: &str) -> &str {
-    match r.rsplit_once('.') {
-        Some((izq, _)) if izq.contains('.') => izq,
-        _ => r,
-    }
+    r.rsplit_once('.').map(|(izq, _)| izq).unwrap_or(r)
 }
 
 /// Todas las referencias que un documento escribe a otro documento.
@@ -93,7 +96,12 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
     let n = ns(d);
     let mut push = |r: &str, kind: Kind, clase: &'static str, pos| {
         out.push(Ref {
-            destino: qualify(r, n),
+            // v1alpha13: lo del catalogo, con el schema de quien escribe.
+            destino: if kind.con_schema() {
+                crate::link::cualificar(r, d)
+            } else {
+                qualify(r, n)
+            },
             kind,
             clase,
             pos,
@@ -224,7 +232,11 @@ fn exportado(pkg: &Package, miembros: &[PathBuf]) -> BTreeMap<PathBuf, BTreeSet<
         let e = out.entry(sitio.to_path_buf()).or_default();
         for i in v.items() {
             if let Some(s) = i.as_str() {
-                e.insert(qualify(s, ns(p)));
+                e.insert(crate::normalize::qualify_catalogo(
+                    s,
+                    ns(p),
+                    crate::normalize::SCHEMA_POR_DEFECTO,
+                ));
             }
         }
     }
@@ -258,7 +270,8 @@ pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
         };
         for i in v.items() {
             let Some(s) = i.as_str() else { continue };
-            let qn = qualify(s, ns(p));
+            let qn =
+                crate::normalize::qualify_catalogo(s, ns(p), crate::normalize::SCHEMA_POR_DEFECTO);
             let suyo = donde
                 .iter()
                 .find(|((n, _), m)| *n == qn && **m == sitio)

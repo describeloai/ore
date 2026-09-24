@@ -62,6 +62,7 @@ pub mod politica;
 pub mod propuesta;
 pub mod proyectos;
 pub mod repositorios;
+pub mod schema;
 pub mod significado;
 pub mod sql_del_arbol;
 pub mod sync;

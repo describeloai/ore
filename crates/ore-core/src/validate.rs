@@ -163,7 +163,37 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
     check_keys(file, root, &raiz_ok, "", &mut diags);
 
     if let Some((_, meta)) = root.get("metadata") {
-        check_keys(file, meta, kind.metadata_keys(), "metadata.", &mut diags);
+        let mut admitidas = kind.metadata_keys_en(version);
+        // v1alpha13: `metadata.schema` fuera de donde vale no es una errata:
+        // es de otra version, o de otra clase de documento, y el mensaje lo
+        // dice (0038).
+        if let Some((k, _)) = meta.get("schema")
+            && !admitidas.contains(&"schema")
+        {
+            let (msg, ayuda) = if kind.con_schema() {
+                (
+                    "`metadata.schema` es de v1alpha13".to_string(),
+                    "declara `apiVersion: oos.dev/v1alpha13`: desde ahí el nombre de lo que un \
+                     paquete tiene es `<paquete>.<schema>.<nombre>`. En una versión anterior \
+                     el documento está en el schema `default`",
+                )
+            } else {
+                (
+                    format!("un `{}` no se ordena en schemas", kind.as_str()),
+                    "el schema es del contenido del catálogo —tablas, vistas, datasets, \
+                     entidades, funciones, acciones y modelos entrenados—. El vocabulario \
+                     compartido se nombra por su vocabulario, y el mismo nombre tiene que \
+                     valer desde todos los paquetes",
+                )
+            };
+            diags.push(
+                Diagnostic::new(Code::Oos1005, file, msg)
+                    .at(k.pos())
+                    .help(ayuda),
+            );
+            admitidas.push("schema");
+        }
+        check_keys(file, meta, &admitidas, "metadata.", &mut diags);
         if kind == Kind::View {
             labels_de_vista(file, meta, &mut diags);
         }
@@ -351,6 +381,13 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     let pertenencia = crate::pertenencia::check(&pkg);
     if !pertenencia.is_empty() {
         return pertenencia;
+    }
+    // **Y el schema, por lo mismo** (v1alpha13): la carpeta que no es la del
+    // schema que el documento dice, o un schema que nadie declara, harian
+    // fallar a todo lo que lo nombra en tres partes.
+    let schema = crate::schema::check(&pkg);
+    if !schema.is_empty() {
+        return schema;
     }
     // Enlazado antes que tipos: no se puede comprobar el tipo de una referencia
     // que no resuelve. Es la misma disciplina de fases que impide enlazar un

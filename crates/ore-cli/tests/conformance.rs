@@ -1257,6 +1257,16 @@ fn borrador_de_v1alpha12() {
     marcador("v1alpha12", "tener", "BORRADOR · OOS v1alpha12 · tener");
 }
 
+/// v1alpha13: ordenar. El schema, segundo nivel del nombre de lo que un
+/// paquete tiene: `<paquete>.<schema>.<nombre>`, único por schema, como en
+/// Unity Catalog (0038). Quince casos; los que importan son los de las dos
+/// partes: un documento de v1alpha12 se nombra `ventas.clientes` y
+/// `ventas.default.clientes` indistintamente.
+#[test]
+fn borrador_de_v1alpha13() {
+    marcador("v1alpha13", "ordenar", "BORRADOR · OOS v1alpha13 · ordenar");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -118,9 +118,23 @@ pub fn ref_de(kind: Kind, ns: Option<&str>, name: &str) -> String {
     }
 }
 
+/// La dirección de un documento: `kind:` + su nombre cualificado en forma
+/// corta (v1alpha13: `p.n` en `default`, `p.s.n` en otro schema).
+pub fn ref_doc(d: &Loaded) -> String {
+    format!("{}:{}", kind_en_ref(d.kind), d.qname().unwrap_or_default())
+}
+
 /// `p.x` o `x` (con el namespace de quien enlaza) → la ref con el kind que
-/// quien enlaza espera.
-fn ref_qn(kind: Kind, texto: &str, ns: Option<&str>) -> String {
+/// quien enlaza espera. Si lo nombrado es del catálogo (v1alpha13), una parte
+/// es del schema de quien enlaza y tres son completas: su forma corta.
+fn ref_qn(kind: Kind, texto: &str, ns: Option<&str>, schema: &str) -> String {
+    if kind.con_schema() {
+        return format!(
+            "{}:{}",
+            kind_en_ref(kind),
+            crate::normalize::qualify_catalogo(texto, ns, schema)
+        );
+    }
     match texto.split_once('.') {
         Some((p, n)) => ref_de(kind, Some(p), n),
         None => ref_de(kind, ns, texto),
@@ -296,10 +310,11 @@ fn define_de(pkg: &Package, d: &Loaded) -> Option<Json> {
         return None;
     }
     let ns = meta_str(d, "namespace");
+    let sc = d.schema().unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO);
     let from = match vistas::fuente(d)? {
-        Fuente::Tabla(qn) => ref_qn(Kind::Table, &qn, ns.as_deref()),
-        Fuente::Vista(qn) => ref_qn(Kind::View, &qn, ns.as_deref()),
-        Fuente::Dataset(qn) => ref_qn(Kind::Dataset, &qn, ns.as_deref()),
+        Fuente::Tabla(qn) => ref_qn(Kind::Table, &qn, ns.as_deref(), sc),
+        Fuente::Vista(qn) => ref_qn(Kind::View, &qn, ns.as_deref(), sc),
+        Fuente::Dataset(qn) => ref_qn(Kind::Dataset, &qn, ns.as_deref(), sc),
         Fuente::Datasource { datasource, objeto } => format!("datasource:{datasource}/{objeto}"),
     };
     let campos = d
@@ -428,14 +443,7 @@ fn detalle_de(pkg: &Package, d: &Loaded) -> Option<Json> {
         }
     }
     if let Some(v) = vista_inducida_de(pkg, d) {
-        m.push((
-            "vistaInducida",
-            Json::s(ref_de(
-                Kind::View,
-                meta_str(v, "namespace").as_deref(),
-                &meta_str(v, "name").unwrap_or_default(),
-            )),
-        ));
+        m.push(("vistaInducida", Json::s(ref_doc(v))));
     }
     Some(Json::obj(m))
 }
@@ -485,7 +493,8 @@ struct Arista {
 fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> Vec<Arista> {
     let ns = meta_str(d, "namespace");
     let ns = ns.as_deref();
-    let yo = ref_de(d.kind, ns, &meta_str(d, "name").unwrap_or_default());
+    let sc = d.schema().unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO);
+    let yo = ref_doc(d);
     let mut out = Vec::new();
     let mut a = |tipo: &'static str, inverso: &'static str, destino: String| {
         out.push(Arista {
@@ -498,10 +507,12 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
     match d.kind {
         Kind::View | Kind::Dataset => {
             match vistas::fuente(d) {
-                Some(Fuente::Tabla(qn)) => a("sale_de", "produce", ref_qn(Kind::Table, &qn, ns)),
-                Some(Fuente::Vista(qn)) => a("sale_de", "produce", ref_qn(Kind::View, &qn, ns)),
+                Some(Fuente::Tabla(qn)) => {
+                    a("sale_de", "produce", ref_qn(Kind::Table, &qn, ns, sc))
+                }
+                Some(Fuente::Vista(qn)) => a("sale_de", "produce", ref_qn(Kind::View, &qn, ns, sc)),
                 Some(Fuente::Dataset(qn)) => {
-                    a("sale_de", "produce", ref_qn(Kind::Dataset, &qn, ns))
+                    a("sale_de", "produce", ref_qn(Kind::Dataset, &qn, ns, sc))
                 }
                 _ => {}
             }
@@ -541,9 +552,9 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 }
                 for qn in leidos.iter().filter(|q| **q != propio) {
                     let destino = if pkg.dataset(qn).is_some() {
-                        ref_qn(Kind::Dataset, qn, ns)
+                        ref_qn(Kind::Dataset, qn, ns, sc)
                     } else {
-                        ref_qn(Kind::View, qn, ns)
+                        ref_qn(Kind::View, qn, ns, sc)
                     };
                     a("sale_de", "produce", destino);
                 }
@@ -552,12 +563,8 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
         Kind::Entity => {
             if let Some(b) = spec_str(d, "backedBy") {
                 let destino = match vistas::respaldo(pkg, d) {
-                    Some(r) => ref_de(
-                        r.kind,
-                        meta_str(r, "namespace").as_deref(),
-                        &meta_str(r, "name").unwrap_or_default(),
-                    ),
-                    None => ref_qn(Kind::View, &b, ns),
+                    Some(r) => ref_doc(r),
+                    None => ref_qn(Kind::View, &b, ns, sc),
                 };
                 a("respaldada_por", "respalda", destino);
             }
@@ -567,7 +574,7 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                         a(
                             "satisface",
                             "satisfecha_por",
-                            ref_qn(Kind::Interface, s, ns),
+                            ref_qn(Kind::Interface, s, ns, sc),
                         );
                     }
                 }
@@ -578,19 +585,19 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                     if let Some((_, c)) = v.get("is")
                         && let Some(s) = c.as_str()
                     {
-                        a("nombra", "nombrado_por", ref_qn(Kind::Concept, s, ns));
+                        a("nombra", "nombrado_por", ref_qn(Kind::Concept, s, ns, sc));
                     }
                 }
             }
         }
         Kind::Function | Kind::Action => {
             if let Some(o) = spec_str(d, "over") {
-                a("lee", "leido_por", ref_qn(Kind::View, &o, ns));
+                a("lee", "leido_por", ref_qn(Kind::View, &o, ns, sc));
             }
             if let Some(r) = d.section("reads") {
                 for i in r.items() {
                     if let Some(s) = i.as_str() {
-                        a("lee", "leido_por", ref_qn(Kind::View, s, ns));
+                        a("lee", "leido_por", ref_qn(Kind::View, s, ns, sc));
                     }
                 }
             }
@@ -603,7 +610,7 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                         {
                             // `ns.Entidad.propiedad` → la entidad
                             let ent = s.rsplit_once('.').map(|(e, _)| e).unwrap_or(s);
-                            a("escribe", "escrito_por", ref_qn(Kind::Entity, ent, ns));
+                            a("escribe", "escrito_por", ref_qn(Kind::Entity, ent, ns, sc));
                         }
                     }
                 }
@@ -626,9 +633,9 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
             };
             for t in de {
                 let destino = if pkg.dataset(&t).is_some() {
-                    ref_qn(Kind::Dataset, &t, ns)
+                    ref_qn(Kind::Dataset, &t, ns, sc)
                 } else {
-                    ref_qn(Kind::View, &t, ns)
+                    ref_qn(Kind::View, &t, ns, sc)
                 };
                 a("sale_de", "produce", destino);
             }
@@ -750,7 +757,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
     for d in &docs {
         let ns = meta_str(d, "namespace");
         let name = meta_str(d, "name").unwrap_or_default();
-        let r = ref_de(d.kind, ns.as_deref(), &name);
+        let r = ref_doc(d);
         let (paquete, carpeta) = paquete_y_carpeta(pkg, d);
         if let Some(p) = &paquete {
             let e = por_paquete.entry(p.clone()).or_default();
@@ -802,6 +809,15 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
                 .unwrap_or(Json::Crudo("null".into())),
         );
         it.insert("carpeta".into(), Json::s(&carpeta));
+        // v1alpha13: el schema que el documento DECLARA (o `default`), que es
+        // su nombre; `carpeta` sigue siendo donde está el fichero. `null` en lo
+        // que no se ordena en schemas.
+        it.insert(
+            "schema".into(),
+            d.schema()
+                .map(Json::s)
+                .unwrap_or(Json::Crudo("null".into())),
+        );
         let suyos: Vec<Json> = proyectos
             .iter()
             .filter(|p| {

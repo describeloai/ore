@@ -46,11 +46,6 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     }
 }
 
-/// El espacio de nombres del documento, para las formas cortas.
-fn ns(d: &Loaded) -> Option<&str> {
-    d.meta("namespace").and_then(|n| n.as_str())
-}
-
 // ── OOS2005 · `writes` resuelve a una propiedad de una entidad ──────────────
 
 fn escrituras(pkg: &Package, d: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
@@ -314,7 +309,7 @@ fn forma_de_accion(pkg: &Package, a: &Loaded, out: &mut Vec<Diagnostic>) {
     if let Some(nodo) = call
         && let Some(nombre) = nodo.as_str()
     {
-        let q = crate::normalize::qualify(nombre, ns(a));
+        let q = crate::link::cualificar(nombre, a);
         let funcion = pkg
             .of(Kind::Function)
             .find(|f| f.qname().as_deref() == Some(q.as_str()));

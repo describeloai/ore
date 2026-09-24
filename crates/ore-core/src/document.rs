@@ -81,6 +81,15 @@ pub enum ApiVersion {
     /// pie y lo escrito una `Table` que apuntaba a lo nuestro; la costura del
     /// gobierno cuelga del plan, no del nombre del documento.
     V1Alpha12,
+    /// v1alpha13. **Ordenar.** Anade `Schema` —el segundo nivel del nombre de
+    /// lo que un paquete tiene— y `metadata.schema` en el contenido del
+    /// catalogo: su nombre pasa a `<paquete>.<schema>.<nombre>`, unico por
+    /// schema, como en Unity Catalog. Lo decidio ORE 0038 (2026-09-24): dos
+    /// `pedidos` en dos schemas del mismo paquete eran `OOS2035`, y un
+    /// catalogo que los pintaba en dos schemas pintaba algo que el lenguaje no
+    /// tenia. El schema se DECLARA y la carpeta se ata a el (`OOS2036`,
+    /// `OOS2037`): la identidad nunca es la ruta.
+    V1Alpha13,
 }
 
 impl ApiVersion {
@@ -95,6 +104,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha10,
         ApiVersion::V1Alpha11,
         ApiVersion::V1Alpha12,
+        ApiVersion::V1Alpha13,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -109,6 +119,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha10 => "oos.dev/v1alpha10",
             ApiVersion::V1Alpha11 => "oos.dev/v1alpha11",
             ApiVersion::V1Alpha12 => "oos.dev/v1alpha12",
+            ApiVersion::V1Alpha13 => "oos.dev/v1alpha13",
         }
     }
 
@@ -220,6 +231,12 @@ pub enum Kind {
     /// `datasource: lago`). Sin `labels`, sin calidad, sin el puntero: el
     /// estado vive en `datasets/<ns>_<n>.json` y no aqui.
     Dataset,
+    /// v1alpha13. **El schema**: el segundo nivel del nombre de lo que un
+    /// paquete tiene. Lo hace EXISTIR —una carpeta vacia no existe en un arbol
+    /// bajo git, y «Create schema» no tenia donde escribir— y lleva su dueno.
+    /// Vive directamente en `<paquete>/<name>/`, y esa carpeta es el schema.
+    /// `default` existe sin declararse.
+    Schema,
 }
 
 impl Kind {
@@ -242,6 +259,7 @@ impl Kind {
         Kind::Action,
         Kind::TrainedModel,
         Kind::Dataset,
+        Kind::Schema,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -264,6 +282,7 @@ impl Kind {
             Kind::Action => "Action",
             Kind::TrainedModel => "TrainedModel",
             Kind::Dataset => "Dataset",
+            Kind::Schema => "Schema",
         }
     }
 
@@ -282,6 +301,7 @@ impl Kind {
             Kind::Action => ApiVersion::V1Alpha10,
             Kind::TrainedModel => ApiVersion::V1Alpha11,
             Kind::Dataset => ApiVersion::V1Alpha12,
+            Kind::Schema => ApiVersion::V1Alpha13,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -423,7 +443,40 @@ impl Kind {
             // `metadata` y otras dentro de cada propiedad sin que nadie las
             // confunda.
             Kind::Concept => &["name", "namespace", "labels", "description"],
+            // v1alpha13. El schema lleva el paquete (`namespace`, `OOS2030`)
+            // y no esta en un schema: su nombre es de dos partes.
+            Kind::Schema => &["name", "namespace", "description"],
         }
+    }
+
+    /// v1alpha13. Los `kind` que se ordenan en schemas: el contenido del
+    /// CATALOGO —lo que un paquete tiene y se nombra
+    /// `<paquete>.<schema>.<nombre>`—. No el vocabulario compartido (se nombra
+    /// por su vocabulario), ni `Resolution` (es de la entidad, no del
+    /// catalogo), ni el propio `Schema`.
+    pub const CON_SCHEMA: &'static [Kind] = &[
+        Kind::Entity,
+        Kind::View,
+        Kind::Table,
+        Kind::Dataset,
+        Kind::Function,
+        Kind::Action,
+        Kind::TrainedModel,
+    ];
+
+    /// Si este `kind` se ordena en schemas (v1alpha13).
+    pub fn con_schema(self) -> bool {
+        Self::CON_SCHEMA.contains(&self)
+    }
+
+    /// Las claves de `metadata` **en una version**: las de siempre, mas
+    /// `schema` en el contenido del catalogo desde v1alpha13.
+    pub fn metadata_keys_en(self, version: ApiVersion) -> Vec<&'static str> {
+        let mut k = self.metadata_keys().to_vec();
+        if self.con_schema() && version >= ApiVersion::V1Alpha13 {
+            k.push("schema");
+        }
+        k
     }
 
     /// Claves admitidas bajo `spec`.
@@ -676,6 +729,8 @@ impl Kind {
                 "endorsements",
                 "authorization",
             ],
+            // v1alpha13. Quien responde del schema; sin el, el del paquete.
+            Kind::Schema => &["owner"],
         }
     }
 

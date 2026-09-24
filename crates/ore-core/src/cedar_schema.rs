@@ -52,10 +52,7 @@ fn autorreferencia(e: &crate::link::Loaded, qn: &str) -> bool {
             rs.entries().iter().any(|(_, rv)| {
                 rv.get("target")
                     .and_then(|(_, t)| t.as_str())
-                    .is_some_and(|t| {
-                        crate::normalize::qualify(t, e.meta("namespace").and_then(|n| n.as_str()))
-                            == qn
-                    })
+                    .is_some_and(|t| crate::link::cualificar(t, e) == qn)
             })
         })
         .unwrap_or(false)

@@ -224,6 +224,11 @@ codes! {
     // con la misma Entity, View, Table, Lattice, Concept o Package compilaban
     // limpios, y cada referencia resolvia la primera que encontraba.
     Oos2035 = "OOS2035", Reference, "dos documentos con la misma identidad (kind y nombre cualificado)";
+    // v1alpha13 · EL SCHEMA SE DECLARA Y LA CARPETA SE ATA A EL, como `OOS2030`
+    // ata el namespace al paquete: la identidad nunca es la ruta (90 §5.2), y
+    // sin esta regla «mover un fichero» y «renombrar» serian dos cosas.
+    Oos2036 = "OOS2036", Reference, "el documento no vive en la carpeta de su schema";
+    Oos2037 = "OOS2037", Reference, "`metadata.schema` nombra un schema que el paquete no declara";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -491,6 +496,9 @@ mod tests {
             Code::Oos2033,
             Code::Oos2034,
             Code::Oos2035,
+            // v1alpha13: el schema, y la carpeta que se ata a el.
+            Code::Oos2036,
+            Code::Oos2037,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,
