@@ -172,3 +172,60 @@ fn los_nombres_de_una_celda_los_decide_el_arbol() {
     // la Table se resuelve para que su 409 diga cómo se lee
     assert_eq!(n("select * from ventas.pedidos_t"), ["ventas.pedidos_t"]);
 }
+
+/// Qué celda de la sesión escribe en el árbol (medida-el-sql-que-escribe.sh
+/// §3): lo decide el destino —un `paquete.nombre` de un paquete del árbol—, y
+/// con el tokenizador, que también ve lo que el parser no analiza.
+#[test]
+fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
+    use ore_core::sql_del_arbol::{EscribeEnElArbol as E, escribe_en_el_arbol};
+    let a = arbol("escribe");
+    let (pkg, _) = ore_core::validate::cargar_paquete(&a.0);
+    let e = |q: &str| escribe_en_el_arbol(q, &pkg);
+    let t = |n: &str| Some(E::Tabla(n.to_string()));
+    assert_eq!(
+        e("create or replace table ventas.x as select * from ventas.pedidos"),
+        t("ventas.x")
+    );
+    assert_eq!(
+        e("CREATE TABLE IF NOT EXISTS ventas.x AS SELECT 1"),
+        t("ventas.x")
+    );
+    assert_eq!(
+        e("insert into ventas.resumen select 'ES', 1"),
+        t("ventas.resumen")
+    );
+    assert_eq!(
+        e("insert or replace into ventas.resumen select 'ES', 1"),
+        t("ventas.resumen")
+    );
+    assert_eq!(
+        e("insert into \"ventas\".\"x\" by name select 1 as a"),
+        t("ventas.x")
+    );
+    assert_eq!(
+        e("create or replace table ventas.x as pivot ventas.pedidos on pais using count(*)"),
+        t("ventas.x")
+    );
+    assert_eq!(e("create temp table ventas.x as select 1"), t("ventas.x"));
+    // varias sentencias: se ve igual (y será «una sentencia» al analizar)
+    assert_eq!(
+        e("select 1; create or replace table ventas.x as select 1"),
+        t("ventas.x")
+    );
+    assert_eq!(
+        e("create or replace view ventas.v as select 1"),
+        Some(E::Vista("ventas.v".into()))
+    );
+    // lo que es de la sesión, de DuckDB
+    assert_eq!(
+        e("create schema tmp; create table tmp.t as select 1; select * from tmp.t"),
+        None
+    );
+    assert_eq!(e("create table x as select 1"), None);
+    assert_eq!(e("create or replace table nada.x as select 1"), None);
+    assert_eq!(e("create table lago.ventas.x as select 1"), None);
+    assert_eq!(e("select * from ventas.pedidos"), None);
+    assert_eq!(e("-- create table ventas.x as select 1\nselect 1"), None);
+    assert_eq!(e("select 'insert into ventas.x' as s"), None);
+}

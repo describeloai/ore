@@ -122,6 +122,10 @@ pub(crate) struct Celda {
     pub texto: String,
     /// `python` (por defecto) o `sql` (W3.3: la consulta entera a `ore.sql`).
     pub lenguaje: String,
+    /// Lo que el agente corre, si no es `texto` tal cual: una celda `sql` que
+    /// escribe en el árbol corre como la celda de `celda_de_sql` (`python`),
+    /// y lo que la persona escribió sigue siendo su SQL.
+    pub corre: Option<(String, String)>,
     pub enviada: Instant,
     pub empezada: Option<Instant>,
     pub salida: Option<Json>,
@@ -811,6 +815,7 @@ impl Servidor {
             Celda {
                 texto,
                 lenguaje: lenguaje.to_string(),
+                corre: None,
                 enviada: Instant::now(),
                 empezada: None,
                 salida: None,
@@ -1075,6 +1080,82 @@ impl Servidor {
         ]))
     }
 
+    /// **Una celda `sql` que escribe en el árbol, ¿cómo corre?** Decidido
+    /// (2026-09-24): en la sesión, una frase que crea o inserta en un
+    /// `paquete.nombre` de un paquete del árbol ESCRIBE de verdad —el
+    /// dataset, como `write()` desde Python—. Medido antes
+    /// (`medida-el-sql-que-escribe.sh`): iba entera a `ore.sql()`, DuckDB la
+    /// hacía en su memoria, daba `Count` y no dejaba nada, ni para la celda
+    /// siguiente.
+    ///
+    /// Corre por el MISMO camino que un `.sql` como trabajo
+    /// ([`celda_de_sql`], cotejado con el árbol de la rama del puesto): UNA
+    /// sentencia, lo que lee y lo que escribe sacado de ella, un `@transform`
+    /// con `write()`. Lo que no es una unidad es la salida de error de la
+    /// celda, con sus diagnósticos. Lo que crea en otra parte (`tmp.t`, `x`)
+    /// sigue siendo de DuckDB.
+    fn sql_que_escribe(&self, id: &str, texto: &str, fichero: &str) -> Result<Desvio, Respuesta> {
+        use ore_core::sql_del_arbol::{EscribeEnElArbol, escribe_en_el_arbol};
+        let rama = match self.puestos.lista.lock().unwrap().get(id) {
+            Some(p) => p.rama.clone(),
+            // el 404 (o el 403) lo dice quien sigue
+            None => return Ok(Desvio::Ninguno),
+        };
+        let mut desvio = Desvio::Ninguno;
+        let r = self.leyendo_en(rama.as_deref(), |raiz| {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            desvio = match escribe_en_el_arbol(texto, &pkg) {
+                None => Desvio::Ninguno,
+                Some(EscribeEnElArbol::Vista(n)) => Desvio::Error(error_de_celda(
+                    format!(
+                        "`{n}` sería una View del árbol, y una View no nace de una celda: se \
+                         declara (un `.yaml` en `packages/<paquete>/views/`, o `declare()`)"
+                    ),
+                    Json::Arr(Vec::new()),
+                )),
+                Some(EscribeEnElArbol::Tabla(n)) => match celda_de_sql(raiz, fichero, texto) {
+                    Ok((celda, "python")) => Desvio::Corre(celda),
+                    Ok(_) => Desvio::Ninguno,
+                    Err(r) => {
+                        let (primero, diagnosticos) = match &r.cuerpo {
+                            Json::Obj(m) => (
+                                match m.get("diagnosticos") {
+                                    Some(Json::Arr(d)) => d
+                                        .first()
+                                        .and_then(|d| match d {
+                                            Json::Obj(x) => match x.get("mensaje") {
+                                                Some(Json::Str(s)) => Some(s.clone()),
+                                                _ => None,
+                                            },
+                                            _ => None,
+                                        })
+                                        .unwrap_or_default(),
+                                    _ => String::new(),
+                                },
+                                m.get("diagnosticos")
+                                    .cloned()
+                                    .unwrap_or(Json::Arr(Vec::new())),
+                            ),
+                            _ => (String::new(), Json::Arr(Vec::new())),
+                        };
+                        Desvio::Error(error_de_celda(
+                            format!(
+                                "la celda escribe en `{n}` (el lago), y lo que escribe en el lago \
+                                 corre como un `.sql` del árbol: {primero}"
+                            ),
+                            diagnosticos,
+                        ))
+                    }
+                },
+            };
+            Respuesta::ok(Json::obj([]))
+        });
+        if r.codigo != 200 {
+            return Err(r);
+        }
+        Ok(desvio)
+    }
+
     /// `POST /puestos/{id}/ejecutar {texto}`: una celda a la cola del puesto.
     /// 202 con su número; se espera con `GET /puestos/{id}/celdas/{n}`.
     pub(crate) fn ejecutar_en_puesto(
@@ -1107,6 +1188,21 @@ impl Servidor {
         if texto.len() > TEXTO_MAXIMO {
             return Respuesta::error(422, "la celda es demasiado larga (256 KiB)");
         }
+        let desvio = if lenguaje == "sql" {
+            // el `.sql` del editor, si lo dice: da nombre al transform y a los
+            // diagnósticos; sin él, `consulta.sql`
+            let fichero = n
+                .get("fichero")
+                .and_then(|(_, v)| v.as_str())
+                .filter(|f| f.ends_with(".sql") && !f.chars().any(char::is_control))
+                .unwrap_or("consulta.sql");
+            match self.sql_que_escribe(id, texto, fichero) {
+                Ok(d) => d,
+                Err(r) => return r,
+            }
+        } else {
+            Desvio::Ninguno
+        };
         let mut lista = self.puestos.lista.lock().unwrap();
         let Some(p) = lista.get_mut(id) else {
             return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
@@ -1145,17 +1241,28 @@ impl Servidor {
         }
         let num = p.siguiente;
         p.siguiente += 1;
+        let (corre, error) = match desvio {
+            Desvio::Ninguno => (None, None),
+            Desvio::Corre(c) => (Some((c, "python".to_string())), None),
+            Desvio::Error(e) => (None, Some(e)),
+        };
+        // una frase que no se puede correr se dice YA, como la salida de su
+        // celda: el agente no llega a verla
+        let hecha = error.is_some();
         p.celdas.insert(
             num,
             Celda {
                 texto: texto.to_string(),
                 lenguaje,
+                corre,
                 enviada: Instant::now(),
-                empezada: None,
-                salida: None,
+                empezada: hecha.then(Instant::now),
+                salida: error,
             },
         );
-        p.pendientes.push_back(num);
+        if !hecha {
+            p.pendientes.push_back(num);
+        }
         let estado = p.estado.dice();
         drop(lista);
         self.puestos.campana.notify_all();
@@ -1405,8 +1512,10 @@ impl Servidor {
             if let Some(n) = p.pendientes.pop_front() {
                 let c = p.celdas.get_mut(&n).expect("la celda pendiente existe");
                 c.empezada = Some(Instant::now());
-                let texto = c.texto.clone();
-                let lenguaje = c.lenguaje.clone();
+                let (texto, lenguaje) = c
+                    .corre
+                    .clone()
+                    .unwrap_or_else(|| (c.texto.clone(), c.lenguaje.clone()));
                 drop(lista);
                 self.puestos.campana.notify_all();
                 return Respuesta::ok(Json::obj([
@@ -2068,6 +2177,30 @@ fn nombra(texto: &str, nombre: &str) -> bool {
     })
 }
 
+/// Cómo corre una celda `sql` de la sesión ([`Servidor::sql_que_escribe`]).
+enum Desvio {
+    /// Tal cual, en `ore.sql()`: lee, o escribe en la memoria de DuckDB.
+    Ninguno,
+    /// Escribe en el árbol: el agente corre esta celda de Python.
+    Corre(String),
+    /// No se puede correr: esta es su salida, ya.
+    Error(Json),
+}
+
+/// La salida `error` de una celda que no llega al agente (la forma de la del
+/// agente, con los diagnósticos del árbol: `fichero`, `linea`, `columna`).
+fn error_de_celda(mensaje: String, diagnosticos: Json) -> Json {
+    Json::obj([
+        ("tipo", Json::s("error")),
+        ("nombre", Json::s("SQL")),
+        ("mensaje", Json::s(mensaje)),
+        ("traza", Json::s("")),
+        ("texto", Json::s("")),
+        ("ms", Json::Int(0)),
+        ("diagnosticos", diagnosticos),
+    ])
+}
+
 /// **Un `.sql` del árbol como la celda de un trabajo** (el SQL del árbol).
 ///
 /// La frase se analiza y se coteja con el árbol de este commit
@@ -2169,7 +2302,8 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
              return write({salida}, sql({consulta}, como=\"arrow\"), modo={modo})\n\
          \n\
          \n\
-         print(\"filas\", {nombre}()[\"filas\"])\n",
+         _escrito = {nombre}()\n\
+         print(\"%s · %s · %d filas%s\" % ({salida}, {modo}, _escrito[\"filas\"], \" · la misma escritura: nada nuevo\" if _escrito[\"repetida\"] else \"\"))\n",
         consulta = cadena(&u.consulta),
         modo = cadena(e.modo.como_en_write()),
     );
@@ -2708,7 +2842,8 @@ mod prueba {
             "@transform(inputs=[\"v.pedidos\"], output=\"v.resumen\")",
             "def resumen():",
             "return write(\"v.resumen\", sql(\"select id from v.pedidos where id > 1\", como=\"arrow\"), modo=\"upsert\")",
-            "print(\"filas\", resumen()[\"filas\"])",
+            "_escrito = resumen()",
+            "print(\"%s · %s · %d filas%s\" % (\"v.resumen\", \"upsert\", _escrito[\"filas\"]",
         ] {
             assert!(celda.contains(trozo), "falta {trozo:?} en:\n{celda}");
         }

@@ -423,15 +423,17 @@ n=$(lee9 "$ML9b" | grep -c '^{"'); [ "$n" = "5" ] || falla "9b · leer da $((n -
 lee9 "$ML9b" | grep '"id":"1",' | grep -q '"total":"10.5"' || falla "9b · el id 1 no trae el total nuevo"
 ( cd "$CL" && git add -A && git commit -qm "upsert" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar el upsert"
 [ "$(pide GET /datasets/ventas/escrita)" = "200" ] && [ "$(campo snapshots.0.operacion)" = "overwrite" ] && [ "$(campo snapshots.0.filas)" = "4" ] || falla "9b · la ficha: $(cat "$TMP/out.json")"
-# la siguiente vez, sin repetir la clave (la tabla la declara), y con una columna
-# que la tabla ya no declaraba (`canal`: la dejó fuera el anexar de 9): la unión
-# la trae de vuelta, el id 200 la lleva y los demás la tienen nula
+# la siguiente vez, sin repetir la clave (la tabla la declara), y con `canal`, que
+# la tabla CONSERVA aunque el anexar de 9 no la trajera (antes la dejaba fuera y
+# lo de los ids 0 y 1 dejaba de verse: `carga::conformar`): el esquema no cambia,
+# el id 200 la lleva y el 0 sigue con la suya
 upserta ventas_escrita "$ML9b" up-2 200 1 '' extra || falla "9b · upsert con la clave de la tabla"
-[ "$(jq_ "$TMP/escrito.json" filas)" = "4" ] && [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "9b · el segundo upsert: $(cat "$TMP/escrito.json")"
+[ "$(jq_ "$TMP/escrito.json" filas)" = "4" ] && [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "false" ] || falla "9b · el segundo upsert: $(cat "$TMP/escrito.json")"
 "$ORE" datasets "$CL" --commit --tabla ventas.escrita --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>&1 || { cat "$TMP/commit.json"; falla "9b · commit del segundo upsert"; }
 grep -q 'changes: { mode: upsert, key: \[id\]' "$CL/packages/ventas/datasets/escrita.yaml" && grep -q "canal: { type: String }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "9b · la Table tras el segundo upsert: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 ML9c=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 lee9 "$ML9c" | grep '"id":"200"' | grep -q '"canal":"web"' || falla "9b · el id 200 no se actualizó"
+lee9 "$ML9c" | grep '"id":"0"' | grep -q '"canal":"web"' || falla "9b · el id 0 perdió su canal (anexar sin la columna la quitaba)"
 [ "$(lee9 "$ML9c" | grep -c '^{"')" = "5" ] || falla "9b · tras el segundo upsert tenía que haber 4 filas"
 ( cd "$CL" && git add -A && git commit -qm "upserts" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar"
 ok "9b · upsert por clave: 3 → 4 filas en un overwrite (copy-on-write, lo de antes se retira), la Table declara \`mode: upsert, key: [id]\` y conserva su descripción; la siguiente vez sin clave (la tabla la declara) y con una columna más, el id 200 se actualiza, la Table la gana y nada de antes se pierde"

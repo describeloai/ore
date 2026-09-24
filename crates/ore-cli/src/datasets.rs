@@ -586,7 +586,13 @@ fn asegurar_dataset(
     }
     for (c, t) in columnas {
         if !bien(c) {
-            return Err((64, format!("la columna `{c}` no es un identificador")));
+            return Err((
+                64,
+                format!(
+                    "la columna `{c}` no es un identificador: dale un nombre (en SQL, `… as nombre`: \
+                     lo que se escribe va por el nombre de cada columna, no por su posición)"
+                ),
+            ));
         }
         if ore_core::types::parse_type(t).is_err() {
             return Err((

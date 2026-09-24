@@ -715,6 +715,99 @@ pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
     out
 }
 
+/// Qué escribe en el árbol una celda de la sesión, si escribe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EscribeEnElArbol {
+    /// `create … table` o `insert … into` un `paquete.nombre`: una tabla del
+    /// lago (y la celda se corre como un `.sql` del árbol).
+    Tabla(String),
+    /// `create … view paquete.nombre`: una View del árbol no nace de una
+    /// celda, se declara.
+    Vista(String),
+}
+
+/// **¿Escribe esta celda en el árbol?** (una celda `sql` de la sesión).
+///
+/// Decidido (2026-09-24): en la sesión, una frase que crea o inserta en un
+/// `paquete.nombre` de un paquete del árbol ESCRIBE de verdad —como `write()`
+/// desde Python—; lo que crea en otra parte (`tmp.t`, `x`, una temporal) es de
+/// DuckDB, como siempre. Medido en `medida-el-sql-que-escribe.sh`: hoy esa
+/// frase daba `Count` y no dejaba nada.
+///
+/// Con el **tokenizador**, no con el parser: lo que `sqlparser` no analiza
+/// (`insert … by name`, `pivot`, `using sample`) también se ve, y en vez de
+/// perderse en la memoria de DuckDB se dice por qué no se corre. Mira
+/// `create [or replace] [temp|temporary] table|view [if not exists] a.b` e
+/// `insert [or replace|ignore] into a.b`, en cualquier sentencia del texto.
+pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbol> {
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let toks: Vec<Token> = Tokenizer::new(&DuckDbDialect {}, texto)
+        .tokenize()
+        .ok()?
+        .into_iter()
+        .filter(|t| !matches!(t, Token::Whitespace(_)))
+        .collect();
+    let es = |i: usize, k: &str| matches!(toks.get(i), Some(Token::Word(w)) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case(k));
+    let paquete = |p: &str| {
+        pkg.docs
+            .iter()
+            .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
+    };
+    // `a.b` en `i` (y no `a.b.c`), con `a` un paquete del árbol
+    let nombre = |i: usize| -> Option<String> {
+        match (
+            toks.get(i),
+            toks.get(i + 1),
+            toks.get(i + 2),
+            toks.get(i + 3),
+        ) {
+            (Some(Token::Word(a)), Some(Token::Period), Some(Token::Word(b)), siguiente)
+                if !matches!(siguiente, Some(Token::Period)) && paquete(&a.value) =>
+            {
+                Some(format!("{}.{}", a.value, b.value))
+            }
+            _ => None,
+        }
+    };
+    for i in 0..toks.len() {
+        if es(i, "create") {
+            let mut j = i + 1;
+            if es(j, "or") && es(j + 1, "replace") {
+                j += 2;
+            }
+            if es(j, "temp") || es(j, "temporary") {
+                j += 1;
+            }
+            let vista = es(j, "view");
+            if !(vista || es(j, "table")) {
+                continue;
+            }
+            j += 1;
+            if es(j, "if") && es(j + 1, "not") && es(j + 2, "exists") {
+                j += 3;
+            }
+            if let Some(n) = nombre(j) {
+                return Some(if vista {
+                    EscribeEnElArbol::Vista(n)
+                } else {
+                    EscribeEnElArbol::Tabla(n)
+                });
+            }
+        } else if es(i, "insert") {
+            let mut j = i + 1;
+            if es(j, "or") && (es(j + 1, "replace") || es(j + 1, "ignore")) {
+                j += 2;
+            }
+            if es(j, "into")
+                && let Some(n) = nombre(j + 1)
+            {
+                return Some(EscribeEnElArbol::Tabla(n));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

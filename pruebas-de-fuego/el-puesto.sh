@@ -43,6 +43,9 @@
 #                                      declara `mode: upsert, key: [n]` · a una View → error · uint64 → error
 #                                      con la columna; y en 8 y 9, Node y Java escriben lo suyo y leen
 #                                      lo de los demás
+# 10c  un .sql que escribe, en sesión  `create or replace table hr.x as …` en una celda sql escribe
+#                                      el dataset (como un .sql como trabajo); insert anexa; dos
+#                                      sentencias, create view, lo que no analiza → error de la celda
 #  6b  la capa de la JVM (0037 iii.c)  GET /entorno/jvm sin-dependencias · un pom.xml ->
 #                                      pendiente con SU digest (no el de python) · POST ->
 #                                      202 y 55-la-capa-jvm-<corto>.yaml en la cola, con
@@ -649,6 +652,42 @@ else
   dice "10 · (sin el lago o sin ore-store-r2: write() no se prueba aquí)"
 fi
 
+# ── 10c · un `.sql` que escribe, en la sesión: escribe de verdad ─────────────
+# Decidido (2026-09-24) y medido antes (medida-el-sql-que-escribe.sh): una celda
+# `sql` que crea o inserta en un paquete del árbol ESCRIBE el dataset —como
+# write() desde Python— por el mismo camino que un `.sql` como trabajo: UNA
+# sentencia, un @transform con lo que la frase declara. Antes daba `Count` y no
+# dejaba nada, ni para la celda siguiente. Lo que se crea en otra parte (`tmp.t`)
+# sigue siendo de DuckDB (el caso 7).
+if [ "$ESCRITO_OK" = si ]; then
+  Q10C='create or replace table hr.porsql as select letra, sum(importe) as total from hr.lago group by letra order by letra'
+  celda_sql "$Q10C" && tiene "d['salida']['tipo']=='texto' and d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas'" || falla "10c · create or replace table en una celda sql: $(cuerpo)"
+  [ -f "$A/datasets/hr_porsql.json" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/porsql.yaml" || falla "10c · lo escrito no está en el árbol (puntero y Dataset)"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"consulta"}, pr' "$A/datasets/hr_porsql.json" || falla "10c · la procedencia: $(cat "$A/datasets/hr_porsql.json")"
+  celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "10c · la celda siguiente lo lee: $(cuerpo)"
+  celda_sql "$Q10C" && tiene "d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas · la misma escritura: nada nuevo'" || falla "10c · la misma frase otra vez: $(cuerpo)"
+  # anexar `0.5` (decimal(2, 1)) a una columna decimal(38, 2): lo de antes se queda
+  # lo que se escribe va por NOMBRE (sql_del_arbol: sin lista de columnas): una
+  # expresión sin alias lo dice, y con él anexa
+  celda_sql 'insert into hr.porsql select letra, 0.5 from hr.lago' && tiene "d['salida']['tipo']=='error' and 'as nombre' in d['salida']['mensaje']" || falla "10c · una columna sin nombre: $(cuerpo)"
+  celda_sql 'insert into hr.porsql select letra, 0.5 as total from hr.lago' && tiene "d['salida']['texto'].strip()=='hr.porsql · anexar · 6 filas'" || falla "10c · insert into: $(cuerpo)"
+  celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[6,'5.25']]" || falla "10c · anexar con otro decimal perdió lo de antes: $(cuerpo)"
+  # el `.sql` del editor da nombre al transform
+  [ "$(pide POST /puestos/$P/ejecutar "$ANA" '{"texto":"create or replace table hr.porfichero as select n from hr.lago","lenguaje":"sql","fichero":"packages/hr/transforms/porfichero.sql"}')" = "202" ] || falla "10c · con fichero: $(cuerpo)"
+  N10C=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
+  for _ in $(seq 1 5); do pide GET "/puestos/$P/celdas/$N10C" "$ANA" >/dev/null; tiene "d['estado']=='hecha'" && break; done
+  tiene "d['salida']['texto'].strip()=='hr.porfichero · sobrescribir · 3 filas'" || falla "10c · con fichero: $(cuerpo)"
+  "$PY" -c 'import json,sys; assert json.load(open(sys.argv[1]))["procedencia"]["transform"]=="porfichero"' "$A/datasets/hr_porfichero.json" || falla "10c · el transform no se llama como el fichero: $(cat "$A/datasets/hr_porfichero.json")"
+  # lo que no se puede correr se dice YA, como la salida de la celda, con su sitio
+  celda_sql 'create or replace table hr.dos as select 1 as x;\nselect 1' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='SQL' and 'UNA sentencia' in d['salida']['mensaje'] and d['salida']['diagnosticos'][0]['linea']==2" || falla "10c · dos sentencias: $(cuerpo)"
+  [ ! -f "$A/datasets/hr_dos.json" ] || falla "10c · dos sentencias dejaron puntero"
+  celda_sql 'create or replace view hr.vista as select 1 as x' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje'] and 'declara' in d['salida']['mensaje']" || falla "10c · create view: $(cuerpo)"
+  celda_sql 'insert into hr.porsql by name select 1.0 as total' && tiene "d['salida']['tipo']=='error' and 'no analiza' in d['salida']['mensaje']" || falla "10c · lo que no analiza: $(cuerpo)"
+  celda_sql 'create or replace table hr.espanoles as select 1 as id' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10c · un dataset mantenido: $(cuerpo)"
+  pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10c · quedan celdas pendientes: $(cuerpo)"
+  dice "10c · un .sql que escribe, en la sesión: create or replace → hr.porsql en el lago (puntero, Dataset, procedencia inputs+transform) y la celda siguiente lo lee · otra vez: la misma escritura · insert into anexa (0.5 en decimal(38, 2): nada de antes se pierde) · con fichero, el transform se llama como él · dos sentencias, create view, lo que no analiza y un mantenido: error de la celda, ya, con su sitio"
+fi
+
 
 # ── 11 · el trabajo (W3.7 ④): un fichero del árbol como Job que termina ──────
 if [ "$ESCRITO_OK" = si ]; then
@@ -705,7 +744,7 @@ PY
   ORE_SERVE="$BASE" PUESTO="$T3" TRABAJO="packages/hr/transforms/contar.sql@local" ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 \
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo3.txt" 2>&1; CODIGO=$?
   [ "$CODIGO" = 0 ] || falla "11b · el agente del .sql salió con $CODIGO: $(tail -5 "$TMP/trabajo3.txt")"
-  [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and 'filas 1' in d['informe']['salida']['texto']" || falla "11b · el informe del .sql: $(cuerpo)"
+  [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['texto'].strip()=='hr.trabajo_sql · sobrescribir · 1 filas'" || falla "11b · el informe del .sql: $(cuerpo)"
   "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/contar.sql@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"contar"}, pr' "$A/datasets/hr_trabajo_sql.json" "$T3" || falla "11b · la procedencia de lo que escribió el .sql: $(cat "$A/datasets/hr_trabajo_sql.json")"
   dice "11b · un .sql como trabajo: lo que nombra lo que no hay es 422 con la línea; create or replace table hr.trabajo_sql as select … corre con @transform(inputs=[hr.lago], output=hr.trabajo_sql) y lo escrito lleva la procedencia de un .py"
   dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"
