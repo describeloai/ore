@@ -1197,6 +1197,14 @@ impl Lago {
         let prefijo = format!("{}/", self.clave(tabla.metadata().location()).map_err(err)?);
         let mut n = 0usize;
         for k in cuenta.listar(&prefijo)? {
+            // Sólo lo de la tabla: sus `metadata/` y `data/`. Lo demás bajo su
+            // ubicación es de OTRA —`datasets/ventas_x` (la tabla `x` de
+            // `ventas`) es prefijo de `datasets/ventas_x/default/n` (la base
+            // `ventas_x`, 0038)— y no es suyo borrarlo.
+            let resto = &k[prefijo.len()..];
+            if !(resto.starts_with("metadata/") || resto.starts_with("data/")) {
+                continue;
+            }
             if vivos.contains(&self.uri(&k)) {
                 continue;
             }

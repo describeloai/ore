@@ -1499,21 +1499,33 @@ fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, S
     let datasets = lista("datasets");
     let claves = lista("claves");
 
-    // Los datasets del bucket: `ore/v2/<clase>/<nombre>/…` → `<clase>/<nombre>`.
+    // Un objeto es de un dataset reclamado si está DEBAJO de él: su nombre es
+    // un prefijo del objeto hasta una `/`, a cualquier profundidad
+    // (`datasets/ventas_x/…` y `datasets/ventas/espana/x/…` igual). Medido
+    // (`medida-los-punteros.sh` M3): cortar a `<clase>/<nombre>` tomaba por
+    // huérfano un dataset anidado aunque se reclamara.
+    let reclamado = |resto: &str| {
+        resto
+            .match_indices('/')
+            .any(|(i, _)| datasets.contains(&resto[..i]))
+    };
     let raiz = format!("{}/", lago::RAIZ);
     let mut huerfanos: std::collections::BTreeSet<String> = Default::default();
     let mut objetos = 0usize;
     for k in cuenta.listar(&raiz)? {
         let resto = &k[raiz.len()..];
-        let mut partes = resto.splitn(3, '/');
-        let (Some(clase), Some(nombre)) = (partes.next(), partes.next()) else {
-            continue;
-        };
-        let dataset = format!("{clase}/{nombre}");
-        if datasets.contains(&dataset) {
+        if reclamado(resto) {
             continue;
         }
-        huerfanos.insert(dataset);
+        // Sólo para contarlo: el dataset es lo de antes de su `metadata/` o
+        // su `data/` (la forma de una tabla Iceberg), o `<clase>/<nombre>`.
+        let segs: Vec<&str> = resto.split('/').collect();
+        let hasta = segs
+            .iter()
+            .position(|s| *s == "metadata" || *s == "data")
+            .filter(|&i| i >= 2)
+            .unwrap_or(2.min(segs.len()));
+        huerfanos.insert(segs[..hasta].join("/"));
         if !seco {
             cuenta.borrar(&k)?;
         }
@@ -1962,6 +1974,89 @@ mod tests {
         assert!(claves.iter().any(|k| k.contains("copias/p_a/")));
         assert!(claves.contains(&"ore/v1/viejo".to_string()));
         assert!(!claves.contains(&"ore/v1/plan/x/y".to_string()));
+    }
+
+    /// El mantenimiento de una tabla no toca lo que está bajo su ubicación y
+    /// es de otra: `datasets/ventas_x` y `datasets/ventas_x/default/n`.
+    #[test]
+    fn recoger_una_tabla_no_se_lleva_la_de_debajo() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let fila = ["{\"id\":\"1\"}"];
+        let s1 = sellar(
+            &lago,
+            &cabecera("1"),
+            "datasets/ventas_x",
+            None,
+            false,
+            fila.into_iter(),
+        )
+        .unwrap();
+        sellar(
+            &lago,
+            &cabecera("1"),
+            "datasets/ventas_x/default/n",
+            None,
+            false,
+            fila.into_iter(),
+        )
+        .unwrap();
+        let debajo = || {
+            cuenta
+                .0
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.contains("ventas_x/default/n/"))
+                .count()
+        };
+        let antes = debajo();
+        assert!(antes > 0);
+        let ml = campo(&s1, "metadata_location");
+        let r = recoger(&lago, "datasets/ventas_x", &ml, Some(0), false).unwrap();
+        assert_eq!(campo(&r, "ficheros"), "0", "{r}");
+        assert_eq!(debajo(), antes);
+    }
+
+    /// Un dataset anidado (`datasets/<base>/<schema>/<n>`, 0038) reclamado se
+    /// queda; el de al lado sin reclamar se va y se cuenta por su nombre; y un
+    /// nombre que es prefijo de otro sin llegar a una `/` no reclama nada.
+    #[test]
+    fn lo_anidado_se_reclama_por_prefijo() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        for d in [
+            "datasets/ventas/default/pedidos",
+            "datasets/ventas/espana/pedidos",
+            "datasets/ventas_pedidos",
+            "datasets/ventas_pedidos2",
+        ] {
+            sellar(
+                &lago,
+                &cabecera("1"),
+                d,
+                None,
+                false,
+                ["{\"id\":\"1\"}"].into_iter(),
+            )
+            .unwrap();
+        }
+        let n = ore_core::parse::parse(
+            "{\"datasets\":[\"datasets/ventas/default/pedidos\",\"datasets/ventas_pedidos\"],\"claves\":[],\"seco\":false}",
+        )
+        .unwrap();
+        let r = recoger_huerfanas(&lago, &n).unwrap();
+        assert_eq!(campo(&r, "huerfanos"), "2", "espana y pedidos2: {r}");
+        let claves: Vec<String> = cuenta.0.lock().unwrap().keys().cloned().collect();
+        let hay = |d: &str| {
+            claves
+                .iter()
+                .any(|k| k.starts_with(&format!("ore/v2/{d}/")))
+        };
+        assert!(hay("datasets/ventas/default/pedidos"), "{claves:?}");
+        assert!(hay("datasets/ventas_pedidos"), "{claves:?}");
+        assert!(!hay("datasets/ventas/espana/pedidos"), "{claves:?}");
+        assert!(!hay("datasets/ventas_pedidos2"), "{claves:?}");
     }
 
     /// La tabla Arrow que un SDK mandaría, con lo que cada lenguaje tiene de
