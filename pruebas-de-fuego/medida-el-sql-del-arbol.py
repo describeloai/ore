@@ -120,6 +120,17 @@ SERVIDORES = {
         "completion": "-", "hover": "-", "tarda_s": 0.21,
     },
 }
+# sqlparser-rs 0.63.0 (Rust; `default-features = false, features = ["std", "visitor"]`:
+# sin `recursive`, que arrastra `stacker`/`psm`; queda `log` + su derive), medido
+# el 2026-09-24 sobre los 13 casos de aqui MAS seis de DuckDB (exclude, group by
+# all, qualify, create or replace, insert or replace, insert ... by name).
+SQLPARSER = {
+    "duckdb": ("18/19", "`insert ... by name` no analiza"),
+    "databricks": ("17/19", "`exclude` y `insert ... by name` no analizan"),
+    "hive": ("16/19", "FROM primero, `exclude` y `insert ... by name`"),
+    "generic": ("18/19", "`insert ... by name`"),
+    "ms_por_consulta": 0.046,
+}
 SQLGLOT = {"disco_mb": 8.1, "ms_por_consulta": 0.61, "aciertos": "13/13", "destino": "insert y create as: hr.salida"}
 
 
@@ -215,8 +226,9 @@ def seccion_indice(arboles):
         datos[nombre] = (arbol, j)
     print("     ⇒ Los NOMBRES y las columnas ya estan: es lo que un `from ` y un `select `")
     print("       ofrecerian, y ningun servidor generico lo tiene (§4).")
-    print("     ⛔ Los TIPOS de una Table no llegan al indice: `discover` los escribe en")
-    print("       `discover.catalog.json` y en las Entity, y la Table sale con `columns: {x: {}}`.")
+    print("     ⛔ Los TIPOS dependen de cuando se descubrio la fuente: un arbol descubierto con")
+    print("       el `discover` de antes deja la Table con `columns: {x: {}}` y los tipos solo en")
+    print("       `discover.catalog.json` y en las Entity; uno de ahora los trae en la Table.")
     print("       Sin tipo el binder (§3) sigue viendo el nombre, pero no la suma de un")
     print("       entero con una cadena.")
     print("     ⛔ Y NOMBRABLE NO ES LEIBLE: una Table es 409 y una Entity no se nombra;")
@@ -276,6 +288,11 @@ def seccion_resolucion():
     print("     sqlglot (dialecto duckdb, %.1f MB, NO esta en la imagen): %s, %.2f ms, y el destino"
           % (SQLGLOT["disco_mb"], SQLGLOT["aciertos"], SQLGLOT["ms_por_consulta"]))
     print("       de lo que escribe (%s)" % SQLGLOT["destino"])
+    print("     sqlparser-rs 0.63 (Rust, sin `stacker`), %.3f ms, destino incluido:" % SQLPARSER["ms_por_consulta"])
+    for d in ("duckdb", "databricks", "hive", "generic"):
+        print("       %-11s %s  (%s)" % (d, SQLPARSER[d][0], SQLPARSER[d][1]))
+    print("       ⇒ el MISMO analizador, con el dialecto como dato: lo que separa DuckDB de")
+    print("         Databricks (Spark) en estos casos es exactamente lo propio de DuckDB.")
     print("     ⛔ Los fallos de la regex no son cosmeticos: lo que resuelve DE MAS (un nombre")
     print("       en un comentario o en una cadena) va a `ore-serve`, es 404 y la celda MUERE")
     print("       por un comentario; lo que resuelve DE MENOS (`from a, b`, `\"hr\".\"x\"`) llega")
