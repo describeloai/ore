@@ -766,7 +766,7 @@ spec:
     pst = open(RAIZ + "/crates/ore-serve/src/puestos.rs", encoding="utf-8").read()
     fila("fallback de rama en datos_del_puesto", "si" if "de_main" in pst else "no", "(leido en puestos.rs: 404|409 en la rama → main)")
     fila("fallback de rama en catalogo.rs", "si" if "leyendo_en(None" in src else "NO", "(leido: loadTable sólo mira la rama del puesto)")
-    fila("lectura_desde_puesto en catalogo.rs", "si" if "lectura_desde_puesto" in src else "NO", "(leido: sólo datos_de la llama)")
+    fila("lectura_desde_puesto en catalogo.rs", "si" if "lectura_desde_puesto" in src else "NO", "(leido en el fuente de catalogo.rs)")
 
 
 def cronometro(fn, veces=5):
