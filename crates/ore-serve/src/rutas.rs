@@ -522,6 +522,8 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "la celda es un número"),
             },
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
+            // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
+            ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
             // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
             ("POST", ["puestos", id, "transform"]) => {
                 self.declarar_transform(sujeto, id, &p.cuerpo)

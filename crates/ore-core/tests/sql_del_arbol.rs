@@ -125,3 +125,50 @@ fn lo_que_no_se_lee_ni_se_escribe_se_dice() {
         "{f:?}"
     );
 }
+
+/// Lo que `sql()` resuelve de una celda: el tokenizador y el árbol como filtro
+/// (medida-el-terreno-de-la-regex.py: 52 de 52).
+#[test]
+fn los_nombres_de_una_celda_los_decide_el_arbol() {
+    let a = arbol("celda");
+    let (pkg, _) = ore_core::validate::cargar_paquete(&a.0);
+    let n = |q: &str| ore_core::sql_del_arbol::nombres_a_resolver(q, &pkg);
+    // lo que la regex fallaba: comentario, cadena, `from a, b`, comillas, tres partes
+    assert_eq!(
+        n("-- de ventas.viejo\nselect * from ventas.pedidos"),
+        ["ventas.pedidos"]
+    );
+    assert_eq!(
+        n("select 'from ventas.resumen' from ventas.pedidos"),
+        ["ventas.pedidos"]
+    );
+    assert_eq!(
+        n("select * from ventas.pedidos, ventas.resumen"),
+        ["ventas.pedidos", "ventas.resumen"]
+    );
+    assert_eq!(
+        n("select * from \"ventas\".\"pedidosEs\""),
+        ["ventas.pedidosEs"]
+    );
+    assert_eq!(n("select * from lago.ventas.pedidos"), Vec::<String>::new());
+    // lo que el parser no analiza, el tokenizador sí
+    assert_eq!(
+        n("pivot ventas.pedidos on pais using count(*)"),
+        ["ventas.pedidos"]
+    );
+    assert_eq!(n("summarize ventas.resumen"), ["ventas.resumen"]);
+    // una errata tras FROM se resuelve (y será el 404 de siempre)
+    assert_eq!(n("select * from ventas.nadie"), ["ventas.nadie"]);
+    // un alias con el nombre de un paquete, en la lista de columnas, no
+    assert_eq!(
+        n("select ventas.pais from ventas.pedidos as ventas"),
+        ["ventas.pedidos"]
+    );
+    // un esquema de la sesión es del motor
+    assert_eq!(
+        n("create schema tmp; create table tmp.t as select 1; select * from tmp.t"),
+        Vec::<String>::new()
+    );
+    // la Table se resuelve para que su 409 diga cómo se lee
+    assert_eq!(n("select * from ventas.pedidos_t"), ["ventas.pedidos_t"]);
+}

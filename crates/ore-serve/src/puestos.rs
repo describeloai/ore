@@ -1655,6 +1655,71 @@ impl Servidor {
             .and_then(|p| p.transform.clone())
     }
 
+    /// **`POST /puestos/{id}/sql {texto}`: `sql()` sin regex.**
+    ///
+    /// Los tres SDK buscaban los nombres con una regex (`VISTAS_EN_SQL`) que
+    /// fallaba 5 de 13 casos —un nombre en un comentario mataba la celda, `from
+    /// a, b` se saltaba la segunda— y cada nombre era una ida y vuelta. Ahora el
+    /// texto entero viene aquí: `sql_del_arbol::nombres_a_resolver` (el
+    /// tokenizador y el árbol DEL PUESTO como filtro; 52 de 52 medidos) dice qué
+    /// nombres lee, y cada uno se resuelve con `datos_del_puesto` —el mismo
+    /// camino que `GET datos`: lo declarado (⑤), el conducto, el fallback a
+    /// `main`, la credencial, y una View como su pregunta—. Uno que no se
+    /// resuelve devuelve su respuesta tal cual, con `nombre`: el SDK la
+    /// convierte en el error de siempre (LookupError, RuntimeError,
+    /// PermissionError). `{fuentes: {<p>.<n>: <lo de datos>}}`.
+    pub(crate) fn sql_del_puesto(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let rama = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p.rama.clone(),
+                Err(r) => return r,
+            }
+        };
+        let texto = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => n
+                .get("texto")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
+        };
+        if texto.trim().is_empty() {
+            return Respuesta::error(422, "sql() quiere una consulta");
+        }
+        let r = self.leyendo_en(rama.as_deref(), |raiz| {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            Respuesta::ok(Json::Arr(
+                ore_core::sql_del_arbol::nombres_a_resolver(&texto, &pkg)
+                    .into_iter()
+                    .map(Json::s)
+                    .collect(),
+            ))
+        });
+        let nombres: Vec<String> = match &r.cuerpo {
+            Json::Arr(xs) if r.codigo == 200 => xs
+                .iter()
+                .filter_map(|x| match x {
+                    Json::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => return r,
+        };
+        let mut fuentes = std::collections::BTreeMap::new();
+        for n in nombres {
+            let mut d = self.datos_del_puesto(sujeto, id, &n);
+            if d.codigo != 200 {
+                if let Json::Obj(m) = &mut d.cuerpo {
+                    m.insert("nombre".into(), Json::s(&n));
+                }
+                return d;
+            }
+            fuentes.insert(n, d.cuerpo);
+        }
+        Respuesta::ok(Json::obj([("fuentes", Json::Obj(fuentes))]))
+    }
+
     /// Lo que se lee por un nombre: un dataset por su puntero (`datos_de`), o
     /// **una View como la pregunta que es** (`datos_de_vista`). Si una View y
     /// un dataset se llaman igual, manda el dataset, como en `datos_de`.

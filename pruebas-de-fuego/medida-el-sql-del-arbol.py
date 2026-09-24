@@ -32,6 +32,10 @@ import sys
 import time
 from collections import Counter
 
+# La regex que los tres SDK usaban hasta que `sql()` paso a `POST /puestos/{id}/sql`
+# (sin regex): se deja aqui, tal cual era, para que la medida siga comparando lo mismo.
+REGEX_DE_ANTES = r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b"
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(AQUI)
@@ -268,7 +272,7 @@ def seccion_resolucion():
     import duckdb
 
     sdk = leer(RAIZ, "puesto", "python", "ore", "__init__.py")
-    regex = re.compile(re.search(r'_VISTAS_EN_SQL = re\.compile\(r"(.+?)"\)', sdk).group(1))
+    regex = re.compile(REGEX_DE_ANTES)
     con = duckdb.connect()
     mal_regex = mal_duck = 0
     for n, q in CASOS:

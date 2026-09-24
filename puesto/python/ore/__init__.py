@@ -14,10 +14,10 @@ la carga es Parquet.
 `persona()` (W3.4) dice quién abrió el puesto: la identidad con la que corre
 lo que haces aquí.
 
-`sql("select … from hr.espanoles")` (W3.3) pregunta a las copias por el nombre
-de sus vistas: cada `paquete.vista` tras FROM/JOIN se resuelve igual que en
-`over()`, se baja una vez por sesión y se registra en DuckDB como la vista
-`paquete.vista`; devuelve un DataFrame. Medido en victor (2 CPU · 3 GB):
+`sql("select … from hr.espanoles")` (W3.3) pregunta a los datasets por su
+nombre: ore-serve dice qué nombres del árbol lee el texto (`POST /puestos/{id}/sql`,
+sin regex) y los resuelve igual que en `over()`; cada uno queda en DuckDB como
+la vista `paquete.nombre`; devuelve un DataFrame. Medido en victor (2 CPU · 3 GB):
 200 M de filas, `group by` con agregados en 1,9 s, `where` en 1 s.
 
 Fuera del clúster (las pruebas de fuego) el almacén es un directorio:
@@ -274,6 +274,12 @@ def _resolver(vista):
         raise ValueError("se quiere `<paquete>.<vista>`, no %r" % (vista,))
     _lee(vista)
     codigo, r = puesto.pedir("GET", "/puestos/%s/datos/%s" % (puesto.id, vista))
+    return _o_el_error(codigo, r, vista)
+
+
+def _o_el_error(codigo, r, vista):
+    """Lo que ore-serve contesto por un nombre, o el error de siempre: el mismo
+    para `over()` (GET datos) que para `sql()` (POST sql)."""
     if codigo == 409:
         raise RuntimeError("la copia de `%s` no está hecha: %s" % (vista, (r or {}).get("error", "")))
     if codigo == 404:
@@ -467,7 +473,6 @@ def _arrow(relacion):
     return relacion.fetch_arrow_table()
 
 
-_VISTAS_EN_SQL = re.compile(r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b")
 _con = None
 
 # ⛔ EL REPARTO DEL POD (medido en `medida-la-celda-que-no-cabe.py`).
@@ -542,18 +547,30 @@ def _duckdb():
 
 
 def sql(texto, como="pandas"):
-    """SQL (DuckDB) sobre las copias: cada `paquete.vista` tras FROM/JOIN se
-    resuelve, se baja una vez y queda como vista `paquete.vista`. Devuelve lo
-    mismo que `over()`: DataFrame con tipos de Arrow, `pyarrow.Table` o polars."""
+    """SQL (DuckDB) sobre los datasets del árbol. El texto entero va a ore-serve
+    (`POST /puestos/{id}/sql`), que dice qué nombres del árbol lee —con el
+    tokenizador y el árbol como filtro: un nombre en un comentario o en una
+    cadena no cuenta, `from a, b` cuenta los dos, un esquema de la sesión es del
+    motor— y los resuelve como `over()`, en una ida y vuelta; cada uno queda como
+    vista `paquete.nombre`. Hasta aquí era una regex que fallaba 5 de 13 casos
+    (`medida-el-sql-del-arbol.py`). Devuelve lo mismo que `over()`: DataFrame con
+    tipos de Arrow, `pyarrow.Table` o polars."""
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() quiere una consulta")
     con = _duckdb()
-    for esquema, nombre in sorted(set(_VISTAS_EN_SQL.findall(texto))):
-        fuente, _ = _fuente_de("%s.%s" % (esquema, nombre))
-        con.execute('create schema if not exists "%s"' % esquema)
+    # Sin puesto no hay árbol, y sin un punto no hay `a.b`: el motor solo.
+    codigo, r = (puesto.pedir("POST", "/puestos/%s/sql" % puesto.id, {"texto": texto})
+                 if puesto.id and "." in texto else (200, {}))
+    if codigo != 200:
+        _o_el_error(codigo, r, (r or {}).get("nombre") or "?")
+    for nombre, rd in sorted(((r or {}).get("fuentes") or {}).items()):
+        _lee(nombre)
+        fuente, _ = _fuente_de_respuesta(nombre, rd)
+        esquema, n = nombre.split(".", 1)
+        con.execute('create schema if not exists "%s"' % esquema.replace('"', '""'))
         # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
         # clave del artefacto o el puntero), ya escapada.
-        con.execute('create or replace view "%s"."%s" as select * from %s' % (esquema, nombre, fuente))
+        con.execute('create or replace view "%s"."%s" as select * from %s' % (esquema.replace('"', '""'), n.replace('"', '""'), fuente))
     r = con.execute(texto)
     if r.description is None:
         return None

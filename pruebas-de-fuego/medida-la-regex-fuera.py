@@ -29,6 +29,10 @@ import subprocess
 import sys
 import tempfile
 
+# La regex que los tres SDK usaban hasta que `sql()` paso a `POST /puestos/{id}/sql`
+# (sin regex): se deja aqui, tal cual era, para que la medida siga comparando lo mismo.
+REGEX_DE_ANTES = r"(?i)\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b"
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(AQUI)
@@ -170,7 +174,7 @@ def seccion_corpus():
     titulo("  §5 EL CORPUS (lo que el repositorio manda de verdad a `sql()`)")
     import duckdb
 
-    regex = re.compile(re.search(r'_VISTAS_EN_SQL = re\.compile\(r"(.+?)"\)', leer(SDK["python"])).group(1))
+    regex = re.compile(REGEX_DE_ANTES)
     con = duckdb.connect()
     ore = ore_bin()
     qs = corpus()

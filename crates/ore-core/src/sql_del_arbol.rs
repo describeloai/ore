@@ -634,6 +634,87 @@ pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
     fallos
 }
 
+/// Las palabras tras las que un `paquete.nombre` es algo que se LEE —y no una
+/// columna con el alias de una tabla—.
+const TRAS_LAS_QUE_SE_LEE: [&str; 6] =
+    ["FROM", "JOIN", "PIVOT", "UNPIVOT", "SUMMARIZE", "DESCRIBE"];
+
+/// **Qué nombres del árbol lee el texto de una celda** (`sql()` en un puesto).
+///
+/// No es [`analizar`]: una celda no es una unidad —puede tener varias
+/// sentencias, leer por función, escribir en un esquema de la sesión— y el
+/// motor es DuckDB, cuya sintaxis el parser no alcanza entera. Medido en
+/// `pruebas-de-fuego/medida-el-terreno-de-la-regex.py`: de 52 frases, el
+/// parser de `sqlparser` no analiza 7 que DuckDB acepta (PIVOT, UNPIVOT,
+/// SUMMARIZE, ASOF, USING SAMPLE, listas por comprensión, INSERT … BY NAME) y
+/// la regex de hoy acierta 43. Aquí se usa su **tokenizador**, que no falla
+/// con lo que no conoce, y **el árbol como filtro**: 52 de 52.
+///
+/// Un `a.b` —con o sin comillas, fuera de comentarios y cadenas, que no sea
+/// parte de un nombre de tres— se resuelve si:
+///
+/// - es un `Dataset`, una `View` o una `Table` del árbol (la Table, para que
+///   su 409 diga «se lee por un Dataset que la copie»); o
+/// - su primer trozo es un paquete y va justo tras FROM, JOIN, PIVOT, UNPIVOT,
+///   SUMMARIZE o DESCRIBE: lo que no existe se dice (`LookupError`, el 404 de
+///   siempre) en vez de dejárselo a DuckDB; y un alias con el nombre de un
+///   paquete en la lista de columnas no se toca.
+///
+/// Lo demás —un esquema de la sesión (`tmp.t`), un alias, un campo de un
+/// struct— es del motor. Hoy la regex mandaba `tmp.t` a ore-serve: 404, y la
+/// celda moría.
+pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let Ok(toks) = Tokenizer::new(&DuckDbDialect {}, texto).tokenize() else {
+        // Un texto que ni se tokeniza (una cadena sin cerrar) no llega a
+        // ninguna parte: que lo diga el motor, con su posición.
+        return Vec::new();
+    };
+    let toks: Vec<Token> = toks
+        .into_iter()
+        .filter(|t| !matches!(t, Token::Whitespace(_)))
+        .collect();
+    let del_arbol = |qn: &str| {
+        pkg.docs.iter().any(|d| {
+            matches!(d.kind, Kind::Dataset | Kind::View | Kind::Table)
+                && d.qname().as_deref() == Some(qn)
+        })
+    };
+    let paquete = |p: &str| {
+        pkg.docs
+            .iter()
+            .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
+    };
+    let palabra = |t: &Token| match t {
+        Token::Word(w) => Some(w.value.clone()),
+        _ => None,
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 2 < toks.len() {
+        if let (Some(a), Token::Period, Some(b)) =
+            (palabra(&toks[i]), &toks[i + 1], palabra(&toks[i + 2]))
+        {
+            let antes = i > 0 && matches!(toks[i - 1], Token::Period);
+            let despues = matches!(toks.get(i + 3), Some(Token::Period));
+            if !antes && !despues {
+                let qn = format!("{a}.{b}");
+                let tras_lectura = i > 0
+                    && matches!(&toks[i - 1], Token::Word(w)
+                        if TRAS_LAS_QUE_SE_LEE.iter().any(|k| w.value.eq_ignore_ascii_case(k)));
+                if (del_arbol(&qn) || (tras_lectura && paquete(&a))) && !out.contains(&qn) {
+                    out.push(qn);
+                }
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

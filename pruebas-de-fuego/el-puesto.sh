@@ -504,6 +504,15 @@ if [ "$LAGO_OK" = "si" ]; then
 fi
 celda_sql 'select * from hr.empleados' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='RuntimeError'" || falla "7 · una vista sin copia: $(cuerpo)"
 celda_sql 'selec nada' && tiene "d['salida']['tipo']=='error'" || falla "7 · sql roto: $(cuerpo)"
+# sin regex (POST /puestos/{id}/sql): lo que la regex fallaba. Un nombre del
+# arbol en un comentario no se resuelve (antes: LookupError y la celda moria);
+# con comillas si; `from a, b` resuelve los dos; un esquema de la sesion es del motor.
+celda_sql '-- antes era hr.nada\nselect count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · un nombre en un comentario no se resuelve: $(cuerpo)"
+celda_sql 'select count(*) as n from \"hr\".\"espanoles\"' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · un nombre entre comillas: $(cuerpo)"
+celda_sql 'create schema tmp; create table tmp.t as select 1 as x; select count(*) as n from tmp.t' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[1]]" || falla "7 · un esquema de la sesion es del motor: $(cuerpo)"
+if [ "$LAGO_OK" = "si" ]; then
+  celda_sql 'select count(*) as n from hr.espanoles a, hr.lago b' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[9]]" || falla "7 · from a, b resuelve los dos: $(cuerpo)"
+fi
 celda 'sql(\"select sum(1) as s from hr.espanoles\")' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "7 · sql() desde python: $(cuerpo)"
 [ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"java"}')" = "422" ] && grep -q 'abre uno `jvm`' "$TMP/r.json" || falla "7 · java en un puesto python no dio 422: $(cuerpo)"
 [ "$(pide POST /puestos/puesto-ana-python/ejecutar "$ANA" '{"texto":"x","lenguaje":"rust"}')" = "422" ] || falla "7 · rust no dio 422: $(cuerpo)"
@@ -991,6 +1000,7 @@ if [ "$NODE_OK" = "si" ]; then
   fi
   celda 'await over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "8 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "8 · sql en node: $(cuerpo)"
+  celda_sql '-- antes era hr.nada\nselect count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "8 · un nombre en un comentario no se resuelve: $(cuerpo)"
   LEN=javascript; celda 'let z = 5; z * 2' && tiene "d['salida']['texto']=='10'" || falla "8 · javascript: $(cuerpo)"; LEN=typescript
   [ "$(pide POST /puestos/puesto-ana-node/ejecutar "$ANA" '{"texto":"1","lenguaje":"python"}')" = "422" ] || falla "8 · python en node no dio 422: $(cuerpo)"
   [ "$(pide DELETE /puestos/puesto-ana-node "$ANA")" = "200" ] || falla "8 · cerrar node: $(cuerpo)"
@@ -1130,6 +1140,7 @@ if [ "$JAVA_OK" = "si" ]; then
   fi
   celda 'over(\"hr.nada\")' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "9 · hr.nada: $(cuerpo)"
   celda_sql 'select count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "9 · sql en la jvm: $(cuerpo)"
+  celda_sql '-- antes era hr.nada\nselect count(*) as n from hr.espanoles' && tiene "d['salida']['tipo']=='tabla' and d['salida']['filas']==[[3]]" || falla "9 · un nombre en un comentario no se resuelve: $(cuerpo)"
   [ "$(pide POST /puestos/puesto-ana-jvm/ejecutar "$ANA" '{"texto":"1","lenguaje":"typescript"}')" = "422" ] || falla "9 · typescript en jvm no dio 422: $(cuerpo)"
   [ "$(pide DELETE /puestos/puesto-ana-jvm "$ANA")" = "200" ] || falla "9 · cerrar jvm: $(cuerpo)"
   for _ in $(seq 1 100); do kill -0 "$AGENTE" 2>/dev/null || break; sleep 0.25; done

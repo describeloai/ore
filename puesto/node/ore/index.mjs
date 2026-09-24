@@ -212,6 +212,12 @@ async function resolver(vista) {
   if (typeof vista !== "string" || vista.split(".").length !== 2) throw new Error(`se quiere \`<paquete>.<vista>\`, no ${JSON.stringify(vista)}`);
   lee(vista);
   const [codigo, r] = await puesto.pedir("GET", `/puestos/${puesto.id}/datos/${vista}`);
+  return oElError(codigo, r, vista);
+}
+
+/** Lo que ore-serve contestó por un nombre, o el error de siempre: el mismo para
+ *  `over()` (GET datos) que para `sql()` (POST sql). */
+function oElError(codigo, r, vista) {
   if (codigo === 409) throw new Error(`la copia de \`${vista}\` no está hecha: ${r?.error ?? ""}`);
   if (codigo === 404) throw new Error(`no hay ninguna \`View\` ni \`Dataset\` \`${vista}\` en el árbol`);
   // El conducto de la lectura (0031 W3.7 gobierno ②): lo que el dataset lleva
@@ -349,7 +355,6 @@ async function cargar(con, extension) {
   }
 }
 
-const VISTAS_EN_SQL = /\b(?:from|join)\s+([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\b/gi;
 
 /** Cuántas filas materializa `over()`/`sql()` si no se dice otra cosa. */
 export const LIMITE = 100_000;
@@ -427,12 +432,20 @@ export async function sql(texto, o) {
   if (typeof texto !== "string" || !texto.trim()) throw new Error("sql() quiere una consulta");
   const { limite, estricto, como } = opciones(o);
   const con = await duckdb();
-  const vistas = new Set([...texto.matchAll(VISTAS_EN_SQL)].map((m) => `${m[1]}.${m[2]}`));
-  for (const v of [...vistas].sort()) {
+  // El texto entero a ore-serve (`POST /puestos/{id}/sql`): él dice qué nombres
+  // del árbol lee —tokenizador y árbol como filtro, sin regex— y los resuelve
+  // como `over()`, en una ida y vuelta.
+  // Sin puesto no hay árbol, y sin un punto no hay `a.b`: el motor solo.
+  const [codigo, resp] = puesto.id && texto.includes(".")
+    ? await puesto.pedir("POST", `/puestos/${puesto.id}/sql`, { texto })
+    : [200, {}];
+  if (codigo !== 200) oElError(codigo, resp, resp?.nombre ?? "?");
+  for (const [v, rd] of Object.entries(resp?.fuentes ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    lee(v);
     const [esquema, nombre] = v.split(".");
-    const [fuente] = await fuenteDe(v);
-    await con.run(`create schema if not exists "${esquema}"`);
-    await con.run(`create or replace view "${esquema}"."${nombre}" as select * from ${fuente}`);
+    const [fuente] = await fuenteDeRespuesta(v, rd);
+    await con.run(`create schema if not exists "${esquema.replaceAll('"', '""')}"`);
+    await con.run(`create or replace view "${esquema.replaceAll('"', '""')}"."${nombre.replaceAll('"', '""')}" as select * from ${fuente}`);
   }
   const { r, truncada } = await leerHasta(con, texto, limite);
   if (estricto && truncada) throw new Error(`sql(): el resultado pasa de ${limite} filas; sube limite, agrega más o quita estricto`);

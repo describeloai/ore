@@ -26,7 +26,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.io.ByteArrayOutputStream;
@@ -251,6 +251,12 @@ public final class Ore {
             throw new IllegalArgumentException("se quiere `<paquete>.<vista>`, no " + vista);
         lee(vista);
         Respuesta r = puesto.pedir("GET", "/puestos/" + puesto.id + "/datos/" + vista, null, Duration.ofSeconds(30));
+        return oElError(r, vista);
+    }
+
+    /** Lo que ore-serve contestó por un nombre, o el error de siempre: el mismo para
+     *  {@code over()} (GET datos) que para {@code sql()} (POST sql). */
+    private static Map<String, Object> oElError(Respuesta r, String vista) throws IOException {
         if (r.codigo() == 409) throw new IllegalStateException("la copia de `" + vista + "` no está hecha: " + r.error());
         if (r.codigo() == 404) throw new IllegalArgumentException("no hay ninguna `View` ni `Dataset` `" + vista + "` en el árbol");
         // El conducto de la lectura (0031 W3.7 gobierno ②): lo que el dataset lleva
@@ -501,8 +507,6 @@ public final class Ore {
         return Path.of(System.getProperty("java.io.tmpdir", "."));
     }
 
-    private static final Pattern VISTAS_EN_SQL = Pattern.compile("(?i)\\b(?:from|join)\\s+([a-z_][a-z0-9_]*)\\.([a-z_][a-z0-9_]*)\\b");
-
     private static String rutaSql(Path f) { return f.toString().replace("\\", "/").replace("'", "''"); }
 
     /** Cuántas filas materializan {@code over()} y {@code sql()} si no se dice otra cosa. */
@@ -557,16 +561,32 @@ public final class Ore {
         }
     }
 
+    /**
+     * Cada nombre del árbol que el texto lee, como vista de DuckDB. El texto entero va a
+     * ore-serve ({@code POST /puestos/{id}/sql}), que dice qué nombres lee —tokenizador y
+     * árbol como filtro, sin regex: un nombre en un comentario o en una cadena no cuenta,
+     * {@code from a, b} cuenta los dos, un esquema de la sesión es del motor— y los
+     * resuelve como {@code over()}, en una ida y vuelta.
+     */
+    @SuppressWarnings("unchecked")
     private static void registrar(Connection con, String texto) throws Exception {
-        TreeSet<String> vistas = new TreeSet<>();
-        Matcher m = VISTAS_EN_SQL.matcher(texto);
-        while (m.find()) vistas.add(m.group(1) + "." + m.group(2));
-        for (String v : vistas) {
-            String[] p = v.split("\\.");
-            String fuente = fuenteDe(v);
+        // Sin puesto no hay árbol (--comprobar), y sin un punto no hay `a.b`: el motor solo.
+        if (puesto.id.isEmpty() || texto.indexOf('.') < 0) return;
+        Respuesta r = puesto.pedir("POST", "/puestos/" + puesto.id + "/sql", Map.of("texto", texto), Duration.ofSeconds(60));
+        if (r.codigo() != 200) {
+            Object n = r.cuerpo() == null ? null : r.cuerpo().get("nombre");
+            oElError(r, n == null ? "?" : String.valueOf(n));
+        }
+        Object fs = r.cuerpo() == null ? null : r.cuerpo().get("fuentes");
+        if (!(fs instanceof Map<?, ?> fuentes)) return;
+        for (Map.Entry<?, ?> e : new TreeMap<>(fuentes).entrySet()) {
+            String v = String.valueOf(e.getKey());
+            lee(v);
+            String[] p = v.split("\\.", 2);
+            String fuente = fuenteDeRespuesta(v, (Map<String, Object>) e.getValue());
             try (Statement s = con.createStatement()) {
-                s.execute("create schema if not exists \"" + p[0] + "\"");
-                s.execute("create or replace view \"" + p[0] + "\".\"" + p[1] + "\" as select * from " + fuente);
+                s.execute("create schema if not exists \"" + p[0].replace("\"", "\"\"") + "\"");
+                s.execute("create or replace view \"" + p[0].replace("\"", "\"\"") + "\".\"" + p[1].replace("\"", "\"\"") + "\" as select * from " + fuente);
             }
         }
     }
