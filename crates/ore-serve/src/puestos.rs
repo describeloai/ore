@@ -2291,20 +2291,42 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
     let cadena = |s: &str| Json::s(s).jcs();
     let inputs = Json::Arr(u.lee.iter().map(|n| Json::s(n.referencia())).collect()).jcs();
     let salida = cadena(&e.destino.referencia());
+    // Un `insert` con columnas sin alias (`select letra, 0.5 from …`): ésas
+    // toman el nombre de la columna de la tabla en su posición, como en SQL.
+    let (importa, datos) = if e.por_posicion.is_empty() {
+        (
+            String::new(),
+            format!("sql({}, como=\"arrow\")", cadena(&u.consulta)),
+        )
+    } else {
+        let posiciones = Json::Arr(
+            e.por_posicion
+                .iter()
+                .map(|p| Json::Int(*p as i64))
+                .collect(),
+        )
+        .jcs();
+        (
+            ", _por_posicion".to_string(),
+            format!(
+                "_por_posicion(sql({}, como=\"arrow\"), {salida}, {posiciones})",
+                cadena(&u.consulta)
+            ),
+        )
+    };
     let celda = format!(
         "# `{codigo}`: la frase declara lo que lee y lo que escribe, y corre con el\n\
          # mismo `@transform` que un `.py` (lo escribe ore-serve, no el cliente).\n\
-         from ore import transform, sql, write\n\
+         from ore import transform, sql, write{importa}\n\
          \n\
          \n\
          @transform(inputs={inputs}, output={salida})\n\
          def {nombre}():\n    \
-             return write({salida}, sql({consulta}, como=\"arrow\"), modo={modo})\n\
+             return write({salida}, {datos}, modo={modo})\n\
          \n\
          \n\
          _escrito = {nombre}()\n\
          print(\"%s · %s · %d filas%s\" % ({salida}, {modo}, _escrito[\"filas\"], \" · la misma escritura: nada nuevo\" if _escrito[\"repetida\"] else \"\"))\n",
-        consulta = cadena(&u.consulta),
         modo = cadena(e.modo.como_en_write()),
     );
     (celda, "python")

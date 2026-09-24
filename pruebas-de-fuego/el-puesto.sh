@@ -667,11 +667,12 @@ if [ "$ESCRITO_OK" = si ]; then
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "10c · la celda siguiente lo lee: $(cuerpo)"
   celda_sql "$Q10C" && tiene "d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas · la misma escritura: nada nuevo'" || falla "10c · la misma frase otra vez: $(cuerpo)"
   # anexar `0.5` (decimal(2, 1)) a una columna decimal(38, 2): lo de antes se queda
-  # lo que se escribe va por NOMBRE (sql_del_arbol: sin lista de columnas): una
-  # expresión sin alias lo dice, y con él anexa
-  celda_sql 'insert into hr.porsql select letra, 0.5 from hr.lago' && tiene "d['salida']['tipo']=='error' and 'as nombre' in d['salida']['mensaje']" || falla "10c · una columna sin nombre: $(cuerpo)"
-  celda_sql 'insert into hr.porsql select letra, 0.5 as total from hr.lago' && tiene "d['salida']['texto'].strip()=='hr.porsql · anexar · 6 filas'" || falla "10c · insert into: $(cuerpo)"
+  # lo que se escribe va por NOMBRE; una expresión SIN alias (`0.5`) toma el de la
+  # columna de la tabla en su posición, como en SQL (`total`)
+  celda_sql 'insert into hr.porsql select letra, 0.5 from hr.lago' && tiene "d['salida']['texto'].strip()=='hr.porsql · anexar · 6 filas'" || falla "10c · insert into sin alias: $(cuerpo)"
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[6,'5.25']]" || falla "10c · anexar con otro decimal perdió lo de antes: $(cuerpo)"
+  # sin tabla no hay posición de la que tomar el nombre: se dice
+  celda_sql 'insert into hr.aunno select 1 from hr.lago' && tiene "d['salida']['tipo']=='error' and 'no existe todavía' in d['salida']['mensaje'] and 'as nombre' in d['salida']['mensaje']" || falla "10c · insert sin alias en una tabla que no existe: $(cuerpo)"
   # el `.sql` del editor da nombre al transform
   [ "$(pide POST /puestos/$P/ejecutar "$ANA" '{"texto":"create or replace table hr.porfichero as select n from hr.lago","lenguaje":"sql","fichero":"packages/hr/transforms/porfichero.sql"}')" = "202" ] || falla "10c · con fichero: $(cuerpo)"
   N10C=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
@@ -685,7 +686,7 @@ if [ "$ESCRITO_OK" = si ]; then
   celda_sql 'insert into hr.porsql by name select 1.0 as total' && tiene "d['salida']['tipo']=='error' and 'no analiza' in d['salida']['mensaje']" || falla "10c · lo que no analiza: $(cuerpo)"
   celda_sql 'create or replace table hr.espanoles as select 1 as id' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10c · un dataset mantenido: $(cuerpo)"
   pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10c · quedan celdas pendientes: $(cuerpo)"
-  dice "10c · un .sql que escribe, en la sesión: create or replace → hr.porsql en el lago (puntero, Dataset, procedencia inputs+transform) y la celda siguiente lo lee · otra vez: la misma escritura · insert into anexa (0.5 en decimal(38, 2): nada de antes se pierde) · con fichero, el transform se llama como él · dos sentencias, create view, lo que no analiza y un mantenido: error de la celda, ya, con su sitio"
+  dice "10c · un .sql que escribe, en la sesión: create or replace → hr.porsql en el lago (puntero, Dataset, procedencia inputs+transform) y la celda siguiente lo lee · otra vez: la misma escritura · insert into sin alias anexa por posición (0.5 → total, en decimal(38, 2): nada de antes se pierde; sin tabla, se dice) · con fichero, el transform se llama como él · dos sentencias, create view, lo que no analiza y un mantenido: error de la celda, ya, con su sitio"
 fi
 
 

@@ -683,6 +683,32 @@ def _mensaje(r):
     return str(e or r)
 
 
+def _por_posicion(tabla_arrow, nombre, posiciones):
+    """`insert into p.t select …` (el SQL del árbol, la celda que escribe
+    ore-serve): lo que se escribe va por NOMBRE de columna, y una columna del
+    `select` que no lo tiene —una expresión sin alias, `0.5`, `sum(x)`— toma el
+    de la columna de la tabla en su misma posición, como en SQL (decidido
+    2026-09-24). `posiciones` las dice el analizador (desde 0)."""
+    ns, t = nombre.split(".")
+    c, r = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+    primera = posiciones[0] + 1
+    if c == 404:
+        raise RuntimeError("insert into %s: la tabla no existe todavía, y la columna %d del select no tiene nombre "
+                           "del que tomarlo: dale uno (`… as nombre`)" % (nombre, primera))
+    if c != 200:
+        raise RuntimeError("insert into %s: ore-serve contestó %s: %s" % (nombre, c, _mensaje(r)))
+    md = r["metadata"]
+    esquema = next((s for s in md.get("schemas", []) if s.get("schema-id") == md.get("current-schema-id")), None) or md.get("schema") or {}
+    de_la_tabla = [f["name"] for f in esquema.get("fields", [])]
+    columnas = list(tabla_arrow.column_names)
+    for p in posiciones:
+        if p >= len(de_la_tabla):
+            raise RuntimeError("insert into %s: la columna %d del select no tiene nombre y la tabla sólo tiene %d: "
+                               "dale uno (`… as nombre`)" % (nombre, p + 1, len(de_la_tabla)))
+        columnas[p] = de_la_tabla[p]
+    return tabla_arrow.rename_columns(columnas)
+
+
 def write(nombre, datos, modo="sobrescribir", clave=None):
     """Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
     Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""

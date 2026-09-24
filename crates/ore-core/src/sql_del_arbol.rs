@@ -99,6 +99,12 @@ impl Nombre {
 pub struct Escritura {
     pub destino: Nombre,
     pub modo: Modo,
+    /// `insert … into p.t select …`: las columnas del `select` (por su
+    /// posición, desde 0) que son una expresión SIN alias. Lo que se escribe
+    /// va por nombre; éstas no lo tienen, y toman el de la columna de la
+    /// tabla en su misma posición, como en SQL (decidido 2026-09-24). Las de
+    /// antes de un `*` sólo: tras él, la posición ya no se sabe.
+    pub por_posicion: Vec<usize>,
 }
 
 /// La declaración que la frase lleva dentro.
@@ -272,6 +278,7 @@ fn escritura_de_create(c: &CreateTable, fallos: &mut Vec<Fallo>) -> Option<Escri
     Some(Escritura {
         destino,
         modo: Modo::Sobrescribir,
+        por_posicion: Vec::new(),
     })
 }
 
@@ -330,7 +337,38 @@ fn escritura_de_insert(i: &Insert, fallos: &mut Vec<Fallo>) -> Option<Escritura>
         }
     }
     let destino = nombre_del_arbol(nombre, fallos)?;
-    Some(Escritura { destino, modo })
+    let por_posicion = i.source.as_deref().map(sin_nombre).unwrap_or_default();
+    Some(Escritura {
+        destino,
+        modo,
+        por_posicion,
+    })
+}
+
+/// Las columnas del `select` de un `insert` que son una expresión sin alias
+/// (`0.5`, `sum(x)`), por su posición: una columna, un `t.col` o un `… as n`
+/// tienen nombre. De un `union`, el primer `select` (el que da los nombres).
+fn sin_nombre(q: &Query) -> Vec<usize> {
+    use sqlparser::ast::{Expr, SelectItem};
+    let mut cuerpo = q.body.as_ref();
+    let proyeccion = loop {
+        match cuerpo {
+            SetExpr::Select(s) => break &s.projection,
+            SetExpr::SetOperation { left, .. } => cuerpo = left.as_ref(),
+            SetExpr::Query(q) => cuerpo = q.body.as_ref(),
+            _ => return Vec::new(),
+        }
+    };
+    let mut out = Vec::new();
+    for (i, item) in proyeccion.iter().enumerate() {
+        match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(_) | Expr::CompoundIdentifier(_))
+            | SelectItem::ExprWithAlias { .. } => {}
+            SelectItem::UnnamedExpr(_) => out.push(i),
+            _ => break,
+        }
+    }
+    out
 }
 
 /// Lo que se lee: cada tabla tras un `from` o un `join`, con los `with` de
@@ -824,6 +862,42 @@ mod tests {
     fn escribe(q: &str) -> (String, Modo) {
         let e = analizar(q).unwrap().escribe.unwrap();
         (e.destino.referencia(), e.modo)
+    }
+
+    /// Las columnas de un `insert` sin nombre: una expresión sin alias toma el
+    /// de la tabla en su posición (decidido 2026-09-24); las demás van por el
+    /// suyo. Tras un `*` la posición ya no se sabe.
+    #[test]
+    fn un_insert_dice_que_columnas_van_por_posicion() {
+        let p = |q: &str| analizar(q).unwrap().escribe.unwrap().por_posicion;
+        assert_eq!(p("insert into hr.x select letra, 0.5 from hr.a"), [1]);
+        assert_eq!(
+            p(
+                "insert into hr.x select a, t.b, c as d, sum(e), e + 1 from hr.a as t group by 1, 2, 3"
+            ),
+            [3, 4]
+        );
+        assert_eq!(
+            p("insert or replace into hr.x select id, 'b' from hr.a"),
+            [1]
+        );
+        assert_eq!(p("insert into hr.x select 1, * from hr.a"), [0]);
+        assert_eq!(
+            p("insert into hr.x select *, 1 from hr.a"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            p("insert into hr.x select 1 as a from hr.a union all select 2 from hr.b"),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            p("insert into hr.x with w as (select 1 as a) select a, 2 from w"),
+            [1]
+        );
+        assert_eq!(
+            p("create or replace table hr.x as select 0.5 from hr.a"),
+            Vec::<usize>::new()
+        );
     }
 
     fn falla(q: &str) -> Vec<Fallo> {
