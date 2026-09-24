@@ -275,7 +275,39 @@ public final class Ore {
      * (el sobre heredado, que se baja una vez).
      */
     private static String fuenteDe(String vista) throws Exception {
-        Map<String, Object> r = resolver(vista);
+        return fuenteDeRespuesta(vista, resolver(vista));
+    }
+
+    /** Donde se pone la vista de DuckDB de cada dataset que una View lee: aparte de los
+     *  nombres del árbol, porque una View y su dataset pueden llamarse igual. */
+    private static final String ESQUEMA_DE_DATASETS = "__ore_dataset";
+
+    /**
+     * Lo que {@code datos} contestó, como fragmento SQL. Una View llega como su pregunta
+     * ({@code consulta}, SQL sobre {@code "__ore_dataset"."<p>.<n>"}) con sus datasets ya
+     * resueltos por el servidor: cada uno se pone como vista de DuckDB por el camino de
+     * siempre, y la View es la consulta encima. Medido: con {@code select *} sobre la raíz,
+     * una View con {@code where} y {@code fields} daba 20 000 filas y 4 columnas donde dice
+     * 5 000 y 2 ({@code medida-la-vista-con-filtro.py}).
+     */
+    @SuppressWarnings("unchecked")
+    private static String fuenteDeRespuesta(String vista, Map<String, Object> r) throws Exception {
+        Object consulta = r.get("consulta");
+        if (consulta != null && !String.valueOf(consulta).isEmpty()) {
+            Connection con = duckdb();
+            try (Statement s = con.createStatement()) { s.execute("create schema if not exists \"" + ESQUEMA_DE_DATASETS + "\""); }
+            Object ds = r.get("datasets");
+            if (ds instanceof Map<?, ?> mapaDs) {
+                for (Map.Entry<?, ?> e : mapaDs.entrySet()) {
+                    String d = String.valueOf(e.getKey());
+                    String fuente = fuenteDeRespuesta(d, (Map<String, Object>) e.getValue());
+                    try (Statement s = con.createStatement()) {
+                        s.execute("create or replace view \"" + ESQUEMA_DE_DATASETS + "\".\"" + d.replace("\"", "\"\"") + "\" as select * from " + fuente);
+                    }
+                }
+            }
+            return "(" + consulta + ")";
+        }
         Object m = r.get("metadata_location");
         if (m != null && !String.valueOf(m).isEmpty()) {
             // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).

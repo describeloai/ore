@@ -291,7 +291,28 @@ def _fuente_de(vista):
     """De qué se lee la vista, como fragmento SQL de DuckDB: `iceberg_scan(...)` si es
     un dataset Iceberg (el puntero trae `metadata_location`), `read_parquet('…')` si
     es un sobre heredado (trae `clave`, y se baja una vez)."""
-    r = _resolver(vista)
+    return _fuente_de_respuesta(vista, _resolver(vista))
+
+
+# Donde se pone la vista de DuckDB de cada dataset que una View lee: aparte de
+# los nombres del árbol, porque una View y su dataset pueden llamarse igual.
+ESQUEMA_DE_DATASETS = "__ore_dataset"
+
+
+def _fuente_de_respuesta(vista, r):
+    """Lo que `datos` contestó, como fragmento SQL. Una View llega como su
+    pregunta (`consulta`, SQL sobre `"__ore_dataset"."<p>.<n>"`) con sus datasets
+    ya resueltos por el servidor: cada uno se pone como vista de DuckDB por el
+    camino de siempre, y la View es la consulta encima. Medido: con `select *`
+    sobre la raíz, una View con `where` y `fields` daba 20 000 filas y 4
+    columnas donde dice 5 000 y 2 (`medida-la-vista-con-filtro.py`)."""
+    if r.get("consulta"):
+        con = _duckdb()
+        con.execute('create schema if not exists "%s"' % ESQUEMA_DE_DATASETS)
+        for d, rd in (r.get("datasets") or {}).items():
+            fuente, _ = _fuente_de_respuesta(d, rd)
+            con.execute('create or replace view "%s"."%s" as select * from %s' % (ESQUEMA_DE_DATASETS, d.replace('"', '""'), fuente))
+        return "(%s)" % r["consulta"], r
     if r.get("metadata_location"):
         global _s3
         # La credencial de lectura que `datos` presta (W3.7 gobierno ②b): acotada

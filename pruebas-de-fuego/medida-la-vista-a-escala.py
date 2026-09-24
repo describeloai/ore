@@ -8,8 +8,9 @@ DuckDB como SQL sobre su dataset (`select id, pais from <raiz> where pais =
 y lo que costaria con el SQL de la View —escrito a mano aqui, porque todavia no
 lo escribe nadie—:
 
-  §1  HOY          `over()` de la View (lo que devuelve, y lo que cuesta) y
-                   `sql()` con un `count(*)` sobre ella
+  §1  EL SDK       `over()` de la View (lo que devuelve, y lo que cuesta) y
+                   `sql()` con un `count(*)` sobre ella; antes del arreglo era el
+                   dataset entero, y el numero de entonces se imprime al lado
   §2  EL ARREGLO   el mismo `iceberg_scan` que el SDK arma, con la proyeccion
                    y el filtro de la View encima
   §3  ORDENADO     lo mismo sobre una copia de los datos ordenada por `pais`:
@@ -159,7 +160,8 @@ def main():
               % ("{:,}".format(m.FILAS).replace(",", "."), "{:,}".format(es).replace(",", ".")))
         print("     %-34s %11s %-6s %9s %10s %22s %15s" % ("", "filas", "", "tiempo", "", "", ""))
         print()
-        print("  §1 HOY (la View no se aplica)")
+        print("  §1 EL SDK (over() y sql() de la View, por `datos`)")
+        print("     antes del arreglo, 2026-09-24, 20 M: over() 20.000.000 filas · 4 col · 1,58 s · 112,5 MB del S3 · 1425 MB pico")
         linea("over(hr.ventasES)", correr(b, "over", "hr.ventasES", "hr.ventas"))
         linea("sql(count(*) from hr.ventasES)", correr(b, "count", "hr.ventasES", "hr.ventas"))
         print("  §2 EL ARREGLO (el SQL de la View sobre su dataset)")

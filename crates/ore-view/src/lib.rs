@@ -47,6 +47,7 @@
 //! absorción —conectarlo con el resto— está hecha: la costura entera es
 //! `crates/ore-cli/src/vista.rs`, y `docs/view-engine.md` §6 la describe.
 
+pub mod a_sql;
 pub mod capabilities;
 pub mod catalog;
 pub mod cost_model;

@@ -558,6 +558,25 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   [ "$(pide GET /documentos/TrainedModel "$ANA")" = "200" ] && tiene "[x['name'] for x in d['documentos']]==['prevision']" || falla "10 · GET /documentos/TrainedModel: $(cuerpo)"
   dice "10 · write(hr.salida) desde la celda: la tabla por IPC a ore-store-r2 con la credencial prestada, el commit por /v1, el Dataset escrito nace tipado y over() devuelve el mismo JSON que hr.lago · repetida sin snapshot · anexar un DataFrame → 5 y sql lo suma · upsert por clave → 6 (54.75) y el Dataset declara la clave · una View → error · uint64 → ValueError con la columna · declare(View sobre hr.salida) la deja en el árbol, otra vez no es nueva, una rota es ValueError con el OOS y no queda, un Model no se sirve · declare(TrainedModel) con linaje por la View: en el árbol y listado; linaje roto OOS2005; sin digest OOS1004 · la procedencia en el puntero y la ficha (leidas fuera de un transform; inputs + transform dentro); un transform no lee ni escribe fuera de lo declarado (PermissionError)"
   ESCRITO_OK=si
+  # 10b · una View con `where` y `fields` sobre un dataset se aplica. Medido antes
+  # (medida-la-vista-con-filtro.py): se leía el dataset entero, todas las filas y
+  # todas las columnas. La que sale son `letra` y `n` de las filas con n en (1, 2);
+  # lo esperado lo cuenta sql() sobre el dataset, y node y jvm (8, 9) lo cotejan.
+  cat > "$A/packages/hr/views/salidaFiltrada.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: salidaFiltrada, namespace: hr }
+spec:
+  owner: team:hr
+  from: { dataset: hr.salida }
+  where: { n: ["1", "2"] }
+  fields: { n: n, letra: letra }
+Y
+  celda 'v = over(\"hr.salidaFiltrada\", como=\"arrow\"); e = sql(\"select count(*) as k from hr.salida where n in (1, 2)\", como=\"arrow\").column(0)[0].as_py(); t = sql(\"select count(*) as k from hr.salida\", como=\"arrow\").column(0)[0].as_py(); print(v.num_rows, e, t, sorted(v.column_names))' \
+    && tiene "(lambda p: p[0]==p[1] and 0 < int(p[1]) < int(p[2]) and d['salida']['texto'].strip().endswith(\"['letra', 'n']\"))(d['salida']['texto'].split())" || falla "10b · la View no se aplicó (filas, esperadas, total, columnas): $(cuerpo)"
+  FILTRADAS=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["salida"]["texto"].split()[0])' "$TMP/r.json")
+  celda 'sql(\"select count(*) as k from hr.salidaFiltrada\", como=\"arrow\").column(0)[0].as_py()' && tiene "d['salida']['texto']=='$FILTRADAS'" || falla "10b · sql() sobre la View: $(cuerpo)"
+  dice "10b · una View con where y fields sobre un dataset: over() y sql() dan sus $FILTRADAS filas y sus dos columnas (letra, n), no el dataset entero"
 else
   ESCRITO_OK=no
   dice "10 · (sin el lago o sin ore-store-r2: write() no se prueba aquí)"
@@ -954,6 +973,7 @@ if [ "$NODE_OK" = "si" ]; then
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
     # write() desde Node: lo que Python escribió (5 filas), leído; y lo suyo, escrito y leído
     celda 'const s = await over(\"hr.salida\"); s.length' && tiene "d['salida']['texto']=='6'" || falla "8 · Node lee lo que Python escribió: $(cuerpo)"
+    celda 'await over(\"hr.salidaFiltrada\")' && tiene "d['salida']['tipo']=='tabla' and sorted(c['name'] for c in d['salida']['columnas'])==['letra','n'] and d['salida']['total']==$FILTRADAS" || falla "8 · la View con filtro en Node (se esperaban $FILTRADAS filas, letra y n): $(cuerpo)"
     celda 'const e = await write(\"hr.salida_node\", await over(\"hr.lago\")); [e.filas, e.repetida]' && tiene "d['salida']['texto']=='[ 3, false ]'" && grep -Eq "derivedFrom: \[.*hr\.lago.*\]" "$A/packages/hr/datasets/salida_node.yaml" || falla "8 · write(hr.salida_node) desde filas: $(cuerpo)"
     celda 'await over(\"hr.salida_node\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "8 · over(hr.salida_node) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'const e2 = await write(\"hr.salida_node\", await over(\"hr.lago\", { como: \"columnas\" })); e2.repetida' && tiene "d['salida']['texto']=='true'" || falla "8 · la misma escritura (por columnas) tenía que ser repetida: $(cuerpo)"
@@ -1092,6 +1112,7 @@ if [ "$JAVA_OK" = "si" ]; then
   if [ "${ESCRITO_OK:-no}" = "si" ]; then
     # write() desde Java: lo que Python (6) y Node (5) escribieron, leído; y lo suyo, escrito y leído
     celda 'over(\"hr.salida\").size() + over(\"hr.salida_node\").size()' && tiene "d['salida']['texto']=='11'" || falla "9 · Java lee lo que Python y Node escribieron: $(cuerpo)"
+    celda 'over(\"hr.salidaFiltrada\")' && tiene "d['salida']['tipo']=='tabla' and sorted(c['name'] for c in d['salida']['columnas'])==['letra','n'] and d['salida']['total']==$FILTRADAS" || falla "9 · la View con filtro en Java (se esperaban $FILTRADAS filas, letra y n): $(cuerpo)"
     celda 'var e = write(\"hr.salida_jvm\", over(\"hr.lago\")); e.get(\"filas\") + \" \" + e.get(\"repetida\")' && grep -Eq "derivedFrom: \[.*hr\.lago.*\]" "$A/packages/hr/datasets/salida_jvm.yaml" && tiene "d['salida']['texto']=='\"3 false\"'" || falla "9 · write(hr.salida_jvm) desde Filas: $(cuerpo)"
     celda 'over(\"hr.salida_jvm\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "9 · over(hr.salida_jvm) no es el mismo JSON que hr.lago: $(cuerpo)"
     celda 'var e2 = write(\"hr.salida_jvm\", arrow(\"hr.lago\")); e2.get(\"repetida\")' && tiene "d['salida']['texto']=='true'" || falla "9 · la misma escritura (por Arrow) tenía que ser repetida: $(cuerpo)"

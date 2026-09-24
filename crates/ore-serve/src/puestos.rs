@@ -1529,7 +1529,7 @@ impl Servidor {
         }
         let (ns, nombre, vista) = (ns.to_string(), nombre.to_string(), vista.to_string());
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
-            self.con_credencial(raiz, datos_de(raiz, &ns, &nombre, &vista))
+            self.datos_o_vista(raiz, &ns, &nombre, &vista)
         });
         // **El fallback de rama** (0031 §4, W3.7 ③): una rama lee las copias
         // de `main` mientras no tenga las suyas. Lo que la rama no tiene —ni
@@ -1538,9 +1538,8 @@ impl Servidor {
         // Medido antes: sin esto, lo que `main` ganaba tras abrir la rama era
         // «no hay ninguna View» desde ella.
         if rama.is_some() && matches!(r.codigo, 404 | 409) {
-            let mut de_main = self.leyendo_en(None, |raiz| {
-                self.con_credencial(raiz, datos_de(raiz, &ns, &nombre, &vista))
-            });
+            let mut de_main =
+                self.leyendo_en(None, |raiz| self.datos_o_vista(raiz, &ns, &nombre, &vista));
             if de_main.codigo == 200 {
                 if let Json::Obj(m) = &mut de_main.cuerpo {
                     m.insert("rama".into(), Json::s("main"));
@@ -1654,6 +1653,117 @@ impl Servidor {
             .unwrap()
             .get(id)
             .and_then(|p| p.transform.clone())
+    }
+
+    /// Lo que se lee por un nombre: un dataset por su puntero (`datos_de`), o
+    /// **una View como la pregunta que es** (`datos_de_vista`). Si una View y
+    /// un dataset se llaman igual, manda el dataset, como en `datos_de`.
+    fn datos_o_vista(&self, raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        let solo_vista = pkg.view(vista).is_some() && pkg.dataset(vista).is_none();
+        if solo_vista {
+            self.datos_de_vista(raiz, &pkg, vista)
+        } else {
+            self.con_credencial(raiz, datos_de(raiz, ns, nombre, vista))
+        }
+    }
+
+    /// **Una View leída desde un puesto: su SQL sobre sus datasets.**
+    ///
+    /// Medido (`medida-la-vista-con-filtro.py`): hasta aquí una View se
+    /// resolvía al puntero de su dataset raíz y el SDK hacía `select *` sobre
+    /// él —20 000 filas y 4 columnas donde la View dice 5 000 y 2—. Ahora
+    /// `ore ask --sql` la compila a SQL de DuckDB sobre sus datasets
+    /// (`"__ore_dataset"."<p>.<n>"`), y **cada dataset se resuelve aquí mismo**
+    /// con `datos_de` y su credencial: su conducto, su puntero, su 409 si no
+    /// está. Aquí y no en el SDK por lo declarado (⑤): un transform que lee
+    /// la View no declara sus datasets, y pedirlos aparte sería un 403.
+    ///
+    /// `{vista, consulta, columnas, datasets: {<p>.<n>: <lo que datos_de da>}}`.
+    fn datos_de_vista(&self, raiz: &Path, pkg: &ore_core::link::Package, vista: &str) -> Respuesta {
+        // Una View virtual —sobre una Table, sin dataset debajo— no tiene de
+        // dónde leerse: lo mismo que decía `datos_de`, con las mismas palabras.
+        if let Some(v) = pkg.view(vista)
+            && ore_core::vistas::raiz_de_lectura(pkg, v).is_none()
+        {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{vista}` es una `View` virtual: no tiene ningún dataset debajo del que leer. Declara un `Dataset` con `from` sobre ella, o léela como pregunta (sql)"
+                ),
+            );
+        }
+        if let Err(n) = ore_core::flow::lectura_desde_puesto(pkg, vista) {
+            let mut r = Respuesta::error(403, format!("{}: {}", n.codigo, n.mensaje));
+            if let Json::Obj(m) = &mut r.cuerpo {
+                m.insert("codigo".into(), Json::s(n.codigo));
+            }
+            return r;
+        }
+        let args: Vec<String> = ["ask", ".", "--vista", vista, "--sql"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let salida = match crate::mando::correr(&self.binario, raiz, &args) {
+            Ok(s) => s,
+            Err(e) => return Respuesta::error(500, e.to_string()),
+        };
+        let json = salida
+            .stdout
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| l.starts_with('{'))
+            .and_then(|l| ore_core::parse::parse(l).ok());
+        let Some(j) = json.filter(|_| salida.bien()) else {
+            let m = salida
+                .stderr
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("la View no se compila")
+                .trim_start_matches("error: ")
+                .to_string();
+            return Respuesta::error(
+                409,
+                format!("`{vista}` no se puede leer desde un puesto: {m}"),
+            );
+        };
+        let texto = |k: &str| {
+            j.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let mut datasets = std::collections::BTreeMap::new();
+        for d in j
+            .get("datasets")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|d| d.as_str())
+        {
+            let Some((dns, dn)) = d.split_once('.') else {
+                continue;
+            };
+            let r = self.con_credencial(raiz, datos_de(raiz, dns, dn, d));
+            if r.codigo != 200 {
+                // El 403 del conducto o el 409 de una copia que no está, del
+                // dataset: la View no se lee sin él, y se dice por qué.
+                return r;
+            }
+            datasets.insert(d.to_string(), r.cuerpo);
+        }
+        Respuesta::ok(Json::obj([
+            ("vista", Json::s(vista)),
+            ("consulta", Json::s(texto("consulta"))),
+            (
+                "columnas",
+                j.get("columnas")
+                    .map(|(_, v)| Json::de_node(v))
+                    .unwrap_or(Json::obj([])),
+            ),
+            ("datasets", Json::Obj(datasets)),
+        ]))
     }
 
     /// **La credencial de lectura** (0031 W3.7 gobierno ②b): lo que `datos`
@@ -1990,12 +2100,12 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
 }
 
 /// Lo que el árbol dice del dataset de un nombre (0031 §10, 0033: **un
-/// lector, un camino**): el nombre resuelve a un `Dataset` —o a una `View`
-/// cuya raíz de lectura es uno— y su puntero está en `datasets/<p>_<n>.json`.
-/// Con `estado: copiada|al-dia` y `metadata_location` (o `clave`, heredado),
-/// el dataset está; si no, 409 con lo que el puntero diga. Una View virtual o
-/// una Table es 409 «sin dataset»: no hay camino por el que esta ruta llegue a
-/// un origen.
+/// lector, un camino**): el nombre resuelve a un `Dataset` y su puntero está
+/// en `datasets/<p>_<n>.json`. Con `estado: copiada|al-dia` y
+/// `metadata_location` (o `clave`, heredado), el dataset está; si no, 409 con
+/// lo que el puntero diga. Una Table es 409 «sin dataset»: no hay camino por el
+/// que esta ruta llegue a un origen. Y una View también es 409 aquí: se lee por
+/// su pregunta (`datos_de_vista`), nunca por el puntero de su raíz.
 fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
     let hay = |carpeta: &str| {
         std::fs::read_dir(raiz.join("packages").join(ns).join(carpeta))
@@ -2024,7 +2134,17 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             .and_then(|v| ore_core::vistas::raiz_de_lectura(&pkg, v))
             .and_then(|c| c.qname());
         match copia {
-            Some(c) => c,
+            // ⛔ Nunca el puntero de la raíz: leerlo con `select *` era no
+            // aplicar la View (medido: 20 000 filas y 4 columnas donde dice
+            // 5 000 y 2). Una View se lee por su pregunta, `datos_de_vista`.
+            Some(_) => {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "`{vista}` es una `View`: se lee como la pregunta que es, no por el puntero de su dataset"
+                    ),
+                );
+            }
             None => {
                 return Respuesta::error(
                     409,
@@ -2315,8 +2435,8 @@ mod prueba {
     use super::*;
 
     /// **Un lector, un camino** (0031 §10, 0033): un dataset resuelve por su
-    /// puntero en `datasets/`; una View, por el del primer dataset que tenga
-    /// debajo; una View virtual y una Table son 409, y lo que no está es 404.
+    /// puntero en `datasets/`; una View no (se lee por su pregunta); una View
+    /// virtual y una Table son 409, y lo que no está es 404.
     #[test]
     fn el_puesto_resuelve_datasets_y_vistas_con_dataset_debajo() {
         let d = std::env::temp_dir().join(format!("ore-datos-{}", std::process::id()));
@@ -2385,11 +2505,12 @@ mod prueba {
             "{}",
             r.cuerpo.jcs()
         );
-        // La vista sobre el dataset lee el puntero del dataset.
+        // La vista sobre el dataset NO da el puntero del dataset: leerlo con
+        // `select *` era no aplicar la View. Va por `datos_de_vista`.
         let r = datos_de(&d, "v", "grandes", "v.grandes");
-        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
         assert!(
-            r.cuerpo.jcs().contains("copias/v_pedidos"),
+            r.cuerpo.jcs().contains("como la pregunta que es"),
             "{}",
             r.cuerpo.jcs()
         );

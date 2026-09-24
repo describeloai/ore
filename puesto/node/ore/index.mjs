@@ -228,8 +228,8 @@ function copiasPorDefecto() {
 
 /** La copia de la vista como Parquet local, bajado UNA vez por sesión (la
  *  clave es el digest del artefacto: una clave nueva es otra copia). */
-async function parquetDe(vista) {
-  const r = await resolver(vista);
+async function parquetDe(vista, resuelto) {
+  const r = resuelto ?? (await resolver(vista));
   const d = copiasPorDefecto();
   mkdirSync(d, { recursive: true });
   const f = join(d, r.clave.replaceAll("/", "_") + ".parquet");
@@ -245,7 +245,29 @@ async function parquetDe(vista) {
  *  dataset Iceberg (el puntero trae `metadata_location`), `read_parquet('…')` si es un
  *  sobre heredado (trae `clave`, y se baja una vez). */
 async function fuenteDe(vista) {
-  const r = await resolver(vista);
+  return fuenteDeRespuesta(vista, await resolver(vista));
+}
+
+// Donde se pone la vista de DuckDB de cada dataset que una View lee: aparte de
+// los nombres del árbol, porque una View y su dataset pueden llamarse igual.
+const ESQUEMA_DE_DATASETS = "__ore_dataset";
+
+/** Lo que `datos` contestó, como fragmento SQL. Una View llega como su pregunta
+ *  (`consulta`, SQL sobre `"__ore_dataset"."<p>.<n>"`) con sus datasets ya
+ *  resueltos por el servidor: cada uno se pone como vista de DuckDB por el
+ *  camino de siempre, y la View es la consulta encima. Medido: con `select *`
+ *  sobre la raíz, una View con `where` y `fields` daba 20 000 filas y 4
+ *  columnas donde dice 5 000 y 2 (`medida-la-vista-con-filtro.py`). */
+async function fuenteDeRespuesta(vista, r) {
+  if (r.consulta) {
+    const con = await duckdb();
+    await con.run(`create schema if not exists "${ESQUEMA_DE_DATASETS}"`);
+    for (const [d, rd] of Object.entries(r.datasets ?? {})) {
+      const [fuente] = await fuenteDeRespuesta(d, rd);
+      await con.run(`create or replace view "${ESQUEMA_DE_DATASETS}"."${d.replaceAll('"', '""')}" as select * from ${fuente}`);
+    }
+    return [`(${r.consulta})`, r];
+  }
   if (r.metadata_location) {
     if (r.metadata_location.startsWith("s3://") && !s3) {
       // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).
@@ -258,7 +280,7 @@ async function fuenteDe(vista) {
     }
     return [await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]), r];
   }
-  const [f] = await parquetDe(vista);
+  const [f] = await parquetDe(vista, r);
   return [`read_parquet('${f.replaceAll("'", "''").replaceAll("\\", "/")}')`, r];
 }
 

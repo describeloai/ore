@@ -729,6 +729,10 @@ enum Command {
         /// Decide quien contesta y con que; no trae ni ejecuta.
         #[arg(long)]
         seco: bool,
+        /// La View como SQL de DuckDB sobre sus datasets (lo que el puesto
+        /// ejecuta para leerla), en JSON: `{vista, datasets, consulta, columnas}`.
+        #[arg(long)]
+        sql: bool,
     },
     /// El indice de assets del arbol (0034): cada documento como un item
     /// (`kind:namespace.name`) con su carpeta, lo que define y expone, su
@@ -945,6 +949,7 @@ fn main() -> std::process::ExitCode {
             vista,
             limite,
             seco,
+            sql,
         } => {
             return preguntar::preguntar(
                 path,
@@ -952,6 +957,7 @@ fn main() -> std::process::ExitCode {
                     vista,
                     limite: *limite,
                     seco: *seco,
+                    sql: *sql,
                 },
             );
         }

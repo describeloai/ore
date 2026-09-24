@@ -60,6 +60,9 @@ pub struct Opciones<'a> {
     pub limite: Option<u64>,
     /// Decidir sin traer: el plan, quién contesta y con qué; ninguna fila.
     pub seco: bool,
+    /// La View como SQL de DuckDB sobre sus datasets, sin traer nada: lo que
+    /// el puesto ejecuta para leerla (`datos` lo devuelve como `consulta`).
+    pub sql: bool,
 }
 
 type Fallo = (u8, String);
@@ -110,6 +113,10 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 ),
             ));
         }
+    }
+
+    if op.sql {
+        return sql_de_la_vista(&pkg, v, op.vista);
     }
 
     // ── ② El plan, y quién lo contesta ───────────────────────────────────────
@@ -270,6 +277,124 @@ fn elegir(
 }
 
 /// La hoja del plan reescrito: la tabla donde vive la copia.
+/// El esquema interno donde el puesto pone la vista de DuckDB de cada dataset
+/// (`"__ore_dataset"."<p>.<n>"`). Aparte del de los nombres del árbol porque
+/// una View y su dataset pueden llamarse igual (v1alpha12): con el mismo nombre,
+/// la View se leería a sí misma.
+pub(crate) const ESQUEMA_DE_DATASETS: &str = "__ore_dataset";
+
+/// **`ore ask --vista p.v --sql`: la View como SQL sobre sus datasets.**
+///
+/// Medido (`medida-la-vista-con-filtro.py`): desde un puesto, leer una View no
+/// aplicaba su `where` ni sus `fields` —el SDK hacía `select *` sobre el
+/// dataset raíz—. Aquí la View se compila con el mismo `vista::cuerpo` que
+/// `ore view` y `ore ask`, pero en un catálogo donde **cada Dataset es una hoja
+/// opaca**: se lee por su puntero, y lo que tenga debajo (el `from` y el
+/// `where` de un mantenido) ya está aplicado en sus bytes. El plan expandido se
+/// escribe en SQL de DuckDB (`ore_view::a_sql`), con cada hoja como
+/// `"__ore_dataset"."<p>.<n>"`.
+///
+/// No pasa por el View Matcher a propósito: el matcher elige entre COPIAS
+/// registradas (mantenidas) y no contesta una View sobre un dataset escrito,
+/// que es el caso de hoy. Aquí no se elige: se lee de lo que la View nombra.
+///
+/// Salida: `{vista, datasets: [<p>.<n>, …], consulta, columnas}`. Lo que el
+/// traductor no sabe escribir es un error con su motivo, nunca un `select *`.
+fn sql_de_la_vista(pkg: &ore_core::link::Package, v: &Loaded, nombre: &str) -> Result<(), Fallo> {
+    if v.kind != ore_core::document::Kind::View {
+        return Err((
+            64,
+            format!(
+                "`{nombre}` es un Dataset: se lee por su puntero, no hay pregunta que escribir"
+            ),
+        ));
+    }
+    let tipos = crate::vista::tipos_de_raiz(pkg);
+    let docs = pkg.of_view();
+    // El catálogo de siempre, sólo para saber qué columnas expone cada dataset.
+    let normal = Catalogo::con(docs.iter().filter_map(|d| {
+        Some(Vista::nueva(
+            &crate::vista::nodo_de(d)?,
+            crate::vista::cuerpo(pkg, d, &tipos),
+        ))
+    }));
+    let hojas = Catalogo::con(docs.iter().filter_map(|d| {
+        let nodo = crate::vista::nodo_de(d)?;
+        if d.kind == ore_core::document::Kind::Dataset {
+            let campos = normal
+                .expandir(&nodo)
+                .ok()
+                .and_then(|p| esquema(&p).ok())
+                .unwrap_or_default();
+            Some(Vista::nueva(
+                &nodo,
+                Nodo::Lee(ore_view::Lectura {
+                    datasource: ESQUEMA_DE_DATASETS.to_string(),
+                    objeto: d.qname()?,
+                    campos,
+                }),
+            ))
+        } else {
+            Some(Vista::nueva(&nodo, crate::vista::cuerpo(pkg, d, &tipos)))
+        }
+    }));
+    let plan = hojas
+        .expandir(&crate::vista::nodo_de(v).unwrap_or_default())
+        .map_err(|e| {
+            (
+                65,
+                format!("el plan de `{nombre}` no se expande: {}", e.como_texto()),
+            )
+        })?;
+    let mut datasets = Vec::new();
+    for l in plan.lecturas() {
+        if l.datasource != ESQUEMA_DE_DATASETS {
+            return Err((
+                65,
+                format!(
+                    "`{nombre}` lee de `{}` (`{}`) y no de un dataset: una View se lee desde un puesto sólo si su cadena llega a uno",
+                    l.objeto, l.datasource
+                ),
+            ));
+        }
+        if !datasets.contains(&l.objeto) {
+            datasets.push(l.objeto.clone());
+        }
+    }
+    let consulta = ore_view::a_sql::plan(&plan, &|l| {
+        Ok(format!(
+            "{}.{}",
+            ore_view::a_sql::ident(ESQUEMA_DE_DATASETS),
+            ore_view::a_sql::ident(&l.objeto)
+        ))
+    })
+    .map_err(|e| (65, format!("`{nombre}` no se escribe en SQL: {e}")))?;
+    let columnas: BTreeMap<String, Json> = esquema(&plan)
+        .map_err(|e| {
+            (
+                70,
+                format!("el plan de `{nombre}` no cuadra: {}", e.como_texto()),
+            )
+        })?
+        .into_iter()
+        .map(|(c, t)| (c, Json::s(t.to_string())))
+        .collect();
+    println!(
+        "{}",
+        Json::obj([
+            ("vista", Json::s(nombre)),
+            (
+                "datasets",
+                Json::Arr(datasets.iter().map(Json::s).collect())
+            ),
+            ("consulta", Json::s(consulta)),
+            ("columnas", Json::Obj(columnas)),
+        ])
+        .jcs()
+    );
+    Ok(())
+}
+
 fn hoja_de(n: &Nodo) -> Option<(String, String)> {
     match n {
         Nodo::Lee(l) => Some((l.datasource.clone(), l.objeto.clone())),
