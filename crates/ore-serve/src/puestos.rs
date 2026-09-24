@@ -172,6 +172,11 @@ pub(crate) struct Puesto {
     /// a que el editor lo recoja. Son mensajes de LSP tal cual, sin mirarlos:
     /// este servidor es el CONDUCTO, no el que entiende.
     pub lsp_al_servidor: VecDeque<Json>,
+    /// Qué flujo del agente recoge lo de arriba: el ÚLTIMO que se abrió. Un
+    /// agente que se reinicia abre uno nuevo, y el viejo —que el servidor aún
+    /// cree abierto— deja de recoger (se llevaba los mensajes a una conexión
+    /// muerta: medido en `el-editor-sql-a-fondo.py`, 1 de cada 6 relevos).
+    pub lsp_generacion: u64,
     /// Lo de vuelta, cada uno con su número —para que un editor que reconecta
     /// diga por dónde iba y no repita ni pierda.
     pub lsp_a_la_consola: VecDeque<(u64, Json)>,
@@ -591,6 +596,7 @@ impl Servidor {
             pendientes: VecDeque::new(),
             celdas: BTreeMap::new(),
             lsp_al_servidor: VecDeque::new(),
+            lsp_generacion: 0,
             lsp_a_la_consola: VecDeque::new(),
             lsp_siguiente: 0,
             trabajo: None,
@@ -787,6 +793,7 @@ impl Servidor {
             pendientes: VecDeque::from([1]),
             celdas: BTreeMap::new(),
             lsp_al_servidor: VecDeque::new(),
+            lsp_generacion: 0,
             lsp_a_la_consola: VecDeque::new(),
             lsp_siguiente: 0,
             trabajo: Some(Trabajo {
@@ -1300,18 +1307,23 @@ impl Servidor {
     /// `GET /puestos/{id}/lsp/agente`: el flujo por el que el agente RECIBE lo
     /// que el editor manda. Un mensaje por evento, en cuanto llega.
     pub(crate) fn flujo_lsp_del_agente(&self, sujeto: &Identidad, id: &str) -> Salida {
-        {
+        let generacion = {
             let mut lista = self.puestos.lista.lock().unwrap();
-            if let Err(r) = Self::reclamar(&mut lista, sujeto, id) {
-                return Salida::Una(r);
-            }
-        }
+            let p = match Self::reclamar(&mut lista, sujeto, id) {
+                Ok(p) => p,
+                Err(r) => return Salida::Una(r),
+            };
+            p.lsp_generacion += 1;
+            p.lsp_generacion
+        };
+        // el flujo viejo, si lo hay, se despierta y se va
+        self.puestos.campana.notify_all();
         let puestos = Arc::clone(&self.puestos);
         let id = id.to_string();
         Salida::Flujo(Flujo {
             tipo: "text/event-stream",
             escribir: Box::new(move |e: &mut Emisor<'_>| {
-                emitir_lsp(&puestos, &id, e, true, 0);
+                emitir_lsp(&puestos, &id, e, Some(generacion), 0);
             }),
         })
     }
@@ -1341,7 +1353,7 @@ impl Servidor {
         Salida::Flujo(Flujo {
             tipo: "text/event-stream",
             escribir: Box::new(move |e: &mut Emisor<'_>| {
-                emitir_lsp(&puestos, &id, e, false, desde);
+                emitir_lsp(&puestos, &id, e, None, desde);
             }),
         })
     }
@@ -2359,10 +2371,42 @@ fn mensajes_de(cuerpo: &str) -> Result<Vec<Json>, Respuesta> {
 /// que el servidor contesta (y se RETIENE con su número, para poder volver).
 ///
 /// ⛔ Sin el candado cogido mientras se escribe, como el flujo del puesto.
-fn emitir_lsp(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, del_agente: bool, desde: u64) {
+/// `generacion`: `Some` si es el flujo del AGENTE (el que recoge y consume lo
+/// que el editor manda), con el número que le tocó al abrirse; `None` si es el
+/// de la consola (el que lee lo de vuelta, sin consumir).
+fn emitir_lsp(
+    puestos: &Puestos,
+    id: &str,
+    e: &mut Emisor<'_>,
+    generacion: Option<u64>,
+    desde: u64,
+) {
+    let del_agente = generacion.is_some();
     let fin = Instant::now() + VIDA;
     let mut visto = desde;
     loop {
+        // El del agente: si otro flujo más nuevo recoge, éste se va; y si el que
+        // leía cerró, no se saca nada de la cola (se lo llevaría a la nada).
+        if let Some(g) = generacion {
+            let (relevado, hay) = {
+                let lista = puestos.lista.lock().unwrap();
+                match lista.get(id) {
+                    Some(p) => (p.lsp_generacion != g, !p.lsp_al_servidor.is_empty()),
+                    None => (false, false),
+                }
+            };
+            if relevado {
+                e.evento(
+                    "fin",
+                    None,
+                    &Json::obj([("motivo", Json::s("otro flujo del agente recoge"))]),
+                );
+                return;
+            }
+            if hay && !e.vivo() {
+                return;
+            }
+        }
         let (mensajes, fuera) = {
             let mut lista = puestos.lista.lock().unwrap();
             let Some(p) = lista.get_mut(id) else {
@@ -2376,7 +2420,11 @@ fn emitir_lsp(puestos: &Puestos, id: &str, e: &mut Emisor<'_>, del_agente: bool,
             };
             let fuera = p.estado == Estado::Cerrado || perdido(p);
             let mensajes: Vec<(Option<u64>, Json)> = if del_agente {
-                p.lsp_al_servidor.drain(..).map(|m| (None, m)).collect()
+                if generacion != Some(p.lsp_generacion) {
+                    Vec::new()
+                } else {
+                    p.lsp_al_servidor.drain(..).map(|m| (None, m)).collect()
+                }
             } else {
                 p.lsp_a_la_consola
                     .iter()

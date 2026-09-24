@@ -272,6 +272,8 @@ class Correa:
 
     def escribir(self, mensaje):
         """Un mensaje del editor, hacia su servidor de lenguaje."""
+        if os.environ.get("ORE_TRAZA_LSP"):
+            log("TRAZA recibe %.3f %s" % (time.time(), mensaje[:80]))
         try:
             m = json.loads(mensaje)
         except ValueError:
@@ -329,6 +331,8 @@ class Correa:
             if not lote:
                 continue
             self.p._cabeceras = self.testigo.cabeceras()
+            if os.environ.get("ORE_TRAZA_LSP"):
+                log("TRAZA entrega %.3f %d: %s" % (time.time(), len(lote), " | ".join(x[:60] for x in lote)))
             try:
                 codigo, r = self.p.pedir(
                     "POST", "/puestos/%s/lsp/salida" % self.p.id, cuerpo={"mensajes": lote})

@@ -189,6 +189,27 @@ impl Emisor<'_> {
         self.trozo(": latido\n\n")
     }
 
+    /// ¿Sigue ahí el que lee? Sin bloquear: si cerró, leer da 0 bytes.
+    ///
+    /// ⛔ Escribir no basta para saberlo: la PRIMERA escritura a una conexión
+    ///   que el otro cerró suele salir bien (el error llega con la siguiente).
+    ///   Medido con el LSP: un agente que se reinicia deja su flujo abierto aquí,
+    ///   ese flujo se lleva los mensajes del editor a la conexión muerta, y se
+    ///   pierden —el `initialize` de pyright entre ellos—.
+    pub fn vivo(&mut self) -> bool {
+        let mut b = [0u8; 1];
+        if self.flujo.set_nonblocking(true).is_err() {
+            return true;
+        }
+        let r = self.flujo.peek(&mut b);
+        let _ = self.flujo.set_nonblocking(false);
+        match r {
+            Ok(0) => false,
+            Ok(_) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+        }
+    }
+
     fn trozo(&mut self, t: &str) -> bool {
         let cabeza = format!("{:x}\r\n", t.len());
         self.flujo.write_all(cabeza.as_bytes()).is_ok()

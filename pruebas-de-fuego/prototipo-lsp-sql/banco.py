@@ -264,7 +264,10 @@ def p3():
                     if re.match(r"[\w.]", objetivo[k - 1]):
                         labels, ms = c.completion(uri, *lc(texto, k))
                         lat.append(ms)
-                        oraculo = [x[0] for x in S.completar(texto, k, c_cat())]
+                        # el oraculo: lo que el servidor deberia dar CON ESE texto (el de
+                        # verdad filtra por lo escrito y recorta: `completar_lista`)
+                        oraculo = [x[0] for x in (S.completar_lista(texto, k, c_cat())[0] if hasattr(S, "completar_lista")
+                                                  else S.completar(texto, k, c_cat()))]
                         total += 1
                         viejas += set(labels) != set(oraculo)
                     time.sleep(0.08)

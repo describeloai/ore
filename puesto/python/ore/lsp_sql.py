@@ -30,6 +30,13 @@ al arrancar eran 7.4 s y 385 MB con 5000 datasets; tokenizar un texto enorme en
 cada tecla, 1.9 s; ligar una sentencia de 360 KB, 6 s. Y «end of input» al
 final del texto no es un error: se esta escribiendo.
 
+Lo que `el-editor-sql-a-fondo.py` (P4-P6, todo de verdad) encontro, y aqui esta
+hecho: cargar el indice DENTRO del hilo de la correa bloqueaba el canal entero
+(una completion de Python, 8 s: se agoto) → el servidor trabaja en SU hilo y el
+indice se refresca en segundo plano; tras FROM con 5000 nombres, 898 KB por
+tecla → filtro y tope; un agente reiniciado no sabia de los ficheros abiertos →
+`DESCONOCIDO` y el cliente los reabre.
+
 Para probarlo sin agente, por stdio (el marco de LSP):
 
     python -m ore.lsp_sql --indice assets.json
@@ -44,8 +51,15 @@ import time
 DEMORA = 0.3
 VENTANA = 20000
 TOPE_BINDER = 100000
-# Lo que dura el indice antes de volver a pedirlo al abrir un fichero.
+# Lo que dura el indice antes de volver a pedirlo (en segundo plano).
 FRESCO_S = 30
+# Cuantos nombres se ofrecen como mucho: con 5000 datasets, tras FROM eran 898 KB
+# por tecla (medido, `el-editor-sql-a-fondo.py` P4). Se filtra por lo que se
+# esta escribiendo y, si no cabe, la lista es INCOMPLETA: el editor vuelve a pedir.
+TOPE_ITEMS = 200
+# El error con el que se dice «ese documento no lo tengo» (un agente que se
+# reinicio): el cliente lo reabre con su texto y repite (LSP RequestFailed).
+DESCONOCIDO = -32803
 PREFIJO = "explain "
 PALABRAS_DE_TABLA = {"from", "join", "into", "update", "table", "describe", "summarize", "pivot", "unpivot"}
 NO_ALIAS = {"where", "join", "on", "group", "order", "limit", "left", "right", "inner", "outer", "full", "cross",
@@ -201,6 +215,20 @@ def desplazamiento(texto, linea, col):
 # ═════════════════════════════════════════════════════════════════════════════
 # Lo que el editor pide
 # ═════════════════════════════════════════════════════════════════════════════
+def completar_lista(texto, cursor, cat):
+    """(items, incompleta): lo de `completar`, filtrado por lo que se esta
+    escribiendo y con `TOPE_ITEMS` como mucho."""
+    items = completar(texto, cursor, cat)
+    m = re.search(r"[\w.]*$", texto[:cursor])
+    escrito = (m.group(0) if m else "").lower()
+    palabra = escrito.rsplit(".", 1)[-1]
+    if palabra:
+        # lo escrito puede ser el nombre entero (`standard_test.pro`) o su ultimo trozo
+        items = [x for x in items if x[0].lower().startswith(escrito) or x[0].lower().rsplit(".", 1)[-1].startswith(palabra)
+                 or palabra in x[0].lower()]
+    return items[:TOPE_ITEMS], (len(items) > TOPE_ITEMS or bool(palabra))
+
+
 def completar(texto, cursor, cat):
     """[(etiqueta, kind de LSP, detalle)] en `cursor`."""
     ini, fin = la_del_cursor(texto, cursor)
@@ -373,23 +401,58 @@ class Servidor:
         self.docs = {}
         self.relojes = {}
         self.candado = threading.Lock()
+        self.cargando = threading.Lock()
+        self.primero = threading.Event()
+        # ⛔ SU hilo: lo que la correa da se encola y la correa sigue (medido: el
+        #   indice cargandose en el hilo de la correa dejaba a pyright sin canal).
+        import queue
+        self.cola = queue.Queue()
+        threading.Thread(target=self._trabajar, daemon=True).start()
+
+    def _trabajar(self):
+        while True:
+            m = self.cola.get()
+            try:
+                self._atender_ya(m)
+            except Exception as e:  # noqa: BLE001 — el hilo no muere por un mensaje
+                self.log("servidor de SQL: %s" % e)
 
     def mandar(self, m):
         self._mandar(json.dumps(m))
 
-    def catalogo(self, forzar=False):
-        if self.cat is None or forzar or time.time() - self.cuando > FRESCO_S:
+    def _recargar(self):
+        """Pedir el indice y montar el catalogo; uno a la vez."""
+        if not self.cargando.acquire(blocking=False):
+            return
+        try:
             try:
                 nuevo = Catalogo(self.cargar())
             except Exception as e:
                 self.log("servidor de SQL: no pude leer el indice (%s)" % e)
-                if self.cat is None:
-                    nuevo = Catalogo({})
-                else:
-                    return self.cat
-            viejo, self.cat, self.cuando = self.cat, nuevo, time.time()
-            if viejo:
-                viejo.cerrar()
+                nuevo = Catalogo({}) if self.cat is None else None
+            if nuevo is not None:
+                viejo, self.cat, self.cuando = self.cat, nuevo, time.time()
+                if viejo:
+                    viejo.cerrar()
+            else:
+                self.cuando = time.time()  # no insistir en cada tecla
+        finally:
+            self.cargando.release()
+            self.primero.set()
+
+    def catalogo(self, forzar=False):
+        """El de ahora. El primero se espera (en este hilo, no en la correa); los
+        siguientes se refrescan en segundo plano y mientras vale el que habia."""
+        if self.cat is None:
+            self._recargar()
+            self.primero.wait(120)
+            if self.cat is None:
+                self.cat = Catalogo({})
+        elif forzar or time.time() - self.cuando > FRESCO_S:
+            if forzar:
+                self._recargar()
+            else:
+                threading.Thread(target=self._recargar, daemon=True).start()
         return self.cat
 
     def programar(self, uri):
@@ -416,7 +479,17 @@ class Servidor:
                          "params": {"uri": uri, "version": version, "diagnostics": ds}})
 
     def atender(self, m):
+        """Lo que la correa da: se encola, y la correa sigue."""
+        self.cola.put(m)
+
+    def _atender_ya(self, m):
         metodo, i, p = m.get("method"), m.get("id"), m.get("params") or {}
+        uri = (p.get("textDocument") or {}).get("uri")
+        if metodo in ("textDocument/completion", "textDocument/hover") and uri not in self.docs:
+            # un agente que se reinicio: no se sabe su texto. Que lo reabran.
+            self.mandar({"jsonrpc": "2.0", "id": i, "error": {"code": DESCONOCIDO, "message": "documento no abierto: %s" % uri,
+                                                               "data": {"ore": "documento-desconocido"}}})
+            return
         try:
             r = self._atender(metodo, p)
         except Exception as e:
@@ -431,13 +504,13 @@ class Servidor:
 
     def _atender(self, metodo, p):
         if metodo == "initialize":
-            self.catalogo()
+            # el indice se pide ya, sin esperarlo: la respuesta sale al momento
+            threading.Thread(target=self.catalogo, daemon=True).start()
             return {"capabilities": {"textDocumentSync": 1, "hoverProvider": True,
                                      "completionProvider": {"triggerCharacters": ["."]}},
                     "serverInfo": {"name": "ore-sql"}}
         if metodo == "textDocument/didOpen":
             d = p["textDocument"]
-            self.catalogo()
             self.docs[d["uri"]] = (d.get("text", ""), d.get("version", 1))
             self.programar(d["uri"])
         elif metodo == "textDocument/didChange":
@@ -456,8 +529,8 @@ class Servidor:
             texto = self._texto(p)
             pos = p.get("position") or {}
             cur = desplazamiento(texto, pos.get("line", 0), pos.get("character", 0))
-            return {"isIncomplete": False, "items": [{"label": l, "kind": k, "detail": d}
-                                                     for l, k, d in completar(texto, cur, self.catalogo())]}
+            items, incompleta = completar_lista(texto, cur, self.catalogo())
+            return {"isIncomplete": incompleta, "items": [{"label": l, "kind": k, "detail": d} for l, k, d in items]}
         elif metodo == "textDocument/hover":
             pos = p.get("position") or {}
             h = explicar(self._texto(p), pos.get("line", 0), pos.get("character", 0), self.catalogo())
