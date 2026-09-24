@@ -10,4 +10,5 @@ repository.workspace = true
 ed25519-compact.workspace = true
 saphyr-parser.workspace = true
 sha2.workspace           = true
+sqlparser.workspace      = true
 unicode-normalization.workspace = true

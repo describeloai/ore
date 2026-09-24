@@ -105,7 +105,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// menos. (`aristas` también aprendió a leer la versión que cargo escribe en
 /// la arista cuando hay dos: sin eso, las dos `sha2` eran un solo nodo y el
 /// cierre medido «crecía» 24 crates que `ore` no enlaza.)
-const CIERRE: usize = 31;
+///
+/// **31 → 34 con `sqlparser` (el SQL del árbol, 2026-09-24).** Un `.sql` dice
+/// él solo qué lee y qué escribe, y eso hay que sacarlo de la frase antes de
+/// correrla y sin el motor delante: es compilar, y compilar es de `ore`. Entran
+/// `sqlparser`, `sqlparser_derive` y `log` (`syn`, `quote` y `proc-macro2` ya
+/// estaban). Sin sus *features* por defecto, que traerían `recursive` →
+/// `stacker` → `psm` con `cc` y ensamblador por plataforma.
+const CIERRE: usize = 34;
 
 #[test]
 fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {

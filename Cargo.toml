@@ -70,6 +70,17 @@ clap = { version = "4", default-features = false, features = [
 # Registro: docs/decisions/0001-parser-de-yaml.md
 saphyr-parser = "0.0.12"
 
+# El analizador de SQL del arbol (`ore_core::sql_del_arbol`): un `.sql` dice el
+# solo que lee y que escribe, y hay que sacarlo de la frase ANTES de correrla
+# (el grafo, el linaje, el permiso de un trabajo) y sin el motor delante.
+# Medido en `pruebas-de-fuego/medida-el-sql-del-arbol.py`: 18/19 casos con el
+# dialecto de DuckDB en 0,046 ms, frente a la regex del SDK (8/13) y sqlglot
+# (13/13, pero Python). Sin `default-features`: la de por defecto,
+# `recursive-protection`, trae `recursive` -> `stacker` -> `psm`, con `cc` y
+# ensamblador por plataforma; sin ella queda `log` y su derive. El limite de
+# recursion del propio parser sigue puesto.
+sqlparser = { version = "0.63", default-features = false, features = ["std", "visitor"] }
+
 # SHA-256. El digest es EL artefacto normativo del proyecto, no un detalle de
 # implementacion: `sha256:<64 hex>` viaja en cada bundle, se firma y lo verifica
 # un tercero. Reimplementar a mano una primitiva criptografica para ahorrar seis

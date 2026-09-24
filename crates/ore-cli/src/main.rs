@@ -27,6 +27,7 @@ mod paquete;
 mod preguntar;
 mod registro;
 mod revision;
+mod unidad_sql;
 mod verificar;
 mod vista;
 mod vocabulario;
@@ -739,6 +740,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Lo que un `.sql` del arbol declara: que lee, que escribe y en que modo
+    /// (`create or replace table ... as` sobrescribe, `insert into` anexa,
+    /// `insert or replace into` hace upsert; un `select` lee y no escribe), o
+    /// por que no es una unidad. Dentro de un arbol, ademas, si lo que lee se
+    /// puede leer y lo que escribe se puede escribir. `--json` con posiciones.
+    Sql {
+        fichero: PathBuf,
+        /// El arbol contra el que cotejar; sin el, el primero subiendo.
+        #[arg(long)]
+        arbol: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Un arbol de antes pasa a despues (0033 §4): `ore migrate v1alpha12 .`
     /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
     /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
@@ -943,6 +957,19 @@ fn main() -> std::process::ExitCode {
         }
         Command::Assets { path, json } => {
             return activos::assets(path, &activos::Opciones { json: *json });
+        }
+        Command::Sql {
+            fichero,
+            arbol,
+            json,
+        } => {
+            return unidad_sql::sql(
+                fichero,
+                &unidad_sql::Opciones {
+                    arbol: arbol.clone(),
+                    json: *json,
+                },
+            );
         }
         Command::Migrate {
             version,
@@ -1233,6 +1260,7 @@ fn main() -> std::process::ExitCode {
         | Command::Datasets { .. }
         | Command::Migrate { .. }
         | Command::Assets { .. }
+        | Command::Sql { .. }
         | Command::Ask { .. }
         | Command::Review { .. }
         | Command::Model { .. }
