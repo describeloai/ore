@@ -864,6 +864,19 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
             .collect::<Result<Vec<_>, _>>()?,
         None => lotes,
     };
+    // Lo que se SUMA a lo que hay (anexar, upsert) va al esquema de la tabla:
+    // un cambio de tipo que perdería las filas de antes se niega, en vez de
+    // hacer otra columna y dejarlas nulas (`carga::conformar`).
+    let lotes = match (&previa, modo.as_str()) {
+        (Some(t), "anexar" | "upsert") => {
+            let esquema = t.metadata().current_schema().clone();
+            lotes
+                .into_iter()
+                .map(|l| carga::conformar(&l, &esquema))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        _ => lotes,
+    };
     // `upsert` (0031 §11 ⑤): copy-on-write en Arrow. Lo que había —con sus
     // position deletes aplicados— menos las claves que llegan, más lo que
     // llega, y todo al esquema unión (la tabla más las columnas nuevas del
@@ -2008,6 +2021,184 @@ mod tests {
             w.finish().unwrap();
         }
         bytes
+    }
+
+    /// Un lote de `letra` (texto) y las columnas que se pidan, como IPC.
+    fn ipc_de(columnas: Vec<(&str, arrow_array::ArrayRef)>) -> Vec<u8> {
+        use arrow_schema::{Field, Schema};
+        let esquema = Arc::new(Schema::new(
+            columnas
+                .iter()
+                .map(|(n, c)| Field::new(*n, c.data_type().clone(), true))
+                .collect::<Vec<_>>(),
+        ));
+        let lote = arrow_array::RecordBatch::try_new(
+            esquema.clone(),
+            columnas.into_iter().map(|(_, c)| c).collect(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn decimales(v: &[i128], p: u8, s: i8) -> arrow_array::ArrayRef {
+        Arc::new(
+            arrow_array::Decimal128Array::from_iter_values(v.iter().copied())
+                .with_precision_and_scale(p, s)
+                .unwrap(),
+        )
+    }
+
+    fn letras(v: &[&str]) -> arrow_array::ArrayRef {
+        Arc::new(arrow_array::StringArray::from_iter_values(
+            v.iter().copied(),
+        ))
+    }
+
+    /// **Añadir filas no cambia el tipo de lo que hay** (medido en
+    /// `medida-el-sql-que-escribe.sh`): anexar `0.5` —`decimal(2, 1)`— a una
+    /// columna `decimal(38, 2)` hacía otra columna, y las filas de antes se
+    /// leían NULL. Ahora el lote va al esquema de la tabla: lo que cabe sin
+    /// perder se convierte, lo que falta va nulo, lo nuevo se suma, y un
+    /// cambio de tipo que perdería algo se niega con el nombre de la columna.
+    #[test]
+    fn anexar_no_cambia_el_tipo_de_lo_que_hay() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "datasets/hr_resumen";
+        let pide = |modo: &str, base: &str, op: &str| {
+            format!(
+                "{{\"dataset\":\"{ds}\",\"modo\":\"{modo}\",\"base\":\"{base}\",\"operacion\":\"{op}\"}}"
+            )
+        };
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"sobrescribir\",\"operacion\":\"op-1\"}}"),
+            &ipc_de(vec![
+                ("letra", letras(&["a", "b"])),
+                ("total", decimales(&[450, 225], 38, 2)),
+            ])[..],
+        )
+        .expect("nace");
+        let ml1 = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, None),
+            "metadata_location",
+        );
+        let totales = |ml: &str| -> Vec<String> {
+            let t = lago.abrir(ml, ds).unwrap();
+            let mut v: Vec<String> = lago
+                .filas(&t)
+                .unwrap()
+                .iter()
+                .map(|f| {
+                    let v = |k: &str| f.get(k).map(|x| x.to_string()).unwrap_or("null".into());
+                    format!("{}:{}", v("letra"), v("total")).replace('"', "")
+                })
+                .collect();
+            v.sort();
+            v
+        };
+
+        // ① un decimal más estrecho Y de menos escala: cabe, se convierte, nada se pierde
+        let e2 = escribir(
+            &lago,
+            &pide("anexar", &ml1, "op-2"),
+            &ipc_de(vec![
+                ("letra", letras(&["a"])),
+                ("total", decimales(&[5], 2, 1)),
+            ])[..],
+        )
+        .expect("anexa");
+        assert_eq!(campo(&e2, "esquema_cambiado"), "false", "{e2}");
+        let ml2 = campo(
+            &aplicar_lo_escrito(&lago, &e2, ds, Some(&ml1)),
+            "metadata_location",
+        );
+        let t2 = totales(&ml2);
+        assert_eq!(t2.len(), 3, "{t2:?}");
+        assert!(
+            t2.iter().all(|x| !x.ends_with(":null")),
+            "lo de antes no se pierde: {t2:?}"
+        );
+
+        // ② sin `total` y con una columna nueva: `total` va nulo en la fila nueva,
+        //    las de antes lo conservan, y `extra` se suma
+        let e3 = escribir(
+            &lago,
+            &pide("anexar", &ml2, "op-3"),
+            &ipc_de(vec![("extra", letras(&["x"])), ("letra", letras(&["c"]))])[..],
+        )
+        .expect("anexa sin total");
+        let ml3 = campo(
+            &aplicar_lo_escrito(&lago, &e3, ds, Some(&ml2)),
+            "metadata_location",
+        );
+        let t3 = totales(&ml3);
+        assert_eq!(t3.len(), 4, "{t3:?}");
+        assert_eq!(
+            t3.iter().filter(|x| x.ends_with(":null")).count(),
+            1,
+            "sólo la nueva: {t3:?}"
+        );
+        let cols = lago::columnas_iceberg(&lago.abrir(&ml3, ds).unwrap());
+        assert_eq!(cols["total"], "decimal(38, 2)");
+        assert_eq!(cols["extra"], "string");
+
+        // ③ otro tipo: se niega, con la columna
+        let e = escribir(
+            &lago,
+            &pide("anexar", &ml3, "op-4"),
+            &ipc_de(vec![
+                ("letra", letras(&["d"])),
+                ("total", letras(&["mucho"])),
+            ])[..],
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("`total`") && e.contains("no se cambia el tipo"),
+            "{e}"
+        );
+
+        // ④ más escala de la que la columna tiene: perdería dígitos, se niega
+        let e = escribir(
+            &lago,
+            &pide("anexar", &ml3, "op-5"),
+            &ipc_de(vec![
+                ("letra", letras(&["d"])),
+                ("total", decimales(&[12345], 38, 4)),
+            ])[..],
+        )
+        .unwrap_err();
+        assert!(e.contains("`total`"), "{e}");
+
+        // ⑤ upsert con el decimal estrecho: las filas que no se tocan conservan lo suyo
+        let e6 = escribir(
+            &lago,
+            &serde_json::json!({"dataset": ds, "modo": "upsert", "base": ml3, "operacion": "op-6", "clave": ["letra"]}).to_string(),
+            &ipc_de(vec![("letra", letras(&["b"])), ("total", decimales(&[7], 2, 1))])[..],
+        )
+        .expect("upsert");
+        let ml6 = campo(
+            &aplicar_lo_escrito(&lago, &e6, ds, Some(&ml3)),
+            "metadata_location",
+        );
+        let t6 = totales(&ml6);
+        assert!(
+            t6.iter().any(|x| x.starts_with("b:") && x.contains("0.7")),
+            "{t6:?}"
+        );
+        assert!(
+            t6.iter().any(|x| x.starts_with("a:") && x.contains("4.5")),
+            "{t6:?}"
+        );
+        assert_eq!(
+            lago::columnas_iceberg(&lago.abrir(&ml6, ds).unwrap())["total"],
+            "decimal(38, 2)"
+        );
     }
 
     fn nodo(linea: &str) -> ore_core::parse::Node {

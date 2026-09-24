@@ -538,6 +538,80 @@ pub fn lotes_de_parquet(parquet: &[u8]) -> Result<Vec<RecordBatch>, String> {
         .collect()
 }
 
+/// **Un lote que se SUMA a lo que hay** (`anexar`, `upsert`), al esquema de la
+/// tabla: las columnas de la tabla con SUS tipos y en su orden, y detrás las
+/// nuevas del lote. Una columna que falta va nula; una de otro tipo se
+/// convierte sólo si no se pierde nada (un decimal que cabe —misma escala o
+/// menor, los mismos dígitos enteros o menos—, un entero o un real a decimal,
+/// un entero a real), y con la conversión ESTRICTA: lo que no quepa es error,
+/// no un nulo. Cualquier otro cambio de tipo se niega con el nombre de la
+/// columna.
+///
+/// ⛔ Medido (`medida-el-sql-que-escribe.sh`): sin esto, anexar `0.5`
+///   (`decimal(2, 1)`) a una columna `decimal(38, 2)` hacía otra columna con
+///   otro id —la regla de [`crate::lago::esquema_deseado`], que vale al
+///   sobrescribir porque se reescribe todo— y los ficheros que ya había, que
+///   siguen vivos al anexar, se leían NULL: se perdía lo escrito.
+pub fn conformar(lote: &RecordBatch, tabla: &iceberg::spec::Schema) -> Result<RecordBatch, String> {
+    let de_la_tabla = iceberg::arrow::schema_to_arrow_schema(tabla)
+        .map_err(|e| format!("el esquema de la tabla no pasa a Arrow: {e}"))?;
+    let estricta = arrow_cast::CastOptions {
+        safe: false,
+        ..Default::default()
+    };
+    let n = lote.num_rows();
+    let mut campos = Vec::with_capacity(de_la_tabla.fields().len());
+    let mut columnas: Vec<ArrayRef> = Vec::with_capacity(de_la_tabla.fields().len());
+    for f in de_la_tabla.fields() {
+        let destino = f.data_type();
+        let col = match lote.column_by_name(f.name()) {
+            None => arrow_array::new_null_array(destino, n),
+            Some(c) if c.data_type() == destino => c.clone(),
+            Some(c) if sin_perdida(c.data_type(), destino) => {
+                arrow_cast::cast_with_options(c, destino, &estricta).map_err(|e| {
+                    format!(
+                        "la columna `{}` (`{}`) no cabe en la de la tabla (`{destino}`): {e}",
+                        f.name(),
+                        c.data_type()
+                    )
+                })?
+            }
+            Some(c) => {
+                return Err(format!(
+                    "la columna `{}` es `{destino}` en la tabla y llega `{}`: al añadir filas \
+                     no se cambia el tipo de una columna (las que ya hay la perderían); \
+                     conviértela a `{destino}`, o sobrescribe la tabla",
+                    f.name(),
+                    c.data_type()
+                ));
+            }
+        };
+        campos.push(Field::new(f.name(), destino.clone(), true));
+        columnas.push(col);
+    }
+    for (f, c) in lote.schema().fields().iter().zip(lote.columns()) {
+        if de_la_tabla.field_with_name(f.name()).is_err() {
+            campos.push(f.as_ref().clone().with_nullable(true));
+            columnas.push(c.clone());
+        }
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(campos)), columnas)
+        .map_err(|e| format!("el lote no cuadra con la tabla: {e}"))
+}
+
+/// ¿Pasa un valor de `de` a `a` sin perder nada (o, de real a decimal, a la
+/// escala de la columna, que es lo que quien lo escribe pide)?
+fn sin_perdida(de: &DataType, a: &DataType) -> bool {
+    match (de, a) {
+        (DataType::Decimal128(p, s), DataType::Decimal128(pp, ss)) => {
+            *s >= 0 && s <= ss && (*p as i16 - *s as i16) <= (*pp as i16 - *ss as i16)
+        }
+        (DataType::Int64 | DataType::Float64, DataType::Decimal128(..)) => true,
+        (DataType::Int64, DataType::Float64) => true,
+        _ => false,
+    }
+}
+
 /// **Un lote al esquema `destino`, por nombre**: las columnas que faltan van
 /// nulas (un fichero de antes de que existieran), una de otro tipo se
 /// convierte si Arrow sabe (`cast`) y si no se dice con su nombre, y una que

@@ -335,9 +335,10 @@ cat <<'FIN'
        con posicion); si no (`tmp.t`, `x`, una temp), es de DuckDB, como hoy (caso 7).
        Lo que sqlparser no analiza (BY NAME, PIVOT, USING SAMPLE) ya es 422 en un
        trabajo: en la sesion tambien, en vez de perderse en memoria.
-     ⛔ ANEXAR CON OTRO DECIMAL BORRA LO QUE HABIA: `0.5 as total` (decimal(2,1)) sobre
-       una columna decimal(38,2) deja las filas anteriores en NULL (6 filas, suma 2.0).
-       Es de `write(modo="anexar")`, tambien desde Python: arreglarlo antes.
+     ⛔ ANEXAR CON OTRO DECIMAL BORRABA LO QUE HABIA: `0.5 as total` (decimal(2,1)) sobre
+       una columna decimal(38,2) dejaba las filas anteriores en NULL (6 filas, suma 2.0).
+       Era de `write(modo="anexar")`, desde los tres SDK. ARREGLADO (`carga::conformar`):
+       lo que se suma va al esquema de la tabla; ahora 6 filas, suma 8.75.
      ⛔ LA MISMA FRASE, DOS SNAPSHOTS: sin `order by`, un `group by` sale en otro orden y
        la clave de operacion (del contenido, en orden) cambia; con `order by`, uno.
      `insert or replace` (upsert) necesita una clave que la frase no puede decir: sobre
