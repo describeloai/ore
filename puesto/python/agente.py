@@ -20,6 +20,10 @@ El servidor de lenguaje corre AQUÍ y no en el navegador porque aquí están el 
 (`/opt/ore/ore`) y la capa del repositorio (`/capa`): saber qué devuelve `over()`
 sólo se puede saber donde vive `over`.
 
+Y el de SQL (`ore.lsp_sql`), por lo mismo: su esquema es el índice del árbol y su
+comprobador el DuckDB de este puesto. Ése corre DENTRO de este proceso, no como
+otro: la correa le da lo que es de SQL y el resto sigue yendo a pyright.
+
 Quién es: dentro del clúster, el agente de la celda (`ore-agente-<n>`, client
 credentials contra el IdP, `rubix_tipo: agente`); en las pruebas, la cabecera
 `x-ore-sujeto: agente:…` (`ORE_SUJETO`). `ore-serve` ata el puesto al primer
@@ -199,6 +203,8 @@ class Correa:
         self.p = puesto
         self.testigo = testigo
         self.proceso = None
+        self.sql = None
+        self.entregando = False
         self.salientes = []
         self.candado = threading.Lock()
         self.vivo = False
@@ -227,11 +233,57 @@ class Correa:
             return False
         log("servidor de lenguaje arrancado: %s" % LSP)
         threading.Thread(target=self._leer_del_servidor, daemon=True).start()
-        threading.Thread(target=self._entregar, daemon=True).start()
+        self._arrancar_entregas()
         return True
 
+    def _arrancar_entregas(self):
+        with self.candado:
+            if self.entregando:
+                return
+            self.entregando = True
+        threading.Thread(target=self._entregar, daemon=True).start()
+
+    # ── el de SQL, en este proceso ──────────────────────────────────────────
+    # ⭐ El reparto: lo que el cliente de SQL del editor manda (id `sql:n`, una
+    #   uri `.sql`, su `initialize`) va a `ore.lsp_sql`; lo demás, a pyright.
+    #   Medido en `pruebas-de-fuego/prototipo-lsp-sql/canal.py`: con dos
+    #   clientes sobre el mismo flujo, nada se cruza.
+    def _sql(self):
+        if self.sql is None:
+            from ore import lsp_sql
+            self.sql = lsp_sql.Servidor(cargar=self._indice, mandar=self._encolar, log=log)
+            self._arrancar_entregas()
+            log("servidor de SQL en marcha (en este proceso)")
+        return self.sql
+
+    def _encolar(self, texto):
+        with self.candado:
+            self.salientes.append(texto)
+
+    def _indice(self):
+        """El índice del árbol en la rama del puesto (`GET /assets`)."""
+        self.p._cabeceras = self.testigo.cabeceras()
+        c, ficha = self.p.pedir("GET", "/puestos/%s" % self.p.id)
+        rama = (ficha or {}).get("rama") if c == 200 else None
+        c, j = self.p.pedir("GET", "/assets", cabeceras={"x-ore-rama": rama} if rama else None, plazo=60)
+        if c != 200:
+            raise RuntimeError("GET /assets contestó %s: %s" % (c, j))
+        return j
+
     def escribir(self, mensaje):
-        """Un mensaje del editor, hacia el servidor de lenguaje."""
+        """Un mensaje del editor, hacia su servidor de lenguaje."""
+        try:
+            m = json.loads(mensaje)
+        except ValueError:
+            m = None
+        if isinstance(m, dict):
+            from ore import lsp_sql
+            if lsp_sql.es_sql(m):
+                try:
+                    self._sql().atender(m)
+                except Exception as e:  # noqa: BLE001 — el editor no se queda colgado
+                    log("el servidor de SQL falló: %s" % e)
+                return
         if not self.encender():
             return
         b = mensaje.encode("utf-8")

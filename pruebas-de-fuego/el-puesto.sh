@@ -440,6 +440,48 @@ grep -q "asi no" "$TMP/lsp.txt" || falla "3c · el diagnóstico no llegó entero
 [ "$(pide POST /puestos/$P/lsp "$ANA" '{}')" = "422" ] || falla "3c · sin mensajes no dio 422: $(cuerpo)"
 dice "3c · el servidor de lenguaje: el editor manda y vuelve por el flujo (id, metodo y el null INTACTO), el aviso sin id tambien · bea 403 en los dos sentidos · una persona no es el agente 403 · un mensaje que no es cadena 422"
 
+# ── 3d · el servidor de SQL, dentro del agente (ore.lsp_sql) ────────────────
+# El cliente de SQL del editor (ids `sql:n`) habla por el MISMO canal que el de
+# Python; la correa del agente se lo da al servidor de SQL de su proceso —el
+# índice del árbol por `GET /assets`, las tablas vacías en su DuckDB— y lo demás
+# sigue yendo al servidor de mentira de 3c. Medido antes en el prototipo
+# (`pruebas-de-fuego/prototipo-lsp-sql/`).
+lsp_sql() { # <mensaje JSON>... → 202
+  pide POST /puestos/$P/lsp "$ANA" "$("$PY" -c 'import json,sys; print(json.dumps({"mensajes": sys.argv[1:]}))' "$@")"
+}
+curl -sN --max-time 12 -H "$ANA" "$BASE/puestos/$P/lsp/consola" >"$TMP/lsp-sql.txt" 2>/dev/null &
+CURL=$!
+sleep 1
+[ "$(lsp_sql '{"jsonrpc":"2.0","id":"sql:1","method":"initialize","params":{"processId":null,"rootUri":"file:///trabajo","capabilities":{},"initializationOptions":{"lenguaje":"sql"}}}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/consulta.sql","languageId":"sql","version":1,"text":"select nombre\nfrom hr.espanoles"}}}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/ajena.sql","languageId":"sql","version":1,"text":"select * from hr.empleados_t"}}}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/a_medias.sql","languageId":"sql","version":1,"text":"select * from "}}}')" = "202" ] || falla "3d · abrir los .sql no dio 202: $(cuerpo)"
+sleep 2
+[ "$(lsp_sql '{"jsonrpc":"2.0","id":"sql:2","method":"textDocument/completion","params":{"textDocument":{"uri":"file:///trabajo/a_medias.sql"},"position":{"line":0,"character":14}}}' \
+  '{"jsonrpc":"2.0","id":"sql:3","method":"textDocument/hover","params":{"textDocument":{"uri":"file:///trabajo/consulta.sql"},"position":{"line":1,"character":8}}}')" = "202" ] || falla "3d · pedir completion y hover no dio 202: $(cuerpo)"
+wait $CURL 2>/dev/null || true
+"$PY" - "$TMP/lsp-sql.txt" <<'PYEOF' || falla "3d · el servidor de SQL: $(tail -c 3000 "$TMP/lsp-sql.txt")"
+import json, sys
+ms = [json.loads(l[6:]) for l in open(sys.argv[1], encoding="utf-8") if l.startswith("data: ")]
+por_id = {m["id"]: m for m in ms if "id" in m and "method" not in m}
+diag = {m["params"]["uri"].rsplit("/", 1)[1]: m["params"]["diagnostics"] for m in ms if m.get("method") == "textDocument/publishDiagnostics" and m["params"]["uri"].endswith(".sql")}
+ini = por_id.get("sql:1", {}).get("result") or {}
+assert ini.get("serverInfo", {}).get("name") == "ore-sql", ("initialize no lo contestó ore-sql", por_id.get("sql:1"))
+assert "eco" not in json.dumps(por_id.get("sql:1")), "el initialize de SQL llegó al servidor de mentira"
+d = diag.get("consulta.sql") or []
+assert len(d) == 1 and "nombre" in d[0]["message"] and d[0]["range"]["start"] == {"line": 0, "character": 7}, ("la columna mal escrita", d)
+assert "¿" in d[0]["message"], ("sin sugerencia", d)
+a = diag.get("ajena.sql") or []
+assert any("Table de otra fuente" in x["message"] for x in a), ("la Table de otra fuente", a)
+assert diag.get("a_medias.sql") == [], ("a medio escribir no es un error", diag.get("a_medias.sql"))
+items = [i["label"] for i in (por_id.get("sql:2", {}).get("result") or {}).get("items", [])]
+assert "hr.espanoles" in items and "hr.lago" in items, ("completion tras FROM", items)
+assert "hr.empleados_t" not in items, ("una Table de otra fuente no se ofrece", items)
+h = ((por_id.get("sql:3", {}).get("result") or {}).get("contents") or {}).get("value", "")
+assert "hr.espanoles" in h and "Dataset" in h, ("hover", h)
+PYEOF
+dice "3d · el servidor de SQL en el agente, por el mismo canal: initialize lo contesta ore-sql (no el de Python) · la columna mal escrita en su sitio (L1:C8) con sugerencia · una Table de otra fuente se dice · a medio escribir no es un error · tras FROM los datasets del árbol (no las Table) · hover del dataset"
+
 # ── 4 · over() ─────────────────────────────────────────────────────────────
 celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "4 · over(hr.espanoles): $(cuerpo)"
 celda 'len(df)' && tiene "d['salida']['texto']=='3'" || falla "4 · len(df): $(cuerpo)"

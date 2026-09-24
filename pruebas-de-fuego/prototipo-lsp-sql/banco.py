@@ -11,7 +11,11 @@
   P5  ROBUSTEZ      basura, un documento enorme, Unicode, rafagas, recargar el
                     indice con el fichero abierto, miles de peticiones.
 
-    python banco.py --indice assets.json [--solo P2,P3]
+    python banco.py --indice assets.json [--solo P2,P3] [--real]
+
+`--real`: contra el modulo de verdad (`python -m ore.lsp_sql`, en
+`puesto/python`) y no contra el prototipo; sus variantes (`--mostrar-fin`,
+`--todo-al-arrancar`) no existen alli y se saltan.
 """
 import json
 import os
@@ -26,7 +30,13 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 AQUI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, AQUI)
-import servidor as S  # noqa: E402  (el oraculo: el mismo contexto, sobre el texto de verdad)
+REAL = "--real" in sys.argv
+PUESTO_PY = os.path.join(os.path.dirname(os.path.dirname(AQUI)), "puesto", "python")
+if REAL:
+    sys.path.insert(0, PUESTO_PY)
+    from ore import lsp_sql as S  # noqa: E402
+else:
+    import servidor as S  # noqa: E402  (el oraculo: el mismo contexto, sobre el texto de verdad)
 
 
 def arg(n, d=None):
@@ -63,8 +73,10 @@ class Cliente:
     """Un editor de mentira: habla LSP por stdio con el servidor."""
 
     def __init__(self, indice, *extra):
-        self.p = subprocess.Popen([sys.executable, os.path.join(AQUI, "servidor.py"), "--indice", indice, *extra],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        orden = ([sys.executable, "-m", "ore.lsp_sql", "--indice", indice] if REAL
+                 else [sys.executable, os.path.join(AQUI, "servidor.py"), "--indice", indice, *extra])
+        self.p = subprocess.Popen(orden, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  cwd=PUESTO_PY if REAL else None)
         self.sig = 1
         self.resp = {}
         self.diags = []  # (t, uri, version, diagnostics)
@@ -231,7 +243,7 @@ ESCRITURAS = [
 def p3():
     print()
     print("P3 · TECLEO  (80 ms por tecla, completion en cada tecla, como Monaco)")
-    for mostrar_fin in (False, True):
+    for mostrar_fin in ((False,) if REAL else (False, True)):
         for editor in ("HOY", "ARREGLADO"):
             c = Cliente(INDICE, *(["--mostrar-fin"] if mostrar_fin else []))
             viejas = total = 0
@@ -305,7 +317,8 @@ def indice_de_mentira(n, cols=30):
 def p4():
     print()
     print("P4 · ESCALA  (un indice de mentira: N datasets x 30 columnas, 20 paquetes)")
-    for n, modo in ((19, ""), (1000, "--todo-al-arrancar"), (1000, ""), (5000, "--todo-al-arrancar"), (5000, "")):
+    for n, modo in (((19, ""), (1000, ""), (5000, "")) if REAL else
+                    ((19, ""), (1000, "--todo-al-arrancar"), (1000, ""), (5000, "--todo-al-arrancar"), (5000, ""))):
         f = INDICE if n == 19 else indice_de_mentira(n)
         c = Cliente(f, *([modo] if modo else []))
         uri = "file:///trabajo/e.sql"
@@ -409,7 +422,7 @@ def p5():
 
 
 def main():
-    print("PROTOTIPO · el servidor de SQL en el agente · %s" % INDICE)
+    print("%s · el servidor de SQL en el agente · %s" % ("EL MODULO DE VERDAD (ore.lsp_sql)" if REAL else "PROTOTIPO", INDICE))
     for nombre, f in (("P2", p2), ("P3", p3), ("P4", p4), ("P5", p5)):
         if nombre in SOLO:
             f()
