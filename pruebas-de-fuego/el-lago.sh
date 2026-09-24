@@ -43,6 +43,8 @@
 #  10  la retención declarada en la tabla (`--retencion p.t --edad 0`) es la que
 #      `--recoger` obedece SIN `--edad`; la que nació con `--retencion-defecto
 #      7d` conserva; la que no tiene ninguna no expira
+#  10b el Job de la copia (`ore materialize --recoger`) reclama TODO puntero
+#      del árbol: lo escrito se queda en el bucket y se lee
 #
 # Y el catálogo REST de Iceberg en `ore-serve` (W3.6c c3, 0031 §11 ①③), con
 # PyIceberg y DuckDB DE VERDAD como clientes (lo de la medida, como prueba):
@@ -454,6 +456,18 @@ assert por["ventas.otra"]["expirados"]==0, ("otra (7d) no tenia que expirar", po
 assert por["ventas.libre"]["expirados"]==0, ("libre (sin retencion) no tenia que expirar", por)
 assert por["ventas.escrita"]["movido"] is True, ("el puntero de escrita tenia que moverse", por)' "$TMP/rec.json" || falla "10 · recoger no obedeció la retención de cada tabla: $(cat "$TMP/rec.json")"
 ok "10 · --recoger sin --edad obedece la retención de cada tabla: 0 expira, 7d conserva, ninguna no expira"
+
+# ── 10b · el Job de la copia no se lleva lo escrito ──────────────────────────
+# `ore materialize --recoger` (malla/48) retira lo que ningún puntero reclama:
+# TODO puntero, no sólo las copias (medida-los-punteros.sh M1: se llevaba
+# entero un dataset escrito y dejaba su puntero colgando).
+objs() { curl -s "$ORE_R2_S3_ENDPOINT/copia?list-type=2&prefix=ore/v2/datasets/$1/" | grep -o '<Key>[^<]*</Key>' | wc -l | tr -d ' '; }
+A10=$(objs ventas_escrita); L10=$(objs ventas_libre)
+"$ORE" materialize "$CL" --recoger --informe datasets > "$TMP/mat10b.txt" 2>&1 || { cat "$TMP/mat10b.txt"; falla "10b · materialize --recoger"; }
+[ "$(objs ventas_escrita)" = "$A10" ] && [ "$(objs ventas_libre)" = "$L10" ] && [ "$A10" -gt 0 ] \
+  || falla "10b · el Job de la copia se llevó lo escrito: escrita $A10 → $(objs ventas_escrita), libre $L10 → $(objs ventas_libre) · $(cat "$TMP/mat10b.txt")"
+n=$(printf '{"metadata_location":"%s"}\n' "$(jq_ "$CL/datasets/ventas_escrita.json" metadata_location)" | "$STORE" leer | grep -c '^{"'); [ "$n" -gt 1 ] || falla "10b · escrita ya no se lee ($n líneas)"
+ok "10b · materialize --recoger reclama todo puntero: lo escrito se queda ($A10 y $L10 objetos) y se lee"
 
 # ══ el catálogo REST en ore-serve (c3) ═══════════════════════════════════════
 if ! "$PY" -c 'import pyiceberg, duckdb' 2>/dev/null; then

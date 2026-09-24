@@ -97,14 +97,17 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     if declaradas.is_empty() {
         println!("sin copias · ningún `Dataset` del paquete lleva `from` (nada que mantener)");
         // Y lo que quedó de las que hubo: la pasada que limpia.
+        if let Some(dir) = informe {
+            retirar_informes_de_nadie(dir, &[]);
+        }
         if recoger && !seco {
-            match recoger_huerfanas(&[], &[]) {
+            // Sin copias no es sin datasets: los escritos y los resultados
+            // siguen siendo del árbol (medida-los-punteros M1).
+            let (reclamados, claves) = crate::datasets::reclamados(path, op.informe);
+            match recoger_huerfanas(&reclamados, &claves) {
                 Ok(l) => println!("  {l}"),
                 Err(e) => println!("  {e}"),
             }
-        }
-        if let Some(dir) = informe {
-            retirar_informes_de_nadie(dir, &[]);
         }
         return std::process::ExitCode::SUCCESS;
     }
@@ -226,24 +229,29 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // con copia, con o sin `--vista`, porque una pasada parcial no puede tomar
     // por huérfano lo que no le tocaba. Y los sobres heredados (`ore/v1/`) que
     // algún puntero todavía nombre por `clave` se quedan hasta que se resellen.
-    let reclamados: Vec<String> = declaradas
-        .iter()
-        .filter_map(|v| v.qname())
-        .map(|qn| {
-            leer_puntero(&punteros, &qn)
-                .and_then(|p| campo_de(&p, "dataset"))
-                .unwrap_or_else(|| dataset_de(&qn))
-        })
-        .collect();
-    if recoger && !seco {
-        match recoger_huerfanas(&reclamados, &heredados) {
-            Ok(l) => println!("{l}"),
-            Err(e) => println!("{e}"),
-        }
-    }
+    //
+    // Y no sólo las copias: TODO puntero del árbol —los datasets escritos, los
+    // resultados de las funciones— reclama el suyo. Medido
+    // (`medida-los-punteros.sh` M1): con sólo las vistas, esta pasada se
+    // llevaba entero un dataset escrito y dejaba su puntero colgando.
+    // El puntero de una vista que ya no está en el árbol se retira ANTES: si
+    // no, reclamaría su dataset y lo huérfano esperaría a la pasada siguiente.
     if let Some(dir) = informe {
         let vivas: Vec<String> = declaradas.iter().filter_map(|v| v.qname()).collect();
         retirar_informes_de_nadie(dir, &vivas);
+    }
+    let (mut reclamados, mut claves) = crate::datasets::reclamados(path, op.informe);
+    reclamados.extend(declaradas.iter().filter_map(|v| v.qname()).map(|qn| {
+        leer_puntero(&punteros, &qn)
+            .and_then(|p| campo_de(&p, "dataset"))
+            .unwrap_or_else(|| dataset_de(&qn))
+    }));
+    claves.extend(heredados.iter().cloned());
+    if recoger && !seco {
+        match recoger_huerfanas(&reclamados, &claves) {
+            Ok(l) => println!("{l}"),
+            Err(e) => println!("{e}"),
+        }
     }
 
     if !op.solo.is_empty() && vistas == 0 {

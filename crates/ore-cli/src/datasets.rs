@@ -247,6 +247,70 @@ pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
     out
 }
 
+/// **Lo que el árbol reclama en el bucket**: el `dataset` de CADA puntero del
+/// árbol —`datasets/` (escritos y mantenidos), `copias/` (los de antes),
+/// `resultados/` (las funciones) y `extra` (un `--informe`)—, y las `clave`s de
+/// sobres heredados que alguno nombra todavía. Es la lista que se le da a
+/// `recoger-huerfanas`, que borra lo que no esté en ella: se reclama de más
+/// (un nombre que no existe no borra nada), nunca de menos. Medido
+/// (`medida-los-punteros.sh` M1): con sólo las vistas mantenidas, el Job de la
+/// copia se llevaba entero un dataset escrito y dejaba su puntero colgando.
+pub(crate) fn reclamados(path: &Path, extra: Option<&Path>) -> (Vec<String>, Vec<String>) {
+    fn jsons(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(es) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in es.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                jsons(&p, out);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("json") {
+                out.push(p);
+            }
+        }
+    }
+    let mut datasets = BTreeSet::new();
+    let mut claves = BTreeSet::new();
+    let mut dirs: Vec<(PathBuf, &str)> = ["datasets", "copias", "resultados"]
+        .into_iter()
+        .map(|d| (path.join(d), d))
+        .collect();
+    if let Some(x) = extra {
+        dirs.push((x.to_path_buf(), "datasets"));
+    }
+    for (dir, clase) in dirs {
+        let mut fs = Vec::new();
+        jsons(&dir, &mut fs);
+        for f in fs {
+            let Some(n) = std::fs::read_to_string(&f)
+                .ok()
+                .and_then(|t| ore_core::parse::parse(&t).ok())
+            else {
+                continue;
+            };
+            // El nombre lo dice el puntero; si no, el de siempre (`<clase>/<stem>`).
+            match campo_de(&n, "dataset") {
+                Some(d) => {
+                    datasets.insert(d);
+                }
+                None => {
+                    if let Some(s) = f.file_stem().and_then(|s| s.to_str()) {
+                        datasets.insert(format!("{clase}/{s}"));
+                    }
+                }
+            }
+            // El informe de una corrida nombra su dataset dentro de `resultado`.
+            if let Some(d) = n.get("resultado").and_then(|(_, r)| campo_de(r, "dataset")) {
+                datasets.insert(d);
+            }
+            if let Some(c) = campo_de(&n, "clave") {
+                claves.insert(c);
+            }
+        }
+    }
+    (datasets.into_iter().collect(), claves.into_iter().collect())
+}
+
 fn dir_copias(path: &Path, op: &Opciones) -> PathBuf {
     op.informe
         .map(Path::to_path_buf)
@@ -423,6 +487,11 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ("movido", Json::Bool(movido)),
         ]));
     }
+    // Y lo que el resto del árbol reclama: `resultados/` y lo que no está en
+    // la carpeta de esta pasada.
+    let (mas, mas_claves) = reclamados(path, None);
+    datasets.extend(mas.into_iter().map(Json::s));
+    claves.extend(mas_claves.into_iter().map(Json::s));
     let h = almacen(
         "recoger-huerfanas",
         &Json::obj([
@@ -2048,6 +2117,52 @@ spec:
         assert_eq!(edad_ms("45s").unwrap(), 45_000);
         assert_eq!(edad_ms("0").unwrap(), 0);
         assert!(edad_ms("una semana").is_err());
+    }
+
+    /// Lo que el árbol reclama: todo puntero, de toda carpeta, a cualquier
+    /// profundidad; el nombre del puntero o el del fichero; el dataset del
+    /// informe de una corrida; y las claves heredadas.
+    #[test]
+    fn el_arbol_reclama_todo_puntero_y_no_solo_las_copias() {
+        let d = std::env::temp_dir().join(format!("ore-reclamados-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for c in ["datasets/ventas/default", "resultados", "copias", "informe"] {
+            std::fs::create_dir_all(d.join(c)).unwrap();
+        }
+        let w = |r: &str, t: &str| std::fs::write(d.join(r), t).unwrap();
+        w(
+            "datasets/ventas_escrita.json",
+            r#"{"tabla":"ventas.escrita"}"#,
+        );
+        w(
+            "datasets/ventas/default/nueva.json",
+            r#"{"dataset":"datasets/ventas/default/nueva"}"#,
+        );
+        w(
+            "copias/ventas_v.json",
+            r#"{"dataset":"copias/ventas_v","clave":"ore/v1/sobre"}"#,
+        );
+        w(
+            "resultados/ia_f.json",
+            r#"{"dataset":"resultados/ia_f","metadata_location":"x"}"#,
+        );
+        w(
+            "resultados/ia_f_20260924T000000Z.json",
+            r#"{"resultado":{"dataset":"resultados/ia_f"}}"#,
+        );
+        w("informe/ventas_copia.json", r#"{"vista":"ventas.copia"}"#);
+        let (ds, claves) = reclamados(&d, Some(&d.join("informe")));
+        for x in [
+            "datasets/ventas_escrita",
+            "datasets/ventas/default/nueva",
+            "copias/ventas_v",
+            "resultados/ia_f",
+            "datasets/ventas_copia",
+        ] {
+            assert!(ds.contains(&x.to_string()), "{x} no se reclama: {ds:?}");
+        }
+        assert_eq!(claves, vec!["ore/v1/sobre".to_string()]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Los punteros de una carpeta, con el nombre del campo o del fichero, y
