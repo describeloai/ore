@@ -300,11 +300,16 @@ def seccion_conclusion():
      DUCKDB LO HACE: un catalogo por base (ATTACH ':memory:'), 0.33 ms por vista con 5000,
        y lo escrito en dos partes sigue resolviendo por el schema `main`; un schema que se
        llame como una base es un error de ambiguedad.
-     /v1 NO: namespaces de un nivel; dos niveles son `ventas%1Fespana` (spec REST), y Spark
-       los nombra `ore.ventas.espana.pedidos`.
-     LO QUE HAY QUE DECIDIR: (1) unico por base o por schema; (2) el schema de lo que hoy
-       esta en "" (`default` como Unity, o `main` como DuckDB); (3) si dos partes siguen
-       valiendo; (4) si discover lleva el schema del origen al schema del catalogo.""")
+     /v1 COMO UNITY: base = `prefix`/`warehouse`, schema = namespace de un nivel; Spark dice
+       `ventas.espana.pedidos`. (Dos niveles con 0x1F: ore-entrada ni los deja llegar.)
+     LA SPEC LO FIJA: la identidad es `kind` + nombre, "never its path" (90-canonical-form
+       §5.2): el schema no sale de la carpeta, se DECLARA (`metadata.schema`) y la carpeta
+       se coteja contra el, como OOS2030 coteja el namespace con el paquete.
+     UNA CARPETA VACIA NO EXISTE EN GIT, y «Create schema» de la consola no llama al
+       servidor: un schema necesita un documento que lo haga existir (y lleve su dueño).
+     DECIDIDO (2026-09-24): unico por SCHEMA (como Unity); `default` para lo que hoy esta en
+       ""; dos partes admitidas por ahora como `base.default.nombre`, y tratadas (no en
+       silencio); discover lleva el schema del origen al del catalogo.""")
 
 
 ARBOLES = []
