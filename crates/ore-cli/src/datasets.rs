@@ -106,6 +106,9 @@ pub struct Opciones<'a> {
     /// Con `--prestar`: sólo para leer (`objectViewer` bajo la tabla), lo que
     /// el puesto usa en `over()` (②b). Nadie tiene que haberlo escrito.
     pub leer: bool,
+    /// Con `--prestar`: si el sujeto no lo escribió, la de leer en vez del 77
+    /// (un `loadTable` desde un puesto, con el conducto ya pasado).
+    pub o_leer: bool,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -1561,15 +1564,32 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// La credencial prestada para `datasets/<ns>_<tabla>`, como los dos campos
 /// del `LoadTableResult` (`config` y `storage-credentials`), ya escritos.
 fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
-    if !op.prestar {
+    prestamo_de(&format!("datasets/{ns}_{tabla}"), op.prestar, op.leer, None)
+}
+
+/// La propiedad que dice, en el `config` de un `loadTable`, que lo prestado es
+/// sólo para leer y por qué. Un cliente de Iceberg ignora lo que no conoce; el
+/// `write()` de los SDK la mira y da el porqué antes de escribir un fichero con
+/// una credencial que no escribe.
+pub(crate) const SOLO_LECTURA: &str = "ore.solo-lectura";
+
+/// La credencial acotada a `dataset` (su sitio en el bucket: `datasets/p_n`,
+/// o lo que diga el puntero —una copia mantenida vive en `copias/p_v`—).
+fn prestamo_de(
+    dataset: &str,
+    prestar: bool,
+    leer: bool,
+    solo_lectura: Option<&str>,
+) -> Result<String, Fallo> {
+    if !prestar {
         return Ok("\"config\":{}".into());
     }
     let salida = almacen_crudo(
         "prestar",
         &format!(
             "{{\"dataset\":{}{}}}",
-            lit(&format!("datasets/{ns}_{tabla}")),
-            if op.leer { ",\"modo\":\"leer\"" } else { "" }
+            lit(dataset),
+            if leer { ",\"modo\":\"leer\"" } else { "" }
         ),
     )?;
     let n = ore_core::parse::parse(&salida).map_err(|e| {
@@ -1578,10 +1598,14 @@ fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
             format!("lo que devolvió `ore-store prestar` no analiza: {e:?}"),
         )
     })?;
-    let config = n
-        .get("config")
-        .map(|(_, c)| Json::de_node(c).jcs())
-        .unwrap_or_else(|| "{}".into());
+    let mut config = match n.get("config").map(|(_, c)| Json::de_node(c)) {
+        Some(Json::Obj(m)) => m,
+        _ => Default::default(),
+    };
+    if let Some(m) = solo_lectura {
+        config.insert(SOLO_LECTURA.into(), Json::s(m));
+    }
+    let config = Json::Obj(config).jcs();
     let prefijo = campo_de(&n, "prefijo").unwrap_or_default();
     Ok(format!(
         "\"config\":{config},\"storage-credentials\":[{{\"prefix\":{},\"config\":{config}}}]",
@@ -1592,24 +1616,59 @@ fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
 /// **`loadTable`**: el `LoadTableResult` de la spec REST, tal cual —el
 /// `metadata.json` no se reanaliza: lleva `null` y números que el JSON de
 /// `ore` no modela—, con la credencial prestada si se pide.
+///
+/// **Un dataset mantenido se carga** (medido con Spark: era 400, «no se
+/// escribe por debajo»): cargar es leer, y una copia al día es una tabla de
+/// Iceberg como otra. Escribirlo sigue siendo 65 en el commit, y su credencial
+/// es siempre la de leer, acotada a donde vive (`copias/p_v`). Una copia
+/// heredada (ORECOPY1: puntero sin `metadata_location`) no es una tabla de
+/// Iceberg: 64 con el motivo, y se lee desde un puesto.
 fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let (ns, tabla) = partes(nombre)?;
-    documento_del_dataset(path, ns, tabla)?;
+    // Un mantenido se carga para leerlo; su motivo va en el `config` (y es el
+    // error del commit si se intenta escribir).
+    let mut solo_lectura = match documento_del_dataset(path, ns, tabla) {
+        Ok(_) => None,
+        Err((65, m)) if m.contains("es un dataset mantenido") => Some(m),
+        Err(e) => return Err(e),
+    };
     let (_, previo) = puntero_del_lago(path, ns, tabla);
-    let ml = previo
-        .as_ref()
-        .and_then(|p| campo_de(p, "metadata_location"))
-        .ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
+    let ml = match previo.as_ref() {
+        Some(p) => campo_de(p, "metadata_location")
+            .filter(|m| !m.is_empty())
+            .ok_or_else(|| {
+                (
+                    64,
+                    format!(
+                        "`{nombre}` es un dataset mantenido en una copia heredada (ORECOPY1): no se escribe por debajo, y no es una tabla de Iceberg; se lee desde un puesto (`over`), no por el catálogo"
+                    ),
+                )
+            })?,
+        None => return Err((65, format!("no hay ningún dataset `{nombre}`"))),
+    };
     // La credencial para escribir sólo se presta a quien lo escribió; la de
-    // leer, a quien pase el conducto (eso lo decide ore-serve antes).
-    if op.prestar && !op.leer {
-        de_quien_lo_escribio(previo.as_ref(), nombre, op.sujeto)?;
+    // leer, a quien pase el conducto (eso lo decide ore-serve antes). Con
+    // `--o-leer`, a quien no lo escribió se le presta la de leer, y se dice.
+    if op.prestar
+        && !op.leer
+        && solo_lectura.is_none()
+        && let Err((_, m)) = de_quien_lo_escribio(previo.as_ref(), nombre, op.sujeto)
+    {
+        if !op.o_leer {
+            return Err((77, m));
+        }
+        solo_lectura = Some(m);
     }
+    let leer = op.leer || solo_lectura.is_some();
     let metadatos = almacen_crudo(
         "metadatos",
         &format!("{{\"metadata_location\":{}}}", lit(&ml)),
     )?;
-    let cred = prestamo(ns, tabla, op)?;
+    let sitio = previo
+        .as_ref()
+        .and_then(|p| campo_de(p, "dataset"))
+        .unwrap_or_else(|| format!("datasets/{ns}_{tabla}"));
+    let cred = prestamo_de(&sitio, op.prestar, leer, solo_lectura.as_deref())?;
     println!(
         "{{\"metadata-location\":{},\"metadata\":{},{cred}}}",
         lit(&ml),

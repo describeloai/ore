@@ -885,6 +885,10 @@ public final class Ore {
             if (r.codigo() == 200) {
                 base = String.valueOf(r.cuerpo().get("metadata-location"));
                 config = mapa(r.cuerpo().get("config"));
+                // Prestado sólo para leer (lo de otra persona, un mantenido): el
+                // porqué, antes de escribir un fichero con una credencial que no escribe.
+                if (config.get("ore.solo-lectura") != null)
+                    throw new IllegalStateException("write(" + nombre + "): " + config.get("ore.solo-lectura"));
                 ubicacion = String.valueOf(((Map<String, Object>) r.cuerpo().get("metadata")).get("location"));
             } else if (r.codigo() == 404) {
                 Map<String, Object> cuerpo = new LinkedHashMap<>();

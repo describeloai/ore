@@ -585,7 +585,23 @@ Y
     && tiene "(lambda p: p[0]==p[1] and 0 < int(p[1]) < int(p[2]) and d['salida']['texto'].strip().endswith(\"['letra', 'n']\"))(d['salida']['texto'].split())" || falla "10b · la View no se aplicó (filas, esperadas, total, columnas): $(cuerpo)"
   FILTRADAS=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["salida"]["texto"].split()[0])' "$TMP/r.json")
   celda 'sql(\"select count(*) as k from hr.salidaFiltrada\", como=\"arrow\").column(0)[0].as_py()' && tiene "d['salida']['texto']=='$FILTRADAS'" || falla "10b · sql() sobre la View: $(cuerpo)"
-  dice "10b · una View con where y fields sobre un dataset: over() y sql() dan sus $FILTRADAS filas y sus dos columnas (letra, n), no el dataset entero"
+  # la misma View por el catálogo (/v1 loadView), como la pide Spark (medida-spark-
+  # por-el-catalogo.py): el config anuncia las vistas; pedida como tabla es 404 (Spark
+  # sólo prueba la vista tras un 404); su SQL nombra el dataset como el catálogo
+  # ("hr"."salida"), las columnas en el orden del esquema, y da lo mismo que over().
+  [ "$(pide GET /v1/config "$ANA")" = "200" ] && tiene "'GET /v1/{prefix}/namespaces/{namespace}/views/{view}' in d['endpoints'] and 'GET /v1/{prefix}/namespaces/{namespace}/tables/{table}' in d['endpoints']" || falla "10b · /v1/config no anuncia las vistas: $(cuerpo)"
+  [ "$(pide GET /v1/namespaces/hr/views "$ANA")" = "200" ] && tiene "{'namespace':['hr'],'name':'salidaFiltrada'} in d['identifiers'] and all(i['name']!='salida' for i in d['identifiers'])" || falla "10b · listViews: $(cuerpo)"
+  [ "$(pide GET /v1/namespaces/hr/tables/salidaFiltrada "$ANA")" = "404" ] && tiene "d['error']['type']=='NoSuchTableException'" || falla "10b · una View pedida como tabla tenía que ser 404: $(cuerpo)"
+  [ "$(pide GET /v1/namespaces/hr/views/salida "$ANA")" = "404" ] && tiene "d['error']['type']=='NoSuchViewException' and 'loadTable' in d['error']['message']" || falla "10b · un dataset pedido como vista: $(cuerpo)"
+  [ "$(pide GET /v1/namespaces/hr/views/salidaFiltrada "$ANA")" = "200" ] && tiene "(lambda m: m['current-version-id']==1 and m['versions'][0]['default-namespace']==['hr'] and m['versions'][0]['representations'][0]['dialect']=='duckdb' and '\"hr\".\"salida\"' in m['versions'][0]['representations'][0]['sql'] and [(f['id'], f['name']) for f in m['schemas'][0]['fields']]==[(1,'letra'),(2,'n')] and len(m['view-uuid'])==36)(d['metadata'])" || falla "10b · loadView: $(cuerpo)"
+  # y en Spark: nombres entre acentos graves (sus comillas dobles son cadenas)
+  tiene "(lambda r: [x['dialect'] for x in r]==['duckdb','spark'] and '\`hr\`.\`salida\`' in r[1]['sql'] and '\"' not in r[1]['sql'])(d['metadata']['versions'][0]['representations'])" || falla "10b · la representación de Spark: $(cuerpo)"
+  [ "$(curl -s -o /dev/null -I -w '%{http_code}' -H "$ANA" "$BASE/v1/namespaces/hr/views/salidaFiltrada")" = "204" ] || falla "10b · HEAD de la vista"
+  # listTables: lo que es una tabla de Iceberg (filtraba por una clase que ya no existe: vacío)
+  [ "$(pide GET /v1/namespaces/hr/tables "$ANA")" = "200" ] && tiene "{'namespace':['hr'],'name':'salida'} in d['identifiers'] and all(i['name']!='salidaFiltrada' for i in d['identifiers'])" || falla "10b · listTables: $(cuerpo)"
+  [ "$(pide POST /v1/namespaces/hr/tables/salida/metrics "$ANA" '{}')" = "204" ] || falla "10b · el informe de un escaneo: $(cuerpo)"
+  celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/views/salidaFiltrada\"); v = sql(b[\"metadata\"][\"versions\"][0][\"representations\"][0][\"sql\"], como=\"arrow\"); print(c, v.num_rows, v.column_names)' && tiene "d['salida']['texto'].strip()==\"200 $FILTRADAS ['letra', 'n']\"" || falla "10b · la SQL que sirve loadView no da lo que da over() ($FILTRADAS filas, letra y n): $(cuerpo)"
+  dice "10b · una View con where y fields sobre un dataset: over() y sql() dan sus $FILTRADAS filas y sus dos columnas (letra, n), no el dataset entero · por /v1: config con las vistas, listViews, como tabla 404, loadView con su SQL sobre \"hr\".\"salida\" y su esquema en orden (la misma respuesta que over()), en DuckDB y en Spark, HEAD 204, metrics 204, listTables con hr.salida"
 else
   ESCRITO_OK=no
   dice "10 · (sin el lago o sin ore-store-r2: write() no se prueba aquí)"
@@ -711,6 +727,7 @@ spec:
   # la otra puerta de lectura: loadTable del catálogo (/v1). Medido antes: 200 con
   # credencial y la columna high entera por DuckDB (medida-el-catalogo-como-resolutor.py §4)
   celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/tables/salida\"); print(c, \"OOS4002\" in str(b))' && tiene "d['salida']['texto'].strip()=='403 True'" || falla "13 · loadTable de hr.salida con el conducto low tenía que ser 403 OOS4002: $(cuerpo)"
+  celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/views/salidaV\"); print(c, \"OOS4002\" in str(b))' && tiene "d['salida']['texto'].strip()=='403 True'" || falla "13 · loadView de la View sobre hr.salida tenía que ser 403 OOS4002: $(cuerpo)"
   celda 'over(\"hr.lago\", como=\"arrow\").num_rows' && tiene "d['salida']['texto']=='3'" || falla "13 · hr.lago, sin etiqueta, se sigue leyendo: $(cuerpo)"
   # el árbol (una persona, no el puesto) declara por dónde sale hacia el código
   [ "$(pide PUT /arbol/conduits.yaml "$ANA" 'apiVersion: oos.dev/v1alpha1
@@ -725,7 +742,7 @@ spec:
   celda 'over(\"hr.salida\", como=\"arrow\").num_rows' && tiene "d['salida']['texto'] in ('3','6')" || falla "13 · con contextSurface.workspace high, hr.salida se lee: $(cuerpo)"
   celda 'c, b = ore.puesto.pedir(\"GET\", \"/v1/namespaces/hr/tables/salida\"); print(c)' && tiene "d['salida']['texto'].strip()=='200'" || falla "13 · con el conducto abierto, loadTable de hr.salida: $(cuerpo)"
   [ "$(pide GET /puestos/puesto-ana-python/datos/hr.salida "$AG")" = "200" ] && tiene "d['clasificacion']=={'gdpr.sensitivity':'high'} and d['dataset']=='hr.salida' and 's3.access-key-id' in d.get('credencial', {})" || falla "13 · datos no trae la clasificacion, el dataset y la credencial de lectura (2b): $(cuerpo)"
-  dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo; contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
+  dice "13 · el conducto de la lectura: sin etiqueta se lee; con la Entity que clasifica importe high y materialization.payload low, over()/sql() son PermissionError OOS4002 y GET datos 403 con el codigo (y loadView de la View encima, 403 OOS4002); contextSurface.workspace high por el arbol lo abre, y datos trae la clasificacion"
 
   # ── 14 · lo escrito lleva lo que leyó (W3.7 gobierno ③, OOS 01-dataset §5) ──
   #

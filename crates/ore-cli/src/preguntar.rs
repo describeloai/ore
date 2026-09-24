@@ -54,6 +54,7 @@ use ore_view::{Catalogo, Clasificacion, Nodo, Valor, Vista, esquema};
 use crate::lector;
 use crate::materializar::{Puntero, programa_del_almacen};
 use crate::vista::Vistas as _;
+use ore_view::a_sql::{Dialecto, ident_en};
 
 pub struct Opciones<'a> {
     pub vista: &'a str,
@@ -63,6 +64,8 @@ pub struct Opciones<'a> {
     /// La View como SQL de DuckDB sobre sus datasets, sin traer nada: lo que
     /// el puesto ejecuta para leerla (`datos` lo devuelve como `consulta`).
     pub sql: bool,
+    /// Con `sql`: como la sirve el catálogo (`/v1` `loadView`), no el puesto.
+    pub catalogo: bool,
 }
 
 type Fallo = (u8, String);
@@ -116,7 +119,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
 
     if op.sql {
-        return sql_de_la_vista(&pkg, v, op.vista);
+        return sql_de_la_vista(&pkg, v, op.vista, op.catalogo);
     }
 
     // ── ② El plan, y quién lo contesta ───────────────────────────────────────
@@ -300,7 +303,22 @@ pub(crate) const ESQUEMA_DE_DATASETS: &str = "__ore_dataset";
 ///
 /// Salida: `{vista, datasets: [<p>.<n>, …], consulta, columnas}`. Lo que el
 /// traductor no sabe escribir es un error con su motivo, nunca un `select *`.
-fn sql_de_la_vista(pkg: &ore_core::link::Package, v: &Loaded, nombre: &str) -> Result<(), Fallo> {
+///
+/// **`--catalogo`: la View como la sirve `/v1`** (`loadView`, medido con Spark
+/// en `medida-spark-por-el-catalogo.py`). Cada dataset se nombra como lo
+/// nombra el catálogo, `"p"."n"` y sin catálogo delante —el cliente llama al
+/// suyo como quiere, y el motor resuelve el nombre en el de la View—. Y el
+/// motor casa las columnas con el esquema **por posición**: la consulta se
+/// envuelve en un `select` con las columnas en el orden del `esquema`, que
+/// sale también, con los tipos de Iceberg de su físico (0032 §1).
+/// Una representación por dialecto que se sepa escribir, DuckDB y Spark
+/// (`representaciones`), y el motor elige la suya.
+fn sql_de_la_vista(
+    pkg: &ore_core::link::Package,
+    v: &Loaded,
+    nombre: &str,
+    catalogo: bool,
+) -> Result<(), Fallo> {
     if v.kind != ore_core::document::Kind::View {
         return Err((
             64,
@@ -361,37 +379,96 @@ fn sql_de_la_vista(pkg: &ore_core::link::Package, v: &Loaded, nombre: &str) -> R
             datasets.push(l.objeto.clone());
         }
     }
-    let consulta = ore_view::a_sql::plan(&plan, &|l| {
-        Ok(format!(
-            "{}.{}",
-            ore_view::a_sql::ident(ESQUEMA_DE_DATASETS),
-            ore_view::a_sql::ident(&l.objeto)
-        ))
-    })
-    .map_err(|e| (65, format!("`{nombre}` no se escribe en SQL: {e}")))?;
-    let columnas: BTreeMap<String, Json> = esquema(&plan)
-        .map_err(|e| {
-            (
-                70,
-                format!("el plan de `{nombre}` no cuadra: {}", e.como_texto()),
-            )
-        })?
-        .into_iter()
-        .map(|(c, t)| (c, Json::s(t.to_string())))
+    let tipos = esquema(&plan).map_err(|e| {
+        (
+            70,
+            format!("el plan de `{nombre}` no cuadra: {}", e.como_texto()),
+        )
+    })?;
+    // El plan en un dialecto. Para el catálogo, cada dataset por su nombre del
+    // catálogo y la consulta envuelta con las columnas en el orden del esquema
+    // (el motor las casa por posición); para el puesto, la hoja interna.
+    let escribir = |d: Dialecto| -> Result<String, String> {
+        let q = ore_view::a_sql::plan_en(d, &plan, &|l| {
+            Ok(match l.objeto.split_once('.') {
+                Some((p, n)) if catalogo => format!("{}.{}", ident_en(d, p), ident_en(d, n)),
+                _ => format!(
+                    "{}.{}",
+                    ident_en(d, ESQUEMA_DE_DATASETS),
+                    ident_en(d, &l.objeto)
+                ),
+            })
+        })?;
+        Ok(if catalogo {
+            let cols: Vec<String> = tipos.keys().map(|c| ident_en(d, c)).collect();
+            format!("select {} from ({q}) as v", cols.join(", "))
+        } else {
+            q
+        })
+    };
+    let columnas: BTreeMap<String, Json> = tipos
+        .iter()
+        .map(|(c, t)| (c.clone(), Json::s(t.to_string())))
         .collect();
-    println!(
-        "{}",
-        Json::obj([
-            ("vista", Json::s(nombre)),
-            (
-                "datasets",
-                Json::Arr(datasets.iter().map(Json::s).collect())
-            ),
-            ("consulta", Json::s(consulta)),
-            ("columnas", Json::Obj(columnas)),
-        ])
-        .jcs()
-    );
+    let mut salida = vec![
+        ("vista", Json::s(nombre)),
+        (
+            "datasets",
+            Json::Arr(datasets.iter().map(Json::s).collect()),
+        ),
+        ("columnas", Json::Obj(columnas)),
+    ];
+    if catalogo {
+        // Una representación por dialecto que se sepa escribir (una opaca sólo
+        // se escribe en el suyo): el motor elige la de su dialecto (medido con
+        // Spark). Ninguna es el error de la de DuckDB.
+        let intentos: Vec<(Dialecto, Result<String, String>)> = [Dialecto::DuckDb, Dialecto::Spark]
+            .into_iter()
+            .map(|d| (d, escribir(d)))
+            .collect();
+        let reps: Vec<Json> = intentos
+            .iter()
+            .filter_map(|(d, r)| {
+                r.as_ref().ok().map(|q| {
+                    Json::obj([
+                        ("dialect", Json::s(d.nombre())),
+                        ("sql", Json::s(q)),
+                        ("type", Json::s("sql")),
+                    ])
+                })
+            })
+            .collect();
+        if reps.is_empty() {
+            let e = intentos[0].1.clone().unwrap_err();
+            return Err((65, format!("`{nombre}` no se escribe en SQL: {e}")));
+        }
+        salida.push(("representaciones", Json::Arr(reps)));
+        let campos = tipos
+            .iter()
+            .enumerate()
+            .map(|(i, (c, t))| {
+                Json::obj([
+                    ("id", Json::Int(i as i64 + 1)),
+                    ("name", Json::s(c)),
+                    ("required", Json::Bool(false)),
+                    ("type", Json::s(ore_core::tipos::Fisico::de(t).iceberg())),
+                ])
+            })
+            .collect();
+        salida.push((
+            "esquema",
+            Json::obj([
+                ("type", Json::s("struct")),
+                ("schema-id", Json::Int(0)),
+                ("fields", Json::Arr(campos)),
+            ]),
+        ));
+    } else {
+        let consulta = escribir(Dialecto::DuckDb)
+            .map_err(|e| (65, format!("`{nombre}` no se escribe en SQL: {e}")))?;
+        salida.push(("consulta", Json::s(consulta)));
+    }
+    println!("{}", Json::obj(salida).jcs());
     Ok(())
 }
 

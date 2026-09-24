@@ -111,6 +111,24 @@ impl Fisico {
         }
     }
 
+    /// El tipo de Iceberg (la spec de tablas, «Primitive Types»): lo que el
+    /// esquema de una View servida por `/v1` dice de cada columna. Mismo
+    /// físico que la copia, así que un motor lo lee sin conversión que no sea
+    /// ensanchar (`decimal(18, 2)` escrito → `decimal(38, 2)` declarado).
+    pub fn iceberg(&self) -> String {
+        match self {
+            Fisico::Texto => "string".into(),
+            Fisico::Entero => "long".into(),
+            Fisico::Real => "double".into(),
+            Fisico::Logico => "boolean".into(),
+            Fisico::Decimal { precision, escala } => format!("decimal({precision}, {escala})"),
+            Fisico::Fecha => "date".into(),
+            Fisico::Hora => "time".into(),
+            Fisico::FechaHora => "timestamp".into(),
+            Fisico::Instante => "timestamptz".into(),
+        }
+    }
+
     /// Cómo se llama el escalar cuando se dice que un valor no lo es.
     pub fn nombre(&self) -> &'static str {
         match self {

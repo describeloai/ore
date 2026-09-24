@@ -717,6 +717,10 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     def cargar():
         c, r = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
         if c == 200:
+            # Prestado sólo para leer (lo de otra persona, un mantenido): el
+            # porqué, antes de escribir un fichero con una credencial que no escribe.
+            if (r.get("config") or {}).get("ore.solo-lectura"):
+                raise RuntimeError("write(%s): %s" % (nombre, r["config"]["ore.solo-lectura"]))
             return r["metadata-location"], None, r.get("config", {}), r["metadata"]["location"]
         if c == 404:
             c, r = puesto.pedir("POST", "/v1/namespaces/%s/tables" % ns, {"name": t, "stage-create": True, "schema": esquema, "properties": {}}, cabeceras=_DELEGAR)

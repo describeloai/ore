@@ -8,12 +8,26 @@
 //!
 //! | ruta | qué | quién decide |
 //! |---|---|---|
-//! | `GET /v1/config` | los defectos: ninguno | aquí |
+//! | `GET /v1/config` | los defectos: ninguno; los `endpoints` que se sirven (con los de vistas: sin ellos Spark no las pide) | aquí |
 //! | `GET /v1/namespaces[/{ns}[/tables]]` | los paquetes del árbol, y las tablas del lago con puntero | el árbol (`packages/*/package.yaml`, `ore datasets`) |
 //! | `GET\|HEAD /v1/namespaces/{ns}/tables/{t}` | el `LoadTableResult`: puntero + `metadata.json` + **la credencial acotada a la tabla** si el cliente manda `X-Iceberg-Access-Delegation: vended-credentials` | `ore datasets --cargar [--prestar]` |
 //! | `POST /v1/namespaces/{ns}/tables` | la tabla nace (`--crear`), o se esboza sin escribir nada si `stage-create` (`--esbozar`) | `ore datasets` |
 //! | `POST /v1/namespaces/{ns}/tables/{t}` | `updateTable`: `requirements` + `updates` → el `metadata.json` siguiente, la `Table`, el puntero, **y el commit lo empuja este proceso** | `ore datasets --commit --tabla` |
 //! | `POST /v1/transactions/commit` | `commitTransaction`: N tablas, un commit del árbol | `ore datasets --commit` |
+//! | `GET /v1/namespaces/{ns}/views` | las Views del paquete que no se llaman como un dataset | el árbol |
+//! | `GET\|HEAD /v1/namespaces/{ns}/views/{v}` | el `LoadViewResult`: la View como SQL sobre sus datasets por su nombre del catálogo, su esquema de Iceberg, **con el conducto** | `ore ask --sql --catalogo` |
+//! | `POST …/tables/{t}/metrics` | el informe de un escaneo (Spark lo manda tras cada lectura): 204, no se guarda | aquí |
+//!
+//! # Las Views (medido con Spark: `medida-spark-por-el-catalogo.py`)
+//!
+//! Spark resuelve un nombre pidiendo PRIMERO la tabla, y sólo si es 404
+//! `NoSuchTableException` prueba `loadView`: por eso una View pedida como tabla
+//! es 404 al leer (y no el 400 de «una consulta no se escribe», que le para).
+//! Dentro de la SQL de la View cada dataset va como `"p"."n"`, sin catálogo
+//! delante, y el motor lo pide por `loadTable`: su conducto, su credencial y
+//! lo declarado se deciden ahí, dataset a dataset, como siempre. Una View que
+//! se llama como un dataset no se sirve como vista: el nombre es la tabla (y
+//! su SQL, que nombra al dataset, se leería a sí misma).
 //!
 //! # Los códigos, que son los de la spec
 //!
@@ -43,7 +57,7 @@
 //!
 //! # Lo que no entra (todavía)
 //!
-//! Vistas de Iceberg, renombrar, borrar tablas, `register`, métricas, el
+//! Renombrar, borrar tablas, `register`, métricas, el
 //! escaneo por el servidor, `Idempotency-Key` (ningún cliente la manda,
 //! medido; la clave de operación del snapshot hace ese trabajo).
 
@@ -167,6 +181,11 @@ impl Servidor {
         rama: Option<&str>,
         seg: &[&str],
     ) -> Respuesta {
+        // El informe de un escaneo: Spark lo manda tras cada lectura. No se
+        // guarda, y un 404 aquí sólo ensucia su registro.
+        if p.metodo == "POST" && matches!(seg, ["namespaces", _, "tables", _, "metrics"]) {
+            return Respuesta::sin_contenido();
+        }
         let prestar = p
             .cabeceras
             .get(DELEGACION)
@@ -221,10 +240,21 @@ impl Servidor {
                 false,
             );
         }
+        // Desde un puesto —o un agente sin él—: lo que se lee pasa por el
+        // conducto (0031 W3.7 gobierno ②), sea una tabla o una View.
+        let desde_puesto = p
+            .cabeceras
+            .get(crate::puestos::PUESTO)
+            .is_some_and(|s| !s.trim().is_empty())
+            || crate::puestos::es_agente(sujeto);
         match (p.metodo.as_str(), seg) {
             ("GET", ["config"]) => Respuesta::ok(Json::obj([
                 ("defaults", Json::obj([])),
                 ("overrides", Json::obj([])),
+                (
+                    "endpoints",
+                    Json::Arr(ENDPOINTS.iter().map(|e| Json::s(*e)).collect()),
+                ),
             ])),
             ("GET", ["namespaces"]) => self.leyendo_en(rama, |raiz| {
                 Respuesta::ok(Json::obj([(
@@ -288,29 +318,87 @@ impl Servidor {
                 // con el mismo código. Y es para leer Y para escribir: DuckDB y
                 // `write()` hacen un solo `loadTable`, y la credencial que da
                 // lee; no se escribe encima de lo que no se puede leer.
-                let desde_puesto = p
-                    .cabeceras
-                    .get(crate::puestos::PUESTO)
-                    .is_some_and(|s| !s.trim().is_empty())
-                    || crate::puestos::es_agente(sujeto);
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        if desde_puesto {
-                            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-                            if let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre) {
-                                return error(
-                                    403,
-                                    "ForbiddenException",
-                                    format!("{}: {}", n.codigo, n.mensaje),
-                                );
-                            }
+                        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                        // Una View no es una tabla: 404, para que el motor
+                        // pruebe `loadView` (Spark sólo lo hace tras un 404).
+                        if solo_vista(&pkg, &nombre) {
+                            return error(
+                                404,
+                                "NoSuchTableException",
+                                format!(
+                                    "`{nombre}` es una View, no una tabla: se lee por `loadView`"
+                                ),
+                            );
                         }
-                        let r = self.cargar(raiz, &nombre, prestar, &sujeto_s);
+                        if desde_puesto
+                            && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre)
+                        {
+                            return error(
+                                403,
+                                "ForbiddenException",
+                                format!("{}: {}", n.codigo, n.mensaje),
+                            );
+                        }
+                        // Desde un puesto, lo de otra persona se lee: la
+                        // credencial de leer, no el 403 de escribir.
+                        let r = self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto);
                         if cabeza && r.codigo == 200 {
                             Respuesta::sin_contenido()
                         } else {
                             r
                         }
+                    }),
+                    false,
+                )
+            }
+            ("GET", ["namespaces", ns, "views"]) => {
+                if let Err(r) = ns_valido(ns) {
+                    return r;
+                }
+                let ns = ns.to_string();
+                con_forma(
+                    self.leyendo_en(rama, move |raiz| {
+                        if !paquetes(raiz).contains(&ns) {
+                            return error(
+                                404,
+                                "NoSuchNamespaceException",
+                                format!("no hay ningún paquete `{ns}`"),
+                            );
+                        }
+                        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                        let mut ids: Vec<Json> = pkg
+                            .docs
+                            .iter()
+                            .filter(|d| d.kind == ore_core::document::Kind::View)
+                            .filter_map(|d| d.qname())
+                            .filter(|q| solo_vista(&pkg, q))
+                            .filter_map(|q| {
+                                let (p, v) = q.split_once('.')?;
+                                (p == ns).then(|| {
+                                    Json::obj([
+                                        ("name", Json::s(v)),
+                                        ("namespace", Json::Arr(vec![Json::s(p)])),
+                                    ])
+                                })
+                            })
+                            .collect();
+                        ids.sort_by_key(|j| j.jcs());
+                        Respuesta::ok(Json::obj([("identifiers", Json::Arr(ids))]))
+                    }),
+                    false,
+                )
+            }
+            ("GET" | "HEAD", ["namespaces", ns, "views", v]) => {
+                if let Err(r) = ns_valido(ns).and_then(|_| ns_valido(v)) {
+                    return r;
+                }
+                let nombre = format!("{ns}.{v}");
+                let cabeza = p.metodo == "HEAD";
+                con_forma(
+                    self.leyendo_en(rama, move |raiz| {
+                        self.cargar_vista(raiz, &nombre, desde_puesto, cabeza)
                     }),
                     false,
                 )
@@ -386,7 +474,7 @@ impl Servidor {
                                 if r.codigo >= 300 {
                                     return r;
                                 }
-                                self.cargar(raiz, &nombre, prestar, &sujeto_s)
+                                self.cargar(raiz, &nombre, prestar, &sujeto_s, false)
                             },
                         ),
                         true,
@@ -432,7 +520,7 @@ impl Servidor {
                             }
                             // `{"metadata-location", "metadata"}`: lo que la spec
                             // devuelve tras un commit, sin credencial.
-                            self.cargar(raiz, &nombre, false, "")
+                            self.cargar(raiz, &nombre, false, "", false)
                         },
                     ),
                     true,
@@ -511,13 +599,129 @@ impl Servidor {
         }
     }
 
+    /// **El `LoadViewResult` de una View** (spec REST de Iceberg, `loadView`):
+    /// su SQL —en DuckDB y en Spark— sobre sus datasets por su nombre del
+    /// catálogo y su esquema, de
+    /// `ore ask --sql --catalogo`. No hay `metadata.json` de la vista en el
+    /// bucket: la View vive en el árbol, y lo que se sirve es su versión de
+    /// ahora (una, la 1). El `view-uuid` sale del nombre: el mismo siempre.
+    fn cargar_vista(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+        desde_puesto: bool,
+        cabeza: bool,
+    ) -> Respuesta {
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        if !solo_vista(&pkg, nombre) {
+            let m = if pkg.dataset(nombre).is_some() {
+                format!("`{nombre}` es un dataset: se lee por `loadTable`")
+            } else {
+                format!("no hay ninguna View `{nombre}`")
+            };
+            return error(404, "NoSuchViewException", m);
+        }
+        if desde_puesto && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, nombre) {
+            return error(
+                403,
+                "ForbiddenException",
+                format!("{}: {}", n.codigo, n.mensaje),
+            );
+        }
+        let args: Vec<String> = ["ask", ".", "--vista", nombre, "--sql", "--catalogo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let s = match mando::correr(&self.binario, raiz, &args) {
+            Ok(s) => s,
+            Err(e) => return error(500, "InternalServerError", e.to_string()),
+        };
+        let json = ultima_json(&s.stdout).and_then(|l| ore_core::parse::parse(&l).ok());
+        let Some(j) = json.filter(|_| s.bien()) else {
+            // Una View virtual (sobre una Table) o una que el traductor no
+            // sabe escribir: existe, y se dice por qué no se sirve.
+            return error(
+                400,
+                "BadRequestException",
+                format!(
+                    "`{nombre}` no se sirve como vista del catálogo: {}",
+                    primera_de(&s.stderr)
+                ),
+            );
+        };
+        if cabeza {
+            return Respuesta::sin_contenido();
+        }
+        let (ns, v) = nombre.split_once('.').unwrap_or(("", nombre));
+        // Una representación por dialecto (DuckDB y Spark): el motor elige la
+        // suya (medido: Spark toma `spark` aunque vaya detrás).
+        let representaciones = j
+            .get("representaciones")
+            .map(|(_, r)| Json::de_node(r))
+            .unwrap_or(Json::Arr(vec![]));
+        let esquema = j
+            .get("esquema")
+            .map(|(_, e)| Json::de_node(e))
+            .unwrap_or(Json::obj([]));
+        let ahora = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let lugar = format!("ore://arbol/{ns}/{v}");
+        let version = Json::obj([
+            ("version-id", Json::Int(1)),
+            ("timestamp-ms", Json::Int(ahora)),
+            ("schema-id", Json::Int(0)),
+            ("summary", Json::obj([("operation", Json::s("create"))])),
+            ("default-namespace", Json::Arr(vec![Json::s(ns)])),
+            ("representations", representaciones),
+        ]);
+        Respuesta::ok(Json::obj([
+            (
+                "metadata-location",
+                Json::s(format!("{lugar}/v1.metadata.json")),
+            ),
+            (
+                "metadata",
+                Json::obj([
+                    ("view-uuid", Json::s(uuid_de(nombre))),
+                    ("format-version", Json::Int(1)),
+                    ("location", Json::s(lugar)),
+                    ("current-version-id", Json::Int(1)),
+                    ("versions", Json::Arr(vec![version])),
+                    (
+                        "version-log",
+                        Json::Arr(vec![Json::obj([
+                            ("version-id", Json::Int(1)),
+                            ("timestamp-ms", Json::Int(ahora)),
+                        ])]),
+                    ),
+                    ("schemas", Json::Arr(vec![esquema])),
+                    ("properties", Json::obj([])),
+                ]),
+            ),
+            ("config", Json::obj([])),
+        ]))
+    }
+
     /// El `LoadTableResult` de una tabla.
-    fn cargar(&self, raiz: &Path, nombre: &str, prestar: bool, sujeto: &str) -> Respuesta {
+    fn cargar(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+        prestar: bool,
+        sujeto: &str,
+        o_leer: bool,
+    ) -> Respuesta {
         let mut args = vec!["datasets", ".", "--cargar", nombre];
         if prestar {
             // La credencial para escribir es de quien escribió: `ore` decide
-            // con el sujeto (W3.7 gobierno ④).
+            // con el sujeto (W3.7 gobierno ④). Con `o_leer` (desde un puesto,
+            // tras el conducto) a quien no lo escribió le da la de leer.
             args.extend(["--prestar", "--sujeto", sujeto]);
+            if o_leer {
+                args.push("--o-leer");
+            }
         }
         self.ore_crudo(raiz, &args, false)
     }
@@ -544,7 +748,14 @@ impl Servidor {
             .map(|(_, v)| v.items())
             .unwrap_or(&[])
             .iter()
-            .filter(|d| d.get("clase").and_then(|(_, v)| v.as_str()) == Some("dataset"))
+            // Lo que es una tabla de Iceberg: escrito o mantenido, con su
+            // `metadata.json` (una copia heredada no lo es). Filtraba por una
+            // `clase` que ya no existe, y salía vacío (medido con Spark).
+            .filter(|d| {
+                d.get("metadata_location")
+                    .and_then(|(_, v)| v.as_str())
+                    .is_some_and(|m| !m.is_empty())
+            })
             .filter_map(|d| d.get("nombre").and_then(|(_, v)| v.as_str()))
             .filter_map(|n| n.split_once('.'))
             .filter(|(p, _)| *p == ns)
@@ -560,6 +771,45 @@ impl Servidor {
 }
 
 /// Los paquetes del árbol: los directorios de `packages/` con `package.yaml`.
+/// Lo que `/v1` sirve, con la forma de la spec (`GET /v1/config`). Sin la
+/// lista, un cliente de la biblioteca de Iceberg supone las rutas de tablas y
+/// NO pide vistas (medido con Spark); con ella, sólo pide lo que está.
+const ENDPOINTS: &[&str] = &[
+    "GET /v1/{prefix}/namespaces",
+    "GET /v1/{prefix}/namespaces/{namespace}",
+    "HEAD /v1/{prefix}/namespaces/{namespace}",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables",
+    "POST /v1/{prefix}/namespaces/{namespace}/tables",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics",
+    "POST /v1/{prefix}/transactions/commit",
+    "GET /v1/{prefix}/namespaces/{namespace}/views",
+    "GET /v1/{prefix}/namespaces/{namespace}/views/{view}",
+    "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}",
+];
+
+/// Una View que no se llama como un dataset: la que el catálogo sirve como
+/// vista. Con el mismo nombre (v1alpha12) el nombre es la tabla.
+fn solo_vista(pkg: &ore_core::link::Package, nombre: &str) -> bool {
+    pkg.view(nombre).is_some() && pkg.dataset(nombre).is_none()
+}
+
+/// Un UUID estable por nombre (la forma de un v5: versión 5, variante RFC).
+fn uuid_de(nombre: &str) -> String {
+    let h = ore_core::digest::de_bytes(format!("ore-view:{nombre}").as_bytes());
+    let x = h.trim_start_matches("sha256:");
+    format!(
+        "{}-{}-5{}-8{}-{}",
+        &x[0..8],
+        &x[8..12],
+        &x[13..16],
+        &x[17..20],
+        &x[20..32]
+    )
+}
+
 fn paquetes(raiz: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(raiz.join("packages"))
         .map(|d| {

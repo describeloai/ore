@@ -605,6 +605,9 @@ export async function write(nombre, datos, o) {
   const semilla = `${nombre}|${modo}` + (clave?.length ? `|${clave.join(",")}` : "");
   const cargar = async () => {
     const [c, r] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+    // Prestado sólo para leer (lo de otra persona, un mantenido): el porqué,
+    // antes de escribir un fichero con una credencial que no escribe.
+    if (c === 200 && r.config?.["ore.solo-lectura"]) throw new Error(`write(${nombre}): ${r.config["ore.solo-lectura"]}`);
     if (c === 200) return { base: r["metadata-location"], esbozo: null, config: r.config ?? {}, ubicacion: r.metadata.location };
     if (c === 404) {
       const [c2, r2] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables`, { name: t, "stage-create": true, schema: esquema, properties: {} }, 30_000, DELEGAR);

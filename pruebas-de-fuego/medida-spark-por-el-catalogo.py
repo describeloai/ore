@@ -30,6 +30,13 @@ ore-serve las sirva de verdad.
                        que ensena Spark, leyendo la tabla y leyendo una View
                        que la lee. Y sin `vended-credentials`.
   §5  ¿CUANTO?         arrancar la sesion, la primera consulta, la segunda.
+  §6  LO DE VERDAD     sin simular nada (la lente solo apunta y traduce la
+                       direccion): lo que ore-serve sirve ya —loadView con el
+                       dialecto spark, el 404 de una View como tabla, los
+                       endpoints, listTables, lo de otra persona desde un
+                       puesto, la copia mantenida—: filas contra ORE, una
+                       cadena con comilla y barra, una View virtual, la
+                       copia heredada y el 403 del conducto por una View.
 
     python pruebas-de-fuego/medida-spark-por-el-catalogo.py --jars DIR [--imagen apache/spark:3.5.6-python3] [--filas 20000]
 
@@ -207,7 +214,7 @@ b = SparkSession.builder.appName("medida").master("local[2]") \
 PUESTO = {"header.x-ore-sujeto": "agente:local", "header.x-ore-puesto": "puesto-ana-python"}
 b = conf(b, "ore", dict(PUESTO, **{"header.X-Iceberg-Access-Delegation": "vended-credentials"}))
 b = conf(b, "sincred", PUESTO)
-for n in ("c_sin", "c_ep", "c_ves"):
+for n in ("c_sin", "c_ep", "c_ves", "real"):
     b = conf(b, n, dict(PUESTO, **{"header.X-Iceberg-Access-Delegation": "vended-credentials"}))
 spark = b.getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
@@ -298,6 +305,21 @@ def pasos(vd):
     # §5
     s += [q("5.segunda", "SELECT count(*) AS n FROM ore.hr.ventas", proxy={"forzar403": {}, "gcs": {}}),
           q("5.tercera", "SELECT count(*) AS n FROM ore.hr.ventas")]
+    # §6 · lo de verdad: la lente no sirve nada (catalogo `real`, iniciado aqui
+    # con el config de ore-serve tal cual)
+    s += [q("6.config·show-views", "SHOW VIEWS IN real.hr"),
+          q("6.show-tables", "SHOW TABLES IN real.hr"),
+          q("6.vista", "SELECT count(*) AS n FROM real.hr.ventasES"),
+          q("6.columnas", "SELECT * FROM real.hr.ventasES ORDER BY id LIMIT 2"),
+          q("6.cadena-rara", "SELECT count(*) AS n FROM real.hr.rarasES"),
+          q("6.join", "SELECT count(*) AS n FROM real.hr.ventasES e JOIN real.hr.clientes c ON e.id = c.id"),
+          q("6.virtual", "SELECT count(*) AS n FROM real.hr.empleados"),
+          q("6.ajena", "SELECT count(*) AS n FROM real.hr.ajena"),
+          q("6.mantenida", "SELECT count(*) AS n FROM real.hr.ventas_es"),
+          q("6.heredada", "SELECT count(*) AS n FROM real.hr.espanoles"),
+          q("6.vista-403", "SELECT count(*) AS n FROM real.hr.ventasES",
+            proxy={"forzar403": {"hr.ventas": "OOS4002: materialization.payload no deja leer hr.ventas (medida)"}, "gcs": {}}),
+          q("6.fin", "SELECT count(*) AS n FROM real.hr.ventasES", proxy={"forzar403": {}, "gcs": {}})]
     return s
 
 
@@ -369,6 +391,16 @@ spec:
   where: { pais: ES }
   fields: { id: id, pais: pais }
 """)
+        # y una con una cadena que Spark escapa distinto que DuckDB: comilla y barra
+        escribir(b.A + "/packages/hr/views/rarasES.yaml", """apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: rarasES, namespace: hr }
+spec:
+  owner: team:hr
+  from: { dataset: hr.ventas }
+  where: { pais: ["O'B\\\\x", ES] }
+  fields: { id: id, pais: pais }
+""")
         a = subprocess.run([b.ore, "ask", ".", "--vista", "hr.ventasES", "--sql"], cwd=b.A, capture_output=True,
                            text=True, encoding="utf-8", errors="replace")
         fila("la View en ORE (`ore ask --sql`)", "codigo %d" % a.returncode, R.corto(a.stdout.strip() or a.stderr, 200))
@@ -405,6 +437,9 @@ spec:
         ver("§3 · ¿LEE VIEWS?  la lente sirve loadView; hr.ventasES = where pais=ES (✓ = %d, lo de ORE)" % esperado, "3.",
             lambda k: (FILAS + 99) // 100 if k == "3.join" else esperado)
         ver("§4 · ¿GOBIERNO?", "4.")
+        reales = {"6.vista": esperado, "6.cadena-rara": esperado, "6.join": (FILAS + 99) // 100,
+                  "6.ajena": (FILAS + 99) // 100, "6.mantenida": FILAS, "6.fin": esperado}
+        ver("§6 · LO DE VERDAD  (ore-serve sirve; la lente solo apunta)", "6.", lambda k: reales.get(k, "?"))
         print()
         print("§5 · ¿CUANTO?")
         fila("  docker run entero", "%.1f s" % total, "contenedor + JVM + todos los pasos")

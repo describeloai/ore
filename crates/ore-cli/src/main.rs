@@ -733,6 +733,11 @@ enum Command {
         /// ejecuta para leerla), en JSON: `{vista, datasets, consulta, columnas}`.
         #[arg(long)]
         sql: bool,
+        /// Con `--sql`: la View como la sirve `/v1` (`loadView`): cada dataset
+        /// por su nombre del catalogo (`"p"."n"`), las columnas en el orden de
+        /// su `esquema` (el de Iceberg, que tambien sale).
+        #[arg(long, requires = "sql")]
+        catalogo: bool,
     },
     /// El indice de assets del arbol (0034): cada documento como un item
     /// (`kind:namespace.name`) con su carpeta, lo que define y expone, su
@@ -859,6 +864,11 @@ enum Command {
         /// Con `--prestar`: solo para leer (lo que el puesto usa en over()).
         #[arg(long)]
         leer: bool,
+        /// Con `--prestar`: la de escribir si el `--sujeto` lo escribio; si no,
+        /// la de leer en vez de negarsela (un `loadTable` desde un puesto, que ya
+        /// paso el conducto: leer lo de otra persona se puede, escribirlo no).
+        #[arg(long)]
+        o_leer: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -950,6 +960,7 @@ fn main() -> std::process::ExitCode {
             limite,
             seco,
             sql,
+            catalogo,
         } => {
             return preguntar::preguntar(
                 path,
@@ -958,6 +969,7 @@ fn main() -> std::process::ExitCode {
                     limite: *limite,
                     seco: *seco,
                     sql: *sql,
+                    catalogo: *catalogo,
                 },
             );
         }
@@ -1014,6 +1026,7 @@ fn main() -> std::process::ExitCode {
             cargar,
             prestar,
             leer,
+            o_leer,
         } => {
             return datasets::datasets(
                 path,
@@ -1042,6 +1055,7 @@ fn main() -> std::process::ExitCode {
                     cargar: cargar.as_deref(),
                     prestar: *prestar,
                     leer: *leer,
+                    o_leer: *o_leer,
                 },
             );
         }
