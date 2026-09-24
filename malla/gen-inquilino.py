@@ -1019,6 +1019,26 @@ def comprobar():
             print("  ⭐ ⑱ el pod dice cuánto mide y dice la verdad: %s MB = `limits.memory`"
                   % dicho.group(1))
 
+    # ── ⑲ LA CAPA DE PYTHON, DETRÁS (0031 W3.2 · el orden) ────────────────
+    #
+    # `PYTHONPATH` no es «un sitio más donde buscar»: es un sitio ANTES QUE
+    # TODOS, incluida la biblioteca estándar (medido). Con la capa ahí delante,
+    # lo que el repositorio declare tapa el `pyarrow` y el `duckdb` contra los
+    # que el SDK está compilado — y un `numpy` mal casado no da una excepción,
+    # da un segfault y se lleva el pod.
+    #
+    # ⇒ La capa la monta el agente al final de `sys.path`. Esta comprobación
+    #   sólo exige una cosa: que la plantilla NO vuelva a ponerla delante.
+    t51 = render(MODELO)[PLANTILLA_PUESTO]
+    if re.search(r"name: PYTHONPATH", t51):
+        fallos.append(
+            "`%s`: vuelve a traer `PYTHONPATH`, y eso pone la capa DELANTE de la biblioteca "
+            "estándar y de lo que la imagen provee: la monta el agente al final, a propósito"
+            % POR_PUESTO)
+    else:
+        print("  ⭐ ⑲ la capa de Python no va delante: sin `PYTHONPATH` en la plantilla, "
+              "la monta el agente al final de `sys.path`")
+
     return veredicto(fallos)
 
 

@@ -45,6 +45,29 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ⭐⭐ LA CAPA VA DETRÁS, Y ES UNA DECISIÓN (0031 W3.2 · el orden).
+#
+# Hasta hoy la capa se montaba con `PYTHONPATH=/capa`, y Python pone lo que hay
+# ahí ANTES QUE TODO LO SUYO — medido: un `json.py` en la capa tapa hasta el de
+# la biblioteca estándar, y un `pyarrow` de la capa tapa el de la imagen.
+#
+# ⛔ Eso es exactamente lo contrario de lo que decidimos para la JVM (0037 ③c),
+#   y por un motivo que aquí es MÁS grave: el SDK está compilado contra el
+#   `pyarrow` y el `duckdb` de la imagen —el contrato de tipos (0032) está
+#   medido contra ellos, y las extensiones del lago están compiladas para esa
+#   versión de DuckDB—. Y si la capa trae un `numpy` que no case con el
+#   `pyarrow` de la imagen, el fallo no es una excepción: es un ABI binario mal
+#   casado, que puede matar al intérprete de un segfault. Eso no deja celda con
+#   error: deja pod muerto.
+#
+# ⇒ MANDA EL CONTENEDOR, igual que en la JVM. La capa AÑADE; no sustituye. Y el
+#   Job que la resuelve tampoco copia ya lo que la imagen pone, así que esto es
+#   el cinturón: si algo se colara, sigue ganando la imagen.
+CAPA = os.environ.get("ORE_CAPA_DIR", "/capa")
+if os.path.isdir(CAPA) and CAPA not in sys.path:
+    sys.path.append(CAPA)
+
 import ore  # noqa: E402 — el SDK, al lado de este fichero
 
 FILAS_MAXIMAS = 200

@@ -71,7 +71,8 @@
 //! el puesto, sin internet, las baja en 0,9 s y las instala en 3,2 s; `import
 //! polars` 160 ms. Por eso la capa **no es una imagen en el registro**: es una
 //! **caja de ruedas en el bucket** (`ore/puesto/<capa>/`) que el puesto instala
-//! al arrancar en un `emptyDir` (`/capa`, en el `PYTHONPATH`). Hermética
+//! al arrancar en un `emptyDir` (`/capa`, que el agente pone **al final** de
+//! `sys.path` — la capa añade, no sustituye). Hermética
 //! —el puesto sigue sin alcanzar PyPI—, reproducible —el lock es la lista de
 //! ruedas, resueltas para el intérprete del entorno 1— y sin un builder de
 //! imágenes ni permisos de registro por inquilino.

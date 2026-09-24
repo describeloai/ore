@@ -172,11 +172,13 @@ def seccion_choque():
     print("       `static final String` se INCRUSTA en quien la usa al compilar, así que")
     print("       ésa no la cambia ningún classpath. Se midió sin querer y por eso se")
     print("       dice: la prueba hay que hacerla con un método, no con una constante.")
-    print("     ⚠️ Y EN PYTHON YA PASA, con el orden contrario: `PYTHONPATH=/capa` va")
+    print("     ⚠️ Y EN PYTHON PASABA, con el orden contrario: `PYTHONPATH=/capa` va")
     print("       ANTES que todo —medido: un `json` puesto en la capa tapa hasta el de la")
-    print("       biblioteca estándar—. Es decir, hoy la capa de Python PUEDE tapar")
-    print("       pandas, pyarrow o duckdb de la imagen. No es asunto de ③c arreglarlo,")
-    print("       pero sí decirlo: en la JVM elegimos el orden contrario A PROPÓSITO.")
+    print("       biblioteca estándar—, así que la capa podía tapar pandas, pyarrow o")
+    print("       duckdb de la imagen. Cuando se midió esto no era asunto de ③c; se dejó")
+    print("       dicho, y DESPUÉS se arregló con la misma forma: la capa de Python va")
+    print("       ahora al final de `sys.path` y el Job no copia lo que la imagen pone")
+    print("       (`/opt/ore/provisto.txt`, el `jars.txt` de Python).")
 
 
 def seccion_como_se_evita():

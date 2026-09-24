@@ -273,6 +273,18 @@ FROM python:3.12-slim AS puesto-python
 RUN pip install --no-cache-dir pandas pyarrow duckdb google-cloud-storage \
  && pip freeze > /entorno-1.txt \
  && python -c "import pandas, pyarrow, duckdb, google.cloud.storage as s; print('entorno 1 ·', pandas.__version__, pyarrow.__version__, duckdb.__version__)"
+# ⭐⭐ LO QUE ESTA IMAGEN PONE, ESCRITO PARA QUE OTRO LO LEA (0031 W3.2 · el
+#   orden). Es el gemelo exacto de `puesto/jvm/jars.txt`: el Job que resuelve
+#   la capa lo lee para NO bajar lo que aquí ya está —el `pyarrow` y el
+#   `duckdb` contra los que el SDK está compilado, y todo lo que arrastran—.
+#   Sin esto, declarar `pandas` en un repositorio metía otro `numpy` en la
+#   capa, y un ABI mal casado no da excepción: mata al intérprete.
+#
+# ⛔ Y se genera AQUÍ, de la instalación de verdad, no a mano: una lista
+#   escrita aparte se queda vieja el día que alguien añada un paquete arriba.
+RUN mkdir -p /opt/ore && pip freeze | sort > /opt/ore/provisto.txt \
+ && test "$(wc -l < /opt/ore/provisto.txt)" -ge 4 \
+ && echo "provisto por la imagen: $(wc -l < /opt/ore/provisto.txt) paquetes" >> /entorno-1.txt
 # ⭐ Las extensiones de DuckDB que leen el LAGO (0031 §10, medido en
 #   `medida-w3-lago.py`): `iceberg` (con `avro`, `httpfs`, `json`, `icu` detrás)
 #   PREINSTALADAS aquí, donde hay red, en /opt/ore/duckdb —de la versión exacta

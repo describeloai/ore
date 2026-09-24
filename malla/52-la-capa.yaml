@@ -75,6 +75,28 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
+        # ⭐ LO QUE LA IMAGEN DEL PUESTO YA PONE (0031 W3.2 · el orden).
+        #   La lista la escribe la propia imagen al construirse
+        #   (`/opt/ore/provisto.txt`, un `pip freeze`), así que quien resuelve y
+        #   quien corre leen EL MISMO fichero — como `jars.txt` en la JVM. Por
+        #   eso este contenedor es `puesto-python:1` y no el del driver: la
+        #   lista no se copia a mano a ningún sitio.
+        - name: lo-que-la-imagen-pone
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: Always
+          volumeMounts: [{ name: trabajo, mountPath: /trabajo }]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cp /opt/ore/provisto.txt /trabajo/provisto.txt
+              echo "### la imagen pone $(wc -l < /trabajo/provisto.txt) paquetes"
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
       containers:
         - name: resolver
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -157,6 +179,55 @@ spec:
                    --platform manylinux_2_17_x86_64 --platform manylinux_2_28_x86_64 \
                    --platform manylinux_2_34_x86_64 --platform manylinux2014_x86_64 \
                    --dest /trabajo/ruedas -r /trabajo/deps.txt 2>/trabajo/pip.err; then
+                # ── lo que la imagen ya pone, FUERA (0031 W3.2 · el orden) ──
+                #
+                # ⭐ Es el `provided` de la JVM (0037 ③c) en Python. `pip
+                #   download` resuelve TODO el árbol, así que declarar
+                #   `scikit-learn` baja también `numpy`; y `numpy` es justo de lo
+                #   que la imagen vive. Dos copias de un paquete binario no son
+                #   «dos versiones»: son un ABI que no casa, y eso no da una
+                #   excepción — mata al intérprete.
+                #
+                # ⇒ Se quita de la caja lo que la imagen pone, y CUANDO LA
+                #   VERSIÓN NO COINCIDE SE DICE, que es lo único que evita que
+                #   alguien pase una tarde buscando por qué su método no existe.
+                python3 - <<'PY'
+                import os, re
+                def normal(n):
+                    return re.sub(r"[-_.]+", "-", n).strip().lower()
+                pone = {}
+                for l in open("/trabajo/provisto.txt", encoding="utf-8", errors="replace"):
+                    if "==" in l:
+                        n, v = l.strip().split("==", 1)
+                        pone[normal(n)] = v.strip()
+                pedido = set()
+                for l in open("/trabajo/deps.txt", encoding="utf-8", errors="replace"):
+                    n = re.split(r"[<>=!~;\[ ]", l.strip(), 1)[0]
+                    if n:
+                        pedido.add(normal(n))
+                avisos, fuera = [], []
+                for f in sorted(os.listdir("/trabajo/ruedas")):
+                    if not f.endswith(".whl"):
+                        continue
+                    partes = f[:-4].split("-")
+                    if len(partes) < 2:
+                        continue
+                    n, v = normal(partes[0]), partes[1]
+                    nuestra = pone.get(n)
+                    if nuestra is None:
+                        continue
+                    os.remove("/trabajo/ruedas/" + f)
+                    fuera.append(f)
+                    if nuestra != v:
+                        avisos.append(
+                            ("pediste %s %s, y esta sesión trae la %s: gana la de la sesión" % (partes[0], v, nuestra))
+                            if n in pedido else
+                            ("%s %s lo arrastra algo que declaraste, y esta sesión trae la %s: gana la de la sesión" % (partes[0], v, nuestra)))
+                open("/trabajo/avisos.txt", "w", encoding="utf-8").write("\n".join(avisos))
+                print("### %d rueda(s) fuera: ya las pone la imagen%s" % (len(fuera), (" · " + ", ".join(fuera[:6])) if fuera else ""))
+                for a in avisos:
+                    print("    ⚠️ " + a)
+                PY
                 ls /trabajo/ruedas | sort > /trabajo/requirements.lock
                 mv /trabajo/requirements.lock /trabajo/ruedas/requirements.lock
                 MB=$(du -sm /trabajo/ruedas | cut -f1)
@@ -164,11 +235,15 @@ spec:
                 gcloud storage cp -q /trabajo/ruedas/* "gs://$BUCKET/ore/puesto/$DIGEST/"
                 echo "### subida a gs://$BUCKET/ore/puesto/$DIGEST/"
                 python3 - "$DIGEST" "$CUANDO" "$MB" "$INFORME" <<'PY'
-              import json, sys
+              import json, os, sys
               d, cuando, mb, informe = sys.argv[1:]
               deps = [l.strip() for l in open("/trabajo/deps.txt") if l.strip()]
               ruedas = [l.strip() for l in open("/trabajo/ruedas/requirements.lock") if l.strip() and l.strip() != "requirements.lock"]
-              json.dump({"estado": "lista", "digest": d, "declarado": deps, "ruedas": ruedas, "mb": mb, "cuando": cuando, "entorno": "puesto-python:1"}, open(informe, "w"), indent=1, sort_keys=True)
+              # ⭐ Los avisos del choque: qué versión pediste y cuál trae la
+              #   sesión. Es lo mismo que el informe de la capa de la JVM
+              #   (0037 ③c · d), y la consola ya sabe pintarlo.
+              avisos = [l.strip() for l in open("/trabajo/avisos.txt", encoding="utf-8")] if os.path.exists("/trabajo/avisos.txt") else []
+              json.dump({"estado": "lista", "digest": d, "declarado": deps, "ruedas": ruedas, "mb": mb, "cuando": cuando, "entorno": "puesto-python:1", "avisos": [a for a in avisos if a]}, open(informe, "w"), indent=1, sort_keys=True)
               PY
               else
                 echo "✗ pip no pudo resolver: $(tail -c 600 /trabajo/pip.err)"

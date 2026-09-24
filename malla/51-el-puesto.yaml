@@ -242,7 +242,16 @@ spec:
             #   termina; el agente sale con el resultado, y `ore-serve` deja
             #   el informe en `trabajos/`. Vacío es una sesión.
             - { name: TRABAJO, value: "trabajo-modelo" }
-            - { name: PYTHONPATH, value: /capa }
+            # ⛔ AQUÍ HABÍA UN `PYTHONPATH=/capa`, Y SE QUITÓ A PROPÓSITO
+            #   (0031 W3.2 · el orden). Python pone lo que hay en `PYTHONPATH`
+            #   ANTES QUE TODO LO SUYO —medido: tapa hasta la biblioteca
+            #   estándar—, así que la capa pisaba el `pyarrow` y el `duckdb`
+            #   contra los que el SDK está compilado. Ahora la monta el agente
+            #   AL FINAL de `sys.path` (`agente.py`), como la JVM pone `/capa`
+            #   al final del classpath: manda el contenedor.
+            #
+            # ⚠️ Si alguien vuelve a poner `PYTHONPATH` aquí, deshace la
+            #   decisión sin tocar una línea de código. Lo vigila `⑲`.
             - { name: TTL, value: "1800" }
             - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
             - { name: ORE_ALMACEN, value: "gcs" }

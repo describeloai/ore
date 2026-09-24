@@ -181,8 +181,9 @@ def seccion_que_verian():
     print("     el SDK va DENTRO de la imagen (`/opt/ore/ore`): %d lineas, %d nombres"
           % (len(sdk.splitlines()), len(nombres)))
     print("       %s" % ", ".join(nombres))
-    print("     la capa del repositorio se monta en `/capa` y es el PYTHONPATH: lo que")
-    print("     el arbol declara en su `pyproject.toml` esta ahi, resuelto.")
+    print("     la capa del repositorio se monta en `/capa` —al final de `sys.path`,")
+    print("     que manda el contenedor—: lo que el arbol declara en su `pyproject.toml`")
+    print("     esta ahi, resuelto.")
     print("     ⇒ Eso es exactamente lo que el navegador NO PUEDE saber, y es la razon")
     print("       de que el servidor viva en el puesto y no en Monaco.")
     print("")

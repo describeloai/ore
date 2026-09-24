@@ -336,7 +336,16 @@ FIN_LSP
 # ⭐ `ORE_MEMORIA_MB` es lo que en el clúster pone la plantilla junto a
 #   `limits.memory`: aquí se finge un pod de 1 GiB para poder comprobar que el
 #   reparto se aplica de verdad (0031 W3, `medida-la-celda-que-no-cabe.py`).
-ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 ORE_MEMORIA_MB=1024 \
+#
+# ⭐ Y una CAPA DE MENTIRA montada como en el puesto (0031 W3.2 · el orden):
+#   trae algo que sólo está ahí —tiene que verse— y dos cosas que TAMBIÉN
+#   existen fuera —`json`, de la biblioteca estándar, y `pyarrow`, de la
+#   imagen—, que NO tienen que verse. Medido: con `PYTHONPATH` las dos ganaban.
+CAPA_PY="$TMP/capa-py"; mkdir -p "$CAPA_PY"
+printf 'VERSION = "la capa"\n' > "$CAPA_PY/solo_en_la_capa.py"
+printf 'DE_LA_CAPA = True\n' > "$CAPA_PY/json.py"
+printf '__version__ = "0.0.0-de-la-capa"\n' > "$CAPA_PY/pyarrow.py"
+ORE_SERVE="$BASE" PUESTO=puesto-ana-python ORE_SUJETO=agente:local ORE_ALMACEN="dir:$ALMACEN_PY" TTL=600 ORE_MEMORIA_MB=1024 ORE_CAPA_DIR="$CAPA_PY" \
   ORE_LSP="$(basename "$PY") lsp-de-mentira.py" TRABAJO_DIR="$TMP_PY" \
   "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/agente.txt" 2>&1 &
 AGENTE=$!
@@ -464,6 +473,26 @@ tiene "float(d['salida']['filas'][0][0].split()[0]) < 600 and 'iB' in d['salida'
   || falla "4b · DuckDB no tiene el tope del pod (se cree el dueño de la maquina): $(cuerpo)"
 tiene "d['salida']['filas'][0][1] != ''" || falla "4b · DuckDB no tiene donde derramar: no podria salir a disco · $(cuerpo)"
 dice "4b · el reparto del pod: DuckDB se pone el tope que le toca de ORE_MEMORIA_MB (y no el de la maquina) y tiene donde derramar"
+
+
+# ── 4c · el orden de la capa de Python (0031 W3.2): la imagen manda ───────
+#
+# ⭐ Hasta hoy la capa iba en `PYTHONPATH`, y eso la pone ANTES QUE TODO —
+#   medido: un `json.py` en la capa tapaba el de la biblioteca estándar, y un
+#   `pyarrow` de la capa tapaba el de la imagen, que es contra el que el SDK
+#   está compilado (el contrato de tipos 0032 y las extensiones del lago)—.
+#   Peor aún: un `numpy` mal casado con el `pyarrow` de la imagen no da una
+#   excepción, da un segfault, y eso se lleva el pod entero.
+#
+# Ahora la monta el agente AL FINAL de `sys.path`, como la JVM pone `/capa` al
+# final del classpath (0037 ③c). Lo que se comprueba aquí es justo eso: que lo
+# que SÓLO está en la capa se ve, y que lo que también existe fuera NO gana.
+P=puesto-ana-python; LEN=python
+celda 'import json, pyarrow, solo_en_la_capa; (hasattr(json, \"DE_LA_CAPA\"), pyarrow.__version__ == \"0.0.0-de-la-capa\", solo_en_la_capa.VERSION)' \
+  && tiene "d['salida']['tipo']=='texto'" || falla "4c · no se pudo mirar el orden de la capa: $(cuerpo)"
+tiene "'False, False' in d['salida']['texto']" || falla "4c · LA CAPA TAPA a la biblioteca estandar o a la imagen: el orden esta al reves · $(cuerpo)"
+tiene "'la capa' in d['salida']['texto']" || falla "4c · lo que SOLO esta en la capa no se ve desde la celda: $(cuerpo)"
+dice "4c · el orden de la capa de Python: lo que solo esta en /capa se ve, y lo que tambien trae la imagen (o la biblioteca estandar) lo sigue poniendo ELLA"
 
 # ── 7 · SQL sobre el bucket (W3.3): la consulta entera, sobre las copias ──
 celda_sql() { local l=$LEN; LEN=sql; celda "$1"; local r=$?; LEN=$l; return $r; }
@@ -797,14 +826,16 @@ mkdir -p "$A/entorno"
 [ "$(pide POST /entorno "$ANA")" = "200" ] || falla "6 · resolver con la capa lista no dio 200: $(cuerpo)"
 [ "$(pide POST /puestos "$BEA" '{}')" = "201" ] && tiene "d['id']=='puesto-bea-python'" || falla "6 · abrir con la capa lista: $(cuerpo)"
 en_cola 51-el-puesto-bea-python.yaml | grep -q "name: CAPA, value: \"$DIGEST\"" || falla "6 · el puesto de bea no lleva la capa: $(en_cola 51-el-puesto-bea-python.yaml | grep -n CAPA)"
-en_cola 51-el-puesto-bea-python.yaml | grep -q 'name: PYTHONPATH, value: /capa' || falla "6 · el puesto no pone /capa en el PYTHONPATH"
+# ⛔ Y NO por `PYTHONPATH`, que ponía la capa delante de todo (0031 W3.2 · el
+#   orden): la monta el agente al final de `sys.path`.
+en_cola 51-el-puesto-bea-python.yaml | grep -q 'name: PYTHONPATH' && falla "6 · el puesto vuelve a poner la capa DELANTE con PYTHONPATH"
 # cambia la declaracion: la capa vuelve a estar pendiente
 printf '[project]
 dependencies = ["polars>=1.40", "scikit-learn"]
 ' > "$A/pyproject.toml"
 [ "$(pide GET /entorno "$ANA")" = "200" ] && tiene "d['estado']=='pendiente' and d['digest']!='$DIGEST'" || falla "6 · otra declaracion no vuelve a pendiente: $(cuerpo)"
 pide DELETE /puestos/puesto-bea-python "$BEA" >/dev/null
-dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa y /capa en el PYTHONPATH · otra declaracion → pendiente"
+dice "6 · la capa: sin dependencias · un pyproject → pendiente (capa-<12 hex>) · abrir → 409 y el Job de la capa en la cola (rol driver) · POST /entorno 202 la misma · informe lista → lista, 200, y el puesto nace con la capa (y SIN PYTHONPATH: la capa va detras) · otra declaracion → pendiente"
 
 
 # ── 6b · la capa de la JVM (0037 ③c): el mismo camino, otro fichero ───────
