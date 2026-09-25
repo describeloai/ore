@@ -1267,6 +1267,19 @@ fn borrador_de_v1alpha13() {
     marcador("v1alpha13", "ordenar", "BORRADOR · OOS v1alpha13 · ordenar");
 }
 
+/// v1alpha14: escribir. La `View` es SQL, y lo que se gobierna de ella —lo que
+/// lee, el contrato, el linaje, el canal lateral— se deriva de la consulta
+/// (0040). Arranca entero en pendiente: esta implementación aún no entiende la
+/// versión, y se limpia caso a caso según se implementa.
+#[test]
+fn borrador_de_v1alpha14() {
+    marcador(
+        "v1alpha14",
+        "escribir",
+        "BORRADOR · OOS v1alpha14 · escribir",
+    );
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
