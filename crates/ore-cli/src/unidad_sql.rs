@@ -52,6 +52,7 @@ fn fallo_json(f: &Fallo) -> Json {
             "ayuda",
             f.ayuda.as_deref().map(Json::s).unwrap_or(Json::Bool(false)),
         ),
+        ("codigo", f.codigo.map(Json::s).unwrap_or(Json::Bool(false))),
     ])
 }
 
@@ -107,6 +108,16 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
             ("lee", Json::Arr(lee)),
             ("escribe", escribe),
             ("fallos", Json::Arr(fallos.iter().map(fallo_json).collect())),
+            // 0038: lo que no para la frase —hoy, `ORE-SQL-2P`—
+            (
+                "avisos",
+                Json::Arr(
+                    unidad
+                        .as_ref()
+                        .map(|u| u.avisos.iter().map(fallo_json).collect())
+                        .unwrap_or_default(),
+                ),
+            ),
         ]);
         println!("{}", j.jcs());
     } else {
@@ -115,6 +126,18 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
             eprintln!("{}{donde}: {}", fichero.display(), f.mensaje);
             if let Some(a) = &f.ayuda {
                 eprintln!("  ayuda: {a}");
+            }
+        }
+        for a in unidad.iter().flat_map(|u| &u.avisos) {
+            let donde = a.pos.map(|p| format!(":{p}")).unwrap_or_default();
+            eprintln!(
+                "{}{donde}: aviso[{}]: {}",
+                fichero.display(),
+                a.codigo.unwrap_or(""),
+                a.mensaje
+            );
+            if let Some(ay) = &a.ayuda {
+                eprintln!("  ayuda: {ay}");
             }
         }
         if let Some(u) = unidad.as_ref().filter(|_| fallos.is_empty()) {

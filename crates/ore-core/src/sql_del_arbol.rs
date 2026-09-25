@@ -23,8 +23,11 @@
 //!
 //! - **`create table … as` sin `or replace`** se niega: un trabajo se vuelve a
 //!   correr, y la segunda vez fallaría porque la tabla ya existe.
-//! - **Un nombre se escribe `paquete.nombre`**: sin paquete no se sabe de quién
-//!   es (salvo que sea un `with`), y con tres partes no es un nombre del árbol.
+//! - **Un nombre se escribe `base.schema.nombre`** (0038, como en Unity
+//!   Catalog: la base es el paquete). Sin base no se sabe de quién es (salvo
+//!   que sea un `with`). **Dos partes** (`base.nombre`, la forma de antes) se
+//!   leen como `base.default.nombre` y se dicen: un aviso [`DOS_PARTES`] que no
+//!   para la frase.
 //! - **Se lee por nombre, nunca por función**: `read_parquet('gs://…')` o
 //!   `iceberg_scan(…)` leen bytes que el árbol no nombra —sin linaje, sin
 //!   conducto—. Los que generan filas sin leer nada (`range`,
@@ -80,19 +83,39 @@ impl Modo {
     }
 }
 
-/// Un nombre del árbol, `paquete.nombre`, y dónde aparece por primera vez.
+/// Un nombre del árbol, `base.schema.nombre`, y dónde aparece por primera vez.
+/// `paquete` es la base (0038: la base es el paquete).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Nombre {
     pub paquete: String,
+    /// `default` si el nombre no lo dice (dos partes).
+    pub schema: String,
     pub nombre: String,
     pub pos: Option<Pos>,
+    /// Se escribió con dos partes (`base.nombre`): se lee en `default`, y se
+    /// avisa ([`DOS_PARTES`]).
+    pub dos_partes: bool,
 }
 
 impl Nombre {
+    /// **La clave del motor**, la forma corta (`normalize::corto`): `p.n` en
+    /// `default`, `p.s.n` en otro schema. Es con la que se busca en el árbol, y
+    /// la que ven quienes ya hablaban con el motor: `ventas.pedidos` y
+    /// `ventas.default.pedidos` son la misma.
     pub fn referencia(&self) -> String {
-        format!("{}.{}", self.paquete, self.nombre)
+        crate::normalize::corto(&self.paquete, &self.schema, &self.nombre)
+    }
+
+    /// Las tres partes, `default` incluido: como se escribe en SQL.
+    pub fn completo(&self) -> String {
+        format!("{}.{}.{}", self.paquete, self.schema, self.nombre)
     }
 }
+
+/// **`ORE-SQL-2P`** · un nombre del árbol con dos partes (`base.nombre`): se
+/// lee como `base.default.nombre`, y se dice (0038 § «Las dos partes»). Un
+/// aviso: la frase corre.
+pub const DOS_PARTES: &str = "ORE-SQL-2P";
 
 /// Lo que se escribe, y cómo.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,14 +143,20 @@ pub struct Unidad {
     /// modo van a `write()`. Se corta del texto —no se reimprime desde el
     /// árbol sintáctico— para que corra exactamente lo que se escribió.
     pub consulta: String,
+    /// Lo que no para la frase pero se dice: hoy, los nombres de dos partes
+    /// ([`DOS_PARTES`]), uno por nombre.
+    pub avisos: Vec<Fallo>,
 }
 
-/// Por qué la frase no es una unidad, y dónde mirar.
+/// Por qué la frase no es una unidad —o, en [`Unidad::avisos`], lo que se
+/// dice sin pararla—, y dónde mirar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fallo {
     pub mensaje: String,
     pub pos: Option<Pos>,
     pub ayuda: Option<String>,
+    /// El código, si lo tiene (`ORE-SQL-2P`).
+    pub codigo: Option<&'static str>,
 }
 
 impl Fallo {
@@ -136,6 +165,25 @@ impl Fallo {
             mensaje: mensaje.into(),
             pos,
             ayuda: None,
+            codigo: None,
+        }
+    }
+
+    /// El aviso de un nombre de dos partes.
+    fn dos_partes(n: &Nombre) -> Self {
+        Self {
+            mensaje: format!(
+                "`{}.{}` tiene dos partes: se lee como `{}`",
+                n.paquete,
+                n.nombre,
+                n.completo()
+            ),
+            pos: n.pos,
+            ayuda: Some(format!(
+                "escribe las tres, `base.schema.nombre`: `{}`",
+                n.completo()
+            )),
+            codigo: Some(DOS_PARTES),
         }
     }
 
@@ -148,7 +196,7 @@ impl Fallo {
 /// Las funciones que generan filas sin leer nada: no rompen el linaje.
 const GENERADORAS: [&str; 3] = ["range", "generate_series", "unnest"];
 
-const LO_QUE_PUEDE_SER: &str = "un `.sql` del árbol es un `select` (lee), `create or replace table p.t as select …` (sobrescribe), `insert into p.t select …` (anexa) o `insert or replace into p.t select …` (upsert)";
+const LO_QUE_PUEDE_SER: &str = "un `.sql` del árbol es un `select` (lee), `create or replace table b.s.t as select …` (sobrescribe), `insert into b.s.t select …` (anexa) o `insert or replace into b.s.t select …` (upsert)";
 
 /// Analiza el texto de un `.sql` y devuelve lo que declara. Todos los fallos a
 /// la vez cuando se puede —un nombre mal escrito no esconde al siguiente—; uno
@@ -205,6 +253,15 @@ pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
             lee.push(n);
         }
     }
+    // Un aviso por nombre de dos partes, donde aparece por primera vez: el
+    // destino y lo que se lee, en el orden del texto.
+    let avisos: Vec<Fallo> = escribe
+        .iter()
+        .map(|e| &e.destino)
+        .chain(lee.iter())
+        .filter(|n| n.dos_partes)
+        .map(Fallo::dos_partes)
+        .collect();
     if let Some(e) = &escribe
         && let Some(n) = lee
             .iter()
@@ -239,6 +296,7 @@ pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
             lee,
             escribe,
             consulta,
+            avisos,
         })
     } else {
         Err(fallos)
@@ -462,7 +520,8 @@ fn partes(n: &ObjectName) -> Vec<&Ident> {
         .collect()
 }
 
-/// `paquete.nombre`, o el fallo que diga por qué no lo es.
+/// `base.schema.nombre` —o `base.nombre`, en `default` y con aviso—, o el fallo
+/// que diga por qué no lo es.
 fn nombre_del_arbol(n: &ObjectName, fallos: &mut Vec<Fallo>) -> Option<Nombre> {
     let pos = pos_de_nombre(n);
     let p = partes(n);
@@ -471,22 +530,31 @@ fn nombre_del_arbol(n: &ObjectName, fallos: &mut Vec<Fallo>) -> Option<Nombre> {
         return None;
     }
     match p.as_slice() {
-        [paquete, nombre] => Some(Nombre {
+        [paquete, schema, nombre] => Some(Nombre {
             paquete: paquete.value.clone(),
+            schema: schema.value.clone(),
             nombre: nombre.value.clone(),
             pos,
+            dos_partes: false,
+        }),
+        [paquete, nombre] => Some(Nombre {
+            paquete: paquete.value.clone(),
+            schema: crate::normalize::SCHEMA_POR_DEFECTO.to_string(),
+            nombre: nombre.value.clone(),
+            pos,
+            dos_partes: true,
         }),
         [solo] => {
             fallos.push(
-                Fallo::new(format!("`{}` no dice de qué paquete es", solo.value), pos)
-                    .ayuda(format!("`paquete.{}`", solo.value)),
+                Fallo::new(format!("`{}` no dice de qué base es", solo.value), pos)
+                    .ayuda(format!("`base.schema.{}`", solo.value)),
             );
             None
         }
         _ => {
             fallos.push(Fallo::new(
                 format!(
-                    "`{n}` tiene {} partes: un nombre del árbol es `paquete.nombre`",
+                    "`{n}` tiene {} partes: un nombre del árbol es `base.schema.nombre`",
                     p.len()
                 ),
                 pos,
@@ -610,6 +678,28 @@ pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
             n.pos,
         )
     };
+    // Un schema que no es `default` existe si se declara (v1alpha13, 01 §2).
+    let hay_schema = |n: &Nombre| {
+        n.schema == crate::normalize::SCHEMA_POR_DEFECTO
+            || pkg.docs.iter().any(|d| {
+                d.kind == Kind::Schema
+                    && d.meta("namespace").and_then(|x| x.as_str()) == Some(n.paquete.as_str())
+                    && d.meta("name").and_then(|x| x.as_str()) == Some(n.schema.as_str())
+            })
+    };
+    let sin_schema = |n: &Nombre| {
+        Fallo::new(
+            format!(
+                "no hay ningún schema `{}` en la base `{}`",
+                n.schema, n.paquete
+            ),
+            n.pos,
+        )
+        .ayuda(format!(
+            "un `kind: Schema` en `packages/{}/{}/schema.yaml`",
+            n.paquete, n.schema
+        ))
+    };
     let mut fallos = Vec::new();
     for n in &u.lee {
         let r = n.referencia();
@@ -638,6 +728,7 @@ pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
                 n.pos,
             )),
             None if !hay_paquete(&n.paquete) => fallos.push(sin_paquete(n)),
+            None if !hay_schema(n) => fallos.push(sin_schema(n)),
             None => fallos.push(Fallo::new(
                 format!("no hay ningún `Dataset` ni `View` `{r}` en el árbol"),
                 n.pos,
@@ -666,6 +757,7 @@ pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
                 n.pos,
             )),
             None if !hay_paquete(&n.paquete) => fallos.push(sin_paquete(n)),
+            None if !hay_schema(n) => fallos.push(sin_schema(n)),
             None => {}
         }
     }
@@ -688,8 +780,9 @@ const TRAS_LAS_QUE_SE_LEE: [&str; 6] =
 /// la regex de hoy acierta 43. Aquí se usa su **tokenizador**, que no falla
 /// con lo que no conoce, y **el árbol como filtro**: 52 de 52.
 ///
-/// Un `a.b` —con o sin comillas, fuera de comentarios y cadenas, que no sea
-/// parte de un nombre de tres— se resuelve si:
+/// Un `a.b` o un `a.b.c` —con o sin comillas, fuera de comentarios y cadenas,
+/// que no sea parte de uno más largo— se resuelve, **en su forma corta**
+/// (`a.default.b` es `a.b`; 0038), si:
 ///
 /// - es un `Dataset`, una `View` o una `Table` del árbol (la Table, para que
 ///   su 409 diga «se lee por un Dataset que la copie»); o
@@ -734,9 +827,19 @@ pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
             (palabra(&toks[i]), &toks[i + 1], palabra(&toks[i + 2]))
         {
             let antes = i > 0 && matches!(toks[i - 1], Token::Period);
-            let despues = matches!(toks.get(i + 3), Some(Token::Period));
-            if !antes && !despues {
-                let qn = format!("{a}.{b}");
+            // `a.b.c`: tres partes, si no sigue otra
+            let c = match (toks.get(i + 3), toks.get(i + 4)) {
+                (Some(Token::Period), Some(t)) => palabra(t),
+                _ => None,
+            };
+            let largo = if c.is_some() { 5 } else { 3 };
+            let despues = matches!(toks.get(i + largo), Some(Token::Period));
+            let mal_formado = c.is_none() && matches!(toks.get(i + 3), Some(Token::Period));
+            if !antes && !despues && !mal_formado {
+                let qn = match &c {
+                    Some(c) => crate::normalize::a_corto(&format!("{a}.{b}.{c}")).into_owned(),
+                    None => format!("{a}.{b}"),
+                };
                 let tras_lectura = i > 0
                     && matches!(&toks[i - 1], Token::Word(w)
                         if TRAS_LAS_QUE_SE_LEE.iter().any(|k| w.value.eq_ignore_ascii_case(k)));
@@ -744,7 +847,7 @@ pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
                     out.push(qn);
                 }
             }
-            i += 3;
+            i += largo;
             continue;
         }
         i += 1;
@@ -756,8 +859,9 @@ pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
 /// Qué escribe en el árbol una celda de la sesión, si escribe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EscribeEnElArbol {
-    /// `create … table` o `insert … into` un `paquete.nombre`: una tabla del
-    /// lago (y la celda se corre como un `.sql` del árbol).
+    /// `create … table` o `insert … into` un `base.schema.nombre` (o
+    /// `base.nombre`): una tabla del lago (y la celda se corre como un `.sql`
+    /// del árbol). En su forma corta.
     Tabla(String),
     /// `create … view paquete.nombre`: una View del árbol no nace de una
     /// celda, se declara.
@@ -791,21 +895,27 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
             .iter()
             .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
     };
-    // `a.b` en `i` (y no `a.b.c`), con `a` un paquete del árbol
+    // `a.b` o `a.b.c` en `i` (y no uno más largo), con `a` un paquete del
+    // árbol; en su forma corta (0038)
     let nombre = |i: usize| -> Option<String> {
-        match (
-            toks.get(i),
-            toks.get(i + 1),
-            toks.get(i + 2),
-            toks.get(i + 3),
-        ) {
-            (Some(Token::Word(a)), Some(Token::Period), Some(Token::Word(b)), siguiente)
-                if !matches!(siguiente, Some(Token::Period)) && paquete(&a.value) =>
-            {
-                Some(format!("{}.{}", a.value, b.value))
-            }
+        let palabra = |k: usize| match toks.get(k) {
+            Some(Token::Word(w)) => Some(w.value.clone()),
             _ => None,
+        };
+        let punto = |k: usize| matches!(toks.get(k), Some(Token::Period));
+        let a = palabra(i).filter(|a| paquete(a))?;
+        if !punto(i + 1) {
+            return None;
         }
+        let b = palabra(i + 2)?;
+        if !punto(i + 3) {
+            return Some(format!("{a}.{b}"));
+        }
+        let c = palabra(i + 4)?;
+        if punto(i + 5) {
+            return None;
+        }
+        Some(crate::normalize::a_corto(&format!("{a}.{b}.{c}")).into_owned())
     };
     for i in 0..toks.len() {
         if es(i, "create") {
@@ -948,10 +1058,7 @@ mod tests {
         );
         // el `with` sólo tapa dentro de su consulta
         let f = falla("select * from (with t as (select 1) select * from t), t");
-        assert!(
-            f[0].mensaje.contains("`t` no dice de qué paquete es"),
-            "{f:?}"
-        );
+        assert!(f[0].mensaje.contains("`t` no dice de qué base es"), "{f:?}");
     }
 
     #[test]
@@ -977,6 +1084,56 @@ mod tests {
     }
 
     #[test]
+    fn tres_partes_y_dos_con_su_aviso() {
+        // tres partes: la base, el schema y el nombre; la clave es la corta
+        let u = analizar("create or replace table ventas.espana.r as select * from ventas.default.pedidos join ventas.espana.clientes using (id)").unwrap();
+        assert_eq!(
+            u.lee.iter().map(Nombre::referencia).collect::<Vec<_>>(),
+            ["ventas.pedidos", "ventas.espana.clientes"]
+        );
+        let d = &u.escribe.as_ref().unwrap().destino;
+        assert_eq!(
+            (d.referencia(), d.completo()),
+            ("ventas.espana.r".into(), "ventas.espana.r".into())
+        );
+        assert!(u.avisos.is_empty(), "{:?}", u.avisos);
+
+        // dos partes: `default`, y un aviso por nombre, en su sitio
+        let u =
+            analizar("insert into hr.x\nselect * from hr.a join hr.default.b using (id)").unwrap();
+        assert_eq!(
+            u.avisos
+                .iter()
+                .map(|a| (a.codigo, a.pos.map(|p| (p.line, p.col))))
+                .collect::<Vec<_>>(),
+            [
+                (Some(DOS_PARTES), Some((1, 13))),
+                (Some(DOS_PARTES), Some((2, 15)))
+            ]
+        );
+        assert!(
+            u.avisos[0].mensaje.contains("`hr.default.x`"),
+            "{:?}",
+            u.avisos
+        );
+        assert!(
+            u.avisos[1]
+                .ayuda
+                .as_deref()
+                .unwrap()
+                .contains("`hr.default.a`")
+        );
+
+        // `p.n` y `p.default.n` son el mismo: se lee una vez, y no se escribe lo que se lee
+        assert_eq!(
+            lee("select * from hr.a join hr.default.a using (id)"),
+            ["hr.a"]
+        );
+        let f = falla("insert into hr.default.x select * from hr.x");
+        assert!(f[0].mensaje.contains("se escribe y se lee"), "{f:?}");
+    }
+
+    #[test]
     fn lo_que_no_es_una_unidad_se_dice_con_su_sitio() {
         let f = falla("create table hr.salida as select * from hr.a");
         assert!(f[0].mensaje.contains("la segunda vez"), "{f:?}");
@@ -986,8 +1143,9 @@ mod tests {
         assert!(f[0].mensaje.contains("UNA sentencia"), "{f:?}");
         assert_eq!(f[0].pos.map(|p| p.line), Some(2));
 
-        let f = falla("select *\nfrom lago.hr.espanoles");
-        assert!(f[0].mensaje.contains("3 partes"), "{f:?}");
+        let f = falla("select *\nfrom ore.lago.hr.espanoles");
+        assert!(f[0].mensaje.contains("4 partes"), "{f:?}");
+        assert!(f[0].mensaje.contains("base.schema.nombre"), "{f:?}");
         assert_eq!(f[0].pos, Some(Pos { line: 2, col: 6 }));
 
         let f = falla("select * from read_parquet('gs://b/x.parquet')");

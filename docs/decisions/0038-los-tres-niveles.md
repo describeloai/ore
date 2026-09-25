@@ -82,7 +82,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
-| **P3** | SQL de tres partes: analizador, `sql()`, `write()`, los tres SDK (ATTACH + alias), el LSP, `ore datasets`; las dos partes con aviso | grande |
+| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve, P3c los tres SDK (ATTACH + alias), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace), crear y listar schemas | medio |
 | **P5** | `discover` con el schema del origen | pequeño |
 | **P6** | La consola: schemas de verdad (crear/renombrar al servidor), refs de tres partes, borradores en la carpeta del schema | medio |
@@ -153,6 +153,32 @@ se sabe: es donde están los bytes, lo que tiene que reclamar, aunque lo haya el
 escritor (el swap de `confirmar`).
 
 Lo que queda de nombres de dos partes (`/v1`, los SDK, `ore datasets --tabla p.t`) es de P3/P4.
+
+## P3: medido, y el analizador hecho
+
+**Medido** (`pruebas-de-fuego/medida-el-sql-de-tres-partes.sh`, un puesto de Python de verdad
+sobre un árbol con `ventas.espana` declarado): con dos partes, todo; con tres, **nada llega**, y
+cada pieza falla por su cuenta y con su frase —`write()` y `over()` las rechazan en el SDK,
+`sql()` y la celda las dejan pasar crudas a DuckDB (`Catalog "ventas" does not exist`: el
+tokenizador descartaba `a.b.c` en silencio), la celda que escribe no se reconoce como tal, el LSP
+ofrece `ventas.clientes` para lo que está en `espana` (un nombre que no existe) y
+`/v1/namespaces/espana/tables` da 200 vacío—. El núcleo, en cambio, ya estaba: `validate`, el
+índice (`schema` de cada ítem) y los punteros.
+
+La partición, por dependencias: **P3a** el analizador → **P3b** ore-serve (la celda y el
+aviso en su salida, `datos_del_puesto`, `declarar_transform`, `datos_de`, el `Dataset` que
+nace en un schema en v1alpha13 y en su carpeta) → **P4** `/v1` (base = prefix, schema =
+namespace; `write()` escribe por ahí, así que va antes que los SDK) → **P3c** los tres SDK →
+**P3d** el LSP → **P3e** `ore datasets --tabla` (y el `identificador()` que se queda con el
+último nivel del namespace) y `ore ask --sql`.
+
+**P3a, hecho.** `sql_del_arbol::Nombre` lleva `schema` y `referencia()` es la forma corta (lo
+de `default` sigue siendo `p.n` para todos los que ya lo consumen); `completo()`, las tres.
+`analizar` acepta `base.schema.nombre`; `base.nombre` es `default` **con un aviso**
+`ORE-SQL-2P` por nombre (`Unidad::avisos`: no para la frase; `Fallo::codigo`); una parte o
+cuatro, fallo. `cotejar` dice el schema que no está declarado. `nombres_a_resolver` y
+`escribe_en_el_arbol` reconocen `a.b.c` (en su forma corta) en vez de descartarlo. `ore sql`
+enseña los avisos (`aviso[ORE-SQL-2P]`, y `avisos` en `--json`).
 
 ## Lo que no cambia
 

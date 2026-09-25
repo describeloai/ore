@@ -54,6 +54,17 @@ fn arbol(caso: &str) -> Arbol {
         "packages/ventas/views/virtual.yaml",
         "apiVersion: oos.dev/v1alpha12\nkind: View\nmetadata: { name: virtual, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.pedidos_t }\n  fields: { id: id }\n",
     );
+    // 0038: el schema `espana`, declarado, con un dataset escrito
+    escribe(
+        r,
+        "packages/ventas/espana/schema.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: espana, namespace: ventas }\nspec: { owner: team:ventas }\n",
+    );
+    escribe(
+        r,
+        "packages/ventas/espana/datasets/clientes.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Dataset\nmetadata: { name: clientes, namespace: ventas, schema: espana }\nspec:\n  owner: team:ventas\n  columns:\n    id: { type: Integer }\n  changes: { mode: append }\n",
+    );
     escribe(
         r,
         "packages/ventas/datasets/resumen.yaml",
@@ -151,6 +162,21 @@ fn los_nombres_de_una_celda_los_decide_el_arbol() {
         ["ventas.pedidosEs"]
     );
     assert_eq!(n("select * from lago.ventas.pedidos"), Vec::<String>::new());
+    // tres partes (0038): en su forma corta; `default` es la de dos
+    assert_eq!(
+        n("select * from ventas.default.pedidos join ventas.espana.clientes using (id)"),
+        ["ventas.espana.clientes", "ventas.pedidos"]
+    );
+    assert_eq!(
+        n("select * from ventas.espana.nadie"),
+        ["ventas.espana.nadie"]
+    );
+    // una columna cualificada con su tabla no es un nombre que leer
+    assert_eq!(
+        n("select ventas.pedidos.id from ventas.pedidos"),
+        ["ventas.pedidos"]
+    );
+    assert_eq!(n("select * from a.b.c.d"), Vec::<String>::new());
     // lo que el parser no analiza, el tokenizador sí
     assert_eq!(
         n("pivot ventas.pedidos on pais using count(*)"),
@@ -225,7 +251,47 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
     assert_eq!(e("create table x as select 1"), None);
     assert_eq!(e("create or replace table nada.x as select 1"), None);
     assert_eq!(e("create table lago.ventas.x as select 1"), None);
+    // tres partes (0038), en su forma corta
+    assert_eq!(
+        e("create or replace table ventas.espana.x as select 1"),
+        t("ventas.espana.x")
+    );
+    assert_eq!(
+        e("insert into ventas.default.resumen select 'ES', 1"),
+        t("ventas.resumen")
+    );
+    assert_eq!(e("create table ventas.a.b.c as select 1"), None);
     assert_eq!(e("select * from ventas.pedidos"), None);
     assert_eq!(e("-- create table ventas.x as select 1\nselect 1"), None);
     assert_eq!(e("select 'insert into ventas.x' as s"), None);
+}
+
+/// 0038: tres partes contra el árbol. El schema tiene que estar declarado; lo
+/// que hay en él se lee por su nombre de tres partes; y dos partes es `default`.
+#[test]
+fn tres_partes_contra_el_arbol() {
+    let a = arbol("tres");
+    let (pkg, _) = ore_core::validate::cargar_paquete(&a.0);
+    let coteja = |q: &str| cotejar(&pkg, &analizar(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    assert_eq!(
+        coteja(
+            "create or replace table ventas.espana.r as select * from ventas.espana.clientes join ventas.default.pedidos using (id)"
+        ),
+        Vec::<Fallo>::new()
+    );
+    let f = coteja("select * from ventas.francia.clientes");
+    assert!(
+        f.len() == 1
+            && f[0]
+                .mensaje
+                .contains("no hay ningún schema `francia` en la base `ventas`"),
+        "{f:?}"
+    );
+    let f = coteja("create or replace table ventas.francia.x as select 1");
+    assert!(f[0].mensaje.contains("schema `francia`"), "{f:?}");
+    // `ventas.clientes` es `ventas.default.clientes`, que no está: el de `espana` no se adivina
+    let f = coteja("select * from ventas.clientes");
+    assert!(f[0].mensaje.contains("`ventas.clientes`"), "{f:?}");
+    let f = coteja("select * from ventas.espana.nadie");
+    assert!(f[0].mensaje.contains("`ventas.espana.nadie`"), "{f:?}");
 }
