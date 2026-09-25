@@ -337,7 +337,7 @@ impl Servidor {
             .strip_prefix("modelo/")
             .unwrap_or(&modelo)
             .to_string();
-        let (url, id) = match self.resolver_modelo(raiz, &nombre_modelo) {
+        let (url, id) = match self.resolver_modelo(raiz, &nombre_modelo, Some(&f.ns), &f.schema) {
             Ok(v) => v,
             Err(r) => return r,
         };

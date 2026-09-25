@@ -603,3 +603,65 @@ fn el_indice_dice_en_que_repositorio_vive_cada_item() {
         Json::Crudo("null".into())
     );
 }
+
+/// ⭐⭐ ORE 0041 · v1alpha15: el modelo vive en un paquete y un schema.
+///
+/// Uno en `ventas.espana` y otro con el mismo nombre en `ventas` (`default`)
+/// son dos modelos; el índice les da paquete y schema (el catálogo los pinta);
+/// una función de `espana` que dice `modelo/chat` es el de su schema; uno de
+/// antes en la raíz sigue resolviendo; y dos en el mismo schema es OOS2035.
+#[test]
+fn el_modelo_de_v1alpha15_vive_en_su_paquete_y_su_schema() {
+    let t = arbol_en("modelo15");
+    let r = t.path();
+    escribe(r, "packages/ventas/espana/schema.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata:\n  name: espana\n  namespace: ventas\n");
+    escribe(r, "packages/ventas/espana/modelos/chat.yaml",
+        "apiVersion: oos.dev/v1alpha15\nkind: Model\nmetadata:\n  name: chat\n  namespace: ventas\n  schema: espana\nspec:\n  profile: g1/llama-3.1-8b\n  tier: shared\n  task: chat\n");
+    escribe(r, "packages/ventas/modelos/chat.yaml",
+        "apiVersion: oos.dev/v1alpha15\nkind: Model\nmetadata:\n  name: chat\n  namespace: ventas\nspec:\n  profile: g1/qwen3-8b\n  tier: shared\n  task: chat\n");
+    escribe(r, "packages/ventas/espana/functions/resumir.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Function\nmetadata: { name: resumir, namespace: ventas, schema: espana }\nspec:\n  runtime: model\n  model: modelo/chat\n  over: ventas.pedidosEs\n  reads: [ventas.pedidosEs]\n  prompt: resume\n  output:\n    resumen: { type: String }\n");
+
+    let d = ore_core::validate::validate_package(r);
+    let nuevos: Vec<String> = d
+        .iter()
+        .filter(|x| {
+            let rel = x.file.strip_prefix(r).unwrap_or(&x.file).to_string_lossy().replace('\\', "/");
+            rel.contains("modelos/") || rel.contains("resumir")
+        })
+        .map(|x| format!("{:?} {} {}", x.code, x.file.display(), x.message))
+        .collect();
+    assert!(nuevos.is_empty(), "{nuevos:#?}");
+
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+    let es = item(&j, "model:ventas.espana.chat");
+    assert_eq!(es["paquete"], Json::s("ventas"));
+    assert_eq!(es["schema"], Json::s("espana"));
+    assert_eq!(es["carpeta"], Json::s("espana"));
+    let def = item(&j, "model:ventas.chat");
+    assert_eq!(def["schema"], Json::s("default"));
+    assert_eq!(def["carpeta"], Json::s(""));
+    // la de antes, en la raíz, sigue ahí y sin paquete
+    assert_eq!(item(&j, "model:v2-lite")["paquete"], Json::Crudo("null".into()));
+    // la función de `espana` usa el de su schema, no el de `default`
+    let f = item(&j, "function:ventas.espana.resumir");
+    assert!(tiene(f, "usa", "model:ventas.espana.chat"), "{:?}", relaciones(f));
+
+    // dos en el mismo schema: OOS2035
+    escribe(r, "packages/ventas/espana/modelos/otro.yaml",
+        "apiVersion: oos.dev/v1alpha15\nkind: Model\nmetadata:\n  name: chat\n  namespace: ventas\n  schema: espana\nspec:\n  profile: g1/llama-3.1-8b\n  tier: shared\n  task: chat\n");
+    let d = ore_core::validate::validate_package(r);
+    assert!(d.iter().any(|x| x.code == ore_core::code::Code::Oos2035), "{d:#?}");
+}
+
+/// Un `Model` de antes con `namespace` es OOS1005: la clave es de v1alpha15.
+#[test]
+fn un_modelo_de_antes_no_lleva_namespace() {
+    let d = ore_core::validate::validate_document(
+        Path::new("modelos/x.yaml"),
+        "apiVersion: oos.dev/v1alpha9\nkind: Model\nmetadata:\n  name: x\n  namespace: ventas\nspec:\n  profile: g1/x\n  tier: shared\n  task: chat\n",
+    );
+    assert!(d.iter().any(|x| x.code == ore_core::code::Code::Oos1005), "{d:#?}");
+}

@@ -209,6 +209,22 @@ impl Package {
     pub fn resolve_entity(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
         self.entity(&cualificar(referencia, desde))
     }
+
+    /// v1alpha15 §3. `modelo/<referencia>` desde `desde`, leida por partes
+    /// como toda referencia del catalogo; si no resuelve, un `Model` de antes
+    /// —sin `namespace`, en la raiz— que se llame exactamente asi.
+    pub fn resolve_model(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        let r = referencia.strip_prefix("modelo/").unwrap_or(referencia);
+        let qn = cualificar(r, desde);
+        self.of(Kind::Model)
+            .find(|m| m.meta("namespace").is_some() && m.qname().as_deref() == Some(qn.as_str()))
+            .or_else(|| {
+                self.of(Kind::Model).find(|m| {
+                    m.meta("namespace").is_none()
+                        && m.meta("name").and_then(|n| n.as_str()) == Some(r)
+                })
+            })
+    }
 }
 
 /// v1alpha13 01 §5. Una referencia a contenido del catalogo, escrita desde
@@ -783,13 +799,11 @@ fn modelos(pkg: &Package, out: &mut Vec<Diagnostic>) {
             continue;
         };
         let nombre = referencia.strip_prefix("modelo/").unwrap_or(referencia);
-        let existe = pkg
-            .of(Kind::Model)
-            .any(|m| m.meta("name").and_then(|n| n.as_str()) == Some(nombre));
-        if !existe {
+        if pkg.resolve_model(referencia, f).is_none() {
+            let a = cualificar(nombre, f);
             out.push(
                 referencia_rota(&f.path, nodo, referencia, "model").help(format!(
-                    "`model` nombra `modelo/{nombre}` y no hay ningun `kind: Model` con `metadata.name: {nombre}` (en `modelos/`). Un modelo entra en el arbol por `POST /modelos` de `ore-serve`, que comprueba que su perfil este certificado"
+                    "`model` nombra `modelo/{nombre}`, que se lee `{a}` (v1alpha15: una parte es el paquete y el schema de la funcion; dos, `<paquete>.<nombre>` en `default`; tres, completo), y no hay ningun `kind: Model` asi, ni uno de antes en `modelos/` con ese nombre. Un modelo entra en el arbol por `POST /modelos` de `ore-serve`, que comprueba que su perfil este certificado"
                 )),
             );
         }

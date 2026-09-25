@@ -315,7 +315,7 @@ impl Servidor {
             ("DELETE", ["modelos", n]) => {
                 let n = n.to_string();
                 self.escribiendo(sujeto, &format!("retirar el modelo `{n}`"), |r| {
-                    self.retirar_modelo(r, &n)
+                    self.retirar_modelo(r, &n, sujeto)
                 })
             }
             // ⭐⭐ CREAR UNA BASE ELIGIENDO QUE ENTRA. Es lo que el modal de la
@@ -2496,7 +2496,9 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
     m.push(("GET", "/conceptos".to_string(), con_identidad));
     for k in documentos::KINDS {
         m.push(("GET", format!("/documentos/{}", k.nombre), con_identidad));
-        for verbo in ["GET", "PUT", "DELETE"] {
+        // Lo que escribe otro verbo (0041: el `Model`) sólo se lee por aquí.
+        let verbos: &[&str] = if k.escribe.is_some() { &["GET"] } else { &["GET", "PUT", "DELETE"] };
+        for &verbo in verbos {
             m.push((
                 verbo,
                 format!("/documentos/{}/{{ns}}/{{nombre}}", k.nombre),

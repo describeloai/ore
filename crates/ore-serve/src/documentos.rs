@@ -125,6 +125,11 @@ pub(crate) struct Kind {
     /// Lo que el verbo exige del `spec` y el compilador todavía no. `Some`
     /// es el motivo del 422.
     pub exige: fn(&Node) -> Option<String>,
+    /// `None`: se escribe y se retira por `/documentos`. `Some(verbo)`: se lee
+    /// por aquí —la ficha del catálogo, su YAML— pero lo escribe otro verbo,
+    /// porque escribirlo es más que el documento (0041: un `Model` es el
+    /// documento Y la suscripción de la celda en el gateway, en un acto).
+    pub escribe: Option<&'static str>,
 }
 
 pub(crate) const KINDS: &[Kind] = &[
@@ -133,18 +138,21 @@ pub(crate) const KINDS: &[Kind] = &[
         carpeta: "entities",
         articulo: "la entidad",
         exige: exige_backed_by,
+        escribe: None,
     },
     Kind {
         nombre: "View",
         carpeta: "views",
         articulo: "la vista",
         exige: exige_owner,
+        escribe: None,
     },
     Kind {
         nombre: "Table",
         carpeta: "tables",
         articulo: "la tabla",
         exige: sin_exigencias,
+        escribe: None,
     },
     // Sin exigencias propias: lo que falta ya es `OOS1004` (`type`).
     Kind {
@@ -152,12 +160,14 @@ pub(crate) const KINDS: &[Kind] = &[
         carpeta: "concepts",
         articulo: "el concepto",
         exige: sin_exigencias,
+        escribe: None,
     },
     Kind {
         nombre: "Interface",
         carpeta: "interfaces",
         articulo: "la interfaz",
         exige: sin_exigencias,
+        escribe: None,
     },
     // v1alpha11 (0031 W3.7 ②). El modelo entrenado, publicado desde una
     // sesion: el compilador ya exige `owner`, `framework`, `version`,
@@ -167,6 +177,7 @@ pub(crate) const KINDS: &[Kind] = &[
         carpeta: "models",
         articulo: "el modelo entrenado",
         exige: sin_exigencias,
+        escribe: None,
     },
     // v1alpha12 (0033). Lo que se tiene: el dataset mantenido (`from`, y el
     // sistema lo cumple) o escrito (`columns` + `changes`). `declare()` desde
@@ -177,6 +188,7 @@ pub(crate) const KINDS: &[Kind] = &[
         carpeta: "datasets",
         articulo: "el dataset",
         exige: sin_exigencias,
+        escribe: None,
     },
     // v1alpha10 (0034 paso 5). La lógica con contrato y la invocación sin
     // código entran por la misma puerta que los demás: la ficha del catálogo
@@ -190,12 +202,26 @@ pub(crate) const KINDS: &[Kind] = &[
         carpeta: "functions",
         articulo: "la función",
         exige: sin_exigencias,
+        escribe: None,
     },
     Kind {
         nombre: "Action",
         carpeta: "actions",
         articulo: "la acción",
         exige: sin_exigencias,
+        escribe: None,
+    },
+    // v1alpha15 (0041). El modelo desplegado, en su base y su schema como
+    // todo lo del catálogo: se lee por aquí, y lo escriben `POST /modelos` y
+    // `DELETE /modelos/{ref}` por ESTE motor, más la suscripción.
+    Kind {
+        nombre: "Model",
+        carpeta: "modelos",
+        articulo: "el modelo",
+        exige: sin_exigencias,
+        escribe: Some(
+            "lo escriben `POST /modelos` y `DELETE /modelos/{ref}`: el documento y la suscripción de la celda en el gateway van juntos, o nada",
+        ),
     },
 ];
 
@@ -375,6 +401,45 @@ fn documentos_de(raiz: &Path) -> (Vec<Documento>, usize) {
     (lista, rotos)
 }
 
+/// ⭐ (0041) Un `Model` del árbol tal como el motor lo encuentra, con su
+/// referencia: `<base>.<nombre>` o `<base>.<schema>.<nombre>`; uno de antes
+/// (v1alpha9–14, en `modelos/` en la raíz, sin paquete), su nombre a secas.
+pub(crate) struct ModeloDelArbol {
+    pub fichero: PathBuf,
+    pub nodo: Node,
+    pub referencia: String,
+    pub nombre: String,
+    pub paquete: Option<String>,
+    pub schema: Option<String>,
+}
+
+/// Los `Model` del árbol, del mismo recorrido que el resto de `/documentos`.
+pub(crate) fn modelos_de(raiz: &Path) -> Vec<ModeloDelArbol> {
+    let (lista, _) = documentos_de(raiz);
+    let mut v: Vec<ModeloDelArbol> = lista
+        .into_iter()
+        .filter(|d| d.kind.nombre == "Model")
+        .map(|d| {
+            let con_sitio = !d.espacio().is_empty();
+            ModeloDelArbol {
+                referencia: if con_sitio { d.cualificado() } else { d.nombre() },
+                nombre: d.nombre(),
+                paquete: con_sitio.then(|| d.espacio()),
+                schema: con_sitio.then(|| d.schema()),
+                fichero: d.fichero,
+                nodo: d.nodo,
+            }
+        })
+        .collect();
+    v.sort_by(|a, b| a.referencia.cmp(&b.referencia));
+    v
+}
+
+/// La fila `Model` de la tabla.
+pub(crate) fn kind_modelo() -> &'static Kind {
+    kind_de("Model").expect("`Model` está en la tabla")
+}
+
 /// Los `.yaml` de un directorio, hacia dentro y sin entrar en los ocultos.
 fn yamls_de(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entradas) = std::fs::read_dir(dir) else {
@@ -479,6 +544,26 @@ fn quien_nombra(todos: &[Documento], d: &Documento) -> Vec<String> {
             }
             ("Table", "View") if apunta(from("table"), d, mismo) => {
                 quien.push(format!("`{}` (from.table)", o.cualificado()));
+            }
+            // v1alpha15 §3: `model: modelo/<ref>`, leída por partes desde la
+            // función; uno de antes (sin paquete), por su nombre a secas.
+            ("Model", "Function") => {
+                let Some(m) = spec
+                    .and_then(|s| s.get("model"))
+                    .and_then(|(_, v)| v.as_str())
+                else {
+                    continue;
+                };
+                let m = m.strip_prefix("modelo/").unwrap_or(m);
+                let nombra = if d.espacio().is_empty() {
+                    m == d.nombre()
+                } else {
+                    ore_core::normalize::qualify_catalogo(m, Some(&o.espacio()), &o.schema())
+                        == d.cualificado()
+                };
+                if nombra {
+                    quien.push(format!("`{}` (model)", o.cualificado()));
+                }
             }
             _ => {}
         }
@@ -749,6 +834,25 @@ impl Servidor {
             Ok(k) => k,
             Err(r) => return r,
         };
+        if let Some(verbo) = k.escribe {
+            return Respuesta::error(405, format!("{} no se escribe por `/documentos`: {verbo}", k.articulo));
+        }
+        self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit)
+    }
+
+    /// La escritura del motor, para un kind ya resuelto: en `packages/<ns>[/<schema>]/<carpeta>/`,
+    /// compilando antes de empujar. La usa `/documentos` y, para el `Model`, `/modelos` (0041).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn escribir_en_su_sitio(
+        &self,
+        raiz: &Path,
+        k: &'static Kind,
+        ns: &str,
+        schema: &str,
+        n: &str,
+        cuerpo: &str,
+        si_commit: Option<&str>,
+    ) -> Respuesta {
         if let Err(r) = nombres(ns, schema, n) {
             return r;
         }
@@ -855,6 +959,25 @@ impl Servidor {
             Ok(k) => k,
             Err(r) => return r,
         };
+        if let Some(verbo) = k.escribe {
+            return Respuesta::error(405, format!("{} no se retira por `/documentos`: {verbo}", k.articulo));
+        }
+        self.retirar_de_su_sitio(raiz, k, ns, schema, n, si_commit, sujeto)
+    }
+
+    /// La retirada del motor, para un kind ya resuelto: 409 con quién lo nombra, o
+    /// fuera si el árbol no empeora. La usa `/documentos` y, para el `Model`, `/modelos`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retirar_de_su_sitio(
+        &self,
+        raiz: &Path,
+        k: &'static Kind,
+        ns: &str,
+        schema: &str,
+        n: &str,
+        si_commit: Option<&str>,
+        sujeto: &ore_entrada::identidad::Identidad,
+    ) -> Respuesta {
         if let Err(r) = nombres(ns, schema, n) {
             return r;
         }

@@ -90,6 +90,14 @@ pub enum ApiVersion {
     /// tenia. El schema se DECLARA y la carpeta se ata a el (`OOS2036`,
     /// `OOS2037`): la identidad nunca es la ruta.
     V1Alpha13,
+    /// v1alpha15. **Situar.** El `Model` deja de ser vocabulario del arbol
+    /// —sin `namespace`, en `modelos/` en la raiz— y pasa a contenido
+    /// gobernado: `metadata.namespace` y `metadata.schema`, unico por schema
+    /// (ORE 0041). Lo midio el catalogo: el indice daba el modelo con
+    /// `paquete: null` y la consola no tenia donde pintarlo, ni el modelo
+    /// dueño. v1alpha14 (la vista es SQL, ORE 0040) no esta todavia aqui: no
+    /// añade nada que un `Model` use.
+    V1Alpha15,
 }
 
 impl ApiVersion {
@@ -105,6 +113,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha11,
         ApiVersion::V1Alpha12,
         ApiVersion::V1Alpha13,
+        ApiVersion::V1Alpha15,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -120,6 +129,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha11 => "oos.dev/v1alpha11",
             ApiVersion::V1Alpha12 => "oos.dev/v1alpha12",
             ApiVersion::V1Alpha13 => "oos.dev/v1alpha13",
+            ApiVersion::V1Alpha15 => "oos.dev/v1alpha15",
         }
     }
 
@@ -394,9 +404,9 @@ impl Kind {
             // la vista si —abajo—: una tabla es un HECHO, y los cuatro niveles
             // de ese reticulo son verbos de acuerdo. Nadie acuerda un hecho.
             | Kind::Table => &["name", "namespace", "description"],
-            // El modelo no lleva `namespace`: se direcciona por su nombre
-            // (`modelo/<nombre>`) desde cualquier paquete, como una funcion en
-            // `functions/`. Y no admite `labels`: lo que produce llega al
+            // El modelo no lleva `namespace` hasta v1alpha15, que se lo da
+            // con `schema` (`metadata_keys_en`): antes se direccionaba por su
+            // nombre desde cualquier paquete. Y no admite `labels`: lo que produce llega al
             // reticulo por los endosos de la funcion que lo invoca, no por una
             // etiqueta que el modelo se ponga a si mismo.
             Kind::Model => &["name", "description"],
@@ -462,6 +472,8 @@ impl Kind {
         Kind::Function,
         Kind::Action,
         Kind::TrainedModel,
+        // v1alpha15: el modelo, desde que tiene paquete (ORE 0041).
+        Kind::Model,
     ];
 
     /// Si este `kind` se ordena en schemas (v1alpha13).
@@ -473,6 +485,13 @@ impl Kind {
     /// `schema` en el contenido del catalogo desde v1alpha13.
     pub fn metadata_keys_en(self, version: ApiVersion) -> Vec<&'static str> {
         let mut k = self.metadata_keys().to_vec();
+        // v1alpha15: el modelo gana paquete y schema a la vez; antes, ninguno.
+        if self == Kind::Model {
+            if version >= ApiVersion::V1Alpha15 {
+                k.extend(["namespace", "schema"]);
+            }
+            return k;
+        }
         if self.con_schema() && version >= ApiVersion::V1Alpha13 {
             k.push("schema");
         }

@@ -84,6 +84,10 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // nombre, `<paquete>.<schema>`.
     Kind::Schema,
     Kind::Resolution,
+    // v1alpha15. El modelo es del paquete donde vive: alguien lo posee y lo
+    // paga, y dos equipos pueden tener cada uno su `chat` (ORE 0041). Uno de
+    // antes, en `modelos/` en la raiz, no tiene paquete con el que discrepar.
+    Kind::Model,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo
     // seria dejar que la ausencia signifique dos cosas.
@@ -99,10 +103,6 @@ pub const COMPARTIDO: &[Kind] = &[
     Kind::Interface,
     Kind::ConduitPolicy,
     Kind::RequestPolicy,
-    // v1alpha9. El modelo se direcciona por su nombre desde cualquier paquete
-    // (`modelo/<nombre>`) y no lleva `namespace`: es vocabulario del arbol,
-    // como un reticulo, y vive en `modelos/` en la raiz.
-    Kind::Model,
 ];
 
 /// Y los estructurales: el manifiesto **es** el nombre, asi que no puede
@@ -169,6 +169,10 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
             continue;
         }
         if d.version().is_none_or(|v| v < ApiVersion::V1Alpha8) {
+            continue;
+        }
+        // Un `Model` anterior a v1alpha15 no tenia `namespace` que declarar.
+        if d.kind == Kind::Model && d.version().is_none_or(|v| v < ApiVersion::V1Alpha15) {
             continue;
         }
         let Some(m) = crate::link::miembro_de(&miembros, &d.path) else {

@@ -58,6 +58,8 @@ const CARPETAS_DE_KIND: &[&str] = &[
     "functions",
     "actions",
     "models",
+    // v1alpha15: la de los `Model` (ORE 0041); `models/` es la de los entrenados.
+    "modelos",
     "interfaces",
     "concepts",
 ];
@@ -608,8 +610,12 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 }
             }
             if let Some(m) = spec_str(d, "model") {
-                let n = m.rsplit('/').next().unwrap_or(&m);
-                a("usa", "usado_por", ref_de(Kind::Model, None, n));
+                // v1alpha15: el modelo resuelto por partes, con su ref de verdad.
+                let destino = match pkg.resolve_model(&m, d) {
+                    Some(md) => ref_doc(md),
+                    None => ref_de(Kind::Model, None, m.strip_prefix("modelo/").unwrap_or(&m)),
+                };
+                a("usa", "usado_por", destino);
             }
         }
         Kind::TrainedModel => {
