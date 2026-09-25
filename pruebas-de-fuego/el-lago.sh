@@ -65,6 +65,9 @@
 # Y materializar SOBRE el lago (0031 «(d)», 0033): un Dataset mantenido cuyo
 # `from` es un dataset no tiene driver de texto —el puntero está en el árbol,
 # no en una URL— y se copia en Arrow (`ore-store copiar`):
+#  15  /v1 como Unity (0038 P4): `warehouse=ventas` → la base es el prefix y
+#      el schema el namespace; PyIceberg crea en `espana` y DuckDB lo lee como
+#      `ventas.espana.pedidos2`; sin warehouse, lo de siempre
 #  14  `ore materialize` de un Dataset sobre `ventas.py` (267 filas vivas, con
 #      position deletes): el testigo es el snapshot del puntero, la copia se
 #      lee, se proyecta y se filtra en Arrow (`where: { pais: FR }` → 1 fila de
@@ -682,4 +685,79 @@ case "$ML14" in s3://copia/ore/v2/catalogo/ventas/default/francia/*) ;; *) falla
 printf '{"metadata_location":"%s","dataset":"datasets/ventas_francia"}\n' "$ML14" | "$STORE" leer | head -1 | grep -q '"conducto":"' || falla "14 · la copia no lleva su cabecera"
 ok "14 · materializar sobre el lago sin driver: francia 1 fila de 267 leídas (filtro y proyección en Arrow, sin las borradas), todoPy 267, el testigo es el snapshot del puntero, ask las contesta tipadas, la segunda pasada no lee, y una Table que nadie escribió se dice"
 
-if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9314\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi
+# ── 15 · /v1 como Unity: la base es el `prefix`, el schema el namespace ──────
+# 0038 P4, medido antes (`medida-v1-como-unity.py`): PyIceberg y DuckDB piden
+# `config?warehouse=<base>` y usan el `prefix` que vuelve. Sin `warehouse`,
+# lo de siempre (el namespace es la base, en `default`).
+git clone -q "$FORJA" "$TMP/c15"
+mkdir -p "$TMP/c15/packages/ventas/espana"
+cat > "$TMP/c15/packages/ventas/espana/schema.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: espana, namespace: ventas }
+spec: { owner: team:data }
+Y
+( cd "$TMP/c15" && git add -A && git commit -qm "el schema espana" && git push -q origin HEAD:main ) || falla "15 · no se pudo declarar el schema"
+cat > "$TMP/py15.py" <<'PY'
+import sys, json
+import pyarrow as pa
+from pyiceberg.catalog import load_catalog
+from pyiceberg.exceptions import NoSuchNamespaceError, RESTError
+base = sys.argv[1]
+cat = load_catalog("ore", **{"type": "rest", "uri": base, "warehouse": "ventas", "header.x-ore-sujeto": "persona:ana"})
+t = pa.table({"id": pa.array([1, 2, 3], pa.int64()), "pais": ["ES", "ES", "PT"]})
+tb = cat.create_table(("espana", "pedidos2"), schema=t.schema)
+tb.append(t)
+out = {
+    "ns": sorted(n[0] for n in cat.list_namespaces()),
+    "espana": sorted(i[1] for i in cat.list_tables("espana")),
+    "default": sorted(i[1] for i in cat.list_tables("default")),
+    "filas": cat.load_table(("espana", "pedidos2")).scan().to_arrow().num_rows,
+    "ubicacion": cat.load_table(("espana", "pedidos2")).metadata.location,
+}
+try:
+    cat.list_tables("francia"); out["francia"] = "sin error"
+except NoSuchNamespaceError as e:
+    out["francia"] = "404"
+try:
+    load_catalog("otra", **{"type": "rest", "uri": base, "warehouse": "nadie", "header.x-ore-sujeto": "persona:ana"}).list_namespaces()
+    out["nadie"] = "sin error"
+except Exception as e:
+    out["nadie"] = type(e).__name__
+viejo = load_catalog("viejo", **{"type": "rest", "uri": base, "header.x-ore-sujeto": "persona:ana"})
+out["viejo"] = sorted(i[1] for i in viejo.list_tables("ventas"))
+print(json.dumps(out))
+PY
+"$PY" "$TMP/py15.py" "$BASE" > "$TMP/py15.json" 2> "$TMP/py15.err" || { tail -5 "$TMP/py15.err"; falla "15 · PyIceberg con warehouse"; }
+"$PY" - "$TMP/py15.json" <<'EOF' || falla "15 · PyIceberg con warehouse: $(cat "$TMP/py15.json")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ns"] == ["default", "espana"], d
+assert d["espana"] == ["pedidos2"] and "pedidos2" not in d["default"] and "py" in d["default"], d
+assert d["filas"] == 3 and d["ubicacion"].endswith("/ore/v2/catalogo/ventas/espana/pedidos2"), d
+assert d["francia"] == "404" and d["nadie"] != "sin error", d
+assert "py" in d["viejo"] and "pedidos2" not in d["viejo"], d
+EOF
+git clone -q "$FORJA" "$TMP/m15"
+grep -q "apiVersion: oos.dev/v1alpha13" "$TMP/m15/packages/ventas/espana/datasets/pedidos2.yaml" \
+  && grep -q "schema: espana" "$TMP/m15/packages/ventas/espana/datasets/pedidos2.yaml" \
+  || falla "15 · el Dataset no nació en v1alpha13 en la carpeta de su schema: $(ls -R "$TMP/m15/packages/ventas" | head -20)"
+[ -f "$TMP/m15/datasets/ventas/espana/pedidos2.json" ] || falla "15 · el puntero no está en datasets/ventas/espana/"
+( cd "$TMP/m15" && "$ORE" validate . >/dev/null 2>&1 ) || falla "15 · el árbol no compila: $(cd "$TMP/m15" && "$ORE" validate . 2>&1 | head -3)"
+cat > "$TMP/duck15.py" <<'PY'
+import sys, json, duckdb
+base, s3 = sys.argv[1], sys.argv[2]
+con = duckdb.connect()
+con.execute("install iceberg; install httpfs; load iceberg; load httpfs;")
+con.execute("create secret s3 (type s3, key_id 'de', secret 'mentira', endpoint '%s', url_style 'path', use_ssl false, region 'auto')" % s3.replace("http://", ""))
+con.execute("create secret ice (type iceberg, token 'persona:ana')")
+con.execute("attach 'ventas' as ventas (type iceberg, endpoint '%s', secret ice)" % base)
+n = con.execute("select count(*) from ventas.espana.pedidos2").fetchone()[0]
+m = con.execute("select count(*) from ventas.default.py").fetchone()[0]
+print(json.dumps({"espana": n, "default": m}))
+PY
+"$PY" "$TMP/duck15.py" "$BASE" "$ORE_R2_S3_ENDPOINT" > "$TMP/duck15.json" 2> "$TMP/duck15.err" || { tail -5 "$TMP/duck15.err"; falla "15 · DuckDB con ATTACH 'ventas'"; }
+[ "$(jq_ "$TMP/duck15.json" espana)" = "3" ] && [ "$(jq_ "$TMP/duck15.json" default)" -gt 0 ] || falla "15 · DuckDB no nombra ventas.espana.pedidos2 ni ventas.default.py: $(cat "$TMP/duck15.json")"
+ok "15 · /v1 como Unity: con warehouse=ventas los namespaces son sus schemas (default, espana); PyIceberg crea espana.pedidos2 (Dataset v1alpha13 en la carpeta del schema, puntero en datasets/ventas/espana/, lago en catalogo/ventas/espana/) y DuckDB lee ventas.espana.pedidos2 y ventas.default.py; un schema o una base que no están, 404; sin warehouse, lo de siempre"
+
+if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9315\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

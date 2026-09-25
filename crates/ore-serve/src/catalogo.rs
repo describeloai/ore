@@ -109,9 +109,9 @@ fn de_ore(codigo: i32, stderr: &str, commit: bool) -> Respuesta {
 /// Qué tabla toca esta petición del catálogo, como `<ns>.<tabla>`; `None` si
 /// no toca ninguna (`config`, `namespaces`) o si es un `commitTransaction`,
 /// que las trae en el cuerpo y las mira `ore datasets --commit`.
-fn tabla_de(p: &Peticion, seg: &[&str]) -> Option<String> {
+fn tabla_de(p: &Peticion, base: Option<&str>, seg: &[&str]) -> Option<String> {
     match seg {
-        ["namespaces", ns, "tables", t] => Some(format!("{ns}.{t}")),
+        ["namespaces", ns, "tables", t] => Some(nombre_de(base, ns, t)),
         // Crear una tabla: el nombre va en el cuerpo.
         ["namespaces", ns, "tables"] if p.metodo == "POST" => ore_core::parse::parse(&p.cuerpo)
             .ok()
@@ -119,9 +119,68 @@ fn tabla_de(p: &Peticion, seg: &[&str]) -> Option<String> {
                 n.get("name")
                     .and_then(|(_, v)| v.as_str().map(String::from))
             })
-            .map(|t| format!("{ns}.{t}")),
+            .map(|t| nombre_de(base, ns, &t)),
         _ => None,
     }
+}
+
+/// **El nombre del árbol de lo que una ruta nombra** (0038 P4), en su forma
+/// corta. Sin `prefix`, el namespace es la base y lo que hay es de `default`
+/// —lo de siempre—; con `prefix` (el `warehouse` que el cliente pidió), el
+/// `prefix` es la base y el namespace su schema, como en Unity Catalog.
+fn nombre_de(base: Option<&str>, ns: &str, t: &str) -> String {
+    match base {
+        None => format!("{ns}.{t}"),
+        Some(b) => ore_core::normalize::corto(b, ns, t),
+    }
+}
+
+/// Los schemas de una base: `default` y los que declara (v1alpha13, `kind:
+/// Schema`), ordenados.
+fn schemas_de(pkg: &ore_core::link::Package, base: &str) -> Vec<String> {
+    let mut v: Vec<String> = pkg
+        .docs
+        .iter()
+        .filter(|d| {
+            d.kind == ore_core::document::Kind::Schema
+                && d.meta("namespace").and_then(|x| x.as_str()) == Some(base)
+        })
+        .filter_map(|d| d.meta("name").and_then(|x| x.as_str()).map(String::from))
+        .collect();
+    v.push(ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// ¿Es `nombre` (forma corta) de este namespace? Sin base: de la base `ns`, en
+/// `default`. Con base: de esa base y del schema `ns`.
+fn del_namespace(base: Option<&str>, ns: &str, nombre: &str) -> Option<String> {
+    let (b, s, t) = ore_core::punteros::partes(nombre)?;
+    let es = match base {
+        None => b == ns && s == ore_core::normalize::SCHEMA_POR_DEFECTO,
+        Some(base) => b == base && s == ns,
+    };
+    es.then(|| t.to_string())
+}
+
+/// El cuerpo de un `commitTransaction` con la base delante del namespace de
+/// cada `identifier` (`["espana"]` → `["ventas", "espana"]`).
+fn con_la_base(n: &ore_core::parse::Node, base: &str) -> String {
+    let mut j = Json::de_node(n);
+    if let Json::Obj(m) = &mut j
+        && let Some(Json::Arr(cambios)) = m.get_mut("table-changes")
+    {
+        for c in cambios {
+            if let Json::Obj(c) = c
+                && let Some(Json::Obj(id)) = c.get_mut("identifier")
+                && let Some(Json::Arr(ns)) = id.get_mut("namespace")
+            {
+                ns.insert(0, Json::s(base));
+            }
+        }
+    }
+    j.jcs()
 }
 
 /// Una respuesta que ya venía con `{"error": "…"}` (la forja adelantada, un
@@ -181,6 +240,19 @@ impl Servidor {
         rama: Option<&str>,
         seg: &[&str],
     ) -> Respuesta {
+        // **El `prefix`** (0038 P4): lo que el cliente recibió de `config`
+        // cuando pidió un `warehouse` —la base—. Lo que no es una de las rutas
+        // de la spec sin él (`config`, `namespaces`, `transactions`) es él.
+        let (base, seg) = match seg {
+            [b, resto @ ..] if !["config", "namespaces", "transactions"].contains(b) => {
+                if let Err(r) = ns_valido(b) {
+                    return r;
+                }
+                (Some(b.to_string()), resto)
+            }
+            _ => (None, seg),
+        };
+        let base = base.as_deref();
         // El informe de un escaneo: Spark lo manda tras cada lectura. No se
         // guarda, y un 404 aquí sólo ensucia su registro.
         if p.metodo == "POST" && matches!(seg, ["namespaces", _, "tables", _, "metrics"]) {
@@ -226,7 +298,7 @@ impl Servidor {
         // en el SDK. Leer va por `datos`, que lo acota igual.
         if let Some(id) = p.cabeceras.get(crate::puestos::PUESTO)
             && let Some(t) = self.transform_de(id.trim())
-            && let Some(tabla) = tabla_de(p, seg)
+            && let Some(tabla) = tabla_de(p, base, seg)
             && tabla != t.output
         {
             return con_forma(
@@ -248,25 +320,65 @@ impl Servidor {
             .is_some_and(|s| !s.trim().is_empty())
             || crate::puestos::es_agente(sujeto);
         match (p.metodo.as_str(), seg) {
-            ("GET", ["config"]) => Respuesta::ok(Json::obj([
-                ("defaults", Json::obj([])),
-                ("overrides", Json::obj([])),
-                (
-                    "endpoints",
-                    Json::Arr(ENDPOINTS.iter().map(|e| Json::s(*e)).collect()),
-                ),
-            ])),
-            ("GET", ["namespaces"]) => self.leyendo_en(rama, |raiz| {
-                Respuesta::ok(Json::obj([(
-                    "namespaces",
-                    Json::Arr(
-                        paquetes(raiz)
-                            .into_iter()
-                            .map(|n| Json::Arr(vec![Json::s(n)]))
-                            .collect(),
+            ("GET", ["config"]) => {
+                // `?warehouse=<base>`: la base es el `prefix` de lo que siga
+                // (medido: PyIceberg y DuckDB lo usan, `medida-v1-como-unity.py`).
+                let overrides = match p.consulta.get("warehouse") {
+                    None => Json::obj([]),
+                    Some(w) => {
+                        let w = w.clone();
+                        let hay = self.leyendo_en(rama, |raiz| {
+                            if paquetes(raiz).contains(&w) {
+                                Respuesta::ok(Json::obj([]))
+                            } else {
+                                error(
+                                    404,
+                                    "NoSuchWarehouseException",
+                                    format!("no hay ninguna base `{w}`"),
+                                )
+                            }
+                        });
+                        if hay.codigo != 200 {
+                            return con_forma(hay, false);
+                        }
+                        Json::obj([("prefix", Json::s(w))])
+                    }
+                };
+                Respuesta::ok(Json::obj([
+                    ("defaults", Json::obj([])),
+                    ("overrides", overrides),
+                    (
+                        "endpoints",
+                        Json::Arr(ENDPOINTS.iter().map(|e| Json::s(*e)).collect()),
                     ),
-                )]))
-            }),
+                ]))
+            }
+            ("GET", ["namespaces"]) => con_forma(
+                self.leyendo_en(rama, |raiz| {
+                    // Sin base, las bases; con ella, sus schemas.
+                    let nombres = match base {
+                        None => paquetes(raiz),
+                        Some(b) if !paquetes(raiz).iter().any(|p| p == b) => {
+                            return error(
+                                404,
+                                "NoSuchWarehouseException",
+                                format!("no hay ninguna base `{b}`"),
+                            );
+                        }
+                        Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b),
+                    };
+                    Respuesta::ok(Json::obj([(
+                        "namespaces",
+                        Json::Arr(
+                            nombres
+                                .into_iter()
+                                .map(|n| Json::Arr(vec![Json::s(n)]))
+                                .collect(),
+                        ),
+                    )]))
+                }),
+                false,
+            ),
             ("GET" | "HEAD", ["namespaces", ns]) => {
                 if let Err(r) = ns_valido(ns) {
                     return r;
@@ -274,7 +386,12 @@ impl Servidor {
                 let ns = ns.to_string();
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        if paquetes(raiz).contains(&ns) {
+                        let existe = match base {
+                            None => paquetes(raiz).contains(&ns),
+                            Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b)
+                                .contains(&ns),
+                        };
+                        if existe {
                             Respuesta::ok(Json::obj([
                                 ("namespace", Json::Arr(vec![Json::s(&ns)])),
                                 ("properties", Json::obj([])),
@@ -283,7 +400,12 @@ impl Servidor {
                             error(
                                 404,
                                 "NoSuchNamespaceException",
-                                format!("no hay ningún paquete `{ns}`"),
+                                match base {
+                                    None => format!("no hay ningún paquete `{ns}`"),
+                                    Some(b) => {
+                                        format!("no hay ningún schema `{ns}` en la base `{b}`")
+                                    }
+                                },
                             )
                         }
                     }),
@@ -296,7 +418,28 @@ impl Servidor {
                 }
                 let ns = ns.to_string();
                 con_forma(
-                    self.leyendo_en(rama, move |raiz| self.tablas(raiz, &ns)),
+                    self.leyendo_en(rama, move |raiz| {
+                        // Lo que no está es 404, no una lista vacía (medido:
+                        // `namespaces/espana/tables` daba 200 sin nada).
+                        let existe = match base {
+                            None => paquetes(raiz).contains(&ns),
+                            Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b)
+                                .contains(&ns),
+                        };
+                        if !existe {
+                            return error(
+                                404,
+                                "NoSuchNamespaceException",
+                                match base {
+                                    None => format!("no hay ningún paquete `{ns}`"),
+                                    Some(b) => {
+                                        format!("no hay ningún schema `{ns}` en la base `{b}`")
+                                    }
+                                },
+                            );
+                        }
+                        self.tablas(raiz, base, &ns)
+                    }),
                     false,
                 )
             }
@@ -304,7 +447,7 @@ impl Servidor {
                 if let Err(r) = ns_valido(ns).and_then(|_| ns_valido(t)) {
                     return r;
                 }
-                let nombre = format!("{ns}.{t}");
+                let nombre = nombre_de(base, ns, t);
                 let cabeza = p.metodo == "HEAD";
                 let sujeto_s = sujeto.persona.clone();
                 // **El conducto de la lectura, también aquí** (0031 W3.7
@@ -360,11 +503,11 @@ impl Servidor {
                 let ns = ns.to_string();
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        if !paquetes(raiz).contains(&ns) {
+                        if !paquetes(raiz).contains(&base.unwrap_or(&ns).to_string()) {
                             return error(
                                 404,
                                 "NoSuchNamespaceException",
-                                format!("no hay ningún paquete `{ns}`"),
+                                format!("no hay ningún paquete `{}`", base.unwrap_or(&ns)),
                             );
                         }
                         let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
@@ -375,13 +518,11 @@ impl Servidor {
                             .filter_map(|d| d.qname())
                             .filter(|q| solo_vista(&pkg, q))
                             .filter_map(|q| {
-                                let (p, v) = q.split_once('.')?;
-                                (p == ns).then(|| {
-                                    Json::obj([
-                                        ("name", Json::s(v)),
-                                        ("namespace", Json::Arr(vec![Json::s(p)])),
-                                    ])
-                                })
+                                let v = del_namespace(base, &ns, &q)?;
+                                Some(Json::obj([
+                                    ("name", Json::s(v)),
+                                    ("namespace", Json::Arr(vec![Json::s(&ns)])),
+                                ]))
                             })
                             .collect();
                         ids.sort_by_key(|j| j.jcs());
@@ -394,11 +535,12 @@ impl Servidor {
                 if let Err(r) = ns_valido(ns).and_then(|_| ns_valido(v)) {
                     return r;
                 }
-                let nombre = format!("{ns}.{v}");
+                let nombre = nombre_de(base, ns, v);
                 let cabeza = p.metodo == "HEAD";
+                let ns = ns.to_string();
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        self.cargar_vista(raiz, &nombre, desde_puesto, cabeza)
+                        self.cargar_vista(raiz, &nombre, &ns, desde_puesto, cabeza)
                     }),
                     false,
                 )
@@ -421,7 +563,7 @@ impl Servidor {
                 if let Err(r) = ns_valido(nombre) {
                     return r;
                 }
-                let nombre = format!("{ns}.{nombre}");
+                let nombre = nombre_de(base, ns, nombre);
                 let esbozo = cuerpo
                     .get("stage-create")
                     .and_then(|(_, v)| v.as_str())
@@ -488,7 +630,7 @@ impl Servidor {
                 if p.cuerpo.trim().is_empty() || ore_core::parse::parse(&p.cuerpo).is_err() {
                     return error(400, "BadRequestException", "el cuerpo no es JSON");
                 }
-                let nombre = format!("{ns}.{t}");
+                let nombre = nombre_de(base, ns, t);
                 let peticion = p.cuerpo.clone();
                 let sujeto_s = sujeto.persona.clone();
                 con_forma(
@@ -527,10 +669,18 @@ impl Servidor {
                 )
             }
             ("POST", ["transactions", "commit"]) => {
-                if p.cuerpo.trim().is_empty() || ore_core::parse::parse(&p.cuerpo).is_err() {
+                let Ok(n) = ore_core::parse::parse(&p.cuerpo) else {
+                    return error(400, "BadRequestException", "el cuerpo no es JSON");
+                };
+                if p.cuerpo.trim().is_empty() {
                     return error(400, "BadRequestException", "el cuerpo no es JSON");
                 }
-                let peticion = p.cuerpo.clone();
+                // Con `prefix`, el namespace de cada tabla es su schema: se le
+                // pone delante la base, y `ore datasets` lee `[base, schema]`.
+                let peticion = match base {
+                    None => p.cuerpo.clone(),
+                    Some(b) => con_la_base(&n, b),
+                };
                 let sujeto_s = sujeto.persona.clone();
                 con_forma(
                     self.escribiendo_en(rama, sujeto, "escribir varias tablas", move |raiz| {
@@ -609,6 +759,7 @@ impl Servidor {
         &self,
         raiz: &Path,
         nombre: &str,
+        ns: &str,
         desde_puesto: bool,
         cabeza: bool,
     ) -> Respuesta {
@@ -652,7 +803,10 @@ impl Servidor {
         if cabeza {
             return Respuesta::sin_contenido();
         }
-        let (ns, v) = nombre.split_once('.').unwrap_or(("", nombre));
+        // El namespace, el que el cliente usa (la base sin `prefix`, el
+        // schema con él); el lugar, por la forma corta.
+        let v = nombre.rsplit('.').next().unwrap_or(nombre);
+        let ns = ns.to_string();
         // Una representación por dialecto (DuckDB y Spark): el motor elige la
         // suya (medido: Spark toma `spark` aunque vaya detrás).
         let representaciones = j
@@ -667,13 +821,14 @@ impl Servidor {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let lugar = format!("ore://arbol/{ns}/{v}");
+        let lugar = format!("ore://arbol/{}", nombre.replace('.', "/"));
+        let _ = v;
         let version = Json::obj([
             ("version-id", Json::Int(1)),
             ("timestamp-ms", Json::Int(ahora)),
             ("schema-id", Json::Int(0)),
             ("summary", Json::obj([("operation", Json::s("create"))])),
-            ("default-namespace", Json::Arr(vec![Json::s(ns)])),
+            ("default-namespace", Json::Arr(vec![Json::s(&ns)])),
             ("representations", representaciones),
         ]);
         Respuesta::ok(Json::obj([
@@ -726,8 +881,9 @@ impl Servidor {
         self.ore_crudo(raiz, &args, false)
     }
 
-    /// Las tablas del lago con puntero, en un paquete.
-    fn tablas(&self, raiz: &Path, ns: &str) -> Respuesta {
+    /// Las tablas del lago con puntero, en un namespace (una base sin
+    /// `prefix`, un schema de la base con él).
+    fn tablas(&self, raiz: &Path, base: Option<&str>, ns: &str) -> Respuesta {
         let args: Vec<String> = ["datasets", ".", "--json"]
             .iter()
             .map(|s| s.to_string())
@@ -757,12 +913,11 @@ impl Servidor {
                     .is_some_and(|m| !m.is_empty())
             })
             .filter_map(|d| d.get("nombre").and_then(|(_, v)| v.as_str()))
-            .filter_map(|n| n.split_once('.'))
-            .filter(|(p, _)| *p == ns)
-            .map(|(p, t)| {
+            .filter_map(|n| del_namespace(base, ns, n))
+            .map(|t| {
                 Json::obj([
                     ("name", Json::s(t)),
-                    ("namespace", Json::Arr(vec![Json::s(p)])),
+                    ("namespace", Json::Arr(vec![Json::s(ns)])),
                 ])
             })
             .collect();

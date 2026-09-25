@@ -498,18 +498,62 @@ fn bien(s: &str) -> bool {
         && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
 }
 
-/// `<paquete>.<tabla>` → (`paquete`, `tabla`), o por qué no.
-fn partes(nombre: &str) -> Result<(&str, &str), Fallo> {
-    let Some((ns, tabla)) = nombre.split_once('.') else {
-        return Err((64, format!("`{nombre}` no es `<paquete>.<tabla>`")));
+/// Una tabla del lago por su nombre (0038): la base (el paquete), el schema
+/// y la tabla. `default` es el de lo que no dice otro.
+#[derive(Debug, Clone, Copy)]
+struct Tabla<'a> {
+    ns: &'a str,
+    schema: &'a str,
+    tabla: &'a str,
+}
+
+impl Tabla<'_> {
+    /// La forma corta: la clave del árbol y la de los punteros.
+    fn corto(&self) -> String {
+        ore_core::normalize::corto(self.ns, self.schema, self.tabla)
+    }
+    fn en_default(&self) -> bool {
+        self.schema == ore_core::normalize::SCHEMA_POR_DEFECTO
+    }
+    /// La carpeta donde viven sus documentos: la del paquete, o la de su
+    /// schema (v1alpha13 01 §3: `packages/<base>/<schema>/…`).
+    fn carpeta(&self, path: &Path) -> PathBuf {
+        let p = path.join("packages").join(self.ns);
+        if self.en_default() {
+            p
+        } else {
+            p.join(self.schema)
+        }
+    }
+}
+
+impl std::fmt::Display for Tabla<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.corto())
+    }
+}
+
+/// `<base>.<tabla>` (en `default`) o `<base>.<schema>.<tabla>` → la
+/// [`Tabla`], o por qué no.
+fn partes(nombre: &str) -> Result<Tabla<'_>, Fallo> {
+    let v: Vec<&str> = nombre.split('.').collect();
+    let (ns, schema, tabla) = match v.as_slice() {
+        [ns, tabla] => (*ns, ore_core::normalize::SCHEMA_POR_DEFECTO, *tabla),
+        [ns, schema, tabla] => (*ns, *schema, *tabla),
+        _ => {
+            return Err((
+                64,
+                format!("`{nombre}` no es `<base>.<schema>.<tabla>` (ni `<base>.<tabla>`)"),
+            ));
+        }
     };
-    if !bien(ns) || !bien(tabla) {
+    if !bien(ns) || !bien(schema) || !bien(tabla) {
         return Err((
             64,
-            format!("`{nombre}`: paquete y tabla llevan letras, dígitos y `_`"),
+            format!("`{nombre}`: base, schema y tabla llevan letras, dígitos y `_`"),
         ));
     }
-    Ok((ns, tabla))
+    Ok(Tabla { ns, schema, tabla })
 }
 
 /// La marca de los documentos que este verbo escribe: sólo esos se regeneran
@@ -518,23 +562,47 @@ const MARCA: &str = "# Un dataset escrito (0033)";
 
 /// Qué hay del documento del dataset: `Ok(None)` si no existe, `Ok(Some(texto))`
 /// si es un dataset escrito, `Err` si con ese nombre hay otra cosa.
-fn documento_del_dataset(path: &Path, ns: &str, tabla: &str) -> Result<Option<String>, Fallo> {
-    let pkg = path.join("packages").join(ns);
+fn documento_del_dataset(path: &Path, t: Tabla) -> Result<Option<String>, Fallo> {
+    let (pkg, tabla) = (t.carpeta(path), t.tabla);
+    // Un schema que no es `default` existe si se declara (v1alpha13 01 §2):
+    // un `kind: Schema` directamente en su carpeta. Una carpeta no lo es.
+    if !t.en_default() {
+        let declarado = std::fs::read_dir(&pkg)
+            .map(|es| {
+                es.flatten().any(|e| {
+                    e.path().extension().is_some_and(|x| x == "yaml")
+                        && std::fs::read_to_string(e.path())
+                            .ok()
+                            .and_then(|x| ore_core::parse::parse(&x).ok())
+                            .is_some_and(|n| {
+                                n.get("kind").and_then(|(_, k)| k.as_str()) == Some("Schema")
+                            })
+                })
+            })
+            .unwrap_or(false);
+        if !declarado {
+            return Err((
+                65,
+                format!(
+                    "no hay ningún schema `{}` en la base `{}`: un `kind: Schema` en `packages/{}/{}/schema.yaml`",
+                    t.schema, t.ns, t.ns, t.schema
+                ),
+            ));
+        }
+    }
     // Una View o una Table con ese nombre: una consulta no se escribe, y a lo
     // que es de otro no se le escribe.
     if pkg.join("views").join(format!("{tabla}.yaml")).is_file() {
         return Err((
             65,
-            format!(
-                "`{ns}.{tabla}` es una View: una consulta no se escribe; escribe en un dataset"
-            ),
+            format!("`{t}` es una View: una consulta no se escribe; escribe en un dataset"),
         ));
     }
     if pkg.join("tables").join(format!("{tabla}.yaml")).is_file() {
         return Err((
             65,
             format!(
-                "`{ns}.{tabla}` es una Table: apunta a lo que es de otro, y a eso no se escribe; escribe en un dataset"
+                "`{t}` es una Table: apunta a lo que es de otro, y a eso no se escribe; escribe en un dataset"
             ),
         ));
     }
@@ -548,7 +616,7 @@ fn documento_del_dataset(path: &Path, ns: &str, tabla: &str) -> Result<Option<St
         return Err((
             65,
             format!(
-                "`{ns}.{tabla}` es un dataset mantenido: lo cumple el sistema desde `from`, y no se escribe por debajo"
+                "`{t}` es un dataset mantenido: lo cumple el sistema desde `from`, y no se escribe por debajo"
             ),
         ));
     }
@@ -600,13 +668,12 @@ fn columnas_del_documento(texto: &str) -> BTreeMap<String, String> {
 /// se revierte. Devuelve `(nueva, regenerada)`.
 fn asegurar_dataset(
     path: &Path,
-    ns: &str,
-    tabla: &str,
+    t: Tabla,
     columnas: &BTreeMap<String, String>,
     clave: Option<&[String]>,
     leyo: Option<&Leyo>,
 ) -> Result<(bool, bool), Fallo> {
-    let nombre = format!("{ns}.{tabla}");
+    let nombre = t.corto();
     if columnas.is_empty() {
         return Err((64, format!("el dataset `{nombre}` no tiene columnas")));
     }
@@ -627,12 +694,11 @@ fn asegurar_dataset(
             ));
         }
     }
-    let doc = path
-        .join("packages")
-        .join(ns)
+    let doc = t
+        .carpeta(path)
         .join("datasets")
-        .join(format!("{tabla}.yaml"));
-    let texto_previo = documento_del_dataset(path, ns, tabla)?;
+        .join(format!("{}.yaml", t.tabla));
+    let texto_previo = documento_del_dataset(path, t)?;
     // Lo que `changes` tiene que decir (0033: QUÉ ESCRITURAS ADMITE): `upsert`
     // con su clave si la escritura fue un upsert (y entonces una Entity puede
     // respaldarse de este dataset: OOS2021 no lo permite de uno que «solo
@@ -650,12 +716,11 @@ fn asegurar_dataset(
     // escritura por un nombre que no resuelve, que no es culpa de quien
     // escribió).
     let existe = |n: &str| {
-        n.split_once('.').is_some_and(|(ns, x)| {
+        partes(n).is_ok_and(|x| {
             ["views", "datasets"].iter().any(|carpeta| {
-                path.join("packages")
-                    .join(ns)
+                x.carpeta(path)
                     .join(carpeta)
-                    .join(format!("{x}.yaml"))
+                    .join(format!("{}.yaml", x.tabla))
                     .is_file()
             })
         })
@@ -697,7 +762,7 @@ fn asegurar_dataset(
         .and_then(|t| seguir_esquema(t, columnas))
     {
         Some(s) => s,
-        None => documento_nuevo(&dueno_del_paquete(path, ns), ns, tabla, columnas),
+        None => documento_nuevo(&dueno_del_paquete(path, t.ns), t, columnas),
     };
     if let Some(c) = &cambios {
         s = con_cambios(&s, c);
@@ -750,14 +815,18 @@ fn asegurar_dataset(
 }
 
 /// El dataset escrito desde cero: lo que `write()` sabe de él.
-fn documento_nuevo(
-    owner: &str,
-    ns: &str,
-    tabla: &str,
-    columnas: &BTreeMap<String, String>,
-) -> String {
+///
+/// En `default`, como siempre (v1alpha12: el árbol de hoy no cambia); en otro
+/// schema, v1alpha13 con su `metadata.schema` (01 §3), en la carpeta de él.
+fn documento_nuevo(owner: &str, t: Tabla, columnas: &BTreeMap<String, String>) -> String {
+    let (ns, schema, tabla) = (t.ns, t.schema, t.tabla);
+    let (version, del_schema) = if t.en_default() {
+        ("v1alpha12", String::new())
+    } else {
+        ("v1alpha13", format!(", schema: {schema}"))
+    };
     let mut s = format!(
-        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}/default/{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
+        "apiVersion: oos.dev/{version}\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns}{del_schema} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}/{schema}/{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
     );
     for (c, t) in columnas {
         s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
@@ -981,9 +1050,10 @@ fn de_quien_lo_escribio(
 /// **su nombre en el lago**: el que el puntero diga; el de antes
 /// (`datasets/<p>_<n>`) si el puntero es de antes y no lo dice; y
 /// `catalogo/<base>/<schema>/<n>` si la tabla nace ahora.
-fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>, String) {
+fn puntero_del_lago(path: &Path, t: Tabla) -> (PathBuf, Option<Node>, String) {
     let dir = path.join(ore_core::punteros::CARPETA);
-    let corto = format!("{ns}.{tabla}");
+    let corto = t.corto();
+    let (ns, tabla) = (t.ns, t.tabla);
     let ruta = ore_core::punteros::ruta_en(&dir, &corto)
         .unwrap_or_else(|| dir.join(format!("{ns}_{tabla}.json")));
     let previo = ore_core::punteros::leer_en(&dir, &corto).map(|(_, n)| n);
@@ -1101,15 +1171,25 @@ struct Cambio<'a> {
 }
 
 impl Cambio<'_> {
+    /// El nombre de la tabla del cambio, en su forma corta: un namespace de
+    /// un nivel es la base (en `default`, lo de siempre); de dos, la base y el
+    /// schema (0038: lo que ore-serve pone cuando la petición trae `prefix`).
+    /// Antes se tomaba sólo el último nivel: `[ventas, espana]` daba `espana.x`.
     fn identificador(&self) -> Option<String> {
         let id = self.nodo.get("identifier").map(|(_, v)| v)?;
-        let ns = id
+        let ns: Vec<&str> = id
             .get("namespace")
             .map(|(_, v)| v.items())
-            .and_then(|i| i.last())
-            .and_then(|n| n.as_str())?;
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|n| n.as_str())
+            .collect();
         let n = id.get("name").and_then(|(_, v)| v.as_str())?;
-        Some(format!("{ns}.{n}"))
+        match ns.as_slice() {
+            [b] => Some(format!("{b}.{n}")),
+            [b, s] => Some(ore_core::normalize::corto(b, s, n)),
+            _ => None,
+        }
     }
     fn crea(&self) -> bool {
         self.nodo
@@ -1300,6 +1380,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         cambio: Cambio<'a>,
         nombre: String,
         ns: String,
+        schema: String,
         tabla: String,
         ruta: PathBuf,
         previo: Option<Node>,
@@ -1309,19 +1390,28 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
     let mut planes = Vec::new();
     for c in cambios {
-        let nombre = c
-            .identificador()
-            .or_else(|| op.tabla.map(String::from))
+        // `--tabla` manda si se da: es el nombre entero (ore-serve lo pone con
+        // la base del `prefix`), y el `identifier` del cuerpo sólo trae el
+        // schema como namespace (0038 P4).
+        let nombre = op
+            .tabla
+            .map(String::from)
+            .or_else(|| c.identificador())
             .ok_or((
                 64,
                 "el cambio no trae `identifier` y no se dio `--tabla <paquete>.<tabla>`"
                     .to_string(),
             ))?;
-        let (ns, tabla) = {
-            let (a, b) = partes(&nombre)?;
-            (a.to_string(), b.to_string())
+        let nombre = ore_core::normalize::a_corto(&nombre).into_owned();
+        let t = partes(&nombre)?;
+        let (ns, tabla) = (t.ns.to_string(), t.tabla.to_string());
+        let schema = t.schema.to_string();
+        let t = Tabla {
+            ns: &ns,
+            schema: &schema,
+            tabla: &tabla,
         };
-        let (ns, tabla) = (ns.as_str(), tabla.as_str());
+        let ns = ns.as_str();
         if !path
             .join("packages")
             .join(ns)
@@ -1330,8 +1420,8 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         {
             return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
         }
-        documento_del_dataset(path, ns, tabla)?;
-        let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
+        documento_del_dataset(path, t)?;
+        let (ruta, previo, lago) = puntero_del_lago(path, t);
         de_quien_lo_escribio(previo.as_ref(), &nombre, op.sujeto)?;
         let base = previo
             .as_ref()
@@ -1379,6 +1469,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             cambio: c,
             nombre,
             ns: ns.to_string(),
+            schema: schema.clone(),
             tabla: tabla.to_string(),
             ruta,
             previo,
@@ -1472,8 +1563,11 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let leyo = p.cambio.leyo();
         let (tabla_nueva, regenerada) = asegurar_dataset(
             path,
-            &p.ns,
-            &p.tabla,
+            Tabla {
+                ns: &p.ns,
+                schema: &p.schema,
+                tabla: &p.tabla,
+            },
             &a.columnas_oos,
             clave.as_deref(),
             leyo.as_ref(),
@@ -1553,7 +1647,8 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
 /// v0 por `ore-store aplicar` con `crear`, la `Table` con sus columnas, el
 /// puntero. Es lo que un `POST /v1/namespaces/{ns}/tables` hace.
 fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let (ns, tabla) = partes(nombre)?;
+    let t = partes(nombre)?;
+    let ns = t.ns;
     let texto = cuerpo_de(op)?;
     if !path
         .join("packages")
@@ -1563,8 +1658,8 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
-    documento_del_dataset(path, ns, tabla)?;
-    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
+    documento_del_dataset(path, t)?;
+    let (ruta, previo, lago) = puntero_del_lago(path, t);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -1590,7 +1685,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         )
     })?;
     let a = aplicado_de(&n);
-    let (tabla_nueva, _) = asegurar_dataset(path, ns, tabla, &a.columnas_oos, None, None)?;
+    let (tabla_nueva, _) = asegurar_dataset(path, t, &a.columnas_oos, None, None)?;
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
@@ -1692,15 +1787,15 @@ fn prestamo_de(
 /// heredada (ORECOPY1: puntero sin `metadata_location`) no es una tabla de
 /// Iceberg: 64 con el motivo, y se lee desde un puesto.
 fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let (ns, tabla) = partes(nombre)?;
+    let t = partes(nombre)?;
     // Un mantenido se carga para leerlo; su motivo va en el `config` (y es el
     // error del commit si se intenta escribir).
-    let mut solo_lectura = match documento_del_dataset(path, ns, tabla) {
+    let mut solo_lectura = match documento_del_dataset(path, t) {
         Ok(_) => None,
         Err((65, m)) if m.contains("es un dataset mantenido") => Some(m),
         Err(e) => return Err(e),
     };
-    let (_, previo, lago) = puntero_del_lago(path, ns, tabla);
+    let (_, previo, lago) = puntero_del_lago(path, t);
     let ml = match previo.as_ref() {
         Some(p) => campo_de(p, "metadata_location")
             .filter(|m| !m.is_empty())
@@ -1749,7 +1844,8 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// escriba sus ficheros; nace en el commit con `assert-create`. No toca el
 /// árbol ni el bucket; la respuesta de `ore-store` se imprime tal cual.
 fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let (ns, tabla) = partes(nombre)?;
+    let t = partes(nombre)?;
+    let ns = t.ns;
     let texto = cuerpo_de(op)?;
     if !path
         .join("packages")
@@ -1759,8 +1855,8 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
-    documento_del_dataset(path, ns, tabla)?;
-    let (_, previo, lago) = puntero_del_lago(path, ns, tabla);
+    documento_del_dataset(path, t)?;
+    let (_, previo, lago) = puntero_del_lago(path, t);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -1794,7 +1890,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// en un commit (`set-properties` con `assert-table-uuid`), y el puntero se
 /// mueve. Es lo que `--recoger` obedece.
 fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let (ns, tabla) = partes(nombre)?;
+    let t = partes(nombre)?;
     let edad = op
         .edad
         .ok_or((
@@ -1803,7 +1899,7 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         ))
         .and_then(|e| edad_ms(e).map_err(|m| (64, m)))?;
     let minimo = op.minimo.unwrap_or(1).max(1);
-    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
+    let (ruta, previo, lago) = puntero_del_lago(path, t);
     let base = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -1855,7 +1951,8 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 
 /// **El swap.** Ver la cabecera del módulo.
 fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let (ns, tabla) = partes(nombre)?;
+    let t = partes(nombre)?;
+    let (ns, tabla) = (t.ns, t.tabla);
     let ml = op.metadata_location.filter(|s| !s.is_empty()).ok_or((
         64,
         "falta `--metadata-location`: el `metadata.json` que el escritor dejó en el bucket"
@@ -1880,7 +1977,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
 
     // ── el CAS semántico: el puntero sigue donde el escritor lo dejó ────────
-    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
+    let (ruta, previo, lago) = puntero_del_lago(path, t);
     let actual = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -1938,7 +2035,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         }
         None => None,
     };
-    let hay_doc = documento_del_dataset(path, ns, tabla)?.is_some();
+    let hay_doc = documento_del_dataset(path, t)?.is_some();
     let tabla_nueva = match (&columnas, hay_doc) {
         (None, false) => {
             return Err((
@@ -1949,7 +2046,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             ));
         }
         (None, true) => false,
-        (Some(cols), _) => asegurar_dataset(path, ns, tabla, cols, None, None)?.0,
+        (Some(cols), _) => asegurar_dataset(path, t, cols, None, None)?.0,
     };
 
     // ── el puntero ──────────────────────────────────────────────────────────
@@ -2209,6 +2306,94 @@ spec:
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// 0038: tres partes. En un schema declarado, el dataset nace en v1alpha13,
+    /// en la carpeta del schema y con su `metadata.schema`, y el árbol compila;
+    /// en uno sin declarar, no; y `p.default.n` es `p.n`, como siempre.
+    #[test]
+    fn un_dataset_nace_en_su_schema() {
+        let d = std::env::temp_dir().join(format!("ore-schema-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("packages/ventas/espana")).unwrap();
+        std::fs::write(
+            d.join("ontology.config.yaml"),
+            "apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: x, version: 0.1.0 }
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/package.yaml"),
+            "apiVersion: oos.dev/v1alpha1
+kind: Package
+metadata: { name: ventas, version: 0.1.0, status: active, domain: ventas }
+spec: { owner: team:ventas }
+",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/espana/schema.yaml"),
+            "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: espana, namespace: ventas }
+spec: { owner: team:ventas }
+",
+        )
+        .unwrap();
+        let cols: BTreeMap<String, String> = [("id", "Integer")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let t = partes("ventas.espana.pedidos").unwrap();
+        assert_eq!(
+            (t.corto(), t.en_default()),
+            ("ventas.espana.pedidos".into(), false)
+        );
+        assert!(asegurar_dataset(&d, t, &cols, None, None).unwrap().0);
+        let doc = std::fs::read_to_string(d.join("packages/ventas/espana/datasets/pedidos.yaml"))
+            .unwrap();
+        assert!(
+            doc.contains("apiVersion: oos.dev/v1alpha13")
+                && doc.contains("metadata: { name: pedidos, namespace: ventas, schema: espana }")
+                && doc.contains("datasets/ventas/espana/pedidos.json"),
+            "{doc}"
+        );
+        let diags = ore_core::validate::validate_package(&d);
+        assert!(diags.is_empty(), "{diags:?}");
+        let e = asegurar_dataset(&d, partes("ventas.francia.x").unwrap(), &cols, None, None)
+            .unwrap_err();
+        assert!(e.1.contains("no hay ningún schema `francia`"), "{e:?}");
+        assert_eq!(partes("ventas.default.x").unwrap().corto(), "ventas.x");
+        assert!(partes("a.b.c.d").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// El identificador de un cambio: un namespace de un nivel es la base; de
+    /// dos, base y schema (antes se tomaba sólo el último).
+    #[test]
+    fn el_identificador_con_dos_niveles() {
+        let id = |j: &str| {
+            let n = ore_core::parse::parse(j).unwrap();
+            Cambio {
+                nodo: &n,
+                indice: None,
+            }
+            .identificador()
+        };
+        assert_eq!(
+            id(r#"{"identifier":{"namespace":["ventas"],"name":"x"}}"#).as_deref(),
+            Some("ventas.x")
+        );
+        assert_eq!(
+            id(r#"{"identifier":{"namespace":["ventas","espana"],"name":"x"}}"#).as_deref(),
+            Some("ventas.espana.x")
+        );
+        assert_eq!(
+            id(r#"{"identifier":{"namespace":["ventas","default"],"name":"x"}}"#).as_deref(),
+            Some("ventas.x")
+        );
+    }
+
     /// El documento de un dataset escrito nace como `kind: Dataset` con el
     /// dueño del paquete, y sigue el esquema sin perder lo demás.
     #[test]
@@ -2230,7 +2415,8 @@ spec:
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
-        let (nueva, regen) = asegurar_dataset(&d, "ventas", "salida", &cols, None, None).unwrap();
+        let (nueva, regen) =
+            asegurar_dataset(&d, partes("ventas.salida").unwrap(), &cols, None, None).unwrap();
         assert!(nueva && !regen);
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(
@@ -2244,8 +2430,14 @@ spec:
         assert!(ore_core::validate_package(&d).is_empty());
         // Un upsert por `pais`: `changes` dice lo que admite.
         let clave = vec!["pais".to_string()];
-        let (nueva, regen) =
-            asegurar_dataset(&d, "ventas", "salida", &cols, Some(&clave), None).unwrap();
+        let (nueva, regen) = asegurar_dataset(
+            &d,
+            partes("ventas.salida").unwrap(),
+            &cols,
+            Some(&clave),
+            None,
+        )
+        .unwrap();
         assert!(!nueva && regen);
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
@@ -2273,8 +2465,7 @@ spec:
         }
         let (_, regen) = asegurar_dataset(
             &d,
-            "ventas",
-            "salida",
+            partes("ventas.salida").unwrap(),
             &cols,
             Some(&clave),
             Some(&leyo(
@@ -2295,8 +2486,7 @@ spec:
         assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
         let (_, regen) = asegurar_dataset(
             &d,
-            "ventas",
-            "salida",
+            partes("ventas.salida").unwrap(),
             &cols,
             Some(&clave),
             Some(&leyo(&["ventas.clientes"], false)),
@@ -2313,8 +2503,7 @@ spec:
         );
         let (_, regen) = asegurar_dataset(
             &d,
-            "ventas",
-            "salida",
+            partes("ventas.salida").unwrap(),
             &cols,
             Some(&clave),
             Some(&leyo(&["ventas.clientes"], false)),
@@ -2323,8 +2512,7 @@ spec:
         assert!(!regen, "lo mismo otra vez no regenera");
         let (_, regen) = asegurar_dataset(
             &d,
-            "ventas",
-            "salida",
+            partes("ventas.salida").unwrap(),
             &cols,
             Some(&clave),
             Some(&leyo(&[], true)),
@@ -2341,7 +2529,8 @@ spec:
             "kind: Table\n",
         )
         .unwrap();
-        let e = asegurar_dataset(&d, "ventas", "orders", &cols, None, None).unwrap_err();
+        let e =
+            asegurar_dataset(&d, partes("ventas.orders").unwrap(), &cols, None, None).unwrap_err();
         assert!(e.1.contains("es una Table"), "{}", e.1);
         let _ = std::fs::remove_dir_all(&d);
     }

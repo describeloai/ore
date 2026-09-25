@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0, P1 y P2 hechos; P3–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido (P0–P2, P3a, P3b y P4 hechos; P3c–P3e y P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
@@ -83,7 +83,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
 | **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
-| **P4** | `/v1` como Unity (base = prefix, schema = namespace), crear y listar schemas | medio |
+| **P4** | `/v1` como Unity (base = prefix, schema = namespace) y `ore datasets` con tres partes | hecho |
 | **P5** | `discover` con el schema del origen | pequeño |
 | **P6** | La consola: schemas de verdad (crear/renombrar al servidor), refs de tres partes, borradores en la carpeta del schema | medio |
 | **P7** | Las semillas (SQL, Python, Java) escribiendo en la base y el schema que el asistente pregunte | pequeño |
@@ -193,6 +193,33 @@ que falla con tres partes es ya sólo del SDK (`write()`, `over()`, `transform()
 `sql()`) y de `/v1`. **`ore datasets` con tres partes pasa a P4**: trabaja con pares
 `(paquete, tabla)` y carpetas, y es lo que `/v1` llama —con base = prefix y schema =
 namespace—; el `Dataset` que nace en un schema (v1alpha13, en su carpeta) se escribe ahí.
+
+## P4, hecho: `/v1` como Unity
+
+**Medido** (`pruebas-de-fuego/medida-v1-como-unity.py`, un catálogo de mentira que apunta cada
+petición): PyIceberg con `warehouse=ventas` y DuckDB con `ATTACH 'ventas'` piden
+`/v1/config?warehouse=ventas` y usan el `prefix` que vuelve —`/v1/ventas/namespaces/espana/…`—;
+DuckDB nombra entonces `ventas.espana.pedidos` y `ventas.default.pedidos`, el mismo nombre que el
+SQL. Sin `warehouse`, las rutas de siempre.
+
+- **ore-entrada** dejaba fuera la cadena de consulta entera («ningún dato entra por la URL»), y
+  `warehouse` está ahí por la spec. Entra **sólo** `warehouse` (`CONSULTA_ADMITIDA`), y sólo si
+  es un identificador: es un nombre, no un dato.
+- **`/v1`**: `config?warehouse=<base>` da `overrides.prefix` (una base que no está, 404). Con
+  `prefix`, **la base es el prefix y el namespace su schema**: `namespaces` son `default` y los
+  declarados, las tablas y vistas las de ese schema, y crear, cargar, escribir y
+  `commitTransaction` nombran `base.schema.tabla` (a los identificadores del cuerpo se les pone
+  la base delante). Sin `prefix`, el namespace es la base y lo que hay es de `default`: nada
+  cambia para quien no lo pide. Un namespace que no está es 404, no una lista vacía.
+- **`ore datasets`** trabaja con `Tabla { base, schema, tabla }`: `--tabla`, `--crear`,
+  `--cargar`… aceptan tres partes; un `Dataset` que nace en un schema se escribe en
+  `packages/<base>/<schema>/datasets/` en v1alpha13 con su `metadata.schema` (el árbol compila);
+  en un schema no declarado, no; `--tabla` manda sobre el `identifier` del cuerpo; e
+  `identificador()` lee `[base, schema]` (antes se quedaba con el último nivel).
+
+el-lago 15, con PyIceberg y DuckDB de verdad: `espana.pedidos2` nace por el catálogo con su
+documento, su puntero en `datasets/ventas/espana/` y su lago en `catalogo/ventas/espana/`, y
+DuckDB lee `ventas.espana.pedidos2`.
 
 ## Lo que no cambia
 

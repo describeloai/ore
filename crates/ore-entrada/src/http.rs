@@ -84,6 +84,31 @@ pub struct Peticion {
     /// una cabecera y quien las lee no debería tener que acordarse.
     pub cabeceras: BTreeMap<String, String>,
     pub cuerpo: String,
+    /// De la cadena de consulta, **sólo** lo que [`CONSULTA_ADMITIDA`] nombra,
+    /// y sólo si es un identificador: todo lo demás se descarta, como siempre.
+    pub consulta: BTreeMap<String, String>,
+}
+
+/// Lo único que entra por la URL: **`warehouse`**, la base que un cliente de
+/// Iceberg le pide a `GET /v1/config?warehouse=<base>` (la spec lo pone ahí;
+/// 0038 P4: la base es el `prefix`, como en Unity Catalog). Es un nombre, no
+/// un dato, y se valida como tal.
+pub const CONSULTA_ADMITIDA: &[&str] = &["warehouse"];
+
+/// `a=b&c=d` → lo admitido, con su valor decodificado y validado: letras,
+/// dígitos, `_` y `-`, hasta 64.
+fn consulta_admitida(q: &str) -> BTreeMap<String, String> {
+    q.split('&')
+        .filter_map(|par| par.split_once('='))
+        .filter(|(k, _)| CONSULTA_ADMITIDA.contains(k))
+        .filter(|(_, v)| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 impl Peticion {
@@ -393,8 +418,13 @@ fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
         .ok_or_else(|| Respuesta::error(400, "sin destino"))?;
     // La cadena de consulta se descarta a propósito: **ningún dato entra por la
     // URL**. Una URL viaja en registros de acceso y en cabeceras `Referer`, y
-    // aquí se manejan nombres de fuentes y decisiones de gobierno.
-    let ruta = destino.split(['?', '#']).next().unwrap_or("/").to_string();
+    // aquí se manejan nombres de fuentes y decisiones de gobierno. Salvo el
+    // nombre que la spec de Iceberg pone ahí (`warehouse`, [`CONSULTA_ADMITIDA`]).
+    let sin_fragmento = destino.split('#').next().unwrap_or("/");
+    let (ruta, consulta) = match sin_fragmento.split_once('?') {
+        Some((r, q)) => (r.to_string(), consulta_admitida(q)),
+        None => (sin_fragmento.to_string(), BTreeMap::new()),
+    };
 
     let mut cabeceras = BTreeMap::new();
     for _ in 0..CABECERAS_MAXIMAS {
@@ -434,6 +464,7 @@ fn leer(flujo: &mut TcpStream) -> Result<Peticion, Respuesta> {
         ruta,
         cabeceras,
         cuerpo,
+        consulta,
     })
 }
 
@@ -601,6 +632,16 @@ fn primera_linea(s: &str) -> String {
 #[cfg(test)]
 mod pruebas_de_pedir {
     use super::*;
+
+    /// De la consulta sólo entra `warehouse`, y sólo si es un nombre.
+    #[test]
+    fn de_la_consulta_solo_entra_warehouse() {
+        let q = consulta_admitida("warehouse=ventas&token=secreto&x=1");
+        assert_eq!(q.len(), 1);
+        assert_eq!(q["warehouse"], "ventas");
+        assert!(consulta_admitida("warehouse=ventas%2F..").is_empty());
+        assert!(consulta_admitida("warehouse=").is_empty());
+    }
 
     #[test]
     fn un_cuerpo_troceado_se_junta() {
