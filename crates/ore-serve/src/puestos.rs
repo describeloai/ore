@@ -126,6 +126,9 @@ pub(crate) struct Celda {
     /// escribe en el árbol corre como la celda de `celda_de_sql` (`python`),
     /// y lo que la persona escribió sigue siendo su SQL.
     pub corre: Option<(String, String)>,
+    /// Lo que se dice sin parar la celda (0038: `ORE-SQL-2P`), como
+    /// diagnósticos con `severidad: aviso`; van en su ficha, junto a la salida.
+    pub avisos: Vec<Json>,
     pub enviada: Instant,
     pub empezada: Option<Instant>,
     pub salida: Option<Json>,
@@ -358,7 +361,29 @@ fn ficha_de_celda(n: u64, c: &Celda) -> Json {
     if let Some(s) = &c.salida {
         m.insert("salida".to_string(), s.clone());
     }
+    if !c.avisos.is_empty() {
+        m.insert("avisos".to_string(), Json::Arr(c.avisos.clone()));
+    }
     Json::Obj(m)
+}
+
+/// Un fallo o un aviso del SQL del árbol, en la forma de los diagnósticos del
+/// árbol (`fichero`, `linea`, `columna`), que es la que el editor pinta.
+fn diagnostico(f: &ore_core::sql_del_arbol::Fallo, fichero: &str, severidad: &str) -> Json {
+    let mut m = vec![
+        ("codigo", Json::s(f.codigo.unwrap_or(""))),
+        ("mensaje", Json::s(&f.mensaje)),
+        ("fichero", Json::s(fichero)),
+        ("severidad", Json::s(severidad)),
+    ];
+    if let Some(p) = f.pos {
+        m.push(("linea", Json::Int(p.line as i64)));
+        m.push(("columna", Json::Int(p.col as i64)));
+    }
+    if let Some(a) = &f.ayuda {
+        m.push(("ayuda", Json::s(a)));
+    }
+    Json::obj(m)
 }
 
 impl Servidor {
@@ -698,7 +723,7 @@ impl Servidor {
         // El fichero, tal como está en el commit de la rama: lo que corre es
         // exactamente eso, y el commit va al informe y a la procedencia de lo
         // que escriba (`ORE_CODIGO=<ruta>@<commit>`).
-        let (texto, commit, lenguaje) = match self.leyendo_en(rama.as_deref(), |raiz| {
+        let (texto, commit, lenguaje, avisos) = match self.leyendo_en(rama.as_deref(), |raiz| {
             let ruta = raiz.join(&codigo);
             let Ok(texto) = std::fs::read_to_string(&ruta) else {
                 return Respuesta::error(404, format!("no hay `{codigo}` en el árbol"));
@@ -709,6 +734,19 @@ impl Servidor {
             // Un `.sql` se analiza y se coteja con el árbol DE ESTE COMMIT antes
             // de encolar nada: lo que no es una unidad es 422 con su sitio, no
             // un Job que falla a los dos minutos.
+            // 0038: y lo que se dice sin pararlo (`ORE-SQL-2P`), en la celda
+            let avisos: Vec<Json> = if lenguaje == "sql" {
+                ore_core::sql_del_arbol::analizar(&texto)
+                    .map(|u| {
+                        u.avisos
+                            .iter()
+                            .map(|f| diagnostico(f, &codigo, "aviso"))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let (texto, lenguaje) = if lenguaje == "sql" {
                 match celda_de_sql(raiz, &codigo, &texto) {
                     Ok(c) => c,
@@ -730,6 +768,7 @@ impl Servidor {
                 ("texto", Json::s(&texto)),
                 ("lenguaje", Json::s(lenguaje)),
                 ("commit", Json::s(commit)),
+                ("avisos", Json::Arr(avisos)),
             ]))
         }) {
             r if r.codigo != 200 => return r,
@@ -747,6 +786,10 @@ impl Servidor {
                     match m.get("lenguaje") {
                         Some(Json::Str(s)) if s == "python" => "python",
                         _ => lenguaje,
+                    },
+                    match m.get("avisos") {
+                        Some(Json::Arr(a)) => a.clone(),
+                        _ => Vec::new(),
                     },
                 ),
                 _ => return Respuesta::error(500, "el árbol no contestó"),
@@ -816,6 +859,7 @@ impl Servidor {
                 texto,
                 lenguaje: lenguaje.to_string(),
                 corre: None,
+                avisos,
                 enviada: Instant::now(),
                 empezada: None,
                 salida: None,
@@ -1094,16 +1138,27 @@ impl Servidor {
     /// con `write()`. Lo que no es una unidad es la salida de error de la
     /// celda, con sus diagnósticos. Lo que crea en otra parte (`tmp.t`, `x`)
     /// sigue siendo de DuckDB.
-    fn sql_que_escribe(&self, id: &str, texto: &str, fichero: &str) -> Result<Desvio, Respuesta> {
+    fn sql_que_escribe(
+        &self,
+        id: &str,
+        texto: &str,
+        fichero: &str,
+    ) -> Result<(Desvio, Vec<Json>), Respuesta> {
         use ore_core::sql_del_arbol::{EscribeEnElArbol, escribe_en_el_arbol};
         let rama = match self.puestos.lista.lock().unwrap().get(id) {
             Some(p) => p.rama.clone(),
             // el 404 (o el 403) lo dice quien sigue
-            None => return Ok(Desvio::Ninguno),
+            None => return Ok((Desvio::Ninguno, Vec::new())),
         };
         let mut desvio = Desvio::Ninguno;
+        let mut avisos = Vec::new();
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            // 0038: los nombres de dos partes se dicen, lea o escriba la celda
+            avisos = ore_core::sql_del_arbol::avisos_de_celda(texto, &pkg)
+                .iter()
+                .map(|f| diagnostico(f, fichero, "aviso"))
+                .collect();
             desvio = match escribe_en_el_arbol(texto, &pkg) {
                 None => Desvio::Ninguno,
                 Some(EscribeEnElArbol::Vista(n)) => Desvio::Error(error_de_celda(
@@ -1153,7 +1208,7 @@ impl Servidor {
         if r.codigo != 200 {
             return Err(r);
         }
-        Ok(desvio)
+        Ok((desvio, avisos))
     }
 
     /// `POST /puestos/{id}/ejecutar {texto}`: una celda a la cola del puesto.
@@ -1201,8 +1256,9 @@ impl Servidor {
                 Err(r) => return r,
             }
         } else {
-            Desvio::Ninguno
+            (Desvio::Ninguno, Vec::new())
         };
+        let (desvio, avisos) = desvio;
         let mut lista = self.puestos.lista.lock().unwrap();
         let Some(p) = lista.get_mut(id) else {
             return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
@@ -1255,6 +1311,7 @@ impl Servidor {
                 texto: texto.to_string(),
                 lenguaje,
                 corre,
+                avisos,
                 enviada: Instant::now(),
                 empezada: hecha.then(Instant::now),
                 salida: error,
@@ -1628,16 +1685,29 @@ impl Servidor {
                 Err(r) => return r,
             }
         };
-        let Some((ns, nombre)) = vista.split_once('.') else {
-            return Respuesta::error(422, "una vista es `<paquete>.<nombre>`");
+        // `base.nombre` o `base.schema.nombre` (0038), en su forma corta: la
+        // clave del árbol, la de los punteros y la que el transform declara.
+        let vista = ore_core::normalize::a_corto(vista).into_owned();
+        let vista = vista.as_str();
+        let Some((ns, schema, nombre)) = ore_core::punteros::partes(vista) else {
+            return Respuesta::error(
+                422,
+                "un nombre del árbol es `<base>.<schema>.<nombre>` (o `<base>.<nombre>`, en `default`)",
+            );
         };
-        if let Err(m) = crate::rutas::token(ns).and(crate::rutas::token(nombre)) {
+        if let Err(m) = crate::rutas::token(ns)
+            .and(crate::rutas::token(schema))
+            .and(crate::rutas::token(nombre))
+        {
             return Respuesta::error(422, m);
         }
         // Lo declarado manda (⑤): mientras un transform corre, este puesto sólo
         // resuelve sus `inputs`. El mismo 403 que el SDK da, en el servidor.
         if let Some(t) = self.transform_de(id)
-            && !t.inputs.iter().any(|i| i == vista)
+            && !t
+                .inputs
+                .iter()
+                .any(|i| ore_core::normalize::a_corto(i) == vista)
         {
             return Respuesta::error(
                 403,
@@ -1696,7 +1766,10 @@ impl Servidor {
                 .map(str::to_string)
         };
         let Some(output) = campo("output") else {
-            return Respuesta::error(422, "un transform declara `output`: `<paquete>.<tabla>`");
+            return Respuesta::error(
+                422,
+                "un transform declara `output`: `<base>.<schema>.<tabla>`",
+            );
         };
         let inputs: Vec<String> = n
             .get("inputs")
@@ -1708,10 +1781,19 @@ impl Servidor {
         if inputs
             .iter()
             .chain([&output])
-            .any(|x| x.split('.').count() != 2)
+            .any(|x| !matches!(x.split('.').count(), 2 | 3))
         {
-            return Respuesta::error(422, "`inputs` y `output` son `<paquete>.<nombre>`");
+            return Respuesta::error(
+                422,
+                "`inputs` y `output` son `<base>.<schema>.<nombre>` (o `<base>.<nombre>`, en `default`)",
+            );
         }
+        // En su forma corta (0038): lo que `datos` y el catálogo comparan.
+        let output = ore_core::normalize::a_corto(&output).into_owned();
+        let inputs: Vec<String> = inputs
+            .iter()
+            .map(|i| ore_core::normalize::a_corto(i).into_owned())
+            .collect();
         let nombre = campo("nombre").unwrap_or_else(|| "transform".into());
         let mut lista = self.puestos.lista.lock().unwrap();
         let p = match Self::reclamar(&mut lista, sujeto, id) {
@@ -1928,7 +2010,7 @@ impl Servidor {
             .iter()
             .filter_map(|d| d.as_str())
         {
-            let Some((dns, dn)) = d.split_once('.') else {
+            let Some((dns, _, dn)) = ore_core::punteros::partes(d) else {
                 continue;
             };
             let r = self.con_credencial(raiz, datos_de(raiz, dns, dn, d));
@@ -2166,17 +2248,6 @@ impl Servidor {
     }
 }
 
-/// ¿`name: <nombre>` aparece como palabra entera (en bloque o en línea)?
-fn nombra(texto: &str, nombre: &str) -> bool {
-    let clave = format!("name: {nombre}");
-    texto.match_indices(&clave).any(|(i, _)| {
-        texto[i + clave.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
-    })
-}
-
 /// Cómo corre una celda `sql` de la sesión ([`Servidor::sql_que_escribe`]).
 enum Desvio {
     /// Tal cual, en `ore.sql()`: lee, o escribe en la memoria de DuckDB.
@@ -2235,22 +2306,7 @@ fn celda_de_sql(
     };
     let diagnosticos = fallos
         .iter()
-        .map(|f| {
-            let mut m = vec![
-                ("codigo", Json::s("")),
-                ("mensaje", Json::s(&f.mensaje)),
-                ("fichero", Json::s(codigo)),
-                ("severidad", Json::s("error")),
-            ];
-            if let Some(p) = f.pos {
-                m.push(("linea", Json::Int(p.line as i64)));
-                m.push(("columna", Json::Int(p.col as i64)));
-            }
-            if let Some(a) = &f.ayuda {
-                m.push(("ayuda", Json::s(a)));
-            }
-            Json::obj(m)
-        })
+        .map(|f| diagnostico(f, codigo, "error"))
         .collect();
     Err(Respuesta {
         codigo: 422,
@@ -2340,33 +2396,23 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
 /// que esta ruta llegue a un origen. Y una View también es 409 aquí: se lee por
 /// su pregunta (`datos_de_vista`), nunca por el puntero de su raíz.
 fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
-    let hay = |carpeta: &str| {
-        std::fs::read_dir(raiz.join("packages").join(ns).join(carpeta))
-            .map(|d| {
-                d.flatten().find_map(|e| {
-                    std::fs::read_to_string(e.path())
-                        .ok()
-                        .filter(|t| nombra(t, nombre))
-                })
-            })
-            .unwrap_or(None)
-    };
     // ¿Existe el documento? El puntero de algo que no está es un 404, no un 409.
-    // Un dataset se lee por su puntero; una vista, por el del primer dataset
-    // que tenga debajo (lo dice el compilador); una tabla, por ninguno.
+    // Un dataset se lee por su puntero; una vista, por su pregunta; una tabla,
+    // por ninguno. Se busca en el árbol compilado por la forma corta (0038:
+    // `p.n` en `default`, `p.s.n` en otro schema; la carpeta no nombra nada),
+    // y con la prioridad de siempre: Dataset, View, Table.
+    let _ = nombre;
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let del_dataset = if hay("datasets").is_some() {
-        format!("{ns}.{nombre}")
-    } else if hay("views").is_some() {
-        let copia = pkg
-            .docs
+    let de = |k: ore_core::document::Kind| {
+        pkg.docs
             .iter()
-            .find(|d| {
-                d.kind == ore_core::document::Kind::View && d.qname().as_deref() == Some(vista)
-            })
-            .and_then(|v| ore_core::vistas::raiz_de_lectura(&pkg, v))
-            .and_then(|c| c.qname());
-        match copia {
+            .find(|d| d.kind == k && d.qname().as_deref() == Some(vista))
+    };
+    use ore_core::document::Kind;
+    let del_dataset = if de(Kind::Dataset).is_some() {
+        vista.to_string()
+    } else if let Some(v) = de(Kind::View) {
+        match ore_core::vistas::raiz_de_lectura(&pkg, v).and_then(|c| c.qname()) {
             // ⛔ Nunca el puntero de la raíz: leerlo con `select *` era no
             // aplicar la View (medido: 20 000 filas y 4 columnas donde dice
             // 5 000 y 2). Una View se lee por su pregunta, `datos_de_vista`.
@@ -2387,7 +2433,7 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
                 );
             }
         }
-    } else if hay("tables").is_some() {
+    } else if de(Kind::Table).is_some() {
         return Respuesta::error(
             409,
             format!(
@@ -2804,6 +2850,36 @@ mod prueba {
         std::fs::remove_file(d.join("datasets/v_salida.json")).unwrap();
         let r = datos_de(&d, "v", "salida", "v.salida");
         assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
+
+        // 0038: un dataset en el schema `espana`, por su nombre de tres
+        // partes (la forma corta `v.espana.clientes`), con su puntero en su
+        // sitio; el mismo nombre en `default` no es él
+        std::fs::create_dir_all(d.join("packages/v/espana/datasets")).unwrap();
+        std::fs::write(
+            d.join("packages/v/espana/schema.yaml"),
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: espana, namespace: v }\nspec: { owner: team:v }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/v/espana/datasets/clientes.yaml"),
+            "apiVersion: oos.dev/v1alpha13\nkind: Dataset\nmetadata: { name: clientes, namespace: v, schema: espana }\nspec:\n  owner: team:v\n  columns: { id: { type: Integer } }\n  changes: { mode: append }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(d.join("datasets/v/espana")).unwrap();
+        std::fs::write(
+            d.join("datasets/v/espana/clientes.json"),
+            "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/ore/v2/catalogo/v/espana/clientes/metadata/1.metadata.json\",\"snapshot\":\"1\",\"dataset\":\"catalogo/v/espana/clientes\"}",
+        )
+        .unwrap();
+        let r = datos_de(&d, "v", "clientes", "v.espana.clientes");
+        assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
+        assert!(
+            r.cuerpo.jcs().contains("catalogo/v/espana/clientes"),
+            "{}",
+            r.cuerpo.jcs()
+        );
+        let r = datos_de(&d, "v", "clientes", "v.clientes");
+        assert_eq!(r.codigo, 404, "{:?}", r.cuerpo);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -2937,21 +3013,6 @@ mod prueba {
         assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
         assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
-    }
-
-    #[test]
-    fn nombra_en_bloque_y_en_linea_y_no_por_prefijo() {
-        assert!(nombra(
-            "metadata: { name: espanoles, namespace: hr }",
-            "espanoles"
-        ));
-        assert!(nombra(
-            "metadata:
-  name: espanoles
-",
-            "espanoles"
-        ));
-        assert!(!nombra("metadata: { name: espanoles2 }", "espanoles"));
     }
 
     #[test]

@@ -662,6 +662,8 @@ fi
 if [ "$ESCRITO_OK" = si ]; then
   Q10C='create or replace table hr.porsql as select letra, sum(importe) as total from hr.lago group by letra order by letra'
   celda_sql "$Q10C" && tiene "d['salida']['tipo']=='texto' and d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas'" || falla "10c · create or replace table en una celda sql: $(cuerpo)"
+  # 0038: dos partes corren (en `default`) y se dicen, en su sitio, sin parar la celda
+  tiene "[(a['codigo'], a['severidad'], a['linea'], a['columna']) for a in d['avisos']]==[('ORE-SQL-2P','aviso',1,25),('ORE-SQL-2P','aviso',1,79)] and 'hr.default.porsql' in d['avisos'][0]['mensaje']" || falla "10c · los avisos de dos partes: $(cuerpo)"
   [ -f "$A/datasets/hr/default/porsql.json" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/porsql.yaml" || falla "10c · lo escrito no está en el árbol (puntero y Dataset)"
   "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"consulta"}, pr' "$A/datasets/hr/default/porsql.json" || falla "10c · la procedencia: $(cat "$A/datasets/hr/default/porsql.json")"
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "10c · la celda siguiente lo lee: $(cuerpo)"

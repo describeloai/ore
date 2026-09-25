@@ -82,7 +82,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
-| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve, P3c los tres SDK (ATTACH + alias), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
+| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace), crear y listar schemas | medio |
 | **P5** | `discover` con el schema del origen | pequeño |
 | **P6** | La consola: schemas de verdad (crear/renombrar al servidor), refs de tres partes, borradores en la carpeta del schema | medio |
@@ -179,6 +179,20 @@ de `default` sigue siendo `p.n` para todos los que ya lo consumen); `completo()`
 cuatro, fallo. `cotejar` dice el schema que no está declarado. `nombres_a_resolver` y
 `escribe_en_el_arbol` reconocen `a.b.c` (en su forma corta) en vez de descartarlo. `ore sql`
 enseña los avisos (`aviso[ORE-SQL-2P]`, y `avisos` en `--json`).
+
+**P3b, hecho.** ore-serve, el lado del puesto: `datos_del_puesto` acepta dos o tres partes (a
+su forma corta: la clave del árbol, la de los punteros y la del transform); `declarar_transform`
+también; `datos_de` busca en el árbol compilado por la forma corta —antes, por carpetas
+(`packages/<p>/datasets|views|tables`), que no ven el schema—, y `datos_de_vista` parte los
+datasets de la pregunta con su schema. **El aviso llega a la celda**: `avisos_de_celda` (el
+tokenizador: lo que se lee y el destino, en su sitio, una vez) da los `ORE-SQL-2P` de una celda
+`sql`, lea o escriba, y los de un `.sql` como trabajo salen de `Unidad::avisos`; van en la ficha
+de la celda (`avisos`, diagnósticos con `severidad: aviso`), junto a la salida. Medido después:
+el servidor ya resuelve `ventas.espana.clientes` (el 409 de «nadie lo escribió todavía»), y lo
+que falla con tres partes es ya sólo del SDK (`write()`, `over()`, `transform()`, el DuckDB de
+`sql()`) y de `/v1`. **`ore datasets` con tres partes pasa a P4**: trabaja con pares
+`(paquete, tabla)` y carpetas, y es lo que `/v1` llama —con base = prefix y schema =
+namespace—; el `Dataset` que nace en un schema (v1alpha13, en su carpeta) se escribe ahí.
 
 ## Lo que no cambia
 

@@ -795,15 +795,63 @@ const TRAS_LAS_QUE_SE_LEE: [&str; 6] =
 /// struct— es del motor. Hoy la regex mandaba `tmp.t` a ore-serve: 404, y la
 /// celda moría.
 pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in nombres_de_celda(texto, pkg) {
+        if n.se_resuelve && !out.contains(&n.qn) {
+            out.push(n.qn);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// **Los avisos de una celda `sql`** (0038): un `ORE-SQL-2P` por cada nombre
+/// del árbol escrito con dos partes —lo que se lee, como en
+/// [`nombres_a_resolver`], y el destino de un `create … table` o un `insert …
+/// into`—, donde aparece por primera vez. Con el tokenizador, como aquél: lo
+/// que el parser no analiza también se ve.
+pub fn avisos_de_celda(texto: &str, pkg: &Package) -> Vec<Fallo> {
+    let mut vistos = BTreeSet::new();
+    nombres_de_celda(texto, pkg)
+        .into_iter()
+        .filter(|n| n.dos_partes && (n.se_resuelve || n.se_escribe))
+        .filter(|n| vistos.insert(n.qn.clone()))
+        .map(|n| {
+            let (p, nombre) = n.qn.split_once('.').unwrap_or((&n.qn, ""));
+            Fallo::dos_partes(&Nombre {
+                paquete: p.to_string(),
+                schema: crate::normalize::SCHEMA_POR_DEFECTO.to_string(),
+                nombre: nombre.to_string(),
+                pos: n.pos,
+                dos_partes: true,
+            })
+        })
+        .collect()
+}
+
+/// Un `a.b` o `a.b.c` del texto de una celda, visto por el tokenizador.
+struct NombreDeCelda {
+    /// En su forma corta.
+    qn: String,
+    dos_partes: bool,
+    pos: Option<Pos>,
+    /// Es un nombre del árbol que se lee (la regla de [`nombres_a_resolver`]).
+    se_resuelve: bool,
+    /// Va tras `table` o `into`, y su primer trozo es un paquete.
+    se_escribe: bool,
+}
+
+fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
     use sqlparser::tokenizer::{Token, Tokenizer};
-    let Ok(toks) = Tokenizer::new(&DuckDbDialect {}, texto).tokenize() else {
+    let Ok(toks) = Tokenizer::new(&DuckDbDialect {}, texto).tokenize_with_location() else {
         // Un texto que ni se tokeniza (una cadena sin cerrar) no llega a
         // ninguna parte: que lo diga el motor, con su posición.
         return Vec::new();
     };
-    let toks: Vec<Token> = toks
+    let toks: Vec<(Token, Option<Pos>)> = toks
         .into_iter()
-        .filter(|t| !matches!(t, Token::Whitespace(_)))
+        .filter(|t| !matches!(t.token, Token::Whitespace(_)))
+        .map(|t| (t.token, pos_de(t.span.start)))
         .collect();
     let del_arbol = |qn: &str| {
         pkg.docs.iter().any(|d| {
@@ -816,43 +864,55 @@ pub fn nombres_a_resolver(texto: &str, pkg: &Package) -> Vec<String> {
             .iter()
             .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
     };
-    let palabra = |t: &Token| match t {
-        Token::Word(w) => Some(w.value.clone()),
+    let palabra = |t: Option<&(Token, Option<Pos>)>| match t {
+        Some((Token::Word(w), _)) => Some(w.value.clone()),
         _ => None,
     };
-    let mut out: Vec<String> = Vec::new();
+    let punto = |t: Option<&(Token, Option<Pos>)>| matches!(t, Some((Token::Period, _)));
+    let tras = |i: usize, ks: &[&str]| {
+        i > 0
+            && matches!(&toks[i - 1].0, Token::Word(w)
+                if ks.iter().any(|k| w.value.eq_ignore_ascii_case(k)))
+    };
+    let mut out = Vec::new();
     let mut i = 0;
     while i + 2 < toks.len() {
-        if let (Some(a), Token::Period, Some(b)) =
-            (palabra(&toks[i]), &toks[i + 1], palabra(&toks[i + 2]))
-        {
-            let antes = i > 0 && matches!(toks[i - 1], Token::Period);
+        if let (Some(a), true, Some(b)) = (
+            palabra(toks.get(i)),
+            punto(toks.get(i + 1)),
+            palabra(toks.get(i + 2)),
+        ) {
+            let antes = i > 0 && punto(toks.get(i - 1));
             // `a.b.c`: tres partes, si no sigue otra
-            let c = match (toks.get(i + 3), toks.get(i + 4)) {
-                (Some(Token::Period), Some(t)) => palabra(t),
-                _ => None,
+            let c = if punto(toks.get(i + 3)) {
+                palabra(toks.get(i + 4))
+            } else {
+                None
             };
             let largo = if c.is_some() { 5 } else { 3 };
-            let despues = matches!(toks.get(i + largo), Some(Token::Period));
-            let mal_formado = c.is_none() && matches!(toks.get(i + 3), Some(Token::Period));
+            let despues = punto(toks.get(i + largo));
+            let mal_formado = c.is_none() && punto(toks.get(i + 3));
             if !antes && !despues && !mal_formado {
                 let qn = match &c {
                     Some(c) => crate::normalize::a_corto(&format!("{a}.{b}.{c}")).into_owned(),
                     None => format!("{a}.{b}"),
                 };
-                let tras_lectura = i > 0
-                    && matches!(&toks[i - 1], Token::Word(w)
-                        if TRAS_LAS_QUE_SE_LEE.iter().any(|k| w.value.eq_ignore_ascii_case(k)));
-                if (del_arbol(&qn) || (tras_lectura && paquete(&a))) && !out.contains(&qn) {
-                    out.push(qn);
-                }
+                let es_paquete = paquete(&a);
+                let se_resuelve = del_arbol(&qn) || (tras(i, &TRAS_LAS_QUE_SE_LEE) && es_paquete);
+                let se_escribe = tras(i, &["table", "into"]) && es_paquete;
+                out.push(NombreDeCelda {
+                    qn,
+                    dos_partes: c.is_none(),
+                    pos: toks[i].1,
+                    se_resuelve,
+                    se_escribe,
+                });
             }
             i += largo;
             continue;
         }
         i += 1;
     }
-    out.sort();
     out
 }
 

@@ -295,3 +295,31 @@ fn tres_partes_contra_el_arbol() {
     let f = coteja("select * from ventas.espana.nadie");
     assert!(f[0].mensaje.contains("`ventas.espana.nadie`"), "{f:?}");
 }
+
+/// Los avisos de una celda `sql` (0038): un `ORE-SQL-2P` por cada nombre del
+/// árbol con dos partes —lo que se lee y el destino—, en su sitio, una vez.
+#[test]
+fn los_avisos_de_una_celda() {
+    use ore_core::sql_del_arbol::{DOS_PARTES, avisos_de_celda};
+    let a = arbol("avisos");
+    let (pkg, _) = ore_core::validate::cargar_paquete(&a.0);
+    let av = |q: &str| {
+        avisos_de_celda(q, &pkg)
+            .into_iter()
+            .map(|f| (f.codigo, f.pos.map(|p| (p.line, p.col)), f.mensaje))
+            .collect::<Vec<_>>()
+    };
+    let r =
+        av("insert into ventas.nuevo\nselect * from ventas.pedidos join ventas.pedidos using (id)");
+    assert_eq!(r.len(), 2, "{r:?}");
+    assert_eq!((r[0].0, r[0].1), (Some(DOS_PARTES), Some((1, 13))));
+    assert!(r[0].2.contains("`ventas.default.nuevo`"), "{r:?}");
+    assert_eq!(r[1].1, Some((2, 15)));
+    // tres partes, un esquema de la sesión, una columna: nada
+    assert!(
+        av("select * from ventas.default.pedidos join ventas.espana.clientes using (id)")
+            .is_empty()
+    );
+    assert!(av("create table tmp.t as select 1; select * from tmp.t").is_empty());
+    assert!(av("select ventas.pais from ventas.default.pedidos as ventas").is_empty());
+}
