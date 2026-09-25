@@ -27,6 +27,7 @@ mod paquete;
 mod preguntar;
 mod registro;
 mod revision;
+mod schemas;
 mod unidad_sql;
 mod verificar;
 mod vista;
@@ -319,6 +320,63 @@ enum AccionPaquete {
         /// La version desde la que los nombres viejos dejan de estar.
         #[arg(long)]
         since: Option<String>,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// **Los schemas de un paquete** (0038 P6): el segundo nivel del nombre,
+    /// `<paquete>.<schema>.<nombre>`. Crear uno y renombrarlo.
+    #[command(subcommand)]
+    Schema(AccionSchema),
+}
+
+/// `ore package schema …` (0038 P6).
+#[derive(Subcommand)]
+enum AccionSchema {
+    /// **Crea un schema**: su `schema.yaml` en `packages/<paquete>/<nombre>/`.
+    ///
+    /// Un schema existe porque un `kind: Schema` lo declara (v1alpha13 01 §2):
+    /// una carpeta vacia no viaja en git. Si la carpeta ya esta, se adopta. Y
+    /// pasa por la puerta: si el arbol empeora, no se escribe nada (65).
+    New {
+        /// El paquete.
+        paquete: String,
+        /// El nombre del schema: un identificador, ni `default` ni
+        /// `information_schema` ni una carpeta de kind.
+        nombre: String,
+        /// La descripcion (`metadata.description`).
+        #[arg(long)]
+        description: Option<String>,
+        /// Quien responde del schema. Sin el, el dueño del paquete.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Lo hecho, en JSON (lo que `ore-serve` contesta).
+        #[arg(long)]
+        json: bool,
+        /// Raiz del repositorio ontologico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// **Renombra un schema**: la carpeta, su metadata, lo que lo nombra en
+    /// tres partes (`.yaml` y `.sql`; el codigo se dice y no se toca), los
+    /// punteros de sus datasets, un `moved` por nombre en el manifiesto y la
+    /// regla del alcance para que la siguiente induccion no lo deshaga.
+    ///
+    /// Todo o nada: si el arbol empeora, se deshace (65).
+    Rename {
+        /// El paquete.
+        paquete: String,
+        /// El schema que hay.
+        viejo: String,
+        /// Como se va a llamar.
+        nuevo: String,
+        /// La version desde la que los nombres viejos dejan de estar. Por
+        /// defecto, la que el paquete declara hoy.
+        #[arg(long)]
+        since: Option<String>,
+        /// Lo hecho, en JSON (lo que `ore-serve` contesta).
+        #[arg(long)]
+        json: bool,
         /// Raiz del repositorio ontologico.
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -1213,6 +1271,33 @@ fn main() -> std::process::ExitCode {
         }) => {
             return paquete::mover(path, qname, a, since.as_deref());
         }
+        Command::Package(AccionPaquete::Schema(AccionSchema::New {
+            paquete,
+            nombre,
+            description,
+            owner,
+            json,
+            path,
+        })) => {
+            return schemas::nuevo(
+                path,
+                paquete,
+                nombre,
+                description.as_deref(),
+                owner.as_deref(),
+                *json,
+            );
+        }
+        Command::Package(AccionPaquete::Schema(AccionSchema::Rename {
+            paquete,
+            viejo,
+            nuevo,
+            since,
+            json,
+            path,
+        })) => {
+            return schemas::renombrar(path, paquete, viejo, nuevo, since.as_deref(), *json);
+        }
         Command::Package(AccionPaquete::New {
             name,
             owner,
@@ -1569,6 +1654,10 @@ fn descubrir(
             .as_ref()
             .and_then(|(a, _)| a.modeladas().cloned()),
         copiadas: Default::default(),
+        schemas: el_alcance
+            .as_ref()
+            .map(|(a, _)| a.schemas().clone())
+            .unwrap_or_default(),
     };
     // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
     //   decision — y por eso entra por `Decisiones` y se guarda con las demas

@@ -43,7 +43,7 @@
 use ore_core::json::Json;
 use ore_core::parse;
 use ore_driver::catalogo::Catalogo;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Al lado del paquete, como sus dos hermanos.
@@ -70,6 +70,13 @@ pub struct Alcance {
     /// excepción a la regla de la clase. En una estándar no hace falta —se
     /// copia todo— y no se escribe.
     copias: BTreeSet<String>,
+    /// **Los schemas renombrados** (0038 P6): schema del origen → el nombre
+    /// que tiene en el paquete. `discover` deja lo del origen en la carpeta
+    /// del schema del origen; alguien lo renombró (`ore package schema
+    /// rename`), y la siguiente inducción —`review`, `model`, `copy`— lo
+    /// tiene que emitir con el nombre nuevo o lo desharía: dos carpetas, las
+    /// mismas tablas. Es una regla que alguien declaró, como las de arriba.
+    schemas: BTreeMap<String, String>,
 }
 
 /// Lo que quedó fuera al aplicar un alcance, para poder decirlo.
@@ -91,6 +98,31 @@ impl Alcance {
             tipo: None,
             entidades: None,
             copias: BTreeSet::new(),
+            schemas: BTreeMap::new(),
+        }
+    }
+
+    /// Los schemas renombrados: el del origen → el del paquete.
+    pub fn schemas(&self) -> &BTreeMap<String, String> {
+        &self.schemas
+    }
+
+    /// **Renombrar un schema** en la regla: lo que se llamaba `viejo` en el
+    /// paquete se llama `nuevo`. Si `viejo` ya era un renombrado, se sigue la
+    /// cadena hasta el origen; si `nuevo` es el del origen, la entrada sobra.
+    /// Un schema que no sale del origen (creado a mano) también entra: no
+    /// casa con ninguna tabla y no cambia nada, y así no hay que saberlo.
+    pub fn renombrar_schema(&mut self, viejo: &str, nuevo: &str) {
+        let origen = self
+            .schemas
+            .iter()
+            .find(|(_, v)| v.as_str() == viejo)
+            .map(|(k, _)| k.clone())
+            .unwrap_or_else(|| viejo.to_string());
+        if origen == nuevo {
+            self.schemas.remove(&origen);
+        } else {
+            self.schemas.insert(origen, nuevo.to_string());
         }
     }
 
@@ -221,12 +253,22 @@ impl Alcance {
                     .collect::<BTreeSet<String>>()
             })
             .unwrap_or_default();
+        let schemas = raiz
+            .get("schemas")
+            .map(|(_, v)| {
+                v.entries()
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                    .collect::<BTreeMap<String, String>>()
+            })
+            .unwrap_or_default();
         Ok(Alcance {
             fuente,
             objetos,
             tipo: tipo.filter(|t| t == "standard"),
             entidades,
             copias,
+            schemas,
         })
     }
 
@@ -250,7 +292,21 @@ impl Alcance {
                 Json::Arr(self.copias.iter().map(Json::s).collect()),
             ));
         }
-        Json::obj(campos).pretty()
+        let mut j = Json::obj(campos);
+        if !self.schemas.is_empty()
+            && let Json::Obj(m) = &mut j
+        {
+            m.insert(
+                "schemas".into(),
+                Json::Obj(
+                    self.schemas
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Json::s(v)))
+                        .collect(),
+                ),
+            );
+        }
+        j.pretty()
     }
 
     /// **Recorta el catálogo.** Devuelve el catálogo recortado y lo que sobró

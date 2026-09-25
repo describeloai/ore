@@ -230,6 +230,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
             regla.estandar = a.estandar();
             regla.modeladas = a.modeladas().cloned();
             regla.copiadas = a.copiadas().clone();
+            regla.schemas = a.schemas().clone();
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
             let (c, r) = a.aplicar(catalogo);

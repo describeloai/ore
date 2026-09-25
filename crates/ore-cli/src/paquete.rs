@@ -1038,7 +1038,7 @@ fn diagnosticos(raiz: &Path) -> ExitCode {
 /// `iberia` a secas— y buscar esa palabra por el fichero cambiaría cualquier
 /// otra cosa que se llame igual. `referencias()` da la posición exacta, y eso
 /// es la mitad del valor de que exista.
-fn sustituir_en(
+pub(crate) fn sustituir_en(
     lineas: &[String],
     pos: ore_core::diag::Pos,
     nuevo: &str,
@@ -1075,7 +1075,7 @@ fn sustituir_en(
 /// bloque— y editar la que hay es mejor que imponer una: reescribir el
 /// manifiesto entero perdería lo que no sabemos emitir, que es casi todo lo que
 /// `01-package` admite.
-fn anunciar(texto: &str, de: &str, a: &str, since: &str) -> Result<String, String> {
+pub(crate) fn anunciar(texto: &str, de: &str, a: &str, since: &str) -> Result<String, String> {
     let item = format!("{{ from: {de}, to: {a}, since: {since} }}");
     let mut lineas: Vec<String> = texto.lines().map(String::from).collect();
     let i = lineas

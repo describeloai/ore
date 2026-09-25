@@ -357,6 +357,35 @@ impl Servidor {
                     self.retirar_paquete(r, &n, sujeto)
                 })
             }
+            // ── 0038 P6 · los schemas de una base (`schemas.rs`) ─────────
+            //   Crear y renombrar: lo que la consola hacía en su estado local.
+            ("POST", ["paquetes", n, "schemas"]) => {
+                let n = n.to_string();
+                let cuerpo = p.cuerpo.clone();
+                let que = analizar(&cuerpo)
+                    .ok()
+                    .and_then(|c| {
+                        c.get("name")
+                            .and_then(|(_, v)| v.as_str().map(String::from))
+                    })
+                    .unwrap_or_default();
+                self.escribiendo(sujeto, &format!("`{n}`: crear el schema `{que}`"), |r| {
+                    self.crear_schema(r, &n, &cuerpo)
+                })
+            }
+            ("POST", ["paquetes", n, "schemas", s, "renombrar"]) => {
+                let (n, s) = (n.to_string(), s.to_string());
+                let cuerpo = p.cuerpo.clone();
+                let a = analizar(&cuerpo)
+                    .ok()
+                    .and_then(|c| c.get("to").and_then(|(_, v)| v.as_str().map(String::from)))
+                    .unwrap_or_default();
+                self.escribiendo(
+                    sujeto,
+                    &format!("`{n}`: el schema `{s}` pasa a llamarse `{a}`"),
+                    |r| self.renombrar_schema(r, &n, &s, &cuerpo),
+                )
+            }
             // ── 0027 P1 C2 · modelar una tabla de una base (`ore model`) ──
             ("POST", ["paquetes", n, "tablas", o, "modelar"]) => {
                 let (n, o) = (n.to_string(), o.to_string());
@@ -2347,6 +2376,12 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         (
             "POST",
             "/paquetes/{nombre}/tablas/{objeto}/copiar",
+            con_identidad,
+        ),
+        ("POST", "/paquetes/{nombre}/schemas", con_identidad),
+        (
+            "POST",
+            "/paquetes/{nombre}/schemas/{schema}/renombrar",
             con_identidad,
         ),
         ("POST", "/proyectos", con_identidad),

@@ -452,6 +452,11 @@ pub struct Regla {
     pub modeladas: Option<BTreeSet<String>>,
     /// Qué tablas se copian una a una en una base foránea.
     pub copiadas: BTreeSet<String>,
+    /// Los schemas renombrados del alcance (0038 P6): el del origen → el del
+    /// paquete. Sólo cambia DÓNDE y CÓMO se llama lo emitido; las preguntas
+    /// siguen con el schema del origen —son del origen—, y sus respuestas
+    /// siguen valiendo.
+    pub schemas: BTreeMap<String, String>,
 }
 
 impl Regla {
@@ -462,6 +467,13 @@ impl Regla {
     /// ¿Se copia esta tabla? Por la clase, o una a una.
     fn copia(&self, tabla: &str) -> bool {
         self.estandar || self.copiadas.contains(tabla)
+    }
+
+    /// El schema de una tabla EN EL PAQUETE: el del origen, o el nombre que
+    /// alguien le dio.
+    fn schema_de(&self, tabla: &str) -> String {
+        let s = schema_de(tabla);
+        self.schemas.get(&s).cloned().unwrap_or(s)
     }
 }
 
@@ -542,8 +554,13 @@ pub fn inducir_con_regla(
             ));
         }
         let base = entidad(&t.nombre);
-        let sch = schema_de(&t.nombre);
-        let vista = if cuantos.get(&format!("{sch}/{base}")).copied().unwrap_or(0) > 1 {
+        let sch = regla.schema_de(&t.nombre);
+        let vista = if cuantos
+            .get(&format!("{}/{base}", schema_de(&t.nombre)))
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
             identificador(sin_schema(&t.nombre))
         } else {
             minuscula_inicial(&base)
@@ -730,7 +747,7 @@ pub fn inducir_con_regla(
         // de nombrado o por quien resolvio la colision— y heredarlo evita pedir
         // una segunda respuesta para la misma cosa.
         let vista = minuscula_inicial(nombre);
-        let sch = schema_de(&t.nombre);
+        let sch = regla.schema_de(&t.nombre);
         ficheros.insert(
             en_schema(&sch, format!("entities/{nombre}.yaml")),
             con_schema(
@@ -743,6 +760,7 @@ pub fn inducir_con_regla(
                         claves: &claves,
                         nombres: &nombres,
                         mapeo: &mapeo,
+                        schemas: &regla.schemas,
                     },
                     &extra,
                 ),
@@ -1716,6 +1734,9 @@ struct Resuelto<'a> {
     nombres: &'a BTreeMap<String, String>,
     /// `tabla.columna` → el concepto que habla, si alguien lo eligió.
     mapeo: &'a BTreeMap<String, String>,
+    /// Los schemas renombrados de la regla (0038 P6): a dónde apunta una
+    /// relación hacia una tabla de otro schema.
+    schemas: &'a BTreeMap<String, String>,
 }
 
 fn entidad_yaml(
@@ -1730,7 +1751,13 @@ fn entidad_yaml(
         claves,
         nombres,
         mapeo,
+        schemas,
     } = *r;
+    // El schema de una tabla en el paquete: el del origen, o su nombre nuevo.
+    let schema_de = |tabla: &str| {
+        let s = schema_de(tabla);
+        schemas.get(&s).cloned().unwrap_or(s)
+    };
     let clave = claves.get(&t.nombre).cloned().unwrap_or_default();
     let mut s = String::new();
     let _ = write!(
@@ -2632,6 +2659,7 @@ mod tests {
             estandar,
             modeladas: None,
             copiadas: BTreeSet::new(),
+            schemas: BTreeMap::new(),
         };
         let sin = inducir_con_regla(
             &cat,
@@ -2719,6 +2747,7 @@ mod tests {
             estandar: true,
             modeladas: Some(BTreeSet::new()),
             copiadas: BTreeSet::new(),
+            schemas: BTreeMap::new(),
         };
         let i = inducir_con_regla(
             &cat,
@@ -2791,12 +2820,14 @@ mod tests {
             estandar: true,
             modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
             copiadas: BTreeSet::new(),
+            schemas: BTreeMap::new(),
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
             estandar: false,
             modeladas: Some(BTreeSet::new()),
             copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
+            schemas: BTreeMap::new(),
         };
         let f = inducir_con_regla(
             &cat,

@@ -184,6 +184,13 @@ jobs:
       - name: y la entidad se lee entera y se escribe como un commit
         run: bash pruebas-de-fuego/los-documentos.sh
 
+      # Los schemas de una base (0038 P6): crear es su `schema.yaml` en un
+      # commit; renombrar mueve la carpeta, reapunta lo que la nombra en tres
+      # partes, mueve los punteros, anuncia el `moved` y deja la regla en el
+      # alcance — y la siguiente induccion no lo deshace.
+      - name: y un schema se crea y se renombra en el arbol
+        run: bash pruebas-de-fuego/los-schemas.sh
+
       # Proponer (0030 W2): rama por persona, propuesta en la forja, el diff y
       # los diagnosticos de la rama, la revision de OTRA persona y el merge —
       # contra la API de la forja de mentira sobre un repositorio pelado.

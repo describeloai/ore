@@ -55,6 +55,14 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         "induce desde un catálogo YA LEÍDO, que le llega como fichero",
     ),
     (
+        &["package", "schema", "new"],
+        "escribe el `schema.yaml` de un paquete (0038 P6); no abre nada",
+    ),
+    (
+        &["package", "schema", "rename"],
+        "mueve y reapunta dentro del árbol (0038 P6); no abre nada",
+    ),
+    (
         &["review"],
         "aplica decisiones que vienen de fuera; no consulta a nadie",
     ),

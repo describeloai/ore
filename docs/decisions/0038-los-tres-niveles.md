@@ -285,6 +285,58 @@ hablan tres partes —`/datasets/{b}/{s}/{n}` (y `confirmar`), `/vistas/{b}/{s}/
 `/documentos/{kind}/{ns}/{s}/{n}`—, con las de dos partes para `default`. `/funciones` sigue en
 dos partes.
 
+## P6a, hecho: los schemas de verdad (crear y renombrar)
+
+La consola tenía «Create schema» y el doble clic de renombrar, y los dos cambiaban el estado del
+navegador: un schema creado desaparecía al recargar. Ahora van al árbol.
+
+**`ore package schema new <p> <s>`** escribe `<p>/<s>/schema.yaml` (con `--description` y
+`--owner`); una carpeta que ya está se adopta. Se niegan `default`, `information_schema`, las
+carpetas de kind (`tables`…) y lo que no es un identificador (65); lo que ya existe, sin mirar
+mayúsculas —para SQL son el mismo— (73); un paquete que no hay (66).
+
+**`ore package schema rename <p> <viejo> <nuevo>`**. Medido antes
+(`medida-renombrar-schema.py`, un árbol descubierto con lo que lo nombra desde fuera): con la
+carpeta, la metadata y las referencias de tres partes, el árbol compila igual que antes; sin el
+`moved`, `ore diff` ve veinte `OOS5007` (cada Entity y cada View «borradas»); con él, un
+`minor`. Son seis cosas:
+
+1. la carpeta, entera: lo de dentro se nombra en una parte y viaja sin tocarlo;
+2. `metadata.name` del `Schema` y `metadata.schema` de lo que declara, por posición;
+3. lo que lo nombra en tres partes (`<p>.<viejo>.x`) en los `.yaml` y `.sql` del árbol —por
+   texto: una referencia de tres partes no se confunde con nada, y así llega a un `exports`, a
+   un `writes: p.s.E.prop` o a SQL—; en un manifiesto, lo que sigue a `from:` es historia y no
+   se toca. **El código (`.py`, `.java`…) no se reescribe: se dice** (`aMano`);
+4. los punteros, de `datasets/<p>/<viejo>/` a `datasets/<p>/<nuevo>/`: los bytes del lago no
+   se mueven —el puntero dice dónde están, y sigue siendo cierto—;
+5. un `moved` por nombre en el manifiesto;
+6. **la regla del alcance**: lo descubierto vive en la carpeta del schema del origen, y la
+   siguiente inducción (`review`, `model`, `copy`) lo volvería a emitir allí —dos carpetas, las
+   mismas tablas—. `discover.scope.json` guarda `schemas: {origen: nuevo}` y el inductor lo
+   aplica (`Regla::schemas`) al emitir: dónde y cómo se llama lo emitido; las preguntas siguen
+   con el schema del origen. Volver al nombre del origen quita la entrada. El catálogo entero
+   de una fuente (sin alcance) no se renombra (73): su Job lo re-induce tal como el origen lo
+   nombra.
+
+**La puerta** es la de siempre —el árbol no empeora— y la pasa `ore`: si la compilación de
+después tiene un diagnóstico que la de antes no tenía, se deshace todo (65). Lo de antes se
+compara traducido: un `OOS2010` sobre `ventas.viejo.X` que ya estaba es el mismo defecto sobre
+`ventas.nuevo.X`, no uno nuevo (sin esto, cualquier árbol con errores previos en el schema
+rechazaría todo renombrado).
+
+**ore-serve**: `POST /paquetes/{p}/schemas` `{name, description?, owner?}` → 201 y
+`POST /paquetes/{p}/schemas/{s}/renombrar` `{to, since?}` → 200, por el camino de `model` y
+`copy` (un clon, `ore`, un commit del sujeto; 65/66/73 → 422/404/409). `los-schemas.sh`: el
+índice trae el schema recién creado aunque esté vacío; renombrar es UN commit y el árbol queda
+con los mismos diagnósticos; copiar una tabla después re-induce en el schema nuevo.
+
+**La consola** (rubix-platform): en una base del árbol, el modal crea por el servidor (y sigue
+abierto si dice que no) y el doble clic renombra por el servidor, con el código que queda por
+tocar como aviso aparte; `default` y renombrar una base se dicen en vez de fingirse en local.
+
+Queda de P6: las referencias de tres partes en los editores de la consola y los borradores en
+la carpeta del schema.
+
 ## Lo que no cambia
 
 El paquete sigue siendo la base (nada que migrar), el lago físico igual, y el proyecto sigue

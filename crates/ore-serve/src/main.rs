@@ -58,6 +58,7 @@ mod proyectos;
 mod puestos;
 mod repositorios;
 mod rutas;
+mod schemas;
 
 use ore_entrada::{http, identidad};
 
