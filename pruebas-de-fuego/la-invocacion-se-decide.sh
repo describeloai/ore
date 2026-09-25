@@ -180,10 +180,10 @@ export FICHEROS_DIR="$TMP/datos"
 
 # ── 0 · la copia, hecha ──────────────────────────────────────────────────────
 salida=$("$ORE" materialize "$A" --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
-CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/datasets/olist_copia_productCategoryNameTranslation.json")
+CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/datasets/olist_copia/default/productCategoryNameTranslation.json")
 [ -n "$CLAVE" ] || { falla "0 · el puntero de la copia no tiene metadata_location"; exit 1; }
 # y cuenta por columna (medida W1 §B): en demo una copia «copiada» tenía 2 de 9 columnas
-"$PY" - "$A/datasets/olist_copia_productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
+"$PY" - "$A/datasets/olist_copia/default/productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
 import json, sys
 i = json.load(open(sys.argv[1]))
 assert i["columnas"] == {"productCategoryName": i["filas"], "productCategoryNameEnglish": i["filas"]}, i.get("columnas")
