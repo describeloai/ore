@@ -795,9 +795,10 @@ impl Servidor {
         // Lo escrito es de quien lo escribió (W3.7 gobierno ④): retirar un
         // Dataset con puntero de otra persona es 403 con quién.
         if k.nombre == "Dataset"
-            && let Ok(t) =
-                std::fs::read_to_string(raiz.join("datasets").join(format!("{ns}_{n}.json")))
-            && let Ok(p) = ore_core::parse::parse(&t)
+            && let Some((_, p)) = ore_core::punteros::leer_en(
+                &raiz.join(ore_core::punteros::CARPETA),
+                &format!("{ns}.{n}"),
+            )
             && let Some(e) = p.get("escrito_por").and_then(|(_, v)| v.as_str())
             && !e.is_empty()
             && e != sujeto.persona
@@ -847,17 +848,30 @@ impl Servidor {
             return r;
         }
         // Un Dataset se va con su puntero (0031 W3.7 gobierno ①): medido
-        // antes, retirar el documento dejaba `datasets/<ns>_<n>.json` huérfano
-        // —un estado sin nada que lo nombre—. Los bytes los expira el
-        // mantenimiento (`--recoger`), como siempre.
-        let puntero = raiz.join("datasets").join(format!("{ns}_{n}.json"));
-        let con_puntero = k.nombre == "Dataset" && puntero.is_file();
-        if con_puntero && let Err(e) = std::fs::remove_file(&puntero) {
-            let _ = std::fs::write(&fichero, &texto);
-            return Respuesta::error(
-                500,
-                format!("no se pudo retirar `datasets/{ns}_{n}.json`: {e}"),
-            );
+        // antes, retirar el documento dejaba el puntero huérfano —un estado
+        // sin nada que lo nombre—. Los bytes los expira el mantenimiento
+        // (`--recoger`), como siempre. El de su sitio y el de antes (0038 P2).
+        let dir = raiz.join(ore_core::punteros::CARPETA);
+        let corto = format!("{ns}.{n}");
+        let punteros: Vec<std::path::PathBuf> = [
+            ore_core::punteros::ruta_en(&dir, &corto),
+            ore_core::punteros::legado_en(&dir, &corto),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|p| p.is_file())
+        .collect();
+        let con_puntero = k.nombre == "Dataset" && !punteros.is_empty();
+        if con_puntero {
+            for puntero in &punteros {
+                if let Err(e) = std::fs::remove_file(puntero) {
+                    let _ = std::fs::write(&fichero, &texto);
+                    return Respuesta::error(
+                        500,
+                        format!("no se pudo retirar `{}`: {e}", puntero.display()),
+                    );
+                }
+            }
         }
         Respuesta::ok(Json::obj([
             ("kind", Json::s(k.nombre)),

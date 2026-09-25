@@ -65,32 +65,32 @@ escribe() {
     || { cat "$TMP/c.err" "$TMP/c.json"; return 1; }
 }
 
+punteros() { (cd "$A/datasets" && find . -name '*.json' | sed 's#^\./##' | sort | tr '\n' ' '); }
+
 echo "M1 · el Job de la copia y un dataset escrito"
 escribe datasets/ventas_escrita ventas.escrita op-1 || exit 1
 ANTES=$(objetos ore/v2/datasets/ventas_escrita/)
-mide "tras write(): $ANTES objetos en ore/v2/datasets/ventas_escrita/, puntero $(ls "$A/datasets")"
-"$ORE" materialize "$A" --recoger --informe datasets --seco > "$TMP/m1s.txt" 2>&1
-mide "materialize --recoger --seco dice: $(grep -i 'hu[eé]rfan\|retir' "$TMP/m1s.txt" | head -2 | tr '\n' ' ')"
+mide "tras write(): $ANTES objetos en ore/v2/datasets/ventas_escrita/, punteros: $(punteros)"
 "$ORE" materialize "$A" --recoger --informe datasets > "$TMP/m1.txt" 2>&1
 DESPUES=$(objetos ore/v2/datasets/ventas_escrita/)
 mide "materialize --recoger dice: $(grep -i 'hu[eé]rfan\|retir' "$TMP/m1.txt" | head -2 | tr '\n' ' ')"
-mide "M1 → $ANTES objetos antes, $DESPUES después (el puntero sigue: $([ -f "$A/datasets/ventas_escrita.json" ] && echo sí || echo no))"
+mide "M1 → $ANTES objetos antes, $DESPUES después · punteros: $(punteros)"
 
 echo "M2 · el choque de nombres"
-escribe datasets/a_b_c a_b.c op-2 >/dev/null || mide "a_b.c no se escribió"
-ML_ABC=$("$PY" -c 'import json;print(json.load(open("'"$A"'/datasets/a_b_c.json"))["tabla"])' 2>/dev/null)
-escribe datasets/a_b_c a.b_c op-3 >/dev/null 2>&1 || mide "a.b_c no se escribió: $(head -c 200 "$TMP/c.err")"
-mide "M2 → ficheros en datasets/: $(ls "$A/datasets" | tr '\n' ' '); el puntero a_b_c.json dice tabla=$("$PY" -c 'import json;print(json.load(open("'"$A"'/datasets/a_b_c.json"))["tabla"])') (antes: $ML_ABC)"
+# Cada tabla, al nombre que el catálogo le da (ore_core::punteros::dataset_nuevo).
+escribe catalogo/a_b/default/c a_b.c op-2 >/dev/null || mide "a_b.c no se escribió: $(head -c 200 "$TMP/c.err")"
+escribe catalogo/a/default/b_c a.b_c op-3 >/dev/null 2>&1 || mide "a.b_c no se escribió: $(head -c 200 "$TMP/c.err")"
+mide "M2 → punteros: $(punteros)"
 
 echo "M3 · un nombre anidado en el lago"
 { printf '{"dataset":"datasets/ventas/default/anidada","modo":"sobrescribir","base":"","operacion":"op-4"}\n'; "$PY" "$TMP/ipc.py"; } \
   | "$STORE" escribir > "$TMP/e4.json" 2>"$TMP/e4.err" || mide "escribir anidado: $(head -c 300 "$TMP/e4.err")"
 mide "M3 → objetos en ore/v2/datasets/ventas/default/anidada/: $(objetos ore/v2/datasets/ventas/default/anidada/)"
-printf '{"datasets":["datasets/ventas/default/anidada","datasets/ventas_escrita","datasets/a_b_c"],"claves":[],"seco":"true"}\n' \
+printf '{"datasets":["datasets/ventas/default/anidada","datasets/ventas_escrita","catalogo/a_b/default/c","catalogo/a/default/b_c"],"claves":[],"seco":"true"}\n' \
   | "$STORE" recoger-huerfanas > "$TMP/h.txt" 2>&1
 mide "M3 → recoger-huerfanas en seco, con el anidado reclamado: $(tr '\n' ' ' < "$TMP/h.txt" | head -c 300)"
 
-echo "M4 · el borrado de un paquete por prefijo"
-escribe datasets/ventas_eu_x ventas_eu.x op-5 >/dev/null || true
-mide "M4 → punteros: $(ls "$A/datasets" | tr '\n' ' ')"
-mide "M4 → lo que empieza por \`ventas_\` (lo que borrar \`ventas\` se llevaría): $(cd "$A/datasets" && ls ventas_* | tr '\n' ' ')"
+echo "M4 · los punteros de una base"
+escribe catalogo/ventas_eu/default/x ventas_eu.x op-5 >/dev/null || true
+mide "M4 → los de \`ventas\` (datasets/ventas/): $(cd "$A/datasets" && find ventas -name '*.json' 2>/dev/null | tr '\n' ' ')"
+mide "M4 → los de \`ventas_eu\` (datasets/ventas_eu/): $(cd "$A/datasets" && find ventas_eu -name '*.json' 2>/dev/null | tr '\n' ' ')"

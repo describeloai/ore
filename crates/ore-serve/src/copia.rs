@@ -192,21 +192,24 @@ impl Servidor {
         if let Err(e) = std::fs::remove_dir_all(&aparte) {
             return Respuesta::error(500, format!("no se pudo borrar el paquete: {e}"));
         }
-        // ⭐ Sus punteros en el árbol (`datasets/<n>_*.json`), fuera en el mismo
-        //   commit: un recibo de una vista que ya no está es un recibo de nadie.
+        // ⭐ Sus punteros en el árbol, fuera en el mismo commit: un recibo de
+        //   una vista que ya no está es un recibo de nadie. Los de SU base —el
+        //   nombre que dice cada puntero, no un prefijo del fichero: medido
+        //   (`medida-los-punteros.sh` M4), `ventas_` se llevaba los de
+        //   `ventas_eu` (0038 P2)—.
         let mut recibos = 0usize;
-        if let Ok(entradas) = std::fs::read_dir(raiz.join("datasets")) {
-            let prefijo = format!("{paquete}_");
-            for e in entradas.flatten() {
-                let nombre = e.file_name().to_string_lossy().into_owned();
-                if nombre.starts_with(&prefijo)
-                    && nombre.ends_with(".json")
-                    && std::fs::remove_file(e.path()).is_ok()
-                {
-                    recibos += 1;
-                }
+        for (nombre, (ruta, _)) in
+            ore_core::punteros::todos_en(&raiz.join(ore_core::punteros::CARPETA))
+        {
+            if ore_core::punteros::partes(&nombre).is_some_and(|(b, _, _)| b == paquete)
+                && std::fs::remove_file(&ruta).is_ok()
+            {
+                recibos += 1;
             }
         }
+        // Y el de antes que quedara debajo de uno de su sitio (`todos_en` da uno
+        // por nombre): tampoco es de nadie.
+        let _ = std::fs::remove_dir_all(raiz.join(ore_core::punteros::CARPETA).join(paquete));
         let mut campos = vec![
             ("package", Json::s(paquete)),
             ("retirado", Json::Bool(true)),
@@ -747,12 +750,12 @@ pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     let copiadas = declaradas
         .iter()
         .filter(|v| {
-            let rel = format!("datasets/{paquete}_{v}.json");
-            std::fs::read_to_string(raiz.join(rel))
-                .ok()
-                .and_then(|t| parse::parse(&t).ok())
-                .and_then(|n| campo(&n, "estado"))
-                .is_some_and(|e| e == "copiada" || e == "al-dia")
+            ore_core::punteros::leer_en(
+                &raiz.join(ore_core::punteros::CARPETA),
+                &format!("{paquete}.{v}"),
+            )
+            .and_then(|(_, n)| campo(&n, "estado"))
+            .is_some_and(|e| e == "copiada" || e == "al-dia")
         })
         .count();
     Json::obj([
@@ -761,12 +764,20 @@ pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     ])
 }
 
-/// Lo que la última pasada del Job dejó en `datasets/<paquete>_<nombre>.json`,
-/// con quién y cuándo (el commit). Sin puntero: `pendiente` — se decidió y
-/// nadie ha copiado todavía.
+/// Lo que la última pasada del Job dejó en el puntero
+/// (`datasets/<paquete>/default/<nombre>.json`, o el de antes), con quién y
+/// cuándo (el commit). Sin puntero: `pendiente` — se decidió y nadie ha
+/// copiado todavía.
 fn informe_de(raiz: &Path, paquete: &str, vista: &str) -> Json {
-    let rel = format!("datasets/{paquete}_{vista}.json");
-    let Ok(texto) = std::fs::read_to_string(raiz.join(&rel)) else {
+    let dir = raiz.join(ore_core::punteros::CARPETA);
+    let Some((ruta, _)) = ore_core::punteros::leer_en(&dir, &format!("{paquete}.{vista}")) else {
+        return Json::obj([("estado", Json::s("pendiente"))]);
+    };
+    let rel = ruta
+        .strip_prefix(raiz)
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let Ok(texto) = std::fs::read_to_string(&ruta) else {
         return Json::obj([("estado", Json::s("pendiente"))]);
     };
     let mut j = match parse::parse(&texto).map(|n| de_node(&n)) {

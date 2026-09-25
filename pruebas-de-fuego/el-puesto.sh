@@ -567,7 +567,7 @@ dice "7 · SQL sobre el bucket: count sobre la copia → tabla · join de dos vi
 if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE_DIR/ore-store-r2.exe" ]; then
   celda 'e = write(\"hr.salida\", over(\"hr.lago\", como=\"arrow\")); (e[\"filas\"], e[\"repetida\"], e[\"snapshot\"] != \"\")' && tiene "d['salida']['texto']=='(3, False, True)'" || falla "10 · write(hr.salida): $(cuerpo)"
   [ -f "$A/packages/hr/datasets/salida.yaml" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/salida.yaml" && grep -q "cuando: { type: DateTimeTz }" "$A/packages/hr/datasets/salida.yaml" || falla "10 · el Dataset escrito no nació tipado en el árbol: $(cat "$A/packages/hr/datasets/salida.yaml" 2>/dev/null)"
-  [ -f "$A/datasets/hr_salida.json" ] || falla "10 · el puntero no está en el árbol"
+  [ -f "$A/datasets/hr/default/salida.json" ] || falla "10 · el puntero no está en el árbol"
   grep -q "type: lago" "$A/ontology.config.yaml" && falla "10 · write() declaró un datasource lago, y ya no hay tal cosa (0033)"
   # lo escrito, leído: EL MISMO JSON que hr.lago (los cuatro tipos sobreviven la vuelta)
   celda 'over(\"hr.salida\")' && tiene "d['salida']['tipo']=='tabla' and $LAGO_COLS and $LAGO_FILAS" || falla "10 · over(hr.salida) no es el mismo JSON que hr.lago: $(cuerpo)"
@@ -586,7 +586,7 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'write(\"hr.espanoles\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10 · escribir un dataset mantenido: $(cuerpo)"
   celda 'write(\"hr.empleados\", over(\"hr.lago\", como=\"arrow\"))' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje']" || falla "10 · escribir una View: $(cuerpo)"
   celda 'import pyarrow as pa; write(\"hr.mala\", pa.table({\"grande\": pa.array([1], pa.uint64())}))' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'grande' in d['salida']['mensaje']" || falla "10 · uint64: $(cuerpo)"
-  [ ! -f "$A/datasets/hr_mala.json" ] || falla "10 · lo negado dejó puntero"
+  [ ! -f "$A/datasets/hr/default/mala.json" ] || falla "10 · lo negado dejó puntero"
   # declarar (W3.7 ①): una View sobre lo que la celda escribió, por la puerta de Forge
   celda 'd = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]\"" || falla "10 · declare(View): $(cuerpo)"
   grep -q "groupBy: \[letra\]" "$A/packages/hr/views/porLetra.yaml" || falla "10 · la View declarada no está en el árbol"
@@ -601,13 +601,13 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   celda 'declare(\"apiVersion: oos.dev/v1alpha11\\nkind: TrainedModel\\nmetadata: { name: sin, namespace: hr }\\nspec:\\n  owner: team:hr\\n  framework: sklearn\\n  version: 1\\n  artifacts: models/hr_sin/v1\\n\")' && tiene "d['salida']['tipo']=='error' and 'OOS1004' in d['salida']['mensaje'] and 'digest' in d['salida']['mensaje']" || falla "10 · un TrainedModel sin digest tenía que ser OOS1004: $(cuerpo)"
   [ ! -f "$A/packages/hr/models/rota.yaml" ] && [ ! -f "$A/packages/hr/models/sin.yaml" ] || falla "10 · lo negado quedó en el árbol"
   # la procedencia (W3.7 ③): lo escrito fuera de un transform dice lo que la sesión leyó; dentro, sus inputs
-  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr["puesto"]=="puesto-ana-python" and "hr.lago" in pr["leidas"] and "hr.salida" not in pr["leidas"], pr' "$A/datasets/hr_salida.json" || falla "10 · el puntero no lleva la procedencia (leidas, sin él mismo): $(cat "$A/datasets/hr_salida.json")"
+  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr["puesto"]=="puesto-ana-python" and "hr.lago" in pr["leidas"] and "hr.salida" not in pr["leidas"], pr' "$A/datasets/hr/default/salida.json" || falla "10 · el puntero no lleva la procedencia (leidas, sin él mismo): $(cat "$A/datasets/hr/default/salida.json")"
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.resumen\")\ndef resumir():\n    t = over(\"hr.lago\", como=\"arrow\")\n    return write(\"hr.resumen\", t)\ne = resumir(); e[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "10 · un transform: $(cuerpo)"
-  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"resumir"}, pr' "$A/datasets/hr_resumen.json" || falla "10 · el puntero del transform no lleva inputs y transform: $(cat "$A/datasets/hr_resumen.json")"
+  "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); pr=p["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"resumir"}, pr' "$A/datasets/hr/default/resumen.json" || falla "10 · el puntero del transform no lleva inputs y transform: $(cat "$A/datasets/hr/default/resumen.json")"
   [ "$(pide GET /datasets/hr/resumen "$ANA")" = "200" ] && tiene "d['procedencia']['transform']=='resumir' and d['snapshots'][0]['procedencia']['inputs']==['hr.lago']" || falla "10 · la ficha no enseña la procedencia: $(cuerpo)"
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.resumen\")\ndef fuera():\n    return over(\"hr.salida\", como=\"arrow\")\nfuera()' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='PermissionError' and 'hr.salida' in d['salida']['mensaje']" || falla "10 · leer fuera de los inputs tenía que ser PermissionError: $(cuerpo)"
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.resumen\")\ndef otro():\n    return write(\"hr.otro\", over(\"hr.lago\", como=\"arrow\"))\notro()' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='PermissionError' and 'hr.otro' in d['salida']['mensaje']" || falla "10 · escribir fuera del output tenía que ser PermissionError: $(cuerpo)"
-  [ ! -f "$A/datasets/hr_otro.json" ] || falla "10 · lo negado dejó puntero"
+  [ ! -f "$A/datasets/hr/default/otro.json" ] || falla "10 · lo negado dejó puntero"
   celda 'transform(inputs=[\"hr.lago\"], output=\"hr.lago\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError'" || falla "10 · input y output iguales: $(cuerpo)"
   [ "$(pide GET /documentos/TrainedModel "$ANA")" = "200" ] && tiene "[x['name'] for x in d['documentos']]==['prevision']" || falla "10 · GET /documentos/TrainedModel: $(cuerpo)"
   dice "10 · write(hr.salida) desde la celda: la tabla por IPC a ore-store-r2 con la credencial prestada, el commit por /v1, el Dataset escrito nace tipado y over() devuelve el mismo JSON que hr.lago · repetida sin snapshot · anexar un DataFrame → 5 y sql lo suma · upsert por clave → 6 (54.75) y el Dataset declara la clave · una View → error · uint64 → ValueError con la columna · declare(View sobre hr.salida) la deja en el árbol, otra vez no es nueva, una rota es ValueError con el OOS y no queda, un Model no se sirve · declare(TrainedModel) con linaje por la View: en el árbol y listado; linaje roto OOS2005; sin digest OOS1004 · la procedencia en el puntero y la ficha (leidas fuera de un transform; inputs + transform dentro); un transform no lee ni escribe fuera de lo declarado (PermissionError)"
@@ -662,8 +662,8 @@ fi
 if [ "$ESCRITO_OK" = si ]; then
   Q10C='create or replace table hr.porsql as select letra, sum(importe) as total from hr.lago group by letra order by letra'
   celda_sql "$Q10C" && tiene "d['salida']['tipo']=='texto' and d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas'" || falla "10c · create or replace table en una celda sql: $(cuerpo)"
-  [ -f "$A/datasets/hr_porsql.json" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/porsql.yaml" || falla "10c · lo escrito no está en el árbol (puntero y Dataset)"
-  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"consulta"}, pr' "$A/datasets/hr_porsql.json" || falla "10c · la procedencia: $(cat "$A/datasets/hr_porsql.json")"
+  [ -f "$A/datasets/hr/default/porsql.json" ] && grep -q "kind: Dataset" "$A/packages/hr/datasets/porsql.yaml" || falla "10c · lo escrito no está en el árbol (puntero y Dataset)"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-python","transform":"consulta"}, pr' "$A/datasets/hr/default/porsql.json" || falla "10c · la procedencia: $(cat "$A/datasets/hr/default/porsql.json")"
   celda_sql 'select count(*) as n, sum(total) as s from hr.porsql' && tiene "d['salida']['filas']==[[3,'3.75']]" || falla "10c · la celda siguiente lo lee: $(cuerpo)"
   celda_sql "$Q10C" && tiene "d['salida']['texto'].strip()=='hr.porsql · sobrescribir · 3 filas · la misma escritura: nada nuevo'" || falla "10c · la misma frase otra vez: $(cuerpo)"
   # anexar `0.5` (decimal(2, 1)) a una columna decimal(38, 2): lo de antes se queda
@@ -678,10 +678,10 @@ if [ "$ESCRITO_OK" = si ]; then
   N10C=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["celda"])' "$TMP/r.json")
   for _ in $(seq 1 5); do pide GET "/puestos/$P/celdas/$N10C" "$ANA" >/dev/null; tiene "d['estado']=='hecha'" && break; done
   tiene "d['salida']['texto'].strip()=='hr.porfichero · sobrescribir · 3 filas'" || falla "10c · con fichero: $(cuerpo)"
-  "$PY" -c 'import json,sys; assert json.load(open(sys.argv[1]))["procedencia"]["transform"]=="porfichero"' "$A/datasets/hr_porfichero.json" || falla "10c · el transform no se llama como el fichero: $(cat "$A/datasets/hr_porfichero.json")"
+  "$PY" -c 'import json,sys; assert json.load(open(sys.argv[1]))["procedencia"]["transform"]=="porfichero"' "$A/datasets/hr/default/porfichero.json" || falla "10c · el transform no se llama como el fichero: $(cat "$A/datasets/hr/default/porfichero.json")"
   # lo que no se puede correr se dice YA, como la salida de la celda, con su sitio
   celda_sql 'create or replace table hr.dos as select 1 as x;\nselect 1' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='SQL' and 'UNA sentencia' in d['salida']['mensaje'] and d['salida']['diagnosticos'][0]['linea']==2" || falla "10c · dos sentencias: $(cuerpo)"
-  [ ! -f "$A/datasets/hr_dos.json" ] || falla "10c · dos sentencias dejaron puntero"
+  [ ! -f "$A/datasets/hr/default/dos.json" ] || falla "10c · dos sentencias dejaron puntero"
   celda_sql 'create or replace view hr.vista as select 1 as x' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje'] and 'declara' in d['salida']['mensaje']" || falla "10c · create view: $(cuerpo)"
   celda_sql 'insert into hr.porsql by name select 1.0 as total' && tiene "d['salida']['tipo']=='error' and 'no analiza' in d['salida']['mensaje']" || falla "10c · lo que no analiza: $(cuerpo)"
   celda_sql 'create or replace table hr.espanoles as select 1 as id' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10c · un dataset mantenido: $(cuerpo)"
@@ -724,7 +724,7 @@ PY
   grep -q "trabajo packages/hr/transforms/resumir.py@local: hecho" "$TMP/trabajo.txt" || falla "11 · el agente no dijo que terminó: $(tail -3 "$TMP/trabajo.txt")"
   [ "$(pide GET /trabajos/$T "$ANA")" = "200" ] && tiene "d['trabajo']=='hecho' and d['estado']=='cerrado' and d['informe']['estado']=='hecho' and d['informe']['fichero']=='trabajos/$T.json' and 'filas 3' in d['informe']['salida']['texto']" || falla "11 · la ficha tras correr: $(cuerpo)"
   "$PY" -c 'import json,sys; i=json.load(open(sys.argv[1])); assert i["codigo"]=="packages/hr/transforms/resumir.py" and i["persona"]=="persona:ana" and i["estado"]=="hecho" and i["ms"]>0, i' "$A/trabajos/$T.json" || falla "11 · el informe en el árbol: $(cat "$A/trabajos/$T.json")"
-  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/resumir.py@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"resumir"}, pr' "$A/datasets/hr_trabajo.json" "$T" || falla "11 · la procedencia de lo que el trabajo escribió: $(cat "$A/datasets/hr_trabajo.json")"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/resumir.py@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"resumir"}, pr' "$A/datasets/hr/default/trabajo.json" "$T" || falla "11 · la procedencia de lo que el trabajo escribió: $(cat "$A/datasets/hr/default/trabajo.json")"
   [ "$(pide GET /datasets/hr/trabajo "$ANA")" = "200" ] && tiene "d['escrito_por']=='persona:ana' and d['procedencia']['codigo']=='packages/hr/transforms/resumir.py@local'" || falla "11 · la ficha del dataset del trabajo: $(cuerpo)"
   en_cola "$F" >/dev/null && falla "11 · el trabajo sigue en la cola tras terminar"
   # uno que se rompe: el agente sale con 1 y el informe dice error
@@ -746,7 +746,7 @@ PY
     "$PY" "$RAIZ/puesto/python/agente.py" >"$TMP/trabajo3.txt" 2>&1; CODIGO=$?
   [ "$CODIGO" = 0 ] || falla "11b · el agente del .sql salió con $CODIGO: $(tail -5 "$TMP/trabajo3.txt")"
   [ "$(pide GET /trabajos/$T3 "$ANA")" = "200" ] && tiene "d['informe']['estado']=='hecho' and d['informe']['salida']['texto'].strip()=='hr.trabajo_sql · sobrescribir · 1 filas'" || falla "11b · el informe del .sql: $(cuerpo)"
-  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/contar.sql@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"contar"}, pr' "$A/datasets/hr_trabajo_sql.json" "$T3" || falla "11b · la procedencia de lo que escribió el .sql: $(cat "$A/datasets/hr_trabajo_sql.json")"
+  "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"codigo":"packages/hr/transforms/contar.sql@local","inputs":["hr.lago"],"puesto":sys.argv[2],"transform":"contar"}, pr' "$A/datasets/hr/default/trabajo_sql.json" "$T3" || falla "11b · la procedencia de lo que escribió el .sql: $(cat "$A/datasets/hr/default/trabajo_sql.json")"
   dice "11b · un .sql como trabajo: lo que nombra lo que no hay es 422 con la línea; create or replace table hr.trabajo_sql as select … corre con @transform(inputs=[hr.lago], output=hr.trabajo_sql) y lo escrito lleva la procedencia de un .py"
   dice "11 · POST /trabajos: 202 trabajo-ana-<hex> con el fichero 54-el-trabajo-… en la cola (TRABAJO=<ruta>@<commit>, la imagen de python); un agente 403, sin fichero 404, un .yaml 422, fuera del árbol 422; el agente con TRABAJO corre la celda y sale 0 → la ficha dice hecho, el informe está en trabajos/<id>.json firmado por ana, el dataset lleva procedencia {codigo, inputs, transform}, y el trabajo sale de la cola; uno roto sale 1 y el informe dice error"
 else
@@ -768,11 +768,11 @@ grep -q "^x: 1" "$A/conduits.yaml" 2>/dev/null && falla "12 · el conducto se re
 [ "$(pide DELETE /arbol/notas/persona.md "$ANA")" = "200" ] || falla "12 · una persona no retira en /arbol: $(cuerpo)"
 if [ "${ESCRITO_OK:-no}" = si ]; then
   # un Dataset se va con su puntero (antes quedaba huérfano)
-  [ -f "$A/datasets/hr_otro.json" ] && falla "12 · hr.otro tenía puntero antes de empezar"
+  [ -f "$A/datasets/hr/default/otro.json" ] && falla "12 · hr.otro tenía puntero antes de empezar"
   celda 'write(\"hr.huerfano\", over(\"hr.lago\", como=\"arrow\"))[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "12 · write(hr.huerfano): $(cuerpo)"
-  [ -f "$A/datasets/hr_huerfano.json" ] || falla "12 · hr.huerfano sin puntero"
+  [ -f "$A/datasets/hr/default/huerfano.json" ] || falla "12 · hr.huerfano sin puntero"
   celda 'ore.puesto.pedir(\"DELETE\", \"/documentos/Dataset/hr/huerfano\")' && tiene "d['salida']['texto'].startswith('(200,') and \"'puntero': True\" in d['salida']['texto']" || falla "12 · DELETE /documentos/Dataset desde la celda: $(cuerpo)"
-  [ ! -f "$A/packages/hr/datasets/huerfano.yaml" ] && [ ! -f "$A/datasets/hr_huerfano.json" ] || falla "12 · el Dataset o su puntero siguen en el árbol"
+  [ ! -f "$A/packages/hr/datasets/huerfano.yaml" ] && [ ! -f "$A/datasets/hr/default/huerfano.json" ] || falla "12 · el Dataset o su puntero siguen en el árbol"
 fi
 dice "12 · desde un puesto sólo entran los verbos: PUT/DELETE /arbol, POST /ramas, /propuestas y /paquetes son 403 para el agente (con y sin x-ore-puesto), GET sigue; una persona escribe en /arbol; DELETE /documentos/Dataset retira también el puntero"
 
@@ -853,7 +853,7 @@ fi
 # la persona del puntero (`escrito_por`); otra recibe 403 con quién. Aquí como
 # personas, contra el catálogo: es la misma puerta que el SDK usa.
 if [ "${ESCRITO_OK:-no}" = si ]; then
-  grep -q '"escrito_por": "persona:ana"' "$A/datasets/hr_derivadoT.json" || grep -q 'escrito_por.*persona:ana' "$A/datasets/hr_derivadoT.json" || falla "15 · hr.derivadoT no dice escrito_por ana: $(cat "$A/datasets/hr_derivadoT.json")"
+  grep -q '"escrito_por": "persona:ana"' "$A/datasets/hr/default/derivadoT.json" || grep -q 'escrito_por.*persona:ana' "$A/datasets/hr/default/derivadoT.json" || falla "15 · hr.derivadoT no dice escrito_por ana: $(cat "$A/datasets/hr/default/derivadoT.json")"
   [ "$(pide GET /v1/namespaces/hr/tables/derivadoT "$BEA")" = "200" ] || falla "15 · bea no puede ni cargar la tabla sin pedir credencial: $(cuerpo)"
   DELEGAR='x-iceberg-access-delegation: vended-credentials'
   CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$BEA" -H "$DELEGAR" "$BASE/v1/namespaces/hr/tables/derivadoT")
@@ -864,7 +864,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   [ "$(pide DELETE /documentos/Dataset/hr/derivadoT "$BEA")" = "403" ] && grep -q "persona:ana" "$TMP/r.json" || falla "15 · bea retiró el dataset de ana: $(cuerpo)"
   [ -f "$A/packages/hr/datasets/derivadoT.yaml" ] || falla "15 · el dataset de ana se fue"
   [ "$(pide DELETE /documentos/Dataset/hr/derivadoT "$ANA")" = "200" ] || falla "15 · ana no pudo retirar lo suyo: $(cuerpo)"
-  [ ! -f "$A/packages/hr/datasets/derivadoT.yaml" ] && [ ! -f "$A/datasets/hr_derivadoT.json" ] || falla "15 · lo de ana no se retiró entero"
+  [ ! -f "$A/packages/hr/datasets/derivadoT.yaml" ] && [ ! -f "$A/datasets/hr/default/derivadoT.json" ] || falla "15 · lo de ana no se retiró entero"
   dice "15 · lo escrito es de quien lo escribió: a bea no se le presta la credencial de hr.derivadoT (403 con persona:ana), su commit es 403 y no lo retira; ana sí"
 fi
 
@@ -883,7 +883,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   celda 'import json; c, r = ore.puesto.pedir(\"GET\", \"/puestos/\" + ore.puesto.id); print(json.dumps([c, r.get(\"transform\"), r.get(\"inputs\")]))' && tiene "d['salida']['texto'].strip()=='[200, null, null]'" || falla "16 · el transform no se retiró al salir: $(cuerpo)"
   celda "$A_PELO"'print(json.dumps([a_pelo(\"GET\", \"/puestos/\" + ore.puesto.id + \"/datos/hr.salida\")]))' && tiene "d['salida']['texto'].strip()=='[200]'" || falla "16 · fuera del transform se vuelve a resolver: $(cuerpo)"
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.declarado\")\ndef t2():\n    return write(\"hr.declarado\", over(\"hr.lago\", como=\"arrow\"))\nt2()[\"filas\"]' && tiene "d['salida']['texto']=='3'" || falla "16 · el transform declarado sí escribe lo suyo: $(cuerpo)"
-  [ -f "$A/datasets/hr_declarado.json" ] || falla "16 · hr.declarado no quedó"
+  [ -f "$A/datasets/hr/default/declarado.json" ] || falla "16 · hr.declarado no quedó"
   dice "16 · lo declarado, en el servidor: dentro de @transform, GET datos de lo no declarado es 403 y el catálogo de otra tabla también (a pelo, rodeando el SDK); GET /puestos lo dice; al salir se retira y todo vuelve a resolverse; lo declarado se escribe"
 fi
 
@@ -920,7 +920,7 @@ if [ "${ESCRITO_OK:-no}" = si ]; then
   celda '@transform(inputs=[\"hr.lago\"], output=\"hr.prohibida\")\ndef t():\n    return write(\"hr.prohibida\", over(\"hr.lago\", como=\"arrow\"))\ntry:\n    t()\n    print(\"ESCRIBIO\")\nexcept Exception as e:\n    print(type(e).__name__)' \
     && tiene "'ESCRIBIO' not in d['salida'].get('texto','') and d['salida']['tipo'] in ('texto','error')" \
     || falla "17 · un analytics escribió aunque el transform lo declaraba: $(cuerpo)"
-  [ ! -f "$A/datasets/hr_prohibida.json" ] || falla "17 · quedó el puntero de lo que no se podía escribir"
+  [ ! -f "$A/datasets/hr/default/prohibida.json" ] || falla "17 · quedó el puntero de lo que no se podía escribir"
   [ "$(pide DELETE /puestos/puesto-ana-python-mirar "$ANA")" = "200" ] || falla "17 · cerrar el puesto del analytics: $(cuerpo)"
   for _ in $(seq 1 100); do kill -0 "$AGENTE2" 2>/dev/null || break; sleep 0.25; done
   AGENTE2=""
@@ -1093,7 +1093,7 @@ if [ "$NODE_OK" = "si" ]; then
     celda 'const dv = await declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetraNode, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida_node }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [dv.kind, dv.nombre, dv.nueva].join(\" \")' && tiene "d['salida']['texto']=='View hr.porLetraNode true'" || falla "8 · declare(View) desde Node: $(cuerpo)"
     [ -f "$A/packages/hr/views/porLetraNode.yaml" ] || falla "8 · la View declarada desde Node no está en el árbol"
     celda 'const resumirNode = transform({ inputs: [\"hr.lago\"], output: \"hr.resumen_node\" }, async function resumirNode() { return write(\"hr.resumen_node\", await over(\"hr.lago\")); }); (await resumirNode()).filas' && tiene "d['salida']['texto']=='3'" || falla "8 · un transform desde Node: $(cuerpo)"
-    "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-node","transform":"resumirNode"}, pr' "$A/datasets/hr_resumen_node.json" || falla "8 · la procedencia desde Node: $(cat "$A/datasets/hr_resumen_node.json")"
+    "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-node","transform":"resumirNode"}, pr' "$A/datasets/hr/default/resumen_node.json" || falla "8 · la procedencia desde Node: $(cat "$A/datasets/hr/default/resumen_node.json")"
     celda 'await transform({ inputs: [\"hr.lago\"], output: \"hr.resumen_node\" }, async () => over(\"hr.salida\"))()' && tiene "d['salida']['tipo']=='error' and 'hr.salida' in d['salida']['mensaje']" || falla "8 · leer fuera de los inputs desde Node: $(cuerpo)"
     celda 'await declare({ kind: \"View\", metadata: { name: \"rotaNode\", namespace: \"hr\" }, spec: { owner: \"team:hr\", from: { table: \"hr.nadie\" }, fields: { a: \"a\" } } })' && tiene "d['salida']['tipo']=='error' and 'OOS' in d['salida']['mensaje']" || falla "8 · declare de una View rota desde Node: $(cuerpo)"
   fi
@@ -1233,7 +1233,7 @@ if [ "$JAVA_OK" = "si" ]; then
     celda 'var dv = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetraJvm, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida_jvm }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); dv.get(\"kind\") + \" \" + dv.get(\"nombre\") + \" \" + dv.get(\"nueva\")' && tiene "d['salida']['texto']=='\"View hr.porLetraJvm true\"'" || falla "9 · declare(View) desde Java: $(cuerpo)"
     [ -f "$A/packages/hr/views/porLetraJvm.yaml" ] || falla "9 · la View declarada desde Java no está en el árbol"
     celda 'var ej = transform(\"resumirJvm\", List.of(\"hr.lago\"), \"hr.resumen_jvm\", () -> write(\"hr.resumen_jvm\", over(\"hr.lago\"))); ej.get(\"filas\")' && tiene "d['salida']['texto']=='3'" || falla "9 · un transform desde Java: $(cuerpo)"
-    "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-jvm","transform":"resumirJvm"}, pr' "$A/datasets/hr_resumen_jvm.json" || falla "9 · la procedencia desde Java: $(cat "$A/datasets/hr_resumen_jvm.json")"
+    "$PY" -c 'import json,sys; pr=json.load(open(sys.argv[1]))["procedencia"]; assert pr=={"inputs":["hr.lago"],"puesto":"puesto-ana-jvm","transform":"resumirJvm"}, pr' "$A/datasets/hr/default/resumen_jvm.json" || falla "9 · la procedencia desde Java: $(cat "$A/datasets/hr/default/resumen_jvm.json")"
     celda 'transform(\"fuera\", List.of(\"hr.lago\"), \"hr.resumen_jvm\", () -> over(\"hr.salida\"))' && tiene "d['salida']['tipo']=='error' and 'hr.salida' in d['salida']['mensaje']" || falla "9 · leer fuera de los inputs desde Java: $(cuerpo)"
     celda 'declare(Map.of(\"kind\", \"View\", \"metadata\", Map.of(\"name\", \"rotaJvm\", \"namespace\", \"hr\"), \"spec\", Map.of(\"owner\", \"team:hr\", \"from\", Map.of(\"table\", \"hr.nadie\"), \"fields\", Map.of(\"a\", \"a\"))))' && tiene "d['salida']['tipo']=='error' and 'OOS' in d['salida']['mensaje']" || falla "9 · declare de una View rota desde Java: $(cuerpo)"
   fi

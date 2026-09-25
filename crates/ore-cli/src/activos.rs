@@ -13,36 +13,13 @@ pub struct Opciones {
     pub json: bool,
 }
 
-/// Los punteros de `datasets/`, por su nombre de fichero sin extensión.
-pub(crate) fn punteros_de(raiz: &Path) -> BTreeMap<String, Json> {
-    let mut out = BTreeMap::new();
-    let Ok(entradas) = std::fs::read_dir(raiz.join("datasets")) else {
-        return out;
-    };
-    for e in entradas.flatten() {
-        let p = e.path();
-        if p.extension().is_none_or(|x| x != "json") {
-            continue;
-        }
-        let Some(nombre) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        if let Ok(texto) = std::fs::read_to_string(&p)
-            && let Ok(n) = ore_core::parse::parse(&texto)
-        {
-            out.insert(nombre, Json::de_node(&n));
-        }
-    }
-    out
-}
-
 pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
     if !path.is_dir() {
         eprintln!("error: `{}` no es un directorio de paquete", path.display());
         return std::process::ExitCode::from(66);
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(path);
-    let punteros = punteros_de(path);
+    let punteros = ore_core::punteros::del_arbol(path);
     let indice = ore_core::assets::indice(&pkg, &punteros, &ore_core::assets::Cabeza::default());
     if op.json {
         println!("{}", indice.jcs());

@@ -181,45 +181,17 @@ impl Puntero {
     }
 }
 
-/// Los punteros, de **una** carpeta (0033: un kind, un puntero). El nombre
-/// `<p>.<x>` sale del campo `nombre`, `tabla` o `vista` del puntero y, si no lo
-/// trae, del nombre del fichero (`<p>_<x>.json`: la primera `_` separa el
-/// paquete, que no lleva ninguna). La clase la dice el documento del árbol:
+/// Los punteros, de **una** carpeta (0033: un kind, un puntero), a cualquier
+/// profundidad (0038 P2: `<dir>/<base>/<schema>/<n>.json`, y los de antes,
+/// `<dir>/<p>_<n>.json`, hasta que `ore migrate` los mueva): el nombre lo dice
+/// `ore_core::punteros::clave_de`. La clase la dice el documento del árbol:
 /// **mantenido** si `packages/<p>/datasets/<x>.yaml` lleva `from`, **escrito**
 /// si no; sin documento, escrito (nació de un `write()` y aún no se declaró).
 pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
     let mut out = Vec::new();
-    let Ok(entradas) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    let mut rutas: Vec<PathBuf> = entradas
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
-        .collect();
-    rutas.sort();
-    for ruta in rutas {
-        let Ok(t) = std::fs::read_to_string(&ruta) else {
-            continue;
-        };
-        let Ok(nodo) = ore_core::parse::parse(&t) else {
-            continue;
-        };
-        let nombre = ["nombre", "tabla", "vista"]
-            .into_iter()
-            .find_map(|k| campo_de(&nodo, k))
-            .unwrap_or_else(|| {
-                let stem = ruta
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default();
-                match stem.split_once('_') {
-                    Some((p, x)) => format!("{p}.{x}"),
-                    None => stem.to_string(),
-                }
-            });
-        let clase = match nombre.split_once('.') {
-            Some((ns, n)) => {
+    for (nombre, (ruta, nodo)) in ore_core::punteros::todos_en(dir) {
+        let clase = match ore_core::punteros::partes(&nombre) {
+            Some((ns, _, n)) => {
                 let doc = path
                     .join("packages")
                     .join(ns)
@@ -256,19 +228,6 @@ pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
 /// (`medida-los-punteros.sh` M1): con sólo las vistas mantenidas, el Job de la
 /// copia se llevaba entero un dataset escrito y dejaba su puntero colgando.
 pub(crate) fn reclamados(path: &Path, extra: Option<&Path>) -> (Vec<String>, Vec<String>) {
-    fn jsons(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(es) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in es.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                jsons(&p, out);
-            } else if p.extension().and_then(|x| x.to_str()) == Some("json") {
-                out.push(p);
-            }
-        }
-    }
     let mut datasets = BTreeSet::new();
     let mut claves = BTreeSet::new();
     let mut dirs: Vec<(PathBuf, &str)> = ["datasets", "copias", "resultados"]
@@ -279,9 +238,7 @@ pub(crate) fn reclamados(path: &Path, extra: Option<&Path>) -> (Vec<String>, Vec
         dirs.push((x.to_path_buf(), "datasets"));
     }
     for (dir, clase) in dirs {
-        let mut fs = Vec::new();
-        jsons(&dir, &mut fs);
-        for f in fs {
+        for f in ore_core::punteros::ficheros(&dir) {
             let Some(n) = std::fs::read_to_string(&f)
                 .ok()
                 .and_then(|t| ore_core::parse::parse(&t).ok())
@@ -800,7 +757,7 @@ fn documento_nuevo(
     columnas: &BTreeMap<String, String>,
 ) -> String {
     let mut s = format!(
-        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}_{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
+        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}/default/{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
     );
     for (c, t) in columnas {
         s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
@@ -1018,16 +975,28 @@ fn de_quien_lo_escribio(
     }
 }
 
-/// El puntero de un dataset, leído del árbol (`datasets/<ns>_<t>.json`).
-fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>) {
-    let ruta = path.join("datasets").join(format!("{ns}_{tabla}.json"));
-    let previo = std::fs::read_to_string(&ruta)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok());
-    (ruta, previo)
+/// El puntero de un dataset en el árbol (0038 P2): **dónde se escribe**
+/// (`datasets/<base>/<schema>/<n>.json`), **lo que decía** (el de su sitio o,
+/// hasta que `ore migrate` lo mueva, el de antes, `datasets/<p>_<n>.json`) y
+/// **su nombre en el lago**: el que el puntero diga; el de antes
+/// (`datasets/<p>_<n>`) si el puntero es de antes y no lo dice; y
+/// `catalogo/<base>/<schema>/<n>` si la tabla nace ahora.
+fn puntero_del_lago(path: &Path, ns: &str, tabla: &str) -> (PathBuf, Option<Node>, String) {
+    let dir = path.join(ore_core::punteros::CARPETA);
+    let corto = format!("{ns}.{tabla}");
+    let ruta = ore_core::punteros::ruta_en(&dir, &corto)
+        .unwrap_or_else(|| dir.join(format!("{ns}_{tabla}.json")));
+    let previo = ore_core::punteros::leer_en(&dir, &corto).map(|(_, n)| n);
+    let lago = match &previo {
+        Some(p) => campo_de(p, "dataset").unwrap_or_else(|| format!("datasets/{ns}_{tabla}")),
+        None => ore_core::punteros::dataset_nuevo(&corto),
+    };
+    (ruta, previo, lago)
 }
 
-/// Escribe el puntero: lo que había, con el estado nuevo encima.
+/// Escribe el puntero en su sitio: lo que había, con el estado nuevo encima;
+/// su `dataset`, el de su `metadata_location` si se sabe (donde están los
+/// bytes: es lo que reclama); y el de antes, fuera.
 fn escribir_puntero(
     ruta: &Path,
     previo: Option<&Node>,
@@ -1045,8 +1014,29 @@ fn escribir_puntero(
         m.insert(k.into(), v);
     }
     m.remove("motivo");
+    if let Some(Json::Str(ml)) = m.get("metadata_location")
+        && let Some(d) = ore_core::punteros::dataset_de_ubicacion(ml)
+    {
+        m.insert("dataset".into(), Json::s(d));
+    }
     std::fs::write(ruta, Json::Obj(m).pretty() + "\n")
-        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))
+        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
+    // `<dir>/<base>/<schema>/<n>.json` → el de antes, `<dir>/<base>_<n>.json`.
+    let segs: Vec<&str> = ruta
+        .iter()
+        .rev()
+        .take(3)
+        .filter_map(|c| c.to_str())
+        .collect();
+    if let ([f, s, b], Some(dir)) = (
+        segs.as_slice(),
+        ruta.parent().and_then(Path::parent).and_then(Path::parent),
+    ) && let Some(n) = f.strip_suffix(".json")
+    {
+        let corto = ore_core::normalize::corto(b, s, n);
+        ore_core::punteros::retirar_legado(dir, &corto, ruta);
+    }
+    Ok(())
 }
 
 /// El cuerpo de `--peticion`: JSON tal cual, `@fichero`, o `-` por stdin.
@@ -1313,6 +1303,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         tabla: String,
         ruta: PathBuf,
         previo: Option<Node>,
+        lago: String,
         base: String,
         repetida: bool,
     }
@@ -1340,7 +1331,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
         }
         documento_del_dataset(path, ns, tabla)?;
-        let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+        let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
         de_quien_lo_escribio(previo.as_ref(), &nombre, op.sujeto)?;
         let base = previo
             .as_ref()
@@ -1372,7 +1363,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 let h = almacen(
                     "historia",
                     &Json::obj([
-                        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+                        ("dataset", Json::s(lago.clone())),
                         ("metadata_location", Json::s(&base)),
                     ]),
                 )?;
@@ -1391,6 +1382,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             tabla: tabla.to_string(),
             ruta,
             previo,
+            lago,
             base,
             repetida,
         });
@@ -1405,7 +1397,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         }
         let pet = format!(
             "{{\"dataset\":{},\"metadata_location\":{},\"peticion\":{texto},\"cambio\":{},\"retencion_defecto\":{defecto}}}",
-            lit(&format!("datasets/{}_{}", p.ns, p.tabla)),
+            lit(&p.lago.clone()),
             lit(&p.base),
             p.cambio
                 .indice
@@ -1460,7 +1452,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
             lineas.push(Json::obj([
-                ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+                ("dataset", Json::s(p.lago.clone())),
                 ("filas", Json::Int(filas)),
                 ("metadata_location", Json::s(&p.base)),
                 (
@@ -1489,7 +1481,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let mut campos = vec![
             ("estado", Json::s("copiada")),
             ("tabla", Json::s(&p.nombre)),
-            ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+            ("dataset", Json::s(p.lago.clone())),
             ("metadata_location", Json::s(&a.metadata_location)),
             ("snapshot", Json::s(&a.snapshot)),
             ("filas", Json::Int(a.filas)),
@@ -1506,7 +1498,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         }
         escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
         lineas.push(Json::obj([
-            ("dataset", Json::s(format!("datasets/{}_{}", p.ns, p.tabla))),
+            ("dataset", Json::s(p.lago.clone())),
             ("filas", Json::Int(a.filas)),
             ("metadata_location", Json::s(&a.metadata_location)),
             ("operacion", Json::s(&a.operacion)),
@@ -1572,7 +1564,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
     documento_del_dataset(path, ns, tabla)?;
-    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -1588,7 +1580,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let defecto = retencion_defecto(op)?;
     let pet = format!(
         "{{\"dataset\":{},\"crear\":true,\"peticion\":{texto},\"retencion_defecto\":{defecto}}}",
-        lit(&format!("datasets/{ns}_{tabla}"))
+        lit(&lago.clone())
     );
     let salida = almacen_crudo("aplicar", &pet)?;
     let n = ore_core::parse::parse(&salida).map_err(|e| {
@@ -1602,7 +1594,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
-        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("dataset", Json::s(lago.clone())),
         ("metadata_location", Json::s(&a.metadata_location)),
         ("snapshot", Json::s(&a.snapshot)),
         ("filas", Json::Int(a.filas)),
@@ -1613,7 +1605,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
     escribir_puntero(&ruta, previo.as_ref(), campos)?;
     let j = Json::obj([
-        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("dataset", Json::s(lago.clone())),
         ("metadata_location", Json::s(&a.metadata_location)),
         ("puntero_nuevo", Json::Bool(true)),
         ("tabla", Json::s(nombre)),
@@ -1636,10 +1628,11 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     Ok(())
 }
 
-/// La credencial prestada para `datasets/<ns>_<tabla>`, como los dos campos
-/// del `LoadTableResult` (`config` y `storage-credentials`), ya escritos.
-fn prestamo(ns: &str, tabla: &str, op: &Opciones) -> Result<String, Fallo> {
-    prestamo_de(&format!("datasets/{ns}_{tabla}"), op.prestar, op.leer, None)
+/// La credencial prestada para `lago` (el nombre del dataset en el bucket),
+/// como los dos campos del `LoadTableResult` (`config` y
+/// `storage-credentials`), ya escritos.
+fn prestamo(lago: &str, op: &Opciones) -> Result<String, Fallo> {
+    prestamo_de(lago, op.prestar, op.leer, None)
 }
 
 /// La propiedad que dice, en el `config` de un `loadTable`, que lo prestado es
@@ -1707,7 +1700,7 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         Err((65, m)) if m.contains("es un dataset mantenido") => Some(m),
         Err(e) => return Err(e),
     };
-    let (_, previo) = puntero_del_lago(path, ns, tabla);
+    let (_, previo, lago) = puntero_del_lago(path, ns, tabla);
     let ml = match previo.as_ref() {
         Some(p) => campo_de(p, "metadata_location")
             .filter(|m| !m.is_empty())
@@ -1742,7 +1735,7 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let sitio = previo
         .as_ref()
         .and_then(|p| campo_de(p, "dataset"))
-        .unwrap_or_else(|| format!("datasets/{ns}_{tabla}"));
+        .unwrap_or_else(|| lago.clone());
     let cred = prestamo_de(&sitio, op.prestar, leer, solo_lectura.as_deref())?;
     println!(
         "{{\"metadata-location\":{},\"metadata\":{},{cred}}}",
@@ -1767,7 +1760,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
     documento_del_dataset(path, ns, tabla)?;
-    let (_, previo) = puntero_del_lago(path, ns, tabla);
+    let (_, previo, lago) = puntero_del_lago(path, ns, tabla);
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -1782,7 +1775,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
     let pet = format!(
         "{{\"dataset\":{},\"peticion\":{texto}}}",
-        lit(&format!("datasets/{ns}_{tabla}"))
+        lit(&lago.clone())
     );
     let salida = almacen_crudo("esbozar", &pet)?;
     let salida = salida.trim();
@@ -1792,7 +1785,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         69,
         "lo que devolvió `ore-store esbozar` no tiene la forma esperada".to_string(),
     ))?;
-    let cred = prestamo(ns, tabla, op)?;
+    let cred = prestamo(&lago, op)?;
     println!("{},{cred}}}", &salida[..fin]);
     Ok(())
 }
@@ -1810,7 +1803,7 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         ))
         .and_then(|e| edad_ms(e).map_err(|m| (64, m)))?;
     let minimo = op.minimo.unwrap_or(1).max(1);
-    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
     let base = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -1827,7 +1820,7 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         .unwrap_or_default();
     let pet = format!(
         "{{\"dataset\":{},\"metadata_location\":{},\"updates\":[{{\"action\":\"set-properties\",\"updates\":{{\"history.expire.max-snapshot-age-ms\":\"{edad}\",\"history.expire.min-snapshots-to-keep\":\"{minimo}\"}}}}]{uuid}}}",
-        lit(&format!("datasets/{ns}_{tabla}")),
+        lit(&lago.clone()),
         lit(&base),
     );
     let salida = almacen_crudo("aplicar", &pet)?;
@@ -1887,7 +1880,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
 
     // ── el CAS semántico: el puntero sigue donde el escritor lo dejó ────────
-    let (ruta, previo) = puntero_del_lago(path, ns, tabla);
+    let (ruta, previo, lago) = puntero_del_lago(path, ns, tabla);
     let actual = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -1963,7 +1956,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let mut campos = vec![
         ("estado", Json::s("copiada")),
         ("tabla", Json::s(nombre)),
-        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("dataset", Json::s(lago.clone())),
         ("metadata_location", Json::s(ml)),
         ("snapshot", Json::s(op.snapshot.unwrap_or_default())),
     ];
@@ -1987,8 +1980,11 @@ fn salida(
     puntero_nuevo: bool,
     tabla_nueva: bool,
 ) -> Result<(), Fallo> {
+    // El nombre en el lago, el de donde están los bytes (lo que dice el puntero).
+    let lago = ore_core::punteros::dataset_de_ubicacion(ml)
+        .unwrap_or_else(|| format!("datasets/{ns}_{tabla}"));
     let j = Json::obj([
-        ("dataset", Json::s(format!("datasets/{ns}_{tabla}"))),
+        ("dataset", Json::s(lago)),
         ("metadata_location", Json::s(ml)),
         ("puntero_nuevo", Json::Bool(puntero_nuevo)),
         ("tabla", Json::s(nombre)),

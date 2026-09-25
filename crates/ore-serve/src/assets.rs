@@ -26,7 +26,7 @@ use crate::rutas::{Arbol, Servidor};
 use ore_core::assets::Cabeza;
 use ore_core::json::Json;
 use ore_entrada::http::Respuesta;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -69,7 +69,7 @@ impl Cache {
 /// compilado, la proyección, y `version` por fichero si hay historia.
 pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-    let punteros = punteros_de(raiz);
+    let punteros = ore_core::punteros::del_arbol(raiz);
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
     // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
     // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que
@@ -138,29 +138,6 @@ fn version_de(raiz: &Path, ruta: &str) -> Option<Json> {
             ),
         ),
     ]))
-}
-
-/// Los punteros de `datasets/`, por su nombre de fichero sin extensión.
-pub(crate) fn punteros_de(raiz: &Path) -> BTreeMap<String, Json> {
-    let mut out = BTreeMap::new();
-    let Ok(entradas) = std::fs::read_dir(raiz.join("datasets")) else {
-        return out;
-    };
-    for e in entradas.flatten() {
-        let p = e.path();
-        if p.extension().is_none_or(|x| x != "json") {
-            continue;
-        }
-        let Some(nombre) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        if let Ok(texto) = std::fs::read_to_string(&p)
-            && let Ok(n) = ore_core::parse::parse(&texto)
-        {
-            out.insert(nombre, Json::de_node(&n));
-        }
-    }
-    out
 }
 
 fn ahora() -> String {

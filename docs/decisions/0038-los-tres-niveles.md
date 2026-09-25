@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0 y P1 hechos; P2–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido (P0, P1 y P2 hechos; P3–P7 pendientes) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
@@ -81,7 +81,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 |---|---|---|
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
-| **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | medio |
+| **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
 | **P3** | SQL de tres partes: analizador, `sql()`, `write()`, los tres SDK (ATTACH + alias), el LSP, `ore datasets`; las dos partes con aviso | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace), crear y listar schemas | medio |
 | **P5** | `discover` con el schema del origen | pequeño |
@@ -120,6 +120,39 @@ consola) ven lo mismo que antes para todo lo de hoy. La **completa** (`completo`
 escribirse) y las demás versiones enteras; sobre el árbol de victor el binario de antes y el de
 después dan el mismo `validate`, los mismos 58 ítems con las mismas refs y **el mismo digest de
 bundle**; el índice sólo gana el campo `schema`.
+
+## P2, hecho: los punteros
+
+Medido antes (`pruebas-de-fuego/medida-los-punteros.sh`), y con tres hallazgos que no eran de
+nombres sino de **borrar lo que no se debía**:
+
+- **P2a** · El Job de la copia (`ore materialize --recoger`) le pasaba a `recoger-huerfanas`
+  sólo los datasets de las vistas mantenidas: **un dataset escrito se borraba entero del
+  bucket** (M1: 4 → 0 objetos) y su puntero quedaba apuntando a nada; `resultados/`, igual,
+  también en la pasada diaria. Ahora se reclama **todo puntero del árbol**
+  (`datasets::reclamados`), y el de una vista retirada se quita antes. el-lago 10b.
+- **P2b** · `recoger-huerfanas` cortaba el nombre a dos segmentos (un dataset anidado era
+  huérfano aunque se reclamara, M3) y el mantenimiento de una tabla borraba lo que hubiera bajo
+  su ubicación: `datasets/ventas_x` es prefijo de `datasets/ventas_x/default/n`. Ahora se
+  reclama por prefijo hasta una `/`, y una tabla sólo toca sus `metadata/` y `data/`.
+- **P2c** · Los punteros, en su sitio. `ore_core::punteros` decide dónde vive el de cada
+  nombre (`datasets/<base>/<schema>/<n>.json`), lee el de antes (`<p>_<n>.json`) mientras
+  quede, dice qué nombre es cada fichero y los lista a cualquier profundidad; todo el que leía
+  o escribía uno a mano pasa por ahí (`ore datasets`, `ore materialize`, el índice, ore-serve:
+  copias, informes, retirar un Dataset o un paquete, preguntar, funciones, puestos).
+  **Quien escribe un puntero lo deja en su sitio y retira el de antes**, y `ore migrate` los
+  mueve todos (y los de `copias/`) escribiendo el `dataset` que el fichero ya no dice. Borrar
+  un paquete retira los punteros **de su base** —el nombre que dice cada uno, no un prefijo del
+  fichero (M4)—.
+
+**El nombre en el lago** de un dataset que nace es `catalogo/<base>/<schema>/<n>`, no
+`datasets/<base>/…`: `datasets/ventas_x` (de antes) sería prefijo de `datasets/ventas_x/default/n`,
+y la credencial prestada al primero —acotada a su prefijo— alcanzaría el segundo. Lo que ya
+existe no se mueve. Y **el `dataset` de un puntero sale de su `metadata_location`** siempre que
+se sabe: es donde están los bytes, lo que tiene que reclamar, aunque lo haya elegido otro
+escritor (el swap de `confirmar`).
+
+Lo que queda de nombres de dos partes (`/v1`, los SDK, `ore datasets --tabla p.t`) es de P3/P4.
 
 ## Lo que no cambia
 

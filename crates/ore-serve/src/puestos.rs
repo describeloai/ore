@@ -2420,20 +2420,15 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
             .map(|(k, v)| (k, Json::s(v)))
             .collect(),
     );
-    let informe = raiz
-        .join("datasets")
-        .join(format!("{}.json", del_dataset.replace('.', "_")));
-    let Ok(texto) = std::fs::read_to_string(&informe) else {
+    let Some((_, n)) =
+        ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &del_dataset)
+    else {
         return Respuesta::error(
             409,
             format!(
                 "el dataset `{del_dataset}` no está: aún no se copió, o nadie lo escribió todavía"
             ),
         );
-    };
-    let n = match ore_core::parse::parse(&texto) {
-        Ok(n) => n,
-        Err(_) => return Respuesta::error(502, format!("el informe de `{vista}` no analiza")),
     };
     let campo = |k: &str| {
         n.get(k)

@@ -341,12 +341,8 @@ impl Servidor {
                 ),
             );
         };
-        let informe = raiz
-            .join("datasets")
-            .join(format!("{}.json", copia_qn.replace('.', "_")));
-        let copia = std::fs::read_to_string(&informe)
-            .ok()
-            .and_then(|t| parse::parse(&t).ok());
+        let copia = ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &copia_qn)
+            .map(|(_, n)| n);
         // Con qué se lee: el `metadata_location` del dataset o, mientras quede
         // alguno, la `clave` de un sobre heredado.
         let clave = copia.as_ref().and_then(|n| {

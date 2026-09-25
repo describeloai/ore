@@ -176,10 +176,16 @@ impl Servidor {
         let Some(vista) = vista else {
             return Json::obj([("estado", Json::s("desconocido"))]);
         };
-        let fichero_informe = format!("datasets/{}.json", vista.replace('.', "_"));
-        let informe = std::fs::read_to_string(raiz.join(&fichero_informe))
-            .ok()
-            .and_then(|t| ore_core::parse::parse(&t).ok());
+        // Su puntero: el de su sitio o el de antes (0038 P2).
+        let dir = raiz.join(ore_core::punteros::CARPETA);
+        let hallado = ore_core::punteros::leer_en(&dir, &vista);
+        let fichero_informe = hallado
+            .as_ref()
+            .and_then(|(r, _)| r.strip_prefix(raiz).ok())
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .or_else(|| ore_core::punteros::ruta(&vista))
+            .unwrap_or_default();
+        let informe = hallado.map(|(_, n)| n);
         let estado_informe = informe
             .as_ref()
             .and_then(|i| {

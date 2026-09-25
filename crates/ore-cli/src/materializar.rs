@@ -241,11 +241,12 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         retirar_informes_de_nadie(dir, &vivas);
     }
     let (mut reclamados, mut claves) = crate::datasets::reclamados(path, op.informe);
-    reclamados.extend(declaradas.iter().filter_map(|v| v.qname()).map(|qn| {
-        leer_puntero(&punteros, &qn)
-            .and_then(|p| campo_de(&p, "dataset"))
-            .unwrap_or_else(|| dataset_de(&qn))
-    }));
+    reclamados.extend(
+        declaradas
+            .iter()
+            .filter_map(|v| v.qname())
+            .map(|qn| dataset_de(leer_puntero(&punteros, &qn).as_ref(), &qn)),
+    );
     claves.extend(heredados.iter().cloned());
     if recoger && !seco {
         match recoger_huerfanas(&reclamados, &claves) {
@@ -354,10 +355,7 @@ fn una(
     let puntero = leer_puntero(punteros, qn);
     // El nombre en el bucket: el que el puntero diga (una copia migrada sigue
     // en `copias/<p>_<v>`), o el de un dataset nuevo.
-    let dataset = puntero
-        .as_ref()
-        .and_then(|p| campo_de(p, "dataset"))
-        .unwrap_or_else(|| dataset_de(qn));
+    let dataset = dataset_de(puntero.as_ref(), qn);
     // Con cualquier `estado`: un puntero que dice `error` por una pasada que
     // falló sigue nombrando el dataset que la anterior dejó, y ese dataset es
     // sobre el que se construye. Si no, cada fallo transitorio estrenaría uno.
@@ -742,12 +740,18 @@ fn recoger_dataset(
     })
 }
 
-/// El nombre de un dataset nuevo en el bucket: `datasets/<paquete>_<nombre>`
-/// (bajo `ore/v2/`). El mismo nombre que su puntero en el árbol, sin `.json`.
-/// Uno que ya existía lo dice su puntero (`dataset`), y puede seguir en
-/// `copias/…`: los bytes no se mueven al migrar.
-pub(crate) fn dataset_de(qn: &str) -> String {
-    format!("datasets/{}", qn.replace('.', "_"))
+/// **El nombre de un dataset en el bucket** (bajo `ore/v2/`): el que su
+/// puntero diga (uno que ya existía puede seguir en `copias/…`: los bytes no
+/// se mueven al migrar); el de antes, `datasets/<p>_<n>`, si el puntero no lo
+/// dice; y si no hay puntero, el de un dataset que nace,
+/// `catalogo/<base>/<schema>/<n>` (0038 P2, `ore_core::punteros`).
+pub(crate) fn dataset_de(puntero: Option<&ore_core::parse::Node>, qn: &str) -> String {
+    match puntero {
+        Some(p) => {
+            campo_de(p, "dataset").unwrap_or_else(|| format!("datasets/{}", qn.replace('.', "_")))
+        }
+        None => ore_core::punteros::dataset_nuevo(qn),
+    }
 }
 
 /// **El dataset que hay debajo** de un documento que copia: el primero bajando
@@ -776,12 +780,11 @@ impl Puntero {
     /// El puntero de una vista **si su copia está hecha** (`copiada` o
     /// `al-dia`, y con algo que leer); si no, por qué no.
     pub fn hecho(raiz: &Path, vista: &str) -> Result<Puntero, String> {
-        let ruta = raiz
-            .join("datasets")
-            .join(format!("{}.json", vista.replace('.', "_")));
-        let n = std::fs::read_to_string(&ruta)
-            .ok()
-            .and_then(|t| ore_core::parse::parse(&t).ok())
+        let dir = raiz.join(ore_core::punteros::CARPETA);
+        let ruta = ore_core::punteros::ruta_en(&dir, vista)
+            .unwrap_or_else(|| dir.join(format!("{vista}.json")));
+        let n = ore_core::punteros::leer_en(&dir, vista)
+            .map(|(_, n)| n)
             .ok_or_else(|| {
                 format!(
                     "su copia no está hecha: no hay `{}` (ore materialize)",
@@ -791,7 +794,7 @@ impl Puntero {
         let estado = campo_de(&n, "estado").unwrap_or_default();
         let p = Puntero {
             vista: vista.to_string(),
-            dataset: campo_de(&n, "dataset").unwrap_or_else(|| dataset_de(vista)),
+            dataset: dataset_de(Some(&n), vista),
             metadata_location: campo_de(&n, "metadata_location"),
             clave: campo_de(&n, "clave"),
         };
@@ -836,12 +839,10 @@ impl Puntero {
     }
 }
 
-/// El puntero de una vista, si está: `<dir>/<paquete>_<vista>.json`.
+/// El puntero de una vista, si está: `<dir>/<base>/<schema>/<n>.json` o, de
+/// antes, `<dir>/<paquete>_<vista>.json`.
 pub(crate) fn leer_puntero(dir: &Path, qn: &str) -> Option<ore_core::parse::Node> {
-    let ruta = dir.join(format!("{}.json", qn.replace('.', "_")));
-    std::fs::read_to_string(ruta)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok())
+    ore_core::punteros::leer_en(dir, qn).map(|(_, n)| n)
 }
 
 /// Un campo escalar de un nodo, si está y no está vacío.
@@ -888,14 +889,7 @@ fn recoger_huerfanas(datasets: &[String], claves: &[String]) -> Result<String, S
 /// el árbol, fuera: un puntero de nadie en el árbol es tan engañoso como un
 /// dataset de nadie en el almacén.
 fn retirar_informes_de_nadie(dir: &Path, vivas: &[String]) {
-    let Ok(entradas) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entradas.flatten() {
-        let ruta = e.path();
-        if ruta.extension().and_then(|x| x.to_str()) != Some("json") {
-            continue;
-        }
+    for ruta in ore_core::punteros::ficheros(dir) {
         let Ok(t) = std::fs::read_to_string(&ruta) else {
             continue;
         };
@@ -916,7 +910,12 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     use ore_core::json::Json;
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("no se pudo crear `{}`: {e}", dir.display()))?;
-    let ruta = dir.join(format!("{}.json", qn.replace('.', "_")));
+    let ruta = ore_core::punteros::ruta_en(dir, qn)
+        .ok_or_else(|| format!("`{qn}` no es un nombre de dataset"))?;
+    if let Some(padre) = ruta.parent() {
+        std::fs::create_dir_all(padre)
+            .map_err(|e| format!("no se pudo crear `{}`: {e}", padre.display()))?;
+    }
     let mut m = match parte {
         Json::Obj(m) => m.clone(),
         _ => Default::default(),
@@ -925,8 +924,7 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     // sigue ahí y sigue siendo cierto hasta su marca. Se conserva lo que decía
     // y se le pone encima el estado de hoy y su motivo.
     if m.get("estado") == Some(&Json::s("error"))
-        && let Ok(previo) = std::fs::read_to_string(&ruta)
-        && let Ok(n) = ore_core::parse::parse(&previo)
+        && let Some((_, n)) = ore_core::punteros::leer_en(dir, qn)
         && let Json::Obj(mut anterior) = Json::de_node(&n)
     {
         anterior.remove("motivo");
@@ -936,8 +934,16 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
         m = anterior;
     }
     m.insert("vista".into(), Json::s(qn));
+    // El nombre en el lago, el de donde están los bytes: lo que se reclama.
+    if let Some(Json::Str(ml)) = m.get("metadata_location")
+        && let Some(d) = ore_core::punteros::dataset_de_ubicacion(ml)
+    {
+        m.insert("dataset".into(), Json::s(d));
+    }
     std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
-        .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))
+        .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))?;
+    ore_core::punteros::retirar_legado(dir, qn, &ruta);
+    Ok(())
 }
 
 /// Carga el árbol y lo rechaza sólo si no compila **la raíz** (conductos,
@@ -1150,12 +1156,11 @@ impl OrigenDelLago {
 
 fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, String> {
     let nombre = abajo.qname().unwrap_or_default();
-    let ruta = raiz_pkg
-        .join("datasets")
-        .join(format!("{}.json", nombre.replace('.', "_")));
-    let puntero = std::fs::read_to_string(&ruta)
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok())
+    let dir = raiz_pkg.join(ore_core::punteros::CARPETA);
+    let ruta = ore_core::punteros::ruta_en(&dir, &nombre)
+        .unwrap_or_else(|| dir.join(format!("{nombre}.json")));
+    let puntero = ore_core::punteros::leer_en(&dir, &nombre)
+        .map(|(_, n)| n)
         .ok_or_else(|| {
             format!(
                 "`{nombre}` es un dataset y no tiene puntero (`{}`): nadie lo escribió ni lo copió todavía",
@@ -1163,7 +1168,7 @@ fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, Str
             )
         })?;
     // Dónde están sus bytes: lo que el puntero diga, o el nombre nuevo.
-    let dataset = campo_de(&puntero, "dataset").unwrap_or_else(|| dataset_de(&nombre));
+    let dataset = dataset_de(Some(&puntero), &nombre);
     let metadata_location = campo_de(&puntero, "metadata_location").ok_or_else(|| {
         format!(
             "el puntero de `{nombre}` (`{}`) no dice `metadata_location`",

@@ -449,11 +449,7 @@ fn detalle_de(pkg: &Package, d: &Loaded) -> Option<Json> {
 }
 
 fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
-    let clave = format!(
-        "{}_{}",
-        meta_str(d, "namespace").unwrap_or_default(),
-        meta_str(d, "name").unwrap_or_default()
-    );
+    let clave = d.qname().unwrap_or_default();
     let Some(Json::Obj(p)) = punteros.get(&clave) else {
         return Json::Crudo("null".into());
     };
@@ -532,11 +528,7 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                     })
                     .unwrap_or_default();
                 if leidos.is_empty() {
-                    let clave = format!(
-                        "{}_{}",
-                        ns.unwrap_or_default(),
-                        meta_str(d, "name").unwrap_or_default()
-                    );
+                    let clave = d.qname().unwrap_or_default();
                     if let Some(Json::Obj(p)) = punteros.get(&clave)
                         && let Some(Json::Obj(pr)) = p.get("procedencia")
                         && let Some(Json::Arr(leidas)) = pr.get("leidas")
@@ -713,9 +705,9 @@ fn clasificacion_de(
 
 /// El índice de assets de un árbol compilado.
 ///
-/// `punteros`: `datasets/<p>_<n>.json` ya leídos, por su nombre de fichero sin
-/// extensión. Los lee quien llama (ore-serve, el CLI): el núcleo no sabe de
-/// ficheros de estado.
+/// `punteros`: los de `datasets/` ya leídos, por la forma corta del nombre
+/// (`crate::punteros::del_arbol`, 0038 P2). Los lee quien llama (ore-serve, el
+/// CLI).
 pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza) -> Json {
     let proyectos = crate::proyectos::leer(&pkg.root);
     let repositorios = crate::repositorios::leer(&pkg.root);

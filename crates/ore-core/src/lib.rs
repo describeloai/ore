@@ -61,6 +61,7 @@ pub mod pertenencia;
 pub mod politica;
 pub mod propuesta;
 pub mod proyectos;
+pub mod punteros;
 pub mod repositorios;
 pub mod schema;
 pub mod significado;

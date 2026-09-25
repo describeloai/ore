@@ -157,25 +157,25 @@ a1=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 1000 "$(leidas "$a1")" "① primera materialización, filas leídas" "I5 (hecho)"
 cmp_n 1000 "$(copiadas "$a1")" "① filas EN LA COPIA" "I5 (hecho)"
 # el informe (P1 I3): lo que quien no alcanza el almacen sabe de la copia
-cmp_n copiada "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe dice el estado" "P1 I3"
-cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el informe cuenta las filas" "P1 I3"
+cmp_n copiada "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "① el informe dice el estado" "P1 I3"
+cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "① el informe cuenta las filas" "P1 I3"
 # y por columna (medida W1 §B): una copia con las filas y sin los valores era `copiada` igual
-cmp_n 1000 "$(tr -d ' \n' < "$INF/ventas_copia.json" | sed -n 's/.*"columnas":{[^}]*"total":\([0-9]*\).*/\1/p' | head -1)" "① el informe cuenta cada columna" "W1 §B"
-cmp_n creada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "① el puntero dice que el dataset nace" "W3.6a"
+cmp_n 1000 "$(tr -d ' \n' < "$INF/ventas/default/copia.json" | sed -n 's/.*"columnas":{[^}]*"total":\([0-9]*\).*/\1/p' | head -1)" "① el informe cuenta cada columna" "W1 §B"
+cmp_n creada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "① el puntero dice que el dataset nace" "W3.6a"
 n1=$(objetos); cmp_n 4 "$((n1 - antes))" "① objetos nuevos (metadata.json + lista + manifiesto + datos)" "W3.6a"
 
 a2=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 if grep -q "ya está" <<<"$a2"; then ok "② sin tocar el origen: 0 filas leídas"
 else mal "② releyó el origen sin que cambiara" "el puntero · I5"; fi
 n2=$(objetos); cmp_n 0 "$((n2 - n1))" "② objetos nuevos" "el puntero · I5"
-cmp_n al-dia "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "② el informe dice al-dia" "P1 I3"
-cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "② y conserva las filas de la copia que ya estaba" "P1 I3"
+cmp_n al-dia "$(sed -n 's/.*"estado": *"\([a-z-]*\)".*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "② el informe dice al-dia" "P1 I3"
+cmp_n 1000 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "② y conserva las filas de la copia que ya estaba" "P1 I3"
 
 filas 10 1001 >> "$D/datos/pedidos.jsonl"
 a3=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 10 "$(leidas "$a3")" "③ +10 filas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a3")" "③ filas EN LA COPIA" "la copia entera, no solo el incremento"
-cmp_n refrescada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)" "③ el puntero dice refrescada (fundida sobre lo que había)" "W3.6a"
+cmp_n refrescada "$(sed -n 's/.*"operacion": *"\([a-z-]*\)".*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "③ el puntero dice refrescada (fundida sobre lo que había)" "W3.6a"
 # un snapshot que sobrescribe: metadata.json + lista + 2 manifiestos (los
 # ficheros nuevos, y los del snapshot anterior como retirados) + datos
 n3=$(objetos); cmp_n 5 "$((n3 - n2))" "③ objetos nuevos (un snapshot más)" "R2"
@@ -185,7 +185,7 @@ a4=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 cmp_n 3 "$(leidas "$a4")" "④ 3 filas modificadas: leídas" "R2 y R3"
 cmp_n 1010 "$(copiadas "$a4")" "④ filas EN LA COPIA" "la copia entera, no solo el incremento"
 n4=$(objetos); cmp_n 5 "$((n4 - n3))" "④ objetos nuevos (un snapshot más)" "R2"
-cmp_n 1010 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas_copia.json" | head -1)" "④ el informe cuenta la copia entera" "P1 I3"
+cmp_n 1010 "$(sed -n 's/.*"filas": *\([0-9]*\).*/\1/p' "$INF/ventas/default/copia.json" | head -1)" "④ el informe cuenta la copia entera" "P1 I3"
 
 a5=$("$ORE" materialize "$D" --recoger --informe "$INF" 2>&1)
 n5=$(objetos)
@@ -197,7 +197,7 @@ n5=$(objetos)
 cmp_n 8 "$((n5 - antes))" "⑤ tras recoger, objetos que quedan" "R5"
 if grep -q "recogidos 2 snapshot(s) superado(s)" <<<"$a5"; then ok "⑤ expiraron los 2 snapshots superados"
 else mal "⑤ no expiró los 2 snapshots superados: $a5" "W3.6a"; fi
-ML5=$(sed -n 's/.*"metadata_location": *"\([^"]*\)".*/\1/p' "$INF/ventas_copia.json" | head -1)
+ML5=$(sed -n 's/.*"metadata_location": *"\([^"]*\)".*/\1/p' "$INF/ventas/default/copia.json" | head -1)
 case "$ML5" in */metadata/00003-*) ok "⑤ el puntero se movió al metadata.json de expirar" ;; *) mal "⑤ el puntero no se movió al expirar: $ML5" "W3.6a" ;; esac
 a6=$("$ORE" materialize "$D" --informe "$INF" 2>&1)
 if grep -q "ya está" <<<"$a6"; then ok "⑥ tras recoger, sigue al día: 0 filas leídas"

@@ -105,7 +105,7 @@ spec:
     );
     escribe(
         r,
-        "datasets/ventas_pedidos.json",
+        "datasets/ventas/default/pedidos.json",
         "{\"estado\": \"error\", \"motivo\": \"el origen no contesta\", \"vista\": \"ventas.pedidos\"}\n",
     );
     // La entidad: respaldada en el dataset, satisface una interfaz, una propiedad nombra un concepto.
@@ -148,14 +148,10 @@ spec:
     t
 }
 
+/// Los punteros del árbol, como los lee quien llama: uno en su sitio
+/// (`datasets/ventas/default/pedidos.json`) y otro de antes (`ventas_resumen`).
 fn punteros(raiz: &Path) -> BTreeMap<String, Json> {
-    let mut out = BTreeMap::new();
-    for e in fs::read_dir(raiz.join("datasets")).unwrap().flatten() {
-        let n = e.path().file_stem().unwrap().to_string_lossy().into_owned();
-        let t = fs::read_to_string(e.path()).unwrap();
-        out.insert(n, Json::de_node(&ore_core::parse::parse(&t).unwrap()));
-    }
-    out
+    ore_core::punteros::del_arbol(raiz)
 }
 
 fn item<'a>(j: &'a Json, r: &str) -> &'a BTreeMap<String, Json> {

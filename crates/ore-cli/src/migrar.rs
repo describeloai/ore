@@ -48,7 +48,7 @@ pub fn migrar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         Ok((cambios, avisos, antes)) => {
             if cambios.is_empty() {
                 println!(
-                    "nada que migrar · el árbol ya está en v1alpha12 (ninguna `View` con `materialized`, ninguna `Table` con `datasource: lago`, ningún puntero en `copias/`)"
+                    "nada que migrar · el árbol ya está en v1alpha12 (ninguna `View` con `materialized`, ninguna `Table` con `datasource: lago`, ningún puntero en `copias/` ni fuera de su sitio en `datasets/`)"
                 );
                 return std::process::ExitCode::SUCCESS;
             }
@@ -368,13 +368,24 @@ fn plan(raiz: &Path) -> Result<(Vec<Cambio>, Vec<String>, usize), String> {
         }
     }
 
-    // ── 5 · los punteros: `copias/` → `datasets/` ───────────────────────────
-    let copias_dir = raiz.join("copias");
-    if let Ok(es) = std::fs::read_dir(&copias_dir) {
+    // ── 5 · los punteros: `copias/` y los de antes de `datasets/` a su sitio ─
+    //
+    // 0038 P2: el puntero de `<p>.<n>` vive en `datasets/<p>/default/<n>.json`
+    // (`ore_core::punteros`). Los de `copias/<p>_<v>.json` y los de antes en la
+    // raíz de `datasets/` (`<p>_<n>.json`) se mueven ahí. El puntero de una
+    // copia dice `vista`; el de `datasets/`, `tabla`; y sin `dataset` derivaba
+    // el prefijo del bucket de su carpeta y su nombre de fichero: se escribe,
+    // porque los bytes se quedan donde están (`copias/<p>_<v>`,
+    // `datasets/<p>_<n>`) y el fichero ya no lo dice.
+    for carpeta in ["copias", ore_core::punteros::CARPETA] {
+        let dir = raiz.join(carpeta);
+        let Ok(es) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut ficheros: Vec<PathBuf> = es
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
             .collect();
         ficheros.sort();
         for f in ficheros {
@@ -384,33 +395,54 @@ fn plan(raiz: &Path) -> Result<(Vec<Cambio>, Vec<String>, usize), String> {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            // El puntero de una copia dice `vista`; el de `datasets/` dice
-            // `tabla`, y sin `dataset` deriva el prefijo del bucket de su
-            // carpeta. Se lleva los dos: el nombre se sigue leyendo, y los
-            // bytes se quedan donde están (`copias/<p>_<v>` en el bucket).
-            let texto = std::fs::read_to_string(&f).ok().and_then(|t| {
-                let n = ore_core::parse::parse(&t).ok()?;
-                let ore_core::json::Json::Obj(mut m) = ore_core::json::Json::de_node(&n) else {
-                    return None;
-                };
-                if let Some(v) = m.get("vista").cloned()
-                    && !m.contains_key("tabla")
-                {
-                    m.insert("tabla".into(), v);
-                }
-                if !m.contains_key("dataset") {
-                    m.insert(
-                        "dataset".into(),
-                        ore_core::json::Json::s(format!("copias/{stem}")),
-                    );
-                }
-                Some(ore_core::json::Json::Obj(m).jcs() + "\n")
-            });
+            let Some(nodo) = std::fs::read_to_string(&f)
+                .ok()
+                .and_then(|t| ore_core::parse::parse(&t).ok())
+            else {
+                avisos.push(format!("{carpeta}/{stem}.json no se lee: se queda"));
+                continue;
+            };
+            let Some(qn) = ore_core::punteros::clave_de(Path::new(&nombre), Some(&nodo)) else {
+                avisos.push(format!("{carpeta}/{stem}.json no dice de qué es: se queda"));
+                continue;
+            };
+            let Some(a) = ore_core::punteros::ruta(&qn) else {
+                avisos.push(format!(
+                    "{carpeta}/{stem}.json es de `{qn}`, que no es un nombre: se queda"
+                ));
+                continue;
+            };
+            if carpeta != "copias" && raiz.join(&a).is_file() {
+                avisos.push(format!(
+                    "{carpeta}/{stem}.json y {a} son de `{qn}`: manda el de su sitio, y el de antes se va"
+                ));
+                cambios.push(Cambio {
+                    que: "se va".into(),
+                    fichero: PathBuf::from(carpeta).join(&nombre),
+                    texto: None,
+                    a: None,
+                });
+                continue;
+            }
+            let ore_core::json::Json::Obj(mut m) = ore_core::json::Json::de_node(&nodo) else {
+                continue;
+            };
+            if let Some(v) = m.get("vista").cloned()
+                && !m.contains_key("tabla")
+            {
+                m.insert("tabla".into(), v);
+            }
+            if !m.contains_key("dataset") {
+                m.insert(
+                    "dataset".into(),
+                    ore_core::json::Json::s(format!("{carpeta}/{stem}")),
+                );
+            }
             cambios.push(Cambio {
                 que: "puntero".into(),
-                fichero: PathBuf::from("copias").join(&nombre),
-                texto,
-                a: Some(PathBuf::from("datasets").join(&nombre)),
+                fichero: PathBuf::from(carpeta).join(&nombre),
+                texto: Some(ore_core::json::Json::Obj(m).pretty() + "\n"),
+                a: Some(PathBuf::from(a)),
             });
         }
     }
@@ -811,6 +843,66 @@ mod tests {
     const ENTIDAD: &str = "apiVersion: oos.dev/v1alpha8\nkind: Entity\nmetadata: { name: Employee, namespace: hr }\nspec:\n  nature: entity\n  primaryKey: [id]\n  backedBy: empleados\n  properties:\n    id: { type: String }\n    pais: { type: String }\n";
     const LAGO: &str = "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: resumen, namespace: hr }\n# la escribió write()\nspec:\n  datasource: lago\n  object: \"hr_resumen\"\n  columns:\n    pais: { type: String }\n    n: { type: Integer }\n  reads: { fullScan: cheap }\n  changes: { mode: upsert, key: [pais], witness: snapshot }\n";
 
+    /// 0038 P2: los punteros de antes de `datasets/` van a su sitio, con el
+    /// nombre de sus bytes escrito; `a_b.c` y `a.b_c` ya no chocan; y si el de
+    /// su sitio ya está, manda ese y el de antes se va.
+    #[test]
+    fn los_punteros_de_antes_van_a_su_sitio() {
+        let paquete = |n: &str| {
+            format!(
+                "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: {{ name: {n}, version: 1.0.0, status: active, domain: d }}\nspec: {{ owner: team:data }}\n"
+            )
+        };
+        let (pa, pab) = (paquete("a"), paquete("a_b"));
+        let dir = arbol(&[
+            ("packages/a/package.yaml", &pa),
+            ("packages/a_b/package.yaml", &pab),
+            (
+                "datasets/a_b_c.json",
+                r#"{"tabla":"a_b.c","metadata_location":"m1"}"#,
+            ),
+            (
+                "datasets/a_x.json",
+                r#"{"estado":"copiada","dataset":"copias/a_x"}"#,
+            ),
+            ("datasets/a_y.json", r#"{"tabla":"a.y"}"#),
+            (
+                "datasets/a/default/y.json",
+                r#"{"tabla":"a.y","dataset":"catalogo/a/default/y"}"#,
+            ),
+        ]);
+        let (cambios, _, _) = plan(&dir).unwrap();
+        aplicar(&dir, &cambios).unwrap();
+        let lee = |r: &str| {
+            let t = std::fs::read_to_string(dir.join(r)).unwrap_or_else(|_| panic!("{r} no está"));
+            let n = ore_core::parse::parse(&t).unwrap();
+            n.get("dataset")
+                .and_then(|(_, v)| v.as_str())
+                .map(String::from)
+        };
+        assert_eq!(
+            lee("datasets/a_b/default/c.json").as_deref(),
+            Some("datasets/a_b_c")
+        );
+        assert_eq!(
+            lee("datasets/a/default/x.json").as_deref(),
+            Some("copias/a_x")
+        );
+        assert_eq!(
+            lee("datasets/a/default/y.json").as_deref(),
+            Some("catalogo/a/default/y")
+        );
+        for viejo in ["a_b_c", "a_x", "a_y"] {
+            assert!(
+                !dir.join(format!("datasets/{viejo}.json")).exists(),
+                "{viejo}"
+            );
+        }
+        let (otra, _, _) = plan(&dir).unwrap();
+        assert!(otra.is_empty(), "migrar dos veces no hace nada");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn la_copia_es_un_dataset_y_la_tabla_del_lago_otro() {
         let dir = arbol(&[
@@ -896,14 +988,17 @@ mod tests {
             !cfg.contains("lago") && cfg.contains("# la fuente"),
             "{cfg}"
         );
-        assert!(dir.join("datasets/hr_empleados.json").exists());
+        // 0038 P2: el puntero va a su sitio y dice dónde siguen los bytes.
+        assert!(dir.join("datasets/hr/default/empleados.json").exists());
         assert!(!dir.join("copias/hr_empleados.json").exists());
-        let pj = std::fs::read_to_string(dir.join("datasets/hr_empleados.json")).unwrap();
-        assert!(
-            pj.contains("\"tabla\":\"hr.empleados\"")
-                && pj.contains("\"dataset\":\"copias/hr_empleados\""),
-            "{pj}"
-        );
+        assert!(!dir.join("datasets/hr_empleados.json").exists());
+        let pj = ore_core::parse::parse(
+            &std::fs::read_to_string(dir.join("datasets/hr/default/empleados.json")).unwrap(),
+        )
+        .unwrap();
+        let campo = |k: &str| pj.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        assert_eq!(campo("tabla").as_deref(), Some("hr.empleados"));
+        assert_eq!(campo("dataset").as_deref(), Some("copias/hr_empleados"));
 
         let despues = ore_core::validate::validate_package(&dir);
         assert!(despues.is_empty(), "{despues:?}");
