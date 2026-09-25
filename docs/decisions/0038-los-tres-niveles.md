@@ -379,8 +379,24 @@ Interface son vocabulario y no cambian. `medida-forge-con-schema.sh` (el `deLaCe
 consola sobre lo que sirve `ore-serve`, con `clientes` en `espana` y en `francia`): tres ids,
 el link a `ventas.espana.Clientes` y cada entidad en su vista.
 
-Queda de P6: P6d —el selector de carpeta de «nuevo fichero», «crear carpeta» que escribe un
-README y no un schema, y los textos de dos partes—.
+## P6d, hecho: el catálogo pinta los schemas declarados
+
+El explorador del catálogo pintaba como schema **cada subcarpeta** del paquete (`carpetas` del
+índice): `transforms/` —un `.sql`—, la carpeta de un repositorio o de un proyecto. Tras 0038 un
+schema es lo que un `kind: Schema` declara, más `default`. El índice de assets da por paquete
+`schemas` (`default` y los declarados) al lado de `carpetas`, que sigue siendo lo que Projects y
+Repositorios usan —sus carpetas no son schemas, y está bien— (0035/0036); la consola agrupa
+cada ítem por el `schema` que declara (el vocabulario, que no tiene, en `default`; uno de un
+schema sin declarar, en el suyo, para no esconderlo). Los ids de los nodos no cambian
+(`paquete:<p>/` es `default`), y crear y renombrar (P6a) siguen igual. `los-schemas.sh` 1, 2 y 4
+(`transforms` en `carpetas` y no en `schemas`) y `medida-catalogo-schemas.sh` (la función de
+la consola sobre `/assets`: pinta default, espana y rubix_demo_ventas, y no transforms).
+
+Retirado de la lista (era un malentendido del barrido, no un fallo): el «nuevo fichero» del
+Code Workspace crea un fichero vacío en la carpeta que se elija —no puede nacer con un schema
+equivocado—, y «crear carpeta» de Projects escribe una carpeta de proyecto, que no es ni tiene
+que ser un schema. Queda cosmético: la cabecera de la vista previa SQL y textos de ayuda de
+Forge en dos partes.
 
 ## Lo que no cambia
 

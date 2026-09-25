@@ -895,6 +895,20 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         }
     }
 
+    // Los schemas DECLARADOS de cada paquete (0038 P6d): un schema existe
+    // porque un `kind: Schema` lo declara, no por ser una carpeta. `carpetas`
+    // sigue diciendo las carpetas —las de Projects y Repositorios (0035/0036)
+    // lo son sin ser schemas—; el catálogo pinta `schemas`.
+    let mut declarados: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for s in pkg.docs.iter().filter(|d| d.kind == Kind::Schema) {
+        if let (Some(p), Some(n)) = (
+            paquete_y_carpeta(pkg, s).0,
+            s.meta("name").and_then(|n| n.as_str()),
+        ) {
+            declarados.entry(p).or_default().insert(n.to_string());
+        }
+    }
+
     // Los paquetes.
     let mut paquetes: Vec<Json> = Vec::new();
     for p in pkg.docs.iter().filter(|d| d.kind == Kind::Package) {
@@ -918,6 +932,16 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
             (
                 "carpetas",
                 Json::Arr(carpetas.into_iter().map(Json::s).collect()),
+            ),
+            // `default` —existe sin declararse— y los declarados, en orden.
+            (
+                "schemas",
+                Json::Arr(
+                    std::iter::once(crate::normalize::SCHEMA_POR_DEFECTO.to_string())
+                        .chain(declarados.remove(&nombre).unwrap_or_default())
+                        .map(Json::s)
+                        .collect(),
+                ),
             ),
             ("items", Json::Int(n)),
         ];

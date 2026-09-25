@@ -12,7 +12,9 @@
 # fuera en tres partes: una View de `default`, un paquete `eu`, un `.sql`, un
 # programa y el puntero de una copia.
 #
-#   1  el indice de assets          la carpeta del schema del origen
+#   1  el indice de assets          la carpeta del schema del origen; y
+#                                   `schemas` = default + los declarados (una
+#                                   carpeta como `transforms/` no es un schema)
 #   2  POST /paquetes/ventas/schemas     201 · commit del sujeto · el indice la
 #                                   trae aunque este vacia
 #   3  lo que se niega              la misma otra vez (y en mayusculas) 409;
@@ -123,11 +125,20 @@ carpetas() { # las carpetas de `ventas` en el indice de assets
   pide GET /assets >/dev/null
   "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(' '.join(sorted([p for p in d['paquetes'] if p['name']=='ventas'][0]['carpetas'])))" "$TMP/r.json"
 }
+schemas() { # los schemas DECLARADOS de `ventas` (0038 P6d): lo que el catalogo pinta
+  pide GET /assets >/dev/null
+  "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(' '.join([p for p in d['paquetes'] if p['name']=='ventas'][0]['schemas']))" "$TMP/r.json"
+}
 
 # ── 1 · el indice ───────────────────────────────────────────────────────────
 C=$(carpetas)
 echo " $C " | grep -q ' rubix_demo_ventas ' || falla "1 · el indice no trae la carpeta del origen: [$C]"
-dice "1 · el indice de assets: ventas › [$C]"
+# ⭐ P6d: `transforms/` es una carpeta (un .sql), no un schema: `carpetas` la trae,
+#   `schemas` no. Un schema es lo que un `kind: Schema` declara, mas `default`.
+SC=$(schemas)
+[ "$SC" = "default rubix_demo_ventas" ] || falla "1 · los schemas declarados: [$SC] (carpetas: [$C])"
+echo " $C " | grep -q ' transforms ' || falla "1 · transforms deberia seguir en carpetas: [$C]"
+dice "1 · el indice de assets: ventas › carpetas [$C] · schemas [$SC]"
 
 # ── 2 · crear ───────────────────────────────────────────────────────────────
 ANTES=$(cabeza)
@@ -141,6 +152,7 @@ asunto | grep -q 'crear el schema `espana`' || falla "2 · el asunto: $(asunto)"
 fichero packages/ventas/espana/schema.yaml | grep -q 'description: "Lo de España"' || falla "2 · el documento: $(fichero packages/ventas/espana/schema.yaml)"
 C=$(carpetas)
 echo " $C " | grep -q ' espana ' || falla "2 · el indice no trae el schema recien creado (vacio): [$C]"
+[ "$(schemas)" = "default espana rubix_demo_ventas" ] || falla "2 · schemas tras crear: [$(schemas)]"
 dice "2 · \`espana\` creado: 201 · commit de ana · el indice lo trae vacio: [$C]"
 
 # ── 3 · lo que se niega al crear ────────────────────────────────────────────
@@ -177,6 +189,7 @@ fichero packages/ventas/discover.scope.json | grep -q '"rubix_demo_ventas": "ven
 C=$(carpetas)
 echo " $C " | grep -q ' ventas_es ' || falla "4 · el indice no trae el nombre nuevo: [$C]"
 echo " $C " | grep -q ' rubix_demo_ventas ' && falla "4 · el indice sigue viendo el viejo: [$C]"
+[ "$(schemas)" = "default espana ventas_es" ] || falla "4 · schemas tras renombrar: [$(schemas)]"
 git clone -q "$FORJA" "$TMP/tras" 2>/dev/null
 ERRORES_4=$(cd "$TMP/tras" && "$ORE" validate . 2>&1 | tail -1)
 [ "$ERRORES_4" = "$ERRORES_0" ] || falla "4 · el arbol cambio: antes «$ERRORES_0», despues «$ERRORES_4»"
