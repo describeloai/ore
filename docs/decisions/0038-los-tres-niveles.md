@@ -398,6 +398,21 @@ equivocado—, y «crear carpeta» de Projects escribe una carpeta de proyecto, 
 que ser un schema. Queda cosmético: la cabecera de la vista previa SQL y textos de ayuda de
 Forge en dos partes.
 
+## La re-inducción retira sólo lo que escribió el inductor
+
+Medido al preparar P7: `review --reinducir` —lo que corren `model` y `copy` desde el catálogo—
+borraba en una base descubierta todo lo que la inducción nueva no producía en las carpetas que
+gobierna: una vista escrita a mano en `views/` (lo que abre «Create › View»; pasaba ya antes de
+0038), una vista a mano dentro del schema del origen y un schema creado desde el catálogo con lo
+suyo (P6a). Ahora lo que escribe el inductor lleva su marca en la primera línea
+(`# ore discover: …`, `MARCA_INDUCIDO`; `package.yaml` no) y la re-inducción retira sólo lo
+marcado que ya no sale; lo que no la lleva no lo toca nunca, y un `schema.yaml` sin marca no se
+retira aunque esté vacío. Un árbol inducido antes de la marca, una vez, la regla de antes con
+dos límites: ni las carpetas de schema que la inducción no produce ni, en `tables/`, `views/` y
+`datasets/`, lo que no tiene nombre del inductor (`<X>__<objeto>.yaml`). No se recalcula «lo
+que produjo la pasada anterior»: `model` y `copy` cambian el alcance antes de re-inducir, y esa
+inducción no sería la que hay en disco. `tests/reinduccion.rs`.
+
 ## Lo que no cambia
 
 El paquete sigue siendo la base (nada que migrar), el lago físico igual, y el proyecto sigue

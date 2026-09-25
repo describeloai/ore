@@ -1725,6 +1725,12 @@ fn descubrir(
 /// Lo comparten `discover` y `review` porque escriben lo mismo: el inductor dice
 /// QUÉ, y quien llama dice DÓNDE. Dos copias de este bucle serían dos sitios
 /// donde arreglar el mismo permiso denegado.
+/// **Lo que escribe el inductor lleva su marca** en la primera línea (0038):
+/// es lo que la re-inducción (`review`, `model`, `copy`) puede retirar. Lo que
+/// no la lleva —una vista escrita a mano, un schema creado desde el catálogo—
+/// no lo toca nunca. `package.yaml` no la lleva: no se retira.
+pub const MARCA_INDUCIDO: &str = "# ore discover: lo escribe la inducción y lo regenera en cada pasada. Lo que no lleva esta línea, no lo toca.";
+
 fn escribir_paquete(
     ind: &inductor::Induccion,
     destino: &std::path::Path,
@@ -1735,7 +1741,13 @@ fn escribir_paquete(
             std::fs::create_dir_all(d)
                 .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", d.display())))?;
         }
-        std::fs::write(&ruta, contenido)
+        let marcado = rel.ends_with(".yaml") && rel != "package.yaml";
+        let texto = if marcado {
+            format!("{MARCA_INDUCIDO}\n{contenido}")
+        } else {
+            contenido.clone()
+        };
+        std::fs::write(&ruta, texto)
             .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
     }
     Ok(())

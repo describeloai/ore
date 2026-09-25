@@ -363,14 +363,34 @@ fn nombre_del_paquete(raiz: &Path) -> String {
 /// Retirar no es limpieza: si una respuesta dijo que una vista no es una
 /// entidad, dejar su `entities/…yaml` de la pasada anterior haría que el paquete
 /// siguiera afirmándola. Se borra **solo** dentro de los directorios que el
-/// inductor gobierna entero, y se dice cuál.
+/// inductor gobierna, y se dice cuál.
+///
+/// ⛔⛔ Y **sólo lo que escribió el inductor** (0038): lo que lleva su marca
+///   (`MARCA_INDUCIDO`, primera línea). Medido: esto borraba TODO lo que la
+///   inducción nueva no producía en esas carpetas, así que un `model` o un
+///   `copy` desde el catálogo se llevaba en silencio una vista escrita a mano
+///   (`views/`, lo que abre «Create › View»), un schema creado desde el
+///   catálogo (`espana/schema.yaml`, P6a) con lo suyo, y una vista a mano
+///   dentro del schema del origen.
+///
+/// ⚠️ Un árbol inducido antes de la marca no tiene ninguna: ahí, una vez, la
+///   regla de antes con dos límites — sólo las carpetas de schema que la
+///   inducción produce (un schema creado a mano no es del inductor) y, en
+///   `tables/`, `views/` y `datasets/`, sólo los nombres del inductor
+///   (`<X>__<objeto>.yaml`). En cuanto esta pasada escribe, ya hay marca.
 fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String>, Fallo> {
     let mut retirados = Vec::new();
     let nuevos: BTreeSet<&String> = ind.ficheros.keys().collect();
+    let marca = crate::MARCA_INDUCIDO;
+    let marcado = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .is_some_and(|t| t.lines().next() == Some(marca))
+    };
     // 0038 P5: lo inducido vive también en la carpeta de cada schema del origen
     // (`public/tables/…`), declarada con su `schema.yaml`: esas carpetas las
     // gobierna igual.
-    let schemas: Vec<String> = std::fs::read_dir(raiz)
+    let todos: Vec<String> = std::fs::read_dir(raiz)
         .map(|es| {
             es.flatten()
                 .filter(|e| e.path().join("schema.yaml").is_file())
@@ -378,6 +398,28 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
                 .collect()
         })
         .unwrap_or_default();
+    // ¿Hay marca en algún sitio? Si no, el árbol es de antes de ella.
+    let con_marca = GOBERNADOS
+        .iter()
+        .map(|d| raiz.join(d))
+        .chain(
+            todos
+                .iter()
+                .flat_map(|s| GOBERNADOS.iter().map(move |d| raiz.join(s).join(d))),
+        )
+        .chain(todos.iter().map(|s| raiz.join(s)))
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|es| es.flatten().map(|e| e.path()))
+        .any(|p| p.extension().is_some_and(|x| x == "yaml") && marcado(&p));
+    // Sin marca, sólo las carpetas de schema que la inducción produce.
+    let schemas: Vec<String> = if con_marca {
+        todos
+    } else {
+        todos
+            .into_iter()
+            .filter(|s| nuevos.contains(&format!("{s}/schema.yaml")))
+            .collect()
+    };
     let carpetas: Vec<String> = GOBERNADOS
         .iter()
         .map(|d| d.to_string())
@@ -401,6 +443,19 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
                 continue;
             };
             let rel = format!("{dir}/{base}");
+            // Sólo lo del inductor: con marca, lo marcado; sin ella (un árbol
+            // de antes), los nombres del inductor en tables/views/datasets.
+            let del_inductor = if con_marca {
+                marcado(&ruta)
+            } else {
+                !matches!(
+                    dir.rsplit('/').next(),
+                    Some("tables" | "views" | "datasets")
+                ) || base.contains("__")
+            };
+            if !del_inductor {
+                continue;
+            }
             // 0033: en `datasets/` conviven los que el inductor emite (la copia
             // de una tabla del alcance, `<X>__<objeto>.yaml` con `from`) y los
             // que `write()` deja (escritos, sin `from`, con el nombre que el
@@ -439,7 +494,15 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
                 .map(|mut es| es.next().is_none())
                 .unwrap_or(true)
         });
-        if !nuevos.contains(&rel) && vacio {
+        // Y sólo el suyo: un `schema.yaml` que no escribió el inductor (creado
+        // desde el catálogo, `ore package schema new`) no se retira aunque
+        // esté vacío — está vacío porque acaba de nacer.
+        let suyo = if con_marca {
+            marcado(&raiz.join(&rel))
+        } else {
+            true
+        };
+        if !nuevos.contains(&rel) && vacio && suyo {
             let ruta = raiz.join(&rel);
             std::fs::remove_file(&ruta).map_err(|e| {
                 fallo(
