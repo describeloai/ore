@@ -334,8 +334,30 @@ con los mismos diagnósticos; copiar una tabla después re-induce en el schema n
 abierto si dice que no) y el doble clic renombra por el servidor, con el código que queda por
 tocar como aviso aparte; `default` y renombrar una base se dicen en vez de fingirse en local.
 
-Queda de P6: las referencias de tres partes en los editores de la consola y los borradores en
-la carpeta del schema.
+## P6b, hecho: Run y los borradores, en su schema (consola)
+
+Medido en la consola (15 sitios que construyen o leen dos partes; 9 equivocados fuera de
+`default`), los dos que hacían algo mal de verdad:
+
+- **Run** sacaba el nombre de la ruta (`packages/<p>/…`) y `metadata.name`, y corría
+  `ventas.default.x` para `packages/ventas/espana/views/x.yaml`. Ahora el schema lo dice el
+  documento (`metadata.schema`; sin él, `default`) y va a `/vistas/{b}/{s}/{n}/ejecutar`. Una
+  Function de otro schema se dice en vez de invocar la de `default`.
+- **Create › View | Dataset** nacía siempre en `default` con un `from` de dos partes. Ahora pasa
+  el schema en que se está y el borrador nace en `packages/<b>/<s>/views|datasets/`, en
+  v1alpha13 con `metadata.schema`, con su `from` en la forma corta de lo que lee y los nombres
+  ocupados mirados en ese schema.
+
+`medida-borrador-en-schema.sh` ejecuta el código de la consola (Node quitando tipos) contra una
+base descubierta que compila: los tres borradores dejan el árbol sin errores, y Run con tres
+partes llega a la vista donde la de dos da 404. ⚠️ La medida tiene que partir de un árbol que
+compila: con los `OOS2010` de un discover que modela, el validador se paraba antes y todo salía
+«igual» (medido).
+
+Queda de P6: P6c —los Jobs (`jobs.ts` parte el sujeto en dos), `/funciones` con schema en ORE
+y su invocación, y los ids de Ontology Forge (`namespace.name`)— y P6d —el selector de
+carpeta de «nuevo fichero», «crear carpeta» que escribe un README y no un schema, y los textos
+de dos partes—.
 
 ## Lo que no cambia
 
