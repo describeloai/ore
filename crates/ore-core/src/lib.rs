@@ -71,6 +71,7 @@ pub mod tipos;
 pub mod transparencia;
 pub mod types;
 pub mod validate;
+pub mod vista_sql;
 pub mod vistas;
 
 pub use code::{Code, Family};

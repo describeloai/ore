@@ -1,6 +1,6 @@
 # 0040 · La vista es SQL (OOS v1alpha14 en ORE)
 
-**Estado:** en curso · paso 0 hecho.
+**Estado:** en curso · pasos 0, 1 y 2 hechos.
 **Spec:** `C:\oos` 7d92e6e, `spec/v1alpha14/`.
 
 ## Contexto
@@ -59,10 +59,26 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
    `OOS4016` con etiqueta y el mismo rango sin ella; `HAVING count(*) >= 8`; `OOS4001`
    por la arista INDIRECT de un `WHERE`). Bump de `vendor/oos`, `ApiVersion::V1Alpha14`,
    claves del spec en `document.rs`.
+   **HECHO**: 24 casos en `C:\oos` 510fe10 (9 aceptan, 15 rechazan; README con la tabla),
+   `vendor/oos` al día y el marcador `borrador_de_v1alpha14` en `conformance.rs`: **0 / 24**,
+   todo pendiente y nada roto. `ApiVersion::V1Alpha14` y las claves de `document.rs` pasan
+   al paso 3: aceptar la versión antes de que `comprobar` sepa leer una vista SQL
+   convertiría los pendientes en regresiones.
 2. **`vista_sql` en ore-core**, pura y sin motor: lo que lee (sin los del `WITH`;
    generadores sí, lectores por función `OOS2038`), lo que proyecta (`*` contra los
    contratos de sus fuentes), linaje por columna (directo, derivado, INDIRECT) y
    predicados clasificados para el canal lateral.
+   **HECHO**: `ore_core::vista_sql::analizar(sql, columnas_de)` → `Consulta { lee,
+   columnas (directas · derivadas · indirectas por columna), indirectas, predicados
+   (Revela | Ordena, con su lugar: WHERE · JOIN · QUALIFY · HAVING), ambiguas,
+   sin_fuente, estrellas_sin_expandir }` o `Fallo` (`NoSeAnaliza`, `NoEsUnaConsulta` y
+   `LeePorFuncion`, las dos últimas `OOS2038`). `columnas_de` es el árbol: expande un `*`
+   y decide una columna sin calificar entre dos fuentes. Las referencias salen a un
+   nivel (a los nombres que la consulta lee); componer la cadena es del paso 3. 19 tests,
+   con el corpus de la medida (todo se analiza salvo `PIVOT`). El ejemplo `vista_sql` ya
+   es una envoltura del módulo, y con él la medida sigue en 115 de 115. Añadido al
+   medir: un `LIMIT` con `ORDER BY` mira por lo que ordena (qué filas salen depende de
+   ello); un `HAVING` sobre un agregado no es un predicado del canal lateral.
 3. **Una sola View en el núcleo.** `vistas.rs` sobre `vista_sql`: `Raiz` pasa a fuentes +
    linaje; la traducción forma→SQL baja a ore-core; `comprobar` (`OOS2018/2019`, `2039`,
    `2011/2022` contra `columns`, `2020`); `flow.rs` propaga por el linaje con varias
