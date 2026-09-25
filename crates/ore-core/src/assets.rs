@@ -1160,11 +1160,15 @@ fn scope_de(dir: &Path) -> (Option<String>, bool, &'static str) {
         };
         return (fuente, true, clase);
     }
-    let fuente = lee("discover.catalog.json").and_then(|n| {
-        n.get("source")
-            .and_then(|(_, v)| v.as_str())
-            .map(str::to_string)
-    });
+    let Some(catalogo) = lee("discover.catalog.json") else {
+        // 0039: sin origen —`create standard database`, `ore package new`—,
+        // lo que tenga sólo puede vivir en el lago.
+        return (None, false, "standard");
+    };
+    let fuente = catalogo
+        .get("source")
+        .and_then(|(_, v)| v.as_str())
+        .map(str::to_string);
     (fuente, false, "foreign")
 }
 

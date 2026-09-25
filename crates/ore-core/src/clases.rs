@@ -225,22 +225,22 @@ public class Ejemplo {
 /// ⭐ Antes era un `.py` con la consulta en una cadena, y con motivo: una celda
 ///   SQL a secas leía pero no escribía (0036). Desde el SQL del árbol (0037 y
 ///   6d451da) un `.sql` es la unidad —en la sesión y como trabajo—, y el que
-///   escribe es UNA sentencia `create or replace table … as select …`: lo que
+///   escribe es UNA sentencia `create or replace dataset … as select …`: lo que
 ///   lee y lo que escribe lo dice la propia sentencia (`ore sql`), sin
 ///   `@transform` que lo repita. Medido en `medida-la-semilla-sql.sh`.
 const TRANSFORMS_SQL: &str = "\
 -- Un transform escrito en SQL: UNA sentencia que escribe. Lo que lee y lo que
 -- escribe lo dice la propia sentencia, y el servidor lo hace cumplir.
 --
--- `CREATE OR REPLACE TABLE … AS SELECT` sobrescribe; `INSERT INTO … SELECT`
--- anexa; `INSERT OR REPLACE INTO … SELECT` hace upsert. Un `SELECT` suelto lee
--- y no escribe.
+-- Lo que se escribe es un dataset: `CREATE OR REPLACE DATASET … AS SELECT`
+-- sobrescribe; `INSERT INTO … SELECT` anexa; `INSERT OR REPLACE INTO … SELECT`
+-- hace upsert. Un `SELECT` suelto lee y no escribe.
 --
 -- Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
 -- base de datos, su schema y el dataset. En `default` basta `base.nombre`.
 -- Cambia los dos por los tuyos y dale a Run.
 
-CREATE OR REPLACE TABLE mi_base.mi_schema.mi_resumen AS
+CREATE OR REPLACE DATASET mi_base.mi_schema.mi_resumen AS
 SELECT pais, count(*) AS n
 FROM mi_base.mi_schema.mi_dataset
 GROUP BY pais
@@ -373,7 +373,9 @@ pub const CLASES: &[Clase] = &[
         // lo que ese fichero declare — en un repositorio de SQL sólo confundía.
         // Actualizar deja lo de antes (`ejemplo.py`, `pyproject.toml`): es de
         // quien lo tenga.
-        version: 4,
+        // 5: lo que se escribe es un DATASET (`create or replace dataset`): una
+        // Table es un puntero a un objeto de un origen y no se crea desde SQL.
+        version: 5,
         semilla: &[("transforms/ejemplo.sql", TRANSFORMS_SQL)],
     },
     Clase {

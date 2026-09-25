@@ -877,6 +877,11 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         }
         _ => lotes,
     };
+    // 0039: lo que cuenta ESTA escritura —las filas que llegan— y las que había
+    // antes: con `filas` (el total de después) dan `num_inserted_rows` y, en un
+    // upsert, `num_updated_rows` (= antes + llegan − después).
+    let anadidas: u64 = lotes.iter().map(|l| l.num_rows() as u64).sum();
+    let antes: u64 = previa.as_ref().map(Lago::filas_del_snapshot).unwrap_or(0);
     // `upsert` (0031 §11 ⑤): copy-on-write en Arrow. Lo que había —con sus
     // position deletes aplicados— menos las claves que llegan, más lo que
     // llega, y todo al esquema unión (la tabla más las columnas nuevas del
@@ -984,6 +989,8 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         ("esquema_cambiado", Json::Bool(p.esquema_cambiado)),
         ("ficheros", Json::Int(p.ficheros as i64)),
         ("filas", Json::Int(p.filas as i64)),
+        ("anadidas", Json::Int(anadidas as i64)),
+        ("antes", Json::Int(antes as i64)),
         ("modo", Json::s(&modo)),
         ("nueva", Json::Bool(previa.is_none())),
         ("operacion", Json::s(clave.unwrap_or_default())),
@@ -998,11 +1005,15 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
 
 /// Lo que `iceberg` serializa con serde (el JSON de la spec REST), como `Json`
 /// del núcleo para que salga en la misma línea que lo demás.
+/// Tal cual lo serializa `serde`: el `Json` del núcleo no modela `null`, y un
+/// `assert-ref-snapshot-id` sobre una tabla sin snapshot —la que nace vacía de
+/// `create dataset … (cols)`, 0039— lo lleva. Pasado por él salía la cadena
+/// `"null"`, y `aplicar` no lo entendía (el 500 de anexar sobre un dataset
+/// vacío, medido en `medida-el-guion-sql.sh`).
 fn json_de<T: serde::Serialize>(v: &T) -> Result<Json, String> {
-    let texto = serde_json::to_string(v).map_err(|e| format!("no se pudo serializar: {e}"))?;
-    let n =
-        ore_core::parse::parse(&texto).map_err(|e| format!("lo serializado no analiza: {e:?}"))?;
-    Ok(Json::de_node(&n))
+    serde_json::to_string(v)
+        .map(Json::Crudo)
+        .map_err(|e| format!("no se pudo serializar: {e}"))
 }
 
 /// **`aplicar`: la segunda mitad** (0031 §11 ①): el cuerpo de un `updateTable`
@@ -2293,6 +2304,107 @@ mod tests {
         assert_eq!(
             lago::columnas_iceberg(&lago.abrir(&ml6, ds).unwrap())["total"],
             "decimal(38, 2)"
+        );
+    }
+
+    /// **Anexar a un dataset que nació vacío** (0039 paso 2: `create dataset
+    /// b.s.d (cols)` y luego `insert … values`): el `createTable` con columnas
+    /// deja una tabla sin snapshot, y sobre ella se anexa.
+    #[test]
+    fn anexar_a_un_dataset_que_nacio_vacio() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "catalogo/ventas/demo/clientes";
+        let crear = serde_json::json!({
+            "dataset": ds,
+            "crear": true,
+            "peticion": {"name": "clientes", "schema": {"type": "struct", "schema-id": 0, "fields": [
+                {"id": 1, "name": "id", "type": "long", "required": false},
+                {"id": 2, "name": "nombre", "type": "string", "required": false}]}}
+        });
+        let r = aplicar(&lago, &crear.to_string()).expect("nace vacío");
+        let ml0 = campo(&r, "metadata_location");
+        let e = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"base\":\"{ml0}\",\"operacion\":\"op-1\"}}"),
+            &ipc_de(vec![
+                ("id", Arc::new(arrow_array::Int64Array::from(vec![1, 2])) as arrow_array::ArrayRef),
+                ("nombre", letras(&["Ana", "Bruno"])),
+            ])[..],
+        )
+        .expect("escribe");
+        let ml1 = campo(
+            &aplicar_lo_escrito(&lago, &e, ds, Some(&ml0)),
+            "metadata_location",
+        );
+        assert_eq!(lago.filas(&lago.abrir(&ml1, ds).unwrap()).unwrap().len(), 2);
+        // lo que cuenta esta escritura (0039 paso 4): llegan 2, había 0
+        assert_eq!(
+            (
+                campo(&e, "anadidas"),
+                campo(&e, "antes"),
+                campo(&e, "filas")
+            ),
+            ("2".into(), "0".into(), "2".into())
+        );
+    }
+
+    /// **El upsert de un dataset que nació con su clave** (`create dataset …
+    /// (…, primary key (id))`): la clave va en `ore.clave` desde el
+    /// `createTable`, y las cuentas dicen cuántas se actualizan.
+    #[test]
+    fn el_upsert_de_un_dataset_que_nacio_con_su_clave() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "catalogo/ventas/demo/precios";
+        let crear = serde_json::json!({
+            "dataset": ds,
+            "crear": true,
+            "peticion": {"name": "precios", "properties": {"ore.clave": "id"},
+                "schema": {"type": "struct", "schema-id": 0, "fields": [
+                {"id": 1, "name": "id", "type": "long", "required": false},
+                {"id": 2, "name": "n", "type": "string", "required": false}]}}
+        });
+        let ml0 = campo(
+            &aplicar(&lago, &crear.to_string()).expect("nace"),
+            "metadata_location",
+        );
+        let pide = |base: &str, op: &str| {
+            format!(
+                "{{\"dataset\":\"{ds}\",\"modo\":\"upsert\",\"base\":\"{base}\",\"operacion\":\"{op}\"}}"
+            )
+        };
+        let id = |v: Vec<i64>| Arc::new(arrow_array::Int64Array::from(v)) as arrow_array::ArrayRef;
+        let e1 = escribir(
+            &lago,
+            &pide(&ml0, "op-1"),
+            &ipc_de(vec![("id", id(vec![1, 2])), ("n", letras(&["a", "b"]))])[..],
+        )
+        .expect("upsert 1");
+        let ml1 = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, Some(&ml0)),
+            "metadata_location",
+        );
+        assert_eq!(
+            (
+                campo(&e1, "anadidas"),
+                campo(&e1, "antes"),
+                campo(&e1, "filas")
+            ),
+            ("2".into(), "0".into(), "2".into())
+        );
+        let e2 = escribir(
+            &lago,
+            &pide(&ml1, "op-2"),
+            &ipc_de(vec![("id", id(vec![2, 3])), ("n", letras(&["B", "c"]))])[..],
+        )
+        .expect("upsert 2");
+        // antes 2 + llegan 2 − después 3 = 1 actualizada
+        assert_eq!(
+            (
+                campo(&e2, "anadidas"),
+                campo(&e2, "antes"),
+                campo(&e2, "filas")
+            ),
+            ("2".into(), "2".into(), "3".into())
         );
     }
 

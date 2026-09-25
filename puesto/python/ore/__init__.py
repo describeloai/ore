@@ -72,7 +72,8 @@ import urllib.request
 
 MAGIA = b"ORECOPY1"
 
-__all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de"]
+__all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
+           "crear_base", "crear_schema", "crear_dataset"]
 
 
 class Puesto:
@@ -762,6 +763,133 @@ def _por_posicion(tabla_arrow, nombre, posiciones):
     return tabla_arrow.rename_columns(columnas)
 
 
+# ── Lo que crea un guion SQL (0039) ────────────────────────────────────────
+# `create … database`, `create schema` y `create dataset … (cols)`: cada uno, el
+# verbo que ya existía —el alta de una base, `createNamespace` y `createTable` de
+# `/v1`—, en nombre de quien abrió el puesto y en su rama. Con `si_no_existe`,
+# lo que ya está no es un error (`if not exists`).
+
+def crear_base(nombre, clase="standard", origen=None, incluye=None, si_no_existe=False):
+    """`create [standard|foreign] database nombre [from origin o include (…)]`.
+    Sin origen, una standard database vacía. Devuelve `{base, clase, creada}`."""
+    cuerpo = {"name": nombre, "type": clase}
+    if origen:
+        cuerpo["source"] = origen
+        cuerpo["only"] = list(incluye or [])
+    c, r = puesto.pedir("POST", "/paquetes", cuerpo, plazo=600)
+    if c == 409 and si_no_existe:
+        return {"base": nombre, "clase": clase, "creada": False}
+    if c not in (200, 201):
+        raise RuntimeError("create database %s: %s" % (nombre, _mensaje(r)))
+    return {"base": nombre, "clase": (r or {}).get("type", clase), "creada": True}
+
+
+def crear_schema(base, schema, si_no_existe=False):
+    """`create schema base.schema`: `createNamespace` de `/v1`. Devuelve
+    `{schema, creado}`."""
+    c, r = puesto.pedir("POST", "/v1/%s/namespaces" % base, {"namespace": [schema], "properties": {}}, plazo=120)
+    if c == 409 and si_no_existe:
+        return {"schema": "%s.%s" % (base, schema), "creado": False}
+    if c != 200:
+        raise RuntimeError("create schema %s.%s: %s" % (base, schema, _mensaje(r)))
+    return {"schema": "%s.%s" % (base, schema), "creado": True}
+
+
+def crear_dataset(nombre, columnas, clave=None, si_no_existe=False):
+    """`create dataset base.schema.nombre (col tipo, …[, primary key (…)])`: un
+    dataset vacío con su esquema (`createTable` de `/v1`). `columnas` es
+    `[(nombre, tipo de Iceberg)]`; `clave`, las columnas de la `primary key`: la
+    que un `insert or replace` (upsert) usa, declarada en el dataset
+    (`ore.clave`). Devuelve `{dataset, creado}`."""
+    nombre = _corto(nombre, "create dataset: el nombre")
+    base, ns, t = _partes(nombre)
+    esquema = {"type": "struct", "schema-id": 0, "fields": [
+        {"id": i + 1, "name": n, "type": ti, "required": False} for i, (n, ti) in enumerate(columnas)]}
+    cuerpo = {"name": t, "schema": esquema}
+    if clave:
+        cuerpo["properties"] = {"ore.clave": ",".join(clave)}
+    c, r = puesto.pedir("POST", "/v1/%s/namespaces/%s/tables" % (base, ns), cuerpo, plazo=120)
+    if c == 409 and si_no_existe:
+        return {"dataset": nombre, "creado": False}
+    if c != 200:
+        raise RuntimeError("create dataset %s: %s" % (nombre, _mensaje(r)))
+    return {"dataset": nombre, "creado": True}
+
+
+_ARROW_DE_ICEBERG = {"long": "int64", "int": "int32", "string": "string", "boolean": "bool", "double": "float64",
+                     "float": "float32", "date": "date32", "binary": "binary"}
+
+
+def _arrow_de_iceberg(tipo):
+    import pyarrow as pa
+
+    if tipo in _ARROW_DE_ICEBERG:
+        return pa.type_for_alias(_ARROW_DE_ICEBERG[tipo])
+    if tipo == "timestamp":
+        return pa.timestamp("us")
+    if tipo == "timestamptz":
+        return pa.timestamp("us", tz="UTC")
+    if tipo == "time":
+        return pa.time64("us")
+    m = re.match(r"decimal\((\d+),\s*(\d+)\)$", tipo or "")
+    if m:
+        return pa.decimal128(int(m.group(1)), int(m.group(2)))
+    return None
+
+
+def _como_la_tabla(tabla_arrow, nombre):
+    """`insert into b.s.d …` (el guion SQL, 0039): cada valor, al tipo de su
+    columna en el dataset, como hace SQL al insertar —`current_timestamp` es
+    TIMESTAMPTZ y la columna puede ser TIMESTAMP; `1` es INTEGER y la columna
+    BIGINT—. Lo que no se convierte sin perder se deja, y `write()` dice por qué
+    no cabe. Si el dataset aún no existe, sus tipos son los de lo que llega."""
+    import pyarrow as pa
+
+    nombre = _corto(nombre)
+    c, r = puesto.pedir("GET", _v1_tabla(nombre), cabeceras=_DELEGAR)
+    if c != 200:
+        return tabla_arrow
+    md = r["metadata"]
+    esquema = next((s for s in md.get("schemas", []) if s.get("schema-id") == md.get("current-schema-id")), None) or md.get("schema") or {}
+    tipos = {f["name"]: f["type"] for f in esquema.get("fields", []) if isinstance(f.get("type"), str)}
+    columnas = []
+    for campo, col in zip(tabla_arrow.schema, tabla_arrow.columns):
+        destino = _arrow_de_iceberg(tipos.get(campo.name))
+        if destino is not None and campo.type != destino:
+            try:
+                col = col.cast(destino)
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                pass
+        columnas.append(col)
+    return pa.table(columnas, names=tabla_arrow.column_names)
+
+
+def _resultado_de_escritura(escrito):
+    """El resultado de una sentencia que escribe (el guion SQL, 0039), como en
+    Databricks: una tabla de una fila. `num_inserted_rows` son las filas que
+    llegaron —no el total del dataset—; en un upsert, las que ya estaban por su
+    clave son `num_updated_rows` (antes + llegan − después). La misma escritura
+    otra vez no deja nada nuevo: ceros."""
+    import pyarrow as pa
+
+    llegan = 0 if escrito.get("repetida") else int(escrito.get("anadidas") or 0)
+    if escrito.get("modo") == "upsert":
+        actualizadas = 0 if escrito.get("repetida") else max(0, int(escrito.get("antes") or 0) + llegan - int(escrito.get("filas") or 0))
+        return pa.table({"num_affected_rows": pa.array([llegan], pa.int64()),
+                         "num_updated_rows": pa.array([actualizadas], pa.int64()),
+                         "num_inserted_rows": pa.array([llegan - actualizadas], pa.int64())})
+    return pa.table({"num_affected_rows": pa.array([llegan], pa.int64()),
+                     "num_inserted_rows": pa.array([llegan], pa.int64())})
+
+
+def _resultado_de_crear(objeto, creado):
+    """El resultado de una sentencia que crea (el guion SQL, 0039): qué, y si se
+    creó o ya estaba (`if not exists`)."""
+    import pyarrow as pa
+
+    return pa.table({"object": [objeto], "status": ["created" if creado else "already exists"]})
+
+
 def write(nombre, datos, modo="sobrescribir", clave=None):
     """Escribe `datos` como el dataset `<paquete>.<tabla>` del lago (ver arriba).
     Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""
@@ -830,7 +958,8 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
             # (el mismo puntero) y no deja nada
             repetida = base is not None and (r or {}).get("metadata-location") == base
             return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(snap or ""), "metadata_location": (r or {}).get("metadata-location", ""),
-                    "operacion": clave, "repetida": repetida}
+                    "operacion": clave, "repetida": repetida, "modo": modo,
+                    "anadidas": escrito.get("anadidas", 0), "antes": escrito.get("antes", 0)}
         if c == 409:
             # alguien escribió mientras tanto (o la tabla nació): otra vez sobre lo que hay
             continue
@@ -841,7 +970,8 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
                 md = r2["metadata"]
                 vigente = [s for s in md.get("snapshots", []) if s.get("snapshot-id") == md.get("current-snapshot-id")]
                 if vigente and vigente[0].get("summary", {}).get("ore.operacion") == clave:
-                    return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(md.get("current-snapshot-id")), "metadata_location": r2["metadata-location"], "operacion": clave, "repetida": False}
+                    return {"tabla": nombre, "filas": escrito["filas"], "snapshot": str(md.get("current-snapshot-id")), "metadata_location": r2["metadata-location"], "operacion": clave, "repetida": False,
+                            "modo": modo, "anadidas": escrito.get("anadidas", 0), "antes": escrito.get("antes", 0)}
             raise RuntimeError("write(%s): el catálogo contestó %s y el commit no está: %s" % (nombre, c, _mensaje(r)))
         raise RuntimeError("write(%s): %s" % (nombre, _mensaje(r)))
     raise RuntimeError("write(%s): cuatro veces alguien escribió antes; vuelve a intentarlo" % nombre)

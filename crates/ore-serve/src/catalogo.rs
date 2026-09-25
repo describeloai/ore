@@ -9,6 +9,7 @@
 //! | ruta | qué | quién decide |
 //! |---|---|---|
 //! | `GET /v1/config` | los defectos: ninguno; los `endpoints` que se sirven (con los de vistas: sin ellos Spark no las pide) | aquí |
+//! | `POST /v1/{base}/namespaces` | `createNamespace`: un schema de la base (0039), en la rama de quien escribe | `ore package schema new` |
 //! | `GET /v1/namespaces[/{ns}[/tables]]` | los paquetes del árbol, y las tablas del lago con puntero | el árbol (`packages/*/package.yaml`, `ore datasets`) |
 //! | `GET\|HEAD /v1/namespaces/{ns}/tables/{t}` | el `LoadTableResult`: puntero + `metadata.json` + **la credencial acotada a la tabla** si el cliente manda `X-Iceberg-Access-Delegation: vended-credentials` | `ore datasets --cargar [--prestar]` |
 //! | `POST /v1/namespaces/{ns}/tables` | la tabla nace (`--crear`), o se esboza sin escribir nada si `stage-create` (`--esbozar`) | `ore datasets` |
@@ -352,6 +353,87 @@ impl Servidor {
                         Json::Arr(ENDPOINTS.iter().map(|e| Json::s(*e)).collect()),
                     ),
                 ]))
+            }
+            // **`createNamespace`** (0039 paso 2): con la base en el `prefix`,
+            // un namespace es un schema, y crearlo es `ore package schema new`
+            // —el mismo verbo que el botón del catálogo (0038 P6a)—, en la rama
+            // de quien escribe. Es lo que llaman `create schema` en un guion y,
+            // mañana, Spark y DuckDB contra este catálogo. Sin `prefix` un
+            // namespace es una base, y una base no nace por aquí.
+            ("POST", ["namespaces"]) => {
+                let Some(b) = base else {
+                    return error(
+                        400,
+                        "BadRequestException",
+                        "sin `prefix` un namespace es una base, y una base no nace por `/v1`: `create standard database b` en un guion (o el catálogo)",
+                    );
+                };
+                let cuerpo = match ore_core::parse::parse(&p.cuerpo) {
+                    Ok(c) if !p.cuerpo.trim().is_empty() => c,
+                    _ => return error(400, "BadRequestException", "el cuerpo no es JSON"),
+                };
+                let partes: Vec<String> = cuerpo
+                    .get("namespace")
+                    .map(|(_, v)| v.items())
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|n| n.as_str().map(String::from))
+                    .collect();
+                let schema = match partes.as_slice() {
+                    [s] => s.clone(),
+                    _ => {
+                        return error(
+                            400,
+                            "BadRequestException",
+                            format!(
+                                "`namespace` es el schema, de un nivel, dentro de la base `{b}`: `[\"<schema>\"]`"
+                            ),
+                        );
+                    }
+                };
+                let comentario = cuerpo
+                    .get("properties")
+                    .and_then(|(_, p)| p.get("comment"))
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from);
+                let mut pide = vec![("name", Json::s(&schema))];
+                if let Some(c) = comentario {
+                    pide.push(("description", Json::s(c)));
+                }
+                let pide = Json::obj(pide).jcs();
+                let b = b.to_string();
+                let r = self.escribiendo_en(
+                    rama,
+                    sujeto,
+                    &format!("`{b}`: crear el schema `{schema}`"),
+                    |raiz| self.crear_schema(raiz, &b, &pide),
+                );
+                match r.codigo {
+                    200 | 201 => Respuesta::ok(Json::obj([
+                        ("namespace", Json::Arr(vec![Json::s(&schema)])),
+                        ("properties", Json::obj([])),
+                    ])),
+                    409 => {
+                        let m = match &r.cuerpo {
+                            Json::Obj(m) => match m.get("error") {
+                                Some(Json::Str(s)) => s.clone(),
+                                _ => format!("ya hay un schema `{schema}` en `{b}`"),
+                            },
+                            _ => format!("ya hay un schema `{schema}` en `{b}`"),
+                        };
+                        error(409, "AlreadyExistsException", m)
+                    }
+                    404 => {
+                        let mut r = con_forma(r, false);
+                        if let Json::Obj(m) = &mut r.cuerpo
+                            && let Some(Json::Obj(e)) = m.get_mut("error")
+                        {
+                            e.insert("type".into(), Json::s("NoSuchWarehouseException"));
+                        }
+                        r
+                    }
+                    _ => con_forma(r, false),
+                }
             }
             ("GET", ["namespaces"]) => con_forma(
                 self.leyendo_en(rama, |raiz| {
@@ -936,6 +1018,7 @@ impl Servidor {
 /// NO pide vistas (medido con Spark); con ella, sólo pide lo que está.
 const ENDPOINTS: &[&str] = &[
     "GET /v1/{prefix}/namespaces",
+    "POST /v1/{prefix}/namespaces",
     "GET /v1/{prefix}/namespaces/{namespace}",
     "HEAD /v1/{prefix}/namespaces/{namespace}",
     "GET /v1/{prefix}/namespaces/{namespace}/tables",

@@ -10,19 +10,27 @@
 //!
 //! # Lo que un `.sql` puede ser
 //!
-//! **Una** sentencia —un fichero, una salida—, y una de estas cuatro:
+//! **Un guion**: una o varias sentencias separadas por `;`, que corren en
+//! orden (ver [`guion`]). Cada una es una **unidad** —lee o escribe datos—:
 //!
 //! | la frase | es | modo de `write()` |
 //! |---|---|---|
 //! | `select …` (o `from … select`, `with …`) | un análisis: lee y no escribe | — |
-//! | `create or replace table p.t as select …` | un transform | `sobrescribir` |
-//! | `insert into p.t select …` | un transform | `anexar` |
-//! | `insert or replace into p.t select …` | un transform | `upsert` (con la clave de la tabla) |
+//! | `create or replace dataset p.d as select …` | un transform | `sobrescribir` |
+//! | `insert into p.d [(cols)] select …` o `… values (…)` | un transform | `anexar` |
+//! | `insert or replace into p.d select …` | un transform | `upsert` (con la clave del dataset) |
+//!
+//! o **crea** algo del catálogo, en su orden —la base, su schema, un dataset
+//! vacío con sus columnas—: [`guion::Sentencia`].
+//!
+//! Lo que se escribe es un **Dataset**, la unidad de almacenamiento del lago
+//! (0033). Una **Table** es un puntero a un objeto de un origen: nace del
+//! descubrimiento, no de SQL, y `create table` se niega con esa frase.
 //!
 //! Y nada más, a propósito:
 //!
-//! - **`create table … as` sin `or replace`** se niega: un trabajo se vuelve a
-//!   correr, y la segunda vez fallaría porque la tabla ya existe.
+//! - **`create dataset … as` sin `or replace`** se niega: un trabajo se vuelve
+//!   a correr, y la segunda vez fallaría porque el dataset ya existe.
 //! - **Un nombre se escribe `base.schema.nombre`** (0038, como en Unity
 //!   Catalog: la base es el paquete). Sin base no se sabe de quién es (salvo
 //!   que sea un `with`). **Dos partes** (`base.nombre`, la forma de antes) se
@@ -160,7 +168,7 @@ pub struct Fallo {
 }
 
 impl Fallo {
-    fn new(mensaje: impl Into<String>, pos: Option<Pos>) -> Self {
+    pub fn new(mensaje: impl Into<String>, pos: Option<Pos>) -> Self {
         Self {
             mensaje: mensaje.into(),
             pos,
@@ -187,7 +195,7 @@ impl Fallo {
         }
     }
 
-    fn ayuda(mut self, a: impl Into<String>) -> Self {
+    pub fn ayuda(mut self, a: impl Into<String>) -> Self {
         self.ayuda = Some(a.into());
         self
     }
@@ -196,34 +204,52 @@ impl Fallo {
 /// Las funciones que generan filas sin leer nada: no rompen el linaje.
 const GENERADORAS: [&str; 3] = ["range", "generate_series", "unnest"];
 
-const LO_QUE_PUEDE_SER: &str = "un `.sql` del árbol es un `select` (lee), `create or replace table b.s.t as select …` (sobrescribe), `insert into b.s.t select …` (anexa) o `insert or replace into b.s.t select …` (upsert)";
+const LO_QUE_PUEDE_SER: &str = "una sentencia del árbol es un `select` (lee), `create or replace dataset b.s.d as select …` (sobrescribe), `insert into b.s.d select …` o `… values (…)` (anexa), `insert or replace into b.s.d select …` (upsert), o crea: `create standard|foreign database b`, `create schema b.s`, `create dataset b.s.d (columnas)`";
 
-/// Analiza el texto de un `.sql` y devuelve lo que declara. Todos los fallos a
-/// la vez cuando se puede —un nombre mal escrito no esconde al siguiente—; uno
-/// solo si la frase no analiza.
+pub mod guion;
+
+/// Analiza el texto de un `.sql` que es **una** unidad —un trabajo, una celda
+/// que escribe— y devuelve lo que declara. Todos los fallos a la vez cuando se
+/// puede —un nombre mal escrito no esconde al siguiente—; uno solo si la frase
+/// no analiza. Un guion de varias sentencias es [`guion::guion`].
 pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
-    let sentencias = match Parser::parse_sql(&DuckDbDialect {}, texto) {
-        Ok(s) => s,
-        Err(e) => return Err(vec![fallo_de_analisis(&e.to_string())]),
-    };
-    let mut sentencias = sentencias.into_iter();
-    let Some(s) = sentencias.next() else {
-        return Err(vec![
-            Fallo::new("el `.sql` está vacío", None).ayuda(LO_QUE_PUEDE_SER),
-        ]);
-    };
-    if let Some(otra) = sentencias.next() {
+    let mut trozos = guion::guion(texto)?;
+    if let Some(otra) = trozos.get(1) {
         return Err(vec![
             Fallo::new(
-                "un `.sql` del árbol es UNA sentencia: un fichero, una salida",
-                pos_de_sentencia(&otra),
+                "un `.sql` que corre como trabajo es UNA sentencia: un fichero, una salida",
+                otra.pos,
             )
-            .ayuda("parte el fichero en dos, o junta lo que calculas en un `with`"),
+            .ayuda("parte el fichero en dos, junta lo que calculas en un `with`, o córrelo en la sesión: allí un guion corre sentencia a sentencia"),
         ]);
     }
+    match trozos.pop() {
+        Some(guion::Trozo {
+            sentencia: guion::Sentencia::Unidad(u),
+            ..
+        }) => Ok(u),
+        Some(t) => Err(vec![
+            Fallo::new(
+                format!(
+                    "`{}` crea algo del catálogo y no lee ni escribe datos: corre en la sesión, como una sentencia de un guion",
+                    t.sentencia.que()
+                ),
+                t.pos,
+            )
+            .ayuda(LO_QUE_PUEDE_SER),
+        ]),
+        None => Err(vec![
+            Fallo::new("el `.sql` está vacío", None).ayuda(LO_QUE_PUEDE_SER),
+        ]),
+    }
+}
 
+/// **Una sentencia que lee o escribe datos**, ya analizada. `texto` es el de
+/// la sentencia con lo de alrededor en blanco (líneas y columnas, las del
+/// fichero): de él se corta la consulta.
+fn unidad_de(s: &Statement, texto: &str) -> Result<Unidad, Vec<Fallo>> {
     let mut fallos = Vec::new();
-    let escribe = match &s {
+    let escribe = match s {
         Statement::Query(_) => None,
         Statement::CreateTable(c) => escritura_de_create(c, &mut fallos),
         Statement::Insert(i) => escritura_de_insert(i, &mut fallos),
@@ -279,17 +305,20 @@ pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
         );
     }
 
-    let consulta = match &s {
+    let consulta = match s {
         Statement::Query(_) => Some(sin_punto_y_coma(texto)),
         Statement::CreateTable(c) => c.query.as_deref().and_then(|q| desde(texto, q)),
-        Statement::Insert(i) => i.source.as_deref().and_then(|q| desde(texto, q)),
+        Statement::Insert(i) => i
+            .source
+            .as_deref()
+            .and_then(|q| consulta_de_insert(texto, i, q)),
         _ => None,
     };
     if fallos.is_empty() {
         let Some(consulta) = consulta else {
             return Err(vec![Fallo::new(
                 "no se encuentra dónde empieza la consulta de la frase",
-                pos_de_sentencia(&s),
+                pos_de_sentencia(s),
             )]);
         };
         Ok(Unidad {
@@ -306,18 +335,20 @@ pub fn analizar(texto: &str) -> Result<Unidad, Vec<Fallo>> {
 fn escritura_de_create(c: &CreateTable, fallos: &mut Vec<Fallo>) -> Option<Escritura> {
     let pos = pos_de_nombre(&c.name);
     if c.query.is_none() {
+        // Un dataset con columnas es [`guion::Sentencia::CrearDataset`]: aquí
+        // sólo llega lo que no es ni eso.
         fallos.push(
             Fallo::new(
-                "una tabla del árbol nace de lo que se escribe en ella, no de una lista de columnas",
+                "un dataset nace vacío con sus columnas (`create dataset b.s.d (…)`) o de lo que se escribe en él",
                 pos,
             )
-            .ayuda("`create or replace table p.t as select …`"),
+            .ayuda("`create or replace dataset b.s.d as select …`"),
         );
         return None;
     }
     if c.temporary {
         fallos.push(Fallo::new(
-            "una tabla temporal no sale de la sesión: usa un `with`",
+            "un dataset temporal no sale de la sesión: usa un `with`",
             pos,
         ));
         return None;
@@ -325,10 +356,10 @@ fn escritura_de_create(c: &CreateTable, fallos: &mut Vec<Fallo>) -> Option<Escri
     if !c.or_replace {
         fallos.push(
             Fallo::new(
-                "`create table … as` falla la segunda vez que corre: la tabla ya existe",
+                "`create dataset … as` falla la segunda vez que corre: el dataset ya existe",
                 pos,
             )
-            .ayuda("`create or replace table … as`: sobrescribe, que es lo que un trabajo repetido tiene que hacer"),
+            .ayuda("`create or replace dataset … as`: sobrescribe, que es lo que un trabajo repetido tiene que hacer"),
         );
         return None;
     }
@@ -371,35 +402,55 @@ fn escritura_de_insert(i: &Insert, fallos: &mut Vec<Fallo>) -> Option<Escritura>
         );
         return None;
     }
-    if !i.columns.is_empty() {
+    let Some(q) = i.source.as_deref() else {
         fallos.push(
             Fallo::new(
-                "lo que se escribe es lo que el `select` devuelve, con sus nombres: sin lista de columnas",
+                "un `insert` del árbol escribe lo que sale de un `select` o de un `values`",
                 pos,
             )
-            .ayuda("pon los nombres como alias en el `select`"),
+            .ayuda("`insert into b.s.d select …` o `insert into b.s.d (cols) values (…)`"),
         );
         return None;
-    }
-    match i.source.as_deref() {
-        Some(q) if !matches!(*q.body, SetExpr::Values(_)) => {}
-        _ => {
-            fallos.push(
-                Fallo::new(
-                    "un `insert` del árbol escribe lo que sale de un `select`",
-                    pos,
-                )
-                .ayuda("`insert into p.t select …`"),
-            );
-            return None;
-        }
-    }
+    };
     let destino = nombre_del_arbol(nombre, fallos)?;
-    let por_posicion = i.source.as_deref().map(sin_nombre).unwrap_or_default();
+    // Con lista de columnas, lo escrito va por ESOS nombres (la consulta se
+    // envuelve con ellos: [`consulta_de_insert`]). Sin ella, un `values` no
+    // tiene nombres —todas sus columnas van por posición— y un `select`, los
+    // suyos salvo las expresiones sin alias.
+    let por_posicion = match (&*q.body, i.columns.is_empty()) {
+        (_, false) => Vec::new(),
+        (SetExpr::Values(v), true) => (0..v.rows.first().map_or(0, |r| r.content.len())).collect(),
+        (_, true) => sin_nombre(q),
+    };
     Some(Escritura {
         destino,
         modo,
         por_posicion,
+    })
+}
+
+/// **Lo que produce un `insert`**, como consulta de `sql()`: lo que sigue al
+/// destino, tal como se escribió; con lista de columnas, envuelto para que
+/// salga con ESOS nombres (`select * from (…) as v(a, b)`), y un `values`
+/// suelto, envuelto también: lo que escribe `write()` es una tabla con nombre.
+fn consulta_de_insert(texto: &str, i: &Insert, q: &Query) -> Option<String> {
+    let base = desde(texto, q)?;
+    // El nodo de un `values` empieza en su primera fila, no en la palabra.
+    let es_values = matches!(*q.body, SetExpr::Values(_));
+    let base = if es_values
+        && !base
+            .get(..6)
+            .is_some_and(|p| p.eq_ignore_ascii_case("values"))
+    {
+        format!("VALUES {base}")
+    } else {
+        base
+    };
+    let columnas: Vec<String> = i.columns.iter().map(ToString::to_string).collect();
+    Some(match (columnas.is_empty(), es_values) {
+        (true, false) => base,
+        (true, true) => format!("SELECT * FROM ({base}) AS v"),
+        (false, _) => format!("SELECT * FROM ({base}) AS v({})", columnas.join(", ")),
     })
 }
 
@@ -661,31 +712,48 @@ fn fallo_de_analisis(m: &str) -> Fallo {
 /// Si **existe** el bytes que se lee lo dice el puntero en el momento de
 /// correr, no el árbol: eso no se coteja aquí.
 pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
-    let doc = |n: &Nombre| {
-        let r = n.referencia();
-        pkg.docs
-            .iter()
-            .find(|d| d.kind != Kind::Package && d.qname().as_deref() == Some(r.as_str()))
-    };
-    let hay_paquete = |p: &str| {
-        pkg.docs
-            .iter()
-            .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
-    };
+    cotejar_con(pkg, u, &guion::Creado::default())
+}
+
+/// El documento del árbol de un nombre (en su forma corta), si lo hay.
+fn doc_de<'a>(pkg: &'a Package, r: &str) -> Option<&'a crate::link::Loaded> {
+    pkg.docs
+        .iter()
+        .find(|d| d.kind != Kind::Package && d.qname().as_deref() == Some(r))
+}
+
+fn hay_base(pkg: &Package, p: &str) -> bool {
+    pkg.docs
+        .iter()
+        .any(|d| d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(p))
+}
+
+/// Un schema que no es `default` existe si se declara (v1alpha13, 01 §2).
+fn hay_schema_declarado(pkg: &Package, base: &str, schema: &str) -> bool {
+    schema == crate::normalize::SCHEMA_POR_DEFECTO
+        || pkg.docs.iter().any(|d| {
+            d.kind == Kind::Schema
+                && d.meta("namespace").and_then(|x| x.as_str()) == Some(base)
+                && d.meta("name").and_then(|x| x.as_str()) == Some(schema)
+        })
+}
+
+/// [`cotejar`] con lo que las sentencias de antes del guion ya crearon: una
+/// base, un schema o un dataset de la sentencia 1 existen para la 2.
+fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> {
+    let doc = |n: &Nombre| doc_de(pkg, &n.referencia());
+    let hay_paquete = |p: &str| hay_base(pkg, p) || creado.bases.contains(p);
     let sin_paquete = |n: &Nombre| {
         Fallo::new(
             format!("no hay ningún paquete `{}` en el árbol", n.paquete),
             n.pos,
         )
     };
-    // Un schema que no es `default` existe si se declara (v1alpha13, 01 §2).
     let hay_schema = |n: &Nombre| {
-        n.schema == crate::normalize::SCHEMA_POR_DEFECTO
-            || pkg.docs.iter().any(|d| {
-                d.kind == Kind::Schema
-                    && d.meta("namespace").and_then(|x| x.as_str()) == Some(n.paquete.as_str())
-                    && d.meta("name").and_then(|x| x.as_str()) == Some(n.schema.as_str())
-            })
+        hay_schema_declarado(pkg, &n.paquete, &n.schema)
+            || creado
+                .schemas
+                .contains(&(n.paquete.clone(), n.schema.clone()))
     };
     let sin_schema = |n: &Nombre| {
         Fallo::new(
@@ -729,6 +797,8 @@ pub fn cotejar(pkg: &Package, u: &Unidad) -> Vec<Fallo> {
             )),
             None if !hay_paquete(&n.paquete) => fallos.push(sin_paquete(n)),
             None if !hay_schema(n) => fallos.push(sin_schema(n)),
+            // lo creó una sentencia de antes del guion
+            None if creado.datasets.contains(&r) => {}
             None => fallos.push(Fallo::new(
                 format!("no hay ningún `Dataset` ni `View` `{r}` en el árbol"),
                 n.pos,
@@ -899,7 +969,7 @@ fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
                 };
                 let es_paquete = paquete(&a);
                 let se_resuelve = del_arbol(&qn) || (tras(i, &TRAS_LAS_QUE_SE_LEE) && es_paquete);
-                let se_escribe = tras(i, &["table", "into"]) && es_paquete;
+                let se_escribe = tras(i, &["table", "dataset", "into"]) && es_paquete;
                 out.push(NombreDeCelda {
                     qn,
                     dos_partes: c.is_none(),
@@ -926,6 +996,11 @@ pub enum EscribeEnElArbol {
     /// `create … view paquete.nombre`: una View del árbol no nace de una
     /// celda, se declara.
     Vista(String),
+    /// Crea algo del catálogo (0039): `create [standard|foreign] database b`
+    /// —DuckDB no tiene bases, así que siempre es del árbol— o `create schema
+    /// b.s` de una base del árbol (`create schema tmp` sigue siendo de DuckDB).
+    /// Lo que dice: `database b`, `schema b.s`.
+    Crea(String),
 }
 
 /// **¿Escribe esta celda en el árbol?** (una celda `sql` de la sesión).
@@ -939,7 +1014,7 @@ pub enum EscribeEnElArbol {
 /// Con el **tokenizador**, no con el parser: lo que `sqlparser` no analiza
 /// (`insert … by name`, `pivot`, `using sample`) también se ve, y en vez de
 /// perderse en la memoria de DuckDB se dice por qué no se corre. Mira
-/// `create [or replace] [temp|temporary] table|view [if not exists] a.b` e
+/// `create [or replace] [temp|temporary] table|dataset|view [if not exists] a.b` e
 /// `insert [or replace|ignore] into a.b`, en cualquier sentencia del texto.
 pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbol> {
     use sqlparser::tokenizer::{Token, Tokenizer};
@@ -979,6 +1054,30 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
     };
     for i in 0..toks.len() {
         if es(i, "create") {
+            // 0039: lo que crea en el catálogo
+            let k = if es(i + 1, "standard") || es(i + 1, "foreign") {
+                i + 2
+            } else {
+                i + 1
+            };
+            let tras_si_no_existe = |m: usize| {
+                if es(m, "if") && es(m + 1, "not") && es(m + 2, "exists") {
+                    m + 3
+                } else {
+                    m
+                }
+            };
+            if es(k, "database") {
+                let m = tras_si_no_existe(k + 1);
+                if let Some(Token::Word(w)) = toks.get(m) {
+                    return Some(EscribeEnElArbol::Crea(format!("database {}", w.value)));
+                }
+            }
+            if es(i + 1, "schema")
+                && let Some(n) = nombre(tras_si_no_existe(i + 2))
+            {
+                return Some(EscribeEnElArbol::Crea(format!("schema {n}")));
+            }
             let mut j = i + 1;
             if es(j, "or") && es(j + 1, "replace") {
                 j += 2;
@@ -987,7 +1086,7 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
                 j += 1;
             }
             let vista = es(j, "view");
-            if !(vista || es(j, "table")) {
+            if !(vista || es(j, "table") || es(j, "dataset")) {
                 continue;
             }
             j += 1;
@@ -1065,7 +1164,7 @@ mod tests {
             [1]
         );
         assert_eq!(
-            p("create or replace table hr.x as select 0.5 from hr.a"),
+            p("create or replace dataset hr.x as select 0.5 from hr.a"),
             Vec::<usize>::new()
         );
     }
@@ -1124,7 +1223,7 @@ mod tests {
     #[test]
     fn los_tres_modos_de_write() {
         assert_eq!(
-            escribe("create or replace table hr.salida as select * from hr.a"),
+            escribe("create or replace dataset hr.salida as select * from hr.a"),
             ("hr.salida".into(), Modo::Sobrescribir)
         );
         assert_eq!(
@@ -1146,7 +1245,7 @@ mod tests {
     #[test]
     fn tres_partes_y_dos_con_su_aviso() {
         // tres partes: la base, el schema y el nombre; la clave es la corta
-        let u = analizar("create or replace table ventas.espana.r as select * from ventas.default.pedidos join ventas.espana.clientes using (id)").unwrap();
+        let u = analizar("create or replace dataset ventas.espana.r as select * from ventas.default.pedidos join ventas.espana.clientes using (id)").unwrap();
         assert_eq!(
             u.lee.iter().map(Nombre::referencia).collect::<Vec<_>>(),
             ["ventas.pedidos", "ventas.espana.clientes"]
@@ -1195,9 +1294,9 @@ mod tests {
 
     #[test]
     fn lo_que_no_es_una_unidad_se_dice_con_su_sitio() {
-        let f = falla("create table hr.salida as select * from hr.a");
+        let f = falla("create dataset hr.salida as select * from hr.a");
         assert!(f[0].mensaje.contains("la segunda vez"), "{f:?}");
-        assert_eq!(f[0].pos, Some(Pos { line: 1, col: 14 }));
+        assert_eq!(f[0].pos, Some(Pos { line: 1, col: 16 }));
 
         let f = falla("select * from hr.a;\nselect * from hr.b");
         assert!(f[0].mensaje.contains("UNA sentencia"), "{f:?}");
@@ -1220,20 +1319,17 @@ mod tests {
                 .mensaje
                 .contains("or replace")
         );
+        // una Table no se crea desde SQL; un dataset con columnas, sí, pero
+        // en un guion de la sesión, no como trabajo
         assert!(
-            falla("insert into hr.x (a) select 1")[0]
+            falla("create or replace table hr.x as select 1")[0]
                 .mensaje
-                .contains("lista de columnas")
+                .contains("una Table es un puntero")
         );
         assert!(
-            falla("insert into hr.x values (1)")[0]
+            falla("create dataset hr.x (a int)")[0]
                 .mensaje
-                .contains("`select`")
-        );
-        assert!(
-            falla("create or replace table hr.x (a int)")[0]
-                .mensaje
-                .contains("lista de columnas")
+                .contains("corre en la sesión")
         );
         assert!(falla("   ")[0].mensaje.contains("vacío"));
     }
@@ -1246,7 +1342,7 @@ mod tests {
         assert_eq!(c("select 1;\n"), "select 1");
         assert_eq!(
             c(
-                "create or replace table hr.s as\n-- lo de España\nselect * exclude (x)\nfrom hr.a\nqualify row_number() over () = 1;"
+                "create or replace dataset hr.s as\n-- lo de España\nselect * exclude (x)\nfrom hr.a\nqualify row_number() over () = 1;"
             ),
             "select * exclude (x)\nfrom hr.a\nqualify row_number() over () = 1"
         );

@@ -125,7 +125,8 @@ pub struct Servidor {
 /// gobierno mismo se reescribía desde un puesto. El testigo que una celda
 /// tiene es el del agente, y lo que un agente escribe en este servidor es lo
 /// que los verbos dicen —leer (`/puestos/{id}/datos`), escribir (`/v1`, el
-/// catálogo; `confirmar`), declarar (`/documentos`)— más lo suyo del puesto
+/// catálogo; `confirmar`), declarar (`/documentos`), crear una base
+/// (`POST /paquetes`, 0039)— más lo suyo del puesto
 /// (`pendiente`, `salida`). Todo lo demás que no sea leer, un agente no lo
 /// hace: 403. Se decide AQUÍ y no ruta a ruta, en una lista de permitidos
 /// como la de `mando.rs`: el verbo que se añada mañana llega negado (P4).
@@ -142,6 +143,8 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["v1", ..]
             | ["documentos", ..]
             | ["conceptos", ..]
+            // 0039: `create … database` en un guion
+            | ["paquetes"]
             | ["datasets", _, _, "confirmar"]
             | ["datasets", _, _, _, "confirmar"]
     );
@@ -326,10 +329,17 @@ impl Servidor {
             //   ya dejo en el arbol, sin credencial, sin red y sin driver. Es
             //   exactamente lo mismo que `review` hace tres rutas mas abajo, y
             //   por el mismo camino: un clon, `ore`, un commit.
+            // ⭐ 0039: y desde un puesto (`create … database` en un guion),
+            //   con `x-ore-puesto`: quien la crea es la persona y va a su rama,
+            //   como lo que una celda declara o escribe.
             ("POST", ["paquetes"]) => {
+                let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
+                    Ok(x) => x,
+                    Err(r) => return r,
+                };
                 let cuerpo = p.cuerpo.clone();
-                self.escribiendo(sujeto, "alta de una base", |r| {
-                    self.alta_de_paquete(r, &cuerpo, sujeto)
+                self.escribiendo_en(rama.as_deref(), &sujeto, "alta de una base", |r| {
+                    self.alta_de_paquete(r, &cuerpo, &sujeto)
                 })
             }
             // ⭐⭐ EL ESQUEMA DESCUBIERTO, que hasta hoy no salia por ningun
@@ -1442,9 +1452,6 @@ impl Servidor {
         let Some(nombre) = campo("name") else {
             return Respuesta::error(422, "falta `name`");
         };
-        let Some(fuente) = campo("source") else {
-            return Respuesta::error(422, "falta `source`: el paquete del que sale el catálogo");
-        };
         if let Err(m) = token(&nombre) {
             return Respuesta::error(422, format!("`name`: {m}"));
         }
@@ -1468,6 +1475,11 @@ impl Servidor {
                     format!("`type` es `standard` o `foreign`, no `{otro}`"),
                 );
             }
+        };
+        // ⭐ 0039: sin origen, una standard database vacía (`create standard
+        //   database b` en un guion): lo que tenga se escribirá en el lago.
+        let Some(fuente) = campo("source") else {
+            return self.base_vacia(raiz, &nombre, campo("type").as_deref(), sujeto);
         };
         let objetos: Vec<String> = cuerpo
             .get("only")
@@ -1502,6 +1514,11 @@ impl Servidor {
         if raiz.join("packages").join(&nombre).exists() {
             return Respuesta::error(409, format!("ya hay un paquete `{nombre}`"));
         }
+        // `s.*` es el schema entero del origen (0039, `include (s.*)`).
+        let objetos = match expandir(&catalogo, objetos) {
+            Ok(o) => o,
+            Err(r) => return r,
+        };
 
         // La lista, FUERA del arbol: es la entrada de una peticion, no un
         // documento del repositorio. `discover` la copia a `discover.scope.json`,
@@ -1577,6 +1594,63 @@ impl Servidor {
                 campos.extend(self.tras_inducir(raiz, &nombre, sujeto));
                 Respuesta::ok(Json::obj(campos))
             }
+        }
+    }
+
+    /// **Una standard database vacía** (0039): `ore package new`, con el dueño
+    /// de las bases —la organización— o, si no la hay, quien la crea.
+    fn base_vacia(
+        &self,
+        raiz: &Path,
+        nombre: &str,
+        tipo: Option<&str>,
+        sujeto: &Identidad,
+    ) -> Respuesta {
+        if tipo == Some("foreign") {
+            return Respuesta::error(
+                422,
+                "una foreign database se lee en su origen: falta `source` (y `only`)",
+            );
+        }
+        if raiz.join("packages").join(nombre).exists() {
+            return Respuesta::error(409, format!("ya hay un paquete `{nombre}`"));
+        }
+        let dueno = self.dueno_del_arbol().or_else(|| {
+            let h = sujeto
+                .persona
+                .split_once(':')
+                .map_or(sujeto.persona.as_str(), |(_, h)| h);
+            let o = format!("user:{h}");
+            ore_core::pertenencia::es_handle(&o).then_some(o)
+        });
+        let mut args: Vec<String> = vec![
+            "package".into(),
+            "new".into(),
+            nombre.into(),
+            "--path".into(),
+            raiz.to_string_lossy().into_owned(),
+        ];
+        if let Some(o) = &dueno {
+            args.extend(["--owner".into(), o.clone()]);
+        }
+        match mando::correr(&self.binario, raiz, &args) {
+            Err(e) => Respuesta::error(500, e.to_string()),
+            Ok(s) if !s.bien() => Respuesta::error(
+                if s.codigo == 65 { 409 } else { 422 },
+                format!(
+                    "`ore package new` devolvió {}: {}",
+                    s.codigo,
+                    primera_linea(&s.stdout, &s.stderr)
+                ),
+            ),
+            Ok(_) => Respuesta::ok(Json::obj([
+                ("name", Json::s(nombre)),
+                ("type", Json::s("standard")),
+                (
+                    "owner",
+                    dueno.map(Json::s).unwrap_or_else(|| Json::s("cambiame")),
+                ),
+            ])),
         }
     }
 
@@ -2435,6 +2509,59 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
 
 pub fn ruta_de(p: &Path) -> String {
     p.display().to_string()
+}
+
+/// **`include (s.*)`** (0039): un objeto `s.*` es el schema `s` entero del
+/// catálogo del origen (sus `tables[].name` que empiezan por `s.`). Lo demás,
+/// tal cual: si no está, lo dice `discover`.
+fn expandir(catalogo: &Path, objetos: Vec<String>) -> Result<Vec<String>, Respuesta> {
+    if !objetos.iter().any(|o| o.ends_with(".*")) {
+        return Ok(objetos);
+    }
+    let nombres: Vec<String> = std::fs::read_to_string(catalogo)
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok())
+        .map(|n| {
+            n.get("tables")
+                .map(|(_, t)| t.items())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|t| {
+                    t.get("name")
+                        .and_then(|(_, v)| v.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for o in objetos {
+        match o.strip_suffix(".*") {
+            None => {
+                if !out.contains(&o) {
+                    out.push(o)
+                }
+            }
+            Some(s) => {
+                let de_s: Vec<&String> = nombres
+                    .iter()
+                    .filter(|n| n.strip_prefix(s).is_some_and(|r| r.starts_with('.')))
+                    .collect();
+                if de_s.is_empty() {
+                    return Err(Respuesta::error(
+                        422,
+                        format!("el origen no tiene nada en `{s}`: `{o}` no incluye ningún objeto"),
+                    ));
+                }
+                for n in de_s {
+                    if !out.contains(n) {
+                        out.push(n.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

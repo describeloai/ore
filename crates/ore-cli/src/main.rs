@@ -812,9 +812,11 @@ enum Command {
         json: bool,
     },
     /// Lo que un `.sql` del arbol declara: que lee, que escribe y en que modo
-    /// (`create or replace table ... as` sobrescribe, `insert into` anexa,
+    /// (`create or replace dataset ... as` sobrescribe, `insert into` anexa,
     /// `insert or replace into` hace upsert; un `select` lee y no escribe), o
-    /// por que no es una unidad. Dentro de un arbol, ademas, si lo que lee se
+    /// por que no es una unidad. Un guion de varias sentencias, cada una en su
+    /// orden, y las que crean (`create standard|foreign database`, `create
+    /// schema`, `create dataset ... (columnas)`). Dentro de un arbol, ademas, si lo que lee se
     /// puede leer y lo que escribe se puede escribir. `--json` con posiciones.
     Sql {
         fichero: PathBuf,

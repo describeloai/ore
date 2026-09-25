@@ -132,6 +132,28 @@ pub(crate) struct Celda {
     pub enviada: Instant,
     pub empezada: Option<Instant>,
     pub salida: Option<Json>,
+    /// **De qué guion es** (0039): las sentencias de un `.sql` de varias
+    /// corren como celdas seguidas, y si una falla las de detrás no corren.
+    pub lote: Option<Lote>,
+}
+
+/// El lugar de una celda en su guion (0039).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Lote {
+    /// El número de la primera celda del guion: el que lo nombra.
+    pub primera: u64,
+    /// Qué sentencia es (desde 0) y cuántas hay.
+    pub i: usize,
+    pub n: usize,
+}
+
+/// Una sentencia de un guion, lista para ser su celda.
+struct SentenciaDelLote {
+    texto: String,
+    corre: (String, &'static str),
+    avisos: Vec<Json>,
+    pos: Option<ore_core::diag::Pos>,
+    que: &'static str,
 }
 
 /// **Un trabajo** (0031 §9, W3.7 ④): un fichero del árbol corrido como una
@@ -363,6 +385,16 @@ fn ficha_de_celda(n: u64, c: &Celda) -> Json {
     }
     if !c.avisos.is_empty() {
         m.insert("avisos".to_string(), Json::Arr(c.avisos.clone()));
+    }
+    if let Some(l) = c.lote {
+        m.insert(
+            "lote".to_string(),
+            Json::obj([
+                ("primera", Json::Int(l.primera as i64)),
+                ("i", Json::Int(l.i as i64)),
+                ("n", Json::Int(l.n as i64)),
+            ]),
+        );
     }
     Json::Obj(m)
 }
@@ -863,6 +895,7 @@ impl Servidor {
                 enviada: Instant::now(),
                 empezada: None,
                 salida: None,
+                lote: None,
             },
         );
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -1154,6 +1187,45 @@ impl Servidor {
         let mut avisos = Vec::new();
         let r = self.leyendo_en(rama.as_deref(), |raiz| {
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            // ⭐ 0039: **un guion** —varias sentencias que el árbol sabe
+            //   correr, cotejadas en orden— es una celda por sentencia. Si no
+            //   coteja y escribe en el árbol, no corre nada (mejor que a medias);
+            //   si no es del árbol (`create schema tmp; …`), es de DuckDB entero,
+            //   como siempre.
+            if let Ok(t) = ore_core::sql_del_arbol::guion::guion(texto)
+                && t.len() > 1
+            {
+                let f = ore_core::sql_del_arbol::guion::cotejar_guion(&pkg, &t);
+                if f.is_empty() {
+                    desvio = Desvio::Guion(
+                        t.iter()
+                            .map(|x| SentenciaDelLote {
+                                texto: x.texto.clone(),
+                                corre: celda_de_sentencia(fichero, x),
+                                avisos: x
+                                    .avisos
+                                    .iter()
+                                    .map(|a| diagnostico(a, fichero, "aviso"))
+                                    .collect(),
+                                pos: x.pos,
+                                que: x.sentencia.que(),
+                            })
+                            .collect(),
+                    );
+                    return Respuesta::ok(Json::obj([]));
+                }
+                if escribe_en_el_arbol(texto, &pkg).is_some() {
+                    desvio = Desvio::Error(error_de_celda(
+                        format!(
+                            "el guion no corre —ninguna de sus {} sentencias—: {}",
+                            t.len(),
+                            f[0].mensaje
+                        ),
+                        Json::Arr(f.iter().map(|x| diagnostico(x, fichero, "error")).collect()),
+                    ));
+                    return Respuesta::ok(Json::obj([]));
+                }
+            }
             // 0038: los nombres de dos partes se dicen, lea o escriba la celda
             avisos = ore_core::sql_del_arbol::avisos_de_celda(texto, &pkg)
                 .iter()
@@ -1168,7 +1240,7 @@ impl Servidor {
                     ),
                     Json::Arr(Vec::new()),
                 )),
-                Some(EscribeEnElArbol::Tabla(n)) => match celda_de_sql(raiz, fichero, texto) {
+                Some(que @ (EscribeEnElArbol::Tabla(_) | EscribeEnElArbol::Crea(_))) => match celda_de_sesion(raiz, fichero, texto) {
                     Ok((celda, "python")) => Desvio::Corre(celda),
                     Ok(_) => Desvio::Ninguno,
                     Err(r) => {
@@ -1193,13 +1265,17 @@ impl Servidor {
                             ),
                             _ => (String::new(), Json::Arr(Vec::new())),
                         };
-                        Desvio::Error(error_de_celda(
-                            format!(
+                        let dice = match que {
+                            EscribeEnElArbol::Crea(n) => format!(
+                                "la celda crea `{n}` en el catálogo, y eso corre como una sentencia \
+                                 del árbol: {primero}"
+                            ),
+                            EscribeEnElArbol::Tabla(n) | EscribeEnElArbol::Vista(n) => format!(
                                 "la celda escribe en `{n}` (el lago), y lo que escribe en el lago \
                                  corre como un `.sql` del árbol: {primero}"
                             ),
-                            diagnosticos,
-                        ))
+                        };
+                        Desvio::Error(error_de_celda(dice, diagnosticos))
                     }
                 },
             };
@@ -1296,11 +1372,61 @@ impl Servidor {
             );
         }
         let num = p.siguiente;
+        if let Desvio::Guion(sentencias) = desvio {
+            // Una celda por sentencia, seguidas en la cola: el agente las corre
+            // de una en una, en la misma sesión, y lo que escribe una lo lee la
+            // siguiente.
+            let n = sentencias.len();
+            let mut celdas = Vec::new();
+            let mut dichas = Vec::new();
+            for (i, s) in sentencias.into_iter().enumerate() {
+                let k = num + i as u64;
+                p.celdas.insert(
+                    k,
+                    Celda {
+                        texto: s.texto.clone(),
+                        lenguaje: lenguaje.clone(),
+                        corre: Some((s.corre.0, s.corre.1.to_string())),
+                        avisos: s.avisos,
+                        enviada: Instant::now(),
+                        empezada: None,
+                        salida: None,
+                        lote: Some(Lote { primera: num, i, n }),
+                    },
+                );
+                p.pendientes.push_back(k);
+                celdas.push(Json::Int(k as i64));
+                let mut d = vec![
+                    ("celda", Json::Int(k as i64)),
+                    ("que", Json::s(s.que)),
+                    ("texto", Json::s(&s.texto)),
+                ];
+                if let Some(pos) = s.pos {
+                    d.push(("linea", Json::Int(pos.line as i64)));
+                    d.push(("columna", Json::Int(pos.col as i64)));
+                }
+                dichas.push(Json::obj(d));
+            }
+            p.siguiente += n as u64;
+            let estado = p.estado.dice();
+            drop(lista);
+            self.puestos.campana.notify_all();
+            return Respuesta {
+                codigo: 202,
+                cuerpo: Json::obj([
+                    ("celda", Json::Int(num as i64)),
+                    ("celdas", Json::Arr(celdas)),
+                    ("sentencias", Json::Arr(dichas)),
+                    ("puesto", Json::s(estado)),
+                ]),
+            };
+        }
         p.siguiente += 1;
         let (corre, error) = match desvio {
             Desvio::Ninguno => (None, None),
             Desvio::Corre(c) => (Some((c, "python".to_string())), None),
             Desvio::Error(e) => (None, Some(e)),
+            Desvio::Guion(_) => unreachable!("el guion ya se encoló"),
         };
         // una frase que no se puede correr se dice YA, como la salida de su
         // celda: el agente no llega a verla
@@ -1315,6 +1441,7 @@ impl Servidor {
                 enviada: Instant::now(),
                 empezada: hecha.then(Instant::now),
                 salida: error,
+                lote: None,
             },
         );
         if !hecha {
@@ -1624,6 +1751,28 @@ impl Servidor {
             return Respuesta::error(404, format!("el puesto no tiene una celda {n}"));
         };
         c.salida = Some(Json::Crudo(cuerpo.trim().to_string()));
+        // ⭐ 0039: una sentencia de un guion que falla para el guion, como en
+        //   Databricks: las de detrás no corren y lo dicen («saltada», y por
+        //   cuál). Lo que ya corrió, corrió: no hay transacción entre
+        //   sentencias.
+        let fallo = matches!(&leida, Json::Obj(m) if matches!(m.get("tipo"), Some(Json::Str(t)) if t == "error"));
+        if fallo && let Some(l) = c.lote {
+            let detras: Vec<u64> = ((n + 1)..(l.primera + l.n as u64)).collect();
+            p.pendientes.retain(|k| !detras.contains(k));
+            for k in detras {
+                if let Some(d) = p.celdas.get_mut(&k)
+                    && d.salida.is_none()
+                {
+                    d.empezada = Some(Instant::now());
+                    d.salida = Some(Json::obj([
+                        ("tipo", Json::s("vacia")),
+                        ("saltada", Json::Bool(true)),
+                        ("por", Json::Int(n as i64)),
+                        ("ms", Json::Int(0)),
+                    ]));
+                }
+            }
+        }
         let es_trabajo = p.trabajo.is_some();
         drop(lista);
         self.puestos.campana.notify_all();
@@ -2256,6 +2405,8 @@ enum Desvio {
     Corre(String),
     /// No se puede correr: esta es su salida, ya.
     Error(Json),
+    /// Un guion (0039): una celda por sentencia, en orden.
+    Guion(Vec<SentenciaDelLote>),
 }
 
 /// La salida `error` de una celda que no llega al agente (la forma de la del
@@ -2304,11 +2455,134 @@ fn celda_de_sql(
         }
         Err(f) => f,
     };
+    Err(rechazo(codigo, &fallos))
+}
+
+/// **Una celda `sql` de la sesión que escribe o crea en el árbol** (0039): la
+/// sentencia se analiza como parte de un guion —así caben las que crean:
+/// `create … database`, `create schema`, `create dataset (cols)`— y se coteja
+/// con el árbol de la rama del puesto.
+fn celda_de_sesion(
+    raiz: &Path,
+    codigo: &str,
+    texto: &str,
+) -> Result<(String, &'static str), Respuesta> {
+    use ore_core::sql_del_arbol::Fallo;
+    use ore_core::sql_del_arbol::guion::{cotejar_guion, guion};
+    let fallos: Vec<Fallo> = match guion(texto) {
+        Ok(t) if t.len() > 1 => vec![
+            Fallo::new(
+                "una celda que escribe en el árbol es UNA sentencia",
+                t[1].pos,
+            )
+            .ayuda("parte la celda en dos"),
+        ],
+        Ok(t) => {
+            let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+            let f = cotejar_guion(&pkg, &t);
+            if f.is_empty() {
+                return Ok(celda_de_sentencia(codigo, &t[0]));
+            }
+            f
+        }
+        Err(f) => f,
+    };
+    Err(rechazo(codigo, &fallos))
+}
+
+/// **Una sentencia del guion, como la celda que la corre** (0039). La que lee
+/// o escribe datos es [`celda_de_unidad`]; la que crea algo del catálogo llama
+/// al verbo del SDK —`crear_base`, `crear_schema`, `crear_dataset`— con lo que
+/// la frase dice. La escribe este proceso a partir del análisis, no el cliente.
+fn celda_de_sentencia(
+    codigo: &str,
+    t: &ore_core::sql_del_arbol::guion::Trozo,
+) -> (String, &'static str) {
+    use ore_core::sql_del_arbol::guion::Sentencia as S;
+    let c = |s: &str| Json::s(s).jcs();
+    let si = |b: bool| if b { "True" } else { "False" };
+    let cabeza = format!(
+        "# `{codigo}`: `{}`, con lo que la frase dice (lo escribe ore-serve, no el cliente).\n",
+        t.sentencia.que()
+    );
+    let cuerpo = match &t.sentencia {
+        S::Unidad(u) => return celda_de_unidad(codigo, u),
+        S::CrearBase {
+            nombre,
+            clase,
+            origen,
+            si_no_existe,
+            ..
+        } => {
+            let (o, inc) = match origen {
+                Some(o) => (
+                    c(&o.nombre),
+                    Json::Arr(o.incluye.iter().map(Json::s).collect()).jcs(),
+                ),
+                None => ("None".to_string(), "None".to_string()),
+            };
+            format!(
+                "from ore import crear_base, _resultado_de_crear\n\n\
+                 _hecho = crear_base({}, clase={}, origen={o}, incluye={inc}, si_no_existe={})\n\
+                 print(\"%s · %s database · %s\" % (_hecho[\"base\"], _hecho[\"clase\"], \"creada\" if _hecho[\"creada\"] else \"ya estaba\"))\n\
+                 _resultado_de_crear(\"%s database %s\" % (_hecho[\"clase\"], _hecho[\"base\"]), _hecho[\"creada\"])\n",
+                c(nombre),
+                c(clase.como_en_el_alta()),
+                si(*si_no_existe)
+            )
+        }
+        S::CrearSchema {
+            base,
+            schema,
+            si_no_existe,
+            ..
+        } => format!(
+            "from ore import crear_schema, _resultado_de_crear\n\n\
+             _hecho = crear_schema({}, {}, si_no_existe={})\n\
+             print(\"%s · schema · %s\" % (_hecho[\"schema\"], \"creado\" if _hecho[\"creado\"] else \"ya estaba\"))\n\
+             _resultado_de_crear(\"schema \" + _hecho[\"schema\"], _hecho[\"creado\"])\n",
+            c(base),
+            c(schema),
+            si(*si_no_existe)
+        ),
+        S::CrearDataset {
+            destino,
+            columnas,
+            clave,
+            si_no_existe,
+        } => {
+            let clave = if clave.is_empty() {
+                "None".to_string()
+            } else {
+                Json::Arr(clave.iter().map(Json::s).collect()).jcs()
+            };
+            let cols = Json::Arr(
+                columnas
+                    .iter()
+                    .map(|k| Json::Arr(vec![Json::s(&k.nombre), Json::s(&k.tipo)]))
+                    .collect(),
+            )
+            .jcs();
+            format!(
+                "from ore import crear_dataset, _resultado_de_crear\n\n\
+                 _hecho = crear_dataset({}, {cols}, clave={clave}, si_no_existe={})\n\
+                 print(\"%s · dataset vacío · %s\" % (_hecho[\"dataset\"], \"creado\" if _hecho[\"creado\"] else \"ya estaba\"))\n\
+                 _resultado_de_crear(\"dataset \" + _hecho[\"dataset\"], _hecho[\"creado\"])\n",
+                c(&destino.referencia()),
+                si(*si_no_existe)
+            )
+        }
+    };
+    (cabeza + &cuerpo, "python")
+}
+
+/// Los fallos de un `.sql` como la respuesta 422 que el editor sabe pintar.
+fn rechazo(codigo: &str, fallos: &[ore_core::sql_del_arbol::Fallo]) -> Respuesta {
     let diagnosticos = fallos
         .iter()
         .map(|f| diagnostico(f, codigo, "error"))
         .collect();
-    Err(Respuesta {
+    Respuesta {
         codigo: 422,
         cuerpo: Json::obj([
             (
@@ -2320,7 +2594,7 @@ fn celda_de_sql(
             ),
             ("diagnosticos", Json::Arr(diagnosticos)),
         ]),
-    })
+    }
 }
 
 /// La celda que corre una unidad ya cotejada. El nombre del transform es el
@@ -2349,7 +2623,7 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
     let salida = cadena(&e.destino.referencia());
     // Un `insert` con columnas sin alias (`select letra, 0.5 from …`): ésas
     // toman el nombre de la columna de la tabla en su posición, como en SQL.
-    let (importa, datos) = if e.por_posicion.is_empty() {
+    let (mut importa, mut datos) = if e.por_posicion.is_empty() {
         (
             String::new(),
             format!("sql({}, como=\"arrow\")", cadena(&u.consulta)),
@@ -2370,10 +2644,17 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
             ),
         )
     };
+    // 0039: un `insert` lleva cada valor al tipo de su columna, como en SQL
+    // (`current_timestamp` es TIMESTAMPTZ; la columna, TIMESTAMP). Un
+    // `create or replace` no: sus tipos son los de su consulta.
+    if e.modo != ore_core::sql_del_arbol::Modo::Sobrescribir {
+        importa.push_str(", _como_la_tabla");
+        datos = format!("_como_la_tabla({datos}, {salida})");
+    }
     let celda = format!(
         "# `{codigo}`: la frase declara lo que lee y lo que escribe, y corre con el\n\
          # mismo `@transform` que un `.py` (lo escribe ore-serve, no el cliente).\n\
-         from ore import transform, sql, write{importa}\n\
+         from ore import transform, sql, write, _resultado_de_escritura{importa}\n\
          \n\
          \n\
          @transform(inputs={inputs}, output={salida})\n\
@@ -2382,7 +2663,8 @@ fn celda_de_unidad(codigo: &str, u: &ore_core::sql_del_arbol::Unidad) -> (String
          \n\
          \n\
          _escrito = {nombre}()\n\
-         print(\"%s · %s · %d filas%s\" % ({salida}, {modo}, _escrito[\"filas\"], \" · la misma escritura: nada nuevo\" if _escrito[\"repetida\"] else \"\"))\n",
+         print(\"%s · %s · %d filas%s\" % ({salida}, {modo}, _escrito[\"filas\"], \" · la misma escritura: nada nuevo\" if _escrito[\"repetida\"] else \"\"))\n\
+         _resultado_de_escritura(_escrito)\n",
         modo = cadena(e.modo.como_en_write()),
     );
     (celda, "python")
@@ -2934,7 +3216,7 @@ mod prueba {
         for trozo in [
             "@transform(inputs=[\"v.pedidos\"], output=\"v.resumen\")",
             "def resumen():",
-            "return write(\"v.resumen\", sql(\"select id from v.pedidos where id > 1\", como=\"arrow\"), modo=\"upsert\")",
+            "return write(\"v.resumen\", _como_la_tabla(sql(\"select id from v.pedidos where id > 1\", como=\"arrow\"), \"v.resumen\"), modo=\"upsert\")",
             "_escrito = resumen()",
             "print(\"%s · %s · %d filas%s\" % (\"v.resumen\", \"upsert\", _escrito[\"filas\"]",
         ] {
@@ -2944,7 +3226,7 @@ mod prueba {
         let (celda, _) = celda_de_sql(
             &d,
             "packages/v/transforms/1-resumen.sql",
-            "create or replace table v.r as select * from v.pedidos",
+            "create or replace dataset v.r as select * from v.pedidos",
         )
         .unwrap_or_else(|r| panic!("{}", r.cuerpo.jcs()));
         assert!(celda.contains("def consulta():"), "{celda}");
@@ -2967,6 +3249,45 @@ mod prueba {
             "{j}"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0039: lo que crea en el catálogo corre como el verbo del SDK, con lo
+    /// que la frase dice; lo que lee o escribe, como siempre.
+    #[test]
+    fn cada_sentencia_del_guion_es_su_celda() {
+        use ore_core::sql_del_arbol::guion::guion;
+        let celda = |q: &str| {
+            let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
+            celda_de_sentencia("x.sql", &t[0])
+        };
+        let (c, l) = celda("create schema if not exists ventas.demo");
+        assert_eq!(l, "python");
+        assert!(
+            c.contains("crear_schema(\"ventas\", \"demo\", si_no_existe=True)"),
+            "{c}"
+        );
+        let (c, _) = celda("create dataset ventas.demo.clientes (id bigint, n varchar)");
+        assert!(
+            c.contains("crear_dataset(\"ventas.demo.clientes\", [[\"id\",\"long\"],[\"n\",\"string\"]], clave=None, si_no_existe=False)"),
+            "{c}"
+        );
+        let (c, _) = celda("create foreign database espejo from origin erp include (s.*, t.x)");
+        assert!(
+            c.contains("crear_base(\"espejo\", clase=\"foreign\", origen=\"erp\", incluye=[\"s.*\",\"t.x\"], si_no_existe=False)"),
+            "{c}"
+        );
+        let (c, _) = celda("create database mi_base");
+        assert!(
+            c.contains("clase=\"standard\", origen=None, incluye=None"),
+            "{c}"
+        );
+        let (c, l) = celda("select 1");
+        assert_eq!((c.as_str(), l), ("select 1", "sql"));
+        let (c, _) = celda("insert into ventas.x (a) values (1)");
+        assert!(
+            c.contains("@transform(inputs=[], output=\"ventas.x\")"),
+            "{c}"
+        );
     }
 
     #[test]

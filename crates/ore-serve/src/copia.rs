@@ -747,7 +747,14 @@ fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
 /// a esta base se copia»), y las vistas de hoy no pueden decir nada de las de
 /// mañana. Ausente = `foreign`: es lo que todas las bases eran antes de que
 /// existiera la palabra, y por eso no hay ninguna migración.
+///
+/// ⭐ 0039: una base que no salió de ningún origen —ni `discover.scope.json` ni
+///   `discover.catalog.json`: `create standard database b` en un guion, `ore
+///   package new`— es **standard**: lo que tenga sólo puede vivir en el lago.
 pub(crate) fn clase_de(dir: &Path) -> &'static str {
+    if !dir.join("discover.scope.json").is_file() && !dir.join("discover.catalog.json").is_file() {
+        return "standard";
+    }
     let declarada = std::fs::read_to_string(dir.join("discover.scope.json"))
         .ok()
         .and_then(|t| parse::parse(&t).ok())

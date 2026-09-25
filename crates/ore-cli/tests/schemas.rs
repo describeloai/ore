@@ -90,7 +90,7 @@ fn taller(nombre: &str) -> PathBuf {
     );
     escribir(
         dir.join("packages/ventas/transforms/cuenta.sql"),
-        "create or replace table ventas.cuenta as\nselect count(*) as n from ventas.rubix_demo_ventas.clientes\n",
+        "create or replace dataset ventas.cuenta as\nselect count(*) as n from ventas.rubix_demo_ventas.clientes\n",
     );
     escribir(
         dir.join("packages/ventas/transforms/lee.py"),

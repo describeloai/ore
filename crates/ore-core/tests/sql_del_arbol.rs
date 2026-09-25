@@ -1,6 +1,7 @@
 //! El SQL del árbol contra un árbol compilado: lo que se lee se puede leer y
 //! lo que se escribe se puede escribir, con las reglas de `datos_de`.
 
+use ore_core::sql_del_arbol::guion::{cotejar_guion, guion};
 use ore_core::sql_del_arbol::{Fallo, analizar, cotejar};
 use std::fs;
 use std::path::Path;
@@ -92,7 +93,7 @@ fn se_lee_un_dataset_o_una_vista_que_sale_de_uno() {
     assert_eq!(
         fallos(
             &a.0,
-            "create or replace table ventas.resumen as select pais, count(*) as n from ventas.pedidosEs group by all"
+            "create or replace dataset ventas.resumen as select pais, count(*) as n from ventas.pedidosEs group by all"
         ),
         vec![]
     );
@@ -128,7 +129,7 @@ fn lo_que_no_se_lee_ni_se_escribe_se_dice() {
     assert!(f[0].mensaje.contains("mantenido"), "{f:?}");
     let f = fallos(
         &a.0,
-        "create or replace table ventas.pedidosEs as select * from ventas.pedidos",
+        "create or replace dataset ventas.pedidosEs as select * from ventas.pedidos",
     );
     assert!(
         f[0].mensaje
@@ -234,6 +235,12 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         t("ventas.x")
     );
     assert_eq!(e("create temp table ventas.x as select 1"), t("ventas.x"));
+    // lo que se escribe es un dataset; `table` también llega aquí, y el
+    // análisis dice que una Table no se crea desde SQL
+    assert_eq!(
+        e("create or replace dataset ventas.x as select 1"),
+        t("ventas.x")
+    );
     // varias sentencias: se ve igual (y será «una sentencia» al analizar)
     assert_eq!(
         e("select 1; create or replace table ventas.x as select 1"),
@@ -243,6 +250,19 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         e("create or replace view ventas.v as select 1"),
         Some(E::Vista("ventas.v".into()))
     );
+    // 0039: lo que crea en el catálogo; `create schema tmp` sigue siendo de DuckDB
+    let c = |n: &str| Some(E::Crea(n.to_string()));
+    assert_eq!(
+        e("CREATE SCHEMA IF NOT EXISTS ventas.demo"),
+        c("schema ventas.demo")
+    );
+    assert_eq!(e("create standard database mi_base"), c("database mi_base"));
+    assert_eq!(
+        e("create foreign database if not exists espejo from origin erp include (s.*)"),
+        c("database espejo")
+    );
+    assert_eq!(e("create database nueva"), c("database nueva"));
+    assert_eq!(e("create schema nada.demo"), None);
     // lo que es de la sesión, de DuckDB
     assert_eq!(
         e("create schema tmp; create table tmp.t as select 1; select * from tmp.t"),
@@ -275,7 +295,7 @@ fn tres_partes_contra_el_arbol() {
     let coteja = |q: &str| cotejar(&pkg, &analizar(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
     assert_eq!(
         coteja(
-            "create or replace table ventas.espana.r as select * from ventas.espana.clientes join ventas.default.pedidos using (id)"
+            "create or replace dataset ventas.espana.r as select * from ventas.espana.clientes join ventas.default.pedidos using (id)"
         ),
         Vec::<Fallo>::new()
     );
@@ -287,7 +307,7 @@ fn tres_partes_contra_el_arbol() {
                 .contains("no hay ningún schema `francia` en la base `ventas`"),
         "{f:?}"
     );
-    let f = coteja("create or replace table ventas.francia.x as select 1");
+    let f = coteja("create or replace dataset ventas.francia.x as select 1");
     assert!(f[0].mensaje.contains("schema `francia`"), "{f:?}");
     // `ventas.clientes` es `ventas.default.clientes`, que no está: el de `espana` no se adivina
     let f = coteja("select * from ventas.clientes");
@@ -322,4 +342,80 @@ fn los_avisos_de_una_celda() {
     );
     assert!(av("create table tmp.t as select 1; select * from tmp.t").is_empty());
     assert!(av("select ventas.pais from ventas.default.pedidos as ventas").is_empty());
+}
+
+/// **Un guion se coteja en orden**: lo que crea la sentencia 1 —una base, un
+/// schema, un dataset— existe para la 2; lo que ya había, se dice.
+#[test]
+fn un_guion_se_coteja_en_orden() {
+    let a = arbol("guion");
+    let (pkg, _) = ore_core::validate::cargar_paquete(&a.0);
+    let coteja = |q: &str| cotejar_guion(&pkg, &guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    // el ejemplo: el schema, el dataset vacío, el insert y el select
+    assert_eq!(
+        coteja(
+            "create schema if not exists ventas.demo;
+             create dataset if not exists ventas.demo.clientes (id bigint, nombre string);
+             insert into ventas.demo.clientes (id, nombre) values (1, 'Ana');
+             select * from ventas.demo.clientes"
+        ),
+        Vec::<Fallo>::new()
+    );
+    // y una base nueva entera, con lo que se escribe en ella y se lee luego
+    assert_eq!(
+        coteja(
+            "create database mi_base;
+             create schema mi_base.s;
+             create or replace dataset mi_base.s.r as select * from ventas.pedidos;
+             select count(*) from mi_base.s.r"
+        ),
+        Vec::<Fallo>::new()
+    );
+    // sin las sentencias de antes, lo mismo no existe
+    let f = coteja("select * from ventas.demo.clientes");
+    assert!(f[0].mensaje.contains("schema `demo`"), "{f:?}");
+    let f = coteja("create dataset ventas.demo.x (a int)");
+    assert!(f[0].mensaje.contains("schema `demo`"), "{f:?}");
+    assert!(
+        f[0].ayuda
+            .as_deref()
+            .unwrap()
+            .contains("create schema ventas.demo")
+    );
+    let f = coteja("create schema otra.s");
+    assert!(f[0].mensaje.contains("ninguna base `otra`"), "{f:?}");
+
+    // lo que ya hay, en su línea; con `if not exists`, nada
+    let f = coteja(
+        "select 1;
+create schema ventas.espana",
+    );
+    assert!(
+        f.len() == 1 && f[0].mensaje.contains("ya hay un schema `ventas.espana`"),
+        "{f:?}"
+    );
+    assert_eq!(f[0].pos.map(|p| p.line), Some(2));
+    assert!(coteja("create schema if not exists ventas.espana").is_empty());
+    let f = coteja("create database ventas");
+    assert!(f[0].mensaje.contains("ya hay una base `ventas`"), "{f:?}");
+    let f = coteja("create dataset ventas.espana.clientes (id int)");
+    assert!(f[0].mensaje.contains("ya hay un dataset"), "{f:?}");
+    assert!(coteja("create dataset if not exists ventas.espana.clientes (id int)").is_empty());
+    let f = coteja("create dataset if not exists ventas.pedidos (id int)");
+    assert!(f[0].mensaje.contains("mantenido"), "{f:?}");
+    let f = coteja(
+        "create dataset ventas.x (a int);
+create dataset ventas.x (a int)",
+    );
+    assert!(
+        f.len() == 1 && f[0].mensaje.contains("ya hay un dataset `ventas.x`"),
+        "{f:?}"
+    );
+
+    // una base sobre un origen: el origen tiene que estar en el árbol
+    assert!(
+        coteja("create foreign database espejo from origin ventas include (public.*)").is_empty()
+    );
+    let f = coteja("create foreign database espejo from origin nadie include (public.*)");
+    assert!(f[0].mensaje.contains("ningún origen `nadie`"), "{f:?}");
 }

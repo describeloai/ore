@@ -1,5 +1,6 @@
 //! **`ore sql <fichero>`** — lo que un `.sql` del árbol declara: qué lee, qué
-//! escribe y en qué modo, o por qué no es una unidad. Lo analiza
+//! escribe y en qué modo, o por qué no es una unidad. Un guion de varias
+//! sentencias, cada una con lo suyo y en orden (`sentencias` en `--json`). Lo analiza
 //! `ore_core::sql_del_arbol`; si el fichero está dentro de un árbol (hay un
 //! `ontology.config.yaml` subiendo, o `--arbol`), además lo coteja con él.
 //!
@@ -8,7 +9,8 @@
 //! no hay (una posición, una escritura, una ayuda) es `false`, como en el
 //! resto de lo que ore-serve devuelve.
 use ore_core::json::Json;
-use ore_core::sql_del_arbol::{Fallo, Nombre, analizar, cotejar};
+use ore_core::sql_del_arbol::guion::{Sentencia, Trozo, cotejar_guion, guion};
+use ore_core::sql_del_arbol::{Fallo, Nombre, Unidad};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -65,23 +67,33 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
         }
     };
     let arbol = op.arbol.clone().or_else(|| arbol_de(fichero));
-    let (unidad, fallos) = match analizar(&texto) {
-        Ok(u) => {
+    let (trozos, fallos) = match guion(&texto) {
+        Ok(t) => {
             let fallos = match &arbol {
                 Some(a) => {
                     let (pkg, _) = ore_core::validate::cargar_paquete(a);
-                    cotejar(&pkg, &u)
+                    cotejar_guion(&pkg, &t)
                 }
                 None => Vec::new(),
             };
-            (Some(u), fallos)
+            (t, fallos)
         }
-        Err(f) => (None, f),
+        Err(f) => (Vec::new(), f),
     };
+    // Una sola unidad: lo de siempre (`lee`, `escribe`, `consulta`).
+    let unidad: Option<&Unidad> = match trozos.as_slice() {
+        [
+            Trozo {
+                sentencia: Sentencia::Unidad(u),
+                ..
+            },
+        ] => Some(u),
+        _ => None,
+    };
+    let avisos: Vec<&Fallo> = trozos.iter().flat_map(|t| &t.avisos).collect();
 
     if op.json {
         let escribe = unidad
-            .as_ref()
             .and_then(|u| u.escribe.as_ref())
             .map(|e| {
                 let [l, c] = posicion(e.destino.pos);
@@ -94,11 +106,9 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
             })
             .unwrap_or(Json::Bool(false));
         let lee = unidad
-            .as_ref()
             .map(|u| u.lee.iter().map(nombre_json).collect())
             .unwrap_or_default();
         let consulta = unidad
-            .as_ref()
             .map(|u| Json::s(&u.consulta))
             .unwrap_or(Json::Bool(false));
         let j = Json::obj([
@@ -111,11 +121,25 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
             // 0038: lo que no para la frase —hoy, `ORE-SQL-2P`—
             (
                 "avisos",
+                Json::Arr(avisos.iter().map(|a| fallo_json(a)).collect()),
+            ),
+            // el guion, sentencia a sentencia y en orden
+            (
+                "sentencias",
                 Json::Arr(
-                    unidad
-                        .as_ref()
-                        .map(|u| u.avisos.iter().map(fallo_json).collect())
-                        .unwrap_or_default(),
+                    trozos
+                        .iter()
+                        .map(|t| {
+                            let [l, c] = posicion(t.pos);
+                            Json::obj([
+                                ("que", Json::s(t.sentencia.que())),
+                                l,
+                                c,
+                                ("texto", Json::s(&t.texto)),
+                                ("dice", Json::s(dice(&t.sentencia))),
+                            ])
+                        })
+                        .collect(),
                 ),
             ),
         ]);
@@ -128,7 +152,7 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
                 eprintln!("  ayuda: {a}");
             }
         }
-        for a in unidad.iter().flat_map(|u| &u.avisos) {
+        for a in &avisos {
             let donde = a.pos.map(|p| format!(":{p}")).unwrap_or_default();
             eprintln!(
                 "{}{donde}: aviso[{}]: {}",
@@ -140,20 +164,14 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
                 eprintln!("  ayuda: {ay}");
             }
         }
-        if let Some(u) = unidad.as_ref().filter(|_| fallos.is_empty()) {
-            let lee: Vec<String> = u.lee.iter().map(Nombre::referencia).collect();
-            let lee = if lee.is_empty() {
-                "nada del árbol".to_string()
+        if fallos.is_empty() && !trozos.is_empty() {
+            if let Some(u) = unidad {
+                println!("{}", dice_de_unidad(u));
             } else {
-                lee.join(", ")
-            };
-            match &u.escribe {
-                None => println!("análisis · lee {lee}"),
-                Some(e) => println!(
-                    "transform · lee {lee} → escribe {} ({})",
-                    e.destino.referencia(),
-                    e.modo.como_en_write()
-                ),
+                for (i, t) in trozos.iter().enumerate() {
+                    let donde = t.pos.map(|p| format!("{p}")).unwrap_or_default();
+                    println!("{} · {donde} · {}", i + 1, dice(&t.sentencia));
+                }
             }
             if arbol.is_none() {
                 println!("  (sin árbol alrededor: los nombres no se cotejaron)");
@@ -164,5 +182,71 @@ pub fn sql(fichero: &Path, op: &Opciones) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+fn dice_de_unidad(u: &Unidad) -> String {
+    let lee: Vec<String> = u.lee.iter().map(Nombre::referencia).collect();
+    let lee = if lee.is_empty() {
+        "nada del árbol".to_string()
+    } else {
+        lee.join(", ")
+    };
+    match &u.escribe {
+        None => format!("análisis · lee {lee}"),
+        Some(e) => format!(
+            "transform · lee {lee} → escribe {} ({})",
+            e.destino.referencia(),
+            e.modo.como_en_write()
+        ),
+    }
+}
+
+/// Lo que una sentencia del guion hace, en una línea.
+fn dice(s: &Sentencia) -> String {
+    let si = |b: bool| if b { " · si no existe" } else { "" };
+    match s {
+        Sentencia::Unidad(u) => dice_de_unidad(u),
+        Sentencia::CrearBase {
+            nombre,
+            clase,
+            origen,
+            si_no_existe,
+            ..
+        } => format!(
+            "crea la {} database `{nombre}`{}{}",
+            clase.como_en_el_alta(),
+            origen
+                .as_ref()
+                .map(|o| format!(" del origen `{}` ({})", o.nombre, o.incluye.join(", ")))
+                .unwrap_or_default(),
+            si(*si_no_existe)
+        ),
+        Sentencia::CrearSchema {
+            base,
+            schema,
+            si_no_existe,
+            ..
+        } => format!("crea el schema `{base}.{schema}`{}", si(*si_no_existe)),
+        Sentencia::CrearDataset {
+            destino,
+            columnas,
+            clave,
+            si_no_existe,
+        } => format!(
+            "crea el dataset `{}` vacío ({}){}{}",
+            destino.referencia(),
+            columnas
+                .iter()
+                .map(|c| format!("{} {}", c.nombre, c.tipo))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if clave.is_empty() {
+                String::new()
+            } else {
+                format!(" · clave ({})", clave.join(", "))
+            },
+            si(*si_no_existe)
+        ),
     }
 }

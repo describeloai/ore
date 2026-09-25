@@ -86,7 +86,7 @@ S="$TMP/semilla"
 mkdir -p "$S/packages/ventas/views" "$S/packages/eu/views" "$S/packages/ventas/transforms" "$S/datasets/ventas/rubix_demo_ventas"
 printf 'apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: resumen, namespace: ventas }\nspec:\n  owner: "team:ventas"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n' > "$S/packages/ventas/views/resumen.yaml"
 printf 'apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: copia, namespace: eu }\nspec:\n  owner: "team:eu"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n' > "$S/packages/eu/views/copia.yaml"
-printf 'create or replace table ventas.cuenta as\nselect count(*) as n from ventas.rubix_demo_ventas.clientes\n' > "$S/packages/ventas/transforms/cuenta.sql"
+printf 'create or replace dataset ventas.cuenta as\nselect count(*) as n from ventas.rubix_demo_ventas.clientes\n' > "$S/packages/ventas/transforms/cuenta.sql"
 printf 'df = ore.read("ventas.rubix_demo_ventas.clientes")\n' > "$S/packages/ventas/transforms/lee.py"
 printf '{"metadata_location":"s3://b/ore/v2/catalogo/ventas/rubix_demo_ventas/clientes/metadata/00001-x.metadata.json"}\n' > "$S/datasets/ventas/rubix_demo_ventas/clientes.json"
 ( cd "$S" && git add -A && git commit -qm "una base descubierta" && git push -q origin HEAD:main ) \
