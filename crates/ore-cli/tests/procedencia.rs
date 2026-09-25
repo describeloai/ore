@@ -159,7 +159,7 @@ fn induce_desde_el_catalogo_real_y_para_en_la_colision() {
         String::from_utf8_lossy(&salida.stderr)
     );
 
-    let tablas = dir.join("packages/ventas/tables");
+    let tablas = dir.join("packages/ventas/rubix_demo_ventas/tables");
     let n = std::fs::read_dir(&tablas)
         .map(|d| d.flatten().count())
         .unwrap_or(0);

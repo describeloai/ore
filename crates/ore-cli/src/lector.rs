@@ -949,7 +949,7 @@ mod tests {
         let tabla = |n: &str| -> String {
             i.ficheros
                 .iter()
-                .find(|(k, _)| k.starts_with("tables/") && k.contains(n))
+                .find(|(k, _)| k.contains("tables/") && k.contains(n))
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| {
                     panic!(
@@ -1039,7 +1039,8 @@ mod tests {
             .unwrap_or_else(|e| panic!("el inductor no lee lo que el lector escribe: {e}\n{c}"));
         let i = crate::inductor::inducir(&cat, "ventas");
         assert!(
-            i.ficheros.contains_key("entities/Clientes.yaml"),
+            i.ficheros
+                .contains_key("rubix_demo_ventas/entities/Clientes.yaml"),
             "{:?}",
             i.ficheros.keys().collect::<Vec<_>>()
         );

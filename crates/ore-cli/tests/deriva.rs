@@ -54,7 +54,8 @@ fn taller(nombre: &str, catalogo: &str) -> PathBuf {
         &["discover", "--from", "cat.json", "--out", "packages/ventas"],
     );
     assert!(
-        dir.join("packages/ventas/tables").is_dir(),
+        dir.join("packages/ventas/rubix_demo_ventas/tables")
+            .is_dir(),
         "el taller no tiene tablas:\n{dicho}"
     );
     dir

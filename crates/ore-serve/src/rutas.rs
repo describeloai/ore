@@ -143,6 +143,7 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["documentos", ..]
             | ["conceptos", ..]
             | ["datasets", _, _, "confirmar"]
+            | ["datasets", _, _, _, "confirmar"]
     );
     if entra {
         return None;
@@ -585,10 +586,14 @@ impl Servidor {
                 })
             }
             ("GET", ["datasets"]) => self.datasets(rama),
-            ("GET", ["datasets", ns, n]) => self.ficha_del_dataset(rama, ns, n),
+            // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
+            ("GET", ["datasets", ns, n]) => {
+                self.ficha_del_dataset(rama, ns, ore_core::normalize::SCHEMA_POR_DEFECTO, n)
+            }
+            ("GET", ["datasets", b, s, n]) => self.ficha_del_dataset(rama, b, s, n),
             // El techo de la clase también aquí (0036 ⑤): `confirmar` mueve el
             // puntero de un dataset, que es escribir.
-            ("POST", ["datasets", ns, n, "confirmar"])
+            ("POST", ["datasets", _, _, "confirmar"] | ["datasets", _, _, _, "confirmar"])
                 if p.cabeceras
                     .get(crate::puestos::PUESTO)
                     .and_then(|id| self.clase_de(id.trim()))
@@ -599,8 +604,15 @@ impl Servidor {
                     "este puesto vive en un repositorio que no escribe datos (0036 ⑤): confirmar mueve el puntero de un dataset",
                 )
             }
-            ("POST", ["datasets", ns, n, "confirmar"]) => {
-                self.confirmar_dataset(sujeto, ns, n, &p.cuerpo)
+            ("POST", ["datasets", ns, n, "confirmar"]) => self.confirmar_dataset(
+                sujeto,
+                ns,
+                ore_core::normalize::SCHEMA_POR_DEFECTO,
+                n,
+                &p.cuerpo,
+            ),
+            ("POST", ["datasets", b, s, n, "confirmar"]) => {
+                self.confirmar_dataset(sujeto, b, s, n, &p.cuerpo)
             }
             // ⭐ 0036 ④: con `X-Ore-Raiz`, sólo las que tocan SUS ficheros —la
             //   pestaña «Pull requests» de un repositorio—.
@@ -646,7 +658,15 @@ impl Servidor {
             ("POST", ["vistas", ns, n, "ejecutar"]) => {
                 let (ns, n) = (ns.to_string(), n.to_string());
                 let cuerpo = p.cuerpo.clone();
-                self.leyendo(move |r| self.ejecutar(r, &ns, &n, &cuerpo))
+                self.leyendo(move |r| {
+                    self.ejecutar(r, &ns, ore_core::normalize::SCHEMA_POR_DEFECTO, &n, &cuerpo)
+                })
+            }
+            // 0038: con su schema, `/vistas/{base}/{schema}/{n}/ejecutar`.
+            ("POST", ["vistas", b, s, n, "ejecutar"]) => {
+                let (b, s, n) = (b.to_string(), s.to_string(), n.to_string());
+                let cuerpo = p.cuerpo.clone();
+                self.leyendo(move |r| self.ejecutar(r, &b, &s, &n, &cuerpo))
             }
             // ── Ontology Forge · los documentos, por kind (`documentos.rs`) ──
             // El kind se resuelve contra `documentos::KINDS`: un kind que no
@@ -708,26 +728,57 @@ impl Servidor {
             // Los conceptos del árbol y los importados de `vendor/*.oob`, con
             // quién los habla: lo que la sección Concepts pinta.
             ("GET", ["conceptos"]) => self.leyendo_en(rama, documentos::conceptos),
-            ("GET", ["documentos", kind, ns, n]) => {
+            // 0038: `{ns}/{n}` es de `default`; `{base}/{schema}/{n}`, de su schema.
+            ("GET" | "PUT" | "DELETE", ["documentos", kind, ns, n])
+            | ("GET" | "PUT" | "DELETE", ["documentos", kind, ns, _, n]) => {
+                let schema = match seg {
+                    [_, _, _, s, _] => s.to_string(),
+                    _ => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
+                };
                 let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
-                self.leyendo_en(rama, move |r| documentos::uno(r, &kind, &ns, &n))
-            }
-            ("PUT", ["documentos", kind, ns, n]) => {
-                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
-                let cuerpo = p.cuerpo.clone();
-                let si_commit = p.cabeceras.get("if-match").cloned();
+                let corto = ore_core::normalize::corto(&ns, &schema, &n);
                 let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
-                self.escribiendo_en(rama, sujeto, &format!("escribir {que} `{ns}.{n}`"), |r| {
-                    self.escribir_documento(r, &kind, &ns, &n, &cuerpo, si_commit.as_deref())
-                })
-            }
-            ("DELETE", ["documentos", kind, ns, n]) => {
-                let (kind, ns, n) = (kind.to_string(), ns.to_string(), n.to_string());
                 let si_commit = p.cabeceras.get("if-match").cloned();
-                let que = documentos::kind_de(&kind).map_or(kind.clone(), |k| k.articulo.into());
-                self.escribiendo_en(rama, sujeto, &format!("retirar {que} `{ns}.{n}`"), |r| {
-                    self.retirar_documento(r, &kind, &ns, &n, si_commit.as_deref(), sujeto)
-                })
+                match p.metodo.as_str() {
+                    "GET" => {
+                        self.leyendo_en(rama, move |r| documentos::uno(r, &kind, &ns, &schema, &n))
+                    }
+                    "PUT" => {
+                        let cuerpo = p.cuerpo.clone();
+                        self.escribiendo_en(
+                            rama,
+                            sujeto,
+                            &format!("escribir {que} `{corto}`"),
+                            |r| {
+                                self.escribir_documento(
+                                    r,
+                                    &kind,
+                                    &ns,
+                                    &schema,
+                                    &n,
+                                    &cuerpo,
+                                    si_commit.as_deref(),
+                                )
+                            },
+                        )
+                    }
+                    _ => self.escribiendo_en(
+                        rama,
+                        sujeto,
+                        &format!("retirar {que} `{corto}`"),
+                        |r| {
+                            self.retirar_documento(
+                                r,
+                                &kind,
+                                &ns,
+                                &schema,
+                                &n,
+                                si_commit.as_deref(),
+                                sujeto,
+                            )
+                        },
+                    ),
+                }
             }
             ("GET", _) | ("POST", _) | ("PUT", _) | ("DELETE", _) => {
                 Respuesta::error(404, "no hay nada en ese camino")
@@ -898,12 +949,9 @@ impl Servidor {
                 if p == nombre {
                     continue;
                 }
-                let Ok(tablas) = std::fs::read_dir(dir.join("tables")) else {
-                    continue;
-                };
-                let la_nombra = tablas
-                    .flatten()
-                    .filter_map(|t| std::fs::read_to_string(t.path()).ok())
+                let la_nombra = yamls_del_kind(&dir, "tables")
+                    .into_iter()
+                    .filter_map(|t| std::fs::read_to_string(t).ok())
                     .filter_map(|t| parse::parse(&t).ok())
                     .any(|d| {
                         d.get("spec")
@@ -1581,23 +1629,14 @@ const COLA: &str = "discover.pending.json";
 ///   la conexion y el modal de nueva database ensenan— se lee del catalogo,
 ///   con la misma forma: nada modelado, nada copiado, sin vista.
 fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
-    if !dir.join("tables").is_dir() {
+    if yamls_del_kind(dir, "tables").is_empty() {
         let del_catalogo = tablas_del_catalogo(dir);
         if !del_catalogo.is_empty() {
             return del_catalogo;
         }
     }
     let leer = |carpeta: &str| -> Vec<Node> {
-        let Ok(entradas) = std::fs::read_dir(dir.join(carpeta)) else {
-            return Vec::new();
-        };
-        let mut rutas: Vec<PathBuf> = entradas
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("yaml"))
-            .collect();
-        rutas.sort();
-        rutas
+        yamls_del_kind(dir, carpeta)
             .into_iter()
             .filter_map(|p| std::fs::read_to_string(p).ok())
             .filter_map(|t| parse::parse(&t).ok())
@@ -1668,6 +1707,14 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             .and_then(|v| entidad_de_vista.get(v).cloned());
         let mut campos = vec![
             ("name", Json::s(&nombre)),
+            // 0038: su schema (`discover` lleva el del origen)
+            (
+                "schema",
+                Json::s(
+                    en(&t, "metadata", "schema")
+                        .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string()),
+                ),
+            ),
             ("object", Json::s(&objeto)),
             (
                 "datasource",
@@ -1754,15 +1801,35 @@ fn tablas_y_modeladas(dir: &Path) -> (usize, usize) {
     (t.len(), m)
 }
 
+/// **Los `.yaml` de la carpeta de un kind en un paquete** (`tables`,
+/// `datasets`…): la de la raíz y la de cada schema declarado (0038 P5:
+/// `discover` deja lo del origen en `<schema>/tables/…`), ordenados.
+pub(crate) fn yamls_del_kind(paquete: &Path, carpeta: &str) -> Vec<PathBuf> {
+    let mut dirs = vec![paquete.join(carpeta)];
+    if let Ok(es) = std::fs::read_dir(paquete) {
+        let mut schemas: Vec<PathBuf> = es
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("schema.yaml").is_file())
+            .collect();
+        schemas.sort();
+        dirs.extend(schemas.into_iter().map(|s| s.join(carpeta)));
+    }
+    let mut out: Vec<PathBuf> = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|es| es.flatten().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("yaml"))
+        .collect();
+    out.sort();
+    out
+}
+
 fn objetos_fisicos(paquete: &Path) -> std::collections::BTreeMap<String, String> {
     let documentos = |carpeta: &str| -> Vec<Node> {
-        let Ok(entradas) = std::fs::read_dir(paquete.join(carpeta)) else {
-            return Vec::new();
-        };
-        entradas
-            .flatten()
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        yamls_del_kind(paquete, carpeta)
+            .into_iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
             .filter_map(|t| parse::parse(&t).ok())
             .collect()
     };
@@ -1937,12 +2004,13 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
     //   origen— no el del modelo. `entities` sigue debajo hasta que la
     //   consola lea `tables` (C3).
     let tablas = tablas_del_paquete(&dir);
-    let Ok(entradas) = std::fs::read_dir(dir.join("entities")) else {
+    let entradas = yamls_del_kind(&dir, "entities");
+    if entradas.is_empty() {
         return Respuesta::ok(Json::obj([
             ("tables", Json::Arr(tablas)),
             ("entities", Json::Arr(Vec::new())),
         ]));
-    };
+    }
 
     // ⭐⭐ EL NOMBRE FISICO, que es lo que hace falta para ELEGIR. Una entidad
     //   se llama `Pedidos`; lo que `discover --only` entiende es `public.pedidos`,
@@ -1954,11 +2022,7 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
 
     let mut rotos = 0usize;
     let mut lista: Vec<(String, Json)> = Vec::new();
-    for e in entradas.flatten() {
-        let camino = e.path();
-        if camino.extension().and_then(|x| x.to_str()) != Some("yaml") {
-            continue;
-        }
+    for camino in entradas {
         let Ok(texto) = std::fs::read_to_string(&camino) else {
             rotos += 1;
             continue;
@@ -2017,9 +2081,14 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
             .and_then(|(_, v)| v.as_str())
             .unwrap_or_default()
             .to_string();
+        let schema = match en("metadata", "schema") {
+            s if s.is_empty() => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
+            s => s,
+        };
         let mut campos = vec![
             ("name", Json::s(&nombre)),
             ("namespace", Json::s(en("metadata", "namespace"))),
+            ("schema", Json::s(&schema)),
             ("backedBy", Json::s(&respaldo)),
             ("primaryKey", Json::Arr(clave)),
             ("properties", Json::Arr(props)),

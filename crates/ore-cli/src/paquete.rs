@@ -172,6 +172,12 @@ impl Taller {
         self.ficheros.insert(r, texto);
     }
 
+    /// Se retira sin ir a ningún sitio (un `Schema` que el destino ya declara).
+    fn retirar(&mut self, p: &Path) {
+        self.ficheros.remove(&self.ruta(p));
+        self.mudados.insert(p.to_path_buf(), p.to_path_buf());
+    }
+
     fn mudar(&mut self, de: &Path, a: PathBuf, texto: String) {
         self.ficheros.remove(&self.ruta(de));
         self.mudados.insert(de.to_path_buf(), a.clone());
@@ -233,7 +239,12 @@ fn planificar(
         .meta("name")
         .and_then(|n| n.as_str())
         .unwrap_or_default();
-    let nuevo_qname = format!("{destino}.{nombre}");
+    // En su schema (0038): el documento se lleva la carpeta y el nombre de él.
+    let schema = doc
+        .schema()
+        .unwrap_or(ore_core::normalize::SCHEMA_POR_DEFECTO)
+        .to_string();
+    let nuevo_qname = ore_core::normalize::corto(destino, &schema, nombre);
     let mut rastro = Rastro::default();
 
     // ① y ② el fichero, con su espacio de nombres nuevo
@@ -252,6 +263,28 @@ fn planificar(
         &format!("namespace: {destino}"),
     );
     taller.mudar(&doc.path, destino_path, nuevo_texto);
+
+    // ②b su schema, declarado también en el destino (v1alpha13 01 §2: una
+    //     carpeta no es un schema; sin él, `OOS2037`). Se copia el del origen.
+    if schema != ore_core::normalize::SCHEMA_POR_DEFECTO {
+        let nuevo = dir_destino.join(&schema).join("schema.yaml");
+        let ya = nuevo.is_file() || taller.ficheros.contains_key(&nuevo);
+        let del_origen = pkg.docs.iter().find(|d| {
+            d.kind == ore_core::document::Kind::Schema
+                && d.meta("name").and_then(|n| n.as_str()) == Some(schema.as_str())
+                && d.meta("namespace").and_then(|n| n.as_str()) == Some(viejo_ns)
+        });
+        if !ya && let Some(sd) = del_origen {
+            let t = taller.leer(&sd.path)?;
+            taller.ficheros.insert(
+                nuevo,
+                t.replace(
+                    &format!("namespace: {viejo_ns}"),
+                    &format!("namespace: {destino}"),
+                ),
+            );
+        }
+    }
 
     // ④ quien lo nombraba
     for d in &pkg.docs {
@@ -283,8 +316,7 @@ fn planificar(
         }
         // ¿Pasa a cruzar el límite? Lo que también se mueve, no.
         let suyo = ore_core::link::miembro_de(miembros, &d.path);
-        if suyo != Some(dir_destino) && !tambien_se_mueven.contains(&d.qname().unwrap_or_default())
-        {
+        if suyo != Some(dir_destino) && !clave(d).is_some_and(|c| tambien_se_mueven.contains(&c)) {
             rastro.cruzan.push(d.qname().unwrap_or_default());
         }
         let mut nuevo = lineas.join("\n");
@@ -327,22 +359,38 @@ pub fn mover(raiz: &Path, qname: &str, destino: &str, since: Option<&str>) -> Ex
     let pkg = ore_core::validate::cargar_paquete(raiz).0;
     let miembros = ore_core::link::miembros(&pkg);
 
-    let Some(doc) = pkg
-        .docs
-        .iter()
-        .find(|d| d.qname().as_deref() == Some(qname))
-    else {
-        eprintln!("error: no hay ningún documento que se llame `{qname}`");
-        return ExitCode::from(65); // EX_DATAERR
+    let docs: Vec<&Loaded> = pkg.docs.iter().collect();
+    let doc = match resolver(&docs, qname).as_slice() {
+        [] => {
+            eprintln!("error: no hay ningún documento que se llame `{qname}`");
+            return ExitCode::from(65); // EX_DATAERR
+        }
+        [uno] => *uno,
+        varios => {
+            eprintln!(
+                "error: hay {} documentos que se llaman `{qname}`: di cuál",
+                varios.len()
+            );
+            for d in varios {
+                eprintln!("  {}", clave(d).unwrap_or_default());
+            }
+            return ExitCode::from(65);
+        }
     };
     let (dir_origen, dir_destino) = match sitios(&pkg, &miembros, doc, destino) {
         Ok(x) => x,
         Err(c) => return c,
     };
+    let en_destino = ore_core::normalize::corto(
+        destino,
+        doc.schema()
+            .unwrap_or(ore_core::normalize::SCHEMA_POR_DEFECTO),
+        &nombre_de(doc),
+    );
     if pkg
         .docs
         .iter()
-        .any(|d| d.qname().as_deref() == Some(&format!("{destino}.{}", nombre_de(doc))))
+        .any(|d| d.kind == doc.kind && d.qname().as_deref() == Some(en_destino.as_str()))
     {
         eprintln!(
             "error: `{destino}` ya tiene un documento llamado `{}`",
@@ -440,10 +488,13 @@ pub fn dividir(
         return ExitCode::from(70);
     };
 
+    // Un `Schema` no es un nodo del corte: es la carpeta de lo demás, y viaja
+    // con lo que se mueve (0038).
     let dentro: Vec<&Loaded> = pkg
         .docs
         .iter()
         .filter(|d| ore_core::pertenencia::DEL_PAQUETE.contains(&d.kind))
+        .filter(|d| d.kind != ore_core::document::Kind::Schema)
         .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(&dir_origen))
         .collect();
     let grafo = grafo_de(&pkg, &dentro);
@@ -484,13 +535,18 @@ pub fn dividir(
     // Los que se mueven, resueltos y comprobados ANTES de tocar nada.
     let mut mueven: Vec<&Loaded> = Vec::new();
     for q in con {
-        let Some(d) = dentro.iter().find(|d| d.qname().as_deref() == Some(q)) else {
+        let ds = resolver(&dentro, q);
+        if ds.is_empty() {
             eprintln!("error: `{q}` no es un documento gobernado de `{paquete}`");
             return ExitCode::from(65);
-        };
-        mueven.push(d);
+        }
+        for d in ds {
+            if !mueven.iter().any(|m| m.path == d.path) {
+                mueven.push(d);
+            }
+        }
     }
-    let nombres: Vec<String> = mueven.iter().filter_map(|d| d.qname()).collect();
+    let nombres: Vec<String> = mueven.iter().filter_map(|d| clave(d)).collect();
 
     let dir_destino = match sitios(&pkg, &miembros, mueven[0], destino) {
         Ok((_, d)) => d,
@@ -637,16 +693,35 @@ pub fn fundir(raiz: &Path, origen: &str, destino: &str, since: Option<&str>) -> 
         return ExitCode::from(65);
     }
 
-    // Las colisiones, ANTES de tocar nada. No se resuelven: se dicen.
+    // Las colisiones, ANTES de tocar nada. No se resuelven: se dicen. Por
+    // identidad —el kind y el nombre en su schema (0038)—: una Table y su View
+    // se llaman igual y no chocan, y dos `pedidos` en dos schemas tampoco.
     let alli: Vec<String> = pkg
         .docs
         .iter()
         .filter(|d| ore_core::link::miembro_de(&miembros, &d.path) == Some(dir_destino))
-        .map(nombre_de)
+        .filter_map(clave)
         .collect();
+    let en_destino = |d: &Loaded| {
+        format!(
+            "{:?}:{}",
+            d.kind,
+            ore_core::normalize::corto(
+                destino,
+                d.schema()
+                    .unwrap_or(ore_core::normalize::SCHEMA_POR_DEFECTO),
+                &nombre_de(d)
+            )
+        )
+    };
+    // Un `Schema` que el destino ya declara no choca: lo suyo va a la carpeta
+    // del destino, y la declaración de origen se retira.
+    let (ya_declarados, mueven): (Vec<&Loaded>, Vec<&Loaded>) = mueven
+        .into_iter()
+        .partition(|d| d.kind == ore_core::document::Kind::Schema && alli.contains(&en_destino(d)));
     let choques: Vec<String> = mueven
         .iter()
-        .map(|d| nombre_de(d))
+        .map(|d| en_destino(d))
         .filter(|n| alli.contains(n))
         .collect();
     if !choques.is_empty() {
@@ -670,8 +745,11 @@ pub fn fundir(raiz: &Path, origen: &str, destino: &str, since: Option<&str>) -> 
     };
     let pos_estado = estado.pos();
 
-    let nombres: Vec<String> = mueven.iter().filter_map(|d| d.qname()).collect();
+    let nombres: Vec<String> = mueven.iter().filter_map(|d| clave(d)).collect();
     let mut taller = Taller::default();
+    for d in &ya_declarados {
+        taller.retirar(&d.path);
+    }
     let mut rastro = Rastro::default();
     let mut nuevos = Vec::new();
     for d in &mueven {
@@ -757,16 +835,19 @@ pub fn fundir(raiz: &Path, origen: &str, destino: &str, since: Option<&str>) -> 
 /// Sin dirección porque para el corte da igual el sentido: una arista que cruza
 /// el límite es una arista que cruza, la escriba quien la escriba.
 fn grafo_de(pkg: &Package, dentro: &[&Loaded]) -> BTreeMap<String, BTreeSet<String>> {
-    let suyos: BTreeSet<String> = dentro.iter().filter_map(|d| d.qname()).collect();
+    let suyos: BTreeSet<String> = dentro.iter().filter_map(|d| clave(d)).collect();
     let mut g: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for d in &pkg.docs {
-        let Some(mio) = d.qname() else { continue };
+        let Some(mio) = clave(d) else { continue };
         for r in ore_core::exporta::referencias(d) {
-            if !suyos.contains(&r.destino) || !suyos.contains(&mio) || r.destino == mio {
+            // La referencia trae su kind: la arista va a ESE documento, no a
+            // todo lo que se llame igual (la Table y su View, 0038 P5).
+            let destino = format!("{:?}:{}", r.kind, r.destino);
+            if !suyos.contains(&destino) || !suyos.contains(&mio) || destino == mio {
                 continue;
             }
-            g.entry(mio.clone()).or_default().insert(r.destino.clone());
-            g.entry(r.destino).or_default().insert(mio.clone());
+            g.entry(mio.clone()).or_default().insert(destino.clone());
+            g.entry(destino).or_default().insert(mio.clone());
         }
     }
     for q in &suyos {
@@ -779,7 +860,7 @@ fn componentes(dentro: &[&Loaded], g: &BTreeMap<String, BTreeSet<String>>) -> Ve
     let mut visto: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for d in dentro {
-        let Some(q) = d.qname() else { continue };
+        let Some(q) = clave(d) else { continue };
         if visto.contains(&q) {
             continue;
         }
@@ -807,6 +888,27 @@ fn clausura(semillas: &[String], g: &BTreeMap<String, BTreeSet<String>>) -> Vec<
 }
 
 // ── Lo compartido ───────────────────────────────────────────────────────────
+
+/// La identidad de un documento, `Kind:qname` (90-canonical-form §5.2): dos
+/// documentos pueden llamarse igual —una Table y su View— y no ser el mismo.
+fn clave(d: &Loaded) -> Option<String> {
+    d.qname().map(|q| format!("{:?}:{q}", d.kind))
+}
+
+/// Los documentos que un nombre dado nombra: `Kind:qname` es uno; un nombre a
+/// secas (dos o tres partes, en su forma corta), todos los que se llamen así.
+fn resolver<'a>(docs: &[&'a Loaded], q: &str) -> Vec<&'a Loaded> {
+    let (kind, nombre) = match q.split_once(':') {
+        Some((k, n)) => (Some(k), n),
+        None => (None, q),
+    };
+    let nombre = ore_core::normalize::a_corto(nombre);
+    docs.iter()
+        .filter(|d| d.qname().as_deref() == Some(nombre.as_ref()))
+        .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind) == k))
+        .copied()
+        .collect()
+}
 
 fn nombre_de(d: &Loaded) -> String {
     d.meta("name")

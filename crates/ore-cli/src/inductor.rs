@@ -514,8 +514,11 @@ pub fn inducir_con_regla(
     // tablas del alcance lo comparten, el físico entero. Sin decisión: cuando
     // se modele, `colision` la nombra y la vista la sigue.
     let mut cuantos: BTreeMap<String, usize> = BTreeMap::new();
+    // Por schema (0038 P5): dos `pedidos` en dos schemas no chocan.
     for t in sin_modelar.iter().chain(cat.tablas.iter()) {
-        *cuantos.entry(entidad(&t.nombre)).or_default() += 1;
+        *cuantos
+            .entry(format!("{}/{}", schema_de(&t.nombre), entidad(&t.nombre)))
+            .or_default() += 1;
     }
     let owner_catalogo = dec
         .de(&id(Clase::Dueno, paquete))
@@ -539,8 +542,9 @@ pub fn inducir_con_regla(
             ));
         }
         let base = entidad(&t.nombre);
-        let vista = if cuantos.get(&base).copied().unwrap_or(0) > 1 {
-            identificador(&t.nombre)
+        let sch = schema_de(&t.nombre);
+        let vista = if cuantos.get(&format!("{sch}/{base}")).copied().unwrap_or(0) > 1 {
+            identificador(sin_schema(&t.nombre))
         } else {
             minuscula_inicial(&base)
         };
@@ -548,7 +552,7 @@ pub fn inducir_con_regla(
         let sufijo = format!(
             "{}__{}.yaml",
             capitalizar(&vista),
-            identificador(&objeto.nombre)
+            identificador(sin_schema(&objeto.nombre))
         );
         // Sin entidad no hay a quién respaldar: la copia no espera a nada. Con
         // clave del origen, `upsert`; sin ella, instantánea.
@@ -556,20 +560,31 @@ pub fn inducir_con_regla(
         let se_copia = regla.copia(&t.nombre);
         let copia = se_copia.then_some(if clave.is_empty() { None } else { Some(clave) });
         ficheros.insert(
-            format!("tables/{sufijo}"),
-            tabla_yaml(
+            en_schema(&sch, format!("tables/{sufijo}")),
+            con_schema(
+                tabla_yaml(
+                    paquete,
+                    &cat.fuente,
+                    t,
+                    objeto,
+                    copia.as_ref().and_then(|c| c.as_deref()),
+                ),
+                &sch,
                 paquete,
-                &cat.fuente,
-                t,
-                objeto,
-                copia.as_ref().and_then(|c| c.as_deref()),
             ),
         );
         // 0033: lo que se copia es un `Dataset` con el plan de la vista dentro;
         // la vista sólo existe cuando NO se copia (la pregunta sobre lo de fuera).
         ficheros.insert(
-            format!("{}/{sufijo}", if se_copia { "datasets" } else { "views" }),
-            vista_yaml(&vista, paquete, &owner_catalogo, t, objeto, se_copia),
+            en_schema(
+                &sch,
+                format!("{}/{sufijo}", if se_copia { "datasets" } else { "views" }),
+            ),
+            con_schema(
+                vista_yaml(&vista, paquete, &owner_catalogo, t, objeto, se_copia),
+                &sch,
+                paquete,
+            ),
         );
     }
     let cat = &cat;
@@ -715,19 +730,24 @@ pub fn inducir_con_regla(
         // de nombrado o por quien resolvio la colision— y heredarlo evita pedir
         // una segunda respuesta para la misma cosa.
         let vista = minuscula_inicial(nombre);
+        let sch = schema_de(&t.nombre);
         ficheros.insert(
-            format!("entities/{nombre}.yaml"),
-            entidad_yaml(
-                nombre,
+            en_schema(&sch, format!("entities/{nombre}.yaml")),
+            con_schema(
+                entidad_yaml(
+                    nombre,
+                    paquete,
+                    &vista,
+                    t,
+                    &Resuelto {
+                        claves: &claves,
+                        nombres: &nombres,
+                        mapeo: &mapeo,
+                    },
+                    &extra,
+                ),
+                &sch,
                 paquete,
-                &vista,
-                t,
-                &Resuelto {
-                    claves: &claves,
-                    nombres: &nombres,
-                    mapeo: &mapeo,
-                },
-                &extra,
             ),
         );
         // **Uno**, y por eso ya no es un bucle: una vista sale de UN sitio.
@@ -747,7 +767,7 @@ pub fn inducir_con_regla(
         let sufijo = format!(
             "{}__{}.yaml",
             identificador(nombre),
-            identificador(&objeto.nombre)
+            identificador(sin_schema(&objeto.nombre))
         );
         // La copia, si la base es estándar y la tabla tiene con qué: la clave
         // del origen o la contestada, que `claves` ya funde. Aquí sí espera:
@@ -758,15 +778,26 @@ pub fn inducir_con_regla(
             None
         };
         ficheros.insert(
-            format!("tables/{sufijo}"),
-            tabla_yaml(paquete, &cat.fuente, t, objeto, copia.as_deref()),
+            en_schema(&sch, format!("tables/{sufijo}")),
+            con_schema(
+                tabla_yaml(paquete, &cat.fuente, t, objeto, copia.as_deref()),
+                &sch,
+                paquete,
+            ),
         );
         ficheros.insert(
-            format!(
-                "{}/{sufijo}",
-                if copia.is_some() { "datasets" } else { "views" }
+            en_schema(
+                &sch,
+                format!(
+                    "{}/{sufijo}",
+                    if copia.is_some() { "datasets" } else { "views" }
+                ),
             ),
-            vista_yaml(&vista, paquete, &owner, t, objeto, copia.is_some()),
+            con_schema(
+                vista_yaml(&vista, paquete, &owner, t, objeto, copia.is_some()),
+                &sch,
+                paquete,
+            ),
         );
 
         if t.filas == Some(0) && dec.de(&id(Clase::Filas, &t.nombre)).is_none() {
@@ -783,6 +814,37 @@ pub fn inducir_con_regla(
     }
 
     ficheros.insert("package.yaml".into(), package_yaml);
+    // Los schemas del origen que entran: cada uno, declarado (01 §2; una
+    // carpeta no hace un schema).
+    let schemas: BTreeSet<String> = ficheros
+        .keys()
+        .filter_map(|k| k.split_once('/'))
+        .map(|(a, _)| a.to_string())
+        .filter(|a| {
+            ![
+                "tables",
+                "views",
+                "datasets",
+                "entities",
+                "concepts",
+                "functions",
+                "actions",
+                "models",
+                "lattices",
+                "rulesets",
+                "interfaces",
+                "resolutions",
+                "policies",
+            ]
+            .contains(&a.as_str())
+        })
+        .collect();
+    for sch in schemas {
+        ficheros.insert(
+            format!("{sch}/schema.yaml"),
+            schema_yaml(&sch, paquete, &owner),
+        );
+    }
     pendientes.extend(pend_paquete);
     pendientes.extend(candidatas_a_concepto(&tablas, dec, voc));
     pendientes.extend(relaciones_no_declaradas(&tablas, &nombres, dec));
@@ -822,11 +884,15 @@ fn huerfanas(
     for c in acunados {
         posibles.insert(id(Clase::Clasificacion, c));
     }
+    for tablas in [antes, despues] {
+        for clave in claves_de_colision(tablas).into_values() {
+            posibles.insert(id(Clase::Colision, &clave));
+        }
+    }
     for t in antes.iter().chain(despues) {
         for c in [Clase::Clave, Clase::Vista, Clase::Filas, Clase::Vacio] {
             posibles.insert(id(c, &t.nombre));
         }
-        posibles.insert(id(Clase::Colision, &entidad(&t.nombre)));
         posibles.insert(id(Clase::Familia, &raiz(&t.nombre)));
         for col in &t.columnas {
             let s = format!("{}.{}", t.nombre, col.nombre);
@@ -1022,14 +1088,23 @@ fn concepto_id(columna: &str, tipo: Option<&str>) -> String {
 /// El nombre de entidad de cada tabla, con las colisiones resueltas donde lo
 /// estén. Una tabla ausente del mapa es una que **no se emite**.
 fn nombres(tablas: &[Tabla], dec: &Decisiones) -> (BTreeMap<String, String>, Vec<Pendiente>) {
+    // Por schema (0038 P5): la entidad se llama igual en dos schemas sin
+    // chocar. La pregunta, si la hay, se llama como siempre (las respuestas de
+    // antes siguen valiendo); `<schema>.<Entidad>` sólo si sale en varios.
+    let claves = claves_de_colision(tablas);
     let mut por_nombre: BTreeMap<String, Vec<&Tabla>> = BTreeMap::new();
     for t in tablas {
-        por_nombre.entry(entidad(&t.nombre)).or_default().push(t);
+        por_nombre
+            .entry(claves[&t.nombre].clone())
+            .or_default()
+            .push(t);
     }
 
     let mut out = BTreeMap::new();
     let mut pendientes = Vec::new();
     for (nombre, grupo) in &por_nombre {
+        // El nombre de la entidad: sin el schema de la clave.
+        let entidad_de = |t: &Tabla| entidad(&t.nombre);
         if grupo.len() == 1 {
             let t = grupo[0];
             // `omitir` a una vista o a una tabla vacía la saca del paquete: es
@@ -1043,7 +1118,7 @@ fn nombres(tablas: &[Tabla], dec: &Decisiones) -> (BTreeMap<String, String>, Vec
             {
                 continue;
             }
-            out.insert(t.nombre.clone(), nombre.clone());
+            out.insert(t.nombre.clone(), entidad_de(t));
             continue;
         }
 
@@ -1074,7 +1149,7 @@ fn nombres(tablas: &[Tabla], dec: &Decisiones) -> (BTreeMap<String, String>, Vec
             Some(Respuesta::Palabra(t)) if !t.eq_ignore_ascii_case(OMITIR) => {
                 match grupo.iter().find(|x| x.nombre == *t) {
                     Some(elegida) => {
-                        out.insert(elegida.nombre.clone(), nombre.clone());
+                        out.insert(elegida.nombre.clone(), entidad_de(elegida));
                     }
                     None => pendientes.push(colision(
                         nombre,
@@ -1806,9 +1881,11 @@ fn entidad_yaml(
             continue;
         };
         aristas += 1;
+        // En su schema (0038 P5): `p.X` si es de `default`, `p.s.X` si no.
+        let objetivo = ore_core::normalize::corto(paquete, &schema_de(&f.destino), destino);
         let _ = write!(
             cuerpo,
-            "    {}:\n      target: {paquete}.{destino}\n      cardinality: many_to_one\n      via: [{}]\n{to_key}      required: {obligatoria}\n",
+            "    {}:\n      target: {objetivo}\n      cardinality: many_to_one\n      via: [{}]\n{to_key}      required: {obligatoria}\n",
             identificador(destino).to_lowercase(),
             ident(&f.columnas)
         );
@@ -1822,10 +1899,17 @@ fn entidad_yaml(
             .iter()
             .any(|c| c.nombre == *columna && c.obligatoria);
         aristas += 1;
+        // En el schema de la tabla de esa entidad (0038 P5).
+        let sch = nombres
+            .iter()
+            .find(|(_, e)| *e == destino)
+            .map(|(tabla, _)| schema_de(tabla))
+            .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
+        let objetivo = ore_core::normalize::corto(paquete, &sch, destino);
         let _ = write!(
             cuerpo,
             "    # No la declara el origen: la confirmó una persona al revisar.\n    \
-             {}:\n      target: {paquete}.{destino}\n      \
+             {}:\n      target: {objetivo}\n      \
              cardinality: many_to_one\n      via: [{}]\n      \
              required: {obligatoria}\n",
             destino.to_lowercase(),
@@ -1983,7 +2067,7 @@ fn tabla_yaml(
            datasource: {fuente}\n  \
            object: {}\n  \
            columns:\n",
-        identificador(&objeto.nombre),
+        identificador(sin_schema(&objeto.nombre)),
         entrecomillar(&objeto.nombre)
     );
     for c in t
@@ -2096,7 +2180,7 @@ fn vista_yaml(
         .filter(|c| objeto.columnas.contains(&c.nombre))
         .map(|c| (identificador(&c.nombre), c.nombre.clone()))
         .collect();
-    let de = Origen::Tabla(identificador(&objeto.nombre));
+    let de = Origen::Tabla(identificador(sin_schema(&objeto.nombre)));
     if copia {
         documento_dataset(vista, paquete, owner, &de, &campos, &[])
     } else {
@@ -2217,6 +2301,133 @@ fn plan_yaml(s: &mut String, campos: &[(String, String)], recorte: &[(String, Ve
     }
 }
 
+// ── El schema del origen (0038 P5) ──────────────────────────────────────────
+//
+// `discover` lleva el schema del origen al del catálogo: `public.ai_insights`
+// de la fuente es `<base>.public.ai_insights`, no `<base>.default.public_ai_insights`
+// (medido, `medida-discover-con-schema.py`: se aplanaba, y dos `pedidos` en dos
+// schemas eran una colisión que sólo una persona podía deshacer). El nombre
+// físico sigue entero en `object`; lo demás —la Table, su View o su Dataset,
+// su Entity— vive en la carpeta del schema, en v1alpha13 y con
+// `metadata.schema`. Lo que no trae schema (un fichero) es de `default`, y
+// sale como siempre: un árbol de hoy no cambia.
+
+/// El schema del catálogo de un nombre del origen: el segmento anterior a la
+/// tabla (`public.x` → `public`; `proyecto.dataset.x` → `dataset`), o `default`.
+fn schema_de(nombre: &str) -> String {
+    let mut segs = nombre.rsplit('.');
+    segs.next();
+    match segs.next().map(identificador) {
+        Some(s) if s.to_lowercase() != ore_core::normalize::SCHEMA_POR_DEFECTO => s,
+        _ => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
+    }
+}
+
+fn en_default(schema: &str) -> bool {
+    schema == ore_core::normalize::SCHEMA_POR_DEFECTO
+}
+
+/// El nombre de la tabla sin su schema: lo que se nombra dentro de él.
+fn sin_schema(nombre: &str) -> &str {
+    if nombre.contains('.') {
+        nombre.rsplit('.').next().unwrap_or(nombre)
+    } else {
+        nombre
+    }
+}
+
+/// La ruta de un fichero del paquete, dentro de la carpeta de su schema.
+fn en_schema(schema: &str, rel: String) -> String {
+    if en_default(schema) {
+        rel
+    } else {
+        format!("{schema}/{rel}")
+    }
+}
+
+/// Un documento emitido, en su schema: v1alpha13 y `metadata.schema` (01 §3).
+/// En `default`, tal cual.
+fn con_schema(texto: String, schema: &str, paquete: &str) -> String {
+    if en_default(schema) {
+        return texto;
+    }
+    let mut t = texto;
+    if let Some(i) = t.find("apiVersion: oos.dev/v1alpha") {
+        let fin = t[i..].find('\n').map(|f| i + f).unwrap_or(t.len());
+        t.replace_range(i..fin, "apiVersion: oos.dev/v1alpha13");
+    }
+    let en_linea = format!(", namespace: {paquete} }}");
+    let en_bloque = format!("\n  namespace: {paquete}\n");
+    if t.contains(&en_linea) {
+        t = t.replacen(
+            &en_linea,
+            &format!(", namespace: {paquete}, schema: {schema} }}"),
+            1,
+        );
+    } else if t.contains(&en_bloque) {
+        t = t.replacen(
+            &en_bloque,
+            &format!("\n  namespace: {paquete}\n  schema: {schema}\n"),
+            1,
+        );
+    }
+    t
+}
+
+/// Cómo se llama la pregunta de colisión de cada tabla: por su entidad, que es
+/// como se ha llamado siempre (y las respuestas de antes siguen valiendo); y
+/// `<schema>.<Entidad>` sólo cuando esa entidad sale en MÁS de un schema del
+/// origen —ahí son dos preguntas distintas, o ninguna—. Se agrupa por el
+/// valor: dos tablas con la misma clave son las que pueden colisionar.
+fn claves_de_colision(tablas: &[Tabla]) -> BTreeMap<String, String> {
+    let mut schemas: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for t in tablas {
+        schemas
+            .entry(entidad(&t.nombre))
+            .or_default()
+            .insert(schema_de(&t.nombre));
+    }
+    tablas
+        .iter()
+        .map(|t| {
+            let e = entidad(&t.nombre);
+            let clave = if schemas.get(&e).is_some_and(|s| s.len() > 1) {
+                format!("{}.{e}", schema_de(&t.nombre))
+            } else {
+                e
+            };
+            (t.nombre.clone(), clave)
+        })
+        .collect()
+}
+
+/// El documento de un schema del paquete (v1alpha13 01 §2).
+fn schema_yaml(schema: &str, paquete: &str, owner: &str) -> String {
+    // Sin dueño decidido, ninguno: el de un schema es opcional y responde el
+    // del paquete, que ya lleva la pregunta (una sola, no una por schema).
+    let spec = if handle(owner) {
+        format!(
+            "spec:
+  owner: {owner}
+"
+        )
+    } else {
+        "spec: {}
+"
+        .to_string()
+    };
+    format!(
+        "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata:
+  name: {schema}
+  namespace: {paquete}
+# El schema `{schema}` del origen (0038 P5): lo que ahí vive se llama
+# `{paquete}.{schema}.<nombre>`.
+{spec}"
+    )
+}
+
 // ── Nombres ─────────────────────────────────────────────────────────────────
 
 /// El nombre de entidad de una tabla. Se toma el último segmento —el esquema y
@@ -2303,26 +2514,20 @@ pub fn sugerencias(p: &Pendiente) -> Option<String> {
 }
 
 pub fn informe(ind: &Induccion, destino: &Path) -> String {
-    let entidades = ind
-        .ficheros
-        .keys()
-        .filter(|k| k.starts_with("entities/"))
-        .count();
-    let tablas = ind
-        .ficheros
-        .keys()
-        .filter(|k| k.starts_with("tables/"))
-        .count();
-    let vistas = ind
-        .ficheros
-        .keys()
-        .filter(|k| k.starts_with("views/"))
-        .count();
-    let datasets = ind
-        .ficheros
-        .keys()
-        .filter(|k| k.starts_with("datasets/"))
-        .count();
+    // Por la carpeta del kind, esté en la raíz del paquete o en la de un
+    // schema (0038 P5: `public/tables/…`).
+    let cuantos = |carpeta: &str| {
+        ind.ficheros
+            .keys()
+            .filter(|k| k.rsplit('/').nth(1) == Some(carpeta))
+            .count()
+    };
+    let (entidades, tablas, vistas, datasets) = (
+        cuantos("entities"),
+        cuantos("tables"),
+        cuantos("views"),
+        cuantos("datasets"),
+    );
     // Decía «entidades y sus bindings», y hacía años que no emitía ninguno: los
     // bindings se retiraron en v1alpha8. Un mensaje que nombra lo que ya no se
     // escribe es peor que uno que calla, porque enseña el paradigma anterior a
@@ -2437,7 +2642,7 @@ mod tests {
         );
         for (k, t) in &sin.ficheros {
             assert!(
-                !k.starts_with("datasets/") && !t.contains("kind: Dataset"),
+                !k.starts_with("rubix_demo_ventas/datasets/") && !t.contains("kind: Dataset"),
                 "foránea con copia en {k}:
 {t}"
             );
@@ -2449,18 +2654,17 @@ mod tests {
             &Vocabulario::default(),
             &todas(true),
         );
-        let vista = &con.ficheros["datasets/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let vista = &con.ficheros["rubix_demo_ventas/datasets/Facturas__facturas.yaml"];
         assert!(
-            vista.contains("kind: Dataset")
-                && vista.contains("from: { table: rubix_demo_ventas_facturas }"),
+            vista.contains("kind: Dataset") && vista.contains("from: { table: facturas }"),
             "{vista}"
         );
         assert!(
             !con.ficheros
-                .contains_key("views/Facturas__rubix_demo_ventas_facturas.yaml"),
+                .contains_key("rubix_demo_ventas/views/Facturas__facturas.yaml"),
             "la copia no deja una vista que sea la misma cosa"
         );
-        let tabla = &con.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let tabla = &con.ficheros["rubix_demo_ventas/tables/Facturas__facturas.yaml"];
         assert!(
             tabla.contains(
                 "mode: upsert
@@ -2468,7 +2672,7 @@ mod tests {
             ),
             "{tabla}"
         );
-        let clientes = &con.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"];
+        let clientes = &con.ficheros["rubix_demo_ventas/views/Clientes__clientes.yaml"];
         assert!(
             clientes.contains("kind: View"),
             "sin clave y con copia:
@@ -2493,9 +2697,9 @@ mod tests {
         .unwrap();
         let despues =
             inducir_con_regla(&cat, "ventas", &dec, &Vocabulario::default(), &todas(true));
-        let clientes = &despues.ficheros["datasets/Clientes__rubix_demo_ventas_clientes.yaml"];
+        let clientes = &despues.ficheros["rubix_demo_ventas/datasets/Clientes__clientes.yaml"];
         assert!(clientes.contains("kind: Dataset"), "{clientes}");
-        let tabla = &despues.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
+        let tabla = &despues.ficheros["rubix_demo_ventas/tables/Clientes__clientes.yaml"];
         assert!(
             tabla.contains(
                 "mode: upsert
@@ -2524,7 +2728,9 @@ mod tests {
             &ninguna,
         );
         assert!(
-            !i.ficheros.keys().any(|k| k.starts_with("entities/")),
+            !i.ficheros
+                .keys()
+                .any(|k| k.starts_with("rubix_demo_ventas/entities/")),
             "{:?}",
             i.ficheros.keys()
         );
@@ -2536,7 +2742,7 @@ mod tests {
         let datasets: Vec<&String> = i
             .ficheros
             .keys()
-            .filter(|k| k.starts_with("datasets/"))
+            .filter(|k| k.starts_with("rubix_demo_ventas/datasets/"))
             .collect();
         assert_eq!(
             datasets.len(),
@@ -2544,7 +2750,9 @@ mod tests {
             "un dataset por tabla del catálogo: {datasets:?}"
         );
         assert!(
-            !i.ficheros.keys().any(|k| k.starts_with("views/")),
+            !i.ficheros
+                .keys()
+                .any(|k| k.starts_with("rubix_demo_ventas/views/")),
             "estándar y sin modelar: se copia sin esperar, y sin vistas que sean la misma cosa"
         );
         for k in &datasets {
@@ -2554,9 +2762,9 @@ mod tests {
             );
         }
         // sin clave, la tabla se queda como el origen la dijo; con clave, upsert
-        let clientes = &i.ficheros["tables/Clientes__rubix_demo_ventas_clientes.yaml"];
+        let clientes = &i.ficheros["rubix_demo_ventas/tables/Clientes__clientes.yaml"];
         assert!(!clientes.contains("upsert"), "{clientes}");
-        let facturas = &i.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
+        let facturas = &i.ficheros["rubix_demo_ventas/tables/Facturas__facturas.yaml"];
         assert!(
             facturas.contains("mode: upsert\n    key: [id_factura]"),
             "{facturas}"
@@ -2564,7 +2772,7 @@ mod tests {
         // la colisión de nombres (Pedidos / pedidos) se resuelve con el físico, sin preguntar
         assert!(
             i.ficheros
-                .contains_key("datasets/Rubix_demo_ventas_pedidos__rubix_demo_ventas_pedidos.yaml"),
+                .contains_key("rubix_demo_ventas/datasets/Pedidos__pedidos.yaml"),
             "{:?}",
             i.ficheros.keys()
         );
@@ -2598,11 +2806,11 @@ mod tests {
             &suelta,
         );
         assert!(
-            f.ficheros["datasets/Facturas__rubix_demo_ventas_facturas.yaml"]
+            f.ficheros["rubix_demo_ventas/datasets/Facturas__facturas.yaml"]
                 .contains("kind: Dataset")
         );
         assert!(
-            f.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"].contains("kind: View")
+            f.ficheros["rubix_demo_ventas/views/Clientes__clientes.yaml"].contains("kind: View")
         );
         let m = inducir_con_regla(
             &cat,
@@ -2612,7 +2820,8 @@ mod tests {
             &una,
         );
         assert!(
-            m.ficheros.contains_key("entities/Clientes.yaml"),
+            m.ficheros
+                .contains_key("rubix_demo_ventas/entities/Clientes.yaml"),
             "{:?}",
             m.ficheros.keys()
         );
@@ -2622,7 +2831,7 @@ mod tests {
                 .any(|p| p.id == "clave/rubix_demo_ventas.clientes")
         );
         assert!(
-            m.ficheros["views/Clientes__rubix_demo_ventas_clientes.yaml"].contains("kind: View"),
+            m.ficheros["rubix_demo_ventas/views/Clientes__clientes.yaml"].contains("kind: View"),
             "modelada sin clave: la copia espera"
         );
     }
@@ -2668,12 +2877,15 @@ mod tests {
     #[test]
     fn una_tabla_es_una_entidad_y_eso_es_un_hecho() {
         let i = inducido();
-        assert!(i.ficheros.contains_key("entities/Facturas.yaml"));
+        assert!(
+            i.ficheros
+                .contains_key("rubix_demo_ventas/entities/Facturas.yaml")
+        );
         // Tres documentos y no dos: el objeto, lo que se expone de él, y lo que
         // significa. Cada capa sabe solo lo suyo.
-        let tabla = &i.ficheros["tables/Facturas__rubix_demo_ventas_facturas.yaml"];
-        let vista = &i.ficheros["views/Facturas__rubix_demo_ventas_facturas.yaml"];
-        let entidad = &i.ficheros["entities/Facturas.yaml"];
+        let tabla = &i.ficheros["rubix_demo_ventas/tables/Facturas__facturas.yaml"];
+        let vista = &i.ficheros["rubix_demo_ventas/views/Facturas__facturas.yaml"];
+        let entidad = &i.ficheros["rubix_demo_ventas/entities/Facturas.yaml"];
 
         // El nombre físico viaja ENTERO a la tabla: es opaco y es del origen.
         assert!(
@@ -2685,10 +2897,7 @@ mod tests {
         // tabla, sus propiedades tendrían que llamarse como las columnas
         // físicas y lo semántico volvería a saber de lo físico.
         assert!(entidad.contains("backedBy: facturas"), "{entidad}");
-        assert!(
-            vista.contains("from: { table: rubix_demo_ventas_facturas }"),
-            "{vista}"
-        );
+        assert!(vista.contains("from: { table: facturas }"), "{vista}");
     }
 
     /// La tabla lleva el tipo que el conector tradujo (0032 §3). Antes se tiraba
@@ -2711,7 +2920,7 @@ mod tests {
           ]
         }"#;
         let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
-        let tabla = &i.ficheros["tables/Pedidos__public_pedidos.yaml"];
+        let tabla = &i.ficheros["public/tables/Pedidos__pedidos.yaml"];
         assert!(
             tabla.contains("    id: { type: Integer, physicalType: bigint }"),
             "{tabla}"
@@ -2750,7 +2959,7 @@ mod tests {
                 .any(|p| p.sujeto.contains("clientes") && p.que.contains("clave")),
             "no reportó la falta de clave"
         );
-        let e = &i.ficheros["entities/Clientes.yaml"];
+        let e = &i.ficheros["rubix_demo_ventas/entities/Clientes.yaml"];
         assert!(!e.contains("primaryKey"), "se inventó una clave:\n{e}");
     }
 
@@ -2852,7 +3061,7 @@ mod tests {
           ]
         }"#;
         let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
-        let f = &i.ficheros["entities/Facturas.yaml"];
+        let f = &i.ficheros["public/entities/Facturas.yaml"];
         assert!(f.contains("via: [id_cliente, cod_pais]"), "{f}");
         // Apunta a la clave primaria del destino, asi que `toKey` sobra (P2).
         assert!(
@@ -2898,7 +3107,7 @@ mod tests {
           ]
         }"#;
         let i = inducir(&Catalogo::leer(CAT).unwrap(), "ventas");
-        let f = &i.ficheros["entities/Facturas.yaml"];
+        let f = &i.ficheros["public/entities/Facturas.yaml"];
         assert!(f.contains("via: [nif_cliente]"), "{f}");
         assert!(
             f.contains("toKey: [nif]"),
@@ -2908,7 +3117,7 @@ mod tests {
         // no identifica. El lector trae las UNIQUE del origen justo para esto:
         // sin ellas la cadena emitía un `toKey` que su propio destino no
         // sostenía, y salía OOS3006 sobre un documento que nadie escribió.
-        let c = &i.ficheros["entities/Clientes.yaml"];
+        let c = &i.ficheros["public/entities/Clientes.yaml"];
         assert!(c.contains("uniqueKeys:") && c.contains("- [nif]"), "{c}");
     }
 
@@ -2938,7 +3147,7 @@ mod tests {
             "no reportó la relación posible"
         );
         assert!(
-            !i.ficheros["entities/Facturas.yaml"].contains("relations"),
+            !i.ficheros["rubix_demo_ventas/entities/Facturas.yaml"].contains("relations"),
             "emitió una arista que nadie declaró"
         );
     }
@@ -2947,7 +3156,10 @@ mod tests {
     fn una_tabla_vacia_no_se_borra_sola() {
         let i = inducido();
         assert!(i.pendientes.iter().any(|p| p.sujeto.contains("mov_bak")));
-        assert!(i.ficheros.contains_key("entities/Mov_bak.yaml"));
+        assert!(
+            i.ficheros
+                .contains_key("rubix_demo_ventas/entities/Mov_bak.yaml")
+        );
     }
 
     fn decisiones(respuestas: &[(&str, Respuesta)]) -> Decisiones {
@@ -3011,9 +3223,9 @@ mod tests {
             Respuesta::Lista(vec!["id".into()]),
         )]);
         assert!(
-            i.ficheros["entities/Clientes.yaml"].contains("primaryKey: [id]"),
+            i.ficheros["rubix_demo_ventas/entities/Clientes.yaml"].contains("primaryKey: [id]"),
             "{}",
-            i.ficheros["entities/Clientes.yaml"]
+            i.ficheros["rubix_demo_ventas/entities/Clientes.yaml"]
         );
         assert!(
             !i.pendientes
@@ -3030,7 +3242,7 @@ mod tests {
             "clave/rubix_demo_ventas.clientes",
             Respuesta::Lista(vec!["no_existe".into()]),
         )]);
-        assert!(!i.ficheros["entities/Clientes.yaml"].contains("primaryKey"));
+        assert!(!i.ficheros["rubix_demo_ventas/entities/Clientes.yaml"].contains("primaryKey"));
         assert!(
             i.pendientes
                 .iter()
@@ -3055,14 +3267,20 @@ mod tests {
                 ),
             ])),
         )]);
-        assert!(i.ficheros.contains_key("entities/Pedidos.yaml"));
-        assert!(i.ficheros.contains_key("entities/PedidosViejos.yaml"));
+        assert!(
+            i.ficheros
+                .contains_key("rubix_demo_ventas/entities/Pedidos.yaml")
+        );
+        assert!(
+            i.ficheros
+                .contains_key("rubix_demo_ventas/entities/PedidosViejos.yaml")
+        );
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Colision));
         // Y cada una conserva su nombre físico, que es del origen y es opaco.
-        let b = &i.ficheros["tables/PedidosViejos__rubix_demo_ventas_Pedidos.yaml"];
+        let b = &i.ficheros["rubix_demo_ventas/tables/PedidosViejos__Pedidos.yaml"];
         assert!(b.contains(r#"object: "rubix_demo_ventas.Pedidos""#), "{b}");
         // La flecha va al revés que en el binding: la entidad nombra a su vista.
-        let e = &i.ficheros["entities/PedidosViejos.yaml"];
+        let e = &i.ficheros["rubix_demo_ventas/entities/PedidosViejos.yaml"];
         assert!(e.contains("backedBy: pedidosViejos"), "{e}");
     }
 
@@ -3099,7 +3317,10 @@ mod tests {
         let rutas: Vec<&String> = i
             .ficheros
             .keys()
-            .filter(|k| k.starts_with("tables/") || k.starts_with("views/"))
+            .filter(|k| {
+                k.starts_with("rubix_demo_ventas/tables/")
+                    || k.starts_with("rubix_demo_ventas/views/")
+            })
             .collect();
         for (n, a) in rutas.iter().enumerate() {
             for b in rutas.iter().skip(n + 1) {
@@ -3112,10 +3333,10 @@ mod tests {
         // Y las dos de la colision estan, cada una con su entidad delante y con
         // sus DOS documentos: el objeto y lo que se expone de el.
         for r in [
-            "tables/Pedidos__rubix_demo_ventas_pedidos.yaml",
-            "tables/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
-            "views/Pedidos__rubix_demo_ventas_pedidos.yaml",
-            "views/PedidosViejos__rubix_demo_ventas_Pedidos.yaml",
+            "rubix_demo_ventas/tables/Pedidos__pedidos.yaml",
+            "rubix_demo_ventas/tables/PedidosViejos__Pedidos.yaml",
+            "rubix_demo_ventas/views/Pedidos__pedidos.yaml",
+            "rubix_demo_ventas/views/PedidosViejos__Pedidos.yaml",
         ] {
             assert!(i.ficheros.contains_key(r), "falta {r}: {rutas:?}");
         }
@@ -3184,22 +3405,22 @@ mod tests {
             &Vocabulario::default(),
         );
         for f in [
-            "entities/Pedidos_2023.yaml",
-            "entities/Pedidos_2024.yaml",
-            "tables/Pedidos_2023__public_pedidos_2023.yaml",
-            "views/Pedidos_2024__public_pedidos_2024.yaml",
+            "public/entities/Pedidos_2023.yaml",
+            "public/entities/Pedidos_2024.yaml",
+            "public/tables/Pedidos_2023__pedidos_2023.yaml",
+            "public/views/Pedidos_2024__pedidos_2024.yaml",
         ] {
             assert!(i.ficheros.contains_key(f), "{:?}", i.ficheros.keys());
         }
         // Y la pregunta se cierra: `separadas` es una respuesta, no un aplazo.
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Familia));
 
-        let viejo = &i.ficheros["tables/Pedidos_2023__public_pedidos_2023.yaml"];
+        let viejo = &i.ficheros["public/tables/Pedidos_2023__pedidos_2023.yaml"];
         assert!(
             !viejo.contains("canal"),
             "atribuyó una columna que no está ahí:\n{viejo}"
         );
-        assert!(i.ficheros["tables/Pedidos_2024__public_pedidos_2024.yaml"].contains("canal"));
+        assert!(i.ficheros["public/tables/Pedidos_2024__pedidos_2024.yaml"].contains("canal"));
     }
 
     /// **Unir dejó de poder escribirse, y una respuesta vieja no se traga.**
@@ -3242,7 +3463,10 @@ mod tests {
         assert!(p.porque.contains("junta"), "{}", p.porque);
         // Las dos hermanas siguen emitiéndose por separado: la familia se ve,
         // y no unirla no es perderla.
-        for e in ["entities/Log_2023.yaml", "entities/Log_2024.yaml"] {
+        for e in [
+            "public/entities/Log_2023.yaml",
+            "public/entities/Log_2024.yaml",
+        ] {
             assert!(i.ficheros.contains_key(e), "{:?}", i.ficheros.keys());
         }
     }
@@ -3265,7 +3489,7 @@ mod tests {
         );
         // Y donde está el concepto NO está el tipo: el esquema lo prohíbe con un
         // `oneOf`, porque no hay orden al que apelar si la copia deja de coincidir.
-        let e = &i.ficheros["entities/Facturas.yaml"];
+        let e = &i.ficheros["rubix_demo_ventas/entities/Facturas.yaml"];
         assert!(e.contains("total: { is: ventas.importeTotal }"), "{e}");
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Concepto));
     }
@@ -3285,9 +3509,12 @@ mod tests {
                 Respuesta::Palabra("si".into()),
             ),
         ]);
-        let f = &i.ficheros["entities/Facturas.yaml"];
+        let f = &i.ficheros["rubix_demo_ventas/entities/Facturas.yaml"];
         assert!(f.contains("via: [id_cliente]"), "{f}");
-        assert!(f.contains("target: ventas.Clientes"), "{f}");
+        assert!(
+            f.contains("target: ventas.rubix_demo_ventas.Clientes"),
+            "{f}"
+        );
         assert!(f.contains("la confirmó una persona"), "{f}");
     }
 
@@ -3300,7 +3527,7 @@ mod tests {
             "relacion/rubix_demo_ventas.facturas.id_cliente",
             Respuesta::Palabra("si".into()),
         )]);
-        assert!(!i.ficheros["entities/Facturas.yaml"].contains("relations"));
+        assert!(!i.ficheros["rubix_demo_ventas/entities/Facturas.yaml"].contains("relations"));
         assert!(
             i.pendientes
                 .iter()
@@ -3433,7 +3660,7 @@ mod tests {
             !i.ficheros.keys().any(|k| k.starts_with("concepts/")),
             "acuñó una copia de un concepto que ya existía"
         );
-        assert!(i.ficheros["entities/Clientes.yaml"].contains("is: gdpr.personalEmail"));
+        assert!(i.ficheros["public/entities/Clientes.yaml"].contains("is: gdpr.personalEmail"));
         // Y no pregunta su clasificación: la decidió quien publicó el
         // vocabulario, y reabrirla sería reabrir una decisión ajena.
         assert!(!i.pendientes.iter().any(|p| p.clase == Clase::Clasificacion));
@@ -3457,7 +3684,7 @@ mod tests {
             .find(|p| p.clase == Clase::Concepto)
             .expect("se tragó un concepto de otro tipo");
         assert!(p.que.contains("Integer"), "{}", p.que);
-        assert!(!i.ficheros["entities/Clientes.yaml"].contains("is:"));
+        assert!(!i.ficheros["public/entities/Clientes.yaml"].contains("is:"));
     }
 
     /// Acuñar abre la pregunta que faltaba. Un concepto sin clasificación no

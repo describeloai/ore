@@ -413,9 +413,9 @@ impl Servidor {
             return Respuesta::error(404, "no hay tal paquete");
         }
         let mut lista = Vec::new();
-        if let Ok(es) = std::fs::read_dir(dir.join("datasets")) {
-            let mut rutas: Vec<PathBuf> = es.flatten().map(|e| e.path()).collect();
-            rutas.sort();
+        {
+            // La raíz del paquete y la de cada schema (0038 P5).
+            let rutas = crate::rutas::yamls_del_kind(&dir, "datasets");
             for p in rutas {
                 let Ok(texto) = std::fs::read_to_string(&p) else {
                     continue;
@@ -441,8 +441,12 @@ impl Servidor {
                 let clave = tabla
                     .as_deref()
                     .and_then(|t| {
+                        // Las tablas de su mismo schema: la carpeta hermana.
                         fichero_de(
-                            &dir.join("tables"),
+                            &p.parent()
+                                .and_then(Path::parent)
+                                .unwrap_or(&dir)
+                                .join("tables"),
                             "Table",
                             t.rsplit('.').next().unwrap_or(t),
                         )
@@ -454,12 +458,23 @@ impl Servidor {
                             .map(|(_, k)| de_node(k))
                     })
                     .unwrap_or(Json::Arr(Vec::new()));
+                // Su schema (0038): el informe es el del puntero de su forma corta.
+                let schema = n
+                    .get("metadata")
+                    .and_then(|(_, m)| campo(m, "schema"))
+                    .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
+                let en_su_schema = if schema == ore_core::normalize::SCHEMA_POR_DEFECTO {
+                    nombre.clone()
+                } else {
+                    format!("{schema}.{nombre}")
+                };
                 lista.push(Json::obj([
                     ("dataset", Json::s(nombre.clone())),
+                    ("schema", Json::s(&schema)),
                     ("table", tabla.map(Json::s).unwrap_or(Json::Bool(false))),
                     ("from", de_node(de)),
                     ("key", clave),
-                    ("copia", informe_de(raiz, paquete, &nombre)),
+                    ("copia", informe_de(raiz, paquete, &en_su_schema)),
                 ]));
             }
         }
@@ -697,12 +712,8 @@ pub(crate) fn texto_de(d: &Json) -> String {
 /// nombre y en orden.
 fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(vistas) = std::fs::read_dir(dir.join("datasets")) else {
-        return out;
-    };
-    let mut rutas: Vec<PathBuf> = vistas.flatten().map(|e| e.path()).collect();
-    rutas.sort();
-    for p in rutas {
+    // La raíz del paquete y la de cada schema (0038 P5).
+    for p in crate::rutas::yamls_del_kind(dir, "datasets") {
         let Ok(texto) = std::fs::read_to_string(&p) else {
             continue;
         };
@@ -715,8 +726,15 @@ fn vistas_con_copia_de(dir: &Path) -> Vec<String> {
         if n.get("spec").and_then(|(_, s)| s.get("from")).is_none() {
             continue;
         }
+        // En su schema, `<schema>.<nombre>`: con el paquete delante es su forma
+        // corta (0038), la del puntero.
         if let Some(v) = n.get("metadata").and_then(|(_, m)| campo(m, "name")) {
-            out.push(v);
+            match n.get("metadata").and_then(|(_, m)| campo(m, "schema")) {
+                Some(s) if s != ore_core::normalize::SCHEMA_POR_DEFECTO => {
+                    out.push(format!("{s}.{v}"))
+                }
+                _ => out.push(v),
+            }
         }
     }
     out

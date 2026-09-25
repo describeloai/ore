@@ -63,9 +63,19 @@ pub(crate) fn limite_de(cuerpo: &str) -> Result<u64, String> {
 
 impl Servidor {
     /// `POST /vistas/{ns}/{n}/ejecutar`: la pregunta, contestada sobre la copia.
-    pub(crate) fn ejecutar(&self, raiz: &Path, ns: &str, nombre: &str, cuerpo: &str) -> Respuesta {
+    pub(crate) fn ejecutar(
+        &self,
+        raiz: &Path,
+        ns: &str,
+        schema: &str,
+        nombre: &str,
+        cuerpo: &str,
+    ) -> Respuesta {
         if let Err(m) = token(ns) {
             return Respuesta::error(422, format!("espacio de nombres: {m}"));
+        }
+        if let Err(m) = token(schema) {
+            return Respuesta::error(422, format!("schema: {m}"));
         }
         if let Err(m) = token(nombre) {
             return Respuesta::error(422, format!("nombre: {m}"));
@@ -74,7 +84,7 @@ impl Servidor {
             Ok(l) => l,
             Err(m) => return Respuesta::error(422, m),
         };
-        let qn = format!("{ns}.{nombre}");
+        let qn = ore_core::normalize::corto(ns, schema, nombre);
         let salida = match mando::correr(
             &self.binario,
             raiz,

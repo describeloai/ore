@@ -271,8 +271,18 @@ impl Documento {
     fn espacio(&self) -> String {
         campo(&self.nodo, "metadata", "namespace")
     }
+    /// Su schema (0038): el que declara, o `default`.
+    fn schema(&self) -> String {
+        let s = campo(&self.nodo, "metadata", "schema");
+        if s.is_empty() {
+            ore_core::normalize::SCHEMA_POR_DEFECTO.to_string()
+        } else {
+            s
+        }
+    }
+    /// En su forma corta: `p.n` en `default`, `p.s.n` en otro schema.
     fn cualificado(&self) -> String {
-        format!("{}.{}", self.espacio(), self.nombre())
+        ore_core::normalize::corto(&self.espacio(), &self.schema(), &self.nombre())
     }
 }
 
@@ -497,6 +507,7 @@ fn ficha(raiz: &Path, d: &Documento) -> Json {
         ("apiVersion", Json::s(campo_raiz(&d.nodo, "apiVersion"))),
         ("name", Json::s(d.nombre())),
         ("namespace", Json::s(d.espacio())),
+        ("schema", Json::s(d.schema())),
         ("fichero", Json::s(relativo)),
         ("metadata", parte("metadata")),
         ("spec", parte("spec")),
@@ -551,18 +562,26 @@ pub(crate) fn listar(raiz: &Path, kind: &str) -> Respuesta {
     Respuesta::ok(Json::obj(salida))
 }
 
-/// `GET /documentos/{kind}/{ns}/{n}`: la ficha, su YAML y el commit que la trajo.
-pub(crate) fn uno(raiz: &Path, kind: &str, ns: &str, n: &str) -> Respuesta {
+/// `GET /documentos/{kind}/{ns}[/{schema}]/{n}`: la ficha, su YAML y el commit
+/// que la trajo.
+pub(crate) fn uno(raiz: &Path, kind: &str, ns: &str, schema: &str, n: &str) -> Respuesta {
     let k = match kind_o_404(kind) {
         Ok(k) => k,
         Err(r) => return r,
     };
-    if let Err(r) = nombres(ns, n) {
+    if let Err(r) = nombres(ns, schema, n) {
         return r;
     }
     let (lista, _) = documentos_de(raiz);
-    let Some(d) = buscar(&lista, k, ns, n) else {
-        return Respuesta::error(404, format!("no hay {} `{ns}.{n}`", k.articulo));
+    let Some(d) = buscar(&lista, k, ns, schema, n) else {
+        return Respuesta::error(
+            404,
+            format!(
+                "no hay {} `{}`",
+                k.articulo,
+                ore_core::normalize::corto(ns, schema, n)
+            ),
+        );
     };
     let Json::Obj(mut m) = ficha(raiz, d) else {
         unreachable!("la ficha es un objeto");
@@ -574,14 +593,21 @@ pub(crate) fn uno(raiz: &Path, kind: &str, ns: &str, n: &str) -> Respuesta {
     Respuesta::ok(Json::Obj(m))
 }
 
-fn buscar<'a>(lista: &'a [Documento], k: &Kind, ns: &str, n: &str) -> Option<&'a Documento> {
-    lista
-        .iter()
-        .find(|d| std::ptr::eq(d.kind, k) && d.espacio() == ns && d.nombre() == n)
+fn buscar<'a>(
+    lista: &'a [Documento],
+    k: &Kind,
+    ns: &str,
+    schema: &str,
+    n: &str,
+) -> Option<&'a Documento> {
+    lista.iter().find(|d| {
+        std::ptr::eq(d.kind, k) && d.espacio() == ns && d.schema() == schema && d.nombre() == n
+    })
 }
 
-fn nombres(ns: &str, n: &str) -> Result<(), Respuesta> {
+fn nombres(ns: &str, schema: &str, n: &str) -> Result<(), Respuesta> {
     token(ns).map_err(|m| Respuesta::error(422, format!("`namespace`: {m}")))?;
+    token(schema).map_err(|m| Respuesta::error(422, format!("`schema`: {m}")))?;
     token(n).map_err(|m| Respuesta::error(422, format!("`name`: {m}")))?;
     Ok(())
 }
@@ -592,6 +618,7 @@ fn nombres(ns: &str, n: &str) -> Result<(), Respuesta> {
 fn documento_del_cuerpo(
     k: &Kind,
     ns: &str,
+    schema: &str,
     n: &str,
     cuerpo: &str,
 ) -> Result<(String, Node), Respuesta> {
@@ -603,26 +630,31 @@ fn documento_del_cuerpo(
         };
         let doc = parse::parse(texto)
             .map_err(|e| Respuesta::error(422, format!("el `yaml` no analiza: {e:?}")))?;
-        comprobar_cabeza(k, ns, n, &doc)?;
+        comprobar_cabeza(k, ns, schema, n, &doc)?;
         return Ok((texto.to_string(), doc));
     }
     // ── el documento en JSON: se emite ──────────────────────────────────────
-    comprobar_cabeza(k, ns, n, &cuerpo)?;
+    comprobar_cabeza(k, ns, schema, n, &cuerpo)?;
     let Some((_, spec)) = cuerpo.get("spec") else {
         return Err(Respuesta::error(422, "falta `spec`"));
     };
+    // En un schema (0038), v1alpha13 y `metadata.schema` (01 §3).
+    let en_schema = schema != ore_core::normalize::SCHEMA_POR_DEFECTO;
     let api = cuerpo
         .get("apiVersion")
         .and_then(|(_, v)| v.as_str())
-        .unwrap_or(API);
+        .unwrap_or(if en_schema { "oos.dev/v1alpha13" } else { API });
     let mut texto = format!(
         "apiVersion: {api}\nkind: {}\nmetadata:\n  name: {n}\n  namespace: {ns}\n",
         k.nombre
     );
+    if en_schema {
+        texto.push_str(&format!("  schema: {schema}\n"));
+    }
     if let Some((_, m)) = cuerpo.get("metadata") {
         for (kk, v) in m.entries() {
             let Some(kk) = kk.as_str() else { continue };
-            if kk == "name" || kk == "namespace" {
+            if kk == "name" || kk == "namespace" || kk == "schema" {
                 continue;
             }
             entrada_yaml(kk, v, 1, &mut texto);
@@ -639,7 +671,13 @@ fn documento_del_cuerpo(
 
 /// `kind`, `metadata.name` y `metadata.namespace`, si vienen, son los de la
 /// ruta; `spec` es un objeto; y lo que el verbo exige, está.
-fn comprobar_cabeza(k: &Kind, ns: &str, n: &str, doc: &Node) -> Result<(), Respuesta> {
+fn comprobar_cabeza(
+    k: &Kind,
+    ns: &str,
+    schema: &str,
+    n: &str,
+    doc: &Node,
+) -> Result<(), Respuesta> {
     if let Some(kd) = doc.get("kind").and_then(|(_, v)| v.as_str())
         && kd != k.nombre
     {
@@ -652,6 +690,20 @@ fn comprobar_cabeza(k: &Kind, ns: &str, n: &str, doc: &Node) -> Result<(), Respu
         ));
     }
     if let Some((_, m)) = doc.get("metadata") {
+        // El schema, como el nombre, lo pone la ruta (0038): uno que no lo
+        // dice es de `default`.
+        let dice = m
+            .get("schema")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or(ore_core::normalize::SCHEMA_POR_DEFECTO);
+        if dice != schema {
+            return Err(Respuesta::error(
+                422,
+                format!(
+                    "`metadata.schema: {dice}` no es el de la ruta (`{schema}`): el nombre lo pone la ruta"
+                ),
+            ));
+        }
         for (campo, sitio) in [("name", n), ("namespace", ns)] {
             if let Some(v) = m.get(campo).and_then(|(_, v)| v.as_str())
                 && v != sitio
@@ -682,11 +734,13 @@ impl Servidor {
     /// y `spec`; el nombre y el espacio los pone la ruta) o con `yaml` tal
     /// cual. 201 si es nuevo, 200 si se reescribe; `commit` lo añade
     /// `escribiendo`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn escribir_documento(
         &self,
         raiz: &Path,
         kind: &str,
         ns: &str,
+        schema: &str,
         n: &str,
         cuerpo: &str,
         si_commit: Option<&str>,
@@ -695,10 +749,10 @@ impl Servidor {
             Ok(k) => k,
             Err(r) => return r,
         };
-        if let Err(r) = nombres(ns, n) {
+        if let Err(r) = nombres(ns, schema, n) {
             return r;
         }
-        let (texto, _) = match documento_del_cuerpo(k, ns, n, cuerpo) {
+        let (texto, _) = match documento_del_cuerpo(k, ns, schema, n, cuerpo) {
             Ok(t) => t,
             Err(r) => return r,
         };
@@ -719,12 +773,20 @@ impl Servidor {
             Err(r) => return r,
         };
         let (lista, _) = documentos_de(raiz);
-        let existente = buscar(&lista, k, ns, n).map(|d| (d.fichero.clone(), d.texto.clone()));
+        let existente =
+            buscar(&lista, k, ns, schema, n).map(|d| (d.fichero.clone(), d.texto.clone()));
+        // Uno nuevo, en la carpeta de su schema (01 §3): la del paquete en
+        // `default`, `<paquete>/<schema>/` en otro.
+        let carpeta = if schema == ore_core::normalize::SCHEMA_POR_DEFECTO {
+            paquete.join(k.carpeta)
+        } else {
+            paquete.join(schema).join(k.carpeta)
+        };
         let fichero = existente
             .as_ref()
             .map(|(f, _)| f.clone())
-            .unwrap_or_else(|| paquete.join(k.carpeta).join(format!("{n}.yaml")));
-        if let Err(e) = std::fs::create_dir_all(paquete.join(k.carpeta))
+            .unwrap_or_else(|| carpeta.join(format!("{n}.yaml")));
+        if let Err(e) = std::fs::create_dir_all(fichero.parent().unwrap_or(&carpeta))
             .and_then(|_| std::fs::write(&fichero, &texto))
         {
             return Respuesta::error(
@@ -733,7 +795,8 @@ impl Servidor {
             );
         }
         // ── compilar antes de empujar: ¿empeora? ────────────────────────────
-        let sin_hablar = match self.empeora(raiz, &antes, &format!("{} `{ns}.{n}`", k.articulo)) {
+        let corto = ore_core::normalize::corto(ns, schema, n);
+        let sin_hablar = match self.empeora(raiz, &antes, &format!("{} `{corto}`", k.articulo)) {
             Ok(t) => t,
             Err(r) => {
                 // (sobre un directorio no hay clon que tirar: se deja como estaba)
@@ -752,6 +815,7 @@ impl Servidor {
             ("kind", Json::s(k.nombre)),
             ("name", Json::s(n)),
             ("namespace", Json::s(ns)),
+            ("schema", Json::s(schema)),
             ("fichero", Json::s(relativo(raiz, &fichero))),
             ("nueva", Json::Bool(existente.is_none())),
         ];
@@ -776,11 +840,13 @@ impl Servidor {
 
     /// `DELETE /documentos/{kind}/{ns}/{n}`: fuera si nadie lo nombra y el
     /// árbol no empeora; 409 con los nombres si alguien lo referencia.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn retirar_documento(
         &self,
         raiz: &Path,
         kind: &str,
         ns: &str,
+        schema: &str,
         n: &str,
         si_commit: Option<&str>,
         sujeto: &ore_entrada::identidad::Identidad,
@@ -789,16 +855,15 @@ impl Servidor {
             Ok(k) => k,
             Err(r) => return r,
         };
-        if let Err(r) = nombres(ns, n) {
+        if let Err(r) = nombres(ns, schema, n) {
             return r;
         }
+        let corto = ore_core::normalize::corto(ns, schema, n);
         // Lo escrito es de quien lo escribió (W3.7 gobierno ④): retirar un
         // Dataset con puntero de otra persona es 403 con quién.
         if k.nombre == "Dataset"
-            && let Some((_, p)) = ore_core::punteros::leer_en(
-                &raiz.join(ore_core::punteros::CARPETA),
-                &format!("{ns}.{n}"),
-            )
+            && let Some((_, p)) =
+                ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &corto)
             && let Some(e) = p.get("escrito_por").and_then(|(_, v)| v.as_str())
             && !e.is_empty()
             && e != sujeto.persona
@@ -806,13 +871,13 @@ impl Servidor {
             return Respuesta::error(
                 403,
                 format!(
-                    "el dataset `{ns}.{n}` lo escribió `{e}`: retirarlo es suyo; lo tuyo va por una propuesta"
+                    "el dataset `{corto}` lo escribió `{e}`: retirarlo es suyo; lo tuyo va por una propuesta"
                 ),
             );
         }
         let (lista, _) = documentos_de(raiz);
-        let Some(d) = buscar(&lista, k, ns, n) else {
-            return Respuesta::error(404, format!("no hay {} `{ns}.{n}`", k.articulo));
+        let Some(d) = buscar(&lista, k, ns, schema, n) else {
+            return Respuesta::error(404, format!("no hay {} `{corto}`", k.articulo));
         };
         if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
             return r;
@@ -852,7 +917,6 @@ impl Servidor {
         // sin nada que lo nombre—. Los bytes los expira el mantenimiento
         // (`--recoger`), como siempre. El de su sitio y el de antes (0038 P2).
         let dir = raiz.join(ore_core::punteros::CARPETA);
-        let corto = format!("{ns}.{n}");
         let punteros: Vec<std::path::PathBuf> = [
             ore_core::punteros::ruta_en(&dir, &corto),
             ore_core::punteros::legado_en(&dir, &corto),

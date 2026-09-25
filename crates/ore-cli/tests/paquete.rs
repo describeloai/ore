@@ -182,7 +182,8 @@ fn dos_paquetes(nombre: &str) -> PathBuf {
     );
     let (_, d) = ore(&dir, &["package", "new", "eu", "--owner", "team:datos"]);
     assert!(
-        dir.join("packages/ventas/tables").is_dir(),
+        dir.join("packages/ventas/rubix_demo_ventas/tables")
+            .is_dir(),
         "el taller no tiene tablas:
 {d}"
     );
@@ -209,7 +210,7 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
         &[
             "package",
             "move",
-            "ventas.rubix_demo_ventas_clientes",
+            "Table:ventas.rubix_demo_ventas.clientes",
             "--to",
             "eu",
         ],
@@ -217,10 +218,10 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
     assert_eq!(c, Some(0), "{dicho}");
 
     // ① el fichero, en el mismo subdirectorio del destino
-    let nuevo = dir.join("packages/eu/tables/Clientes__rubix_demo_ventas_clientes.yaml");
+    let nuevo = dir.join("packages/eu/rubix_demo_ventas/tables/Clientes__clientes.yaml");
     assert!(nuevo.is_file(), "no está en el destino:\n{dicho}");
     assert!(
-        !dir.join("packages/ventas/tables/Clientes__rubix_demo_ventas_clientes.yaml")
+        !dir.join("packages/ventas/rubix_demo_ventas/tables/Clientes__clientes.yaml")
             .exists(),
         "sigue en el origen"
     );
@@ -232,17 +233,17 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
     // ③ el anuncio en el manifiesto de ORIGEN
     let m = std::fs::read_to_string(dir.join("packages/ventas/package.yaml")).unwrap();
     assert!(
-        m.contains("from: ventas.rubix_demo_ventas_clientes")
-            && m.contains("to: eu.rubix_demo_ventas_clientes"),
+        m.contains("from: ventas.rubix_demo_ventas.clientes")
+            && m.contains("to: eu.rubix_demo_ventas.clientes"),
         "{m}"
     );
 
     // ④ y lo que lo nombraba, reapuntado
     let v = std::fs::read_to_string(
-        dir.join("packages/ventas/views/Clientes__rubix_demo_ventas_clientes.yaml"),
+        dir.join("packages/ventas/rubix_demo_ventas/views/Clientes__clientes.yaml"),
     )
     .unwrap();
-    assert!(v.contains("table: eu.rubix_demo_ventas_clientes"), "{v}");
+    assert!(v.contains("table: eu.rubix_demo_ventas.clientes"), "{v}");
 
     // Y lo que el movimiento deja: EXACTAMENTE el `OOS2028` que el mando
     // anunció, porque `exports` no lo decide él.
@@ -274,7 +275,7 @@ fn con_el_export_que_dice_el_arbol_queda_igual() {
         &[
             "package",
             "move",
-            "ventas.rubix_demo_ventas_clientes",
+            "Table:ventas.rubix_demo_ventas.clientes",
             "--to",
             "eu",
         ],
@@ -282,7 +283,7 @@ fn con_el_export_que_dice_el_arbol_queda_igual() {
     let m = dir.join("packages/eu/package.yaml");
     let t = std::fs::read_to_string(&m).unwrap().replace(
         "spec: { owner: \"team:datos\" }",
-        "spec: { owner: \"team:datos\", exports: [eu.rubix_demo_ventas_clientes] }",
+        "spec: { owner: \"team:datos\", exports: [eu.rubix_demo_ventas.clientes] }",
     );
     std::fs::write(&m, t).unwrap();
 
@@ -295,7 +296,7 @@ fn con_el_export_que_dice_el_arbol_queda_igual() {
 #[test]
 fn las_negativas_no_mueven_nada() {
     let dir = dos_paquetes("mover-negativas");
-    let sitio = dir.join("packages/ventas/tables/Clientes__rubix_demo_ventas_clientes.yaml");
+    let sitio = dir.join("packages/ventas/rubix_demo_ventas/tables/Clientes__clientes.yaml");
     let original = std::fs::read_to_string(&sitio).unwrap();
 
     for (args, porque) in [
@@ -307,7 +308,7 @@ fn las_negativas_no_mueven_nada() {
             vec![
                 "package",
                 "move",
-                "ventas.rubix_demo_ventas_clientes",
+                "Table:ventas.rubix_demo_ventas.clientes",
                 "--to",
                 "no_existe",
             ],
@@ -317,7 +318,7 @@ fn las_negativas_no_mueven_nada() {
             vec![
                 "package",
                 "move",
-                "ventas.rubix_demo_ventas_clientes",
+                "Table:ventas.rubix_demo_ventas.clientes",
                 "--to",
                 "ventas",
             ],
@@ -381,11 +382,9 @@ fn una_componente_entera_sale_a_cero() {
             "--to",
             "eu",
             "--con",
-            "ventas.Clientes",
+            "ventas.rubix_demo_ventas.Clientes",
             "--con",
-            "ventas.clientes",
-            "--con",
-            "ventas.rubix_demo_ventas_clientes",
+            "ventas.rubix_demo_ventas.clientes",
         ],
     );
     assert_eq!(c, Some(0), "{dicho}");
@@ -395,9 +394,9 @@ fn una_componente_entera_sale_a_cero() {
 
     // Y los tres están donde tienen que estar, con su espacio de nombres nuevo.
     for f in [
-        "packages/eu/entities/Clientes.yaml",
-        "packages/eu/views/Clientes__rubix_demo_ventas_clientes.yaml",
-        "packages/eu/tables/Clientes__rubix_demo_ventas_clientes.yaml",
+        "packages/eu/rubix_demo_ventas/entities/Clientes.yaml",
+        "packages/eu/rubix_demo_ventas/views/Clientes__clientes.yaml",
+        "packages/eu/rubix_demo_ventas/tables/Clientes__clientes.yaml",
     ] {
         let t = std::fs::read_to_string(dir.join(f)).unwrap_or_else(|_| panic!("falta {f}"));
         assert!(t.contains("namespace: eu"), "{f}:\n{t}");
@@ -419,7 +418,7 @@ fn un_corte_parcial_dice_lo_que_cuesta_y_lo_que_falta() {
             "--to",
             "eu",
             "--con",
-            "ventas.rubix_demo_ventas_mov_bak",
+            "Table:ventas.rubix_demo_ventas.mov_bak",
         ],
     );
     assert_eq!(c, Some(0), "{dicho}");
@@ -428,7 +427,10 @@ fn un_corte_parcial_dice_lo_que_cuesta_y_lo_que_falta() {
         dicho.contains("no es una componente entera") && dicho.contains("Con 2 más"),
         "tiene que decir qué arrastra:\n{dicho}"
     );
-    assert!(dicho.contains("ventas.Mov_bak"), "{dicho}");
+    assert!(
+        dicho.contains("ventas.rubix_demo_ventas.Mov_bak"),
+        "{dicho}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -492,11 +494,9 @@ fn fundir_deshace_el_corte_y_deja_una_lapida() {
             "--to",
             "eu",
             "--con",
-            "ventas.Clientes",
+            "ventas.rubix_demo_ventas.Clientes",
             "--con",
-            "ventas.clientes",
-            "--con",
-            "ventas.rubix_demo_ventas_clientes",
+            "ventas.rubix_demo_ventas.clientes",
         ],
     );
 
@@ -511,8 +511,8 @@ fn fundir_deshace_el_corte_y_deja_una_lapida() {
     assert!(m.contains("status: retired"), "{m}");
     assert_eq!(m.matches("from: eu.").count(), 3, "{m}");
     assert!(
-        !dir.join("packages/eu/entities").exists()
-            || std::fs::read_dir(dir.join("packages/eu/entities"))
+        !dir.join("packages/eu/rubix_demo_ventas/entities").exists()
+            || std::fs::read_dir(dir.join("packages/eu/rubix_demo_ventas/entities"))
                 .map(|d| d.flatten().count())
                 .unwrap_or(0)
                 == 0,

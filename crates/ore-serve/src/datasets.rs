@@ -42,12 +42,18 @@ impl Servidor {
         })
     }
 
-    /// `GET /datasets/{ns}/{n}`.
-    pub(crate) fn ficha_del_dataset(&self, rama: Option<&str>, ns: &str, n: &str) -> Respuesta {
-        if let Err(m) = token(ns).and(token(n)) {
+    /// `GET /datasets/{ns}[/{schema}]/{n}`.
+    pub(crate) fn ficha_del_dataset(
+        &self,
+        rama: Option<&str>,
+        ns: &str,
+        schema: &str,
+        n: &str,
+    ) -> Respuesta {
+        if let Err(m) = token(ns).and(token(schema)).and(token(n)) {
             return Respuesta::error(422, m);
         }
-        let nombre = format!("{ns}.{n}");
+        let nombre = ore_core::normalize::corto(ns, schema, n);
         self.leyendo_en(rama, move |raiz| {
             self.ore_json(
                 raiz,
@@ -68,10 +74,11 @@ impl Servidor {
         &self,
         sujeto: &Identidad,
         ns: &str,
+        schema: &str,
         n: &str,
         cuerpo: &str,
     ) -> Respuesta {
-        if let Err(m) = token(ns).and(token(n)) {
+        if let Err(m) = token(ns).and(token(schema)).and(token(n)) {
             return Respuesta::error(422, m);
         }
         let c = match ore_core::parse::parse(cuerpo) {
@@ -90,7 +97,7 @@ impl Servidor {
                 "falta `metadata_location`: el `metadata.json` que se escribió en el bucket",
             );
         };
-        let nombre = format!("{ns}.{n}");
+        let nombre = ore_core::normalize::corto(ns, schema, n);
         let mut args: Vec<String> = vec![
             "datasets".into(),
             ".".into(),

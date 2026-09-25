@@ -157,10 +157,10 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
 
     let tabla = leer(
         &dir,
-        "packages/ventas/tables/Clientes__public_clientes.yaml",
+        "packages/ventas/public/tables/Clientes__clientes.yaml",
     );
-    let vista = leer(&dir, "packages/ventas/views/Clientes__public_clientes.yaml");
-    let entidad = leer(&dir, "packages/ventas/entities/Clientes.yaml");
+    let vista = leer(&dir, "packages/ventas/public/views/Clientes__clientes.yaml");
+    let entidad = leer(&dir, "packages/ventas/public/entities/Clientes.yaml");
 
     // La tabla: el nombre físico ENTERO —es opaco y es del origen— y las dos
     // caras copiadas del catálogo. No se completan ni se corrigen: qué se puede
@@ -183,10 +183,7 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
     // pregunta (0033): ni `materialized` ni `freshness`, que ya no son suyas.
     // Lo que se tiene —la copia— es un `Dataset`, y una base foránea no lo
     // emite: aquí no hay `datasets/`.
-    assert!(
-        vista.contains("from: { table: public_clientes }"),
-        "{vista}"
-    );
+    assert!(vista.contains("from: { table: clientes }"), "{vista}");
     assert!(!vista.contains("\n  materialized:"), "{vista}");
     assert!(!vista.contains("\n  freshness:"), "{vista}");
     assert!(
@@ -255,7 +252,7 @@ fn lo_inducido_solo_falla_por_lo_que_falta_decidir() {
     // Y el dueño llega a los DOS documentos que lo llevan. Es una decisión, no
     // dos: contestarla una vez y que la vista se quedara en `cambiame` sería
     // una pregunta escondida.
-    let vista = leer(&dir, "packages/ventas/views/Clientes__public_clientes.yaml");
+    let vista = leer(&dir, "packages/ventas/public/views/Clientes__clientes.yaml");
     assert!(vista.contains(r#"owner: "team:datos""#), "{vista}");
 }
 
@@ -300,9 +297,9 @@ fn lo_que_alguien_omite_no_deja_resto_en_ningun_directorio() {
 
     // La primera pasada la emite: nadie ha dicho todavía que no entre.
     for f in [
-        "packages/ventas/entities/V_activos.yaml",
-        "packages/ventas/tables/V_activos__public_v_activos.yaml",
-        "packages/ventas/views/V_activos__public_v_activos.yaml",
+        "packages/ventas/public/entities/V_activos.yaml",
+        "packages/ventas/public/tables/V_activos__v_activos.yaml",
+        "packages/ventas/public/views/V_activos__v_activos.yaml",
     ] {
         assert!(dir.join(f).exists(), "no emitió {f}");
     }
@@ -310,15 +307,15 @@ fn lo_que_alguien_omite_no_deja_resto_en_ningun_directorio() {
     contestar(&dir, TODO_CONTESTADO);
 
     for f in [
-        "packages/ventas/entities/V_activos.yaml",
-        "packages/ventas/tables/V_activos__public_v_activos.yaml",
-        "packages/ventas/views/V_activos__public_v_activos.yaml",
+        "packages/ventas/public/entities/V_activos.yaml",
+        "packages/ventas/public/tables/V_activos__v_activos.yaml",
+        "packages/ventas/public/views/V_activos__v_activos.yaml",
     ] {
         assert!(!dir.join(f).exists(), "dejó de resto {f}");
     }
     // Y lo que nadie omitió sigue entero.
     assert!(
-        dir.join("packages/ventas/tables/Clientes__public_clientes.yaml")
+        dir.join("packages/ventas/public/tables/Clientes__clientes.yaml")
             .exists()
     );
 }

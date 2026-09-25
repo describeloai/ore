@@ -261,6 +261,30 @@ sin `prefix` es lo que el cliente ve. Con `--base` (ore-serve lo pone cuando la 
 `"base"."schema"."n"`. el-lago 15: una View en `espana` se lista en su schema (y no en la base
 sin prefix), con `default-namespace: [espana]` y su SQL sobre `"espana"."pedidos2"`.
 
+## P5, hecho: `discover` lleva el schema del origen
+
+`foreign_test.public.ai_insights` es `foreign_test.public.ai_insights`, y no
+`foreign_test.default.public_ai_insights` (medido: `medida-discover-con-schema.py`). El schema
+es el segmento anterior a la tabla (`public.x` → `public`; `proyecto.dataset.x` → `dataset`);
+lo del origen va a `<schema>/tables|views|datasets|entities`, en v1alpha13 con
+`metadata.schema`, y el paquete declara cada schema en `<schema>/schema.yaml` (con `owner` sólo
+si es un handle: el `cambiame` del paquete ya lleva la pregunta, y dos `OOS2009` por lo mismo
+sobran). La tabla se llama por su nombre (`clientes`, no `rubix_demo_ventas_clientes`); la
+pregunta de colisión lleva el schema sólo cuando la misma entidad sale en más de uno (las
+respuestas de antes siguen valiendo); una relación a otro schema se escribe en tres partes.
+`review` limpia también `<schema>/<dir>`.
+
+**P5b · `ore package`** (medido al mover una base descubierta): la Table y su View se llaman
+igual, y el grafo por `qname` las fundía en un nodo. Ahora la clave es `Kind:qname`; el
+documento `Schema` no es un nodo; mover algo de un schema copia su declaración al destino, y
+fundir retira el `Schema` que el destino ya declara.
+
+**ore-serve**: los `.yaml` de un kind se leen de la raíz del paquete y de cada schema
+(`yamls_del_kind`); el esquema de una base dice el `schema` de cada tabla y entidad; y las rutas
+hablan tres partes —`/datasets/{b}/{s}/{n}` (y `confirmar`), `/vistas/{b}/{s}/{n}/ejecutar`,
+`/documentos/{kind}/{ns}/{s}/{n}`—, con las de dos partes para `default`. `/funciones` sigue en
+dos partes.
+
 ## Lo que no cambia
 
 El paquete sigue siendo la base (nada que migrar), el lago físico igual, y el proyecto sigue

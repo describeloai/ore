@@ -185,7 +185,6 @@ dice "$CAT" '"mode": "none"' "atribuyo cambios a algo que no los emite"
 # ── 2 · Y las decisiones que salen ──────────────────────────────────────────
 COLA=packages/ventas/discover.pending.json
 for d in \
-  'colision/Clientes' \
   'clave/public.v_clientes_activos' \
   'tipo/public.log_eventos.origen' \
   'vacio/public.log_eventos' \
@@ -204,10 +203,17 @@ done
 dice "$COLA" 'gdpr.personalEmail' "no ofrecio el concepto publicado como candidato"
 
 # Lo que NO se emite es la mitad del contrato. Una tabla sin ninguna columna
-# tipable no tiene entidad, y dos que colisionan no tienen ninguna: emitir una
-# decidiria cual de las dos existe.
-[ ! -e packages/ventas/entities/Log_eventos.yaml ] || falla "emitio una entidad sin nada que escribir"
-[ ! -e packages/ventas/entities/Clientes.yaml ]    || falla "resolvio la colision por su cuenta"
+# tipable no tiene entidad.
+[ ! -e packages/ventas/public/entities/Log_eventos.yaml ] || falla "emitio una entidad sin nada que escribir"
+
+# ✏️ 0038 P5 · `public.clientes` y `ventas.clientes` YA NO CHOCAN. Cada una va a
+#   la carpeta del schema del origen y se llama `ventas.public.Clientes` y
+#   `ventas.ventas.Clientes`: dos nombres, ninguna pregunta. Antes el schema se
+#   aplanaba y las dos querian ser `ventas.Clientes`.
+no_dice "$COLA" '"colision/' "pregunto una colision entre dos schemas"
+dice packages/ventas/public/entities/Clientes.yaml 'schema: public' "public.clientes no esta en su schema"
+dice packages/ventas/ventas/entities/Clientes.yaml 'schema: ventas' "ventas.clientes no esta en su schema"
+dice packages/ventas/public/schema.yaml 'kind: Schema' "el schema del origen no se declaro"
 
 # ── 3 · Contestar, en dos sentadas ──────────────────────────────────────────
 #
@@ -216,20 +222,16 @@ dice "$COLA" 'gdpr.personalEmail' "no ofrecio el concepto publicado como candida
 # silencio y sobre ficheros que ya parecian buenos.
 cat > "$R/a1.yaml" <<'YAML'
 answers:
-  colision/Clientes:
-    public.clientes: Clientes
-    ventas.clientes: ClientesVentas
   dueno/ventas: team:datos
 YAML
 ore review packages/ventas --answers "$R/a1.yaml" > r1.txt || falla "la primera pasada fallo"
-dice packages/ventas/entities/Clientes.yaml 'name: Clientes' "no emitio la colision resuelta"
-dice packages/ventas/entities/ClientesVentas.yaml 'name: ClientesVentas' "solo emitio una de las dos"
+dice packages/ventas/public/entities/Clientes.yaml 'name: Clientes' "perdio public.Clientes"
+dice packages/ventas/ventas/entities/Clientes.yaml 'name: Clientes' "perdio ventas.Clientes"
 
-# Y con la colision resuelta aparecen las preguntas que estaban DETRAS de ella.
-# Mientras no se emitia ninguna de las dos tablas no habia documento donde poner
-# el tipo de una columna suya, ni entidad a la que pudiera apuntar una relacion.
-dice "$COLA" 'tipo/public.clientes.domicilio' "no pregunto por el tipo que tapaba la colision"
-dice "$COLA" 'relacion/public.pedidos.id_cliente' "no propuso la relacion tras resolver la colision"
+# Y sin colision que las tape, las preguntas de detras estan desde el principio:
+# el tipo de una columna de `public.clientes` y la relacion que apunta a ella.
+dice "$COLA" 'tipo/public.clientes.domicilio' "no pregunto por el tipo de public.clientes"
+dice "$COLA" 'relacion/public.pedidos.id_cliente' "no propuso la relacion hacia public.clientes"
 
 cat > "$R/a2.yaml" <<'YAML'
 answers:
@@ -249,7 +251,7 @@ YAML
 ore review packages/ventas --answers "$R/a2.yaml" > r2.txt || falla "la segunda pasada fallo"
 
 # Lo que decidio la PRIMERA sentada sigue en pie.
-dice packages/ventas/entities/ClientesVentas.yaml 'name: ClientesVentas' "la segunda pasada deshizo la primera"
+dice packages/ventas/ventas/entities/Clientes.yaml 'name: Clientes' "la segunda pasada perdio ventas.Clientes"
 dice packages/ventas/package.yaml 'team:datos' "la segunda pasada perdio el dueno"
 
 # UNIR DEJO DE PODER ESCRIBIRSE. Era una entidad servida desde N tablas, que
@@ -257,13 +259,13 @@ dice packages/ventas/package.yaml 'team:datos' "la segunda pasada perdio el duen
 # —el vocabulario no tiene junta, y `v1alpha8/00-scope` §6 la deja fuera a
 # proposito—. Asi que la familia se sigue VIENDO, que es lo que evita modelar la
 # misma cosa dos veces, y las respuestas son `separadas` y `omitir`.
-dice packages/ventas/entities/Pedidos.yaml 'name: Pedidos' "perdio la hermana viva"
-dice packages/ventas/entities/Pedidos_2024.yaml 'name: Pedidos_2024' "perdio la hermana fechada"
+dice packages/ventas/public/entities/Pedidos.yaml 'name: Pedidos' "perdio la hermana viva"
+dice packages/ventas/public/entities/Pedidos_2024.yaml 'name: Pedidos_2024' "perdio la hermana fechada"
 for f in \
-  packages/ventas/tables/Pedidos__public_pedidos.yaml \
-  packages/ventas/views/Pedidos__public_pedidos.yaml \
-  packages/ventas/tables/Pedidos_2024__public_pedidos_2024.yaml \
-  packages/ventas/views/Pedidos_2024__public_pedidos_2024.yaml
+  packages/ventas/public/tables/Pedidos__pedidos.yaml \
+  packages/ventas/public/views/Pedidos__pedidos.yaml \
+  packages/ventas/public/tables/Pedidos_2024__pedidos_2024.yaml \
+  packages/ventas/public/views/Pedidos_2024__pedidos_2024.yaml
 do
   [ -e "$f" ] || falla "falta $f"
 done
@@ -271,7 +273,7 @@ done
 # Apuntar a un concepto publicado NO escribe una copia: acunar lo que ya existe
 # es la inflacion por la otra puerta. Se apunta, y se hereda su clasificacion.
 [ ! -e packages/ventas/concepts/personalEmail.yaml ] || falla "acuno una copia de un concepto publicado"
-dice packages/ventas/entities/Clientes.yaml 'is: gdpr.personalEmail' "no hablo el concepto publicado"
+dice packages/ventas/public/entities/Clientes.yaml 'is: gdpr.personalEmail' "no hablo el concepto publicado"
 
 # Y acunar uno nuevo SI lo escribe —`is` exige que exista, y una referencia
 # colgando seria peor que no preguntar— con la clasificacion que alguien dijo.
@@ -285,7 +287,7 @@ dice packages/ventas/concepts/telefonoPersonal.yaml 'labels: { gdpr.sensitivity:
 # Se midio: con `tables` y `views` fuera de los directorios gobernados, omitir
 # retiraba la entidad y dejaba la tabla y la vista. El paquete validaba, porque
 # una vista sin entidad es legal, asi que el resto no daba ningun sintoma.
-for f in   packages/ventas/entities/V_clientes_activos.yaml   packages/ventas/tables/V_clientes_activos__public_v_clientes_activos.yaml   packages/ventas/views/V_clientes_activos__public_v_clientes_activos.yaml
+for f in   packages/ventas/public/entities/V_clientes_activos.yaml   packages/ventas/public/tables/V_clientes_activos__v_clientes_activos.yaml   packages/ventas/public/views/V_clientes_activos__v_clientes_activos.yaml
 do
   [ ! -e "$f" ] || falla "dejo de resto $f, que alguien omitio"
 done
@@ -294,14 +296,14 @@ done
 #
 # Y antes, el recuento que define este peldano: el inductor ESPEJA la mitad
 # fisica —`kind: Table` con sus dos caras— y **no emite ni un binding**.
-grep -rq 'kind: Table' packages/ventas/tables/ || falla "no emitio ninguna tabla"
-grep -rq 'kind: View'  packages/ventas/views/  || falla "no emitio ninguna vista"
-dice packages/ventas/entities/Clientes.yaml 'backedBy:' "la entidad no nombra a su vista"
+grep -rq 'kind: Table' packages/ventas/public/tables/ || falla "no emitio ninguna tabla"
+grep -rq 'kind: View'  packages/ventas/public/views/  || falla "no emitio ninguna vista"
+dice packages/ventas/public/entities/Clientes.yaml 'backedBy:' "la entidad no nombra a su vista"
 if grep -rq 'kind: Binding' packages/ventas/; then
   falla "emitio un binding: $(grep -rl 'kind: Binding' packages/ventas/)"
 fi
 # Y lo que el driver sondeo llega hasta el documento, sin que nadie lo escriba.
-grep -rq 'changes:' packages/ventas/tables/ || falla "la cara D no llego a la tabla"
+grep -rq 'changes:' packages/ventas/public/tables/ || falla "la cara D no llego a la tabla"
 
 dice "$COLA" '"pending": \[\]' "quedaron decisiones sin cerrar: $(cat r2.txt)"
 ore validate . > validado.txt 2>&1 || falla "lo revisado no valida: $(cat validado.txt)"

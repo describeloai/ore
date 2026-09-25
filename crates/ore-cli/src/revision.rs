@@ -366,7 +366,28 @@ fn nombre_del_paquete(raiz: &Path) -> String {
 fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String>, Fallo> {
     let mut retirados = Vec::new();
     let nuevos: BTreeSet<&String> = ind.ficheros.keys().collect();
-    for dir in GOBERNADOS {
+    // 0038 P5: lo inducido vive también en la carpeta de cada schema del origen
+    // (`public/tables/…`), declarada con su `schema.yaml`: esas carpetas las
+    // gobierna igual.
+    let schemas: Vec<String> = std::fs::read_dir(raiz)
+        .map(|es| {
+            es.flatten()
+                .filter(|e| e.path().join("schema.yaml").is_file())
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let carpetas: Vec<String> = GOBERNADOS
+        .iter()
+        .map(|d| d.to_string())
+        .chain(
+            schemas
+                .iter()
+                .flat_map(|s| GOBERNADOS.iter().map(move |d| format!("{s}/{d}"))),
+        )
+        .collect();
+    for dir in &carpetas {
+        let dir = dir.as_str();
         let Ok(entradas) = std::fs::read_dir(raiz.join(dir)) else {
             continue;
         };
@@ -384,7 +405,7 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
             // que `write()` deja (escritos, sin `from`, con el nombre que el
             // código eligió). Sólo se retiran los primeros: lo escrito no es
             // del inductor y no se toca.
-            if dir == "datasets" {
+            if dir.rsplit('/').next() == Some("datasets") {
                 let del_inductor = base.contains("__")
                     && std::fs::read_to_string(&ruta)
                         .ok()
@@ -406,6 +427,27 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
                 })?;
                 retirados.push(rel);
             }
+        }
+    }
+
+    // Y el schema que se quedó sin nada de lo inducido: su `schema.yaml` también.
+    for s in &schemas {
+        let rel = format!("{s}/schema.yaml");
+        let vacio = GOBERNADOS.iter().all(|d| {
+            std::fs::read_dir(raiz.join(s).join(d))
+                .map(|mut es| es.next().is_none())
+                .unwrap_or(true)
+        });
+        if !nuevos.contains(&rel) && vacio {
+            let ruta = raiz.join(&rel);
+            std::fs::remove_file(&ruta).map_err(|e| {
+                fallo(
+                    73,
+                    format!("no se pudo retirar `{}`: {e}", ruta.display()),
+                    &[],
+                )
+            })?;
+            retirados.push(rel);
         }
     }
 
