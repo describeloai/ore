@@ -1,6 +1,6 @@
 # 0040 · La vista es SQL (OOS v1alpha14 en ORE)
 
-**Estado:** decidido, sin empezar (paso 0 pendiente).
+**Estado:** en curso · paso 0 hecho.
 **Spec:** `C:\oos` 7d92e6e, `spec/v1alpha14/`.
 
 ## Contexto
@@ -40,6 +40,20 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
 0. **Medir.** Prototipo de `vista_sql` sobre todas las Views propias y de conformance
    traducidas: el linaje derivado del SQL ¿es idéntico al del motor estructurado? Es la
    puerta para quitar la forma. Y los usuarios de `raiz` que se rompen con varias fuentes.
+   **HECHO** (`medida-el-linaje-de-la-vista-sql.py`, prototipo
+   `crates/ore-core/examples/vista_sql.rs`):
+   - L1: de 214 Views del repositorio se traducen 213 (144 de una Table, 48 de una View,
+     9 de un Dataset, **12 de la forma v1alpha7 `from: { datasource, object }`**, que no
+     tiene nombre del árbol: el paso 3 le da uno sintético); la que no, es un caso
+     inválido a propósito (`OOS2034`). El prototipo analiza las 213.
+   - L2: **115 de 115** Views válidas dan exactamente el linaje del motor (salida, raíz,
+     DIRECT/INDIRECT). Las otras 99 son casos inválidos que `ore view` no sigue; las
+     cubre la conformance en el paso 3 (18 de ellas son de flujo: `OOS4001/4002/4011`).
+   - Medir corrigió la spec: el motor no deja la arista del `GROUP BY` hacia las propias
+     claves, sólo hacia los agregados; y el `HAVING` mira las claves. §5 de
+     `01-la-vista-es-sql` lo dice ahora así (una clave no proyectada, hacia todas).
+   - L3: 61 usos de la raíz única fuera de `vistas.rs`, en 13 ficheros (`vista.rs` 26,
+     `materializar.rs` 7, `flow.rs` 6, `registro.rs` 5, `assets.rs` 5, …).
 1. **La spec entra en ORE.** Casos de conformance v1alpha14 en `C:\oos` (válida;
    `OOS1005`; `OOS2038` por `read_parquet`, dos sentencias, `INSERT`; `OOS2039`;
    `OOS4016` con etiqueta y el mismo rango sin ella; `HAVING count(*) >= 8`; `OOS4001`
