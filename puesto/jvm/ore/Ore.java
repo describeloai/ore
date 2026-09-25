@@ -209,9 +209,50 @@ public final class Ore {
     public static String CODIGO = null;
 
     /** Un transform (0031 §9, W3.7 ③): corre {@code cuerpo} con {@code inputs} como lo único que puede leer ({@code over}, {@code sql}) y {@code output} como lo único que puede escribir ({@code write}); lo demás lanza. Lo escrito lleva {@code procedencia: {inputs, transform, …}}. */
-    public static <T> T transform(String nombre, List<String> inputs, String output, java.util.concurrent.Callable<T> cuerpo) throws Exception {
-        if (inputs == null || inputs.stream().anyMatch(i -> i == null || i.chars().filter(c -> c == '.').count() != 1)) throw new IllegalArgumentException("transform(): `inputs` es una lista de `<paquete>.<vista>`");
-        if (output == null || output.chars().filter(c -> c == '.').count() != 1) throw new IllegalArgumentException("transform(): `output` es `<paquete>.<tabla>`");
+    static final String DEFAULT = "default";
+
+    /** {@code base.nombre} o {@code base.schema.nombre} (0038) → la forma corta, la clave del
+     *  árbol: {@code base.nombre} en {@code default}, {@code base.schema.nombre} en otro schema. */
+    static String corto(String nombre, String que) {
+        String[] p = nombre == null ? new String[0] : nombre.split("\\.", -1);
+        if ((p.length != 2 && p.length != 3) || java.util.Arrays.stream(p).anyMatch(String::isEmpty))
+            throw new IllegalArgumentException(que + " es `<base>.<schema>.<nombre>` (o `<base>.<nombre>`, en `default`), no " + nombre);
+        return p.length == 3 && p[1].equals(DEFAULT) ? p[0] + "." + p[2] : String.join(".", p);
+    }
+
+    /** La forma corta → {base, schema, nombre}. */
+    static String[] partes(String corto) {
+        String[] p = corto.split("\\.");
+        return p.length == 2 ? new String[] {p[0], DEFAULT, p[1]} : p;
+    }
+
+    /** La ruta de {@code /v1} de una tabla, como Unity (0038 P4): la base es el {@code prefix}. */
+    static String v1Tabla(String corto) {
+        String[] p = partes(corto);
+        return "/v1/" + p[0] + "/namespaces/" + p[1] + "/tables/" + p[2];
+    }
+
+    /** Un identificador de DuckDB entre comillas dobles (no confundir con {@code q}, que escapa un literal). */
+    private static String ident(String x) { return "\"" + x.replace("\"", "\"\"") + "\""; }
+
+    /** El nombre del árbol como vista de DuckDB con sus tres niveles (0038): un catálogo por
+     *  base y un schema por schema; lo de {@code default}, con su alias en {@code main} (donde
+     *  DuckDB busca un nombre de DOS partes). */
+    private static void registra(Connection con, String corto, String fuente) throws SQLException {
+        String[] p = partes(corto);
+        try (Statement s = con.createStatement()) {
+            s.execute("attach if not exists ':memory:' as " + ident(p[0]));
+            s.execute("create schema if not exists " + ident(p[0]) + "." + ident(p[1]));
+            s.execute("create or replace view " + ident(p[0]) + "." + ident(p[1]) + "." + ident(p[2]) + " as select * from " + fuente);
+            if (p[1].equals(DEFAULT))
+                s.execute("create or replace view " + ident(p[0]) + ".main." + ident(p[2]) + " as select * from " + ident(p[0]) + "." + ident(p[1]) + "." + ident(p[2]));
+        }
+    }
+
+    public static <T> T transform(String nombre, List<String> inputsDados, String outputDado, java.util.concurrent.Callable<T> cuerpo) throws Exception {
+        if (inputsDados == null) throw new IllegalArgumentException("transform(): `inputs` es una lista de `<base>.<schema>.<nombre>`");
+        List<String> inputs = inputsDados.stream().map(i -> corto(i, "transform(): cada input")).toList();
+        String output = corto(outputDado, "transform(): `output`");
         if (inputs.contains(output)) throw new IllegalArgumentException("transform(): `" + output + "` no puede ser input y output a la vez");
         if (transformActivo != null) throw new IllegalStateException("transform(): `" + transformActivo.nombre() + "` ya está corriendo; un transform no llama a otro");
         transformActivo = new Transform(nombre == null || nombre.isEmpty() ? "transform" : nombre, List.copyOf(inputs), output);
@@ -219,7 +260,8 @@ public final class Ore {
         try { return cuerpo.call(); } finally { transformActivo = null; decirTransform(null); }
     }
 
-    private static void lee(String vista) {
+    private static void lee(String vistaDada) {
+        String vista = corto(vistaDada, "un nombre del árbol");
         if (transformActivo != null && !transformActivo.inputs().contains(vista)) throw new IllegalStateException("`" + vista + "` no está en los inputs de `" + transformActivo.nombre() + "` (" + String.join(", ", transformActivo.inputs()) + "): un transform sólo lee lo que declara");
         if (!leidas.contains(vista)) leidas.add(vista);
     }
@@ -246,9 +288,8 @@ public final class Ore {
         return p;
     }
 
-    private static Map<String, Object> resolver(String vista) throws IOException, InterruptedException {
-        if (vista == null || vista.chars().filter(c -> c == '.').count() != 1)
-            throw new IllegalArgumentException("se quiere `<paquete>.<vista>`, no " + vista);
+    private static Map<String, Object> resolver(String vistaDada) throws IOException, InterruptedException {
+        String vista = corto(vistaDada, "un nombre del árbol");
         lee(vista);
         Respuesta r = puesto.pedir("GET", "/puestos/" + puesto.id + "/datos/" + vista, null, Duration.ofSeconds(30));
         return oElError(r, vista);
@@ -301,18 +342,20 @@ public final class Ore {
         Object consulta = r.get("consulta");
         if (consulta != null && !String.valueOf(consulta).isEmpty()) {
             Connection con = duckdb();
-            try (Statement s = con.createStatement()) { s.execute("create schema if not exists \"" + ESQUEMA_DE_DATASETS + "\""); }
+            // En `memory`, y nombradas con él: dentro de una vista de un catálogo adjunto (una
+            // base, 0038) un schema sin cualificar se busca en ESE catálogo.
+            try (Statement s = con.createStatement()) { s.execute("create schema if not exists memory.\"" + ESQUEMA_DE_DATASETS + "\""); }
             Object ds = r.get("datasets");
             if (ds instanceof Map<?, ?> mapaDs) {
                 for (Map.Entry<?, ?> e : mapaDs.entrySet()) {
                     String d = String.valueOf(e.getKey());
                     String fuente = fuenteDeRespuesta(d, (Map<String, Object>) e.getValue());
                     try (Statement s = con.createStatement()) {
-                        s.execute("create or replace view \"" + ESQUEMA_DE_DATASETS + "\".\"" + d.replace("\"", "\"\"") + "\" as select * from " + fuente);
+                        s.execute("create or replace view memory.\"" + ESQUEMA_DE_DATASETS + "\".\"" + d.replace("\"", "\"\"") + "\" as select * from " + fuente);
                     }
                 }
             }
-            return "(" + consulta + ")";
+            return "(" + String.valueOf(consulta).replace("\"" + ESQUEMA_DE_DATASETS + "\".", "memory.\"" + ESQUEMA_DE_DATASETS + "\".") + ")";
         }
         Object m = r.get("metadata_location");
         if (m != null && !String.valueOf(m).isEmpty()) {
@@ -322,8 +365,7 @@ public final class Ore {
             if (String.valueOf(m).startsWith("s3://") && s3 == null) {
                 if (credencial.get("s3.access-key-id") != null) s3 = credencial;
                 else {
-                    String[] p = vista.split("\\.");
-                    Respuesta l = puesto.pedir("GET", "/v1/namespaces/" + p[0] + "/tables/" + p[1], null, Duration.ofSeconds(30), DELEGAR);
+                    Respuesta l = puesto.pedir("GET", v1Tabla(corto(vista, "un nombre del árbol")), null, Duration.ofSeconds(30), DELEGAR);
                     Object cfg = l.cuerpo().get("config");
                     if (l.codigo() == 200 && cfg instanceof Map<?, ?> c && c.get("s3.access-key-id") != null) s3 = mapa(cfg);
                 }
@@ -582,12 +624,8 @@ public final class Ore {
         for (Map.Entry<?, ?> e : new TreeMap<>(fuentes).entrySet()) {
             String v = String.valueOf(e.getKey());
             lee(v);
-            String[] p = v.split("\\.", 2);
             String fuente = fuenteDeRespuesta(v, (Map<String, Object>) e.getValue());
-            try (Statement s = con.createStatement()) {
-                s.execute("create schema if not exists \"" + p[0].replace("\"", "\"\"") + "\"");
-                s.execute("create or replace view \"" + p[0].replace("\"", "\"\"") + "\".\"" + p[1].replace("\"", "\"\"") + "\" as select * from " + fuente);
-            }
+            registra(con, v, fuente);
         }
     }
 
@@ -864,24 +902,24 @@ public final class Ore {
 
     /** Escribe {@code datos} como el dataset {@code <paquete>.<tabla>} del lago; {@code modo} es {@code sobrescribir}, {@code anexar} o {@code upsert} (con {@code clave}: las columnas que identifican una fila; copy-on-write, y la clave queda declarada en la tabla). */
     @SuppressWarnings("unchecked")
-    public static Map<String, Object> write(String nombre, Object datos, String modo, List<String> clave) throws Exception {
-        if (nombre == null || nombre.chars().filter(c -> c == '.').count() != 1) throw new IllegalArgumentException("write() quiere `<paquete>.<tabla>`, no " + nombre);
+    public static Map<String, Object> write(String nombreDado, Object datos, String modo, List<String> clave) throws Exception {
+        final String nombre = corto(nombreDado, "write(): el nombre");
         if (!modo.equals("sobrescribir") && !modo.equals("anexar") && !modo.equals("upsert")) throw new IllegalArgumentException("modo " + modo + ": vale `sobrescribir`, `anexar` o `upsert`");
         if (clave != null && !modo.equals("upsert")) throw new IllegalArgumentException("`clave` es de modo `upsert`");
-        String[] p = nombre.split("\\.");
-        String ns = p[0], t = p[1];
+        String[] p = partes(nombre);
+        String bd = p[0], ns = p[1], t = p[2]; // el namespace de /v1 es el schema (0038 P4)
         List<Map<String, Object>> campos = new ArrayList<>();
         byte[] ipc = ipcDe(datos, campos);
         Map<String, Object> esquema = new LinkedHashMap<>();
         esquema.put("type", "struct"); esquema.put("schema-id", 0); esquema.put("fields", campos);
-        String dataset = "datasets/" + ns + "_" + t;
+        String dataset = "catalogo/" + bd + "/" + ns + "/" + t; // una etiqueta: la ubicación la da el catálogo
         if (transformActivo != null && !nombre.equals(transformActivo.output())) throw new IllegalStateException("`" + nombre + "` no es el output de `" + transformActivo.nombre() + "` (" + transformActivo.output() + "): un transform sólo escribe lo que declara");
         String semilla = nombre + "|" + modo + (clave != null && !clave.isEmpty() ? "|" + String.join(",", clave) : "");
         String claveOperacion = "";
         for (int intento = 0; intento < 4; intento++) {
             // 1 · la tabla, con la credencial prestada; o esbozada si no existe
             String base = null; Object esbozo = null; Map<String, String> config; String ubicacion;
-            Respuesta r = puesto.pedir("GET", "/v1/namespaces/" + ns + "/tables/" + t, null, Duration.ofSeconds(30), DELEGAR);
+            Respuesta r = puesto.pedir("GET", v1Tabla(nombre), null, Duration.ofSeconds(30), DELEGAR);
             if (r.codigo() == 200) {
                 base = String.valueOf(r.cuerpo().get("metadata-location"));
                 config = mapa(r.cuerpo().get("config"));
@@ -893,7 +931,7 @@ public final class Ore {
             } else if (r.codigo() == 404) {
                 Map<String, Object> cuerpo = new LinkedHashMap<>();
                 cuerpo.put("name", t); cuerpo.put("stage-create", true); cuerpo.put("schema", esquema); cuerpo.put("properties", Map.of());
-                Respuesta r2 = puesto.pedir("POST", "/v1/namespaces/" + ns + "/tables", cuerpo, Duration.ofSeconds(30), DELEGAR);
+                Respuesta r2 = puesto.pedir("POST", "/v1/" + bd + "/namespaces/" + ns + "/tables", cuerpo, Duration.ofSeconds(30), DELEGAR);
                 if (r2.codigo() != 200) throw new IllegalStateException("write(" + nombre + "): " + mensajeDe(r2));
                 esbozo = r2.cuerpo().get("metadata");
                 config = mapa(r2.cuerpo().get("config"));
@@ -918,7 +956,7 @@ public final class Ore {
             Map<String, Object> commit = new LinkedHashMap<>();
             commit.put("identifier", Map.of("namespace", List.of(ns), "name", t));
             commit.put("requirements", escrito.get("requirements")); commit.put("updates", escrito.get("updates"));
-            Respuesta c = puesto.pedir("POST", "/v1/namespaces/" + ns + "/tables/" + t, commit, Duration.ofSeconds(120));
+            Respuesta c = puesto.pedir("POST", v1Tabla(nombre), commit, Duration.ofSeconds(120));
             if (c.codigo() == 200) {
                 Map<String, Object> md = (Map<String, Object>) c.cuerpo().get("metadata");
                 Map<String, Object> out = new LinkedHashMap<>();
@@ -931,7 +969,7 @@ public final class Ore {
             if (c.codigo() == 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
             if (c.codigo() >= 500) {
                 // el commit pudo entrar: se MIRA antes de darlo por perdido
-                Respuesta v = puesto.pedir("GET", "/v1/namespaces/" + ns + "/tables/" + t, null, Duration.ofSeconds(30));
+                Respuesta v = puesto.pedir("GET", v1Tabla(nombre), null, Duration.ofSeconds(30));
                 if (v.codigo() == 200) {
                     Map<String, Object> md = (Map<String, Object>) v.cuerpo().get("metadata");
                     Object actual = md.get("current-snapshot-id");

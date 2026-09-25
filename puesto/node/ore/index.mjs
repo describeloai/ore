@@ -167,9 +167,45 @@ let transformActivo = null;
  * escribir (`write`); lo demás lanza. Lo escrito lleva `procedencia: {inputs,
  * transform, …}`.
  */
+const DEFAULT = "default";
+
+/** `base.nombre` o `base.schema.nombre` (0038) → la forma corta, la clave del
+ *  árbol: `base.nombre` en `default`, `base.schema.nombre` en otro schema. */
+function corto(nombre, que = "un nombre del árbol") {
+  const p = typeof nombre === "string" ? nombre.split(".") : [];
+  if (![2, 3].includes(p.length) || !p.every((x) => x)) throw new Error(`${que} es \`<base>.<schema>.<nombre>\` (o \`<base>.<nombre>\`, en \`default\`), no ${JSON.stringify(nombre)}`);
+  return p.length === 3 && p[1] === DEFAULT ? `${p[0]}.${p[2]}` : p.join(".");
+}
+
+/** La forma corta → [base, schema, nombre]. */
+function partes(c) {
+  const p = c.split(".");
+  return p.length === 2 ? [p[0], DEFAULT, p[1]] : p;
+}
+
+/** La ruta de `/v1` de una tabla, como Unity (0038 P4): la base es el `prefix`. */
+function v1Tabla(c) {
+  const [b, s, n] = partes(c);
+  return `/v1/${b}/namespaces/${s}/tables/${n}`;
+}
+
+const q = (x) => `"${x.replaceAll('"', '""')}"`;
+
+/** El nombre del árbol como vista de DuckDB con sus tres niveles (0038): un
+ *  catálogo por base y un schema por schema; lo de `default`, con su alias en
+ *  `main` (donde DuckDB busca un nombre de DOS partes). */
+async function registra(con, c, fuente) {
+  const [b, s, n] = partes(c);
+  await con.run(`attach if not exists ':memory:' as ${q(b)}`);
+  await con.run(`create schema if not exists ${q(b)}.${q(s)}`);
+  await con.run(`create or replace view ${q(b)}.${q(s)}.${q(n)} as select * from ${fuente}`);
+  if (s === DEFAULT) await con.run(`create or replace view ${q(b)}.main.${q(n)} as select * from ${q(b)}.${q(s)}.${q(n)}`);
+}
+
 export function transform({ inputs, output }, fn) {
-  if (!Array.isArray(inputs) || !inputs.every((i) => typeof i === "string" && i.split(".").length === 2)) throw new Error("transform(): `inputs` es una lista de `<paquete>.<vista>`");
-  if (typeof output !== "string" || output.split(".").length !== 2) throw new Error("transform(): `output` es `<paquete>.<tabla>`");
+  if (!Array.isArray(inputs)) throw new Error("transform(): `inputs` es una lista de `<base>.<schema>.<nombre>`");
+  inputs = inputs.map((i) => corto(i, "transform(): cada input"));
+  output = corto(output, "transform(): `output`");
   if (inputs.includes(output)) throw new Error(`transform(): \`${output}\` no puede ser input y output a la vez`);
   if (typeof fn !== "function") throw new Error("transform(): quiere una función");
   const nombre = fn.name || "transform";
@@ -184,6 +220,7 @@ export function transform({ inputs, output }, fn) {
 }
 
 function lee(vista) {
+  vista = corto(vista);
   if (transformActivo && !transformActivo.inputs.includes(vista)) throw new Error(`\`${vista}\` no está en los inputs de \`${transformActivo.nombre}\` (${transformActivo.inputs.join(", ")}): un transform sólo lee lo que declara`);
   if (!leidas.includes(vista)) leidas.push(vista);
 }
@@ -209,7 +246,7 @@ function procedencia(nombre) {
 }
 
 async function resolver(vista) {
-  if (typeof vista !== "string" || vista.split(".").length !== 2) throw new Error(`se quiere \`<paquete>.<vista>\`, no ${JSON.stringify(vista)}`);
+  vista = corto(vista);
   lee(vista);
   const [codigo, r] = await puesto.pedir("GET", `/puestos/${puesto.id}/datos/${vista}`);
   return oElError(codigo, r, vista);
@@ -267,20 +304,21 @@ const ESQUEMA_DE_DATASETS = "__ore_dataset";
 async function fuenteDeRespuesta(vista, r) {
   if (r.consulta) {
     const con = await duckdb();
-    await con.run(`create schema if not exists "${ESQUEMA_DE_DATASETS}"`);
+    // En `memory`, y nombradas con él: dentro de una vista de un catálogo
+    // adjunto (una base, 0038) un schema sin cualificar se busca en ESE catálogo.
+    await con.run(`create schema if not exists memory."${ESQUEMA_DE_DATASETS}"`);
     for (const [d, rd] of Object.entries(r.datasets ?? {})) {
       const [fuente] = await fuenteDeRespuesta(d, rd);
-      await con.run(`create or replace view "${ESQUEMA_DE_DATASETS}"."${d.replaceAll('"', '""')}" as select * from ${fuente}`);
+      await con.run(`create or replace view memory."${ESQUEMA_DE_DATASETS}"."${d.replaceAll('"', '""')}" as select * from ${fuente}`);
     }
-    return [`(${r.consulta})`, r];
+    return [`(${r.consulta.replaceAll(`"${ESQUEMA_DE_DATASETS}".`, `memory."${ESQUEMA_DE_DATASETS}".`)})`, r];
   }
   if (r.metadata_location) {
     if (r.metadata_location.startsWith("s3://") && !s3) {
       // La credencial de lectura que `datos` presta (W3.7 gobierno ②b).
       if (r.credencial?.["s3.access-key-id"]) s3 = r.credencial;
       else {
-        const [ns, t] = vista.split(".");
-        const [c, l] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+        const [c, l] = await puesto.pedir("GET", v1Tabla(corto(vista)), undefined, 30_000, DELEGAR);
         if (c === 200 && l?.config?.["s3.access-key-id"]) s3 = l.config;
       }
     }
@@ -442,10 +480,8 @@ export async function sql(texto, o) {
   if (codigo !== 200) oElError(codigo, resp, resp?.nombre ?? "?");
   for (const [v, rd] of Object.entries(resp?.fuentes ?? {}).sort(([a], [b]) => (a < b ? -1 : 1))) {
     lee(v);
-    const [esquema, nombre] = v.split(".");
     const [fuente] = await fuenteDeRespuesta(v, rd);
-    await con.run(`create schema if not exists "${esquema.replaceAll('"', '""')}"`);
-    await con.run(`create or replace view "${esquema.replaceAll('"', '""')}"."${nombre.replaceAll('"', '""')}" as select * from ${fuente}`);
+    await registra(con, v, fuente);
   }
   const { r, truncada } = await leerHasta(con, texto, limite);
   if (estricto && truncada) throw new Error(`sql(): el resultado pasa de ${limite} filas; sube limite, agrega más o quita estricto`);
@@ -591,26 +627,26 @@ function mensajeDe(r) {
  *  Devuelve `{ tabla, filas, snapshot, metadata_location, operacion, repetida }`. */
 export async function write(nombre, datos, o) {
   const { modo = "sobrescribir", clave } = o ?? {};
-  if (typeof nombre !== "string" || nombre.split(".").length !== 2) throw new Error(`write() quiere \`<paquete>.<tabla>\`, no ${JSON.stringify(nombre)}`);
+  nombre = corto(nombre, "write(): el nombre");
   if (modo !== "sobrescribir" && modo !== "anexar" && modo !== "upsert") throw new Error(`modo: ${JSON.stringify(modo)}: vale "sobrescribir", "anexar" o "upsert"`);
   if (clave !== undefined && (!Array.isArray(clave) || !clave.every((c) => typeof c === "string"))) throw new Error(`clave: ${JSON.stringify(clave)}: una lista de nombres de columna`);
   if (clave !== undefined && modo !== "upsert") throw new Error('`clave` es de modo: "upsert"');
-  const [ns, t] = nombre.split(".");
+  const [bd, ns, t] = partes(nombre); // el namespace de /v1 es el schema (0038 P4)
   const { nombres, tipos, columnas } = columnasDe(datos);
   if (nombres.length === 0 || (columnas[0]?.length ?? 0) === 0) throw new Error("write(): la tabla no tiene filas");
   const esquema = { type: "struct", "schema-id": 0, fields: nombres.map((n, i) => ({ id: i + 1, name: n, type: tipoIceberg(n, tipos[n]), required: false })) };
   const parquet = await parquetDe_(nombres, tipos, columnas);
-  const dataset = `datasets/${ns}_${t}`;
+  const dataset = `catalogo/${bd}/${ns}/${t}`; // una etiqueta: la ubicación la da el catálogo
   if (transformActivo && nombre !== transformActivo.output) throw new Error(`\`${nombre}\` no es el output de \`${transformActivo.nombre}\` (${transformActivo.output}): un transform sólo escribe lo que declara`);
   const semilla = `${nombre}|${modo}` + (clave?.length ? `|${clave.join(",")}` : "");
   const cargar = async () => {
-    const [c, r] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`, undefined, 30_000, DELEGAR);
+    const [c, r] = await puesto.pedir("GET", v1Tabla(nombre), undefined, 30_000, DELEGAR);
     // Prestado sólo para leer (lo de otra persona, un mantenido): el porqué,
     // antes de escribir un fichero con una credencial que no escribe.
     if (c === 200 && r.config?.["ore.solo-lectura"]) throw new Error(`write(${nombre}): ${r.config["ore.solo-lectura"]}`);
     if (c === 200) return { base: r["metadata-location"], esbozo: null, config: r.config ?? {}, ubicacion: r.metadata.location };
     if (c === 404) {
-      const [c2, r2] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables`, { name: t, "stage-create": true, schema: esquema, properties: {} }, 30_000, DELEGAR);
+      const [c2, r2] = await puesto.pedir("POST", `/v1/${bd}/namespaces/${ns}/tables`, { name: t, "stage-create": true, schema: esquema, properties: {} }, 30_000, DELEGAR);
       if (c2 !== 200) throw new Error(`write(${nombre}): ${mensajeDe(r2)}`);
       return { base: null, esbozo: r2.metadata, config: r2.config ?? {}, ubicacion: r2.metadata.location };
     }
@@ -629,7 +665,7 @@ export async function write(nombre, datos, o) {
     if (p.status !== 0) throw new Error(`write(): ${(p.stderr?.toString("utf8") ?? "").trim().replace(/^error: /, "") || "el escritor falló"}`);
     escrito = JSON.parse(p.stdout.toString("utf8"));
     claveOperacion = escrito.operacion || claveOperacion;
-    const [c, r] = await puesto.pedir("POST", `/v1/namespaces/${ns}/tables/${t}`, { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, 120_000);
+    const [c, r] = await puesto.pedir("POST", v1Tabla(nombre), { identifier: { namespace: [ns], name: t }, requirements: escrito.requirements, updates: escrito.updates }, 120_000);
     if (c === 200) {
       const snap = r?.metadata?.["current-snapshot-id"];
       // repetida: el catálogo contestó con lo que ya había (el mismo puntero)
@@ -639,7 +675,7 @@ export async function write(nombre, datos, o) {
     if (c === 409) continue; // alguien escribió mientras tanto: otra vez sobre lo que hay
     if (c >= 500) {
       // el commit pudo entrar: se MIRA antes de darlo por perdido
-      const [c2, r2] = await puesto.pedir("GET", `/v1/namespaces/${ns}/tables/${t}`);
+      const [c2, r2] = await puesto.pedir("GET", v1Tabla(nombre));
       if (c2 === 200) {
         const md = r2.metadata;
         const vigente = (md.snapshots ?? []).find((x) => x["snapshot-id"] === md["current-snapshot-id"]);

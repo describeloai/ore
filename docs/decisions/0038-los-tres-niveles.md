@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0–P2, P3a, P3b y P4 hechos; P3c–P3e y P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido (P0–P2, P3a–P3c y P4 hechos; P3d, P3e y P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
@@ -82,7 +82,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
-| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
+| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias, hecho), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace) y `ore datasets` con tres partes | hecho |
 | **P5** | `discover` con el schema del origen | pequeño |
 | **P6** | La consola: schemas de verdad (crear/renombrar al servidor), refs de tres partes, borradores en la carpeta del schema | medio |
@@ -220,6 +220,28 @@ SQL. Sin `warehouse`, las rutas de siempre.
 el-lago 15, con PyIceberg y DuckDB de verdad: `espana.pedidos2` nace por el catálogo con su
 documento, su puntero en `datasets/ventas/espana/` y su lago en `catalogo/ventas/espana/`, y
 DuckDB lee `ventas.espana.pedidos2`.
+
+## P3c, hecho: los tres SDK
+
+Python, Node y la JVM, lo mismo en los tres:
+
+- **Los nombres**: `write()`, `over()`, `transform()` y `_por_posicion` aceptan `base.nombre` y
+  `base.schema.nombre`, y trabajan con la forma corta (`ventas.default.x` es `ventas.x`).
+- **`sql()`**: cada nombre del árbol es una vista de DuckDB con sus tres niveles —`attach if
+  not exists ':memory:' as <base>`, `"<base>"."<schema>"."<n>"`— y lo de `default` lleva su
+  alias en `"<base>"."main"."<n>"`, donde DuckDB busca un nombre de dos partes (medido: así
+  resuelven `ventas.pedidos`, `ventas.default.pedidos` y `ventas.espana.clientes`, y
+  `ventas.clientes` falla sugiriendo `ventas.espana.clientes`). Fuera el `create schema "p"` en
+  `memory`: con un catálogo del mismo nombre, la referencia es ambigua (medido).
+- **Dentro de una vista de un catálogo adjunto, un schema sin cualificar se busca en ESE
+  catálogo** (medido en el-puesto 10b): los datasets de una View (`"__ore_dataset"."p.n"`) se
+  nombran con `memory.` delante.
+- **`/v1` con prefix**: `write()` y el préstamo de la credencial piden
+  `/v1/<base>/namespaces/<schema>/tables/<n>` (P4).
+
+Medido después (`medida-el-sql-de-tres-partes.sh`): con el agente de Python, `write()`, `sql()`,
+`over()` y la celda que escribe, con `default` y con `espana`, de punta a punta; `ore validate`
+limpio y el índice con su schema. el-puesto: tres partes desde Python, Node y Java.
 
 ## Lo que no cambia
 

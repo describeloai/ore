@@ -211,14 +211,42 @@ class _Transform:
         self.nombre, self.inputs, self.output = nombre, list(inputs), output
 
 
+DEFAULT = "default"
+
+
+def _corto(nombre, que="un nombre del árbol"):
+    """`base.nombre` o `base.schema.nombre` (0038) → la forma corta, la clave del
+    árbol: `base.nombre` en `default`, `base.schema.nombre` en otro schema.
+    `ventas.pedidos` y `ventas.default.pedidos` son el mismo."""
+    partes = nombre.split(".") if isinstance(nombre, str) else []
+    if len(partes) not in (2, 3) or not all(partes):
+        raise ValueError("%s es `<base>.<schema>.<nombre>` (o `<base>.<nombre>`, en `default`), no %r" % (que, nombre))
+    if len(partes) == 3 and partes[1] == DEFAULT:
+        return "%s.%s" % (partes[0], partes[2])
+    return ".".join(partes)
+
+
+def _partes(corto):
+    """La forma corta → (base, schema, nombre)."""
+    p = corto.split(".")
+    return (p[0], DEFAULT, p[1]) if len(p) == 2 else (p[0], p[1], p[2])
+
+
+def _v1_tabla(corto):
+    """La ruta de `/v1` de una tabla, como Unity (0038 P4): la base es el
+    `prefix`, el schema el namespace."""
+    b, s_, n = _partes(corto)
+    return "/v1/%s/namespaces/%s/tables/%s" % (b, s_, n)
+
+
 def transform(inputs, output):
     """`@transform(inputs=[…], output="p.t")`: lo declarado es lo único que la
     función puede leer (`over`, `sql`) y escribir (`write`); lo demás es
     `PermissionError`. Lo escrito lleva `procedencia: {inputs, transform, …}`."""
-    if isinstance(inputs, str) or not all(isinstance(i, str) and i.count(".") == 1 for i in inputs):
-        raise ValueError("transform(): `inputs` es una lista de `<paquete>.<vista>`")
-    if not isinstance(output, str) or output.count(".") != 1:
-        raise ValueError("transform(): `output` es `<paquete>.<tabla>`")
+    if isinstance(inputs, str):
+        raise ValueError("transform(): `inputs` es una lista de `<base>.<schema>.<nombre>`")
+    inputs = [_corto(i, "transform(): cada input") for i in inputs]
+    output = _corto(output, "transform(): `output`")
     if output in inputs:
         raise ValueError("transform(): `%s` no puede ser input y output a la vez" % output)
 
@@ -247,6 +275,7 @@ def transform(inputs, output):
 
 def _lee(vista):
     """Anota una lectura, y dentro de un transform la acota a sus `inputs`."""
+    vista = _corto(vista)
     if _transform is not None and vista not in _transform.inputs:
         raise PermissionError("`%s` no está en los inputs de `%s` (%s): un transform sólo lee lo que declara" % (vista, _transform.nombre, ", ".join(_transform.inputs)))
     if vista not in _leidas:
@@ -270,8 +299,7 @@ def _procedencia(nombre=None):
 
 def _resolver(vista):
     """Qué copia es `<paquete>.<vista>`, según ore-serve (en nombre de la persona)."""
-    if not isinstance(vista, str) or vista.count(".") != 1:
-        raise ValueError("se quiere `<paquete>.<vista>`, no %r" % (vista,))
+    vista = _corto(vista)
     _lee(vista)
     codigo, r = puesto.pedir("GET", "/puestos/%s/datos/%s" % (puesto.id, vista))
     return _o_el_error(codigo, r, vista)
@@ -314,11 +342,14 @@ def _fuente_de_respuesta(vista, r):
     columnas donde dice 5 000 y 2 (`medida-la-vista-con-filtro.py`)."""
     if r.get("consulta"):
         con = _duckdb()
-        con.execute('create schema if not exists "%s"' % ESQUEMA_DE_DATASETS)
+        # En `memory`, y nombradas con él: dentro de una vista de un catálogo
+        # adjunto (una base, 0038) un schema sin cualificar se busca en ESE
+        # catálogo, no en `memory` (medido).
+        con.execute('create schema if not exists memory."%s"' % ESQUEMA_DE_DATASETS)
         for d, rd in (r.get("datasets") or {}).items():
             fuente, _ = _fuente_de_respuesta(d, rd)
-            con.execute('create or replace view "%s"."%s" as select * from %s' % (ESQUEMA_DE_DATASETS, d.replace('"', '""'), fuente))
-        return "(%s)" % r["consulta"], r
+            con.execute('create or replace view memory."%s"."%s" as select * from %s' % (ESQUEMA_DE_DATASETS, d.replace('"', '""'), fuente))
+        return "(%s)" % r["consulta"].replace('"%s".' % ESQUEMA_DE_DATASETS, 'memory."%s".' % ESQUEMA_DE_DATASETS), r
     if r.get("metadata_location"):
         global _s3
         # La credencial de lectura que `datos` presta (W3.7 gobierno ②b): acotada
@@ -328,8 +359,7 @@ def _fuente_de_respuesta(vista, r):
             if cred.get("s3.access-key-id"):
                 _s3 = cred
             else:
-                ns, t = vista.split(".")
-                c, l = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+                c, l = puesto.pedir("GET", _v1_tabla(_corto(vista)), cabeceras=_DELEGAR)
                 if c == 200 and (l or {}).get("config", {}).get("s3.access-key-id"):
                     _s3 = l["config"]
         return _iceberg(r["metadata_location"], cred.get("gcs.oauth2.token")), r
@@ -546,6 +576,26 @@ def _duckdb():
     return _con
 
 
+def _q(x):
+    return '"%s"' % x.replace('"', '""')
+
+
+def _registra(con, corto, fuente):
+    """El nombre del árbol como vista de DuckDB, con sus tres niveles (0038): un
+    catálogo por base (`attach ':memory:' as <base>`), un schema por schema. Lo
+    de `default` lleva además su alias en `main`, que es donde DuckDB busca un
+    nombre de DOS partes (medido): `ventas.pedidos` y `ventas.default.pedidos`
+    leen lo mismo mientras las dos partes se admitan."""
+    b, s_, n = _partes(corto)
+    con.execute("attach if not exists ':memory:' as %s" % _q(b))
+    con.execute("create schema if not exists %s.%s" % (_q(b), _q(s_)))
+    # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
+    # clave del artefacto o el puntero), ya escapada.
+    con.execute("create or replace view %s.%s.%s as select * from %s" % (_q(b), _q(s_), _q(n), fuente))
+    if s_ == DEFAULT:
+        con.execute("create or replace view %s.main.%s as select * from %s.%s.%s" % (_q(b), _q(n), _q(b), _q(s_), _q(n)))
+
+
 def sql(texto, como="pandas"):
     """SQL (DuckDB) sobre los datasets del árbol. El texto entero va a ore-serve
     (`POST /puestos/{id}/sql`), que dice qué nombres del árbol lee —con el
@@ -566,11 +616,7 @@ def sql(texto, como="pandas"):
     for nombre, rd in sorted(((r or {}).get("fuentes") or {}).items()):
         _lee(nombre)
         fuente, _ = _fuente_de_respuesta(nombre, rd)
-        esquema, n = nombre.split(".", 1)
-        con.execute('create schema if not exists "%s"' % esquema.replace('"', '""'))
-        # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
-        # clave del artefacto o el puntero), ya escapada.
-        con.execute('create or replace view "%s"."%s" as select * from %s' % (esquema.replace('"', '""'), n.replace('"', '""'), fuente))
+        _registra(con, nombre, fuente)
     r = con.execute(texto)
     if r.description is None:
         return None
@@ -689,8 +735,8 @@ def _por_posicion(tabla_arrow, nombre, posiciones):
     `select` que no lo tiene —una expresión sin alias, `0.5`, `sum(x)`— toma el
     de la columna de la tabla en su misma posición, como en SQL (decidido
     2026-09-24). `posiciones` las dice el analizador (desde 0)."""
-    ns, t = nombre.split(".")
-    c, r = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+    nombre = _corto(nombre)
+    c, r = puesto.pedir("GET", _v1_tabla(nombre), cabeceras=_DELEGAR)
     primera = posiciones[0] + 1
     if c == 404:
         raise RuntimeError("insert into %s: la tabla no existe todavía, y la columna %d del select no tiene nombre "
@@ -714,8 +760,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     Devuelve `{tabla, filas, snapshot, metadata_location, operacion, repetida}`."""
     import hashlib
 
-    if not isinstance(nombre, str) or nombre.count(".") != 1:
-        raise ValueError("write() quiere `<paquete>.<tabla>`, no %r" % (nombre,))
+    nombre = _corto(nombre, "write(): el nombre")
     if modo not in ("sobrescribir", "anexar", "upsert"):
         raise ValueError("modo=%r: vale `sobrescribir`, `anexar` o `upsert`" % (modo,))
     if clave is not None and (isinstance(clave, str) or not all(isinstance(c, str) for c in clave)):
@@ -725,7 +770,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     clave_upsert = list(clave) if clave else None
     if _transform is not None and nombre != _transform.output:
         raise PermissionError("`%s` no es el output de `%s` (%s): un transform sólo escribe lo que declara" % (nombre, _transform.nombre, _transform.output))
-    ns, t = nombre.split(".")
+    base, ns, t = _partes(nombre)  # el namespace de /v1 es el schema (0038 P4)
     tabla_arrow = _arrow_de(datos)
     if tabla_arrow.num_rows == 0:
         raise ValueError("write(): la tabla no tiene filas")
@@ -738,10 +783,10 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
     # misma escritura, y el catálogo no la repite.
     semilla = "%s|%s" % (nombre, modo) + ("|" + ",".join(clave_upsert) if clave_upsert else "")
     clave = None
-    dataset = "datasets/%s_%s" % (ns, t)
+    dataset = "catalogo/%s/%s/%s" % (base, ns, t)  # una etiqueta: la ubicación la da el catálogo
 
     def cargar():
-        c, r = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t), cabeceras=_DELEGAR)
+        c, r = puesto.pedir("GET", _v1_tabla(nombre), cabeceras=_DELEGAR)
         if c == 200:
             # Prestado sólo para leer (lo de otra persona, un mantenido): el
             # porqué, antes de escribir un fichero con una credencial que no escribe.
@@ -749,7 +794,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
                 raise RuntimeError("write(%s): %s" % (nombre, r["config"]["ore.solo-lectura"]))
             return r["metadata-location"], None, r.get("config", {}), r["metadata"]["location"]
         if c == 404:
-            c, r = puesto.pedir("POST", "/v1/namespaces/%s/tables" % ns, {"name": t, "stage-create": True, "schema": esquema, "properties": {}}, cabeceras=_DELEGAR)
+            c, r = puesto.pedir("POST", "/v1/%s/namespaces/%s/tables" % (base, ns), {"name": t, "stage-create": True, "schema": esquema, "properties": {}}, cabeceras=_DELEGAR)
             if c != 200:
                 raise RuntimeError("write(%s): %s" % (nombre, _mensaje(r)))
             return None, r["metadata"], r.get("config", {}), r["metadata"]["location"]
@@ -770,7 +815,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
             peticion["esbozo"] = esbozo
         escrito = _escribir_ficheros(binario, env, peticion, ipc)
         clave = escrito.get("operacion") or clave
-        c, r = puesto.pedir("POST", "/v1/namespaces/%s/tables/%s" % (ns, t),
+        c, r = puesto.pedir("POST", _v1_tabla(nombre),
                             {"identifier": {"namespace": [ns], "name": t}, "requirements": escrito["requirements"], "updates": escrito["updates"]}, plazo=120)
         if c == 200:
             snap = ((r or {}).get("metadata") or {}).get("current-snapshot-id")
@@ -784,7 +829,7 @@ def write(nombre, datos, modo="sobrescribir", clave=None):
             continue
         if c >= 500:
             # el commit pudo entrar: se MIRA antes de reintentar
-            c2, r2 = puesto.pedir("GET", "/v1/namespaces/%s/tables/%s" % (ns, t))
+            c2, r2 = puesto.pedir("GET", _v1_tabla(nombre))
             if c2 == 200:
                 md = r2["metadata"]
                 vigente = [s for s in md.get("snapshots", []) if s.get("snapshot-id") == md.get("current-snapshot-id")]
