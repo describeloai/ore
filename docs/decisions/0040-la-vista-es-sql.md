@@ -1,6 +1,6 @@
 # 0040 · La vista es SQL (OOS v1alpha14 en ORE)
 
-**Estado:** en curso · pasos 0 y 1 hechos.
+**Estado:** en curso · pasos 0, 1 y 2 hechos.
 **Spec:** `C:\oos` 7d92e6e, `spec/v1alpha14/`.
 
 ## Contexto
@@ -68,6 +68,17 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
    generadores sí, lectores por función `OOS2038`), lo que proyecta (`*` contra los
    contratos de sus fuentes), linaje por columna (directo, derivado, INDIRECT) y
    predicados clasificados para el canal lateral.
+   **HECHO**: `ore_core::vista_sql::analizar(sql, columnas_de)` → `Consulta { lee,
+   columnas (directas · derivadas · indirectas por columna), indirectas, predicados
+   (Revela | Ordena, con su lugar: WHERE · JOIN · QUALIFY · HAVING), ambiguas,
+   sin_fuente, estrellas_sin_expandir }` o `Fallo` (`NoSeAnaliza`, `NoEsUnaConsulta` y
+   `LeePorFuncion`, las dos últimas `OOS2038`). `columnas_de` es el árbol: expande un `*`
+   y decide una columna sin calificar entre dos fuentes. Las referencias salen a un
+   nivel (a los nombres que la consulta lee); componer la cadena es del paso 3. 19 tests,
+   con el corpus de la medida (todo se analiza salvo `PIVOT`). El ejemplo `vista_sql` ya
+   es una envoltura del módulo, y con él la medida sigue en 115 de 115. Añadido al
+   medir: un `LIMIT` con `ORDER BY` mira por lo que ordena (qué filas salen depende de
+   ello); un `HAVING` sobre un agregado no es un predicado del canal lateral.
 3. **Una sola View en el núcleo.** `vistas.rs` sobre `vista_sql`: `Raiz` pasa a fuentes +
    linaje; la traducción forma→SQL baja a ore-core; `comprobar` (`OOS2018/2019`, `2039`,
    `2011/2022` contra `columns`, `2020`); `flow.rs` propaga por el linaje con varias

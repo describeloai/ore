@@ -8,7 +8,7 @@ traducción, analizada como SQL, dé **el mismo linaje** que el motor de hoy.
       de un nivel —la tabla de §7 de `01-la-vista-es-sql`—: cuántas se traducen,
       y las que no, por qué
   L2  el linaje por columna de esa consulta (el prototipo del paso 2,
-      `cargo run --example vista_sql`, sqlparser sin motor), compuesto por la
+      `ore_core::vista_sql` por `examples/vista_sql`, sqlparser sin motor), compuesto por la
       cadena de fuentes hasta las columnas raíz, contra el que `ore view`
       imprime (DIRECT / INDIRECT, por raíz): cuántas coinciden, y las que no
   L3  quién supone UNA raíz en el núcleo: los usos de `vistas::raiz*` y de
@@ -311,7 +311,7 @@ def main():
     todas = []
     for raiz, docs in pk.items():
         for d in docs:
-            if d["kind"] != "View":
+            if d["kind"] != "View" or "sql" in (d.get("spec") or {}):
                 continue
             total += 1
             try:
@@ -336,12 +336,12 @@ def main():
     for raiz, docs in pk.items():
         motor, fallos, rc, err = lineaje_del_motor(raiz)
         if not motor:
-            sin_motor += sum(1 for d in docs if d["kind"] == "View")
+            sin_motor += sum(1 for d in docs if d["kind"] == "View" and "sql" not in (d.get("spec") or {}))
             continue
         paquetes_ok += 1
         arb = Arbol(docs_del_arbol(raiz_del_arbol(raiz), docs))
         for d in docs:
-            if d["kind"] != "View":
+            if d["kind"] != "View" or "sql" in (d.get("spec") or {}):
                 continue
             n = qn(d)
             m = motor.get(n)
