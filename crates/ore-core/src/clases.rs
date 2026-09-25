@@ -86,12 +86,15 @@ const TRANSFORMS_PY: &str = "\
 # `transform`, `over` y `write` son del SDK del puesto y ADEMAS los pone la
 # sesión en el espacio de la celda: el import no cambia lo que corre — hace que
 # el editor sepa de qué hablas (ADR 0037 ③a).
+#
+# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
 # Cambia las dos referencias por las tuyas y dale a Run.
 
 from ore import transform, over, write
 
-ENTRADA = \"<paquete>.<dataset>\"
-SALIDA = \"<paquete>.<resumen>\"
+ENTRADA = \"mi_base.mi_schema.mi_dataset\"
+SALIDA = \"mi_base.mi_schema.mi_resumen\"
 
 
 @transform(inputs=[ENTRADA], output=SALIDA)
@@ -196,6 +199,8 @@ const TRANSFORMS_JAVA: &str = "\
 // ⛔ El nombre del fichero ES el nombre de la clase pública: si renombras uno,
 //   renombra el otro.
 //
+// Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+// base de datos, su schema y el dataset. En `default` basta `base.nombre`.
 // Cambia las dos referencias por las tuyas y dale a Run.
 import static ore.Ore.*;
 
@@ -203,8 +208,8 @@ import java.util.List;
 import java.util.Map;
 
 public class Ejemplo {
-    static final String ENTRADA = \"<paquete>.<dataset>\";
-    static final String SALIDA = \"<paquete>.<resumen>\";
+    static final String ENTRADA = \"mi_base.mi_schema.mi_dataset\";
+    static final String SALIDA = \"mi_base.mi_schema.mi_resumen\";
 
     public static void main(String[] args) throws Exception {
         Map<String, Object> escrito = transform(\"resumir\", List.of(ENTRADA), SALIDA,
@@ -214,41 +219,30 @@ public class Ejemplo {
 }
 ";
 
-/// El transform escrito en SQL. La consulta manda; lo que sale, se escribe.
+/// El transform escrito en SQL: **un `.sql` de verdad** (0038 P7), una sentencia
+/// que escribe.
 ///
-/// ⛔ La consulta vive en una cadena y no en un `.sql` aparte, y no por gusto:
-///   un trabajo del árbol se ejecuta como **una celda** —no hay fichero desde
-///   el que leer al lado— y una celda SQL a secas **lee pero no escribe**. Un
-///   `.sql` suelto que dijera ser un transform sería un cartel.
+/// ⭐ Antes era un `.py` con la consulta en una cadena, y con motivo: una celda
+///   SQL a secas leía pero no escribía (0036). Desde el SQL del árbol (0037 y
+///   6d451da) un `.sql` es la unidad —en la sesión y como trabajo—, y el que
+///   escribe es UNA sentencia `create or replace table … as select …`: lo que
+///   lee y lo que escribe lo dice la propia sentencia (`ore sql`), sin
+///   `@transform` que lo repita. Medido en `medida-la-semilla-sql.sh`.
 const TRANSFORMS_SQL: &str = "\
-# Un transform escrito en SQL: la consulta manda, y lo que sale se escribe.
-# Sigue DECLARANDO qué lee y qué escribe, y el servidor lo hace cumplir
-# (ADR 0031 · W3.7).
-#
-# `transform`, `sql` y `write` son del SDK del puesto y ADEMAS los pone la
-# sesión en el espacio de la celda: el import no cambia lo que corre — hace que
-# el editor sepa de qué hablas (ADR 0037 ③a).
-# Cambia las referencias por las tuyas y dale a Run.
+-- Un transform escrito en SQL: UNA sentencia que escribe. Lo que lee y lo que
+-- escribe lo dice la propia sentencia, y el servidor lo hace cumplir.
+--
+-- `create or replace table` sobrescribe; `insert into` anexa; `insert or
+-- replace into` hace upsert. Un `select` suelto lee y no escribe.
+--
+-- Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+-- base de datos, su schema y el dataset. En `default` basta `base.nombre`.
+-- Cambia los dos por los tuyos y dale a Run.
 
-from ore import transform, sql, write
-
-ENTRADA = \"mi_paquete.mi_dataset\"
-SALIDA = \"mi_paquete.mi_resumen\"
-
-CONSULTA = f\"\"\"
+create or replace table mi_base.mi_schema.mi_resumen as
 select pais, count(*) as n
-from {ENTRADA}
+from mi_base.mi_schema.mi_dataset
 group by pais
-\"\"\"
-
-
-@transform(inputs=[ENTRADA], output=SALIDA)
-def resumir():
-    return write(SALIDA, sql(CONSULTA, como=\"arrow\"))
-
-
-escrito = resumir()
-print(\"filas\", escrito[\"filas\"])
 ";
 
 const ANALYTICS_PY: &str = "\
@@ -262,7 +256,9 @@ const ANALYTICS_PY: &str = "\
 
 from ore import over, sql
 
-FUENTE = \"<paquete>.<dataset>\"
+# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
+FUENTE = \"mi_base.mi_schema.mi_dataset\"
 
 filas = over(FUENTE)
 print(FUENTE, \"→\", len(filas), \"filas\")
@@ -279,8 +275,11 @@ const MODELS_PY: &str = "\
 
 from ore import over, declare
 
-ENTRADA = \"<paquete>.<dataset>\"
-MODELO = \"<paquete>.<modelo>\"
+# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
+ENTRADA = \"mi_base.mi_schema.mi_dataset\"
+MODELO = \"mi_base.mi_schema.mi_modelo\"
+BASE, SCHEMA, NOMBRE = MODELO.split(\".\")
 
 filas = over(ENTRADA)
 # ... entrenar con lo que declares en el pyproject.toml de este repositorio ...
@@ -288,7 +287,7 @@ digest = \"sha256:00000000000000000000000000000000000000000000000000000000000000
 
 print(declare({
     \"kind\": \"TrainedModel\",
-    \"metadata\": {\"name\": MODELO.split(\".\")[-1], \"namespace\": MODELO.split(\".\")[0]},
+    \"metadata\": {\"name\": NOMBRE, \"namespace\": BASE, \"schema\": SCHEMA},
     \"spec\": {\"owner\": \"team:cambiame\", \"trainedFrom\": [ENTRADA], \"digest\": digest},
 }))
 ";
@@ -305,7 +304,9 @@ const FUNCTIONS_PY: &str = "\
 from ore import over
 
 
-FUENTE = \"<paquete>.<dataset>\"
+# Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
+# base de datos, su schema y el dataset. En `default` basta `base.nombre`.
+FUENTE = \"mi_base.mi_schema.mi_dataset\"
 
 
 def clasificar(fila):
@@ -331,7 +332,8 @@ pub const CLASES: &[Clase] = &[
         // 2 porque la plantilla CAMBIÓ (⑧a): lo escrito con la de antes —un
         // comentario y sin `pyproject.toml`— sale `actualizable: true`, que es
         // lo que la columna «UPGRADE» existe para decir.
-        version: 3,
+        // 4: la semilla nombra en tres partes (0038 P7).
+        version: 4,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("transforms/ejemplo.py", TRANSFORMS_PY),
@@ -349,7 +351,8 @@ pub const CLASES: &[Clase] = &[
         // 3 porque la plantilla CAMBIÓ (0037 ③c): lo escrito con la de antes
         // —sin `pom.xml`— sale `actualizable: true`, que es lo que la columna
         // «UPGRADE» existe para decir.
-        version: 3,
+        // 4: la semilla nombra en tres partes (0038 P7).
+        version: 4,
         semilla: &[
             ("pom.xml", POM_JVM),
             ("transforms/Ejemplo.java", TRANSFORMS_JAVA),
@@ -364,10 +367,12 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets writing SQL.",
-        version: 2,
+        // 3: un `.sql` de verdad, en tres partes (0038 P7). Actualizar la deja al
+        // lado del `ejemplo.py` de antes, que no se borra: es de quien lo tenga.
+        version: 3,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
-            ("transforms/ejemplo.py", TRANSFORMS_SQL),
+            ("transforms/ejemplo.sql", TRANSFORMS_SQL),
         ],
     },
     Clase {
@@ -379,7 +384,8 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Analytics",
         descripcion: "Analyze your datasets using your preferred data science environment.",
-        version: 3,
+        // 4: la semilla nombra en tres partes (0038 P7).
+        version: 4,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("analisis/ejemplo.py", ANALYTICS_PY),
@@ -394,7 +400,8 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Models",
         descripcion: "Create, test and train models for machine learning, forecasting and more.",
-        version: 3,
+        // 4: la semilla nombra en tres partes (0038 P7).
+        version: 4,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("modelos/entrenar.py", MODELS_PY),
@@ -409,7 +416,8 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Functions",
         descripcion: "Write reusable code for pipelines, transforms and applications.",
-        version: 3,
+        // 4: la semilla nombra en tres partes (0038 P7).
+        version: 4,
         semilla: &[
             ("pyproject.toml", PYPROJECT_PY),
             ("funciones/ejemplo.py", FUNCTIONS_PY),
@@ -658,7 +666,10 @@ mod pruebas {
                 .flat_map(|(_, t)| t.lines())
                 .filter(|l| {
                     let l = l.trim();
-                    !l.is_empty() && !l.starts_with('#') && !l.starts_with("//")
+                    !l.is_empty()
+                        && !l.starts_with('#')
+                        && !l.starts_with("//")
+                        && !l.starts_with("--")
                 })
                 .count();
             assert!(codigo >= 4, "{} tiene {codigo} líneas de código", c.id);
@@ -677,6 +688,34 @@ mod pruebas {
                 );
             }
         }
+    }
+
+    /// ⭐ (0038 P7) Las semillas nombran en TRES partes, `base.schema.nombre`:
+    ///   ni el `<paquete>.<dataset>` de antes —que no es un nombre y no corría—
+    ///   ni dos partes, que son `default` y el SQL avisa (`ORE-SQL-2P`).
+    #[test]
+    fn las_semillas_nombran_en_tres_partes() {
+        for c in CLASES {
+            for (ruta, texto) in c.semilla {
+                if ruta.ends_with(".toml") || ruta.ends_with(".xml") {
+                    continue;
+                }
+                assert!(!texto.contains("<paquete>"), "{} · {ruta}", c.id);
+                assert!(
+                    texto.contains("mi_base.mi_schema."),
+                    "{} · {ruta} no nombra en tres partes",
+                    c.id
+                );
+            }
+        }
+        // y la de SQL es un `.sql`, no una cadena dentro de Python
+        let sql = de("transforms-sql").unwrap();
+        assert!(
+            sql.semilla
+                .iter()
+                .any(|(r, _)| *r == "transforms/ejemplo.sql")
+        );
+        assert!(!sql.semilla.iter().any(|(r, _)| r.ends_with(".py")));
     }
 
     /// Cada clase pertenece a una familia que existe, y cada familia tiene

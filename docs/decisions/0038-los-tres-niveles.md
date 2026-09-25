@@ -398,6 +398,28 @@ equivocado—, y «crear carpeta» de Projects escribe una carpeta de proyecto, 
 que ser un schema. Queda cosmético: la cabecera de la vista previa SQL y textos de ayuda de
 Forge en dos partes.
 
+## P7, hecho (A): las semillas nombran en tres partes
+
+Medido antes: las semillas de las clases de repositorio (`clases.rs`) se copian tal cual al
+crear una instancia —no se sustituye nada— y nombraban `<paquete>.<dataset>`, que no es un nombre
+y no corría; `transforms-sql` seguía siendo un `.py` con la consulta en una cadena
+(`medida-la-semilla-sql.sh`, 07eb659, midió la `.sql` y no se cambió).
+
+Decidido (A): los ficheros de una instancia viven en ella, y lo que su código escribe se nombra
+en el propio código. Las semillas nombran en tres partes (`mi_base.mi_schema.mi_dataset`,
+`…mi_resumen`, `…mi_modelo`) y lo explican; siguen siendo ejemplos que la persona cambia, y el
+asistente no pregunta nada. `transforms-sql` siembra `transforms/ejemplo.sql`: UNA sentencia
+`create or replace table … as select …` —`ore sql` dice que escribe
+`mi_base.mi_schema.mi_resumen` (sobrescribe) y lee `mi_base.mi_schema.mi_dataset`—. Las
+versiones suben (4; la de SQL, 3): «Propose upgrade» escribe la semilla nueva y no borra el
+`ejemplo.py` de antes, que es de quien lo tenga. `las_semillas_nombran_en_tres_partes`.
+
+**`declare()` en un schema** (un resto de P3c, al nombrar el modelo en tres partes): los tres SDK
+llamaban siempre a `/documentos/{kind}/{ns}/{n}` —`default`— y un documento con
+`metadata.schema` por esa ruta es un 422. Ahora, fuera de `default`,
+`/documentos/{kind}/{b}/{s}/{n}`, y devuelven el nombre entero. el-puesto 10: una View declarada
+en `hr.espana` desde la celda de Python.
+
 ## La re-inducción retira sólo lo que escribió el inductor
 
 Medido al preparar P7: `review --reinducir` —lo que corren `model` y `copy` desde el catálogo—

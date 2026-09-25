@@ -93,7 +93,7 @@ function cabeza(texto) {
   if (resto.startsWith("{")) resto.replace(/^\{|\}$/g, "").split(",").forEach(par);
   else for (const l of texto.slice(m.index + m[0].length).split("\n").slice(1)) { if (!/^[ \t]/.test(l)) break; par(l); }
   if (!campos.name) throw new Error("declare(): `metadata.name` no está");
-  return [k[1], campos.namespace ?? "", campos.name];
+  return [k[1], campos.namespace ?? "", campos.name, campos.schema || "default"];
 }
 
 /**
@@ -104,15 +104,19 @@ function cabeza(texto) {
  * los diagnósticos.
  */
 export async function declare(documento) {
-  let kind, ns, nombre, cuerpo;
-  if (typeof documento === "string") { [kind, ns, nombre] = cabeza(documento); cuerpo = { yaml: documento }; }
+  let kind, ns, nombre, schema, cuerpo;
+  if (typeof documento === "string") { [kind, ns, nombre, schema] = cabeza(documento); cuerpo = { yaml: documento }; }
   else if (documento && typeof documento === "object") {
     kind = documento.kind; ns = documento.metadata?.namespace ?? ""; nombre = documento.metadata?.name ?? ""; cuerpo = documento;
+    schema = documento.metadata?.schema || "default";
     if (!kind || !nombre) throw new Error("declare(): el documento quiere `kind` y `metadata.name`");
   } else throw new Error(`declare() quiere el YAML del documento o un objeto, no ${typeof documento}`);
   if (!ns) throw new Error("declare(): `metadata.namespace` no está: un documento vive en un paquete");
-  const [c, r] = await puesto.pedir("PUT", `/documentos/${kind}/${ns}/${nombre}`, cuerpo, 120_000);
-  if (c === 200 || c === 201) return { kind: r?.kind ?? kind, nombre: `${r?.namespace ?? ns}.${r?.name ?? nombre}`, fichero: r?.fichero ?? "", commit: r?.commit ?? "", nueva: Boolean(r?.nueva ?? c === 201) };
+  // 0038: en su schema, `/documentos/{kind}/{base}/{schema}/{n}`; la de dos tramos es `default`.
+  const ruta = schema === "default" ? `/documentos/${kind}/${ns}/${nombre}` : `/documentos/${kind}/${ns}/${schema}/${nombre}`;
+  const [c, r] = await puesto.pedir("PUT", ruta, cuerpo, 120_000);
+  const s = r?.schema ?? schema;
+  if (c === 200 || c === 201) return { kind: r?.kind ?? kind, nombre: s === "default" ? `${r?.namespace ?? ns}.${r?.name ?? nombre}` : `${r?.namespace ?? ns}.${s}.${r?.name ?? nombre}`, fichero: r?.fichero ?? "", commit: r?.commit ?? "", nueva: Boolean(r?.nueva ?? c === 201) };
   if (r?.diagnosticos?.length) throw new Error(`declare(${ns}.${nombre}): ${r.diagnosticos.map((d) => `${d.codigo ?? "?"}: ${d.mensaje ?? ""}`).join("; ")}`);
   throw new Error(`declare(${ns}.${nombre}): ${r?.error ?? "?"} (${c})`);
 }

@@ -142,7 +142,7 @@ def _cabeza(texto):
                 campos[k.strip()] = v.strip().strip("\"'")
     if not campos.get("name"):
         raise ValueError("declare(): `metadata.name` no está")
-    return kind, campos.get("namespace", ""), campos["name"]
+    return kind, campos.get("namespace", ""), campos["name"], campos.get("schema") or DEFAULT
 
 
 def declare(documento):
@@ -150,12 +150,13 @@ def declare(documento):
     (str) o un dict `{kind, metadata, spec}`. Lo firma quien abrió el puesto, en
     su rama. Devuelve `{kind, nombre, fichero, commit, nueva}`."""
     if isinstance(documento, str):
-        kind, ns, nombre = _cabeza(documento)
+        kind, ns, nombre, schema = _cabeza(documento)
         cuerpo = {"yaml": documento}
     elif isinstance(documento, dict):
         kind = documento.get("kind")
         meta = documento.get("metadata") or {}
         ns, nombre = meta.get("namespace", ""), meta.get("name", "")
+        schema = meta.get("schema") or DEFAULT
         if not kind or not nombre:
             raise ValueError("declare(): el documento quiere `kind` y `metadata.name`")
         cuerpo = documento
@@ -163,9 +164,15 @@ def declare(documento):
         raise ValueError("declare() quiere el YAML del documento o un dict, no %r" % (type(documento).__name__,))
     if not ns:
         raise ValueError("declare(): `metadata.namespace` no está: un documento vive en un paquete")
-    c, r = puesto.pedir("PUT", "/documentos/%s/%s/%s" % (kind, ns, nombre), cuerpo, plazo=120)
+    # 0038: en su schema, `/documentos/{kind}/{base}/{schema}/{n}`; la de dos
+    # tramos es `default`, y un documento de otro schema por ella es un 422.
+    ruta = ("/documentos/%s/%s/%s" % (kind, ns, nombre) if schema == DEFAULT
+            else "/documentos/%s/%s/%s/%s" % (kind, ns, schema, nombre))
+    c, r = puesto.pedir("PUT", ruta, cuerpo, plazo=120)
     if c in (200, 201):
-        return {"kind": r.get("kind", kind), "nombre": "%s.%s" % (r.get("namespace", ns), r.get("name", nombre)),
+        s_ = r.get("schema", schema)
+        return {"kind": r.get("kind", kind),
+                "nombre": ".".join([r.get("namespace", ns)] + ([] if s_ == DEFAULT else [s_]) + [r.get("name", nombre)]),
                 "fichero": r.get("fichero", ""), "commit": r.get("commit", ""), "nueva": bool(r.get("nueva", c == 201))}
     r = r or {}
     if r.get("diagnosticos"):

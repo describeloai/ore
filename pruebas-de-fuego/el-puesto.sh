@@ -154,6 +154,13 @@ spec:
 Y
 # lo que se tiene son DATASETS (0033): `espanoles` y `lago` son copias con su
 # plan sobre la pregunta `empleados`; sus punteros, en `datasets/`
+# 0038: un schema de `hr`, `espana`, para declarar en él desde la celda.
+mkdir -p "$A/packages/hr/espana"
+cat > "$A/packages/hr/espana/schema.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: espana, namespace: hr }
+Y
 mkdir -p "$A/packages/hr/datasets" "$A/datasets"
 cat > "$A/packages/hr/datasets/espanoles.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha12
@@ -596,6 +603,8 @@ if [ "$LAGO_OK" = "si" ] && [ -x "$ORE_STORE_DIR/ore-store-r2" -o -x "$ORE_STORE
   # declarar (W3.7 ①): una View sobre lo que la celda escribió, por la puerta de Forge
   celda 'd = declare(\"apiVersion: oos.dev/v1alpha12\\nkind: View\\nmetadata: { name: porLetra, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra, n: \\\"count()\\\" }\\n  groupBy: [letra]\\n\"); [d[\"kind\"], d[\"nombre\"], d[\"fichero\"], d[\"nueva\"]]' && tiene "d['salida']['texto']==\"['View', 'hr.porLetra', 'packages/hr/views/porLetra.yaml', True]\"" || falla "10 · declare(View): $(cuerpo)"
   grep -q "groupBy: \[letra\]" "$A/packages/hr/views/porLetra.yaml" || falla "10 · la View declarada no está en el árbol"
+  # 0038 P7: en un schema, por `/documentos/View/hr/espana/…`: su nombre entero y su carpeta
+  celda 'd = declare(\"apiVersion: oos.dev/v1alpha13\\nkind: View\\nmetadata: { name: porLetraEs, namespace: hr, schema: espana }\\nspec:\\n  owner: team:hr\\n  from: { dataset: hr.salida }\\n  fields: { letra: letra }\\n\"); [d[\"nombre\"], d[\"fichero\"]]' && tiene "d['salida']['texto']==\"['hr.espana.porLetraEs', 'packages/hr/espana/views/porLetraEs.yaml']\"" || falla "10 · declare() en un schema: $(cuerpo)"
   celda 'declare({\"kind\": \"View\", \"metadata\": {\"name\": \"porLetra\", \"namespace\": \"hr\"}, \"spec\": {\"owner\": \"team:hr\", \"from\": {\"dataset\": \"hr.salida\"}, \"fields\": {\"letra\": \"letra\", \"n\": \"count()\"}, \"groupBy\": [\"letra\"]}})[\"nueva\"]' && tiene "d['salida']['texto']=='False'" || falla "10 · declare(dict) otra vez: $(cuerpo)"
   celda 'declare(\"apiVersion: oos.dev/v1alpha8\\nkind: View\\nmetadata: { name: rota, namespace: hr }\\nspec:\\n  owner: team:hr\\n  from: { table: hr.nadie }\\n  fields: { a: a }\\n\")' && tiene "d['salida']['tipo']=='error' and d['salida']['nombre']=='ValueError' and 'OOS' in d['salida']['mensaje']" || falla "10 · declare de una View rota tenía que ser ValueError con el diagnóstico: $(cuerpo)"
   [ ! -f "$A/packages/hr/views/rota.yaml" ] || falla "10 · lo negado quedó en el árbol"

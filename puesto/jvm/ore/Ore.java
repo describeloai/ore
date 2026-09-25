@@ -861,7 +861,7 @@ public final class Ore {
         else { for (String l : yaml.substring(m.end()).split("\n")) { if (l.isEmpty()) continue; if (!Character.isWhitespace(l.charAt(0))) break; par.accept(l); } }
         if (campos.get("name") == null) throw new IllegalArgumentException("declare(): `metadata.name` no está");
         Map<String, Object> cuerpo = new LinkedHashMap<>(); cuerpo.put("yaml", yaml);
-        return declarar(k.group(1), campos.getOrDefault("namespace", ""), campos.get("name"), cuerpo);
+        return declarar(k.group(1), campos.getOrDefault("namespace", ""), campos.getOrDefault("schema", "default"), campos.get("name"), cuerpo);
     }
 
     /** Lo mismo, con el documento como mapa {@code {kind, metadata, spec}}. */
@@ -870,18 +870,23 @@ public final class Ore {
         Object kind = documento.get("kind");
         Map<String, Object> meta = documento.get("metadata") instanceof Map<?, ?> mm ? (Map<String, Object>) mm : Map.of();
         if (kind == null || meta.get("name") == null) throw new IllegalArgumentException("declare(): el documento quiere `kind` y `metadata.name`");
-        return declarar(kind.toString(), String.valueOf(meta.getOrDefault("namespace", "")), meta.get("name").toString(), documento);
+        return declarar(kind.toString(), String.valueOf(meta.getOrDefault("namespace", "")), String.valueOf(meta.getOrDefault("schema", "default")), meta.get("name").toString(), documento);
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> declarar(String kind, String ns, String nombre, Map<String, Object> cuerpo) throws Exception {
+    private static Map<String, Object> declarar(String kind, String ns, String schema, String nombre, Map<String, Object> cuerpo) throws Exception {
         if (ns.isEmpty()) throw new IllegalArgumentException("declare(): `metadata.namespace` no está: un documento vive en un paquete");
-        Respuesta r = puesto.pedir("PUT", "/documentos/" + kind + "/" + ns + "/" + nombre, cuerpo, Duration.ofSeconds(120));
+        // 0038: en su schema, /documentos/{kind}/{base}/{schema}/{n}; la de dos tramos es `default`.
+        String ruta = schema.isEmpty() || schema.equals("default")
+                ? "/documentos/" + kind + "/" + ns + "/" + nombre
+                : "/documentos/" + kind + "/" + ns + "/" + schema + "/" + nombre;
+        Respuesta r = puesto.pedir("PUT", ruta, cuerpo, Duration.ofSeconds(120));
         Map<String, Object> c = r.cuerpo();
         if (r.codigo() == 200 || r.codigo() == 201) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("kind", c.getOrDefault("kind", kind));
-            out.put("nombre", c.getOrDefault("namespace", ns) + "." + c.getOrDefault("name", nombre));
+            String s = String.valueOf(c.getOrDefault("schema", schema));
+            out.put("nombre", c.getOrDefault("namespace", ns) + "." + (s.isEmpty() || s.equals("default") ? "" : s + ".") + c.getOrDefault("name", nombre));
             out.put("fichero", c.getOrDefault("fichero", ""));
             out.put("commit", c.getOrDefault("commit", ""));
             out.put("nueva", Boolean.TRUE.equals(c.get("nueva")) || (c.get("nueva") == null && r.codigo() == 201));
