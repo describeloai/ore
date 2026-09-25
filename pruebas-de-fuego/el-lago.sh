@@ -758,6 +758,33 @@ print(json.dumps({"espana": n, "default": m}))
 PY
 "$PY" "$TMP/duck15.py" "$BASE" "$ORE_R2_S3_ENDPOINT" > "$TMP/duck15.json" 2> "$TMP/duck15.err" || { tail -5 "$TMP/duck15.err"; falla "15 · DuckDB con ATTACH 'ventas'"; }
 [ "$(jq_ "$TMP/duck15.json" espana)" = "3" ] && [ "$(jq_ "$TMP/duck15.json" default)" -gt 0 ] || falla "15 · DuckDB no nombra ventas.espana.pedidos2 ni ventas.default.py: $(cat "$TMP/duck15.json")"
+# y una View en `espana` (P3e): por /v1 con prefix se lista en su schema, y su
+# SQL nombra el dataset desde el catálogo del cliente (`"espana"."pedidos2"`)
+git -C "$TMP/m15" pull -q origin main 2>/dev/null
+mkdir -p "$TMP/m15/packages/ventas/espana/views"
+cat > "$TMP/m15/packages/ventas/espana/views/esp.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: View
+metadata: { name: esp, namespace: ventas, schema: espana }
+spec:
+  owner: team:data
+  from: { dataset: pedidos2 }
+  where: { pais: ES }
+  fields: { id: id, pais: pais }
+Y
+( cd "$TMP/m15" && "$ORE" validate . >/dev/null 2>&1 && git add -A && git commit -qm "la vista esp" && git push -q origin HEAD:main ) || falla "15 · la View en espana: $(cd "$TMP/m15" && "$ORE" validate . 2>&1 | head -3)"
+[ "$(pide GET /v1/ventas/namespaces/espana/views)" = "200" ] && grep -q '"name":"esp"' "$TMP/out.json" || falla "15 · listViews de espana: $(cat "$TMP/out.json")"
+[ "$(pide GET /v1/namespaces/ventas/views)" = "200" ] && ! grep -q '"name":"esp"' "$TMP/out.json" || falla "15 · la View de espana no es de la base sin prefix: $(cat "$TMP/out.json")"
+[ "$(pide GET /v1/ventas/namespaces/espana/views/esp)" = "200" ] || falla "15 · loadView con prefix: $(cat "$TMP/out.json")"
+"$PY" - "$TMP/out.json" <<'EOF' || falla "15 · el SQL de la View con prefix: $(cat "$TMP/out.json" | head -c 600)"
+import json, sys
+m = json.load(open(sys.argv[1]))["metadata"]
+v = m["versions"][0]
+sql = {r["dialect"]: r["sql"] for r in v["representations"]}
+assert v["default-namespace"] == ["espana"], v["default-namespace"]
+assert '"espana"."pedidos2"' in sql["duckdb"] and '"ventas"' not in sql["duckdb"], sql
+assert '`espana`.`pedidos2`' in sql["spark"], sql
+EOF
 ok "15 · /v1 como Unity: con warehouse=ventas los namespaces son sus schemas (default, espana); PyIceberg crea espana.pedidos2 (Dataset v1alpha13 en la carpeta del schema, puntero en datasets/ventas/espana/, lago en catalogo/ventas/espana/) y DuckDB lee ventas.espana.pedidos2 y ventas.default.py; un schema o una base que no están, 404; sin warehouse, lo de siempre"
 
 if [ "$fallos" = 0 ]; then printf '\xe2\x9c\x93 el lago: 0\xe2\x80\x9315\n'; else printf '\xe2\x9c\x97 %s fallos\n' "$fallos"; exit 1; fi

@@ -99,7 +99,7 @@ def main():
         i_py = registro.find("servidor de lenguaje arrancado")
         print("EL EDITOR DE SQL · el cliente de la consola + ore-serve + el agente, de verdad")
         afirma(res["registrado_sql"], "el cliente de SQL registra completion y hover para `sql`")
-        afirma("hr.ventas" in res["tras_from"] and "ventas.pedidos" in res["tras_from"], "tras FROM, los datasets del árbol", res["tras_from"])
+        afirma("hr.default.ventas" in res["tras_from"] and "ventas.default.pedidos" in res["tras_from"], "tras FROM, los datasets del árbol", res["tras_from"])
         afirma({"id", "pais", "total", "cuando"} <= set(res["alias_sin_esperar"]),
                "con el modelo cambiado y SIN esperar al didChange, la completion ve el texto nuevo (las columnas de `v`)", res["alias_sin_esperar"])
         m = res["marca"] or {}

@@ -738,6 +738,10 @@ enum Command {
         /// su `esquema` (el de Iceberg, que tambien sale).
         #[arg(long, requires = "sql")]
         catalogo: bool,
+        /// Con `--catalogo`: la base de la peticion (el `prefix` de `/v1`):
+        /// lo de ella se nombra `"schema"."n"`, lo de otra con sus tres partes.
+        #[arg(long, requires = "catalogo")]
+        base: Option<String>,
     },
     /// El indice de assets del arbol (0034): cada documento como un item
     /// (`kind:namespace.name`) con su carpeta, lo que define y expone, su
@@ -961,6 +965,7 @@ fn main() -> std::process::ExitCode {
             seco,
             sql,
             catalogo,
+            base,
         } => {
             return preguntar::preguntar(
                 path,
@@ -970,6 +975,7 @@ fn main() -> std::process::ExitCode {
                     seco: *seco,
                     sql: *sql,
                     catalogo: *catalogo,
+                    base: base.as_deref(),
                 },
             );
         }

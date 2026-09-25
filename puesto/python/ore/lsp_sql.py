@@ -14,12 +14,14 @@ es de SQL (`es_sql`) y le pasa una funcion para mandar lo que contesta.
 
   completion    el contexto del cursor sobre texto a medio escribir: el
                 tokenizador de DuckDB y el indice, sin analizar. Tras FROM los
-                nombres, tras `paquete.` los suyos, tras `alias.` sus columnas,
-                y en lo demas las columnas de lo que la sentencia lee.
+                nombres enteros (`base.schema.nombre`, 0038), tras `base.` sus
+                schemas, tras `base.schema.` sus nombres, tras `alias.` sus
+                columnas, y en lo demas las columnas de lo que la sentencia lee.
   diagnosticos  `explain` en DuckDB, UNA sentencia cada vez, con las tablas
                 vacias de lo que nombra (creadas bajo demanda). La posicion es
                 el `^` de DuckDB. `DEMORA` tras el ultimo cambio. Una Table de
-                otra fuente se dice, con la View que la lee.
+                otra fuente se dice, con la View que la lee; y un nombre de dos
+                partes, con el aviso `ORE-SQL-2P` (0038: se lee en `default`).
   hover         el tipo de una columna; de un dataset, dueño, filas, estado y
                 conducto.
 
@@ -97,25 +99,75 @@ def _q(n):
     return '"%s"' % str(n).replace('"', '""')
 
 
+# 0038: el nombre de lo que se lee es `base.schema.nombre`; dos partes es
+# `default`, y se avisa (el mismo codigo que ore-serve y `ore sql`).
+DEFAULT = "default"
+DOS_PARTES = "ORE-SQL-2P"
+
+
+def corto(b, s_, n):
+    """La forma corta, en minusculas: la clave del indice (`b.n` en `default`)."""
+    return ("%s.%s" % (b, n) if s_.lower() == DEFAULT else "%s.%s.%s" % (b, s_, n)).lower()
+
+
+def nombres(txt):
+    """[(i, j, clave, dos_partes)] de cada `a.b` y `a.b.c` de una lista de trozos
+    (`j`, el indice del ultimo), que no sea parte de uno mas largo. Las comillas
+    de un identificador no cuentan."""
+    t = [x.strip('"') if x != "." else x for x in txt]
+    punto = lambda k: 0 <= k < len(t) and t[k] == "."
+    out, i = [], 0
+    while i + 2 < len(t):
+        if punto(i + 1) and not punto(i) and not punto(i + 2) and not punto(i - 1):
+            if punto(i + 3) and i + 4 < len(t) and not punto(i + 4) and not punto(i + 5):
+                out.append((i, i + 4, corto(t[i], t[i + 2], t[i + 4]), False))
+                i += 5
+                continue
+            if not punto(i + 3):
+                out.append((i, i + 2, corto(t[i], DEFAULT, t[i + 2]), True))
+                i += 3
+                continue
+        i += 1
+    return out
+
+
+def clave_de(palabra):
+    """`a.b` o `a.b.c` escrito → su clave."""
+    p = palabra.split(".")
+    if len(p) == 3:
+        return corto(*p)
+    if len(p) == 2:
+        return corto(p[0], DEFAULT, p[1])
+    return palabra.lower()
+
+
 class Catalogo:
     """Lo que se lee desde SQL (Dataset y View) y las Table de otra fuente."""
 
     def __init__(self, indice):
         self.legibles, self.ajenas = {}, {}
+        self.schemas = {}
         for i in (indice.get("items") or {}).values():
-            n = ("%s.%s" % (i.get("paquete"), i.get("name"))).lower()
+            s_ = i.get("schema") or DEFAULT
+            n = corto(i.get("paquete"), s_, i.get("name"))
+            i = dict(i, schema=s_, completo="%s.%s.%s" % (i.get("paquete"), s_, i.get("name")))
             if i.get("kind") in ("Dataset", "View"):
                 self.legibles[n] = i
             elif i.get("kind") == "Table":
                 self.ajenas[n] = i
-        self.paquetes = sorted({n.split(".")[0] for n in list(self.legibles) + list(self.ajenas)})
+            else:
+                continue
+            self.schemas.setdefault(str(i.get("paquete")).lower(), set()).add(s_)
+        self.paquetes = sorted(self.schemas)
         self.candado = threading.Lock()
         self.hechas = set()
         import duckdb
         # Una conexion PROPIA: nada que ver con la de las celdas (`ore._duckdb()`).
+        # Un catalogo por base y un schema por schema (0038), como en `sql()`.
         self.con = duckdb.connect()
-        for p in sorted({i["paquete"] for i in self.legibles.values()}):
-            self.con.execute("create schema if not exists %s" % _q(p))
+        for i in self.legibles.values():
+            self.con.execute("attach if not exists ':memory:' as %s" % _q(i["paquete"]))
+            self.con.execute("create schema if not exists %s.%s" % (_q(i["paquete"]), _q(i["schema"])))
 
     def cols(self, n):
         return [(c.get("name"), c.get("type")) for c in (self.legibles.get(n) or {}).get("expone", [])]
@@ -127,7 +179,11 @@ class Catalogo:
                 continue
             i = self.legibles[n]
             cols = ", ".join("%s %s" % (_q(c["name"]), tipo_duckdb(c.get("type"))) for c in i.get("expone", []))
-            self.con.execute("create table %s.%s (%s)" % (_q(i["paquete"]), _q(i["name"]), cols or "x VARCHAR"))
+            b, s_, t = _q(i["paquete"]), _q(i["schema"]), _q(i["name"])
+            self.con.execute("create table %s.%s.%s (%s)" % (b, s_, t, cols or "x VARCHAR"))
+            # lo de `default`, tambien en `main`: donde DuckDB busca dos partes
+            if i["schema"] == DEFAULT:
+                self.con.execute("create or replace view %s.main.%s as select * from %s.%s.%s" % (b, t, b, s_, t))
             self.hechas.add(n)
 
     def cerrar(self):
@@ -189,11 +245,10 @@ def alias_de(ts, cat):
     """alias -> nombre, y el nombre corto -> nombre (`<p>.<n> [as] <alias>`)."""
     al = {}
     txt = [t[1] for t in ts]
-    for i in range(len(txt) - 2):
-        n = ("%s.%s" % (txt[i], txt[i + 2])).lower()
-        if txt[i + 1] == "." and n in cat.legibles:
-            al[txt[i + 2].lower()] = n
-            j = i + 3
+    for i, j, n, _ in nombres(txt):
+        if n in cat.legibles:
+            al[txt[j].strip('"').lower()] = n
+            j = j + 1
             if j < len(txt) and txt[j].lower() == "as":
                 j += 1
             if j < len(txt) and re.match(r"^[A-Za-z_]\w*$", txt[j]) and txt[j].lower() not in NO_ALIAS:
@@ -241,16 +296,23 @@ def completar(texto, cursor, cat):
     ts = [t for t in tokens(base) if t[2] != "comment"]
     al = alias_de([t for t in tokens(texto) if t[2] != "comment"], cat)
     if ts and ts[-1][1] == ".":
-        q = ts[-2][1].lower() if len(ts) > 1 else ""
+        q = ts[-2][1].strip('"').lower() if len(ts) > 1 else ""
+        # `base.schema.`: los nombres de ese schema
+        if len(ts) > 3 and ts[-3][1] == ".":
+            b = ts[-4][1].strip('"').lower()
+            if b in cat.paquetes:
+                return [(i["name"], 7, i.get("kind", "")) for n, i in sorted(cat.legibles.items())
+                        if str(i["paquete"]).lower() == b and i["schema"].lower() == q]
+        # `base.`: sus schemas (0038: el nombre es de tres partes)
         if q in cat.paquetes:
-            return [(cat.legibles[n]["name"], 7, cat.legibles[n].get("kind", "")) for n in sorted(cat.legibles) if n.startswith(q + ".")]
+            return [(x, 9, "schema") for x in sorted(cat.schemas.get(q, ()))]
         if q in al:
             return [(c, 5, t or "") for c, t in cat.cols(al[q])]
         return []
     ultima = next((t[1].lower() for t in reversed(ts) if t[2] == "keyword"), "")
     if ultima in PALABRAS_DE_TABLA:
-        return ([("%s.%s" % (cat.legibles[n]["paquete"], cat.legibles[n]["name"]), 7, cat.legibles[n].get("kind", ""))
-                 for n in sorted(cat.legibles)] + [(p, 9, "paquete") for p in cat.paquetes])
+        return ([(cat.legibles[n]["completo"], 7, cat.legibles[n].get("kind", "")) for n in sorted(cat.legibles)]
+                + [(p, 9, "base") for p in cat.paquetes])
     vistos, out = set(), []
     for n in sorted(set(al.values())):
         for c, t in cat.cols(n):
@@ -298,15 +360,23 @@ def _rango(texto, ini, fin):
 def diagnosticar(texto, cat):
     out = []
     ts = tokens(texto)
-    # una Table de otra fuente: sql() no la lee; se dice cual es su View
-    for i in range(len(ts) - 2):
-        n = ("%s.%s" % (ts[i][1], ts[i + 2][1])).lower()
-        if ts[i + 1][1] == "." and n in cat.ajenas and n not in cat.legibles:
+    avisados = set()
+    for i, j, n, dos in nombres([t[1] for t in ts]):
+        rango = _rango(texto, ts[i][0], ts[j][0] + len(ts[j][1]))
+        # una Table de otra fuente: sql() no la lee; se dice cual es su View
+        if n in cat.ajenas and n not in cat.legibles:
             a = cat.ajenas[n]
             ind = ((a.get("detalle") or {}).get("vistaInducida") or "").replace("view:", "")
-            out.append({"range": _rango(texto, ts[i][0], ts[i + 2][0] + len(ts[i + 2][1])), "severity": 1, "source": "ore",
-                        "message": "`%s.%s` es una Table de otra fuente: sql() no la lee%s" % (
-                            a["paquete"], a["name"], (", lee su View `%s`" % ind) if ind else "")})
+            out.append({"range": rango, "severity": 1, "source": "ore",
+                        "message": "`%s` es una Table de otra fuente: sql() no la lee%s" % (
+                            a["completo"], (", lee su View `%s`" % ind) if ind else "")})
+        # 0038: dos partes se leen en `default`, y se dice (una vez por nombre)
+        if dos and (n in cat.legibles or n in cat.ajenas) and n not in avisados:
+            avisados.add(n)
+            i_ = cat.legibles.get(n) or cat.ajenas[n]
+            out.append({"range": rango, "severity": 2, "source": "ore", "code": DOS_PARTES,
+                        "message": "`%s.%s` tiene dos partes: se lee como `%s` · escribe las tres, `base.schema.nombre`" % (
+                            i_["paquete"], i_["name"], i_["completo"])})
     if not texto.strip():
         return out
     for ini, fin in sentencias(texto):
@@ -320,8 +390,7 @@ def diagnosticar(texto, cat):
         with cat.candado:
             try:
                 ts_s = tokens(s)
-                cat.asegurar({("%s.%s" % (ts_s[k][1], ts_s[k + 2][1])).lower()
-                              for k in range(len(ts_s) - 2) if ts_s[k + 1][1] == "."})
+                cat.asegurar({n for _, _, n, _ in nombres([t[1] for t in ts_s])})
                 # ⛔ UNA sentencia: con varias, DuckDB EJECUTA las que siguen.
                 cat.con.execute(PREFIJO + s)
                 continue
@@ -337,9 +406,11 @@ def diagnosticar(texto, cat):
         falta = re.search(r"Table with name (\S+) does not exist", m)
         if falta:
             # con las tablas bajo demanda DuckDB no sabe sugerir: el indice si
-            cerca = difflib.get_close_matches(falta.group(1).lower(), [cat.legibles[n]["name"].lower() for n in cat.legibles], n=1)
+            # (y se sugiere por su nombre ENTERO: `ventas.clientes` es `ventas.espana.clientes`)
+            completos = {cat.legibles[n]["name"].lower(): cat.legibles[n]["completo"] for n in sorted(cat.legibles)}
+            cerca = difflib.get_close_matches(falta.group(1).lower(), list(completos), n=1)
             if cerca:
-                msg = msg.split("!")[0] + "! · ¿%s?" % cerca[0]
+                msg = msg.split("!")[0] + "! · ¿%s?" % completos[cerca[0]]
         a = ini + desplazamiento(s, *p)
         largo = re.match(r"[\w.]*", texto[a:]).end() or 1
         out.append({"range": _rango(texto, a, a + largo), "severity": 1, "source": "duckdb", "message": msg})
@@ -357,12 +428,12 @@ def explicar(texto, linea, col, cat):
     while b < len(l) and re.match(r"[\w.]", l[b]):
         b += 1
     palabra = l[a:b].lower().strip(".")
-    if palabra in cat.legibles:
-        i = cat.legibles[palabra]
+    if clave_de(palabra) in cat.legibles and palabra.count(".") in (1, 2):
+        i = cat.legibles[clave_de(palabra)]
         p = i.get("puntero") or {}
         conductos = ", ".join("%s %s" % kv for kv in ((i.get("acceso") or {}).get("conductos") or {}).items())
         clas = ", ".join("%s:%s" % kv for kv in ((i.get("acceso") or {}).get("clasificacion") or {}).items())
-        partes = ["**%s.%s** · %s · dueño %s" % (i["paquete"], i["name"], i["kind"], i.get("owner") or "?"),
+        partes = ["**%s** · %s · dueño %s" % (i["completo"], i["kind"], i.get("owner") or "?"),
                   "%d columnas · %s filas · %s" % (len(i.get("expone", [])), p.get("filas", "?"), p.get("estado", "sin puntero"))]
         if i.get("description"):
             partes.insert(1, i["description"])

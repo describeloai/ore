@@ -212,7 +212,7 @@ def p5(b, ag):
     t0 = time.time()
     visto = None
     r = c("completion", lenguaje="sql", ruta=uri, texto="select * from ")
-    ya = "hr.nuevo_p5" in r["labels"] or r["n"] > base["n"]
+    ya = "hr.default.nuevo_p5" in r["labels"] or r["n"] > base["n"]
     otra = 0
     while not ya and time.time() - t0 < 45:
         time.sleep(3)

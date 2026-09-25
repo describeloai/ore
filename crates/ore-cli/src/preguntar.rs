@@ -66,6 +66,10 @@ pub struct Opciones<'a> {
     pub sql: bool,
     /// Con `sql`: como la sirve el catálogo (`/v1` `loadView`), no el puesto.
     pub catalogo: bool,
+    /// Con `catalogo`: la base de la petición (el `prefix` de `/v1`, 0038 P4).
+    /// Lo de esa base se nombra desde el catálogo del cliente, `"schema"."n"`;
+    /// lo de otra, con sus tres partes.
+    pub base: Option<&'a str>,
 }
 
 type Fallo = (u8, String);
@@ -119,7 +123,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
 
     if op.sql {
-        return sql_de_la_vista(&pkg, v, op.vista, op.catalogo);
+        return sql_de_la_vista(&pkg, v, op.vista, op.catalogo, op.base);
     }
 
     // ── ② El plan, y quién lo contesta ───────────────────────────────────────
@@ -307,7 +311,9 @@ pub(crate) const ESQUEMA_DE_DATASETS: &str = "__ore_dataset";
 /// **`--catalogo`: la View como la sirve `/v1`** (`loadView`, medido con Spark
 /// en `medida-spark-por-el-catalogo.py`). Cada dataset se nombra como lo
 /// nombra el catálogo, `"p"."n"` y sin catálogo delante —el cliente llama al
-/// suyo como quiere, y el motor resuelve el nombre en el de la View—. Y el
+/// suyo como quiere, y el motor resuelve el nombre en el de la View—. Con
+/// `--base` (la petición traía `prefix`, 0038 P4) el namespace es el schema:
+/// lo de esa base es `"schema"."n"`, y lo de otra, `"base"."schema"."n"`. Y el
 /// motor casa las columnas con el esquema **por posición**: la consulta se
 /// envuelve en un `select` con las columnas en el orden del `esquema`, que
 /// sale también, con los tipos de Iceberg de su físico (0032 §1).
@@ -318,6 +324,7 @@ fn sql_de_la_vista(
     v: &Loaded,
     nombre: &str,
     catalogo: bool,
+    base: Option<&str>,
 ) -> Result<(), Fallo> {
     if v.kind != ore_core::document::Kind::View {
         return Err((
@@ -390,8 +397,22 @@ fn sql_de_la_vista(
     // (el motor las casa por posición); para el puesto, la hoja interna.
     let escribir = |d: Dialecto| -> Result<String, String> {
         let q = ore_view::a_sql::plan_en(d, &plan, &|l| {
-            Ok(match l.objeto.split_once('.') {
-                Some((p, n)) if catalogo => format!("{}.{}", ident_en(d, p), ident_en(d, n)),
+            Ok(match ore_core::punteros::partes(&l.objeto) {
+                // Sin `prefix`, el namespace es la base: lo de `default`, `"p"."n"`
+                Some((p, s, n))
+                    if catalogo
+                        && base.is_none()
+                        && s == ore_core::normalize::SCHEMA_POR_DEFECTO =>
+                {
+                    format!("{}.{}", ident_en(d, p), ident_en(d, n))
+                }
+                // Con él, el namespace es el schema: lo de su base, `"s"."n"`
+                Some((p, s, n)) if catalogo && base == Some(p) => {
+                    format!("{}.{}", ident_en(d, s), ident_en(d, n))
+                }
+                Some((p, s, n)) if catalogo => {
+                    format!("{}.{}.{}", ident_en(d, p), ident_en(d, s), ident_en(d, n))
+                }
                 _ => format!(
                     "{}.{}",
                     ident_en(d, ESQUEMA_DE_DATASETS),

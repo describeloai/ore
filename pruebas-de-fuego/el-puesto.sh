@@ -471,17 +471,21 @@ diag = {m["params"]["uri"].rsplit("/", 1)[1]: m["params"]["diagnostics"] for m i
 ini = por_id.get("sql:1", {}).get("result") or {}
 assert ini.get("serverInfo", {}).get("name") == "ore-sql", ("initialize no lo contestó ore-sql", por_id.get("sql:1"))
 assert "eco" not in json.dumps(por_id.get("sql:1")), "el initialize de SQL llegó al servidor de mentira"
-d = diag.get("consulta.sql") or []
-assert len(d) == 1 and "nombre" in d[0]["message"] and d[0]["range"]["start"] == {"line": 0, "character": 7}, ("la columna mal escrita", d)
+todo = diag.get("consulta.sql") or []
+d = [x for x in todo if x["severity"] == 1]
+assert len(d) == 1 and "nombre" in d[0]["message"] and d[0]["range"]["start"] == {"line": 0, "character": 7}, ("la columna mal escrita", todo)
+# 0038: `hr.espanoles` tiene dos partes: el aviso ORE-SQL-2P, en su sitio, que no es un error
+dos = [x for x in todo if x.get("code") == "ORE-SQL-2P"]
+assert len(dos) == 1 and dos[0]["severity"] == 2 and dos[0]["range"]["start"] == {"line": 1, "character": 5} and "hr.default.espanoles" in dos[0]["message"], ("el aviso de dos partes", todo)
 assert "¿" in d[0]["message"], ("sin sugerencia", d)
 a = diag.get("ajena.sql") or []
 assert any("Table de otra fuente" in x["message"] for x in a), ("la Table de otra fuente", a)
 assert diag.get("a_medias.sql") == [], ("a medio escribir no es un error", diag.get("a_medias.sql"))
 items = [i["label"] for i in (por_id.get("sql:2", {}).get("result") or {}).get("items", [])]
-assert "hr.espanoles" in items and "hr.lago" in items, ("completion tras FROM", items)
-assert "hr.empleados_t" not in items, ("una Table de otra fuente no se ofrece", items)
+assert "hr.default.espanoles" in items and "hr.default.lago" in items, ("completion tras FROM: los nombres enteros", items)
+assert not any("empleados_t" in i for i in items), ("una Table de otra fuente no se ofrece", items)
 h = ((por_id.get("sql:3", {}).get("result") or {}).get("contents") or {}).get("value", "")
-assert "hr.espanoles" in h and "Dataset" in h, ("hover", h)
+assert "hr.default.espanoles" in h and "Dataset" in h, ("hover", h)
 PYEOF
 dice "3d · el servidor de SQL en el agente, por el mismo canal: initialize lo contesta ore-sql (no el de Python) · la columna mal escrita en su sitio (L1:C8) con sugerencia · una Table de otra fuente se dice · a medio escribir no es un error · tras FROM los datasets del árbol (no las Table) · hover del dataset"
 

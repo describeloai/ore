@@ -540,7 +540,7 @@ impl Servidor {
                 let ns = ns.to_string();
                 con_forma(
                     self.leyendo_en(rama, move |raiz| {
-                        self.cargar_vista(raiz, &nombre, &ns, desde_puesto, cabeza)
+                        self.cargar_vista(raiz, &nombre, base, &ns, desde_puesto, cabeza)
                     }),
                     false,
                 )
@@ -759,6 +759,7 @@ impl Servidor {
         &self,
         raiz: &Path,
         nombre: &str,
+        base: Option<&str>,
         ns: &str,
         desde_puesto: bool,
         cabeza: bool,
@@ -779,10 +780,14 @@ impl Servidor {
                 format!("{}: {}", n.codigo, n.mensaje),
             );
         }
-        let args: Vec<String> = ["ask", ".", "--vista", nombre, "--sql", "--catalogo"]
+        let mut args: Vec<String> = ["ask", ".", "--vista", nombre, "--sql", "--catalogo"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        // Con `prefix`, el namespace es el schema: el SQL nombra desde él (0038 P4).
+        if let Some(b) = base {
+            args.extend(["--base".to_string(), b.to_string()]);
+        }
         let s = match mando::correr(&self.binario, raiz, &args) {
             Ok(s) => s,
             Err(e) => return error(500, "InternalServerError", e.to_string()),

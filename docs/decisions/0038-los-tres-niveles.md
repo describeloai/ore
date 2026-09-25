@@ -1,6 +1,6 @@
 # 0038 · Los tres niveles: `base.schema.nombre`, como en Unity Catalog
 
-**Estado:** decidido (P0–P2, P3a–P3c y P4 hechos; P3d, P3e y P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
+**Estado:** decidido (P0–P4 hechos; P5–P7 pendientes) · **Fecha:** 2026-09-24 ·
 **Decide:** cómo se nombra lo que un inquilino tiene en el catálogo —en los documentos, en SQL,
 por `/v1` y en la consola—, ahora que el **schema** es parte del nombre. Sigue a
 [`0033`](0033-el-dataset.md) (el dataset), [`0034`](0034-el-catalogo-de-assets.md) ④ (el
@@ -82,7 +82,7 @@ La especificación decide lo que no podía decidir ORE: **la identidad nunca es 
 | **P0** | La gramática: OOS v1alpha13 (spec, esquemas, errores) y esta ADR | hecho |
 | **P1** | La identidad en el núcleo: `qname()`, `qualify()`, `metadata_keys()`, `pertenencia` (`OOS2036`/`2037`), `sin_propiedad()`, el índice; la conformidad de v1alpha13, medida. Sin schema = `default`: los árboles de hoy compilan sin tocarlos | hecho |
 | **P2** | Los punteros `datasets/<base>/<schema>/<nombre>.json` y su migración | hecho |
-| **P3** | SQL de tres partes (medido y partido, § P3): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias, hecho), P3d el LSP, P3e `ore datasets` y `ore ask`; las dos partes con aviso `ORE-SQL-2P` | grande |
+| **P3** | SQL de tres partes (medido y partido, § P3; hecho): P3a el analizador (hecho), P3b ore-serve (hecho), P3c los tres SDK (ATTACH + alias, hecho), P3d el LSP (hecho), P3e `ore ask` (hecho; `ore datasets`, en P4); las dos partes con aviso `ORE-SQL-2P` | grande |
 | **P4** | `/v1` como Unity (base = prefix, schema = namespace) y `ore datasets` con tres partes | hecho |
 | **P5** | `discover` con el schema del origen | pequeño |
 | **P6** | La consola: schemas de verdad (crear/renombrar al servidor), refs de tres partes, borradores en la carpeta del schema | medio |
@@ -242,6 +242,24 @@ Python, Node y la JVM, lo mismo en los tres:
 Medido después (`medida-el-sql-de-tres-partes.sh`): con el agente de Python, `write()`, `sql()`,
 `over()` y la celda que escribe, con `default` y con `espana`, de punta a punta; `ore validate`
 limpio y el índice con su schema. el-puesto: tres partes desde Python, Node y Java.
+
+## P3d y P3e, hechos: el editor y `ore ask`
+
+**El LSP** (`puesto/python/ore/lsp_sql.py`) tenía su catálogo por `paquete.nombre` —con tres
+partes ofrecía `ventas.clientes` para lo que está en `espana`, un nombre que no existe (medido)—
+y un `create schema "p"` en su DuckDB. Ahora: un recorrido de nombres (`a.b` y `a.b.c`, a la
+forma corta); el catálogo por la clave de cada ítem (su `schema` del índice), un catálogo de
+DuckDB por base y lo de `default` con su alias en `main`, como `sql()`; tras FROM, los nombres
+enteros (`ventas.default.pedidos`) y las bases; tras `base.`, sus schemas; tras `base.schema.`,
+sus nombres; **el aviso `ORE-SQL-2P`** como diagnóstico (severidad aviso, `code`), una vez por
+nombre; un nombre que no está se sugiere entero (`¿ventas.espana.clientes?`); y el hover, por
+el nombre entero.
+
+**`ore ask --sql --catalogo`** (lo que `loadView` sirve) nombraba cada dataset `"p"."n"`, que
+sin `prefix` es lo que el cliente ve. Con `--base` (ore-serve lo pone cuando la petición trae
+`prefix`) el namespace es el schema: lo de esa base se nombra `"schema"."n"` y lo de otra
+`"base"."schema"."n"`. el-lago 15: una View en `espana` se lista en su schema (y no en la base
+sin prefix), con `default-namespace: [espana]` y su SQL sobre `"espana"."pedidos2"`.
 
 ## Lo que no cambia
 
