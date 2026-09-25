@@ -672,15 +672,26 @@ impl Servidor {
             },
             // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
             ("GET", ["funciones"]) => self.leyendo(|r| self.funciones(r)),
-            ("GET", ["funciones", ns, n, "resultados"]) => {
+            // 0038 P6c: `{ns}/{n}` es de `default`; `{b}/{s}/{n}`, de su schema.
+            ("GET", ["funciones", ns, n, "resultados"])
+            | ("GET", ["funciones", ns, _, n, "resultados"]) => {
+                let schema = match seg {
+                    [_, _, s, _, _] => s.to_string(),
+                    _ => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
+                };
                 let (ns, n) = (ns.to_string(), n.to_string());
-                self.leyendo(move |r| self.resultados(r, &ns, &n))
+                self.leyendo(move |r| self.resultados(r, &ns, &schema, &n))
             }
             // Invocar no escribe el árbol: escribe la cola. Se lee el árbol
             // para decidir, y el Job hace el resto.
-            ("POST", ["funciones", ns, n, "invocar"]) => {
+            ("POST", ["funciones", ns, n, "invocar"])
+            | ("POST", ["funciones", ns, _, n, "invocar"]) => {
+                let schema = match seg {
+                    [_, _, s, _, _] => s.to_string(),
+                    _ => ore_core::normalize::SCHEMA_POR_DEFECTO.to_string(),
+                };
                 let (ns, n) = (ns.to_string(), n.to_string());
-                self.leyendo(move |r| self.invocar(r, &ns, &n, sujeto))
+                self.leyendo(move |r| self.invocar(r, &ns, &schema, &n, sujeto))
             }
             // ── 0030 W1 ④ · la pregunta, servida (`preguntar.rs`) ──────────
             // Síncrono y de lectura: clona, `ore ask`, y devuelve las filas.
@@ -2366,6 +2377,16 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/funciones", con_identidad),
         ("GET", "/funciones/{ns}/{nombre}/resultados", con_identidad),
         ("POST", "/funciones/{ns}/{nombre}/invocar", con_identidad),
+        (
+            "GET",
+            "/funciones/{base}/{schema}/{nombre}/resultados",
+            con_identidad,
+        ),
+        (
+            "POST",
+            "/funciones/{base}/{schema}/{nombre}/invocar",
+            con_identidad,
+        ),
         ("POST", "/vistas/{ns}/{nombre}/ejecutar", con_identidad),
         ("POST", "/paquetes/{nombre}/copia/rehacer", con_identidad),
         (

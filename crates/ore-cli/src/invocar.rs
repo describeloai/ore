@@ -17,7 +17,8 @@
 //! esquema (el de la copia más `output`). Dos corridas de la misma función
 //! sobre la misma copia con la misma respuesta del modelo son **el mismo
 //! artefacto**, y la segunda no sube un byte. El informe
-//! (`resultados/<ns>_<f>_<corrida>.json`) es lo que `ore-serve` y la consola
+//! (`resultados/<ns>_<f>_<corrida>.json`; en otro schema,
+//! `resultados/<ns>/<s>/<f>_<corrida>.json`) es lo que `ore-serve` y la consola
 //! pueden leer sin alcanzar el almacén: filas, aciertos, errores, tokens,
 //! milisegundos y las cinco primeras respuestas.
 //!
@@ -120,6 +121,9 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         65,
         "la función no dice `over`: sin filas no hay sobre qué invocar".to_string(),
     ))?;
+    // En su contexto (0038): en un schema, `over` puede ir en una parte y es de
+    // ese schema; `p.default.n` es `p.n`.
+    let over = ore_core::link::cualificar(&over, f);
     let prompt = texto("prompt").ok_or((65, "la función no lleva `prompt`".to_string()))?;
     let output: BTreeMap<String, String> = f
         .section("output")
@@ -337,10 +341,12 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     // puntero en `<informe>/<p>_<f>.json` y una corrida por snapshot. Si el
     // puntero está, la corrida de hoy sobrescribe la anterior y la historia
     // se queda; si no, el dataset nace.
-    let dataset_resultado = format!("resultados/{}", op.funcion.replace('.', "_"));
+    // 0038 P6c: `p_f` en `default`, `p/s/f` en otro schema (`punteros::resultados_de`).
+    let nombre_resultado = ore_core::punteros::resultados_de(op.funcion);
+    let dataset_resultado = format!("resultados/{nombre_resultado}");
     let puntero_resultado = op
         .informe
-        .map(|d| d.join(format!("{}.json", op.funcion.replace('.', "_"))));
+        .map(|d| d.join(format!("{nombre_resultado}.json")));
     let base_resultado: Option<String> = puntero_resultado
         .as_ref()
         .and_then(|r| std::fs::read_to_string(r).ok())
@@ -485,7 +491,11 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         ]);
         std::fs::create_dir_all(dir)
             .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", dir.display())))?;
-        let ruta = dir.join(format!("{}_{corrida}.json", op.funcion.replace('.', "_")));
+        let ruta = dir.join(format!("{nombre_resultado}_{corrida}.json"));
+        if let Some(d) = ruta.parent() {
+            std::fs::create_dir_all(d)
+                .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", d.display())))?;
+        }
         std::fs::write(&ruta, informe.pretty() + "\n")
             .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
         println!("  informe · {}", ruta.display());

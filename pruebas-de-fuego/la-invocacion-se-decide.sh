@@ -20,6 +20,8 @@
 #   6  lo que se niega: sin copia hecha, con `effects`, `runtime: wasm`, un
 #      `output` que se llama como un campo de la copia, sin puerta
 #   7  la puerta pide identidad: sin `MODELO_TOKEN` todas las filas fallan y se dice
+#   8  una función en un schema (0038 P6c): por su nombre entero, y sus
+#      resultados en `resultados/<p>/<s>/<f>`, sin chocar con los de `default`
 #
 # Necesita `ore`, `ore-store-r2`, `ore-read-jsonl` y `ore-invoke` en el PATH o en
 # target/{release,debug}, y python3.
@@ -294,4 +296,35 @@ echo "$s" | grep -q "la puerta contestó 401" || falla "7 · no dice que la puer
 echo "$s" | grep -q "nada que sellar" || falla "7 · selló sin filas: $s"
 dice "7 · sin MODELO_TOKEN: 401 por fila, nada que sellar, y la corrida falla"
 
-if [ "$fallos" = 0 ]; then echo "✓ la invocación se decide: 0–7"; else echo "✗ $fallos fallo(s)"; exit 1; fi
+# ── 8 · 0038 P6c: una función en un schema ──────────────────────────────────
+# Se invoca por su nombre entero y sus resultados van a `resultados/<p>/<s>/<f>`:
+# con `_` serían `olist_copia_es_traducir`, que es también lo de la función
+# `es_traducir` de `default`.
+mkdir -p "$A/packages/olist_copia/es/functions"
+printf 'apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: es, namespace: olist_copia }\n' > "$A/packages/olist_copia/es/schema.yaml"
+cat > "$A/packages/olist_copia/es/functions/traducir.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Function
+metadata: { name: traducir, namespace: olist_copia, schema: es }
+spec:
+  runtime: model
+  model: modelo/v2-lite
+  over: olist_copia.productCategoryNameTranslation
+  prompt: "Traduce la categoría al español en una o dos palabras."
+  output:
+    categoriaEs: { type: String }
+Y
+( cd "$A" && "$ORE" validate . >/dev/null 2>&1 ) || falla "8 · con la función en un schema, el árbol no compila: $("$ORE" validate "$A" 2>&1 | head -5)"
+s=$("$ORE" invoke "$A" --funcion olist_copia.es.traducir --puerta "$PUERTA" --modelo de-mentira/v2-lite --informe "$A/resultados" 2>&1) || falla "8 · ore invoke en un schema falló: $s"
+echo "$s" | grep -q "sellado · s3://copia/ore/v2/resultados/olist_copia/es/traducir/metadata/00000-.* el dataset nace" || falla "8 · no selló su dataset en su sitio: $s"
+ls "$A"/resultados/olist_copia/es/traducir_*.json >/dev/null 2>&1 || falla "8 · no dejó su informe en resultados/olist_copia/es/"
+"$PY" - "$A/resultados/olist_copia/es/traducir.json" <<'PY' || falla "8 · su puntero"
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["dataset"] == "resultados/olist_copia/es/traducir" and p["funcion"] == "olist_copia.es.traducir", p
+PY
+[ ! -e "$A/resultados/olist_copia_es_traducir.json" ] || falla "8 · escribió el nombre con _ que choca"
+[ -f "$A/resultados/olist_copia_traducirCategoria.json" ] || falla "8 · se llevó el puntero de la de default"
+dice "8 · en un schema: \`olist_copia.es.traducir\` sella resultados/olist_copia/es/traducir, con su informe y su puntero al lado"
+
+if [ "$fallos" = 0 ]; then echo "✓ la invocación se decide: 0–8"; else echo "✗ $fallos fallo(s)"; exit 1; fi

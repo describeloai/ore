@@ -1,6 +1,7 @@
 //! Las funciones del árbol y su invocación (ADR 0029, F4a·I3):
 //! `GET /funciones` · `GET /funciones/{ns}/{n}/resultados` ·
-//! `POST /funciones/{ns}/{n}/invocar`.
+//! `POST /funciones/{ns}/{n}/invocar` — y, desde 0038 P6c, con su schema:
+//! `/funciones/{b}/{s}/{n}/…` (las de dos partes son de `default`).
 //!
 //! # Quién manda
 //!
@@ -33,17 +34,21 @@ fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
 
-/// Una `Function` del árbol, tal como está en `packages/<ns>/functions/`.
+/// Una `Function` del árbol, tal como está en `packages/<ns>/functions/` o en
+/// `packages/<ns>/<schema>/functions/` (0038).
 struct Funcion {
     ruta: PathBuf,
     ns: String,
+    /// `metadata.schema`, o `default`.
+    schema: String,
     nombre: String,
     spec: Node,
 }
 
 impl Funcion {
+    /// Su forma corta: `p.f` en `default`, `p.s.f` en otro schema.
     fn qn(&self) -> String {
-        format!("{}.{}", self.ns, self.nombre)
+        ore_core::normalize::corto(&self.ns, &self.schema, &self.nombre)
     }
     fn texto(&self, k: &str) -> Option<String> {
         campo(&self.spec, k)
@@ -69,16 +74,8 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
     let mut dirs: Vec<PathBuf> = paquetes.flatten().map(|e| e.path()).collect();
     dirs.sort();
     for p in dirs {
-        let Ok(fs) = std::fs::read_dir(p.join("functions")) else {
-            continue;
-        };
-        let mut rutas: Vec<PathBuf> = fs
-            .flatten()
-            .map(|e| e.path())
-            .filter(|r| r.extension().is_some_and(|x| x == "yaml"))
-            .collect();
-        rutas.sort();
-        for ruta in rutas {
+        // La raíz del paquete y la carpeta de cada schema (0038).
+        for ruta in crate::rutas::yamls_del_kind(&p, "functions") {
             let Ok(texto) = std::fs::read_to_string(&ruta) else {
                 continue;
             };
@@ -94,6 +91,9 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
             let (Some(nombre), Some(ns)) = (campo(meta, "name"), campo(meta, "namespace")) else {
                 continue;
             };
+            let schema = campo(meta, "schema")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string());
             let spec = n
                 .get("spec")
                 .map(|(_, s)| s.clone())
@@ -104,6 +104,7 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
             out.push(Funcion {
                 ruta,
                 ns,
+                schema,
                 nombre,
                 spec,
             });
@@ -112,19 +113,37 @@ fn funciones_de(raiz: &Path) -> Vec<Funcion> {
     out
 }
 
-/// Los informes de una función, los más recientes primero.
+/// `AAAAMMDDTHHMMSSZ`: lo que va detrás del nombre en el informe de una corrida.
+fn es_corrida(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 16
+        && b[8] == b'T'
+        && b[15] == b'Z'
+        && b[..8].iter().chain(&b[9..15]).all(u8::is_ascii_digit)
+}
+
+/// Los informes de una función, los más recientes primero: `resultados/<p>_<f>_<corrida>.json`
+/// en `default`, `resultados/<p>/<s>/<f>_<corrida>.json` en otro schema
+/// (`punteros::resultados_de`).
+///
+/// ⚠️ Lo que sigue al prefijo tiene que ser una corrida: `ia_f_` es también el
+///   principio de los informes de `ia.f_x`, y sin mirarlo se mezclaban.
 fn resultados_de(raiz: &Path, qn: &str) -> Vec<Json> {
-    let prefijo = format!("{}_", qn.replace('.', "_"));
-    let Ok(es) = std::fs::read_dir(raiz.join("resultados")) else {
+    let nombre = ore_core::punteros::resultados_de(qn);
+    let (sub, base) = nombre.rsplit_once('/').unwrap_or(("", &nombre));
+    let prefijo = format!("{base}_");
+    let Ok(es) = std::fs::read_dir(raiz.join("resultados").join(sub)) else {
         return Vec::new();
     };
     let mut ficheros: Vec<PathBuf> = es
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|f| f.to_str())
-                .is_some_and(|f| f.starts_with(&prefijo) && f.ends_with(".json"))
+            p.file_name().and_then(|f| f.to_str()).is_some_and(|f| {
+                f.strip_prefix(&prefijo)
+                    .and_then(|r| r.strip_suffix(".json"))
+                    .is_some_and(es_corrida)
+            })
         })
         .collect();
     ficheros.sort();
@@ -156,6 +175,7 @@ fn ficha(raiz: &Path, f: &Funcion) -> Json {
     Json::obj([
         ("name", Json::s(&f.nombre)),
         ("namespace", Json::s(&f.ns)),
+        ("schema", Json::s(&f.schema)),
         ("runtime", opt(f.texto("runtime"))),
         ("model", opt(f.texto("model"))),
         ("over", opt(f.texto("over"))),
@@ -202,37 +222,40 @@ impl Servidor {
         Respuesta::ok(Json::obj([("functions", Json::Arr(lista))]))
     }
 
-    /// `GET /funciones/{ns}/{n}/resultados`: los informes, del más nuevo al más viejo.
-    pub(crate) fn resultados(&self, raiz: &Path, ns: &str, nombre: &str) -> Respuesta {
-        if funciones_de(raiz)
-            .iter()
-            .all(|f| f.ns != ns || f.nombre != nombre)
-        {
-            return Respuesta::error(404, format!("no hay ninguna función `{ns}.{nombre}`"));
+    /// `GET /funciones/{ns}[/{schema}]/{n}/resultados`: los informes, del más nuevo al más viejo.
+    pub(crate) fn resultados(
+        &self,
+        raiz: &Path,
+        ns: &str,
+        schema: &str,
+        nombre: &str,
+    ) -> Respuesta {
+        let qn = ore_core::normalize::corto(ns, schema, nombre);
+        if funciones_de(raiz).iter().all(|f| f.qn() != qn) {
+            return Respuesta::error(404, format!("no hay ninguna función `{qn}`"));
         }
         Respuesta::ok(Json::obj([
-            ("function", Json::s(format!("{ns}.{nombre}"))),
-            (
-                "resultados",
-                Json::Arr(resultados_de(raiz, &format!("{ns}.{nombre}"))),
-            ),
+            ("function", Json::s(&qn)),
+            ("resultados", Json::Arr(resultados_de(raiz, &qn))),
         ]))
     }
 
-    /// `POST /funciones/{ns}/{n}/invocar`: decide si se puede, y encola.
+    /// `POST /funciones/{ns}[/{schema}]/{n}/invocar`: decide si se puede, y encola.
     pub(crate) fn invocar(
         &self,
         raiz: &Path,
         ns: &str,
+        schema: &str,
         nombre: &str,
         sujeto: &Identidad,
     ) -> Respuesta {
         if let Err(m) = token(ns) {
             return Respuesta::error(422, format!("espacio de nombres: {m}"));
         }
+        let pedida = ore_core::normalize::corto(ns, schema, nombre);
         let funciones = funciones_de(raiz);
-        let Some(f) = funciones.iter().find(|f| f.ns == ns && f.nombre == nombre) else {
-            return Respuesta::error(404, format!("no hay ninguna función `{ns}.{nombre}`"));
+        let Some(f) = funciones.iter().find(|f| f.qn() == pedida) else {
+            return Respuesta::error(404, format!("no hay ninguna función `{pedida}`"));
         };
         let qn = f.qn();
 
@@ -302,6 +325,9 @@ impl Servidor {
                 format!("`{qn}` no dice `over`: sin filas no hay sobre qué invocar"),
             );
         };
+        // En su contexto (0038): en un schema, `over` puede ir en una parte y es
+        // de ese schema; `p.default.n` es `p.n`.
+        let over = ore_core::normalize::qualify_catalogo(&over, Some(&f.ns), &f.schema);
         let Some(modelo) = f.texto("model") else {
             return Respuesta::error(422, format!("`{qn}` no dice `model`"));
         };

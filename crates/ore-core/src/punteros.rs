@@ -37,6 +37,21 @@ pub fn partes(corto: &str) -> Option<(&str, &str, &str)> {
     }
 }
 
+/// **Cómo se llaman los resultados de una función** (0029 F4a; 0038 P6c),
+/// bajo `resultados/`: el dataset (`resultados/<esto>`), su puntero
+/// (`<esto>.json`) y el informe de cada corrida (`<esto>_<corrida>.json`).
+///
+/// En `default`, `p_f`: el nombre de siempre, y nada que migrar. En otro
+/// schema, `p/s/f`: con `_` en vez de `/` sería `p_s_f`, que es también lo
+/// de la función `s_f` de `default` —dos funciones, un fichero—.
+pub fn resultados_de(corto: &str) -> String {
+    match partes(corto) {
+        Some((b, s, n)) if s != SCHEMA_POR_DEFECTO => format!("{b}/{s}/{n}"),
+        Some((b, _, n)) => format!("{b}_{n}"),
+        None => corto.replace('.', "_"),
+    }
+}
+
 /// El puntero de `corto` en `dir` (la carpeta de punteros o un `--informe`):
 /// `<dir>/<base>/<schema>/<n>.json`.
 pub fn ruta_en(dir: &Path, corto: &str) -> Option<PathBuf> {
@@ -192,6 +207,15 @@ pub fn del_arbol(raiz: &Path) -> BTreeMap<String, Json> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_resultados_de_una_funcion_en_default_y_en_un_schema() {
+        assert_eq!(resultados_de("ia.f"), "ia_f");
+        assert_eq!(resultados_de("ia.default.f"), "ia_f");
+        assert_eq!(resultados_de("ia.espana.f"), "ia/espana/f");
+        // la de `default` que se llama `espana_f` no choca con la de `espana`
+        assert_ne!(resultados_de("ia.espana_f"), resultados_de("ia.espana.f"));
+    }
 
     #[test]
     fn la_ruta_el_legado_y_el_nombre_en_el_lago() {

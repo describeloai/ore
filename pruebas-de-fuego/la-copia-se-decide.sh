@@ -569,6 +569,42 @@ curl -sf -H "$SUJ" "$BASE/funciones" | grep -q '"resultados":1' || falla "8 · G
 COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" "$BASE/funciones/tienda/nadie/resultados"); [ "$COD" = "404" ] || falla "8 · resultados de una inventada devolvio $COD"
 dice "8 · GET /funciones cuenta los resultados y GET …/resultados los lista, el mas nuevo primero"
 
+# 8b · 0038 P6c: una funcion en el schema `olist` (el que `discover` dejo), por
+# `/funciones/{base}/{schema}/{n}`. Sus resultados, en `resultados/tienda/olist/`:
+# con `_` serian `tienda_olist_segmentar`, que es tambien lo de una funcion
+# `olist_segmentar` de `default`.
+mkdir -p "$REPO/packages/tienda/olist/functions"
+cat > "$REPO/packages/tienda/olist/functions/segmentar.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Function
+metadata: { name: segmentar, namespace: tienda, schema: olist }
+spec:
+  runtime: model
+  model: modelo/v2-lite
+  over: tienda.customers
+  prompt: "Di el segmento del cliente en una palabra."
+  output:
+    segmento: { type: String }
+Y
+curl -sf -H "$SUJ" "$BASE/funciones" > "$TMP/f.json" || falla "8b · GET /funciones fallo"
+grep -q '"name":"segmentar","namespace":"tienda","output":\["segmento"\],"over":"tienda.customers","prompt":"Di el segmento del cliente en una palabra.","resultados":0,"runtime":"model","schema":"olist"' "$TMP/f.json" \
+  || falla "8b · GET /funciones no la lista en su schema: $(cat "$TMP/f.json")"
+COD=$(invocar tienda/olist/segmentar); [ "$COD" = "202" ] || falla "8b · invocar en su schema devolvio $COD: $(cuerpo)"
+cuerpo | grep -q '"function":"tienda.olist.segmentar"' || falla "8b · la respuesta no la nombra entera: $(cuerpo)"
+cuerpo | grep -q 'encolado como `49-la-invocacion-tienda-olist-segmentar.yaml`' || falla "8b · no encolo aparte de la de default: $(cuerpo)"
+en_cola 49-la-invocacion-tienda-olist-segmentar.yaml | grep -q 'name: FUNCION, value: "tienda.olist.segmentar"' || falla "8b · el Job no lleva la funcion entera"
+en_cola 49-la-invocacion-tienda-segmentar.yaml | grep -q 'name: FUNCION, value: "tienda.segmentar"' || falla "8b · la de default se piso"
+mkdir -p "$REPO/resultados/tienda/olist"
+printf '{ "funcion": "tienda.olist.segmentar", "estado": "ok", "filas": 2, "ok": 2, "errores": 0 }\n' > "$REPO/resultados/tienda/olist/segmentar_20260918T100000Z.json"
+curl -sf -H "$SUJ" "$BASE/funciones/tienda/olist/segmentar/resultados" > "$TMP/res.json" || falla "8b · GET resultados en su schema fallo"
+grep -q '"function":"tienda.olist.segmentar"' "$TMP/res.json" && grep -q '"corrida":"20260918T100000Z"' "$TMP/res.json" && grep -q '"ok":2' "$TMP/res.json" \
+  || falla "8b · sus resultados no salen: $(cat "$TMP/res.json")"
+grep -q '20260917T200000Z' "$TMP/res.json" && falla "8b · se mezclan los resultados de la de default"
+curl -sf -H "$SUJ" "$BASE/funciones/tienda/segmentar/resultados" | grep -q '20260918T100000Z' && falla "8b · la de default lista los de la de olist"
+COD=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" "$BASE/funciones/tienda/otro/segmentar/resultados"); [ "$COD" = "404" ] || falla "8b · en un schema que no la tiene devolvio $COD"
+rm -rf "$REPO/packages/tienda/olist/functions" "$REPO/resultados/tienda"
+dice "8b · en su schema: listada con \`schema\`, invocada por /funciones/tienda/olist/segmentar (su Job, aparte), y sus resultados en resultados/tienda/olist/ sin mezclarse"
+
 # ── 9 · rehacer la copia (0030 W1): cuando el recibo miente ─────────────────
 # Escribe la cola, no el arbol: el Job de la copia con REHACER al instante y
 # VISTAS a las del paquete. Dos peticiones son dos Jobs. 404 sin paquete; 409

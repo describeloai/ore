@@ -354,10 +354,33 @@ partes llega a la vista donde la de dos da 404. ⚠️ La medida tiene que parti
 compila: con los `OOS2010` de un discover que modela, el validador se paraba antes y todo salía
 «igual» (medido).
 
-Queda de P6: P6c —los Jobs (`jobs.ts` parte el sujeto en dos), `/funciones` con schema en ORE
-y su invocación, y los ids de Ontology Forge (`namespace.name`)— y P6d —el selector de
-carpeta de «nuevo fichero», «crear carpeta» que escribe un README y no un schema, y los textos
-de dos partes—.
+Queda de P6: P6c y P6d.
+
+## P6c, hecho: `/funciones` con schema, los Jobs y Forge
+
+**ORE.** Una `Function` se lee también de `<paquete>/<schema>/functions/` y sabe su schema
+(`metadata.schema`); `GET /funciones` lo dice, y `/funciones/{b}/{s}/{n}/invocar|resultados`
+la alcanza (las de dos partes, `default`). Su `over` se cualifica en su contexto —en un schema
+puede ir en una parte—, en `ore-serve` y en `ore invoke`. **Los resultados** se llamaban
+`resultados/<p>_<f>…`: con tres partes, `p_s_f`, que es también lo de la función `s_f` de
+`default`. `punteros::resultados_de` los nombra `p_f` en `default` —lo de siempre, nada que
+migrar— y `p/s/f` en otro schema (dataset `resultados/p/s/f`, puntero `p/s/f.json`, informe
+`p/s/f_<corrida>.json`); y el listado de informes exige que lo de detrás del prefijo sea una
+corrida (`ia_f_` es también el principio de los de `ia.f_x`). El Job se llama
+`invocar-<p>-<s>-<f>-…` y se encola aparte de la de `default`. la-invocacion-se-decide 8 y
+la-copia-se-decide 8b.
+
+**La consola.** Los Jobs partían el sujeto (`b.s.v`, `b.s.f`) en dos; ahora por sus partes, y
+los informes de `/copias` por el nombre entero. Run de una Function va a su ruta de tres
+partes. Ontology Forge: el id de Entity, View y Table es su forma corta (`p.s.n`), el `target`
+de una relación y el `backedBy` en una parte se cualifican con la base y el schema de quien
+los escribe, y una vista dice quién se sostiene en ella por el nombre entero; Concept e
+Interface son vocabulario y no cambian. `medida-forge-con-schema.sh` (el `deLaCelda` de la
+consola sobre lo que sirve `ore-serve`, con `clientes` en `espana` y en `francia`): tres ids,
+el link a `ventas.espana.Clientes` y cada entidad en su vista.
+
+Queda de P6: P6d —el selector de carpeta de «nuevo fichero», «crear carpeta» que escribe un
+README y no un schema, y los textos de dos partes—.
 
 ## Lo que no cambia
 
