@@ -232,17 +232,18 @@ const TRANSFORMS_SQL: &str = "\
 -- Un transform escrito en SQL: UNA sentencia que escribe. Lo que lee y lo que
 -- escribe lo dice la propia sentencia, y el servidor lo hace cumplir.
 --
--- `create or replace table` sobrescribe; `insert into` anexa; `insert or
--- replace into` hace upsert. Un `select` suelto lee y no escribe.
+-- `CREATE OR REPLACE TABLE … AS SELECT` sobrescribe; `INSERT INTO … SELECT`
+-- anexa; `INSERT OR REPLACE INTO … SELECT` hace upsert. Un `SELECT` suelto lee
+-- y no escribe.
 --
 -- Los nombres son de tres partes, `base.schema.nombre` (0038, como Unity): la
 -- base de datos, su schema y el dataset. En `default` basta `base.nombre`.
 -- Cambia los dos por los tuyos y dale a Run.
 
-create or replace table mi_base.mi_schema.mi_resumen as
-select pais, count(*) as n
-from mi_base.mi_schema.mi_dataset
-group by pais
+CREATE OR REPLACE TABLE mi_base.mi_schema.mi_resumen AS
+SELECT pais, count(*) AS n
+FROM mi_base.mi_schema.mi_dataset
+GROUP BY pais
 ";
 
 const ANALYTICS_PY: &str = "\
@@ -367,13 +368,13 @@ pub const CLASES: &[Clase] = &[
         perfil: None,
         titulo: "Transforms",
         descripcion: "Transform and integrate datasets writing SQL.",
-        // 3: un `.sql` de verdad, en tres partes (0038 P7). Actualizar la deja al
-        // lado del `ejemplo.py` de antes, que no se borra: es de quien lo tenga.
-        version: 3,
-        semilla: &[
-            ("pyproject.toml", PYPROJECT_PY),
-            ("transforms/ejemplo.sql", TRANSFORMS_SQL),
-        ],
+        // 4: un `.sql` de verdad, en tres partes y SIN `pyproject.toml` (0038 P7):
+        // la consulta corre en el entorno de Python, pero no puede usar nada de
+        // lo que ese fichero declare — en un repositorio de SQL sólo confundía.
+        // Actualizar deja lo de antes (`ejemplo.py`, `pyproject.toml`): es de
+        // quien lo tenga.
+        version: 4,
+        semilla: &[("transforms/ejemplo.sql", TRANSFORMS_SQL)],
     },
     Clase {
         id: "analytics-python",
@@ -676,8 +677,9 @@ mod pruebas {
             // ⭐ 0037 ③c: y en Java lo mismo, con su fichero. Un repositorio
             //   sin dónde declarar se come la capa de la celda, o —como pasaba
             //   en la JVM hasta ③c— no puede usar ni una biblioteca.
+            // `sql` no: una consulta no usa dependencias de Python (0038 P7).
             if let Some(donde) = match c.lenguaje {
-                "python" | "sql" => Some("pyproject.toml"),
+                "python" => Some("pyproject.toml"),
                 "java" => Some("pom.xml"),
                 _ => None,
             } {
@@ -716,6 +718,7 @@ mod pruebas {
                 .any(|(r, _)| *r == "transforms/ejemplo.sql")
         );
         assert!(!sql.semilla.iter().any(|(r, _)| r.ends_with(".py")));
+        assert!(!sql.semilla.iter().any(|(r, _)| *r == "pyproject.toml"));
     }
 
     /// Cada clase pertenece a una familia que existe, y cada familia tiene

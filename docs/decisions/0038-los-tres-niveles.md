@@ -412,7 +412,8 @@ asistente no pregunta nada. `transforms-sql` siembra `transforms/ejemplo.sql`: U
 `create or replace table … as select …` —`ore sql` dice que escribe
 `mi_base.mi_schema.mi_resumen` (sobrescribe) y lee `mi_base.mi_schema.mi_dataset`—. Las
 versiones suben (4; la de SQL, 3): «Propose upgrade» escribe la semilla nueva y no borra el
-`ejemplo.py` de antes, que es de quien lo tenga. `las_semillas_nombran_en_tres_partes`.
+`ejemplo.py` de antes, que es de quien lo tenga. `las_semillas_nombran_en_tres_partes`. Y la de SQL, con las palabras clave en mayúsculas y **sin `pyproject.toml`** (versión 4): la
+consulta corre en el entorno de Python, pero no puede usar nada de lo que ese fichero declare.
 
 **`declare()` en un schema** (un resto de P3c, al nombrar el modelo en tres partes): los tres SDK
 llamaban siempre a `/documentos/{kind}/{ns}/{n}` —`default`— y un documento con
