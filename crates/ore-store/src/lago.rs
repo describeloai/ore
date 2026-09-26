@@ -858,9 +858,10 @@ impl Lago {
             }
             (_, None) => {}
         }
-        if manifiestos.is_empty() {
-            return Err("nada que escribir: ni ficheros nuevos ni tabla que sobrescribir".into());
-        }
+        // Sin manifiestos el snapshot lleva la lista vacía: una tabla de 0 filas
+        // con su esquema, que es lo que una vista cuyo `where` no casa ES. Antes
+        // esto se negaba («nada que escribir»), y un dataset vacío fallaba en
+        // cada pasada sin dejar puntero ni recibo (medido en A5).
 
         // ── la lista de manifiestos y el snapshot ──────────────────────────
         let ruta_lista = format!(

@@ -366,7 +366,8 @@ fn sellar<'a>(
 /// (medido: `ore-store leer` 8,3 s por millón de filas, Arrow 0,4 s). Aquí se
 /// abre la tabla origen por su `metadata_location`, se leen sus lotes vivos
 /// (con los position deletes aplicados), se aplican los filtros de la vista
-/// (`[[columna, "eq", valor]]`, con el literal llevado al tipo de la columna),
+/// (`[{columna, operador: "eq", valor}]`, la forma del ADR 0008, con el
+/// literal llevado al tipo de la columna),
 /// se proyecta por nombre (`proyeccion: {campo: columna}`) y cada columna se
 /// lleva al físico que la cabecera declara (`cast`; lo que no convierte se
 /// queda como texto y va a `sin_estrechar`, como en `sellar`). De ahí en
@@ -410,29 +411,29 @@ fn copiar(
                 .collect()
         })
         .unwrap_or_default();
-    let filtros: Vec<(String, String)> = origen
-        .get("filtros")
-        .map(|(_, f)| {
-            f.items()
+    let filtros: Vec<(String, String)> =
+        origen
+            .get("filtros")
+            .map(|(_, f)| {
+                f.items()
                 .iter()
                 .map(|t| {
-                    let i = t.items();
-                    match (
-                        i.first().and_then(|x| x.as_str()),
-                        i.get(1).and_then(|x| x.as_str()),
-                        i.get(2).and_then(|x| x.as_str()),
-                    ) {
-                        (Some(c), Some("eq"), Some(v)) => Ok((c.to_string(), v.to_string())),
-                        (Some(c), Some(op), _) => Err(format!(
+                    let campo = |k: &str| t.get(k).and_then(|(_, x)| x.as_str());
+                    match (campo("columna"), campo("operador").unwrap_or("eq"), campo("valor")) {
+                        (Some(c), "eq", Some(v)) => Ok((c.to_string(), v.to_string())),
+                        (Some(c), op, _) if op != "eq" => Err(format!(
                             "el filtro sobre `{c}` es `{op}` y `copiar` sólo sabe `eq`"
                         )),
-                        _ => Err("un filtro no tiene la forma `[columna, \"eq\", valor]`".into()),
+                        _ => Err(
+                            "un filtro no tiene la forma `{columna, operador, valor}` (ADR 0008)"
+                                .into(),
+                        ),
                     }
                 })
                 .collect::<Result<Vec<_>, String>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+            })
+            .transpose()?
+            .unwrap_or_default();
     // Cada campo de la cabecera nombra una columna del origen; lo que no esté
     // en la proyección no se copia, y una columna que el origen no tiene se
     // dice con su nombre (la vista se validó contra la Table, pero la tabla
@@ -945,10 +946,14 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
     // pyarrow y Arrow Java escriben) o como Parquet (`formato: parquet`: lo que
     // DuckDB escribe desde Node, que no lleva Arrow).
     let mut lotes = Vec::new();
+    let vacio;
     match campo("formato").as_deref() {
         None | Some("ipc") => {
             let flujo = arrow_ipc::reader::StreamReader::try_new(lector, None)
                 .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
+            // Un flujo sin filas trae su esquema igualmente: un DataFrame vacío
+            // se escribe como una tabla de 0 filas con sus columnas (A5).
+            vacio = Some(arrow_array::RecordBatch::new_empty(flujo.schema()));
             for lote in flujo {
                 let lote =
                     lote.map_err(|e| format!("un lote del flujo IPC no se pudo leer: {e}"))?;
@@ -969,6 +974,9 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
                 .with_batch_size(1 << 16)
                 .build()
                 .map_err(|e| format!("el Parquet no se pudo abrir: {e}"))?;
+            vacio = Some(arrow_array::RecordBatch::new_empty(
+                arrow_array::RecordBatchReader::schema(&flujo),
+            ));
             for lote in flujo {
                 let lote = lote.map_err(|e| format!("un lote del Parquet no se pudo leer: {e}"))?;
                 if lote.num_rows() > 0 {
@@ -978,9 +986,13 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
         }
         Some(otro) => return Err(format!("`formato` es `ipc` o `parquet`, no `{otro}`")),
     }
-    let Some(primero) = lotes.first() else {
-        return Err("el flujo IPC no trae ninguna fila: nada que escribir".into());
-    };
+    if lotes.is_empty() {
+        match vacio {
+            Some(v) => lotes.push(carga::normalizar(&v)?),
+            None => return Err("el flujo no trae esquema: nada que escribir".into()),
+        }
+    }
+    let primero = &lotes[0];
     let columnas = lago::columnas_de(primero);
     if columnas.is_empty() {
         return Err("la tabla no tiene columnas: nada que escribir".into());
@@ -3012,7 +3024,10 @@ mod tests {
             conducto: "materialization.payload".into(),
         };
         // con un filtro: el literal `2.50` contra el decimal(18,2) del origen
-        let n = nodo(&peticion("[[\"total\",\"eq\",\"2.5\"]]", ""));
+        let n = nodo(&peticion(
+            "[{\"columna\":\"total\",\"operador\":\"eq\",\"valor\":\"2.5\"}]",
+            "",
+        ));
         let origen = n.get("origen").unwrap().1.clone();
         let c = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).expect("copia");
         assert_eq!(campo(&c, "operacion"), "creada");
@@ -3055,10 +3070,73 @@ mod tests {
         let origen = n.get("origen").unwrap().1.clone();
         let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
         assert!(e.contains("`apellido`"), "{e}");
-        let n = nodo(&peticion("[[\"id\",\"eq\",\"tres\"]]", ""));
+        let n = nodo(&peticion(
+            "[{\"columna\":\"id\",\"operador\":\"eq\",\"valor\":\"tres\"}]",
+            "",
+        ));
         let origen = n.get("origen").unwrap().1.clone();
         let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
         assert!(e.contains("`id = tres`"), "{e}");
+        // A5: un filtro que no casa con nada da una tabla de 0 filas con su
+        // esquema y su cabecera, no «nada que escribir»
+        let n = nodo(&peticion(
+            "[{\"columna\":\"id\",\"operador\":\"eq\",\"valor\":\"99\"}]",
+            "",
+        ));
+        let origen = n.get("origen").unwrap().1.clone();
+        let c = copiar(&lago, &cab, "copias/vacia", None, false, &origen).expect("copia vacía");
+        assert_eq!(campo(&c, "operacion"), "creada");
+        assert_eq!(campo(&c, "filas"), "0", "{c}");
+        let ml_vacia = campo(&c, "metadata_location");
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{ml_vacia}\",\"dataset\":\"copias/vacia\"}}"
+            )),
+        )
+        .expect("lee la vacía");
+        assert_eq!(l.lines().count(), 1, "solo la cabecera: {l}");
+        let t = lago.abrir(&ml_vacia, "copias/vacia").unwrap();
+        let nombres: Vec<_> = t
+            .metadata()
+            .current_schema()
+            .as_struct()
+            .fields()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert_eq!(nombres, ["clave", "importe", "quien"]);
+    }
+
+    /// A5: un flujo IPC sin lotes (un DataFrame vacío) trae su esquema, y se
+    /// escribe como una tabla de 0 filas con esas columnas.
+    #[test]
+    fn un_flujo_sin_filas_escribe_una_tabla_vacia() {
+        use arrow_schema::{DataType, Field, Schema};
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "datasets/vacio";
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("nombre", DataType::Utf8, true),
+        ]));
+        let mut bytes = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.finish().unwrap();
+        }
+        let e = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"v-1\"}}"),
+            &bytes[..],
+        )
+        .expect("escribe vacío");
+        let ml = campo(
+            &aplicar_lo_escrito(&lago, &e, ds, None),
+            "metadata_location",
+        );
+        let t = lago.abrir(&ml, ds).unwrap();
+        assert!(lago.filas(&t).unwrap().is_empty());
+        assert_eq!(t.metadata().current_schema().as_struct().fields().len(), 2);
     }
 
     /// ADR 0040 paso 4c: `volcar` saca el dataset entero en Arrow, y lo que
