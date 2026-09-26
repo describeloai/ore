@@ -17,8 +17,8 @@
 //!
 //! No escribe YAML: llama a [`crate::inductor::documento_paquete`], que es el
 //! mismo que usa la inducción. Un manifiesto escrito a mano y uno inducido
-//! tienen que ser el mismo texto — es la misma disciplina que `ore view add` con
-//! `documento_vista`.
+//! tienen que ser el mismo texto — es la misma disciplina que la vista que el
+//! inductor propone con `documento_vista`.
 //!
 //! # Lo que decide, y lo que no
 //!
@@ -100,7 +100,7 @@ pub fn nuevo(raiz: &Path, nombre: &str, owner: Option<&str>, dominio: Option<&st
     // viaja en git y no significa nada. Los crea quien escribe el primer
     // documento, que es como ya funciona la inducción.
     println!("  ore discover --from <catálogo> --out packages/{nombre}");
-    println!("  ore view add <nombre> --from <tabla>");
+    println!("  CREATE VIEW {nombre}.<vista> AS SELECT …   (en un puesto)");
     if owner.is_none() {
         println!();
         println!("  · `owner: cambiame` — NO valida, y es a propósito");
@@ -108,7 +108,7 @@ pub fn nuevo(raiz: &Path, nombre: &str, owner: Option<&str>, dominio: Option<&st
         println!("    sin nadie que responda aparentando lo contrario.");
     }
 
-    // Lo que salga del árbol entero, como hace `ore view add`: escribir un
+    // Lo que salga del árbol entero: escribir un
     // documento que rompe el árbol y callarlo es media herramienta.
     let diags = ore_core::validate_package(raiz);
     if diags.is_empty() {
@@ -286,7 +286,8 @@ fn planificar(
         }
     }
 
-    // ④ quien lo nombraba
+    // ④ quien lo nombraba: por un campo, o dentro de la consulta de una vista
+    //    SQL (0040 paso 6), que se reescribe en su sitio.
     for d in &pkg.docs {
         if d.path == doc.path {
             continue;
@@ -295,7 +296,12 @@ fn planificar(
             .into_iter()
             .filter(|r| r.destino == qname && r.kind == doc.kind)
             .collect();
-        if refs.is_empty() {
+        let sql = ore_core::servir::nombrados(pkg, d)
+            .iter()
+            .any(|n| n.doc.path == doc.path)
+            .then(|| ore_core::servir::renombrar(pkg, d, &qname, &nuevo_qname))
+            .flatten();
+        if refs.is_empty() && sql.is_none() {
             continue;
         }
         let t = taller.leer(&d.path)?;
@@ -322,6 +328,17 @@ fn planificar(
         let mut nuevo = lineas.join("\n");
         if acaba_en_salto {
             nuevo.push('\n');
+        }
+        if let Some(sql) = sql {
+            nuevo = con_sql(&nuevo, &sql).ok_or_else(|| {
+                format!(
+                    "no se pudo reapuntar la consulta de `{}`",
+                    d.qname().unwrap_or_default()
+                )
+            })?;
+            rastro
+                .reapuntados
+                .push(format!("{}  ·  sql", d.qname().unwrap_or_default()));
         }
         taller.escribir(&d.path, nuevo);
     }
@@ -839,10 +856,18 @@ fn grafo_de(pkg: &Package, dentro: &[&Loaded]) -> BTreeMap<String, BTreeSet<Stri
     let mut g: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for d in &pkg.docs {
         let Some(mio) = clave(d) else { continue };
-        for r in ore_core::exporta::referencias(d) {
+        // Lo que la consulta de una vista SQL lee también la ata (0040 paso 6).
+        let de_la_consulta = ore_core::servir::nombrados(pkg, d)
+            .into_iter()
+            .filter_map(|n| Some((n.doc.kind, n.doc.qname()?)));
+        for (kind, qn) in ore_core::exporta::referencias(d)
+            .into_iter()
+            .map(|r| (r.kind, r.destino))
+            .chain(de_la_consulta)
+        {
             // La referencia trae su kind: la arista va a ESE documento, no a
             // todo lo que se llame igual (la Table y su View, 0038 P5).
-            let destino = format!("{:?}:{}", r.kind, r.destino);
+            let destino = format!("{kind:?}:{qn}");
             if !suyos.contains(&destino) || !suyos.contains(&mio) || destino == mio {
                 continue;
             }
@@ -1038,6 +1063,47 @@ fn diagnosticos(raiz: &Path) -> ExitCode {
 /// `iberia` a secas— y buscar esa palabra por el fichero cambiaría cualquier
 /// otra cosa que se llame igual. `referencias()` da la posición exacta, y eso
 /// es la mitad del valor de que exista.
+/// El texto de un documento con su `spec.sql` cambiado por `sql`, en bloque
+/// literal y en su sitio: lo demás del fichero —comentarios, orden, estilo— no
+/// se toca. `None` si no hay `spec.sql` donde el analizador dijo.
+pub(crate) fn con_sql(texto: &str, sql: &str) -> Option<String> {
+    let raiz = ore_core::parse::parse(texto).ok()?;
+    let (_, spec) = raiz.get("spec")?;
+    let (clave, _) = spec.get("sql")?;
+    let lineas: Vec<&str> = texto.split('\n').collect();
+    let i = clave.pos().line.checked_sub(1)?;
+    let de_la_clave = lineas.get(i)?;
+    let sangria = de_la_clave.len() - de_la_clave.trim_start().len();
+    if !de_la_clave.trim_start().starts_with("sql:") {
+        return None;
+    }
+    // El bloque: las líneas que siguen, más sangradas que la clave (o vacías).
+    let mut fin = i + 1;
+    while fin < lineas.len() {
+        let l = lineas[fin];
+        if !l.trim().is_empty() && l.len() - l.trim_start().len() <= sangria {
+            break;
+        }
+        fin += 1;
+    }
+    // Las vacías del final son del fichero, no de la consulta.
+    while fin > i + 1 && lineas[fin - 1].trim().is_empty() {
+        fin -= 1;
+    }
+    let pad = " ".repeat(sangria);
+    let mut out: Vec<String> = lineas[..i].iter().map(|l| l.to_string()).collect();
+    out.push(format!("{pad}sql: |"));
+    for l in sql.trim_end_matches('\n').split('\n') {
+        out.push(if l.is_empty() {
+            String::new()
+        } else {
+            format!("{pad}  {l}")
+        });
+    }
+    out.extend(lineas[fin..].iter().map(|l| l.to_string()));
+    Some(out.join("\n"))
+}
+
 pub(crate) fn sustituir_en(
     lineas: &[String],
     pos: ore_core::diag::Pos,

@@ -219,3 +219,52 @@ fn la_copia_de_una_consulta_esta_encima() {
     // una vista SQL sin copia no tiene de dónde leerse fuera de un puesto
     assert_eq!(de(vista(&pkg, "ventas.cruce")), None);
 }
+
+/// **Lo que nombra una consulta, y dónde** (0040 paso 6): con comillas o sin
+/// ellas, en dos o en tres partes, con alias; el nombre de un `WITH` no es del
+/// árbol. Y renombrar escribe el nombre nuevo entero en su sitio, citado como
+/// estaba, sin tocar nada más de lo escrito.
+#[test]
+fn una_consulta_se_reapunta_en_su_sitio() {
+    let t = arbol("renombrar");
+    escribe(
+        &t.0,
+        "packages/ventas/views/mezcla.yaml",
+        "apiVersion: oos.dev/v1alpha14\nkind: View\nmetadata: { name: mezcla, namespace: ventas }\nspec:\n  owner: team:ventas\n  dialect: duckdb\n  sql: |\n    WITH x AS (SELECT id FROM \"ventas\".\"pedidos\")\n    SELECT p.id -- ventas.pedidos\n    FROM ventas.pedidos p\n    JOIN \"ventas\".\"espana\".\"clientes\" c ON c.id = p.id\n    JOIN x ON x.id = p.id\n  columns:\n    id: { type: Integer }\n",
+    );
+    let (pkg, _) = ore_core::validate::cargar_paquete(&t.0);
+    let v = vista(&pkg, "ventas.mezcla");
+    let sql = v
+        .section("sql")
+        .and_then(|s| s.as_str())
+        .unwrap()
+        .to_string();
+    let escritos: Vec<(String, String, bool)> = ore_core::servir::nombrados(&pkg, v)
+        .into_iter()
+        .map(|n| (n.doc.qname().unwrap(), sql[n.rango].to_string(), n.citado))
+        .collect();
+    assert_eq!(
+        escritos,
+        [
+            (
+                "ventas.pedidos".into(),
+                "\"ventas\".\"pedidos\"".into(),
+                true
+            ),
+            ("ventas.pedidos".into(), "ventas.pedidos".into(), false),
+            (
+                "ventas.espana.clientes".into(),
+                "\"ventas\".\"espana\".\"clientes\"".into(),
+                true
+            ),
+        ]
+    );
+    let nuevo = ore_core::servir::renombrar(&pkg, v, "ventas.pedidos", "eu.pedidos").unwrap();
+    assert_eq!(
+        nuevo,
+        "WITH x AS (SELECT id FROM \"eu\".\"pedidos\")\nSELECT p.id -- ventas.pedidos\n\
+         FROM eu.pedidos p\nJOIN \"ventas\".\"espana\".\"clientes\" c ON c.id = p.id\n\
+         JOIN x ON x.id = p.id\n"
+    );
+    assert!(ore_core::servir::renombrar(&pkg, v, "ventas.otra", "eu.otra").is_none());
+}

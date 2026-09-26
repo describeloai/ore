@@ -12,7 +12,6 @@
 //! | | qué delega | ADR |
 //! |---|---|---|
 //! | `ore-read-<tipo>` | leer filas de un origen | 0008 |
-//! | `ore-maintain` | correr el circuito Δ | 0013 |
 //! | **`ore-store-<tipo>`** | **escribir el dataset y devolver su puntero** | **0015 · 0031 §10** |
 //!
 //! # El protocolo

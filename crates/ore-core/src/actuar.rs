@@ -120,16 +120,9 @@ fn lectura(pkg: &Package, d: &Loaded, out: &mut Vec<Diagnostic>) {
         && let Some(r) = nodo.as_str()
     {
         match pkg.resolve_view(r, d) {
-            Some(v) => {
-                expone = Some(
-                    v.section("fields")
-                        .map(|f| f.entries())
-                        .unwrap_or(&[])
-                        .iter()
-                        .filter_map(|(k, _)| k.as_str().map(String::from))
-                        .collect(),
-                );
-            }
+            // Lo que la vista expone: sus `fields`, o el contrato de una
+            // vista SQL (v1alpha14 §4: `OOS7014` sigue valiendo sobre ella).
+            Some(v) => expone = Some(crate::vistas::expone(v).into_keys().collect()),
             None => out.push(no_es_vista(d, nodo, r, "over")),
         }
     }

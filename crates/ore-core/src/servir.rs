@@ -244,3 +244,136 @@ impl VisitorMut for Resolver<'_, '_> {
         }
     }
 }
+
+/// Un nombre del árbol escrito en la consulta de una vista SQL: a qué documento
+/// resuelve y **dónde está escrito** (bytes de `spec.sql`), para reescribirlo en
+/// su sitio sin tocar el resto de lo que alguien escribió.
+#[derive(Clone)]
+pub struct Nombrado<'a> {
+    pub doc: &'a Loaded,
+    pub rango: std::ops::Range<usize>,
+    /// Si se escribió entre comillas (`"ventas"."clientes"`).
+    pub citado: bool,
+}
+
+/// **Lo que nombra la consulta de una vista SQL, y dónde** (0040 paso 6): lo
+/// que `package move`/`split` y `schema rename` necesitan para reapuntarla,
+/// igual que reapuntan un `from:`. Los nombres de un `WITH` no son del árbol.
+/// Vacío si no es una vista SQL o su consulta no se analiza.
+pub fn nombrados<'a>(pkg: &'a Package, v: &'a Loaded) -> Vec<Nombrado<'a>> {
+    let Some(sql) = v.section("sql").and_then(|s| s.as_str()) else {
+        return Vec::new();
+    };
+    let Ok(sentencias) = Parser::parse_sql(&DuckDbDialect {}, sql) else {
+        return Vec::new();
+    };
+    let [Statement::Query(q)] = sentencias.as_slice() else {
+        return Vec::new();
+    };
+    // Dónde empieza cada línea: las posiciones del analizador son línea y
+    // columna (en caracteres), desde 1.
+    let inicios: Vec<usize> = std::iter::once(0)
+        .chain(sql.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let byte = |l: u64, c: u64| -> Option<usize> {
+        let ini = *inicios.get(usize::try_from(l).ok()?.checked_sub(1)?)?;
+        let col = usize::try_from(c).ok()?.checked_sub(1)?;
+        Some(
+            ini + sql[ini..]
+                .chars()
+                .take(col)
+                .map(char::len_utf8)
+                .sum::<usize>(),
+        )
+    };
+    struct Recoge<'a, 'b> {
+        pkg: &'a Package,
+        desde: &'a Loaded,
+        ctes: BTreeSet<String>,
+        byte: &'b dyn Fn(u64, u64) -> Option<usize>,
+        out: Vec<Nombrado<'a>>,
+    }
+    impl Visitor for Recoge<'_, '_> {
+        type Break = ();
+        fn pre_visit_table_factor(&mut self, tf: &TableFactor) -> ControlFlow<()> {
+            let TableFactor::Table {
+                name, args: None, ..
+            } = tf
+            else {
+                return ControlFlow::Continue(());
+            };
+            let ids: Vec<&Ident> = name
+                .0
+                .iter()
+                .filter_map(|p| match p {
+                    ObjectNamePart::Identifier(i) => Some(i),
+                    _ => None,
+                })
+                .collect();
+            if ids.len() != name.0.len() || ids.is_empty() {
+                return ControlFlow::Continue(());
+            }
+            let escrito = ids
+                .iter()
+                .map(|i| i.value.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            if ids.len() == 1 && self.ctes.contains(&escrito.to_lowercase()) {
+                return ControlFlow::Continue(());
+            }
+            let (Some(d), Some(a), Some(b)) = (
+                crate::linaje::resolver(self.pkg, self.desde, &escrito),
+                (self.byte)(ids[0].span.start.line, ids[0].span.start.column),
+                (self.byte)(
+                    ids[ids.len() - 1].span.end.line,
+                    ids[ids.len() - 1].span.end.column,
+                ),
+            ) else {
+                return ControlFlow::Continue(());
+            };
+            self.out.push(Nombrado {
+                doc: d,
+                rango: a..b,
+                citado: ids.iter().any(|i| i.quote_style.is_some()),
+            });
+            ControlFlow::Continue(())
+        }
+    }
+    let mut r = Recoge {
+        pkg,
+        desde: v,
+        ctes: nombres_de_with(q),
+        byte: &byte,
+        out: Vec::new(),
+    };
+    let _ = Visit::visit(q.as_ref(), &mut r);
+    r.out
+}
+
+/// La consulta de `v` con cada nombre que resuelve a `de` (su nombre corto)
+/// escrito como `a`, entero —`p.n` o `p.s.n`, que se lee igual desde cualquier
+/// schema— y citado como estaba. `None` si no lo nombra.
+pub fn renombrar(pkg: &Package, v: &Loaded, de: &str, a: &str) -> Option<String> {
+    let mut sql = v.section("sql")?.as_str()?.to_string();
+    let mut sitios: Vec<Nombrado> = nombrados(pkg, v)
+        .into_iter()
+        .filter(|n| n.doc.qname().as_deref() == Some(de))
+        .collect();
+    if sitios.is_empty() {
+        return None;
+    }
+    // De atrás adelante: una sustitución no mueve las de antes.
+    sitios.sort_by_key(|n| std::cmp::Reverse(n.rango.start));
+    for n in sitios {
+        let nuevo = if n.citado {
+            a.split('.')
+                .map(|p| format!("\"{}\"", p.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(".")
+        } else {
+            a.to_string()
+        };
+        sql.replace_range(n.rango, &nuevo);
+    }
+    Some(sql)
+}

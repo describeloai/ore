@@ -1,15 +1,22 @@
-apiVersion: oos.dev/v1alpha8
+apiVersion: oos.dev/v1alpha14
 kind: View
 metadata: { name: empleados, namespace: hr }
 spec:
   owner: team:hr
-  from: { table: erp_employees }
-  # Era `materialization.topology.freshnessSLA`. La frescura es de la consulta,
-  # no del objeto: un mismo objeto se tolera fresco de un modo para el indice y
-  # de otro para un informe.
-  freshness: 30m
-  fields:
-    employeeId:  employee_id
-    managerId:   manager_id
-    baseSalary:  national_id
-    actualizado: updated_at
+  # Llevaba `freshness: 30m` (era `materialization.topology.freshnessSLA`). La
+  # frescura es de lo que se copia, y en v1alpha14 lo que se copia es un
+  # `Dataset`: una vista que nadie copia no tiene frescura que cumplir, y
+  # `ore migrate v1alpha14` la quitó diciéndolo.
+  dialect: duckdb
+  sql: |
+    SELECT
+      "employee_id" AS "employeeId",
+      "manager_id" AS "managerId",
+      "national_id" AS "baseSalary",
+      "updated_at" AS "actualizado"
+    FROM "hr"."erp_employees"
+  columns:
+    employeeId: { type: String }
+    managerId: { type: String }
+    baseSalary: { type: String }
+    actualizado: { type: String }

@@ -598,7 +598,7 @@ pub fn inducir_con_regla(
                 format!("{}/{sufijo}", if se_copia { "datasets" } else { "views" }),
             ),
             con_schema(
-                vista_yaml(&vista, paquete, &owner_catalogo, t, objeto, se_copia),
+                vista_yaml(&vista, paquete, &sch, &owner_catalogo, t, objeto, se_copia),
                 &sch,
                 paquete,
             ),
@@ -812,7 +812,7 @@ pub fn inducir_con_regla(
                 ),
             ),
             con_schema(
-                vista_yaml(&vista, paquete, &owner, t, objeto, copia.is_some()),
+                vista_yaml(&vista, paquete, &sch, &owner, t, objeto, copia.is_some()),
                 &sch,
                 paquete,
             ),
@@ -2094,7 +2094,7 @@ fn tabla_yaml(
            datasource: {fuente}\n  \
            object: {}\n  \
            columns:\n",
-        identificador(sin_schema(&objeto.nombre)),
+        nombre_de_tabla(objeto),
         entrecomillar(&objeto.nombre)
     );
     for c in t
@@ -2185,8 +2185,9 @@ fn tabla_yaml(
 /// líneas, y esas tres líneas son las que dicen *«esto se expone»*.
 ///
 /// Expone **todas** las columnas del objeto, también las que la entidad no
-/// modela por no saber traducir su tipo: la vista es física y no tipa, así que
-/// dar tipo a una columna más tarde no obliga a tocarla.
+/// modela por no saber traducir su tipo: su contrato las dice `String`, que es
+/// lo único que se afirma de ellas, y tiparlas más tarde es cambiar el contrato
+/// (añadir no rompe; cambiar un tipo sí, v1alpha14 §9).
 ///
 /// **Y sale en `DRAFT`, como la entidad.** Esas tres líneas dicen *«esto se
 /// expone»*, y eso es una decisión que nadie ha tomado todavía: la propuso esta
@@ -2196,95 +2197,137 @@ fn tabla_yaml(
 fn vista_yaml(
     vista: &str,
     paquete: &str,
+    schema: &str,
     owner: &str,
     t: &Tabla,
     objeto: &Objeto,
     copia: bool,
 ) -> String {
-    let campos: Vec<(String, String)> = t
+    let de_la_tabla: Vec<_> = t
         .columnas
         .iter()
         .filter(|c| objeto.columnas.contains(&c.nombre))
+        .collect();
+    let campos: Vec<(String, String)> = de_la_tabla
+        .iter()
         .map(|c| (identificador(&c.nombre), c.nombre.clone()))
         .collect();
-    let de = Origen::Tabla(identificador(sin_schema(&objeto.nombre)));
+    let tabla = nombre_de_tabla(objeto);
     if copia {
-        documento_dataset(vista, paquete, owner, &de, &campos, &[])
-    } else {
-        documento_vista(vista, paquete, owner, &de, &campos, &[])
+        return documento_dataset(vista, paquete, owner, &tabla, &campos, &[]);
     }
+    let tipos: BTreeMap<String, String> = de_la_tabla
+        .iter()
+        .filter_map(|c| Some((c.nombre.clone(), c.tipo.clone()?)))
+        .collect();
+    documento_vista(vista, paquete, schema, owner, &tabla, &campos, &tipos)
 }
 
-/// De dónde sale una vista o un dataset: los tres casos del vocabulario.
-pub enum Origen {
-    Tabla(String),
-    Vista(String),
-    Dataset(String),
+/// **Cómo se llama la `Table` de un objeto: `<objeto>_t`.** En v1alpha14 un
+/// nombre es una sola cosa en su schema (`OOS2035`), y la vista que expone el
+/// objeto —o el dataset que lo copia— se llama como él. La tabla es el hecho
+/// del origen y sólo la nombran quienes la leen; la pregunta es lo que el
+/// resto del árbol nombra. Su `object` es el del origen, sin sufijo. El mismo
+/// que `ore migrate v1alpha14` da a una tabla que se llamaba como su vista.
+fn nombre_de_tabla(objeto: &Objeto) -> String {
+    format!("{}_t", identificador(sin_schema(&objeto.nombre)))
 }
 
-/// **El emisor de una `View`, y es el único.**
+/// **El emisor de la `View` que el inductor propone** (v1alpha14, ADR 0040
+/// paso 6): el objeto expuesto con nombres de identificador, escrito como la
+/// consulta que es. La consulta la escribe **la traducción de la forma**
+/// (`linaje::como_sql`, la de §7 que usan la migración y el núcleo al
+/// servir): se escribe la forma de siempre y se traduce, así que una vista
+/// inducida y una migrada son el mismo texto. Y legible, una columna por línea
+/// cuando no cabe (`migrar_v14::legible`).
 ///
-/// Lo usan el inductor —que propone una por cada objeto espejado— y
-/// `ore view add` —que autora una a mano—. Que sea **el mismo** no es
-/// economía: una vista escrita por una interfaz y una inducida tienen que ser
-/// el mismo texto, o hay dos emisores y divergen en el caso que ninguna prueba
-/// ejerce. Es la figura que este árbol lleva encontrando y cerrando desde que
-/// existen dos derivaciones de lo mismo.
+/// El contrato (`columns`) lleva el tipo que el conector tradujo de cada
+/// columna, y `String` donde no supo: es lo único que se afirma de ella, y lo
+/// que el núcleo le daba al tiparla.
 ///
-/// `campos` va **en orden**: el del origen cuando lo emite el inductor, el que
-/// pidió quien la autora cuando es a mano. Reordenar aquí sería decidir por
-/// ellos.
+/// `campos` va **en orden**, el del origen: reordenar aquí sería decidir.
 ///
 /// Una vista es sólo la pregunta (0033): ni `freshness` ni copia. Lo que se
-/// tiene lo dice un `Dataset` (`documento_dataset`), que lleva el mismo plan.
+/// tiene lo dice un `Dataset` (`documento_dataset`), que lleva la forma.
+///
+/// `ore view add`, el segundo emisor que esto tenía, se retiró en el paso 5:
+/// una vista nueva nace de un `CREATE VIEW` en un puesto.
 pub fn documento_vista(
     vista: &str,
     paquete: &str,
+    schema: &str,
     owner: &str,
-    de: &Origen,
+    tabla: &str,
     campos: &[(String, String)],
-    recorte: &[(String, Vec<String>)],
+    tipos: &BTreeMap<String, String>,
 ) -> String {
-    let (clave, valor) = match de {
-        Origen::Tabla(t) => ("table", t),
-        Origen::Vista(v) => ("view", v),
-        Origen::Dataset(d) => ("dataset", d),
+    let con_schema = if en_default(schema) {
+        String::new()
+    } else {
+        format!("\n  schema: {schema}")
     };
+    // La forma, como se escribía hasta v1alpha13, sólo para traducirla.
+    let mut forma = format!(
+        "apiVersion: oos.dev/v1alpha13\nkind: View\n\
+         metadata:\n  name: {vista}\n  namespace: {paquete}{con_schema}\n\
+         spec:\n  owner: o\n  from: {{ table: {} }}\n  fields:\n",
+        escalar_yaml(tabla)
+    );
+    plan_yaml(&mut forma, campos, &[]);
+    let sql = parse::parse(&forma)
+        .ok()
+        .and_then(|root| {
+            ore_core::linaje::como_sql(&ore_core::link::Loaded {
+                path: Path::new("vista.yaml").to_path_buf(),
+                kind: ore_core::document::Kind::View,
+                root,
+            })
+        })
+        .map(|s| crate::migrar_v14::legible(&s))
+        .unwrap_or_default();
     let mut s = String::new();
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha12\n\
+        "apiVersion: oos.dev/v1alpha14\n\
          kind: View\n\
          metadata:\n  \
            name: {vista}\n  \
-           namespace: {paquete}\n  \
+           namespace: {paquete}{con_schema}\n  \
            labels: {{ oos.maturity: DRAFT }}\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
-           from: {{ {clave}: {valor} }}\n"
+           dialect: duckdb\n  \
+           sql: |\n"
     );
-    s.push_str("  fields:\n");
-    plan_yaml(&mut s, campos, recorte);
+    for l in sql.lines() {
+        let _ = writeln!(s, "    {l}");
+    }
+    s.push_str("  columns:\n");
+    for (prop, col) in campos {
+        let tipo = tipos.get(col).map(String::as_str).unwrap_or("String");
+        let _ = writeln!(
+            s,
+            "    {}: {{ type: {} }}",
+            escalar_yaml(prop),
+            escalar_yaml(tipo)
+        );
+    }
     s
 }
 
 /// **El dataset con su plan** (0033): lo que hasta aquí era una `View` con
-/// `materialized`. El mismo plan que `documento_vista` —los mismos campos, en
-/// el mismo orden, el mismo recorte— con el documento que el registro lista.
+/// `materialized`. La forma de la vista que sería —los mismos campos, en el
+/// mismo orden, el mismo recorte—, que v1alpha14 mantiene en el dataset: la
+/// vista la escribe como consulta (`documento_vista`) y el dataset la cumple.
 /// Sin `labels`: un dataset no tiene madurez que acordar, tiene bytes.
 pub fn documento_dataset(
     nombre: &str,
     paquete: &str,
     owner: &str,
-    de: &Origen,
+    tabla: &str,
     campos: &[(String, String)],
     recorte: &[(String, Vec<String>)],
 ) -> String {
-    let (clave, valor) = match de {
-        Origen::Tabla(t) => ("table", t),
-        Origen::Vista(v) => ("view", v),
-        Origen::Dataset(d) => ("dataset", d),
-    };
     let mut s = String::new();
     let _ = write!(
         s,
@@ -2297,7 +2340,7 @@ pub fn documento_dataset(
          # que sería; aquí vive porque es lo que se tiene (0033).\n\
          spec:\n  \
            owner: \"{owner}\"\n  \
-           from: {{ {clave}: {valor} }}\n"
+           from: {{ table: {tabla} }}\n"
     );
     s.push_str("  fields:\n");
     plan_yaml(&mut s, campos, recorte);
@@ -2379,6 +2422,11 @@ fn con_schema(texto: String, schema: &str, paquete: &str) -> String {
         return texto;
     }
     let mut t = texto;
+    // v1alpha13 es la primera que tiene schemas; una posterior (la vista, en
+    // v1alpha14) ya los tiene, y ya lo lleva escrito.
+    if t.contains("apiVersion: oos.dev/v1alpha14") {
+        return t;
+    }
     if let Some(i) = t.find("apiVersion: oos.dev/v1alpha") {
         let fin = t[i..].find('\n').map(|f| i + f).unwrap_or(t.len());
         t.replace_range(i..fin, "apiVersion: oos.dev/v1alpha13");
@@ -2489,10 +2537,6 @@ fn capitalizar(id: &str) -> String {
 /// inventar un carácter — por eso el nombre físico sigue entero en `columns` de
 /// la tabla y en el valor de `fields` de la vista, que son los dos sitios donde
 /// lo físico se dice tal cual. (Decía «en el binding»: se retiró en v1alpha8.)
-pub fn identificador_publico(bruto: &str) -> String {
-    identificador(bruto)
-}
-
 fn identificador(bruto: &str) -> String {
     let mut out = String::new();
     for c in bruto.chars() {
@@ -2684,7 +2728,7 @@ mod tests {
         );
         let vista = &con.ficheros["rubix_demo_ventas/datasets/Facturas__facturas.yaml"];
         assert!(
-            vista.contains("kind: Dataset") && vista.contains("from: { table: facturas }"),
+            vista.contains("kind: Dataset") && vista.contains("from: { table: facturas_t }"),
             "{vista}"
         );
         assert!(
@@ -2928,7 +2972,13 @@ mod tests {
         // tabla, sus propiedades tendrían que llamarse como las columnas
         // físicas y lo semántico volvería a saber de lo físico.
         assert!(entidad.contains("backedBy: facturas"), "{entidad}");
-        assert!(vista.contains("from: { table: facturas }"), "{vista}");
+        // Y la lee por su tabla, que se llama `<objeto>_t`: la vista ya se
+        // llama `facturas`, y en v1alpha14 un nombre es una sola cosa.
+        assert!(
+            vista.contains(r#"FROM "ventas"."rubix_demo_ventas"."facturas_t""#),
+            "{vista}"
+        );
+        assert!(tabla.contains("name: facturas_t"), "{tabla}");
     }
 
     /// La tabla lleva el tipo que el conector tradujo (0032 §3). Antes se tiraba
@@ -3866,97 +3916,135 @@ mod tests {
 mod emisor {
     use super::*;
 
-    /// **El emisor es uno**, y esta prueba es la que impide que se separe.
-    ///
-    /// Lo llaman el inductor —que propone una vista por objeto— y
-    /// `ore view add` —que autora una a mano—. Si divergieran, una vista
-    /// escrita desde una interfaz y una inducida serían textos distintos para
-    /// la misma cosa, y la diferencia aparecería en el caso que ninguna prueba
-    /// ejerce: el escapado de un nombre raro, el orden de los campos.
+    fn tipos(xs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        xs.iter()
+            .map(|(c, t)| (c.to_string(), t.to_string()))
+            .collect()
+    }
+
+    /// **La vista que el inductor propone es v1alpha14** (0040 paso 6): la
+    /// consulta que traduce su forma, en DRAFT, con el contrato de los tipos
+    /// que el conector tradujo y `String` donde no supo. Sin operación: ni
+    /// `freshness` ni copia, que son de un `Dataset`.
     #[test]
-    fn una_vista_sobre_una_tabla_sale_en_draft_y_sin_operacion() {
+    fn una_vista_sobre_una_tabla_sale_en_draft_y_como_consulta() {
         let s = documento_vista(
             "clientes_eu",
             "ventas",
+            "default",
             "team:ventas",
-            &Origen::Tabla("clientes".into()),
+            "clientes_t",
             &[
                 ("id".into(), "id".into()),
                 ("pais".into(), "cod_pais".into()),
             ],
-            &[],
+            &tipos(&[("id", "Integer")]),
         );
-        assert!(s.contains("kind: View"), "{s}");
+        assert!(
+            s.starts_with("apiVersion: oos.dev/v1alpha14\nkind: View\n"),
+            "{s}"
+        );
         assert!(s.contains("labels: { oos.maturity: DRAFT }"), "{s}");
-        assert!(s.contains("from: { table: clientes }"), "{s}");
-        assert!(s.contains("    id: id\n    pais: cod_pais\n"), "{s}");
-        // Una vista es sólo la pregunta (0033): ni `freshness` ni copia.
-        assert!(!s.contains("freshness:"), "{s}");
-        assert!(!s.contains("materialized:"), "{s}");
-        assert!(!s.contains("where:"), "{s}");
-        // Y el dataset con el mismo plan es el mismo texto de plan.
+        assert!(s.contains("  dialect: duckdb\n"), "{s}");
+        assert!(
+            s.contains("  sql: |\n    SELECT \"id\", \"cod_pais\" AS \"pais\"\n    FROM \"ventas\".\"clientes_t\"\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  columns:\n    id: { type: Integer }\n    pais: { type: String }\n"),
+            "{s}"
+        );
+        assert!(!s.contains("freshness:") && !s.contains("from:"), "{s}");
+        // Y es una vista v1alpha14 que el núcleo lee: su consulta es la suya.
+        let v = ore_core::link::Loaded {
+            path: Path::new("v.yaml").to_path_buf(),
+            kind: ore_core::document::Kind::View,
+            root: parse::parse(&s).unwrap(),
+        };
+        assert!(ore_core::vistas::es_sql(&v));
+        assert_eq!(
+            ore_core::vistas::contrato(&v)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["id", "pais"]
+        );
+    }
+
+    /// Y el dataset que copia el mismo objeto lleva la forma, que en v1alpha14
+    /// sigue siendo suya: los mismos campos, en el mismo orden.
+    #[test]
+    fn el_dataset_lleva_la_forma_con_su_recorte() {
         let d = documento_dataset(
             "clientes_eu",
             "ventas",
             "team:ventas",
-            &Origen::Tabla("clientes".into()),
+            "clientes_t",
             &[
                 ("id".into(), "id".into()),
                 ("pais".into(), "cod_pais".into()),
             ],
-            &[],
-        );
-        assert!(d.contains("kind: Dataset") && !d.contains("labels"), "{d}");
-        assert!(d.contains("    id: id\n    pais: cod_pais\n"), "{d}");
-    }
-
-    /// Una vista **sobre otra vista** usa la otra clave de `from`, que es el
-    /// segundo caso del vocabulario y no hay un tercero.
-    #[test]
-    fn una_vista_sobre_otra_vista_sale_por_view_y_no_por_table() {
-        let s = documento_vista(
-            "iberia",
-            "ventas",
-            "team:ventas",
-            &Origen::Vista("clientes".into()),
-            &[("id".into(), "id".into())],
-            &[],
-        );
-        assert!(s.contains("from: { view: clientes }"), "{s}");
-    }
-
-    /// El recorte: **una igualdad o una lista**, que es lo único que el
-    /// vocabulario admite. Un nombre repetido es la lista.
-    #[test]
-    fn el_recorte_sale_como_igualdad_o_como_lista() {
-        let s = documento_vista(
-            "v",
-            "p",
-            "o",
-            &Origen::Tabla("t".into()),
-            &[("id".into(), "id".into())],
             &[
                 ("borrado".into(), vec!["false".into()]),
                 ("pais".into(), vec!["ES".into(), "PT".into()]),
             ],
         );
-        assert!(s.contains("    borrado: false\n"), "{s}");
-        assert!(s.contains("    pais: [ES, PT]\n"), "{s}");
+        assert!(d.contains("kind: Dataset") && !d.contains("labels"), "{d}");
+        assert!(d.contains("from: { table: clientes_t }"), "{d}");
+        assert!(d.contains("    id: id\n    pais: cod_pais\n"), "{d}");
+        assert!(d.contains("    borrado: false\n"), "{d}");
+        assert!(d.contains("    pais: [ES, PT]\n"), "{d}");
     }
 
-    /// Y un nombre que no es un escalar simple **se entrecomilla**, con la
-    /// misma función que ya usaba el inductor. Es justo lo que se perdería si
-    /// una interfaz escribiera el YAML por su cuenta.
+    /// En un schema que no es `default`: el documento lo dice, la consulta
+    /// nombra la tabla con él, y `con_schema` no la baja a v1alpha13 ni le
+    /// escribe el schema dos veces.
+    #[test]
+    fn en_un_schema_la_consulta_lo_nombra() {
+        let s = documento_vista(
+            "clientes",
+            "ventas",
+            "espana",
+            "team:ventas",
+            "clientes_t",
+            &[("id".into(), "id".into())],
+            &BTreeMap::new(),
+        );
+        assert!(s.contains("  namespace: ventas\n  schema: espana\n"), "{s}");
+        assert!(
+            s.contains("FROM \"ventas\".\"espana\".\"clientes_t\""),
+            "{s}"
+        );
+        assert_eq!(con_schema(s.clone(), "espana", "ventas"), s);
+    }
+
+    /// Un nombre que no es un identificador sale entrecomillado en la consulta,
+    /// y la columna del contrato se llama como la propiedad.
     #[test]
     fn una_columna_con_forma_rara_se_entrecomilla() {
         let s = documento_vista(
             "v",
             "p",
+            "default",
             "o",
-            &Origen::Tabla("t".into()),
+            "t_t",
             &[("ref".into(), "Worker_Reference.ID".into())],
-            &[],
+            &BTreeMap::new(),
         );
-        assert!(s.contains("ref: \"Worker_Reference.ID\""), "{s}");
+        assert!(
+            s.contains("SELECT \"Worker_Reference.ID\" AS \"ref\""),
+            "{s}"
+        );
+        assert!(s.contains("    ref: { type: String }\n"), "{s}");
+    }
+
+    /// La tabla de un objeto se llama `<objeto>_t`: la vista o el dataset que
+    /// lo exponen se llaman como él, y en v1alpha14 un nombre es una cosa.
+    #[test]
+    fn la_tabla_de_un_objeto_lleva_su_sufijo() {
+        let o = Objeto {
+            nombre: "public.clientes".into(),
+            columnas: vec![],
+        };
+        assert_eq!(nombre_de_tabla(&o), "clientes_t");
     }
 }

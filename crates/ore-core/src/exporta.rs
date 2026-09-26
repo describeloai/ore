@@ -325,27 +325,40 @@ pub fn comprobar(pkg: &Package) -> Vec<Diagnostic> {
         let Some(mio) = crate::link::miembro_de(&miembros, &d.path) else {
             continue;
         };
-        for r in referencias(d) {
-            let Some(suyo) = donde.get(&(r.destino.clone(), r.kind.as_str())) else {
+        // Lo que escribe en sus campos, y —una vista SQL, v1alpha14— lo que
+        // lee su consulta, que cruza la frontera igual (0040 paso 6).
+        let de_la_consulta = d
+            .section("sql")
+            .map(|s| s.pos())
+            .map(|pos| {
+                crate::servir::nombrados(pkg, d)
+                    .into_iter()
+                    .filter_map(|n| Some((n.doc.qname()?, n.doc.kind, "sql", pos)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (destino, kind, clase, pos) in referencias(d)
+            .into_iter()
+            .map(|r| (r.destino, r.kind, r.clase, r.pos))
+            .chain(de_la_consulta)
+        {
+            let Some(suyo) = donde.get(&(destino.clone(), kind.as_str())) else {
                 continue; // no resuelve: lo dice quien comprueba esa referencia
             };
             if *suyo == mio {
                 continue;
             }
-            if exports.get(*suyo).is_some_and(|e| e.contains(&r.destino)) {
+            if exports.get(*suyo).is_some_and(|e| e.contains(&destino)) {
                 continue;
             }
             let dueno = suyo.file_name().unwrap_or_default().to_string_lossy();
             out.push(
                 Diagnostic::new(
                     Code::Oos2028,
-                    &r.desde.path,
-                    format!(
-                        "`{}: {}` cruza a `{dueno}`, que no lo exporta",
-                        r.clase, r.destino
-                    ),
+                    &d.path,
+                    format!("`{clase}: {destino}` cruza a `{dueno}`, que no lo exporta"),
                 )
-                .at(r.pos)
+                .at(pos)
                 .help(format!(
                     "existe, y por eso esto no es `OOS2018`: está en otro paquete y ese \
                      paquete no lo hace público. Añádelo a `exports` de `{dueno}`, o deja de \

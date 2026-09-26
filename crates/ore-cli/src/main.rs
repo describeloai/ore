@@ -9,7 +9,6 @@
 
 mod activos;
 mod alcance;
-mod autoria;
 mod cache;
 mod candado;
 mod datasets;
@@ -23,6 +22,7 @@ mod lector;
 mod materializar;
 mod mcp;
 mod migrar;
+mod migrar_v14;
 mod paquete;
 mod preguntar;
 mod registro;
@@ -81,40 +81,6 @@ struct Cli {
 /// Lo que se puede hacer con una fuente. Hoy solo darla de alta; `list` y
 /// `remove` esperan a tener más de una cosa que decir que la que ya dice el
 /// manifiesto, que se lee.
-/// Lo que se puede hacer con una vista mas alla de mirarla.
-#[derive(Subcommand)]
-enum AccionVista {
-    /// **Autora una pregunta nueva sobre un hecho.**
-    ///
-    /// El tercer acto: `discover` espeja, `review` decide lo que la induccion
-    /// no supo decidir, y esto escribe una vista que nadie propuso. Usa el
-    /// MISMO emisor que el inductor, para que una vista autorada y una
-    /// inducida sean el mismo texto.
-    ///
-    /// `fields` empieza con TODAS las columnas del origen y se restan: quitar
-    /// una es una decision visible y olvidarse de anadir una no lo es.
-    Add {
-        /// Como se llama esta pregunta. **No se deriva**: el nombre derivado ya
-        /// lo cogio la vista que el inductor propuso por el objeto.
-        nombre: String,
-        /// La tabla o la vista de la que sale. Cualificado o corto.
-        #[arg(long = "from", value_name = "TABLA|VISTA")]
-        de: String,
-        /// `propiedad=columna`, o solo `columna`. Repetible. Sin ninguno, van
-        /// todas las del origen.
-        #[arg(long = "field", value_name = "PROP=COL")]
-        campos: Vec<String>,
-        /// `columna=valor`. Repetible; el mismo nombre dos veces es una lista.
-        #[arg(long = "where", value_name = "COL=VALOR")]
-        recorte: Vec<String>,
-        /// Quien responde. Sin el se escribe `cambiame`, que NO valida.
-        #[arg(long)]
-        owner: Option<String>,
-        /// Raiz del paquete donde vive el origen.
-        #[arg(long, default_value = ".")]
-        path: PathBuf,
-    },
-}
 
 #[derive(Subcommand)]
 enum AccionFuente {
@@ -671,15 +637,10 @@ enum Command {
     /// la del `where`, que `validate` no mira—, modo de refresco, qué empuja al
     /// origen, y si la copia compila. Todo desde el árbol de ficheros: no
     /// ejecuta, no mide, no abre nada.
+    ///
+    /// Una vista nueva nace de un `CREATE VIEW` en un puesto (0040 paso 5);
+    /// `ore view add`, que la escribia en la forma estructurada, se retiro.
     View {
-        /// `add` autora una vista nueva; sin subcomando, informa.
-        ///
-        /// Clap prefiere el subcomando cuando el primer token coincide con
-        /// su nombre, asi que `ore view <ruta>` sigue funcionando. Un
-        /// directorio que se llamara literalmente `add` seria ambiguo, y es un
-        /// precio que se paga para no romper el mando que ya existia.
-        #[command(subcommand)]
-        accion: Option<AccionVista>,
         #[arg(default_value = ".")]
         path: PathBuf,
     },
@@ -841,9 +802,11 @@ enum Command {
     /// convierte cada `View` con `materialized` en un `Dataset` con su plan,
     /// cada `Table` con `datasource: lago` en un `Dataset` escrito, reapunta
     /// `from` a lo que paso a ser dataset y mueve `copias/` a `datasets/`.
+    /// `ore migrate v1alpha14 .` (ADR 0040 paso 6): cada `View` estructurada
+    /// pasa a ser su consulta SQL con su contrato; la v1alpha12 antes, si falta.
     /// Con `--seco` dice que haria y no toca nada.
     Migrate {
-        /// La version de destino. Hoy solo `v1alpha12`.
+        /// La version de destino: `v1alpha12` o `v1alpha14`.
         version: String,
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -994,21 +957,7 @@ fn main() -> std::process::ExitCode {
     match &cli.command {
         Command::Validate { path } => return validar(path),
         Command::Report { path } => return informar(path),
-        Command::View {
-            accion:
-                Some(AccionVista::Add {
-                    nombre,
-                    de,
-                    campos,
-                    recorte,
-                    owner,
-                    path,
-                }),
-            ..
-        } => {
-            return autoria::anadir(path, nombre, de, campos, recorte, owner.as_deref());
-        }
-        Command::View { path, .. } => return vista::ver(path),
+        Command::View { path } => return vista::ver(path),
         Command::Verify { propuesta, path } => return verificar::verificar(path, propuesta),
         Command::Materialize {
             path,
@@ -1075,11 +1024,17 @@ fn main() -> std::process::ExitCode {
             path,
             seco,
         } => {
-            if version != "v1alpha12" {
-                eprintln!("ore migrate · solo se migra a `v1alpha12` (pediste `{version}`)");
-                return std::process::ExitCode::from(64);
-            }
-            return migrar::migrar(path, &migrar::Opciones { seco: *seco });
+            let op = migrar::Opciones { seco: *seco };
+            return match version.as_str() {
+                "v1alpha12" => migrar::migrar(path, &op),
+                "v1alpha14" => migrar_v14::migrar(path, &op),
+                _ => {
+                    eprintln!(
+                        "ore migrate · se migra a `v1alpha12` o a `v1alpha14` (pediste `{version}`)"
+                    );
+                    std::process::ExitCode::from(64)
+                }
+            };
         }
         Command::Datasets {
             path,

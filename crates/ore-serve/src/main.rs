@@ -10,11 +10,10 @@
 //! | | qué delega | ADR |
 //! |---|---|---|
 //! | `ore-read-<tipo>` | leer filas de un origen | 0008 |
-//! | `ore-maintain` | correr el circuito Δ | 0013 |
 //! | `ore-store-<tipo>` | sellar y subir el artefacto | 0015 |
 //! | **`ore-serve`** | **atender a un cliente** | **0020** |
 //!
-//! Y aquí la delegación compra algo que en las otras tres era un efecto
+//! Y aquí la delegación compra algo que en las otras dos era un efecto
 //! secundario: **el proceso que mira a internet no es el que decide qué
 //! significan las cosas**.
 //!

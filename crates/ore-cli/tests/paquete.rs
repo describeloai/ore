@@ -210,7 +210,7 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
         &[
             "package",
             "move",
-            "Table:ventas.rubix_demo_ventas.clientes",
+            "Table:ventas.rubix_demo_ventas.clientes_t",
             "--to",
             "eu",
         ],
@@ -233,8 +233,8 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
     // ③ el anuncio en el manifiesto de ORIGEN
     let m = std::fs::read_to_string(dir.join("packages/ventas/package.yaml")).unwrap();
     assert!(
-        m.contains("from: ventas.rubix_demo_ventas.clientes")
-            && m.contains("to: eu.rubix_demo_ventas.clientes"),
+        m.contains("from: ventas.rubix_demo_ventas.clientes_t")
+            && m.contains("to: eu.rubix_demo_ventas.clientes_t"),
         "{m}"
     );
 
@@ -243,7 +243,11 @@ fn mueve_el_fichero_el_nombre_y_lo_anuncia() {
         dir.join("packages/ventas/rubix_demo_ventas/views/Clientes__clientes.yaml"),
     )
     .unwrap();
-    assert!(v.contains("table: eu.rubix_demo_ventas.clientes"), "{v}");
+    // La vista es una consulta (0040 paso 6): se reapunta dentro de ella.
+    assert!(
+        v.contains(r#"FROM "eu"."rubix_demo_ventas"."clientes_t""#),
+        "{v}"
+    );
 
     // Y lo que el movimiento deja: EXACTAMENTE el `OOS2028` que el mando
     // anunció, porque `exports` no lo decide él.
@@ -275,7 +279,7 @@ fn con_el_export_que_dice_el_arbol_queda_igual() {
         &[
             "package",
             "move",
-            "Table:ventas.rubix_demo_ventas.clientes",
+            "Table:ventas.rubix_demo_ventas.clientes_t",
             "--to",
             "eu",
         ],
@@ -283,7 +287,7 @@ fn con_el_export_que_dice_el_arbol_queda_igual() {
     let m = dir.join("packages/eu/package.yaml");
     let t = std::fs::read_to_string(&m).unwrap().replace(
         "spec: { owner: \"team:datos\" }",
-        "spec: { owner: \"team:datos\", exports: [eu.rubix_demo_ventas.clientes] }",
+        "spec: { owner: \"team:datos\", exports: [eu.rubix_demo_ventas.clientes_t] }",
     );
     std::fs::write(&m, t).unwrap();
 
@@ -308,7 +312,7 @@ fn las_negativas_no_mueven_nada() {
             vec![
                 "package",
                 "move",
-                "Table:ventas.rubix_demo_ventas.clientes",
+                "Table:ventas.rubix_demo_ventas.clientes_t",
                 "--to",
                 "no_existe",
             ],
@@ -318,7 +322,7 @@ fn las_negativas_no_mueven_nada() {
             vec![
                 "package",
                 "move",
-                "Table:ventas.rubix_demo_ventas.clientes",
+                "Table:ventas.rubix_demo_ventas.clientes_t",
                 "--to",
                 "ventas",
             ],
@@ -385,6 +389,10 @@ fn una_componente_entera_sale_a_cero() {
             "ventas.rubix_demo_ventas.Clientes",
             "--con",
             "ventas.rubix_demo_ventas.clientes",
+            // La tabla se llama `clientes_t` (0040 paso 6): ya no la nombra
+            // el mismo nombre que la vista.
+            "--con",
+            "ventas.rubix_demo_ventas.clientes_t",
         ],
     );
     assert_eq!(c, Some(0), "{dicho}");
@@ -418,7 +426,7 @@ fn un_corte_parcial_dice_lo_que_cuesta_y_lo_que_falta() {
             "--to",
             "eu",
             "--con",
-            "Table:ventas.rubix_demo_ventas.mov_bak",
+            "Table:ventas.rubix_demo_ventas.mov_bak_t",
         ],
     );
     assert_eq!(c, Some(0), "{dicho}");
@@ -497,6 +505,10 @@ fn fundir_deshace_el_corte_y_deja_una_lapida() {
             "ventas.rubix_demo_ventas.Clientes",
             "--con",
             "ventas.rubix_demo_ventas.clientes",
+            // La tabla se llama `clientes_t` (0040 paso 6): ya no la nombra
+            // el mismo nombre que la vista.
+            "--con",
+            "ventas.rubix_demo_ventas.clientes_t",
         ],
     );
 

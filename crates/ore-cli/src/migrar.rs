@@ -30,26 +30,54 @@ pub struct Opciones {
 }
 
 /// Un cambio del plan: qué fichero, qué pasa y por qué.
-struct Cambio {
-    que: String,
-    fichero: PathBuf,
+pub(crate) struct Cambio {
+    pub(crate) que: String,
+    pub(crate) fichero: PathBuf,
     /// El texto nuevo, si el fichero se escribe; `None` si se borra o se mueve.
-    texto: Option<String>,
+    pub(crate) texto: Option<String>,
     /// A dónde se mueve, si se mueve.
-    a: Option<PathBuf>,
+    pub(crate) a: Option<PathBuf>,
 }
 
+/// El plan de una versión: los cambios, los avisos y los diagnósticos de antes.
+pub(crate) type Plan = Result<(Vec<Cambio>, Vec<String>, usize), String>;
+
 pub fn migrar(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    match plan(path) {
+    ejecutar(
+        path,
+        op,
+        plan(path),
+        "nada que migrar · el árbol ya está en v1alpha12 (ninguna `View` con `materialized`, ninguna `Table` con `datasource: lago`, ningún puntero en `copias/` ni fuera de su sitio en `datasets/`)",
+        |cambios, antes| {
+            let (n_datasets, n_borrados, n_movidos, n_reescritos) = (
+                cambios.iter().filter(|c| c.que == "dataset").count(),
+                cambios.iter().filter(|c| c.que == "se va").count(),
+                cambios.iter().filter(|c| c.que == "puntero").count(),
+                cambios.iter().filter(|c| c.que == "reescrito").count(),
+            );
+            format!(
+                "{n_datasets} datasets nuevos · {n_reescritos} documentos reescritos · {n_borrados} que se van · {n_movidos} punteros movidos · antes: {antes} diagnósticos"
+            )
+        },
+    )
+}
+
+/// Enseña el plan y, sin `--seco`, lo aplica y dice qué da el árbol después.
+pub(crate) fn ejecutar(
+    path: &Path,
+    op: &Opciones,
+    plan: Plan,
+    nada: &str,
+    resumen: impl Fn(&[Cambio], usize) -> String,
+) -> std::process::ExitCode {
+    match plan {
         Err(e) => {
             eprintln!("ore migrate · {e}");
             std::process::ExitCode::from(65)
         }
         Ok((cambios, avisos, antes)) => {
             if cambios.is_empty() {
-                println!(
-                    "nada que migrar · el árbol ya está en v1alpha12 (ninguna `View` con `materialized`, ninguna `Table` con `datasource: lago`, ningún puntero en `copias/` ni fuera de su sitio en `datasets/`)"
-                );
+                println!("{nada}");
                 return std::process::ExitCode::SUCCESS;
             }
             for c in &cambios {
@@ -61,16 +89,8 @@ pub fn migrar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             for a in &avisos {
                 println!("  aviso      {a}");
             }
-            let (n_datasets, n_borrados, n_movidos, n_reescritos) = (
-                cambios.iter().filter(|c| c.que == "dataset").count(),
-                cambios.iter().filter(|c| c.que == "se va").count(),
-                cambios.iter().filter(|c| c.que == "puntero").count(),
-                cambios.iter().filter(|c| c.que == "reescrito").count(),
-            );
             println!();
-            println!(
-                "{n_datasets} datasets nuevos · {n_reescritos} documentos reescritos · {n_borrados} que se van · {n_movidos} punteros movidos · antes: {antes} diagnósticos"
-            );
+            println!("{}", resumen(&cambios, antes));
             if op.seco {
                 println!("(--seco: nada escrito)");
                 return std::process::ExitCode::SUCCESS;
@@ -90,7 +110,7 @@ pub fn migrar(path: &Path, op: &Opciones) -> std::process::ExitCode {
 }
 
 /// El plan entero, sin tocar el disco.
-fn plan(raiz: &Path) -> Result<(Vec<Cambio>, Vec<String>, usize), String> {
+pub(crate) fn plan(raiz: &Path) -> Plan {
     let (pkg, diags) = ore_core::validate::cargar_paquete(raiz);
     if !diags.is_empty() {
         return Err(format!(
@@ -118,11 +138,13 @@ fn plan(raiz: &Path) -> Result<(Vec<Cambio>, Vec<String>, usize), String> {
         .collect();
 
     // Los nombres que pasan a ser dataset: las copias y las tablas del lago.
-    let a_dataset: BTreeSet<String> = copias
-        .iter()
-        .chain(tablas_lago.iter())
-        .filter_map(|d| d.qname())
-        .collect();
+    // Por separado, porque una tabla y una vista pueden llamarse igual: un
+    // `from.table` que nombra la tabla de una vista copiada lee la tabla, no
+    // la copia.
+    let a_dataset = ADataset {
+        vistas: copias.iter().filter_map(|d| d.qname()).collect(),
+        tablas: tablas_lago.iter().filter_map(|d| d.qname()).collect(),
+    };
     // Las vistas que alguien nombra COMO vista y no pueden irse: `over` y
     // `reads` de una Function, `over` de una Action, `trainedFrom`.
     let nombradas_como_vista: BTreeSet<String> = nombradas_como_vista(&pkg);
@@ -457,7 +479,7 @@ fn plan(raiz: &Path) -> Result<(Vec<Cambio>, Vec<String>, usize), String> {
     Ok((cambios, avisos, antes))
 }
 
-fn aplicar(raiz: &Path, cambios: &[Cambio]) -> Result<(), String> {
+pub(crate) fn aplicar(raiz: &Path, cambios: &[Cambio]) -> Result<(), String> {
     let en_git = raiz.join(".git").exists();
     for c in cambios {
         let abs = raiz.join(&c.fichero);
@@ -599,11 +621,17 @@ fn carpeta_hermana(path: &Path, nombre: &str) -> PathBuf {
 
 /// `from: {view: x}` o `from: {table: x}` donde `x` pasó a ser dataset →
 /// `from: {dataset: x}`, y el documento sube a v1alpha12. `None` si no toca.
-fn reapuntar(v: &Loaded, a_dataset: &BTreeSet<String>) -> Option<String> {
+/// Lo que pasa a ser dataset, por lo que era.
+struct ADataset {
+    vistas: BTreeSet<String>,
+    tablas: BTreeSet<String>,
+}
+
+fn reapuntar(v: &Loaded, a_dataset: &ADataset) -> Option<String> {
     reapuntar_nodo(&v.root, a_dataset)
 }
 
-fn reapuntar_nodo(root: &Node, a_dataset: &BTreeSet<String>) -> Option<String> {
+fn reapuntar_nodo(root: &Node, a_dataset: &ADataset) -> Option<String> {
     let ns = root
         .get("metadata")
         .and_then(|(_, m)| m.get("namespace"))
@@ -615,10 +643,14 @@ fn reapuntar_nodo(root: &Node, a_dataset: &BTreeSet<String>) -> Option<String> {
         .map(|(_, n)| ("view", n))
         .or_else(|| from.get("table").map(|(_, n)| ("table", n)))?;
     let qn = ore_core::normalize::qualify(ref_.as_str()?, ns);
-    if !a_dataset.contains(&qn) {
+    let de = if clave == "view" {
+        &a_dataset.vistas
+    } else {
+        &a_dataset.tablas
+    };
+    if !de.contains(&qn) {
         return None;
     }
-    let _ = clave;
     let mut nuevo = root.clone();
     // apiVersion → v1alpha12
     if let Node::Mapping { entries, .. } = &mut nuevo {
@@ -691,9 +723,9 @@ fn sin_datasource_lago(raiz: &Path, c: &Loaded) -> Option<String> {
 
 // ── emitir YAML desde un nodo ──────────────────────────────────────────────
 
-const POS: ore_core::diag::Pos = ore_core::diag::Pos { line: 0, col: 0 };
+pub(crate) const POS: ore_core::diag::Pos = ore_core::diag::Pos { line: 0, col: 0 };
 
-fn esc(s: &str) -> Node {
+pub(crate) fn esc(s: &str) -> Node {
     Node::Scalar {
         raw: s.to_string(),
         style: Style::Plain,
@@ -702,13 +734,23 @@ fn esc(s: &str) -> Node {
 }
 
 fn documento(kind: &str, metadata: Vec<(String, Node)>, spec: Vec<(String, Node)>) -> Node {
+    documento_en("oos.dev/v1alpha12", kind, metadata, spec)
+}
+
+/// Un documento de `version` con su `metadata` y su `spec`, en ese orden.
+pub(crate) fn documento_en(
+    version: &str,
+    kind: &str,
+    metadata: Vec<(String, Node)>,
+    spec: Vec<(String, Node)>,
+) -> Node {
     let m = |v: Vec<(String, Node)>| Node::Mapping {
         entries: v.into_iter().map(|(k, n)| (esc(&k), n)).collect(),
         pos: POS,
     };
     Node::Mapping {
         entries: vec![
-            (esc("apiVersion"), esc("oos.dev/v1alpha12")),
+            (esc("apiVersion"), esc(version)),
             (esc("kind"), esc(kind)),
             (esc("metadata"), m(metadata)),
             (esc("spec"), m(spec)),
@@ -744,6 +786,33 @@ fn escalar(raw: &str, style: Style) -> String {
     }
 }
 
+/// Un texto de una sola línea (y su salto final), partido en líneas de hasta
+/// 80 por los espacios: plegado (`>`), YAML las vuelve a juntar con un espacio
+/// y el valor es el mismo. `None` si tiene más líneas, o espacios que plegar
+/// cambiaría (dobles, al principio o al final).
+fn plegado(raw: &str) -> Option<Vec<String>> {
+    let una = raw.strip_suffix('\n')?;
+    if una.contains('\n')
+        || una.contains("  ")
+        || una.starts_with(' ')
+        || una.ends_with(' ')
+        || una.contains('\t')
+    {
+        return None;
+    }
+    let mut lineas: Vec<String> = Vec::new();
+    for palabra in una.split(' ') {
+        match lineas.last_mut() {
+            Some(l) if l.chars().count() + 1 + palabra.chars().count() <= 80 => {
+                l.push(' ');
+                l.push_str(palabra);
+            }
+            _ => lineas.push(palabra.to_string()),
+        }
+    }
+    Some(lineas)
+}
+
 fn es_escalar(n: &Node) -> bool {
     matches!(n, Node::Scalar { .. })
 }
@@ -755,6 +824,31 @@ fn emitir_en(n: &Node, sangria: usize, out: &mut String) {
             for (k, v) in entries {
                 let clave = k.as_str().unwrap_or("");
                 match v {
+                    // Un texto de varias líneas —la consulta de una vista— en
+                    // bloque literal, como lo escribiría una persona; uno de
+                    // una línea que venía plegado (`>`), plegado otra vez.
+                    Node::Scalar {
+                        raw,
+                        style: Style::Block,
+                        ..
+                    } if raw.ends_with('\n') && !raw.trim().is_empty() => match plegado(raw) {
+                        Some(lineas) => {
+                            out.push_str(&format!("{pad}{clave}: >\n"));
+                            for l in lineas {
+                                out.push_str(&format!("{pad}  {l}\n"));
+                            }
+                        }
+                        None => {
+                            out.push_str(&format!("{pad}{clave}: |\n"));
+                            for l in raw.lines() {
+                                if l.is_empty() {
+                                    out.push('\n');
+                                } else {
+                                    out.push_str(&format!("{pad}  {l}\n"));
+                                }
+                            }
+                        }
+                    },
                     Node::Scalar { raw, style, .. } => {
                         out.push_str(&format!("{pad}{clave}: {}\n", escalar(raw, *style)));
                     }

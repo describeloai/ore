@@ -26,7 +26,7 @@
 //! | `paquete`, `carpeta` | la ruta: `packages/<p>/<carpeta>/<fichero>`, quitando las carpetas del kind (`tables/`, `views/`…) estén donde estén: los árboles de hoy caen enteros en `""` («sin clasificar») y `espana/views/x.yaml` es el schema `espana` |
 //! | `define` | lo que tiene plan: `from` (la ref), `identidad` (sin `where`/`groupBy`/`having` y expone lo de abajo con sus nombres), qué claves usa, `freshness`; un escrito: `columns`, `changes` |
 //! | `expone` | lo que sale con su tipo: [`vistas::expone_en`] + las `columns` de la raíz |
-//! | `detalle` | la `Table`: `object`, `datasource`, `reads`, `changes`, `columns`, y **`vistaInducida`** (0034 ⑤ 5: la View identidad que el inductor dejó sobre ella —`__` en el fichero— es un detalle de la tabla y **no un ítem**) |
+//! | `detalle` | la `Table`: `object`, `datasource`, `reads`, `changes`, `columns`, (la View que el inductor deja sobre ella es un ítem como cualquier otra vista: desde 0040 paso 6 es una vista SQL v1alpha14 de pleno derecho, y el catálogo no la trata aparte) |
 //! | `puntero` | el resumen de `datasets/<p>_<n>.json`, si lo hay |
 //! | `relaciones` | tipadas y **en las dos direcciones**, de lo que el documento dice: `from` → `sale_de`/`produce`; `backedBy` → `respaldada_por`/`respalda`; `over`/`reads` → `lee`/`leido_por`; `effects.writes` → `escribe`/`escrito_por`; `trainedFrom` → `sale_de`/`produce`; `implements` → `satisface`/`satisfecha_por`; `is` (el concepto de una propiedad) → `nombra`/`nombrado_por`; `model` → `usa`/`usado_por`. Una ref que no resuelve va con `rota: true`: el índice enseña lo que hay, no lo arregla |
 //! | `acceso` | del plano de datos: `clasificacion` (las labels del documento; en una Entity, las efectivas de sus propiedades; en lo que lee una tabla, las de las columnas que usa) y `conductos` (si `materialization.payload` compila para lo que copia, por [`flow::check`]). La concesión de `ore-iam` **no** entra: es del plano de control |
@@ -287,19 +287,6 @@ fn es_identidad(pkg: &Package, d: &Loaded) -> bool {
     !abajo.is_empty() && expone.keys().cloned().collect::<BTreeSet<_>>() == abajo
 }
 
-/// La View identidad que el inductor dejó sobre una tabla: `__` en el
-/// fichero, `from: {table}` a ella, identidad. Es un detalle de la tabla.
-fn vista_inducida_de<'a>(pkg: &'a Package, t: &Loaded) -> Option<&'a Loaded> {
-    let tqn = t.qname()?;
-    pkg.of(Kind::View).find(|v| {
-        matches!(vistas::fuente(v), Some(Fuente::Tabla(ref q)) if *q == tqn)
-            && v.path
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy().contains("__"))
-            && es_identidad(pkg, v)
-    })
-}
-
 fn define_de(pkg: &Package, d: &Loaded) -> Option<Json> {
     if d.kind == Kind::Dataset && vistas::es_escrito(d) {
         let mut m = vec![("columns", Json::Int(vistas::columnas(d).len() as i64))];
@@ -437,7 +424,7 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
     }
 }
 
-fn detalle_de(pkg: &Package, d: &Loaded) -> Option<Json> {
+fn detalle_de(d: &Loaded) -> Option<Json> {
     if d.kind != Kind::Table {
         return None;
     }
@@ -461,9 +448,6 @@ fn detalle_de(pkg: &Package, d: &Loaded) -> Option<Json> {
                 Json::de_node(n),
             ));
         }
-    }
-    if let Some(v) = vista_inducida_de(pkg, d) {
-        m.push(("vistaInducida", Json::s(ref_doc(v))));
     }
     Some(Json::obj(m))
 }
@@ -759,17 +743,8 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
         .map(|d| d.file)
         .collect();
 
-    // Los ítems: los documentos con kind de ②, menos las vistas inducidas.
-    let inducidas: BTreeSet<std::path::PathBuf> = pkg
-        .tables()
-        .filter_map(|t| vista_inducida_de(pkg, t))
-        .map(|v| v.path.clone())
-        .collect();
-    let docs: Vec<&Loaded> = pkg
-        .docs
-        .iter()
-        .filter(|d| es_item(d.kind) && !inducidas.contains(&d.path))
-        .collect();
+    // Los ítems: los documentos con kind de ②.
+    let docs: Vec<&Loaded> = pkg.docs.iter().filter(|d| es_item(d.kind)).collect();
 
     let mut items: BTreeMap<String, BTreeMap<String, Json>> = BTreeMap::new();
     let mut aristas: Vec<Arista> = Vec::new();
@@ -871,7 +846,7 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
             it.insert("define".into(), def);
         }
         it.insert("expone".into(), expone_de(pkg, d));
-        if let Some(det) = detalle_de(pkg, d) {
+        if let Some(det) = detalle_de(d) {
             it.insert("detalle".into(), det);
         }
         if d.kind == Kind::Dataset {

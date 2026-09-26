@@ -37,7 +37,6 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let mut relaciones = 0usize;
     let mut rotas = 0usize;
     let mut identidad = 0usize;
-    let mut inducidas = 0usize;
     for it in items.values() {
         let Json::Obj(it) = it else { continue };
         if let Some(Json::Str(k)) = it.get("kind") {
@@ -55,11 +54,6 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
         {
             identidad += 1;
         }
-        if let Some(Json::Obj(d)) = it.get("detalle")
-            && d.contains_key("vistaInducida")
-        {
-            inducidas += 1;
-        }
     }
     println!(
         "{} ítems · {}",
@@ -71,7 +65,7 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
             .join(", ")
     );
     println!(
-        "{relaciones} relaciones (en las dos direcciones) · rotas {rotas} · identidad {identidad} · tablas con vista inducida {inducidas}"
+        "{relaciones} relaciones (en las dos direcciones) · rotas {rotas} · identidad {identidad}"
     );
     if let Some(Json::Arr(ps)) = m.get("paquetes") {
         for p in ps {

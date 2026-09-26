@@ -211,13 +211,11 @@ fn el_indice_proyecta_cada_kind_con_su_carpeta_su_define_y_sus_relaciones() {
         panic!()
     };
 
-    // Los ítems: cada kind, y la vista inducida NO es uno.
+    // Los ítems: cada kind. La vista que el inductor deja sobre una tabla es
+    // uno más (0040 paso 6: una vista de pleno derecho, sin trato aparte).
     let refs: Vec<&String> = items.keys().collect();
-    assert!(
-        !items.contains_key("view:ventas.clientes"),
-        "la vista inducida no es un ítem: {refs:?}"
-    );
     for r in [
+        "view:ventas.clientes",
         "table:ventas.pedidos_t",
         "table:ventas.clientes_t",
         "dataset:ventas.pedidos",
@@ -233,7 +231,7 @@ fn el_indice_proyecta_cada_kind_con_su_carpeta_su_define_y_sus_relaciones() {
     ] {
         assert!(items.contains_key(r), "falta `{r}`: {refs:?}");
     }
-    assert_eq!(items.len(), 12);
+    assert_eq!(items.len(), 13);
 
     // La carpeta del cliente, y la del kind que no cuenta.
     assert_eq!(
@@ -274,15 +272,11 @@ fn el_indice_proyecta_cada_kind_con_su_carpeta_su_define_y_sus_relaciones() {
     assert_eq!(ex.len(), 3);
     assert!(ex.iter().any(|c| matches!(c, Json::Obj(o) if o.get("name") == Some(&Json::s("email")) && o.get("type") == Some(&Json::s("String")))));
 
-    // detalle: la tabla con su vista inducida; la otra sin ella.
+    // detalle: la tabla con lo del origen, y nada de la vista que la lee.
     let Json::Obj(det) = &item(&j, "table:ventas.clientes_t")["detalle"] else {
         panic!()
     };
-    assert_eq!(det["vistaInducida"], Json::s("view:ventas.clientes"));
     assert_eq!(det["object"], Json::s("public.clientes"));
-    let Json::Obj(det) = &item(&j, "table:ventas.pedidos_t")["detalle"] else {
-        panic!()
-    };
     assert!(!det.contains_key("vistaInducida"));
 
     // puntero: el escrito con su procedencia; el mantenido en error.
@@ -380,7 +374,8 @@ fn el_indice_proyecta_cada_kind_con_su_carpeta_su_define_y_sus_relaciones() {
     assert_eq!(p["type"], Json::s("standard"));
     assert_eq!(p["scoped"], Json::Bool(true));
     assert_eq!(p["source"], Json::s("pg"));
-    assert_eq!(p["items"], Json::Int(11));
+    // Once más la vista que el inductor deja sobre su tabla: un ítem más (0040 paso 6).
+    assert_eq!(p["items"], Json::Int(12));
     assert_eq!(
         p["carpetas"],
         Json::Arr(vec![Json::s(""), Json::s("espana")])
@@ -461,7 +456,7 @@ fn el_indice_reparte_los_items_por_proyecto_y_se_solapan() {
             ("espana-bis".into(), "1".into(), "-".into()),
             ("nuevo".into(), "0".into(), "-".into()),
             ("roto".into(), "0".into(), "sin `nombre`".into()),
-            ("todo-ventas".into(), "11".into(), "-".into()),
+            ("todo-ventas".into(), "12".into(), "-".into()),
         ],
         "los proyectos, por nombre de carpeta"
     );

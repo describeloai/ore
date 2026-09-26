@@ -745,7 +745,7 @@ pub fn fundir_lotes(
 ///
 /// # Por qué esto no es el circuito Δ
 ///
-/// Se miró si `ore-maintain` servía, y no: [ADR 0013](../../../docs/decisions/0013-el-protocolo-del-mantenedor.md)
+/// Se miró si `ore-maintain` (retirado en 0040 paso 6) servía, y no: [ADR 0013](../../../docs/decisions/0013-el-protocolo-del-mantenedor.md)
 /// dice de él *«la sesión ES el estado, y cerrarla es tirarlo»*. Ese estado es
 /// efímero por decisión; el de una copia **sobrevive**, y vive en un objeto que
 /// solo este programa puede abrir. Reusarlo habría sido forzar la pieza.

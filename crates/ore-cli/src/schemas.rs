@@ -347,6 +347,10 @@ fn es_de_nombre(c: char) -> bool {
 /// un nombre suelto la contienen— y así llega igual a un `.sql`, a un
 /// `exports` o a un `writes: p.s.Entidad.propiedad`. En un manifiesto, lo que
 /// sigue a `from:` es la historia (`moved`) y no se toca.
+///
+/// Y entre comillas, `"<paquete>"."<viejo>"."x"`: así escribe una consulta la
+/// traducción de la forma (`como_sql`), y así la dejan `ore migrate v1alpha14`
+/// y el inductor en cada vista (0040 paso 6).
 fn reapuntar(
     texto: &str,
     paquete: &str,
@@ -354,27 +358,52 @@ fn reapuntar(
     nuevo: &str,
     manifiesto: bool,
 ) -> (String, usize) {
-    let aguja = format!("{paquete}.{viejo}.");
+    let (t, n) = reapuntar_con(
+        texto,
+        &format!("{paquete}.{viejo}."),
+        &format!("{paquete}.{nuevo}."),
+        manifiesto,
+        |c| c.is_ascii_alphabetic() || c == '_',
+    );
+    let (t, m) = reapuntar_con(
+        &t,
+        &format!("\"{paquete}\".\"{viejo}\"."),
+        &format!("\"{paquete}\".\"{nuevo}\"."),
+        manifiesto,
+        |c| c == '"',
+    );
+    (t, n + m)
+}
+
+/// `aguja` por `puesto` donde empieza un nombre —ni detrás de otra parte de
+/// nombre ni de un punto— y la sigue lo que `sigue` acepta.
+fn reapuntar_con(
+    texto: &str,
+    aguja: &str,
+    puesto: &str,
+    manifiesto: bool,
+    sigue: impl Fn(char) -> bool,
+) -> (String, usize) {
     let mut out = String::with_capacity(texto.len());
     let mut n = 0;
     let mut resto = texto;
     let mut previo: Option<char> = None;
-    while let Some(i) = resto.find(&aguja) {
+    while let Some(i) = resto.find(aguja) {
         let antes = &resto[..i];
         let delante = antes.chars().next_back().or(previo);
         let detras = resto[i + aguja.len()..].chars().next();
-        let suelto = !delante.is_some_and(|c| es_de_nombre(c) || c == '.')
-            && detras.is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        let suelto =
+            !delante.is_some_and(|c| es_de_nombre(c) || c == '.') && detras.is_some_and(&sigue);
         let historia = manifiesto && {
             let hasta: String = out.clone() + antes;
             hasta.trim_end().ends_with("from:")
         };
         out.push_str(antes);
         if suelto && !historia {
-            out.push_str(&format!("{paquete}.{nuevo}."));
+            out.push_str(puesto);
             n += 1;
         } else {
-            out.push_str(&aguja);
+            out.push_str(aguja);
         }
         previo = aguja.chars().next_back();
         resto = &resto[i + aguja.len()..];
@@ -807,6 +836,21 @@ mod tests {
         assert!(s.contains("ventas.viejo2.b"), "{s}");
         assert!(s.contains("ventas.viejo., ventas.nuevo.c"), "{s}");
         assert!(s.contains("from ventas.nuevo.pedidos"), "{s}");
+    }
+
+    /// Y entre comillas, que es como escriben la consulta la migración y el
+    /// inductor (0040 paso 6); `"ventas"."viejo2"` no es `"ventas"."viejo"`.
+    #[test]
+    fn se_reapunta_tambien_entre_comillas() {
+        let t = "  sql: |\n    SELECT \"id\"\n    FROM \"ventas\".\"viejo\".\"clientes_t\"\n    \
+                 JOIN \"ventas\".\"viejo2\".\"b\" USING (id)\n";
+        let (s, n) = reapuntar(t, "ventas", "viejo", "nuevo", false);
+        assert_eq!(n, 1, "{s}");
+        assert!(
+            s.contains("FROM \"ventas\".\"nuevo\".\"clientes_t\""),
+            "{s}"
+        );
+        assert!(s.contains("\"ventas\".\"viejo2\".\"b\""), "{s}");
     }
 
     #[test]

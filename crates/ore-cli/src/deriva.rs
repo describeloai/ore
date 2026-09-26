@@ -386,37 +386,28 @@ fn comparar_conjuntos(a: &[String], b: &[String]) -> Direccion {
 /// observabilidad puntúan el impacto deduciendo qué tablas se usan más; aquí la
 /// vista que proyecta esa columna está escrita en un fichero.
 fn vistas_de(pkg: &Package, tabla: &Loaded, columna: Option<&str>) -> Vec<String> {
-    let corto = tabla
-        .root
-        .get("metadata")
-        .and_then(|(_, m)| m.get("name"))
-        .and_then(|(_, n)| n.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let Some(qn) = tabla.qname() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    // 0033: lo que lee una tabla es una vista o un dataset mantenido.
+    // 0033: lo que lee una tabla es una vista o un dataset mantenido. Y desde
+    // v1alpha14 (0040 paso 6) una vista es una consulta: lo que lee y lo que
+    // proyecta no están en `from` ni en `fields`, sino en su linaje, que
+    // vale para las dos formas (la estructurada se traduce a la suya).
     for v in pkg
         .docs
         .iter()
         .filter(|d| matches!(d.kind, Kind::View | Kind::Dataset))
     {
-        let de = v
-            .section("from")
-            .and_then(|n| n.get("table"))
-            .and_then(|(_, x)| x.as_str())
-            .unwrap_or_default();
-        if de != corto && !de.ends_with(&format!(".{corto}")) {
+        let Some(lin) = ore_core::linaje::linaje(pkg, v) else {
             continue;
-        }
-        if let Some(c) = columna {
-            let usa = v
-                .section("fields")
-                .is_some_and(|n| n.entries().iter().any(|(_, val)| val.as_str() == Some(c)));
-            if !usa {
-                continue;
-            }
-        }
-        if let Some(q) = v.qname() {
+        };
+        let toca = lin.values().flatten().any(|(r, arista)| {
+            r.doc == qn
+                && columna
+                    .is_none_or(|c| r.columna == c && *arista == ore_core::linaje::Arista::Directa)
+        });
+        if toca && let Some(q) = v.qname() {
             out.push(q);
         }
     }

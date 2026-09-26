@@ -21,8 +21,8 @@
 #                                     SOLO lo suyo, la referenciada sigue en 409
 #  11  GET /documentos/View · Table   enteras; un kind fuera de la tabla, 404 con
 #                                     la lista de los servidos
-#  12  PUT View                       201 y el MISMO `plan sha256` que la misma
-#                                     vista por `ore view add`; sin owner 422;
+#  12  PUT View                       201 y la vista con su plan (`ore view`);
+#                                     sin owner 422;
 #                                     columna que la tabla no tiene, OOS2018
 #  13  PUT con `yaml` tal cual        se guarda con sus comentarios; el nombre lo
 #                                     pone la ruta
@@ -114,7 +114,9 @@ trap limpiar EXIT
 
 buscar() {
   local n
-  for n in "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
+  # `ORE_BIN`, si se da, primero: los binarios de otro `CARGO_TARGET_DIR`.
+  for n in ${ORE_BIN:+"$ORE_BIN/$1" "$ORE_BIN/$1.exe"} \
+           "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
            "$RAIZ/target/debug/$1"   "$RAIZ/target/debug/$1.exe"; do
     [ -x "$n" ] && { echo "$n"; return 0; }
   done
@@ -315,7 +317,8 @@ dice "10 · con el arbol roto por otro lado: lo valido entra, lo invalido sale c
 # ── 11 · View y Table: el mismo motor, dos filas más de la tabla de kinds ───
 [ "$(pide GET /documentos/View)" = "200" ] || falla "11 · GET /documentos/View · $(cat "$TMP/r.json")"
 cumple "{x['name'] for x in d['documentos']} == {'empleados','envios'}" "11 · acme-retail tiene dos vistas"
-cumple "[x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['from']=={'table':'workday_worker'} and len([x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['fields'])==12" "11 · la vista trae from y fields enteros"
+# acme-retail es v1alpha14 (0040 paso 6): la vista es su consulta y su contrato.
+cumple "[x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['sql'].rstrip().endswith('FROM \"hr\".\"workday_worker\"') and len([x for x in d['documentos'] if x['name']=='empleados'][0]['spec']['columns'])==12" "11 · la vista trae su consulta y su contrato enteros"
 [ "$(pide GET /documentos/Table)" = "200" ] || falla "11 · GET /documentos/Table · $(cat "$TMP/r.json")"
 cumple "len(d['documentos']) == 2 and [x for x in d['documentos'] if x['name']=='workday_worker'][0]['spec']['reads']['fullScan']=='forbidden' and 'physicalType' in json.dumps(d['documentos'])" "11 · la tabla trae sus dos caras y sus columnas"
 [ "$(pide GET /documentos/Ruleset)" = "404" ] || falla "11 · un kind que no esta en la tabla no dio 404"
@@ -323,16 +326,12 @@ grep -q "Entity · View · Table · Concept · Interface" "$TMP/r.json" || falla
 [ "$(pide GET /documentos/Table/hr/workday_worker)" = "200" ] && cumple "d['yaml'].startswith('apiVersion: oos.dev/v1alpha8') and 'kind: Table' in d['yaml'] and d['commit']['autor']=='semilla'" "11 · una tabla con su YAML y su commit"
 dice "11 · View y Table se leen enteras por el mismo motor; un kind fuera de la tabla es 404 con la lista"
 
-# ── 12 · PUT de una View: el mismo plan que `ore view add` ──────────────────
+# ── 12 · PUT de una View ─────────────────────────────────────────────────────
 #
-# El verbo emite el YAML con el emisor de Entity; `ore view add` con el suyo.
-# Que no divergen se mide: la misma vista por los dos caminos da el mismo
-# `plan sha256` en `ore view .`.
-git clone -q "$FORJA" "$TMP/add" 2>/dev/null
-( cd "$TMP/add" && "$ORE" view add --from workday_worker --owner team:people-data --field id=Worker_Reference.ID --path packages/hr solo_ids >/dev/null 2>&1 ) || falla "12 · ore view add fallo"
-PLAN_ADD=$(cd "$TMP/add" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,/^$/p" | grep -o "sha256:[0-9a-f]*" | head -1)
-[ -n "$PLAN_ADD" ] || falla "12 · ore view no dio plan para la de add"
-rm -rf "$TMP/add"
+# El verbo emite el YAML con el emisor de Entity, y la vista tiene plan.
+# (Hasta el paso 5 de 0040 se cotejaba con `ore view add`, que se retiró: una
+# vista nueva nace de un `CREATE VIEW` en un puesto. Que la consola escriba la
+# vista como SQL es el paso 7.)
 VISTA='{"metadata":{"labels":{"oos.maturity":"DRAFT"}},"spec":{"owner":"team:people-data","from":{"table":"workday_worker"},"fields":{"id":"Worker_Reference.ID"}}}'
 [ "$(pide PUT /documentos/View/hr/solo_ids "$VISTA")" = "201" ] || falla "12 · PUT View no dio 201 · $(cat "$TMP/r.json")"
 [ "$(asunto)" = 'escribir la vista `hr.solo_ids`' ] || falla "12 · el asunto: $(asunto)"
@@ -340,7 +339,7 @@ git clone -q "$FORJA" "$TMP/put" 2>/dev/null
 PLAN_PUT=$(cd "$TMP/put" && "$ORE" view . 2>/dev/null | sed -n "/^hr.solo_ids$/,/^$/p" | grep -o "sha256:[0-9a-f]*" | head -1)
 grep -q "^apiVersion" "$TMP/put/packages/hr/views/solo_ids.yaml" || falla "12 · la vista no esta en views/"
 rm -rf "$TMP/put"
-[ "$PLAN_PUT" = "$PLAN_ADD" ] || falla "12 · el plan por PUT ($PLAN_PUT) no es el plan por view add ($PLAN_ADD)"
+[ -n "$PLAN_PUT" ] || falla "12 · ore view no dio plan para la vista del PUT"
 # sin owner: lo exige el verbo, no el compilador
 SIN=$("$PY" -c "import json,sys; d=json.loads(sys.argv[1]); del d['spec']['owner']; print(json.dumps(d))" "$VISTA")
 [ "$(pide PUT /documentos/View/hr/otra "$SIN")" = "422" ] || falla "12 · una vista sin owner entro · $(cat "$TMP/r.json")"
@@ -349,7 +348,7 @@ grep -q "owner" "$TMP/r.json" || falla "12 · el 422 no nombra owner"
 MAL='{"spec":{"owner":"team:people-data","from":{"table":"workday_worker"},"fields":{"id":"No_Existe"}}}'
 [ "$(pide PUT /documentos/View/hr/rota2 "$MAL")" = "422" ] || falla "12 · una vista rota entro · $(cat "$TMP/r.json")"
 cumple "d['diagnosticos'][0]['codigo']=='OOS2018' and 'No_Existe' in d['diagnosticos'][0]['mensaje']" "12 · OOS2018 con la columna"
-dice "12 · PUT View: 201, mismo plan que ore view add ($PLAN_PUT), sin owner 422, columna que no esta OOS2018"
+dice "12 · PUT View: 201, con plan ($PLAN_PUT), sin owner 422, columna que no esta OOS2018"
 
 # ── 13 · PUT con `yaml` tal cual: los comentarios sobreviven ────────────────
 YAML_DOC=$("$PY" -c 'import json; print(json.dumps({"yaml": "apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata:\n  name: solo_ids\n  namespace: hr\nspec:\n  owner: team:people-data\n  # este comentario es de quien escribe, y se queda\n  from: { table: workday_worker }\n  fields:\n    id: \"Worker_Reference.ID\"\n"}))')
@@ -363,7 +362,8 @@ dice "13 · PUT con yaml tal cual: se guarda con sus comentarios, y el nombre lo
 [ "$(pide DELETE /documentos/View/hr/empleados)" = "409" ] || falla "14 · retirar la vista de Employee no dio 409 · $(cat "$TMP/r.json")"
 grep -q 'hr.Employee` (backedBy)' "$TMP/r.json" || falla "14 · el 409 no dice quien la nombra · $(cat "$TMP/r.json")"
 [ "$(pide DELETE /documentos/Table/hr/workday_worker)" = "409" ] || falla "14 · retirar la tabla de empleados no dio 409 · $(cat "$TMP/r.json")"
-grep -q 'hr.empleados` (from.view)\|hr.empleados` (from.table)' "$TMP/r.json" || falla "14 · el 409 de la tabla no dice la vista · $(cat "$TMP/r.json")"
+# la de acme la lee por su consulta (v1alpha14): el 409 también lo dice
+grep -q 'hr.empleados` (sql)' "$TMP/r.json" || falla "14 · el 409 de la tabla no dice la vista SQL · $(cat "$TMP/r.json")"
 grep -q 'hr.solo_ids` (from.table)' "$TMP/r.json" || falla "14 · el 409 de la tabla no dice TODAS las vistas · $(cat "$TMP/r.json")"
 # una vista sobre solo_ids, y entonces solo_ids tampoco se retira
 [ "$(pide PUT /documentos/View/hr/encima '{"spec":{"owner":"team:people-data","from":{"view":"solo_ids"},"fields":{"id":"id"}}}')" = "201" ] || falla "14 · la vista sobre vista no entro · $(cat "$TMP/r.json")"

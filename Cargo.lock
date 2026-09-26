@@ -2177,14 +2177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ore-maintain"
-version = "0.1.0"
-dependencies = [
- "ore-core",
- "ore-view",
-]
-
-[[package]]
 name = "ore-read-bigquery"
 version = "0.1.0"
 dependencies = [

@@ -557,7 +557,30 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
             }
         }
     }
-    println!("  raíz      lago · lo que lee son datasets, y la consulta la ejecuta DuckDB");
+    // Lo que lee del mundo: una tabla de un origen tiene raíz y caras, como
+    // las tenía la vista estructurada que la leía (0040 paso 6: la que el
+    // inductor propone es ya una consulta). Sin ninguna, todo es del lago.
+    let tablas: Vec<&Loaded> = sql
+        .map(|s| {
+            vistas::lee_directo(pkg, s)
+                .into_iter()
+                .filter(|d| d.kind == Kind::Table)
+                .collect()
+        })
+        .unwrap_or_default();
+    if tablas.is_empty() {
+        println!("  raíz      lago · lo que lee son datasets, y la consulta la ejecuta DuckDB");
+    }
+    for t in &tablas {
+        println!(
+            "  raíz      {} · {}",
+            t.section("datasource")
+                .and_then(|d| d.as_str())
+                .unwrap_or("?"),
+            t.section("object").and_then(|o| o.as_str()).unwrap_or("?")
+        );
+        println!("  caras     {}", caras(t));
+    }
     if let Some(s) = sql {
         match vistas::tipos_del_contrato(s) {
             Ok(t) => println!(
@@ -576,6 +599,10 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
             Some(d) if Some(&d) == v.qname().as_ref() =>
                 "copia — la consulta ya está en sus bytes".to_string(),
             Some(d) => format!("se lee de su copia `{d}`"),
+            None if !tablas.is_empty() =>
+                "virtual · lee una tabla de un origen: se lee sobre un dataset que la copie \
+                 (`from: { table }`), no desde lo que se tiene"
+                    .to_string(),
             None => "se lee en un puesto (`sql()`), con la identidad de quien lee".to_string(),
         }
     );
@@ -632,6 +659,38 @@ impl Vistas for Package {
 /// mismo nombre y distinto kind—: la vista va por su nombre y el dataset por
 /// `dataset:<nombre>`. Es la única costura: los punteros, el registro y lo
 /// que el usuario nombra siguen por el nombre cualificado.
+/// **El contrato de cada vista estructurada** (ADR 0040 paso 6): lo que expone,
+/// con el tipo que el plan del motor da a cada columna sobre los tipos de la
+/// fuente ([`tipos_de_fuente`]). Es lo que `ore migrate v1alpha14` escribe en
+/// `columns`; `Err` dice por qué el plan no tipa.
+pub(crate) fn contratos(pkg: &Package) -> BTreeMap<String, Result<Vec<(String, String)>, String>> {
+    let tipos = tipos_de_fuente(pkg);
+    let todas = pkg.of_view();
+    let catalogo = Catalogo::con(
+        todas
+            .iter()
+            .filter_map(|v| Some(Vista::nueva(&nodo_de(v)?, cuerpo(pkg, v, &tipos)))),
+    );
+    let mut out = BTreeMap::new();
+    for v in todas
+        .iter()
+        .filter(|v| v.kind == Kind::View && !vistas::es_sql(v))
+    {
+        let Some(qn) = v.qname() else { continue };
+        let r = catalogo
+            .expandir(&qn)
+            .map_err(|e| e.como_texto())
+            .and_then(|plan| esquema(&plan).map_err(|d| d.como_texto()))
+            .map(|e| {
+                e.into_iter()
+                    .map(|(c, t)| (c, t.to_string()))
+                    .collect::<Vec<_>>()
+            });
+        out.insert(qn, r);
+    }
+    out
+}
+
 pub(crate) fn nodo_de(d: &Loaded) -> Option<String> {
     let qn = d.qname()?;
     Some(if d.kind == Kind::Dataset {
@@ -687,25 +746,7 @@ pub(crate) fn objeto_del_lago(d: &Loaded) -> String {
 /// Lo que ni una ni otra nombra es `String`, que es lo único que se puede
 /// afirmar de una columna de la que solo se sabe el nombre.
 pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
-    let mut out = BTreeMap::new();
-    for t in pkg.tables() {
-        let (Some(datasource), Some(objeto)) = (
-            t.section("datasource").and_then(|d| d.as_str()),
-            t.section("object").and_then(|o| o.as_str()),
-        ) else {
-            continue;
-        };
-        for (col, tipo) in vistas::tipos_de_columnas(t) {
-            out.insert((datasource.to_string(), objeto.to_string(), col), tipo);
-        }
-    }
-    // v1alpha12: y las de un dataset escrito, bajo `(lago, <ns>_<n>)`.
-    for d in pkg.datasets().filter(|d| vistas::es_escrito(d)) {
-        let objeto = objeto_del_lago(d);
-        for (col, tipo) in vistas::tipos_de_columnas(d) {
-            out.insert(("lago".to_string(), objeto.clone(), col), tipo);
-        }
-    }
+    let mut out = tipos_de_fuente(pkg);
     for e in pkg.entities() {
         let Some(v) = vistas::respaldo(pkg, e) else {
             continue;
@@ -747,6 +788,34 @@ pub(crate) fn tipos_de_raiz(pkg: &Package) -> BTreeMap<(String, String, String),
                 (raiz.datasource.clone(), raiz.objeto.clone(), col.clone()),
                 t,
             );
+        }
+    }
+    out
+}
+
+/// Los tipos que **la fuente** da a cada columna raíz: los de la tabla y los
+/// del dataset escrito, sin lo que una entidad afina encima. Es lo que el
+/// contrato de una vista v1alpha14 lleva (§4: el tipo que el motor da al
+/// resolver la consulta), y lo que la migración escribe en él: el `Money` de
+/// una entidad es de la entidad, no de la columna.
+pub(crate) fn tipos_de_fuente(pkg: &Package) -> BTreeMap<(String, String, String), Type> {
+    let mut out = BTreeMap::new();
+    for t in pkg.tables() {
+        let (Some(datasource), Some(objeto)) = (
+            t.section("datasource").and_then(|d| d.as_str()),
+            t.section("object").and_then(|o| o.as_str()),
+        ) else {
+            continue;
+        };
+        for (col, tipo) in vistas::tipos_de_columnas(t) {
+            out.insert((datasource.to_string(), objeto.to_string(), col), tipo);
+        }
+    }
+    // v1alpha12: y las de un dataset escrito, bajo `(lago, <ns>_<n>)`.
+    for d in pkg.datasets().filter(|d| vistas::es_escrito(d)) {
+        let objeto = objeto_del_lago(d);
+        for (col, tipo) in vistas::tipos_de_columnas(d) {
+            out.insert(("lago".to_string(), objeto.clone(), col), tipo);
         }
     }
     out

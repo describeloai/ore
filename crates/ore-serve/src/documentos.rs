@@ -269,7 +269,7 @@ fn exige_owner(spec: &Node) -> Option<String> {
         .is_none_or(str::is_empty)
         .then(|| {
             "falta `spec.owner`: quien responde de lo que la vista expone y con qué frescura. \
-             `ore validate` no lo exige; `ore view add` sí, y este verbo también"
+             `ore validate` no lo exige; un `CREATE VIEW` lo pone, y este verbo lo pide"
                 .to_string()
         })
 }
@@ -1016,7 +1016,18 @@ impl Servidor {
             return r;
         }
         let cualificado = d.cualificado();
-        let quien = quien_nombra(&lista, d);
+        let mut quien = quien_nombra(&lista, d);
+        // Y lo que lee la consulta de una vista SQL (0040 paso 6): no está en
+        // un campo, así que se resuelve con el árbol.
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        for v in pkg.docs.iter().filter(|v| ore_core::vistas::es_sql(v)) {
+            if ore_core::servir::nombrados(&pkg, v)
+                .iter()
+                .any(|x| x.doc.path.ends_with(&d.fichero))
+            {
+                quien.push(format!("`{}` (sql)", v.qname().unwrap_or_default()));
+            }
+        }
         if !quien.is_empty() {
             return Respuesta::error(
                 409,

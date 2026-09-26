@@ -183,7 +183,14 @@ fn lo_inducido_son_tablas_vistas_y_entidades_y_ningun_binding() {
     // pregunta (0033): ni `materialized` ni `freshness`, que ya no son suyas.
     // Lo que se tiene —la copia— es un `Dataset`, y una base foránea no lo
     // emite: aquí no hay `datasets/`.
-    assert!(vista.contains("from: { table: clientes }"), "{vista}");
+    // Desde 0040 paso 6 es v1alpha14: la consulta de su forma, sobre su tabla,
+    // que se llama `<objeto>_t` (en v1alpha14 un nombre es una sola cosa).
+    assert!(vista.contains("apiVersion: oos.dev/v1alpha14"), "{vista}");
+    assert!(
+        vista.contains(r#"FROM "ventas"."public"."clientes_t""#),
+        "{vista}"
+    );
+    assert!(tabla.contains("name: clientes_t"), "{tabla}");
     assert!(!vista.contains("\n  materialized:"), "{vista}");
     assert!(!vista.contains("\n  freshness:"), "{vista}");
     assert!(

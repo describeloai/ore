@@ -428,7 +428,8 @@ def diagnosticar(texto, cat):
         # una Table de otra fuente: sql() no la lee; se dice cual es su View
         if n in cat.ajenas and n not in cat.legibles:
             a = cat.ajenas[n]
-            ind = ((a.get("detalle") or {}).get("vistaInducida") or "").replace("view:", "")
+            ind = next((r["ref"].replace("view:", "") for r in (a.get("relaciones") or [])
+                        if r.get("tipo") == "produce" and r.get("ref", "").startswith("view:")), "")
             out.append({"range": rango, "severity": 1, "source": "ore",
                         "message": "`%s` es una Table de otra fuente: sql() no la lee%s" % (
                             a["completo"], (", lee su View `%s`" % ind) if ind else "")})

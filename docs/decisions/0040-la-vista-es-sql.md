@@ -234,7 +234,87 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
 6. **Migrar y suprimir.** `ore migrate` reescribe v8–13 → v14 (tipos de sus fuentes) en
    `casos/`, `acme-retail` y el árbol del usuario; lo que no compila se borra. Se quita la
    forma: `cuerpo()` estructurado, emisores de `autoria` y del inductor.
-7. **Consola.** `DocumentoView` = `sql/dialect/columns`; la Forge enseña SQL y contrato;
+   **Medido antes** (`medida-migrar-a-v14.py`, 97 árboles con vistas: los de la conformance
+   v8–13 y `casos/`): 131 de 133 vistas se traducen y las 49 de los válidos tienen contrato
+   entero; pero **la forma no se puede quitar del código**: v14 la mantiene en el `Dataset`
+   mantenido, y la conformance v5–13 (decisión A) espera sus reglas (`OOS2020/2021/2023–2025`,
+   `OOS5019/5020/5028–5033`). Lo que se suprime es lo muerto de verdad. Y dos cosas que
+   romperían: una tabla y una vista con el mismo nombre (el patrón del inductor, `OOS2035` en
+   v14), y la copia de una vista que lee una tabla (4c sólo lee el lago).
+   - **6a · `ore migrate v1alpha14`** (`migrar_v14.rs`), en dos tiempos sobre una copia del
+     árbol: **los nombres** —la vista se queda el suyo, que es el que nombran entidades,
+     funciones y acciones; la tabla que se llamaba como ella pasa a `<n>_t` (su `object` no
+     cambia) y el dataset a `<n>_copia` con su puntero mudado diciendo dónde siguen sus bytes;
+     quien los lee por `from`, reapuntado en su sitio sin tocar el resto del fichero— y luego
+     **las consultas**: cada vista es su `como_sql`, legible, con el contrato del plan sobre
+     los tipos **de la fuente** (`vista::tipos_de_fuente`: el `Money` de una entidad es de la
+     entidad; lo que la tabla no tipa es `String` y se avisa). La copia de una vista sobre una
+     tabla pasa a leer la tabla con la forma de la vista (la siguen copiando los drivers) y la
+     vista es la consulta sobre su copia; con forma encima, las dos se componen si ninguna
+     agrupa. Encadena la v1alpha12 si falta. **El criterio de hecho**: el árbol migrado da
+     exactamente los mismos diagnósticos, código a código —la cadena entera se ensaya en una
+     copia y se coteja contra el árbol de antes—; si no, o si algo no se migra solo (una vista
+     v1alpha7, una cadena de vistas hasta una tabla copiada), no se escribe nada.
+     Medido: **36 de 37 árboles válidos migran** con 0 errores (el que no, `casos/con-vista`,
+     es el testigo v7 de `migracion.rs` y se queda); **ningún inválido calla su código** (29 no
+     migran, 31 migran y lo siguen diciendo). `acme-retail` migrado en `C:\oos` (los
+     comentarios que enseñan, dichos en v14), `casos/jerarquia` también; el árbol del inquilino
+     (traza local) migra con sus mismos 10 errores.
+     Dos fallos que la medida sacó y ya estaban: la v1alpha12 reapuntaba el `from.table` de un
+     dataset a su propia copia cuando la tabla y la vista se llamaban igual (se leía a sí
+     mismo), y `OOS7014` miraba sólo `fields`, así que una función sobre una vista SQL «no
+     veía» ninguna columna (ahora `vistas::expone`, que lee el contrato).
+     Lo que cambia además de la forma, dicho: cada copia por consulta se rehace entera **una
+     vez** (su cabecera es la consulta servida), y se pierden los comentarios de los
+     documentos reemitidos, como en la v1alpha12.
+   - **6b · el inductor emite v14, y `ore view add` se va.** La vista que propone por cada
+     objeto es la consulta de su forma —escrita con la forma de siempre y traducida por
+     `como_sql`, así que una vista inducida y una migrada son el mismo texto—, en DRAFT, con
+     el contrato de los tipos que el conector tradujo (`String` donde no supo). Su tabla se
+     llama **`<objeto>_t`**, siempre: la vista o el dataset que exponen el objeto se llaman
+     como él, y en v14 un nombre es una sola cosa; el `object` es el del origen. El dataset
+     que copia un objeto sigue llevando la forma (v14 la mantiene en él). `con_schema` ya no
+     baja a v1alpha13 un documento v14. `ore view add` (`autoria.rs`), el segundo emisor, se
+     retira: una vista nueva nace de un `CREATE VIEW` en un puesto; `los-documentos.sh` 12
+     deja de cotejarse con él. Queda para el paso 7: el PUT estructurado de la Forge sigue
+     escribiendo la forma de antes hasta que la consola escriba SQL.
+     Que el inductor escriba consultas sacó a la luz lo que las herramientas que reapuntan
+     nombres no sabían de una vista SQL —y que ya faltaba desde el paso 5 para cualquier
+     `CREATE VIEW`—. El núcleo dice ahora **qué nombra una consulta y dónde**
+     (`servir::nombrados`, por las posiciones de `sqlparser`) y lo **reescribe en su sitio**
+     (`servir::renombrar`, citado como estaba). Con eso:
+     - `package move`/`split`/`merge` reapuntan la consulta de quien lee lo que se mueve, y
+       sus componentes cuentan lo que la consulta lee;
+     - `OOS2028` mira también lo que lee la consulta: una vista SQL que cruza a un paquete
+       que no lo exporta ya no pasa callada;
+     - `schema rename` reconoce los nombres entre comillas;
+     - `drift-detect` dice quién proyecta una columna por el linaje, no por `fields`;
+     - `ore view` de una vista SQL que lee una tabla enseña su raíz y sus caras, y que se lee
+       sobre un dataset que la copie.
+     Y la migración no se lleva en silencio lo que el emparejador de `ore ask` hacía: una
+     vista sobre una tabla que un dataset copia se contesta hoy desde esa copia, y como
+     consulta no; si la hay, no se migra sola (medido: ninguna en el corpus ni en los árboles
+     reales).
+     Y la vista que el inductor deja sobre cada tabla es **una vista SQL v1alpha14 de pleno
+     derecho**: el catálogo de assets deja de reconocerla por el `__` de su fichero y de
+     esconderla como `vistaInducida` de su tabla; sale como un ítem más. El servidor de SQL del
+     puesto, que la sugería al leer una tabla de otra fuente, la saca de las relaciones del
+     catálogo (`produce`).
+   - **6c · `OOS2021`, `OOS2023` y `OOS2029` sobre la copia de una vista SQL: no se portan,
+     y es lo que dice la spec** (§10 no las cuenta entre las que siguen valiendo). `OOS2029`
+     (el origen no proyecta) y `OOS2023` (copia fechada por columna sin clave) hablan de copiar
+     desde una tabla: la copia de una consulta lee sólo datasets del lago y se rehace entera,
+     así que no puede darse ninguna; la copia de la tabla —el dataset `from: { table }`— es
+     estructurada y las sigue teniendo. `OOS2021` (entidad mutable sobre algo que sólo anexa)
+     no se decide mirando una consulta: una SQL puede sacar el estado presente de un log de
+     eventos (la última fila por clave), que la forma no podía; portarla daría falsos positivos.
+   - **6d · lo muerto, fuera**: el crate `ore-maintain` (el mantenedor Δ de 0013), que no se
+     construía en ninguna imagen ni lo llamaba nadie. Los ADR que lo describen quedan como
+     historia. La forma estructurada se queda: v14 la mantiene en el dataset y la conformance
+     v5–13 espera sus reglas.
+7. **Consola.** (La Ontology Forge, legacy y sin entrada en la navegación, se retiró entera de
+   rubix-platform el 2026-09-26: ya no hay pantalla de documentos que migrar.)
+   `DocumentoView` = `sql/dialect/columns`; la Forge enseña SQL y contrato;
    «As SQL» lee `spec.sql` (fuera `como-sql.ts`); el borrador de vista es un `.sql` con
    `CREATE VIEW`; faceta del catálogo, `ordenDeCampos` y mocks.
 8. **Pruebas de fuego y cierre.** Las 15 `.sh` que usan vistas; nueva

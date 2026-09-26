@@ -81,12 +81,12 @@ fn taller(nombre: &str) -> PathBuf {
     );
     escribir(
         dir.join("packages/ventas/views/resumen.yaml"),
-        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: resumen, namespace: ventas }\nspec:\n  owner: \"team:ventas\"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n",
+        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: resumen, namespace: ventas }\nspec:\n  owner: \"team:ventas\"\n  from: { table: ventas.rubix_demo_ventas.clientes_t }\n  fields: { id: id }\n",
     );
     ore(&dir, &["package", "new", "eu", "--owner", "team:eu"]);
     escribir(
         dir.join("packages/eu/views/copia.yaml"),
-        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: copia, namespace: eu }\nspec:\n  owner: \"team:eu\"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n",
+        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: copia, namespace: eu }\nspec:\n  owner: \"team:eu\"\n  from: { table: ventas.rubix_demo_ventas.clientes_t }\n  fields: { id: id }\n",
     );
     escribir(
         dir.join("packages/ventas/transforms/cuenta.sql"),
@@ -153,7 +153,7 @@ fn crear_un_schema_y_lo_que_se_niega() {
     //   (OOS2036), y no queda nada escrito
     escribir(
         dir.join("packages/ventas/suelta/views/x.yaml"),
-        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: x, namespace: ventas }\nspec:\n  owner: \"team:ventas\"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n",
+        "apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: x, namespace: ventas }\nspec:\n  owner: \"team:ventas\"\n  from: { table: ventas.rubix_demo_ventas.clientes_t }\n  fields: { id: id }\n",
     );
     let antes = errores(&dir);
     let (c, dicho) = ore(&dir, &["package", "schema", "new", "ventas", "suelta"]);
@@ -194,12 +194,18 @@ fn renombrar_un_schema_descubierto() {
     let vista = leer(p("packages/ventas/ventas_es/views/Clientes__clientes.yaml"));
     // ② su metadata; lo suyo en una parte, tal cual
     assert!(vista.contains("schema: ventas_es"), "{vista}");
-    assert!(vista.contains("table: clientes"), "{vista}");
+    // La vista inducida es una consulta (0040 paso 6), y nombra su tabla en
+    // tres partes entre comillas: se reapunta como las demás.
+    assert!(
+        vista.contains(r#"FROM "ventas"."ventas_es"."clientes_t""#),
+        "{vista}"
+    );
     // ③ lo que lo nombra en tres partes: yaml y sql; el programa, no
     assert!(
-        leer(p("packages/ventas/views/resumen.yaml")).contains("table: ventas.ventas_es.clientes")
+        leer(p("packages/ventas/views/resumen.yaml"))
+            .contains("table: ventas.ventas_es.clientes_t")
     );
-    assert!(leer(p("packages/eu/views/copia.yaml")).contains("table: ventas.ventas_es.clientes"));
+    assert!(leer(p("packages/eu/views/copia.yaml")).contains("table: ventas.ventas_es.clientes_t"));
     assert!(
         leer(p("packages/ventas/transforms/cuenta.sql")).contains("from ventas.ventas_es.clientes")
     );

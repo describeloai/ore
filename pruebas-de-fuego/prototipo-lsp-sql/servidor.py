@@ -271,7 +271,8 @@ def diagnosticar(texto, cat):
     for i in range(len(ts) - 2):
         n = ("%s.%s" % (ts[i][1], ts[i + 2][1])).lower()
         if ts[i + 1][1] == "." and n in cat.ajenas and n not in cat.legibles:
-            ind = ((cat.ajenas[n].get("detalle") or {}).get("vistaInducida") or "").replace("view:", "")
+            ind = next((r["ref"].replace("view:", "") for r in (cat.ajenas[n].get("relaciones") or [])
+                        if r.get("tipo") == "produce" and r.get("ref", "").startswith("view:")), "")
             ini, fin = ts[i][0], ts[i + 2][0] + len(ts[i + 2][1])
             l0, c0 = texto[:ini].count("\n"), ini - (texto.rfind("\n", 0, ini) + 1)
             out.append({"range": {"start": {"line": l0, "character": c0}, "end": {"line": l0, "character": c0 + fin - ini}},

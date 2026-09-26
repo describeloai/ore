@@ -55,7 +55,9 @@ trap limpiar EXIT
 
 buscar() {
   local n
-  for n in "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
+  # `ORE_BIN`, si se da, primero: los binarios de otro `CARGO_TARGET_DIR`.
+  for n in ${ORE_BIN:+"$ORE_BIN/$1" "$ORE_BIN/$1.exe"} \
+           "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
            "$RAIZ/target/debug/$1"   "$RAIZ/target/debug/$1.exe"; do
     [ -x "$n" ] && { echo "$n"; return 0; }
   done
