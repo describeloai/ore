@@ -1,0 +1,27 @@
+# La credencial de Google Cloud, en un solo sitio (Fase A de BigQuery, A1).
+#
+# Dos programas hablan ya con APIs de Google con el token de la cuenta que
+# corre —`ore-store-gcs` (Cloud Storage) y, desde A2, `ore-read-bigquery`— y
+# los dos necesitan lo mismo: pedirle el token al metadata server, saber cuándo
+# caduca y pedir otro antes. Tenerlo dos veces es tener dos maneras de que una
+# copia de más de una hora falle a medias.
+#
+# No puede vivir en `ore-driver`: esa crate la enlaza `ore-cli`, y el guardián
+# de dependencias (`ore-cli/tests/dependencias.rs`) veta TLS dentro de `ore`.
+[package]
+name        = "ore-gcp"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El token de la cuenta que corre, renovado, para hablar con Google Cloud"
+
+[dependencies]
+# Solo para leer la respuesta del metadata server.
+ore-core = { path = "../ore-core" }
+# HTTP con TLS de la plataforma, y bloqueante: las mismas crates y la misma
+# razón que `ore-store` ya documenta (la CA de la empresa está donde el sistema
+# operativo la busca). No añade nada al cierre del árbol.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"

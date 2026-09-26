@@ -10,9 +10,10 @@
 //! Es exactamente lo que los Jobs de la celda ya usan con `gcloud` para Secret
 //! Manager; aquí se usa sin `gcloud` en medio.
 //!
-//! En local no hay metadata server: se pasa el token en `ORE_GCS_TOKEN`
-//! (`gcloud auth print-access-token`). Vale una hora, que es más de lo que dura
-//! una materialización.
+//! El token lo da `ore_gcp::Credencial`: el del metadata server, **renovado**
+//! antes de caducar; en local, el de `ORE_GCP_TOKEN` (o `ORE_GCS_TOKEN`, el
+//! nombre de antes), que no se renueva. Hasta A1 de BigQuery se guardaba aquí
+//! el primero para siempre, y una copia de más de una hora fallaba a medias.
 //!
 //! # Las mismas dos garantías que R2 honraba
 //!
@@ -34,8 +35,6 @@ use std::io::Read as _;
 
 const API: &str = "https://storage.googleapis.com";
 const AGENTE: &str = "ore-store-gcs/0.1";
-const METADATA: &str =
-    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
 /// El intercambio de tokens de Google: de un token de la cuenta a uno **acotado**
 /// por *Credential Access Boundary* (0031 §11 ③, medido en
 /// `medida-w3-escribir.py`: dentro del prefijo 200; fuera, borrar y sobrescribir
@@ -45,9 +44,7 @@ const STS: &str = "https://sts.googleapis.com/v1/token";
 
 pub struct Cuenta {
     pub bucket: String,
-    /// Fijo si vino por `ORE_GCS_TOKEN`; si no, se pide al metadata server en la
-    /// primera petición y se guarda.
-    token: std::sync::Mutex<Option<String>>,
+    credencial: ore_gcp::Credencial,
 }
 
 impl Cuenta {
@@ -56,40 +53,12 @@ impl Cuenta {
             .map_err(|_| "falta la variable de entorno `ORE_GCS_BUCKET`".to_string())?;
         Ok(Cuenta {
             bucket,
-            token: std::sync::Mutex::new(
-                std::env::var("ORE_GCS_TOKEN")
-                    .ok()
-                    .filter(|t| !t.is_empty()),
-            ),
+            credencial: ore_gcp::Credencial::del_entorno(),
         })
     }
 
     fn token(&self) -> Result<String, String> {
-        if let Some(t) = self
-            .token
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            return Ok(t.clone());
-        }
-        let cuerpo = cliente()?
-            .get(METADATA)
-            .set("metadata-flavor", "Google")
-            .timeout(std::time::Duration::from_secs(5))
-            .call()
-            .map_err(|e| format!("sin `ORE_GCS_TOKEN` y el metadata server no contesta ({e}): en GCP hace falta Workload Identity; en local, `ORE_GCS_TOKEN=$(gcloud auth print-access-token)`"))?
-            .into_string()
-            .map_err(|e| format!("el token del metadata server no se pudo leer: {e}"))?;
-        let t = ore_core::parse::parse(&cuerpo)
-            .ok()
-            .and_then(|n| {
-                n.get("access_token")
-                    .and_then(|(_, v)| v.as_str().map(String::from))
-            })
-            .ok_or("el metadata server no devolvió `access_token`")?;
-        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(t.clone());
-        Ok(t)
+        self.credencial.token()
     }
 
     fn pide(&self, metodo: &str, url: &str) -> Result<ureq::Request, String> {
@@ -104,13 +73,7 @@ impl Cuenta {
     }
 }
 
-fn cliente() -> Result<ureq::Agent, String> {
-    let tls = native_tls::TlsConnector::new()
-        .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
-    Ok(ureq::AgentBuilder::new()
-        .tls_connector(std::sync::Arc::new(tls))
-        .build())
-}
+use ore_gcp::cliente;
 
 /// Percent-encoding de un nombre de objeto **como segmento**: la barra también,
 /// porque en la API JSON el nombre entero es un solo segmento de la ruta.

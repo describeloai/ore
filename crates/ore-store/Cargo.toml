@@ -73,6 +73,9 @@ uuid = { version = "1", features = ["v4"] }
 # donde el sistema operativo la busca.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
+# El token de GCS (A1 de BigQuery): el del metadata server, renovado antes de
+# caducar. Es la misma credencial que usa `ore-read-bigquery`, en un solo sitio.
+ore-gcp = { path = "../ore-gcp" }
 
 # SHA-256, para el digest del cuerpo y para la firma. HMAC NO se enlaza: es una
 # construccion de seis lineas sobre esto, con vectores oficiales, y la crate

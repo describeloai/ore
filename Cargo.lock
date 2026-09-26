@@ -2141,6 +2141,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-gcp"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "ore-core",
+ "ureq",
+]
+
+[[package]]
 name = "ore-iam"
 version = "0.1.0"
 dependencies = [
@@ -2251,6 +2260,7 @@ dependencies = [
  "iceberg",
  "native-tls",
  "ore-core",
+ "ore-gcp",
  "parquet",
  "serde",
  "serde_json",
