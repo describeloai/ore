@@ -912,14 +912,14 @@ def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
     return "\n".join(lineas) + "\n"
 
 
-def _ruta_de_vista(nombre):
+def _ruta_de_vista(nombre, kind="View"):
     base, ns, v = _partes(nombre)
-    return ("/documentos/View/%s/%s" % (base, v) if ns == DEFAULT
-            else "/documentos/View/%s/%s/%s" % (base, ns, v))
+    return ("/documentos/%s/%s/%s" % (kind, base, v) if ns == DEFAULT
+            else "/documentos/%s/%s/%s/%s" % (kind, base, ns, v))
 
 
 def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemplaza=False,
-                si_no_existe=False, evolucion=False, existe=None, anterior=None):
+                si_no_existe=False, evolucion=False, existe=None, anterior=None, materializada=False):
     """`create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)]
     [comment '…'] [with schema evolution] as <sql>` (ADR 0040 paso 5).
 
@@ -928,7 +928,11 @@ def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemp
     (el contrato que tenía) los dice `ore-serve` al escribir la celda; reemplazar
     una vista puede AÑADIR columnas, y quitar una o cambiarle el tipo rompe a
     quien la lee: sólo con `evolucion` (`with schema evolution`). Devuelve
-    `{vista, estado: created|replaced|already exists, columnas}`."""
+    `{vista, estado: created|replaced|already exists, columnas}`.
+
+    `materializada` (`create materialized view`, ADR 0040 paso 7): después de la
+    vista, su copia —el dataset `<vista>_copia`, `from: { view }`, que la copia
+    entera—; quien lee la vista lee su copia. Devuelve además `copia`."""
     nombre = _corto(nombre, "create view: el nombre")
     que = "create view %s" % nombre
     if existe and si_no_existe:
@@ -966,14 +970,35 @@ def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemp
         nuevas = [c for c in contrato if c not in anterior]
         if nuevas:
             print("%s · añade %s al contrato" % (nombre, ", ".join(nuevas)))
-    texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno or "team:%s" % _partes(nombre)[0])
-    c, r = puesto.pedir("PUT", _ruta_de_vista(nombre), {"yaml": texto}, plazo=120)
+    dueno = dueno or "team:%s" % _partes(nombre)[0]
+    texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno)
+    _poner(que, _ruta_de_vista(nombre), texto)
+    hecho = {"vista": nombre, "estado": estado, "columnas": contrato}
+    if materializada:
+        copia = nombre + "_copia"
+        _poner(que, _ruta_de_vista(copia, "Dataset"), _yaml_de_copia(copia, nombre, dueno))
+        hecho["copia"] = copia
+    return hecho
+
+
+def _poner(que, ruta, texto):
+    """`PUT /documentos/…` con el YAML tal cual; un código OOS es el error."""
+    c, r = puesto.pedir("PUT", ruta, {"yaml": texto}, plazo=120)
     if c not in (200, 201):
         r = r or {}
         if r.get("diagnosticos"):
             raise ValueError("%s: %s" % (que, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
         raise RuntimeError("%s: %s (%s)" % (que, r.get("error", "?"), c))
-    return {"vista": nombre, "estado": estado, "columnas": contrato}
+
+
+def _yaml_de_copia(copia, vista, dueno):
+    """El dataset que copia entera la vista `vista` (ADR 0040 decisión D)."""
+    base, ns, n = _partes(copia)
+    lineas = ["apiVersion: oos.dev/v1alpha14", "kind: Dataset", "metadata:", "  name: %s" % n, "  namespace: %s" % base]
+    if ns != DEFAULT:
+        lineas.append("  schema: %s" % ns)
+    lineas += ["spec:", "  owner: %s" % dueno, "  from: { view: %s }" % vista]
+    return "\n".join(lineas) + "\n"
 
 
 def borrar_vista(nombre, si_existe=False):

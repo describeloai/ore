@@ -2585,6 +2585,7 @@ fn celda_de_sentencia(
             o_reemplaza,
             si_no_existe,
             evolucion,
+            materializada,
             ..
         } => {
             let r = destino.referencia();
@@ -2624,7 +2625,7 @@ fn celda_de_sentencia(
             format!(
                 "from ore import crear_vista, _resultado_de_crear\n\n\
                  _hecho = crear_vista({}, {}, columnas={cols}, comentario={}, dueno={}, o_reemplaza={}, \
-                 si_no_existe={}, evolucion={}, existe={}, anterior={anterior})\n\
+                 si_no_existe={}, evolucion={}, existe={}, anterior={anterior}, materializada={})\n\
                  print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
                  _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
                 c(&r),
@@ -2635,6 +2636,7 @@ fn celda_de_sentencia(
                 si(*si_no_existe),
                 si(*evolucion),
                 si(hay.is_some()),
+                si(*materializada),
             )
         }
         S::BorrarVista { destino, si_existe } => format!(
@@ -3400,9 +3402,12 @@ mod prueba {
         );
         assert_eq!(l, "python");
         assert!(
-            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=\"team:ventas\", o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None)"),
+            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=\"team:ventas\", o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None, materializada=False)"),
             "{c}"
         );
+        // ADR 0040 paso 7: la materializada, la misma llamada y su copia
+        let (c, _) = celda("create materialized view ventas.m as select 1 as a");
+        assert!(c.contains("materializada=True)"), "{c}");
         let (c, _) = celda("drop view if exists ventas.v");
         assert!(
             c.contains("borrar_vista(\"ventas.v\", si_existe=True)"),

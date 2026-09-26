@@ -204,7 +204,7 @@ impl Fallo {
 /// Las funciones que generan filas sin leer nada: no rompen el linaje.
 const GENERADORAS: [&str; 3] = ["range", "generate_series", "unnest"];
 
-const LO_QUE_PUEDE_SER: &str = "una sentencia del árbol es un `select` (lee), `create or replace dataset b.s.d as select …` (sobrescribe), `insert into b.s.d select …` o `… values (…)` (anexa), `insert or replace into b.s.d select …` (upsert), o crea: `create standard|foreign database b`, `create schema b.s`, `create dataset b.s.d (columnas)`, `create [or replace] view b.s.v as select …` (y `drop view b.s.v`)";
+const LO_QUE_PUEDE_SER: &str = "una sentencia del árbol es un `select` (lee), `create or replace dataset b.s.d as select …` (sobrescribe), `insert into b.s.d select …` o `… values (…)` (anexa), `insert or replace into b.s.d select …` (upsert), o crea: `create standard|foreign database b`, `create schema b.s`, `create dataset b.s.d (columnas)`, `create [or replace] [materialized] view b.s.v as select …` (y `drop view b.s.v`)";
 
 pub mod guion;
 

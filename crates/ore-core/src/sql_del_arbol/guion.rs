@@ -24,6 +24,7 @@
 //! | `create schema [if not exists] b.s` | un schema declarado de la base |
 //! | `create dataset [if not exists] b.s.d (col tipo, …)` | un Dataset vacío, con su esquema, en el lago |
 //! | `create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …` | una View v1alpha14: su consulta y su contrato, que describe DuckDB (ADR 0040 paso 5) |
+//! | `create [or replace] materialized view b.s.v … as select …` | la misma View y su copia, el dataset `b.s.v_copia` (`from: { view }`) que la copia entera; lee el lago (ADR 0040 paso 7) |
 //! | `drop view [if exists] b.s.v` | la quita del árbol; si algo la lee, no |
 //!
 //! Y `create table` se niega: una **Table** es un puntero a un objeto de un
@@ -136,6 +137,10 @@ pub enum Sentencia {
         /// `with schema evolution`: reemplazarla puede romper su contrato
         /// (quitar una columna, cambiarle el tipo). Sin esto, no.
         evolucion: bool,
+        /// `create materialized view` (ADR 0040 paso 7): la vista y su copia,
+        /// el dataset `<vista>_copia` que la copia entera (`from: { view }`).
+        /// Quien lee la vista lee su copia.
+        materializada: bool,
     },
     /// `drop view [if exists]`.
     BorrarVista { destino: Nombre, si_existe: bool },
@@ -154,6 +159,15 @@ impl Sentencia {
             Self::CrearBase { .. } => "create database",
             Self::CrearSchema { .. } => "create schema",
             Self::CrearDataset { .. } => "create dataset",
+            Self::CrearVista {
+                o_reemplaza: true,
+                materializada: true,
+                ..
+            } => "create or replace materialized view",
+            Self::CrearVista {
+                materializada: true,
+                ..
+            } => "create materialized view",
             Self::CrearVista {
                 o_reemplaza: true, ..
             } => "create or replace view",
@@ -398,6 +412,10 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
         if temporal {
             j += 1;
         }
+        let materializada = es(&ts, j, "materialized") && es(&ts, j + 1, "view");
+        if materializada {
+            j += 1;
+        }
         if es(&ts, j, "view") {
             if temporal {
                 return Err(vec![
@@ -408,7 +426,7 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
                     .ayuda("con un nombre que no es de una base del árbol (`create temp view v as …`) es de DuckDB; sin `temp`, `create view b.s.v as …` la guarda en el árbol"),
                 ]);
             }
-            return crear_vista(&ts, j + 1, &texto, o_reemplaza);
+            return crear_vista(&ts, j + 1, &texto, o_reemplaza, materializada);
         }
         if es(&ts, j, "table") {
             return Err(vec![tabla_no(ts[j].pos)]);
@@ -658,7 +676,7 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
     })
 }
 
-const LA_VISTA: &str = "`create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
+const LA_VISTA: &str = "`create [or replace] [materialized] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
 
 /// Un nombre del árbol de sus partes: tres, o dos (en `default`, con aviso).
 fn nombre_de(partes: &[String], pos: Option<Pos>, fallos: &mut Vec<Fallo>) -> Option<Nombre> {
@@ -714,6 +732,7 @@ fn crear_vista(
     i: usize,
     texto: &str,
     o_reemplaza: bool,
+    materializada: bool,
 ) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let (si_no_existe, i) = si_no_existe(ts, i);
     let Some((partes, pos, mut i)) = nombre_en(ts, i) else {
@@ -870,9 +889,86 @@ fn crear_vista(
             o_reemplaza,
             si_no_existe,
             evolucion,
+            materializada,
         },
         avisos,
     ))
+}
+
+/// **La copia de una vista materializada**: se llama `<vista>_copia`, y ese
+/// nombre tiene que estar libre —o ser ya su copia, si se reemplaza—. Y como la
+/// copia de una consulta se calcula en un puesto, que lee el lago (0040 paso
+/// 4c), lo que la vista lee tiene que acabar en datasets: una `Table` de un
+/// origen se copia antes con un dataset (`from: { table }`).
+fn cotejar_la_copia(
+    pkg: &Package,
+    creado: &Creado,
+    destino: &Nombre,
+    lee: &[Nombre],
+    o_reemplaza: bool,
+) -> Vec<Fallo> {
+    let mut fallos = Vec::new();
+    let r = destino.referencia();
+    let copia = format!("{r}{}", crate::vistas::SUFIJO_DE_LA_COPIA);
+    match doc_de(pkg, &copia) {
+        None if creado.datasets.contains(&copia) || creado.vistas.contains(&copia) => fallos
+            .push(Fallo::new(
+                format!("la copia de `{r}` se llama `{copia}`, y ese nombre ya lo usa el guion"),
+                destino.pos,
+            )),
+        None => {}
+        Some(d)
+            if o_reemplaza
+                && d.kind == Kind::Dataset
+                && matches!(crate::vistas::fuente(d), Some(crate::vistas::Fuente::Vista(ref v)) if *v == r) => {}
+        Some(d) => fallos.push(
+            Fallo::new(
+                format!(
+                    "la copia de `{r}` se llama `{copia}`, y ya hay un `{:?}` con ese nombre (OOS2035)",
+                    d.kind
+                ),
+                destino.pos,
+            )
+            .ayuda("dale otro nombre a la vista"),
+        ),
+    }
+    for n in lee {
+        let x = n.referencia();
+        let tabla = doc_de(pkg, &x).and_then(|d| tabla_debajo(pkg, d, &mut Vec::new()));
+        if let Some(t) = tabla {
+            fallos.push(
+                Fallo::new(
+                    format!(
+                        "`{r}` es materializada y lee `{t}`, una tabla de un origen: su copia se calcula en un puesto, que lee el lago"
+                    ),
+                    n.pos,
+                )
+                .ayuda(format!(
+                    "copia antes la tabla con un dataset (`from: {{ table: {t} }}`) y lee ese dataset; o créala sin `materialized`"
+                )),
+            );
+        }
+    }
+    fallos
+}
+
+/// La primera `Table` de un origen a la que llega `d` leyendo por vistas; un
+/// dataset es del lago y ahí se para (el mantenido la copia él).
+fn tabla_debajo(pkg: &Package, d: &crate::link::Loaded, pila: &mut Vec<String>) -> Option<String> {
+    match d.kind {
+        Kind::Table => d.qname(),
+        Kind::View => {
+            let qn = d.qname()?;
+            if pila.contains(&qn) {
+                return None;
+            }
+            pila.push(qn);
+            crate::vistas::lee_directo(pkg, d)
+                .into_iter()
+                .find_map(|x| tabla_debajo(pkg, x, pila))
+        }
+        _ => None,
+    }
 }
 
 /// `drop view [if exists] b.s.v` desde `i` (tras `view`).
@@ -1084,9 +1180,13 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                 lee,
                 o_reemplaza,
                 si_no_existe,
+                materializada,
                 ..
             } => {
                 let r = destino.referencia();
+                if *materializada {
+                    fallos.extend(cotejar_la_copia(pkg, &creado, destino, lee, *o_reemplaza));
+                }
                 if !hay_base_o_creada(&creado, &destino.paquete) {
                     fallos.push(sin_base(&destino.paquete, destino.pos));
                 } else if !(hay_schema_declarado(pkg, &destino.paquete, &destino.schema)

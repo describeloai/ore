@@ -312,11 +312,25 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
      construía en ninguna imagen ni lo llamaba nadie. Los ADR que lo describen quedan como
      historia. La forma estructurada se queda: v14 la mantiene en el dataset y la conformance
      v5–13 espera sus reglas.
-7. **Consola.** (La Ontology Forge, legacy y sin entrada en la navegación, se retiró entera de
-   rubix-platform el 2026-09-26: ya no hay pantalla de documentos que migrar.)
-   `DocumentoView` = `sql/dialect/columns`; la Forge enseña SQL y contrato;
+7. **Consola.** `DocumentoView` = `sql/dialect/columns`; la Forge enseña SQL y contrato;
    «As SQL» lee `spec.sql` (fuera `como-sql.ts`); el borrador de vista es un `.sql` con
    `CREATE VIEW`; faceta del catálogo, `ordenDeCampos` y mocks.
+   - La Ontology Forge, legacy y sin entrada en la navegación, se retiró entera de
+     rubix-platform (2026-09-26): no hay pantalla de documentos que migrar.
+   - «As SQL» fuera del Code Workspace (una vista v14 ya es su consulta); `ordenDeCampos`
+     del contrato; el detalle de una vista en el catálogo dice qué lee y su dialecto (el
+     visor de la consulta, aparte); `DocumentoView` y los datos del banco, v14.
+   - **`CREATE MATERIALIZED VIEW b.s.v AS SELECT …`** (ORE): la vista y su copia, el
+     dataset `b.s.v_copia` (`from: { view }`), que es lo que se lee. Como la copia de una
+     consulta se calcula en un puesto, que lee el lago, una vista materializada no lee una
+     tabla de un origen —ni directamente ni por otra vista—, y se dice al escribirla; y el
+     nombre de su copia tiene que estar libre. No es `create or replace dataset … as`, que
+     es un trabajo: se recalcula al ejecutarlo, no se mantiene.
+   - **Crear, desde el catálogo**: Create › View / Materialized / Dataset abre un
+     `untitled.sql` sin guardar con su `CREATE …`, en una instancia de SQL transforms de
+     la base, elegida sin preguntar —ninguna: se crea con su semilla; una: ésa; varias: la
+     última usada ahí, o la del commit más reciente—. Elegir mal cuesta nada: el `.sql` no
+     se escribe hasta el commit, y la vista vive en su schema.
 8. **Pruebas de fuego y cierre.** Las 15 `.sh` que usan vistas; nueva
    `la-vista-es-sql.sh` de punta a punta (`CREATE VIEW` en el puesto → documento →
    linaje → `OOS4016` → `sql()` → `/v1` → `Entity` con `backedBy` → copia). Cierre.

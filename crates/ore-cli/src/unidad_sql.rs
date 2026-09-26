@@ -254,16 +254,18 @@ fn dice(s: &Sentencia) -> String {
             o_reemplaza,
             si_no_existe,
             evolucion,
+            materializada,
             ..
         } => {
             let lee: Vec<String> = lee.iter().map(Nombre::referencia).collect();
             format!(
-                "{} la vista `{}` · lee {}{}{}",
+                "{} la vista {}`{}` · lee {}{}{}{}",
                 if *o_reemplaza {
                     "crea o reemplaza"
                 } else {
                     "crea"
                 },
+                if *materializada { "materializada " } else { "" },
                 destino.referencia(),
                 if lee.is_empty() {
                     "nada del árbol".to_string()
@@ -275,6 +277,15 @@ fn dice(s: &Sentencia) -> String {
                     " · puede romper su contrato"
                 } else {
                     ""
+                },
+                if *materializada {
+                    format!(
+                        " · y su copia `{}{}`",
+                        destino.referencia(),
+                        ore_core::vistas::SUFIJO_DE_LA_COPIA
+                    )
+                } else {
+                    String::new()
                 }
             )
         }

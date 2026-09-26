@@ -263,7 +263,7 @@ fn nombres(
         let sufijo = if d.kind == Kind::Table {
             "_t"
         } else {
-            "_copia"
+            vistas::SUFIJO_DE_LA_COPIA
         };
         let nuevo = (1..)
             .map(|i| match i {

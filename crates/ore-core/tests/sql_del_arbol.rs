@@ -445,7 +445,9 @@ fn una_vista_se_crea_y_se_quita_desde_sql() {
             o_reemplaza,
             si_no_existe,
             evolucion,
+            materializada,
         } => {
+            assert!(!*materializada);
             assert_eq!(destino.referencia(), "ventas.espana.porPais");
             assert_eq!(
                 consulta,
@@ -497,6 +499,81 @@ fn una_vista_se_crea_y_se_quita_desde_sql() {
         f("create view v as select 1")[0]
             .mensaje
             .contains("de qué base")
+    );
+}
+
+/// ADR 0040 paso 7: `create materialized view` es la vista y su copia —el
+/// dataset `<vista>_copia`—. La copia de una consulta se calcula en un puesto,
+/// que lee el lago: una vista materializada no lee una tabla de un origen, ni
+/// directamente ni por otra vista; y el nombre de su copia tiene que estar libre.
+#[test]
+fn una_vista_materializada_lee_el_lago_y_su_copia_tiene_sitio() {
+    use ore_core::sql_del_arbol::guion::Sentencia;
+    let t = guion(
+        "create or replace materialized view ventas.grandes as select id from ventas.pedidos",
+    )
+    .unwrap_or_else(|f| panic!("{f:?}"));
+    assert_eq!(t[0].sentencia.que(), "create or replace materialized view");
+    assert!(matches!(
+        &t[0].sentencia,
+        Sentencia::CrearVista {
+            materializada: true,
+            ..
+        }
+    ));
+    let a = arbol("materializada");
+    escribe(
+        &a.0,
+        "packages/ventas/datasets/ocupado.yaml",
+        "apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: nueva_copia, namespace: ventas }
+spec:
+  owner: team:ventas
+  columns:
+    id: { type: Integer }
+  changes: { mode: append }
+",
+    );
+    escribe(
+        &a.0,
+        "packages/ventas/views/deLaTabla.yaml",
+        "apiVersion: oos.dev/v1alpha12
+kind: View
+metadata: { name: deLaTabla, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { table: ventas.pedidos_t }
+  fields: { id: id }
+",
+    );
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&a.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let f = |q: &str| cotejar_guion(&pkg, &guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    // sobre un dataset, o una vista sobre un dataset (mantenido: la tabla la
+    // copia él): se puede
+    assert!(
+        f("create materialized view ventas.grande as select id from ventas.pedidos").is_empty()
+    );
+    assert!(
+        f("create materialized view ventas.grande as select id from ventas.pedidosEs").is_empty()
+    );
+    // sobre una tabla de un origen, o una vista que acaba en una: no
+    let x = f("create materialized view ventas.grande as select id from ventas.pedidos_t");
+    assert!(
+        x.iter().any(|x| x.mensaje.contains("tabla de un origen")),
+        "{x:?}"
+    );
+    let x = f("create materialized view ventas.grande as select id from ventas.deLaTabla");
+    assert!(
+        x.iter().any(|x| x.mensaje.contains("tabla de un origen")),
+        "{x:?}"
+    );
+    // su copia se llamaría `ventas.nueva_copia`, que ya es otra cosa
+    let x = f("create materialized view ventas.nueva as select id from ventas.pedidos");
+    assert!(
+        x.iter().any(|x| x.mensaje.contains("`ventas.nueva_copia`")),
+        "{x:?}"
     );
 }
 

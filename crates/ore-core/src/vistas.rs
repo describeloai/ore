@@ -239,6 +239,11 @@ impl Package {
     }
 }
 
+/// **El sufijo de la copia de una vista**: `<vista>_copia` es el dataset que
+/// la copia entera. Lo nombran igual `create materialized view` y `ore migrate
+/// v1alpha14` (ADR 0040), para que una copia se reconozca por su nombre.
+pub const SUFIJO_DE_LA_COPIA: &str = "_copia";
+
 /// v1alpha12. **Un dataset mantenido**: tiene `from`, el sistema cumple su
 /// plan. Es lo que hasta v1alpha11 era una vista con `materialized`.
 pub fn es_mantenido(d: &Loaded) -> bool {
