@@ -1,0 +1,342 @@
+{
+  "_que": "los mismos, SIN useInt64Timestamp: el TIMESTAMP como float (lo que no hay que pedir)",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "schema": {
+      "fields": [
+        {
+          "name": "dt",
+          "type": "DATETIME",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "t",
+          "type": "TIME",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "byt",
+          "type": "BYTES",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "bn",
+          "type": "BIGNUMERIC",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "nmin",
+          "type": "NUMERIC",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "j",
+          "type": "JSON",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "g",
+          "type": "GEOGRAPHY",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "nan",
+          "type": "FLOAT",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "inf",
+          "type": "FLOAT",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "ninf",
+          "type": "FLOAT",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "tiny",
+          "type": "FLOAT",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "decima",
+          "type": "FLOAT",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "i64max",
+          "type": "INTEGER",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "b",
+          "type": "BOOLEAN",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "st",
+          "type": "RECORD",
+          "mode": "NULLABLE",
+          "fields": [
+            {
+              "name": "a",
+              "type": "INTEGER",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "b",
+              "type": "RECORD",
+              "mode": "NULLABLE",
+              "fields": [
+                {
+                  "name": "c",
+                  "type": "STRING",
+                  "mode": "NULLABLE"
+                },
+                {
+                  "name": "d",
+                  "type": "INTEGER",
+                  "mode": "REPEATED"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "arr",
+          "type": "RECORD",
+          "mode": "REPEATED",
+          "fields": [
+            {
+              "name": "k",
+              "type": "INTEGER",
+              "mode": "NULLABLE"
+            },
+            {
+              "name": "v",
+              "type": "STRING",
+              "mode": "NULLABLE"
+            }
+          ]
+        },
+        {
+          "name": "iv",
+          "type": "INTERVAL",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "tsmin",
+          "type": "TIMESTAMP",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "tsmax",
+          "type": "TIMESTAMP",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "dmin",
+          "type": "DATE",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "rg",
+          "type": "RANGE",
+          "mode": "NULLABLE",
+          "rangeElementType": {
+            "type": "DATE"
+          }
+        },
+        {
+          "name": "emptyarr",
+          "type": "INTEGER",
+          "mode": "REPEATED"
+        },
+        {
+          "name": "ints",
+          "type": "INTEGER",
+          "mode": "REPEATED"
+        },
+        {
+          "name": "vacio",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "textonull",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "nulo",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        }
+      ]
+    },
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job_odlK0yaJ0XeWt0hyokaF38p-bd06",
+      "location": "EU"
+    },
+    "totalRows": "1",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "2026-09-26T10:11:12.123456"
+          },
+          {
+            "v": "23:59:59.999999"
+          },
+          {
+            "v": "AP9ob2xh"
+          },
+          {
+            "v": "123456789012345678901234567890123456789.12345678901234567890123456789012345678"
+          },
+          {
+            "v": "-99999999999999999999999999999.999999999"
+          },
+          {
+            "v": "{\"a\":[1,2,{\"b\":null}],\"c\":\"null\"}"
+          },
+          {
+            "v": "POINT(-8.4 43.37)"
+          },
+          {
+            "v": "NaN"
+          },
+          {
+            "v": "Infinity"
+          },
+          {
+            "v": "-Infinity"
+          },
+          {
+            "v": "1.0E-300"
+          },
+          {
+            "v": "0.1"
+          },
+          {
+            "v": "9223372036854775807"
+          },
+          {
+            "v": "true"
+          },
+          {
+            "v": {
+              "f": [
+                {
+                  "v": "1"
+                },
+                {
+                  "v": {
+                    "f": [
+                      {
+                        "v": "x"
+                      },
+                      {
+                        "v": [
+                          {
+                            "v": "1"
+                          },
+                          {
+                            "v": "2"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "v": [
+              {
+                "v": {
+                  "f": [
+                    {
+                      "v": "1"
+                    },
+                    {
+                      "v": "v"
+                    }
+                  ]
+                }
+              },
+              {
+                "v": {
+                  "f": [
+                    {
+                      "v": "2"
+                    },
+                    {
+                      "v": "w"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "v": "0-0 1 0:0:0"
+          },
+          {
+            "v": "-6.21355968E10"
+          },
+          {
+            "v": "2.534023008E11"
+          },
+          {
+            "v": "0001-01-01"
+          },
+          {
+            "v": "[2024-01-01, 2024-02-01)"
+          },
+          {
+            "v": []
+          },
+          {
+            "v": [
+              {
+                "v": "1"
+              },
+              {
+                "v": "2"
+              }
+            ]
+          },
+          {
+            "v": ""
+          },
+          {
+            "v": "null"
+          },
+          {
+            "v": null
+          }
+        ]
+      }
+    ],
+    "totalBytesProcessed": "0",
+    "jobComplete": true,
+    "cacheHit": false,
+    "queryId": "job_odlK0yaJ0XeWt0hyokaF38p-bd06",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "totalBytesBilled": "0",
+    "totalSlotMs": "15",
+    "location": "EU",
+    "creationTime": "1790426463231",
+    "startTime": "1790426463257",
+    "endTime": "1790426463424",
+    "pageRowCount": "1",
+    "statementType": "SELECT"
+  }
+}

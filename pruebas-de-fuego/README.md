@@ -35,6 +35,19 @@ construir L2 — el driver, el índice, el refresco y una consulta que cruza dos
 familias de fuente. Cada medición de esas era un `echo` en una terminal; aquí es una
 aserción.
 
+**`bigquery-real.sh`** lleva BigQuery de punta a punta —catálogo, `discover
+--type standard`, `materialize` a Iceberg y la relectura— contra un dataset de
+verdad con la semilla de `semilla/bigquery-ventas.sql`, y compara la copia **valor
+a valor** con lo sembrado. Nació en rojo a propósito (2026-09-26): afirma lo que la
+Fase A tiene que conseguir, y cada aserción en rojo lleva la etiqueta del paso que
+la apaga (`[A2]` el transporte REST, `[A3]` el catálogo en el driver, `[A4]` el
+contrato de tipos). La línea base medida: 11 en rojo —el texto `'null'` se vuelve
+NULL, los microsegundos se pierden, un TIMESTAMP se queda como texto, NUMERIC cae a
+`decimal(38, 18)`, `REQUIRED` no llega a Iceberg— y 12 en verde. **CI no la corre**:
+no alcanza BigQuery, y sin `BQ_URL` la prueba se salta diciéndolo. Los tests del
+driver leen en su lugar respuestas grabadas de verdad
+(`crates/ore-read-bigquery/tests/rest/`, que regenera `grabar-bigquery-rest.py`).
+
 Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`
 es una dependencia y no un servicio.
@@ -45,6 +58,7 @@ es una dependencia y no un servicio.
 pruebas-de-fuego/graphql.sh          # necesita node
 pruebas-de-fuego/fuentes-reales.sh   # necesita docker
 pruebas-de-fuego/descubrimiento.sh   # necesita docker, y `ore` en el PATH
+BQ_URL=bigquery://<proyecto>/ventas pruebas-de-fuego/bigquery-real.sh   # a mano: gcloud y la semilla
 ```
 
 Las tres las corre `ci.yml` en cada empujón, que es el punto. Y cada una tiene

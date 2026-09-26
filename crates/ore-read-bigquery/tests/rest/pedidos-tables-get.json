@@ -1,0 +1,51 @@
+{
+  "_que": "tables.get de pedidos: el esquema con REQUIRED, sin job",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#table",
+    "etag": "6P0SL3GhCdeH0ZKp+GkuCQ==",
+    "id": "project-8853a180-450d-47be-b83:ventas.pedidos",
+    "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/project-8853a180-450d-47be-b83/datasets/ventas/tables/pedidos",
+    "tableReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "datasetId": "ventas",
+      "tableId": "pedidos"
+    },
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "mode": "REQUIRED"
+        },
+        {
+          "name": "cliente_id",
+          "type": "STRING"
+        },
+        {
+          "name": "total",
+          "type": "NUMERIC"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        }
+      ]
+    },
+    "numBytes": "348",
+    "numLongTermBytes": "0",
+    "numRows": "8",
+    "creationTime": "1788810472395",
+    "lastModifiedTime": "1790423658202",
+    "type": "TABLE",
+    "location": "EU",
+    "numTimeTravelPhysicalBytes": "0",
+    "numTotalLogicalBytes": "348",
+    "numActiveLogicalBytes": "348",
+    "numLongTermLogicalBytes": "0",
+    "numTotalPhysicalBytes": "1761",
+    "numActivePhysicalBytes": "1761",
+    "numLongTermPhysicalBytes": "0",
+    "numCurrentPhysicalBytes": "1761"
+  }
+}

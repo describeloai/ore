@@ -1,0 +1,60 @@
+{
+  "_que": "explorar: los datasets del proyecto",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#datasetList",
+    "etag": "BoGv69z3znBk7MmTNn34/g==",
+    "datasets": [
+      {
+        "kind": "bigquery#dataset",
+        "id": "project-8853a180-450d-47be-b83:_0b26d7160cb7803c324ff8bb62d1fc0ec9c47d93",
+        "datasetReference": {
+          "datasetId": "_0b26d7160cb7803c324ff8bb62d1fc0ec9c47d93",
+          "projectId": "project-8853a180-450d-47be-b83"
+        },
+        "location": "US",
+        "type": "DEFAULT"
+      },
+      {
+        "kind": "bigquery#dataset",
+        "id": "project-8853a180-450d-47be-b83:_8f39843d314b496dcdfca4c8245efbdbf5f12608",
+        "datasetReference": {
+          "datasetId": "_8f39843d314b496dcdfca4c8245efbdbf5f12608",
+          "projectId": "project-8853a180-450d-47be-b83"
+        },
+        "location": "US",
+        "type": "DEFAULT"
+      },
+      {
+        "kind": "bigquery#dataset",
+        "id": "project-8853a180-450d-47be-b83:_91800c1bf73c785d8e3f0db2d1d739c737fb339a",
+        "datasetReference": {
+          "datasetId": "_91800c1bf73c785d8e3f0db2d1d739c737fb339a",
+          "projectId": "project-8853a180-450d-47be-b83"
+        },
+        "location": "EU",
+        "type": "DEFAULT"
+      },
+      {
+        "kind": "bigquery#dataset",
+        "id": "project-8853a180-450d-47be-b83:_f8c07860b20556dc25640d734aa6f635d63e7139",
+        "datasetReference": {
+          "datasetId": "_f8c07860b20556dc25640d734aa6f635d63e7139",
+          "projectId": "project-8853a180-450d-47be-b83"
+        },
+        "location": "EU",
+        "type": "DEFAULT"
+      },
+      {
+        "kind": "bigquery#dataset",
+        "id": "project-8853a180-450d-47be-b83:ventas",
+        "datasetReference": {
+          "datasetId": "ventas",
+          "projectId": "project-8853a180-450d-47be-b83"
+        },
+        "location": "EU",
+        "type": "DEFAULT"
+      }
+    ]
+  }
+}

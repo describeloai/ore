@@ -1,0 +1,134 @@
+{
+  "_que": "la semilla de clientes por jobs.query",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "email",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "alta",
+          "type": "DATE",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "pais",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        }
+      ]
+    },
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job_2CMCR7d4Zxp5ZjUUah3KwuE8k6aY",
+      "location": "EU"
+    },
+    "totalRows": "5",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "ore-e2e-c1"
+          },
+          {
+            "v": "ana@ejemplo.test"
+          },
+          {
+            "v": "2024-01-15"
+          },
+          {
+            "v": "ES"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-c2"
+          },
+          {
+            "v": "luis@ejemplo.test"
+          },
+          {
+            "v": "1999-12-31"
+          },
+          {
+            "v": "FR"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-c3"
+          },
+          {
+            "v": "eva@ejemplo.test"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-c4"
+          },
+          {
+            "v": "null@ejemplo.test"
+          },
+          {
+            "v": "2026-09-26"
+          },
+          {
+            "v": "null"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-c5"
+          },
+          {
+            "v": "ñandú@ejemplo.test"
+          },
+          {
+            "v": "2000-02-29"
+          },
+          {
+            "v": "PT"
+          }
+        ]
+      }
+    ],
+    "totalBytesProcessed": "206",
+    "jobComplete": true,
+    "cacheHit": false,
+    "queryId": "job_2CMCR7d4Zxp5ZjUUah3KwuE8k6aY",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "totalBytesBilled": "10485760",
+    "totalSlotMs": "13",
+    "location": "EU",
+    "creationTime": "1790426464600",
+    "startTime": "1790426464717",
+    "endTime": "1790426464948",
+    "pageRowCount": "5",
+    "statementType": "SELECT"
+  }
+}

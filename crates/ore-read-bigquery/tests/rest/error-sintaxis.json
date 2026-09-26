@@ -1,0 +1,20 @@
+{
+  "_que": "un 400 de BigQuery, con su mensaje",
+  "_estado": 400,
+  "respuesta": {
+    "error": {
+      "code": 400,
+      "message": "Syntax error: Unexpected identifier \"SELEC\" at [1:1]",
+      "errors": [
+        {
+          "message": "Syntax error: Unexpected identifier \"SELEC\" at [1:1]",
+          "domain": "global",
+          "reason": "invalidQuery",
+          "location": "q",
+          "locationType": "parameter"
+        }
+      ],
+      "status": "INVALID_ARGUMENT"
+    }
+  }
+}

@@ -1,0 +1,443 @@
+{
+  "_que": "la receta de catalogo de lector.rs sobre ventas",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "schema": {
+      "fields": [
+        {
+          "name": "table_name",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "table_type",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "row_count",
+          "type": "INTEGER",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "column_name",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "ordinal_position",
+          "type": "INTEGER",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "is_nullable",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "data_type",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "column_description",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "is_key",
+          "type": "BOOLEAN",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "ref_table",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "is_partitioning_column",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "exige_filtro",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "historial",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        }
+      ]
+    },
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job__w_F2wTN-xSrIgA9LEqJcH8fMwm_",
+      "location": "EU"
+    },
+    "totalRows": "8",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "clientes"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "5"
+          },
+          {
+            "v": "id"
+          },
+          {
+            "v": "1"
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": "STRING"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "clientes"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "5"
+          },
+          {
+            "v": "email"
+          },
+          {
+            "v": "2"
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": "STRING"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "clientes"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "5"
+          },
+          {
+            "v": "alta"
+          },
+          {
+            "v": "3"
+          },
+          {
+            "v": "YES"
+          },
+          {
+            "v": "DATE"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "clientes"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "5"
+          },
+          {
+            "v": "pais"
+          },
+          {
+            "v": "4"
+          },
+          {
+            "v": "YES"
+          },
+          {
+            "v": "STRING"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "pedidos"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "8"
+          },
+          {
+            "v": "id"
+          },
+          {
+            "v": "1"
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": "STRING"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "pedidos"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "8"
+          },
+          {
+            "v": "cliente_id"
+          },
+          {
+            "v": "2"
+          },
+          {
+            "v": "YES"
+          },
+          {
+            "v": "STRING"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "pedidos"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "8"
+          },
+          {
+            "v": "total"
+          },
+          {
+            "v": "3"
+          },
+          {
+            "v": "YES"
+          },
+          {
+            "v": "NUMERIC"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "pedidos"
+          },
+          {
+            "v": "BASE TABLE"
+          },
+          {
+            "v": "8"
+          },
+          {
+            "v": "ts"
+          },
+          {
+            "v": "4"
+          },
+          {
+            "v": "YES"
+          },
+          {
+            "v": "TIMESTAMP"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "false"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "NO"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      }
+    ],
+    "totalBytesProcessed": "73400320",
+    "jobComplete": true,
+    "cacheHit": false,
+    "queryId": "job__w_F2wTN-xSrIgA9LEqJcH8fMwm_",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "totalBytesBilled": "83886080",
+    "totalSlotMs": "16483",
+    "location": "EU",
+    "creationTime": "1790426468782",
+    "startTime": "1790426468955",
+    "endTime": "1790426471899",
+    "pageRowCount": "8",
+    "statementType": "SELECT"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "_que": "timeoutMs=1000 sobre una consulta de ~25 s: jobComplete=false",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job_eWZgUnjqe8skMT9f-YL7gnYe8HWi",
+      "location": "EU"
+    },
+    "jobComplete": false,
+    "queryId": "job_eWZgUnjqe8skMT9f-YL7gnYe8HWi",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "location": "EU",
+    "creationTime": "1790426466967",
+    "startTime": "1790426466991",
+    "statementType": "SELECT"
+  }
+}

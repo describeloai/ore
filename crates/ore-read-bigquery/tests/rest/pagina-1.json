@@ -1,0 +1,61 @@
+{
+  "_que": "primera pagina de 3 filas: trae pageToken y jobReference",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        }
+      ]
+    },
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job_DaQQjJuaXWa52Sh5-s1eFHoi7162",
+      "location": "EU"
+    },
+    "totalRows": "8",
+    "pageToken": "BEMMNO65UAAQAAASA4EAAEEAQCAAKGQIBABRB7X7777QOIFQVYKUVYQBBJ6AUKIKDZYHE33KMVRXILJYHA2TGYJRHAYC2NBVGBSC2NBXMJSS2YRYGMIS2TNGBNHQAAAACIUV6ZRYMMYDOOBWGBRDEMBVGU3GIYZSGU3DIMDEG4ZTIYLBGZTDMMZVMQ3DGZJXGEZTSGREGQ4WIYLBMNRDKLJWGJSGGLJUMZSTSLJZMZTGILJTGJRGCY3EMRQWGMRSGMJDEYLON5XGK5S7O5CW4RDOGBYVMMLSNYYXCRSOMZFEG6LCIVYDQ5KQHF2TETCPLEZTOZDPNN3VK4CFONGECGROMV3F652FNZCG4MDRKYYXE3RROFDE4ZSKIN4WERLQHB2VAOLVGJGE6WJTG5SG623XKVYEK42MIE======",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p1"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p2"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p3"
+          }
+        ]
+      }
+    ],
+    "totalBytesProcessed": "96",
+    "jobComplete": true,
+    "cacheHit": false,
+    "queryId": "job_DaQQjJuaXWa52Sh5-s1eFHoi7162",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "totalBytesBilled": "10485760",
+    "totalSlotMs": "20",
+    "location": "EU",
+    "creationTime": "1790426465526",
+    "startTime": "1790426465620",
+    "endTime": "1790426465816",
+    "pageRowCount": "3",
+    "statementType": "SELECT"
+  }
+}

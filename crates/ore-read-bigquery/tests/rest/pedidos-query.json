@@ -1,0 +1,182 @@
+{
+  "_que": "la semilla de pedidos por jobs.query",
+  "_estado": 200,
+  "respuesta": {
+    "kind": "bigquery#queryResponse",
+    "schema": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "cliente_id",
+          "type": "STRING",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "total",
+          "type": "NUMERIC",
+          "mode": "NULLABLE"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "mode": "NULLABLE"
+        }
+      ]
+    },
+    "jobReference": {
+      "projectId": "project-8853a180-450d-47be-b83",
+      "jobId": "job_K2TzbixrWRqIBdfi9yOEwjVC8JVA",
+      "location": "EU"
+    },
+    "totalRows": "8",
+    "rows": [
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p1"
+          },
+          {
+            "v": "ore-e2e-c1"
+          },
+          {
+            "v": "19.99"
+          },
+          {
+            "v": "1788256800000000"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p2"
+          },
+          {
+            "v": "ore-e2e-c1"
+          },
+          {
+            "v": "0"
+          },
+          {
+            "v": "1788393599123456"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p3"
+          },
+          {
+            "v": "ore-e2e-c2"
+          },
+          {
+            "v": "-5.5"
+          },
+          {
+            "v": "0"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p4"
+          },
+          {
+            "v": "ore-e2e-c2"
+          },
+          {
+            "v": "12345678901234567890.123456789"
+          },
+          {
+            "v": "1788429600000000"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p5"
+          },
+          {
+            "v": "ore-e2e-c3"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": null
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p6"
+          },
+          {
+            "v": null
+          },
+          {
+            "v": "100"
+          },
+          {
+            "v": "1788510600000000"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p7"
+          },
+          {
+            "v": "ore-e2e-c4"
+          },
+          {
+            "v": "0.000000001"
+          },
+          {
+            "v": "1788566400000000"
+          }
+        ]
+      },
+      {
+        "f": [
+          {
+            "v": "ore-e2e-p8"
+          },
+          {
+            "v": "ore-e2e-c5"
+          },
+          {
+            "v": "7"
+          },
+          {
+            "v": "1790445600000000"
+          }
+        ]
+      }
+    ],
+    "totalBytesProcessed": "348",
+    "jobComplete": true,
+    "cacheHit": false,
+    "queryId": "job_K2TzbixrWRqIBdfi9yOEwjVC8JVA",
+    "jobCreationReason": {
+      "code": "REQUESTED"
+    },
+    "totalBytesBilled": "10485760",
+    "totalSlotMs": "17",
+    "location": "EU",
+    "creationTime": "1790426463674",
+    "startTime": "1790426463781",
+    "endTime": "1790426464031",
+    "pageRowCount": "8",
+    "statementType": "SELECT"
+  }
+}
