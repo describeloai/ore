@@ -284,6 +284,8 @@ fn las_caras_sondeadas_llegan_hasta_el_motor() {
     // Nada se copia todavía, y no porque se haya decidido: porque proponerlo
     // habría sido inventarlo.
     assert!(out.contains("flujo     virtual"), "{out}");
+    // Y de dónde se lee de verdad: lo que `descubrimiento.sh` 6 exige.
+    assert!(out.contains("raíz de lectura"), "{out}");
 }
 
 /// **Lo omitido se va del paquete, y ahora son tres sitios.**

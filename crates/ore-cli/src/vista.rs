@@ -580,6 +580,7 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
             t.section("object").and_then(|o| o.as_str()).unwrap_or("?")
         );
         println!("  caras     {}", caras(t));
+        println!("            {}", raiz_de_lectura(pkg, v, t));
     }
     if let Some(s) = sql {
         match vistas::tipos_del_contrato(s) {
