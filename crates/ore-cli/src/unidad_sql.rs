@@ -248,5 +248,40 @@ fn dice(s: &Sentencia) -> String {
             },
             si(*si_no_existe)
         ),
+        Sentencia::CrearVista {
+            destino,
+            lee,
+            o_reemplaza,
+            si_no_existe,
+            evolucion,
+            ..
+        } => {
+            let lee: Vec<String> = lee.iter().map(Nombre::referencia).collect();
+            format!(
+                "{} la vista `{}` · lee {}{}{}",
+                if *o_reemplaza {
+                    "crea o reemplaza"
+                } else {
+                    "crea"
+                },
+                destino.referencia(),
+                if lee.is_empty() {
+                    "nada del árbol".to_string()
+                } else {
+                    lee.join(", ")
+                },
+                si(*si_no_existe),
+                if *evolucion {
+                    " · puede romper su contrato"
+                } else {
+                    ""
+                }
+            )
+        }
+        Sentencia::BorrarVista { destino, si_existe } => format!(
+            "quita la vista `{}`{}",
+            destino.referencia(),
+            if *si_existe { " · si existe" } else { "" }
+        ),
     }
 }

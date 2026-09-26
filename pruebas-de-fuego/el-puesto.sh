@@ -468,7 +468,8 @@ sleep 1
 [ "$(lsp_sql '{"jsonrpc":"2.0","id":"sql:1","method":"initialize","params":{"processId":null,"rootUri":"file:///trabajo","capabilities":{},"initializationOptions":{"lenguaje":"sql"}}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/consulta.sql","languageId":"sql","version":1,"text":"select nombre\nfrom hr.espanoles"}}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/ajena.sql","languageId":"sql","version":1,"text":"select * from hr.empleados_t"}}}' \
-  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/a_medias.sql","languageId":"sql","version":1,"text":"select * from "}}}')" = "202" ] || falla "3d · abrir los .sql no dio 202: $(cuerpo)"
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/a_medias.sql","languageId":"sql","version":1,"text":"select * from "}}}' \
+  '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///trabajo/guion.sql","languageId":"sql","version":1,"text":"CREATE SCHEMA IF NOT EXISTS hr.demo;\nCREATE DATASET hr.demo.x (id BIGINT);\nCREATE OR REPLACE VIEW hr.demo.v (letra COMMENT '"'"'la letra'"'"')\n  WITH SCHEMA EVOLUTION AS\nSELECT letrra FROM hr.default.lago;\nDROP VIEW IF EXISTS hr.demo.v"}}}')" = "202" ] || falla "3d · abrir los .sql no dio 202: $(cuerpo)"
 sleep 2
 [ "$(lsp_sql '{"jsonrpc":"2.0","id":"sql:2","method":"textDocument/completion","params":{"textDocument":{"uri":"file:///trabajo/a_medias.sql"},"position":{"line":0,"character":14}}}' \
   '{"jsonrpc":"2.0","id":"sql:3","method":"textDocument/hover","params":{"textDocument":{"uri":"file:///trabajo/consulta.sql"},"position":{"line":1,"character":8}}}')" = "202" ] || falla "3d · pedir completion y hover no dio 202: $(cuerpo)"
@@ -491,13 +492,17 @@ assert "¿" in d[0]["message"], ("sin sugerencia", d)
 a = diag.get("ajena.sql") or []
 assert any("Table de otra fuente" in x["message"] for x in a), ("la Table de otra fuente", a)
 assert diag.get("a_medias.sql") == [], ("a medio escribir no es un error", diag.get("a_medias.sql"))
+# ADR 0040 paso 5: las frases del guion no son errores de DuckDB; de la vista se
+# comprueba su consulta, y la columna mal escrita se dice en su sitio (L5:C8)
+g = [x for x in (diag.get("guion.sql") or []) if x["severity"] == 1]
+assert len(g) == 1 and "letrra" in g[0]["message"] and g[0]["range"]["start"] == {"line": 4, "character": 7}, ("el guion en el editor", diag.get("guion.sql"))
 items = [i["label"] for i in (por_id.get("sql:2", {}).get("result") or {}).get("items", [])]
 assert "hr.default.espanoles" in items and "hr.default.lago" in items, ("completion tras FROM: los nombres enteros", items)
 assert not any("empleados_t" in i for i in items), ("una Table de otra fuente no se ofrece", items)
 h = ((por_id.get("sql:3", {}).get("result") or {}).get("contents") or {}).get("value", "")
 assert "hr.default.espanoles" in h and "Dataset" in h, ("hover", h)
 PYEOF
-dice "3d · el servidor de SQL en el agente, por el mismo canal: initialize lo contesta ore-sql (no el de Python) · la columna mal escrita en su sitio (L1:C8) con sugerencia · una Table de otra fuente se dice · a medio escribir no es un error · tras FROM los datasets del árbol (no las Table) · hover del dataset"
+dice "3d · el servidor de SQL en el agente, por el mismo canal: initialize lo contesta ore-sql (no el de Python) · la columna mal escrita en su sitio (L1:C8) con sugerencia · una Table de otra fuente se dice · a medio escribir no es un error · un guion con create schema/dataset/view y drop view: sólo el error de verdad, dentro de la consulta de la vista · tras FROM los datasets del árbol (no las Table) · hover del dataset"
 
 # ── 4 · over() ─────────────────────────────────────────────────────────────
 celda 'df = over(\"hr.espanoles\"); df' && tiene "d['salida']['tipo']=='tabla' and [c['name'] for c in d['salida']['columnas']]==['id','pais'] and d['salida']['filas']==[['e1','ES'],['e2','ES'],['e3','ES']] and d['salida']['total']==3" || falla "4 · over(hr.espanoles): $(cuerpo)"
@@ -719,11 +724,10 @@ if [ "$ESCRITO_OK" = si ]; then
   tiene "d['salida']['texto'].strip()=='hr.porfichero · sobrescribir · 3 filas'" || falla "10c · con fichero: $(cuerpo)"
   "$PY" -c 'import json,sys; assert json.load(open(sys.argv[1]))["procedencia"]["transform"]=="porfichero"' "$A/datasets/hr/default/porfichero.json" || falla "10c · el transform no se llama como el fichero: $(cat "$A/datasets/hr/default/porfichero.json")"
   # lo que no se puede correr se dice YA, como la salida de la celda, con su sitio
-  celda_sql 'create or replace view hr.vista as select 1 as x' && tiene "d['salida']['tipo']=='error' and 'View' in d['salida']['mensaje'] and 'declara' in d['salida']['mensaje']" || falla "10c · create view: $(cuerpo)"
   celda_sql 'insert into hr.porsql by name select 1.0 as total' && tiene "d['salida']['tipo']=='error' and 'no analiza' in d['salida']['mensaje']" || falla "10c · lo que no analiza: $(cuerpo)"
   celda_sql 'create or replace dataset hr.espanoles as select 1 as id' && tiene "d['salida']['tipo']=='error' and 'mantenido' in d['salida']['mensaje']" || falla "10c · un dataset mantenido: $(cuerpo)"
   pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10c · quedan celdas pendientes: $(cuerpo)"
-  dice "10c · un .sql que escribe, en la sesión: create or replace → hr.porsql en el lago (puntero, Dataset, procedencia inputs+transform) y la celda siguiente lo lee · otra vez: la misma escritura · insert into sin alias anexa por posición (0.5 → total, en decimal(38, 2): nada de antes se pierde; sin tabla, se dice) · con fichero, el transform se llama como él · create view, lo que no analiza y un mantenido: error de la celda, ya, con su sitio"
+  dice "10c · un .sql que escribe, en la sesión: create or replace → hr.porsql en el lago (puntero, Dataset, procedencia inputs+transform) y la celda siguiente lo lee · otra vez: la misma escritura · insert into sin alias anexa por posición (0.5 → total, en decimal(38, 2): nada de antes se pierde; sin tabla, se dice) · con fichero, el transform se llama como él · lo que no analiza y un mantenido: error de la celda, ya, con su sitio"
 fi
 
 # ── 10d · el guion (0039): varias sentencias, una ejecución ─────────────────
@@ -788,6 +792,50 @@ SQL
   # lo que no es del árbol sigue siendo de DuckDB, entero (el caso 7)
   pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10d · quedan celdas pendientes: $(cuerpo)"
   dice "10d · el guion: CREATE SCHEMA + CREATE DATASET (cols) + INSERT … VALUES (current_timestamp → TIMESTAMP) + SELECT = cuatro celdas en orden, cada una con su lote; todo resultado es una tabla (object/status, num_affected_rows/num_inserted_rows) y el select lee lo que el insert escribió · otra vez: already exists, y anexa · la sentencia 2 falla: la 1 corrió, la 3 y la 4 saltadas por la 2 · el upsert con primary key: num_updated_rows · un guion que no coteja no corre nada (línea 3)"
+
+  # ── 10e · CREATE VIEW (ADR 0040 paso 5): la vista nace de SQL ─────────────
+  # La consulta se guarda tal como se escribió y su contrato lo describe DuckDB
+  # en el puesto, sin leer una fila; el documento es v1alpha14 y va a la rama
+  # del puesto. Reemplazarla puede añadir columnas; quitar una rompe a quien la
+  # lee: sólo con `with schema evolution`.
+  V10E="$A/packages/hr/demo_uc/views/porNombre.yaml"
+  printf "CREATE OR REPLACE VIEW hr.demo_uc.porNombre (id, nombre COMMENT 'el nombre de pila')\n  COMMENT 'los clientes, por nombre'\nAS\nSELECT id, nombre\nFROM hr.demo_uc.clientes;\nSELECT count(*) AS n FROM hr.demo_uc.porNombre;\n" > "$TMP/vista.sql"
+  guion_sql "$TMP/vista.sql"
+  fichas "[s['que'] for s in g['sentencias']]==['create or replace view','select'] and f[0]['salida']['filas']==[['view hr.demo_uc.porNombre','created']] and f[1]['salida']['filas']==[[5]]" || falla "10e · la vista nace y se lee en la sentencia siguiente: $(cat "$TMP/fichas.json")"
+  [ -f "$V10E" ] || falla "10e · la vista no está en el árbol"
+  "$PY" - "$V10E" <<'EOF' || falla "10e · el documento de la vista: $(cat "$V10E")"
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+assert "apiVersion: oos.dev/v1alpha14" in t and "dialect: duckdb" in t, t
+assert "  sql: |\n    SELECT id, nombre\n    FROM hr.demo_uc.clientes\n" in t, t
+assert 'id: { type: "Integer" }' in t and 'nombre: { type: "String", description: "el nombre de pila" }' in t, t
+assert 'description: "los clientes, por nombre"' in t and "owner: team:hr" in t, t
+EOF
+  "$ORE" validate "$A" >/dev/null 2>&1 || falla "10e · el árbol con la vista no compila: $("$ORE" validate "$A" 2>&1 | tail -5)"
+  # otra vez: `or replace` la reemplaza; `if not exists`, la deja
+  guion_sql "$TMP/vista.sql"
+  fichas "f[0]['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']]" || falla "10e · otra vez, replaced: $(cat "$TMP/fichas.json")"
+  celda_sql 'create view if not exists hr.demo_uc.porNombre as select 1 as x' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','already exists']]" || falla "10e · if not exists: $(cuerpo)"
+  # añadir una columna se puede, y se dice; quitar una rompe el contrato
+  celda_sql 'create or replace view hr.demo_uc.porNombre as select id, nombre, email from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']] and 'añade email' in d['salida']['texto']" || falla "10e · añadir una columna: $(cuerpo)"
+  celda_sql 'create or replace view hr.demo_uc.porNombre as select id from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'rompe su contrato' in d['salida']['mensaje'] and 'quita' in d['salida']['mensaje'] and 'with schema evolution' in d['salida']['mensaje']" || falla "10e · quitar una columna sin decirlo: $(cuerpo)"
+  grep -q "email" "$V10E" || falla "10e · la vista rota se escribió igual"
+  celda_sql 'create or replace view hr.demo_uc.porNombre with schema evolution as select id from hr.demo_uc.clientes' && tiene "d['salida']['filas']==[['view hr.demo_uc.porNombre','replaced']]" || falla "10e · with schema evolution: $(cuerpo)"
+  grep -q "nombre:" "$V10E" && falla "10e · el contrato no cambió con evolution"
+  # lo que no se puede: sin alias, un nombre que ya es un dataset
+  celda_sql 'create view hr.demo_uc.sinAlias as select id + 1 from hr.demo_uc.clientes' && tiene "d['salida']['tipo']=='error' and 'no tiene nombre' in d['salida']['mensaje'] and 'as nombre' in d['salida']['mensaje']" || falla "10e · una columna sin alias: $(cuerpo)"
+  celda_sql 'create view hr.demo_uc.clientes as select 1 as x' && tiene "d['salida']['tipo']=='error' and 'OOS2035' in d['salida']['mensaje']" || falla "10e · el nombre de un dataset: $(cuerpo)"
+  [ ! -e "$A/packages/hr/demo_uc/views/sinAlias.yaml" ] || falla "10e · la vista sin alias se escribió"
+  # DROP VIEW: si otra la lee, no se quita; si no, sí; `if exists` no es un error
+  celda_sql 'create view hr.demo_uc.encima as select id from hr.demo_uc.porNombre' && tiene "d['salida']['filas']==[['view hr.demo_uc.encima','created']]" || falla "10e · una vista sobre otra: $(cuerpo)"
+  celda_sql 'drop view hr.demo_uc.porNombre' && tiene "d['salida']['tipo']=='error' and 'OOS' in d['salida']['mensaje']" || falla "10e · quitar una vista que otra lee: $(cuerpo)"
+  [ -f "$V10E" ] || falla "10e · se quitó una vista que otra lee"
+  printf "DROP VIEW hr.demo_uc.encima;\nDROP VIEW hr.demo_uc.porNombre;\nDROP VIEW IF EXISTS hr.demo_uc.porNombre;\n" > "$TMP/quitar.sql"
+  guion_sql "$TMP/quitar.sql"
+  fichas "[x['salida']['filas'] for x in f]==[[['view hr.demo_uc.encima','dropped']],[['view hr.demo_uc.porNombre','dropped']],[['view hr.demo_uc.porNombre','not found']]]" || falla "10e · drop view: $(cat "$TMP/fichas.json")"
+  [ ! -e "$V10E" ] || falla "10e · drop view no la quitó del árbol"
+  pide GET /puestos/$P "$ANA" >/dev/null; tiene "d['pendientes']==0" || falla "10e · quedan celdas pendientes: $(cuerpo)"
+  dice "10e · CREATE VIEW: la vista nace de SQL (v1alpha14, la consulta tal cual, el contrato descrito por DuckDB con los comentarios de sus columnas, el dueño de su base) y se lee en la sentencia siguiente · compila · or replace → replaced, if not exists → already exists · añadir una columna se dice, quitarla rompe el contrato salvo with schema evolution · sin alias y el nombre de un dataset (OOS2035): error · DROP VIEW: no si otra la lee; sí, y if exists → not found"
 fi
 
 

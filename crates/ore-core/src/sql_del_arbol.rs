@@ -204,7 +204,7 @@ impl Fallo {
 /// Las funciones que generan filas sin leer nada: no rompen el linaje.
 const GENERADORAS: [&str; 3] = ["range", "generate_series", "unnest"];
 
-const LO_QUE_PUEDE_SER: &str = "una sentencia del árbol es un `select` (lee), `create or replace dataset b.s.d as select …` (sobrescribe), `insert into b.s.d select …` o `… values (…)` (anexa), `insert or replace into b.s.d select …` (upsert), o crea: `create standard|foreign database b`, `create schema b.s`, `create dataset b.s.d (columnas)`";
+const LO_QUE_PUEDE_SER: &str = "una sentencia del árbol es un `select` (lee), `create or replace dataset b.s.d as select …` (sobrescribe), `insert into b.s.d select …` o `… values (…)` (anexa), `insert or replace into b.s.d select …` (upsert), o crea: `create standard|foreign database b`, `create schema b.s`, `create dataset b.s.d (columnas)`, `create [or replace] view b.s.v as select …` (y `drop view b.s.v`)";
 
 pub mod guion;
 
@@ -798,7 +798,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
             None if !hay_paquete(&n.paquete) => fallos.push(sin_paquete(n)),
             None if !hay_schema(n) => fallos.push(sin_schema(n)),
             // lo creó una sentencia de antes del guion
-            None if creado.datasets.contains(&r) => {}
+            None if creado.datasets.contains(&r) || creado.vistas.contains(&r) => {}
             None => fallos.push(Fallo::new(
                 format!("no hay ningún `Dataset` ni `View` `{r}` en el árbol"),
                 n.pos,
@@ -993,8 +993,9 @@ pub enum EscribeEnElArbol {
     /// `base.nombre`): una tabla del lago (y la celda se corre como un `.sql`
     /// del árbol). En su forma corta.
     Tabla(String),
-    /// `create … view paquete.nombre`: una View del árbol no nace de una
-    /// celda, se declara.
+    /// `create [or replace] view` o `drop view` de un `base.schema.nombre`
+    /// (ADR 0040 paso 5): una View del árbol, que corre como una sentencia del
+    /// guion.
     Vista(String),
     /// Crea algo del catálogo (0039): `create [standard|foreign] database b`
     /// —DuckDB no tiene bases, así que siempre es del árbol— o `create schema
@@ -1099,6 +1100,16 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
                 } else {
                     EscribeEnElArbol::Tabla(n)
                 });
+            }
+        } else if es(i, "drop") && es(i + 1, "view") {
+            // ADR 0040 paso 5: quitar una View del árbol también es del guion
+            let j = if es(i + 2, "if") && es(i + 3, "exists") {
+                i + 4
+            } else {
+                i + 2
+            };
+            if let Some(n) = nombre(j) {
+                return Some(EscribeEnElArbol::Vista(n));
             }
         } else if es(i, "insert") {
             let mut j = i + 1;

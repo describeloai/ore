@@ -1201,7 +1201,7 @@ impl Servidor {
                         t.iter()
                             .map(|x| SentenciaDelLote {
                                 texto: x.texto.clone(),
-                                corre: celda_de_sentencia(fichero, x),
+                                corre: celda_de_sentencia(fichero, x, &pkg),
                                 avisos: x
                                     .avisos
                                     .iter()
@@ -1233,14 +1233,9 @@ impl Servidor {
                 .collect();
             desvio = match escribe_en_el_arbol(texto, &pkg) {
                 None => Desvio::Ninguno,
-                Some(EscribeEnElArbol::Vista(n)) => Desvio::Error(error_de_celda(
-                    format!(
-                        "`{n}` sería una View del árbol, y una View no nace de una celda: se \
-                         declara (un `.yaml` en `packages/<paquete>/views/`, o `declare()`)"
-                    ),
-                    Json::Arr(Vec::new()),
-                )),
-                Some(que @ (EscribeEnElArbol::Tabla(_) | EscribeEnElArbol::Crea(_))) => match celda_de_sesion(raiz, fichero, texto) {
+                // ADR 0040 paso 5: `create view` / `drop view` de una View del
+                // árbol corren como una sentencia del guion, como `create schema`.
+                Some(que) => match celda_de_sesion(raiz, fichero, texto) {
                     Ok((celda, "python")) => Desvio::Corre(celda),
                     Ok(_) => Desvio::Ninguno,
                     Err(r) => {
@@ -1270,7 +1265,11 @@ impl Servidor {
                                 "la celda crea `{n}` en el catálogo, y eso corre como una sentencia \
                                  del árbol: {primero}"
                             ),
-                            EscribeEnElArbol::Tabla(n) | EscribeEnElArbol::Vista(n) => format!(
+                            EscribeEnElArbol::Vista(n) => format!(
+                                "la celda crea o quita la vista `{n}` del árbol, y eso corre como \
+                                 una sentencia del árbol: {primero}"
+                            ),
+                            EscribeEnElArbol::Tabla(n) => format!(
                                 "la celda escribe en `{n}` (el lago), y lo que escribe en el lago \
                                  corre como un `.sql` del árbol: {primero}"
                             ),
@@ -2481,7 +2480,7 @@ fn celda_de_sesion(
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             let f = cotejar_guion(&pkg, &t);
             if f.is_empty() {
-                return Ok(celda_de_sentencia(codigo, &t[0]));
+                return Ok(celda_de_sentencia(codigo, &t[0], &pkg));
             }
             f
         }
@@ -2497,6 +2496,7 @@ fn celda_de_sesion(
 fn celda_de_sentencia(
     codigo: &str,
     t: &ore_core::sql_del_arbol::guion::Trozo,
+    pkg: &ore_core::link::Package,
 ) -> (String, &'static str) {
     use ore_core::sql_del_arbol::guion::Sentencia as S;
     let c = |s: &str| Json::s(s).jcs();
@@ -2572,8 +2572,110 @@ fn celda_de_sentencia(
                 si(*si_no_existe)
             )
         }
+        // ADR 0040 paso 5. Lo que el árbol sabe al escribir la celda va en la
+        // llamada: si ya hay una vista con ese nombre, el contrato que tenía
+        // (para decir si reemplazarla lo rompe) y el dueño que le toca —el del
+        // schema, o el de la base—. El contrato nuevo lo describe DuckDB en
+        // el puesto, que es quien sabe ejecutarla.
+        S::CrearVista {
+            destino,
+            consulta,
+            columnas,
+            comentario,
+            o_reemplaza,
+            si_no_existe,
+            evolucion,
+            ..
+        } => {
+            let r = destino.referencia();
+            let hay = pkg.view(&r);
+            let anterior = match hay {
+                Some(v) if ore_core::vistas::es_sql(v) => {
+                    match ore_core::vistas::tipos_del_contrato(v) {
+                        Ok(t) => Json::Obj(
+                            t.iter()
+                                .map(|(k, v)| (k.clone(), Json::s(v.to_string())))
+                                .collect(),
+                        )
+                        .jcs(),
+                        Err(_) => "None".to_string(),
+                    }
+                }
+                _ => "None".to_string(),
+            };
+            let cols = if columnas.is_empty() {
+                "None".to_string()
+            } else {
+                // Un literal de Python: cada cadena como JSON (que Python lee
+                // igual) y la ausencia como `None`.
+                format!(
+                    "[{}]",
+                    columnas
+                        .iter()
+                        .map(|k| format!(
+                            "[{},{}]",
+                            c(&k.nombre),
+                            k.comentario.as_deref().map_or("None".to_string(), c)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            };
+            format!(
+                "from ore import crear_vista, _resultado_de_crear\n\n\
+                 _hecho = crear_vista({}, {}, columnas={cols}, comentario={}, dueno={}, o_reemplaza={}, \
+                 si_no_existe={}, evolucion={}, existe={}, anterior={anterior})\n\
+                 print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
+                 _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
+                c(&r),
+                c(consulta),
+                comentario.as_deref().map_or("None".to_string(), c),
+                c(&dueno_de(pkg, &destino.paquete, &destino.schema)),
+                si(*o_reemplaza),
+                si(*si_no_existe),
+                si(*evolucion),
+                si(hay.is_some()),
+            )
+        }
+        S::BorrarVista { destino, si_existe } => format!(
+            "from ore import borrar_vista, _resultado_de_crear\n\n\
+             _hecho = borrar_vista({}, si_existe={})\n\
+             print(\"%s · vista · %s\" % (_hecho[\"vista\"], _hecho[\"estado\"]))\n\
+             _resultado_de_crear(\"view \" + _hecho[\"vista\"], _hecho[\"estado\"])\n",
+            c(&destino.referencia()),
+            si(*si_existe)
+        ),
     };
     (cabeza + &cuerpo, "python")
+}
+
+/// **El dueño de lo que nace en un schema**: el suyo, si lo declara; si no, el
+/// de su base. Es el equipo, no la persona que la creó —quién la creó ya lo
+/// dice el commit— (ADR 0040 paso 5, como Unity: una vista no queda huérfana
+/// cuando alguien se va).
+fn dueno_de(pkg: &ore_core::link::Package, base: &str, schema: &str) -> String {
+    use ore_core::document::Kind;
+    let de = |d: &ore_core::link::Loaded| {
+        d.section("owner")
+            .and_then(|o| o.as_str().map(str::to_string))
+    };
+    pkg.docs
+        .iter()
+        .find(|d| {
+            d.kind == Kind::Schema
+                && d.meta("namespace").and_then(|x| x.as_str()) == Some(base)
+                && d.meta("name").and_then(|x| x.as_str()) == Some(schema)
+        })
+        .and_then(de)
+        .or_else(|| {
+            pkg.docs
+                .iter()
+                .find(|d| {
+                    d.kind == Kind::Package && d.meta("name").and_then(|n| n.as_str()) == Some(base)
+                })
+                .and_then(de)
+        })
+        .unwrap_or_else(|| format!("team:{base}"))
 }
 
 /// Los fallos de un `.sql` como la respuesta 422 que el editor sabe pintar.
@@ -3256,9 +3358,13 @@ mod prueba {
     #[test]
     fn cada_sentencia_del_guion_es_su_celda() {
         use ore_core::sql_del_arbol::guion::guion;
+        // un árbol vacío: la vista no existe y su dueño es el equipo de su base
+        let vacio = std::env::temp_dir().join(format!("ore-celda-{}", std::process::id()));
+        std::fs::create_dir_all(&vacio).unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
         let celda = |q: &str| {
             let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
-            celda_de_sentencia("x.sql", &t[0])
+            celda_de_sentencia("x.sql", &t[0], &pkg)
         };
         let (c, l) = celda("create schema if not exists ventas.demo");
         assert_eq!(l, "python");
@@ -3286,6 +3392,20 @@ mod prueba {
         let (c, _) = celda("insert into ventas.x (a) values (1)");
         assert!(
             c.contains("@transform(inputs=[], output=\"ventas.x\")"),
+            "{c}"
+        );
+        // ADR 0040 paso 5: la vista, con su consulta tal cual y lo que el árbol sabe
+        let (c, l) = celda(
+            "create or replace view ventas.v (a comment 'la a', b) comment 'x' as\nselect 1 as a, 2 as b",
+        );
+        assert_eq!(l, "python");
+        assert!(
+            c.contains("crear_vista(\"ventas.v\", \"select 1 as a, 2 as b\", columnas=[[\"a\",\"la a\"],[\"b\",None]], comentario=\"x\", dueno=\"team:ventas\", o_reemplaza=True, si_no_existe=False, evolucion=False, existe=False, anterior=None)"),
+            "{c}"
+        );
+        let (c, _) = celda("drop view if exists ventas.v");
+        assert!(
+            c.contains("borrar_vista(\"ventas.v\", si_existe=True)"),
             "{c}"
         );
     }

@@ -187,20 +187,33 @@ class Catalogo:
             self.hechas.add(n)
 
     def cerrar(self):
-        try:
-            self.con.close()
-        except Exception:
-            pass
+        # ⛔ Con el candado: el refresco cierra el catálogo viejo desde SU hilo,
+        #   y cerrar la conexión mientras otro hilo hace un `explain` con ella
+        #   es memoria liberada en DuckDB —un «Segmentation fault» del agente
+        #   entero (visto en el-puesto 3d)—. Se espera a que termine.
+        with self.candado:
+            try:
+                self.con.close()
+            except Exception:
+                pass
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # El texto: tokens, sentencias
 # ═════════════════════════════════════════════════════════════════════════════
+# ⛔ `duckdb.tokenize` es del módulo: usa la conexión por defecto, que no es de
+#   varios hilos a la vez. Y aquí los hay: cada documento abierto se diagnostica
+#   en el hilo de su temporizador. Medido en el-puesto 3d: con cuatro abiertos a
+#   la vez, uno se quedaba colgado —ni diagnóstico ni error—. De uno en uno.
+_TOKENIZADOR = threading.Lock()
+
+
 def tokenizar(texto):
     """`duckdb.tokenize` con las posiciones en CARACTERES (las da en bytes)."""
     import duckdb
     try:
-        ts = duckdb.tokenize(texto)
+        with _TOKENIZADOR:
+            ts = duckdb.tokenize(texto)
     except Exception:
         return []
     if len(texto) != len(texto.encode("utf-8")):
@@ -357,6 +370,50 @@ def _rango(texto, ini, fin):
     return {"start": {"line": l0, "character": c0}, "end": {"line": l1, "character": c1}}
 
 
+def lo_que_duckdb_entiende(s):
+    """De una sentencia, lo que DuckDB puede comprobar: `(desde, texto)`, o `None`.
+
+    El guion (0039) y la vista (ADR 0040 paso 5) tienen frases que DuckDB no
+    conoce —`create dataset`, `create schema b.s`, `create standard database`,
+    `create view … (col comment '…') with schema evolution as`, `drop view`—, y
+    `explain` las marcaba como error aunque corren. Lo suyo lo dice ore-serve al
+    correrlas; aquí se comprueba sólo lo que es de DuckDB: la consulta de detrás
+    de `as` de un `create view` o un `create dataset … as`, en su sitio."""
+    ts = tokens(s)
+    w = [t[1].lower() for t in ts]
+    if not w:
+        return 0, s
+    if w[0] == "drop" and w[1:2] == ["view"]:
+        return None
+    if w[0] != "create":
+        return 0, s
+    k = 2 if w[1:2] in (["standard"], ["foreign"]) else 1
+    if w[k:k + 1] == ["database"]:
+        return None
+    if w[1:2] == ["schema"]:
+        # `create schema b.s` es del árbol; `create schema tmp`, de DuckDB
+        return None if "." in w[2:7] else (0, s)
+    j = 1
+    if w[j:j + 2] == ["or", "replace"]:
+        j += 2
+    if w[j:j + 1] in (["temp"], ["temporary"]):
+        return 0, s
+    if w[j:j + 1] not in (["view"], ["dataset"]):
+        return 0, s
+    hondo = 0
+    for i in range(j + 1, len(ts)):
+        if w[i] == "(":
+            hondo += 1
+        elif w[i] == ")":
+            hondo -= 1
+        elif w[i] == "as" and hondo == 0:
+            if i + 1 < len(ts):
+                return ts[i + 1][0], s[ts[i + 1][0]:]
+            return None  # se está escribiendo
+    # `create dataset b.s.d (col tipo, …)`, o una vista a medio escribir
+    return None
+
+
 def diagnosticar(texto, cat):
     out = []
     ts = tokens(texto)
@@ -387,6 +444,12 @@ def diagnosticar(texto, cat):
             out.append({"range": _rango(texto, ini, ini), "severity": 3, "source": "ore",
                         "message": "sentencia de %d KB: no se comprueba mientras se escribe" % (len(s) // 1024)})
             continue
+        parte = lo_que_duckdb_entiende(s)
+        if parte is None:
+            continue
+        # lo de DuckDB, y desde dónde de la sentencia empieza
+        d, s = parte
+        ini += d
         with cat.candado:
             try:
                 ts_s = tokens(s)

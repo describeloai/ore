@@ -73,7 +73,7 @@ import urllib.request
 MAGIA = b"ORECOPY1"
 
 __all__ = ["over", "sql", "write", "declare", "transform", "persona", "puesto", "tabla", "json_de",
-           "crear_base", "crear_schema", "crear_dataset"]
+           "crear_base", "crear_schema", "crear_dataset", "crear_vista", "borrar_vista"]
 
 
 class Puesto:
@@ -816,6 +816,173 @@ def crear_dataset(nombre, columnas, clave=None, si_no_existe=False):
     return {"dataset": nombre, "creado": True}
 
 
+# ── La vista (ADR 0040 paso 5) ─────────────────────────────────────────────
+# `create view` guarda la consulta tal como se escribió (`spec.sql`) y su
+# contrato (`spec.columns`), que no escribe nadie: lo describe DuckDB aquí, SIN
+# LEER UNA FILA (medido, `medida-create-view.py`: <1 ms con 0 filas o con 10 M),
+# sobre tablas vacías con los tipos de lo que la consulta lee —las del índice
+# del árbol, como el servidor de lenguaje—. Así no hace falta credencial ni
+# puntero, y una vista puede leer también una Table (virtual). Lo escribe
+# `PUT /documentos/View/…` en nombre de quien abrió el puesto y en su rama, y el
+# compilador lo coteja: un código OOS vuelve como el error de la celda.
+
+# DuckDB → OOS (0032). Un entero es un entero —`sum(bigint)` es HUGEINT en
+# DuckDB y aquí `Integer`: si un día no cabe en 64 bits, la copia falla con la
+# columna nombrada, como en Databricks (ANSI) o BigQuery—; `avg` y `/` son
+# DOUBLE, `Float`. Lo que OOS no tiene (STRUCT, MAP, UNION) es `None`.
+_ENTEROS = {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER",
+            "UBIGINT", "UHUGEINT", "INT", "INT1", "INT2", "INT4", "INT8", "INT16", "INT32", "INT64", "INT128"}
+_DE_DUCKDB = {"DECIMAL": "Decimal", "NUMERIC": "Decimal", "DOUBLE": "Float", "FLOAT": "Float", "REAL": "Float",
+              "FLOAT4": "Float", "FLOAT8": "Float", "BOOLEAN": "Boolean", "VARCHAR": "String", "UUID": "String",
+              "ENUM": "String", "DATE": "Date", "TIME": "Time", "TIME WITH TIME ZONE": "Time", "TIMETZ": "Time",
+              "TIMESTAMP": "DateTime", "TIMESTAMP_S": "DateTime", "TIMESTAMP_MS": "DateTime",
+              "TIMESTAMP_NS": "DateTime", "TIMESTAMP WITH TIME ZONE": "DateTimeTz", "TIMESTAMPTZ": "DateTimeTz",
+              "BLOB": "Opaque", "INTERVAL": "Opaque", "BIT": "Opaque", "JSON": "Opaque"}
+
+
+def _oos_de_duckdb(tipo):
+    """El tipo de OOS de un tipo de DuckDB (lo que da `describe`), o `None`."""
+    t = (tipo or "").strip().upper()
+    if t.endswith("[]"):
+        dentro = _oos_de_duckdb(t[:-2])
+        return "list<%s>" % dentro if dentro and not dentro.startswith("list<") else None
+    base = re.sub(r"\(.*\)$", "", t).strip()
+    if base in _ENTEROS:
+        return "Integer"
+    return _DE_DUCKDB.get(base)
+
+
+_NOMBRE_DE_COLUMNA = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _rama_del_puesto():
+    c, ficha = puesto.pedir("GET", "/puestos/%s" % puesto.id) if puesto.id else (0, None)
+    rama = (ficha or {}).get("rama") if c == 200 else None
+    return {"x-ore-rama": rama} if rama else None
+
+
+def _describir(sql, que):
+    """`[(columna, tipo de DuckDB)]` de la consulta, sin leer una fila: DuckDB la
+    describe sobre tablas vacías con los tipos del índice del árbol."""
+    from ore import lsp_sql
+
+    c, indice = puesto.pedir("GET", "/assets", cabeceras=_rama_del_puesto(), plazo=60)
+    if c != 200:
+        raise RuntimeError("%s: no pude leer el índice del árbol (GET /assets → %s)" % (que, c))
+    cat = lsp_sql.Catalogo(indice)
+    try:
+        # una vista también lee una Table (es virtual): sus columnas, igual
+        for n, i in cat.ajenas.items():
+            cat.con.execute("attach if not exists ':memory:' as %s" % lsp_sql._q(i["paquete"]))
+            cat.con.execute("create schema if not exists %s.%s" % (lsp_sql._q(i["paquete"]), lsp_sql._q(i["schema"])))
+            cat.legibles.setdefault(n, i)
+        leidos = [n for _, _, n, _ in lsp_sql.nombres([t[1] for t in lsp_sql.tokens(sql)])]
+        with cat.candado:
+            cat.asegurar(leidos)
+        try:
+            return [(r[0], r[1]) for r in cat.con.execute("describe " + sql).fetchall()]
+        except Exception as e:  # el binder de DuckDB: una columna o un nombre que no está
+            raise ValueError("%s: la consulta no se describe: %s" % (que, str(e).strip().splitlines()[0])) from None
+    finally:
+        cat.cerrar()
+
+
+def _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno):
+    base, ns, v = _partes(nombre)
+    lineas = ["apiVersion: oos.dev/v1alpha14", "kind: View", "metadata:", "  name: %s" % v, "  namespace: %s" % base]
+    if ns != DEFAULT:
+        lineas.append("  schema: %s" % ns)
+    if comentario:
+        lineas.append("  description: %s" % json.dumps(comentario, ensure_ascii=False))
+    lineas += ["spec:", "  owner: %s" % dueno, "  dialect: duckdb", "  sql: |"]
+    lineas += ["    " + l if l.strip() else "" for l in sql.replace("\r\n", "\n").strip("\n").split("\n")]
+    lineas.append("  columns:")
+    for c, t in contrato.items():
+        d = comentarios.get(c)
+        lineas.append("    %s: { type: %s%s }" % (c, json.dumps(t), ", description: %s" % json.dumps(d, ensure_ascii=False) if d else ""))
+    return "\n".join(lineas) + "\n"
+
+
+def _ruta_de_vista(nombre):
+    base, ns, v = _partes(nombre)
+    return ("/documentos/View/%s/%s" % (base, v) if ns == DEFAULT
+            else "/documentos/View/%s/%s/%s" % (base, ns, v))
+
+
+def crear_vista(nombre, sql, columnas=None, comentario=None, dueno=None, o_reemplaza=False,
+                si_no_existe=False, evolucion=False, existe=None, anterior=None):
+    """`create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)]
+    [comment '…'] [with schema evolution] as <sql>` (ADR 0040 paso 5).
+
+    El contrato lo describe DuckDB (ver arriba). `columnas`, `[(nombre,
+    comentario)]`, renombra las del select por posición. `existe` y `anterior`
+    (el contrato que tenía) los dice `ore-serve` al escribir la celda; reemplazar
+    una vista puede AÑADIR columnas, y quitar una o cambiarle el tipo rompe a
+    quien la lee: sólo con `evolucion` (`with schema evolution`). Devuelve
+    `{vista, estado: created|replaced|already exists, columnas}`."""
+    nombre = _corto(nombre, "create view: el nombre")
+    que = "create view %s" % nombre
+    if existe and si_no_existe:
+        return {"vista": nombre, "estado": "already exists", "columnas": anterior}
+    if existe and not o_reemplaza:
+        raise RuntimeError("%s: ya hay una vista con ese nombre (`create or replace view` la reemplaza)" % que)
+    descritas = _describir(sql, que)
+    if columnas:
+        if len(columnas) != len(descritas):
+            raise ValueError("%s: la lista nombra %d columnas y la consulta da %d" % (que, len(columnas), len(descritas)))
+        descritas = [(c[0], t) for c, (_, t) in zip(columnas, descritas)]
+    comentarios = {c[0]: c[1] for c in (columnas or []) if len(c) > 1 and c[1]}
+    contrato, vistos = {}, set()
+    for c, t in descritas:
+        if not _NOMBRE_DE_COLUMNA.match(c):
+            raise ValueError("%s: la columna `%s` no tiene nombre: dale uno (`… as nombre`), o nómbralas en la "
+                             "lista: `create view %s (a, b, …) as …`" % (que, c, nombre))
+        if c.lower() in vistos:
+            raise ValueError("%s: `%s` sale dos veces: cada columna del contrato, un nombre (`… as otro`)" % (que, c))
+        vistos.add(c.lower())
+        oos = _oos_de_duckdb(t)
+        if oos is None:
+            raise ValueError("%s: `%s` es %s, y OOS no tiene ese tipo: saca sus campos (`s.campo as x`) o pásala a "
+                             "texto (`to_json(s) as x`)" % (que, c, t))
+        contrato[c] = oos
+    estado = "replaced" if existe else "created"
+    if existe and anterior:
+        quitadas = [c for c in anterior if c not in contrato]
+        cambiadas = ["%s (%s → %s)" % (c, anterior[c], contrato[c]) for c in anterior if c in contrato and contrato[c] != anterior[c]]
+        if (quitadas or cambiadas) and not evolucion:
+            rompe = (["quita " + ", ".join(quitadas)] if quitadas else []) +                     (["cambia " + ", ".join(cambiadas)] if cambiadas else [])
+            raise ValueError("%s: reemplazarla rompe su contrato —%s— y quien la lea deja de encontrar lo que leía. "
+                             "Si es lo que quieres: `create or replace view … with schema evolution as …`"
+                             % (que, "; ".join(rompe)))
+        nuevas = [c for c in contrato if c not in anterior]
+        if nuevas:
+            print("%s · añade %s al contrato" % (nombre, ", ".join(nuevas)))
+    texto = _yaml_de_vista(nombre, sql, contrato, comentarios, comentario, dueno or "team:%s" % _partes(nombre)[0])
+    c, r = puesto.pedir("PUT", _ruta_de_vista(nombre), {"yaml": texto}, plazo=120)
+    if c not in (200, 201):
+        r = r or {}
+        if r.get("diagnosticos"):
+            raise ValueError("%s: %s" % (que, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
+        raise RuntimeError("%s: %s (%s)" % (que, r.get("error", "?"), c))
+    return {"vista": nombre, "estado": estado, "columnas": contrato}
+
+
+def borrar_vista(nombre, si_existe=False):
+    """`drop view [if exists] b.s.v`: la quita del árbol en la rama del puesto.
+    Si algo la lee, el árbol empeora y no se quita: el código OOS lo dice.
+    Devuelve `{vista, estado: dropped|not found}`."""
+    nombre = _corto(nombre, "drop view: el nombre")
+    c, r = puesto.pedir("DELETE", _ruta_de_vista(nombre), plazo=120)
+    if c in (200, 204):
+        return {"vista": nombre, "estado": "dropped"}
+    if c == 404 and si_existe:
+        return {"vista": nombre, "estado": "not found"}
+    r = r or {}
+    if r.get("diagnosticos"):
+        raise ValueError("drop view %s: %s" % (nombre, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
+    raise RuntimeError("drop view %s: %s (%s)" % (nombre, r.get("error", "?"), c))
+
+
 _ARROW_DE_ICEBERG = {"long": "int64", "int": "int32", "string": "string", "boolean": "bool", "double": "float64",
                      "float": "float32", "date": "date32", "binary": "binary"}
 
@@ -884,10 +1051,12 @@ def _resultado_de_escritura(escrito):
 
 def _resultado_de_crear(objeto, creado):
     """El resultado de una sentencia que crea (el guion SQL, 0039): qué, y si se
-    creó o ya estaba (`if not exists`)."""
+    creó o ya estaba (`if not exists`). `creado` es un booleano, o el estado ya
+    dicho (`replaced`, `dropped`…: la vista, ADR 0040 paso 5)."""
     import pyarrow as pa
 
-    return pa.table({"object": [objeto], "status": ["created" if creado else "already exists"]})
+    estado = creado if isinstance(creado, str) else ("created" if creado else "already exists")
+    return pa.table({"object": [objeto], "status": [estado]})
 
 
 def write(nombre, datos, modo="sobrescribir", clave=None):

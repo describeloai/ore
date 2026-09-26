@@ -199,6 +199,38 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
    `SELECT` → `columns` → documento en la rama; los códigos OOS vuelven como error de la
    celda; resultado `object/status`. SDK `crear_vista`; `ore view add` y el inductor
    escriben SQL.
+   **5a–5c HECHOS**, medidos antes (`medida-create-view.py`: `DESCRIBE` no lee una fila, <1 ms
+   con 0 o con 10 M) y cotejados con Databricks/Unity, Snowflake, BigQuery, Postgres y Trino:
+   - La frase: `create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)]
+     [comment '…'] [with schema evolution] as select …` y `drop view [if exists] b.s.v`, en el
+     guion y en una celda suelta (`guion.rs`, `Sentencia::CrearVista/BorrarVista`). `or replace`
+     e `if not exists` no van juntas (Databricks, Snowflake); `temp` es de DuckDB.
+   - Su cotejo: la base y el schema, «ya hay», **un nombre que ya es un Dataset o una Table no se
+     reemplaza nunca** (`OOS2035`), lo que lee existe (una Table también: la vista es virtual), y
+     una vista del guion se lee en la sentencia siguiente.
+   - `crear_vista` (SDK): la consulta **tal como se escribió** (`spec.sql`; los nombres se
+     resuelven al servirla, como Snowflake y BigQuery); el contrato lo describe DuckDB sobre
+     tablas vacías con los tipos del índice (sin credencial ni puntero); `PUT /documentos/View`
+     en la rama del puesto, y un código OOS es el error de la celda.
+   - DuckDB → OOS (0032): los enteros, `HUGEINT` incluido (`sum(bigint)`), son `Integer` —si un
+     día no cabe en 64 bits la copia falla con la columna, como Databricks ANSI o BigQuery—;
+     `DECIMAL` es `Decimal`, `DOUBLE` (`avg`, `/`) `Float`, `T[]` `list<T>`, `BLOB/INTERVAL/JSON`
+     `Opaque`; STRUCT y MAP se niegan con el remedio (`s.campo as x`).
+   - Columnas: sin alias (`id + 1`) o repetidas se niegan pidiendo alias o la lista de
+     columnas (más estricto que Spark y Postgres, que inventan `(id + 1)` y `?column?`).
+   - Reemplazar: añadir columnas se dice; **quitar una o cambiarle el tipo rompe a quien la lee
+     y se niega salvo `with schema evolution`** (Postgres sólo deja añadir al final).
+   - El dueño es el del schema o el de la base, no la persona (quién la creó lo dice el
+     commit). `comment` → `description`, de la vista y de cada columna.
+   - `drop view`: si otra cosa la lee el árbol empeora y no se quita.
+   - **5c · el editor** (`lsp_sql.lo_que_duckdb_entiende`): el servidor de lenguaje del puesto
+     diagnosticaba cada sentencia con `explain` de DuckDB, que no conoce el guion. Medido con un
+     guion de `create schema/dataset/view` y `drop view`: **3 errores falsos, y el de verdad —una
+     columna mal escrita dentro de la vista— escondido**. Ahora lo del guion no va a DuckDB, y de
+     `create view … as` y `create dataset … as` se comprueba la consulta, en su sitio: 1 error, el
+     de verdad (`el-puesto.sh` 3d).
+   Queda: `ore view add` se retira y el inductor pasa al paso 6 (el nombre de la pareja
+   Table/View, `OOS2035`, y las columnas sin tipo).
 6. **Migrar y suprimir.** `ore migrate` reescribe v8–13 → v14 (tipos de sus fuentes) en
    `casos/`, `acme-retail` y el árbol del usuario; lo que no compila se borra. Se quita la
    forma: `cuerpo()` estructurado, emisores de `autoria` y del inductor.

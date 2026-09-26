@@ -23,12 +23,25 @@
 //! | `create foreign database b from origin o include (…)` | una foreign database: se lee en el origen |
 //! | `create schema [if not exists] b.s` | un schema declarado de la base |
 //! | `create dataset [if not exists] b.s.d (col tipo, …)` | un Dataset vacío, con su esquema, en el lago |
+//! | `create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …` | una View v1alpha14: su consulta y su contrato, que describe DuckDB (ADR 0040 paso 5) |
+//! | `drop view [if exists] b.s.v` | la quita del árbol; si algo la lee, no |
 //!
 //! Y `create table` se niega: una **Table** es un puntero a un objeto de un
 //! origen, nace del descubrimiento y no guarda bytes; lo que se escribe es un
 //! **Dataset**. Como `sqlparser` no conoce `dataset`, la palabra se cambia por
 //! `table  ` —el mismo largo, así que ninguna posición se mueve— antes de
 //! analizar, y se recuerda que era un dataset.
+//!
+//! # La vista (ADR 0040 paso 5)
+//!
+//! `create view` guarda la consulta **tal como se escribió** (`spec.sql`) y su
+//! contrato (`spec.columns`), que no escribe nadie a mano: lo describe DuckDB
+//! en el puesto, sin leer una fila (`crear_vista` del SDK). Aquí se analiza la
+//! frase —el nombre, la lista de columnas con sus comentarios, `comment`,
+//! `with schema evolution`— y se coteja lo que lee; la consulta la analiza
+//! `sqlparser` como el `select` que es. `or replace` e `if not exists` no van
+//! juntas (como en Databricks y Snowflake), y un nombre que ya es un `Dataset`
+//! o una `Table` no se reemplaza nunca (v1alpha14: un nombre, una cosa).
 
 use super::*;
 use sqlparser::tokenizer::{Location, Token, Tokenizer};
@@ -70,6 +83,15 @@ pub struct Columna {
     pub pos: Option<Pos>,
 }
 
+/// Una columna de la lista de `create view v (a, b comment '…') as …`: el
+/// nombre que toma la columna del `select` en esa posición, y su descripción.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnaDeVista {
+    pub nombre: String,
+    pub comentario: Option<String>,
+    pub pos: Option<Pos>,
+}
+
 /// Lo que una sentencia del guion es.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sentencia {
@@ -96,6 +118,27 @@ pub enum Sentencia {
         clave: Vec<String>,
         si_no_existe: bool,
     },
+    /// `create view` (ADR 0040 paso 5): una View v1alpha14.
+    CrearVista {
+        destino: Nombre,
+        /// La consulta tal como se escribió, sin el `create … as`: lo que
+        /// guarda `spec.sql`. Los nombres se resuelven al servirla.
+        consulta: String,
+        /// Lo que lee, por su nombre del árbol.
+        lee: Vec<Nombre>,
+        /// La lista de columnas, si la dice: renombra las del `select` por
+        /// posición.
+        columnas: Vec<ColumnaDeVista>,
+        /// `comment '…'`: la descripción de la vista.
+        comentario: Option<String>,
+        o_reemplaza: bool,
+        si_no_existe: bool,
+        /// `with schema evolution`: reemplazarla puede romper su contrato
+        /// (quitar una columna, cambiarle el tipo). Sin esto, no.
+        evolucion: bool,
+    },
+    /// `drop view [if exists]`.
+    BorrarVista { destino: Nombre, si_existe: bool },
 }
 
 impl Sentencia {
@@ -111,6 +154,11 @@ impl Sentencia {
             Self::CrearBase { .. } => "create database",
             Self::CrearSchema { .. } => "create schema",
             Self::CrearDataset { .. } => "create dataset",
+            Self::CrearVista {
+                o_reemplaza: true, ..
+            } => "create or replace view",
+            Self::CrearVista { .. } => "create view",
+            Self::BorrarVista { .. } => "drop view",
         }
     }
 }
@@ -134,6 +182,7 @@ pub struct Creado {
     pub bases: BTreeSet<String>,
     pub schemas: BTreeSet<(String, String)>,
     pub datasets: BTreeSet<String>,
+    pub vistas: BTreeSet<String>,
 }
 
 const LA_BASE: &str =
@@ -321,6 +370,9 @@ fn nombre_de_base(n: &str) -> bool {
 /// Lo que es una sentencia (su texto, con lo de alrededor en blanco).
 fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let ts = tokens(texto)?;
+    if es(&ts, 0, "drop") && es(&ts, 1, "view") {
+        return borrar_vista(&ts, 2);
+    }
     let mut es_dataset = false;
     let mut texto = std::borrow::Cow::Borrowed(texto);
     if es(&ts, 0, "create") {
@@ -338,11 +390,25 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
             return crear_schema(&ts, 2).map(|s| (s, Vec::new()));
         }
         let mut j = 1;
-        if es(&ts, j, "or") && es(&ts, j + 1, "replace") {
+        let o_reemplaza = es(&ts, j, "or") && es(&ts, j + 1, "replace");
+        if o_reemplaza {
             j += 2;
         }
-        if es(&ts, j, "temp") || es(&ts, j, "temporary") {
+        let temporal = es(&ts, j, "temp") || es(&ts, j, "temporary");
+        if temporal {
             j += 1;
+        }
+        if es(&ts, j, "view") {
+            if temporal {
+                return Err(vec![
+                    Fallo::new(
+                        "una vista temporal no es del árbol: vive en la sesión",
+                        ts[j].pos,
+                    )
+                    .ayuda("con un nombre que no es de una base del árbol (`create temp view v as …`) es de DuckDB; sin `temp`, `create view b.s.v as …` la guarda en el árbol"),
+                ]);
+            }
+            return crear_vista(&ts, j + 1, &texto, o_reemplaza);
         }
         if es(&ts, j, "table") {
             return Err(vec![tabla_no(ts[j].pos)]);
@@ -592,6 +658,253 @@ fn crear_schema(ts: &[Tok], i: usize) -> Result<Sentencia, Vec<Fallo>> {
     })
 }
 
+const LA_VISTA: &str = "`create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …`";
+
+/// Un nombre del árbol de sus partes: tres, o dos (en `default`, con aviso).
+fn nombre_de(partes: &[String], pos: Option<Pos>, fallos: &mut Vec<Fallo>) -> Option<Nombre> {
+    match partes {
+        [p, s, n] => Some(Nombre {
+            paquete: p.clone(),
+            schema: s.clone(),
+            nombre: n.clone(),
+            pos,
+            dos_partes: false,
+        }),
+        [p, n] => Some(Nombre {
+            paquete: p.clone(),
+            schema: crate::normalize::SCHEMA_POR_DEFECTO.to_string(),
+            nombre: n.clone(),
+            pos,
+            dos_partes: true,
+        }),
+        [solo] => {
+            fallos.push(
+                Fallo::new(format!("`{solo}` no dice de qué base es"), pos)
+                    .ayuda(format!("`base.schema.{solo}`")),
+            );
+            None
+        }
+        _ => {
+            fallos.push(Fallo::new(
+                format!(
+                    "`{}` tiene {} partes: un nombre del árbol es `base.schema.nombre`",
+                    partes.join("."),
+                    partes.len()
+                ),
+                pos,
+            ));
+            None
+        }
+    }
+}
+
+/// Una cadena entre comillas simples en `i`.
+fn cadena_en(ts: &[Tok], i: usize) -> Option<String> {
+    match ts.get(i).map(|t| &t.t) {
+        Some(Token::SingleQuotedString(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `create [or replace] view …` desde `i` (tras `view`). La consulta se corta
+/// del texto desde el token que sigue a `as`, con lo de antes en blanco: sus
+/// líneas y columnas son las del fichero.
+fn crear_vista(
+    ts: &[Tok],
+    i: usize,
+    texto: &str,
+    o_reemplaza: bool,
+) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    let (si_no_existe, i) = si_no_existe(ts, i);
+    let Some((partes, pos, mut i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new("falta el nombre de la vista", pos_en(ts, i)).ayuda(LA_VISTA),
+        ]);
+    };
+    let mut fallos = Vec::new();
+    let destino = nombre_de(&partes, pos, &mut fallos);
+    let mut columnas: Vec<ColumnaDeVista> = Vec::new();
+    let mut comentario = None;
+    let mut evolucion = false;
+    loop {
+        if matches!(ts.get(i).map(|t| &t.t), Some(Token::LParen)) && columnas.is_empty() {
+            i += 1;
+            loop {
+                let (nombre, cpos) = match ts.get(i) {
+                    Some(Tok {
+                        t: Token::Word(w),
+                        pos,
+                        ..
+                    }) => (w.value.clone(), *pos),
+                    _ => {
+                        return Err(vec![
+                            Fallo::new("en la lista de columnas va un nombre", pos_en(ts, i))
+                                .ayuda(LA_VISTA),
+                        ]);
+                    }
+                };
+                i += 1;
+                let mut c = None;
+                if es(ts, i, "comment") {
+                    let Some(s) = cadena_en(ts, i + 1) else {
+                        return Err(vec![
+                            Fallo::new("`comment` va seguido de '…'", pos_en(ts, i + 1))
+                                .ayuda(LA_VISTA),
+                        ]);
+                    };
+                    c = Some(s);
+                    i += 2;
+                }
+                columnas.push(ColumnaDeVista {
+                    nombre,
+                    comentario: c,
+                    pos: cpos,
+                });
+                match ts.get(i).map(|t| &t.t) {
+                    Some(Token::Comma) => i += 1,
+                    Some(Token::RParen) => {
+                        i += 1;
+                        break;
+                    }
+                    _ => {
+                        return Err(vec![
+                            Fallo::new("falta `)` o `,` en la lista de columnas", pos_en(ts, i))
+                                .ayuda(LA_VISTA),
+                        ]);
+                    }
+                }
+            }
+        } else if es(ts, i, "comment") && comentario.is_none() {
+            let Some(s) = cadena_en(ts, i + 1) else {
+                return Err(vec![
+                    Fallo::new("`comment` va seguido de '…'", pos_en(ts, i + 1)).ayuda(LA_VISTA),
+                ]);
+            };
+            comentario = Some(s);
+            i += 2;
+        } else if es(ts, i, "with") && es(ts, i + 1, "schema") && es(ts, i + 2, "evolution") {
+            evolucion = true;
+            i += 3;
+        } else if es(ts, i, "as") {
+            break;
+        } else if i >= ts.len() {
+            return Err(vec![
+                Fallo::new(
+                    "falta `as select …`: una vista es su consulta",
+                    pos_en(ts, i),
+                )
+                .ayuda(LA_VISTA),
+            ]);
+        } else {
+            return Err(vec![sobra(ts, i, LA_VISTA)]);
+        }
+    }
+    let Some(q) = ts.get(i + 1) else {
+        return Err(vec![
+            Fallo::new("falta la consulta tras `as`", pos_en(ts, i)).ayuda(LA_VISTA),
+        ]);
+    };
+    let lineas = inicios_de_linea(texto);
+    let b = byte_de(texto, &lineas, q.loc);
+    let solo = en_blanco(texto, b, texto.len());
+    let s = match Parser::parse_sql(&DuckDbDialect {}, &solo) {
+        Ok(v) if v.len() == 1 && matches!(v[0], Statement::Query(_)) => v.into_iter().next(),
+        Ok(_) => {
+            fallos.push(
+                Fallo::new(
+                    "una vista es UNA consulta, un `select` que lee por nombre (OOS2038)",
+                    q.pos,
+                )
+                .ayuda(LA_VISTA),
+            );
+            None
+        }
+        Err(e) => {
+            fallos.push(fallo_de_analisis(&e.to_string()));
+            None
+        }
+    };
+    let mut avisos = Vec::new();
+    let mut lee = Vec::new();
+    if let Some(s) = s {
+        match unidad_de(&s, &solo) {
+            Ok(u) => {
+                avisos.extend(u.avisos);
+                lee = u.lee;
+            }
+            Err(f) => fallos.extend(f),
+        }
+    }
+    if o_reemplaza && si_no_existe {
+        fallos.push(
+            Fallo::new(
+                "`or replace` e `if not exists` no van juntas: una reemplaza lo que hay, la otra lo deja",
+                pos,
+            )
+            .ayuda("`create or replace view …` para reemplazarla, `create view if not exists …` para dejarla"),
+        );
+    }
+    let mut nombres = BTreeSet::new();
+    for c in &columnas {
+        if !nombres.insert(c.nombre.to_lowercase()) {
+            fallos.push(Fallo::new(
+                format!("`{}` está dos veces en la lista de columnas", c.nombre),
+                c.pos,
+            ));
+        }
+    }
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let destino = destino.expect("sin fallos hay nombre");
+    if destino.dos_partes {
+        avisos.insert(0, Fallo::dos_partes(&destino));
+    }
+    Ok((
+        Sentencia::CrearVista {
+            destino,
+            consulta: sin_punto_y_coma(&texto[b..]),
+            lee,
+            columnas,
+            comentario,
+            o_reemplaza,
+            si_no_existe,
+            evolucion,
+        },
+        avisos,
+    ))
+}
+
+/// `drop view [if exists] b.s.v` desde `i` (tras `view`).
+fn borrar_vista(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    const FORMA: &str = "`drop view [if exists] base.schema.vista`";
+    let (si_existe, i) = if es(ts, i, "if") && es(ts, i + 1, "exists") {
+        (true, i + 2)
+    } else {
+        (false, i)
+    };
+    let Some((partes, pos, i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new("falta el nombre de la vista", pos_en(ts, i)).ayuda(FORMA),
+        ]);
+    };
+    let mut fallos = Vec::new();
+    if i < ts.len() {
+        fallos.push(sobra(ts, i, FORMA));
+    }
+    let destino = nombre_de(&partes, pos, &mut fallos);
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let destino = destino.expect("sin fallos hay nombre");
+    let avisos = if destino.dos_partes {
+        vec![Fallo::dos_partes(&destino)]
+    } else {
+        Vec::new()
+    };
+    Ok((Sentencia::BorrarVista { destino, si_existe }, avisos))
+}
+
 /// `create dataset [if not exists] b.s.d (col tipo, …)`.
 fn crear_dataset(c: &CreateTable) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let pos = pos_de_nombre(&c.name);
@@ -765,6 +1078,115 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                 if let Some(e) = &u.escribe {
                     creado.datasets.insert(e.destino.referencia());
                 }
+            }
+            Sentencia::CrearVista {
+                destino,
+                lee,
+                o_reemplaza,
+                si_no_existe,
+                ..
+            } => {
+                let r = destino.referencia();
+                if !hay_base_o_creada(&creado, &destino.paquete) {
+                    fallos.push(sin_base(&destino.paquete, destino.pos));
+                } else if !(hay_schema_declarado(pkg, &destino.paquete, &destino.schema)
+                    || creado
+                        .schemas
+                        .contains(&(destino.paquete.clone(), destino.schema.clone())))
+                {
+                    fallos.push(
+                        Fallo::new(
+                            format!(
+                                "no hay ningún schema `{}` en la base `{}`",
+                                destino.schema, destino.paquete
+                            ),
+                            destino.pos,
+                        )
+                        .ayuda(format!(
+                            "créalo antes en el guion: `create schema {}.{}`",
+                            destino.paquete, destino.schema
+                        )),
+                    );
+                } else {
+                    let ya = || {
+                        Fallo::new(format!("ya hay una vista `{r}`"), destino.pos).ayuda(format!(
+                            "`create or replace view {}` para reemplazarla, o `create view if not exists …` si da igual que ya esté",
+                            destino.completo()
+                        ))
+                    };
+                    match doc_de(pkg, &r) {
+                        Some(d) if d.kind == Kind::View => {
+                            if !o_reemplaza && !si_no_existe {
+                                fallos.push(ya());
+                            }
+                        }
+                        // v1alpha14: una tabla, una vista y un dataset comparten
+                        // el nombre de su schema, y uno no reemplaza al otro.
+                        Some(d) => fallos.push(
+                            Fallo::new(
+                                format!(
+                                    "`{r}` ya es un `{:?}`: en un schema un nombre es una cosa (OOS2035), y una vista no reemplaza a otra cosa",
+                                    d.kind
+                                ),
+                                destino.pos,
+                            )
+                            .ayuda("dale otro nombre a la vista"),
+                        ),
+                        None if creado.datasets.contains(&r) => fallos.push(Fallo::new(
+                            format!("`{r}` ya es un dataset de este guion (OOS2035)"),
+                            destino.pos,
+                        )),
+                        None if creado.vistas.contains(&r) && !o_reemplaza && !si_no_existe => {
+                            fallos.push(ya())
+                        }
+                        None => {}
+                    }
+                }
+                // Lo que lee: una tabla, una vista o un dataset del árbol (una
+                // vista puede leer una Table: es virtual), o lo que el guion
+                // ya creó.
+                for n in lee {
+                    let x = n.referencia();
+                    match doc_de(pkg, &x) {
+                        Some(d) if matches!(d.kind, Kind::Dataset | Kind::View | Kind::Table) => {}
+                        Some(d) => fallos.push(Fallo::new(
+                            format!(
+                                "`{x}` es una `{:?}`: una vista lee tablas, vistas y datasets",
+                                d.kind
+                            ),
+                            n.pos,
+                        )),
+                        None if creado.datasets.contains(&x) || creado.vistas.contains(&x) => {}
+                        None if x == r => {}
+                        None => fallos.push(Fallo::new(
+                            format!("no hay ninguna tabla, vista ni dataset `{x}` en el árbol"),
+                            n.pos,
+                        )),
+                    }
+                    if x == r {
+                        fallos.push(Fallo::new(
+                            format!("`{r}` se lee a sí misma (OOS2019)"),
+                            n.pos,
+                        ));
+                    }
+                }
+                creado.vistas.insert(r);
+            }
+            Sentencia::BorrarVista { destino, si_existe } => {
+                let r = destino.referencia();
+                match doc_de(pkg, &r) {
+                    Some(d) if d.kind == Kind::View => {}
+                    Some(d) => fallos.push(Fallo::new(
+                        format!("`{r}` es un `{:?}`, no una vista", d.kind),
+                        destino.pos,
+                    )),
+                    None if creado.vistas.contains(&r) || *si_existe => {}
+                    None => fallos.push(
+                        Fallo::new(format!("no hay ninguna vista `{r}`"), destino.pos)
+                            .ayuda(format!("`drop view if exists {}`", destino.completo())),
+                    ),
+                }
+                creado.vistas.remove(&r);
             }
             Sentencia::CrearBase {
                 nombre,

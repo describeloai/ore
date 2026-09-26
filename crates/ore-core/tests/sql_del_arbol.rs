@@ -250,6 +250,12 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
         e("create or replace view ventas.v as select 1"),
         Some(E::Vista("ventas.v".into()))
     );
+    // ADR 0040 paso 5: quitarla también es del árbol; `drop view tmp` no
+    assert_eq!(
+        e("drop view if exists ventas.espana.v"),
+        Some(E::Vista("ventas.espana.v".into()))
+    );
+    assert_eq!(e("drop view v"), None);
     // 0039: lo que crea en el catálogo; `create schema tmp` sigue siendo de DuckDB
     let c = |n: &str| Some(E::Crea(n.to_string()));
     assert_eq!(
@@ -418,4 +424,124 @@ create dataset ventas.x (a int)",
     );
     let f = coteja("create foreign database espejo from origin nadie include (public.*)");
     assert!(f[0].mensaje.contains("ningún origen `nadie`"), "{f:?}");
+}
+
+/// ADR 0040 paso 5: `create view` y `drop view` en el guion. La frase se lee
+/// entera —el nombre, la lista de columnas con sus comentarios, `comment`,
+/// `with schema evolution`— y la consulta se guarda tal como se escribió.
+#[test]
+fn una_vista_se_crea_y_se_quita_desde_sql() {
+    use ore_core::sql_del_arbol::guion::Sentencia;
+    let q = "create or replace view ventas.espana.porPais (pais comment 'el país', n)\n  comment 'pedidos por país'\n  with schema evolution\nas\nselect pais, count(*) as n\nfrom ventas.pedidos\ngroup by pais;";
+    let t = guion(q).unwrap_or_else(|f| panic!("{f:?}"));
+    assert_eq!(t[0].sentencia.que(), "create or replace view");
+    match &t[0].sentencia {
+        Sentencia::CrearVista {
+            destino,
+            consulta,
+            lee,
+            columnas,
+            comentario,
+            o_reemplaza,
+            si_no_existe,
+            evolucion,
+        } => {
+            assert_eq!(destino.referencia(), "ventas.espana.porPais");
+            assert_eq!(
+                consulta,
+                "select pais, count(*) as n\nfrom ventas.pedidos\ngroup by pais"
+            );
+            assert_eq!(
+                lee.iter().map(|n| n.referencia()).collect::<Vec<_>>(),
+                ["ventas.pedidos"]
+            );
+            assert_eq!(
+                columnas
+                    .iter()
+                    .map(|c| (c.nombre.as_str(), c.comentario.as_deref()))
+                    .collect::<Vec<_>>(),
+                [("pais", Some("el país")), ("n", None)]
+            );
+            assert_eq!(comentario.as_deref(), Some("pedidos por país"));
+            assert!(*o_reemplaza && !*si_no_existe && *evolucion);
+        }
+        s => panic!("{s:?}"),
+    }
+    let t = guion("drop view if exists ventas.v").unwrap();
+    assert_eq!(t[0].sentencia.que(), "drop view");
+
+    // lo que no es una vista del árbol se dice, en su sitio
+    let f = |q: &str| guion(q).expect_err(q);
+    assert!(
+        f("create or replace view if not exists ventas.v as select 1")[0]
+            .mensaje
+            .contains("no van juntas")
+    );
+    assert!(
+        f("create temp view ventas.v as select 1")[0]
+            .mensaje
+            .contains("temporal")
+    );
+    assert!(
+        f("create view ventas.v as insert into ventas.x select 1")[0]
+            .mensaje
+            .contains("OOS2038")
+    );
+    assert!(
+        f("create view ventas.v (a, a) as select 1 as a, 2 as b")[0]
+            .mensaje
+            .contains("dos veces")
+    );
+    assert!(f("create view ventas.v")[0].mensaje.contains("as select"));
+    assert!(
+        f("create view v as select 1")[0]
+            .mensaje
+            .contains("de qué base")
+    );
+}
+
+#[test]
+fn una_vista_se_coteja_con_el_arbol() {
+    let t = arbol("vista");
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&t.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let f = |q: &str| cotejar_guion(&pkg, &guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    // lee una tabla (virtual), una vista y un dataset: se puede
+    assert!(f("create view ventas.nueva as select p.id from ventas.pedidos_t p join ventas.pedidosEs e on e.id = p.id join ventas.pedidos d on d.id = p.id").is_empty());
+    // ya hay una: sin `or replace` ni `if not exists` se dice
+    let ya = f("create view ventas.pedidosEs as select id from ventas.pedidos");
+    assert!(ya[0].mensaje.contains("ya hay una vista"), "{ya:?}");
+    assert!(
+        f("create or replace view ventas.pedidosEs as select id from ventas.pedidos").is_empty()
+    );
+    assert!(
+        f("create view if not exists ventas.pedidosEs as select id from ventas.pedidos").is_empty()
+    );
+    // un nombre que ya es un dataset no se reemplaza nunca
+    let d = f("create or replace view ventas.resumen as select 1 as n");
+    assert!(d[0].mensaje.contains("OOS2035"), "{d:?}");
+    // lo que no está, y el schema que no está
+    assert!(
+        f("create view ventas.v as select * from ventas.nada")[0]
+            .mensaje
+            .contains("ninguna tabla, vista ni dataset")
+    );
+    assert!(
+        f("create view ventas.fantasma.v as select 1 as n")[0]
+            .mensaje
+            .contains("ningún schema")
+    );
+    // en orden: una vista del guion se lee en la siguiente sentencia, y se quita
+    assert!(f("create view ventas.v as select id from ventas.pedidos;\nselect * from ventas.v;\ndrop view ventas.v").is_empty());
+    assert!(
+        f("drop view ventas.nada")[0]
+            .mensaje
+            .contains("ninguna vista")
+    );
+    assert!(f("drop view if exists ventas.nada").is_empty());
+    assert!(
+        f("drop view ventas.resumen")[0]
+            .mensaje
+            .contains("no una vista")
+    );
 }
