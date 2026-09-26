@@ -845,10 +845,19 @@ def _oos_de_duckdb(tipo):
     t = (tipo or "").strip().upper()
     if t.endswith("[]"):
         dentro = _oos_de_duckdb(t[:-2])
+        # `list<T>` es de escalares (02-entity §3.3): un decimal dentro va sin
+        # su precisión, como el `ARRAY<NUMERIC>` de BigQuery.
+        if dentro and dentro.startswith("Decimal<"):
+            dentro = "Decimal"
         return "list<%s>" % dentro if dentro and not dentro.startswith("list<") else None
     base = re.sub(r"\(.*\)$", "", t).strip()
     if base in _ENTEROS:
         return "Integer"
+    # `DECIMAL(18,3)` lleva su precisión al contrato (0032 T5): `Decimal<18, 3>`,
+    # no `Decimal` a secas, que la copia leería como (38, 18).
+    m = re.match(r"^(?:DECIMAL|NUMERIC)\((\d+),\s*(\d+)\)$", t)
+    if m and 1 <= int(m.group(1)) <= 38:
+        return "Decimal<%s, %s>" % (m.group(1), m.group(2))
     return _DE_DUCKDB.get(base)
 
 
