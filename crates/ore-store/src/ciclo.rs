@@ -2678,7 +2678,10 @@ mod tests {
         assert_eq!(campo(&a1, "operacion"), "op-1");
         let ja1: serde_json::Value = serde_json::from_str(&a1).unwrap();
         assert_eq!(ja1["columnas_oos"]["cuando"], "DateTimeTz");
-        assert_eq!(ja1["columnas_oos"]["total"], "Decimal");
+        // El SDK escribió `decimal(18, 2)` y la tabla lo guarda así: el árbol lo
+        // dice con su precisión (0032 T4). Antes salía `Decimal` a secas y se
+        // releía como `(38, 18)`, que no es lo que había.
+        assert_eq!(ja1["columnas_oos"]["total"], "Decimal<18, 2>");
         assert_eq!(ja1["retencion"]["edad_ms"], 0);
 
         // leer, sin cabecera de copia: una hecha del esquema, y las filas canónicas

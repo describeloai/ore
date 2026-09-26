@@ -131,6 +131,27 @@ echo "── 3 · discover standard y validate"
 if "$ORE" validate . > "$TMP/val.txt" 2>&1; then ok "el arbol compila"
 else falla "validate: $(tail -3 "$TMP/val.txt")"; fi
 
+# Una vista que filtra `total` —`Decimal<38, 9>`— por un literal. Con el
+# prototipo de la gramatica dejaba de tipar («no se comparan Decimal(38, 9) y
+# String»): el motor de vistas solo comparaba tipos iguales (02-entity §3.5).
+mkdir -p packages/ventas/ventas/views
+cat > packages/ventas/ventas/views/caros.yaml <<'Y'
+apiVersion: oos.dev/v1alpha8
+kind: View
+metadata: { name: caros, namespace: ventas }
+spec:
+  owner: team:datos
+  from: { table: ventas.ventas.pedidos }
+  fields: { id: id, total: total }
+  where:
+    total: ["7.5"]
+Y
+"$ORE" view . > "$TMP/view.txt" 2>&1
+esq=$(sed -n '/^ventas.caros/,/^$/p' "$TMP/view.txt" | grep "esquema" | head -1)
+afirma "[A4]" "una vista que filtra un Decimal<38, 9> por un literal tipa, y conserva la precisión" \
+  "$(case "$esq" in *"no tipa"*) ;; *"total: Decimal<38, 9>"*) echo 1;; esac)" "$esq"
+rm -f packages/ventas/ventas/views/caros.yaml
+
 echo "── 4 · materialize"
 t0=$(reloj)
 "$ORE" materialize . > "$TMP/mat.txt" 2>&1

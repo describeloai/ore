@@ -1093,7 +1093,10 @@ fn literal(raw: &str, t: &Type) -> Valor {
             _ => Valor::Cadena(raw.to_string()),
         },
         Type::Scalar(s) if s == "Decimal" => Valor::Decimal(raw.to_string()),
-        Type::Parametric { .. } => Valor::Decimal(raw.to_string()),
+        // `Decimal<p, s>` (0032 T4): su literal es un decimal como el de
+        // `Decimal`, y compara en el supertipo (02-entity §3.5). Sin esta rama
+        // salía cadena y la vista dejaba de tipar (medido con el prototipo).
+        Type::Parametric { .. } | Type::Decimal { .. } => Valor::Decimal(raw.to_string()),
         _ => Valor::Cadena(raw.to_string()),
     }
 }

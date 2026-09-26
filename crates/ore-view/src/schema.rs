@@ -51,6 +51,10 @@ pub enum Desajuste {
     /// implícito**: comparar un `Decimal` con un `String` no falla en un almacén
     /// — da cifras incorrectas, que es peor.
     TiposIncomparables { izquierda: Type, derecha: Type },
+    /// Dos decimales cuyo supertipo no cabe en 38 cifras (02-entity §3.5): no
+    /// hay decimal exacto donde quepan los dos, y redondear uno sería elegir en
+    /// silencio qué cifras se pierden.
+    DecimalDesborda { izquierda: Type, derecha: Type },
     /// Donde hacía falta una condición hay otra cosa.
     NoEsBooleano { donde: &'static str, tipo: Type },
     /// Un agregado que necesita una columna y no la tiene. Solo `cuenta` puede
@@ -86,6 +90,11 @@ impl Desajuste {
             Desajuste::TiposIncomparables { izquierda, derecha } => format!(
                 "no se comparan `{izquierda}` y `{derecha}`: no hay ensanchamiento implícito, \
                  porque una conversión en silencio no da un error — da cifras incorrectas"
+            ),
+            Desajuste::DecimalDesborda { izquierda, derecha } => format!(
+                "`{izquierda}` y `{derecha}` no caben juntos en un decimal: harían falta más de \
+                 38 cifras, y redondear uno sería elegir en silencio cuáles se pierden \
+                 (02-entity §3.5)"
             ),
             Desajuste::NoEsBooleano { donde, tipo } => {
                 format!("`{donde}` necesita una condición y esto es `{tipo}`")
@@ -170,7 +179,26 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                     }
                     // El promedio de enteros no es un entero, y decir que sí lo
                     // es sería el primer sitio por donde se pierde un decimal.
-                    (Agregado::Promedio, Some(_)) => escalar("Decimal"),
+                    // Sobre un `Decimal<p, s>`, `Decimal<38, max(s, 9)>`
+                    // (02-entity §3.5).
+                    (Agregado::Promedio, Some(c)) => match exige(&dentro, c, "agrupa")? {
+                        Type::Decimal { precision, escala } => {
+                            let (precision, escala) =
+                                ore_core::types::media_decimal((precision, escala));
+                            Type::Decimal { precision, escala }
+                        }
+                        _ => escalar("Decimal"),
+                    },
+                    // Sumar decimales puede pasar de la precisión de cada uno:
+                    // `Decimal<38, s>` (02-entity §3.5).
+                    (Agregado::Suma, Some(c)) => match exige(&dentro, c, "agrupa")? {
+                        Type::Decimal { precision, escala } => {
+                            let (precision, escala) =
+                                ore_core::types::suma_decimal((precision, escala));
+                            Type::Decimal { precision, escala }
+                        }
+                        otro => otro,
+                    },
                     (_, Some(c)) => exige(&dentro, c, "agrupa")?,
                 };
                 out.insert(nombre.clone(), t);
@@ -183,10 +211,10 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
             let Some(primera) = iter.next() else {
                 return Ok(Esquema::new());
             };
-            let base = esquema(primera)?;
+            let mut base = esquema(primera)?;
             for r in iter {
                 let otra = esquema(r)?;
-                for (campo, t) in &base {
+                for (campo, t) in base.iter_mut() {
                     match otra.get(campo) {
                         None => {
                             return Err(Desajuste::RamasDesiguales {
@@ -194,12 +222,26 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                                 porque: "una rama no lo produce".into(),
                             });
                         }
-                        Some(o) if o != t => {
-                            return Err(Desajuste::RamasDesiguales {
-                                campo: campo.clone(),
-                                porque: format!("una rama lo da `{t}` y otra `{o}`"),
-                            });
-                        }
+                        // Dos decimales con precisión se unen en su supertipo
+                        // (02-entity §3.5); lo demás tiene que ser igual.
+                        Some(o) if o != t => match ore_core::types::supertipo(t, o) {
+                            ore_core::types::Supertipo::Es(s) => *t = s,
+                            ore_core::types::Supertipo::Desborda { .. } => {
+                                return Err(Desajuste::RamasDesiguales {
+                                    campo: campo.clone(),
+                                    porque: format!(
+                                        "una rama lo da `{t}` y otra `{o}`, y juntos pasan de \
+                                         38 cifras"
+                                    ),
+                                });
+                            }
+                            ore_core::types::Supertipo::Ninguno => {
+                                return Err(Desajuste::RamasDesiguales {
+                                    campo: campo.clone(),
+                                    porque: format!("una rama lo da `{t}` y otra `{o}`"),
+                                });
+                            }
+                        },
                         _ => {}
                     }
                 }
@@ -215,6 +257,22 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
 
         Nodo::Distingue(e) => esquema(e),
         Nodo::Limita { entrada, .. } => esquema(entrada),
+    }
+}
+
+/// Si dos tipos se pueden comparar: iguales, o con supertipo (02-entity §3.5)
+/// —un `Decimal<p, s>` con un literal decimal, dos decimales que quepan
+/// juntos—. **Sin ensanchamiento implícito** fuera de eso.
+fn comparables(i: Type, d: Type) -> Result<(), Desajuste> {
+    match ore_core::types::supertipo(&i, &d) {
+        ore_core::types::Supertipo::Es(_) => Ok(()),
+        ore_core::types::Supertipo::Desborda { izquierda, derecha } => {
+            Err(Desajuste::DecimalDesborda { izquierda, derecha })
+        }
+        ore_core::types::Supertipo::Ninguno => Err(Desajuste::TiposIncomparables {
+            izquierda: i,
+            derecha: d,
+        }),
     }
 }
 
@@ -255,22 +313,14 @@ pub fn tipo_de(x: &Expr, e: &Esquema, donde: &'static str) -> Result<Type, Desaj
             izquierda, derecha, ..
         } => {
             let (i, d) = (tipo_de(izquierda, e, donde)?, tipo_de(derecha, e, donde)?);
-            if i != d {
-                return Err(Desajuste::TiposIncomparables {
-                    izquierda: i,
-                    derecha: d,
-                });
-            }
+            comparables(i, d)?;
             escalar("Boolean")
         }
 
         Expr::EnConjunto { campo, valores } => {
             let t = exige(e, campo, donde)?;
-            if let Some(v) = valores.iter().find(|v| v.tipo() != t) {
-                return Err(Desajuste::TiposIncomparables {
-                    izquierda: t,
-                    derecha: v.tipo(),
-                });
+            for v in valores {
+                comparables(t.clone(), v.tipo())?;
             }
             escalar("Boolean")
         }
@@ -594,5 +644,97 @@ mod tests {
                 campo: "no_existe".into()
             })
         );
+    }
+
+    /// `Decimal<p, s>` en las operaciones de una vista (02-entity §3.5).
+    fn ventas() -> Nodo {
+        hoja(
+            "ventas.pedidos",
+            &[
+                ("pais", "String"),
+                ("total", "Decimal<38, 9>"),
+                ("coste", "Decimal<10, 2>"),
+                ("n", "Integer"),
+            ],
+        )
+    }
+
+    /// Un literal decimal se compara con un `Decimal<p, s>` —se escribe
+    /// `"7.5"`, como con `Decimal`—, y un entero sigue sin mezclarse.
+    #[test]
+    fn un_decimal_con_precision_se_compara_con_su_literal() {
+        let filtra = |derecha: Valor| Nodo::Filtra {
+            entrada: Box::new(ventas()),
+            predicado: Expr::Compara {
+                op: Comparador::Mayor,
+                izquierda: Box::new(Expr::campo("total")),
+                derecha: Box::new(lit(derecha)),
+            },
+        };
+        assert!(esquema(&filtra(Valor::Decimal("7.5".into()))).is_ok());
+        assert!(matches!(
+            esquema(&filtra(Valor::Entero(7))),
+            Err(Desajuste::TiposIncomparables { .. })
+        ));
+        let conjunto = Nodo::Filtra {
+            entrada: Box::new(ventas()),
+            predicado: Expr::EnConjunto {
+                campo: "coste".into(),
+                valores: vec![Valor::Decimal("1.5".into()), Valor::Decimal("2".into())],
+            },
+        };
+        assert!(esquema(&conjunto).is_ok());
+        // Dos columnas de distinta precisión se comparan en su supertipo.
+        let columnas = Nodo::Filtra {
+            entrada: Box::new(ventas()),
+            predicado: Expr::Compara {
+                op: Comparador::Mayor,
+                izquierda: Box::new(Expr::campo("total")),
+                derecha: Box::new(Expr::campo("coste")),
+            },
+        };
+        assert!(esquema(&columnas).is_ok());
+    }
+
+    /// Las ramas de una unión se juntan en su supertipo; si pasa de 38 cifras,
+    /// no tipa.
+    #[test]
+    fn una_union_de_decimales_sale_en_su_supertipo() {
+        let rama = |t: &str| hoja("x", &[("v", t)]);
+        let u = Nodo::Unifica(vec![rama("Decimal<10, 2>"), rama("Decimal<12, 4>")]);
+        assert_eq!(esquema(&u).unwrap()["v"], t("Decimal<12, 4>"));
+        let u = Nodo::Unifica(vec![rama("Decimal<38, 0>"), rama("Decimal<38, 38>")]);
+        assert!(matches!(
+            esquema(&u),
+            Err(Desajuste::RamasDesiguales { porque, .. }) if porque.contains("38 cifras")
+        ));
+        let u = Nodo::Unifica(vec![rama("Decimal<10, 2>"), rama("Integer")]);
+        assert!(esquema(&u).is_err(), "un entero no se mezcla");
+    }
+
+    /// `sum` → `Decimal<38, s>`, `avg` → `Decimal<38, max(s, 9)>`, `min`/`max`
+    /// conservan, `count` es `Integer`.
+    #[test]
+    fn los_agregados_de_un_decimal_con_precision() {
+        let agrupa = |funcion: Agregado, sobre: &str| Nodo::Agrupa {
+            entrada: Box::new(ventas()),
+            por: ["pais".to_string()].into(),
+            agregados: [(
+                "a".to_string(),
+                Agregacion {
+                    funcion,
+                    sobre: Some(sobre.to_string()),
+                },
+            )]
+            .into(),
+        };
+        let de = |f, c| esquema(&agrupa(f, c)).unwrap()["a"].to_string();
+        assert_eq!(de(Agregado::Suma, "coste"), "Decimal<38, 2>");
+        assert_eq!(de(Agregado::Promedio, "coste"), "Decimal<38, 9>");
+        assert_eq!(de(Agregado::Promedio, "total"), "Decimal<38, 9>");
+        assert_eq!(de(Agregado::Minimo, "coste"), "Decimal<10, 2>");
+        assert_eq!(de(Agregado::Maximo, "total"), "Decimal<38, 9>");
+        assert_eq!(de(Agregado::Promedio, "n"), "Decimal", "el de siempre");
+        assert_eq!(de(Agregado::Suma, "n"), "Integer");
     }
 }

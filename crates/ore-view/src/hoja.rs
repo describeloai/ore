@@ -39,7 +39,9 @@ pub fn valor(tipo: &str, texto: &str) -> Result<Valor, String> {
                 .parse()
                 .map_err(|_| format!("`{texto}` no es un entero de 64 bits"))?,
         ),
-        "Decimal" | "Float" => {
+        // `Decimal<p, s>` (0032 T4) se lee como un `Decimal`: su valor es el
+        // mismo decimal plano, y la precisión es del contrato de la copia.
+        t if t == "Decimal" || t == "Float" || t.starts_with("Decimal<") => {
             if !decimal_plano(texto) {
                 return Err(format!(
                     "`{texto}` no es un decimal plano: un {tipo} con exponente, `NaN` o \

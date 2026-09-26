@@ -1319,13 +1319,26 @@ pub fn ahora_ms() -> i64 {
 /// `Table` del lago declara cuando nace de una escritura. Lo que el contrato
 /// no tiene (anidados, binario, uuid) va como `String` y se dice en la ficha
 /// por su tipo de Iceberg.
-pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> &'static str {
+pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
     use iceberg::spec::{PrimitiveType, Type};
     match t {
         Type::Primitive(p) => match p {
             PrimitiveType::Int | PrimitiveType::Long => "Integer",
             PrimitiveType::Float | PrimitiveType::Double => "Float",
             PrimitiveType::Boolean => "Boolean",
+            // La precisión de la tabla vuelve al árbol (0032 T4): antes salía
+            // `Decimal` a secas, y un `Dataset` escrito como `decimal(10, 2)`
+            // se releía con la de por defecto.
+            //
+            // Y la vuelta es exacta en los dos sentidos: `decimal(38, 18)` es el
+            // físico de `Decimal` a secas (`Fisico::de`), así que vuelve como
+            // `Decimal` — si no, cada `Dataset` escrito antes de T4 cambiaría de
+            // tipo al releerse, y `diff` lo cobraría como `OOS5010`.
+            PrimitiveType::Decimal { precision, scale }
+                if (*precision as u8, *scale as u8) != ore_core::tipos::DECIMAL_POR_DEFECTO =>
+            {
+                return format!("Decimal<{precision}, {scale}>");
+            }
             PrimitiveType::Decimal { .. } => "Decimal",
             PrimitiveType::Date => "Date",
             PrimitiveType::Time => "Time",
@@ -1335,6 +1348,7 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> &'static str {
         },
         _ => "String",
     }
+    .to_string()
 }
 
 /// Las columnas de un esquema de Iceberg como escalares de OOS.
@@ -1345,7 +1359,7 @@ pub fn columnas_oos(tabla: &Table) -> BTreeMap<String, String> {
         .as_struct()
         .fields()
         .iter()
-        .map(|f| (f.name.clone(), oos_de_iceberg(&f.field_type).to_string()))
+        .map(|f| (f.name.clone(), oos_de_iceberg(&f.field_type)))
         .collect()
 }
 

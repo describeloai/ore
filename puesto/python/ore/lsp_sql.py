@@ -91,6 +91,11 @@ def tipo_duckdb(t):
     m = re.match(r"^(Money|Quantity)<[^,]+,\s*(\d+)>$", t)
     if m:
         return "DECIMAL(38, %s)" % min(int(m.group(2)), 18)
+    # `Decimal<p, s>` (0032 T4): la precisión y la escala del tipo, no las de
+    # por defecto. Antes caía en VARCHAR y DuckDB lo trataba como texto.
+    m = re.match(r"^Decimal<\s*(\d+)\s*,\s*(\d+)\s*>$", t)
+    if m:
+        return "DECIMAL(%s, %s)" % (m.group(1), m.group(2))
     return {"Integer": "BIGINT", "Decimal": "DECIMAL(38, 18)", "Float": "DOUBLE", "Boolean": "BOOLEAN",
             "Date": "DATE", "Time": "TIME", "DateTime": "TIMESTAMP", "DateTimeTz": "TIMESTAMPTZ"}.get(t, "VARCHAR")
 

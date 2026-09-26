@@ -115,6 +115,52 @@ pub fn supertipo_decimal(a: (u8, u8), b: (u8, u8)) -> Option<(u8, u8)> {
     (precision <= PRECISION_MAXIMA).then_some((precision, escala))
 }
 
+/// Lo que da juntar dos tipos donde tiene que salir uno: los dos lados de una
+/// comparación, las ramas de una unión.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Supertipo {
+    Es(Type),
+    /// No hay: tipos distintos que no se mezclan sin decirlo.
+    Ninguno,
+    /// Dos decimales cuyo supertipo pasaría de 38 cifras (02-entity §3.5).
+    Desborda {
+        izquierda: Type,
+        derecha: Type,
+    },
+}
+
+/// **El supertipo de dos tipos** (02-entity §3.5). Iguales, él mismo; dos
+/// `Decimal<p, s>`, la mayor escala y la mayor parte entera; un `Decimal<p, s>`
+/// y un `Decimal` sin precisión —un literal, que se escribe `"100"`—, `Decimal`,
+/// porque la precisión deja de saberse. Todo lo demás, ninguno: un `Integer` no
+/// se mezcla con un decimal sin decirlo, con precisión o sin ella.
+pub fn supertipo(a: &Type, b: &Type) -> Supertipo {
+    let decimal_suelto = |t: &Type| matches!(t, Type::Scalar(s) if s == "Decimal");
+    match (a, b) {
+        _ if a == b => Supertipo::Es(a.clone()),
+        (
+            Type::Decimal {
+                precision: p1,
+                escala: s1,
+            },
+            Type::Decimal {
+                precision: p2,
+                escala: s2,
+            },
+        ) => match supertipo_decimal((*p1, *s1), (*p2, *s2)) {
+            Some((precision, escala)) => Supertipo::Es(Type::Decimal { precision, escala }),
+            None => Supertipo::Desborda {
+                izquierda: a.clone(),
+                derecha: b.clone(),
+            },
+        },
+        (Type::Decimal { .. }, o) | (o, Type::Decimal { .. }) if decimal_suelto(o) => {
+            Supertipo::Es(Type::Scalar("Decimal".into()))
+        }
+        _ => Supertipo::Ninguno,
+    }
+}
+
 /// `sum(Decimal<p, s>)` → `Decimal<38, s>` (02-entity §3.5).
 pub fn suma_decimal(t: (u8, u8)) -> (u8, u8) {
     (PRECISION_MAXIMA, t.1)
@@ -770,6 +816,28 @@ mod tests {
         assert_eq!(suma_decimal((10, 2)), (38, 2));
         assert_eq!(media_decimal((10, 2)), (38, 9));
         assert_eq!(media_decimal((38, 12)), (38, 12));
+        let t = |s: &str| parse_type(s).unwrap();
+        assert_eq!(
+            supertipo(&t("Decimal<10, 2>"), &t("Decimal<12, 4>")),
+            Supertipo::Es(t("Decimal<12, 4>"))
+        );
+        assert_eq!(
+            supertipo(&t("Decimal<38, 9>"), &t("Decimal")),
+            Supertipo::Es(t("Decimal"))
+        );
+        assert!(matches!(
+            supertipo(&t("Decimal<38, 0>"), &t("Decimal<38, 38>")),
+            Supertipo::Desborda { .. }
+        ));
+        assert_eq!(
+            supertipo(&t("Decimal<38, 9>"), &t("Integer")),
+            Supertipo::Ninguno
+        );
+        assert_eq!(supertipo(&t("Decimal"), &t("Integer")), Supertipo::Ninguno);
+        assert_eq!(
+            supertipo(&t("String"), &t("String")),
+            Supertipo::Es(t("String"))
+        );
     }
 
     /// La divisa sin precisión y la precisión sin divisa son el mismo error.
