@@ -182,6 +182,16 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
      `JOIN` de dos datasets —que el motor de vistas no sabe— copiados, el testigo de cada
      entrada, `ask` desde la copia, la segunda pasada «ya está», y una copia con `where`
      y una consulta que falla al ejecutarse dicen su motivo en el puntero.
+   - **En `demo`, de verdad** (`la-copia-sql-en-demo.py`, 2026-09-26, imágenes de `6db8ead`):
+     un `write()` desde `puesto-python` deja la entrada (6 filas) en el bucket del inquilino;
+     una vista SQL (`GROUP BY`) y su copia llegan al árbol por la forja; el Job «rehacer»,
+     rendido de la plantilla que trajo la convergencia, corre en `jobs-p` en **20 s**:
+     `preparar` vuelca 6 filas con `ore-store-gcs`, `calcular` las ejecuta con DuckDB como
+     65532 (3 filas), `copiar` sella la copia en `gs://…/catalogo/prueba_sql/…` y empuja el
+     puntero como `copiador`: `copiada`, 3 filas, 6 leídas, el testigo es el snapshot de la
+     entrada. Retirado después (árbol y cola; los objetos, la pasada siguiente).
+     Medido de paso: un script que toma las imágenes del `HEAD` local cae en
+     `ImagePullBackOff` si hay un commit sin empujar; se toman las del commit que corre.
    - Queda: `registro` (el matcher no ve una copia por consulta: una estructurada sobre
      ella no se contesta desde su copia) y el estado de `POST /trabajos` en memoria, que la
      copia ya no usa.
