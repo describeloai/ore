@@ -1540,10 +1540,14 @@ fn peticion(
     let mut filtros = Vec::new();
     for (columna, valores) in &r.filtros {
         match valores.as_slice() {
-            [uno] => filtros.push(ore_core::json::Json::Arr(vec![
-                ore_core::json::Json::s(columna),
-                ore_core::json::Json::s("eq"),
-                ore_core::json::Json::s(uno),
+            // La forma del ADR 0008, `{columna, operador, valor}`: la que leen
+            // los drivers y `ore-store copiar`. Hasta A5 salían triples, que
+            // solo `copiar` entendía, y toda copia con `where` desde un origen
+            // externo fallaba sin que ninguna prueba lo ejerciera.
+            [uno] => filtros.push(ore_core::json::Json::obj(vec![
+                ("columna", ore_core::json::Json::s(columna)),
+                ("operador", ore_core::json::Json::s("eq")),
+                ("valor", ore_core::json::Json::s(uno)),
             ])),
             varios => {
                 return Err(format!(
@@ -1662,6 +1666,22 @@ mod tests {
             agrega: Default::default(),
             tabla: None,
         }
+    }
+
+    /// **Los filtros van con la forma del ADR 0008**, `{columna, operador,
+    /// valor}`: la que `ore_driver::leer_peticion` lee. Con triples, toda copia
+    /// con `where` desde BigQuery o Postgres fallaba (A5).
+    #[test]
+    fn los_filtros_van_con_la_forma_del_adr_0008() {
+        let mut r = raiz();
+        r.filtros = vec![("id".into(), vec!["7".into()])].into_iter().collect();
+        let p = peticion("x://y", &r, None, None, None, false).expect("petición");
+        assert!(
+            p.contains("\"filtros\":[{\"columna\":\"id\",\"operador\":\"eq\",\"valor\":\"7\"}]"),
+            "{p}"
+        );
+        let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
+        assert_eq!(leida.filtros, [("id".into(), "eq".into(), "7".into())]);
     }
 
     /// **El rango sobre una columna**: lleva `cursor`, y `start` es exclusivo.

@@ -13,7 +13,9 @@
 #   [B]  REQUIRED → required en Iceberg: salió de la Fase A (2026-09-26). Exige
 #        un cambio de spec, un análisis de nulabilidad en las vistas, y que
 #        Iceberg no deja endurecer una tabla que existe. Se DICE, no se cuenta.
-#   [A5] (sin aserción aqui todavia: pide una tabla vacia en el dataset)
+#   [A5] un dataset cuyo `where` no casa es una tabla de 0 filas con su
+#        esquema (hoy: «nada que escribir» en cada pasada), y un dataset con
+#        `where` sobre BigQuery llega al driver con la forma del ADR 0008
 #
 # Lo que se mide, de punta a punta y sin escribir en GCP:
 #   1  `ore source check` responde
@@ -152,6 +154,30 @@ afirma "[A4]" "una vista que filtra un Decimal<38, 9> por un literal tipa, y con
   "$(case "$esq" in *"no tipa"*) ;; *"total: Decimal<38, 9>"*) echo 1;; esac)" "$esq"
 rm -f packages/ventas/ventas/views/caros.yaml
 
+# A5: dos Datasets con `where`. Uno sobre BigQuery (el filtro viaja al driver)
+# y otro sobre la copia de pedidos que no casa con nada (0 filas).
+mkdir -p packages/ventas/ventas/datasets
+cat > packages/ventas/ventas/datasets/pedidosC1.yaml <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Dataset
+metadata: { name: pedidosC1, namespace: ventas, schema: ventas }
+spec:
+  owner: team:datos
+  from: { table: ventas.ventas.pedidos }
+  fields: { id: id, total: total }
+  where: { cliente_id: ore-e2e-c1 }
+Y
+cat > packages/ventas/ventas/datasets/sinPedidos.yaml <<'Y'
+apiVersion: oos.dev/v1alpha13
+kind: Dataset
+metadata: { name: sinPedidos, namespace: ventas, schema: ventas }
+spec:
+  owner: team:datos
+  from: { dataset: ventas.ventas.pedidos }
+  fields: { id: id, total: total, ts: ts }
+  where: { id: no-existe }
+Y
+
 echo "── 4 · materialize"
 t0=$(reloj)
 "$ORE" materialize . > "$TMP/mat.txt" 2>&1
@@ -171,6 +197,14 @@ for v in pedidos:8:[A2] clientes:5:; do
   afirma "$et" "$t: ninguna columna se queda sin estrechar" "$([ "$se" = "null" ] || [ "$se" = "{}" ] && echo 1)" "$se"
 done
 
+afirma "[A5]" "un dataset con \`where\` sobre BigQuery: 2 filas (el filtro llega al driver)" \
+  "$([ "$(puntero pedidosC1 estado)" = copiada ] && [ "$(puntero pedidosC1 filas)" = 2 ] && echo 1)" \
+  "estado=$(puntero pedidosC1 estado) filas=$(puntero pedidosC1 filas) · $(puntero pedidosC1 motivo)"
+afirma "[A5]" "un dataset cuyo \`where\` no casa: 0 filas, con puntero" \
+  "$([ "$(puntero sinPedidos estado)" = copiada ] && [ "$(puntero sinPedidos filas)" = 0 ] && echo 1)" \
+  "estado=$(puntero sinPedidos estado) filas=$(puntero sinPedidos filas) · $(puntero sinPedidos motivo)"
+afirma "" "materialize termina bien" "$([ "$rc" = 0 ] && echo 1)" "$(tail -3 "$TMP/mat.txt")"
+
 echo "── 5 · la metadata de Iceberg"
 tipo_ice() {  # tabla columna campo
   local ml; ml=$(puntero "$1" metadata_location)
@@ -184,6 +218,8 @@ print(json.dumps(f[0][sys.argv[2]]) if f else "sin-columna")' "$2" "$3"
 afirma "[A2]" "pedidos.ts es timestamptz" "$([ "$(tipo_ice pedidos ts type)" = '"timestamptz"' ] && echo 1)" "es $(tipo_ice pedidos ts type)"
 afirma "[A4]" "pedidos.total es decimal(38, 9)" "$([ "$(tipo_ice pedidos total type)" = '"decimal(38, 9)"' ] && echo 1)" "es $(tipo_ice pedidos total type)"
 afirma "" "clientes.alta es date" "$([ "$(tipo_ice clientes alta type)" = '"date"' ] && echo 1)" "es $(tipo_ice clientes alta type)"
+afirma "[A5]" "la tabla vacía conserva su esquema: sinPedidos.total es decimal(38, 9)" \
+  "$([ "$(tipo_ice sinPedidos total type)" = '"decimal(38, 9)"' ] && echo 1)" "es $(tipo_ice sinPedidos total type)"
 dice "[B] pedidos.id required en Iceberg: pendiente de la Fase B (hoy $(tipo_ice pedidos id required))"
 
 echo "── 6 · lo que se relee es lo sembrado"
