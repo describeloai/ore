@@ -97,12 +97,54 @@ type Fisica = (String, String, String, BTreeMap<String, String>);
 
 fn fisicas(pkg: &Package, e: &Loaded) -> Option<Fisica> {
     let v = vistas::respaldo(pkg, e)?;
+    if vistas::es_sql(v) {
+        return fisicas_por_el_linaje(pkg, v);
+    }
     let r = vistas::raiz(pkg, v).ok()?;
     Some((
         v.qname().unwrap_or_default(),
         r.datasource,
         r.objeto,
         r.columnas,
+    ))
+}
+
+/// v1alpha14 · la fuente física de una vista SQL, si la tiene: cada columna
+/// que sale **tal cual** de una sola columna de una sola tabla. Una vista que
+/// junta dos tablas no tiene un objeto donde recorrer una relación, y la
+/// entidad se queda fuera del índice, como la de una vista sin raíz.
+fn fisicas_por_el_linaje(pkg: &Package, v: &Loaded) -> Option<Fisica> {
+    use crate::linaje::Arista;
+    let lin = crate::linaje::linaje(pkg, v)?;
+    let mut tabla: Option<String> = None;
+    let mut columnas: BTreeMap<String, String> = BTreeMap::new();
+    for (col, raices) in lin {
+        let directas: Vec<_> = raices
+            .iter()
+            .filter(|(_, a)| *a == Arista::Directa)
+            .collect();
+        let [(r, _)] = directas.as_slice() else {
+            continue;
+        };
+        pkg.table(&r.doc)?;
+        match &tabla {
+            Some(t) if *t != r.doc => return None,
+            _ => tabla = Some(r.doc.clone()),
+        }
+        columnas.insert(col, r.columna.clone());
+    }
+    let t = pkg.table(tabla.as_deref()?)?;
+    let texto = |k: &str| {
+        t.section(k)
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    Some((
+        v.qname().unwrap_or_default(),
+        texto("datasource"),
+        texto("object"),
+        columnas,
     ))
 }
 

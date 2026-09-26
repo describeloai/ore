@@ -162,33 +162,39 @@ pub fn como_sql(v: &Loaded) -> Option<String> {
     Some(sql)
 }
 
-/// ¿Pasa por una vista SQL lo que este documento lee, él incluido? Es la
-/// puerta de lo nuevo: una cadena de vistas de v1alpha7 a v1alpha13 sigue
-/// comprobándose como en su versión (§7), y lo de v1alpha14 —el linaje con sus
-/// aristas INDIRECT, varias fuentes— entra en cuanto hay una.
-pub fn usa_sql(pkg: &Package, d: &Loaded) -> bool {
-    fn ir(pkg: &Package, d: &Loaded, vistos: &mut Vec<(Kind, String)>) -> bool {
-        if vistas::es_sql(d) {
-            return true;
-        }
-        let clave = (d.kind, d.qname().unwrap_or_default());
-        if vistos.contains(&clave) {
-            return false;
-        }
-        vistos.push(clave);
-        vistas::lee_directo(pkg, d)
-            .into_iter()
-            .any(|abajo| ir(pkg, abajo, vistos))
+/// ¿Se gobierna por su linaje? **Toda vista, de cualquier versión, y todo
+/// dataset mantenido**: una sola View dentro de ORE (ADR 0040, decisión A). Un
+/// dataset escrito no: es suelo, y lo que lleva lo dice lo que leyó.
+///
+/// Medido antes de quitar la puerta que dejaba las de v1alpha7 a v1alpha13 en
+/// `vistas::raiz()` (`medida-todas-las-vistas-por-el-linaje.py`): `ore
+/// validate` da lo mismo en los 410 árboles del repositorio y `ore diff` en los
+/// 25 casos de diff.
+pub fn por_el_linaje(d: &Loaded) -> bool {
+    d.kind == Kind::View || vistas::es_mantenido(d)
+}
+
+/// Lo que un nombre de la consulta de `desde` nombra. La de una vista SQL se
+/// resuelve por el nombre; la de una forma estructurada, **por su clave**:
+/// `from: { table }` dice que es la tabla, aunque una vista se llame igual —y
+/// hasta v1alpha13 pueden, y la traducción no puede perderlo—.
+fn resolver<'a>(pkg: &'a Package, desde: &Loaded, nombre: &str) -> Option<&'a Loaded> {
+    if vistas::es_sql(desde) {
+        return vistas::fuente_sql(pkg, nombre, desde);
     }
-    ir(pkg, d, &mut Vec::new())
+    match vistas::fuente(desde)? {
+        Fuente::Tabla(q) => pkg.table(&q),
+        Fuente::Vista(q) => pkg.view(&q),
+        Fuente::Dataset(q) => pkg.dataset(&q),
+        Fuente::Datasource { .. } => None,
+    }
 }
 
 /// La consulta de un documento contra el árbol: la suya, o la de su forma.
 fn consulta_de(pkg: &Package, d: &Loaded) -> Option<Consulta> {
     let sql = como_sql(d)?;
     let columnas_de = |n: &str| {
-        vistas::fuente_sql(pkg, n, d)
-            .map(|f| vistas::columnas_que_expone(pkg, f).into_iter().collect())
+        resolver(pkg, d, n).map(|f| vistas::columnas_que_expone(pkg, f).into_iter().collect())
     };
     analizar(&sql, &columnas_de).ok()
 }
@@ -246,7 +252,7 @@ fn raices_con(
         )]
         .into();
     }
-    let Some(f) = vistas::fuente_sql(pkg, &r.fuente, desde) else {
+    let Some(f) = resolver(pkg, desde, &r.fuente) else {
         return BTreeSet::new();
     };
     let Some(l) = linaje_con(pkg, f, pila) else {

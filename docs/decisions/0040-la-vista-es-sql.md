@@ -1,6 +1,6 @@
 # 0040 · La vista es SQL (OOS v1alpha14 en ORE)
 
-**Estado:** en curso · pasos 0, 1 y 2 hechos.
+**Estado:** en curso · pasos 0 a 3 hechos.
 **Spec:** `C:\oos` 7d92e6e, `spec/v1alpha14/`.
 
 ## Contexto
@@ -83,6 +83,51 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
    linaje; la traducción forma→SQL baja a ore-core; `comprobar` (`OOS2018/2019`, `2039`,
    `2011/2022` contra `columns`, `2020`); `flow.rs` propaga por el linaje con varias
    raíces y añade `OOS4016`; se migran los 19 módulos.
+   **Tanda 1 HECHA** (medido antes de seguir, `medida-las-consumidoras-de-la-vista-sql.py` y
+   `medida-todas-las-vistas-por-el-linaje.py`):
+   - 3a–3c (900a8f3): v1alpha14 aceptada, `comprobar_sql`, `linaje.rs` y el flujo sobre el
+     linaje con `OOS4016`.
+   - **Una sola View.** Medido con todas las vistas por el linaje: `ore validate` igual en los
+     410 árboles del repositorio, `ore diff` igual en los 25 casos, y 24 clasificaciones de
+     assets cambiaban por un fallo de la traducción: una vista estructurada sobre la tabla del
+     mismo nombre (`from: { table: ventas.clientes }`) se traducía a `FROM ventas.clientes`,
+     que resolvía a la propia vista. Arreglado (la forma estructurada resuelve su fuente por
+     su clave), la medida da **0 cambios**, y la puerta se quita: toda vista y todo dataset
+     mantenido se gobiernan por su linaje (`linaje::por_el_linaje`).
+   - **Un nombre, una cosa** (decidido por el usuario, como Unity): en v1alpha14 una tabla,
+     una vista y un dataset comparten el espacio de nombres de su schema (`OOS2035`); una
+     consulta que nombra una pareja de antes es `OOS2018`. Había 45 parejas en 30 árboles.
+   - Una errata de la spec, medida: en la forma estructurada la ausencia es `[]`, no `null`.
+   - Conformance v1alpha14 26/26.
+
+   - **Lo que la medida no vio, y los tests sí**: tres árboles de `ore-cli/tests/vistas.rs`
+     —copias v7/v8 que exponen `id` y recortan por una columna etiquetada, y la copia de
+     `sum(salary)`— pasaban `ore validate` y sólo `ore view` los negaba. Con una sola View el
+     linaje lleva la arista INDIRECT y `validate` da `OOS4002`. **Decidido (usuario): se acepta
+     como el cierre del agujero** que la cabecera de `vista.rs` anunciaba; la spec lo dice como
+     excepción de seguridad (C:\oos bcedd3c). Lección: la medida de «0 cambios» tiene que
+     pasar también los tests, que escriben árboles que no están en disco.
+
+   **Tanda 2 HECHA**, lo que la medida 1a encontró:
+   - `diff` (decisión E): una vista escrita como consulta se compara por su contrato
+     (`OOS5001` columna que se va, `OOS5002` tipo que cambia) y por sus filas: la consulta sin
+     su proyección, reescrita (`vista_sql::filas`); si difiere, `OOS5028` y `OOS5029`, como un
+     cambio incomparable de la forma. Espacios o proyección no cuentan.
+   - `assets`: `define` de una vista SQL (`dialect`, `sql`, `lee`), los tipos de su contrato y
+     sus `sale_de`. `aristas.rs`: una entidad sobre una vista SQL de una sola tabla entra en el
+     índice de topología.
+   - `sql_del_arbol` y `puestos::datos_de_vista`: una vista SQL que lee datasets se deja leer
+     (`vistas::se_lee_de_datasets`); servirla es del paso 4, y `ore ask --sql` lo dice.
+
+   Lo que era, antes de hacerlo:
+   - `diff` de una vista SQL: un cambio que quita filas sale como parche (`1.0.1`) y en una
+     estructurada es `OOS5028` → decisión E.
+   - La faceta de `assets` (sin `define`, sin tipos del contrato, sin `sale_de`) y
+     `aristas.rs` (una entidad sobre una vista SQL no entra en el índice de topología).
+   - `sql_del_arbol` y `puestos::datos_de_vista` niegan leer una vista SQL que lee datasets
+     (`raiz_de_lectura` no cruza una consulta).
+   - `ore view` da un informe hueco de una vista SQL; `ask --sql`, `materializar`,
+     `registro`, `invocar` y `funciones` son del paso 4.
 4. **Servir.** `ore ask --vista --sql`, `/vistas/…/ejecutar` y `datos_del_puesto` sirven
    `spec.sql` con los nombres resueltos, como una unidad `.sql`, sin `a_sql`. La copia se
    rehace entera. `/v1` `loadView` en `duckdb`; Spark se niega (C).

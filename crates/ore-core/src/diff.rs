@@ -253,6 +253,10 @@ struct Shape {
     /// del plan **no está disponible aquí**. No es una preferencia: es el grafo
     /// de crates.
     vistas: BTreeMap<String, Vista>,
+    /// v1alpha14 · cada vista como su consulta: la suya si es SQL, la de su
+    /// forma si no (`linaje::como_sql`). Es lo que se compara en cuanto uno de
+    /// los dos lados es una vista SQL (decisión E de ADR 0040).
+    consultas: BTreeMap<String, ConsultaDeVista>,
     policies: BTreeMap<String, cedar::Policy>,
     lattices: BTreeMap<String, Lattice>,
     /// Propiedad → clases de gobierno que la cubren **de hecho**.
@@ -349,6 +353,19 @@ fn lista(n: &Node) -> Vec<String> {
         .iter()
         .filter_map(|i| i.as_str().map(String::from))
         .collect()
+}
+
+/// v1alpha14 · lo que se compara de una vista escrita como consulta: su
+/// contrato y qué filas salen (§9 de `01-la-vista-es-sql`).
+#[derive(Debug, Clone, Default)]
+struct ConsultaDeVista {
+    /// Es una vista SQL de v1alpha14 (y no la traducción de una forma).
+    sql: bool,
+    /// La consulta sin su proyección, reescrita (`vista_sql::filas`).
+    filas: Option<String>,
+    /// El contrato: columna → tipo (vacío si la forma no lo dice).
+    columnas: BTreeMap<String, String>,
+    anunciados: BTreeSet<String>,
 }
 
 /// Lo que una vista responde, no lo que declara.
@@ -572,6 +589,37 @@ fn shape(pkg: &Package) -> Shape {
             }
             crate::document::Kind::View => {
                 let Some(qn) = d.qname() else { continue };
+                let es_sql = crate::vistas::es_sql(d);
+                s.consultas.insert(
+                    qn.clone(),
+                    ConsultaDeVista {
+                        sql: es_sql,
+                        filas: crate::linaje::como_sql(d)
+                            .as_deref()
+                            .and_then(crate::vista_sql::filas),
+                        columnas: if es_sql {
+                            d.section("columns")
+                                .map(|c| {
+                                    c.entries()
+                                        .iter()
+                                        .filter_map(|(k, v)| {
+                                            Some((
+                                                k.as_str()?.to_string(),
+                                                cadena(v, "type").unwrap_or_default(),
+                                            ))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            crate::vistas::expone(d)
+                                .into_keys()
+                                .map(|k| (k, String::new()))
+                                .collect()
+                        },
+                        anunciados: anunciados(d),
+                    },
+                );
                 let Ok(r) = crate::vistas::raiz(pkg, d) else {
                     // Sin raíz no hay efecto que comparar, y quien lo dice es
                     // `OOS2018` sobre la versión que no resuelve. `diff` no
@@ -771,6 +819,7 @@ pub fn diff(antes: &Package, despues: &Package) -> Report {
     efectos_y_reglas(&a, &b, &mut changes);
     conductos(&a, &b, &mut changes);
     sustrato(&a, &b, &mut changes);
+    consultas(&a, &b, &mut changes);
     politicas(&a, &b, &mut changes);
     gobierno(&a, &b, &mut changes);
 
@@ -1312,9 +1361,78 @@ fn conductos(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
 /// Un cambio incomparable —`false` por `true`, o dos conjuntos que se cruzan—
 /// emite **los dos**, y no hace falta un tercer código: pierde filas y gana
 /// filas a la vez, que es exactamente lo que los dos dicen.
+/// v1alpha14 · **una vista SQL se compara por su contrato y por sus filas**
+/// (decisión E de ADR 0040, §9 de `01-la-vista-es-sql`).
+///
+/// La forma estructurada dejaba decir en qué dirección cambia un recorte
+/// —`[ES, PT]` a `[ES]` estrecha—; una consulta, no: `IN ('ES', 'PT')` y un
+/// `JOIN` nuevo no se ordenan. Así que se dice lo que se sabe: si la consulta
+/// sin su proyección es otra, las filas pueden ser otras **en las dos
+/// direcciones**, y salen los dos códigos del recorte, como en un cambio
+/// incomparable de la forma. Una proyección distinta o unos espacios no
+/// cambian las filas, y no salen.
+///
+/// El contrato: una columna que desaparece sin anuncio es `OOS5001`, y una que
+/// cambia de tipo, `OOS5002`. Sólo si uno de los dos lados es SQL: dos formas
+/// estructuradas las compara `sustrato`, con su precisión.
+fn consultas(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
+    let corta = |s: &Option<String>| {
+        let t = s.clone().unwrap_or_default();
+        if t.chars().count() > 120 {
+            format!("{}…", t.chars().take(120).collect::<String>())
+        } else {
+            t
+        }
+    };
+    for (qn, antes) in &a.consultas {
+        let despues = b.consultas.get(qn);
+        if !antes.sql && !despues.is_some_and(|d| d.sql) {
+            continue;
+        }
+        let Some(despues) = despues else {
+            // Una vista SQL que desaparece: la forma la compara `sustrato`, y
+            // ésta no está en `vistas`.
+            if antes.sql && !b.anunciados_doc.contains(qn) {
+                out.push(Change::new(Code::Oos5007, Axis::Consumer).sujeto(qn));
+            }
+            continue;
+        };
+        for (col, tipo) in &antes.columnas {
+            match despues.columnas.get(col) {
+                None if !despues.anunciados.contains(col) => out
+                    .push(Change::new(Code::Oos5001, Axis::Consumer).sujeto(format!("{qn}.{col}"))),
+                Some(otro) if !tipo.is_empty() && !otro.is_empty() && otro != tipo => out.push(
+                    Change::new(Code::Oos5002, Axis::Consumer)
+                        .sujeto(format!("{qn}.{col}"))
+                        .de_a(tipo, otro),
+                ),
+                _ => {}
+            }
+        }
+        if let (Some(x), Some(y)) = (&antes.filas, &despues.filas)
+            && x != y
+        {
+            out.push(
+                Change::new(Code::Oos5028, Axis::Consumer)
+                    .sujeto(qn)
+                    .de_a(corta(&antes.filas), corta(&despues.filas)),
+            );
+            out.push(
+                Change::new(Code::Oos5029, Axis::Policy)
+                    .sujeto(qn)
+                    .de_a(corta(&antes.filas), corta(&despues.filas)),
+            );
+        }
+    }
+}
+
 fn sustrato(a: &Shape, b: &Shape, out: &mut Vec<Change>) {
     for (qn, antes) in &a.vistas {
         let Some(despues) = b.vistas.get(qn) else {
+            // Pasó a ser una vista SQL: la compara `consultas`.
+            if b.consultas.get(qn).is_some_and(|c| c.sql) {
+                continue;
+            }
             // Una vista que desaparece es lo mismo que una entidad que
             // desaparece, un piso más abajo: el consumidor la nombraba. Y con
             // la misma salida: si el manifiesto lo anuncia, se movió.

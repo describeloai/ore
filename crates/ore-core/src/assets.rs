@@ -309,6 +309,22 @@ fn define_de(pkg: &Package, d: &Loaded) -> Option<Json> {
     if !matches!(d.kind, Kind::View | Kind::Dataset) {
         return None;
     }
+    // v1alpha14: una vista SQL define su consulta, en su dialecto, y lo que
+    // lee por nombre.
+    if vistas::es_sql(d) {
+        let lee: Vec<Json> = vistas::lee_directo(pkg, d)
+            .into_iter()
+            .map(|f| Json::s(ref_doc(f)))
+            .collect();
+        return Some(Json::obj(vec![
+            (
+                "dialect",
+                Json::s(spec_str(d, "dialect").unwrap_or_default()),
+            ),
+            ("sql", Json::s(spec_str(d, "sql").unwrap_or_default())),
+            ("lee", Json::Arr(lee)),
+        ]));
+    }
     let ns = meta_str(d, "namespace");
     let sc = d.schema().unwrap_or(crate::normalize::SCHEMA_POR_DEFECTO);
     let from = match vistas::fuente(d)? {
@@ -379,7 +395,9 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
                     )
                 })
                 .unwrap_or_default();
-            let escrito = if vistas::es_escrito(d) {
+            // El contrato de una vista SQL lleva sus tipos, como las `columns`
+            // de un escrito.
+            let escrito = if vistas::es_escrito(d) || vistas::es_sql(d) {
                 tipos_de_tabla(d)
             } else {
                 BTreeMap::new()
@@ -502,6 +520,11 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
     };
     match d.kind {
         Kind::View | Kind::Dataset => {
+            if vistas::es_sql(d) {
+                for f in vistas::lee_directo(pkg, d) {
+                    a("sale_de", "produce", ref_doc(f));
+                }
+            }
             match vistas::fuente(d) {
                 Some(Fuente::Tabla(qn)) => {
                     a("sale_de", "produce", ref_qn(Kind::Table, &qn, ns, sc))

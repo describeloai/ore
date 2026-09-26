@@ -22,9 +22,9 @@
 //! copia lleva lo que llevan sus columnas. El motor comprueba además por lo que
 //! **decide qué filas salen**: una vista que recorta por `nationalId` y expone
 //! solo `id` no copia el DNI, y aun así revela quién lo tiene. Es el flujo
-//! implícito de Denning, y `ore validate` no lo mira porque el núcleo no tiene
-//! linaje por columna. El día que lo tenga, esta comprobación se moverá allí;
-//! hasta entonces vive aquí y **se niega igual**.
+//! implícito de Denning. Desde ADR 0040 el núcleo tiene linaje por columna
+//! (`ore_core::linaje`) y `ore validate` lo niega (`OOS4002` por la arista
+//! INDIRECT); aquí sigue siendo el informe del motor.
 //!
 //! # La dirección, que es de un solo sentido
 //!

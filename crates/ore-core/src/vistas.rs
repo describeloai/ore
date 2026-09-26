@@ -301,6 +301,18 @@ pub fn fuente_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Option<
         .or_else(|| pkg.resolve_table(nombre, desde))
 }
 
+/// v1alpha14. **Todo** lo que un nombre de una consulta nombra. En v1alpha14 una
+/// tabla, una vista y un dataset comparten el espacio de nombres de su schema
+/// (`OOS2035`), así que es uno; hasta v1alpha13 podían llamarse igual, y un
+/// nombre que nombra dos cosas no dice cuál lee (`OOS2018`).
+pub fn fuentes_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Vec<&'a Loaded> {
+    pkg.resolve_view(nombre, desde)
+        .into_iter()
+        .chain(pkg.resolve_dataset(nombre, desde))
+        .chain(pkg.resolve_table(nombre, desde))
+        .collect()
+}
+
 /// v1alpha14. Las columnas que una fuente de una consulta deja nombrar: las de
 /// una tabla, o lo que una vista o un dataset exponen.
 pub fn columnas_que_expone(pkg: &Package, d: &Loaded) -> BTreeSet<String> {
@@ -1154,6 +1166,32 @@ pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded
         .find(|e| e.kind == Kind::Dataset || e.section("materialized").is_some())
 }
 
+/// **¿Se lee de lo que se tiene?** Una vista que se lee desde un puesto —o
+/// desde un `.sql`— sale de datasets: la cadena de una estructurada llega a
+/// uno (`raiz_de_lectura`), y todo lo que lee una SQL se lee así a su vez.
+/// Una tabla de un origen no: se lee por un dataset que la copie.
+pub fn se_lee_de_datasets(pkg: &Package, d: &Loaded) -> bool {
+    fn ir(pkg: &Package, d: &Loaded, pila: &mut Vec<(Kind, String)>) -> bool {
+        let clave = (d.kind, d.qname().unwrap_or_default());
+        if pila.contains(&clave) {
+            return false;
+        }
+        match d.kind {
+            Kind::Dataset => true,
+            Kind::View if es_sql(d) => {
+                pila.push(clave);
+                let abajo = lee_directo(pkg, d);
+                let si = !abajo.is_empty() && abajo.into_iter().all(|x| ir(pkg, x, pila));
+                pila.pop();
+                si
+            }
+            Kind::View => raiz_de_lectura(pkg, d).is_some(),
+            _ => false,
+        }
+    }
+    ir(pkg, d, &mut Vec::new())
+}
+
 /// v1alpha12. **El suelo de una cadena, como documento**: la `Table` en la que
 /// termina, o el dataset **escrito** en el que termina. Es donde están las dos
 /// caras —`changes.mode`, `changes.key`, `witness`— para quien las necesite
@@ -1186,16 +1224,19 @@ pub fn datasources_de(pkg: &Package, e: &Loaded) -> BTreeSet<String> {
     let Some(v) = respaldo(pkg, e) else {
         return out;
     };
-    // v1alpha14: una vista SQL puede leer de varias fuentes, y la entidad sale
-    // de todas ellas: de cada tabla raíz de su linaje.
-    if crate::linaje::usa_sql(pkg, v) {
+    // v1alpha14: la entidad sale de cada raíz de su linaje —una vista SQL
+    // puede leer de varias fuentes—: el datasource de cada tabla, el de un
+    // objeto de v1alpha7 (`datasource·objeto`), y el lago de lo escrito.
+    if crate::linaje::por_el_linaje(v) {
         for raices in crate::linaje::linaje(pkg, v).unwrap_or_default().values() {
             for (r, _) in raices {
-                if let Some(ds) = pkg
-                    .table(&r.doc)
-                    .and_then(|t| t.section("datasource"))
-                    .and_then(|d| d.as_str())
-                {
+                if let Some(t) = pkg.table(&r.doc) {
+                    if let Some(ds) = t.section("datasource").and_then(|d| d.as_str()) {
+                        out.insert(ds.to_string());
+                    }
+                } else if pkg.dataset(&r.doc).is_some() {
+                    out.insert("lago".to_string());
+                } else if let Some((ds, _)) = r.doc.split_once('·') {
                     out.insert(ds.to_string());
                 }
             }
@@ -1375,7 +1416,26 @@ fn comprobar_sql(pkg: &Package, v: &Loaded, out: &mut Vec<Diagnostic>) {
     let mut fuentes: BTreeMap<String, &Loaded> = BTreeMap::new();
     let mut falta = false;
     for n in &c.lee {
-        match fuente_sql(pkg, n, v) {
+        let todas = fuentes_sql(pkg, n, v);
+        if todas.len() > 1 {
+            falta = true;
+            let que: Vec<String> = todas.iter().map(|d| d.kind.as_str().to_string()).collect();
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2018,
+                    &v.path,
+                    format!("`{qn}` lee `{n}`, que nombra {} cosas: {}", todas.len(), que.join(" y ")),
+                )
+                .at(nodo.pos())
+                .help(
+                    "en SQL un nombre nombra UNA cosa, y la consulta no puede decir cuál. Desde \
+                     v1alpha14 una tabla, una vista y un dataset comparten el espacio de nombres de \
+                     su schema; renombra uno de los dos",
+                ),
+            );
+            continue;
+        }
+        match todas.first().copied() {
             Some(d) => {
                 fuentes.insert(n.clone(), d);
             }

@@ -334,6 +334,17 @@ fn sql_de_la_vista(
             ),
         ));
     }
+    // v1alpha14: una vista SQL se sirve como su consulta, con los nombres
+    // resueltos (ADR 0040 paso 4). Hasta entonces se dice, en vez de pasar por
+    // el plan de la forma estructurada, que no la entiende.
+    if ore_core::vistas::es_sql(v) {
+        return Err((
+            69,
+            format!(
+                "`{nombre}` es una vista SQL (v1alpha14): servirla como su consulta llega con                  ADR 0040 paso 4"
+            ),
+        ));
+    }
     let tipos = crate::vista::tipos_de_raiz(pkg);
     let docs = pkg.of_view();
     // El catálogo de siempre, sólo para saber qué columnas expone cada dataset.

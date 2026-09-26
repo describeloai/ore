@@ -675,10 +675,10 @@ pub fn carga_de(
     v: &Loaded,
 ) -> BTreeMap<String, Labels> {
     let vqn = v.qname().unwrap_or_default();
-    // v1alpha14: si lo que se lee pasa por una vista SQL, la carga sale del
-    // linaje por columna hasta la raíz —con sus aristas INDIRECT—, porque ya
-    // no hay «una raíz» que heredar ni una cadena que proyectar.
-    if crate::linaje::usa_sql(pkg, v) {
+    // v1alpha14: la carga de una vista o de una copia sale del linaje por
+    // columna hasta la raíz —con sus aristas INDIRECT—: una sola View (ADR
+    // 0040). Lo de abajo queda para el dataset escrito, que es suelo.
+    if crate::linaje::por_el_linaje(v) {
         return carga_por_el_linaje(pkg, lat, efectivas, v);
     }
     {

@@ -774,7 +774,7 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
         match doc(n) {
             Some(d) if d.kind == Kind::Dataset => {}
             Some(d) if d.kind == Kind::View => {
-                if vistas::raiz_de_lectura(pkg, d).is_none() {
+                if !vistas::se_lee_de_datasets(pkg, d) {
                     fallos.push(
                         Fallo::new(
                             format!("`{r}` es una `View` virtual: no tiene ningún dataset debajo del que leer"),
