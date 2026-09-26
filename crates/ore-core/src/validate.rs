@@ -259,8 +259,100 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
             diags.push(d);
         }
     }
+    if kind == Kind::View && version >= document::ApiVersion::V1Alpha14 {
+        forma_de_vista_sql(file, root, &mut diags);
+    }
 
     diags
+}
+
+/// Los dialectos en que una vista puede estar escrita (v1alpha14 §8).
+pub const DIALECTOS: &[&str] = &["duckdb"];
+
+/// v1alpha14 · la vista es SQL: su consulta, su dialecto y su contrato, los
+/// tres. Lo que la consulta dice lo comprueba el enlazado (`OOS2038`,
+/// `OOS2039`); aquí, que esté.
+fn forma_de_vista_sql(file: &Path, root: &Node, out: &mut Vec<Diagnostic>) {
+    let spec = root.get("spec").map(|(_, s)| s);
+    let pos = spec.map(Node::pos).unwrap_or(root.pos());
+    let falta = |clave: &str, ayuda: &str| {
+        Diagnostic::new(
+            Code::Oos1004,
+            file,
+            format!("una vista de v1alpha14 sin `spec.{clave}`"),
+        )
+        .at(pos)
+        .help(ayuda.to_string())
+    };
+    match spec.and_then(|s| s.get("dialect")) {
+        None => out.push(falta(
+            "dialect",
+            "el dialecto no se supone: una vista dice en qué SQL está escrita. En esta versión, \
+             `dialect: duckdb`",
+        )),
+        Some((_, d)) if !DIALECTOS.contains(&d.as_str().unwrap_or("")) => out.push(
+            Diagnostic::new(
+                Code::Oos1004,
+                file,
+                format!(
+                    "`dialect: {}` no es un dialecto de esta versión",
+                    d.as_str().unwrap_or("?")
+                ),
+            )
+            .at(d.pos())
+            .help(format!(
+                "los dialectos son {}: el de la sesión donde nace un `CREATE VIEW`. Servir una \
+                 vista a otro motor es de una versión posterior",
+                DIALECTOS.join(" · ")
+            )),
+        ),
+        Some(_) => {}
+    }
+    match spec.and_then(|s| s.get("sql")) {
+        Some((_, s)) if s.as_str().is_some_and(|t| !t.trim().is_empty()) => {}
+        Some((_, s)) => out.push(
+            Diagnostic::new(Code::Oos1004, file, "`spec.sql` no es una consulta")
+                .at(s.pos())
+                .help("el cuerpo de la vista: un texto con UNA consulta `SELECT`"),
+        ),
+        None => out.push(falta(
+            "sql",
+            "una vista es su consulta: un `SELECT` en el dialecto de `dialect`",
+        )),
+    }
+    match spec.and_then(|s| s.get("columns")) {
+        None => out.push(falta(
+            "columns",
+            "el contrato: lo que la vista expone, columna a columna y con su tipo. Lo deriva \
+             quien declara la vista —la sesión que corre el `CREATE VIEW`, la migración— \
+             describiendo la consulta",
+        )),
+        Some((_, c)) if c.entries().is_empty() => out.push(
+            Diagnostic::new(Code::Oos1004, file, "`spec.columns` está vacío")
+                .at(c.pos())
+                .help("una consulta proyecta al menos una columna"),
+        ),
+        Some((_, c)) => {
+            for (k, v) in c.entries() {
+                if v.get("type").is_none() {
+                    out.push(
+                        Diagnostic::new(
+                            Code::Oos1004,
+                            file,
+                            format!(
+                                "la columna `{}` no dice su `type`",
+                                k.as_str().unwrap_or("?")
+                            ),
+                        )
+                        .at(k.pos())
+                        .help(
+                            "el contrato lleva el tipo de cada columna, en el vocabulario de OOS",
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Una vista solo puede etiquetarse a sí misma, y con un único retículo.

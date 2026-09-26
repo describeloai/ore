@@ -90,13 +90,19 @@ pub enum ApiVersion {
     /// tenia. El schema se DECLARA y la carpeta se ata a el (`OOS2036`,
     /// `OOS2037`): la identidad nunca es la ruta.
     V1Alpha13,
+    /// v1alpha14. **Escribir.** La `View` es SQL: `spec.sql` en su `dialect`,
+    /// con el contrato que se deriva de la consulta en `spec.columns`, y lo
+    /// que se gobierna de ella —lo que lee, el linaje, el canal lateral— se
+    /// deriva de lo escrito. Lo decidio ORE 0040 (2026-09-25): de 24 consultas
+    /// de un `CREATE VIEW`, 6 cabian en la forma estructurada, y lo que la forma
+    /// aseguraba se deriva de la consulta.
+    V1Alpha14,
     /// v1alpha15. **Situar.** El `Model` deja de ser vocabulario del arbol
     /// —sin `namespace`, en `modelos/` en la raiz— y pasa a contenido
     /// gobernado: `metadata.namespace` y `metadata.schema`, unico por schema
     /// (ORE 0041). Lo midio el catalogo: el indice daba el modelo con
     /// `paquete: null` y la consola no tenia donde pintarlo, ni el modelo
-    /// dueño. v1alpha14 (la vista es SQL, ORE 0040) no esta todavia aqui: no
-    /// añade nada que un `Model` use.
+    /// dueño.
     V1Alpha15,
 }
 
@@ -113,6 +119,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha11,
         ApiVersion::V1Alpha12,
         ApiVersion::V1Alpha13,
+        ApiVersion::V1Alpha14,
         ApiVersion::V1Alpha15,
     ];
 
@@ -129,6 +136,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha11 => "oos.dev/v1alpha11",
             ApiVersion::V1Alpha12 => "oos.dev/v1alpha12",
             ApiVersion::V1Alpha13 => "oos.dev/v1alpha13",
+            ApiVersion::V1Alpha14 => "oos.dev/v1alpha14",
             ApiVersion::V1Alpha15 => "oos.dev/v1alpha15",
         }
     }
@@ -814,6 +822,12 @@ impl Kind {
             // compilar una vista que dice «y ademas se guarda» sin que nadie
             // la guarde: el registro listaria datasets que no existen. Es
             // `OOS1005` con el remedio en el mensaje (`validate::check_keys`).
+            // v1alpha14: la vista es SQL. La forma estructurada no convive en
+            // el mismo documento: una vista es una sola cosa, y `from`,
+            // `fields`, `where`, `groupBy` y `having` aqui son `OOS1005`.
+            Kind::View if version >= ApiVersion::V1Alpha14 => {
+                &["owner", "dialect", "sql", "columns", "moved", "reserved"]
+            }
             Kind::View if version >= ApiVersion::V1Alpha12 => &[
                 "owner", "from", "fields", "where", "moved", "reserved", "groupBy", "having",
             ],

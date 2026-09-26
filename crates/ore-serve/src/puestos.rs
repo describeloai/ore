@@ -2101,7 +2101,7 @@ impl Servidor {
         // Una View virtual —sobre una Table, sin dataset debajo— no tiene de
         // dónde leerse: lo mismo que decía `datos_de`, con las mismas palabras.
         if let Some(v) = pkg.view(vista)
-            && ore_core::vistas::raiz_de_lectura(pkg, v).is_none()
+            && !ore_core::vistas::se_lee_de_datasets(pkg, v)
         {
             return Respuesta::error(
                 409,

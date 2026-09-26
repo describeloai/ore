@@ -341,8 +341,12 @@ fn una_copia_sobre_una_tabla_que_cabe_en_su_conducto_viaja_sellada() {
 /// `INDIRECT` no sale de la gramática ni de la versión — sale de que **qué
 /// filas aparecen es observable**. Cambiar dónde vive el puntero no la mueve.
 ///
-/// `ore validate` acepta el paquete: la copia no lleva `nationalId`. `ore view`
-/// se niega, y ahora además enseña de qué objeto salió la columna que delata.
+/// Desde ADR 0040 (una sola View, gobernada por su linaje) lo niega el
+/// **núcleo**: `ore validate` da `OOS4002` sobre la columna copiada, porque la
+/// arista INDIRECT le lleva la etiqueta de la columna de la tabla que decide
+/// qué filas salen. Hasta entonces sólo lo negaba `ore view`, que es opcional:
+/// era el agujero que la cabecera de `vista.rs` decía que se cerraría el día
+/// que el núcleo tuviera linaje por columna.
 #[test]
 fn recortar_por_una_columna_clasificada_de_una_tabla_tambien_se_niega() {
     let dir = paquete(
@@ -379,34 +383,27 @@ fn recortar_por_una_columna_clasificada_de_una_tabla_tambien_se_niega() {
         ],
     );
 
-    // El núcleo lo acepta: `iberia` no copia `nationalId`.
+    // El núcleo lo niega: `iberia` no copia `nationalId`, pero qué filas
+    // salen lo decide una columna `high`.
     let v = Command::new(env!("CARGO_BIN_EXE_ore"))
         .arg("validate")
         .arg(&dir)
         .output()
         .unwrap();
+    let err = String::from_utf8_lossy(&v.stderr);
+    assert!(!v.status.success(), "`ore validate` tenía que negarse");
     assert!(
-        v.status.success(),
-        "`ore validate` tenía que aceptar: la copia no lleva la columna\n{}",
-        String::from_utf8_lossy(&v.stderr)
+        err.contains("OOS4002") && err.contains("`hr.iberia.id` lleva `gdpr.sensitivity:high`"),
+        "{err}"
     );
-
-    // El motor no: qué filas salen lo decide una columna `high`.
-    let (ok, out, err) = ver(&dir);
-    assert!(!ok, "tenía que negarse:\n{out}");
-    assert!(
-        out.contains("NO compila") && err.contains("el motor de vistas se niega"),
-        "{out}\n{err}"
-    );
-    // Y la columna que delata es la de la TABLA, nombrada por su nombre físico.
-    assert!(out.contains("national_id"), "{out}");
 }
 
 /// **Lo que solo el motor ve.** `iberia` expone `id` y recorta por
 /// `nationalId`, que la entidad clasifica `high`. No copia el DNI — y revela
-/// quién lo tiene, porque qué filas aparecen es observable. `ore validate`
-/// acepta el paquete: el núcleo comprueba lo que se copia, no lo que decide.
-/// `ore view` se niega, por la arista INDIRECT, y dice por dónde.
+/// quién lo tiene, porque qué filas aparecen es observable. Desde ADR 0040 lo
+/// niega el núcleo —`ore validate`, `OOS4002`— por la arista INDIRECT: lo que
+/// antes sólo veía `ore view`. En v1alpha7 también: la regla no es de la
+/// versión, es de que un predicado lee.
 #[test]
 fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
     let dir = std::env::temp_dir().join(format!("ore-vista-indirecta-{}", std::process::id()));
@@ -457,31 +454,17 @@ fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
          employeeId: { type: String }\n    nationalId: { type: String, labels: { gdpr.sensitivity: high } }\n",
     );
 
-    // El núcleo lo acepta: `iberia` no copia `nationalId`.
     let v = Command::new(env!("CARGO_BIN_EXE_ore"))
         .arg("validate")
         .arg(&dir)
         .output()
         .unwrap();
+    let err = String::from_utf8_lossy(&v.stderr);
+    assert!(!v.status.success(), "`ore validate` tenía que negarse");
     assert!(
-        v.status.success(),
-        "`ore validate` tenía que aceptar: la copia no lleva la columna\n{}",
-        String::from_utf8_lossy(&v.stderr)
+        err.contains("OOS4002") && err.contains("`hr.iberia.id` lleva `gdpr.sensitivity:high`"),
+        "{err}"
     );
-
-    // El motor no: qué filas salen lo decide una columna `high`.
-    let (ok, out, err) = ver(&dir);
-    assert!(!ok, "tenía que negarse:\n{out}");
-    assert!(
-        out.contains("`materialization.payload` NO compila"),
-        "{out}"
-    );
-    assert!(out.contains("`id` no compila"), "{out}");
-    assert!(
-        out.contains("erp·public.employees.national_id  por INFLUENCIA (Filtro)"),
-        "{out}"
-    );
-    assert!(err.contains("se niega a compilar"), "{err}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -922,13 +905,19 @@ fn una_entidad_sale_de_una_vista_que_agrupa() {
 #[test]
 fn la_etiqueta_de_una_columna_sobrevive_a_sumarla() {
     let dir = arbol_nomina("etiqueta-agregada", "high", "low");
-    let (ok, out, err) = ver(&dir);
-    assert!(!ok, "{out}");
-    let todo = format!("{out}{err}");
-    assert!(todo.contains("NO compila"), "{todo}");
-    // Y dice por dónde: la derivación, no una columna copiada.
-    assert!(todo.contains("por derivación (Agregacion)"), "{todo}");
-    assert!(todo.contains("employees.salary"), "{todo}");
+    // Desde ADR 0040 lo niega el núcleo antes que el motor: el linaje lleva
+    // la etiqueta de `salary` hasta `masa` por la suma.
+    let v = Command::new(env!("CARGO_BIN_EXE_ore"))
+        .arg("validate")
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&v.stderr);
+    assert!(!v.status.success(), "`ore validate` tenía que negarse");
+    assert!(
+        err.contains("OOS4002") && err.contains("`hr.nomina.masa` lleva `gdpr.sensitivity:high`"),
+        "{err}"
+    );
 }
 
 // ── `having` ────────────────────────────────────────────────────────────────

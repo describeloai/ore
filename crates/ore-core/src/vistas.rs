@@ -174,6 +174,10 @@ pub enum SinRaiz {
     /// Una vista sin `from` que resuelva. El esquema lo impide; esto es lo que
     /// pasa si se llega aquí sin haberlo validado.
     SinFrom(String),
+    /// v1alpha14. Una vista SQL no es un eslabón de una cadena: su consulta
+    /// puede leer varias fuentes, y lo que sale de cada una lo dice su linaje,
+    /// no una raíz.
+    Consulta(String),
 }
 
 impl Package {
@@ -275,6 +279,115 @@ pub fn fuente(v: &Loaded) -> Option<Fuente> {
         .unwrap_or("")
         .to_string();
     Some(Fuente::Datasource { datasource, objeto })
+}
+
+/// v1alpha14. **Una vista SQL**: su cuerpo es una consulta (`spec.sql`), y
+/// lo que expone es su contrato (`spec.columns`).
+pub fn es_sql(v: &Loaded) -> bool {
+    v.kind == Kind::View && v.section("sql").is_some()
+}
+
+/// v1alpha14. El contrato de una vista SQL: los nombres de `spec.columns`.
+pub fn contrato(v: &Loaded) -> BTreeSet<String> {
+    columnas(v)
+}
+
+/// v1alpha14. Lo que un nombre escrito en una consulta nombra: una vista, un
+/// dataset o una tabla del árbol, con la regla de nombres de siempre (una
+/// parte es su schema; dos, `default`; tres, completa).
+pub fn fuente_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Option<&'a Loaded> {
+    pkg.resolve_view(nombre, desde)
+        .or_else(|| pkg.resolve_dataset(nombre, desde))
+        .or_else(|| pkg.resolve_table(nombre, desde))
+}
+
+/// v1alpha14. **Todo** lo que un nombre de una consulta nombra. En v1alpha14 una
+/// tabla, una vista y un dataset comparten el espacio de nombres de su schema
+/// (`OOS2035`), así que es uno; hasta v1alpha13 podían llamarse igual, y un
+/// nombre que nombra dos cosas no dice cuál lee (`OOS2018`).
+pub fn fuentes_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Vec<&'a Loaded> {
+    pkg.resolve_view(nombre, desde)
+        .into_iter()
+        .chain(pkg.resolve_dataset(nombre, desde))
+        .chain(pkg.resolve_table(nombre, desde))
+        .collect()
+}
+
+/// v1alpha14. Las columnas que una fuente de una consulta deja nombrar: las de
+/// una tabla, o lo que una vista o un dataset exponen.
+pub fn columnas_que_expone(pkg: &Package, d: &Loaded) -> BTreeSet<String> {
+    if d.kind == Kind::Table {
+        columnas(d)
+    } else {
+        expone_en(pkg, d).into_keys().collect()
+    }
+}
+
+/// v1alpha14. **La consulta de una vista SQL, analizada contra el árbol**: lo
+/// que lee, lo que proyecta y su linaje a un nivel (`vista_sql`). El árbol
+/// expande sus `*` y decide una columna sin calificar entre dos fuentes.
+/// `None` si no es una vista SQL.
+pub fn consulta(
+    pkg: &Package,
+    v: &Loaded,
+) -> Option<Result<crate::vista_sql::Consulta, crate::vista_sql::Fallo>> {
+    let sql = v.section("sql")?.as_str()?;
+    let columnas_de =
+        |n: &str| fuente_sql(pkg, n, v).map(|d| columnas_que_expone(pkg, d).into_iter().collect());
+    Some(crate::vista_sql::analizar(sql, &columnas_de))
+}
+
+/// Lo que un documento lee **por nombre**, un eslabón: la fuente de una vista
+/// estructurada o de un dataset mantenido, o lo que la consulta de una vista
+/// SQL nombra. Lo que no resuelve no sale: eso lo dice `OOS2018`.
+pub fn lee_directo<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<&'a Loaded> {
+    if es_sql(d) {
+        let Some(Ok(c)) = consulta(pkg, d) else {
+            return vec![];
+        };
+        return c.lee.iter().filter_map(|n| fuente_sql(pkg, n, d)).collect();
+    }
+    match fuente(d) {
+        Some(Fuente::Vista(q)) => pkg.view(&q).into_iter().collect(),
+        Some(Fuente::Dataset(q)) => pkg.dataset(&q).into_iter().collect(),
+        Some(Fuente::Tabla(q)) => pkg.table(&q).into_iter().collect(),
+        _ => vec![],
+    }
+}
+
+/// Un camino de lectura que vuelve a `desde`, si lo hay: la cadena para el
+/// mensaje de `OOS2019`.
+fn vuelve(pkg: &Package, desde: &Loaded) -> Option<Vec<String>> {
+    fn ir<'a>(
+        pkg: &'a Package,
+        objetivo: &Loaded,
+        d: &'a Loaded,
+        camino: &mut Vec<(Kind, String)>,
+    ) -> Option<Vec<String>> {
+        for abajo in lee_directo(pkg, d) {
+            let clave = (abajo.kind, abajo.qname().unwrap_or_default());
+            if abajo.kind == objetivo.kind && abajo.qname() == objetivo.qname() {
+                let mut c: Vec<String> = camino.iter().map(|(_, n)| n.clone()).collect();
+                c.push(clave.1);
+                return Some(c);
+            }
+            if camino.contains(&clave) {
+                continue;
+            }
+            camino.push(clave);
+            if let Some(c) = ir(pkg, objetivo, abajo, camino) {
+                return Some(c);
+            }
+            camino.pop();
+        }
+        None
+    }
+    let desde = pkg
+        .docs
+        .iter()
+        .find(|d| d.kind == desde.kind && d.qname() == desde.qname())?;
+    let mut camino = vec![(desde.kind, desde.qname().unwrap_or_default())];
+    ir(pkg, desde, desde, &mut camino)
 }
 
 /// Las columnas que una tabla declara.
@@ -458,6 +571,9 @@ pub fn agregados(v: &Loaded) -> BTreeMap<String, Agregado> {
 /// entidad respaldada por una vista que agrupa recibía *«`hr.por_pais` no
 /// expone `n`»* sobre una vista que **sí** lo expone.
 pub fn expone(v: &Loaded) -> BTreeMap<String, String> {
+    if es_sql(v) {
+        return contrato(v).into_iter().map(|c| (c.clone(), c)).collect();
+    }
     let mut out = campos(v);
     let Some(fs) = v.section("fields") else {
         return out;
@@ -646,6 +762,7 @@ pub fn cadena<'a>(pkg: &'a Package, v: &'a Loaded) -> Result<Vec<&'a Loaded>, Si
         vistos.push(qn.clone());
         fila.push(actual);
         match fuente(actual) {
+            None if es_sql(actual) => return Err(SinRaiz::Consulta(qn)),
             // v1alpha12: un dataset escrito no tiene `from` y no le falta: es
             // suelo por derecho. Lo que se tiene no sale de nada de fuera.
             None if es_escrito(actual) => return Ok(fila),
@@ -1049,6 +1166,32 @@ pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded
         .find(|e| e.kind == Kind::Dataset || e.section("materialized").is_some())
 }
 
+/// **¿Se lee de lo que se tiene?** Una vista que se lee desde un puesto —o
+/// desde un `.sql`— sale de datasets: la cadena de una estructurada llega a
+/// uno (`raiz_de_lectura`), y todo lo que lee una SQL se lee así a su vez.
+/// Una tabla de un origen no: se lee por un dataset que la copie.
+pub fn se_lee_de_datasets(pkg: &Package, d: &Loaded) -> bool {
+    fn ir(pkg: &Package, d: &Loaded, pila: &mut Vec<(Kind, String)>) -> bool {
+        let clave = (d.kind, d.qname().unwrap_or_default());
+        if pila.contains(&clave) {
+            return false;
+        }
+        match d.kind {
+            Kind::Dataset => true,
+            Kind::View if es_sql(d) => {
+                pila.push(clave);
+                let abajo = lee_directo(pkg, d);
+                let si = !abajo.is_empty() && abajo.into_iter().all(|x| ir(pkg, x, pila));
+                pila.pop();
+                si
+            }
+            Kind::View => raiz_de_lectura(pkg, d).is_some(),
+            _ => false,
+        }
+    }
+    ir(pkg, d, &mut Vec::new())
+}
+
 /// v1alpha12. **El suelo de una cadena, como documento**: la `Table` en la que
 /// termina, o el dataset **escrito** en el que termina. Es donde están las dos
 /// caras —`changes.mode`, `changes.key`, `witness`— para quien las necesite
@@ -1078,9 +1221,29 @@ pub fn suelo<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
 /// cuando no hay ninguna.
 pub fn datasources_de(pkg: &Package, e: &Loaded) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
-    if let Some(v) = respaldo(pkg, e)
-        && let Ok(r) = raiz(pkg, v)
-    {
+    let Some(v) = respaldo(pkg, e) else {
+        return out;
+    };
+    // v1alpha14: la entidad sale de cada raíz de su linaje —una vista SQL
+    // puede leer de varias fuentes—: el datasource de cada tabla, el de un
+    // objeto de v1alpha7 (`datasource·objeto`), y el lago de lo escrito.
+    if crate::linaje::por_el_linaje(v) {
+        for raices in crate::linaje::linaje(pkg, v).unwrap_or_default().values() {
+            for (r, _) in raices {
+                if let Some(t) = pkg.table(&r.doc) {
+                    if let Some(ds) = t.section("datasource").and_then(|d| d.as_str()) {
+                        out.insert(ds.to_string());
+                    }
+                } else if pkg.dataset(&r.doc).is_some() {
+                    out.insert("lago".to_string());
+                } else if let Some((ds, _)) = r.doc.split_once('·') {
+                    out.insert(ds.to_string());
+                }
+            }
+        }
+        return out;
+    }
+    if let Ok(r) = raiz(pkg, v) {
         out.insert(r.datasource);
     }
     out
@@ -1211,6 +1374,236 @@ fn donde_copia(v: &Loaded) -> Option<crate::diag::Pos> {
     v.section("materialized")
         .or_else(|| v.section("from"))
         .map(|n| n.pos())
+}
+
+/// v1alpha14 · las comprobaciones de una vista SQL (`01-la-vista-es-sql`
+/// §3–§4): es UNA consulta que lee por nombre (`OOS2038`), lo que nombra existe
+/// (`OOS2018`), lo que lee no vuelve sobre ella (`OOS2019`), su contrato es lo
+/// que proyecta (`OOS2039`) y lo que lee se deja leer (`OOS2020`).
+fn comprobar_sql(pkg: &Package, v: &Loaded, out: &mut Vec<Diagnostic>) {
+    use crate::vista_sql::Fallo;
+    let qn = v.qname().unwrap_or_default();
+    let Some(nodo) = v.section("sql") else { return };
+    let Some(r) = consulta(pkg, v) else { return };
+    let c = match r {
+        Ok(c) => c,
+        Err(f) => {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2038,
+                    &v.path,
+                    format!("`{qn}`: {}", f.como_texto()),
+                )
+                .at(nodo.pos())
+                .help(match f {
+                    Fallo::LeePorFuncion(_) => {
+                        "una vista lee por NOMBRE: una tabla, una vista o un dataset del árbol. \
+                         Lo que se lee por función no tiene linaje, ni etiqueta, ni conducto. \
+                         Registra esos bytes como una `Table` o un `Dataset` y léelos por su \
+                         nombre"
+                    }
+                    _ => {
+                        "el cuerpo de una vista es UNA consulta `SELECT` —con `WITH`, `UNION`, \
+                         joins, expresiones, agregados o ventanas— y nada que escriba"
+                    }
+                }),
+            );
+            return;
+        }
+    };
+
+    // OOS2018 · cada nombre del árbol que lee, existe.
+    let mut fuentes: BTreeMap<String, &Loaded> = BTreeMap::new();
+    let mut falta = false;
+    for n in &c.lee {
+        let todas = fuentes_sql(pkg, n, v);
+        if todas.len() > 1 {
+            falta = true;
+            let que: Vec<String> = todas.iter().map(|d| d.kind.as_str().to_string()).collect();
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2018,
+                    &v.path,
+                    format!("`{qn}` lee `{n}`, que nombra {} cosas: {}", todas.len(), que.join(" y ")),
+                )
+                .at(nodo.pos())
+                .help(
+                    "en SQL un nombre nombra UNA cosa, y la consulta no puede decir cuál. Desde \
+                     v1alpha14 una tabla, una vista y un dataset comparten el espacio de nombres de \
+                     su schema; renombra uno de los dos",
+                ),
+            );
+            continue;
+        }
+        match todas.first().copied() {
+            Some(d) => {
+                fuentes.insert(n.clone(), d);
+            }
+            None => {
+                falta = true;
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2018,
+                        &v.path,
+                        format!("`{qn}` lee `{n}`, que no existe"),
+                    )
+                    .at(nodo.pos())
+                    .help(
+                        "lo que una vista lee DEBE ser una `Table`, una `View` o un `Dataset` del \
+                         paquete o de una dependencia, nombrado en una, dos o tres partes (una \
+                         es su schema; dos, `default`)",
+                    ),
+                );
+            }
+        }
+    }
+    if falta {
+        return;
+    }
+
+    // OOS2019 · lo que lee no vuelve sobre ella.
+    if let Some(ciclo) = vuelve(pkg, v) {
+        out.push(
+            Diagnostic::new(
+                Code::Oos2019,
+                &v.path,
+                format!("lo que `{qn}` lee vuelve sobre ella: {}", ciclo.join(" → ")),
+            )
+            .at(nodo.pos())
+            .help(
+                "una vista se define por lo que lee, y una que se lee a sí misma no se define: \
+                 ninguna de las del ciclo tiene de dónde salir",
+            ),
+        );
+        return;
+    }
+
+    // OOS2018 · cada columna que la consulta nombra existe en su fuente.
+    let mut nombradas: BTreeSet<&crate::vista_sql::Ref> = BTreeSet::new();
+    for col in &c.columnas {
+        nombradas.extend(col.directas.iter());
+        nombradas.extend(col.derivadas.iter());
+        nombradas.extend(col.indirectas.iter());
+    }
+    nombradas.extend(c.indirectas.iter());
+    for p in &c.predicados {
+        nombradas.extend(p.mira.iter());
+    }
+    let mut sin_columna = false;
+    for r in nombradas {
+        let Some(d) = fuentes.get(&r.fuente) else {
+            continue;
+        };
+        let tiene = columnas_que_expone(pkg, d);
+        if tiene.iter().any(|t| t.eq_ignore_ascii_case(&r.columna)) {
+            continue;
+        }
+        sin_columna = true;
+        let fqn = d.qname().unwrap_or_default();
+        out.push(
+            Diagnostic::new(
+                Code::Oos2018,
+                &v.path,
+                format!("`{qn}` lee `{}` de `{fqn}`, que no la tiene", r.columna),
+            )
+            .at(nodo.pos())
+            .help(if tiene.is_empty() {
+                format!("`{fqn}` no expone ninguna columna")
+            } else {
+                format!(
+                    "`{fqn}` tiene: {}",
+                    tiene.into_iter().collect::<Vec<_>>().join(" · ")
+                )
+            }),
+        );
+    }
+    for s in &c.sin_fuente {
+        sin_columna = true;
+        out.push(
+            Diagnostic::new(
+                Code::Oos2018,
+                &v.path,
+                format!("`{qn}` nombra `{s}`, que no es de ninguna de sus fuentes"),
+            )
+            .at(nodo.pos()),
+        );
+    }
+    if sin_columna {
+        return;
+    }
+
+    // OOS2039 · el contrato es lo que la consulta proyecta: ni uno de más, ni
+    // uno de menos. El orden no significa nada, como no lo significaba `fields`.
+    let proyecta: Vec<&str> = c.columnas.iter().map(|x| x.nombre.as_str()).collect();
+    let declara = contrato(v);
+    let de_mas: Vec<&String> = declara
+        .iter()
+        .filter(|n| !proyecta.iter().any(|p| p.eq_ignore_ascii_case(n)))
+        .collect();
+    let de_menos: Vec<&str> = proyecta
+        .iter()
+        .copied()
+        .filter(|p| !declara.iter().any(|n| n.eq_ignore_ascii_case(p)))
+        .collect();
+    if !de_mas.is_empty() || !de_menos.is_empty() {
+        let pos = v.section("columns").map(Node::pos).unwrap_or(nodo.pos());
+        let mut que = Vec::new();
+        if !de_mas.is_empty() {
+            que.push(format!(
+                "el contrato nombra {} y la consulta no lo proyecta",
+                de_mas
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !de_menos.is_empty() {
+            que.push(format!(
+                "la consulta proyecta {} y el contrato no lo nombra",
+                de_menos
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        out.push(
+            Diagnostic::new(
+                Code::Oos2039,
+                &v.path,
+                format!("`{qn}`: {}", que.join("; ")),
+            )
+            .at(pos)
+            .help(format!(
+                "`columns` no se inventa: se deriva de la consulta, describiéndola. La \
+                     consulta proyecta: {}",
+                proyecta.join(" · ")
+            )),
+        );
+    }
+
+    // OOS2020 · lo que no se puede leer no se lee: una tabla con `reads: none`
+    // no contesta consultas. Una vista SQL es virtual; para leer de una copia,
+    // se lee el dataset.
+    for d in fuentes.values() {
+        if d.kind != Kind::Table || se_lee(d) {
+            continue;
+        }
+        let tqn = d.qname().unwrap_or_default();
+        out.push(
+            Diagnostic::new(
+                Code::Oos2020,
+                &v.path,
+                format!("`{qn}` lee `{tqn}`, que declara `reads: none`: no hay dónde preguntar"),
+            )
+            .at(nodo.pos())
+            .help(
+                "una tabla con `reads: none` no responde consultas, solo emite cambios. Lee de un \
+                 dataset que la copie —`kind: Dataset` con `from: { table }`—",
+            ),
+        );
+    }
 }
 
 /// Las comprobaciones de enlazado de las tablas, las vistas y `backedBy`.
@@ -1366,6 +1759,13 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         .chain(pkg.of(Kind::Dataset).filter(|d| es_mantenido(d)))
     {
         let qn = v.qname().unwrap_or_default();
+
+        // v1alpha14: la vista SQL tiene sus propias comprobaciones, y ninguna
+        // de las de la forma estructurada le alcanza.
+        if es_sql(v) {
+            comprobar_sql(pkg, v, out);
+            continue;
+        }
 
         // ── OOS2032 y OOS2033 · la agrupación cuadra consigo misma ──────────
         //

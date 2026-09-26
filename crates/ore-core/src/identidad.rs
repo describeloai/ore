@@ -48,7 +48,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
             .or_default()
             .push(d);
     }
-    let mut out = Vec::new();
+    let mut out = un_nombre_una_cosa(pkg);
     for (identidad, docs) in por_identidad {
         if docs.len() < 2 {
             continue;
@@ -84,6 +84,61 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
                      fichero es incidental (90-canonical §5.2): dos ficheros con la misma \
                      identidad son dos verdades, y ninguna referencia sabría cuál resolver. \
                      Retira uno, o dale otro nombre",
+                ),
+            );
+        }
+    }
+    out
+}
+
+/// v1alpha14 · **un nombre, una cosa**. En SQL un nombre no dice su `kind`:
+/// `FROM ventas.clientes` no puede elegir entre una tabla y una vista que se
+/// llamen así. Desde v1alpha14 una `Table`, una `View` y un `Dataset` comparten
+/// el espacio de nombres de su schema, como en Unity Catalog, y dos con el
+/// mismo nombre son la misma identidad (ADR 0040). Hasta v1alpha13 podían
+/// convivir —`from.table` y `from.view` decían cuál— y siguen pudiendo: la
+/// regla alcanza a la pareja en cuanto uno de los dos es de v1alpha14.
+fn un_nombre_una_cosa(pkg: &Package) -> Vec<Diagnostic> {
+    use crate::document::{ApiVersion, Kind};
+    let mut por_nombre: BTreeMap<String, Vec<&crate::link::Loaded>> = BTreeMap::new();
+    for d in &pkg.docs {
+        if !matches!(d.kind, Kind::Table | Kind::View | Kind::Dataset) {
+            continue;
+        }
+        let Some(qn) = d.qname() else { continue };
+        por_nombre.entry(qn).or_default().push(d);
+    }
+    let mut out = Vec::new();
+    for (qn, docs) in por_nombre {
+        let kinds: std::collections::BTreeSet<&str> =
+            docs.iter().map(|d| d.kind.as_str()).collect();
+        if kinds.len() < 2
+            || !docs
+                .iter()
+                .any(|d| d.version().is_some_and(|v| v >= ApiVersion::V1Alpha14))
+        {
+            continue;
+        }
+        let que: Vec<&str> = kinds.into_iter().collect();
+        for d in docs
+            .iter()
+            .filter(|d| d.version().is_some_and(|v| v >= ApiVersion::V1Alpha14))
+        {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2035,
+                    &d.path,
+                    format!(
+                        "`{qn}` es a la vez {}: en v1alpha14 un nombre es una cosa",
+                        que.join(" y ")
+                    ),
+                )
+                .at(d.root.pos())
+                .help(
+                    "una tabla, una vista y un dataset comparten el espacio de nombres de su \
+                     schema, como en Unity Catalog: una consulta SQL nombra por nombre y no puede \
+                     decir cuál lee. Dale otro nombre a uno —una vista sobre la tabla del mismo \
+                     nombre se llama como lo que pregunta—",
                 ),
             );
         }

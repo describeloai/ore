@@ -254,6 +254,23 @@ pub fn analizar(
     })
 }
 
+/// **Qué filas salen**, sin decir qué columnas: la consulta sin su proyección,
+/// escrita de nuevo por el analizador. Dos consultas que dan lo mismo aquí
+/// devuelven las mismas filas aunque proyecten otra cosa o estén escritas con
+/// otros espacios; si difieren, las filas pueden ser otras (v1alpha14 §9). En
+/// un `UNION` la proyección decide las filas, y se compara entera. `None` si
+/// no es una consulta.
+pub fn filas(sql: &str) -> Option<String> {
+    let mut sentencias = Parser::parse_sql(&DuckDbDialect {}, sql).ok()?;
+    let [Statement::Query(q)] = sentencias.as_mut_slice() else {
+        return None;
+    };
+    if let SetExpr::Select(s) = q.body.as_mut() {
+        s.projection.clear();
+    }
+    Some(q.to_string())
+}
+
 // ─── el análisis ──────────────────────────────────────────────────────────
 
 /// Lo que sale de una consulta o subconsulta mientras se analiza.
@@ -1142,6 +1159,25 @@ mod tests {
     fn una_columna_sin_fuente_se_dice() {
         let c = ok("select x.id from ventas.s.pedidos p");
         assert_eq!(c.sin_fuente, ["x.id".to_string()].into());
+    }
+
+    #[test]
+    fn las_filas_no_dependen_de_la_proyeccion_ni_de_los_espacios() {
+        let a = filas("select id, pais from v.s.p where pais in ('ES', 'PT')").unwrap();
+        let b = filas(
+            "SELECT  id
+FROM v.s.p WHERE pais IN ('ES', 'PT')",
+        )
+        .unwrap();
+        assert_eq!(a, b);
+        let c = filas("select id from v.s.p where pais in ('ES')").unwrap();
+        assert_ne!(a, c);
+        // En un UNION la proyección decide qué filas hay.
+        assert_ne!(
+            filas("select id from v.s.a union select id from v.s.b"),
+            filas("select pais from v.s.a union select id from v.s.b")
+        );
+        assert!(filas("select 1; select 2").is_none());
     }
 
     /// El corpus de `medida-la-vista-sql.py`: lo que la gente escribe en un
