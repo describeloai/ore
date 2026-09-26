@@ -1,14 +1,16 @@
 # La tercera familia, y la que cierra un circuito que estaba abierto por un
-# lado. `ore` trae dentro la receta del CATALOGO de BigQuery —ejecuta `bq`— y
-# no traia nada para la fase ③: `ore materialize` llama a `ore-read-<tipo> leer`
-# sin receta interna de ninguna clase, asi que BigQuery entraba y no salia.
+# lado. `ore` trae dentro la receta del CATALOGO de BigQuery y no traia nada
+# para la fase ③: `ore materialize` llama a `ore-read-<tipo> leer` sin receta
+# interna de ninguna clase, asi que BigQuery entraba y no salia.
 #
-# Y no trae dependencias: delega en `bq`, igual que la receta, por la razon que
-# esa ya midio —la credencial nunca entra en el espacio de direcciones de ORE—.
-# Lo que justifica que esto sea un binario aparte y no otra receta dentro de
-# `ore` es que `materializar` no tiene ningun sitio donde meter una: el reparto
-# de la fase ③ es «un programa por familia», y respetarlo es mas barato que
-# abrirle una excepcion a la primera fuente que la pida.
+# Hasta A2 (2026-09-26) delegaba en el CLI `bq`, para que la credencial no
+# entrara en el proceso. Se midio lo que costaba: tres perdidas silenciosas en
+# la salida `prettyjson` (el texto 'null' se volvia NULL, un TIMESTAMP perdia
+# los microsegundos y la zona) y 8-11 s de arranque por llamada. Ahora habla la
+# API REST con el token de la cuenta que corre (`ore-gcp`), y la credencial que
+# antes vivia en el proceso de `bq` —en el mismo pod— vive en este. Acotarla no
+# sirve: BigQuery ignora la Credential Access Boundary (medido). La frontera es
+# el IAM de la cuenta de servicio del driver.
 [package]
 name        = "ore-read-bigquery"
 version     = { workspace = true }
@@ -23,3 +25,13 @@ ore-core   = { path = "../ore-core" }
 ore-driver = { path = "../ore-driver" }
 # Y la FORMA, que resulto ser la misma que la de Postgres salvo tres ejes.
 ore-sql    = { path = "../ore-sql" }
+# El token, renovado antes de caducar, y el cliente HTTPS (A1).
+ore-gcp    = { path = "../ore-gcp" }
+# Solo para nombrar los errores de estado HTTP; la version y las features son
+# las de `ore-gcp`, asi que no anade nada al cierre.
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+# Las respuestas de la API. No el analizador de `ore-core`: aqui importa
+# distinguir `null` de `"null"` —es una de las tres perdidas que A2 arregla— y
+# leer paginas de decenas de MB sin pasar por un analizador de YAML. Ya estaba
+# en el arbol (lo trae `iceberg`).
+serde_json = "1"

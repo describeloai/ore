@@ -2,9 +2,8 @@
 //!
 //! # Qué estaba abierto
 //!
-//! `ore` trae dentro la receta del **catálogo** de BigQuery: ejecuta `bq`, que
-//! el usuario ya tiene y ya autenticó, y traduce lo que dice. Para las filas no
-//! traía nada — `ore materialize` llama a `ore-read-<tipo> leer` y **no tiene
+//! `ore` trae dentro la receta del **catálogo** de BigQuery. Para las filas no
+//! traía nada —`ore materialize` llama a `ore-read-<tipo> leer` y **no tiene
 //! receta interna de ninguna clase**—, así que BigQuery entraba y no salía: se
 //! podían espejar tablas y proponer vistas, y ninguna copia se podía poblar.
 //!
@@ -12,105 +11,46 @@
 //!
 //! Porque el reparto de la fase ③ es *un programa por familia*, y no hay ningún
 //! sitio en `materializar.rs` donde meter una excepción sin abrirla para todas.
-//! Respetar el reparto sale más barato que hacerle un hueco a la primera fuente
-//! que lo pida.
 //!
-//! Y delega en `bq` por lo que la receta ya midió: **la credencial nunca entra
-//! en el espacio de direcciones de ORE**. Este programa no abre un socket, no
-//! lee un fichero de servicio y no sabe qué es un token. Ejecuta un programa que
-//! el usuario ya autenticó y lee su stdout.
+//! # Por REST, y no por `bq` (A2, 2026-09-26)
 //!
-//! # Los tres verbos, y por qué uno se niega
+//! Hasta A2 delegaba en el CLI `bq` para que la credencial no entrara en este
+//! proceso. Contra un dataset real (`pruebas-de-fuego/bigquery-real.sh`) se
+//! midió lo que costaba: el texto `'null'` se volvía NULL, un TIMESTAMP perdía
+//! los microsegundos y llegaba sin zona —la copia lo dejaba como texto—, y cada
+//! llamada tardaba 8-11 s en arrancar el intérprete de `bq`. Por REST la misma
+//! consulta tarda 0,5-0,9 s y los valores llegan tipados ([`valores`]).
+//!
+//! La credencial es el token de la cuenta que corre (`ore-gcp`): el del
+//! metadata server, renovado; en local `ORE_GCP_TOKEN`. Antes vivía en el
+//! proceso de `bq`, en el mismo pod; ahora en este. **Acotarla no sirve**:
+//! BigQuery ignora la Credential Access Boundary (medido). La frontera es el
+//! IAM de la cuenta de servicio del driver.
+//!
+//! # Los verbos
 //!
 //! | verbo | qué hace |
 //! |---|---|
-//! | `leer` | las filas del fragmento de plan que llega por stdin |
+//! | `leer` | las filas del fragmento de plan que llega por stdin, **página a página** |
 //! | `testigo` | hasta dónde está el origen, **si sabe fecharse** |
-//! | `catalogo` | **se niega**: esa mitad vive dentro de `ore` y es la que corre |
-//!
-//! `lector::catalogo` despacha `bigquery` a su receta y no llega nunca aquí, así
-//! que implementarlo sería una segunda versión de lo mismo que nadie puede
-//! alcanzar — y dos derivaciones de la misma cosa divergen en la que ninguna
-//! prueba ejerce.
+//! | `check` | `SELECT 1`, sin crear un job |
+//! | `explorar` | los datasets del proyecto, todas las páginas |
+//! | `catalogo` | **se niega** todavía: esa mitad vive dentro de `ore` (A3 la muda) |
 //!
 //! # La truncación que no avisa
 //!
-//! `bq` imprime como mucho `--max_rows` filas y **no dice que cortó**. Una copia
-//! poblada con menos filas de las que hay responde, sus números salen, y son de
-//! menos: es la categoría de fallo que este árbol persigue, el que no tiene
-//! síntoma. Y **no se arregla subiendo el tope**, porque cualquier tope se
-//! alcanza algún día y el día que se alcance tampoco lo dirá.
-//!
-//! Se pide **una fila más de las que se admiten**. Si llega, había más de las
-//! que caben y esto se niega. Es exacto, y esa es la gracia: distingue «hay
-//! justo el tope» —que es correcto y se sirve— de «hay más» —que no se puede
-//! servir—. `bq ls` tiene la misma trampa con `--max_results`, y lleva la misma
-//! cuenta.
-//!
-//! De los dos errores posibles se comete el reversible: negarse deja al operador
-//! recortando la vista, y truncar deja una copia que nadie va a sospechar.
-//!
-//! # Lo que NO está medido contra un dataset real, y se dice
-//!
-//! La traducción está probada entera y **sin servidor**, que es lo que hace que
-//! *«el SQL emitido contiene solo las columnas proyectadas»* sea un aserto: un
-//! aserto que exigiera un servidor no se ejecutaría nunca en la suite.
-//!
-//! Lo que **no** se ha ejercido es la ejecución contra un dataset real, porque
-//! no se ha nombrado ninguno. `bq` sí arranca en esta máquina —`This is BigQuery
-//! CLI 2.1.36`— y conviene dejar escrito por qué el primer sondeo dijo lo
-//! contrario: lanzado **desde Git Bash** contesta `ERROR: (bq) python3.14:
-//! command not found`, y lanzado como proceso —que es lo que hacen `ore` y
-//! esto— contesta bien. Un lector que no arranca se parece demasiado a uno que
-//! falta, y desde el intérprete equivocado se parece a los dos.
+//! El CLI cortaba en `--max_rows` sin decirlo y este driver pedía una fila de
+//! más para notarlo, con un tope de un millón. Por REST no hay tope: se pagina
+//! hasta el final, cada página se escribe según llega, y al terminar las filas
+//! contadas tienen que ser el `totalRows` que dijo el servidor ([`rest`]).
 
 mod consultas;
+mod rest;
+mod valores;
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::io::Read as _;
-use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
-
-/// Las filas que este driver admite servir de una vez.
-///
-/// El número no lo dicta nada del mundo: es el que ya estaba, y lo que cambia
-/// no es cuál sea sino que **se sepa cuándo se pasa**.
-const TOPE: usize = 1_000_000;
-
-/// Los datasets que admite enumerar `explorar`. Mismo criterio.
-const TOPE_DATASETS: usize = 1_000;
-
-/// Si lo que llegó cabía.
-///
-/// Se le pide a `bq` `tope + 1`, así que `tope + 1` respuestas significan **al
-/// menos** una de más: no se sabe cuántas hay, y por eso el mensaje no lo dice.
-/// Justo `tope` es correcto y se sirve.
-fn dentro_del_tope(llegaron: usize, tope: usize, que: &str, salida: &str) -> Result<(), String> {
-    if llegaron <= tope {
-        return Ok(());
-    }
-    Err(format!(
-        "el origen tiene más de {tope} {que} y `bq` los habría cortado sin decirlo.\n  \
-         Una copia poblada con menos filas de las que hay responde, y sus números son de \
-         menos.\n  {salida}"
-    ))
-}
-
-/// Analiza lo que dijo `bq` **y comprueba que no se corte**. Una sola puerta:
-/// tres sitios lo parseaban por su cuenta, y la comprobación en dos de tres es
-/// la que no se nota.
-fn analizar(
-    salida: &str,
-    tope: usize,
-    que: &str,
-    remedio: &str,
-) -> Result<ore_core::parse::Node, String> {
-    let arbol = ore_core::parse::parse(salida)
-        .map_err(|e| format!("lo que devolvió `bq` no analiza: {e:?}"))?;
-    dentro_del_tope(arbol.items().len(), tope, que, remedio)?;
-    Ok(arbol)
-}
+use std::io::{Read as _, Write as _};
+use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -128,49 +68,7 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-
-    let resultado = match verbo {
-        "leer" => filas(&entrada),
-        "testigo" => testigo(&entrada),
-        // **¿Responde esta fuente?** Se le pide a `bq` lo mas barato que hay:
-        // `SELECT 1`. Contesta a la vez por la autenticacion, por el proyecto y
-        // por que el propio `bq` arranca — que en esta maquina fue justo el
-        // fallo que se disfrazo de otra cosa.
-        "check" => match ore_driver::leer_coordenada(&entrada) {
-            Err(e) => Err(e),
-            Ok((url, _)) => Ok(
-                match proyecto(&url).and_then(|p| {
-                    bq(
-                        &p,
-                        &consultas::Invocacion {
-                            consulta: "SELECT 1 AS ok".to_string(),
-                            parametros: Vec::new(),
-                        },
-                    )
-                }) {
-                    Ok(_) => ore_driver::comprobacion(true, None),
-                    Err(e) => ore_driver::comprobacion(false, Some(&e)),
-                },
-            ),
-        },
-        // **El quinto verbo: que contiene esta fuente.** Y existe por una
-        // asimetria real, no por simetria: una URL de BigQuery nombra UN
-        // dataset, asi que hay que saberselo antes de declararlo. Las otras dos
-        // familias abarcan su fuente entera y no tienen esa pregunta.
-        "explorar" => match ore_driver::leer_coordenada(&entrada) {
-            Err(e) => Err(e),
-            Ok((url, _)) => explorar(&url),
-        },
-        "catalogo" => Err(
-            "`ore` trae la receta del catálogo de BigQuery dentro y es la que \
-                           corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
-                           aquí. Lo que implementa este programa es `leer`, que es el verbo de \
-                           la fase ③"
-                .to_string(),
-        ),
-        otro => Err(format!("`{otro}` no es un verbo de este lector")),
-    };
-
+    let resultado = rest::Http::del_entorno().and_then(|http| verbo_(&http, verbo, &entrada));
     match resultado {
         Ok(salida) => {
             if !salida.is_empty() {
@@ -182,6 +80,58 @@ fn main() -> ExitCode {
             eprintln!("ore-read-bigquery: {m}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn verbo_(t: &dyn rest::Transporte, verbo: &str, entrada: &str) -> Result<String, String> {
+    match verbo {
+        "leer" => {
+            let salida = std::io::stdout();
+            let mut salida = std::io::BufWriter::new(salida.lock());
+            filas(t, entrada, &mut salida)?;
+            salida
+                .flush()
+                .map_err(|e| format!("no se pudo escribir la salida: {e}"))?;
+            Ok(String::new())
+        }
+        "testigo" => testigo(t, entrada),
+        // **¿Responde esta fuente?** Lo más barato que hay: `SELECT 1`, sin
+        // job. Contesta a la vez por el token, por el proyecto y por el permiso
+        // de lanzar consultas en él.
+        "check" => {
+            let (url, _) = ore_driver::leer_coordenada(entrada)?;
+            let r = proyecto(&url).and_then(|p| {
+                rest::consultar(
+                    t,
+                    &p,
+                    &rest::Consulta {
+                        texto: "SELECT 1 AS ok",
+                        parametros: &[],
+                        sin_job: true,
+                    },
+                    |_, _| Ok(()),
+                )
+            });
+            Ok(match r {
+                Ok(_) => ore_driver::comprobacion(true, None),
+                Err(e) => ore_driver::comprobacion(false, Some(&e)),
+            })
+        }
+        // **Qué contiene esta fuente.** Existe por una asimetría real: una URL
+        // de BigQuery nombra UN dataset, así que hay que sabérselo antes de
+        // declararlo. Las otras dos familias abarcan su fuente entera.
+        "explorar" => {
+            let (url, _) = ore_driver::leer_coordenada(entrada)?;
+            explorar(t, &url)
+        }
+        "catalogo" => Err(
+            "`ore` trae la receta del catálogo de BigQuery dentro y es la que \
+                           corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
+                           aquí. Lo que implementa este programa es `leer`, que es el verbo de \
+                           la fase ③"
+                .to_string(),
+        ),
+        otro => Err(format!("`{otro}` no es un verbo de este lector")),
     }
 }
 
@@ -205,90 +155,84 @@ fn proyecto(url: &str) -> Result<String, String> {
 
 // ── ⑤ · Las filas ───────────────────────────────────────────────────────────
 
-fn filas(peticion: &str) -> Result<String, String> {
+fn filas(
+    t: &dyn rest::Transporte,
+    peticion: &str,
+    salida: &mut dyn std::io::Write,
+) -> Result<u64, String> {
     let p = ore_driver::leer_peticion(peticion)?;
 
     // **El rango, o la negativa.** BigQuery sabe recortar por una columna —es
     // un `WHERE` más— y este driver no sabe leer su historial de cambios: para
     // eso haría falta la función de tabla `CHANGES`, y el rango sería sobre un
-    // instante de confirmación y no sobre una columna. Se declara lo que se
-    // sabe y la comprobación es del protocolo, no de aquí.
+    // instante de confirmación y no sobre una columna.
     if let Some(porque) = ore_driver::rango_servible(&p, true, false) {
         return Err(porque);
     }
 
     let proyecto = proyecto(&p.url)?;
-    // La forma es de `ore-sql` y el dialecto una constante suya. Lo que este
-    // fichero pone es el objeto YA CUALIFICADO —BigQuery antepone el proyecto y
-    // PostgreSQL no tiene nada que anteponer— y el transporte.
-    //
-    // Y la consulta de tipos va DENTRO de `preparar`: quien decide si hace
-    // falta es el dialecto, no este fichero. Antes lo sabia de memoria, que es
-    // lo que el tercer driver tendria que recordar.
+    // La forma es de `ore-sql`, y quien decide si hacen falta los tipos es el
+    // dialecto, no este fichero.
     let c = ore_sql::preparar(
         &p,
         &ore_sql::dialectos::BIGQUERY,
         &consultas::cualificado(&proyecto, &p.objeto),
-        || tipos_de(&proyecto, &p.objeto),
+        || tipos_de(t, &proyecto, &p.objeto),
     )?;
-    let salida = bq(
+
+    rest::consultar(
+        t,
         &proyecto,
-        &consultas::Invocacion {
-            consulta: c.texto,
-            parametros: c.parametros,
+        &rest::Consulta {
+            texto: &c.texto,
+            parametros: &c.parametros,
+            sin_job: false,
         },
-    )?;
-
-    let arbol = analizar(
-        &salida,
-        TOPE,
-        "filas",
-        "Recorta la vista con un `where`, o materialízala por tramos.",
-    )?;
-
-    let mut out = String::new();
-    for fila in arbol.items() {
-        let valores: Vec<Option<String>> = p
-            .proyeccion
-            .iter()
-            .map(|(_, col)| {
-                fila.get(col)
-                    .and_then(|(_, v)| v.as_str())
-                    // `bq --format=prettyjson` escribe `null` para una celda sin
-                    // valor, y el analizador de OOS —que lee JSON porque JSON es
-                    // un subconjunto de YAML— lo entrega como el texto `null`.
-                    // Así que una cadena cuyo contenido sea literalmente `null`
-                    // se confunde con la ausencia. Se dice porque es una pérdida
-                    // real, y es la de aguas abajo también: `ore_driver::fila`
-                    // ya convierte la ausencia en cadena vacía.
-                    .filter(|s| *s != "null")
-                    .map(String::from)
-            })
-            .collect();
-        out.push_str(&ore_driver::fila(&p, &valores));
-        out.push('\n');
-    }
-    Ok(out.trim_end().to_string())
+        |campos, pagina| {
+            // Por nombre y no por posición: la proyección se de-duplica, así
+            // que la columna *i* del resultado no es la propiedad *i*.
+            let indice: BTreeMap<&str, usize> = campos
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| c["name"].as_str().map(|n| (n, i)))
+                .collect();
+            for fila in pagina {
+                let celdas = fila["f"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                let mut valores = Vec::with_capacity(p.proyeccion.len());
+                for (_, col) in &p.proyeccion {
+                    let i = *indice
+                        .get(col.as_str())
+                        .ok_or_else(|| format!("BigQuery no devolvió la columna `{col}`"))?;
+                    valores.push(valores::texto(&campos[i], &celdas[i]["v"])?);
+                }
+                writeln!(salida, "{}", ore_driver::fila(&p, &valores))
+                    .map_err(|e| format!("no se pudo escribir la fila: {e}"))?;
+            }
+            Ok(())
+        },
+    )
 }
 
-/// Los tipos de las columnas de la tabla, del `INFORMATION_SCHEMA` de su
-/// dataset. Es la consulta de más que GoogleSQL obliga a hacer, y el porqué
-/// está en [`ore_sql`].
-fn tipos_de(proyecto: &str, objeto: &str) -> Result<BTreeMap<String, String>, String> {
-    let salida = bq(proyecto, &consultas::tipos(proyecto, objeto)?)?;
-    let arbol = analizar(&salida, TOPE, "columnas", "")?;
-    let mut out = BTreeMap::new();
-    for f in arbol.items() {
-        let campo = |k: &str| f.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
-        if let (Some(c), Some(t)) = (campo("column_name"), campo("data_type")) {
-            out.insert(c, t);
-        }
-    }
+/// Los tipos de las columnas de la tabla, de `tables.get`: sin job y sin coste.
+/// En los nombres de GoogleSQL, que es lo que un parámetro espera.
+fn tipos_de(
+    t: &dyn rest::Transporte,
+    proyecto: &str,
+    objeto: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let (dataset, tabla) = consultas::partes(objeto)?;
+    let campos = rest::esquema(t, proyecto, dataset, tabla)?;
+    let out: BTreeMap<String, String> = campos
+        .iter()
+        .filter_map(|c| {
+            Some((
+                c["name"].as_str()?.to_string(),
+                valores::estandar(c["type"].as_str()?).to_string(),
+            ))
+        })
+        .collect();
     if out.is_empty() {
-        return Err(format!(
-            "`{objeto}` no devolvió ninguna columna. O no existe, o la credencial de `bq` no \
-             alcanza a su `INFORMATION_SCHEMA`"
-        ));
+        return Err(format!("`{objeto}` no tiene ninguna columna"));
     }
     Ok(out)
 }
@@ -302,24 +246,12 @@ fn tipos_de(proyecto: &str, objeto: &str) -> Result<BTreeMap<String, String>, St
 ///
 /// # Y sin él, `none` — que es una respuesta cierta y no una rendición
 ///
-/// El protocolo dice que *«`valor: None` con `modo: "none"` es la respuesta de
-/// un origen que no sabe fecharse»*. Este driver no sabe fechar una tabla de
-/// BigQuery, y hay dos formas de no saberlo que conviene no confundir:
-///
 /// - **`log`** es lo que la receta del catálogo emite cuando la tabla tiene el
-///   historial de cambios encendido, y su ordinal es un instante de
-///   confirmación. Servirlo exigiría leer por `CHANGES`, que es otro camino de
-///   lectura entero — y prometer el testigo sin poder servir su rango dejaría
-///   una copia que se fecha y no se refresca.
-/// - **`snapshot`** se podría sacar de la metadata de almacenamiento, y sería
-///   mentir un poco: `leer` no fija `FOR SYSTEM_TIME AS OF`, así que el testigo
-///   y las filas no serían el mismo instante. Es justo lo que `snapshot`
-///   promete.
-///
-/// Contestar `none` deja la copia sin fecha y **lo dice**; `materialize` avisa
-/// cuando el origen contesta menos de lo que la tabla declara, y ese aviso es
-/// preferible a una marca que no respalda nada.
-fn testigo(peticion: &str) -> Result<String, String> {
+///   historial de cambios encendido. Servirlo exigiría leer por `CHANGES`, que
+///   es otro camino de lectura entero (Fase B).
+/// - **`snapshot`** exigiría que `leer` fijara `FOR SYSTEM_TIME AS OF`, y no lo
+///   hace: el testigo y las filas no serían el mismo instante.
+fn testigo(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
     let cursor = ore_core::parse::parse(peticion).ok().and_then(|n| {
         n.get("cursor")
@@ -330,177 +262,57 @@ fn testigo(peticion: &str) -> Result<String, String> {
         return Ok(ore_driver::testigo("none", None));
     };
     let proyecto = proyecto(&url)?;
-    let salida = bq(&proyecto, &consultas::maximo(&proyecto, &objeto, &c)?)?;
-    let arbol = analizar(&salida, TOPE, "filas", "")?;
-    let maximo = arbol
-        .items()
-        .first()
-        .and_then(|f| f.get("m"))
-        .and_then(|(_, v)| v.as_str())
-        .filter(|s| *s != "null")
-        .map(String::from);
-    // Una tabla vacía no tiene máximo, y eso no es un fallo: es que no hay por
-    // dónde avanzar todavía.
+    let mut maximo: Option<String> = None;
+    rest::consultar(
+        t,
+        &proyecto,
+        &rest::Consulta {
+            texto: &consultas::maximo(&proyecto, &objeto, &c)?,
+            parametros: &[],
+            sin_job: true,
+        },
+        |_, filas| {
+            // `m` es la única columna; una tabla vacía da NULL, y eso no es un
+            // fallo: es que no hay por dónde avanzar todavía.
+            if let Some(f) = filas.first() {
+                maximo = f["f"][0]["v"].as_str().map(String::from);
+            }
+            Ok(())
+        },
+    )?;
     Ok(ore_driver::testigo("field", maximo.as_deref()))
 }
 
-// ── ⓪ · Que contiene esta fuente ────────────────────────────────────────────
+// ── ⓪ · Qué contiene esta fuente ────────────────────────────────────────────
 
-/// **Los datasets del proyecto.**
-///
-/// `bq ls` y no una consulta: listar datasets no es preguntarle nada a ninguno,
-/// y `INFORMATION_SCHEMA` es **por dataset** — para recorrerlos con SQL habria
-/// que saberselos ya, que es justo lo que esto viene a contestar.
-///
-/// Devuelve, por cada uno, la URL que habria que declarar. Que salga hecha no
-/// es comodidad: es lo que evita que alguien la componga a mano y se equivoque
-/// en el separador.
-fn explorar(url: &str) -> Result<String, String> {
+/// **Los datasets del proyecto**, con la URL que habría que declarar. Que salga
+/// hecha evita que alguien la componga a mano y se equivoque en el separador.
+fn explorar(t: &dyn rest::Transporte, url: &str) -> Result<String, String> {
+    use ore_core::json::Json;
     let proyecto = proyecto(url)?;
-    let ruta = resolver("bq").ok_or_else(|| {
-        "no se encontro `bq` en el PATH. Es el cliente de BigQuery, y viene con el SDK de          Google: este programa no habla con BigQuery, habla con el"
-            .to_string()
-    })?;
-    let salida = Command::new(&ruta)
-        .args([
-            "ls".to_string(),
-            "--format=prettyjson".to_string(),
-            "--datasets=true".to_string(),
-            // Uno más de los que se admiten: ver la cabecera.
-            format!("--max_results={}", TOPE_DATASETS + 1),
-            format!("--project_id={proyecto}"),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", ruta.display()))?;
-    if !salida.status.success() {
+    let nombres = rest::datasets(t, &proyecto)?;
+    if nombres.is_empty() {
         return Err(format!(
-            "`bq ls` fallo:
-{}",
-            String::from_utf8_lossy(&salida.stderr).trim()
+            "`{proyecto}` no tiene ningún dataset visible con esta credencial. Una lista vacía \
+             tendría el mismo aspecto que un proyecto al que no se llega, así que se dice"
         ));
     }
-    let texto = String::from_utf8_lossy(&salida.stdout).into_owned();
-    let arbol = analizar(
-        &texto,
-        TOPE_DATASETS,
-        "datasets",
-        "Un sondeo parcial con el aspecto de uno completo es peor que ninguno: \
-         declara por su URL el dataset que buscas.",
-    )?;
-    let mut fuera: Vec<ore_core::json::Json> = Vec::new();
-    for d in arbol.items() {
-        // `datasetReference.datasetId` es lo documentado; `id` —`proyecto:ds`—
-        // es el respaldo. Se prueban los dos y no se inventa ninguno.
-        let nombre = d
-            .get("datasetReference")
-            .and_then(|(_, r)| r.get("datasetId"))
-            .and_then(|(_, v)| v.as_str())
-            .map(String::from)
-            .or_else(|| {
-                d.get("id")
-                    .and_then(|(_, v)| v.as_str())
-                    .and_then(|s| s.split_once(':'))
-                    .map(|(_, ds)| ds.to_string())
-            });
-        let Some(n) = nombre else { continue };
-        fuera.push(ore_core::json::Json::obj([
-            ("nombre", ore_core::json::Json::s(&n)),
-            (
-                "url",
-                ore_core::json::Json::s(format!("bigquery://{proyecto}/{n}")),
-            ),
-        ]));
-    }
-    if fuera.is_empty() {
-        return Err(format!(
-            "`{proyecto}` no tiene ningun dataset visible con esta credencial. Una lista vacia              tendria el mismo aspecto que un proyecto al que no se llega, asi que se dice"
-        ));
-    }
-    Ok(ore_core::json::Json::obj([("contiene", ore_core::json::Json::Arr(fuera))]).pretty())
-}
-
-// ── Ejecutar `bq` ───────────────────────────────────────────────────────────
-
-/// `CreateProcess` no consulta `PATHEXT`, y en Windows `bq` **es un `.cmd`**.
-/// Resolver a mano es lo que hace que este programa lo encuentre igual que lo
-/// encuentra `ore`.
-fn resolver(programa: &str) -> Option<PathBuf> {
-    let exts: Vec<OsString> = std::env::var_os("PATHEXT")
-        .map(|p| {
-            p.to_string_lossy()
-                .split(';')
-                .filter(|e| !e.is_empty())
-                .map(OsString::from)
-                .collect()
+    let fuera = nombres
+        .iter()
+        .map(|n| {
+            Json::obj([
+                ("nombre", Json::s(n)),
+                ("url", Json::s(format!("bigquery://{proyecto}/{n}"))),
+            ])
         })
-        .unwrap_or_default();
-    for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
-        let base = dir.join(programa);
-        for e in &exts {
-            let mut con = base.clone().into_os_string();
-            con.push(e);
-            let p = PathBuf::from(con);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        if base.is_file() {
-            return Some(base);
-        }
-    }
-    None
-}
-
-fn bq(proyecto: &str, i: &consultas::Invocacion) -> Result<String, String> {
-    let ruta = resolver("bq").ok_or_else(|| {
-        "no se encontró `bq` en el PATH. Es el cliente de BigQuery, y viene con el SDK de \
-         Google: este programa no habla con BigQuery, habla con él"
-            .to_string()
-    })?;
-    let mut args: Vec<String> = vec![
-        "query".into(),
-        "--format=prettyjson".into(),
-        "--use_legacy_sql=false".into(),
-        // Una más de las que se admiten, para poder distinguir «justo el tope»
-        // de «más de las que caben». Ver la cabecera.
-        format!("--max_rows={}", TOPE + 1),
-        "--quiet".into(),
-        format!("--project_id={proyecto}"),
-    ];
-    args.extend(i.parametros.iter().map(|p| format!("--parameter={p}")));
-
-    let mut hijo = Command::new(&ruta)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", ruta.display()))?;
-    if let Some(mut s) = hijo.stdin.take() {
-        use std::io::Write as _;
-        let _ = s.write_all(i.consulta.as_bytes());
-    }
-    let salida = hijo
-        .wait_with_output()
-        .map_err(|e| format!("`bq` no terminó: {e}"))?;
-    if !salida.status.success() {
-        // Su stderr, literal. `bq` avisa de que le falta un intérprete o de que
-        // no hay sesión, y las dos cosas se arreglan solas en cuanto se leen:
-        // resumirlas convierte un problema de cinco minutos en una tarde.
-        return Err(format!(
-            "`bq` falló:\n{}",
-            String::from_utf8_lossy(&salida.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&salida.stdout).into_owned())
+        .collect();
+    Ok(Json::obj([("contiene", Json::Arr(fuera))]).pretty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rest::pruebas::{Guion, grabada};
 
     #[test]
     fn el_proyecto_sale_de_la_url_y_el_dataset_no() {
@@ -510,29 +322,55 @@ mod tests {
         assert!(proyecto("bigquery:///hr").is_err());
     }
 
-    /// **Justo el tope se sirve; una más se niega.**
-    ///
-    /// La frontera es el test entero: pedir `tope + 1` solo sirve de algo si
-    /// `tope` exacto sigue pasando. Con la comparación mal puesta —`>=`— una
-    /// tabla de justo un millón de filas dejaría de poder materializarse, que
-    /// es el error simétrico y tampoco avisa de nada.
+    /// `leer` de punta a punta contra lo grabado: `tables.get` para los tipos
+    /// (el filtro los pide) y la consulta; la salida es la fila de
+    /// `ore_driver::fila`, con el nulo ausente y el texto `null` intacto.
     #[test]
-    fn el_tope_se_alcanza_y_no_se_pasa() {
-        assert!(dentro_del_tope(0, 2, "filas", "").is_ok());
-        assert!(dentro_del_tope(2, 2, "filas", "").is_ok());
-        let e = dentro_del_tope(3, 2, "filas", "recorta").unwrap_err();
-        assert!(e.contains("más de 2 filas"), "{e}");
-        assert!(e.contains("sin decirlo"), "{e}");
-        assert!(e.contains("recorta"), "{e}");
+    fn leer_emite_las_filas_de_la_semilla() {
+        let g = Guion::new(vec![
+            Ok(grabada("pedidos-tables-get")),
+            Ok(grabada("pedidos-query")),
+        ]);
+        let peticion = r#"{"url":"bigquery://p/ventas","objeto":"ventas.pedidos",
+            "proyeccion":{"id":"id","total":"total","ts":"ts"},
+            "filtros":[{"columna":"id","operador":"gt","valor":"ore-e2e-"}]}"#;
+        let mut salida = Vec::new();
+        let n = filas(&g, peticion, &mut salida).unwrap();
+        let texto = String::from_utf8(salida).unwrap();
+        let lineas: Vec<&str> = texto.lines().collect();
+        assert_eq!(n, 8);
+        assert_eq!(
+            lineas[1],
+            r#"{"id":"ore-e2e-p2","total":"0","ts":"2026-09-02 23:59:59.123456+00"}"#
+        );
+        assert_eq!(lineas[4], r#"{"id":"ore-e2e-p5"}"#);
+        let pedidas = g.pedidas.borrow();
+        assert!(pedidas[0].starts_with("GET projects/p/datasets/ventas/tables/pedidos"));
+        assert!(pedidas[1].contains(r#""type":"STRING""#), "{}", pedidas[1]);
     }
 
-    /// Y lo que de verdad se quiere sujetar: que `bq` cortando en seco lo
-    /// **parezca**. Se le da a `analizar` una respuesta con una fila de más y
-    /// tiene que negarse, no devolver las que caben.
     #[test]
-    fn una_respuesta_cortada_no_pasa_por_analizar() {
-        let tres = r#"[{"a":"1"},{"a":"2"},{"a":"3"}]"#;
-        assert!(analizar(tres, 3, "filas", "").is_ok());
-        assert!(analizar(tres, 2, "filas", "").is_err());
+    fn el_texto_null_de_clientes_sigue_siendo_texto() {
+        let g = Guion::new(vec![
+            Ok(grabada("clientes-tables-get")),
+            Ok(grabada("clientes-query")),
+        ]);
+        let peticion = r#"{"url":"bigquery://p/ventas","objeto":"ventas.clientes",
+            "proyeccion":{"id":"id","pais":"pais"}}"#;
+        let mut salida = Vec::new();
+        filas(&g, peticion, &mut salida).unwrap();
+        let texto = String::from_utf8(salida).unwrap();
+        assert!(
+            texto.contains(r#"{"id":"ore-e2e-c4","pais":"null"}"#),
+            "{texto}"
+        );
+        assert!(texto.contains(r#"{"id":"ore-e2e-c3"}"#), "{texto}");
+    }
+
+    #[test]
+    fn explorar_da_la_url_hecha() {
+        let g = Guion::new(vec![Ok(grabada("datasets-list"))]);
+        let s = explorar(&g, "bigquery://p").unwrap();
+        assert!(s.contains("bigquery://p/ventas"), "{s}");
     }
 }

@@ -2190,7 +2190,10 @@ version = "0.1.0"
 dependencies = [
  "ore-core",
  "ore-driver",
+ "ore-gcp",
  "ore-sql",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
