@@ -43,7 +43,7 @@ Fase A tiene que conseguir, y cada aserción en rojo lleva la etiqueta del paso 
 la apaga (`[A2]` el transporte REST, `[A3]` el catálogo en el driver, `[A4]` el
 contrato de tipos). La línea base medida: 11 en rojo —el texto `'null'` se vuelve
 NULL, los microsegundos se pierden, un TIMESTAMP se queda como texto, NUMERIC cae a
-`decimal(38, 18)`, `REQUIRED` no llega a Iceberg— y 12 en verde. Tras A2 (REST): 4 en rojo, 1 de A3 y 3 de A4. Tras A3 (el catálogo en el driver): 3, las de A4. **CI no la corre**:
+`decimal(38, 18)`, `REQUIRED` no llega a Iceberg— y 12 en verde. Tras A2 (REST): 4 en rojo, 1 de A3 y 3 de A4. Tras A3 (el catálogo en el driver): 3, las de A4. Tras A4 (`Decimal<p, s>`): todo en verde, y `required` en Iceberg se dice como [B], pendiente de la Fase B. **CI no la corre**:
 no alcanza BigQuery, y sin `BQ_URL` la prueba se salta diciéndolo. Los tests del
 driver leen en su lugar respuestas grabadas de verdad
 (`crates/ore-read-bigquery/tests/rest/`, que regenera `grabar-bigquery-rest.py`).

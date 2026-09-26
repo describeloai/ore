@@ -87,7 +87,7 @@ Medido antes de decidir nada (`medida-w3-leer.py`, `medida-w3-tipos.py`):
 | sitio | quién lo pone | vocabulario |
 |---|---|---|
 | **el origen** | el driver, al descubrir (`ore-read-postgres`, `ore-read-bigquery`, `ore-read-jsonl`) | el físico del origen (`numeric(10,2)`, `timestamptz`, `INT64`), citado en `Table.columns.<c>.physicalType` |
-| **el árbol** | el mismo driver, que ya lo traduce (`escalar()`), y el inductor, que **hoy lo tira** | el escalar de OOS: `String · Integer · Decimal · Float · Boolean · Date · Time · DateTime · DateTimeTz · Opaque` |
+| **el árbol** | el mismo driver, que ya lo traduce (`escalar()`), y el inductor, que lo escribe desde T2 (antes lo tiraba) | el escalar de OOS: `String · Integer · Decimal · Float · Boolean · Date · Time · DateTime · DateTimeTz · Opaque` |
 | **la copia** | `ore-store::carga`, al sellar | Arrow/Parquet, estrechado desde el escalar (abajo) |
 | **la celda** | el SDK de cada lenguaje | el tipo nativo columnar del lenguaje (abajo), y el JSON de la consola |
 
@@ -96,7 +96,8 @@ Medido antes de decidir nada (`medida-w3-leer.py`, `medida-w3-tipos.py`):
 | OOS | Arrow / Parquet | pyarrow / pandas(ArrowDtype) | Node (DuckDB tipado) | Java (Arrow) | JSON de la consola |
 |---|---|---|---|---|---|
 | `Integer` | `int64` | · / `int64[pyarrow]` (nulable) | `bigint` | `Long` | número si \|x\| ≤ 2⁵³, si no **cadena** |
-| `Decimal` | `decimal128(p, s)` (p, s del `physicalType`; sin ellos, **(38, 18)**, el mismo por defecto que Foundry) | `Decimal` · | `DuckDBDecimalValue` · | `BigDecimal` · | **cadena** siempre (`"12345.6789"`) |
+| `Decimal` | `decimal128(38, 18)`: la precisión **no se declaró** (el mismo por defecto que Foundry). Hasta T5 esta fila decía «p, s del `physicalType`», y no había código que lo hiciera | `Decimal` · | `DuckDBDecimalValue` · | `BigDecimal` · | **cadena** siempre (`"12345.6789"`) |
+| `Decimal<p, s>` (T5) | `decimal128(p, s)` | `Decimal` · | `DuckDBDecimalValue` · | `BigDecimal` · | **cadena** siempre |
 | `Float` | `float64` | · | `number` | `Double` | número; `NaN`, `inf`, `-inf` como **cadena** |
 | `Boolean` | `bool` | · | `boolean` | `Boolean` | booleano |
 | `String` | `string` (`large_string` si > 2 GB de columna) | · | `string` | `String` | cadena |
@@ -260,6 +261,9 @@ antes de meter nada en una imagen:
 - Lo que falta para que la precisión llegue al Parquet (`numeric(10,2)` → `decimal128(10, 2)`
   en vez de `(38, 18)`): la cabecera de la copia lleva sólo el escalar. Es cosmético —
   `decimal128` ocupa 16 bytes con cualquier precisión— y queda para T3 si el SDK lo necesita.
+  **No era cosmético** (T5, medido el 2026-09-26): `(38, 18)` admite 20 cifras enteras, un
+  `NUMERIC` de BigQuery 29, y basta un valor que no quepa para que la columna entera se quede
+  como texto. Los 16 bytes eran ciertos; la conclusión no.
 
 ### T3, hecho: la celda ve el contrato
 
@@ -377,3 +381,38 @@ clúster o pago: BigQuery (BigLake) leyendo el `metadata.json` en sitio.
 | **T2** ✓ 2026-09-20 | el escalar al árbol: `Table.columns.<c>.type` en OOS (`oos@65715b8`), el driver emite tipo y cita, el inductor los escribe, `tipos_de_raiz` tipa con la tabla y la entidad afina | hecho: `ore view` de una vista sobre una tabla tipada sin entidad da `id: Integer · sueldo: Decimal · desde: Date` (prueba `el_tipo_de_la_tabla_llega_al_esquema_del_plan_y_la_entidad_lo_afina`); en el clúster, tras desplegar: re-inducir el paquete (`POST /paquetes/{n}/copia` o rehacer la database) → la cabecera de la copia cambia → la pasada siguiente sella copias tipadas y `medida-w3-tipos.py` deja de decir `string×218` |
 | **T3** ✓ 2026-09-20 | la celda: valores tipados en los tres (pandas `ArrowDtype` · DuckDB tipado con límite · Arrow Java con `Filas` y `arrow()`), el JSON único en el SDK (`ore.tabla`), `estricto` donde hay algo que degradar | `medida-w3-leer.py`: **23/23 en los seis caminos** (`over`/`sql` × Python/Node/Java), 0 degradadas; `el-puesto.sh` 1–9 con los tres agentes; `--comprobar` de las dos imágenes ejerce el contrato al construirse |
 | **T4** ✓ 2026-09-20 | Arrow JS y Arrow Java medidos con la misma matriz antes de entrar en las imágenes | arriba: Java → Arrow (23/23, 14,6 M filas/s, 5 MB); Node → DuckDB tipado por columnas (22/23, sin añadir nada) y no Arrow JS (11/23, 21 MB); en Node no se materializan 10 M de filas |
+| **T5** ✓ 2026-09-26 | la precisión en la gramática: `Decimal<p, s>` (oos `0e6abc1`, `a2abba1`, `98e40ab`, `cc959f0`); los drivers la dicen; la copia la usa; el motor de vistas opera con ella | abajo; conformidad 82/82; `bigquery-real.sh` en verde contra BigQuery real: `NUMERIC` → `Decimal<38, 9>` → `decimal(38, 9)` |
+
+## T5 · `Decimal<p, s>` (2026-09-26)
+
+**Lo que se midió.** Con el estrechado real (`Fisico::analizar`), `(38, 18)` no admite un valor
+de 21 cifras enteras ni el máximo de un `NUMERIC` de BigQuery (29); `(38, 9)` los admite todos.
+Un `numeric` de PostgreSQL con más de 18 decimales no cabe en ninguno, y el `BIGNUMERIC`
+(76 cifras) tampoco: Iceberg y Parquet paran en 38 (`MAX_DECIMAL_PRECISION` de la crate
+`iceberg`). La precisión del origen vivía solo en `physicalType` —una cita que no se
+interpreta— y se perdía en `vistas::tipos_de_columnas`, en el esquema de `ore-view` y en la
+cabecera de la copia.
+
+**Por qué la gramática y no un camino paralelo.** Un prototipo de ~25 líneas (una variante de
+`Type`) llevó el tipo de BigQuery real hasta `decimal(38, 9)` en Iceberg sin tocar nada más:
+el tipo ya viajaba por todas partes. Lo que no viajaba se vio también: una vista que filtraba
+la columna por un literal dejaba de tipar, y unos diez sitios degradaban el tipo nuevo a texto
+en silencio. Un mapa paralelo de `physicalType` habría tenido que cruzar las mismas costuras
+sin que el compilador señalara ninguna.
+
+**Lo que decide.**
+
+| | |
+|---|---|
+| la forma | `Decimal<p, s>`, `1 ≤ p ≤ 38`, `0 ≤ s ≤ p` (02-entity §3.2). Fuera de rango, `OOS3002`; también en las `columns` de `Table` y `Dataset`, donde antes un tipo mal escrito se descartaba en silencio |
+| `Decimal` a secas | sigue: precisión no declarada, físico `(38, 18)` |
+| lo que no cabe en 38 | `String`, con la cita del origen: el valor exacto viaja como texto |
+| el ensanche | sin perder cifras por ningún lado; declarar o retirar la precisión es `OOS5010` (02 §3.4, 91 §5.1) |
+| la vista | `sum` → `Decimal<38, s>`, `avg` → `Decimal<38, max(s, 9)>`, `min`/`max` conservan; comparaciones y uniones en el supertipo; más de 38 cifras, no tipa; un `Integer` no se mezcla (02 §3.5) |
+| la fusión | un decimal solo se convierte si ensancha: `arrow_cast` redondea `0.005` a `0.01` con `Ok`, también con `safe: false` (medido), así que la guarda es de `carga::al_esquema` y no del cast |
+| la vuelta | `decimal(p, s)` de Iceberg vuelve como `Decimal<p, s>`, y `(38, 18)` como `Decimal`: ida y vuelta exactas |
+
+**Lo que no decide.** La nulabilidad (`REQUIRED` del origen → `required` en Iceberg) se midió en
+el mismo trabajo y se sacó: pide un cambio de spec, un análisis de nulabilidad en las vistas
+(una junta por la izquierda, una columna calculada), y que Iceberg no deja endurecer una tabla
+que existe. Queda para su propio ADR.
