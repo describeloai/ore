@@ -79,6 +79,22 @@
 //!
 //! Y `leer` deja de exigir la cabecera de la copia: lo que otro escribió
 //! también se lee, con una cabecera hecha del esquema de la tabla.
+//!
+//! # La copia de una vista SQL (ADR 0040 paso 4c)
+//!
+//! La consulta de una vista SQL la ejecuta DuckDB en la imagen del puesto, en
+//! un paso del Job de la copia **que no monta credencial**: no lee el bucket.
+//! Le llegan los datasets que la consulta lee, y deja lo que devuelve, en
+//! ficheros Arrow; quien lee el bucket y quien sella la copia sigue siendo
+//! este programa. Dos verbos más, por fichero y no por stdin/stdout porque el
+//! paso de en medio es otro contenedor:
+//!
+//! - **`volcar`**: `{metadata_location, dataset, archivo}` → el dataset entero
+//!   (con los *position deletes* aplicados) en `archivo`, Arrow IPC;
+//! - **`sellar-arrow`**: la cabecera con `dataset`, `base` y `archivo` → las
+//!   columnas que el contrato declara, cada una en su físico de 0032, sellan la
+//!   copia **entera** (sobrescribe: la copia de una vista se rehace entera,
+//!   decisión D) por la misma cola que `sellar` y `copiar`.
 
 use crate::almacen::Almacen;
 use crate::lago::{self, Lago, Operacion};
@@ -232,6 +248,15 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         }
         "recoger-huerfanas" => recoger_huerfanas(&lago, &n),
         "leer" => leer(&lago, &n),
+        "volcar" => volcar(&lago, &n),
+        "sellar-arrow" => {
+            let cab = leer_cabecera(primera)?;
+            let dataset = campo("dataset")
+                .ok_or("a `sellar-arrow` le falta `dataset`: bajo qué nombre vive la copia")?;
+            let archivo = campo("archivo")
+                .ok_or("a `sellar-arrow` le falta `archivo`: el Arrow que la consulta dejó")?;
+            sellar_arrow(&lago, &cab, &dataset, campo("base").as_deref(), &archivo)
+        }
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -240,7 +265,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer` e `historia`"
+             `recoger-huerfanas`, `leer`, `historia`, `volcar` y `sellar-arrow`"
         )),
     }
 }
@@ -574,6 +599,154 @@ fn copiar(
         columnas,
         sin_estrechar,
         Some(leidas),
+    )
+}
+
+/// **`volcar`** (ADR 0040 paso 4c): el dataset entero, tal como se lee —con
+/// los *position deletes* aplicados—, en un fichero Arrow IPC (stream). Es lo
+/// que el paso que ejecuta la consulta de una vista SQL recibe en vez de una
+/// credencial del bucket.
+fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+    let campo = |k: &str| {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+    };
+    let ml = campo("metadata_location")
+        .ok_or("a `volcar` le falta `metadata_location`: el puntero del dataset")?;
+    let archivo = campo("archivo").ok_or("a `volcar` le falta `archivo`: dónde dejarlo")?;
+    let dataset = campo("dataset").unwrap_or_else(|| "dataset".into());
+    let t = lago.abrir(&ml, &dataset)?;
+    let lotes = lago.lotes(&t)?;
+    let esquema = match lotes.first() {
+        Some(l) => l.schema(),
+        // Sin filas, el esquema de la tabla: la consulta tiene que poder
+        // nombrar sus columnas aunque no haya ninguna fila.
+        None => std::sync::Arc::new(
+            iceberg::arrow::schema_to_arrow_schema(t.metadata().current_schema())
+                .map_err(|e| format!("el esquema de `{dataset}` no pasa a Arrow: {e}"))?,
+        ),
+    };
+    let f = std::fs::File::create(&archivo)
+        .map_err(|e| format!("no se pudo crear `{archivo}`: {e}"))?;
+    let mut w = arrow_ipc::writer::StreamWriter::try_new(std::io::BufWriter::new(f), &esquema)
+        .map_err(|e| format!("no se pudo empezar `{archivo}`: {e}"))?;
+    let mut filas = 0usize;
+    for l in &lotes {
+        filas += l.num_rows();
+        w.write(l)
+            .map_err(|e| format!("no se pudo escribir `{archivo}`: {e}"))?;
+    }
+    w.finish()
+        .map_err(|e| format!("no se pudo cerrar `{archivo}`: {e}"))?;
+    Ok(Json::obj([
+        ("archivo", Json::s(&archivo)),
+        ("filas", Json::Int(filas as i64)),
+    ])
+    .jcs())
+}
+
+/// **`sellar-arrow`** (ADR 0040 paso 4c): lo que devolvió la consulta de una
+/// vista SQL, en Arrow, sella su copia. Las columnas son **las del contrato**
+/// (la cabecera), cada una en el físico de 0032 que declara: una que la
+/// consulta no trae, o que no convierte, se dice con su nombre y no se sella
+/// nada. La copia de una vista se rehace entera (decisión D): sobrescribe.
+fn sellar_arrow(
+    lago: &Lago,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    base: Option<&str>,
+    archivo: &str,
+) -> Result<String, String> {
+    use arrow_array::{Array, RecordBatch};
+    use arrow_schema::{Field, Schema};
+
+    let f =
+        std::fs::File::open(archivo).map_err(|e| format!("no se pudo abrir `{archivo}`: {e}"))?;
+    let lector = arrow_ipc::reader::StreamReader::try_new(std::io::BufReader::new(f), None)
+        .map_err(|e| format!("`{archivo}` no es Arrow IPC: {e}"))?;
+    let esquema = Arc::new(Schema::new(
+        cab.esquema
+            .iter()
+            .map(|(n, t)| Field::new(n, carga::arrow_del_oos(t), true))
+            .collect::<Vec<_>>(),
+    ));
+    let mut lotes: Vec<RecordBatch> = Vec::new();
+    let mut filas = 0usize;
+    for lote in lector {
+        let lote = lote.map_err(|e| format!("`{archivo}` no se lee entero: {e}"))?;
+        if let Some(sobra) = lote
+            .schema()
+            .fields()
+            .iter()
+            .find(|f| !cab.esquema.contains_key(f.name()))
+        {
+            return Err(format!(
+                "la consulta devolvió `{}`, y el contrato de la vista no la declara",
+                sobra.name()
+            ));
+        }
+        let mut columnas = Vec::with_capacity(esquema.fields().len());
+        for f in esquema.fields() {
+            let c = lote.column_by_name(f.name()).ok_or_else(|| {
+                format!(
+                    "el contrato declara `{}` y la consulta no la devolvió",
+                    f.name()
+                )
+            })?;
+            columnas.push(if c.data_type() == f.data_type() {
+                c.clone()
+            } else {
+                arrow_cast::cast(c, f.data_type()).map_err(|e| {
+                    format!(
+                        "la columna `{}` es `{}` y no convierte a `{}` (lo que su contrato declara): {e}",
+                        f.name(),
+                        c.data_type(),
+                        f.data_type()
+                    )
+                })?
+            });
+        }
+        filas += lote.num_rows();
+        let l = RecordBatch::try_new(esquema.clone(), columnas)
+            .map_err(|e| format!("el lote de la consulta no construye: {e}"))?;
+        if l.num_rows() > 0 {
+            lotes.push(l);
+        }
+    }
+    if lotes.is_empty() {
+        lotes.push(RecordBatch::new_empty(esquema.clone()));
+    }
+    let columnas = Json::Obj(
+        esquema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let n: usize = lotes
+                    .iter()
+                    .map(|l| l.num_rows() - l.column(i).null_count())
+                    .sum();
+                (f.name().clone(), Json::Int(n as i64))
+            })
+            .collect(),
+    );
+    let previa = match base {
+        Some(b) => Some(lago.abrir(b, dataset)?),
+        None => None,
+    };
+    confirmar_copia(
+        lago,
+        cab,
+        dataset,
+        base,
+        false,
+        previa,
+        lotes,
+        columnas,
+        BTreeMap::new(),
+        Some(filas),
     )
 }
 
@@ -2883,6 +3056,126 @@ mod tests {
         let origen = n.get("origen").unwrap().1.clone();
         let e = copiar(&lago, &cab, "copias/ventas_v", None, false, &origen).unwrap_err();
         assert!(e.contains("`id = tres`"), "{e}");
+    }
+
+    /// ADR 0040 paso 4c: `volcar` saca el dataset entero en Arrow, y lo que
+    /// la consulta devuelva sella la copia con las columnas del contrato, cada
+    /// una en su físico (Int32 → Integer, texto grande → String); rehacerla es
+    /// sobrescribirla; una columna que el contrato no declara, o que falta, se
+    /// dice y no sella nada.
+    #[test]
+    fn volcar_y_sellar_arrow_son_la_copia_de_una_consulta() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let ds = "datasets/ventas_origen";
+        let e1 = escribir(
+            &lago,
+            &format!("{{\"dataset\":\"{ds}\",\"operacion\":\"c-1\"}}"),
+            &tabla_ipc(0, 5, false)[..],
+        )
+        .expect("nace");
+        let ml = campo(
+            &aplicar_lo_escrito(&lago, &e1, ds, None),
+            "metadata_location",
+        );
+        let dir = std::env::temp_dir().join(format!("ore-volcar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entrada = dir.join("entrada.arrow");
+        let v = volcar(
+            &lago,
+            &nodo(
+                &Json::obj([
+                    ("metadata_location", Json::s(&ml)),
+                    ("dataset", Json::s(ds)),
+                    ("archivo", Json::s(entrada.to_string_lossy())),
+                ])
+                .jcs(),
+            ),
+        )
+        .expect("vuelca");
+        assert_eq!(campo(&v, "filas"), "5", "{v}");
+        let leidos: Vec<_> =
+            arrow_ipc::reader::StreamReader::try_new(std::fs::File::open(&entrada).unwrap(), None)
+                .unwrap()
+                .map(|l| l.unwrap())
+                .collect();
+        assert_eq!(leidos.iter().map(|l| l.num_rows()).sum::<usize>(), 5);
+        assert!(leidos[0].column_by_name("total").is_some());
+
+        // lo que la consulta devolvió: `id` en Int32 y `nombre` en texto grande
+        let cab = sobre::Cabecera {
+            plan: "sha256:consulta".into(),
+            esquema: [
+                ("id".to_string(), "Integer".to_string()),
+                ("nombre".to_string(), "String".to_string()),
+            ]
+            .into(),
+            testigo: sobre::Testigo {
+                modo: "snapshot".into(),
+                valor: Some("ventas.origen@1".into()),
+            },
+            clave: Vec::new(),
+            conducto: "materialization.payload".into(),
+        };
+        let salida = dir.join("salida.arrow");
+        let de_la_consulta = |cols: &[&str], archivo: &std::path::Path| {
+            let todas = tabla_ipc(0, 3, false);
+            let l = arrow_ipc::reader::StreamReader::try_new(&todas[..], None)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+            let idx: Vec<usize> = cols
+                .iter()
+                .map(|c| l.schema().index_of(c).unwrap())
+                .collect();
+            let l = l.project(&idx).unwrap();
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(
+                std::fs::File::create(archivo).unwrap(),
+                &l.schema(),
+            )
+            .unwrap();
+            w.write(&l).unwrap();
+            w.finish().unwrap();
+        };
+        de_la_consulta(&["id", "nombre"], &salida);
+        let archivo = salida.to_string_lossy().to_string();
+        let c = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).expect("sella");
+        assert_eq!(campo(&c, "operacion"), "creada", "{c}");
+        assert_eq!(campo(&c, "filas"), "3", "{c}");
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{}\",\"dataset\":\"datasets/ventas_copia\"}}",
+                campo(&c, "metadata_location")
+            )),
+        )
+        .expect("lee");
+        let mut lineas = l.lines();
+        let cabecera: serde_json::Value = serde_json::from_str(lineas.next().unwrap()).unwrap();
+        assert_eq!(cabecera["plan"], "sha256:consulta");
+        assert_eq!(cabecera["testigo"]["valor"], "ventas.origen@1");
+        let filas: Vec<serde_json::Value> =
+            lineas.map(|x| serde_json::from_str(x).unwrap()).collect();
+        assert_eq!(filas.len(), 3, "{l}");
+        assert_eq!(filas[1]["nombre"], "n1");
+        // rehacerla es sobrescribirla
+        let ml_c = campo(&c, "metadata_location");
+        let c2 = sellar_arrow(&lago, &cab, "datasets/ventas_copia", Some(&ml_c), &archivo)
+            .expect("rehace");
+        assert_eq!(campo(&c2, "operacion"), "sobrescrita", "{c2}");
+        assert_eq!(campo(&c2, "filas"), "3", "{c2}");
+        // lo que el contrato no declara, y lo que falta: se dicen
+        de_la_consulta(&["id", "nombre", "total"], &salida);
+        let e = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).unwrap_err();
+        assert!(e.contains("`total`") && e.contains("no la declara"), "{e}");
+        de_la_consulta(&["id"], &salida);
+        let e = sellar_arrow(&lago, &cab, "datasets/ventas_copia", None, &archivo).unwrap_err();
+        assert!(
+            e.contains("`nombre`") && e.contains("no la devolvió"),
+            "{e}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn aplicar_lo_escrito_err(

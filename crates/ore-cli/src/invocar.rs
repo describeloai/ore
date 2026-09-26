@@ -152,8 +152,9 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         })
         .ok_or_else(|| (65, format!("`over: {over}` no es una vista del árbol")))?;
     // 0033: la copia de `over` es el primer dataset bajando por su cadena
-    // (ella misma incluida si es un dataset).
-    let Some(copia) = ore_core::vistas::raiz_de_lectura(&pkg, vista) else {
+    // (ella misma incluida si es un dataset); la de una vista SQL, el dataset
+    // que la copia entera, encima (ADR 0040 paso 4c).
+    let Some(copia) = ore_core::vistas::dataset_de_lectura(&pkg, vista) else {
         return Err((
             65,
             format!(

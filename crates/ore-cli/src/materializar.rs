@@ -44,6 +44,37 @@
 //! fila a nadie, y el puntero guarda su digest: si coinciden, la copia está y
 //! no se lee el origen. Un `HEAD` al `metadata.json` apuntado protege de un
 //! bucket que alguien vació.
+//!
+//! # La copia de una vista SQL (ADR 0040 paso 4c)
+//!
+//! Una vista SQL no tiene plan del motor de vistas: su cuerpo es una consulta,
+//! y quien la sabe ejecutar es DuckDB. Su copia —un `Dataset` con `from: {
+//! view: X }` que la copia **entera**— se hace en tres tiempos, y los tres son
+//! de la misma pasada del Job de la copia, con la misma identidad, el mismo
+//! commit del puntero y el mismo recolector:
+//!
+//! 1. **`--preparar DIR`**: la consulta servida (`servir`, con cada dataset
+//!    como `"__ore_dataset"."<p>.<n>"`) y los datasets que lee, volcados en
+//!    Arrow por `ore-store volcar`, en `DIR/<copia>/`. Sólo lo que no está al
+//!    día; no se sella nada ni se toca un puntero;
+//! 2. **el cálculo**, `python -m ore.calcular DIR`, en la imagen del puesto:
+//!    DuckDB ejecuta la consulta sobre esos ficheros y deja
+//!    `DIR/<copia>/salida.arrow`. **Sin credencial**: no lee el bucket, y
+//!    DuckDB se cierra al exterior antes de ejecutarla;
+//! 3. **`--calculado DIR`**: `ore-store sellar-arrow` sella la copia con las
+//!    columnas del contrato, y el puntero se mueve como el de cualquier copia.
+//!
+//! La cabecera es la de siempre con lo que aquí la nombra: el **plan** es el
+//! digest de la consulta servida, el **esquema** el contrato, y el **testigo**
+//! el snapshot de cada dataset que lee (`p.n@<snapshot>`, ordenados): si
+//! ninguno se movió y la consulta es la misma, «ya está» sin leer una fila. Se
+//! rehace entera (decisión D). Y el flujo no se comprueba aquí con el motor de
+//! vistas: lo comprueba el compilador por el linaje de la consulta
+//! (`OOS4002` sobre `materialization.payload`), y un paquete que no compila no
+//! llega a copiarse.
+//!
+//! Sin `--calculado`, una copia por consulta **se queda como estaba**: su
+//! puntero no se toca y se dice. Una pasada que no sabe calcularla no la rompe.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -71,17 +102,28 @@ pub struct Opciones<'a> {
     pub rehacer: bool,
     /// Solo estas vistas (`paquete.vista`); vacío es todas las que declaran copia.
     pub solo: &'a [String],
+    /// La copia de una vista SQL, primera mitad: dejar en este directorio lo
+    /// que su cálculo necesita. Con esto no se sella nada.
+    pub preparar: Option<&'a Path>,
+    /// La segunda: lo que su cálculo dejó, para sellarlo.
+    pub calculado: Option<&'a Path>,
 }
 
 pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    let (seco, recoger) = (op.seco, op.recoger);
+    // Preparar no sella ni recoge: sólo deja lo que el cálculo necesita.
+    let preparando = op.preparar.is_some();
+    let (seco, recoger) = (op.seco, op.recoger && !preparando);
     let punteros = op
         .informe
         .map(Path::to_path_buf)
         .unwrap_or_else(|| path.join("datasets"));
     // En seco no se toca el árbol: el puntero es el estado, y una pasada que
     // sólo dice qué haría no puede dejarlo diciendo «pendiente».
-    let informe: Option<&Path> = if seco { None } else { Some(&punteros) };
+    let informe: Option<&Path> = if seco || preparando {
+        None
+    } else {
+        Some(&punteros)
+    };
     // ⭐ La copia exige que compile SU paquete —y lo de la raíz del árbol:
     //   conductos, retículos—, no el inquilino entero. Medido en `demo` (P1
     //   I5): una base foránea con `dueno` sin contestar (`owner: cambiame`,
@@ -154,6 +196,11 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
         if !op.solo.is_empty() && !op.solo.contains(&qn) {
             continue;
         }
+        // Preparar sólo mira las copias por consulta.
+        let por_consulta = vistas::por_consulta(&pkg, v);
+        if preparando && !por_consulta {
+            continue;
+        }
         vistas += 1;
         println!("{qn}");
         // Su paquete no compila: esta copia no se intenta, y el informe lo dice.
@@ -175,21 +222,29 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             fallos += 1;
             continue;
         }
-        match una(
-            &pkg,
-            path,
-            v,
-            &qn,
-            &catalogo,
-            &clasificacion,
-            &conductos,
-            &bundle,
-            seco,
-            recoger,
-            op.rehacer,
-            &punteros,
-        ) {
-            Ok((linea, parte)) => {
+        let hecho = if por_consulta {
+            por_su_consulta(&pkg, path, v, &qn, &bundle, seco, recoger, op, &punteros)
+        } else {
+            una(
+                &pkg,
+                path,
+                v,
+                &qn,
+                &catalogo,
+                &clasificacion,
+                &conductos,
+                &bundle,
+                seco,
+                recoger,
+                op.rehacer,
+                &punteros,
+            )
+            .map(Some)
+        };
+        match hecho {
+            // Preparada, o sin calcular: el puntero se queda como estaba.
+            Ok(None) => {}
+            Ok(Some((linea, parte))) => {
                 println!("  {linea}");
                 if let Some(dir) = informe
                     && let Err(e) = escribir_informe(dir, &qn, &parte)
@@ -236,6 +291,14 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // llevaba entero un dataset escrito y dejaba su puntero colgando.
     // El puntero de una vista que ya no está en el árbol se retira ANTES: si
     // no, reclamaría su dataset y lo huérfano esperaría a la pasada siguiente.
+    if preparando {
+        return if fallos > 0 {
+            eprintln!("error: {fallos} de {vistas} no se prepararon");
+            std::process::ExitCode::from(65)
+        } else {
+            std::process::ExitCode::SUCCESS
+        };
+    }
     if let Some(dir) = informe {
         let vivas: Vec<String> = declaradas.iter().filter_map(|v| v.qname()).collect();
         retirar_informes_de_nadie(dir, &vivas);
@@ -363,40 +426,8 @@ fn una(
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"));
     // La misma cabecera que la última vez, y el dataset sigue ahí: al día.
-    let al_dia = !rehacer
-        && hecho.is_some()
-        && puntero
-            .as_ref()
-            .and_then(|p| campo_de(p, "cabecera"))
-            .as_deref()
-            == Some(huella.as_str())
-        && {
-            let b = almacen(
-                "buscar",
-                &Json::obj([("metadata_location", Json::s(hecho.as_deref().unwrap_or("")))]).jcs(),
-                None,
-            )?;
-            campo_de(&b, "existe").as_deref() == Some("true")
-        };
-    if al_dia {
-        let ml = hecho.clone().unwrap_or_default();
-        // El puntero de antes, tal cual, con el estado de hoy. Las filas y las
-        // cuentas son las de la copia que ya estaba: nadie las recontó.
-        let mut m = match puntero.as_ref().map(Json::de_node) {
-            Some(Json::Obj(m)) => m,
-            _ => Default::default(),
-        };
-        m.insert("estado".into(), Json::s("al-dia"));
-        m.insert("bundle".into(), Json::s(bundle));
-        m.insert("leidas".into(), Json::Int(0));
-        m.remove("rehecha");
-        let recogidas = recoger_dataset(recoger && !seco, &dataset, &ml, &mut m)?;
-        return Ok((
-            format!(
-                "ya está · {ml}\n  el puntero lo dijo sin leer una sola fila del origen{recogidas}"
-            ),
-            Json::Obj(m),
-        ));
+    if !rehacer && al_dia_con(puntero.as_ref(), &huella)? {
+        return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset);
     }
     if seco {
         return Ok((
@@ -553,6 +584,224 @@ fn una(
 
 /// **⑥ El puntero nuevo, y recoger lo que quedó atrás** — de lo que el almacén
 /// contestó a `sellar` o a `copiar`, que es la misma línea.
+/// **④ «Ya está»**: el puntero de antes, tal cual, con el estado de hoy. Las
+/// filas y las cuentas son las de la copia que ya estaba: nadie las recontó.
+fn ya_esta(
+    puntero: Option<&ore_core::parse::Node>,
+    bundle: &str,
+    recoger: bool,
+    dataset: &str,
+) -> Result<(String, ore_core::json::Json), String> {
+    use ore_core::json::Json;
+    let ml = puntero
+        .and_then(|p| campo_de(p, "metadata_location"))
+        .unwrap_or_default();
+    let mut m = match puntero.map(Json::de_node) {
+        Some(Json::Obj(m)) => m,
+        _ => Default::default(),
+    };
+    m.insert("estado".into(), Json::s("al-dia"));
+    m.insert("bundle".into(), Json::s(bundle));
+    m.insert("leidas".into(), Json::Int(0));
+    m.remove("rehecha");
+    let recogidas = recoger_dataset(recoger, dataset, &ml, &mut m)?;
+    Ok((
+        format!(
+            "ya está · {ml}\n  el puntero lo dijo sin leer una sola fila del origen{recogidas}"
+        ),
+        Json::Obj(m),
+    ))
+}
+
+/// La huella de la cabecera, y si el puntero ya la tiene y su dataset sigue en
+/// el bucket: lo que decide «ya está» (④), igual para las dos copias.
+fn al_dia_con(puntero: Option<&ore_core::parse::Node>, huella: &str) -> Result<bool, String> {
+    use ore_core::json::Json;
+    let Some(p) = puntero else { return Ok(false) };
+    let Some(ml) = campo_de(p, "metadata_location") else {
+        return Ok(false);
+    };
+    if campo_de(p, "cabecera").as_deref() != Some(huella) {
+        return Ok(false);
+    }
+    let b = almacen(
+        "buscar",
+        &Json::obj([("metadata_location", Json::s(&ml))]).jcs(),
+        None,
+    )?;
+    Ok(campo_de(&b, "existe").as_deref() == Some("true"))
+}
+
+/// **La copia de una vista SQL** (ADR 0040 paso 4c; ver la cabecera del
+/// módulo). `Ok(None)` es que el puntero no se toca: preparada, o sin calcular.
+#[allow(clippy::too_many_arguments)]
+fn por_su_consulta(
+    pkg: &Package,
+    raiz_pkg: &Path,
+    d: &Loaded,
+    qn: &str,
+    bundle: &str,
+    seco: bool,
+    recoger: bool,
+    op: &Opciones,
+    punteros: &Path,
+) -> Result<Option<(String, ore_core::json::Json)>, String> {
+    use ore_core::json::Json;
+    let v = vistas::consulta_copiada(pkg, d)?;
+    let servida = ore_core::servir::servir(pkg, v, ore_core::servir::Para::Puesto)?;
+    let esq = vistas::tipos_del_contrato(v)?;
+    // Lo que lee, por su puntero: de ahí sale el testigo y lo que se vuelca.
+    let mut entradas: Vec<(String, OrigenDelLago)> = Vec::new();
+    for ds in &servida.datasets {
+        let doc = pkg
+            .dataset(ds)
+            .ok_or_else(|| format!("la consulta lee `{ds}` y no es un dataset del árbol"))?;
+        entradas.push((ds.clone(), origen_del_lago(raiz_pkg, doc)?));
+    }
+    let mut marcas: Vec<String> = entradas
+        .iter()
+        .map(|(ds, o)| format!("{ds}@{}", o.testigo.1.as_deref().unwrap_or("0")))
+        .collect();
+    marcas.sort();
+    let testigo = ("snapshot".to_string(), Some(marcas.join(",")));
+    let plan = ore_core::digest::de_bytes(servida.consulta.as_bytes());
+    let cabecera = cabecera(&plan, &esq, &testigo, &[]);
+    let huella = ore_core::digest::de_bytes(cabecera.as_bytes());
+    let puntero = leer_puntero(punteros, qn);
+    let dataset = dataset_de(puntero.as_ref(), qn);
+    let base = puntero
+        .as_ref()
+        .and_then(|p| campo_de(p, "metadata_location"));
+
+    if !op.rehacer && al_dia_con(puntero.as_ref(), &huella)? {
+        if op.preparar.is_some() {
+            println!("  ya está: nada que calcular");
+            return Ok(None);
+        }
+        return ya_esta(puntero.as_ref(), bundle, recoger && !seco, &dataset).map(Some);
+    }
+    if seco {
+        return Ok(Some((
+            format!(
+                "haría falta calcularla · la consulta de `{}` sobre {}",
+                v.qname().unwrap_or_default(),
+                marcas.join(", ")
+            ),
+            Json::obj([("estado", Json::s("pendiente"))]),
+        )));
+    }
+    let carpeta = |dir: &Path| dir.join(qn);
+
+    // ── ① preparar: la consulta y lo que lee, en Arrow ──────────────────────
+    if let Some(dir) = op.preparar {
+        let aqui = carpeta(dir);
+        let _ = std::fs::remove_dir_all(&aqui);
+        std::fs::create_dir_all(aqui.join("entradas"))
+            .map_err(|e| format!("no se pudo crear `{}`: {e}", aqui.display()))?;
+        let mut leidas = 0i64;
+        let mut archivos = BTreeMap::new();
+        for (ds, o) in &entradas {
+            let archivo = aqui.join("entradas").join(format!("{ds}.arrow"));
+            let r = almacen(
+                "volcar",
+                &Json::obj([
+                    ("metadata_location", Json::s(&o.metadata_location)),
+                    ("dataset", Json::s(&o.dataset)),
+                    ("archivo", Json::s(archivo.to_string_lossy())),
+                ])
+                .jcs(),
+                None,
+            )?;
+            leidas += campo_de(&r, "filas")
+                .and_then(|n| n.parse::<i64>().ok())
+                .unwrap_or(0);
+            archivos.insert(ds.clone(), Json::s(format!("entradas/{ds}.arrow")));
+        }
+        let peticion = Json::obj([
+            ("copia", Json::s(qn)),
+            ("vista", Json::s(v.qname().unwrap_or_default())),
+            ("consulta", Json::s(&servida.consulta)),
+            (
+                "columnas",
+                Json::Obj(
+                    esq.iter()
+                        .map(|(c, t)| (c.clone(), Json::s(t.to_string())))
+                        .collect(),
+                ),
+            ),
+            ("entradas", Json::Obj(archivos)),
+            (
+                "esquema_de_datasets",
+                Json::s(ore_core::servir::ESQUEMA_DE_DATASETS),
+            ),
+            ("huella", Json::s(&huella)),
+            ("leidas", Json::Int(leidas)),
+        ]);
+        std::fs::write(aqui.join("peticion.json"), peticion.pretty() + "\n")
+            .map_err(|e| format!("no se pudo escribir la petición: {e}"))?;
+        println!(
+            "  preparada · {} datasets, {leidas} filas en `{}`",
+            entradas.len(),
+            aqui.display()
+        );
+        return Ok(None);
+    }
+
+    // ── ③ sellar lo calculado ────────────────────────────────────────────────
+    let Some(dir) = op.calculado else {
+        println!(
+            "  se calcula en el puesto (`--preparar` y `--calculado`): esta pasada no la toca"
+        );
+        return Ok(None);
+    };
+    let aqui = carpeta(dir);
+    // El cálculo que falló lo dice él: su motivo va al puntero.
+    if let Ok(e) = std::fs::read_to_string(aqui.join("error.txt")) {
+        return Err(format!("la consulta no se pudo ejecutar · {}", e.trim()));
+    }
+    let peticion = std::fs::read_to_string(aqui.join("peticion.json"))
+        .ok()
+        .and_then(|t| ore_core::parse::parse(&t).ok());
+    let salida = aqui.join("salida.arrow");
+    let Some(peticion) = peticion.filter(|_| salida.is_file()) else {
+        println!(
+            "  sin calcular en `{}`: esta pasada no la toca",
+            aqui.display()
+        );
+        return Ok(None);
+    };
+    // Lo calculado es de ESTA cabecera, o no se sella: el árbol pudo moverse
+    // entre preparar y sellar.
+    if campo_de(&peticion, "huella").as_deref() != Some(huella.as_str()) {
+        println!("  lo calculado es de otra consulta o de otras entradas: la próxima pasada");
+        return Ok(None);
+    }
+    let leidas = campo_de(&peticion, "leidas")
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut e = format!("{{\"dataset\":\"{dataset}\",");
+    if let Some(b) = &base {
+        e.push_str(&format!("\"base\":{},", Json::s(b).jcs()));
+    }
+    e.push_str(&format!(
+        "\"archivo\":{},",
+        Json::s(salida.to_string_lossy()).jcs()
+    ));
+    let sellada = almacen("sellar-arrow", &cabecera.replacen('{', &e, 1), None)?;
+    informe_de(
+        &sellada,
+        leidas,
+        &dataset,
+        &huella,
+        &plan,
+        &testigo,
+        bundle,
+        op.rehacer,
+        recoger && !seco,
+    )
+    .map(Some)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn informe_de(
     salida: &ore_core::parse::Node,

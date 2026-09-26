@@ -32,6 +32,28 @@
 #   snapshot anterior se lee por su id— sin que el bucket crezca sin límite.
 #   La política de retención como tal es de W3.6b (el CronJob de mantenimiento).
 #
+# ── ⭐ LA COPIA DE UNA VISTA SQL (ADR 0040 paso 4c) ─────────────────────────
+#
+#   Una vista v1alpha14 es una consulta, y quien la ejecuta es DuckDB, que vive
+#   en la imagen del PUESTO y no en `ore-drivers`. Por eso la pasada tiene tres
+#   contenedores en fila, sobre el mismo clon del árbol (`/trabajo/arbol`):
+#
+#     preparar  (ore-drivers)  `ore materialize --preparar`: la consulta servida
+#                              y los datasets que lee, en Arrow, en
+#                              /trabajo/calculo. Sólo las que no están al día.
+#     calcular  (puesto)       `python -m ore.calcular`: DuckDB la ejecuta sobre
+#                              esos ficheros y deja salida.arrow. NO monta el
+#                              testigo ni lee el bucket: lo que lee ya está en
+#                              el disco, y DuckDB se cierra al exterior antes de
+#                              ejecutarla.
+#     copiar    (ore-drivers)  la pasada de siempre, con `--calculado`: sella
+#                              también esas, y empuja el puntero.
+#
+#   Es la misma identidad, el mismo commit (el swap) y el mismo recolector que
+#   cualquier copia: la copia de una vista SQL tiene UN escritor, esta pasada
+#   —`write()` sobre un mantenido sigue negado—. Sin nada que calcular, los dos
+#   primeros pasos no hacen nada y tardan lo que tarda un clon.
+#
 # ── ⛔ Lo que este Job NO decide ────────────────────────────────────────────
 #
 # Qué vistas tienen copia (el verbo, con la firma de quien decide), con qué clave
@@ -145,6 +167,75 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
+        # ── ⭐ Paso 4c: el clon del árbol, y lo que la copia de una vista SQL
+        #   necesita para calcularse (la consulta y lo que lee, en Arrow).
+        #   Sin copias por consulta que no estén al día, sólo el clon.
+        - name: preparar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: GIT_TERMINAL_PROMPT, value: "0" }
+            - { name: GIT_CONFIG_COUNT, value: "2" }
+            - { name: GIT_CONFIG_KEY_0, value: "http.extraheader" }
+            - { name: GIT_CONFIG_KEY_1, value: "safe.directory" }
+            - { name: GIT_CONFIG_VALUE_1, value: "*" }
+            - { name: VISTAS, value: "olist.customers" }
+            - { name: REHACER, value: "" }
+            - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+          volumeMounts:
+            - { name: puesto, mountPath: /puesto, readOnly: true }
+            - { name: trabajo, mountPath: /trabajo }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
+              cd /trabajo
+              git clone --quiet \
+                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
+              cd arbol
+              mkdir -p /trabajo/calculo
+              if [ -n "$REHACER" ]; then
+                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+                # shellcheck disable=SC2086
+                ore materialize . --preparar /trabajo/calculo --rehacer $SOLO \
+                  || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
+              else
+                ore materialize . --preparar /trabajo/calculo \
+                  || echo "⚠️ alguna copia por consulta no se preparó: su informe lo dirá"
+              fi
+          resources:
+            requests: {cpu: "200m", memory: 512Mi}
+            limits:   {cpu: "2000m", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+        # ── ⭐ Paso 4c: DuckDB ejecuta cada consulta sobre lo preparado. La
+        #   imagen del puesto, SIN el volumen del testigo: no hay credencial
+        #   que leer, y lo que la consulta lee ya está en /trabajo/calculo.
+        #   Una consulta que falla deja `error.txt` y las demás siguen.
+        - name: calcular
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            # Lo que DuckDB se puede quedar (la mitad) y dónde derrama el resto.
+            - { name: ORE_MEMORIA_MB, value: "2048" }
+          volumeMounts:
+            - { name: trabajo, mountPath: /trabajo }
+          workingDir: /opt/ore
+          command: ["python3", "-m", "ore.calcular", "/trabajo/calculo"]
+          resources:
+            requests: {cpu: "500m", memory: 1Gi}
+            limits:   {cpu: "2000m", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }
       containers:
         - name: copiar
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -214,10 +305,8 @@ spec:
               #   `http://usuario:token@host/…` lo lee cualquier proceso de la
               #   máquina. Misma disciplina que `ore-serve/git.rs`.
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
-              cd /trabajo
-              git clone --quiet \
-                http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
-              cd arbol
+              # El clon lo hizo `preparar`, en el mismo commit que lo calculado.
+              cd /trabajo/arbol
               echo "### los datasets con copia: $VISTAS"
               # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esos
               # datasets. Lo dice `ore view .` en la línea `raíz` de cada uno
@@ -276,10 +365,12 @@ spec:
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
-                ore materialize . --rehacer $SOLO --recoger --informe datasets                   || echo "⚠️ algún dataset no se rehizo: su informe en datasets/ lo dice"
+                ore materialize . --rehacer $SOLO --recoger --informe datasets --calculado /trabajo/calculo \
+                  || echo "⚠️ algún dataset no se rehizo: su informe en datasets/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                ore materialize . --recoger --informe datasets                   || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
+                ore materialize . --recoger --informe datasets --calculado /trabajo/calculo \
+                  || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
               fi
 
               git add -A datasets

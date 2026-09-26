@@ -1,6 +1,6 @@
 # 0040 · La vista es SQL (OOS v1alpha14 en ORE)
 
-**Estado:** en curso · pasos 0 a 3 hechos.
+**Estado:** en curso · pasos 0 a 4 hechos.
 **Spec:** `C:\oos` 7d92e6e, `spec/v1alpha14/`.
 
 ## Contexto
@@ -131,6 +131,60 @@ llamadores). Todo supone **una raíz** por vista (`raiz` 14 usos, `raiz_de_lectu
 4. **Servir.** `ore ask --vista --sql`, `/vistas/…/ejecutar` y `datos_del_puesto` sirven
    `spec.sql` con los nombres resueltos, como una unidad `.sql`, sin `a_sql`. La copia se
    rehace entera. `/v1` `loadView` en `duckdb`; Spark se niega (C).
+   **HECHO**, en dos tandas y con dos decisiones del usuario: **servir también las
+   estructuradas por su consulta** (una sola View también al servir), y **lo que se calcula
+   fuera del código del usuario lo calcula un trabajo con la imagen del puesto**.
+   - **4a–4b** (`abc1b5f`): `ore_core::servir` sirve la consulta de una vista con cada
+     nombre del árbol resuelto: un dataset por el nombre con que lo registra quien lee
+     (`"__ore_dataset"."p.n"` en un puesto; su nombre del catálogo en `/v1`), una vista como
+     subconsulta con su alias, una tabla de un origen nunca. **Del todo, no dejado a
+     DuckDB**: medido (`medida-servir-la-vista-como-sql.py`), un nombre de dos partes dentro
+     de una vista de DuckDB se resuelve contra el schema de la vista. `ore ask --sql` sirve
+     por aquí las dos formas, con los tipos del contrato o del plan; `a_sql` ya no sirve
+     nada, y la vieja y la nueva dan lo mismo en las 5 vistas de la medida (S4). `/v1` da una
+     sola representación, `duckdb`. `el-puesto.sh` 10b: la vista SQL da por `over()` y
+     `sql()` las mismas filas que la estructurada.
+   - **4c · la copia, el «Run» y `over`.** Cotejado antes con lo que hace la industria
+     (Databricks/Unity, Snowflake, BigQuery, dbt, Foundry) y con el código: el refresco de
+     una tabla derivada corre con una identidad de servicio y en cómputo gestionado, nunca
+     en la sesión de quien lee; cada dataset mantenido tiene **un solo escritor** y lo impone
+     el sistema; el refresco entero entra en **un commit atómico**; el estado es lo que queda
+     en el destino; «Run» corre en la sesión de quien lee, con sus permisos. Nuestra pasada
+     de la copia (0027, `malla/48`) **ya es eso** —identidad de servicio, push como *swap*
+     con la forja de *compare-and-set*, el puntero como estado, reencolar idempotente por
+     contenido—, así que la copia de una vista SQL **entra en ella** y no en `POST
+     /trabajos` (que sólo lanza una persona, en su rama, con el estado en memoria):
+     - `ore materialize --preparar DIR` vuelca la consulta servida y lo que lee
+       (`ore-store volcar`, Arrow); `python -m ore.calcular DIR`, un contenedor de la imagen
+       del puesto **sin el testigo montado**, la ejecuta con DuckDB cerrado al exterior;
+       `ore materialize --calculado DIR` la sella (`ore-store sellar-arrow`, las columnas y
+       los físicos del contrato) y la pasada empuja el puntero como siempre. Sin nada que
+       calcular, los dos primeros pasos no hacen nada.
+     - La cabecera: plan = digest de la consulta servida; esquema = el contrato; testigo =
+       el snapshot de cada dataset que lee (`p.n@s`, ordenados). Si nada se movió, «ya
+       está» sin leer una fila. Se rehace entera (D). El flujo lo comprueba el compilador
+       por el linaje (`OOS4002` sobre `materialization.payload`).
+     - **Un solo escritor, sin excepción nueva:** la copia la sella `ore-store` desde la
+       pasada, como cualquier copia; `write()` sobre un mantenido sigue negado.
+     - La copia de una vista SQL es la vista **entera** (D): un `Dataset` con `from: { view }`
+       y `fields`/`where` encima no es una copia, y su puntero lo dice.
+     - **Medido y arreglado de paso:** con una vista SQL con copia en el árbol, `ore view`
+       salía con 65, y el Job de la copia (`ore view . || exit 1`) **se caía entero, con
+       todas las copias del inquilino**. Ahora `ore view` la enseña por su consulta (qué
+       lee, su contrato, de dónde se copia), su `raíz` es el lago, y sin `--calculado` su
+       puntero no se toca.
+     - `ore ask` de una vista SQL (y de su copia) contesta con las filas de su copia; sin
+       copia, «se lee en un puesto», y `/vistas/…/ejecutar` lo da como **409**: el «Run» de
+       una vista SQL es `sql()` en el puesto de quien lee (la consola, paso 7).
+     - `over:` una vista SQL lee su copia: `vistas::dataset_de_lectura` la busca **encima**
+       (`copia_de_la_consulta`), porque una vista SQL no tiene dataset debajo.
+   - **4d:** `el-lago.sh` 14c, de punta a punta con el S3 de mentira: un `GROUP BY` y un
+     `JOIN` de dos datasets —que el motor de vistas no sabe— copiados, el testigo de cada
+     entrada, `ask` desde la copia, la segunda pasada «ya está», y una copia con `where`
+     y una consulta que falla al ejecutarse dicen su motivo en el puntero.
+   - Queda: `registro` (el matcher no ve una copia por consulta: una estructurada sobre
+     ella no se contesta desde su copia) y el estado de `POST /trabajos` en memoria, que la
+     copia ya no usa.
 5. **`CREATE [OR REPLACE] VIEW` en el guion** (ADR 0039): en el puesto DuckDB describe el
    `SELECT` → `columns` → documento en la rama; los códigos OOS vuelven como error de la
    celda; resultado `object/status`. SDK `crear_vista`; `ore view add` y el inductor

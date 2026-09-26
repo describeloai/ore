@@ -1166,6 +1166,107 @@ pub fn raiz_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded
         .find(|e| e.kind == Kind::Dataset || e.section("materialized").is_some())
 }
 
+/// v1alpha14 (ADR 0040 paso 4c). **¿Su cadena llega a una consulta?** Una
+/// vista SQL, o lo que se apoya en una: su cadena no termina en una tabla ni en
+/// un dataset escrito, sino en una consulta que sólo sabe ejecutar un motor de
+/// SQL. Lo que sale de ahí no lo calcula el motor de vistas.
+pub fn por_consulta(pkg: &Package, d: &Loaded) -> bool {
+    matches!(cadena(pkg, d), Err(SinRaiz::Consulta(_)))
+}
+
+/// v1alpha14. **Los tipos de lo que una vista SQL expone**: su contrato
+/// (`spec.columns.<c>.type`). Es lo único que los dice —la consulta no tipa—, y
+/// un tipo que no es de OOS se dice con su columna.
+pub fn tipos_del_contrato(v: &Loaded) -> Result<BTreeMap<String, crate::types::Type>, String> {
+    let mut t = BTreeMap::new();
+    for (k, n) in v
+        .section("columns")
+        .map(|c| c.entries().to_vec())
+        .unwrap_or_default()
+    {
+        let (Some(c), Some(ty)) = (k.as_str(), n.get("type").and_then(|(_, x)| x.as_str())) else {
+            continue;
+        };
+        let ty = crate::types::parse_type(ty).map_err(|e| {
+            format!(
+                "`{}.{c}` no tiene un tipo de OOS: {e:?}",
+                v.qname().unwrap_or_default()
+            )
+        })?;
+        t.insert(c.to_string(), ty);
+    }
+    Ok(t)
+}
+
+/// Lo que da forma a un dataset mantenido sobre su `from`. La copia de una
+/// vista SQL no lleva nada de esto: se copia la vista **entera** (decisión D);
+/// lo que haya que quitar o filtrar va en su consulta.
+const FORMA_DE_UN_MANTENIDO: &[&str] = &["fields", "where", "groupBy", "having"];
+
+/// v1alpha14 (ADR 0040 paso 4c). **La vista SQL que un dataset mantenido copia
+/// entera**: `from: { view: X }` con `X` una vista SQL, y nada que le dé forma
+/// encima. `Err` dice por qué no, en palabras de quien lo declaró.
+pub fn consulta_copiada<'a>(pkg: &'a Package, d: &'a Loaded) -> Result<&'a Loaded, String> {
+    let qn = d.qname().unwrap_or_default();
+    if !es_mantenido(d) {
+        return Err(format!("`{qn}` no es un dataset mantenido"));
+    }
+    let v = match fuente(d) {
+        Some(Fuente::Vista(x)) => pkg.view(&x),
+        _ => None,
+    }
+    .filter(|v| es_sql(v))
+    .ok_or_else(|| {
+        format!(
+            "`{qn}` se apoya en una vista SQL sin copiarla: lo que está encima de una consulta \
+             se escribe como otra consulta (una View v1alpha14), y se copia ésa"
+        )
+    })?;
+    if let Some(k) = FORMA_DE_UN_MANTENIDO
+        .iter()
+        .find(|k| d.section(k).is_some())
+    {
+        return Err(format!(
+            "`{qn}` copia la vista SQL `{}` con `{k}` encima: la copia de una vista es la vista \
+             entera (ADR 0040, decisión D); lo que quieras quitar o filtrar, en su consulta",
+            v.qname().unwrap_or_default()
+        ));
+    }
+    Ok(v)
+}
+
+/// v1alpha14 (ADR 0040 paso 4c). **La copia de una vista SQL**, buscada hacia
+/// arriba: el dataset mantenido que la copia entera. Una vista SQL no tiene
+/// dataset debajo —lee por nombre, no por `from`—, así que su copia no está en
+/// su cadena ([`raiz_de_lectura`]) sino encima. Si hay varias, la primera por
+/// nombre.
+pub fn copia_de_la_consulta<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    if !es_sql(v) {
+        return None;
+    }
+    let qn = v.qname()?;
+    let mut copias: Vec<&Loaded> = pkg
+        .docs
+        .iter()
+        .filter(|d| {
+            consulta_copiada(pkg, d).is_ok_and(|x| x.qname().as_deref() == Some(qn.as_str()))
+        })
+        .collect();
+    copias.sort_by_key(|d| d.qname());
+    copias.into_iter().next()
+}
+
+/// **De qué dataset se leen las filas de algo del árbol**: el primero bajando
+/// por su cadena ([`raiz_de_lectura`]) o, si es una vista SQL, su copia
+/// ([`copia_de_la_consulta`]). Un dataset mantenido que copia una consulta es él
+/// mismo. Es lo que `over:` lee (0029 ③): siempre una copia, nunca el origen.
+pub fn dataset_de_lectura<'a>(pkg: &'a Package, v: &'a Loaded) -> Option<&'a Loaded> {
+    if v.kind == Kind::Dataset && por_consulta(pkg, v) {
+        return consulta_copiada(pkg, v).is_ok().then_some(v);
+    }
+    raiz_de_lectura(pkg, v).or_else(|| copia_de_la_consulta(pkg, v))
+}
+
 /// **¿Se lee de lo que se tiene?** Una vista que se lee desde un puesto —o
 /// desde un `.sql`— sale de datasets: la cadena de una estructurada llega a
 /// uno (`raiz_de_lectura`), y todo lo que lee una SQL se lee así a su vez.

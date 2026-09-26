@@ -72,6 +72,23 @@ fn arbol(caso: &str) -> Arbol {
         "packages/ventas/views/cruce.yaml",
         "apiVersion: oos.dev/v1alpha14\nkind: View\nmetadata: { name: cruce, namespace: ventas }\nspec:\n  owner: team:ventas\n  dialect: duckdb\n  sql: |\n    SELECT p.id FROM ventas.pedidos p JOIN ventas.espana.clientes c ON c.id = p.id\n  columns:\n    id: { type: Integer }\n",
     );
+    // Su copia (paso 4c): un dataset mantenido que la copia entera, y otro que
+    // le pone un `where` encima —eso no es copiarla—. Copiar pide conducto.
+    escribe(
+        r,
+        "conduits.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: { name: lago }\nspec:\n  owner: team:ventas\n  conduits:\n    materialization.payload: { oos.maturity: DRAFT }\n",
+    );
+    escribe(
+        r,
+        "packages/ventas/datasets/grandesCopia.yaml",
+        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: grandesCopia, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { view: ventas.grandes }\n",
+    );
+    escribe(
+        r,
+        "packages/ventas/datasets/grandesFiltrada.yaml",
+        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: grandesFiltrada, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { view: ventas.grandes }\n  where: { pais: ES }\n",
+    );
     // Una que lee una tabla de un origen: virtual, no se sirve desde lo que se tiene.
     escribe(
         r,
@@ -163,4 +180,42 @@ fn una_tabla_de_un_origen_no_se_sirve() {
     let (pkg, _) = ore_core::validate::cargar_paquete(&t.0);
     let e = servir(&pkg, vista(&pkg, "ventas.virtual"), Para::Puesto).unwrap_err();
     assert!(e.contains("ventas.pedidos_t") && e.contains("Table"), "{e}");
+}
+
+/// Paso 4c: la copia de una vista SQL está **encima** de ella, no en su cadena:
+/// se encuentra hacia arriba, y es la vista entera; y de ella se leen sus filas.
+#[test]
+fn la_copia_de_una_consulta_esta_encima() {
+    use ore_core::vistas;
+    let t = arbol("copia");
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&t.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let grandes = vista(&pkg, "ventas.grandes");
+    let copia = pkg.dataset("ventas.grandesCopia").unwrap();
+    let filtrada = pkg.dataset("ventas.grandesFiltrada").unwrap();
+    let pedidos = pkg.dataset("ventas.pedidos").unwrap();
+    assert!(vistas::por_consulta(&pkg, copia));
+    assert!(vistas::por_consulta(&pkg, grandes));
+    assert!(!vistas::por_consulta(&pkg, pedidos));
+    // la vista que copia entera, y la que no es una copia
+    assert_eq!(
+        vistas::consulta_copiada(&pkg, copia)
+            .unwrap()
+            .qname()
+            .as_deref(),
+        Some("ventas.grandes")
+    );
+    let Err(e) = vistas::consulta_copiada(&pkg, filtrada) else {
+        panic!("con `where` no es una copia")
+    };
+    assert!(e.contains("`where`") && e.contains("entera"), "{e}");
+    // hacia arriba: la de la vista es su copia; la raíz de lectura no la ve
+    assert!(vistas::raiz_de_lectura(&pkg, grandes).is_none());
+    let de = |d| vistas::dataset_de_lectura(&pkg, d).and_then(|x| x.qname());
+    assert_eq!(de(grandes).as_deref(), Some("ventas.grandesCopia"));
+    assert_eq!(de(copia).as_deref(), Some("ventas.grandesCopia"));
+    assert_eq!(de(filtrada), None);
+    assert_eq!(de(pedidos).as_deref(), Some("ventas.pedidos"));
+    // una vista SQL sin copia no tiene de dónde leerse fuera de un puesto
+    assert_eq!(de(vista(&pkg, "ventas.cruce")), None);
 }

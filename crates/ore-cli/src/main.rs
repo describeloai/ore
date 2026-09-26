@@ -736,6 +736,17 @@ enum Command {
         /// las que declaran copia.
         #[arg(long, value_name = "NS.VISTA")]
         vista: Vec<String>,
+        /// La copia de una vista SQL, primera mitad (ADR 0040 paso 4c): deja en
+        /// `DIR/<copia>/` la consulta servida y los datasets que lee, en Arrow,
+        /// para que DuckDB la ejecute sin leer el bucket. No sella nada ni toca un puntero;
+        /// las demás copias no se miran.
+        #[arg(long, value_name = "DIR", conflicts_with = "calculado")]
+        preparar: Option<PathBuf>,
+        /// La copia de una vista SQL, segunda mitad: sella lo que el cálculo
+        /// dejó en `DIR/<copia>/salida.arrow`. Sin esto, una copia por consulta
+        /// se queda como estaba y se dice.
+        #[arg(long, value_name = "DIR")]
+        calculado: Option<PathBuf>,
     },
     /// Invoca una `Function` de lectura (`runtime: model`, `over`, `output`,
     /// sin `effects`) sobre la COPIA de `over`: `ore-store-<tipo> leer` trae
@@ -1006,6 +1017,8 @@ fn main() -> std::process::ExitCode {
             informe,
             rehacer,
             vista,
+            preparar,
+            calculado,
         } => {
             return materializar::materializar(
                 path,
@@ -1015,6 +1028,8 @@ fn main() -> std::process::ExitCode {
                     informe: informe.as_deref(),
                     rehacer: *rehacer,
                     solo: vista,
+                    preparar: preparar.as_deref(),
+                    calculado: calculado.as_deref(),
                 },
             );
         }

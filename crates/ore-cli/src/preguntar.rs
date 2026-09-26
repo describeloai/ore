@@ -125,6 +125,11 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     if op.sql {
         return sql_de_la_vista(&pkg, v, op.vista, op.catalogo, op.base);
     }
+    // v1alpha14 (ADR 0040 paso 4c): una consulta no la contesta el motor de
+    // vistas. Se contesta su copia, si la tiene; si no, se lee en un puesto.
+    if ore_core::vistas::por_consulta(&pkg, v) {
+        return de_la_copia_de_una_consulta(path, &pkg, v, op);
+    }
 
     // ── ② El plan, y quién lo contesta ───────────────────────────────────────
     let tipos = crate::vista::tipos_de_raiz(&pkg);
@@ -283,6 +288,94 @@ fn elegir(
     Err((65, msg))
 }
 
+/// **`ore ask` sobre una consulta** (ADR 0040 paso 4c): la vista SQL —o la
+/// copia que la copia entera— se contesta con las filas de su copia, tal cual:
+/// la consulta ya está aplicada en sus bytes, y el motor de vistas no sabe
+/// ejecutarla. Sin copia no se contesta aquí: una vista SQL se lee en un puesto
+/// (`sql()`), con la identidad de quien la lee.
+fn de_la_copia_de_una_consulta(
+    path: &Path,
+    pkg: &ore_core::link::Package,
+    v: &Loaded,
+    op: &Opciones,
+) -> Result<(), Fallo> {
+    let Some(copia) = ore_core::vistas::dataset_de_lectura(pkg, v) else {
+        let porque = match ore_core::vistas::consulta_copiada(pkg, v) {
+            Err(e) if v.kind == ore_core::document::Kind::Dataset => e,
+            _ => format!(
+                "`{}` es una consulta y no tiene copia: se lee en un puesto, `sql(\"select * from {}\")`, \
+                 o se declara un `Dataset` con `from: {{ view: {} }}` y se copia",
+                op.vista, op.vista, op.vista
+            ),
+        };
+        return Err((65, porque));
+    };
+    let de = copia.qname().unwrap_or_default();
+    let puntero = Puntero::hecho(path, &de).map_err(|e| (65, e))?;
+    eprintln!("{}", op.vista);
+    eprintln!(
+        "  contesta `{de}`{} · la consulta ya está en sus bytes · copia {}",
+        if de == op.vista { " (su copia)" } else { "" },
+        puntero.nombre()
+    );
+    let programa = programa_del_almacen().map_err(|e| (78, e))?;
+    let leido = lector::ejecutar(&programa, &["leer".into()], Some(&puntero.peticion_leer()))
+        .map_err(|e| (69, con_ayuda(e)))?;
+    let (esq, base, leidas) = ore_view::hoja::de_leer(&leido).map_err(|e| (69, e))?;
+    let columnas: BTreeMap<String, Json> = esq
+        .iter()
+        .map(|(c, t)| (c.clone(), Json::s(t.to_string())))
+        .collect();
+    let tope = op.limite.unwrap_or(u64::MAX);
+    let mut salida: Vec<String> = Vec::new();
+    'filas: for (f, w) in base.presentes() {
+        let linea = Json::Obj(f.iter().map(|(k, v)| (k.clone(), plano(v))).collect()).jcs();
+        for _ in 0..w {
+            if salida.len() as u64 >= tope {
+                break 'filas;
+            }
+            salida.push(linea.clone());
+        }
+    }
+    let filas = salida.len() as u64;
+    let cab = Json::obj([
+        ("vista", Json::s(op.vista)),
+        ("copia", puntero.como_json()),
+        ("plan", Json::s(copia_plan(&leido))),
+        ("compensacion", Json::Int(0)),
+        ("columnas", Json::Obj(columnas)),
+        (
+            "limite",
+            op.limite.map_or(Json::Bool(false), |n| Json::Int(n as i64)),
+        ),
+        ("filas", Json::Int(filas as i64)),
+        ("leidas", Json::Int(leidas as i64)),
+        ("trabajo", Json::Int(leidas as i64)),
+    ]);
+    println!("{}", cab.jcs());
+    if op.seco {
+        return Ok(());
+    }
+    for l in &salida {
+        println!("{l}");
+    }
+    eprintln!("  {filas} filas · {leidas} leídas");
+    Ok(())
+}
+
+/// El plan que la copia dice contestar: el de su cabecera.
+fn copia_plan(leido: &str) -> String {
+    leido
+        .lines()
+        .next()
+        .and_then(|l| ore_core::parse::parse(l).ok())
+        .and_then(|n| {
+            n.get("plan")
+                .and_then(|(_, p)| p.as_str().map(String::from))
+        })
+        .unwrap_or_default()
+}
+
 /// La hoja del plan reescrito: la tabla donde vive la copia.
 /// El esquema interno donde el puesto pone la vista de DuckDB de cada dataset
 /// (`"__ore_dataset"."<p>.<n>"`). Aparte del de los nombres del árbol porque
@@ -338,21 +431,7 @@ fn sql_de_la_vista(
     // motor para una estructurada, que no los declara. La consulta, en los dos
     // casos, es la suya servida (ADR 0040 paso 4): una sola View.
     let tipos: BTreeMap<String, ore_core::types::Type> = if ore_core::vistas::es_sql(v) {
-        let mut t = BTreeMap::new();
-        for (k, n) in v
-            .section("columns")
-            .map(|c| c.entries().to_vec())
-            .unwrap_or_default()
-        {
-            let (Some(c), Some(ty)) = (k.as_str(), n.get("type").and_then(|(_, x)| x.as_str()))
-            else {
-                continue;
-            };
-            let ty = ore_core::types::parse_type(ty)
-                .map_err(|e| (65, format!("`{nombre}.{c}` no tiene un tipo de OOS: {e:?}")))?;
-            t.insert(c.to_string(), ty);
-        }
-        t
+        ore_core::vistas::tipos_del_contrato(v).map_err(|e| (65, e))?
     } else {
         tipos_del_plan(pkg, v, nombre)?
     };

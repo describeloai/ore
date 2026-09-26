@@ -74,6 +74,17 @@
 #      267 leídas; sin where → 267 y sin las borradas), `ore ask` la contesta
 #      tipada, la segunda pasada dice «ya está» sin leer, y un dataset que
 #      nadie escribió se dice
+#  14c la copia de una VISTA SQL (ADR 0040 paso 4c): `ore view` la enseña por su
+#      consulta y sale con 0 (el Job de la copia no se cae); sin `--calculado`
+#      su puntero no se toca; `--preparar` deja la consulta servida y lo que lee
+#      en Arrow, `python -m ore.calcular` la ejecuta con DuckDB sin credencial,
+#      `--calculado` la sella con los tipos del contrato (un GROUP BY y un JOIN
+#      de dos datasets, que el motor de vistas no sabe); el testigo es el
+#      snapshot de cada entrada; `ore ask` contesta la vista SQL desde su
+#      copia; la segunda pasada no calcula nada («ya está»); una copia con
+#      `where` encima no es una copia, y una consulta que falla al ejecutarse
+#      deja su motivo en el puntero; y la copia lleva la consulta como plan en
+#      su cabecera
 #
 # Necesita `ore`, `ore-serve`, `ore-store-r2` en target/{release,debug}, git y
 # python3 con pyarrow (para 7–10), pyiceberg y duckdb (11–13); sin ellos se
@@ -684,6 +695,124 @@ ML14=$(jq_ "$CL/datasets/ventas/default/francia.json" metadata_location)
 case "$ML14" in s3://copia/ore/v2/catalogo/ventas/default/francia/*) ;; *) falla "14 · la copia no vive bajo catalogo/<base>/<schema>/: $ML14";; esac
 printf '{"metadata_location":"%s","dataset":"datasets/ventas_francia"}\n' "$ML14" | "$STORE" leer | head -1 | grep -q '"conducto":"' || falla "14 · la copia no lleva su cabecera"
 ok "14 · materializar sobre el lago sin driver: francia 1 fila de 267 leídas (filtro y proyección en Arrow, sin las borradas), todoPy 267, el testigo es el snapshot del puntero, ask las contesta tipadas, la segunda pasada no lee, y una Table que nadie escribió se dice"
+
+# ── 14c · la copia de una vista SQL: preparar, calcular, sellar ──────────────
+if ! "$PY" -c 'import duckdb, pyarrow' 2>/dev/null; then
+  dice "sin duckdb/pyarrow: 14c (la copia de una vista SQL) se salta"
+else
+cat > "$CL/packages/ventas/views/porPais.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha14
+kind: View
+metadata: { name: porPais, namespace: ventas }
+spec:
+  owner: team:ventas
+  dialect: duckdb
+  sql: |
+    SELECT pais, count(*) AS n, sum(total) AS total FROM ventas.py GROUP BY pais
+  columns:
+    pais: { type: String }
+    n: { type: Integer }
+    total: { type: Decimal }
+Y
+cat > "$CL/packages/ventas/views/deFrancia.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha14
+kind: View
+metadata: { name: deFrancia, namespace: ventas }
+spec:
+  owner: team:ventas
+  dialect: duckdb
+  sql: |
+    SELECT p.id, p.total FROM ventas.py p JOIN ventas.francia f ON f.id = p.id
+  columns:
+    id: { type: Integer }
+    total: { type: Decimal }
+Y
+cat > "$CL/packages/ventas/views/rota.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha14
+kind: View
+metadata: { name: rota, namespace: ventas }
+spec:
+  owner: team:ventas
+  dialect: duckdb
+  sql: |
+    SELECT CAST(pais AS INTEGER) AS n FROM ventas.py
+  columns:
+    n: { type: Integer }
+Y
+for par in "porPaisCopia porPais" "deFranciaCopia deFrancia" "rotaCopia rota"; do
+  set -- $par
+  cat > "$CL/packages/ventas/datasets/$1.yaml" <<Y
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: $1, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { view: ventas.$2 }
+Y
+done
+cat > "$CL/packages/ventas/datasets/porPaisEs.yaml" <<'Y'
+apiVersion: oos.dev/v1alpha12
+kind: Dataset
+metadata: { name: porPaisEs, namespace: ventas }
+spec:
+  owner: team:ventas
+  from: { view: ventas.porPais }
+  where: { pais: ES }
+Y
+C14="--vista ventas.porPaisCopia --vista ventas.deFranciaCopia --vista ventas.rotaCopia --vista ventas.porPaisEs"
+( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "14c · el árbol con las vistas SQL no compila"; }
+# `ore view`: por su consulta, sin fuga, y la `raíz` que el Job busca es el lago
+"$ORE" view "$CL" > "$TMP/view14c.txt" 2>&1 || falla "14c · ore view sale con error (y el Job de la copia se caería entero): $(grep -A3 porPais "$TMP/view14c.txt" | head -12)"
+F14=$(awk -v n="ventas.porPaisCopia" '$0==n{m=1;next} m&&/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s;exit}' "$TMP/view14c.txt")
+[ "$F14" = lago ] || falla "14c · el Job no sabría qué fuente abrir para ventas.porPaisCopia (\`$F14\`): $(grep -A6 '^ventas.porPaisCopia' "$TMP/view14c.txt")"
+grep -A2 '^ventas.porPaisCopia' "$TMP/view14c.txt" | grep -q "consulta  duckdb · lee ventas.py" || falla "14c · ore view no dice qué lee la copia: $(grep -A6 '^ventas.porPaisCopia' "$TMP/view14c.txt")"
+# sin `--calculado`: la pasada de siempre no la toca
+"$ORE" materialize "$CL" --vista ventas.porPaisCopia > "$TMP/mat14c0.txt" 2>&1 || falla "14c · sin --calculado la pasada falla: $(cat "$TMP/mat14c0.txt")"
+grep -q "esta pasada no la toca" "$TMP/mat14c0.txt" && [ ! -e "$CL/datasets/ventas/default/porPaisCopia.json" ] || falla "14c · sin --calculado tenía que quedarse como estaba: $(cat "$TMP/mat14c0.txt")"
+# ① preparar
+CALC="$TMP/calculo"
+"$ORE" materialize "$CL" --preparar "$CALC" $C14 > "$TMP/mat14c1.txt" 2>&1
+[ -f "$CALC/ventas.porPaisCopia/peticion.json" ] && [ -f "$CALC/ventas.porPaisCopia/entradas/ventas.py.arrow" ] || falla "14c · --preparar no dejó la petición ni las entradas: $(cat "$TMP/mat14c1.txt")"
+[ -f "$CALC/ventas.deFranciaCopia/entradas/ventas.francia.arrow" ] || falla "14c · --preparar no volcó las dos entradas del JOIN: $(ls -R "$CALC")"
+[ ! -e "$CL/datasets/ventas/default/porPaisCopia.json" ] || falla "14c · --preparar tocó un puntero"
+grep -q '__ore_dataset' "$CALC/ventas.porPaisCopia/peticion.json" || falla "14c · la consulta no va servida: $(cat "$CALC/ventas.porPaisCopia/peticion.json")"
+grep -q "entera" "$TMP/mat14c1.txt" || falla "14c · la copia con where tenía que decirse al preparar: $(cat "$TMP/mat14c1.txt")"
+# ② calcular: DuckDB, sin credencial (ninguna variable del almacén)
+env -u ORE_R2_ACCESS_KEY_ID -u ORE_R2_SECRET_ACCESS_KEY -u ORE_R2_S3_ENDPOINT \
+  PYTHONPATH="$RAIZ/puesto/python" "$PY" -m ore.calcular "$CALC" > "$TMP/calc14c.txt" 2>&1 || falla "14c · ore.calcular: $(cat "$TMP/calc14c.txt")"
+[ -f "$CALC/ventas.porPaisCopia/salida.arrow" ] && [ -f "$CALC/ventas.rotaCopia/error.txt" ] || falla "14c · el cálculo: $(cat "$TMP/calc14c.txt")"
+# ③ sellar
+"$ORE" materialize "$CL" --calculado "$CALC" $C14 > "$TMP/mat14c2.txt" 2>&1
+P14="$CL/datasets/ventas/default"
+[ "$(jq_ "$P14/porPaisCopia.json" estado)" = "copiada" ] || falla "14c · porPaisCopia no se copió: $(cat "$TMP/mat14c2.txt")"
+[ "$(jq_ "$P14/porPaisCopia.json" testigo.valor)" = "ventas.py@$(jq_ "$P14/py.json" snapshot)" ] || falla "14c · el testigo tenía que ser el snapshot de lo que lee: $(cat "$P14/porPaisCopia.json")"
+[ "$(jq_ "$P14/porPaisCopia.json" leidas)" = "267" ] || falla "14c · leídas, las 267 de ventas.py: $(cat "$P14/porPaisCopia.json")"
+case "$(jq_ "$P14/deFranciaCopia.json" testigo.valor)" in "ventas.francia@"*",ventas.py@"*) ;; *) falla "14c · el testigo del JOIN nombra sus dos entradas: $(cat "$P14/deFranciaCopia.json")";; esac
+[ "$(jq_ "$P14/deFranciaCopia.json" filas)" = "1" ] || falla "14c · el JOIN con francia es 1 fila: $(cat "$P14/deFranciaCopia.json")"
+[ "$(jq_ "$P14/rotaCopia.json" estado)" = "error" ] && grep -q "no se pudo ejecutar" "$P14/rotaCopia.json" || falla "14c · la consulta que falla deja su motivo en el puntero: $(cat "$P14/rotaCopia.json" 2>/dev/null) $(cat "$TMP/mat14c2.txt")"
+[ "$(jq_ "$P14/porPaisEs.json" estado)" = "error" ] && grep -q "entera" "$P14/porPaisEs.json" || falla "14c · una copia con where encima no es una copia: $(cat "$P14/porPaisEs.json" 2>/dev/null)"
+# `ore ask` contesta la vista SQL con las filas de su copia, tipadas por el contrato
+"$ORE" ask "$CL" --vista ventas.porPais > "$TMP/ask14c.txt" 2>"$TMP/ask14c.err" || falla "14c · ore ask de la vista SQL: $(cat "$TMP/ask14c.err")"
+"$PY" - "$TMP/ask14c.txt" <<'EOF' || falla "14c · lo que ask contesta de porPais: $(cat "$TMP/ask14c.txt")"
+import json, sys
+l = [x for x in open(sys.argv[1], encoding="utf-8").read().splitlines() if x.strip()]
+cab = json.loads(l[0]); filas = [json.loads(x) for x in l[1:]]
+assert cab["copia"]["de"] == "ventas.porPaisCopia", cab
+assert cab["columnas"] == {"pais": "String", "n": "Integer", "total": "Decimal"}, cab["columnas"]
+assert sum(f["n"] for f in filas) == 267, filas
+assert [f["n"] for f in filas if f["pais"] == "FR"] == [1], filas
+EOF
+# la segunda pasada: nada que calcular, y «ya está»
+rm -rf "$CALC"
+"$ORE" materialize "$CL" --preparar "$CALC" --vista ventas.porPaisCopia > "$TMP/mat14c3.txt" 2>&1
+grep -q "nada que calcular" "$TMP/mat14c3.txt" && [ ! -e "$CALC/ventas.porPaisCopia" ] || falla "14c · la segunda pasada tenía que no preparar nada: $(cat "$TMP/mat14c3.txt")"
+"$ORE" materialize "$CL" --calculado "$CALC" --vista ventas.porPaisCopia > "$TMP/mat14c4.txt" 2>&1
+grep -q "ya está" "$TMP/mat14c4.txt" && [ "$(jq_ "$P14/porPaisCopia.json" estado)" = "al-dia" ] || falla "14c · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14c4.txt")"
+# la copia es autodescriptiva: su plan es el digest de la consulta servida
+ML14C=$(jq_ "$P14/porPaisCopia.json" metadata_location)
+printf '{"metadata_location":"%s","dataset":"datasets/ventas_porPaisCopia"}\n' "$ML14C" | "$STORE" leer | head -1 | grep -q '"plan":"sha256:' || falla "14c · la copia no lleva su cabecera (plan = la consulta)"
+ok "14c · la copia de una vista SQL: ore view sin fuga (raíz lago), sin --calculado no se toca, --preparar vuelca lo que lee, ore.calcular la ejecuta sin credencial, --calculado la sella (GROUP BY y JOIN de dos datasets), el testigo es el snapshot de cada entrada, ask la contesta desde su copia, la segunda pasada no calcula, y lo que no es una copia o no se ejecuta lo dice su puntero"
+fi
 
 # ── 15 · /v1 como Unity: la base es el `prefix`, el schema el namespace ──────
 # 0038 P4, medido antes (`medida-v1-como-unity.py`): PyIceberg y DuckDB piden

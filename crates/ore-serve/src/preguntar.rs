@@ -110,6 +110,9 @@ impl Servidor {
             let codigo = match salida.codigo {
                 65 if motivo.starts_with("no hay ninguna `View`") => 404,
                 65 if motivo.contains("no está hecha") || motivo.contains("no está:") => 409,
+                // Una vista SQL sin copia (ADR 0040 paso 4c): se lee en un
+                // puesto, con la identidad de quien la lee; aquí no hay qué leer.
+                65 if motivo.contains("se lee en un puesto") => 409,
                 65 | 66 => 422,
                 _ => 502,
             };

@@ -122,6 +122,15 @@ pub fn ver(path: &std::path::Path) -> std::process::ExitCode {
             println!("  estado    {nivel}");
         }
 
+        // v1alpha14 (ADR 0040 paso 4c): una consulta no tiene plan del motor
+        // de vistas —la ejecuta DuckDB— y no es una fuga. Se enseña lo que es:
+        // qué lee, qué expone por contrato, y de dónde se copia. La `raíz` es
+        // el lago —lo que lee son datasets— y es lo que el Job de la copia
+        // busca para saber qué fuentes abrir: ninguna.
+        if vistas::por_consulta(&pkg, v) {
+            ver_consulta(&pkg, v);
+            continue;
+        }
         let plan = match catalogo.expandir(&nodo_de(v).unwrap_or_default()) {
             Ok(p) => p,
             Err(e) => {
@@ -506,6 +515,70 @@ fn escritura(pkg: &Package, v: &Loaded, r: &vistas::Raiz) -> String {
                 .unwrap_or_else(|| "la raíz".to_string())
         ),
     }
+}
+
+/// **Una consulta, en `ore view`** (ADR 0040 paso 4c): la vista SQL o la copia
+/// que la copia entera. Qué lee, qué expone por contrato, dónde se lee y cómo
+/// se copia. Lo que no se puede copiar se dice, y no es una fuga: la pasada de
+/// la copia lo informa en su puntero.
+fn ver_consulta(pkg: &Package, v: &Loaded) {
+    let sql = if vistas::es_sql(v) {
+        Some(v)
+    } else {
+        vistas::consulta_copiada(pkg, v).ok()
+    };
+    match sql {
+        Some(s) => {
+            let lee: Vec<String> = vistas::lee_directo(pkg, s)
+                .iter()
+                .filter_map(|d| d.qname())
+                .collect();
+            println!(
+                "  consulta  {} · lee {}",
+                s.section("dialect")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("duckdb"),
+                if lee.is_empty() {
+                    "nada del árbol".to_string()
+                } else {
+                    lee.join(", ")
+                }
+            );
+            if s.qname() != v.qname() {
+                println!(
+                    "  copia     entera de `{}`, rehecha en cada pasada",
+                    s.qname().unwrap_or_default()
+                );
+            }
+        }
+        None => {
+            if let Err(e) = vistas::consulta_copiada(pkg, v) {
+                println!("  copia     no se copia · {e}");
+            }
+        }
+    }
+    println!("  raíz      lago · lo que lee son datasets, y la consulta la ejecuta DuckDB");
+    if let Some(s) = sql {
+        match vistas::tipos_del_contrato(s) {
+            Ok(t) => println!(
+                "  esquema   {}",
+                t.iter()
+                    .map(|(c, t)| format!("{c}: {t}"))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            ),
+            Err(e) => println!("  esquema   no tipa · {e}"),
+        }
+    }
+    println!(
+        "  flujo     {}",
+        match vistas::dataset_de_lectura(pkg, v).and_then(|d| d.qname()) {
+            Some(d) if Some(&d) == v.qname().as_ref() =>
+                "copia — la consulta ya está en sus bytes".to_string(),
+            Some(d) => format!("se lee de su copia `{d}`"),
+            None => "se lee en un puesto (`sql()`), con la identidad de quien lee".to_string(),
+        }
+    );
 }
 
 /// De dónde salen de verdad las filas, y la regla que lo decidió.

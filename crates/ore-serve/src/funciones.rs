@@ -347,8 +347,10 @@ impl Servidor {
             return Respuesta::error(422, format!("`over: {over}` no es `<paquete>.<vista>`"));
         };
         // 0033: la copia de `over` es el primer dataset bajando por su cadena
-        // (ella misma incluida si es un dataset). Se mira con el compilador, que
-        // es quien sabe qué hay debajo; sin dataset no hay de dónde leer.
+        // (ella misma incluida si es un dataset); la de una vista SQL, el
+        // dataset que la copia entera, encima (ADR 0040 paso 4c). Se mira con el
+        // compilador, que es quien sabe dónde está; sin dataset no hay de dónde
+        // leer.
         let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
         let doc = pkg.docs.iter().find(|d| {
             matches!(
@@ -357,7 +359,7 @@ impl Servidor {
             ) && d.qname().as_deref() == Some(over.as_str())
         });
         let copia_qn = doc
-            .and_then(|d| ore_core::vistas::raiz_de_lectura(&pkg, d))
+            .and_then(|d| ore_core::vistas::dataset_de_lectura(&pkg, d))
             .and_then(|c| c.qname());
         let Some(copia_qn) = copia_qn else {
             return Respuesta::error(
