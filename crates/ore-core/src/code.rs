@@ -229,6 +229,10 @@ codes! {
     // sin esta regla «mover un fichero» y «renombrar» serian dos cosas.
     Oos2036 = "OOS2036", Reference, "el documento no vive en la carpeta de su schema";
     Oos2037 = "OOS2037", Reference, "`metadata.schema` nombra un schema que el paquete no declara";
+    // v1alpha14 · LA VISTA ES SQL. Su consulta es UNA y lee por nombre, y su
+    // contrato es lo que proyecta: lo que se gobierna se deriva de lo escrito.
+    Oos2038 = "OOS2038", Reference, "la consulta de una vista no es un SELECT que lee por nombre";
+    Oos2039 = "OOS2039", Reference, "el contrato de una vista no es lo que su consulta proyecta";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -273,6 +277,10 @@ codes! {
     // esta familia porque lo que está en juego es la solidez de la propagación.
     // No cuenta entre los 52 de v1alpha1 — como `OOS2001`.
     Oos4015 = "OOS4015", Flow, "la expresión lee una propiedad que derivedFrom no declara";
+    // v1alpha14 · el canal lateral, sobre el linaje: un predicado que ordena
+    // sobre una columna cuya raiz lleva etiqueta dice de cada fila que sale lo
+    // que su etiqueta prohibe decir.
+    Oos4016 = "OOS4016", Flow, "predicado que ordena sobre una columna etiquetada";
 
     // ── OOS5xxx · compatibilidad ────────────────────────────────────────────
     Oos5001 = "OOS5001", Compatibility, "propiedad eliminada sin moved ni reserved";
@@ -499,6 +507,10 @@ mod tests {
             // v1alpha13: el schema, y la carpeta que se ata a el.
             Code::Oos2036,
             Code::Oos2037,
+            // v1alpha14: la vista es SQL.
+            Code::Oos2038,
+            Code::Oos2039,
+            Code::Oos4016,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,
             Code::Oos5029,

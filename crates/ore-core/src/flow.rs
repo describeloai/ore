@@ -253,6 +253,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     // 3 · Los conductos y la regla de flujo.
     let conductos = clearances(pkg, &lat);
     vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
+    canal_lateral(pkg, &lat, &efectivas, &mut out);
     indices_de_topologia(pkg, &lat, &efectivas, &conductos, &mut out);
 
     // 4 · Desclasificadores y valores de ejemplo.
@@ -674,6 +675,12 @@ pub fn carga_de(
     v: &Loaded,
 ) -> BTreeMap<String, Labels> {
     let vqn = v.qname().unwrap_or_default();
+    // v1alpha14: si lo que se lee pasa por una vista SQL, la carga sale del
+    // linaje por columna hasta la raíz —con sus aristas INDIRECT—, porque ya
+    // no hay «una raíz» que heredar ni una cadena que proyectar.
+    if crate::linaje::usa_sql(pkg, v) {
+        return carga_por_el_linaje(pkg, lat, efectivas, v);
+    }
     {
         let mut por_campo: BTreeMap<String, Labels> = BTreeMap::new();
         let subir = |ls: &mut Labels, ret: &str, nivel: &str, origen: Origin| {
@@ -857,6 +864,195 @@ pub fn carga_de(
         }
 
         por_campo
+    }
+}
+
+// ── v1alpha14 · el flujo sobre el linaje ────────────────────────────────────
+
+fn subir_en(
+    lat: &BTreeMap<String, Lattice>,
+    ls: &mut Labels,
+    ret: &str,
+    nivel: &str,
+    origen: Origin,
+) {
+    let sube = match (ls.get(ret), lat.get(ret)) {
+        (Some((actual, _)), Some(l)) => l.index(nivel) > l.index(actual),
+        (None, _) => true,
+        _ => false,
+    };
+    if sube {
+        ls.insert(ret.to_string(), (nivel.to_string(), origen));
+    }
+}
+
+/// **Lo que lleva puesta cada columna raíz**: lo de su datasource, lo de su
+/// columna en la `Table`, lo que un dataset escrito heredó de lo que leyó, y lo
+/// que cada entidad dice de la columna de su vista que sale de ella. La
+/// etiqueta es del dato, no del eslabón (§6 de `01-la-vista-es-sql`): por eso
+/// se pone en la raíz y sube por el linaje, y no se proyecta de vista en vista.
+fn etiquetas_de_raices(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    raices: &BTreeSet<crate::linaje::Raiz>,
+) -> BTreeMap<crate::linaje::Raiz, Labels> {
+    use crate::linaje::Arista;
+    let mut out: BTreeMap<crate::linaje::Raiz, Labels> = BTreeMap::new();
+    let del_datasource = |ds: &str| -> Vec<(String, String)> {
+        let mut v = Vec::new();
+        for c in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
+            for d in c.section("datasources").map(|n| n.items()).unwrap_or(&[]) {
+                if d.get("name").and_then(|(_, x)| x.as_str()) == Some(ds) {
+                    v.extend(read_labels(d).into_iter().map(|(r, n, _)| (r, n)));
+                }
+            }
+        }
+        v
+    };
+    for r in raices {
+        let ls = out.entry(r.clone()).or_default();
+        if let Some(t) = pkg.table(&r.doc) {
+            if let Some(ds) = t.section("datasource").and_then(|d| d.as_str()) {
+                for (ret, n) in del_datasource(ds) {
+                    subir_en(lat, ls, &ret, &n, Origin::Inherited);
+                }
+            }
+            if let Some((_, col)) = t.section("columns").and_then(|c| c.get(&r.columna)) {
+                for (ret, n, _) in read_labels(col) {
+                    subir_en(lat, ls, &ret, &n, Origin::Inherited);
+                }
+            }
+        } else if let Some(d) = pkg.dataset(&r.doc) {
+            if let Some(labels) = carga_de(pkg, lat, efectivas, d).get(&r.columna) {
+                for (ret, (n, o)) in labels {
+                    subir_en(lat, ls, ret, n, *o);
+                }
+            }
+        } else if let Some((ds, _)) = r.doc.split_once('·') {
+            for (ret, n) in del_datasource(ds) {
+                subir_en(lat, ls, &ret, &n, Origin::Inherited);
+            }
+        }
+    }
+    // Lo que las entidades dicen: cada propiedad etiquetada, por la columna de
+    // su vista de la que sale, hasta sus raíces directas.
+    for e in pkg.entities() {
+        let Some(suya) = crate::vistas::respaldo(pkg, e) else {
+            continue;
+        };
+        let Some(props) = efectivas.get(&e.qname().unwrap_or_default()) else {
+            continue;
+        };
+        let Some(lin) = crate::linaje::linaje(pkg, suya) else {
+            continue;
+        };
+        for (prop, labels) in props {
+            let Some(rs) = lin.get(prop) else { continue };
+            for (raiz, arista) in rs {
+                if *arista != Arista::Directa || !raices.contains(raiz) {
+                    continue;
+                }
+                let ls = out.entry(raiz.clone()).or_default();
+                for (ret, (n, o)) in labels {
+                    subir_en(lat, ls, ret, n, *o);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// v1alpha14 · la carga de un documento por su linaje: cada columna lleva el
+/// `join` de lo que llevan sus raíces, por las aristas directas **y las
+/// INDIRECT** —la regla de flujo corre sobre las dos (§5)—.
+fn carga_por_el_linaje(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    v: &Loaded,
+) -> BTreeMap<String, Labels> {
+    let Some(lin) = crate::linaje::linaje(pkg, v) else {
+        return BTreeMap::new();
+    };
+    let raices: BTreeSet<crate::linaje::Raiz> = lin
+        .values()
+        .flat_map(|rs| rs.iter().map(|(r, _)| r.clone()))
+        .collect();
+    let de_raiz = etiquetas_de_raices(pkg, lat, efectivas, &raices);
+    let mut out: BTreeMap<String, Labels> = BTreeMap::new();
+    for (col, rs) in lin {
+        let ls = out.entry(col).or_default();
+        for (r, _) in rs {
+            for (ret, (n, o)) in de_raiz.get(&r).into_iter().flatten() {
+                subir_en(lat, ls, ret, n, *o);
+            }
+        }
+    }
+    out
+}
+
+/// ── OOS4016 · el canal lateral, sobre el linaje (v1alpha14 §6) ────────────
+///
+/// **Un predicado no filtra, LEE**: qué filas salen es observable, y un rango
+/// sobre una columna clasificada ordena en vez de particionar. La igualdad, la
+/// pertenencia y la ausencia sólo revelan pertenencia a una clase. La frontera
+/// es la de v1alpha7, trazada sobre el linaje y no sobre la gramática: un
+/// predicado que ordena sobre una columna cuya raíz lleva una etiqueta por
+/// encima de ⊥ en un eje de confidencialidad se niega; sobre una sin etiqueta,
+/// vale.
+fn canal_lateral(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    efectivas: &BTreeMap<String, EntityLabels>,
+    out: &mut Vec<Diagnostic>,
+) {
+    use crate::linaje::Arista;
+    use crate::vista_sql::Clase;
+    for v in pkg.of(Kind::View).filter(|v| crate::vistas::es_sql(v)) {
+        let Some(Ok(c)) = crate::vistas::consulta(pkg, v) else {
+            continue;
+        };
+        let qn = v.qname().unwrap_or_default();
+        for p in c.predicados.iter().filter(|p| p.clase == Clase::Ordena) {
+            let mut raices: BTreeSet<crate::linaje::Raiz> = BTreeSet::new();
+            for r in &p.mira {
+                for (raiz, arista) in crate::linaje::raices_de(pkg, v, r) {
+                    if arista == Arista::Directa {
+                        raices.insert(raiz);
+                    }
+                }
+            }
+            let de_raiz = etiquetas_de_raices(pkg, lat, efectivas, &raices);
+            let clasificada = de_raiz.iter().find_map(|(raiz, ls)| {
+                ls.iter().find_map(|(ret, (nivel, _))| {
+                    let l = lat.get(ret)?;
+                    (l.axis == Axis::Confidentiality && l.index(nivel).is_some_and(|i| i > 0))
+                        .then(|| (raiz.clone(), ret.clone(), nivel.clone()))
+                })
+            });
+            let Some((raiz, ret, nivel)) = clasificada else {
+                continue;
+            };
+            let mut d = Diagnostic::new(
+                Code::Oos4016,
+                &v.path,
+                format!(
+                    "`{qn}` filtra con `{}`, que ordena sobre `{}.{}` ({ret}: {nivel})",
+                    p.texto, raiz.doc, raiz.columna
+                ),
+            )
+            .help(
+                "un predicado no filtra, LEE: qué filas salen es observable, y un rango, un patrón \
+                 o una función sobre una columna clasificada dice de cada fila lo que su etiqueta \
+                 prohíbe decir. Sobre ella valen igualdad, pertenencia a una lista y ausencia \
+                 (`=`, `IN`, `IS NULL`), que sólo revelan a qué clase pertenece",
+            );
+            if let Some(n) = v.section("sql") {
+                d = d.at(n.pos());
+            }
+            out.push(d);
+        }
     }
 }
 

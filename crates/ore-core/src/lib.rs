@@ -51,6 +51,7 @@ pub mod graphql;
 pub mod identidad;
 pub mod impacto;
 pub mod json;
+pub mod linaje;
 pub mod link;
 pub mod manifiesto;
 pub mod normalize;
