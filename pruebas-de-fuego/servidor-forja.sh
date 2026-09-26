@@ -156,7 +156,9 @@ grep -q '"dataset:v.pedidos":{' "$TMP/a3.json" || falla "5 · el indice no tiene
 grep -q '"identidad":true' "$TMP/a3.json" || falla "5 · el dataset identidad no lo dice"
 grep -q '"tipo":"produce"' "$TMP/a3.json" && grep -q '"tipo":"sale_de"' "$TMP/a3.json" || falla "5 · faltan las dos direcciones de la relacion"
 grep -q '"sujeto":"persona:ana"' "$TMP/a3.json" || falla "5 · la version del fichero no dice quien: $(grep -o '"version":[^}]*}' "$TMP/a3.json" | head -1)"
-grep -q '"type":"foreign"' "$TMP/a3.json" || falla "5 · el paquete no dice su clase"
+# 0039: un paquete sin origen (ni `discover.scope.json` ni `discover.catalog.json`,
+# como este, hecho a mano) es `standard`: lo que tenga solo puede vivir en el lago.
+grep -q '"type":"standard"' "$TMP/a3.json" || falla "5 · el paquete no dice su clase (sin origen, standard)"
 dice "5 · GET /assets: calcula una vez por cabeza ($CAB1), la segunda de memoria, y un push ($CAB3) lo recalcula con el dataset, sus dos direcciones, su version y su clase"
 
 echo
