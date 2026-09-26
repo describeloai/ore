@@ -2001,7 +2001,7 @@ fn concepto_yaml(
 /// Los nombres físicos son **opacos** —pueden llevar puntos, espacios o empezar
 /// por dígito— y un `Worker_Reference.ID` sin comillas sigue analizando pero
 /// deja de ser lo que era el día que alguien meta un `:`.
-fn escalar_yaml(s: &str) -> String {
+pub(crate) fn escalar_yaml(s: &str) -> String {
     let simple = !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')

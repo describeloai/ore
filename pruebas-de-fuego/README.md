@@ -37,7 +37,7 @@ aserción.
 
 **`bigquery-real.sh`** lleva BigQuery de punta a punta —catálogo, `discover
 --type standard`, `materialize` a Iceberg y la relectura— contra un dataset de
-verdad con la semilla de `semilla/bigquery-ventas.sql`, y compara la copia **valor
+verdad con la semilla de `bigquery-semilla.sql`, y compara la copia **valor
 a valor** con lo sembrado. Nació en rojo a propósito (2026-09-26): afirma lo que la
 Fase A tiene que conseguir, y cada aserción en rojo lleva la etiqueta del paso que
 la apaga (`[A2]` el transporte REST, `[A3]` el catálogo en el driver, `[A4]` el

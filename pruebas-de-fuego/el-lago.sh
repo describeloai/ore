@@ -345,7 +345,7 @@ escribe ventas_escrita sobrescribir "" op-1 0 5 || falla "7 · ore-store escribi
 [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "5" ] || falla "7 · 5 filas: $(jq_ "$TMP/commit.json" tablas.0.filas)"
 ML7=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 grep -q "cuando: { type: DateTimeTz }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "7 · la Table no lleva DateTimeTz: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
-grep -q "total: { type: Decimal }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "7 · la Table no lleva Decimal"
+grep -q 'total: { type: "Decimal<18, 2>" }' "$CL/packages/ventas/datasets/escrita.yaml" || falla "7 · la Table no lleva Decimal<18, 2>, entre comillas: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 [ "$(jq_ "$CL/datasets/ventas/default/escrita.json" operacion)" = "op-1" ] || falla "7 · el puntero no lleva la operación"
 [ -n "$(jq_ "$CL/datasets/ventas/default/escrita.json" uuid)" ] || falla "7 · el puntero no lleva el uuid"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "7 · el árbol no compila con la Table que nació"; }
@@ -371,7 +371,7 @@ escribe ventas_escrita anexar "$ML7" op-3 100 1 || falla "8 · escribir (base vi
 [ "$(jq_ "$CL/datasets/ventas/default/escrita.json" metadata_location)" = "$ML8" ] || falla "8 · el 75 movió el puntero"
 # una columna más: la Table del árbol sigue el esquema — y lo que alguien le
 # añadió a mano (una descripción, una etiqueta en una columna) se queda
-sed -i 's|^metadata: { name: escrita, namespace: ventas }|metadata: { name: escrita, namespace: ventas, description: "lo que ana escribió" }|; s|^    total: { type: Decimal }|    total: { type: Decimal, labels: { gdpr.sensitivity: high } }|' "$CL/packages/ventas/datasets/escrita.yaml"
+sed -i 's|^metadata: { name: escrita, namespace: ventas }|metadata: { name: escrita, namespace: ventas, description: "lo que ana escribió" }|; s|^    total: { type: "Decimal<18, 2>" }|    total: { type: "Decimal<18, 2>", labels: { gdpr.sensitivity: high } }|' "$CL/packages/ventas/datasets/escrita.yaml"
 grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/datasets/escrita.yaml" && grep -q "gdpr.sensitivity: high" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · no se pudo anotar la Table a mano: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 escribe ventas_escrita sobrescribir "$ML8" op-4 0 2 extra || falla "8 · escribir (columna nueva)"
 [ "$(jq_ "$TMP/escrito.json" esquema_cambiado)" = "true" ] || falla "8 · escribir no vio el esquema nuevo"
@@ -379,7 +379,7 @@ escribe ventas_escrita sobrescribir "$ML8" op-4 0 2 extra || falla "8 · escribi
 [ "$(jq_ "$TMP/commit.json" tablas.0.tabla_regenerada)" = "true" ] || falla "8 · la Table tenía que regenerarse: $(cat "$TMP/commit.json")"
 grep -q "canal: { type: String }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la Table no lleva la columna nueva"
 grep -q 'description: "lo que ana escribió"' "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la regeneración perdió la descripción"
-grep -q "total: { type: Decimal, labels: { gdpr.sensitivity: high } }" "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la regeneración perdió la etiqueta: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
+grep -q 'total: { type: "Decimal<18, 2>", labels: { gdpr.sensitivity: high } }' "$CL/packages/ventas/datasets/escrita.yaml" || falla "8 · la regeneración perdió la etiqueta: $(cat "$CL/packages/ventas/datasets/escrita.yaml")"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "8 · el árbol no compila con la Table regenerada"; }
 ML8b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 "$ORE" datasets "$CL" --ficha ventas.escrita --json > "$TMP/ficha.json" 2>&1 || falla "8 · ficha"
@@ -520,7 +520,7 @@ PY
 [ "$(jq_ "$TMP/py11.json" snapshots)" = "4" ] || falla "11 · 4 snapshots: $(cat "$TMP/py11.json")"
 grep -q "Commit failed due to a concurrent update, retrying" "$TMP/py11.err" || falla "11 · la segunda mano no vio el 409 ni reintentó: $(tail -3 "$TMP/py11.err")"
 [ "$(pide GET /arbol/packages/ventas/datasets/py.yaml)" = "200" ] || falla "11 · el Dataset no está en el árbol"
-grep -q '"total: { type: Decimal }' "$TMP/out.json" || grep -q 'total: { type: Decimal }' "$TMP/out.json" || falla "11 · la Table no lleva Decimal: $(cat "$TMP/out.json" | head -c 300)"
+grep -qE 'total: \{ type: (\\\\?")?Decimal' "$TMP/out.json" || falla "11 · la Table no lleva Decimal: $(cat "$TMP/out.json" | head -c 300)"
 [ "$(pide GET /arbol/historia/datasets/ventas/default/py.json)" = "200" ] || falla "11 · GET /arbol/historia del puntero"
 [ "$(campo versiones.0.autor)" = "persona:ana" ] || falla "11 · el commit no es del sujeto: $(campo versiones.0.autor)"
 NV=$("$PY" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["versiones"]))' "$TMP/out.json")
@@ -673,7 +673,7 @@ import json, sys
 l = [x for x in open(sys.argv[1], encoding="utf-8").read().splitlines() if x.strip()]
 cab = json.loads(l[0]); filas = [json.loads(x) for x in l[1:]]
 assert cab["filas"] == 1 and cab["copia"]["de"] == "ventas.francia", cab
-assert cab["columnas"] == {"id": "Integer", "pais": "String", "importe": "Decimal"}, cab["columnas"]
+assert cab["columnas"] == {"id": "Integer", "pais": "String", "importe": "Decimal<18, 2>"}, cab["columnas"]
 assert filas == [{"id": 3, "pais": "FR", "importe": "4.5"}], filas
 EOF
 "$ORE" ask "$CL" --vista ventas.todoPy > "$TMP/ask14.txt" 2>"$TMP/ask14.err" || { cat "$TMP/ask14.err"; falla "14 · ore ask todoPy"; }

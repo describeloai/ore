@@ -9,7 +9,7 @@ cientifica; el esquema de un resultado dice NULLABLE aunque la tabla diga
 REQUIRED).
 
 Solo lee, y cada consulta lleva `maximumBytesBilled`. Necesita la semilla de
-`semilla/bigquery-ventas.sql` cargada y un token:
+`bigquery-semilla.sql` cargada y un token:
 
     ORE_GCP_TOKEN=$(gcloud auth print-access-token) \\
       python pruebas-de-fuego/grabar-bigquery-rest.py <proyecto> [dataset=ventas]

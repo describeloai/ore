@@ -28,7 +28,7 @@
 #
 # Necesita:
 #   · `BQ_URL=bigquery://<proyecto>/<dataset>` con la semilla de
-#     `semilla/bigquery-ventas.sql` cargada (filas con id `ore-e2e-*`). Sin
+#     `bigquery-semilla.sql` cargada (filas con id `ore-e2e-*`). Sin
 #     `BQ_URL` se salta: CI no alcanza BigQuery, y decirlo es mejor que fingir.
 #   · un token de Google Cloud: `ORE_GCP_TOKEN` (p. ej. `gcloud auth
 #     print-access-token`) o el servidor de metadatos (ADR 0042).

@@ -829,6 +829,8 @@ fn documento_nuevo(owner: &str, t: Tabla, columnas: &BTreeMap<String, String>) -
         "apiVersion: oos.dev/{version}\nkind: Dataset\nmetadata: {{ name: {tabla}, namespace: {ns}{del_schema} }}\n{MARCA}: lo escribió `write()` desde un puesto, y este\n# documento sigue el esquema de la tabla Iceberg (nació con la primera escritura\n# y sus columnas siguen al esquema cuando evoluciona; lo demás que se le\n# añada se conserva). Su puntero es `datasets/{ns}/{schema}/{tabla}.json`; su\n# historia, los snapshots de la tabla; su linaje, la procedencia del puntero.\nspec:\n  owner: {owner}\n  columns:\n"
     );
     for (c, t) in columnas {
+        // `Decimal<18, 2>` lleva una coma, y en estilo flow la coma lo partiría.
+        let t = crate::inductor::escalar_yaml(t);
         s.push_str(&format!("    {c}: {{ type: {t} }}\n"));
     }
     s.push_str("  changes: { mode: append }\n");
@@ -908,7 +910,12 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
                 Some((l, col, largo)) => ediciones.push(Edicion::Tipo(l, col, largo, t.clone())),
                 None if c.vacia => ediciones.push(Edicion::Linea(
                     c.linea,
-                    format!("{}{}: {{ type: {t} }}", " ".repeat(sangria), c.nombre),
+                    format!(
+                        "{}{}: {{ type: {} }}",
+                        " ".repeat(sangria),
+                        c.nombre,
+                        crate::inductor::escalar_yaml(t)
+                    ),
                 )),
                 // Un mapa con otras claves y sin `type`: se le pone la suya.
                 None => {
@@ -918,7 +925,11 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
                         .unwrap_or(sangria + 2);
                     ediciones.push(Edicion::Insertar(
                         c.linea + 1,
-                        vec![format!("{}type: {t}", " ".repeat(s2))],
+                        vec![format!(
+                            "{}type: {}",
+                            " ".repeat(s2),
+                            crate::inductor::escalar_yaml(t)
+                        )],
                     ));
                 }
             },
@@ -927,7 +938,13 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
     let nuevas: Vec<String> = columnas
         .iter()
         .filter(|(c, _)| !doc.iter().any(|d| &d.nombre == *c))
-        .map(|(c, t)| format!("{}{c}: {{ type: {t} }}", " ".repeat(sangria)))
+        .map(|(c, t)| {
+            format!(
+                "{}{c}: {{ type: {} }}",
+                " ".repeat(sangria),
+                crate::inductor::escalar_yaml(t)
+            )
+        })
         .collect();
     if !nuevas.is_empty() {
         ediciones.push(Edicion::Insertar(fin, nuevas));
@@ -948,7 +965,11 @@ fn seguir_esquema(texto: &str, columnas: &BTreeMap<String, String>) -> Option<St
             Edicion::Tipo(l, col, largo, t) => {
                 let linea = &lineas[l - 1];
                 let antes: String = linea.chars().take(col - 1).collect();
+                // Un tipo que ya estaba entre comillas ocupa dos más que su valor.
+                let citado = matches!(linea.chars().nth(col - 1), Some('"' | '\''));
+                let largo = largo + if citado { 2 } else { 0 };
                 let despues: String = linea.chars().skip(col - 1 + largo).collect();
+                let t = crate::inductor::escalar_yaml(&t);
                 lineas[l - 1] = format!("{antes}{t}{despues}");
             }
             Edicion::Insertar(l, vs) => {
