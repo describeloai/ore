@@ -117,7 +117,7 @@ afirma "" "pedidos.id es required (REQUIRED en el origen)" "$([ "$(cat_col venta
 st=$(cat_col ventas.pedidos total sourceType)
 afirma "[A4]" "pedidos.total cita su fisico (NUMERIC(38, 9)) para que la copia sepa su escala" \
   "$(case "$st" in *NUMERIC*38*9*) echo 1;; esac)" "sourceType=$st"
-echo '{"url":"'"$BQ_URL"'"}' | "$DRV" catalogo > "$TMP/drv-cat.json" 2> "$TMP/drv-cat.err"
+printf '%s' "$BQ_URL" | "$DRV" catalogo bq > "$TMP/drv-cat.json" 2> "$TMP/drv-cat.err"
 afirma "[A3]" "el propio driver contesta \`catalogo\` (el catalogo vive en el driver)" \
   "$(grep -q '"ventas.pedidos"' "$TMP/drv-cat.json" && echo 1)" "$(head -c 120 "$TMP/drv-cat.err")"
 

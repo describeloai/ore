@@ -35,7 +35,7 @@
 //! | `testigo` | hasta dónde está el origen, **si sabe fecharse** |
 //! | `check` | `SELECT 1`, sin crear un job |
 //! | `explorar` | los datasets del proyecto, todas las páginas |
-//! | `catalogo` | **se niega** todavía: esa mitad vive dentro de `ore` (A3 la muda) |
+//! | `catalogo` | el catálogo del dataset, una consulta paginada ([`catalogo`]); la URL por stdin y la fuente como argumento, como `ore-read-postgres` |
 //!
 //! # La truncación que no avisa
 //!
@@ -44,6 +44,7 @@
 //! hasta el final, cada página se escribe según llega, y al terminar las filas
 //! contadas tienen que ser el `totalRows` que dijo el servidor ([`rest`]).
 
+mod catalogo;
 mod consultas;
 mod rest;
 mod valores;
@@ -68,7 +69,9 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let resultado = rest::Http::del_entorno().and_then(|http| verbo_(&http, verbo, &entrada));
+    let fuente = args.get(1).map(String::as_str).unwrap_or("bigquery");
+    let resultado =
+        rest::Http::del_entorno().and_then(|http| verbo_(&http, verbo, fuente, &entrada));
     match resultado {
         Ok(salida) => {
             if !salida.is_empty() {
@@ -83,7 +86,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn verbo_(t: &dyn rest::Transporte, verbo: &str, entrada: &str) -> Result<String, String> {
+fn verbo_(
+    t: &dyn rest::Transporte,
+    verbo: &str,
+    fuente: &str,
+    entrada: &str,
+) -> Result<String, String> {
     match verbo {
         "leer" => {
             let salida = std::io::stdout();
@@ -124,13 +132,9 @@ fn verbo_(t: &dyn rest::Transporte, verbo: &str, entrada: &str) -> Result<String
             let (url, _) = ore_driver::leer_coordenada(entrada)?;
             explorar(t, &url)
         }
-        "catalogo" => Err(
-            "`ore` trae la receta del catálogo de BigQuery dentro y es la que \
-                           corre: `lector::catalogo` despacha `bigquery` a la suya y no llega \
-                           aquí. Lo que implementa este programa es `leer`, que es el verbo de \
-                           la fase ③"
-                .to_string(),
-        ),
+        // La URL a secas, no una coordenada: es lo único que el catálogo
+        // necesita, y es la forma que `ore` le pasa a cualquier familia.
+        "catalogo" => catalogo::leer(t, fuente, entrada),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     }
 }
