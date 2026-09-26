@@ -2497,7 +2497,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
     for k in documentos::KINDS {
         m.push(("GET", format!("/documentos/{}", k.nombre), con_identidad));
         // Lo que escribe otro verbo (0041: el `Model`) sólo se lee por aquí.
-        let verbos: &[&str] = if k.escribe.is_some() { &["GET"] } else { &["GET", "PUT", "DELETE"] };
+        let verbos: &[&str] = if k.escribe.is_some() {
+            &["GET"]
+        } else {
+            &["GET", "PUT", "DELETE"]
+        };
         for &verbo in verbos {
             m.push((
                 verbo,

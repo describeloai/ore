@@ -71,8 +71,8 @@ use crate::cola;
 use crate::documentos::{self, ModeloDelArbol};
 use crate::rutas::{Servidor, analizar, token};
 use ore_core::json::Json;
-use ore_core::parse::{self, Node};
 use ore_core::normalize::{SCHEMA_POR_DEFECTO, a_corto, corto, qualify_catalogo};
+use ore_core::parse::{self, Node};
 use ore_entrada::http::{self, Respuesta};
 use std::path::Path;
 
@@ -686,7 +686,8 @@ impl Servidor {
                 if let Err(e) = std::fs::remove_file(&m.fichero) {
                     return Respuesta::error(500, format!("no se pudo retirar `{ruta}`: {e}"));
                 }
-                if let Err(r) = self.empeora(raiz, &antes, &format!("retirar el modelo `{nombre}`")) {
+                if let Err(r) = self.empeora(raiz, &antes, &format!("retirar el modelo `{nombre}`"))
+                {
                     let _ = std::fs::write(&m.fichero, &texto);
                     let motivo = match &r.cuerpo {
                         Json::Obj(o) => match o.get("error") {

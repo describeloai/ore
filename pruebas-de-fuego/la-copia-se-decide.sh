@@ -83,6 +83,9 @@ metadata: { name: demo, version: 0.1.0 }
 datasources:
   - { name: pg, type: postgres, connectionEnv: PG_URL }
 Y
+# 0039: la clase la dice el origen. Una base foranea hecha a mano dice de donde sale,
+# como la dejaria `discover` (sin ese fichero seria standard: solo el lago).
+printf '{"source":"pg"}\n' > "$REPO/packages/olist/discover.catalog.json"
 cat > "$REPO/packages/olist/package.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha1
 kind: Package

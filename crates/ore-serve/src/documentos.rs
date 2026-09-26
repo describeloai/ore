@@ -422,7 +422,11 @@ pub(crate) fn modelos_de(raiz: &Path) -> Vec<ModeloDelArbol> {
         .map(|d| {
             let con_sitio = !d.espacio().is_empty();
             ModeloDelArbol {
-                referencia: if con_sitio { d.cualificado() } else { d.nombre() },
+                referencia: if con_sitio {
+                    d.cualificado()
+                } else {
+                    d.nombre()
+                },
                 nombre: d.nombre(),
                 paquete: con_sitio.then(|| d.espacio()),
                 schema: con_sitio.then(|| d.schema()),
@@ -835,7 +839,10 @@ impl Servidor {
             Err(r) => return r,
         };
         if let Some(verbo) = k.escribe {
-            return Respuesta::error(405, format!("{} no se escribe por `/documentos`: {verbo}", k.articulo));
+            return Respuesta::error(
+                405,
+                format!("{} no se escribe por `/documentos`: {verbo}", k.articulo),
+            );
         }
         self.escribir_en_su_sitio(raiz, k, ns, schema, n, cuerpo, si_commit)
     }
@@ -960,7 +967,10 @@ impl Servidor {
             Err(r) => return r,
         };
         if let Some(verbo) = k.escribe {
-            return Respuesta::error(405, format!("{} no se retira por `/documentos`: {verbo}", k.articulo));
+            return Respuesta::error(
+                405,
+                format!("{} no se retira por `/documentos`: {verbo}", k.articulo),
+            );
         }
         self.retirar_de_su_sitio(raiz, k, ns, schema, n, si_commit, sujeto)
     }
