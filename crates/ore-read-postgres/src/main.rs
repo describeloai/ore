@@ -345,10 +345,43 @@ fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
         return escalar(dentro.trim()).map(|e| format!("list<{e}>"));
     }
     match familia {
-        "d" => escalar(base?).map(String::from),
+        "d" => {
+            let b = base?;
+            decimal(b).or_else(|| escalar(b).map(String::from))
+        }
         "e" => Some("String".into()),
-        _ => escalar(t).map(String::from),
+        _ => decimal(t).or_else(|| escalar(t).map(String::from)),
     }
+}
+
+/// **`numeric(p, s)` con su precisión** (02-entity §3.2, 0032 T4).
+///
+/// `numeric(p, s)` y `numeric(p)` —escala 0— son `Decimal<p, s>` si caben en
+/// 38 cifras, el techo de Iceberg; si no, `String`, y el valor exacto viaja
+/// como texto con la cita al lado. `numeric` sin límites devuelve `None` aquí y
+/// sigue siendo `Decimal` a secas: su precisión no se declaró, y la copia
+/// estrecha lo que quepa en su físico por defecto y deja como texto la columna
+/// que no (con `sin_estrechar` en el informe).
+fn decimal(pg: &str) -> Option<String> {
+    let (base, resto) = pg.split_once('(')?;
+    if !matches!(base.trim(), "numeric" | "decimal") {
+        return None;
+    }
+    let n: Vec<u16> = resto
+        .strip_suffix(')')?
+        .split(',')
+        .map(|x| x.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    let (p, s) = match n[..] {
+        [p] => (p, 0),
+        [p, s] => (p, s),
+        _ => return None,
+    };
+    Some(if (1..=38).contains(&p) && s <= p {
+        format!("Decimal<{p}, {s}>")
+    } else {
+        "String".into()
+    })
 }
 
 /// `relkind`, tal y como lo dice el catálogo.
@@ -767,12 +800,24 @@ mod tests {
         );
     }
 
-    /// La precisión es una restricción, no otro tipo.
+    /// La longitud de un texto es una restricción, no otro tipo. La precisión
+    /// de un decimal sí viaja desde 0032 T4: sin ella la copia usaba `(38, 18)`
+    /// y un valor con más de 20 cifras enteras dejaba la columna como texto.
     #[test]
-    fn la_precision_no_cambia_el_tipo() {
+    fn la_precision_del_decimal_viaja_y_la_longitud_no() {
+        for (pg, oos) in [
+            ("numeric(12,2)", "Decimal<12, 2>"),
+            ("numeric(5)", "Decimal<5, 0>"),
+            ("numeric(50,2)", "String"),
+            ("numeric", "Decimal"),
+            ("money", "Decimal"),
+        ] {
+            assert_eq!(traducir(pg, "b", None).as_deref(), Some(oos), "{pg}");
+        }
         assert_eq!(
-            traducir("numeric(12,2)", "b", None).as_deref(),
-            Some("Decimal")
+            traducir("importe", "d", Some("numeric(10,2)")).as_deref(),
+            Some("Decimal<10, 2>"),
+            "un dominio sobre un decimal lleva la precisión de su base"
         );
         assert_eq!(
             traducir("character varying(255)", "b", None).as_deref(),

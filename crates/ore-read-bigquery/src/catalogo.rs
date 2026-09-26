@@ -151,12 +151,58 @@ fn tipo_oos(bq: &str) -> Option<&'static str> {
 }
 
 /// `ARRAY<X>` es `list<X>` si `X` se sabe traducir. `ARRAY<STRUCT<…>>` no.
+/// Un decimal lleva su precisión ([`decimal`]); dentro de una lista no, porque
+/// `list<T>` es de escalares (02-entity §3.3).
 fn traducir(bq: &str) -> Option<String> {
     let t = bq.trim();
     if let Some(dentro) = t.strip_prefix("ARRAY<").and_then(|r| r.strip_suffix('>')) {
         return tipo_oos(dentro).map(|e| format!("list<{e}>"));
     }
-    tipo_oos(t).map(String::from)
+    decimal(t).or_else(|| tipo_oos(t).map(String::from))
+}
+
+/// **Un decimal de BigQuery con su precisión** (02-entity §3.2, 0032 T4).
+///
+/// | origen | OOS | por qué |
+/// |---|---|---|
+/// | `NUMERIC` | `Decimal<38, 9>` | la precisión implícita de BigQuery, dicha |
+/// | `NUMERIC(P)`, `NUMERIC(P, S)` | `Decimal<P, S>` (S = 0 si falta) | siempre cabe: `P ≤ S + 29 ≤ 38` |
+/// | `BIGNUMERIC(P, S)` con `P ≤ 38` | `Decimal<P, S>` | cabe en `decimal128` |
+/// | `BIGNUMERIC`, o `P > 38` | `String` | 76 cifras no caben en Iceberg (techo 38): el valor exacto viaja como texto, y la cita dice qué era |
+///
+/// Antes todos eran `Decimal` a secas, y la copia usaba `(38, 18)`: un
+/// NUMERIC de más de 20 cifras enteras no cabía y la columna entera se quedaba
+/// como texto (medido el 2026-09-26).
+fn decimal(bq: &str) -> Option<String> {
+    let (base, args) = match bq.split_once('(') {
+        Some((b, r)) => (b.trim(), Some(r.strip_suffix(')')?)),
+        None => (bq.trim(), None),
+    };
+    let grande = match base {
+        "NUMERIC" | "DECIMAL" => false,
+        "BIGNUMERIC" | "BIGDECIMAL" => true,
+        _ => return None,
+    };
+    let (p, s) = match args {
+        None if grande => return Some("String".into()),
+        None => (38, 9),
+        Some(a) => {
+            let n: Vec<u16> = a
+                .split(',')
+                .map(|x| x.trim().parse().ok())
+                .collect::<Option<_>>()?;
+            match n[..] {
+                [p] => (p, 0),
+                [p, s] => (p, s),
+                _ => return None,
+            }
+        }
+    };
+    Some(if p <= 38 && s <= p {
+        format!("Decimal<{p}, {s}>")
+    } else {
+        "String".into()
+    })
 }
 
 fn clase(table_type: &str) -> &'static str {
@@ -271,12 +317,12 @@ pub fn armar(fuente: &str, dataset: &str, filas: &[Fila]) -> String {
             }
         });
 
-        // El tipo o su cita, nunca los dos: `sourceType` no se interpreta aguas
-        // abajo, y por eso solo se pone cuando no hubo traducción.
-        let (tipo, origen) = match traducir(&tipo_bruto) {
-            Some(t) => (Some(t.to_string()), None),
-            None => (None, Some(tipo_bruto.clone())),
-        };
+        // El tipo **y** su cita, como `ore-read-postgres` desde 0032 T2: la
+        // traducción es lo que el árbol entiende; la cita es el hecho, y dice
+        // qué era una columna que viaja como texto (un BIGNUMERIC) o que no se
+        // supo traducir (un STRUCT). Antes era una cosa o la otra.
+        let tipo = traducir(&tipo_bruto);
+        let origen = Some(tipo_bruto.clone());
         acc.columnas.push(Columna {
             nombre: columna.clone(),
             tipo,
@@ -462,8 +508,32 @@ mod tests {
     fn timestamp_no_es_datetime() {
         assert_eq!(traducir("TIMESTAMP").as_deref(), Some("DateTimeTz"));
         assert_eq!(traducir("DATETIME").as_deref(), Some("DateTime"));
-        assert_eq!(traducir("NUMERIC(10, 2)").as_deref(), Some("Decimal"));
+        assert_eq!(
+            traducir("NUMERIC(10, 2)").as_deref(),
+            Some("Decimal<10, 2>")
+        );
         assert_eq!(traducir("ARRAY<STRING>").as_deref(), Some("list<String>"));
+    }
+
+    /// Los decimales con su precisión (0032 T4), fila a fila de [`decimal`].
+    #[test]
+    fn cada_decimal_con_su_precision() {
+        for (bq, oos) in [
+            ("NUMERIC", "Decimal<38, 9>"),
+            ("NUMERIC(10, 2)", "Decimal<10, 2>"),
+            ("NUMERIC(10)", "Decimal<10, 0>"),
+            ("BIGNUMERIC(38, 10)", "Decimal<38, 10>"),
+            ("BIGNUMERIC(40, 2)", "String"),
+            ("BIGNUMERIC", "String"),
+            ("DECIMAL", "Decimal<38, 9>"),
+        ] {
+            assert_eq!(traducir(bq).as_deref(), Some(oos), "{bq}");
+        }
+        assert_eq!(traducir("ARRAY<NUMERIC>").as_deref(), Some("list<Decimal>"));
+        // Y la cita va siempre, con la traducción al lado.
+        let c = catalogo();
+        assert!(c.contains("\"sourceType\": \"INT64\""), "{c}");
+        assert!(c.contains("\"type\": \"Integer\""), "{c}");
     }
 
     /// El caso que decide la doctrina: un `STRUCT` **no** es `Opaque`.

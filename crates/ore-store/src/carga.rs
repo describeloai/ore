@@ -612,6 +612,16 @@ fn sin_perdida(de: &DataType, a: &DataType) -> bool {
     }
 }
 
+/// Si convertir `de` en `a` es seguro para un decimal: entre dos decimales,
+/// solo si ensancha ([`sin_perdida`]); cualquier otro par no es asunto de esta
+/// guarda y sigue decidiéndolo el cast.
+fn decimal_ensancha(de: &DataType, a: &DataType) -> bool {
+    match (de, a) {
+        (DataType::Decimal128(..), DataType::Decimal128(..)) => sin_perdida(de, a),
+        _ => true,
+    }
+}
+
 /// **Un lote al esquema `destino`, por nombre**: las columnas que faltan van
 /// nulas (un fichero de antes de que existieran), una de otro tipo se
 /// convierte si Arrow sabe (`cast`) y si no se dice con su nombre, y una que
@@ -628,6 +638,20 @@ pub fn al_esquema(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBat
             match lote.column_by_name(campo.name()) {
                 None => Ok(arrow_array::new_null_array(campo.data_type(), n)),
                 Some(col) if col.data_type() == campo.data_type() => Ok(col.clone()),
+                // **Un decimal solo se convierte si ensancha** (02-entity §3.4).
+                // `arrow_cast` de `decimal(38, 18)` a `decimal(10, 2)` devuelve
+                // `Ok` redondeando `0.005` a `0.01` y dejando en NULL lo que no
+                // cabe; con `safe: false` detecta el desbordamiento pero sigue
+                // redondeando (medido el 2026-09-26). Así que la pregunta no se
+                // le hace al cast: se niega antes, y la copia se rehace entera.
+                Some(col) if !decimal_ensancha(col.data_type(), campo.data_type()) => Err(format!(
+                    "la columna `{}` es `{}` en un fichero y `{}` en la tabla: convertirla \
+                     perdería cifras —el cast redondea sin decirlo—, así que no se funde. \
+                     Rehaz la copia entera (`ore materialize --rehacer`)",
+                    campo.name(),
+                    col.data_type(),
+                    campo.data_type()
+                )),
                 Some(col) => arrow_cast::cast(col, campo.data_type()).map_err(|e| {
                     format!(
                         "la columna `{}` es `{}` en un fichero y `{}` en la tabla, y no se convierte: {e}",
@@ -946,5 +970,58 @@ mod tests {
             leer(&a.bytes).expect("lee")[0]["visto"],
             "2024-06-01 12:00:00+00"
         );
+    }
+
+    /// La guarda de 0032 T4, con los valores que se midieron: `0.005` escrito
+    /// en `decimal(38, 18)` y fundido con una tabla `decimal(10, 2)` salía
+    /// `0.01` —y `123456789.12`, NULL— con un `Ok`. Ahora no se funde.
+    #[test]
+    fn un_decimal_que_pierde_cifras_no_se_funde() {
+        use arrow_array::Decimal128Array;
+        let viejo = Decimal128Array::from(vec![5_000_000_000_000_000i128])
+            .with_precision_and_scale(38, 18)
+            .unwrap();
+        let lote = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "total",
+                DataType::Decimal128(38, 18),
+                true,
+            )])),
+            vec![Arc::new(viejo)],
+        )
+        .unwrap();
+        let estrecho = Arc::new(Schema::new(vec![Field::new(
+            "total",
+            DataType::Decimal128(10, 2),
+            true,
+        )]));
+        let e = al_esquema(&lote, &estrecho).unwrap_err();
+        assert!(e.contains("rehacer"), "{e}");
+        // Y ensanchar sí se funde, exacto: `19.99` de decimal(10, 2) en una tabla
+        // decimal(12, 4) —dos enteras y dos decimales más— es `19.9900`.
+        let estrecho_viejo = Decimal128Array::from(vec![1999i128])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let lote = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "total",
+                DataType::Decimal128(10, 2),
+                true,
+            )])),
+            vec![Arc::new(estrecho_viejo)],
+        )
+        .unwrap();
+        let ancho = Arc::new(Schema::new(vec![Field::new(
+            "total",
+            DataType::Decimal128(12, 4),
+            true,
+        )]));
+        let r = al_esquema(&lote, &ancho).unwrap();
+        let d = r
+            .column(0)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(d.value_as_string(0), "19.9900");
     }
 }

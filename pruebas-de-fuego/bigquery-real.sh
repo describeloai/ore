@@ -9,7 +9,10 @@
 #   [A2] el transporte REST: `'null'` es texto, los microsegundos llegan, un
 #        TIMESTAMP se estrecha a instante (hoy los tres se pierden en `bq`)
 #   [A3] el catalogo en el driver: `ore-read-bigquery catalogo` contesta
-#   [A4] el contrato de tipos: NUMERIC → decimal(38, 9), REQUIRED → required
+#   [A4] el contrato de tipos: NUMERIC → `Decimal<38, 9>` → decimal(38, 9)
+#   [B]  REQUIRED → required en Iceberg: salió de la Fase A (2026-09-26). Exige
+#        un cambio de spec, un análisis de nulabilidad en las vistas, y que
+#        Iceberg no deja endurecer una tabla que existe. Se DICE, no se cuenta.
 #   [A5] (sin aserción aqui todavia: pide una tabla vacia en el dataset)
 #
 # Lo que se mide, de punta a punta y sin escribir en GCP:
@@ -114,9 +117,9 @@ afirma "" "el catalogo trae ventas.clientes y ventas.pedidos" \
   "$([ "$n" = "['ventas.clientes', 'ventas.pedidos']" ] && echo 1)" "trae $n"
 afirma "" "pedidos.ts es DateTimeTz en el catalogo" "$([ "$(cat_col ventas.pedidos ts type)" = '"DateTimeTz"' ] && echo 1)"
 afirma "" "pedidos.id es required (REQUIRED en el origen)" "$([ "$(cat_col ventas.pedidos id required)" = 'true' ] && echo 1)"
-st=$(cat_col ventas.pedidos total sourceType)
-afirma "[A4]" "pedidos.total cita su fisico (NUMERIC(38, 9)) para que la copia sepa su escala" \
-  "$(case "$st" in *NUMERIC*38*9*) echo 1;; esac)" "sourceType=$st"
+tt=$(cat_col ventas.pedidos total type); st=$(cat_col ventas.pedidos total sourceType)
+afirma "[A4]" "pedidos.total es Decimal<38, 9> (la precisión implícita de NUMERIC, dicha) y cita NUMERIC" \
+  "$([ "$tt" = '"Decimal<38, 9>"' ] && [ "$st" = '"NUMERIC"' ] && echo 1)" "type=$tt sourceType=$st"
 printf '%s' "$BQ_URL" | "$DRV" catalogo bq > "$TMP/drv-cat.json" 2> "$TMP/drv-cat.err"
 afirma "[A3]" "el propio driver contesta \`catalogo\` (el catalogo vive en el driver)" \
   "$(grep -q '"ventas.pedidos"' "$TMP/drv-cat.json" && echo 1)" "$(head -c 120 "$TMP/drv-cat.err")"
@@ -160,7 +163,7 @@ print(json.dumps(f[0][sys.argv[2]]) if f else "sin-columna")' "$2" "$3"
 afirma "[A2]" "pedidos.ts es timestamptz" "$([ "$(tipo_ice pedidos ts type)" = '"timestamptz"' ] && echo 1)" "es $(tipo_ice pedidos ts type)"
 afirma "[A4]" "pedidos.total es decimal(38, 9)" "$([ "$(tipo_ice pedidos total type)" = '"decimal(38, 9)"' ] && echo 1)" "es $(tipo_ice pedidos total type)"
 afirma "" "clientes.alta es date" "$([ "$(tipo_ice clientes alta type)" = '"date"' ] && echo 1)" "es $(tipo_ice clientes alta type)"
-afirma "[A4]" "pedidos.id es required en Iceberg" "$([ "$(tipo_ice pedidos id required)" = 'true' ] && echo 1)" "es $(tipo_ice pedidos id required)"
+dice "[B] pedidos.id required en Iceberg: pendiente de la Fase B (hoy $(tipo_ice pedidos id required))"
 
 echo "── 6 · lo que se relee es lo sembrado"
 cat > "$TMP/esperado-pedidos.jsonl" <<'J'
