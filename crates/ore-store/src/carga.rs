@@ -667,6 +667,81 @@ pub fn al_esquema(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBat
         .map_err(|e| format!("el lote no construye: {e}"))
 }
 
+/// **Un lote que llega de un driver, al contrato de la cabecera** (ADR 0043).
+///
+/// Más estricto que [`al_esquema`], porque aquí nada es de un fichero viejo: el
+/// driver entrega exactamente la proyección.
+///
+/// - una columna que falta, o que sobra, se dice con su nombre;
+/// - la conversión es la de Arrow **sin su modo seguro**: un valor que no
+///   convierte es un error, no un nulo;
+/// - un decimal que estrecha —la Storage Read da todo NUMERIC como
+///   `decimal(38, 9)`, y el contrato dice `Decimal<10, 2>`— se convierte y se
+///   **vuelve a convertir**: si no sale idéntico, se perdían cifras y se niega.
+///   El cast redondea sin decirlo (medido el 2026-09-26); la vuelta lo dice.
+pub fn al_contrato(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBatch, String> {
+    if let Some(sobra) = lote
+        .schema()
+        .fields()
+        .iter()
+        .find(|f| destino.field_with_name(f.name()).is_err())
+    {
+        return Err(format!(
+            "el flujo trae `{}`, y el contrato no la declara",
+            sobra.name()
+        ));
+    }
+    let estricto = arrow_cast::CastOptions {
+        safe: false,
+        ..Default::default()
+    };
+    let columnas = destino
+        .fields()
+        .iter()
+        .map(|campo| -> Result<ArrayRef, String> {
+            let col = lote.column_by_name(campo.name()).ok_or_else(|| {
+                format!("el contrato declara `{}` y el flujo no la trae", campo.name())
+            })?;
+            if col.data_type() == campo.data_type() {
+                return Ok(col.clone());
+            }
+            let convertir = |c: &ArrayRef, a: &DataType| {
+                arrow_cast::cast_with_options(c, a, &estricto).map_err(|e| {
+                    format!(
+                        "la columna `{}` llega como `{}` y no convierte a `{}` (lo que su contrato                          declara): {e}",
+                        campo.name(),
+                        col.data_type(),
+                        campo.data_type()
+                    )
+                })
+            };
+            let ida = convertir(col, campo.data_type())?;
+            if let (DataType::Decimal128(..), DataType::Decimal128(..)) =
+                (col.data_type(), campo.data_type())
+                && !sin_perdida(col.data_type(), campo.data_type())
+            {
+                use arrow_array::cast::AsArray;
+                let vuelta = convertir(&ida, col.data_type())?;
+                let (a, b) = (
+                    col.as_primitive::<arrow_array::types::Decimal128Type>(),
+                    vuelta.as_primitive::<arrow_array::types::Decimal128Type>(),
+                );
+                if a.iter().zip(b.iter()).any(|(x, y)| x != y) {
+                    return Err(format!(
+                        "la columna `{}` llega como `{}` y un valor no cabe en `{}` sin perder                          cifras: el contrato es más estrecho que el origen",
+                        campo.name(),
+                        col.data_type(),
+                        campo.data_type()
+                    ));
+                }
+            }
+            Ok(ida)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    RecordBatch::try_new(destino.clone(), columnas)
+        .map_err(|e| format!("el lote no construye: {e}"))
+}
+
 /// El texto de la clave de cada fila: los valores de las columnas de `clave`
 /// tal como Arrow los enseña, separados por `\0` (un nulo es `\x01`, que
 /// ningún valor lleva).

@@ -301,31 +301,143 @@ pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Resul
         .map_err(|e| fallo(69, format!("`{programa}` no terminó: {e}"), &[]))?;
 
     if !salida.status.success() {
-        // Su stderr literal es lo único accionable que existe. Resumirlo aquí
-        // convertiría un problema de cinco minutos en una tarde: un driver avisa
-        // de que no hay credencial, o de que la fuente no responde, y las dos
-        // cosas se arreglan solas en cuanto se leen.
-        let err = String::from_utf8_lossy(&salida.stderr);
-        let mut ayuda = vec![format!("  {}", ruta.display())];
-        ayuda.extend(
-            err.lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| format!("  │ {l}")),
-        );
-        return Err(Fallo {
-            codigo: 69,
-            mensaje: format!(
-                "`{programa}` falló ({})",
-                salida
-                    .status
-                    .code()
-                    .map_or_else(|| "sin código".to_string(), |c| c.to_string())
-            ),
-            ayuda,
-        });
+        return Err(fallo_del_hijo(
+            programa,
+            &ruta,
+            salida.status,
+            &salida.stderr,
+        ));
     }
     String::from_utf8(salida.stdout)
         .map_err(|_| fallo(65, format!("`{programa}` no devolvió UTF-8"), &[]))
+}
+
+/// Su stderr literal es lo único accionable que existe. Resumirlo convertiría
+/// un problema de cinco minutos en una tarde: un driver avisa de que no hay
+/// credencial, o de que la fuente no responde, y las dos cosas se arreglan
+/// solas en cuanto se leen.
+fn fallo_del_hijo(
+    programa: &str,
+    ruta: &Path,
+    estado: std::process::ExitStatus,
+    stderr: &[u8],
+) -> Fallo {
+    let err = String::from_utf8_lossy(stderr);
+    let mut ayuda = vec![format!("  {}", ruta.display())];
+    ayuda.extend(
+        err.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!("  │ {l}")),
+    );
+    Fallo {
+        codigo: 69,
+        mensaje: format!(
+            "`{programa}` falló ({})",
+            estado
+                .code()
+                .map_or_else(|| "sin código".to_string(), |c| c.to_string())
+        ),
+        ayuda,
+    }
+}
+
+/// **Un programa en marcha, con su salida sin leer** (ADR 0043).
+///
+/// [`ejecutar`] espera a que el programa acabe y devuelve su salida entera: con
+/// las filas de una tabla, eso es la tabla en la memoria de `ore`. Esto la deja
+/// abierta para encauzarla a otro programa. El stderr se recoge en un hilo
+/// aparte: un programa que escribe mucho por ahí y nadie lo lee se bloquea.
+pub struct Lanzado {
+    programa: String,
+    ruta: PathBuf,
+    hijo: std::process::Child,
+    pub stdin: Option<std::process::ChildStdin>,
+    pub stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+/// Lanza `programa` y le escribe `entrada`. Con `abierta`, su stdin sigue
+/// abierto para escribirle más; sin ella, se cierra.
+pub fn lanzar(
+    programa: &str,
+    args: &[String],
+    entrada: &str,
+    abierta: bool,
+) -> Result<Lanzado, Fallo> {
+    use std::io::{Read as _, Write as _};
+    let ruta = resolver(programa).ok_or_else(|| {
+        fallo(
+            69,
+            format!("no se encontró `{programa}` en el PATH"),
+            &["  Es el programa que habla con la fuente. ORE no lo lleva dentro."],
+        )
+    })?;
+    let mut hijo = Command::new(&ruta)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            fallo(
+                69,
+                format!("no se pudo ejecutar `{}`: {e}", ruta.display()),
+                &[],
+            )
+        })?;
+    let mut err = hijo.stderr.take();
+    let stderr = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        if let Some(e) = err.as_mut() {
+            let _ = e.read_to_end(&mut b);
+        }
+        b
+    });
+    let mut stdin = hijo.stdin.take();
+    if let Some(s) = stdin.as_mut() {
+        let _ = s.write_all(entrada.as_bytes());
+    }
+    Ok(Lanzado {
+        programa: programa.to_string(),
+        ruta,
+        stdout: hijo.stdout.take(),
+        stdin: if abierta { stdin } else { None },
+        hijo,
+        stderr: Some(stderr),
+    })
+}
+
+impl Lanzado {
+    /// Espera a que acabe; lo que quede en stdout se lee y se devuelve.
+    pub fn esperar(mut self) -> Result<Vec<u8>, Fallo> {
+        use std::io::Read as _;
+        drop(self.stdin.take());
+        let mut salida = Vec::new();
+        if let Some(mut o) = self.stdout.take() {
+            let _ = o.read_to_end(&mut salida);
+        }
+        let estado = self
+            .hijo
+            .wait()
+            .map_err(|e| fallo(69, format!("`{}` no terminó: {e}", self.programa), &[]))?;
+        let err = self
+            .stderr
+            .take()
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        if !estado.success() {
+            return Err(fallo_del_hijo(&self.programa, &self.ruta, estado, &err));
+        }
+        Ok(salida)
+    }
+
+    /// Lo corta: el otro lado del cauce ya no va a leer.
+    pub fn matar(mut self) {
+        let _ = self.hijo.kill();
+        drop(self.stdin.take());
+        drop(self.stdout.take());
+        let _ = self.hijo.wait();
+    }
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────

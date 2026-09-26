@@ -10,6 +10,10 @@
 > que la resuelve en Arrow. Lo que este ADR fija —un fragmento del plan, no SQL— sigue
 > valiendo: cambia quién lo ejecuta, no lo que viaja.
 
+> **Y la forma de lo que vuelve (2026-09-26, [0043](0043-el-flujo-es-arrow.md)):** la petición
+> puede llevar `formato: arrow`. Es una preferencia: el driver que sabe contesta un flujo Arrow IPC
+> con los nombres de las propiedades; el que no, filas de texto como aquí se describe.
+
 ---
 
 ## El problema

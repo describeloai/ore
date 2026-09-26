@@ -567,8 +567,22 @@ fn una(
     // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
-    let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
-    let salida = almacen("sellar", &peticion_de(fundir, ""), Some(&filas))?;
+    let (salida, leidas) = match filas {
+        Leido::Texto(filas) => {
+            let leidas = filas.lines().filter(|l| !l.trim().is_empty()).count();
+            (
+                almacen("sellar", &peticion_de(fundir, ""), Some(&filas))?,
+                leidas,
+            )
+        }
+        Leido::Flujo(driver, salida) => {
+            let s = encauzar(&peticion_de(fundir, ""), driver, salida)?;
+            let leidas = campo_de(&s, "leidas")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            (s, leidas)
+        }
+    };
     informe_de(
         &salida,
         leidas,
@@ -1502,26 +1516,107 @@ fn leer(
     // Si el testigo del origen ORDENA. Decide si un rango sin columna tiene
     // sentido: `log` si, `snapshot` no.
     ordena: bool,
-) -> Result<String, String> {
+) -> Result<Leido, String> {
     let (tipo, env) = lector::declaracion(raiz_pkg, &r.datasource)
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
     let url = lector::url(raiz_pkg, &env, &r.datasource)
         .map_err(|f| format!("la fuente `{}` · {}", r.datasource, f.mensaje))?;
     let peticion = peticion(&url, r, cursor, desde, hasta, ordena)?;
 
-    lector::ejecutar(
+    // Se pide en Arrow y se mira qué llega (ADR 0043): un flujo IPC empieza por
+    // `0xFFFFFFFF`, y una fila de texto por `{`. Un driver que no sabe Arrow
+    // contesta en texto y sigue valiendo.
+    use std::io::Read as _;
+    let mut driver = lector::lanzar(
         &format!("ore-read-{tipo}"),
         &["leer".to_string()],
-        Some(&peticion),
+        &peticion,
+        false,
     )
-    .map_err(|f| {
-        let mut s = f.mensaje;
-        for l in f.ayuda {
-            s.push('\n');
-            s.push_str(&l);
+    .map_err(texto_del_fallo)?;
+    let mut salida = driver.stdout.take().ok_or("el driver no tiene salida")?;
+    let mut inicio = [0u8; 4];
+    let mut n = 0;
+    while n < 4 {
+        match salida.read(&mut inicio[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) => return Err(format!("no se pudo leer la salida del driver: {e}")),
         }
-        s
-    })
+    }
+    if n == 4 && inicio == [0xFF; 4] {
+        return Ok(Leido::Flujo(driver, salida));
+    }
+    let mut bytes = inicio[..n].to_vec();
+    salida
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("no se pudo leer la salida del driver: {e}"))?;
+    drop(salida);
+    driver.esperar().map_err(texto_del_fallo)?;
+    String::from_utf8(bytes)
+        .map(Leido::Texto)
+        .map_err(|_| format!("`ore-read-{tipo}` no devolvió UTF-8"))
+}
+
+/// Lo que el driver contestó: filas de texto, o un flujo Arrow sin leer.
+enum Leido {
+    Texto(String),
+    Flujo(lector::Lanzado, std::process::ChildStdout),
+}
+
+fn texto_del_fallo(f: lector::Fallo) -> String {
+    let mut s = f.mensaje;
+    for l in f.ayuda {
+        s.push('\n');
+        s.push_str(&l);
+    }
+    s
+}
+
+/// **El cauce** (ADR 0043): la salida del driver va a `ore-store sellar-flujo`
+/// sin pasar por la memoria de `ore`. Los cuatro bytes que se leyeron para
+/// saber qué era se reenvían delante.
+///
+/// Si el driver falla, el almacén se corta antes de que vea el final: sin la
+/// marca de fin no sella. Si el almacén falla —un lote que no casa con el
+/// contrato—, el driver se corta, porque nadie va a leer lo que le queda.
+fn encauzar(
+    peticion: &str,
+    driver: lector::Lanzado,
+    mut salida: std::process::ChildStdout,
+) -> Result<ore_core::parse::Node, String> {
+    use std::io::Write as _;
+    let programa = programa_del_almacen()?;
+    let mut almacen = lector::lanzar(
+        &programa,
+        &["sellar-flujo".to_string()],
+        &format!("{peticion}\n"),
+        true,
+    )
+    .map_err(texto_del_fallo)?;
+    let mut entrada = almacen.stdin.take().ok_or("el almacén no tiene entrada")?;
+    let copia = entrada
+        .write_all(&[0xFF; 4])
+        .and_then(|_| std::io::copy(&mut salida, &mut entrada));
+    drop(salida);
+    if copia.is_err() {
+        driver.matar();
+        drop(entrada);
+        return Err(match almacen.esperar() {
+            Err(f) => texto_del_fallo(f),
+            Ok(_) => "el almacén dejó de leer el flujo sin decir por qué".into(),
+        });
+    }
+    if let Err(f) = driver.esperar() {
+        drop(entrada);
+        almacen.matar();
+        return Err(texto_del_fallo(f));
+    }
+    drop(entrada);
+    let bytes = almacen.esperar().map_err(texto_del_fallo)?;
+    let texto = String::from_utf8(bytes).map_err(|_| format!("`{programa}` no devolvió UTF-8"))?;
+    ore_core::parse::parse(texto.trim())
+        .map_err(|e| format!("lo que devolvió `{programa}` no analiza: {e:?}\n{texto}"))
 }
 
 /// **La petición, armada aparte y sin tocar nada.**
@@ -1602,6 +1697,8 @@ fn peticion(
         ),
     ));
     campos.push(("filtros", Json::Arr(filtros)));
+    // Una preferencia (ADR 0043): el driver que sabe contesta en Arrow.
+    campos.push(("formato", Json::s("arrow")));
     Ok(Json::obj(campos).jcs())
 }
 

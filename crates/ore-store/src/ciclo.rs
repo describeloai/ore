@@ -144,6 +144,11 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     if verbo == "escribir" {
         return escribir(&Lago::nuevo(cuenta), primera, lector);
     }
+    // El flujo Arrow de un driver (ADR 0043): bytes, no texto, y sin leerlo
+    // entero — es lo que hace que la memoria no crezca con la tabla.
+    if verbo == "sellar-flujo" {
+        return sellar_flujo(&Lago::nuevo(cuenta), primera, &n, lector);
+    }
     let mut texto = String::new();
     lector
         .read_to_string(&mut texto)
@@ -750,6 +755,156 @@ fn sellar_arrow(
     )
 }
 
+/// Un lector que recuerda los últimos ocho bytes: los de la **marca de fin**
+/// de un flujo Arrow IPC (`0xFFFFFFFF` y una longitud cero).
+///
+/// `StreamReader` trata un corte limpio entre dos mensajes igual que el final:
+/// un driver que muere entre dos lotes dejaría una tabla corta que se sellaría
+/// como entera. La marca la escribe `finish()`, y solo un driver que terminó
+/// bien llega a llamarlo. La cola se comparte (`Rc`) porque el lector queda
+/// prestado al `StreamReader` y la pregunta se hace desde fuera.
+struct ConFin<R> {
+    dentro: R,
+    cola: std::rc::Rc<std::cell::Cell<[u8; 8]>>,
+}
+
+impl<R: std::io::Read> std::io::Read for ConFin<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.dentro.read(buf)?;
+        let mut cola = self.cola.get();
+        for &b in &buf[..n] {
+            cola.rotate_left(1);
+            cola[7] = b;
+        }
+        self.cola.set(cola);
+        Ok(n)
+    }
+}
+
+const MARCA_DE_FIN: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+
+/// **`sellar-flujo`** (ADR 0043): las filas de un driver en Arrow IPC, al
+/// contrato de la cabecera ([`carga::al_contrato`]) y a la tabla **lote a
+/// lote**. La copia entera (sin `fundir`) no se tiene nunca en memoria: cada
+/// lote se escribe y se suelta. Fundir por clave sí necesita lo que había, y
+/// ese camino es el de siempre ([`confirmar_copia`]) — un incremento, no la
+/// tabla.
+fn sellar_flujo(
+    lago: &Lago,
+    primera: &str,
+    n: &ore_core::parse::Node,
+    lector: impl std::io::Read,
+) -> Result<String, String> {
+    use arrow_schema::{Field, Schema};
+    let cab = leer_cabecera(primera)?;
+    let campo = |k: &str| -> Option<String> {
+        n.get(k)
+            .and_then(|(_, v)| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let dataset = campo("dataset")
+        .ok_or("a `sellar-flujo` le falta `dataset`: bajo qué nombre vive la copia")?;
+    let base = campo("base");
+    let fundir = campo("fundir").is_some_and(|v| v == "true");
+
+    let esquema = Arc::new(Schema::new(
+        cab.esquema
+            .iter()
+            .map(|(n, t)| Field::new(n, carga::arrow_del_oos(t), true))
+            .collect::<Vec<_>>(),
+    ));
+    let cola = std::rc::Rc::new(std::cell::Cell::new([0u8; 8]));
+    let mut flujo = arrow_ipc::reader::StreamReader::try_new(
+        ConFin {
+            dentro: lector,
+            cola: cola.clone(),
+        },
+        None,
+    )
+    .map_err(|e| format!("lo que sigue a la petición no es un flujo Arrow IPC: {e}"))?;
+    let mut filas = 0usize;
+    let mut no_nulos = vec![0usize; esquema.fields().len()];
+    let mut hecho = false;
+    // La marca de fin se pregunta DENTRO del iterador, antes del último
+    // `None`: si falta, el último elemento es un error y no hay snapshot.
+    let lotes = std::iter::from_fn(|| {
+        if hecho {
+            return None;
+        }
+        match flujo.next() {
+            Some(l) => Some(
+                l.map_err(|e| format!("un lote del flujo no se pudo leer: {e}"))
+                    .and_then(|l| carga::al_contrato(&l, &esquema))
+                    .inspect(|l| {
+                        filas += l.num_rows();
+                        for (i, c) in l.columns().iter().enumerate() {
+                            no_nulos[i] += c.len() - c.null_count();
+                        }
+                    }),
+            ),
+            None => {
+                hecho = true;
+                (cola.get() != MARCA_DE_FIN).then(|| Err(sin_fin()))
+            }
+        }
+    });
+
+    let previa = match &base {
+        Some(b) => Some(lago.abrir(b, &dataset)?),
+        None => None,
+    };
+    if fundir {
+        let mut lotes = lotes.collect::<Result<Vec<_>, _>>()?;
+        if lotes.is_empty() {
+            lotes.push(arrow_array::RecordBatch::new_empty(esquema.clone()));
+        }
+        return confirmar_copia(
+            lago,
+            &cab,
+            &dataset,
+            base.as_deref(),
+            true,
+            previa,
+            lotes,
+            cuentas(&esquema, &no_nulos),
+            BTreeMap::new(),
+            Some(filas),
+        );
+    }
+    let columnas_del_contrato =
+        lago::columnas_de(&arrow_array::RecordBatch::new_empty(esquema.clone()));
+    let (tabla, operacion, esquema_cambiado, propiedades) =
+        destino(lago, &cab, &dataset, previa, &columnas_del_contrato)?;
+    let escrito = lago.instantanea_flujo(&tabla, lotes, operacion, propiedades)?;
+    Ok(respuesta(
+        &escrito,
+        operacion,
+        base.as_deref(),
+        false,
+        cuentas(&esquema, &no_nulos),
+        &BTreeMap::new(),
+        Some(filas),
+        esquema_cambiado,
+    ))
+}
+
+fn sin_fin() -> String {
+    "el flujo se cortó sin su marca de fin: el driver no terminó, y una copia corta      no se sella"
+        .into()
+}
+
+fn cuentas(esquema: &arrow_schema::Schema, no_nulos: &[usize]) -> Json {
+    Json::Obj(
+        esquema
+            .fields()
+            .iter()
+            .zip(no_nulos)
+            .map(|(f, n)| (f.name().clone(), Json::Int(*n as i64)))
+            .collect(),
+    )
+}
+
 /// **La cola común de `sellar` y `copiar`**: los lotes ya tipados van a la
 /// tabla de `dataset` —fundidos por clave sobre lo que había si `fundir`—, la
 /// cabecera como propiedades del snapshot, y el puntero nuevo con sus cuentas.
@@ -790,9 +945,42 @@ fn confirmar_copia(
         lotes
     };
 
+    let (tabla, operacion, esquema_cambiado, propiedades_snapshot) =
+        destino(lago, cab, dataset, previa, &lago::columnas_de(&lotes[0]))?;
+    let escrito = lago.instantanea(&tabla, lotes, operacion, propiedades_snapshot)?;
+    Ok(respuesta(
+        &escrito,
+        operacion,
+        base,
+        fundir,
+        columnas,
+        &sin_estrechar,
+        leidas,
+        esquema_cambiado,
+    ))
+}
+
+/// **La tabla donde se escribe**: la que había, con el esquema que el lote pide
+/// (`sobrescribir`), o una nueva (`anexar`); y la cabecera como propiedades del
+/// snapshot.
+fn destino(
+    lago: &Lago,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    previa: Option<iceberg::table::Table>,
+    columnas_del_lote: &[(String, arrow_schema::DataType)],
+) -> Result<
+    (
+        iceberg::table::Table,
+        Operacion,
+        bool,
+        HashMap<String, String>,
+    ),
+    String,
+> {
     // El esquema que el lote pide, con los ids de la tabla si la hay.
     let deseado = lago::esquema_deseado(
-        &lago::columnas_de(&lotes[0]),
+        columnas_del_lote,
         previa
             .as_ref()
             .map(|t| t.metadata().current_schema().as_ref()),
@@ -826,10 +1014,23 @@ fn confirmar_copia(
             (t, Operacion::Anexar, false)
         }
     };
-    let escrito = lago.instantanea(&tabla, lotes, operacion, propiedades_snapshot)?;
-    let t = &escrito.tabla;
+    Ok((tabla, operacion, esquema_cambiado, propiedades_snapshot))
+}
 
-    Ok(Json::obj([
+/// **Lo que `sellar`, `copiar` y `sellar-flujo` contestan**, con sus cuentas.
+#[allow(clippy::too_many_arguments)]
+fn respuesta(
+    escrito: &lago::Escrito,
+    operacion: Operacion,
+    base: Option<&str>,
+    fundir: bool,
+    columnas: Json,
+    sin_estrechar: &BTreeMap<String, String>,
+    leidas: Option<usize>,
+    esquema_cambiado: bool,
+) -> String {
+    let t = &escrito.tabla;
+    Json::obj([
         ("bytes", Json::Int(escrito.bytes as i64)),
         ("columnas", columnas),
         ("esquema_cambiado", Json::Bool(esquema_cambiado)),
@@ -877,7 +1078,7 @@ fn confirmar_copia(
         ),
         ("ubicacion", Json::s(t.metadata().location())),
     ])
-    .jcs())
+    .jcs()
 }
 
 /// **`escribir`: la primera mitad del verbo escribir** (0031 §11 ②). La tabla
@@ -3105,6 +3306,107 @@ mod tests {
             .map(|f| f.name.clone())
             .collect();
         assert_eq!(nombres, ["clave", "importe", "quien"]);
+    }
+
+    /// ADR 0043: un flujo del driver con `decimal(38, 9)` —lo que da la
+    /// Storage Read para cualquier NUMERIC— y un contrato `Decimal<10, 2>`.
+    fn flujo_de(valores: &[i128], cerrar: bool) -> Vec<u8> {
+        use arrow_schema::{DataType, Field, Schema, TimeUnit};
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, true),
+            Field::new("total", DataType::Decimal128(38, 9), true),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ]));
+        let n = valores.len();
+        let lote = arrow_array::RecordBatch::try_new(
+            esquema.clone(),
+            vec![
+                Arc::new(arrow_array::StringArray::from_iter_values(
+                    (0..n).map(|i| format!("p{i}")),
+                )),
+                Arc::new(
+                    arrow_array::Decimal128Array::from(valores.to_vec())
+                        .with_precision_and_scale(38, 9)
+                        .unwrap(),
+                ),
+                Arc::new(
+                    arrow_array::TimestampMicrosecondArray::from(vec![1_788_393_599_123_456; n])
+                        .with_timezone("UTC"),
+                ),
+            ],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut w = arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &esquema).unwrap();
+            w.write(&lote).unwrap();
+            w.write(&lote).unwrap();
+            if cerrar {
+                w.finish().unwrap();
+            }
+        }
+        bytes
+    }
+
+    fn primera_flujo(ds: &str) -> String {
+        format!(
+            "{{\"dataset\":\"{ds}\",\"clave\":[],\"conducto\":\"materialization.payload\",\"esquema\":{{\"id\":\"String\",\"total\":\"Decimal<10, 2>\",\"ts\":\"DateTimeTz\"}},\"plan\":\"sha256:p\",\"testigo\":{{\"modo\":\"none\"}}}}"
+        )
+    }
+
+    /// El flujo entero se sella lote a lote: dos lotes, sus filas, el decimal
+    /// estrechado sin perder nada y el instante en UTC.
+    #[test]
+    fn un_flujo_entero_se_sella_al_contrato() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let ds = "copias/flujo";
+        let primera = primera_flujo(ds);
+        let bytes = flujo_de(&[19_990_000_000, -5_500_000_000, 0], true);
+        let r = sellar_flujo(&lago, &primera, &nodo(&primera), &bytes[..]).expect("sella");
+        assert_eq!(campo(&r, "operacion"), "creada");
+        assert_eq!(campo(&r, "filas"), "6", "{r}");
+        assert_eq!(campo(&r, "leidas"), "6", "{r}");
+        let t = lago.abrir(&campo(&r, "metadata_location"), ds).unwrap();
+        assert_eq!(
+            lago::columnas_iceberg(&t).get("total").map(String::as_str),
+            Some("decimal(10, 2)")
+        );
+        let l = leer(
+            &lago,
+            &nodo(&format!(
+                "{{\"metadata_location\":\"{}\",\"dataset\":\"{ds}\"}}",
+                campo(&r, "metadata_location")
+            )),
+        )
+        .unwrap();
+        assert!(l.contains("\"total\":\"19.99\""), "{l}");
+        assert!(l.contains("\"total\":\"-5.5\""), "{l}");
+    }
+
+    /// Un flujo cortado entre dos lotes —el driver murió— no se sella: le falta
+    /// la marca de fin, y una copia corta respondería como si fuera entera.
+    #[test]
+    fn un_flujo_sin_marca_de_fin_no_se_sella() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let primera = primera_flujo("copias/corta");
+        let bytes = flujo_de(&[1_000_000_000], false);
+        let e = sellar_flujo(&lago, &primera, &nodo(&primera), &bytes[..]).unwrap_err();
+        assert!(e.contains("marca de fin"), "{e}");
+    }
+
+    /// Un valor con más decimales de los que el contrato admite no se redondea:
+    /// se dice. (El cast de Arrow redondearía `0.005` a `0.01` sin avisar.)
+    #[test]
+    fn un_decimal_que_no_cabe_en_el_contrato_se_niega() {
+        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let primera = primera_flujo("copias/redondeo");
+        let bytes = flujo_de(&[5_000_000], true); // 0.005
+        let e = sellar_flujo(&lago, &primera, &nodo(&primera), &bytes[..]).unwrap_err();
+        assert!(e.contains("sin perder"), "{e}");
     }
 
     /// A5: un flujo IPC sin lotes (un DataFrame vacío) trae su esquema, y se

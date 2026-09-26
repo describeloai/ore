@@ -63,6 +63,13 @@ pub struct Peticion {
     /// Por eso `gt` es admisible aquí y no allí.
     pub filtros: Vec<(String, String, String)>,
 
+    /// **En qué forma quiere las filas quien pide** (ADR 0043): `arrow` pide un
+    /// flujo Arrow IPC por stdout, con los campos de la proyección como
+    /// nombres. Es una preferencia, no una exigencia: un driver que no sabe, o
+    /// que para esta petición no puede, contesta en texto —una fila JSON por
+    /// línea— y quien lee distingue las dos por el primer byte.
+    pub formato: Option<String>,
+
     // ── El rango · ADR 0016 B ───────────────────────────────────────────────
     //
     // **Y por qué estos tres se llaman en inglés cuando los de arriba no.**
@@ -220,6 +227,7 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         start: opcional("start"),
         end: opcional("end"),
         cursor: opcional("cursor"),
+        formato: opcional("formato"),
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());

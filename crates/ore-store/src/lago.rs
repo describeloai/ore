@@ -328,6 +328,10 @@ impl FileRead for Lectura {
     }
 }
 
+/// Cuánto crece un fichero de datos antes de empezar otro. Es también la
+/// memoria de una escritura: cada fichero se acumula entero antes de subirse.
+const FICHERO_OBJETIVO: usize = 128 << 20;
+
 /// Se acumula y se sube de una vez al cerrar: una subida por fichero, con el
 /// `crc32c`/`sha256` que el almacén valida.
 #[derive(Debug)]
@@ -707,20 +711,55 @@ impl Lago {
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Preparado, String> {
-        runtime().block_on(self.preparar_async(tabla, esquema, lotes, operacion, propiedades))
+        runtime().block_on(self.preparar_async(
+            tabla,
+            esquema,
+            lotes.into_iter().map(Ok),
+            operacion,
+            propiedades,
+        ))
+    }
+
+    /// **Lo mismo, con los lotes según llegan** (ADR 0043): cada uno se escribe
+    /// y se suelta, así que la memoria es la de un fichero en curso y no la de
+    /// la tabla. Un lote que falla aborta todo antes del snapshot: no queda
+    /// nada confirmado, solo ficheros sueltos que `recoger-huerfanas` barre.
+    pub fn instantanea_flujo(
+        &self,
+        tabla: &Table,
+        lotes: impl Iterator<Item = Result<RecordBatch, String>>,
+        operacion: Operacion,
+        propiedades: HashMap<String, String>,
+    ) -> Result<Escrito, String> {
+        let esquema = tabla.metadata().current_schema().as_ref().clone();
+        let p = runtime().block_on(self.preparar_async(
+            tabla,
+            esquema,
+            lotes,
+            operacion,
+            propiedades,
+        ))?;
+        let nueva = self.confirmar(tabla, p.cambios, p.requisitos)?;
+        Ok(Escrito {
+            tabla: nueva,
+            ficheros: p.ficheros,
+            bytes: p.bytes,
+            filas: p.filas,
+            retirados: p.retirados,
+        })
     }
 
     async fn preparar_async(
         &self,
         tabla: &Table,
         esquema: Schema,
-        lotes: Vec<RecordBatch>,
+        lotes: impl Iterator<Item = Result<RecordBatch, String>>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Preparado, String> {
         let meta = tabla.metadata();
         let io = tabla.file_io().clone();
-        let filas: u64 = lotes.iter().map(|l| l.num_rows() as u64).sum();
+        let mut filas: u64 = 0;
         let esquema = Arc::new(esquema);
 
         // ── el esquema: el de la tabla, o el nuevo con el id que le tocará ──
@@ -750,36 +789,53 @@ impl Lago {
         };
 
         // ── los ficheros de datos ───────────────────────────────────────────
-        let ficheros: Vec<DataFile> = if filas == 0 {
-            Vec::new()
-        } else {
-            let ubicacion = DefaultLocationGenerator::new(meta).map_err(err)?;
-            let nombres = DefaultFileNameGenerator::new(
-                uuid::Uuid::new_v4().to_string(),
-                None,
-                DataFileFormat::Parquet,
-            );
-            let props = parquet::file::properties::WriterProperties::builder()
-                .set_compression(parquet::basic::Compression::SNAPPY)
-                .build();
-            let parquet = ParquetWriterBuilder::new(props, esquema.clone());
-            let rodante = RollingFileWriterBuilder::new_with_default_file_size(
-                parquet,
-                io.clone(),
-                ubicacion,
-                nombres,
-            );
-            let mut escritor = DataFileWriterBuilder::new(rodante)
-                .build(None)
-                .await
-                .map_err(err)?;
-            let arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&esquema).map_err(err)?);
-            for lote in lotes {
-                let lote = RecordBatch::try_new(arrow.clone(), lote.columns().to_vec())
-                    .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
-                escritor.write(lote).await.map_err(err)?;
+        // El escritor nace con el primer lote que trae filas: sin filas no hay
+        // fichero, y el snapshot lleva la lista vacía (A5).
+        let arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(&esquema).map_err(err)?);
+        let mut escritor = None;
+        for lote in lotes {
+            let lote = lote?;
+            if lote.num_rows() == 0 {
+                continue;
             }
-            escritor.close().await.map_err(err)?
+            if escritor.is_none() {
+                let ubicacion = DefaultLocationGenerator::new(meta).map_err(err)?;
+                let nombres = DefaultFileNameGenerator::new(
+                    uuid::Uuid::new_v4().to_string(),
+                    None,
+                    DataFileFormat::Parquet,
+                );
+                let props = parquet::file::properties::WriterProperties::builder()
+                    .set_compression(parquet::basic::Compression::SNAPPY)
+                    .build();
+                let parquet = ParquetWriterBuilder::new(props, esquema.clone());
+                // 128 MiB y no los 512 por defecto: cada fichero se acumula
+                // entero antes de subirlo (`Escritura`), y eso es lo que
+                // cuesta en memoria una copia de cualquier tamaño.
+                let rodante = RollingFileWriterBuilder::new(
+                    parquet,
+                    FICHERO_OBJETIVO,
+                    io.clone(),
+                    ubicacion,
+                    nombres,
+                );
+                escritor = Some(
+                    DataFileWriterBuilder::new(rodante)
+                        .build(None)
+                        .await
+                        .map_err(err)?,
+                );
+            }
+            filas += lote.num_rows() as u64;
+            let lote = RecordBatch::try_new(arrow.clone(), lote.columns().to_vec())
+                .map_err(|e| format!("el lote no casa con el esquema de la tabla: {e}"))?;
+            if let Some(w) = escritor.as_mut() {
+                w.write(lote).await.map_err(err)?;
+            }
+        }
+        let ficheros: Vec<DataFile> = match escritor {
+            Some(mut w) => w.close().await.map_err(err)?,
+            None => Vec::new(),
         };
         let bytes: u64 = ficheros.iter().map(|f| f.file_size_in_bytes()).sum();
 
