@@ -68,10 +68,62 @@ const ESCALARES: &[&str] = &[
 /// | cualquiera → `Opaque` | `Opaque` es *«no lo modelamos»*. Ir ahí no ensancha el dominio: **retira el gobierno** |
 /// | `Boolean` → `Integer` | eso es elegir una codificación, no ampliar un dominio |
 ///
-/// Solo mira escalares. Un paramétrico —`Money<EUR,2>`— lo clasifica
-/// `OOS5010`, que es más específico y va antes.
+/// Y **entre decimales con precisión** (02-entity §3.4, 2026-09-26):
+/// `Decimal<p₁, s₁>` ensancha a `Decimal<p₂, s₂>` cuando no pierde ninguna
+/// cifra por ningún lado —`s₂ ≥ s₁` y `p₂ − s₂ ≥ p₁ − s₁`—, e `Integer` a
+/// `Decimal<p, s>` solo con `p − s ≥ 19`, las cifras del entero de 64 bits.
+/// Declarar o retirar la precisión (`Decimal` ↔ `Decimal<p, s>`) no ensancha
+/// en ninguna dirección.
+///
+/// Un paramétrico de unidad —`Money<EUR,2>`— lo clasifica `OOS5010`, que es
+/// más específico y va antes.
 pub fn ensancha(de: &str, a: &str) -> bool {
-    matches!((de, a), ("Integer", "Decimal"))
+    match (parse_type(de), parse_type(a)) {
+        (
+            Ok(Type::Decimal {
+                precision: p1,
+                escala: s1,
+            }),
+            Ok(Type::Decimal {
+                precision: p2,
+                escala: s2,
+            }),
+        ) => s2 >= s1 && p2 - s2 >= p1 - s1,
+        (Ok(Type::Scalar(i)), Ok(Type::Decimal { precision, escala })) if i == "Integer" => {
+            precision - escala >= CIFRAS_DEL_ENTERO
+        }
+        _ => matches!((de, a), ("Integer", "Decimal")),
+    }
+}
+
+/// Las cifras del mayor entero de 64 bits, `9 223 372 036 854 775 807`: el
+/// `Integer` de las copias (0032) visto como decimal es `Decimal<19, 0>`.
+pub const CIFRAS_DEL_ENTERO: u8 = 19;
+
+/// El techo de la precisión: el de Iceberg y Parquet (`decimal128`).
+pub const PRECISION_MAXIMA: u8 = 38;
+
+/// **El supertipo de dos decimales** (02-entity §3.5): la mayor escala y la
+/// mayor parte entera. Una unión, las dos ramas de un `CASE`, los dos lados de
+/// una comparación. `None` si no cabe en [`PRECISION_MAXIMA`]: no hay decimal
+/// exacto donde quepan los dos, y redondear sería elegir en silencio qué
+/// cifras se pierden.
+pub fn supertipo_decimal(a: (u8, u8), b: (u8, u8)) -> Option<(u8, u8)> {
+    let escala = a.1.max(b.1);
+    let enteras = (a.0 - a.1).max(b.0 - b.1);
+    let precision = enteras.checked_add(escala)?;
+    (precision <= PRECISION_MAXIMA).then_some((precision, escala))
+}
+
+/// `sum(Decimal<p, s>)` → `Decimal<38, s>` (02-entity §3.5).
+pub fn suma_decimal(t: (u8, u8)) -> (u8, u8) {
+    (PRECISION_MAXIMA, t.1)
+}
+
+/// `avg(Decimal<p, s>)` → `Decimal<38, max(s, 9)>` (02-entity §3.5): la de
+/// BigQuery. La de DuckDB, `DOUBLE`, cambia un exacto por un binario.
+pub fn media_decimal(t: (u8, u8)) -> (u8, u8) {
+    (PRECISION_MAXIMA, t.1.max(9))
 }
 
 /// El conjunto cerrado, para quien tenga que OFRECERLO.
@@ -98,6 +150,13 @@ pub enum Type {
         precision: u32,
     },
     List(String),
+    /// `Decimal<p, s>` (02-entity §3.2): el decimal con su precisión y su
+    /// escala, `1 ≤ p ≤ 38` y `0 ≤ s ≤ p`. `Decimal` a secas es
+    /// `Scalar("Decimal")` y dice otra cosa: la precisión no se declaró.
+    Decimal {
+        precision: u8,
+        escala: u8,
+    },
     /// `iso.CountryAlpha2`. Su resolución es trabajo de dependencias.
     Imported(String),
 }
@@ -125,6 +184,7 @@ impl std::fmt::Display for Type {
         match self {
             Type::Scalar(s) | Type::Imported(s) => f.write_str(s),
             Type::List(s) => write!(f, "list<{s}>"),
+            Type::Decimal { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Type::Parametric {
                 ctor,
                 unit,
@@ -140,6 +200,8 @@ pub enum TypeError {
     Desconocido,
     /// Un paramétrico al que le falta la unidad o la precisión.
     Incompleto(String),
+    /// `Decimal<p, s>` con los números fuera de rango (OOS3002).
+    DecimalFueraDeRango(String),
 }
 
 pub fn parse_type(s: &str) -> Result<Type, TypeError> {
@@ -151,6 +213,9 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
         };
     }
 
+    if let Some(resto) = s.strip_prefix("Decimal<") {
+        return decimal(resto);
+    }
     if let Some((ctor, resto)) = s.split_once('<') {
         if !matches!(ctor, "Money" | "Quantity") {
             return Err(TypeError::Desconocido);
@@ -182,12 +247,56 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
     Err(TypeError::Desconocido)
 }
 
+/// Lo que sigue a `Decimal<`. Sin cerrar, o sin los dos números, está
+/// incompleto; con los dos pero fuera de rango, también es `OOS3002`, con la
+/// causa dicha.
+fn decimal(resto: &str) -> Result<Type, TypeError> {
+    let Some(args) = resto.strip_suffix('>') else {
+        return Err(TypeError::Incompleto("Decimal".into()));
+    };
+    let partes: Vec<&str> = args.split(',').map(str::trim).collect();
+    let [p, e] = partes[..] else {
+        return Err(TypeError::Incompleto("Decimal".into()));
+    };
+    let (Ok(p), Ok(e)) = (p.parse::<u16>(), e.parse::<u16>()) else {
+        return Err(TypeError::Incompleto("Decimal".into()));
+    };
+    if p == 0 || p > u16::from(PRECISION_MAXIMA) {
+        return Err(TypeError::DecimalFueraDeRango(format!(
+            "la precisión va de 1 a {PRECISION_MAXIMA}, el techo de Iceberg y Parquet \
+             (`decimal128`), y es {p}. Lo que no cabe viaja como `String` con su `physicalType`"
+        )));
+    }
+    if e > p {
+        return Err(TypeError::DecimalFueraDeRango(format!(
+            "la escala ({e}) no puede pasar de la precisión ({p}): son las cifras detrás de la \
+             coma, y no hay más que las que hay"
+        )));
+    }
+    Ok(Type::Decimal {
+        precision: p as u8,
+        escala: e as u8,
+    })
+}
+
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     tipos_de_conceptos(pkg, &mut out);
     // OOS3006 vive en su propio modulo porque necesita el paquete entero: hay
     // que leer la `primaryKey` de OTRA entidad. Es de esta familia igualmente.
     crate::enlace_compuesto::comprobar(pkg, &mut out);
+    // Las columnas de una `Table` y de un `Dataset` también declaran tipo, y un
+    // `Decimal<40, 2>` ahí se ignoraba en silencio: `tipos_de_columnas` descarta
+    // lo que no analiza, y la columna quedaba sin tipo — texto para quien la
+    // leyera. Desde `Decimal<p, s>` (0032 T4) un tipo mal escrito en una columna
+    // dice su código igual que en una propiedad.
+    for d in pkg
+        .docs
+        .iter()
+        .filter(|d| matches!(d.kind, Kind::Table | Kind::Dataset))
+    {
+        tipos_de_seccion(d, "columns", &mut out);
+    }
     for e in pkg.entities() {
         tipos_declarados(e, &mut out);
         temporalidad(e, &mut out);
@@ -236,7 +345,13 @@ fn tipos_de_conceptos(pkg: &Package, out: &mut Vec<Diagnostic>) {
 }
 
 fn tipos_declarados(e: &Loaded, out: &mut Vec<Diagnostic>) {
-    let Some(ps) = e.section("properties") else {
+    tipos_de_seccion(e, "properties", out);
+}
+
+/// OOS3001/OOS3002 sobre el `type` de cada entrada de una sección: las
+/// `properties` de una entidad, las `columns` de una tabla o de un dataset.
+fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
+    let Some(ps) = e.section(seccion) else {
         return;
     };
     for (k, v) in ps.entries() {
@@ -259,6 +374,22 @@ fn tipos_declarados(e: &Loaded, out: &mut Vec<Diagnostic>) {
                      y gobernar, y el sistema de tipos no necesita saber qué hay dentro",
                     ESCALARES.join(" · ")
                 )),
+            ),
+            Err(TypeError::Incompleto(ctor)) if ctor == "Decimal" => out.push(
+                Diagnostic::new(
+                    Code::Oos3002,
+                    &e.path,
+                    format!("`{s}` está incompleto: `Decimal<p, s>` lleva precisión y escala"),
+                )
+                .at(t.pos())
+                .help(
+                    "escríbelo como `Decimal<10, 2>` —diez cifras, dos detrás de la coma—, o \
+                     `Decimal` a secas si la precisión no se sabe. En estilo flow va entre \
+                     comillas: la coma lo partiría",
+                ),
+            ),
+            Err(TypeError::DecimalFueraDeRango(porque)) => out.push(
+                Diagnostic::new(Code::Oos3002, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
             ),
             Err(TypeError::Incompleto(ctor)) => out.push(
                 Diagnostic::new(
@@ -526,6 +657,8 @@ mod tests {
         casos.push("list<String>".into());
         casos.push("Money<EUR, 2>".into());
         casos.push("Quantity<km, 1>".into());
+        casos.push("Decimal<38, 9>".into());
+        casos.push("Decimal<1, 0>".into());
         casos.push("iso.CountryAlpha2".into());
         for c in casos {
             let t = parse_type(&c).unwrap_or_else(|_| panic!("`{c}` tenia que analizar"));
@@ -560,6 +693,83 @@ mod tests {
             parse_type("list<Blob>"),
             Err(TypeError::Desconocido)
         ));
+    }
+
+    /// `Decimal<p, s>` (02-entity §3.2): los bordes del rango analizan, y lo
+    /// de fuera es OOS3002 —incompleto o fuera de rango—, nunca «desconocido».
+    #[test]
+    fn el_decimal_con_precision_y_su_rango() {
+        assert_eq!(
+            parse_type("Decimal<10,2>").unwrap(),
+            Type::Decimal {
+                precision: 10,
+                escala: 2
+            }
+        );
+        assert_eq!(
+            parse_type("Decimal<10,2>").unwrap().to_string(),
+            "Decimal<10, 2>"
+        );
+        assert!(parse_type("Decimal<38, 38>").is_ok());
+        assert!(parse_type("Decimal<1, 0>").is_ok());
+        assert_eq!(
+            parse_type("Decimal").unwrap(),
+            Type::Scalar("Decimal".into())
+        );
+        for (t, incompleto) in [
+            ("Decimal<10>", true),
+            ("Decimal<10, dos>", true),
+            ("Decimal<10, 2", true),
+            ("Decimal<10, 2, 1>", true),
+            ("Decimal<2, 4>", false),
+            ("Decimal<0, 0>", false),
+            ("Decimal<40, 2>", false),
+            ("Decimal<300, 2>", false),
+        ] {
+            match parse_type(t) {
+                Err(TypeError::Incompleto(c)) if incompleto => assert_eq!(c, "Decimal"),
+                Err(TypeError::DecimalFueraDeRango(_)) if !incompleto => {}
+                otro => panic!("`{t}` dio {otro:?}"),
+            }
+        }
+    }
+
+    /// 02-entity §3.4: sin perder cifras por ningún lado; declarar o retirar la
+    /// precisión no ensancha.
+    #[test]
+    fn el_ensanche_entre_decimales() {
+        assert!(ensancha("Decimal<10, 2>", "Decimal<12, 2>"));
+        assert!(ensancha("Decimal<10, 2>", "Decimal<12, 4>"));
+        assert!(
+            !ensancha("Decimal<12, 4>", "Decimal<12, 2>"),
+            "pierde decimales"
+        );
+        assert!(
+            !ensancha("Decimal<12, 2>", "Decimal<12, 4>"),
+            "pierde enteras"
+        );
+        assert!(ensancha("Integer", "Decimal<19, 0>"));
+        assert!(ensancha("Integer", "Decimal<38, 9>"));
+        assert!(!ensancha("Integer", "Decimal<10, 2>"));
+        assert!(!ensancha("Decimal", "Decimal<38, 9>"));
+        assert!(!ensancha("Decimal<38, 9>", "Decimal"));
+        assert!(ensancha("Integer", "Decimal"), "el par de siempre sigue");
+    }
+
+    /// 02-entity §3.5, fila a fila.
+    #[test]
+    fn el_decimal_en_las_operaciones() {
+        assert_eq!(supertipo_decimal((10, 2), (12, 4)), Some((12, 4)));
+        assert_eq!(supertipo_decimal((10, 2), (5, 5)), Some((13, 5)));
+        assert_eq!(
+            supertipo_decimal((38, 0), (38, 38)),
+            None,
+            "76 cifras no caben"
+        );
+        assert_eq!(supertipo_decimal((38, 9), (19, 0)), Some((38, 9)));
+        assert_eq!(suma_decimal((10, 2)), (38, 2));
+        assert_eq!(media_decimal((10, 2)), (38, 9));
+        assert_eq!(media_decimal((38, 12)), (38, 12));
     }
 
     /// La divisa sin precisión y la precisión sin divisa son el mismo error.

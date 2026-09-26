@@ -90,6 +90,13 @@ impl Fisico {
                 precision: DECIMAL_POR_DEFECTO.0,
                 escala: (*precision).min(u32::from(DECIMAL_POR_DEFECTO.1)) as u8,
             },
+            // La precisión y la escala del tipo, no las de por defecto (0032 T4).
+            // Con `(38, 18)` un NUMERIC de BigQuery de más de 20 cifras enteras
+            // no cabía y la columna entera se quedaba como texto (medido).
+            Type::Decimal { precision, escala } => Fisico::Decimal {
+                precision: *precision,
+                escala: *escala,
+            },
             Type::List(_) | Type::Imported(_) => Fisico::Texto,
         }
     }
@@ -483,6 +490,8 @@ mod tests {
             ("Opaque", "string"),
             ("list<Integer>", "string"),
             ("Money<EUR, 2>", "decimal128(38, 2)"),
+            ("Decimal<38, 9>", "decimal128(38, 9)"),
+            ("Decimal<10, 2>", "decimal128(10, 2)"),
             ("Quantity<km, 1>", "decimal128(38, 1)"),
         ];
         for (oos, arrow) in tabla {

@@ -475,6 +475,11 @@ fn grafo(crudo: &str) -> Result<String, String> {
             precision,
         } => format!("{ctor}_{unit}_{precision}"),
         Type::List(inner) => format!("[{}!]", escalar(&inner)),
+        // `Decimal<p, s>` es un `Decimal` para quien lee: el escalar ya viaja
+        // como cadena exacta, y la precisión es del contrato de la copia, no de
+        // la forma del valor. Un escalar por combinación —como `Money_EUR_2`—
+        // no añadiría nada que el cliente pueda comprobar.
+        Type::Decimal { .. } => escalar("Decimal").to_string(),
         Type::Imported(q) => q.replace('.', "_"),
     })
 }

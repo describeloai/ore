@@ -1207,7 +1207,11 @@ fn tipos(sujeto: &str, p: &Prop, q: &Prop, out: &mut Vec<Change>) {
         // OOS5010 · misma base, distintos parámetros: `Money<EUR,2> →
         // Money<USD,2>` no es un tipo nuevo, es el mismo tipo mintiendo. El
         // valor 68400.50 sigue cabiendo y significa otra cosa.
-        let code = if base(&p.ty) == base(&q.ty) && p.ty.contains('<') {
+        //
+        // Y `Decimal` ↔ `Decimal<p, s>` también: declarar o retirar la precisión
+        // cambia el contrato de la misma base (02-entity §3.4), así que basta
+        // con que UNO de los dos lados lleve parámetros.
+        let code = if base(&p.ty) == base(&q.ty) && (p.ty.contains('<') || q.ty.contains('<')) {
             Code::Oos5010
         } else {
             Code::Oos5002

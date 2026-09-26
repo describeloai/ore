@@ -1362,13 +1362,17 @@ fn el_submodulo_trae_la_suite_completa() {
     // es otra cosa: cuenta lo que el submodulo TRAE, no lo que se cumple, y
     // baja cuando el vocabulario se retira. Que sean dos numeros distintos es
     // lo que permite decir «se retiro un kind» sin que parezca una regresion.
-    assert_eq!(casos.len(), 75, "número de casos inesperado");
-    assert_eq!(por_grupo.get("invalid"), Some(&31));
-    assert_eq!(por_grupo.get("diff"), Some(&21));
+    //
+    // Y subieron siete con `Decimal<p, s>` (oos 0e6abc1, 2026-09-26): uno
+    // valido, tres invalidos (OOS3002) y tres de diff (el ensanche decimal y
+    // dos OOS5010).
+    assert_eq!(casos.len(), 82, "número de casos inesperado");
+    assert_eq!(por_grupo.get("invalid"), Some(&34));
+    assert_eq!(por_grupo.get("diff"), Some(&24));
     assert_eq!(por_grupo.get("canonical"), Some(&9));
     assert_eq!(por_grupo.get("digest"), Some(&8));
     assert_eq!(por_grupo.get("emit"), Some(&4));
-    assert_eq!(por_grupo.get("valid"), Some(&2));
+    assert_eq!(por_grupo.get("valid"), Some(&3));
 }
 
 /// **Los otros tres campos del caso, que hasta hoy no leía nadie.**
