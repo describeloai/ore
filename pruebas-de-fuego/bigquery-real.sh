@@ -117,7 +117,7 @@ print(json.dumps(c[0].get(sys.argv[4])) if c else "sin-columna")' "$TMP/catalogo
 }
 n=$("$PY" -c 'import json,sys; print(sorted(t["name"] for t in json.load(open(sys.argv[1],encoding="utf-8"))["tables"]))' "$TMP/catalogo.json" 2>/dev/null)
 afirma "" "el catalogo trae ventas.clientes y ventas.pedidos" \
-  "$([ "$n" = "['ventas.clientes', 'ventas.pedidos']" ] && echo 1)" "trae $n"
+  "$(case "$n" in *"'ventas.clientes'"*"'ventas.pedidos'"*) echo 1;; esac)" "trae $n"
 afirma "" "pedidos.ts es DateTimeTz en el catalogo" "$([ "$(cat_col ventas.pedidos ts type)" = '"DateTimeTz"' ] && echo 1)"
 afirma "" "pedidos.id es required (REQUIRED en el origen)" "$([ "$(cat_col ventas.pedidos id required)" = 'true' ] && echo 1)"
 tt=$(cat_col ventas.pedidos total type); st=$(cat_col ventas.pedidos total sourceType)

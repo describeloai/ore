@@ -46,6 +46,7 @@
 
 mod catalogo;
 mod consultas;
+mod flecha;
 mod rest;
 mod valores;
 
@@ -96,6 +97,26 @@ fn verbo_(
         "leer" => {
             let salida = std::io::stdout();
             let mut salida = std::io::BufWriter::new(salida.lock());
+            // En Arrow si se pide y se puede (ADR 0043); si no, en texto. Lo
+            // que decide se dice por stderr: una lectura que va por el camino
+            // lento sin avisar es la que nadie encuentra.
+            let p = ore_driver::leer_peticion(entrada)?;
+            if p.formato.as_deref() == Some("arrow")
+                && ore_driver::rango_servible(&p, true, false).is_none()
+            {
+                match flecha::leer(t, &p, &proyecto(&p.url)?, &mut salida)? {
+                    flecha::Lectura::Servida(n) => {
+                        eprintln!("ore-read-bigquery: {n} filas en Arrow (Storage Read)");
+                        salida
+                            .flush()
+                            .map_err(|e| format!("no se pudo escribir la salida: {e}"))?;
+                        return Ok(String::new());
+                    }
+                    flecha::Lectura::Declina(porque) => {
+                        eprintln!("ore-read-bigquery: aviso · se lee en texto por REST: {porque}");
+                    }
+                }
+            }
             filas(t, entrada, &mut salida)?;
             salida
                 .flush()

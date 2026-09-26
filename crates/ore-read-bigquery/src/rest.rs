@@ -35,6 +35,12 @@ pub trait Transporte {
     fn post(&self, ruta: &str, cuerpo: &Value) -> Result<Value, String>;
     /// `GET {API}/{ruta}?{consulta}`.
     fn get(&self, ruta: &str, consulta: &[(&str, String)]) -> Result<Value, String>;
+    /// El token con el que se habla, para lo que no va por esta API (Storage
+    /// Read, por gRPC). Un transporte de pruebas no tiene: sin él, la lectura
+    /// en Arrow se declina y se lee por aquí.
+    fn token(&self) -> Result<String, String> {
+        Err("este transporte no tiene token".into())
+    }
 }
 
 /// El de verdad: HTTPS con el token de la cuenta que corre.
@@ -84,6 +90,10 @@ impl Http {
 }
 
 impl Transporte for Http {
+    fn token(&self) -> Result<String, String> {
+        self.credencial.token()
+    }
+
     fn post(&self, ruta: &str, cuerpo: &Value) -> Result<Value, String> {
         self.enviar(self.agente.post(&format!("{API}/{ruta}")), Some(cuerpo))
     }
@@ -247,6 +257,19 @@ pub fn esquema(
         .as_array()
         .cloned()
         .ok_or_else(|| format!("`{dataset}.{tabla}` no trae esquema"))
+}
+
+/// La tabla entera de `tables.get`: el tipo (`TABLE`, `VIEW`…) y el esquema.
+pub fn tabla(
+    t: &dyn Transporte,
+    proyecto: &str,
+    dataset: &str,
+    tabla: &str,
+) -> Result<Value, String> {
+    t.get(
+        &format!("projects/{proyecto}/datasets/{dataset}/tables/{tabla}"),
+        &[],
+    )
 }
 
 /// Los datasets de un proyecto, todas las páginas.
