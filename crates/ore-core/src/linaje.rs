@@ -178,7 +178,7 @@ pub fn por_el_linaje(d: &Loaded) -> bool {
 /// resuelve por el nombre; la de una forma estructurada, **por su clave**:
 /// `from: { table }` dice que es la tabla, aunque una vista se llame igual —y
 /// hasta v1alpha13 pueden, y la traducción no puede perderlo—.
-fn resolver<'a>(pkg: &'a Package, desde: &Loaded, nombre: &str) -> Option<&'a Loaded> {
+pub fn resolver<'a>(pkg: &'a Package, desde: &Loaded, nombre: &str) -> Option<&'a Loaded> {
     if vistas::es_sql(desde) {
         return vistas::fuente_sql(pkg, nombre, desde);
     }

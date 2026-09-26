@@ -65,6 +65,7 @@ pub mod proyectos;
 pub mod punteros;
 pub mod repositorios;
 pub mod schema;
+pub mod servir;
 pub mod significado;
 pub mod sql_del_arbol;
 pub mod sync;

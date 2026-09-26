@@ -783,7 +783,7 @@ v = m["versions"][0]
 sql = {r["dialect"]: r["sql"] for r in v["representations"]}
 assert v["default-namespace"] == ["espana"], v["default-namespace"]
 assert '"espana"."pedidos2"' in sql["duckdb"] and '"ventas"' not in sql["duckdb"], sql
-assert '`espana`.`pedidos2`' in sql["spark"], sql
+assert list(sql) == ["duckdb"], sql  # Spark, con la migración de dialecto (ADR 0040 C)
 EOF
 ok "15 · /v1 como Unity: con warehouse=ventas los namespaces son sus schemas (default, espana); PyIceberg crea espana.pedidos2 (Dataset v1alpha13 en la carpeta del schema, puntero en datasets/ventas/espana/, lago en catalogo/ventas/espana/) y DuckDB lee ventas.espana.pedidos2 y ventas.default.py; un schema o una base que no están, 404; sin warehouse, lo de siempre"
 
