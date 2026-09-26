@@ -302,9 +302,9 @@ pub fn ejecutar(programa: &str, args: &[String], entrada: Option<&str>) -> Resul
 
     if !salida.status.success() {
         // Su stderr literal es lo único accionable que existe. Resumirlo aquí
-        // convertiría un problema de cinco minutos en una tarde: `bq` avisa de
-        // que le falta un intérprete, o de que no hay sesión, y las dos cosas se
-        // arreglan solas en cuanto se leen.
+        // convertiría un problema de cinco minutos en una tarde: un driver avisa
+        // de que no hay credencial, o de que la fuente no responde, y las dos
+        // cosas se arreglan solas en cuanto se leen.
         let err = String::from_utf8_lossy(&salida.stderr);
         let mut ayuda = vec![format!("  {}", ruta.display())];
         ayuda.extend(

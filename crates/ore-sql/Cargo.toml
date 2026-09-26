@@ -2,8 +2,8 @@
 #
 # No es un binario, y eso NO es una preferencia: se midio. Juntar los drivers
 # en un `ore-read-sql` unico embarcaria 89 crates —`tokio`, `native-tls`,
-# `openssl`, FFI de plataforma— a un lector de BigQuery que delega en `bq` y no
-# abre un socket. `crates/ore-cli/tests/dependencias.rs` existe para que eso no
+# `openssl`, FFI de plataforma— a un lector de BigQuery que no los usa (entonces
+# delegaba en `bq`; desde A2 habla REST con `ureq`, ADR 0042). `crates/ore-cli/tests/dependencias.rs` existe para que eso no
 # pase en silencio, y `pruebas-de-fuego/medida-espectro-dialecto.py` tiene las
 # cifras.
 #

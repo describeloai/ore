@@ -18,8 +18,8 @@
 //! Porque **el transporte no es dialecto**. Se midió sobre `Cargo.lock`: el
 //! lector de PostgreSQL arrastra 114 crates y el de BigQuery 25, y de los 114
 //! hay **89 que solo son suyos** —`tokio`, `native-tls`, `openssl`, FFI de
-//! plataforma—. Un binario único se los llevaría a un lector que delega en `bq`
-//! y no abre un socket, y `ore-cli/tests/dependencias.rs` existe justo para que
+//! plataforma—. Un binario único se los llevaría a un lector que no los usa
+//! (entonces delegaba en `bq`; desde A2 habla REST con `ureq`, ADR 0042), y `ore-cli/tests/dependencias.rs` existe justo para que
 //! eso no ocurra sin que nadie lo note.
 //!
 //! Así que se comparte la forma, y cada driver se queda con dos cosas: su

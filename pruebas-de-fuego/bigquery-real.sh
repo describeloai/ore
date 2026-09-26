@@ -30,7 +30,8 @@
 #   · `BQ_URL=bigquery://<proyecto>/<dataset>` con la semilla de
 #     `semilla/bigquery-ventas.sql` cargada (filas con id `ore-e2e-*`). Sin
 #     `BQ_URL` se salta: CI no alcanza BigQuery, y decirlo es mejor que fingir.
-#   · credenciales de `gcloud` (hoy el driver usa `bq`; desde A1, un token).
+#   · un token de Google Cloud: `ORE_GCP_TOKEN` (p. ej. `gcloud auth
+#     print-access-token`) o el servidor de metadatos (ADR 0042).
 #   · `ore`, `ore-read-bigquery`, `ore-store-r2` en target/{release,debug}.
 #   · Python 3 (el S3 de mentira y las comparaciones).
 #

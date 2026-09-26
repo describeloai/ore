@@ -24,8 +24,9 @@
 #
 #   ore-drivers         todo lo que `ore` puede ejecutar: los tres `ore-read-*`,
 #                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2`, `ore-store-gcs` y `ore-invoke`,
-#                       sobre el SDK de Google Cloud porque `ore-read-bigquery`
-#                       delega en `bq` y no habla la API él mismo.
+#                       sobre el SDK de Google Cloud, que ya no es por
+#                       `ore-read-bigquery` (habla REST desde A2, ADR 0042)
+#                       sino por el Job del aprovisionador, que usa `gcloud`.
 #
 # Es la misma frontera que el sustrato ya tiene —12 de 14 crates no abren una
 # conexión— y la misma que usa la `NetworkPolicy` de la malla.
@@ -65,10 +66,14 @@ ENTRYPOINT ["/bin/ore"]
 
 # ── 2 · La del conjunto ─────────────────────────────────────────────────────
 #
-# Sobre el SDK de Google Cloud y no sobre `alpine` porque `ore-read-bigquery`
-# necesita `bq` en el `PATH`. Trae además las CA del sistema, que es lo que
-# convierte «hablar TLS» en «verificar contra quién»: un binario estático sin
-# ellas se conecta y no sabe con quién habla.
+# Sobre el SDK de Google Cloud y no sobre `alpine`. Ya no es por `bq`:
+# `ore-read-bigquery` habla la API REST él mismo desde A2 (ADR 0042). Lo que
+# ata esta base es el aprovisionador (abajo), que necesita `gcloud`; separarlo
+# dejaría a los drivers sobre `alpine` con las CA.
+#
+# Trae además las CA del sistema, que es lo que convierte «hablar TLS» en
+# «verificar contra quién»: un binario estático sin ellas se conecta y no sabe
+# con quién habla.
 FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 
 # ── ⭐ `git` y `psql`, y los dos por el APROVISIONADOR ──────────────────────
@@ -210,7 +215,8 @@ ENTRYPOINT ["/bin/ore-iam"]
 # ⛔⛔ Y AQUÍ SE PIERDE LA GARANTÍA DE `scratch` A PROPÓSITO, otra vez. Igual que
 # `ore-serve` la perdió para tener `git`, éste la pierde para tener `gcloud`:
 # **es lo único con lo que habla con el KMS**, y no habla con el KMS — habla con
-# él. Es el patrón de `ore-read-bigquery` con `bq`.
+# él. Era el patrón de `ore-read-bigquery` con `bq`, hasta que BigQuery pasó a
+# REST (ADR 0042: allí `bq` perdía valores en silencio; aquí no hay valores).
 #
 # Lo que se compra cediéndola:
 #
