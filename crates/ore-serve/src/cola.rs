@@ -80,7 +80,20 @@ pub fn nombre_de_objeto(s: &str) -> String {
 ///   «mismo contenido» y el conflicto no puede darse. Es la misma regla que
 ///   `gen-inquilino.py`, y por eso los dos producen **el mismo nombre** para la
 ///   misma fuente — encolar dos veces no crea dos Jobs.
+#[cfg(test)]
 pub fn rendir(plantilla: &str, fuente: &str) -> Result<(String, String), String> {
+    rendir_corrida(plantilla, fuente, None)
+}
+
+/// **Volver a catalogar**: lo mismo con una corrida dentro. El nombre del Job
+/// sale del contenido, así que sin ella «otra vez» sería el mismo Job —ya
+/// `Failed`— y Flux no crearía ninguno. Con ella el fichero es el mismo
+/// (`44-el-catalogo-<obj>.yaml`: Flux poda el Job anterior) y el Job es otro.
+pub fn rendir_corrida(
+    plantilla: &str,
+    fuente: &str,
+    corrida: Option<&str>,
+) -> Result<(String, String), String> {
     if !plantilla.contains(&format!("catalogo-{FUENTE_MODELO}-{RESUMEN_MODELO}")) {
         // ⛔ Se niega en vez de escribir algo que no sustituye nada. Un Job
         //   llamado `catalogo-bq-00000000` en el namespace de un cliente sería
@@ -96,6 +109,11 @@ pub fn rendir(plantilla: &str, fuente: &str) -> Result<(String, String), String>
         &format!("value: \"{FUENTE_MODELO}\""),
         &format!("value: \"{fuente}\""),
     );
+    // Un comentario y no un campo: no cambia lo que el Job hace, solo quién es.
+    let t = match corrida {
+        Some(c) => format!("# corrida: {c}\n{t}"),
+        None => t,
+    };
     let h = digest::de_bytes(t.as_bytes());
     // `de_bytes` devuelve `sha256:<64 hex>`; se toman los ocho primeros, que es
     // lo mismo que hace el renderizador con `hexdigest()[:8]`.
@@ -528,6 +546,26 @@ pub fn rendir_capa(
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    /// Volver a catalogar da OTRO Job en el MISMO fichero: sin la corrida, el
+    /// nombre saldría igual y Flux no crearía nada.
+    #[test]
+    fn volver_a_catalogar_da_otro_job() {
+        let p =
+            "metadata:\n  name: catalogo-bq-00000000\nenv:\n  - { name: FUENTE, value: \"bq\" }\n";
+        let (f0, t0) = rendir(p, "ventas").unwrap();
+        let (f1, t1) = rendir_corrida(p, "ventas", Some("20260927T150000Z")).unwrap();
+        let (_, t2) = rendir_corrida(p, "ventas", Some("20260927T150001Z")).unwrap();
+        assert_eq!(f0, f1);
+        let nombre = |t: &str| {
+            t.lines()
+                .find(|l| l.contains("name: catalogo-"))
+                .unwrap()
+                .to_string()
+        };
+        assert_ne!(nombre(&t0), nombre(&t1));
+        assert_ne!(nombre(&t1), nombre(&t2));
+    }
 
     /// La comprobación: la URL y la corrida entran, el nombre lleva el
     /// resumen, y la ranura es por URL.

@@ -263,6 +263,15 @@ impl Servidor {
             // lo que el paso de conexión del wizard enseña (`credenciales`).
             // «Comprobar acceso» antes del alta: un Job con la cuenta del
             // driver ejecuta `check`; su resultado vuelve por el informador.
+            // Volver a leer el origen: tras conceder un rol que faltaba, el
+            // catálogo que falló no se reintenta solo (su Job ya existe).
+            ("POST", ["fuentes", n, "catalogar"]) => {
+                let n = n.to_string();
+                Respuesta::ok(Json::obj([(
+                    "encolado",
+                    Json::s(self.encolar_catalogo_corrida(&n, sujeto, true)),
+                )]))
+            }
             ("POST", ["fuentes", "comprobaciones"]) => {
                 let cuerpo = p.cuerpo.clone();
                 self.comprobar_fuente(&cuerpo, sujeto)
@@ -1499,6 +1508,12 @@ impl Servidor {
     ///   —un inquilino aprovisionado antes de que esto existiera— se dice con esa
     ///   frase, que es la que manda a converger.
     fn encolar_catalogo(&self, fuente: &str, sujeto: &Identidad) -> String {
+        self.encolar_catalogo_corrida(fuente, sujeto, false)
+    }
+
+    /// Con `otra_vez`, una corrida dentro: otro Job aunque el anterior exista
+    /// (`cola::rendir_corrida`).
+    fn encolar_catalogo_corrida(&self, fuente: &str, sujeto: &Identidad, otra_vez: bool) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`);                     lo rendira la convergencia"
                 .into();
@@ -1517,7 +1532,8 @@ impl Servidor {
                 );
             }
         };
-        let (fichero, texto) = match cola::rendir(&plantilla, fuente) {
+        let corrida = otra_vez.then(crate::funciones::corrida_ahora);
+        let (fichero, texto) = match cola::rendir_corrida(&plantilla, fuente, corrida.as_deref()) {
             Ok(v) => v,
             Err(e) => return format!("NO encolado: {e}"),
         };
@@ -2547,6 +2563,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/fuentes/{nombre}/estado", con_identidad),
         ("GET", "/fuentes/credenciales/{tipo}", con_identidad),
         ("POST", "/fuentes/comprobaciones", con_identidad),
+        ("POST", "/fuentes/{nombre}/catalogar", con_identidad),
         ("GET", "/paquetes", con_identidad),
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),
