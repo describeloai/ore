@@ -1516,6 +1516,27 @@ SELECT * FROM ventas.demo_uc.clientes;
     }
 
     #[test]
+    fn el_schema_default_se_escribe_con_su_nombre() {
+        // Lo que escribe el Create de la consola (0040 paso 7): tres partes
+        // también en `default`, que en SQL es palabra reservada.
+        for q in [
+            "create view b.default.v as select id from b.default.t",
+            "create materialized view b.default.v as select id from b.default.t",
+        ] {
+            let trozos = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
+            let Sentencia::CrearVista { destino, lee, .. } = &trozos[0].sentencia else {
+                panic!("{q}: no es create view");
+            };
+            assert_eq!(
+                (destino.schema.as_str(), destino.dos_partes),
+                ("default", false),
+                "{q}"
+            );
+            assert_eq!(lee[0].schema, "default", "{q}");
+        }
+    }
+
+    #[test]
     fn una_table_no_se_crea_desde_sql() {
         for q in [
             "create table hr.x (a int)",
