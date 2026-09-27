@@ -109,7 +109,7 @@ fn de_git(e: crate::git::Fallo) -> Respuesta {
                 ("conflictos", Json::Arr(fs.iter().map(Json::s).collect())),
             ]),
         },
-        e @ G::Adelantado(_) => Respuesta::error(409, e.to_string()),
+        e @ (G::Adelantado(_) | G::Cruza(_)) => Respuesta::error(409, e.to_string()),
         e => Respuesta::error(502, e.to_string()),
     }
 }
@@ -152,6 +152,13 @@ fn cabeza_de_pr(pr: &Json) -> String {
     hijo(pr, "head")
         .and_then(|h| campo(h, "ref"))
         .unwrap_or_default()
+}
+
+/// La rama contra la que se propone (`main`).
+fn base_de(pr: &Json) -> String {
+    hijo(pr, "base")
+        .and_then(|h| campo(h, "ref"))
+        .unwrap_or_else(|| "main".into())
 }
 
 /// La rama que se propone: la global, también cuando la PR sale de su derivada.
@@ -681,6 +688,12 @@ impl Servidor {
                         "ficherosDelAlcance".into(),
                         Json::Arr(hecha.ficheros.iter().map(Json::s).collect()),
                     );
+                    // Lo del catálogo que la rama cambia en la carpeta se queda
+                    // en la rama: se propone desde el catálogo (0044 A.2 ①).
+                    m.insert(
+                        "documentosFuera".into(),
+                        Json::Arr(hecha.fuera.iter().map(Json::s).collect()),
+                    );
                 }
                 Respuesta::creado(j)
             }
@@ -729,7 +742,7 @@ impl Servidor {
         let hecha = match alcance_de(&pr) {
             Some(a) if estado_de(&pr) == "abierta" => self
                 .forja()
-                .and_then(|f| f.huellas(&rama_de(&pr), &rama, &a).ok()),
+                .and_then(|f| f.huellas(&base, &rama_de(&pr), &rama, &a).ok()),
             _ => None,
         };
         let revisiones: Vec<Json> = api
@@ -837,7 +850,7 @@ impl Servidor {
         // derivada. Si la rama cambia lo propuesto, esa aprobación deja de valer.
         let huella = match (alcance_de(&pr), self.forja()) {
             (Some(a), Some(f)) => f
-                .huellas(&rama_de(&pr), &cabeza_de_pr(&pr), &a)
+                .huellas(&base_de(&pr), &rama_de(&pr), &cabeza_de_pr(&pr), &a)
                 .ok()
                 .map(|(_, h)| format!("huella: {h}\n")),
             _ => None,
@@ -970,7 +983,7 @@ impl Servidor {
             .and_then(|h| campo(h, "ref"))
             .unwrap_or_else(|| "main".into());
         let titulo = campo(pr, "title").unwrap_or_default();
-        let (hoy, hecha) = match forja.huellas(&rama, &derivada, alcance) {
+        let (hoy, hecha) = match forja.huellas(&base, &rama, &derivada, alcance) {
             Ok(h) => h,
             Err(e) => return de_git(e),
         };

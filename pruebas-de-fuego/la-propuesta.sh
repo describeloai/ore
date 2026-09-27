@@ -498,18 +498,35 @@ tiene "d['fusionada'] is True and d['alcance']=='packages/hr/pipelines' and d['r
 [ "$(git --git-dir="$BARE" diff --name-only main ana/mixta)" = "packages/hr/views/fuera.yaml" ] || falla "8e · la rama no quedo con solo lo de fuera: $(git --git-dir="$BARE" diff --name-only main ana/mixta)"
 git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/mixta/hr/pipelines && falla "8e · la derivada sigue tras fusionar"
 git --git-dir="$BARE" log -1 --format=%s main | grep -q "packages/hr/pipelines de ana/mixta), revisada por persona:bea" || falla "8e · el commit de merge no dice el alcance: $(git --git-dir="$BARE" log -1 --format=%s main)"
-# lo que el alcance lee y solo esta en la rama: main + alcance no compila, y se dice que falta
-[ "$(pide POST /ramas "$ANA" '{"nombre":"dep"}')" = "201" ] || falla "8e · la rama dep: $(cuerpo)"
-[ "$(put_fichero packages/hr/views/base_dep.yaml "$ANA" "$(vista14 base_dep hr.empleados_t id)" ana/dep)" = "201" ] || falla "8e · la vista de fuera: $(cuerpo)"
-[ "$(put_fichero packages/hr/pipelines/lee.yaml "$ANA" "$(vista14 lee hr.base_dep id)" ana/dep)" = "201" ] || falla "8e · la vista del repositorio: $(cuerpo)"
-[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/dep","titulo":"Lee algo de la rama","alcance":"packages/hr/pipelines"}')" = "201" ] || falla "8e · proponer dep: $(cuerpo)"
+# un documento del catalogo DENTRO de la carpeta es un activo: se queda en la rama
+# (se propone desde el catalogo); lo que no es documento (un .json) va
+[ "$(pide POST /ramas "$ANA" '{"nombre":"docs"}')" = "201" ] || falla "8e · la rama docs: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/lee.yaml "$ANA" "$(vista14 lee hr.empleados_t id)" ana/docs)" = "201" ] || falla "8e · la vista dentro del repositorio: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/docs","titulo":"Solo un documento","alcance":"packages/hr/pipelines"}')" = "422" ] && cuerpo | grep -q 'no cambia nada' || falla "8e · un alcance con solo un documento del catalogo no dio 422: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/transforms/dos.py "$ANA" 'print(3)' ana/docs)" = "201" ] || falla "8e · el codigo de docs: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/config.json "$ANA" '{"retries": 3}' ana/docs)" = "201" ] || falla "8e · la configuracion del repositorio: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/docs","titulo":"El codigo, sin la vista","alcance":"packages/hr/pipelines"}')" = "201" ] || falla "8e · proponer docs: $(cuerpo)"
+tiene "sorted(d['ficherosDelAlcance'])==['packages/hr/pipelines/config.json','packages/hr/pipelines/transforms/dos.py'] and d['documentosFuera']==['packages/hr/pipelines/lee.yaml']" || falla "8e · el alcance lleva el documento del catalogo: $(cuerpo)"
 M=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json")
-[ "$(pide POST /propuestas/$M/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8e · aprobar dep: $(cuerpo)"
-[ "$(pide POST /propuestas/$M/fusionar "$BEA")" = "422" ] && tiene "any(x['codigo']=='OOS2018' and 'base_dep' in x['mensaje'] for x in d['diagnosticos'])" || falla "8e · main + alcance incompleto no dio OOS2018: $(cuerpo | head -c 700)"
-[ "$(pide GET /arbol/packages/hr/pipelines/lee.yaml "$ANA")" = "404" ] || falla "8e · lo que no compila llego a main"
-[ "$(pide DELETE /propuestas/$M "$ANA")" = "200" ] || falla "8e · cerrar dep: $(cuerpo)"
-git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/dep/hr/pipelines && falla "8e · la derivada sigue tras cerrar"
-dice "8e · scope proposals por repositorio: la PR lleva solo el repositorio (una derivada, fuera de /ramas) · 422 alcance malo o sin cambios · 409 el mismo alcance o la rama entera · la rama cambia lo propuesto: 409, la derivada se regenera y la aprobacion vieja no vale · fusionada: main con el codigo de hoy y sin la vista, la rama al dia con solo la vista, la derivada fuera, el merge dice el alcance · main + alcance que lee algo de la rama: 422 OOS2018 · cerrar borra la derivada"
+[ "$(pide POST /propuestas/$M/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8e · aprobar docs: $(cuerpo)"
+[ "$(pide POST /propuestas/$M/fusionar "$BEA")" = "200" ] || falla "8e · fusionar docs: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/pipelines/transforms/dos.py "$ANA")" = "200" ] || falla "8e · main no tiene el codigo de docs"
+[ "$(pide GET /arbol/packages/hr/pipelines/lee.yaml "$ANA")" = "404" ] || falla "8e · el documento del catalogo llego a main por la propuesta del repositorio"
+[ "$(git --git-dir="$BARE" diff --name-only main ana/docs)" = "packages/hr/pipelines/lee.yaml" ] || falla "8e · la rama docs no quedo con solo el documento: $(git --git-dir="$BARE" diff --name-only main ana/docs)"
+# un fichero movido de dentro a fuera del repositorio no se parte: 409
+[ "$(pide POST /ramas "$ANA" '{"nombre":"mueve"}')" = "201" ] || falla "8e · la rama mueve: $(cuerpo)"
+"$PY" - "$TMP/mueve.json" <<'EOF'
+import json, sys
+json.dump({"mensaje": "uno.py sale del repositorio",
+           "ficheros": [{"ruta": "packages/hr/scripts/uno.py", "texto": "print(2)"}],
+           "retirar": ["packages/hr/pipelines/transforms/uno.py"]}, open(sys.argv[1], "w"))
+EOF
+commit "$ANA" ana/mueve "$TMP/mueve.json" >/dev/null
+git --git-dir="$BARE" diff --name-status -M main ana/mueve | grep -q '^R.*packages/hr/pipelines/transforms/uno.py.*packages/hr/scripts/uno.py' || falla "8e · mover en la rama: $(cuerpo) · $(git --git-dir="$BARE" diff --name-status -M main ana/mueve)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mueve","titulo":"Se lleva uno.py","alcance":"packages/hr/pipelines"}')" = "409" ] && cuerpo | grep -q 'borde del repositorio' || falla "8e · un movimiento que cruza el borde no dio 409: $(cuerpo)"
+git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/mueve/hr/pipelines && falla "8e · quedo una derivada del 409"
+[ "$(pide GET /arbol/packages/hr/pipelines/transforms/uno.py "$ANA")" = "200" ] || falla "8e · main perdio uno.py"
+dice "8e · scope proposals por repositorio: la PR lleva solo el repositorio (una derivada, fuera de /ramas) · 422 alcance malo o sin cambios · 409 el mismo alcance o la rama entera · la rama cambia lo propuesto: 409, la derivada se regenera y la aprobacion vieja no vale · fusionada: main con el codigo de hoy y sin la vista, la rama al dia con solo la vista, la derivada fuera, el merge dice el alcance · un documento del catalogo dentro de la carpeta se queda en la rama (solo el: 422), lo que no es documento va · mover a traves del borde: 409"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"

@@ -57,6 +57,8 @@ pub enum Fallo {
     SinRama(String),
     /// Un merge con conflictos: los ficheros que chocan (0030 W2).
     Conflicto(Vec<String>),
+    /// Un fichero movido de dentro a fuera de un alcance, o al revés (0044 A.2).
+    Cruza(Vec<String>),
 }
 
 impl std::fmt::Display for Fallo {
@@ -71,6 +73,11 @@ impl std::fmt::Display for Fallo {
             ),
             Fallo::Git(m) => write!(f, "git: {m}"),
             Fallo::SinRama(r) => write!(f, "no hay ninguna rama `{r}` en la forja"),
+            Fallo::Cruza(fs) => write!(
+                f,
+                "se mueve a través del borde del repositorio, y eso no es sólo del repositorio: {}",
+                fs.join(", ")
+            ),
             Fallo::Conflicto(fs) => write!(
                 f,
                 "las dos ramas cambian lo mismo y git no sabe cuál vale: {}",
@@ -412,15 +419,90 @@ impl Forja {
         Ok(())
     }
 
+    /// **Qué lleva el alcance de un repositorio** (0044 A.2 ①), en un clon
+    /// que tiene las dos puntas: lo que la rama cambia bajo `prefijo` desde
+    /// `desde`, **sin los documentos del catálogo** —un `.yaml`, un `.oob`, una
+    /// política—, que son activos y se proponen desde el catálogo.
+    /// Un fichero movido **a través del borde** del repositorio no se parte:
+    /// `Fallo::Cruza`. Devuelve `(ficheros, documentos que se quedan, parche)`.
+    fn alcance_en(
+        &self,
+        dir: &Path,
+        desde: &str,
+        cabeza: &str,
+        prefijo: &str,
+    ) -> Result<(Vec<String>, Vec<String>, String), Fallo> {
+        let dentro = |r: &str| r == prefijo || r.starts_with(&format!("{prefijo}/"));
+        let estados = self.git(
+            Some(dir),
+            &["diff", "--name-status", "-M", desde, cabeza],
+        )?;
+        let mut ficheros = Vec::new();
+        let mut fuera = Vec::new();
+        let mut cruzan = Vec::new();
+        for l in estados.lines() {
+            let partes: Vec<&str> = l.split('\t').collect();
+            let (antes, despues) = match partes.as_slice() {
+                [e, a, d] if e.starts_with('R') || e.starts_with('C') => (*a, *d),
+                [_, r] => (*r, *r),
+                _ => continue,
+            };
+            if !dentro(antes) && !dentro(despues) {
+                continue;
+            }
+            // lo que es del catálogo, a un lado u otro del movimiento, no va
+            let documento = Self::es_documento(antes) || Self::es_documento(despues);
+            if documento {
+                for r in [antes, despues] {
+                    if dentro(r) && !fuera.iter().any(|x| x == r) {
+                        fuera.push(r.to_string());
+                    }
+                }
+                continue;
+            }
+            if dentro(antes) != dentro(despues) {
+                cruzan.push(format!("{antes} → {despues}"));
+                continue;
+            }
+            ficheros.push(despues.to_string());
+        }
+        if !cruzan.is_empty() {
+            return Err(Fallo::Cruza(cruzan));
+        }
+        if ficheros.is_empty() {
+            return Ok((ficheros, fuera, String::new()));
+        }
+        let mut args: Vec<String> = ["diff", "--binary", "-M", desde, cabeza, "--", prefijo]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        args.extend(fuera.iter().map(|f| format!(":(exclude){f}")));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let parche = self.git(Some(dir), &args)?;
+        Ok((ficheros, fuera, parche))
+    }
+
+    /// ¿`ruta` es un documento del catálogo? Lo que el compilador carga
+    /// (`validate.rs`): todo `.yaml`/`.yml` —uno sin `kind` no es «del
+    /// repositorio»: el árbol no compila (`OOS1002`, medido)—, `.oob`, `.cedar`,
+    /// `.cedarschema` y `ontology.lock`.
+    fn es_documento(ruta: &str) -> bool {
+        let bajo = ruta.to_ascii_lowercase();
+        [".yaml", ".yml", ".oob", ".cedar", ".cedarschema"]
+            .iter()
+            .any(|e| bajo.ends_with(e))
+            || bajo.ends_with("ontology.lock")
+    }
+
     /// **La derivada de una propuesta con alcance** (0044 A.2 ③): el `base` de
     /// hoy más lo que `rama` cambia bajo `prefijo` desde que salió de `base`
-    /// —el diff desde el `merge-base`, con renombrados, aplicado a tres
-    /// bandas—. Copiar los ficheros de la rama NO vale: pisaría lo que `base`
-    /// cambió después en esos mismos ficheros (medido).
+    /// (`alcance_en`: sin los documentos del catálogo), aplicado a tres bandas.
+    /// Copiar los ficheros de la rama NO vale: pisaría lo que `base` cambió
+    /// después en esos mismos ficheros (medido).
     ///
-    /// `Ok(None)` si la rama no cambia nada ahí. Un choque con lo que `base`
-    /// hizo después es `Fallo::Conflicto` con los ficheros. El commit lleva la
-    /// **huella** —el árbol de `prefijo` en la rama—: es lo que se revisó.
+    /// `Ok(None)` si la rama no cambia nada del repositorio ahí. Un choque con
+    /// lo que `base` hizo después es `Fallo::Conflicto` con los ficheros. El
+    /// commit lleva la **huella** —el parche del alcance—: es lo que se revisó.
     pub fn derivar(
         &self,
         base: &str,
@@ -437,44 +519,18 @@ impl Forja {
             .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
             .trim()
             .to_string();
-        let ficheros: Vec<String> = self
-            .git(
-                Some(dir),
-                &[
-                    "diff",
-                    "--name-only",
-                    "-M",
-                    &desde,
-                    "FETCH_HEAD",
-                    "--",
-                    prefijo,
-                ],
-            )?
-            .lines()
-            .map(str::to_string)
-            .filter(|l| !l.is_empty())
-            .collect();
+        let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", prefijo)?;
         if ficheros.is_empty() {
             return Ok(None);
         }
-        let huella =
-            huella_de(self.git(Some(dir), &["rev-parse", &format!("FETCH_HEAD:{prefijo}")]));
-        let parche = self.git(
-            Some(dir),
-            &[
-                "diff",
-                "--binary",
-                "-M",
-                &desde,
-                "FETCH_HEAD",
-                "--",
-                prefijo,
-            ],
-        )?;
         let fichero = dir.join(".git").join("alcance.patch");
-        std::fs::write(&fichero, parche)
+        std::fs::write(&fichero, &parche)
             .map_err(|e| Fallo::Git(format!("no se pudo escribir el parche: {e}")))?;
         let fichero_s = fichero.to_string_lossy().into_owned();
+        let huella = self
+            .git(Some(dir), &["hash-object", &fichero_s])?
+            .trim()
+            .to_string();
         if let Err(e) = self.git(Some(dir), &["apply", "--3way", "--index", &fichero_s]) {
             let chocan: Vec<String> = self
                 .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
@@ -494,7 +550,11 @@ impl Forja {
             sujeto,
             &format!("{mensaje}\n\nrama: {rama}\nalcance: {prefijo}\nhuella: {huella}"),
         )?;
-        Ok(Some(Derivada { clon, ficheros }))
+        Ok(Some(Derivada {
+            clon,
+            ficheros,
+            fuera,
+        }))
     }
 
     /// Empuja la cabeza de este clon a `destino`, **forzando**: la derivada se
@@ -505,17 +565,36 @@ impl Forja {
             .map(|_| ())
     }
 
-    /// `(la huella de hoy de prefijo en rama, la huella con la que se hizo la
+    /// `(la huella de hoy del alcance, la huella con la que se hizo la
     /// derivada)`. Distintas ⇒ la rama cambió lo propuesto desde entonces.
     pub fn huellas(
         &self,
+        base: &str,
         rama: &str,
         derivada: &str,
         prefijo: &str,
     ) -> Result<(String, String), Fallo> {
         let clon = self.clonar_rama(Some(rama))?;
         let dir = clon.ruta();
-        let hoy = huella_de(self.git(Some(dir), &["rev-parse", &format!("HEAD:{prefijo}")]));
+        self.git(Some(dir), &["fetch", "--quiet", "origin", base])
+            .map_err(|_| Fallo::SinRama(base.to_string()))?;
+        let desde = self
+            .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
+            .trim()
+            .to_string();
+        let hoy = match self.alcance_en(dir, &desde, "HEAD", prefijo) {
+            Ok((fs, _, parche)) if !fs.is_empty() => {
+                let fichero = dir.join(".git").join("alcance.patch");
+                std::fs::write(&fichero, &parche)
+                    .map_err(|e| Fallo::Git(format!("no se pudo escribir el parche: {e}")))?;
+                self.git(Some(dir), &["hash-object", &fichero.to_string_lossy()])?
+                    .trim()
+                    .to_string()
+            }
+            Ok(_) => "-".into(),
+            // Lo que ya no se puede proponer tampoco está «al día».
+            Err(_) => "✗".into(),
+        };
         self.git(Some(dir), &["fetch", "--quiet", "origin", derivada])
             .map_err(|_| Fallo::SinRama(derivada.to_string()))?;
         let mensaje = self.git(Some(dir), &["log", "-1", "--format=%B", "FETCH_HEAD"])?;
@@ -534,16 +613,10 @@ impl Forja {
 pub struct Derivada {
     pub clon: Prestado,
     pub ficheros: Vec<String>,
+    /// Documentos del catálogo bajo la carpeta que la rama cambia y NO van.
+    pub fuera: Vec<String>,
 }
 
-/// La huella de un alcance: el árbol de la carpeta en la rama, o `-` si la
-/// rama no la tiene (se borró entera).
-fn huella_de(r: Result<String, Fallo>) -> String {
-    r.map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "-".into())
-}
 
 /// El correo de un sujeto que no tiene correo.
 ///

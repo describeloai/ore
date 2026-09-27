@@ -283,6 +283,12 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
 
    Los grupos —un repositorio, una base, un schema, «todo»— se expanden a unidades al proponer.
    Proponer «todo» es la propuesta de hoy.
+
+   **El alcance de un repositorio no lleva activos** (hecho): lo que la rama cambia bajo su
+   carpeta **menos los documentos del catálogo** —todo `.yaml` (uno sin `kind` no compila,
+   `OOS1002`: no hay YAML «de repositorio»), `.oob`, `.cedar`, `ontology.lock`—, que se quedan
+   en la rama y la respuesta nombra (`documentosFuera`). Y **un movimiento que cruza el borde**
+   de la carpeta no se parte: `409` (llevar sólo el borrado dejaría a `main` sin el fichero).
 2. **La propuesta guarda su alcance** en su cuerpo en la forja (como hoy `sub:`), en una línea
    `alcance:` con las unidades. Una unidad sólo está en **una** propuesta abierta: `proponer` da
    `409` y dice cuál la lleva.
