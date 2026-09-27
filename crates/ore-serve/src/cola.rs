@@ -70,11 +70,7 @@ pub fn nombre_de_objeto(s: &str) -> String {
     }
     let n: String = out.trim_matches('-').chars().take(30).collect();
     let n = n.trim_matches('-').to_string();
-    if n.is_empty() {
-        "sin-nombre".into()
-    } else {
-        n
-    }
+    if n.is_empty() { "sin-nombre".into() } else { n }
 }
 
 /// El Job de catálogo de una fuente: cómo se llama el fichero y qué lleva dentro.
@@ -816,19 +812,23 @@ env:
             b.lines().next(),
             "otra corrida es otro Job"
         );
-        assert!(rendir_invocacion(
-            "name: x
+        assert!(
+            rendir_invocacion(
+                "name: x
 ", &i
-        )
-        .is_err());
-        assert!(rendir_invocacion(
-            p,
-            &Invocacion {
-                funcion: "a\"b",
-                ..i
-            }
-        )
-        .is_err());
+            )
+            .is_err()
+        );
+        assert!(
+            rendir_invocacion(
+                p,
+                &Invocacion {
+                    funcion: "a\"b",
+                    ..i
+                }
+            )
+            .is_err()
+        );
     }
 
     /// ⛔ Una plantilla que no trae el hueco NO se rinde a medias.
