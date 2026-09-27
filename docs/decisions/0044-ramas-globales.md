@@ -123,8 +123,11 @@ Dos pantallas del mismo producto, dos ideas de «dónde estoy». Eso es lo que e
 **Estado:** visión de producto y, en A.2, su definición técnica medida (2026-09-27). Primer
 entregable hecho en ORE: **el alcance por repositorio** (`POST /propuestas {alcance}`: la derivada
 `alcance/<rama>/<carpeta>`, la huella de lo revisado, `main` + alcance validado, la rama al día al
-fusionar; `la-propuesta.sh` 8e). Falta su pantalla en Code Repositories; después, el alcance por
-activos desde el catálogo.
+fusionar; `la-propuesta.sh` 8e) y su pantalla en Code Repositories. Segundo, en ORE: **el alcance
+por activos** (`POST /propuestas {activos: [id…]}`: sus ficheros y, movidos, los de antes; lo que
+comparte fichero y el `package.yaml` de su base van con ellos al proponer; `faltan` dice lo que la
+rama cambia y a `main` + alcance le falta para compilar; `la-propuesta.sh` 8f). Falta su pantalla
+en el catálogo.
 
 ### El problema
 

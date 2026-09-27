@@ -136,7 +136,7 @@ fn autor_de(pr: &Json) -> String {
 
 /// Las líneas de la cabecera del cuerpo de la PR: `sub: …` y, en una
 /// propuesta con alcance (0044 A.2 ②), `rama: …` y `alcance: …`.
-const CABECERA: [&str; 3] = ["sub: ", "rama: ", "alcance: "];
+const CABECERA: [&str; 4] = ["sub: ", "rama: ", "alcance: ", "activos: "];
 
 fn de_la_cabecera(pr: &Json, k: &str) -> Option<String> {
     let cuerpo = campo(pr, "body")?;
@@ -169,6 +169,80 @@ fn rama_de(pr: &Json) -> String {
 /// El alcance de una propuesta: la carpeta de un repositorio. `None`: la rama entera.
 fn alcance_de(pr: &Json) -> Option<String> {
     de_la_cabecera(pr, "alcance")
+}
+
+/// Los activos de una propuesta con alcance de activos (0044 A.2, E2): sus ids.
+fn activos_de(pr: &Json) -> Option<Vec<String>> {
+    de_la_cabecera(pr, "activos").map(|l| {
+        l.split(", ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// Lo que lleva una propuesta que no es la rama entera.
+enum Alcance {
+    /// La carpeta de un repositorio (E1).
+    Carpeta(String),
+    /// Unos activos, por su id (E2).
+    Activos(Vec<String>),
+}
+
+impl Alcance {
+    fn de(pr: &Json) -> Option<Alcance> {
+        alcance_de(pr)
+            .map(Alcance::Carpeta)
+            .or_else(|| activos_de(pr).map(Alcance::Activos))
+    }
+
+    /// Cómo se dice en un mensaje: la carpeta, o cuántos activos.
+    fn describe(&self) -> String {
+        match self {
+            Alcance::Carpeta(c) => c.clone(),
+            Alcance::Activos(a) if a.len() == 1 => a[0].clone(),
+            Alcance::Activos(a) => format!("{} activos", a.len()),
+        }
+    }
+}
+
+/// ¿Lleva la propuesta algo que no es la rama entera?
+fn con_alcance(pr: &Json) -> bool {
+    Alcance::de(pr).is_some()
+}
+
+/// Una lista de textos del cuerpo JSON de la petición.
+fn lista_del_cuerpo(cuerpo: &str, k: &str) -> Option<Vec<String>> {
+    let n = ore_core::parse::parse(cuerpo).ok()?;
+    let (_, v) = n.get(k)?;
+    Some(
+        v.items()
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
+/// Los nombres entre comillas invertidas de un diagnóstico: `hr.cons`, `pais`…
+fn nombrados(mensaje: &str) -> Vec<String> {
+    mensaje
+        .split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s.to_string())
+        .collect()
+}
+
+/// Un nombre corto y estable para la derivada de unos activos: FNV-1a de sus ids.
+fn huella_de_ids(ids: &[String]) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in ids.join("\n").bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{h:08x}")
 }
 
 /// La derivada de `rama` para `alcance` (0044 A.2 ③): una rama técnica, fuera
@@ -209,6 +283,7 @@ fn estado_de(pr: &Json) -> &'static str {
 pub(crate) fn propuesta_de(pr: &Json) -> Json {
     let rama = rama_de(pr);
     let alcance = alcance_de(pr);
+    let activos = activos_de(pr);
     let base = hijo(pr, "base")
         .and_then(|h| campo(h, "ref"))
         .unwrap_or_default();
@@ -225,8 +300,15 @@ pub(crate) fn propuesta_de(pr: &Json) -> Json {
             alcance.as_ref().map(Json::s).unwrap_or(Json::Bool(false)),
         ),
         (
+            "activos",
+            activos
+                .as_ref()
+                .map(|a| Json::Arr(a.iter().map(Json::s).collect()))
+                .unwrap_or(Json::Bool(false)),
+        ),
+        (
             "derivada",
-            if alcance.is_some() {
+            if con_alcance(pr) {
                 Json::s(cabeza_de_pr(pr))
             } else {
                 Json::Bool(false)
@@ -596,13 +678,28 @@ impl Servidor {
             Ok(a) => a,
             Err(r) => return r,
         };
+        let activos = lista_del_cuerpo(cuerpo, "activos");
+        let alcance = match (alcance, activos) {
+            (Some(_), Some(_)) => {
+                return Respuesta::error(
+                    422,
+                    "`alcance` (una carpeta) o `activos`, no los dos: son dos propuestas",
+                );
+            }
+            (_, Some(a)) if a.is_empty() => {
+                return Respuesta::error(422, "`activos` vacío: no hay qué proponer");
+            }
+            (Some(c), None) => Some(Alcance::Carpeta(c)),
+            (None, Some(a)) => Some(Alcance::Activos(a)),
+            (None, None) => None,
+        };
         let abiertas = api.pulls("open").unwrap_or_default();
         if let Some(alcance) = alcance {
             return self.proponer_alcance(
                 sujeto,
                 &rama,
                 &base,
-                &alcance,
+                alcance,
                 titulo.trim(),
                 descripcion.trim(),
                 &abiertas,
@@ -612,14 +709,14 @@ impl Servidor {
         // unidad, una propuesta abierta (0044 A.2 ②).
         if let Some(pr) = abiertas
             .iter()
-            .find(|pr| alcance_de(pr).is_some() && rama_de(pr) == rama)
+            .find(|pr| con_alcance(pr) && rama_de(pr) == rama)
         {
             return Respuesta::error(
                 409,
                 format!(
                     "`{rama}` ya tiene la propuesta #{} con alcance `{}`: proponer la rama entera lo llevaría dos veces",
                     numero(pr, "number").unwrap_or(0),
-                    alcance_de(pr).unwrap_or_default()
+                    Alcance::de(pr).map(|a| a.describe()).unwrap_or_default()
                 ),
             );
         }
@@ -630,16 +727,159 @@ impl Servidor {
         }
     }
 
-    /// **Proponer sólo lo de un repositorio** (0044 A.2): la PR sale de la
-    /// derivada —`base` de hoy más lo que la rama cambia bajo `alcance`—, así
-    /// que la forja enseña, valida y fusiona justo eso; lo demás sigue en la rama.
+    /// **Lo que un alcance lleva, en ficheros** (0044 A.2): una carpeta tal
+    /// cual; unos activos, por `GET /ramas/{r}/cambios` —su `ruta` y, si se
+    /// movieron, su `rutaAntes`—, más **lo que va con ellos sin remedio**:
+    /// otro documento cambiado que comparte fichero, y el `package.yaml` de su
+    /// base si la rama lo cambió (la versión del paquete va con sus activos).
+    ///
+    /// Devuelve el alcance para git, los ids que lleva (los pedidos y los que
+    /// van con ellos) y cuáles se añadieron. `estricto` es proponer: un id que
+    /// la rama no cambia es un `422`, y se añade lo que va con ellos. Si no (una
+    /// propuesta ya abierta), los ids son los guardados, y uno que la rama ya
+    /// no cambia se ignora (lo deshizo).
+    fn en_ficheros(
+        &self,
+        rama: &str,
+        alcance: &Alcance,
+        estricto: bool,
+    ) -> Result<(crate::git::Alcance, Vec<String>, Vec<String>), Respuesta> {
+        let pedidos = match alcance {
+            Alcance::Carpeta(c) => {
+                return Ok((
+                    crate::git::Alcance::Carpeta(c.clone()),
+                    Vec::new(),
+                    Vec::new(),
+                ));
+            }
+            Alcance::Activos(a) => a,
+        };
+        let cambios = self.cambios_de(rama)?;
+        let id_de = |c: &Json| campo(c, "id").unwrap_or_default();
+        let rutas_de = |c: &Json| -> Vec<String> {
+            [campo(c, "ruta"), campo(c, "rutaAntes")]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        let mut llevo: Vec<String> = Vec::new();
+        for x in pedidos {
+            match cambios
+                .iter()
+                .find(|c| id_de(c) == *x || campo(c, "ref").as_deref() == Some(x.as_str()))
+            {
+                Some(c) => {
+                    if !llevo.contains(&id_de(c)) {
+                        llevo.push(id_de(c));
+                    }
+                }
+                None if estricto => {
+                    return Err(Respuesta::error(
+                        422,
+                        format!(
+                            "`{x}` no es un activo que `{rama}` cambie: no hay qué proponer de él"
+                        ),
+                    ));
+                }
+                None => {}
+            }
+        }
+        let pedidos_ids = llevo.clone();
+        // Lo que va con ellos, hasta que no se añade nada. SÓLO al proponer: la
+        // propuesta guarda el conjunto ya completo, y lo que la rama cambie
+        // después (otra versión del paquete) no se cuela en lo ya revisado.
+        if estricto {
+            loop {
+                let rutas: Vec<String> = cambios
+                    .iter()
+                    .filter(|c| llevo.contains(&id_de(c)))
+                    .flat_map(rutas_de)
+                    .collect();
+                let bases: Vec<String> = cambios
+                    .iter()
+                    .filter(|c| llevo.contains(&id_de(c)))
+                    .filter_map(|c| campo(c, "nombre"))
+                    .filter_map(|n| n.split('.').next().map(str::to_string))
+                    .collect();
+                let nuevos: Vec<String> = cambios
+                    .iter()
+                    .filter(|c| !llevo.contains(&id_de(c)))
+                    .filter(|c| {
+                        rutas_de(c).iter().any(|r| rutas.contains(r))
+                            || (campo(c, "kind").as_deref() == Some("Package")
+                                && campo(c, "nombre").is_some_and(|n| bases.contains(&n)))
+                    })
+                    .map(id_de)
+                    .collect();
+                if nuevos.is_empty() {
+                    break;
+                }
+                llevo.extend(nuevos);
+            }
+        }
+        let mut rutas: Vec<String> = cambios
+            .iter()
+            .filter(|c| llevo.contains(&id_de(c)))
+            .flat_map(rutas_de)
+            .collect();
+        rutas.sort();
+        rutas.dedup();
+        let anadidos = llevo
+            .iter()
+            .filter(|i| !pedidos_ids.contains(i))
+            .cloned()
+            .collect();
+        llevo.sort();
+        Ok((crate::git::Alcance::Rutas(rutas), llevo, anadidos))
+    }
+
+    /// Los cambios de la rama frente a `main` (`GET /ramas/{r}/cambios`), la lista.
+    fn cambios_de(&self, rama: &str) -> Result<Vec<Json>, Respuesta> {
+        let r = self.cambios(rama);
+        if r.codigo >= 300 {
+            return Err(r);
+        }
+        Ok(match hijo(&r.cuerpo, "cambios") {
+            Some(Json::Arr(v)) => v.clone(),
+            _ => Vec::new(),
+        })
+    }
+
+    /// **Lo que le falta al alcance** para compilar sobre `main`: los activos
+    /// que un diagnóstico nombra, que la rama cambia y que el alcance no lleva.
+    /// Es la sugerencia de «añádelo» (0044 A.2 ④). Un nombre que la rama NO
+    /// cambia no está aquí: eso es que el alcance rompería `main`.
+    fn faltan(&self, rama: &str, diagnosticos: &[Json], lleva: &[String]) -> Vec<String> {
+        let Ok(cambios) = self.cambios_de(rama) else {
+            return Vec::new();
+        };
+        let mut faltan: Vec<String> = Vec::new();
+        for d in diagnosticos {
+            for nombre in nombrados(&campo(d, "mensaje").unwrap_or_default()) {
+                for c in &cambios {
+                    let id = campo(c, "id").unwrap_or_default();
+                    let es = campo(c, "nombre").as_deref() == Some(nombre.as_str())
+                        || id.ends_with(&format!(":{nombre}"));
+                    if es && !lleva.contains(&id) && !faltan.contains(&id) {
+                        faltan.push(id);
+                    }
+                }
+            }
+        }
+        faltan
+    }
+
+    /// **Proponer sólo una parte de la rama** (0044 A.2): lo de un repositorio
+    /// (E1) o unos activos (E2). La PR sale de la derivada —`base` de hoy más
+    /// esa parte—, así que la forja enseña, valida y fusiona justo eso; lo
+    /// demás sigue en la rama.
     #[allow(clippy::too_many_arguments)]
     fn proponer_alcance(
         &self,
         sujeto: &Identidad,
         rama: &str,
         base: &str,
-        alcance: &str,
+        alcance: Alcance,
         titulo: &str,
         descripcion: &str,
         abiertas: &[Json],
@@ -647,37 +887,71 @@ impl Servidor {
         let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
             return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
         };
-        if let Some(pr) = abiertas
-            .iter()
-            .find(|pr| rama_de(pr) == rama && alcance_de(pr).is_none_or(|a| a == alcance))
-        {
+        let (en_git, lleva, anadidos) = match self.en_ficheros(rama, &alcance, true) {
+            Ok(x) => x,
+            Err(r) => return r,
+        };
+        // Una cosa, una propuesta abierta: la rama entera choca con todo; una
+        // carpeta, con la misma carpeta; unos activos, con los que comparta.
+        let choca = |pr: &&Json| {
+            rama_de(pr) == rama
+                && match (Alcance::de(pr), &alcance) {
+                    (None, _) => true,
+                    (Some(Alcance::Carpeta(a)), Alcance::Carpeta(b)) => a == *b,
+                    (Some(Alcance::Activos(a)), Alcance::Activos(_)) => {
+                        a.iter().any(|x| lleva.contains(x))
+                    }
+                    _ => false,
+                }
+        };
+        if let Some(pr) = abiertas.iter().find(choca) {
             return Respuesta::error(
                 409,
                 format!(
-                    "`{alcance}` de `{rama}` ya va en la propuesta #{}: una cosa, una propuesta abierta",
+                    "`{}` de `{rama}` ya va en la propuesta #{}: una cosa, una propuesta abierta",
+                    alcance.describe(),
                     numero(pr, "number").unwrap_or(0)
                 ),
             );
         }
-        let derivada = derivada_de(rama, alcance);
+        let derivada = match &alcance {
+            Alcance::Carpeta(c) => derivada_de(rama, c),
+            Alcance::Activos(_) => {
+                format!("{PREFIJO_DERIVADA}{rama}/activos-{}", huella_de_ids(&lleva))
+            }
+        };
         if let Err(m) = nombre_de_rama_valido(&derivada) {
             return Respuesta::error(422, m);
         }
-        let hecha = match forja.derivar(base, rama, alcance, sujeto, titulo) {
+        let hecha = match forja.derivar(base, rama, &en_git, sujeto, titulo) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
                     422,
-                    format!("`{rama}` no cambia nada en `{alcance}`: no hay qué proponer"),
+                    format!(
+                        "`{rama}` no cambia nada en `{}`: no hay qué proponer",
+                        alcance.describe()
+                    ),
                 );
             }
             Err(e) => return de_git(e),
         };
+        // Lo que ya se sabe: si `main` + esto compila, y si no, qué le falta.
+        let diagnosticos = self.diagnosticos_de(hecha.clon.ruta()).unwrap_or_default();
+        let faltan = if diagnosticos.is_empty() {
+            Vec::new()
+        } else {
+            self.faltan(rama, &diagnosticos, &lleva)
+        };
         if let Err(e) = forja.empujar_a(hecha.clon.ruta(), &derivada) {
             return de_git(e);
         }
+        let linea = match &alcance {
+            Alcance::Carpeta(c) => format!("alcance: {c}"),
+            Alcance::Activos(_) => format!("activos: {}", lleva.join(", ")),
+        };
         let cuerpo_pr = format!(
-            "sub: {}\nrama: {rama}\nalcance: {alcance}\n\n{descripcion}",
+            "sub: {}\nrama: {rama}\n{linea}\n\n{descripcion}",
             sujeto.persona
         );
         match api.abrir_pull(&derivada, base, titulo, &cuerpo_pr) {
@@ -693,6 +967,24 @@ impl Servidor {
                     m.insert(
                         "documentosFuera".into(),
                         Json::Arr(hecha.fuera.iter().map(Json::s).collect()),
+                    );
+                    // Lo que va con los activos pedidos sin remedio, dicho.
+                    m.insert(
+                        "anadidos".into(),
+                        Json::Arr(anadidos.iter().map(Json::s).collect()),
+                    );
+                    m.insert(
+                        "diagnosticos".into(),
+                        Json::Arr(
+                            diagnosticos
+                                .iter()
+                                .map(crate::arbol::con_posicion)
+                                .collect(),
+                        ),
+                    );
+                    m.insert(
+                        "faltan".into(),
+                        Json::Arr(faltan.iter().map(Json::s).collect()),
                     );
                 }
                 Respuesta::creado(j)
@@ -739,11 +1031,15 @@ impl Servidor {
         let diff = api.diff(n).unwrap_or_default();
         // Con alcance: ¿la derivada lleva lo que la rama tiene HOY en el
         // alcance?, y una revisión vale si se hizo sobre lo que hay ahora.
-        let hecha = match alcance_de(&pr) {
-            Some(a) if estado_de(&pr) == "abierta" => self
+        let alcance = Alcance::de(&pr).filter(|_| estado_de(&pr) == "abierta");
+        let en_git = alcance
+            .as_ref()
+            .and_then(|a| self.en_ficheros(&rama_de(&pr), a, false).ok());
+        let hecha = match &en_git {
+            Some((g, _, _)) => self
                 .forja()
-                .and_then(|f| f.huellas(&base, &rama_de(&pr), &rama, &a).ok()),
-            _ => None,
+                .and_then(|f| f.huellas(&base, &rama_de(&pr), &rama, g).ok()),
+            None => None,
         };
         let revisiones: Vec<Json> = api
             .revisiones(n)
@@ -768,6 +1064,17 @@ impl Servidor {
         } else {
             (Json::Bool(false), Json::Arr(vec![]))
         };
+        // Con activos: lo que le falta para compilar sobre `main`, si algo.
+        if let (Some((_, lleva, _)), Json::Arr(ds), Json::Obj(m)) =
+            (&en_git, &diagnosticos, &mut ficha)
+            && matches!(alcance, Some(Alcance::Activos(_)))
+        {
+            let faltan = self.faltan(&rama_de(&pr), ds, lleva);
+            m.insert(
+                "faltan".into(),
+                Json::Arr(faltan.iter().map(Json::s).collect()),
+            );
+        }
         if let Json::Obj(m) = &mut ficha {
             m.insert("ficheros".into(), Json::Arr(ficheros));
             m.insert("diff".into(), Json::s(diff));
@@ -848,10 +1155,14 @@ impl Servidor {
         let texto = del_cuerpo(cuerpo, "texto").unwrap_or_default();
         // Con alcance, la revisión dice SOBRE QUÉ se hizo: la huella de la
         // derivada. Si la rama cambia lo propuesto, esa aprobación deja de valer.
-        let huella = match (alcance_de(&pr), self.forja()) {
-            (Some(a), Some(f)) => f
-                .huellas(&base_de(&pr), &rama_de(&pr), &cabeza_de_pr(&pr), &a)
+        let huella = match (Alcance::de(&pr), self.forja()) {
+            (Some(a), Some(f)) => self
+                .en_ficheros(&rama_de(&pr), &a, false)
                 .ok()
+                .and_then(|(g, _, _)| {
+                    f.huellas(&base_de(&pr), &rama_de(&pr), &cabeza_de_pr(&pr), &g)
+                        .ok()
+                })
                 .map(|(_, h)| format!("huella: {h}\n")),
             _ => None,
         }
@@ -892,7 +1203,7 @@ impl Servidor {
                 "quien propone no fusiona lo suyo: hace falta otra persona (0030 W2: dos personas, una revisión)",
             );
         }
-        if let Some(alcance) = alcance_de(&pr) {
+        if let Some(alcance) = Alcance::de(&pr) {
             return self.fusionar_alcance(sujeto, n, &pr, &alcance);
         }
         let aprobada_por: Vec<String> = api
@@ -972,7 +1283,13 @@ impl Servidor {
     /// 4. la forja fusiona la derivada (un `merge`: atómico) y la borra;
     /// 5. `main` se trae a la rama, para que lo fusionado deje de contar como
     ///    suyo. Si eso choca, la fusión ya es buena y se dice.
-    fn fusionar_alcance(&self, sujeto: &Identidad, n: u64, pr: &Json, alcance: &str) -> Respuesta {
+    fn fusionar_alcance(
+        &self,
+        sujeto: &Identidad,
+        n: u64,
+        pr: &Json,
+        alcance: &Alcance,
+    ) -> Respuesta {
         let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
             return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
         };
@@ -983,11 +1300,16 @@ impl Servidor {
             .and_then(|h| campo(h, "ref"))
             .unwrap_or_else(|| "main".into());
         let titulo = campo(pr, "title").unwrap_or_default();
-        let (hoy, hecha) = match forja.huellas(&base, &rama, &derivada, alcance) {
+        let (en_git, lleva, _) = match self.en_ficheros(&rama, alcance, false) {
+            Ok(x) => x,
+            Err(r) => return r,
+        };
+        let alcance = alcance.describe();
+        let (hoy, hecha) = match forja.huellas(&base, &rama, &derivada, &en_git) {
             Ok(h) => h,
             Err(e) => return de_git(e),
         };
-        let nueva = match forja.derivar(&base, &rama, alcance, sujeto, &titulo) {
+        let nueva = match forja.derivar(&base, &rama, &en_git, sujeto, &titulo) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1030,9 +1352,11 @@ impl Servidor {
         }
         match self.diagnosticos_de(nueva.clon.ruta()) {
             Ok(ds) if !ds.is_empty() => {
+                let faltan = self.faltan(&rama, &ds, &lleva);
                 return Respuesta {
                     codigo: 422,
                     cuerpo: Json::obj([
+                        ("faltan", Json::Arr(faltan.iter().map(Json::s).collect())),
                         (
                             "error",
                             Json::s(format!(
@@ -1070,7 +1394,7 @@ impl Servidor {
                 Json::Arr(aprobada_por.iter().map(Json::s).collect()),
             ),
             ("rama", Json::s(&rama)),
-            ("alcance", Json::s(alcance)),
+            ("alcance", Json::s(&alcance)),
             ("ramaAlDia", al_dia),
         ]))
     }
@@ -1109,7 +1433,7 @@ impl Servidor {
         }
         let res = api.cerrar_pull(n);
         // La derivada es técnica: cerrada su propuesta, sobra.
-        if res.is_ok() && alcance_de(&pr).is_some() {
+        if res.is_ok() && con_alcance(&pr) {
             let _ = api.borrar_rama(&cabeza_de_pr(&pr));
         }
         match res {
@@ -1278,26 +1602,42 @@ mod tests {
         let pr = Json::obj([
             (
                 "body",
-                Json::s("sub: persona:ana
+                Json::s(
+                    "sub: persona:ana
 rama: ana/mixta
 alcance: packages/hr/etl
 
 el transform
-rama: no es cabecera"),
+rama: no es cabecera",
+                ),
             ),
-            ("head", Json::obj([("ref", Json::s("alcance/ana/mixta/hr/etl"))])),
+            (
+                "head",
+                Json::obj([("ref", Json::s("alcance/ana/mixta/hr/etl"))]),
+            ),
         ]);
         assert_eq!(autor_de(&pr), "persona:ana");
         assert_eq!(rama_de(&pr), "ana/mixta");
         assert_eq!(alcance_de(&pr).as_deref(), Some("packages/hr/etl"));
-        assert_eq!(descripcion_de(&pr), "el transform
-rama: no es cabecera");
-        assert_eq!(derivada_de("ana/mixta", "packages/hr/etl"), "alcance/ana/mixta/hr/etl");
+        assert_eq!(
+            descripcion_de(&pr),
+            "el transform
+rama: no es cabecera"
+        );
+        assert_eq!(
+            derivada_de("ana/mixta", "packages/hr/etl"),
+            "alcance/ana/mixta/hr/etl"
+        );
         // sin alcance, la rama es la cabeza de la PR, como siempre
         let entera = Json::obj([
-            ("body", Json::s("sub: persona:ana
+            (
+                "body",
+                Json::s(
+                    "sub: persona:ana
 
-x")),
+x",
+                ),
+            ),
             ("head", Json::obj([("ref", Json::s("ana/x"))])),
         ]);
         assert_eq!(rama_de(&entera), "ana/x");
@@ -1305,11 +1645,56 @@ x")),
     }
 
     #[test]
+    fn una_propuesta_de_activos_los_dice_en_la_cabecera() {
+        let pr = Json::obj([
+            (
+                "body",
+                Json::s(
+                    "sub: persona:ana
+rama: ana/x
+activos: Package:hr, View:hr.default.a1
+
+los dos",
+                ),
+            ),
+            (
+                "head",
+                Json::obj([("ref", Json::s("alcance/ana/x/activos-0badcafe"))]),
+            ),
+        ]);
+        assert_eq!(rama_de(&pr), "ana/x");
+        assert!(alcance_de(&pr).is_none());
+        assert_eq!(
+            activos_de(&pr).unwrap(),
+            vec!["Package:hr".to_string(), "View:hr.default.a1".to_string()]
+        );
+        assert!(con_alcance(&pr));
+        assert_eq!(Alcance::de(&pr).unwrap().describe(), "2 activos");
+        assert_eq!(descripcion_de(&pr), "los dos");
+    }
+
+    #[test]
+    fn un_diagnostico_nombra_entre_comillas_invertidas() {
+        assert_eq!(
+            nombrados("`hr.cons` lee `pais` de `hr.pub`, que no la tiene"),
+            vec!["hr.cons", "pais", "hr.pub"]
+        );
+        let ids = vec!["View:hr.default.a1".to_string()];
+        assert_eq!(huella_de_ids(&ids), huella_de_ids(&ids.clone()));
+        assert_eq!(huella_de_ids(&ids).len(), 8);
+    }
+
+    #[test]
     fn la_huella_de_una_revision_no_es_su_texto() {
-        let r = Json::obj([("body", Json::s("revision: persona:bea aprueba
+        let r = Json::obj([(
+            "body",
+            Json::s(
+                "revision: persona:bea aprueba
 huella: abc
 
-bien"))]);
+bien",
+            ),
+        )]);
         let v = revision_de(&r).unwrap();
         assert_eq!(campo(&v, "huella").as_deref(), Some("abc"));
         assert_eq!(campo(&v, "texto").as_deref(), Some("bien"));

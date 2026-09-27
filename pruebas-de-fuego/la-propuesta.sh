@@ -528,6 +528,80 @@ git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/mueve/hr/
 [ "$(pide GET /arbol/packages/hr/pipelines/transforms/uno.py "$ANA")" = "200" ] || falla "8e · main perdio uno.py"
 dice "8e · scope proposals por repositorio: la PR lleva solo el repositorio (una derivada, fuera de /ramas) · 422 alcance malo o sin cambios · 409 el mismo alcance o la rama entera · la rama cambia lo propuesto: 409, la derivada se regenera y la aprobacion vieja no vale · fusionada: main con el codigo de hoy y sin la vista, la rama al dia con solo la vista, la derivada fuera, el merge dice el alcance · un documento del catalogo dentro de la carpeta se queda en la rama (solo el: 422), lo que no es documento va · mover a traves del borde: 409"
 
+# ── 8f · proponer UNOS ACTIVOS desde el catalogo (0044 A.2 · E2) ─────────────
+# La misma propuesta que la del repositorio, con otro alcance: unos activos por
+# su id. Viajan sus ficheros (y, movido, el de antes); lo que comparte fichero y
+# el package.yaml de su base van con ellos; main + alcance se valida y, si le
+# falta algo que la rama cambia, se dice cual (faltan); un consumidor de main que
+# rompe no se arregla anadiendo: el alcance romperia main.
+num() { "$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json"; }
+[ "$(pide POST /ramas "$ANA" '{"nombre":"activos"}')" = "201" ] || falla "8f · la rama: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/a1.yaml "$ANA" "$(vista14 a1 hr.empleados_t id)" ana/activos)" = "201" ] || falla "8f · a1: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/a2.yaml "$ANA" "$(vista14 a2 hr.a1 id)" ana/activos)" = "201" ] || falla "8f · a2 (lee a1): $(cuerpo)"
+[ "$(put_fichero packages/hr/views/a3.yaml "$ANA" "$(vista14 a3 hr.empleados_t id pais)" ana/activos)" = "201" ] || falla "8f · a3: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/transforms/tres.py "$ANA" 'print(4)' ana/activos)" = "201" ] || falla "8f · el codigo: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"x","activos":["View:hr.default.nada"]}')" = "422" ] || falla "8f · un activo que la rama no cambia no dio 422: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"x","activos":["View:hr.default.a3"],"alcance":"packages/hr/pipelines"}')" = "422" ] || falla "8f · carpeta y activos a la vez no dio 422: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"Solo a3","activos":["View:hr.default.a3"]}')" = "201" ] || falla "8f · proponer a3: $(cuerpo)"
+tiene "d['activos']==['View:hr.default.a3'] and d['ficherosDelAlcance']==['packages/hr/views/a3.yaml'] and d['faltan']==[] and d['anadidos']==[] and d['derivada'].startswith('alcance/ana/activos/activos-') and d['alcance'] is False" || falla "8f · la propuesta de a3: $(cuerpo)"
+N3=$(num)
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"Otra vez","activos":["view:hr.a3"]}')" = "409" ] || falla "8f · el mismo activo (por su ref) dos veces no dio 409: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"Toda"}')" = "409" ] || falla "8f · la rama entera con activos abiertos no dio 409: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"El repo","alcance":"packages/hr/pipelines"}')" = "201" ] || falla "8f · el repositorio y los activos no conviven: $(cuerpo)"
+R=$(num); [ "$(pide DELETE /propuestas/$R "$ANA")" = "200" ] || falla "8f · cerrar la del repositorio: $(cuerpo)"
+# a2 lee a1, que solo esta en la rama: se propone, pero dice que falta a1
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"Solo a2","activos":["View:hr.default.a2"]}')" = "201" ] || falla "8f · proponer a2: $(cuerpo)"
+tiene "d['faltan']==['View:hr.default.a1'] and any(x['codigo']=='OOS2018' for x in d['diagnosticos'])" || falla "8f · a2 sin a1 no dice que falta: $(cuerpo | head -c 700)"
+N2=$(num)
+[ "$(pide GET /propuestas/$N2 "$BEA")" = "200" ] && tiene "d['faltan']==['View:hr.default.a1']" || falla "8f · el detalle no dice que falta: $(cuerpo | head -c 500)"
+[ "$(pide POST /propuestas/$N2/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8f · aprobar a2: $(cuerpo)"
+[ "$(pide POST /propuestas/$N2/fusionar "$BEA")" = "422" ] && tiene "d['faltan']==['View:hr.default.a1']" || falla "8f · fusionar a2 sin a1: $(cuerpo | head -c 500)"
+[ "$(pide DELETE /propuestas/$N2 "$ANA")" = "200" ] || falla "8f · cerrar a2: $(cuerpo)"
+# la version del paquete va con sus activos
+[ "$(pide GET /arbol/packages/hr/package.yaml "$ANA" "" ana/activos)" = "200" ] || falla "8f · leer package.yaml: $(cuerpo)"
+PKG=$("$PY" -c 'import re,sys,json; print(re.sub(r"version: [0-9.]+", "version: 9.9.9", json.load(open(sys.argv[1]))["texto"]), end="")' "$TMP/r.json")
+[ "$(put_fichero packages/hr/package.yaml "$ANA" "$PKG" ana/activos)" = "200" ] || falla "8f · subir la version en la rama: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"a1 y a2","activos":["View:hr.default.a1","View:hr.default.a2"]}')" = "201" ] || falla "8f · proponer a1 y a2: $(cuerpo)"
+tiene "d['faltan']==[] and d['diagnosticos']==[] and d['anadidos']==['Package:hr'] and 'packages/hr/package.yaml' in d['ficherosDelAlcance'] and sorted(d['activos'])==['Package:hr','View:hr.default.a1','View:hr.default.a2']" || falla "8f · a1+a2 no llevan el paquete o no compilan: $(cuerpo | head -c 700)"
+N12=$(num)
+# fusionar a3: main tiene a3 y nada mas de la rama
+[ "$(pide POST /propuestas/$N3/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8f · aprobar a3: $(cuerpo)"
+[ "$(pide POST /propuestas/$N3/fusionar "$BEA")" = "200" ] && tiene "d['ramaAlDia'] is True and d['alcance']=='View:hr.default.a3'" || falla "8f · fusionar a3: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/a3.yaml "$ANA")" = "200" ] || falla "8f · main no tiene a3"
+[ "$(pide GET /arbol/packages/hr/views/a1.yaml "$ANA")" = "404" ] || falla "8f · a1 llego a main sin proponerse"
+[ "$(git --git-dir="$BARE" diff --name-only main ana/activos | sort | tr '\n' ' ')" = "packages/hr/package.yaml packages/hr/pipelines/transforms/tres.py packages/hr/views/a1.yaml packages/hr/views/a2.yaml " ] || falla "8f · la rama no quedo con lo demas: $(git --git-dir="$BARE" diff --name-only main ana/activos)"
+[ "$(pide DELETE /propuestas/$N12 "$ANA")" = "200" ] || falla "8f · cerrar a1+a2: $(cuerpo)"
+# un consumidor de main que rompe: no hay nada que anadir, el alcance romperia main
+[ "$(put_fichero packages/hr/views/b1.yaml "$ANA" "$(vista14 b1 hr.empleados_t id pais)")" = "201" ] || falla "8f · b1 en main: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/b2.yaml "$ANA" "$(vista14 b2 hr.b1 pais)")" = "201" ] || falla "8f · b2 en main (lee pais de b1): $(cuerpo)"
+[ "$(pide POST /ramas "$ANA" '{"nombre":"rompe"}')" = "201" ] || falla "8f · la rama rompe: $(cuerpo)"
+"$PY" - "$TMP/rompe.json" "$(vista14 b1 hr.empleados_t id)" "$(vista14 b2 hr.b1 id)" <<'EOF'
+import json, sys
+json.dump({"mensaje": "b1 sin pais, y b2 que ya no lo lee", "forzar": True,
+           "ficheros": [{"ruta": "packages/hr/views/b1.yaml", "texto": sys.argv[2] + "\n"}]}, open(sys.argv[1], "w"))
+EOF
+commit "$ANA" ana/rompe "$TMP/rompe.json" >/dev/null
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/rompe","titulo":"b1 sin pais","activos":["View:hr.default.b1"]}')" = "201" ] || falla "8f · proponer b1: $(cuerpo)"
+tiene "d['faltan']==[] and any(x['codigo']=='OOS2018' and 'b2' in x['mensaje'] for x in d['diagnosticos'])" || falla "8f · el consumidor roto de main no se dice: $(cuerpo | head -c 700)"
+NB=$(num); [ "$(pide DELETE /propuestas/$NB "$ANA")" = "200" ] || falla "8f · cerrar b1: $(cuerpo)"
+# un activo movido viaja entero: el fichero de antes sale de main
+[ "$(pide POST /ramas "$ANA" '{"nombre":"mueve-a3"}')" = "201" ] || falla "8f · la rama mueve-a3: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/a3.yaml "$ANA")" = "200" ] || falla "8f · leer a3"
+"$PY" -c 'import json,sys; open(sys.argv[2],"w").write(json.load(open(sys.argv[1]))["texto"])' "$TMP/r.json" "$TMP/a3.yaml"
+"$PY" - "$TMP/mueve-a3.json" "$TMP/a3.yaml" <<'EOF'
+import json, sys
+json.dump({"mensaje": "a3 cambia de fichero",
+           "ficheros": [{"ruta": "packages/hr/views/a3_movida.yaml", "texto": open(sys.argv[2]).read()}],
+           "retirar": ["packages/hr/views/a3.yaml"]}, open(sys.argv[1], "w"))
+EOF
+commit "$ANA" ana/mueve-a3 "$TMP/mueve-a3.json" >/dev/null
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mueve-a3","titulo":"a3 se muda","activos":["View:hr.default.a3"]}')" = "201" ] || falla "8f · proponer el movido: $(cuerpo)"
+NM=$(num)
+[ "$(pide POST /propuestas/$NM/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8f · aprobar el movido: $(cuerpo)"
+[ "$(pide POST /propuestas/$NM/fusionar "$BEA")" = "200" ] || falla "8f · fusionar el movido: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/a3_movida.yaml "$ANA")" = "200" ] && [ "$(pide GET /arbol/packages/hr/views/a3.yaml "$ANA")" = "404" ] || falla "8f · el movimiento no viajo entero"
+dice "8f · scope proposals por activos: solo a3 llega a main (la rama sigue con a1, a2, el paquete y el codigo) · 422 activo que la rama no cambia o carpeta y activos a la vez · 409 el mismo activo (por id o ref) o la rama entera; el repositorio convive · a2 sin a1: faltan [a1] al proponer, en el detalle y al fusionar (422) · el package.yaml cambiado va con sus activos · un consumidor de main roto: diagnostico sin faltan · un activo movido viaja entero"
+
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
 "$SERVE" --repo "$TMP/dir" --ore "$ORE" --bind "127.0.0.1:$PUERTO_DIR" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque2.txt" 2>&1 &

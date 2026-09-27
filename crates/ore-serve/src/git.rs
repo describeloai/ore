@@ -430,13 +430,14 @@ impl Forja {
         dir: &Path,
         desde: &str,
         cabeza: &str,
-        prefijo: &str,
+        alcance: &Alcance,
     ) -> Result<(Vec<String>, Vec<String>, String), Fallo> {
+        let prefijo = match alcance {
+            Alcance::Carpeta(p) => p.as_str(),
+            Alcance::Rutas(rutas) => return self.rutas_en(dir, desde, cabeza, rutas),
+        };
         let dentro = |r: &str| r == prefijo || r.starts_with(&format!("{prefijo}/"));
-        let estados = self.git(
-            Some(dir),
-            &["diff", "--name-status", "-M", desde, cabeza],
-        )?;
+        let estados = self.git(Some(dir), &["diff", "--name-status", "-M", desde, cabeza])?;
         let mut ficheros = Vec::new();
         let mut fuera = Vec::new();
         let mut cruzan = Vec::new();
@@ -482,6 +483,36 @@ impl Forja {
         Ok((ficheros, fuera, parche))
     }
 
+    /// **Qué lleva un alcance de activos** (0044 A.2, E2): sus ficheros, tal
+    /// cual —de antes y de después si se movieron: un movimiento viaja entero—.
+    /// Sin exclusiones: los ficheros ya son los de los activos elegidos.
+    fn rutas_en(
+        &self,
+        dir: &Path,
+        desde: &str,
+        cabeza: &str,
+        rutas: &[String],
+    ) -> Result<(Vec<String>, Vec<String>, String), Fallo> {
+        if rutas.is_empty() {
+            return Ok((Vec::new(), Vec::new(), String::new()));
+        }
+        let mut args: Vec<&str> = vec!["diff", "--name-only", "-M", desde, cabeza, "--"];
+        args.extend(rutas.iter().map(String::as_str));
+        let ficheros: Vec<String> = self
+            .git(Some(dir), &args)?
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        if ficheros.is_empty() {
+            return Ok((ficheros, Vec::new(), String::new()));
+        }
+        let mut args: Vec<&str> = vec!["diff", "--binary", "-M", desde, cabeza, "--"];
+        args.extend(rutas.iter().map(String::as_str));
+        let parche = self.git(Some(dir), &args)?;
+        Ok((ficheros, Vec::new(), parche))
+    }
+
     /// ¿`ruta` es un documento del catálogo? Lo que el compilador carga
     /// (`validate.rs`): todo `.yaml`/`.yml` —uno sin `kind` no es «del
     /// repositorio»: el árbol no compila (`OOS1002`, medido)—, `.oob`, `.cedar`,
@@ -507,7 +538,7 @@ impl Forja {
         &self,
         base: &str,
         rama: &str,
-        prefijo: &str,
+        alcance: &Alcance,
         sujeto: &Identidad,
         mensaje: &str,
     ) -> Result<Option<Derivada>, Fallo> {
@@ -519,7 +550,7 @@ impl Forja {
             .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
             .trim()
             .to_string();
-        let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", prefijo)?;
+        let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", alcance)?;
         if ficheros.is_empty() {
             return Ok(None);
         }
@@ -548,7 +579,10 @@ impl Forja {
         self.confirmar(
             dir,
             sujeto,
-            &format!("{mensaje}\n\nrama: {rama}\nalcance: {prefijo}\nhuella: {huella}"),
+            &format!(
+                "{mensaje}\n\nrama: {rama}\nalcance: {}\nhuella: {huella}",
+                alcance.describe()
+            ),
         )?;
         Ok(Some(Derivada {
             clon,
@@ -572,7 +606,7 @@ impl Forja {
         base: &str,
         rama: &str,
         derivada: &str,
-        prefijo: &str,
+        alcance: &Alcance,
     ) -> Result<(String, String), Fallo> {
         let clon = self.clonar_rama(Some(rama))?;
         let dir = clon.ruta();
@@ -582,7 +616,7 @@ impl Forja {
             .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
             .trim()
             .to_string();
-        let hoy = match self.alcance_en(dir, &desde, "HEAD", prefijo) {
+        let hoy = match self.alcance_en(dir, &desde, "HEAD", alcance) {
             Ok((fs, _, parche)) if !fs.is_empty() => {
                 let fichero = dir.join(".git").join("alcance.patch");
                 std::fs::write(&fichero, &parche)
@@ -608,6 +642,23 @@ impl Forja {
     }
 }
 
+/// **Lo que lleva una propuesta con alcance**, para git (0044 A.2): lo que la
+/// rama cambia bajo la carpeta de un repositorio (sin documentos del catálogo),
+/// o los ficheros de unos activos.
+pub enum Alcance {
+    Carpeta(String),
+    Rutas(Vec<String>),
+}
+
+impl Alcance {
+    pub fn describe(&self) -> String {
+        match self {
+            Alcance::Carpeta(p) => p.clone(),
+            Alcance::Rutas(rs) => format!("{} ficheros de activos", rs.len()),
+        }
+    }
+}
+
 /// La derivada recién hecha: el clon con su commit (sin empujar; la huella va
 /// en el mensaje) y los ficheros del alcance.
 pub struct Derivada {
@@ -616,7 +667,6 @@ pub struct Derivada {
     /// Documentos del catálogo bajo la carpeta que la rama cambia y NO van.
     pub fuera: Vec<String>,
 }
-
 
 /// El correo de un sujeto que no tiene correo.
 ///
