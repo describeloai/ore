@@ -256,7 +256,7 @@ impl Respuesta {
 /// inducidos**. Que inducir sea una función de `(catálogo, decisiones)` es lo
 /// que hace reproducible la revisión — el mismo catálogo y las mismas respuestas
 /// dan el mismo paquete, byte a byte, sin volver a tocar la fuente.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Decisiones(BTreeMap<String, Respuesta>);
 
 impl Decisiones {
@@ -349,6 +349,32 @@ impl Decisiones {
 
     fn de(&self, id: &str) -> Option<&Respuesta> {
         self.0.get(id)
+    }
+
+    /// ⭐ 0045 P1 · **Las que son del objeto del origen**: su clave y los tipos
+    ///   de sus columnas. Son del objeto y no de la base que lo lee —dos bases
+    ///   de la misma fuente no pueden tener dos claves para una tabla—, así que
+    ///   se contestan una vez, en el paquete de la fuente.
+    pub fn es_del_objeto(id: &str) -> bool {
+        id.starts_with("clave/") || id.starts_with("tipo/")
+    }
+
+    /// `(del objeto, de la base)`.
+    pub fn partir(self) -> (Decisiones, Decisiones) {
+        let (a, b) = self
+            .0
+            .into_iter()
+            .partition(|(id, _)| Self::es_del_objeto(id));
+        (Decisiones(a), Decisiones(b))
+    }
+
+    /// Los ids que estas contestan y `otras` contesta distinto.
+    pub fn discrepa_de(&self, otras: &Decisiones) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|(id, r)| otras.0.get(*id).is_some_and(|o| o != *r))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// `true` si alguien contestó `omitir` a esta decisión.
@@ -457,6 +483,12 @@ pub struct Regla {
     /// siguen con el schema del origen —son del origen—, y sus respuestas
     /// siguen valiendo.
     pub schemas: BTreeMap<String, String>,
+    /// ⭐ 0045 P1 · **Lo que copia alguna base de la misma fuente**, esta
+    /// incluida o no. La tabla es del objeto, y si el objeto se copia en la
+    /// celda —lo copie quien lo copie— su tabla se funde por su clave. Sin esto
+    /// la misma tabla salía `upsert` en la base estándar y como la sondeó el
+    /// driver en la foránea: dos punteros para una cosa.
+    pub copiadas_en_la_fuente: BTreeSet<String>,
 }
 
 impl Regla {
@@ -467,6 +499,13 @@ impl Regla {
     /// ¿Se copia esta tabla? Por la clase, o una a una.
     fn copia(&self, tabla: &str) -> bool {
         self.estandar || self.copiadas.contains(tabla)
+    }
+
+    /// ¿La copia ALGUIEN? Esta base, u otra de la misma fuente (0045 P1). Es lo
+    /// que decide la cara `D` de la tabla, que es del objeto; lo que emite esta
+    /// base —un `Dataset` o una `View`— lo sigue decidiendo `copia`.
+    fn se_copia_en_la_fuente(&self, tabla: &str) -> bool {
+        self.copia(tabla) || self.copiadas_en_la_fuente.contains(tabla)
     }
 
     /// El schema de una tabla EN EL PAQUETE: el del origen, o el nombre que
@@ -573,9 +612,12 @@ pub fn inducir_con_regla(
         );
         // Sin entidad no hay a quién respaldar: la copia no espera a nada. Con
         // clave del origen, `upsert`; sin ella, instantánea.
+        // ⭐ 0045 P1: la cara `D` de la tabla la decide si el objeto se copia
+        //   en la FUENTE —esta base u otra—, no si lo copia esta: la tabla es
+        //   del objeto, y dos bases de la misma fuente escriben la misma.
         let clave = clave_de(t, dec);
         let se_copia = regla.copia(&t.nombre);
-        let copia = se_copia.then_some(if clave.is_empty() { None } else { Some(clave) });
+        let se_funde = regla.se_copia_en_la_fuente(&t.nombre) && !clave.is_empty();
         ficheros.insert(
             en_schema(&sch, format!("tables/{sufijo}")),
             con_schema(
@@ -584,7 +626,7 @@ pub fn inducir_con_regla(
                     &cat.fuente,
                     t,
                     objeto,
-                    copia.as_ref().and_then(|c| c.as_deref()),
+                    se_funde.then_some(clave.as_slice()),
                 ),
                 &sch,
                 paquete,
@@ -790,15 +832,20 @@ pub fn inducir_con_regla(
         // La copia, si la base es estándar y la tabla tiene con qué: la clave
         // del origen o la contestada, que `claves` ya funde. Aquí sí espera:
         // esta vista respalda una entidad, y sin identidad no se mantiene.
+        let clave = claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned();
         let copia = if regla.copia(&t.nombre) {
-            claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned()
+            clave.clone()
         } else {
             None
         };
+        // ⭐ 0045 P1: la cara `D`, por si el objeto se copia en la fuente.
+        let se_funde = clave
+            .as_deref()
+            .filter(|_| regla.se_copia_en_la_fuente(&t.nombre));
         ficheros.insert(
             en_schema(&sch, format!("tables/{sufijo}")),
             con_schema(
-                tabla_yaml(paquete, &cat.fuente, t, objeto, copia.as_deref()),
+                tabla_yaml(paquete, &cat.fuente, t, objeto, se_funde),
                 &sch,
                 paquete,
             ),
@@ -2139,10 +2186,14 @@ fn tabla_yaml(
         ),
     }
     match (&t.cambia, clave_de_la_copia) {
-        // La base es estándar y la tabla tiene clave: la copia se funde por
-        // ella. El testigo sigue siendo el que el driver sondeó — eso no lo
-        // cambia una clave—; lo que cambia es que ahora hay con qué retirar
-        // una fila, que es lo que `upsert` afirma y `append` no podía.
+        // El objeto se copia en la celda y tiene clave: la copia se funde por
+        // ella. El testigo sigue siendo el que el driver sondeó —eso no lo
+        // cambia una clave—; lo que cambia es que ahora hay con qué retirar una
+        // fila, que es lo que `upsert` afirma y `append` no podía.
+        //
+        // ⭐ 0045 P1: «se copia» es de la FUENTE (`Regla::se_copia_en_la_fuente`),
+        //   no de esta base. Sin copia en ninguna, la tabla es lo que el driver
+        //   sondeó, tal cual: ni `drift-detect` ni el motor ven otra cosa.
         (cambia, Some(clave)) => {
             let testigo = cambia
                 .as_ref()
@@ -2704,6 +2755,7 @@ mod tests {
             modeladas: None,
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            copiadas_en_la_fuente: Default::default(),
         };
         let sin = inducir_con_regla(
             &cat,
@@ -2792,6 +2844,7 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            copiadas_en_la_fuente: Default::default(),
         };
         let i = inducir_con_regla(
             &cat,
@@ -2865,6 +2918,7 @@ mod tests {
             modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            copiadas_en_la_fuente: Default::default(),
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
@@ -2872,6 +2926,7 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
             schemas: BTreeMap::new(),
+            copiadas_en_la_fuente: Default::default(),
         };
         let f = inducir_con_regla(
             &cat,

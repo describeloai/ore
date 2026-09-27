@@ -1,6 +1,6 @@
 # 0045 · El puntero es de la fuente: una database standard es sus datasets
 
-**Estado:** aprobado (2026-09-27), B0 medido; P1–P6 por hacer · **Decide:** dónde
+**Estado:** aprobado (2026-09-27), B0 medido, P1 hecho; P2–P6 por hacer · **Decide:** dónde
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
 ubicación que fijaron P1 I4b (`f7580aa`) y [`0033`](0033-el-dataset.md); **no** revisa lo que
 0033 decidió sobre el `Dataset` (§ «Lo que no se hace»). Toca el `_t` de
@@ -128,12 +128,21 @@ malla).
 
 | paso | qué | criterio de hecho | despliega |
 |---|---|---|---|
-| **P1 · el puntero es del objeto** | `tabla_yaml` escribe la clave si se conoce (del origen o contestada), sea la database foránea o estándar; `clave/*` y `tipo/*` se contestan **una vez por fuente** (`packages/<fuente>/discover.answers.json`), y una database que los contestó distinto no re-induce: lo dice | tests del inductor; en un árbol con las dos, `review --reinducir` deja los 19 pares **idénticos** salvo nombre y namespace; `cotejo` sin diagnósticos nuevos | sí, solo |
+| **P1 · el puntero es del objeto** ✅ | la cara `D` de la tabla la decide si el objeto **se copia en la fuente** —esta base u otra, leído de los `discover.scope.json`—, no si lo copia esta: con copia y clave, `upsert` + `key`; sin copia en ninguna, lo que sondeó el driver, tal cual (así ni `drift-detect` ni el motor ven una cara que el origen no dijo). `clave/*` y `tipo/*` se contestan **una vez por fuente** (`packages/<fuente>/discover.answers.json`); una base que los contestó distinto no re-induce: lo dice | `el_puntero_es_del_objeto.rs` (5 casos); en la copia de `victor`, tras `review --reinducir`, los 19 pares de `standard_test`/`foreign_test` **idénticos** (eran 0), `lint` y `report` iguales | sí, solo |
 | **P2 · leer en los dos sitios** | ore-serve resuelve la Table por el árbol y no por la carpeta: `copias` (por `registro::clave_de`), `tablas_del_paquete` (fuente: siempre su catálogo, anotado con sus Tables; database: sus Datasets y Views unidos a la Table que nombran, esté donde esté), `objetos_fisicos`, `retirar_fuente` (cuenta las databases por `discover.scope.json`), la guarda de borrar una Table (Datasets y SQL) | tests de ore-serve en las dos disposiciones; `la-copia-se-decide.sh` verde **sin cambios** | sí, antes de P3 |
 | **P3 · el inductor escribe en la fuente** | un canal aparte en `Induccion` para `packages/<fuente>/`: la Table (v1alpha13, schema **del origen**, namespace la fuente, nombre el del objeto, sin `_t`), su `schema.yaml` y su línea de `exports` en tres partes; crea o actualiza, **nunca crea el directorio** (sin fuente —CLI suelta—, el sitio de siempre); la database, solo Datasets o Views con `from: { table: <fuente>.<schema>.<obj> }`; `review --reinducir` retira las Tables viejas | tests del inductor; `standard` da N datasets y 0 tables; `la-copia-se-decide.sh` reescrita (14 aserciones, 219-226 y `_t`) | con P4 |
 | **P4 · migrar los árboles** | `ore migrate fuentes`: por fuente, las Tables de todas sus databases por `(datasource, object)` → una en la fuente (tras P1 son iguales; si no, no migra y dice cuál), `exports`, reapunta `from` y SQL (`servir::renombrar`), borra las viejas. Reusa `paquete::planificar` y el `cotejo` de `migrar_v14` | `cotejo` en copias de `demo`, `prueba` y `victor`: mismos diagnósticos; `bq` 3 items, `standard_test` 19; cada árbol, **un** commit que compila solo | P3 + P4 juntos, árbol a árbol |
 | **P5 · los que miran un paquete** | `drift-detect` sobre la fuente con la unión de los alcances de sus databases; la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
 | **P6 · consola** | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
+
+⚠️ **Lo primero que se probó en P1 y no valía**: escribir la clave (y `upsert`) en la tabla siempre que se conociera. Rompió dos guardas con razón —`drift-detect` veía `upsert → none` como deriva, y «las caras sondeadas llegan al motor» dejaba de ser cierto—: la tabla afirmaba del origen algo que el origen no dijo. `upsert` es la cara de un objeto **que se copia**; por eso la decide la fuente y no cada base.
+
+⚠️ **P4 mueve, no re-induce.** Medido al cerrar P1 en la copia de `victor`: `review --reinducir`
+sobre `foreign_test` (inducida el 21-sep) no solo iguala sus punteros —19 de 19 idénticos a los de
+`standard_test`, de 0—; también reescribe sus 19 vistas con el inductor de hoy (v1alpha14 SQL, en
+el schema `public`: `foreign_test.x` pasa a `foreign_test.public.x`), y eso renombra lo que
+entidades, funciones y SQL a mano nombran. La migración de los árboles vivos toca solo las Tables
+y quien las nombra.
 
 Fuera: `ore pack` con la fuente como dependencia versionada. Colisiones al quitar `_t` (`a-b`/`a_b`,
 `Pedidos`/`pedidos` en Windows): el sufijo de siempre **solo** cuando colisionan, y se dice.

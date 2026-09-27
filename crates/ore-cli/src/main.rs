@@ -1630,6 +1630,7 @@ fn descubrir(
             .as_ref()
             .map(|(a, _)| a.schemas().clone())
             .unwrap_or_default(),
+        copiadas_en_la_fuente: alcance::copiadas_en_la_fuente(destino, &catalogo.fuente),
     };
     // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
     //   decision — y por eso entra por `Decisiones` y se guarda con las demas
@@ -1642,17 +1643,22 @@ fn descubrir(
             inductor::Respuesta::Palabra(o.to_string()),
         );
     }
+    // ⭐ 0045 P1: una base nueva de una fuente ya leída nace con lo que la
+    //   fuente sabe de sus objetos (la clave, los tipos): contestado una vez.
+    let fuente = revision::dir_de_la_fuente(destino, &catalogo.fuente);
+    let dec = match revision::con_la_fuente(dec, fuente.as_deref()) {
+        Ok(d) => d,
+        Err(f) => return f.salir(),
+    };
     let ind = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
     if let Err((codigo, mensaje)) = escribir_paquete(&ind, destino) {
         eprintln!("error: {mensaje}");
         return std::process::ExitCode::from(codigo);
     }
-    if !dec.is_empty() {
-        let dadas = revision::ruta_respuestas(destino);
-        if let Err(e) = std::fs::write(&dadas, dec.json().pretty()) {
-            eprintln!("error: no se pudo escribir `{}`: {e}", dadas.display());
-            return std::process::ExitCode::from(73);
-        }
+    if !dec.is_empty()
+        && let Err(f) = revision::guardar_respuestas(destino, fuente.as_deref(), &dec)
+    {
+        return f.salir();
     }
 
     // El catálogo, al lado de lo que produjo. No es un caché: es lo que hace que

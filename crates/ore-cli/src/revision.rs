@@ -102,13 +102,18 @@ pub fn review(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> ExitCo
             print!("{informe}");
             ExitCode::SUCCESS
         }
-        Err(f) => {
-            eprintln!("error: {}", f.mensaje);
-            for l in &f.ayuda {
-                eprintln!("{l}");
-            }
-            ExitCode::from(f.codigo)
+        Err(f) => f.salir(),
+    }
+}
+
+impl Fallo {
+    /// Lo dice por `stderr` y sale con su código.
+    pub fn salir(self) -> ExitCode {
+        eprintln!("error: {}", self.mensaje);
+        for l in &self.ayuda {
+            eprintln!("{l}");
         }
+        ExitCode::from(self.codigo)
     }
 }
 
@@ -248,6 +253,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     };
 
     let paquete = nombre_del_paquete(raiz);
+    regla.copiadas_en_la_fuente = crate::alcance::copiadas_en_la_fuente(raiz, &catalogo.fuente);
 
     // El vocabulario se lee del REPOSITORIO, no del paquete: un vocabulario
     // publicado es un paquete sin entidades que otros importan, así que mirar
@@ -260,7 +266,10 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     // Lo ya contestado en pasadas anteriores, y la cola que queda con ello
     // puesto: preguntar otra vez lo que alguien ya decidió es la forma más
     // rápida de que deje de contestar.
-    let mut dec = acumuladas(raiz)?;
+    // ⭐ 0045 P1: con lo que la FUENTE ya sabe de sus objetos (la clave, los
+    //   tipos), que es de todas las bases que la leen y no de esta.
+    let fuente = dir_de_la_fuente(raiz, &catalogo.fuente);
+    let mut dec = con_la_fuente(acumuladas(raiz)?, fuente.as_deref())?;
     let antes = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
 
     let nuevas = match respuestas {
@@ -309,7 +318,7 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     // Y aquí está todo: la revisión es la misma inducción con las decisiones
     // tomadas. Nada de lo de abajo retoca un documento.
     let despues = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
-    let retirados = escribir(raiz, &despues, &dec)?;
+    let retirados = escribir(raiz, &despues, &dec, fuente.as_deref())?;
 
     Ok(informe(&antes, &despues, cuantas, &retirados))
 }
@@ -378,7 +387,12 @@ fn nombre_del_paquete(raiz: &Path) -> String {
 ///   inducción produce (un schema creado a mano no es del inductor) y, en
 ///   `tables/`, `views/` y `datasets/`, sólo los nombres del inductor
 ///   (`<X>__<objeto>.yaml`). En cuanto esta pasada escribe, ya hay marca.
-fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String>, Fallo> {
+fn escribir(
+    raiz: &Path,
+    ind: &Induccion,
+    dec: &Decisiones,
+    fuente: Option<&Path>,
+) -> Result<Vec<String>, Fallo> {
     let mut retirados = Vec::new();
     let nuevos: BTreeSet<&String> = ind.ficheros.keys().collect();
     let marca = crate::MARCA_INDUCIDO;
@@ -529,15 +543,91 @@ fn escribir(raiz: &Path, ind: &Induccion, dec: &Decisiones) -> Result<Vec<String
         )
     })?;
 
-    let dadas = raiz.join(RESPUESTAS);
-    std::fs::write(&dadas, dec.json().pretty()).map_err(|e| {
-        fallo(
-            73,
-            format!("no se pudo escribir `{}`: {e}", dadas.display()),
-            &[],
-        )
-    })?;
+    guardar_respuestas(raiz, fuente, dec)?;
     Ok(retirados)
+}
+
+/// ⭐⭐ 0045 P1 · **EL PAQUETE DE LA FUENTE**, si existe: `packages/<fuente>/`
+/// con su `package.yaml` y sin alcance —una base lleva `discover.scope.json`;
+/// la fuente, no—.
+///
+/// ⛔ Aquí **nunca se crea**. Lo crea el Job de catálogo, y que exista es
+///   «catalogada» para ore-serve: crearlo desde una base diría que se leyó un
+///   origen que nadie ha leído. Sin él —el CLI suelto, una prueba— todo se
+///   queda en la base, como siempre.
+pub fn dir_de_la_fuente(raiz: &Path, fuente: &str) -> Option<std::path::PathBuf> {
+    let d = crate::raiz_del_repositorio(raiz)?
+        .join("packages")
+        .join(fuente);
+    let es_ella = std::fs::canonicalize(raiz).ok() == std::fs::canonicalize(&d).ok();
+    (!es_ella && d.join("package.yaml").is_file() && !crate::alcance::ruta(&d).is_file())
+        .then_some(d)
+}
+
+/// Lo contestado en la base, con lo que la fuente sabe de sus objetos.
+///
+/// ⛔ Una base que contestó DISTINTO lo que la fuente ya sabe no se re-induce
+///   en silencio: saldría otro puntero del mismo objeto, que es justo lo que
+///   0045 quita. Lo dice, y contestar otra vez desde aquí lo cambia en la
+///   fuente (cambiar de opinión es legítimo; tener dos, no).
+pub fn con_la_fuente(
+    mut de_la_base: Decisiones,
+    fuente: Option<&Path>,
+) -> Result<Decisiones, Fallo> {
+    let Some(f) = fuente else {
+        return Ok(de_la_base);
+    };
+    let (de_la_fuente, _) = acumuladas(f)?.partir();
+    let choca = de_la_base.discrepa_de(&de_la_fuente);
+    if !choca.is_empty() {
+        let donde = format!(
+            "  Lo que vale está en `{}`. Para cambiarlo, contéstalo otra vez: se",
+            f.join(RESPUESTAS).display()
+        );
+        return Err(fallo(
+            65,
+            format!(
+                "esta base contestó distinto de su fuente: {}",
+                choca.join(", ")
+            ),
+            &[
+                "  La clave y los tipos son del objeto del origen, y se contestan una vez",
+                "  por fuente (0045): dos bases no pueden tener dos claves para una tabla.",
+                &donde,
+                "  cambia para todas las bases de la fuente.",
+            ],
+        ));
+    }
+    de_la_base.fundir(de_la_fuente);
+    Ok(de_la_base)
+}
+
+/// Guarda lo contestado: lo del objeto en la fuente, si la hay; el resto, en la
+/// base. Sin fuente, todo en la base.
+pub fn guardar_respuestas(
+    raiz: &Path,
+    fuente: Option<&Path>,
+    dec: &Decisiones,
+) -> Result<(), Fallo> {
+    let escribir = |ruta: std::path::PathBuf, d: &Decisiones| {
+        std::fs::write(&ruta, d.json().pretty()).map_err(|e| {
+            fallo(
+                73,
+                format!("no se pudo escribir `{}`: {e}", ruta.display()),
+                &[],
+            )
+        })
+    };
+    let Some(f) = fuente else {
+        return escribir(raiz.join(RESPUESTAS), dec);
+    };
+    let (del_objeto, de_la_base) = dec.clone().partir();
+    if !del_objeto.is_empty() {
+        let mut ya = acumuladas(f)?;
+        ya.fundir(del_objeto);
+        escribir(f.join(RESPUESTAS), &ya)?;
+    }
+    escribir(raiz.join(RESPUESTAS), &de_la_base)
 }
 
 // ── Los formularios ─────────────────────────────────────────────────────────
@@ -801,12 +891,6 @@ pub fn cola(ind: &Induccion) -> String {
 
 pub fn ruta_cola(raiz: &Path) -> std::path::PathBuf {
     raiz.join(COLA)
-}
-
-/// Donde viven las respuestas ya dadas: `discover --owner` escribe la primera y
-/// `review` las acumula.
-pub fn ruta_respuestas(raiz: &Path) -> std::path::PathBuf {
-    raiz.join(RESPUESTAS)
 }
 
 // ── Comprobaciones ──────────────────────────────────────────────────────────
