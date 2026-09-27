@@ -828,7 +828,7 @@ EOF
   [ ! -e "$A/packages/hr/demo_uc/views/sinAlias.yaml" ] || falla "10e · la vista sin alias se escribió"
   # DROP VIEW: si otra la lee, no se quita; si no, sí; `if exists` no es un error
   celda_sql 'create view hr.demo_uc.encima as select id from hr.demo_uc.porNombre' && tiene "d['salida']['filas']==[['view hr.demo_uc.encima','created']]" || falla "10e · una vista sobre otra: $(cuerpo)"
-  celda_sql 'drop view hr.demo_uc.porNombre' && tiene "d['salida']['tipo']=='error' and 'OOS' in d['salida']['mensaje']" || falla "10e · quitar una vista que otra lee: $(cuerpo)"
+  celda_sql 'drop view hr.demo_uc.porNombre' && tiene "d['salida']['tipo']=='error' and '409' in d['salida']['mensaje'] and 'hr.demo_uc.encima' in d['salida']['mensaje']" || falla "10e · quitar una vista que otra lee: $(cuerpo)"
   [ -f "$V10E" ] || falla "10e · se quitó una vista que otra lee"
   printf "DROP VIEW hr.demo_uc.encima;\nDROP VIEW hr.demo_uc.porNombre;\nDROP VIEW IF EXISTS hr.demo_uc.porNombre;\n" > "$TMP/quitar.sql"
   guion_sql "$TMP/quitar.sql"
