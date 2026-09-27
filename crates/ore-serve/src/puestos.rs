@@ -548,10 +548,13 @@ impl Servidor {
             let lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
             // Uno PERDIDO (vivo sin latido: TTL, tope o relevo; o encolado
-            // que nunca arrancó) se sustituye.
+            // que nunca arrancó) se sustituye. Y uno abierto en OTRA rama
+            // también: la sesión lee y escribe la rama en que se trabaja, y
+            // devolver el de otra era cotejar contra un árbol que no es el tuyo.
             if let Some(p) = lista.get(&id)
                 && p.estado != Estado::Cerrado
                 && !perdido(p)
+                && p.rama == rama
             {
                 return Respuesta::ok(ficha(&id, p));
             }
