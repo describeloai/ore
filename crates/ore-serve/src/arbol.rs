@@ -246,7 +246,7 @@ impl Servidor {
         if texto.len() > 2 * 1024 * 1024 {
             return Respuesta::error(413, "un fichero del árbol no pasa de 2 MB");
         }
-        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+        if let Some(r) = self.arbol_se_movio_en(raiz, si_commit, &[ruta]) {
             return r;
         }
         let p = raiz.join(&rel);
@@ -343,7 +343,7 @@ impl Servidor {
         let Ok(texto) = std::fs::read_to_string(&p) else {
             return Respuesta::error(404, format!("no hay `{ruta}` en el árbol"));
         };
-        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+        if let Some(r) = self.arbol_se_movio_en(raiz, si_commit, &[ruta]) {
             return r;
         }
         let antes = match self.diagnosticos_de(raiz) {
@@ -390,7 +390,7 @@ impl Servidor {
             return Respuesta::error(404, format!("no hay `{ruta}` en el árbol"));
         }
         // Lo que `.git/` guarda no se toca, y `ruta_valida` ya lo negó arriba.
-        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+        if let Some(r) = self.arbol_se_movio_en(raiz, si_commit, &[ruta]) {
             return r;
         }
         let antes = match self.diagnosticos_de(raiz) {
@@ -527,7 +527,12 @@ impl Servidor {
                 ("seco", Json::Bool(seco)),
             ]));
         }
-        if let Some(r) = self.arbol_se_movio(raiz, si_commit) {
+        let tocadas: Vec<&str> = escribir
+            .iter()
+            .map(|(_, r, _)| r.as_str())
+            .chain(retirar.iter().map(|(_, r)| r.as_str()))
+            .collect();
+        if let Some(r) = self.arbol_se_movio_en(raiz, si_commit, &tocadas) {
             return r;
         }
         let antes = match self.diagnosticos_de(raiz) {

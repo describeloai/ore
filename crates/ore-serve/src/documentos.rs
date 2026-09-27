@@ -1120,6 +1120,38 @@ impl Servidor {
         ))
     }
 
+    /// **`If-Match` por fichero**: el árbol pudo moverse —un `CREATE VIEW` que
+    /// acaba de correr en el puesto, otra persona en otra parte de la rama— sin
+    /// tocar lo que se escribe ahora. Entonces no hay nada que pisar, y negar
+    /// obligaría a recargar y perder el borrador por un cambio ajeno. Sólo es
+    /// `409` si ALGUNA de `rutas` cambió entre lo leído y la cabeza (o si lo
+    /// leído no está en la historia: no hay contra qué comparar).
+    pub(crate) fn arbol_se_movio_en(
+        &self,
+        raiz: &Path,
+        si_commit: Option<&str>,
+        rutas: &[&str],
+    ) -> Option<Respuesta> {
+        let r = self.arbol_se_movio(raiz, si_commit)?;
+        let esperado = si_commit?.trim().trim_matches('"');
+        let mut args = vec!["diff", "--name-only", esperado, "HEAD", "--"];
+        args.extend(rutas.iter().copied());
+        match git(raiz, &args) {
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(Respuesta::error(
+                409,
+                format!(
+                    "`{}` cambió desde que se abrió: nada se escribió; hay que volver a leerlo y decidir sobre lo que hay ahora",
+                    s.lines()
+                        .filter(|l| !l.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("`, `")
+                ),
+            )),
+            None => Some(r),
+        }
+    }
+
     /// Los diagnósticos del árbol tal como está: la foto de ANTES. Si el
     /// compilador falla sin diagnósticos (no arranca, no es un árbol), se
     /// cuenta la primera línea como uno, para que la foto no salga limpia

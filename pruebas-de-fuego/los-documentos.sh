@@ -497,6 +497,19 @@ cumple "d['diagnosticos'][0]['codigo']=='OOS2018' and d['diagnosticos'][0]['fich
 sed 's/id: Worker_Reference.ID/id: Worker_Reference.ID\n    nombre: Legal_Name/' "$TMP/porRuta.yaml" > "$TMP/mas.yaml"
 [ "$(pon packages/hr/views/porRuta.yaml "$TMP/mas.yaml" "If-Match: $CABEZA")" = "409" ] || falla "19 · con If-Match viejo no dio 409 · $(cat "$TMP/r.json")"
 [ "$(pon packages/hr/views/porRuta.yaml "$TMP/mas.yaml" "If-Match: $(cabeza)")" = "200" ] || falla "19 · con If-Match al dia no entro · $(cat "$TMP/r.json")"
+# If-Match por fichero: el arbol se movio por OTRO fichero (un CREATE VIEW del puesto,
+# otra persona): lo que se escribe no cambio, asi que entra; lo que si cambio, 409
+LEIDO=$(cabeza)
+printf 'otra cosa
+' > "$TMP/ajeno.txt"
+[ "$(pon packages/hr/ajeno.txt "$TMP/ajeno.txt")" = "201" ] || falla "19 · el fichero ajeno · $(cat "$TMP/r.json")"
+{ cat "$TMP/porRuta.yaml"; printf '# una
+'; } > "$TMP/una.yaml"
+{ cat "$TMP/porRuta.yaml"; printf '# otra
+'; } > "$TMP/otra.yaml"
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/una.yaml" "If-Match: $LEIDO")" = "200" ] && cumple "d.get('igual') is not True" "19 · el cambio sobre un arbol movido por otro entro" || falla "19 · un cambio ajeno dio 409 a otro fichero · $(cat "$TMP/r.json")"
+[ "$(pon packages/hr/views/porRuta.yaml "$TMP/otra.yaml" "If-Match: $LEIDO")" = "409" ] && cumple "'porRuta.yaml' in d['error']" "19 · el 409 por fichero dice cual" || falla "19 · el mismo fichero cambiado no dio 409 · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /arbol/packages/hr/ajeno.txt)" = "200" ] || falla "19 · retirar el ajeno · $(cat "$TMP/r.json")"
 # lo gobernado que se induce, y la historia, no se editan
 [ "$(pon packages/hr/discover.scope.json "$TMP/porRuta.yaml")" = "422" ] || falla "19 · discover.scope.json entro por /arbol"
 [ "$(pon .git/config "$TMP/porRuta.yaml")" = "422" ] || falla "19 · .git entro por /arbol"
@@ -504,7 +517,7 @@ sed 's/id: Worker_Reference.ID/id: Worker_Reference.ID\n    nombre: Legal_Name/'
 [ "$(pide DELETE /arbol/packages/hr/views/porRuta.yaml)" = "200" ] || falla "19 · DELETE /arbol · $(cat "$TMP/r.json")"
 [ "$(asunto)" = 'retirar `packages/hr/views/porRuta.yaml`' ] || falla "19 · el asunto del retiro: $(asunto)"
 [ "$(pide GET /arbol/packages/hr/views/porRuta.yaml)" = "404" ] || falla "19 · retirada y sigue"
-dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, igual, 422 con marcador fichero:linea:columna, 409 If-Match) · lo inducido y .git no se editan · DELETE"
+dice "19 · /arbol: indice con kinds · fichero con commit · PUT compila (201, igual, 422 con marcador fichero:linea:columna, 409 If-Match por fichero: un cambio ajeno no lo da) · lo inducido y .git no se editan · DELETE"
 
 # ── 20 · /proyectos: la lente, escrita (0035 ②) ─────────────────────────────
 ANTES_ITEMS=$(pide GET /assets >/dev/null; campo "len(d['items'])")
