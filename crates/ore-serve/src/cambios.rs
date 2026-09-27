@@ -297,6 +297,9 @@ impl Servidor {
             let doc = y.or(x).unwrap().doc;
             let mut m: Vec<(&'static str, Json)> = vec![
                 ("id", Json::s(id.as_str())),
+                // La dirección del activo en el índice del catálogo (`GET
+                // /assets`): con ella la consola casa el cambio con su hoja.
+                ("ref", Json::s(ore_core::assets::ref_doc(doc))),
                 ("kind", Json::s(doc.kind.as_str())),
                 ("nombre", Json::s(doc.qname().unwrap_or_default())),
                 ("estado", Json::s(estado)),

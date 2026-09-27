@@ -256,6 +256,7 @@ tiene "[c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['colum
 tiene "'spec.sql' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['campos'] and 'pais' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['sql']['antes']" || falla "3d · el sql antes y despues: $(cuerpo | head -c 900)"
 tiene "[(s['code'],s['subject']) for s in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['semantico']]==[('OOS5001','hr.publica.pais')]" || falla "3d · OOS5001 no va con su vista: $(cuerpo | head -c 900)"
 tiene "[s['code'] for s in [c for c in d['cambios'] if c['id']=='View:hr.default.viejos'][0]['semantico']]==['OOS5007'] and [s['code'] for s in d['semantico']['otros']]==['OOS5021']" || falla "3d · OOS5007 con la borrada, la version suelta: $(cuerpo | head -c 900)"
+tiene "[c['ref'] for c in d['cambios'] if c['id']=='View:hr.default.publica']==['view:hr.publica']" || falla "3d · la ref del indice: $(cuerpo | head -c 600)"
 tiene "[c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['afecta']==['View:hr.default.ids'] and [c for c in d['cambios'] if c['id']=='View:hr.default.ids'][0]['rompe'] is False" || falla "3d · a quien alcanza: $(cuerpo | head -c 900)"
 tiene "all('despues' not in c['id'] for c in d['cambios'])" || falla "3d · lo de main despues del fork sale como de la rama"
 [ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] && tiene "d['desde_cache'] is True" || falla "3d · la segunda vez no fue de memoria: $(cuerpo | head -c 200)"
