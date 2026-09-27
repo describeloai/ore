@@ -13,6 +13,11 @@
 //! ⭐ Contra el punto del que salió la rama (`merge-base`), no contra la base
 //!   de hoy: lo que la base hizo después no es de la rama.
 //!
+//! ⭐ **En conflicto con la base**: un activo que la rama cambió y que la base
+//!   TAMBIÉN cambió desde que la rama salió (`conflicto` y `enBase`). Al fusionar
+//!   pueden chocar, y quien mira la rama está viendo una versión que ya no es la
+//!   de la base. Se compara el punto de partida con la base de hoy.
+//!
 //! ⭐ De memoria por `(cabeza de la base, cabeza de la rama)`: con las dos
 //!   cabezas iguales el resultado es el mismo, y se saben sin clonar.
 
@@ -227,7 +232,24 @@ impl Servidor {
             Ok(p) => p,
             Err(e) => return Respuesta::error(502, e.to_string()),
         };
-        let j = self.comparar(rama, &base, &frente, antes.ruta(), clon.ruta());
+        // La base de hoy, sólo si se movió desde el punto de partida: sin eso no
+        // hay nada que pueda chocar. `frente_a` la dejó en `FETCH_HEAD`.
+        let hoy = if frente.atras > 0 {
+            match forja.extraer(clon.ruta(), "FETCH_HEAD") {
+                Ok(p) => Some(p),
+                Err(e) => return Respuesta::error(502, e.to_string()),
+            }
+        } else {
+            None
+        };
+        let j = self.comparar(
+            rama,
+            &base,
+            &frente,
+            antes.ruta(),
+            clon.ruta(),
+            hoy.as_ref().map(|p| p.ruta()),
+        );
         if let Some(k) = clave {
             self.cambios_cache.guarda(k, Arc::new(j.clone()));
         }
@@ -245,10 +267,17 @@ impl Servidor {
         frente: &crate::git::Frente,
         antes: &Path,
         despues: &Path,
+        base_hoy: Option<&Path>,
     ) -> Json {
         let (pkg_a, _) = ore_core::validate::cargar_paquete(antes);
         let (pkg_d, _) = ore_core::validate::cargar_paquete(despues);
         let (a, d) = (activos(&pkg_a, antes), activos(&pkg_d, despues));
+        // La base de hoy, si se movió: sus activos, para ver cuáles tocó también.
+        let pkg_h = base_hoy.map(|h| ore_core::validate::cargar_paquete(h).0);
+        let h = match (&pkg_h, base_hoy) {
+            (Some(p), Some(r)) => Some(activos(p, r)),
+            _ => None,
+        };
         let (g_a, g_d) = (lectores(&pkg_a), lectores(&pkg_d));
 
         // Lo que rompe, por activo: el sujeto de un cambio de `ore diff` es
@@ -279,6 +308,7 @@ impl Servidor {
 
         let ids: BTreeSet<&String> = a.keys().chain(d.keys()).collect();
         let (mut nuevos, mut modificados, mut borrados, mut rompen) = (0, 0, 0, 0);
+        let mut conflictos = 0;
         let mut cambios = Vec::new();
         for id in ids {
             let (x, y) = (a.get(id), d.get(id));
@@ -305,6 +335,20 @@ impl Servidor {
                 ("estado", Json::s(estado)),
                 ("ruta", Json::s(y.or(x).unwrap().ruta.as_str())),
             ];
+            // ¿La base también lo cambió desde el punto de partida? Y qué le hizo.
+            let en_base = h.as_ref().and_then(|h| {
+                match (x.map(|x| &x.canonico), h.get(id).map(|z| &z.canonico)) {
+                    (None, Some(_)) => Some("nuevo"),
+                    (Some(_), None) => Some("borrado"),
+                    (Some(a), Some(z)) if a != z => Some("modificado"),
+                    _ => None,
+                }
+            });
+            m.push(("conflicto", Json::Bool(en_base.is_some())));
+            if let Some(e) = en_base {
+                conflictos += 1;
+                m.push(("enBase", Json::s(e)));
+            }
             if let (Some(x), Some(y)) = (x, y) {
                 if x.ruta != y.ruta {
                     m.push(("rutaAntes", Json::s(x.ruta.as_str())));
@@ -422,6 +466,7 @@ impl Servidor {
                     ("modificados", Json::Int(modificados)),
                     ("borrados", Json::Int(borrados)),
                     ("rompen", Json::Int(rompen)),
+                    ("conflictos", Json::Int(conflictos)),
                 ]),
             ),
             ("cambios", Json::Arr(cambios)),

@@ -250,7 +250,7 @@ vista14() { # <nombre> <lee> <columnas...>
 [ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] || falla "3d · GET cambios: $(cuerpo)"
 cp "$TMP/r.json" "$TMP/cambios.json"
 tiene "d['base']=='main' and d['adelante']==3 and d['atras']==1 and d['desde_cache'] is False" || falla "3d · la distancia a main: $(cuerpo | head -c 400)"
-tiene "d['resumen']=={'nuevos':1,'modificados':1,'borrados':1,'rompen':2}" || falla "3d · el resumen: $(cuerpo | head -c 900)"
+tiene "d['resumen']=={'nuevos':1,'modificados':1,'borrados':1,'rompen':2,'conflictos':0} and all(c['conflicto'] is False for c in d['cambios'])" || falla "3d · el resumen: $(cuerpo | head -c 900)"
 tiene "sorted((c['id'],c['estado']) for c in d['cambios'])==[('View:hr.default.ids','nuevo'),('View:hr.default.publica','modificado'),('View:hr.default.viejos','borrado')]" || falla "3d · los activos: $(cuerpo | head -c 900)"
 tiene "[c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['columnas']=={'anadidas':[],'quitadas':['pais'],'cambiadas':[]}" || falla "3d · la columna quitada: $(cuerpo | head -c 900)"
 tiene "'spec.sql' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['campos'] and 'pais' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['sql']['antes']" || falla "3d · el sql antes y despues: $(cuerpo | head -c 900)"
@@ -262,12 +262,16 @@ tiene "all('despues' not in c['id'] for c in d['cambios'])" || falla "3d · lo d
 [ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] && tiene "d['desde_cache'] is True" || falla "3d · la segunda vez no fue de memoria: $(cuerpo | head -c 200)"
 [ "$(pide GET /ramas/main/cambios "$ANA")" = "422" ] || falla "3d · main frente a si misma no dio 422: $(cuerpo)"
 [ "$(pide GET /ramas/nadie/nada/cambios "$ANA")" = "404" ] || falla "3d · una rama que no existe no dio 404: $(cuerpo)"
+# main TAMBIEN toca lo que la rama borro: conflicto con main, y dice que le hizo
+[ "$(put_fichero packages/hr/views/viejos.yaml "$ANA" "$(vista14 viejos hr.empleados_t id pais)")" = "200" ] || falla "3d · main cambia viejos: $(cuerpo)"
+[ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] || falla "3d · GET cambios con conflicto: $(cuerpo)"
+tiene "d['resumen']['conflictos']==1 and [(c['conflicto'],c.get('enBase')) for c in d['cambios'] if c['id']=='View:hr.default.viejos']==[(True,'modificado')] and [c['conflicto'] for c in d['cambios'] if c['id']=='View:hr.default.publica']==[False]" || falla "3d · el conflicto con main: $(cuerpo | head -c 900)"
 # y se deja como estaba: la rama fuera, main sin lo de esta seccion
 [ "$(pide DELETE /ramas/ana/cambios "$ANA")" = "200" ] || falla "3d · retirar la rama: $(cuerpo)"
 for f in viejos despues publica; do
   [ "$(pide DELETE "/arbol/packages/hr/views/$f.yaml" "$ANA")" = "200" ] || falla "3d · dejar main como estaba ($f): $(cuerpo)"
 done
-dice "3d · GET /ramas/{r}/cambios: nuevo, modificado y borrado por activo frente al fork (main despues no cuenta) · la columna quitada y el sql antes/despues · OOS5001 con su vista, OOS5007 con la borrada, la version suelta · a quien alcanza · adelante 3, atras 1 · de memoria la segunda vez · 422 main, 404 sin rama"
+dice "3d · GET /ramas/{r}/cambios: nuevo, modificado y borrado por activo frente al fork (main despues no cuenta) · la columna quitada y el sql antes/despues · OOS5001 con su vista, OOS5007 con la borrada, la version suelta · a quien alcanza · adelante 3, atras 1 · de memoria la segunda vez · conflicto con main: lo que la rama y main tocaron los dos (enBase) · 422 main, 404 sin rama"
 
 # ── 3b · varios ficheros en UN commit con mensaje (POST /arbol/commit), y en seco lo que seria ──
 # Lo que el panel de Commit del workspace enseña sale de git, no de un contador:
