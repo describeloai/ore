@@ -58,7 +58,9 @@ use crate::cola;
 use crate::documentos;
 use crate::git;
 use crate::mando;
+use ore_core::document::Kind;
 use ore_core::json::Json;
+use ore_core::link::{Loaded, Package};
 use ore_core::parse::{self, Node, Style};
 use ore_entrada::http::{self, Peticion, Respuesta, Salida};
 use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
@@ -1052,36 +1054,15 @@ impl Servidor {
         if !declarada {
             return Respuesta::error(404, format!("no hay ninguna fuente `{nombre}` declarada"));
         }
-        // Los paquetes que la nombran —una `Table` con `datasource: <n>`—: 409
-        // con la lista. Son las databases que salen de ella y cualquier paquete
-        // escrito a mano sobre ella; sin la fuente, OOS2004 en cada tabla.
-        let mut bases = Vec::new();
-        if let Ok(entradas) = std::fs::read_dir(raiz.join("packages")) {
-            for e in entradas.flatten() {
-                let dir = e.path();
-                let Some(p) = dir.file_name().and_then(|x| x.to_str()) else {
-                    continue;
-                };
-                if p == nombre {
-                    continue;
-                }
-                let la_nombra = yamls_del_kind(&dir, "tables")
-                    .into_iter()
-                    .filter_map(|t| std::fs::read_to_string(t).ok())
-                    .filter_map(|t| parse::parse(&t).ok())
-                    .any(|d| {
-                        d.get("spec")
-                            .and_then(|(_, s)| s.get("datasource"))
-                            .and_then(|(_, v)| v.as_str())
-                            == Some(nombre)
-                    });
-                if la_nombra {
-                    bases.push(p.to_string());
-                }
-            }
-        }
+        // Los paquetes que salen de ella: 409 con la lista. ⭐ 0045 P2: por
+        // alcance, por una `Table` con `datasource: <n>` y por lo que lee una
+        // `Table` de su paquete (`punteros::bases_que_salen_de`). Antes solo lo
+        // segundo, en carpetas `tables/`: con los punteros en la fuente no veía
+        // a nadie y la retiraba con ellos dentro.
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        let bases = crate::punteros::bases_que_salen_de(raiz, &pkg, nombre);
+        drop(pkg);
         if !bases.is_empty() {
-            bases.sort();
             return Respuesta::error(
                 409,
                 format!(
@@ -1964,20 +1945,20 @@ const COLA: &str = "discover.pending.json";
 ///   lo gobernado nace al crear una database. Su esquema —lo que la ficha de
 ///   la conexion y el modal de nueva database ensenan— se lee del catalogo,
 ///   con la misma forma: nada modelado, nada copiado, sin vista.
-fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
-    if yamls_del_kind(dir, "tables").is_empty() {
-        let del_catalogo = tablas_del_catalogo(dir);
-        if !del_catalogo.is_empty() {
-            return del_catalogo;
-        }
+fn tablas_del_paquete(raiz: &Path, pkg: &Package, dir: &Path) -> Vec<Json> {
+    let este = dir
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or_default()
+        .to_string();
+    // ⭐ 0045 P2: la FUENTE enseña siempre su catálogo entero —lo que la ficha
+    //   de la conexión y el modal de nueva database ofrecen—, anotado con su
+    //   puntero y con quién lo usa. Si enseñara sus Tables, dejaría de ofrecer
+    //   los objetos que ninguna database ha usado todavía.
+    if crate::punteros::es_paquete_de_fuente(dir) {
+        return tablas_de_la_fuente(raiz, pkg, dir, &este);
     }
-    let leer = |carpeta: &str| -> Vec<Node> {
-        yamls_del_kind(dir, carpeta)
-            .into_iter()
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .filter_map(|t| parse::parse(&t).ok())
-            .collect()
-    };
+    let suyo = |d: &&Loaded| crate::punteros::paquete_de(raiz, d).as_deref() == Some(este.as_str());
     let en = |d: &Node, padre: &str, k: &str| -> Option<String> {
         d.get(padre)
             .and_then(|(_, m)| m.get(k))
@@ -1985,48 +1966,75 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             .map(String::from)
     };
     // Lo que lee una tabla: una vista (la pregunta) o un dataset mantenido (la
-    // copia, 0033). `(nombre, es dataset)`, y entidad → lo que la respalda.
-    let mut vista_de_tabla: std::collections::BTreeMap<String, (String, bool)> = Default::default();
-    for (carpeta, es_dataset) in [("views", false), ("datasets", true)] {
-        for v in leer(carpeta) {
-            // ⭐ Una vista v1alpha14 dice lo que lee en su SQL (0040): la que lee
-            //   UNA sola cosa la expone como lo hacía `from.table`.
-            let de_sql = || {
-                let sql = en(&v, "spec", "sql")?;
-                match ore_core::servir::nombres_leidos(&sql).as_slice() {
-                    [uno] => Some(uno.clone()),
-                    _ => None,
-                }
-            };
-            if let (Some(n), Some(t)) = (
-                en(&v, "metadata", "name"),
-                v.get("spec")
-                    .and_then(|(_, s)| s.get("from"))
-                    .and_then(|(_, f)| f.get("table"))
-                    .and_then(|(_, t)| t.as_str().map(String::from))
-                    .or_else(de_sql),
-            ) {
-                let clave = t.rsplit('.').next().unwrap_or(&t).to_string();
-                // Un dataset gana a una vista sobre la misma tabla: es lo que se
-                // tiene, y es lo que el catálogo enseña.
-                if es_dataset || !vista_de_tabla.contains_key(&clave) {
-                    vista_de_tabla.insert(clave, (n, es_dataset));
-                }
-            }
+    // copia, 0033), `(nombre, es dataset)`, por la ruta de la tabla.
+    //
+    // ⭐ 0045 P2: la tabla se RESUELVE por el árbol —`from.table`, o la única
+    //   cosa que lee una vista SQL (0040)—, esté en este paquete o en el de su
+    //   fuente. Antes se buscaba por el último trozo del nombre en la carpeta
+    //   hermana, y con el puntero en la fuente no se encontraba nada.
+    let mut lector: std::collections::BTreeMap<PathBuf, (String, bool)> = Default::default();
+    for d in pkg
+        .docs
+        .iter()
+        .filter(suyo)
+        .filter(|d| matches!(d.kind, Kind::View | Kind::Dataset))
+    {
+        let (Some(t), Some(n)) = (
+            crate::punteros::tabla_que_lee(pkg, d),
+            en(&d.root, "metadata", "name"),
+        ) else {
+            continue;
+        };
+        let es_dataset = d.kind == Kind::Dataset;
+        // Un dataset gana a una vista sobre la misma tabla: es lo que se
+        // tiene, y es lo que el catálogo enseña.
+        if es_dataset || !lector.contains_key(&t.path) {
+            lector.insert(t.path.clone(), (n, es_dataset));
         }
     }
     let mut entidad_de_vista: std::collections::BTreeMap<String, String> = Default::default();
-    for e in leer("entities") {
-        if let (Some(n), Some(v)) = (en(&e, "metadata", "name"), en(&e, "spec", "backedBy")) {
+    for e in pkg
+        .docs
+        .iter()
+        .filter(suyo)
+        .filter(|d| d.kind == Kind::Entity)
+    {
+        if let (Some(n), Some(v)) = (
+            en(&e.root, "metadata", "name"),
+            en(&e.root, "spec", "backedBy"),
+        ) {
             entidad_de_vista.insert(v, n);
         }
     }
+    // Las tablas: las suyas, y las que leen las suyas estén donde estén.
+    let mut tablas: Vec<&Loaded> = pkg
+        .docs
+        .iter()
+        .filter(suyo)
+        .filter(|d| d.kind == Kind::Table)
+        .collect();
+    for p in lector.keys() {
+        if !tablas.iter().any(|t| &t.path == p)
+            && let Some(t) = pkg.docs.iter().find(|d| &d.path == p)
+        {
+            tablas.push(t);
+        }
+    }
+    tablas.sort_by(|a, b| a.path.cmp(&b.path));
+    // Sin tablas ni nadie que las lea: lo que el catálogo guardado dice.
+    if tablas.is_empty() {
+        let del_catalogo = tablas_del_catalogo(dir);
+        if !del_catalogo.is_empty() {
+            return del_catalogo;
+        }
+    }
     let mut salida: Vec<(String, Json)> = Vec::new();
-    for t in leer("tables") {
-        let Some(nombre) = en(&t, "metadata", "name") else {
+    for tabla in tablas {
+        let t = &tabla.root;
+        let Some(nombre) = en(t, "metadata", "name") else {
             continue;
         };
-        let objeto = en(&t, "spec", "object").unwrap_or_default();
+        let objeto = en(t, "spec", "object").unwrap_or_default();
         let mut columnas = Vec::new();
         if let Some((_, spec)) = t.get("spec")
             && let Some((_, c)) = spec.get("columns")
@@ -2044,7 +2052,7 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
                 columnas.push(Json::obj(campos));
             }
         }
-        let (vista, copiada) = match vista_de_tabla.get(&nombre) {
+        let (vista, copiada) = match lector.get(&tabla.path) {
             Some((v, c)) => (Some(v.clone()), *c),
             None => (None, false),
         };
@@ -2057,14 +2065,14 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
             (
                 "schema",
                 Json::s(
-                    en(&t, "metadata", "schema")
+                    en(t, "metadata", "schema")
                         .unwrap_or_else(|| ore_core::normalize::SCHEMA_POR_DEFECTO.to_string()),
                 ),
             ),
             ("object", Json::s(&objeto)),
             (
                 "datasource",
-                Json::s(en(&t, "spec", "datasource").unwrap_or_default()),
+                Json::s(en(t, "spec", "datasource").unwrap_or_default()),
             ),
             ("columns", Json::Arr(columnas)),
             ("modeled", Json::Bool(entidad.is_some())),
@@ -2086,6 +2094,62 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
     }
     salida.sort_by(|a, b| a.0.cmp(&b.0));
     salida.into_iter().map(|(_, j)| j).collect()
+}
+
+/// ⭐ 0045 P2 · **El esquema de una fuente**: su catálogo entero, y en cada
+/// objeto su puntero (`table`, si ya está en la fuente) y quién lo usa
+/// (`usedBy`: las databases que lo leen, en cualquiera de las dos
+/// disposiciones). Las dos claves se ordenan detrás de `object`, y solo están
+/// si dicen algo: la forma de antes no cambia.
+fn tablas_de_la_fuente(raiz: &Path, pkg: &Package, dir: &Path, este: &str) -> Vec<Json> {
+    let mut filas = tablas_del_catalogo(dir);
+    let de = |d: &Loaded| crate::punteros::paquete_de(raiz, d);
+    let objeto = |t: &Loaded| {
+        t.section("object")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+    for f in filas.iter_mut() {
+        let Json::Obj(m) = f else { continue };
+        let Some(Json::Str(o)) = m.get("object").cloned() else {
+            continue;
+        };
+        let puntero = pkg.docs.iter().find(|t| {
+            t.kind == Kind::Table
+                && de(t).as_deref() == Some(este)
+                && objeto(t).as_deref() == Some(o.as_str())
+        });
+        let mut usan = std::collections::BTreeSet::new();
+        for t in pkg.docs.iter().filter(|d| d.kind == Kind::Table) {
+            if t.section("datasource").and_then(|v| v.as_str()) == Some(este)
+                && objeto(t).as_deref() == Some(o.as_str())
+                && let Some(p) = de(t)
+                && p != este
+            {
+                usan.insert(p);
+            }
+        }
+        if let Some(t) = puntero {
+            for d in &pkg.docs {
+                if let Some(p) = de(d)
+                    && p != este
+                    && crate::punteros::tablas_que_lee(pkg, d)
+                        .iter()
+                        .any(|x| x.path == t.path)
+                {
+                    usan.insert(p);
+                }
+            }
+            m.insert("table".into(), Json::s(t.qname().unwrap_or_default()));
+        }
+        if !usan.is_empty() {
+            m.insert(
+                "usedBy".into(),
+                Json::Arr(usan.into_iter().map(Json::s).collect()),
+            );
+        }
+    }
+    filas
 }
 
 /// El esquema de una fuente, desde `discover.catalog.json`: `name` es el objeto
@@ -2138,8 +2202,8 @@ fn tablas_del_catalogo(dir: &Path) -> Vec<Json> {
 }
 
 /// Cuantas tablas tiene un paquete y cuantas estan modeladas (tienen `Entity`).
-fn tablas_y_modeladas(dir: &Path) -> (usize, usize) {
-    let t = tablas_del_paquete(dir);
+fn tablas_y_modeladas(raiz: &Path, pkg: &Package, dir: &Path) -> (usize, usize) {
+    let t = tablas_del_paquete(raiz, pkg, dir);
     let m = t
         .iter()
         .filter(|j| matches!(j, Json::Obj(o) if o.get("modeled") == Some(&Json::Bool(true))))
@@ -2171,48 +2235,34 @@ pub(crate) fn yamls_del_kind(paquete: &Path, carpeta: &str) -> Vec<PathBuf> {
     out
 }
 
-fn objetos_fisicos(paquete: &Path) -> std::collections::BTreeMap<String, String> {
-    let documentos = |carpeta: &str| -> Vec<Node> {
-        yamls_del_kind(paquete, carpeta)
-            .into_iter()
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .filter_map(|t| parse::parse(&t).ok())
-            .collect()
-    };
-    let en = |d: &Node, padre: &str, k: &str| -> Option<String> {
-        d.get(padre)
-            .and_then(|(_, m)| m.get(k))
-            .and_then(|(_, v)| v.as_str())
-            .map(String::from)
-    };
-    // tabla → objeto
-    let mut objeto: std::collections::BTreeMap<String, String> = Default::default();
-    for t in documentos("tables") {
-        if let (Some(n), Some(o)) = (en(&t, "metadata", "name"), en(&t, "spec", "object")) {
-            objeto.insert(n, o);
-        }
-    }
-    // vista → objeto, por su tabla
+/// Vista (o dataset) → el objeto físico de la tabla que lee, esté donde esté la
+/// tabla (0045 P2: resuelta por el árbol, no por la carpeta hermana).
+fn objetos_fisicos(
+    raiz: &Path,
+    pkg: &Package,
+    paquete: &Path,
+) -> std::collections::BTreeMap<String, String> {
+    let este = paquete
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or_default();
     let mut salida: std::collections::BTreeMap<String, String> = Default::default();
-    for v in documentos("views") {
-        let Some(nombre) = en(&v, "metadata", "name") else {
+    for d in pkg.docs.iter().filter(|d| {
+        matches!(d.kind, Kind::View | Kind::Dataset)
+            && crate::punteros::paquete_de(raiz, d).as_deref() == Some(este)
+    }) {
+        let (Some(nombre), Some(o)) = (
+            d.meta("name").and_then(|v| v.as_str()),
+            crate::punteros::tabla_que_lee(pkg, d)
+                .and_then(|t| t.section("object"))
+                .and_then(|v| v.as_str()),
+        ) else {
             continue;
         };
-        // v1alpha14: la tabla que lee su SQL, si lee una sola (0040).
-        let tabla = v
-            .get("spec")
-            .and_then(|(_, s)| s.get("from"))
-            .and_then(|(_, f)| f.get("table"))
-            .and_then(|(_, t)| t.as_str().map(String::from))
-            .or_else(|| {
-                let sql = en(&v, "spec", "sql")?;
-                match ore_core::servir::nombres_leidos(&sql).as_slice() {
-                    [uno] => Some(uno.rsplit('.').next().unwrap_or(uno).to_string()),
-                    _ => None,
-                }
-            });
-        if let Some(o) = tabla.and_then(|t| objeto.get(&t)) {
-            salida.insert(nombre, o.clone());
+        // Una vista gana a un dataset con el mismo nombre (lo que `backedBy`
+        // nombraba antes de 0033).
+        if d.kind == Kind::View || !salida.contains_key(nombre) {
+            salida.insert(nombre.to_string(), o.to_string());
         }
     }
     salida
@@ -2255,6 +2305,9 @@ fn paquetes(raiz: &Path) -> Respuesta {
     let Ok(entradas) = std::fs::read_dir(&dir) else {
         return Respuesta::ok(Json::obj([("packages", Json::Arr(Vec::new()))]));
     };
+    // ⭐ 0045 P2: el árbol, una vez para todos: la tabla de una database puede
+    //   vivir en el paquete de su fuente.
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
     let mut lista: Vec<(String, Json)> = Vec::new();
     for e in entradas.flatten() {
         let manifiesto = e.path().join("package.yaml");
@@ -2295,7 +2348,7 @@ fn paquetes(raiz: &Path) -> Respuesta {
         ];
         // ⭐ Y cuantas tablas tiene y cuantas estan modeladas (0027 P1 C1): el
         //   catalogo no modela, asi que una base recien nacida es N/0.
-        let (tablas, modeladas) = tablas_y_modeladas(&e.path());
+        let (tablas, modeladas) = tablas_y_modeladas(raiz, &pkg, &e.path());
         campos.push(("tablas", Json::Int(tablas as i64)));
         campos.push(("modeladas", Json::Int(modeladas as i64)));
         if let Some(f) = fuente {
@@ -2357,7 +2410,8 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
     //   el del catalogo de activos —todas las columnas, con el tipo del
     //   origen— no el del modelo. `entities` sigue debajo hasta que la
     //   consola lea `tables` (C3).
-    let tablas = tablas_del_paquete(&dir);
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    let tablas = tablas_del_paquete(raiz, &pkg, &dir);
     let entradas = yamls_del_kind(&dir, "entities");
     if entradas.is_empty() {
         return Respuesta::ok(Json::obj([
@@ -2372,7 +2426,7 @@ fn esquema(raiz: &Path, paquete: &str) -> Respuesta {
     //   vista `pedidos` dice `from: { table: public_pedidos }`, y la tabla
     //   `public_pedidos` dice `object: public.pedidos`. Se resuelven aqui,
     //   una vez, en vez de en cada consola.
-    let objeto_de = objetos_fisicos(&dir);
+    let objeto_de = objetos_fisicos(raiz, &pkg, &dir);
 
     let mut rotos = 0usize;
     let mut lista: Vec<(String, Json)> = Vec::new();
@@ -3062,5 +3116,115 @@ mod pruebas {
     fn el_fichero_de_respuestas_vive_fuera_del_arbol() {
         let f = temporal("respuestas", "json");
         assert!(f.starts_with(std::env::temp_dir()));
+    }
+}
+
+#[cfg(test)]
+mod el_puntero_en_la_fuente {
+    //! 0045 P2: el esquema y los recuentos de una database y de su fuente, con
+    //! el puntero en la fuente, dicen lo mismo que con el puntero en la database.
+    use super::*;
+
+    fn arbol(nombre: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ore-p2-{}-{nombre}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let w = |rel: &str, t: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        };
+        w(
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: pg, type: postgres, connectionEnv: PG_URL }\n",
+        );
+        w(
+            "packages/pg/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: pg, version: 0.1.0, status: draft, domain: pg }\nspec: { owner: team:t, exports: [pg.olist.orders] }\n",
+        );
+        w(
+            "packages/pg/discover.catalog.json",
+            "{\"source\":\"pg\",\"tables\":[{\"name\":\"olist.customers\",\"columns\":[{\"name\":\"customer_id\",\"type\":\"String\"}]},{\"name\":\"olist.orders\",\"columns\":[{\"name\":\"order_id\",\"sourceType\":\"varchar\",\"type\":\"String\"}]}]}",
+        );
+        w(
+            "packages/pg/olist/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: olist, namespace: pg }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/pg/olist/tables/orders.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Table\nmetadata: { name: orders, namespace: pg, schema: olist }\nspec:\n  datasource: pg\n  object: \"olist.orders\"\n  columns: { order_id: { type: String, physicalType: varchar } }\n  reads: { fullScan: cheap }\n  changes: { mode: none, witness: none, key: [order_id] }\n",
+        );
+        w(
+            "packages/tienda/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: tienda, version: 0.1.0, status: active, domain: tienda }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/tienda/discover.scope.json",
+            "{\"source\":\"pg\",\"objects\":[\"olist.orders\"],\"type\":\"standard\"}",
+        );
+        w(
+            "packages/tienda/discover.catalog.json",
+            "{\"source\":\"pg\",\"tables\":[{\"name\":\"olist.customers\",\"columns\":[]},{\"name\":\"olist.orders\",\"columns\":[]}]}",
+        );
+        w(
+            "packages/tienda/olist/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: olist, namespace: tienda }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/tienda/olist/datasets/orders.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Dataset\nmetadata: { name: orders, namespace: tienda, schema: olist }\nspec:\n  owner: team:t\n  from: { table: pg.olist.orders }\n  fields: { order_id: order_id }\n",
+        );
+        d
+    }
+
+    fn campo<'a>(j: &'a Json, k: &str) -> Option<&'a Json> {
+        match j {
+            Json::Obj(m) => m.get(k),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn la_database_ensena_su_copia_aunque_el_puntero_este_en_la_fuente() {
+        let d = arbol("database");
+        let (pkg, _) = ore_core::validate::cargar_paquete(&d);
+        let filas = tablas_del_paquete(&d, &pkg, &d.join("packages/tienda"));
+        // Una fila, la de lo que copia: no el catálogo entero de la database.
+        assert_eq!(filas.len(), 1, "{filas:?}");
+        let f = &filas[0];
+        assert_eq!(campo(f, "object"), Some(&Json::s("olist.orders")));
+        assert_eq!(campo(f, "datasource"), Some(&Json::s("pg")));
+        assert_eq!(campo(f, "copied"), Some(&Json::Bool(true)));
+        assert_eq!(campo(f, "dataset"), Some(&Json::s("orders")));
+        assert_eq!(
+            tablas_y_modeladas(&d, &pkg, &d.join("packages/tienda")),
+            (1, 0)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn la_fuente_ensena_su_catalogo_entero_con_su_puntero_y_quien_lo_usa() {
+        let d = arbol("fuente");
+        let (pkg, _) = ore_core::validate::cargar_paquete(&d);
+        let filas = tablas_del_paquete(&d, &pkg, &d.join("packages/pg"));
+        // Las dos del catálogo, aunque solo una tenga puntero: el modal de nueva
+        // database tiene que seguir ofreciendo `customers`.
+        assert_eq!(filas.len(), 2, "{filas:?}");
+        let orders = filas
+            .iter()
+            .find(|f| campo(f, "object") == Some(&Json::s("olist.orders")))
+            .unwrap();
+        assert_eq!(campo(orders, "table"), Some(&Json::s("pg.olist.orders")));
+        assert_eq!(
+            campo(orders, "usedBy"),
+            Some(&Json::Arr(vec![Json::s("tienda")]))
+        );
+        let customers = filas
+            .iter()
+            .find(|f| campo(f, "object") == Some(&Json::s("olist.customers")))
+            .unwrap();
+        assert_eq!(campo(customers, "table"), None);
+        assert_eq!(campo(customers, "usedBy"), None);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

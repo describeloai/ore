@@ -57,6 +57,7 @@ mod preguntar;
 mod propuestas;
 mod proyectos;
 mod puestos;
+mod punteros;
 mod repositorios;
 mod rutas;
 mod schemas;

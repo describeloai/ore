@@ -546,7 +546,16 @@ fn quien_nombra(todos: &[Documento], d: &Documento) -> Vec<String> {
             ("View", "View") if apunta(from("view"), d, mismo) => {
                 quien.push(format!("`{}` (from.view)", o.cualificado()));
             }
-            ("Table", "View") if apunta(from("table"), d, mismo) => {
+            // ⭐ 0045 P2: un dataset mantenido también lee una tabla, y la nombra
+            //   en tres partes desde otro paquete (`<fuente>.<schema>.<obj>`):
+            //   se compara cualificado, como `model` abajo.
+            ("Table", "View" | "Dataset")
+                if apunta(from("table"), d, mismo)
+                    || from("table").and_then(|v| v.as_str()).is_some_and(|v| {
+                        ore_core::normalize::qualify_catalogo(v, Some(&o.espacio()), &o.schema())
+                            == d.cualificado()
+                    }) =>
+            {
                 quien.push(format!("`{}` (from.table)", o.cualificado()));
             }
             // v1alpha15 §3: `model: modelo/<ref>`, leída por partes desde la

@@ -44,33 +44,6 @@ fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
 }
 
-/// El fichero de un documento `kind` con ese nombre, bajo `packages/<n>/<dir>/`.
-fn fichero_de(dir: &Path, kind: &str, nombre: &str) -> Option<(PathBuf, String, Node)> {
-    let es = std::fs::read_dir(dir).ok()?;
-    let mut rutas: Vec<PathBuf> = es
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
-        .collect();
-    rutas.sort();
-    for p in rutas {
-        let Ok(texto) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        let Ok(n) = parse::parse(&texto) else {
-            continue;
-        };
-        if campo(&n, "kind").as_deref() != Some(kind) {
-            continue;
-        }
-        let meta = n.get("metadata").map(|(_, m)| m);
-        if meta.and_then(|m| campo(m, "name")).as_deref() == Some(nombre) {
-            return Some((p, texto, n));
-        }
-    }
-    None
-}
-
 impl Servidor {
     /// **Ascender** una base foránea a estándar: `POST /paquetes/{n}/copia`.
     /// La clase al alcance y `ore review --reinducir`: el inductor aplica la
@@ -413,6 +386,9 @@ impl Servidor {
             return Respuesta::error(404, "no hay tal paquete");
         }
         let mut lista = Vec::new();
+        // ⭐ 0045 P2: la tabla de cada copia se resuelve por el árbol: puede vivir
+        //   en el paquete de su fuente, no en la carpeta hermana.
+        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
         {
             // La raíz del paquete y la de cada schema (0038 P5).
             let rutas = crate::rutas::yamls_del_kind(&dir, "datasets");
@@ -438,25 +414,18 @@ impl Servidor {
                     .and_then(|(_, m)| campo(m, "name"))
                     .unwrap_or_default();
                 let tabla = spec.get("from").and_then(|(_, f)| campo(f, "table"));
-                let clave = tabla
-                    .as_deref()
-                    .and_then(|t| {
-                        // Las tablas de su mismo schema: la carpeta hermana.
-                        fichero_de(
-                            &p.parent()
-                                .and_then(Path::parent)
-                                .unwrap_or(&dir)
-                                .join("tables"),
-                            "Table",
-                            t.rsplit('.').next().unwrap_or(t),
-                        )
+                let rel = p.strip_prefix(raiz).unwrap_or(&p).to_path_buf();
+                let clave = pkg
+                    .docs
+                    .iter()
+                    .find(|d| d.path == p || d.path.ends_with(&rel))
+                    .and_then(|d| match ore_core::vistas::fuente(d) {
+                        Some(ore_core::vistas::Fuente::Tabla(qn)) => pkg.table(&qn),
+                        _ => None,
                     })
-                    .and_then(|(_, _, tn)| {
-                        tn.get("spec")
-                            .and_then(|(_, s)| s.get("changes"))
-                            .and_then(|(_, c)| c.get("key"))
-                            .map(|(_, k)| de_node(k))
-                    })
+                    .and_then(|t| t.section("changes"))
+                    .and_then(|ch| ch.get("key"))
+                    .map(|(_, k)| de_node(k))
                     .unwrap_or(Json::Arr(Vec::new()));
                 // Su schema (0038): el informe es el del puntero de su forma corta.
                 let schema = n
