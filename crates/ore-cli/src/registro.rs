@@ -500,15 +500,15 @@ pub fn imprimir(inv: &Inventario, restricciones: &[Restriccion]) {
 pub fn restricciones(pkg: &Package) -> Vec<Restriccion> {
     let mut out: Vec<Restriccion> = Vec::new();
 
-    // 1 · La tabla `upsert`, que trae su clave declarada por obligación.
+    // 1 · La tabla con clave. ⭐ 0045 P1′: con cualquier modo — la clave es la
+    //   identidad de la fila (v1alpha8 01-table §6), no una propiedad de
+    //   `upsert`. Antes solo contaba con `upsert`, que era la única forma de
+    //   declararla hasta v1alpha8.
     for t in pkg
         .docs
         .iter()
         .filter(|d| d.kind == ore_core::document::Kind::Table)
     {
-        if vistas::modo(t) != vistas::Modo::Upsert {
-            continue;
-        }
         let columnas = lista(
             t.section("changes")
                 .and_then(|c| c.get("key"))

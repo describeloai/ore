@@ -430,6 +430,11 @@ pub struct Induccion {
     /// dicen en vez de ignorarse: una respuesta que no llega a ninguna parte
     /// tiene exactamente el mismo aspecto que una que sí.
     pub huerfanas: Vec<String>,
+    /// ⭐ 0045 P1′ · **Las copias que el origen no deja mantener**, con el
+    /// porqué: la base las pide y no se emiten. No es una decisión pendiente
+    /// —nadie puede contestarla desde aquí: es lo que el origen emite—, y
+    /// por eso va aparte y se dice.
+    pub sin_copia: Vec<(String, &'static str)>,
 }
 
 /// Inducir sin nada decidido y sin vocabulario publicado.
@@ -483,12 +488,6 @@ pub struct Regla {
     /// siguen con el schema del origen —son del origen—, y sus respuestas
     /// siguen valiendo.
     pub schemas: BTreeMap<String, String>,
-    /// ⭐ 0045 P1 · **Lo que copia alguna base de la misma fuente**, esta
-    /// incluida o no. La tabla es del objeto, y si el objeto se copia en la
-    /// celda —lo copie quien lo copie— su tabla se funde por su clave. Sin esto
-    /// la misma tabla salía `upsert` en la base estándar y como la sondeó el
-    /// driver en la foránea: dos punteros para una cosa.
-    pub copiadas_en_la_fuente: BTreeSet<String>,
 }
 
 impl Regla {
@@ -499,13 +498,6 @@ impl Regla {
     /// ¿Se copia esta tabla? Por la clase, o una a una.
     fn copia(&self, tabla: &str) -> bool {
         self.estandar || self.copiadas.contains(tabla)
-    }
-
-    /// ¿La copia ALGUIEN? Esta base, u otra de la misma fuente (0045 P1). Es lo
-    /// que decide la cara `D` de la tabla, que es del objeto; lo que emite esta
-    /// base —un `Dataset` o una `View`— lo sigue decidiendo `copia`.
-    fn se_copia_en_la_fuente(&self, tabla: &str) -> bool {
-        self.copia(tabla) || self.copiadas_en_la_fuente.contains(tabla)
     }
 
     /// El schema de una tabla EN EL PAQUETE: el del origen, o el nombre que
@@ -547,6 +539,7 @@ pub fn inducir_con_regla(
     let estandar = regla.estandar;
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
+    let mut sin_copia: Vec<(String, &'static str)> = Vec::new();
 
     // ── El catálogo: lo que NO se modela ────────────────────────────────────
     //
@@ -610,14 +603,18 @@ pub fn inducir_con_regla(
             capitalizar(&vista),
             identificador(sin_schema(&objeto.nombre))
         );
-        // Sin entidad no hay a quién respaldar: la copia no espera a nada. Con
-        // clave del origen, `upsert`; sin ella, instantánea.
-        // ⭐ 0045 P1: la cara `D` de la tabla la decide si el objeto se copia
-        //   en la FUENTE —esta base u otra—, no si lo copia esta: la tabla es
-        //   del objeto, y dos bases de la misma fuente escriben la misma.
+        // Sin entidad no hay a quién respaldar: la copia no espera a nada —salvo
+        // a un origen que no deja mantenerla (`la_copia_no_se_mantiene`)—.
+        // ⭐ 0045 P1′: la tabla dice lo que el origen emite, tal cual lo sondeó
+        //   el driver, y la clave si se conoce. No depende de quién la lea.
         let clave = clave_de(t, dec);
-        let se_copia = regla.copia(&t.nombre);
-        let se_funde = regla.se_copia_en_la_fuente(&t.nombre) && !clave.is_empty();
+        let impide = la_copia_no_se_mantiene(t, false);
+        if regla.copia(&t.nombre)
+            && let Some(m) = impide
+        {
+            sin_copia.push((t.nombre.clone(), m));
+        }
+        let se_copia = regla.copia(&t.nombre) && impide.is_none();
         ficheros.insert(
             en_schema(&sch, format!("tables/{sufijo}")),
             con_schema(
@@ -626,7 +623,7 @@ pub fn inducir_con_regla(
                     &cat.fuente,
                     t,
                     objeto,
-                    se_funde.then_some(clave.as_slice()),
+                    (!clave.is_empty()).then_some(clave.as_slice()),
                 ),
                 &sch,
                 paquete,
@@ -832,20 +829,28 @@ pub fn inducir_con_regla(
         // La copia, si la base es estándar y la tabla tiene con qué: la clave
         // del origen o la contestada, que `claves` ya funde. Aquí sí espera:
         // esta vista respalda una entidad, y sin identidad no se mantiene.
+        //
+        // ⭐ 0045 P1′: y un origen que solo anexa no deja mantener la copia de
+        //   una entidad (`OOS2021`) aunque haya clave: lo que se borra en el
+        //   origen no llega. Antes la tabla se reescribía a `upsert` y la regla
+        //   callaba; ahora la copia espera y el informe dice por qué.
         let clave = claves.get(&t.nombre).filter(|k| !k.is_empty()).cloned();
-        let copia = if regla.copia(&t.nombre) {
+        let impide = la_copia_no_se_mantiene(t, true);
+        if regla.copia(&t.nombre)
+            && clave.is_some()
+            && let Some(m) = impide
+        {
+            sin_copia.push((t.nombre.clone(), m));
+        }
+        let copia = if regla.copia(&t.nombre) && impide.is_none() {
             clave.clone()
         } else {
             None
         };
-        // ⭐ 0045 P1: la cara `D`, por si el objeto se copia en la fuente.
-        let se_funde = clave
-            .as_deref()
-            .filter(|_| regla.se_copia_en_la_fuente(&t.nombre));
         ficheros.insert(
             en_schema(&sch, format!("tables/{sufijo}")),
             con_schema(
-                tabla_yaml(paquete, &cat.fuente, t, objeto, se_funde),
+                tabla_yaml(paquete, &cat.fuente, t, objeto, clave.as_deref()),
                 &sch,
                 paquete,
             ),
@@ -928,6 +933,7 @@ pub fn inducir_con_regla(
         ficheros,
         pendientes,
         huerfanas,
+        sin_copia,
     }
 }
 
@@ -2129,7 +2135,7 @@ fn tabla_yaml(
     fuente: &str,
     t: &Tabla,
     objeto: &Objeto,
-    clave_de_la_copia: Option<&[String]>,
+    clave: Option<&[String]>,
 ) -> String {
     let mut s = String::new();
     let _ = write!(
@@ -2185,46 +2191,73 @@ fn tabla_yaml(
             "  # El driver no declaró qué se puede empujar a este origen.\n  reads: {}\n",
         ),
     }
-    match (&t.cambia, clave_de_la_copia) {
-        // El objeto se copia en la celda y tiene clave: la copia se funde por
-        // ella. El testigo sigue siendo el que el driver sondeó —eso no lo
-        // cambia una clave—; lo que cambia es que ahora hay con qué retirar una
-        // fila, que es lo que `upsert` afirma y `append` no podía.
-        //
-        // ⭐ 0045 P1: «se copia» es de la FUENTE (`Regla::se_copia_en_la_fuente`),
-        //   no de esta base. Sin copia en ninguna, la tabla es lo que el driver
-        //   sondeó, tal cual: ni `drift-detect` ni el motor ven otra cosa.
-        (cambia, Some(clave)) => {
-            let testigo = cambia
-                .as_ref()
-                .and_then(|n| match n {
-                    Json::Obj(m) => m.get("witness").cloned(),
-                    _ => None,
-                })
-                .unwrap_or(Json::s("none"));
-            let _ = writeln!(s, "  changes:");
-            let _ = writeln!(s, "    mode: upsert");
-            let _ = writeln!(
-                s,
-                "    key: [{}]",
-                clave
-                    .iter()
-                    .map(|c| escalar_yaml(c))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            s.push_str(&cara_yaml(&Json::obj([("witness", testigo)]), 4));
-        }
-        (Some(n), None) => {
-            let _ = writeln!(s, "  changes:");
-            s.push_str(&cara_yaml(n, 4));
-        }
+    // ⭐⭐ 0045 P1′ · LA CARA `D` ES LA DEL ORIGEN, y la clave va si se sabe.
+    //
+    // `mode` y `witness` son lo que el driver sondeó, tal cual: qué emite el
+    // origen. `key` es la identidad de la fila y «es legal siempre» (v1alpha8
+    // 01-table §6): la leen el mantenedor, la copia —que funde por ella con
+    // cualquier modo— y la escritura.
+    //
+    // ⛔ Antes, una tabla que se copiaba y tenía clave salía `mode: upsert`
+    //   dijera el origen lo que dijera. Era la copia escrita en el objeto: el
+    //   motor creía que un origen mudo emitía upserts, y un origen que solo
+    //   anexa —Postgres sin clave primaria, que lo dice a propósito para que
+    //   salte `OOS2021`— dejaba de hacer saltar la regla cuando alguien
+    //   contestaba una clave: la copia se quedaba con lo borrado dentro.
+    match (&t.cambia, clave) {
         (None, None) => s.push_str(
             "  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n  \
              changes: { mode: none, witness: none }\n",
         ),
+        (cambia, clave) => {
+            let mut caras = match cambia {
+                Some(Json::Obj(m)) => m.clone(),
+                _ => BTreeMap::from([
+                    ("mode".to_string(), Json::s("none")),
+                    ("witness".to_string(), Json::s("none")),
+                ]),
+            };
+            if cambia.is_none() {
+                s.push_str("  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n");
+            }
+            if let Some(k) = clave {
+                caras.insert(
+                    "key".to_string(),
+                    Json::Arr(k.iter().map(Json::s).collect()),
+                );
+            }
+            let _ = writeln!(s, "  changes:");
+            s.push_str(&cara_yaml(&Json::Obj(caras), 4));
+        }
     }
     s
+}
+
+/// ⭐ 0045 P1′ · **Por qué el origen no deja mantener una copia de este
+/// objeto**, si no la deja. Son `OOS2023` y `OOS2021` dichos antes de escribir,
+/// con lo que el driver sondeó: emitir la copia sería escribir un paquete que
+/// no compila —o, antes de P1′, uno que compilaba mintiendo—.
+fn la_copia_no_se_mantiene(t: &Tabla, con_entidad: bool) -> Option<&'static str> {
+    let cara = |k: &str| match &t.cambia {
+        Some(Json::Obj(m)) => m.get(k).and_then(|v| match v {
+            Json::Str(s) => Some(s.as_str()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    if cara("mode") != Some("append") {
+        return None;
+    }
+    if cara("witness") == Some("field") {
+        return Some(
+            "el origen solo anexa y se fecha por una columna: lo que re-entrega no \
+             se puede deduplicar (OOS2023)",
+        );
+    }
+    con_entidad.then_some(
+        "el origen solo anexa: lo que se borra allí no llega, y la copia de una \
+         entidad se quedaría con lo borrado dentro (OOS2021)",
+    )
 }
 
 /// La vista trivial: **el objeto expuesto tal cual, con nombres de
@@ -2659,6 +2692,12 @@ pub fn informe(ind: &Induccion, destino: &Path) -> String {
          \x20 ✓ todas en DRAFT: nada de esto es verdad todavía\n\n",
         destino.display()
     );
+    for (t, porque) in &ind.sin_copia {
+        let _ = writeln!(s, "  · `{t}` no se copia: {porque}");
+    }
+    if !ind.sin_copia.is_empty() {
+        s.push('\n');
+    }
     if ind.pendientes.is_empty() {
         s.push_str("  Sin decisiones pendientes.\n");
         return s;
@@ -2755,7 +2794,6 @@ mod tests {
             modeladas: None,
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
-            copiadas_en_la_fuente: Default::default(),
         };
         let sin = inducir_con_regla(
             &cat,
@@ -2789,11 +2827,9 @@ mod tests {
             "la copia no deja una vista que sea la misma cosa"
         );
         let tabla = &con.ficheros["rubix_demo_ventas/tables/Facturas__facturas.yaml"];
+        // 0045 P1′: la clave, con la cara que dijo el origen; no `upsert`.
         assert!(
-            tabla.contains(
-                "mode: upsert
-    key: [id_factura]"
-            ),
+            tabla.contains("key: [id_factura]") && !tabla.contains("upsert"),
             "{tabla}"
         );
         let clientes = &con.ficheros["rubix_demo_ventas/views/Clientes__clientes.yaml"];
@@ -2825,10 +2861,7 @@ mod tests {
         assert!(clientes.contains("kind: Dataset"), "{clientes}");
         let tabla = &despues.ficheros["rubix_demo_ventas/tables/Clientes__clientes.yaml"];
         assert!(
-            tabla.contains(
-                "mode: upsert
-    key: [id]"
-            ),
+            tabla.contains("key: [id]") && !tabla.contains("upsert"),
             "{tabla}"
         );
     }
@@ -2844,7 +2877,6 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
-            copiadas_en_la_fuente: Default::default(),
         };
         let i = inducir_con_regla(
             &cat,
@@ -2887,12 +2919,13 @@ mod tests {
                 "estándar y sin modelar: se copia sin esperar · {k}"
             );
         }
-        // sin clave, la tabla se queda como el origen la dijo; con clave, upsert
+        // la tabla se queda como el origen la dijo; con clave, además la clave
+        // (0045 P1′: nunca un `upsert` que el origen no haya dicho)
         let clientes = &i.ficheros["rubix_demo_ventas/tables/Clientes__clientes.yaml"];
         assert!(!clientes.contains("upsert"), "{clientes}");
         let facturas = &i.ficheros["rubix_demo_ventas/tables/Facturas__facturas.yaml"];
         assert!(
-            facturas.contains("mode: upsert\n    key: [id_factura]"),
+            facturas.contains("key: [id_factura]") && !facturas.contains("upsert"),
             "{facturas}"
         );
         // la colisión de nombres (Pedidos / pedidos) se resuelve con el físico, sin preguntar
@@ -2918,7 +2951,6 @@ mod tests {
             modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
-            copiadas_en_la_fuente: Default::default(),
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
@@ -2926,7 +2958,6 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
             schemas: BTreeMap::new(),
-            copiadas_en_la_fuente: Default::default(),
         };
         let f = inducir_con_regla(
             &cat,

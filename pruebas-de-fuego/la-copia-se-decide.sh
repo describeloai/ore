@@ -26,7 +26,7 @@
 #   3b `ore model tienda olist.customers`  la entidad Customers y su cola (clave, con «la COPIA
 #                                       espera») · la copia de customers ESPERA (respalda una
 #                                       entidad sin identidad) · orders sigue · contestar `clave`
-#                                       la trae de vuelta, en upsert por customer_id · compila
+#                                       la trae de vuelta, fundida por customer_id · compila
 #      (C2) GET /esquema trae `tables` desde tables/ (columnas con physicalType, view, modeled);
 #      modelar es POST /paquetes/{n}/tablas/{objeto}/modelar (201 · 409 si ya · 404 si no esta);
 #      GET /paquetes dice tablas y modeladas
@@ -154,6 +154,13 @@ spec:
   fields: { id: order_id }
 Y
 # Lo que el Job de catalogo deja: el paquete de la fuente con `discover.catalog.json`.
+# ⭐ 0045 P1′: `customers` es un Postgres sin clave primaria y sin WAL logico —
+#   `{ none, none }`: no emite cambios, la copia se recomputa entera—. Era
+#   `{ append, log }` (sin clave CON WAL logico), y con eso la copia de una
+#   ENTIDAD no se puede mantener (OOS2021: lo borrado no llega); la tabla se
+#   reescribia a `upsert` y la regla callaba. Ese caso lo fija
+#   `crates/ore-cli/tests/el_puntero_es_del_objeto.rs`; este guion prueba el
+#   ciclo de vida de la copia, con un origen que la deja mantener.
 # Dos objetos, uno con clave primaria y otro sin, como los sondearia el driver.
 cat > "$REPO/packages/pg/package.yaml" <<'Y'
 apiVersion: oos.dev/v1alpha1
@@ -168,7 +175,7 @@ cat > "$REPO/packages/pg/discover.catalog.json" <<'J'
     { "name": "olist.customers",
       "columns": [ { "name": "customer_id", "type": "String", "sourceType": "character varying(32)", "required": true }, { "name": "customer_city", "type": "String" } ],
       "reads": { "fullScan": "cheap" },
-      "changes": { "mode": "append", "witness": "log" } },
+      "changes": { "mode": "none", "witness": "none" } },
     { "name": "olist.orders",
       "columns": [ { "name": "order_id", "type": "String", "required": true }, { "name": "customer_id", "type": "String" } ],
       "primaryKey": ["order_id"],
@@ -253,7 +260,7 @@ dataset tienda orders | grep -q 'kind: Dataset' || falla "2 · orders (con clave
 tabla tienda orders | grep -q "mode: upsert" || falla "2 · la tabla orders no esta en upsert: $(tabla tienda orders)"
 tabla tienda orders | grep -q "key: \[order_id\]" || falla "2 · la tabla orders no lleva la clave: $(tabla tienda orders)"
 dataset tienda customers | grep -q 'kind: Dataset' || falla "2 · customers (sin clave, sin modelar) no se copia: $(dataset tienda customers)"
-tabla tienda customers | grep -q "mode: append" || falla "2 · customers sin clave no se queda como el origen la dijo: $(tabla tienda customers)"
+tabla tienda customers | grep -q "mode: none" || falla "2 · customers sin clave no se queda como el origen la dijo: $(tabla tienda customers)"
 grep -q '"clave/' "$REPO/packages/tienda/discover.pending.json" && falla "2 · el catalogo pregunta por la clave: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 [ -z "$(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")" ] || falla "2 · la cola del catalogo no esta vacia: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 cuerpo | grep -q '"quedan":0' || falla "2 · la respuesta dice que quedan decisiones: $(cuerpo)"
@@ -331,10 +338,11 @@ COD=$(decidir tienda '{"answers":{"clave/olist.customers":["customer_id"]}}')
 [ "$COD" = "200" ] || falla "3b · contestar la clave devolvio $COD: $(cuerpo)"
 dataset tienda customers | grep -q 'kind: Dataset' || falla "3b · con la clave contestada, la copia no vuelve: $(dataset tienda customers)"
 tabla tienda customers | grep -q "key: \[customer_id\]" || falla "3b · la tabla no lleva la clave contestada: $(tabla tienda customers)"
-tabla tienda customers | grep -q "mode: upsert" || falla "3b · la tabla no paso a upsert"
+tabla tienda customers | grep -q "mode: none" || falla "3b · la tabla no dice lo que el origen emite: $(tabla tienda customers)"
+tabla tienda customers | grep -q "upsert" && falla "3b · la tabla dice upsert y el origen no emite cambios (0045 P1′): $(tabla tienda customers)"
 grep -q "primaryKey: \[customer_id\]" "$REPO/packages/tienda/olist/entities/Customers.yaml" || falla "3b · la entidad no lleva la clave: $(cat "$REPO/packages/tienda/olist/entities/Customers.yaml")"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "3b · el arbol no compila con la modelada: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
-dice "3b · POST modelar customers: 201 · su entidad y su cola (la clave, y la copia la espera) · la copia de customers espera, la de orders sigue · contestada la clave, vuelve en upsert y la entidad la lleva · compila"
+dice "3b · POST modelar customers: 201 · su entidad y su cola (la clave, y la copia la espera) · la copia de customers espera, la de orders sigue · contestada la clave, vuelve (la tabla la lleva y sigue diciendo lo que el origen emite) y la entidad la lleva · compila"
 
 # ── 4 ───────────────────────────────────────────────────────────────────────
 COD=$(asc tienda)

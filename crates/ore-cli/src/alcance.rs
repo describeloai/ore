@@ -137,16 +137,6 @@ impl Alcance {
         &self.copias
     }
 
-    /// Lo que esta base copia a la celda: todo lo suyo si es estándar; si no,
-    /// sus `copies`.
-    pub fn que_copia(&self) -> BTreeSet<String> {
-        if self.estandar() {
-            self.objetos.clone()
-        } else {
-            self.copias.clone()
-        }
-    }
-
     /// **Copiar** una tabla de una base foránea. `Err` si no está en el alcance,
     /// si la base es estándar (ya se copia todo) o si ya estaba.
     pub fn copiar(&mut self, objeto: &str) -> Result<(), String> {
@@ -369,29 +359,6 @@ impl Alcance {
         }
         Ok(())
     }
-}
-
-/// ⭐ 0045 P1 · **Qué objetos de `fuente` copia alguna base del repositorio.**
-///
-/// Se lee de los alcances (`packages/*/discover.scope.json`), que es donde cada
-/// base dice su clase y sus `copies`. Un alcance que no analiza no cuenta: no
-/// es de quien pregunta arreglarlo, y lo dirá su propia revisión.
-pub fn copiadas_en_la_fuente(desde: &Path, fuente: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let Some(repo) = crate::raiz_del_repositorio(desde) else {
-        return out;
-    };
-    let Ok(dirs) = std::fs::read_dir(repo.join("packages")) else {
-        return out;
-    };
-    for d in dirs.flatten() {
-        if let Ok(Some(a)) = del_paquete(&d.path())
-            && a.fuente == fuente
-        {
-            out.extend(a.que_copia());
-        }
-    }
-    out
 }
 
 pub fn ruta(raiz: &Path) -> PathBuf {

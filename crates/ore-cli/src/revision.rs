@@ -253,7 +253,6 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     };
 
     let paquete = nombre_del_paquete(raiz);
-    regla.copiadas_en_la_fuente = crate::alcance::copiadas_en_la_fuente(raiz, &catalogo.fuente);
 
     // El vocabulario se lee del REPOSITORIO, no del paquete: un vocabulario
     // publicado es un paquete sin entidades que otros importan, así que mirar
@@ -566,10 +565,11 @@ pub fn dir_de_la_fuente(raiz: &Path, fuente: &str) -> Option<std::path::PathBuf>
 
 /// Lo contestado en la base, con lo que la fuente sabe de sus objetos.
 ///
-/// ⛔ Una base que contestó DISTINTO lo que la fuente ya sabe no se re-induce
-///   en silencio: saldría otro puntero del mismo objeto, que es justo lo que
-///   0045 quita. Lo dice, y contestar otra vez desde aquí lo cambia en la
-///   fuente (cambiar de opinión es legítimo; tener dos, no).
+/// ⭐ En un choque **manda la fuente**, y se dice. Una base de antes de 0045
+///   guardaba su propia clave; la de la fuente es la que ven todas, y abortar
+///   aquí dejaría a esta base sin poder ni contestar otra vez (P1′: la revisión
+///   paraba antes de leer las respuestas nuevas). Lo viejo de la base se va al
+///   guardar, y contestar desde aquí lo cambia en la fuente, para todas.
 pub fn con_la_fuente(
     mut de_la_base: Decisiones,
     fuente: Option<&Path>,
@@ -578,25 +578,11 @@ pub fn con_la_fuente(
         return Ok(de_la_base);
     };
     let (de_la_fuente, _) = acumuladas(f)?.partir();
-    let choca = de_la_base.discrepa_de(&de_la_fuente);
-    if !choca.is_empty() {
-        let donde = format!(
-            "  Lo que vale está en `{}`. Para cambiarlo, contéstalo otra vez: se",
+    for id in de_la_base.discrepa_de(&de_la_fuente) {
+        eprintln!(
+            "aviso: esta base tenía `{id}` contestada distinto de su fuente; vale la de `{}`",
             f.join(RESPUESTAS).display()
         );
-        return Err(fallo(
-            65,
-            format!(
-                "esta base contestó distinto de su fuente: {}",
-                choca.join(", ")
-            ),
-            &[
-                "  La clave y los tipos son del objeto del origen, y se contestan una vez",
-                "  por fuente (0045): dos bases no pueden tener dos claves para una tabla.",
-                &donde,
-                "  cambia para todas las bases de la fuente.",
-            ],
-        ));
     }
     de_la_base.fundir(de_la_fuente);
     Ok(de_la_base)
@@ -841,6 +827,11 @@ fn informe(antes: &Induccion, despues: &Induccion, nuevas: usize, retirados: &[S
             s,
             "  · {conceptos} conceptos acuñados: `is` exige que existan, y ahora existen"
         );
+    }
+
+    // ⭐ 0045 P1′: lo que la base pide copiar y el origen no deja mantener.
+    for (t, porque) in &despues.sin_copia {
+        let _ = writeln!(s, "  · `{t}` no se copia: {porque}");
     }
 
     // Una respuesta que no llega a ninguna pregunta no puede pasar por una

@@ -1630,7 +1630,6 @@ fn descubrir(
             .as_ref()
             .map(|(a, _)| a.schemas().clone())
             .unwrap_or_default(),
-        copiadas_en_la_fuente: alcance::copiadas_en_la_fuente(destino, &catalogo.fuente),
     };
     // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
     //   decision — y por eso entra por `Decisiones` y se guarda con las demas

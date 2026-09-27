@@ -1,6 +1,6 @@
 # 0045 · El puntero es de la fuente: una database standard es sus datasets
 
-**Estado:** aprobado (2026-09-27), B0 medido, P1 hecho; P2–P6 por hacer · **Decide:** dónde
+**Estado:** aprobado (2026-09-27); B0 medido; el puntero medido como producto y como implementación; P1 y P1′ hechos; P1.5–P6 por hacer · **Decide:** dónde
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
 ubicación que fijaron P1 I4b (`f7580aa`) y [`0033`](0033-el-dataset.md); **no** revisa lo que
 0033 decidió sobre el `Dataset` (§ «Lo que no se hace»). Toca el `_t` de
@@ -119,40 +119,72 @@ un `package.yaml` v1alpha1. **Ningún bloqueo en la spec ni en ore-core.** Lo qu
 6. **La consola no confunde la fuente con una database** (filtra por `scoped`, que es tener
    `discover.scope.json`); lo que cambia es el esquema de la conexión (punto 2).
 
-## La iteración
+## La medida del puntero (2026-09-27, tras P1)
 
-El orden sale del punto 1 de B0: **primero el puntero deja de depender de quién lo lee**, en el
-sitio de hoy; con eso los duplicados salen iguales y moverlos es mover, no decidir. Y del punto 2:
-**los lectores aprenden a leer en los dos sitios antes** de que nada se mueva (binario antes que
-malla).
+Se midió después de empujar P1, y no antes, que es el orden equivocado: todo lo de abajo —los
+Datasets de una standard y las Views de una foreign— cuelga del puntero, y la idea y su
+implementación tenían que medirse antes de construir encima.
+
+**Como producto, la idea es el estado del arte.** Que el puntero sea del origen, se registre una
+vez y lo nombren sus consumidores es lo que hacen dbt `sources` (el análogo más cercano:
+declarado una vez, `source()` desde cualquier modelo, nodo aparte en el DAG), el auto-registro de
+Foundry (un proyecto gestionado, espejo de la fuente, que nadie edita), los *foreign catalogs* de
+Unity Catalog y las *catalog-linked databases* de Snowflake. Foundry y Databricks enseñan además
+el síntoma de no hacerlo: dos syncs de la misma tabla no comparten nada. **Lo que el mercado
+divide** es dónde van la clave y la semántica de cambios: los ingestores (syncs de Foundry,
+Lakeflow Connect) los ponen en cada copia, porque dos copias pueden querer mantenerse distinto
+(SCD1 frente a SCD2). La lectura buena: **el puntero lleva la verdad del objeto** —su esquema, su
+clave, lo que emite el origen— y **la copia decide cómo se mantiene**.
+
+**Como implementación, P1 no lo era.** Su regla —`upsert` + `key` si alguna base de la fuente
+copia el objeto— escribía en el objeto lo que la copia necesitaba, y era una herencia: el inductor
+ya reescribía a `upsert` cualquier tabla copiada con clave. Medido en el código:
+
+- **La copia no necesita `upsert`**: `materializar` funde por `changes.key` con cualquier modo
+  (`registro::clave_de`), que es lo que dice la spec —la clave «es legal siempre», y la leen el
+  mantenedor, la copia y la escritura (v1alpha8 `01-table` §6)—.
+- **Escondía una pérdida**: el driver de Postgres dice `{ append, log }` de una tabla sin clave
+  primaria con WAL lógico **a propósito**, para que salte `OOS2021` (una entidad copiada de un
+  origen que solo anexa se queda con lo borrado dentro). Contestar una clave la reescribía a
+  `upsert`, la regla callaba y la copia mentía.
+- **Informaba mal al motor**: un origen mudo (`none`) pasaba a «emite upserts».
+- **El escaneo de alcances era el mismo defecto un nivel más arriba**: el puntero seguía
+  dependiendo de quién lo lee, y quedaba viejo hasta que las demás bases se re-indujeran.
+- **Un bug**: con respuestas chocadas, `review` abortaba antes de leer las nuevas, y el mensaje
+  decía «contéstalo otra vez», que era imposible.
+
+## La iteración (revisada)
 
 | paso | qué | criterio de hecho | despliega |
 |---|---|---|---|
-| **P1 · el puntero es del objeto** ✅ | la cara `D` de la tabla la decide si el objeto **se copia en la fuente** —esta base u otra, leído de los `discover.scope.json`—, no si lo copia esta: con copia y clave, `upsert` + `key`; sin copia en ninguna, lo que sondeó el driver, tal cual (así ni `drift-detect` ni el motor ven una cara que el origen no dijo). `clave/*` y `tipo/*` se contestan **una vez por fuente** (`packages/<fuente>/discover.answers.json`); una base que los contestó distinto no re-induce: lo dice | `el_puntero_es_del_objeto.rs` (5 casos); en la copia de `victor`, tras `review --reinducir`, los 19 pares de `standard_test`/`foreign_test` **idénticos** (eran 0), `lint` y `report` iguales | sí, solo |
-| **P2 · leer en los dos sitios** | ore-serve resuelve la Table por el árbol y no por la carpeta: `copias` (por `registro::clave_de`), `tablas_del_paquete` (fuente: siempre su catálogo, anotado con sus Tables; database: sus Datasets y Views unidos a la Table que nombran, esté donde esté), `objetos_fisicos`, `retirar_fuente` (cuenta las databases por `discover.scope.json`), la guarda de borrar una Table (Datasets y SQL) | tests de ore-serve en las dos disposiciones; `la-copia-se-decide.sh` verde **sin cambios** | sí, antes de P3 |
-| **P3 · el inductor escribe en la fuente** | un canal aparte en `Induccion` para `packages/<fuente>/`: la Table (v1alpha13, schema **del origen**, namespace la fuente, nombre el del objeto, sin `_t`), su `schema.yaml` y su línea de `exports` en tres partes; crea o actualiza, **nunca crea el directorio** (sin fuente —CLI suelta—, el sitio de siempre); la database, solo Datasets o Views con `from: { table: <fuente>.<schema>.<obj> }`; `review --reinducir` retira las Tables viejas | tests del inductor; `standard` da N datasets y 0 tables; `la-copia-se-decide.sh` reescrita (14 aserciones, 219-226 y `_t`) | con P4 |
-| **P4 · migrar los árboles** | `ore migrate fuentes`: por fuente, las Tables de todas sus databases por `(datasource, object)` → una en la fuente (tras P1 son iguales; si no, no migra y dice cuál), `exports`, reapunta `from` y SQL (`servir::renombrar`), borra las viejas. Reusa `paquete::planificar` y el `cotejo` de `migrar_v14` | `cotejo` en copias de `demo`, `prueba` y `victor`: mismos diagnósticos; `bq` 3 items, `standard_test` 19; cada árbol, **un** commit que compila solo | P3 + P4 juntos, árbol a árbol |
-| **P5 · los que miran un paquete** | `drift-detect` sobre la fuente con la unión de los alcances de sus databases; la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
+| **P1 · el puntero es del objeto** ✅ `af5a474` | `clave/*` y `tipo/*` una vez por fuente (`packages/<fuente>/discover.answers.json`; el paquete de la fuente nunca se crea desde una base). Su regla de la cara `D` la sustituye P1′ | — | sí |
+| **P1′ · la verdad del origen** ✅ | la cara `D` es **la del driver, tal cual, más `key` si se conoce**: sin `upsert` inventado y sin escaneo de alcances (fuera `Regla::copiadas_en_la_fuente`); `registro::restricciones` toma la clave como identidad con cualquier modo; lo que el origen no deja mantener **no se copia y se dice** (`Induccion::sin_copia`: `OOS2021` para una entidad sobre `append`, `OOS2023` para `append` + `field`), en el informe de `discover` y en el de `review`; en un choque de respuestas **manda la fuente**, con aviso | `el_puntero_es_del_objeto.rs` (4 casos; el de `OOS2021`: la tabla gana la clave, sigue diciendo `append`, la entidad no se copia y el árbol no da `OOS2021`); `la-copia-se-decide.sh` 0–10 en local | sí |
+| **P1.5 · la fuente se llama como la conexión** | el nombre del paquete de la fuente —y de su datasource— sale del nombre que el usuario da en el **paso 2 del wizard**, no de `<tipo>_<fecha>`: `bigquery_20260927_1428.ventas.pedidos` quedaría escrito en cada `from` y cada SQL, y renombrar después es reescribirlos todos | una conexión nueva nace con su nombre; las de hoy se renombran en P4 | sí, antes de P3′ |
+| **P2 · leer en los dos sitios** | ore-serve resuelve la Table por el árbol y no por la carpeta: `copias` (por `registro::clave_de`), `tablas_del_paquete` (fuente: siempre su catálogo, anotado con sus Tables; database: sus Datasets y Views unidos a la Table que nombran, esté donde esté), `objetos_fisicos`, `retirar_fuente` (cuenta las databases por `discover.scope.json`), la guarda de borrar una Table (Datasets y SQL) | tests de ore-serve en las dos disposiciones; `la-copia-se-decide.sh` verde sin cambios | sí, antes de P3′ |
+| **P3′ · un solo escritor de la fuente** | `ore source induce <fuente>`, lanzado por el Job de catálogo y tras cada cambio de alcance: escribe las Tables de los objetos que **alguna** base usa —con el catálogo y las respuestas **de la fuente**—, su `schema.yaml` y sus `exports` en tres partes, y retira las que ya no usa nadie. Las bases solo nombran (`from: { table: <fuente>.<schema>.<obj> }`, o SQL) y fallan si falta la Table. Sin dos escritores del mismo paquete (carreras en ore-serve), y sin una base que tenga que saber si otra sigue usando un objeto | tests de ore-cli; `standard` da N datasets y 0 tables; `la-copia-se-decide.sh` reescrita | con P4 |
+| **P4 · migrar los árboles** | por fuente: las Tables se **re-inducen** desde el catálogo de la fuente (tras P1′ el contenido depende solo del objeto: no hay nada que fusionar); las bases se **reapuntan**, no se re-inducen (re-inducir una base vieja reescribe sus vistas y renombra lo que las nombra); se retiran las viejas; la fuente toma el nombre de su conexión (P1.5) | `cotejo` en copias de `demo`, `prueba` y `victor`: mismos diagnósticos; `bq` 3 items, `standard_test` 19; cada árbol, **un** commit que compila solo | P3′ + P4 juntos, árbol a árbol |
+| **P5 · los que miran un paquete** | `drift-detect` sobre el paquete de la fuente contra su propio catálogo (ya no hace falta la unión de alcances); la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
 | **P6 · consola** | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
 
-⚠️ **Lo primero que se probó en P1 y no valía**: escribir la clave (y `upsert`) en la tabla siempre que se conociera. Rompió dos guardas con razón —`drift-detect` veía `upsert → none` como deriva, y «las caras sondeadas llegan al motor» dejaba de ser cierto—: la tabla afirmaba del origen algo que el origen no dijo. `upsert` es la cara de un objeto **que se copia**; por eso la decide la fuente y no cada base.
+⚠️ **`la-copia-se-decide.sh` cambió de origen, no de expectativa.** Su `customers` era
+`{ append, log }` y el guion construía diez pasos sobre su copia de entidad: con P1′ esa copia no
+se mantiene (`OOS2021`), que es justo lo que P1′ corrige. Pasa a `{ none, none }` —el otro
+Postgres sin clave real, sin WAL lógico, que se recomputa entero— y el caso `append` lo fija
+`el_puntero_es_del_objeto.rs`.
 
-⚠️ **P4 mueve, no re-induce.** Medido al cerrar P1 en la copia de `victor`: `review --reinducir`
-sobre `foreign_test` (inducida el 21-sep) no solo iguala sus punteros —19 de 19 idénticos a los de
-`standard_test`, de 0—; también reescribe sus 19 vistas con el inductor de hoy (v1alpha14 SQL, en
-el schema `public`: `foreign_test.x` pasa a `foreign_test.public.x`), y eso renombra lo que
-entidades, funciones y SQL a mano nombran. La migración de los árboles vivos toca solo las Tables
-y quien las nombra.
+Pendiente de la spec, no de este ADR: que la copia de una entidad sobre un origen que solo anexa
+**sí** se pueda mantener recomputándola entera en cada refresco es una perilla del Dataset
+(`refresh: recompute | merge`), con `OOS2021`/`OOS2023` aplicando solo a `merge`. Es la mitad «la
+copia decide cómo se mantiene» del estado del arte, y va a `C:\oos`.
 
 Fuera: `ore pack` con la fuente como dependencia versionada. Colisiones al quitar `_t` (`a-b`/`a_b`,
 `Pedidos`/`pedidos` en Windows): el sufijo de siempre **solo** cuando colisionan, y se dice.
 
 ⚠️ **Coordinación**: `_t`, `migrar_v14` y `la-copia-se-decide.sh` son del trabajo de 0040 (sesión
-«SQL índice y paradigma»). B1 y B3 se hablan con ella antes de escribir.
+«SQL índice y paradigma»). P3′ y P4 se hablan con ella antes de escribir.
 
-⚠️ **B3 y las propuestas por activos** (`356618c`, `POST /propuestas {activos}`): una propuesta lleva
+⚠️ **P4 y las propuestas por activos** (`356618c`, `POST /propuestas {activos}`): una propuesta lleva
 activos por `doc_id` (`Kind:qname`), y mover una Table de paquete **cambia su id**: en una rama que
 migre sale como borrada en la database y nueva en la fuente, no como movida. La propuesta de esa
 migración tiene que llevar las dos mitades juntas —y los Datasets reapuntados—; `faltan` pide la
-nueva por `OOS2018` pero **no** la borrada: se listan las dos a mano. Criterio añadido a B3: la migración de un árbol es **una** propuesta que
-compila sola.
+nueva por `OOS2018` pero **no** la borrada: se listan las dos a mano. Criterio añadido a P4: la migración de un árbol es **una** propuesta que compila sola.
