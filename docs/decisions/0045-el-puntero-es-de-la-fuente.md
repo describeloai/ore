@@ -1,6 +1,6 @@
 # 0045 · El puntero es de la fuente: una database standard es sus datasets
 
-**Estado:** propuesto (2026-09-27), pendiente de la medida B0 y del visto bueno · **Decide:** dónde
+**Estado:** aprobado (2026-09-27), B0 medido; P1–P6 por hacer · **Decide:** dónde
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
 ubicación que fijaron P1 I4b (`f7580aa`) y [`0033`](0033-el-dataset.md); **no** revisa lo que
 0033 decidió sobre el `Dataset` (§ «Lo que no se hace»). Toca el `_t` de
@@ -82,18 +82,61 @@ que es donde están (la ficha de la fuente ya lista su esquema).
 - **No se revisa el `Dataset` de 0033** ni la regla de v1alpha12: el Dataset sigue sin llevar el
   origen. Lo que cambia es de quién es la Table.
 
+## B0 · lo medido (2026-09-27)
+
+**Empírico**, sobre una copia del árbol vivo de `victor` con el `ore` de `main`, moviendo a mano:
+
+| prueba | resultado |
+|---|---|
+| `bq`: sus 3 Tables a `bigquery_20260927_1428`, sin `exports` | `OOS2028` ×3: **resuelve** (no es `OOS2018`), falta hacerlo público |
+| `exports` en dos partes (`ventas.pedidos`) | `OOS2027`: se cualifica sin namespace; **va en tres partes** |
+| `exports` en tres partes | `ok · sin errores`; `ore view`, `report`, `lint` y `datasets` **idénticos byte a byte**; índice de assets: `bq` 6 → 3 items, «sale de» apunta a `table:bigquery_…ventas.pedidos` |
+| `standard_test` + `foreign_test` (misma fuente) comparten 19 Tables | `ok · sin errores`; `lint`, `report` y `datasets` idénticos; en `view` cambia **solo** la línea `caras` de las 19 vistas foráneas: ahora ven la clave del objeto. `standard_test` 38 → 19 items, `foreign_test` 39 → 20 |
+| vistas SQL v1alpha14 que leen `fuente.schema.objeto`, con join a la propia database | resuelven: raíz, caras y esquema correctos |
+
+**Leído** (compilador, inductor, ore-serve, consola). El compilador carga el árbol entero y resuelve
+en plano: la referencia entre paquetes no necesita `dependencies`; raíz, linaje, etiquetas,
+`OOS2035`, `servir` y la copia (`48-la-copia.yaml` corre desde la raíz) funcionan; `exports` vale en
+un `package.yaml` v1alpha1. **Ningún bloqueo en la spec ni en ore-core.** Lo que sí hay:
+
+1. **El puntero depende de quién lo lee.** `tabla_yaml` escribe `mode: upsert, key` si la tabla se
+   copia y `mode: none` si no: el mismo `products` es `upsert · key: [id]` en `standard_test` y
+   `none` en `foreign_test`. Y `clave/<obj>` y `tipo/<obj>.<col>` se contestan por database. Dos
+   databases pueden escribir dos punteros distintos del mismo objeto, y «fusionar si son iguales»
+   no fusionaría casi nada.
+2. **ore-serve lee la carpeta `tables/` hermana**: `copias` (la clave, `copia.rs:440`),
+   `tablas_del_paquete` (con ella el esquema, `GET /paquetes` y la ficha de la conexión: si la
+   fuente gana `tables/` deja de leer su catálogo; si la database la pierde, lee el suyo entero),
+   `objetos_fisicos`, y la guarda de `retirar_fuente` (dejaría borrar la fuente con sus Tables).
+3. **El inductor no escribe fuera de su paquete**: `escribir_paquete` sobrescribe todo, la ruta de
+   schema se rompe con `../`, y nadie escribe `exports`. **Y no debe crear `packages/<fuente>/`**:
+   que exista es «catalogada» para ore-serve, y el Job de catálogo se la salta.
+4. **Tres comandos miran un paquete solo**: `ore drift-detect --path <db>` (0 Tables: todo sería
+   deriva), la compuerta de `materialize` (atribuye los diagnósticos de la Table a la fuente, que no
+   tiene copias) y `ore pack` (el `.oob` de una database deja colgando su `from.table`).
+5. **Las propuestas**: una Table movida es `borrado` + `nuevo`; `faltan` encuentra la mitad nueva
+   (`OOS2018`) pero **no** la borrada.
+6. **La consola no confunde la fuente con una database** (filtra por `scoped`, que es tener
+   `discover.scope.json`); lo que cambia es el esquema de la conexión (punto 2).
+
 ## La iteración
 
-| paso | qué | criterio de hecho |
-|---|---|---|
-| **B0** | **medir** lo que A no midió: que el compilador resuelve `from.table` a otro paquete del mismo árbol con `exports` (`OOS2028`) y sin `dependencies` versionadas; qué rutas leen la carpeta `tables/` **hermana** (`copia.rs:440`, `tablas_del_paquete`, `objetos_fisicos`, `retirar_fuente`, `deriva.rs`, `registro::restricciones`); qué pasa con la clave cuando dos databases la contestan distinto | un informe con cada sitio y su arreglo; si algo obliga a tocar la spec, vuelve aquí |
-| **B1** | el inductor escribe las Tables en el paquete de la fuente (crea las que falten, no reescribe las que estén) y las exporta; la database solo sus Datasets o Views | tests del inductor; `standard` da N datasets y 0 tables en la database |
-| **B2** | ore-serve lee las Tables de la fuente: esquema, copias (clave), objetos físicos, retirar fuente | `la-copia-se-decide.sh` reescrita (14 aserciones) en verde |
-| **B3** | `ore migrate`: mueve las Tables de cada database a su fuente, fusiona duplicados idénticos, reapunta los `from` y el SQL; si dos databases discrepan en un objeto, **no migra** y lo dice | `cotejo`: mismos diagnósticos antes y después, en los árboles de `demo`, `prueba` y `victor` |
-| **B4** | consola: la database lista sus datasets; la conexión, sus tablas; «Sale de» del dataset enlaza a la tabla de la fuente | la `bq` de `victor` enseña tres |
+El orden sale del punto 1 de B0: **primero el puntero deja de depender de quién lo lee**, en el
+sitio de hoy; con eso los duplicados salen iguales y moverlos es mover, no decidir. Y del punto 2:
+**los lectores aprenden a leer en los dos sitios antes** de que nada se mueva (binario antes que
+malla).
 
-Orden: B0 primero y sola; B1–B2 juntas (una sin la otra rompe la copia); B3 antes de desplegar
-(los árboles vivos tienen el par); B4 al final.
+| paso | qué | criterio de hecho | despliega |
+|---|---|---|---|
+| **P1 · el puntero es del objeto** | `tabla_yaml` escribe la clave si se conoce (del origen o contestada), sea la database foránea o estándar; `clave/*` y `tipo/*` se contestan **una vez por fuente** (`packages/<fuente>/discover.answers.json`), y una database que los contestó distinto no re-induce: lo dice | tests del inductor; en un árbol con las dos, `review --reinducir` deja los 19 pares **idénticos** salvo nombre y namespace; `cotejo` sin diagnósticos nuevos | sí, solo |
+| **P2 · leer en los dos sitios** | ore-serve resuelve la Table por el árbol y no por la carpeta: `copias` (por `registro::clave_de`), `tablas_del_paquete` (fuente: siempre su catálogo, anotado con sus Tables; database: sus Datasets y Views unidos a la Table que nombran, esté donde esté), `objetos_fisicos`, `retirar_fuente` (cuenta las databases por `discover.scope.json`), la guarda de borrar una Table (Datasets y SQL) | tests de ore-serve en las dos disposiciones; `la-copia-se-decide.sh` verde **sin cambios** | sí, antes de P3 |
+| **P3 · el inductor escribe en la fuente** | un canal aparte en `Induccion` para `packages/<fuente>/`: la Table (v1alpha13, schema **del origen**, namespace la fuente, nombre el del objeto, sin `_t`), su `schema.yaml` y su línea de `exports` en tres partes; crea o actualiza, **nunca crea el directorio** (sin fuente —CLI suelta—, el sitio de siempre); la database, solo Datasets o Views con `from: { table: <fuente>.<schema>.<obj> }`; `review --reinducir` retira las Tables viejas | tests del inductor; `standard` da N datasets y 0 tables; `la-copia-se-decide.sh` reescrita (14 aserciones, 219-226 y `_t`) | con P4 |
+| **P4 · migrar los árboles** | `ore migrate fuentes`: por fuente, las Tables de todas sus databases por `(datasource, object)` → una en la fuente (tras P1 son iguales; si no, no migra y dice cuál), `exports`, reapunta `from` y SQL (`servir::renombrar`), borra las viejas. Reusa `paquete::planificar` y el `cotejo` de `migrar_v14` | `cotejo` en copias de `demo`, `prueba` y `victor`: mismos diagnósticos; `bq` 3 items, `standard_test` 19; cada árbol, **un** commit que compila solo | P3 + P4 juntos, árbol a árbol |
+| **P5 · los que miran un paquete** | `drift-detect` sobre la fuente con la unión de los alcances de sus databases; la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
+| **P6 · consola** | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
+
+Fuera: `ore pack` con la fuente como dependencia versionada. Colisiones al quitar `_t` (`a-b`/`a_b`,
+`Pedidos`/`pedidos` en Windows): el sufijo de siempre **solo** cuando colisionan, y se dice.
 
 ⚠️ **Coordinación**: `_t`, `migrar_v14` y `la-copia-se-decide.sh` son del trabajo de 0040 (sesión
 «SQL índice y paradigma»). B1 y B3 se hablan con ella antes de escribir.
@@ -101,6 +144,6 @@ Orden: B0 primero y sola; B1–B2 juntas (una sin la otra rompe la copia); B3 an
 ⚠️ **B3 y las propuestas por activos** (`356618c`, `POST /propuestas {activos}`): una propuesta lleva
 activos por `doc_id` (`Kind:qname`), y mover una Table de paquete **cambia su id**: en una rama que
 migre sale como borrada en la database y nueva en la fuente, no como movida. La propuesta de esa
-migración tiene que llevar las dos mitades juntas —y los Datasets reapuntados—; `faltan` las pide por
-`OOS2018` si falta una. Criterio añadido a B3: la migración de un árbol es **una** propuesta que
+migración tiene que llevar las dos mitades juntas —y los Datasets reapuntados—; `faltan` pide la
+nueva por `OOS2018` pero **no** la borrada: se listan las dos a mano. Criterio añadido a B3: la migración de un árbol es **una** propuesta que
 compila sola.
