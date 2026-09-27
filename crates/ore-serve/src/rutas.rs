@@ -253,7 +253,9 @@ impl Servidor {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         match (p.metodo.as_str(), seg) {
-            ("GET", ["fuentes"]) => self.leyendo(fuentes),
+            // Ramas globales, fase 1: lo que el catálogo lee, EN la rama de
+            // `x-ore-rama`; sin ella, la de por defecto, como siempre.
+            ("GET", ["fuentes"]) => self.leyendo_en(rama, fuentes),
             // Qué credencial usa una familia y qué roles concede el cliente:
             // lo que el paso de conexión del wizard enseña (`credenciales`).
             // «Comprobar acceso» antes del alta: un Job con la cuenta del
@@ -266,6 +268,9 @@ impl Servidor {
                 Respuesta::ok(crate::credenciales::de(tipo, self.cuenta_driver.as_deref()))
             }
             ("POST", ["fuentes"]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Dar de alta una fuente") {
+                    return r;
+                }
                 let cuerpo = p.cuerpo.clone();
                 // ⛔ EL TESTIGO DE QUIEN PIDIO, y no uno nuestro. El custodio
                 //   decide con `concesion_viva` si esa persona puede emitir, y
@@ -298,6 +303,9 @@ impl Servidor {
             //   de ella. La credencial del custodio se dice y no se toca: el
             //   cofre no tiene baja todavía, y es un acto con su propia huella.
             ("DELETE", ["fuentes", n]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Retirar una fuente") {
+                    return r;
+                }
                 let n = n.to_string();
                 // Con el testigo de quien pide, como el alta: el custodio decide
                 // si esa persona puede retirar (`owner`, o `secreto:retirar`).
@@ -310,12 +318,12 @@ impl Servidor {
                     self.retirar_fuente(r, &n, testigo.as_deref(), sujeto)
                 })
             }
-            ("GET", ["paquetes"]) => self.leyendo(paquetes),
+            ("GET", ["paquetes"]) => self.leyendo_en(rama, paquetes),
             // ── 0027 E1 · los verbos del modelo (`modelos.rs`) ────────────
             // (E3: la lista de certificación tal como Bastion la publica; no
             // toca el árbol, pero sí dice qué se puede pedir: con identidad)
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
-            ("GET", ["modelos"]) => self.leyendo(|r| self.modelos(r)),
+            ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, "alta de un modelo", |r| {
@@ -324,7 +332,7 @@ impl Servidor {
             }
             ("GET", ["modelos", n]) => {
                 let n = n.to_string();
-                self.leyendo(move |r| self.modelo(r, &n))
+                self.leyendo_en(rama, move |r| self.modelo(r, &n))
             }
             ("DELETE", ["modelos", n]) => {
                 let n = n.to_string();
@@ -363,21 +371,21 @@ impl Servidor {
             //   donde sacar el de verdad.
             ("GET", ["paquetes", n, "esquema"]) => {
                 let n = n.to_string();
-                self.leyendo(move |r| esquema(r, &n))
+                self.leyendo_en(rama, move |r| esquema(r, &n))
             }
             ("GET", ["paquetes", n, "decisiones"]) => {
                 let n = n.to_string();
-                self.leyendo(move |r| decisiones(r, &n))
+                self.leyendo_en(rama, move |r| decisiones(r, &n))
             }
             // ── 0027 P1 I2 · la decisión de la copia (`copia.rs`) ────────
             ("GET", ["paquetes", n, "copias"]) => {
                 let n = n.to_string();
-                self.leyendo(move |r| self.copias(r, &n))
+                self.leyendo_en(rama, move |r| self.copias(r, &n))
             }
             // ── retirar una base: el paquete fuera del arbol, y la cola al dia ──
             ("DELETE", ["paquetes", n]) => {
                 let n = n.to_string();
-                self.escribiendo(sujeto, &format!("retirar la base `{n}`"), |r| {
+                self.escribiendo_en(rama, sujeto, &format!("retirar la base `{n}`"), |r| {
                     self.retirar_paquete(r, &n, sujeto)
                 })
             }
@@ -393,9 +401,12 @@ impl Servidor {
                             .and_then(|(_, v)| v.as_str().map(String::from))
                     })
                     .unwrap_or_default();
-                self.escribiendo(sujeto, &format!("`{n}`: crear el schema `{que}`"), |r| {
-                    self.crear_schema(r, &n, &cuerpo)
-                })
+                self.escribiendo_en(
+                    rama,
+                    sujeto,
+                    &format!("`{n}`: crear el schema `{que}`"),
+                    |r| self.crear_schema(r, &n, &cuerpo),
+                )
             }
             ("POST", ["paquetes", n, "schemas", s, "renombrar"]) => {
                 let (n, s) = (n.to_string(), s.to_string());
@@ -404,7 +415,8 @@ impl Servidor {
                     .ok()
                     .and_then(|c| c.get("to").and_then(|(_, v)| v.as_str().map(String::from)))
                     .unwrap_or_default();
-                self.escribiendo(
+                self.escribiendo_en(
+                    rama,
                     sujeto,
                     &format!("`{n}`: el schema `{s}` pasa a llamarse `{a}`"),
                     |r| self.renombrar_schema(r, &n, &s, &cuerpo),
@@ -413,12 +425,15 @@ impl Servidor {
             // ── 0027 P1 C2 · modelar una tabla de una base (`ore model`) ──
             ("POST", ["paquetes", n, "tablas", o, "modelar"]) => {
                 let (n, o) = (n.to_string(), o.to_string());
-                self.escribiendo(sujeto, &format!("`{n}`: modelar `{o}`"), |r| {
+                self.escribiendo_en(rama, sujeto, &format!("`{n}`: modelar `{o}`"), |r| {
                     self.modelar(r, &n, &o, sujeto)
                 })
             }
             // ── copiar UNA tabla de una base foránea (`ore copy`) ─────────
             ("POST", ["paquetes", n, "tablas", o, "copiar"]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Copiar una tabla") {
+                    return r;
+                }
                 let (n, o) = (n.to_string(), o.to_string());
                 self.escribiendo(sujeto, &format!("`{n}`: copiar `{o}` a la celda"), |r| {
                     self.copiar_tabla(r, &n, &o, sujeto)
@@ -427,16 +442,25 @@ impl Servidor {
             // ── 0027 P1 I4b · ascender una base foránea a estándar ────────
             // 0030 W1 · rehacer la copia: escribe la cola, no el árbol.
             ("POST", ["paquetes", n, "copia", "rehacer"]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Rehacer la copia") {
+                    return r;
+                }
                 let n = n.to_string();
                 self.leyendo(move |r| self.rehacer_copia(r, &n, sujeto))
             }
             ("POST", ["paquetes", n, "copia"]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Ascender a base estándar") {
+                    return r;
+                }
                 let n = n.to_string();
                 self.escribiendo(sujeto, &format!("`{n}` pasa a base estándar"), |r| {
                     self.ascender(r, &n, sujeto)
                 })
             }
             ("POST", ["paquetes", n, "decisiones"]) => {
+                if let Some(r) = self.solo_en_la_de_por_defecto(rama, "Contestar las decisiones") {
+                    return r;
+                }
                 let n = n.to_string();
                 let cuerpo = p.cuerpo.clone();
                 self.escribiendo(sujeto, &format!("decisiones de `{n}`"), |r| {
@@ -695,7 +719,7 @@ impl Servidor {
                 Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
             },
             // ── 0029 F4a I3 · las funciones y su invocación (`funciones.rs`) ──
-            ("GET", ["funciones"]) => self.leyendo(|r| self.funciones(r)),
+            ("GET", ["funciones"]) => self.leyendo_en(rama, |r| self.funciones(r)),
             // 0038 P6c: `{ns}/{n}` es de `default`; `{b}/{s}/{n}`, de su schema.
             ("GET", ["funciones", ns, n, "resultados"])
             | ("GET", ["funciones", ns, _, n, "resultados"]) => {

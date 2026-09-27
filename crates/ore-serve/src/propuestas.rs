@@ -779,6 +779,33 @@ impl Servidor {
         }
     }
 
+    /// **Lo que mueve DATOS, sólo en la rama por defecto** (ramas globales, fase
+    /// 1). Copiar, ascender, rehacer la copia, decidir o dar de alta una fuente
+    /// escriben la cola, y los Jobs que encolan leen la rama por defecto: hecho
+    /// desde otra rama, escribiría allí sin decirlo. Los datos de una rama
+    /// llegan después; hasta entonces se niega con el porqué. `None` = adelante.
+    pub(crate) fn solo_en_la_de_por_defecto(
+        &self,
+        rama: Option<&str>,
+        que: &str,
+    ) -> Option<Respuesta> {
+        let r = rama?;
+        let por_defecto = self
+            .api()
+            .ok()
+            .and_then(|a| a.rama_por_defecto().ok())
+            .unwrap_or_else(|| "main".into());
+        (r != por_defecto).then(|| {
+            Respuesta::error(
+                409,
+                format!(
+                    "{que} mueve datos, y una rama todavía no tiene datos propios: los Jobs \
+                     leen `{por_defecto}`. Hazlo en `{por_defecto}` (estás en `{r}`)"
+                ),
+            )
+        })
+    }
+
     /// Como `escribiendo`, en la rama que diga la cabecera: el clon ES la rama,
     /// así que `publicar` empuja a ella. Sin cabecera, `main`.
     pub(crate) fn escribiendo_en(

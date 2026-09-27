@@ -11,6 +11,10 @@
 #   3  el arbol EN la rama               PUT /arbol/… con X-Ore-Rama → 201 con commit y rama; main
 #                                       NO lo tiene (404) y la rama si (200); una rama que no
 #                                       existe → 404; el gate «no empeora» sigue en la rama (422)
+#   3c el catalogo EN la rama           GET /paquetes/{p}/esquema y /paquetes con X-Ore-Rama enseñan
+#                                       la tabla de la rama y main no · POST /paquetes/{p}/schemas
+#                                       escribe en la rama (main sin el schema) · lo que mueve datos
+#                                       (ascender a estandar) en una rama: 409 que lo dice
 #   3b POST /arbol/commit               varios ficheros en UN commit con mensaje, o en seco lo que
 #                                       seria: A/M/D y +/- de git, el gate «no empeora» (422
 #                                       forzable), forzar: true commitea igual y lo dice, 0 cambiados
@@ -194,6 +198,32 @@ ROTA=$(printf '%s' "$NUEVA")
 [ "$(put_fichero packages/hr/views/rota.yaml "$ANA" "$ROTA" ana/vistas-hr)" = "422" ] || falla "3 · una vista rota en la rama no dio 422: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/views/rota.yaml "$ANA" "" ana/vistas-hr)" = "404" ] || falla "3 · la vista rota quedo en la rama"
 dice "3 · el arbol EN la rama: PUT con X-Ore-Rama → 201 con commit y rama · main no lo tiene, la rama si · diagnosticos de la rama · 404 rama inexistente · 422 nombre malo · el gate «no empeora» sigue en la rama"
+
+# ── 3c · el catalogo EN la rama (ramas globales, fase 1) ───────────────────
+BAJAS='apiVersion: oos.dev/v1alpha8
+kind: Table
+metadata: { name: bajas_t, namespace: hr }
+spec:
+  datasource: erp
+  object: "bajas.jsonl"
+  columns:
+    id: {}
+  reads: { fullScan: cheap }
+  changes: { mode: append, witness: snapshot }
+'
+# en una rama suya, que se retira al final: la propuesta de 4 es la de ana/vistas-hr sola
+[ "$(pide POST /ramas "$ANA" '{"nombre":"catalogo"}')" = "201" ] || falla "3c · la rama del catalogo: $(cuerpo)"
+[ "$(put_fichero packages/hr/tables/bajas_t.yaml "$ANA" "$BAJAS" ana/catalogo)" = "201" ] || falla "3c · la tabla en la rama: $(cuerpo)"
+[ "$(pide GET /paquetes/hr/esquema "$ANA" "" ana/catalogo)" = "200" ] && cuerpo | grep -q '"name":"bajas_t"' || falla "3c · el esquema de la rama no trae su tabla: $(cuerpo)"
+[ "$(pide GET /paquetes/hr/esquema "$ANA")" = "200" ] && ! cuerpo | grep -q 'bajas_t' || falla "3c · el esquema de main trae la tabla de la rama: $(cuerpo)"
+[ "$(pide GET /paquetes "$ANA" "" ana/catalogo)" = "200" ] && tiene "[x['tablas'] for x in d['packages'] if x['name']=='hr']==[2]" || falla "3c · GET /paquetes en la rama no cuenta 2 tablas: $(cuerpo)"
+[ "$(pide GET /paquetes "$ANA")" = "200" ] && tiene "[x['tablas'] for x in d['packages'] if x['name']=='hr']==[1]" || falla "3c · GET /paquetes en main no cuenta 1 tabla: $(cuerpo)"
+[ "$(pide POST /paquetes/hr/schemas "$ANA" '{"name":"borrador"}' ana/catalogo)" = "201" ] || falla "3c · crear el schema en la rama: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/borrador/schema.yaml "$ANA" "" ana/catalogo)" = "200" ] || falla "3c · la rama no tiene el schema: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/borrador/schema.yaml "$ANA")" = "404" ] || falla "3c · main tiene el schema de la rama: $(cuerpo)"
+[ "$(pide POST /paquetes/hr/copia "$ANA" '{}' ana/catalogo)" = "409" ] && cuerpo | grep -q 'mueve datos' || falla "3c · ascender en una rama no dio 409: $(cuerpo)"
+[ "$(pide DELETE /ramas/ana/catalogo "$ANA")" = "200" ] || falla "3c · retirar la rama del catalogo: $(cuerpo)"
+dice "3c · el catalogo EN la rama: esquema y /paquetes con la tabla de la rama (main sin ella) · el schema nuevo en la rama y no en main · ascender en una rama: 409, mueve datos"
 
 # ── 3b · varios ficheros en UN commit con mensaje (POST /arbol/commit), y en seco lo que seria ──
 # Lo que el panel de Commit del workspace enseña sale de git, no de un contador:
