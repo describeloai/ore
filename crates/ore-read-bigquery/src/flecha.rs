@@ -307,6 +307,32 @@ async fn leer_async(
     Ok(Lectura::Servida(filas))
 }
 
+/// **Una sesión de lectura que se abre y se suelta**: la prueba del permiso
+/// `bigquery.readsessions.create` sin leer una fila (la usa `acceso`). Con un
+/// solo stream y ninguna columna elegida; la sesión caduca sola.
+pub fn sesion_de_prueba(token: &str, proyecto: &str, tabla: &str) -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("no arranca el runtime: {e}"))?;
+    rt.block_on(async {
+        let mut c = cliente(token, tabla).await?;
+        c.create_read_session(api::CreateReadSessionRequest {
+            parent: format!("projects/{proyecto}"),
+            read_session: Some(api::ReadSession {
+                table: tabla.to_string(),
+                data_format: api::DataFormat::Arrow as i32,
+                ..Default::default()
+            }),
+            max_stream_count: 1,
+            ..Default::default()
+        })
+        .await
+        .map(|_| ())
+        .map_err(|s| format!("{} ({:?})", s.message(), s.code()))
+    })
+}
+
 /// Un stream entero, reanudando por `offset` si se corta: la API lo admite y
 /// una lectura larga se corta de verdad.
 async fn leer_stream(

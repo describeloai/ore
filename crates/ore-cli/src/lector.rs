@@ -540,11 +540,41 @@ pub fn comprobar(raiz: &Path, fuente: &str) -> std::process::ExitCode {
     };
     let ok = n.get("ok").and_then(|(_, v)| v.as_str()) == Some("true");
     let porque = n.get("porque").and_then(|(_, v)| v.as_str()).unwrap_or("");
+    // Permiso a permiso, si el lector los da (BigQuery: jobs, datos, lectura).
+    // Es lo que convierte «no responde» en «concede ESTE rol AQUÍ».
+    let permisos: Vec<String> = n
+        .get("permisos")
+        .map(|(_, o)| {
+            o.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let campo = |c: &str| v.get(c).and_then(|(_, x)| x.as_str()).unwrap_or("");
+                    let marca = match campo("ok") {
+                        "true" => "✓",
+                        "false" => "✗",
+                        _ => "·",
+                    };
+                    Some(format!(
+                        "  {marca} {} · `{}` en {}",
+                        k.as_str()?,
+                        campo("rol"),
+                        campo("donde")
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     if ok {
         println!("{fuente} · sí · `{tipo}` responde");
+        for l in &permisos {
+            println!("{l}");
+        }
         return std::process::ExitCode::SUCCESS;
     }
     println!("{fuente} · no · `{tipo}` no responde");
+    for l in &permisos {
+        println!("{l}");
+    }
     // El motivo, **literal**: el mensaje del servidor es lo único accionable que
     // existe, y resumirlo convierte cinco minutos en una tarde.
     for l in porque.lines().filter(|l| !l.trim().is_empty()) {

@@ -44,6 +44,7 @@
 //! hasta el final, cada página se escribe según llega, y al terminar las filas
 //! contadas tienen que ser el `totalRows` que dijo el servidor ([`rest`]).
 
+mod acceso;
 mod catalogo;
 mod consultas;
 mod flecha;
@@ -127,24 +128,11 @@ fn verbo_(
         // **¿Responde esta fuente?** Lo más barato que hay: `SELECT 1`, sin
         // job. Contesta a la vez por el token, por el proyecto y por el permiso
         // de lanzar consultas en él.
+        // **¿Puede esta cuenta leer este dataset?** Tres permisos, uno a uno
+        // (`acceso`): el `SELECT 1` de antes decía `ok` sin acceso a los datos.
         "check" => {
             let (url, _) = ore_driver::leer_coordenada(entrada)?;
-            let r = proyecto(&url).and_then(|p| {
-                rest::consultar(
-                    t,
-                    &p,
-                    &rest::Consulta {
-                        texto: "SELECT 1 AS ok",
-                        parametros: &[],
-                        sin_job: true,
-                    },
-                    |_, _| Ok(()),
-                )
-            });
-            Ok(match r {
-                Ok(_) => ore_driver::comprobacion(true, None),
-                Err(e) => ore_driver::comprobacion(false, Some(&e)),
-            })
+            acceso::comprobar(t, &url)
         }
         // **Qué contiene esta fuente.** Existe por una asimetría real: una URL
         // de BigQuery nombra UN dataset, así que hay que sabérselo antes de
@@ -167,7 +155,7 @@ fn verbo_(
 /// El dataset no se toma de aquí: viene dentro del objeto —`dataset.tabla`, que
 /// es lo que emite el catálogo— y tomarlo de los dos sitios sería el segundo
 /// sitio que puede discrepar del primero.
-fn proyecto(url: &str) -> Result<String, String> {
+pub(crate) fn proyecto(url: &str) -> Result<String, String> {
     let resto = url.strip_prefix("bigquery://").ok_or_else(|| {
         format!("`{url}` no es una URL de BigQuery: se esperaba `bigquery://<proyecto>/<dataset>`")
     })?;
