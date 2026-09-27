@@ -127,6 +127,22 @@ curl -sf -H "$SUJ" "$BASE/fuentes" | grep -q "clave" \
   && falla "4 · la lista de fuentes filtro algo que parece un secreto"
 dice "4 · GET /fuentes la ve, y no devuelve ningun secreto"
 
+# ── 4a · El nombre (0045 P1.5): la regla de todo lo que llega a ser ────────
+# Minúsculas, dígitos y `_`, empezando por letra, hasta 30: lo que admiten a
+# la vez el custodio (`fuente-<n>`), la cola y el paquete. Un nombre que no
+# cumple es 422 con el que sí valdría; uno ocupado, 409 con uno libre. Y en los
+# dos casos NADA se escribe.
+COD=$(curl -s -o "$TMP/nombre.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/fuentes" \
+       -d '{"name":"Ventas Produccion","url":"bigquery://un-proyecto/ventas"}')
+[ "$COD" = "422" ] || falla "4a · un nombre con mayusculas y espacios devolvio $COD: $(cat "$TMP/nombre.json")"
+grep -q '"sugerencia":"ventas_produccion"' "$TMP/nombre.json" || falla "4a · el 422 no sugiere el nombre: $(cat "$TMP/nombre.json")"
+COD=$(curl -s -o "$TMP/nombre.json" -w '%{http_code}' -X POST -H "$SUJ" "$BASE/fuentes" \
+       -d '{"name":"demo","url":"bigquery://otro-proyecto/ventas"}')
+[ "$COD" = "409" ] || falla "4a · un nombre ocupado devolvio $COD: $(cat "$TMP/nombre.json")"
+grep -q '"sugerencia":"demo_2"' "$TMP/nombre.json" || falla "4a · el 409 no sugiere uno libre: $(cat "$TMP/nombre.json")"
+curl -sf -H "$SUJ" "$BASE/fuentes" | grep -q 'Ventas\|otro-proyecto' && falla "4a · un alta rechazada escribio algo"
+dice "4a · el nombre: 422 con la sugerencia (ventas_produccion) · 409 si esta ocupado, con uno libre (demo_2) · nada escrito"
+
 ( cd "$REPO" && "$ORE" discover --from catalogo.json --out packages/ventas --name ventas >/dev/null 2>&1 ) \
   || falla "4 · \`ore discover\` fallo"
 

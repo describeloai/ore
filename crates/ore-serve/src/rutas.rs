@@ -967,13 +967,21 @@ impl Servidor {
     /// ⭐ La clase es `conexion`, que el custodio ya tenia en su lista desde el
     /// primer dia y nadie habia usado. Es literalmente lo que se pidio cuando se
     /// diseno: *«credenciales de bases de datos, de sources»*.
-    fn guardar_credencial(&self, nombre: &str, url: &str, testigo: Option<&str>) -> String {
+    fn guardar_credencial(
+        &self,
+        nombre: &str,
+        url: &str,
+        testigo: Option<&str>,
+    ) -> Result<String, (Option<u16>, String)> {
         let (Some(cofre), Some(org)) = (&self.cofre, &self.organizacion) else {
-            return "NO guardada: este servidor no sabe de ningun custodio                     (`--cofre` y `--organizacion`)"
-                .into();
+            return Err((None, "NO guardada: este servidor no sabe de ningun custodio                     (`--cofre` y `--organizacion`)"
+                .into()));
         };
         let Some(t) = testigo else {
-            return "NO guardada: la peticion no traia testigo que reenviar".into();
+            return Err((
+                None,
+                "NO guardada: la peticion no traia testigo que reenviar".into(),
+            ));
         };
         let cuerpo = Json::obj([
             ("nombre", Json::s(format!("fuente-{nombre}"))),
@@ -987,14 +995,17 @@ impl Servidor {
             Some(t),
             Some(&cuerpo),
         ) {
-            Err(e) => format!("NO guardada: {e}"),
-            Ok((c, _)) if (200..300).contains(&c) => {
-                format!("guardada en el custodio como `fuente-{nombre}`, clase `conexion`")
-            }
-            Ok((c, b)) => format!(
-                "NO guardada: el custodio contesto {c} · {}",
-                b.trim().chars().take(90).collect::<String>()
-            ),
+            Err(e) => Err((None, format!("NO guardada: {e}"))),
+            Ok((c, _)) if (200..300).contains(&c) => Ok(format!(
+                "guardada en el custodio como `fuente-{nombre}`, clase `conexion`"
+            )),
+            Ok((c, b)) => Err((
+                Some(c),
+                format!(
+                    "NO guardada: el custodio contesto {c} · {}",
+                    b.trim().chars().take(90).collect::<String>()
+                ),
+            )),
         }
     }
 
@@ -1235,8 +1246,29 @@ impl Servidor {
         let Some(url) = campo("url") else {
             return Respuesta::error(422, "falta `url`");
         };
-        if let Err(m) = token(&nombre) {
-            return Respuesta::error(422, format!("`name`: {m}"));
+        // ⭐ 0045 P1.5: el nombre, con la regla que todo lo que llega a ser
+        //   admite, y lo que ya lo ocupa, ANTES de escribir nada.
+        if let Err(m) = nombre_de_fuente(&nombre) {
+            return con_sugerencia(422, m, sugerir_nombre_de_fuente(&nombre));
+        }
+        if fuente_declarada(raiz, &nombre) {
+            return con_sugerencia(
+                409,
+                format!("ya hay una fuente `{nombre}`"),
+                nombre_libre(raiz, &nombre),
+            );
+        }
+        // ⛔ Un paquete con ese nombre haría nacer la fuente «catalogada» —
+        //   `GET /fuentes/{n}/estado` mira si existe `packages/<n>/`— y el Job
+        //   de catálogo se la saltaría para siempre.
+        if raiz.join("packages").join(&nombre).exists() {
+            return con_sugerencia(
+                409,
+                format!(
+                    "ya hay un paquete `{nombre}` en el árbol, y una fuente es también su paquete"
+                ),
+                nombre_libre(raiz, &nombre),
+            );
         }
         // ── LA GUARDA, QUE AHORA DEPENDE DE QUE HAYA DONDE GUARDARLA ──────
         //
@@ -1280,8 +1312,11 @@ impl Servidor {
 
         match mando::correr(&self.binario, raiz, &args) {
             Err(e) => Respuesta::error(500, e.to_string()),
+            // ⭐ 0045 P1.5: 422. Lo que ocupa el nombre ya se ha mirado arriba
+            //   (409); lo que `ore source add` rechaza es lo que se le dio —la
+            //   URL, el tipo—, y eso no es un conflicto con nada.
             Ok(s) if !s.bien() => Respuesta::error(
-                409,
+                422,
                 format!(
                     "`ore source add` devolvió {}: {}",
                     s.codigo,
@@ -1305,7 +1340,6 @@ impl Servidor {
                 //   quedaría un secreto que nombra una fuente que no existe, y
                 //   a eso no lo mira nadie nunca.
                 let guardada = self.guardar_credencial(&nombre, &url, testigo);
-                let encolado = self.encolar_catalogo(&nombre, sujeto);
 
                 // ⛔⛔ Y SI TRAIA CREDENCIAL Y NO SE GUARDO, ESTO NO ES UN 201.
                 //
@@ -1320,6 +1354,24 @@ impl Servidor {
                 //   y deshacer un commit empujado no es una vuelta atras: es
                 //   otro commit. Se dice en el mensaje, que es lo que permite
                 //   reintentar solo la credencial en vez de adivinar el estado.
+                // ⭐ 0045 P1.5: un 409 del custodio es un secreto `fuente-<n>` que
+                //   sobrevivió a la baja de otra fuente con ese nombre: el nombre
+                //   está ocupado, y se dice como los demás. El árbol no se
+                //   publica —la respuesta no es 2xx— y nada se encola.
+                if let Err((Some(409), m)) = &guardada {
+                    return con_sugerencia(
+                        409,
+                        format!(
+                            "el custodio ya guarda un secreto `fuente-{nombre}` (de una fuente \
+                             que se retiró con ese nombre): {m}"
+                        ),
+                        nombre_libre(raiz, &format!("{nombre}_2")),
+                    );
+                }
+                let guardada = match guardada {
+                    Ok(g) => g,
+                    Err((_, m)) => m,
+                };
                 if trae_credencial && !guardada.starts_with("guardada") {
                     return Respuesta::error(
                         502,
@@ -1329,6 +1381,10 @@ impl Servidor {
                         ),
                     );
                 }
+                // Se encola cuando la fuente va a quedar: después de la
+                // credencial, no antes (un 502 no publica el árbol, y un Job
+                // encolado para una fuente que no existe se quedaba en la cola).
+                let encolado = self.encolar_catalogo(&nombre, sujeto);
 
                 Respuesta::creado(Json::obj([
                     ("name", Json::s(nombre)),
@@ -2477,6 +2533,126 @@ fn paquete_de(raiz: &Path, nombre: &str) -> Result<PathBuf, Respuesta> {
 ///
 /// El alfabeto es cerrado, así que `..`, `/`, `\` y los nombres reservados de
 /// Windows no son casos que haya que acordarse de excluir: no están.
+/// ⭐⭐ 0045 P1.5 · **EL NOMBRE DE UNA FUENTE**: `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`,
+/// hasta 30.
+///
+/// Es la intersección de todo lo que ese nombre llega a ser, medida:
+///
+/// | dónde | su regla |
+/// |---|---|
+/// | el secreto `fuente-<n>` del custodio | minúsculas, `[a-z0-9_-]`, `≤ 63` → `n ≤ 56` |
+/// | el fichero y el Job de la cola (`cola::nombre_de_objeto`) | minúsculas, lo demás `-`, corta a 30 |
+/// | el paquete de la fuente (`OOS2030`) | una letra, luego letras, dígitos y `_` |
+///
+/// ⛔ Antes valía `^[A-Za-z][A-Za-z0-9_]{0,127}$`, y así `Ventas` fallaba al
+///   guardar la credencial (el custodio no admite mayúsculas) y `Ventas` y
+///   `ventas`, `a_b` y `a__b` —o dos nombres largos con el mismo prefijo—
+///   caían en el MISMO fichero de la cola: el segundo catálogo pisaba al
+///   primero. Minúsculas, sin `__` ni `_` en los bordes y hasta 30 hacen
+///   `nombre_de_objeto` biyectivo.
+pub fn nombre_de_fuente(n: &str) -> Result<(), String> {
+    let bien = n.len() <= 30
+        && n.starts_with(|c: char| c.is_ascii_lowercase())
+        && n.split('_').all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if bien {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{n}` no puede ser el nombre de una fuente: minúsculas, dígitos y `_` \
+             (sin `__` ni `_` al principio o al final), empezando por letra y hasta 30"
+        ))
+    }
+}
+
+/// **El nombre que sale de lo que alguien escribió**: sin acentos, en
+/// minúsculas, lo demás `_`, sin `_` repetidos ni en los bordes, cortado a 30
+/// en un `_`. Si empieza por dígito, `f_` delante. Lo mismo hace la consola en
+/// vivo, debajo del nombre de la conexión; aquí sirve para sugerirlo.
+pub fn sugerir_nombre_de_fuente(humano: &str) -> String {
+    let mut s = String::new();
+    for c in humano.chars().flat_map(sin_acento) {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+        } else if !s.ends_with('_') {
+            s.push('_');
+        }
+    }
+    let mut s = s.trim_matches('_').to_string();
+    if s.starts_with(|c: char| c.is_ascii_digit()) {
+        s = format!("f_{s}");
+    }
+    if s.is_empty() {
+        s = "fuente".into();
+    }
+    if s.len() > 30 {
+        let corte = s[..30].rfind('_').filter(|i| *i > 0).unwrap_or(30);
+        s = s[..corte].trim_end_matches('_').to_string();
+    }
+    s
+}
+
+/// Lo que una letra con tilde es sin ella. Lo justo para los nombres que se
+/// escriben aquí; lo que no está, se va por `_`.
+fn sin_acento(c: char) -> Option<char> {
+    Some(match c {
+        'á' | 'à' | 'ä' | 'â' | 'Á' | 'À' | 'Ä' | 'Â' => 'a',
+        'é' | 'è' | 'ë' | 'ê' | 'É' | 'È' | 'Ë' | 'Ê' => 'e',
+        'í' | 'ì' | 'ï' | 'î' | 'Í' | 'Ì' | 'Ï' | 'Î' => 'i',
+        'ó' | 'ò' | 'ö' | 'ô' | 'Ó' | 'Ò' | 'Ö' | 'Ô' => 'o',
+        'ú' | 'ù' | 'ü' | 'û' | 'Ú' | 'Ù' | 'Ü' | 'Û' => 'u',
+        'ñ' | 'Ñ' => 'n',
+        'ç' | 'Ç' => 'c',
+        c => c,
+    })
+}
+
+/// ¿Declara el manifiesto de `raiz` una fuente `nombre`?
+fn fuente_declarada(raiz: &Path, nombre: &str) -> bool {
+    std::fs::read_to_string(raiz.join("ontology.config.yaml"))
+        .ok()
+        .and_then(|t| parse::parse(&t).ok())
+        .and_then(|n| {
+            n.get("datasources").map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .any(|d| d.get("name").and_then(|(_, x)| x.as_str()) == Some(nombre))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Un nombre libre a partir de `n`: él, o `n_2`, `n_3`… — ni declarado ni con
+/// paquete. Para decirlo en el 409 en vez de dejar al que llama adivinando.
+fn nombre_libre(raiz: &Path, n: &str) -> String {
+    let ocupado = |x: &str| fuente_declarada(raiz, x) || raiz.join("packages").join(x).exists();
+    if !ocupado(n) {
+        return n.to_string();
+    }
+    (2..)
+        .map(|i| {
+            let sufijo = format!("_{i}");
+            let base = &n[..n.len().min(30 - sufijo.len())];
+            format!("{}{sufijo}", base.trim_end_matches('_'))
+        })
+        .find(|x| !ocupado(x))
+        .unwrap_or_else(|| n.to_string())
+}
+
+/// Un error con el nombre que sí valdría al lado: la consola lo ofrece.
+fn con_sugerencia(codigo: u16, motivo: String, sugerencia: String) -> Respuesta {
+    Respuesta {
+        codigo,
+        cuerpo: Json::obj([
+            ("error", Json::s(motivo)),
+            ("sugerencia", Json::s(sugerencia)),
+        ]),
+    }
+}
+
 pub fn token(v: &str) -> Result<(), String> {
     if v.is_empty() || v.len() > 64 {
         return Err("tiene que medir entre 1 y 64 caracteres".into());
@@ -2755,6 +2931,70 @@ fn expandir(catalogo: &Path, objetos: Vec<String>) -> Result<Vec<String>, Respue
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod el_nombre_de_una_fuente {
+    use super::*;
+
+    /// La regla es la intersección de custodio, cola y namespace: lo que pasa,
+    /// pasa en los tres.
+    #[test]
+    fn la_regla() {
+        for bien in [
+            "ventas",
+            "ventas_produccion",
+            "pg",
+            "bq2",
+            "a_b_c",
+            &"a".repeat(30),
+        ] {
+            assert!(nombre_de_fuente(bien).is_ok(), "{bien}");
+        }
+        for mal in [
+            "Ventas",
+            "ventas-prod",
+            "a__b",
+            "_a",
+            "a_",
+            "2ventas",
+            "",
+            "ventas prod",
+            &"a".repeat(31),
+            "bigquery_20260927_1428x_largooo",
+        ] {
+            assert!(nombre_de_fuente(mal).is_err(), "{mal}");
+        }
+    }
+
+    /// Lo que la regla deja pasar no colisiona en la cola: `nombre_de_objeto`
+    /// es biyectivo sobre ella.
+    #[test]
+    fn dos_nombres_validos_no_comparten_fichero_de_cola() {
+        let nombres = ["ventas", "ventas_2", "ventas2", "a_b", "ab", "a_bc", "ab_c"];
+        let objetos: std::collections::BTreeSet<_> =
+            nombres.iter().map(|n| cola::nombre_de_objeto(n)).collect();
+        assert_eq!(objetos.len(), nombres.len(), "{objetos:?}");
+    }
+
+    #[test]
+    fn el_nombre_que_se_sugiere_cumple_la_regla() {
+        for (humano, sale) in [
+            ("Ventas Producción", "ventas_produccion"),
+            ("  CRM -- EU (prod) ", "crm_eu_prod"),
+            ("2024 ventas", "f_2024_ventas"),
+            ("Ñandú", "nandu"),
+            ("¿?", "fuente"),
+            (
+                "Almacén de datos de la región norte del país",
+                "almacen_de_datos_de_la_region",
+            ),
+        ] {
+            let s = sugerir_nombre_de_fuente(humano);
+            assert_eq!(s, sale, "{humano}");
+            assert!(nombre_de_fuente(&s).is_ok(), "{humano} → {s}");
+        }
+    }
 }
 
 #[cfg(test)]

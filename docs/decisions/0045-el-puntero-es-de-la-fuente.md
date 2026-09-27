@@ -159,12 +159,42 @@ ya reescribía a `upsert` cualquier tabla copiada con clave. Medido en el códig
 |---|---|---|---|
 | **P1 · el puntero es del objeto** ✅ `af5a474` | `clave/*` y `tipo/*` una vez por fuente (`packages/<fuente>/discover.answers.json`; el paquete de la fuente nunca se crea desde una base). Su regla de la cara `D` la sustituye P1′ | — | sí |
 | **P1′ · la verdad del origen** ✅ | la cara `D` es **la del driver, tal cual, más `key` si se conoce**: sin `upsert` inventado y sin escaneo de alcances (fuera `Regla::copiadas_en_la_fuente`); `registro::restricciones` toma la clave como identidad con cualquier modo; lo que el origen no deja mantener **no se copia y se dice** (`Induccion::sin_copia`: `OOS2021` para una entidad sobre `append`, `OOS2023` para `append` + `field`), en el informe de `discover` y en el de `review`; en un choque de respuestas **manda la fuente**, con aviso | `el_puntero_es_del_objeto.rs` (4 casos; el de `OOS2021`: la tabla gana la clave, sigue diciendo `append`, la entidad no se copia y el árbol no da `OOS2021`); `la-copia-se-decide.sh` 0–10 en local | sí |
-| **P1.5 · la fuente se llama como la conexión** | el nombre del paquete de la fuente —y de su datasource— sale del nombre que el usuario da en el **paso 2 del wizard**, no de `<tipo>_<fecha>`: `bigquery_20260927_1428.ventas.pedidos` quedaría escrito en cada `from` y cada SQL, y renombrar después es reescribirlos todos | una conexión nueva nace con su nombre; las de hoy se renombran en P4 | sí, antes de P3′ |
+| **P1.5 · la fuente se llama como la conexión** | el nombre del paquete de la fuente —y de su datasource— sale del nombre que el usuario da en el **paso 2 del wizard**, no de `<tipo>_<fecha>`: `bigquery_20260927_1428.ventas.pedidos` quedaría escrito en cada `from` y cada SQL, y renombrar después es reescribirlos todos | una conexión nueva nace con su nombre; las guardas de 422/409 probadas en ore-serve; las de hoy se renombran en P4 | sí, antes de P3′ |
 | **P2 · leer en los dos sitios** | ore-serve resuelve la Table por el árbol y no por la carpeta: `copias` (por `registro::clave_de`), `tablas_del_paquete` (fuente: siempre su catálogo, anotado con sus Tables; database: sus Datasets y Views unidos a la Table que nombran, esté donde esté), `objetos_fisicos`, `retirar_fuente` (cuenta las databases por `discover.scope.json`), la guarda de borrar una Table (Datasets y SQL) | tests de ore-serve en las dos disposiciones; `la-copia-se-decide.sh` verde sin cambios | sí, antes de P3′ |
 | **P3′ · un solo escritor de la fuente** | `ore source induce <fuente>`, lanzado por el Job de catálogo y tras cada cambio de alcance: escribe las Tables de los objetos que **alguna** base usa —con el catálogo y las respuestas **de la fuente**—, su `schema.yaml` y sus `exports` en tres partes, y retira las que ya no usa nadie. Las bases solo nombran (`from: { table: <fuente>.<schema>.<obj> }`, o SQL) y fallan si falta la Table. Sin dos escritores del mismo paquete (carreras en ore-serve), y sin una base que tenga que saber si otra sigue usando un objeto | tests de ore-cli; `standard` da N datasets y 0 tables; `la-copia-se-decide.sh` reescrita | con P4 |
 | **P4 · migrar los árboles** | por fuente: las Tables se **re-inducen** desde el catálogo de la fuente (tras P1′ el contenido depende solo del objeto: no hay nada que fusionar); las bases se **reapuntan**, no se re-inducen (re-inducir una base vieja reescribe sus vistas y renombra lo que las nombra); se retiran las viejas; la fuente toma el nombre de su conexión (P1.5) | `cotejo` en copias de `demo`, `prueba` y `victor`: mismos diagnósticos; `bq` 3 items, `standard_test` 19; cada árbol, **un** commit que compila solo | P3′ + P4 juntos, árbol a árbol |
 | **P5 · los que miran un paquete** | `drift-detect` sobre el paquete de la fuente contra su propio catálogo (ya no hace falta la unión de alcances); la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
 | **P6 · consola** | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
+
+### P1.5 · lo medido
+
+- **El nombre ya lo pide el paso 2** (`NameStep.tsx`, «Nombre»), pero llega **relleno** con
+  `<tipo>_<aaaammdd>_<hhmm>` (`SourceSetupWizard.tsx:59-64`, `nombrePorDefecto`): casi nadie lo
+  cambia. No hay nombre humano aparte; lo único humano es `description` del manifiesto («BigQuery ·
+  dado de alta desde la consola»), que la consola pide y **no enseña**: en todas partes se ve el id.
+- **El nombre es muchas cosas a la vez**: el datasource del manifiesto, `packages/<n>/`, el secreto
+  `fuente-<n>` del cofre, la variable `<ORG>_<N>_URL`, el fichero de la cola
+  `44-el-catalogo-<obj>.yaml`, `GET /fuentes/{n}/…` y —tras P3′— cada `from` y cada SQL.
+- **La regla de hoy no es la intersección de las suyas.** La consola y `ore source add` admiten
+  `^[A-Za-z][A-Za-z0-9_]{0,127}$`; el cofre solo admite `fuente-<n>` en minúsculas y hasta 63
+  (`n ≤ 56`), y la cola corta a 30 y pasa a minúsculas (`cola::nombre_de_objeto`). Así que hoy
+  **ya se rompen en silencio**: `Ventas` falla al guardar la credencial —502 con el árbol ya
+  escrito—, y `Ventas`/`ventas`, `a_b`/`a__b` o dos nombres largos con el mismo prefijo comparten
+  fichero de cola: el segundo catálogo pisa al primero.
+- **Colisiones que nadie mira**: un `packages/<n>/` que ya existe (de una database con ese nombre:
+  la fuente nace «catalogada» y el Job se la salta para siempre) y un secreto `fuente-<n>` que
+  sobrevivió a una baja.
+- Y un error mal dicho: cualquier fallo de `ore source add`, un nombre inválido incluido, sale
+  **409** (`rutas.rs:1283`); es un 422.
+
+### P1.5 · lo que se hace
+
+| pieza | qué |
+|---|---|
+| **la regla** | `^[a-z][a-z0-9]*(_[a-z0-9]+)*$`, **≤ 30**: la intersección de cofre, cola y namespace (`OOS2030`). Minúsculas y sin `__` ni `_` en los bordes hacen `nombre_de_objeto` biyectivo; 30 es su corte |
+| **ore-serve** (la guarda de verdad) | `nombre_de_fuente` en `alta_de_fuente`, antes del CLI: **422** con la regla y el identificador sugerido si no cumple; **409** si ya es un datasource, si `packages/<n>/` existe, si su fichero de cola es de otra fuente o si `fuente-<n>` ya está en el cofre, sugiriendo `<n>_2`. Y el fallo de `ore source add` por nombre, 422 |
+| **consola** | el paso 2 pide **«Nombre de la conexión»**, texto libre y vacío (fuera `nombrePorDefecto`), y enseña debajo, en vivo, el identificador que sale de él (sin acentos, minúsculas, lo demás `_`, ≤ 30; si empieza por dígito, con el tipo delante: `pg_2024_ventas`), editable; avisa de colisión antes de enviar con los nombres que ya hay. Manda `description` = el nombre humano, y las listas lo enseñan con el identificador debajo |
+| **orden** | ore-serve primero (una consola vieja manda nombres que la guarda nueva acepta o rechaza con 422); la consola después. Las fuentes de hoy se renombran en P4 |
 
 ⚠️ **`la-copia-se-decide.sh` cambió de origen, no de expectativa.** Su `customers` era
 `{ append, log }` y el guion construía diez pasos sobre su copia de entidad: con P1′ esa copia no
@@ -172,10 +202,11 @@ se mantiene (`OOS2021`), que es justo lo que P1′ corrige. Pasa a `{ none, none
 Postgres sin clave real, sin WAL lógico, que se recomputa entero— y el caso `append` lo fija
 `el_puntero_es_del_objeto.rs`.
 
-Pendiente de la spec, no de este ADR: que la copia de una entidad sobre un origen que solo anexa
-**sí** se pueda mantener recomputándola entera en cada refresco es una perilla del Dataset
-(`refresh: recompute | merge`), con `OOS2021`/`OOS2023` aplicando solo a `merge`. Es la mitad «la
-copia decide cómo se mantiene» del estado del arte, y va a `C:\oos`.
+> **Inciso · la entidad sobre un origen que solo anexa.** Desde P1′ su copia no se emite: lo
+> borrado en el origen no llegaría (`OOS2021`), y el informe lo dice. Si se quiere mantenerla
+> igual —recomputándola entera en cada refresco—, eso es de la copia, no del puntero: una perilla
+> del Dataset (`refresh: recompute | merge`), con `OOS2021`/`OOS2023` solo para `merge`. Es spec
+> (`C:\oos`), fuera de este ADR.
 
 Fuera: `ore pack` con la fuente como dependencia versionada. Colisiones al quitar `_t` (`a-b`/`a_b`,
 `Pedidos`/`pedidos` en Windows): el sufijo de siempre **solo** cuando colisionan, y se dice.
