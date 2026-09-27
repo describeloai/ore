@@ -64,7 +64,9 @@ trap limpiar EXIT
 
 buscar() {
   local n
-  for n in "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
+  # `ORE_BIN`, si se da, primero: los binarios de otro `CARGO_TARGET_DIR`.
+  for n in ${ORE_BIN:+"$ORE_BIN/$1" "$ORE_BIN/$1.exe"} \
+           "$RAIZ/target/release/$1" "$RAIZ/target/release/$1.exe" \
            "$RAIZ/target/debug/$1"   "$RAIZ/target/debug/$1.exe"; do
     [ -x "$n" ] && { echo "$n"; return 0; }
   done
@@ -263,7 +265,7 @@ paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
 esquema() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
 esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entidades que no hay: $(esquema tienda)"
-esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
+esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers_t","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"orders",.*"key":\["order_id"\]' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers",.*"key":\[\]' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es la organizacion (team:demo): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
@@ -324,7 +326,7 @@ dataset tienda orders | grep -q 'kind: Dataset' || falla "3b · modelar customer
 COD=$(modelar tienda olist.customers)
 [ "$COD" = "409" ] || falla "3b · modelar dos veces devolvio $COD: $(cuerpo)"
 paquete tienda | grep -q '"modeladas": 1' || falla "3b · GET /paquetes no cuenta la modelada: $(paquete tienda)"
-esquema tienda | grep -q '"entity":"Customers".*"modeled":true,"name":"customers"' || falla "3b · el esquema no dice que customers esta modelada: $(esquema tienda)"
+esquema tienda | grep -q '"entity":"Customers".*"modeled":true,"name":"customers_t"' || falla "3b · el esquema no dice que customers esta modelada: $(esquema tienda)"
 COD=$(decidir tienda '{"answers":{"clave/olist.customers":["customer_id"]}}')
 [ "$COD" = "200" ] || falla "3b · contestar la clave devolvio $COD: $(cuerpo)"
 dataset tienda customers | grep -q 'kind: Dataset' || falla "3b · con la clave contestada, la copia no vuelve: $(dataset tienda customers)"
@@ -375,7 +377,7 @@ grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · copi
 dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · la tabla copiada no lleva la copia: $(dataset espejo orders)"
 [ -n "$(dataset espejo customers)" ] && falla "6 · copiar orders copio tambien customers"
 paquete espejo | grep -q '"type": "foreign"' && paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 1}' || falla "6 · GET /paquetes: sigue foreign con 1 copia: $(paquete espejo)"
-esquema espejo | grep -q '"copied":true,.*"name":"orders"' && esquema espejo | grep -q '"copied":false,.*"name":"customers"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
+esquema espejo | grep -q '"copied":true,.*"name":"orders_t"' && esquema espejo | grep -q '"copied":false,.*"name":"customers_t"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.olist.orders,tienda.olist.customers,tienda.olist.orders"' || falla "6 · el Job no lleva espejo.orders: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 COD=$(copiar espejo olist.orders)
 [ "$COD" = "409" ] || falla "6 · copiar dos veces devolvio $COD: $(cuerpo)"
@@ -520,7 +522,7 @@ kind: View
 metadata: { name: libre, namespace: tienda }
 spec:
   owner: team:data
-  from: { table: tienda.olist.orders }
+  from: { table: tienda.olist.orders_t }
   fields: { id: order_id }
 Y
 funcion8 sinCopia tienda.libre ""

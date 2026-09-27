@@ -1767,12 +1767,22 @@ fn tablas_del_paquete(dir: &Path) -> Vec<Json> {
     let mut vista_de_tabla: std::collections::BTreeMap<String, (String, bool)> = Default::default();
     for (carpeta, es_dataset) in [("views", false), ("datasets", true)] {
         for v in leer(carpeta) {
+            // ⭐ Una vista v1alpha14 dice lo que lee en su SQL (0040): la que lee
+            //   UNA sola cosa la expone como lo hacía `from.table`.
+            let de_sql = || {
+                let sql = en(&v, "spec", "sql")?;
+                match ore_core::servir::nombres_leidos(&sql).as_slice() {
+                    [uno] => Some(uno.clone()),
+                    _ => None,
+                }
+            };
             if let (Some(n), Some(t)) = (
                 en(&v, "metadata", "name"),
                 v.get("spec")
                     .and_then(|(_, s)| s.get("from"))
                     .and_then(|(_, f)| f.get("table"))
-                    .and_then(|(_, t)| t.as_str().map(String::from)),
+                    .and_then(|(_, t)| t.as_str().map(String::from))
+                    .or_else(de_sql),
             ) {
                 let clave = t.rsplit('.').next().unwrap_or(&t).to_string();
                 // Un dataset gana a una vista sobre la misma tabla: es lo que se
@@ -1966,12 +1976,20 @@ fn objetos_fisicos(paquete: &Path) -> std::collections::BTreeMap<String, String>
         let Some(nombre) = en(&v, "metadata", "name") else {
             continue;
         };
+        // v1alpha14: la tabla que lee su SQL, si lee una sola (0040).
         let tabla = v
             .get("spec")
             .and_then(|(_, s)| s.get("from"))
             .and_then(|(_, f)| f.get("table"))
-            .and_then(|(_, t)| t.as_str());
-        if let Some(o) = tabla.and_then(|t| objeto.get(t)) {
+            .and_then(|(_, t)| t.as_str().map(String::from))
+            .or_else(|| {
+                let sql = en(&v, "spec", "sql")?;
+                match ore_core::servir::nombres_leidos(&sql).as_slice() {
+                    [uno] => Some(uno.rsplit('.').next().unwrap_or(uno).to_string()),
+                    _ => None,
+                }
+            });
+        if let Some(o) = tabla.and_then(|t| objeto.get(&t)) {
             salida.insert(nombre, o.clone());
         }
     }

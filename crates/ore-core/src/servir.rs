@@ -350,6 +350,52 @@ pub fn nombrados<'a>(pkg: &'a Package, v: &'a Loaded) -> Vec<Nombrado<'a>> {
     r.out
 }
 
+/// **Los nombres que lee una consulta SQL, tal como están escritos** (`a`,
+/// `s.a`, `p.s.a`), sin los de un `WITH` y sin resolverlos: para quien sólo
+/// tiene el texto y no el paquete cargado. Vacío si no se analiza.
+pub fn nombres_leidos(sql: &str) -> Vec<String> {
+    let Ok(sentencias) = Parser::parse_sql(&DuckDbDialect {}, sql) else {
+        return Vec::new();
+    };
+    let [Statement::Query(q)] = sentencias.as_slice() else {
+        return Vec::new();
+    };
+    struct Recoge {
+        ctes: BTreeSet<String>,
+        out: Vec<String>,
+    }
+    impl Visitor for Recoge {
+        type Break = ();
+        fn pre_visit_table_factor(&mut self, tf: &TableFactor) -> ControlFlow<()> {
+            if let TableFactor::Table {
+                name, args: None, ..
+            } = tf
+            {
+                let ids: Vec<&str> = name
+                    .0
+                    .iter()
+                    .filter_map(|p| match p {
+                        ObjectNamePart::Identifier(i) => Some(i.value.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let escrito = ids.join(".");
+                let es_cte = ids.len() == 1 && self.ctes.contains(&escrito.to_lowercase());
+                if ids.len() == name.0.len() && !ids.is_empty() && !es_cte {
+                    self.out.push(escrito);
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut r = Recoge {
+        ctes: nombres_de_with(q),
+        out: Vec::new(),
+    };
+    let _ = Visit::visit(q.as_ref(), &mut r);
+    r.out
+}
+
 /// La consulta de `v` con cada nombre que resuelve a `de` (su nombre corto)
 /// escrito como `a`, entero —`p.n` o `p.s.n`, que se lee igual desde cualquier
 /// schema— y citado como estaba. `None` si no lo nombra.
