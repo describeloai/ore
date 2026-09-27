@@ -1374,8 +1374,25 @@ impl Servidor {
     ///   hace cuando no hay paquete. Quien pregunta esta mirando una ficha sin
     ///   esquema y deja de preguntar en cuanto aparece — la ventana es la que
     ///   tarda un catalogo, un par de minutos.
+    ///
+    /// ⭐⭐ Y UN CUARTO: `fallida`. El Job que falla deja su diagnóstico en el
+    ///   árbol (`cola::Fallo`); si el Job de la cola sigue siendo ese, la
+    ///   fuente está fallida y se dice por qué. Si es otro, alguien pulsó
+    ///   «Reintentar» y está `encolada` otra vez.
     fn estado(&self, fuente: &str) -> Respuesta {
         let cola = self.cola.as_ref();
+        let fallida = |f: cola::Fallo| {
+            Respuesta::ok(Json::obj([
+                ("estado", Json::s("fallida")),
+                (
+                    "dice",
+                    Json::s("el catalogo fallo; su diagnostico esta en el arbol"),
+                ),
+                ("job", Json::s(f.job)),
+                ("fin", Json::s(f.fin)),
+                ("log", Json::s(f.log)),
+            ]))
+        };
         // ⭐ TODO dentro del mismo clon del arbol: preguntar por el paquete y
         //   por la cola son dos preguntas, pero una sola visita a la forja.
         self.leyendo(move |raiz| {
@@ -1386,9 +1403,24 @@ impl Servidor {
                     ("dice", Json::s("su catalogo esta en el arbol")),
                 ]));
             }
+            // ⛔ `fuente` viene de la URL: solo nombres, nunca un camino.
+            let fallo = fuente
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                .then(|| {
+                    std::fs::read_to_string(
+                        raiz.join(".fallos").join(format!("{fuente}.catalogo.txt")),
+                    )
+                    .ok()
+                })
+                .flatten()
+                .and_then(|t| cola::fallo_de(&t));
             // ② La cola. Sin `--cola` NO se contesta `pendiente`: eso afirmaria
             //    que nadie lo encolo, y lo cierto es que no se puede saber.
             let Some(cola) = cola else {
+                if let Some(f) = fallo {
+                    return fallida(f);
+                }
                 return Respuesta::ok(Json::obj([
                     ("estado", Json::s("desconocido")),
                     (
@@ -1409,16 +1441,19 @@ impl Servidor {
                 }
             };
             let fichero = format!("44-el-catalogo-{}.yaml", cola::nombre_de_objeto(fuente));
-            if prestado.ruta().join(&fichero).is_file() {
-                Respuesta::ok(Json::obj([
+            let en_cola = std::fs::read_to_string(prestado.ruta().join(&fichero)).ok();
+            match (fallo, en_cola) {
+                // El Job que falló es el que sigue en la cola: nadie reintentó.
+                (Some(f), Some(t)) if cola::job_de(&t) == Some(f.job.as_str()) => fallida(f),
+                (Some(f), None) => fallida(f),
+                (_, Some(_)) => Respuesta::ok(Json::obj([
                     ("estado", Json::s("encolada")),
                     ("dice", Json::s("se esta leyendo el origen")),
-                ]))
-            } else {
-                Respuesta::ok(Json::obj([
+                ])),
+                (None, None) => Respuesta::ok(Json::obj([
                     ("estado", Json::s("pendiente")),
                     ("dice", Json::s("nadie ha encolado su catalogo todavia")),
-                ]))
+                ])),
             }
         })
     }

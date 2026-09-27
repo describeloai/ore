@@ -193,6 +193,10 @@ spec:
             - { name: EMISOR, value: "https://login.paladio.io" }
             - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
             - { name: REALM, value: "rubix" }
+            # ⭐ Quién soy: el fallo lo lleva, y ore-serve lo compara con el Job
+            #   que haya en la cola para saber si alguien pulsó «Reintentar».
+            - name: JOB
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['job-name']" } }
           volumeMounts:
             - { name: puesto, mountPath: /puesto, readOnly: true }
             - { name: trabajo, mountPath: /trabajo }
@@ -296,9 +300,34 @@ spec:
               [ -f "packages/$FUENTE/package.yaml" ] \
                 || ore package new "$FUENTE" --owner "team:$ORGANIZACION" --path .
               # ⭐ Si falla, el DIAGNOSTICO: `ore source check` dice permiso a permiso
-              #   qué falta y dónde concederlo. El informador sube este log a
-              #   `ore-iam` y la ficha de la fuente lo enseña (0026).
-              ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json" || { echo "### el catalogo fallo; diagnostico:"; ore source check "$FUENTE" || true; exit 1; }
+              #   qué falta y dónde concederlo.
+              # ⛔⛔ Y SE DEJA EN EL ÁRBOL, no solo en el log del pod. Medido el
+              #   2026-09-27 en `victor`: una hora después del fallo el Job seguía
+              #   `Failed` y sus pods ya no existían —nodos spot—, así que el
+              #   informador no tenía log que subir y la ficha decía «falló sin
+              #   decir por qué» de un Job que sí lo dijo. `.fallos/` está fuera de
+              #   `packages/`: la fuente sigue sin catalogar y el reconciliador la
+              #   sigue viendo pendiente. ore-serve lo lee en `GET /fuentes/{n}/estado`.
+              # ⚠️ El log se limpia de `usuario:clave@` antes de escribirlo: el
+              #   árbol lo lee cualquiera del inquilino, el log del pod no.
+              LOG=/trabajo/catalogo.log
+              FALLO=".fallos/$FUENTE.catalogo.txt"
+              if ! ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json" > "$LOG" 2>&1; then
+                echo "### el catalogo fallo; diagnostico:" >> "$LOG"
+                ore source check "$FUENTE" >> "$LOG" 2>&1 || true
+                cat "$LOG"
+                git reset -q --hard; git clean -fdq
+                if grep -qx "job: $JOB" "$FALLO" 2>/dev/null; then echo "· el diagnostico de este Job ya esta en el arbol"; exit 1; fi
+                mkdir -p .fallos
+                { echo "job: $JOB"; echo "fin: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "---"; tail -n 60 "$LOG" | sed -E 's#(://[^:/@ ]+):[^@ ]+@#\1:***@#g'; } > "$FALLO"
+                git add "$FALLO"
+                git -c user.name=catalogo -c user.email=catalogo@invalido commit -q -m "Catalogo de \`$FUENTE\`: fallo"
+                git push -q origin HEAD:main || { git pull -q --rebase origin main && git push -q origin HEAD:main; } || echo "⚠ no se pudo dejar el diagnostico en el arbol"
+                exit 1
+              fi
+              cat "$LOG"
+              # Un catálogo que sale bien se lleva el fallo anterior.
+              git rm -q -f --ignore-unmatch "$FALLO"
 
               git add -A
               if git diff --cached --quiet; then

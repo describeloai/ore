@@ -70,7 +70,11 @@ pub fn nombre_de_objeto(s: &str) -> String {
     }
     let n: String = out.trim_matches('-').chars().take(30).collect();
     let n = n.trim_matches('-').to_string();
-    if n.is_empty() { "sin-nombre".into() } else { n }
+    if n.is_empty() {
+        "sin-nombre".into()
+    } else {
+        n
+    }
 }
 
 /// El Job de catálogo de una fuente: cómo se llama el fichero y qué lleva dentro.
@@ -543,6 +547,44 @@ pub fn rendir_capa(
     Ok((format!("{numero}-{mote}-{corto}.yaml"), t, job))
 }
 
+/// ⭐⭐ EL FALLO DE UN CATÁLOGO, tal como el Job lo deja en el árbol
+/// (`.fallos/<fuente>.catalogo.txt`, `malla/44-el-catalogo.yaml`).
+///
+/// ⛔ Antes vivía solo en el log del pod, y el informador lo subía mientras el
+///   pod existiera. Medido el 2026-09-27 en `victor`: una hora después del
+///   fallo el Job seguía `Failed` y sus pods ya no estaban —nodos spot—, así
+///   que la ficha decía «falló sin decir por qué» de un Job que SÍ lo dijo.
+///   Lo que el cliente tiene que leer horas después no puede vivir en un pod.
+///
+/// Formato: `job: <nombre>`, `fin: <iso>`, una línea `---` y el log.
+pub struct Fallo {
+    pub job: String,
+    pub fin: String,
+    pub log: String,
+}
+
+pub fn fallo_de(texto: &str) -> Option<Fallo> {
+    let (cabecera, log) = texto.split_once("\n---\n")?;
+    let campo = |k: &str| {
+        cabecera
+            .lines()
+            .find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()))
+    };
+    Some(Fallo {
+        job: campo("job:")?,
+        fin: campo("fin:").unwrap_or_default(),
+        log: log.to_string(),
+    })
+}
+
+/// El nombre del Job que hay en un fichero de la cola: `name: catalogo-…`.
+pub fn job_de(texto: &str) -> Option<&str> {
+    texto
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("name: catalogo-").map(|_| l.trim()))
+        .and_then(|l| l.strip_prefix("name: "))
+}
+
 #[cfg(test)]
 mod prueba {
     use super::*;
@@ -565,6 +607,19 @@ mod prueba {
         };
         assert_ne!(nombre(&t0), nombre(&t1));
         assert_ne!(nombre(&t1), nombre(&t2));
+    }
+
+    /// El fallo se lee, y el Job de la cola se reconoce: si son el mismo, la
+    /// fuente está `fallida`; si no, alguien pulsó «Reintentar».
+    #[test]
+    fn el_fallo_se_lee_y_se_empareja_con_la_cola() {
+        let f = fallo_de("job: catalogo-bq-1a2b3c4d\nfin: 2026-09-27T12:37:47Z\n---\n  ✗ jobs · `roles/bigquery.jobUser` en proyecto p\n").unwrap();
+        assert_eq!(f.job, "catalogo-bq-1a2b3c4d");
+        assert_eq!(f.fin, "2026-09-27T12:37:47Z");
+        assert!(f.log.contains("jobUser"));
+        assert!(fallo_de("sin cabecera").is_none());
+        let cola = "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: catalogo-bq-1a2b3c4d\n  namespace: t-demo\n";
+        assert_eq!(job_de(cola), Some("catalogo-bq-1a2b3c4d"));
     }
 
     /// La comprobación: la URL y la corrida entran, el nombre lleva el
@@ -761,23 +816,19 @@ env:
             b.lines().next(),
             "otra corrida es otro Job"
         );
-        assert!(
-            rendir_invocacion(
-                "name: x
+        assert!(rendir_invocacion(
+            "name: x
 ", &i
-            )
-            .is_err()
-        );
-        assert!(
-            rendir_invocacion(
-                p,
-                &Invocacion {
-                    funcion: "a\"b",
-                    ..i
-                }
-            )
-            .is_err()
-        );
+        )
+        .is_err());
+        assert!(rendir_invocacion(
+            p,
+            &Invocacion {
+                funcion: "a\"b",
+                ..i
+            }
+        )
+        .is_err());
     }
 
     /// ⛔ Una plantilla que no trae el hueco NO se rinde a medias.
