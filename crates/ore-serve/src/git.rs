@@ -80,6 +80,18 @@ impl std::fmt::Display for Fallo {
     }
 }
 
+/// Una rama frente a otra ([`Forja::frente_a`]).
+#[derive(Debug, Clone)]
+pub struct Frente {
+    /// El commit del que salió (`merge-base`).
+    pub desde: String,
+    pub cabeza: String,
+    /// Commits de la rama que la base no tiene.
+    pub adelante: u64,
+    /// Commits de la base desde que la rama salió.
+    pub atras: u64,
+}
+
 /// Un directorio temporal que se borra al soltarlo.
 ///
 /// Sin esto, un servidor que atiende mil peticiones deja mil clones en el
@@ -204,6 +216,59 @@ impl Forja {
             }
             (_, e) => e,
         })?;
+        Ok(prestado)
+    }
+
+    /// **Dónde está la rama de este clon frente a `base`** (ramas globales, fase
+    /// 2): de qué commit salió —el `merge-base`, no la `base` de hoy: comparar
+    /// contra lo que `base` hizo después pondría sus cambios en la rama, al
+    /// revés—, su cabeza, y cuántos commits lleva cada una desde entonces.
+    pub fn frente_a(&self, dir: &Path, base: &str) -> Result<Frente, Fallo> {
+        self.git(Some(dir), &["fetch", "--quiet", "origin", base])
+            .map_err(|_| Fallo::SinRama(base.to_string()))?;
+        let desde = self
+            .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
+            .trim()
+            .to_string();
+        let cabeza = self
+            .git(Some(dir), &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        let cuentas = self.git(
+            Some(dir),
+            &["rev-list", "--left-right", "--count", "FETCH_HEAD...HEAD"],
+        )?;
+        let mut n = cuentas
+            .split_whitespace()
+            .map(|x| x.parse::<u64>().unwrap_or(0));
+        let (atras, adelante) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
+        Ok(Frente {
+            desde,
+            cabeza,
+            adelante,
+            atras,
+        })
+    }
+
+    /// El árbol del commit `c` de este clon, en un directorio aparte que se
+    /// borra solo (un `worktree`: no se vuelve a clonar).
+    pub fn extraer(&self, dir: &Path, c: &str) -> Result<Prestado, Fallo> {
+        let destino = temporal();
+        let prestado = Prestado(destino.clone());
+        let destino_s = destino.to_string_lossy().into_owned();
+        self.git(
+            Some(dir),
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &destino_s,
+                c,
+            ],
+        )?;
         Ok(prestado)
     }
 

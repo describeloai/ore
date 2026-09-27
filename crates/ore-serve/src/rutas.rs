@@ -119,6 +119,9 @@ pub struct Servidor {
     pub puestos: std::sync::Arc<crate::puestos::Puestos>,
     /// El índice de assets, por cabeza (0034 ⑤): `GET /assets` de memoria.
     pub assets_cache: crate::assets::Cache,
+    /// En qué se diferencia una rama de la de por defecto (ramas globales,
+    /// fase 2), por las dos cabezas: `GET /ramas/{r}/cambios` de memoria.
+    pub cambios_cache: crate::assets::Cache,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -537,6 +540,11 @@ impl Servidor {
             }
             // ── 0030 W2 · ramas y propuestas (`propuestas.rs`) ──
             ("GET", ["ramas"]) => self.ramas(),
+            // Ramas globales, fase 2: en qué se diferencia la rama de la de por
+            // defecto, por activo y con su significado (`cambios.rs`).
+            ("GET", ["ramas", resto @ .., "cambios"]) if !resto.is_empty() => {
+                self.cambios(&resto.join("/"))
+            }
             ("POST", ["ramas"]) => self.crear_rama(sujeto, &p.cuerpo),
             ("DELETE", ["ramas", nombre @ ..]) => self.retirar_rama(&nombre.join("/")),
             // ⭐ Traer OTRA rama a ésta (el «Merge» del menú): git merge en un clon de

@@ -49,12 +49,12 @@ impl std::fmt::Debug for Cache {
 }
 
 impl Cache {
-    fn lee(&self, clave: &Clave) -> Option<Arc<Json>> {
+    pub(crate) fn lee(&self, clave: &Clave) -> Option<Arc<Json>> {
         let e = self.entradas.lock().ok()?;
         e.iter().find(|(k, _)| k == clave).map(|(_, v)| v.clone())
     }
 
-    fn guarda(&self, clave: Clave, j: Arc<Json>) {
+    pub(crate) fn guarda(&self, clave: Clave, j: Arc<Json>) {
         if let Ok(mut e) = self.entradas.lock() {
             e.retain(|(k, _)| *k != clave);
             e.push_back((clave, j));

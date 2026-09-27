@@ -15,6 +15,11 @@
 #                                       la tabla de la rama y main no · POST /paquetes/{p}/schemas
 #                                       escribe en la rama (main sin el schema) · lo que mueve datos
 #                                       (ascender a estandar) en una rama: 409 que lo dice
+#   3d en que se diferencia la rama     GET /ramas/{r}/cambios: por ACTIVO (nuevo, modificado, borrado)
+#                                       frente al punto del que salio —lo que main hizo despues no
+#                                       es de la rama—; la columna quitada, OOS5001 atado a su vista,
+#                                       a quien alcanza (la vista que la lee); adelante/atras; de
+#                                       memoria la segunda vez
 #   3b POST /arbol/commit               varios ficheros en UN commit con mensaje, o en seco lo que
 #                                       seria: A/M/D y +/- de git, el gate «no empeora» (422
 #                                       forzable), forzar: true commitea igual y lo dice, 0 cambiados
@@ -224,6 +229,44 @@ spec:
 [ "$(pide POST /paquetes/hr/copia "$ANA" '{}' ana/catalogo)" = "409" ] && cuerpo | grep -q 'mueve datos' || falla "3c · ascender en una rama no dio 409: $(cuerpo)"
 [ "$(pide DELETE /ramas/ana/catalogo "$ANA")" = "200" ] || falla "3c · retirar la rama del catalogo: $(cuerpo)"
 dice "3c · el catalogo EN la rama: esquema y /paquetes con la tabla de la rama (main sin ella) · el schema nuevo en la rama y no en main · ascender en una rama: 409, mueve datos"
+
+# ── 3d · en que se diferencia la rama de main (ramas globales, fase 2) ──────
+# Vistas SQL (v1alpha14): su contrato es lo que `ore diff` compara (OOS5001,
+# OOS5007); una vista estructurada se compara por el linaje, y otra cosa.
+vista14() { # <nombre> <lee> <columnas...>
+  local n=$1 f=$2; shift 2
+  local cs; cs=$(printf '%s, ' "$@"); cs=${cs%, }
+  printf 'apiVersion: oos.dev/v1alpha14\nkind: View\nmetadata: { name: %s, namespace: hr }\nspec:\n  owner: team:data\n  dialect: duckdb\n  sql: |\n    SELECT %s FROM %s\n  columns:\n' "$n" "$cs" "$f"
+  for c in "$@"; do printf '    %s: { type: String }\n' "$c"; done
+}
+[ "$(put_fichero packages/hr/views/publica.yaml "$ANA" "$(vista14 publica hr.empleados_t id pais)")" = "201" ] || falla "3d · la vista publicada de main: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/viejos.yaml "$ANA" "$(vista14 viejos hr.empleados_t id)")" = "201" ] || falla "3d · la vista de main que la rama borra: $(cuerpo)"
+[ "$(pide POST /ramas "$ANA" '{"nombre":"cambios"}')" = "201" ] || falla "3d · la rama: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/publica.yaml "$ANA" "$(vista14 publica hr.empleados_t id)" ana/cambios)" = "200" ] || falla "3d · quitar pais: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/ids.yaml "$ANA" "$(vista14 ids hr.publica id)" ana/cambios)" = "201" ] || falla "3d · la vista nueva que la lee: $(cuerpo)"
+[ "$(pide DELETE /arbol/packages/hr/views/viejos.yaml "$ANA" "" ana/cambios)" = "200" ] || falla "3d · borrar en la rama: $(cuerpo)"
+# main sigue: lo suyo no es de la rama
+[ "$(put_fichero packages/hr/views/despues.yaml "$ANA" "$(vista14 despues hr.empleados_t id)")" = "201" ] || falla "3d · main despues del fork: $(cuerpo)"
+[ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] || falla "3d · GET cambios: $(cuerpo)"
+cp "$TMP/r.json" "$TMP/cambios.json"
+tiene "d['base']=='main' and d['adelante']==3 and d['atras']==1 and d['desde_cache'] is False" || falla "3d · la distancia a main: $(cuerpo | head -c 400)"
+tiene "d['resumen']=={'nuevos':1,'modificados':1,'borrados':1,'rompen':2}" || falla "3d · el resumen: $(cuerpo | head -c 900)"
+tiene "sorted((c['id'],c['estado']) for c in d['cambios'])==[('View:hr.default.ids','nuevo'),('View:hr.default.publica','modificado'),('View:hr.default.viejos','borrado')]" || falla "3d · los activos: $(cuerpo | head -c 900)"
+tiene "[c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['columnas']=={'anadidas':[],'quitadas':['pais'],'cambiadas':[]}" || falla "3d · la columna quitada: $(cuerpo | head -c 900)"
+tiene "'spec.sql' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['campos'] and 'pais' in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['sql']['antes']" || falla "3d · el sql antes y despues: $(cuerpo | head -c 900)"
+tiene "[(s['code'],s['subject']) for s in [c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['semantico']]==[('OOS5001','hr.publica.pais')]" || falla "3d · OOS5001 no va con su vista: $(cuerpo | head -c 900)"
+tiene "[s['code'] for s in [c for c in d['cambios'] if c['id']=='View:hr.default.viejos'][0]['semantico']]==['OOS5007'] and [s['code'] for s in d['semantico']['otros']]==['OOS5021']" || falla "3d · OOS5007 con la borrada, la version suelta: $(cuerpo | head -c 900)"
+tiene "[c for c in d['cambios'] if c['id']=='View:hr.default.publica'][0]['afecta']==['View:hr.default.ids'] and [c for c in d['cambios'] if c['id']=='View:hr.default.ids'][0]['rompe'] is False" || falla "3d · a quien alcanza: $(cuerpo | head -c 900)"
+tiene "all('despues' not in c['id'] for c in d['cambios'])" || falla "3d · lo de main despues del fork sale como de la rama"
+[ "$(pide GET /ramas/ana/cambios/cambios "$ANA")" = "200" ] && tiene "d['desde_cache'] is True" || falla "3d · la segunda vez no fue de memoria: $(cuerpo | head -c 200)"
+[ "$(pide GET /ramas/main/cambios "$ANA")" = "422" ] || falla "3d · main frente a si misma no dio 422: $(cuerpo)"
+[ "$(pide GET /ramas/nadie/nada/cambios "$ANA")" = "404" ] || falla "3d · una rama que no existe no dio 404: $(cuerpo)"
+# y se deja como estaba: la rama fuera, main sin lo de esta seccion
+[ "$(pide DELETE /ramas/ana/cambios "$ANA")" = "200" ] || falla "3d · retirar la rama: $(cuerpo)"
+for f in viejos despues publica; do
+  [ "$(pide DELETE "/arbol/packages/hr/views/$f.yaml" "$ANA")" = "200" ] || falla "3d · dejar main como estaba ($f): $(cuerpo)"
+done
+dice "3d · GET /ramas/{r}/cambios: nuevo, modificado y borrado por activo frente al fork (main despues no cuenta) · la columna quitada y el sql antes/despues · OOS5001 con su vista, OOS5007 con la borrada, la version suelta · a quien alcanza · adelante 3, atras 1 · de memoria la segunda vez · 422 main, 404 sin rama"
 
 # ── 3b · varios ficheros en UN commit con mensaje (POST /arbol/commit), y en seco lo que seria ──
 # Lo que el panel de Commit del workspace enseña sale de git, no de un contador:

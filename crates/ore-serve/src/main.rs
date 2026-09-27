@@ -40,6 +40,7 @@
 
 mod arbol;
 mod assets;
+mod cambios;
 mod catalogo;
 mod cola;
 mod copia;
@@ -356,6 +357,7 @@ fn main() -> ExitCode {
         forja_api,
         puestos: std::sync::Arc::new(puestos::Puestos::default()),
         assets_cache: assets::Cache::default(),
+        cambios_cache: assets::Cache::default(),
     };
 
     match http::servir_con_flujos(escucha, move |p| servidor.atender_flujo(p)) {
