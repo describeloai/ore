@@ -373,7 +373,17 @@ impl Forja {
     /// contestar ninguna de las dos.
     pub fn publicar(&self, dir: &Path, sujeto: &Identidad, mensaje: &str) -> Result<String, Fallo> {
         self.git(Some(dir), &["add", "-A"])?;
+        self.confirmar(dir, sujeto, mensaje)?;
+        self.git(Some(dir), &["push", "--quiet", "origin", "HEAD"])?;
+        Ok(self
+            .git(Some(dir), &["rev-parse", "--short", "HEAD"])?
+            .trim()
+            .to_string())
+    }
 
+    /// El commit de lo que ya está en el índice, con la persona de autor y este
+    /// servidor de committer (lo de `publicar`), sin empujar.
+    fn confirmar(&self, dir: &Path, sujeto: &Identidad, mensaje: &str) -> Result<(), Fallo> {
         let mut c = Command::new("git");
         c.current_dir(dir);
         for (k, v) in self.entorno() {
@@ -399,13 +409,140 @@ impl Forja {
         if !s.status.success() {
             return Err(Fallo::Git(primera(&String::from_utf8_lossy(&s.stderr))));
         }
-
-        self.git(Some(dir), &["push", "--quiet", "origin", "HEAD"])?;
-        Ok(self
-            .git(Some(dir), &["rev-parse", "--short", "HEAD"])?
-            .trim()
-            .to_string())
+        Ok(())
     }
+
+    /// **La derivada de una propuesta con alcance** (0044 A.2 ③): el `base` de
+    /// hoy más lo que `rama` cambia bajo `prefijo` desde que salió de `base`
+    /// —el diff desde el `merge-base`, con renombrados, aplicado a tres
+    /// bandas—. Copiar los ficheros de la rama NO vale: pisaría lo que `base`
+    /// cambió después en esos mismos ficheros (medido).
+    ///
+    /// `Ok(None)` si la rama no cambia nada ahí. Un choque con lo que `base`
+    /// hizo después es `Fallo::Conflicto` con los ficheros. El commit lleva la
+    /// **huella** —el árbol de `prefijo` en la rama—: es lo que se revisó.
+    pub fn derivar(
+        &self,
+        base: &str,
+        rama: &str,
+        prefijo: &str,
+        sujeto: &Identidad,
+        mensaje: &str,
+    ) -> Result<Option<Derivada>, Fallo> {
+        let clon = self.clonar_rama(Some(base))?;
+        let dir = clon.ruta();
+        self.git(Some(dir), &["fetch", "--quiet", "origin", rama])
+            .map_err(|_| Fallo::SinRama(rama.to_string()))?;
+        let desde = self
+            .git(Some(dir), &["merge-base", "HEAD", "FETCH_HEAD"])?
+            .trim()
+            .to_string();
+        let ficheros: Vec<String> = self
+            .git(
+                Some(dir),
+                &[
+                    "diff",
+                    "--name-only",
+                    "-M",
+                    &desde,
+                    "FETCH_HEAD",
+                    "--",
+                    prefijo,
+                ],
+            )?
+            .lines()
+            .map(str::to_string)
+            .filter(|l| !l.is_empty())
+            .collect();
+        if ficheros.is_empty() {
+            return Ok(None);
+        }
+        let huella =
+            huella_de(self.git(Some(dir), &["rev-parse", &format!("FETCH_HEAD:{prefijo}")]));
+        let parche = self.git(
+            Some(dir),
+            &[
+                "diff",
+                "--binary",
+                "-M",
+                &desde,
+                "FETCH_HEAD",
+                "--",
+                prefijo,
+            ],
+        )?;
+        let fichero = dir.join(".git").join("alcance.patch");
+        std::fs::write(&fichero, parche)
+            .map_err(|e| Fallo::Git(format!("no se pudo escribir el parche: {e}")))?;
+        let fichero_s = fichero.to_string_lossy().into_owned();
+        if let Err(e) = self.git(Some(dir), &["apply", "--3way", "--index", &fichero_s]) {
+            let chocan: Vec<String> = self
+                .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .filter(|l| !l.is_empty())
+                .collect();
+            return Err(if chocan.is_empty() {
+                e
+            } else {
+                Fallo::Conflicto(chocan)
+            });
+        }
+        self.confirmar(
+            dir,
+            sujeto,
+            &format!("{mensaje}\n\nrama: {rama}\nalcance: {prefijo}\nhuella: {huella}"),
+        )?;
+        Ok(Some(Derivada { clon, ficheros }))
+    }
+
+    /// Empuja la cabeza de este clon a `destino`, **forzando**: la derivada se
+    /// regenera, no se edita (0044 A.2 ③), y sólo la escribe este servidor.
+    pub fn empujar_a(&self, dir: &Path, destino: &str) -> Result<(), Fallo> {
+        let r = format!("HEAD:refs/heads/{destino}");
+        self.git(Some(dir), &["push", "--quiet", "--force", "origin", &r])
+            .map(|_| ())
+    }
+
+    /// `(la huella de hoy de prefijo en rama, la huella con la que se hizo la
+    /// derivada)`. Distintas ⇒ la rama cambió lo propuesto desde entonces.
+    pub fn huellas(
+        &self,
+        rama: &str,
+        derivada: &str,
+        prefijo: &str,
+    ) -> Result<(String, String), Fallo> {
+        let clon = self.clonar_rama(Some(rama))?;
+        let dir = clon.ruta();
+        let hoy = huella_de(self.git(Some(dir), &["rev-parse", &format!("HEAD:{prefijo}")]));
+        self.git(Some(dir), &["fetch", "--quiet", "origin", derivada])
+            .map_err(|_| Fallo::SinRama(derivada.to_string()))?;
+        let mensaje = self.git(Some(dir), &["log", "-1", "--format=%B", "FETCH_HEAD"])?;
+        let hecha = mensaje
+            .lines()
+            .find_map(|l| l.strip_prefix("huella: "))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        Ok((hoy, hecha))
+    }
+}
+
+/// La derivada recién hecha: el clon con su commit (sin empujar; la huella va
+/// en el mensaje) y los ficheros del alcance.
+pub struct Derivada {
+    pub clon: Prestado,
+    pub ficheros: Vec<String>,
+}
+
+/// La huella de un alcance: el árbol de la carpeta en la rama, o `-` si la
+/// rama no la tiene (se borró entera).
+fn huella_de(r: Result<String, Fallo>) -> String {
+    r.map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "-".into())
 }
 
 /// El correo de un sujeto que no tiene correo.

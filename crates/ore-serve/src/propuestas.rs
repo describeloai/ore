@@ -90,6 +90,30 @@ fn del_cuerpo(cuerpo: &str, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str().map(String::from))
 }
 
+/// Lo que git dijo, como respuesta: rama que no está 404, choque o
+/// adelantamiento 409 (con los ficheros si los hay), lo demás 502.
+fn de_git(e: crate::git::Fallo) -> Respuesta {
+    use crate::git::Fallo as G;
+    match e {
+        G::SinRama(r) => Respuesta::error(404, format!("no hay ninguna rama `{r}`")),
+        G::Conflicto(fs) => Respuesta {
+            codigo: 409,
+            cuerpo: Json::obj([
+                (
+                    "error",
+                    Json::s(format!(
+                        "lo propuesto choca con lo que `main` cambió después: {}. Trae `main` a la rama, resuélvelo y vuelve a proponer",
+                        fs.join(", ")
+                    )),
+                ),
+                ("conflictos", Json::Arr(fs.iter().map(Json::s).collect())),
+            ]),
+        },
+        e @ G::Adelantado(_) => Respuesta::error(409, e.to_string()),
+        e => Respuesta::error(502, e.to_string()),
+    }
+}
+
 pub(crate) fn de_la_forja(e: Fallo) -> Respuesta {
     let codigo = match e.codigo {
         404 => 404,
@@ -110,11 +134,52 @@ fn autor_de(pr: &Json) -> String {
         .unwrap_or_default()
 }
 
+/// Las líneas de la cabecera del cuerpo de la PR: `sub: …` y, en una
+/// propuesta con alcance (0044 A.2 ②), `rama: …` y `alcance: …`.
+const CABECERA: [&str; 3] = ["sub: ", "rama: ", "alcance: "];
+
+fn de_la_cabecera(pr: &Json, k: &str) -> Option<String> {
+    let cuerpo = campo(pr, "body")?;
+    let pre = format!("{k}: ");
+    cuerpo
+        .lines()
+        .take_while(|l| CABECERA.iter().any(|c| l.starts_with(c)))
+        .find_map(|l| l.strip_prefix(pre.as_str()).map(|v| v.trim().to_string()))
+}
+
+/// La rama de la que sale la PR en la forja: la rama, o su derivada.
+fn cabeza_de_pr(pr: &Json) -> String {
+    hijo(pr, "head")
+        .and_then(|h| campo(h, "ref"))
+        .unwrap_or_default()
+}
+
+/// La rama que se propone: la global, también cuando la PR sale de su derivada.
+fn rama_de(pr: &Json) -> String {
+    de_la_cabecera(pr, "rama").unwrap_or_else(|| cabeza_de_pr(pr))
+}
+
+/// El alcance de una propuesta: la carpeta de un repositorio. `None`: la rama entera.
+fn alcance_de(pr: &Json) -> Option<String> {
+    de_la_cabecera(pr, "alcance")
+}
+
+/// La derivada de `rama` para `alcance` (0044 A.2 ③): una rama técnica, fuera
+/// del selector, que sólo escribe este servidor.
+fn derivada_de(rama: &str, alcance: &str) -> String {
+    format!(
+        "{PREFIJO_DERIVADA}{rama}/{}",
+        alcance.strip_prefix("packages/").unwrap_or(alcance)
+    )
+}
+
+pub(crate) const PREFIJO_DERIVADA: &str = "alcance/";
+
 fn descripcion_de(pr: &Json) -> String {
     campo(pr, "body")
         .map(|b| {
             b.lines()
-                .skip(1)
+                .skip_while(|l| CABECERA.iter().any(|c| l.starts_with(c)))
                 .collect::<Vec<_>>()
                 .join("\n")
                 .trim()
@@ -135,9 +200,8 @@ fn estado_de(pr: &Json) -> &'static str {
 
 /// La propuesta como la consola la quiere: sin la forja dentro.
 pub(crate) fn propuesta_de(pr: &Json) -> Json {
-    let rama = hijo(pr, "head")
-        .and_then(|h| campo(h, "ref"))
-        .unwrap_or_default();
+    let rama = rama_de(pr);
+    let alcance = alcance_de(pr);
     let base = hijo(pr, "base")
         .and_then(|h| campo(h, "ref"))
         .unwrap_or_default();
@@ -149,6 +213,18 @@ pub(crate) fn propuesta_de(pr: &Json) -> Json {
         ("autor", Json::s(autor_de(pr))),
         ("rama", Json::s(rama)),
         ("base", Json::s(base)),
+        (
+            "alcance",
+            alcance.as_ref().map(Json::s).unwrap_or(Json::Bool(false)),
+        ),
+        (
+            "derivada",
+            if alcance.is_some() {
+                Json::s(cabeza_de_pr(pr))
+            } else {
+                Json::Bool(false)
+            },
+        ),
         (
             "creada",
             Json::s(campo(pr, "created_at").unwrap_or_default()),
@@ -171,13 +247,27 @@ fn revision_de(r: &Json) -> Option<Json> {
     let primera = cuerpo.lines().next().unwrap_or("");
     let resto = primera.strip_prefix("revision: ")?;
     let (persona, veredicto) = resto.rsplit_once(' ')?;
+    let huella = cuerpo
+        .lines()
+        .nth(1)
+        .and_then(|l| l.strip_prefix("huella: "))
+        .map(|h| h.trim().to_string());
+    let salta = if huella.is_some() { 2 } else { 1 };
     Some(Json::obj([
         ("por", Json::s(persona)),
         ("veredicto", Json::s(veredicto)),
         (
             "texto",
-            Json::s(cuerpo.lines().skip(1).collect::<Vec<_>>().join("\n").trim()),
+            Json::s(
+                cuerpo
+                    .lines()
+                    .skip(salta)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim(),
+            ),
         ),
+        ("huella", huella.map(Json::s).unwrap_or(Json::Bool(false))),
         (
             "cuando",
             Json::s(campo(r, "submitted_at").unwrap_or_default()),
@@ -220,13 +310,11 @@ impl Servidor {
                     Json::Arr(
                         ramas
                             .into_iter()
+                            .filter(|(nombre, _)| !nombre.starts_with(PREFIJO_DERIVADA))
                             .map(|(nombre, commit)| {
                                 let propuesta = abiertas
                                     .iter()
-                                    .find(|pr| {
-                                        hijo(pr, "head").and_then(|h| campo(h, "ref")).as_deref()
-                                            == Some(nombre.as_str())
-                                    })
+                                    .find(|pr| rama_de(pr) == nombre)
                                     .and_then(|pr| numero(pr, "number"));
                                 Json::obj([
                                     ("nombre", Json::s(&nombre)),
@@ -294,10 +382,11 @@ impl Servidor {
                 format!("`{nombre}` es la rama por defecto: es lo que Flux mira, y no se retira"),
             );
         }
-        if let Some(pr) =
-            api.pulls("open").unwrap_or_default().iter().find(|pr| {
-                hijo(pr, "head").and_then(|h| campo(h, "ref")).as_deref() == Some(nombre)
-            })
+        if let Some(pr) = api
+            .pulls("open")
+            .unwrap_or_default()
+            .iter()
+            .find(|pr| rama_de(pr) == nombre)
         {
             return Respuesta::error(
                 409,
@@ -495,10 +584,110 @@ impl Servidor {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| format!("Propuesta de {}: {rama}", sujeto.persona));
         let descripcion = del_cuerpo(cuerpo, "descripcion").unwrap_or_default();
+        let alcance = match crate::entorno::alcance_valido(del_cuerpo(cuerpo, "alcance").as_deref())
+        {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let abiertas = api.pulls("open").unwrap_or_default();
+        if let Some(alcance) = alcance {
+            return self.proponer_alcance(
+                sujeto,
+                &rama,
+                &base,
+                &alcance,
+                titulo.trim(),
+                descripcion.trim(),
+                &abiertas,
+            );
+        }
+        // La rama entera lleva lo que ya va en sus propuestas con alcance: una
+        // unidad, una propuesta abierta (0044 A.2 ②).
+        if let Some(pr) = abiertas
+            .iter()
+            .find(|pr| alcance_de(pr).is_some() && rama_de(pr) == rama)
+        {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{rama}` ya tiene la propuesta #{} con alcance `{}`: proponer la rama entera lo llevaría dos veces",
+                    numero(pr, "number").unwrap_or(0),
+                    alcance_de(pr).unwrap_or_default()
+                ),
+            );
+        }
         let cuerpo_pr = format!("sub: {}\n\n{}", sujeto.persona, descripcion.trim());
         match api.abrir_pull(&rama, &base, titulo.trim(), &cuerpo_pr) {
             Ok(pr) => Respuesta::creado(propuesta_de(&pr)),
             Err(e) => de_la_forja(e),
+        }
+    }
+
+    /// **Proponer sólo lo de un repositorio** (0044 A.2): la PR sale de la
+    /// derivada —`base` de hoy más lo que la rama cambia bajo `alcance`—, así
+    /// que la forja enseña, valida y fusiona justo eso; lo demás sigue en la rama.
+    #[allow(clippy::too_many_arguments)]
+    fn proponer_alcance(
+        &self,
+        sujeto: &Identidad,
+        rama: &str,
+        base: &str,
+        alcance: &str,
+        titulo: &str,
+        descripcion: &str,
+        abiertas: &[Json],
+    ) -> Respuesta {
+        let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
+            return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
+        };
+        if let Some(pr) = abiertas
+            .iter()
+            .find(|pr| rama_de(pr) == rama && alcance_de(pr).is_none_or(|a| a == alcance))
+        {
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{alcance}` de `{rama}` ya va en la propuesta #{}: una cosa, una propuesta abierta",
+                    numero(pr, "number").unwrap_or(0)
+                ),
+            );
+        }
+        let derivada = derivada_de(rama, alcance);
+        if let Err(m) = nombre_de_rama_valido(&derivada) {
+            return Respuesta::error(422, m);
+        }
+        let hecha = match forja.derivar(base, rama, alcance, sujeto, titulo) {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                return Respuesta::error(
+                    422,
+                    format!("`{rama}` no cambia nada en `{alcance}`: no hay qué proponer"),
+                );
+            }
+            Err(e) => return de_git(e),
+        };
+        if let Err(e) = forja.empujar_a(hecha.clon.ruta(), &derivada) {
+            return de_git(e);
+        }
+        let cuerpo_pr = format!(
+            "sub: {}\nrama: {rama}\nalcance: {alcance}\n\n{descripcion}",
+            sujeto.persona
+        );
+        match api.abrir_pull(&derivada, base, titulo, &cuerpo_pr) {
+            Ok(pr) => {
+                let mut j = propuesta_de(&pr);
+                if let Json::Obj(m) = &mut j {
+                    m.insert(
+                        "ficherosDelAlcance".into(),
+                        Json::Arr(hecha.ficheros.iter().map(Json::s).collect()),
+                    );
+                }
+                Respuesta::creado(j)
+            }
+            Err(e) => {
+                let _ = api.borrar_rama(&derivada);
+                de_la_forja(e)
+            }
         }
     }
 
@@ -515,9 +704,9 @@ impl Servidor {
             Err(e) => return de_la_forja(e),
         };
         let mut ficha = propuesta_de(&pr);
-        let rama = hijo(&pr, "head")
-            .and_then(|h| campo(h, "ref"))
-            .unwrap_or_default();
+        // Lo que la forja compara y valida es la cabeza de la PR: la rama, o
+        // su derivada.
+        let rama = cabeza_de_pr(&pr);
         let base = hijo(&pr, "base")
             .and_then(|h| campo(h, "ref"))
             .unwrap_or_else(|| "main".into());
@@ -535,12 +724,31 @@ impl Servidor {
             })
             .collect();
         let diff = api.diff(n).unwrap_or_default();
+        // Con alcance: ¿la derivada lleva lo que la rama tiene HOY en el
+        // alcance?, y una revisión vale si se hizo sobre lo que hay ahora.
+        let hecha = match alcance_de(&pr) {
+            Some(a) if estado_de(&pr) == "abierta" => self
+                .forja()
+                .and_then(|f| f.huellas(&rama_de(&pr), &rama, &a).ok()),
+            _ => None,
+        };
         let revisiones: Vec<Json> = api
             .revisiones(n)
             .unwrap_or_default()
             .iter()
             .filter_map(revision_de)
+            .map(|mut r| {
+                if let (Some((_, h)), Json::Obj(m)) = (&hecha, &mut r) {
+                    let vale =
+                        campo(&Json::Obj(m.clone()), "huella").as_deref() == Some(h.as_str());
+                    m.insert("vigente".into(), Json::Bool(vale));
+                }
+                r
+            })
             .collect();
+        if let (Some((hoy, h)), Json::Obj(m)) = (&hecha, &mut ficha) {
+            m.insert("alDia".into(), Json::Bool(hoy == h));
+        }
         // El significado y los diagnósticos salen de la rama misma, no de la forja.
         let (semantico, diagnosticos) = if estado_de(&pr) == "abierta" {
             self.rama_frente_a(&rama, &base)
@@ -625,8 +833,18 @@ impl Servidor {
             );
         }
         let texto = del_cuerpo(cuerpo, "texto").unwrap_or_default();
+        // Con alcance, la revisión dice SOBRE QUÉ se hizo: la huella de la
+        // derivada. Si la rama cambia lo propuesto, esa aprobación deja de valer.
+        let huella = match (alcance_de(&pr), self.forja()) {
+            (Some(a), Some(f)) => f
+                .huellas(&rama_de(&pr), &cabeza_de_pr(&pr), &a)
+                .ok()
+                .map(|(_, h)| format!("huella: {h}\n")),
+            _ => None,
+        }
+        .unwrap_or_default();
         let cuerpo_review = format!(
-            "revision: {} {veredicto}\n\n{}",
+            "revision: {} {veredicto}\n{huella}\n{}",
             sujeto.persona,
             texto.trim()
         );
@@ -660,6 +878,9 @@ impl Servidor {
                 422,
                 "quien propone no fusiona lo suyo: hace falta otra persona (0030 W2: dos personas, una revisión)",
             );
+        }
+        if let Some(alcance) = alcance_de(&pr) {
+            return self.fusionar_alcance(sujeto, n, &pr, &alcance);
         }
         let aprobada_por: Vec<String> = api
             .revisiones(n)
@@ -728,6 +949,138 @@ impl Servidor {
         }
     }
 
+    /// **Fusionar una propuesta con alcance** (0044 A.2 ④ y ⑥):
+    ///
+    /// 1. si la rama cambió lo propuesto desde que se hizo la derivada, la
+    ///    derivada se regenera y se contesta `409`: lo nuevo no lo ha visto nadie;
+    /// 2. vale la aprobación de otra persona **sobre lo que hay ahora** (su huella);
+    /// 3. se regenera sobre el `main` de hoy y se valida ESO —`main` más el
+    ///    alcance, no la rama—; un `OOS2018` dice qué falta en el alcance;
+    /// 4. la forja fusiona la derivada (un `merge`: atómico) y la borra;
+    /// 5. `main` se trae a la rama, para que lo fusionado deje de contar como
+    ///    suyo. Si eso choca, la fusión ya es buena y se dice.
+    fn fusionar_alcance(&self, sujeto: &Identidad, n: u64, pr: &Json, alcance: &str) -> Respuesta {
+        let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
+            return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
+        };
+        let autor = autor_de(pr);
+        let rama = rama_de(pr);
+        let derivada = cabeza_de_pr(pr);
+        let base = hijo(pr, "base")
+            .and_then(|h| campo(h, "ref"))
+            .unwrap_or_else(|| "main".into());
+        let titulo = campo(pr, "title").unwrap_or_default();
+        let (hoy, hecha) = match forja.huellas(&rama, &derivada, alcance) {
+            Ok(h) => h,
+            Err(e) => return de_git(e),
+        };
+        let nueva = match forja.derivar(&base, &rama, alcance, sujeto, &titulo) {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "`{rama}` ya no cambia nada en `{alcance}`: la propuesta #{n} se cierra, no se fusiona"
+                    ),
+                );
+            }
+            Err(e) => return de_git(e),
+        };
+        if hoy != hecha {
+            if let Err(e) = forja.empujar_a(nueva.clon.ruta(), &derivada) {
+                return de_git(e);
+            }
+            return Respuesta::error(
+                409,
+                format!(
+                    "`{rama}` cambió `{alcance}` desde que se propuso: la propuesta #{n} ya lleva lo de ahora, y hay que revisarla otra vez"
+                ),
+            );
+        }
+        let aprobada_por: Vec<String> = api
+            .revisiones(n)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(revision_de)
+            .filter(|r| campo(r, "veredicto").as_deref() == Some("aprueba"))
+            .filter(|r| campo(r, "huella").as_deref() == Some(hoy.as_str()))
+            .filter_map(|r| campo(&r, "por"))
+            .filter(|p| *p != autor)
+            .collect();
+        if aprobada_por.is_empty() {
+            return Respuesta::error(
+                422,
+                format!(
+                    "la propuesta #{n} no tiene revisión sobre lo que lleva ahora: nadie distinto de `{autor}` la ha aprobado"
+                ),
+            );
+        }
+        match self.diagnosticos_de(nueva.clon.ruta()) {
+            Ok(ds) if !ds.is_empty() => {
+                return Respuesta {
+                    codigo: 422,
+                    cuerpo: Json::obj([
+                        (
+                            "error",
+                            Json::s(format!(
+                                "`{base}` con `{alcance}` de `{rama}` no compila: no se fusiona. Si lee algo que sólo está en la rama, eso también tiene que ir en la propuesta"
+                            )),
+                        ),
+                        (
+                            "diagnosticos",
+                            Json::Arr(ds.iter().map(crate::arbol::con_posicion).collect()),
+                        ),
+                    ]),
+                };
+            }
+            Ok(_) => {}
+            Err(r) => return r,
+        }
+        if let Err(e) = forja.empujar_a(nueva.clon.ruta(), &derivada) {
+            return de_git(e);
+        }
+        let mensaje = format!(
+            "Propuesta #{n} de {autor} ({alcance} de {rama}), revisada por {} y fusionada por {}: {titulo}",
+            aprobada_por.join(", "),
+            sujeto.persona,
+        );
+        if let Err(e) = api.fusionar(n, &mensaje) {
+            return de_la_forja(e);
+        }
+        let al_dia = self.poner_al_dia(sujeto, &rama, &base);
+        Respuesta::ok(Json::obj([
+            ("numero", Json::Int(n as i64)),
+            ("fusionada", Json::Bool(true)),
+            ("por", Json::s(&sujeto.persona)),
+            (
+                "revisada_por",
+                Json::Arr(aprobada_por.iter().map(Json::s).collect()),
+            ),
+            ("rama", Json::s(&rama)),
+            ("alcance", Json::s(alcance)),
+            ("ramaAlDia", al_dia),
+        ]))
+    }
+
+    /// Trae `base` a la rama tras fusionar una parte de ella: `true`, o lo que
+    /// lo impidió (la fusión ya ocurrió; esto sólo ordena la rama).
+    fn poner_al_dia(&self, sujeto: &Identidad, rama: &str, base: &str) -> Json {
+        let Some(forja) = self.forja() else {
+            return Json::Bool(false);
+        };
+        let hecho = forja.clonar_rama(Some(rama)).and_then(|clon| {
+            let mensaje = format!("Traer `{base}` a `{rama}` tras fusionar parte de ella");
+            if forja.traer(clon.ruta(), base, sujeto, &mensaje)? {
+                forja.empujar(clon.ruta())?;
+            }
+            Ok(())
+        });
+        match hecho {
+            Ok(()) => Json::Bool(true),
+            Err(e) => Json::s(e.to_string()),
+        }
+    }
+
     /// `DELETE /propuestas/{n}`: cerrada sin fusionar. La rama se queda.
     pub(crate) fn cerrar_propuesta(&self, n: u64) -> Respuesta {
         let api = match self.api() {
@@ -741,7 +1094,12 @@ impl Servidor {
         if estado_de(&pr) != "abierta" {
             return Respuesta::error(409, format!("la propuesta #{n} ya está {}", estado_de(&pr)));
         }
-        match api.cerrar_pull(n) {
+        let res = api.cerrar_pull(n);
+        // La derivada es técnica: cerrada su propuesta, sobra.
+        if res.is_ok() && alcance_de(&pr).is_some() {
+            let _ = api.borrar_rama(&cabeza_de_pr(&pr));
+        }
+        match res {
             Ok(()) => Respuesta::ok(Json::obj([
                 ("numero", Json::Int(n as i64)),
                 ("estado", Json::s("cerrada")),
@@ -900,5 +1258,47 @@ mod tests {
         let pr = Json::obj([("body", Json::s("sub: persona:ana\n\nla vista de hr"))]);
         assert_eq!(autor_de(&pr), "persona:ana");
         assert_eq!(descripcion_de(&pr), "la vista de hr");
+    }
+
+    #[test]
+    fn una_propuesta_con_alcance_dice_su_rama_y_su_carpeta_en_la_cabecera() {
+        let pr = Json::obj([
+            (
+                "body",
+                Json::s("sub: persona:ana
+rama: ana/mixta
+alcance: packages/hr/etl
+
+el transform
+rama: no es cabecera"),
+            ),
+            ("head", Json::obj([("ref", Json::s("alcance/ana/mixta/hr/etl"))])),
+        ]);
+        assert_eq!(autor_de(&pr), "persona:ana");
+        assert_eq!(rama_de(&pr), "ana/mixta");
+        assert_eq!(alcance_de(&pr).as_deref(), Some("packages/hr/etl"));
+        assert_eq!(descripcion_de(&pr), "el transform
+rama: no es cabecera");
+        assert_eq!(derivada_de("ana/mixta", "packages/hr/etl"), "alcance/ana/mixta/hr/etl");
+        // sin alcance, la rama es la cabeza de la PR, como siempre
+        let entera = Json::obj([
+            ("body", Json::s("sub: persona:ana
+
+x")),
+            ("head", Json::obj([("ref", Json::s("ana/x"))])),
+        ]);
+        assert_eq!(rama_de(&entera), "ana/x");
+        assert!(alcance_de(&entera).is_none());
+    }
+
+    #[test]
+    fn la_huella_de_una_revision_no_es_su_texto() {
+        let r = Json::obj([("body", Json::s("revision: persona:bea aprueba
+huella: abc
+
+bien"))]);
+        let v = revision_de(&r).unwrap();
+        assert_eq!(campo(&v, "huella").as_deref(), Some("abc"));
+        assert_eq!(campo(&v, "texto").as_deref(), Some("bien"));
     }
 }

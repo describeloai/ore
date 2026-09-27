@@ -120,8 +120,11 @@ Dos pantallas del mismo producto, dos ideas de «dónde estoy». Eso es lo que e
 
 ## Apéndice A · Scope proposals: se ramifica el mundo, se propone lo que es tuyo
 
-**Estado:** visión de producto y, en A.2, su definición técnica medida (2026-09-27); sin
-construir. Lo siguiente: acotar el primer entregable de A.2.
+**Estado:** visión de producto y, en A.2, su definición técnica medida (2026-09-27). Primer
+entregable hecho en ORE: **el alcance por repositorio** (`POST /propuestas {alcance}`: la derivada
+`alcance/<rama>/<carpeta>`, la huella de lo revisado, `main` + alcance validado, la rama al día al
+fusionar; `la-propuesta.sh` 8e). Falta su pantalla en Code Repositories; después, el alcance por
+activos desde el catálogo.
 
 ### El problema
 

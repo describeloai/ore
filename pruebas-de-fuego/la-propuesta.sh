@@ -464,6 +464,53 @@ VER=$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([c["versi
   || falla "8d · actualizar lo que no es un repositorio no dio 404: $(cuerpo)"
 dice "8d · el upgrade de la plantilla: trae los ficheros de la version de hoy EN UNA RAMA y abre propuesta (con el manifiesto dentro) · main sigue en la v1 hasta que se fusiona · fusionada, el indice dice la de hoy y deja de ofrecerla · al dia, 409 · lo que no es un repositorio, 404"
 
+# ── 8e · proponer SOLO lo de un repositorio (0044 A.2 · scope proposals) ────
+# Una rama global lleva codigo de un repositorio Y una vista del catalogo. La
+# propuesta desde el repositorio lleva solo lo suyo: sale de una derivada
+# (main + lo que la rama cambia bajo la carpeta), se revisa sobre su huella, se
+# valida main + alcance, y al fusionar la rama se pone al dia y conserva lo demas.
+[ "$(pide POST /ramas "$ANA" '{"nombre":"mixta"}')" = "201" ] || falla "8e · la rama: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/transforms/uno.py "$ANA" 'print(1)' ana/mixta)" = "201" ] || falla "8e · el codigo en la rama: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/fuera.yaml "$ANA" "$(vista14 fuera hr.empleados_t id)" ana/mixta)" = "201" ] || falla "8e · la vista en la rama: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mixta","titulo":"Solo el repo","alcance":"x"}')" = "422" ] || falla "8e · un alcance malo no dio 422: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mixta","titulo":"Nada","alcance":"packages/hr/otro"}')" = "422" ] && cuerpo | grep -q 'no cambia nada' || falla "8e · un alcance sin cambios no dio 422: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mixta","titulo":"Solo el repo","descripcion":"el transform","alcance":"packages/hr/pipelines"}')" = "201" ] || falla "8e · proponer con alcance: $(cuerpo)"
+tiene "d['rama']=='ana/mixta' and d['alcance']=='packages/hr/pipelines' and d['derivada']=='alcance/ana/mixta/hr/pipelines' and d['ficherosDelAlcance']==['packages/hr/pipelines/transforms/uno.py'] and d['descripcion']=='el transform' and d['autor']=='persona:ana'" || falla "8e · la propuesta con alcance: $(cuerpo)"
+N=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json")
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mixta","titulo":"Otra vez","alcance":"packages/hr/pipelines"}')" = "409" ] || falla "8e · el mismo alcance dos veces no dio 409: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/mixta","titulo":"Toda"}')" = "409" ] || falla "8e · la rama entera con un alcance abierto no dio 409: $(cuerpo)"
+[ "$(pide GET /propuestas/$N "$BEA")" = "200" ] || falla "8e · GET la propuesta: $(cuerpo)"
+tiene "[f['ruta'] for f in d['ficheros']]==['packages/hr/pipelines/transforms/uno.py'] and d['alDia'] is True and d['diagnosticos']==[]" || falla "8e · la PR no es solo el alcance: $(cuerpo | head -c 700)"
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "all(not r['nombre'].startswith('alcance/') for r in d['ramas']) and [r for r in d['ramas'] if r['nombre']=='ana/mixta'][0]['propuesta']==$N" || falla "8e · /ramas ensena la derivada o no sabe la propuesta: $(cuerpo)"
+# bea aprueba; ana sigue cambiando el repositorio: lo aprobado ya no es lo que hay
+[ "$(pide POST /propuestas/$N/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8e · bea no pudo aprobar: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/transforms/uno.py "$ANA" 'print(2)' ana/mixta)" = "200" ] || falla "8e · cambiar el codigo en la rama: $(cuerpo)"
+[ "$(pide GET /propuestas/$N "$BEA")" = "200" ] && tiene "d['alDia'] is False and d['revisiones'][0]['vigente'] is True" || falla "8e · la propuesta no sabe que la rama cambio: $(cuerpo | head -c 700)"
+[ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "409" ] && cuerpo | grep -q 'revisarla otra vez' || falla "8e · fusionar lo que nadie ha visto no dio 409: $(cuerpo)"
+[ "$(pide GET /propuestas/$N "$BEA")" = "200" ] && tiene "d['alDia'] is True and d['revisiones'][0]['vigente'] is False" || falla "8e · la derivada no se puso al dia o la revision sigue valiendo: $(cuerpo | head -c 700)"
+[ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "422" ] && cuerpo | grep -q 'sobre lo que lleva ahora' || falla "8e · una aprobacion vieja dejo fusionar: $(cuerpo)"
+[ "$(pide POST /propuestas/$N/revisar "$BEA" '{"veredicto":"aprobar","texto":"ahora si"}')" = "201" ] || falla "8e · bea no pudo aprobar otra vez: $(cuerpo)"
+[ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "200" ] || falla "8e · fusionar con alcance: $(cuerpo)"
+tiene "d['fusionada'] is True and d['alcance']=='packages/hr/pipelines' and d['rama']=='ana/mixta' and d['ramaAlDia'] is True" || falla "8e · la fusion con alcance: $(cuerpo)"
+# main tiene el codigo de hoy y NO la vista; la rama sigue, al dia, con solo la vista
+[ "$(pide GET /arbol/packages/hr/pipelines/transforms/uno.py "$ANA")" = "200" ] && cuerpo | grep -q 'print(2)' || falla "8e · main no tiene el codigo: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/fuera.yaml "$ANA")" = "404" ] || falla "8e · la vista de fuera del alcance llego a main: $(cuerpo)"
+[ "$(git --git-dir="$BARE" diff --name-only main ana/mixta)" = "packages/hr/views/fuera.yaml" ] || falla "8e · la rama no quedo con solo lo de fuera: $(git --git-dir="$BARE" diff --name-only main ana/mixta)"
+git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/mixta/hr/pipelines && falla "8e · la derivada sigue tras fusionar"
+git --git-dir="$BARE" log -1 --format=%s main | grep -q "packages/hr/pipelines de ana/mixta), revisada por persona:bea" || falla "8e · el commit de merge no dice el alcance: $(git --git-dir="$BARE" log -1 --format=%s main)"
+# lo que el alcance lee y solo esta en la rama: main + alcance no compila, y se dice que falta
+[ "$(pide POST /ramas "$ANA" '{"nombre":"dep"}')" = "201" ] || falla "8e · la rama dep: $(cuerpo)"
+[ "$(put_fichero packages/hr/views/base_dep.yaml "$ANA" "$(vista14 base_dep hr.empleados_t id)" ana/dep)" = "201" ] || falla "8e · la vista de fuera: $(cuerpo)"
+[ "$(put_fichero packages/hr/pipelines/lee.yaml "$ANA" "$(vista14 lee hr.base_dep id)" ana/dep)" = "201" ] || falla "8e · la vista del repositorio: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/dep","titulo":"Lee algo de la rama","alcance":"packages/hr/pipelines"}')" = "201" ] || falla "8e · proponer dep: $(cuerpo)"
+M=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json")
+[ "$(pide POST /propuestas/$M/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8e · aprobar dep: $(cuerpo)"
+[ "$(pide POST /propuestas/$M/fusionar "$BEA")" = "422" ] && tiene "any(x['codigo']=='OOS2018' and 'base_dep' in x['mensaje'] for x in d['diagnosticos'])" || falla "8e · main + alcance incompleto no dio OOS2018: $(cuerpo | head -c 700)"
+[ "$(pide GET /arbol/packages/hr/pipelines/lee.yaml "$ANA")" = "404" ] || falla "8e · lo que no compila llego a main"
+[ "$(pide DELETE /propuestas/$M "$ANA")" = "200" ] || falla "8e · cerrar dep: $(cuerpo)"
+git --git-dir="$BARE" show-ref --verify --quiet refs/heads/alcance/ana/dep/hr/pipelines && falla "8e · la derivada sigue tras cerrar"
+dice "8e · scope proposals por repositorio: la PR lleva solo el repositorio (una derivada, fuera de /ramas) · 422 alcance malo o sin cambios · 409 el mismo alcance o la rama entera · la rama cambia lo propuesto: 409, la derivada se regenera y la aprobacion vieja no vale · fusionada: main con el codigo de hoy y sin la vista, la rama al dia con solo la vista, la derivada fuera, el merge dice el alcance · main + alcance que lee algo de la rama: 422 OOS2018 · cerrar borra la derivada"
+
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
 "$SERVE" --repo "$TMP/dir" --ore "$ORE" --bind "127.0.0.1:$PUERTO_DIR" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque2.txt" 2>&1 &
