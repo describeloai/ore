@@ -2368,7 +2368,7 @@ fn paquetes(raiz: &Path) -> Respuesta {
 /// La fuente se lee de `discover.scope.json` si lo hay y de
 /// `discover.catalog.json` si no; los dos la declaran. Un paquete escrito a
 /// mano no tiene ninguno y no tiene fuente que decir.
-fn origen_de(paquete: &Path) -> (Option<String>, bool) {
+pub(crate) fn origen_de(paquete: &Path) -> (Option<String>, bool) {
     let fuente_en = |f: &str| {
         std::fs::read_to_string(paquete.join(f))
             .ok()

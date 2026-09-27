@@ -15,6 +15,7 @@ mod datasets;
 mod deriva;
 mod empaquetar;
 mod fuente;
+mod fuente_inducida;
 mod inductor;
 mod inicio;
 mod invocar;
@@ -22,6 +23,7 @@ mod lector;
 mod materializar;
 mod mcp;
 mod migrar;
+mod migrar_punteros;
 mod migrar_v14;
 mod paquete;
 mod preguntar;
@@ -104,6 +106,19 @@ enum AccionFuente {
         /// Para qué es esta fuente.
         #[arg(long, value_name = "TEXTO")]
         description: Option<String>,
+        /// Raíz del repositorio ontológico.
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// **Los punteros de la fuente** (ADR 0045 P3′): escribe en
+    /// `packages/<fuente>/` la `Table` de cada objeto que alguna base usa
+    /// —con el catálogo y las respuestas de la fuente—, sus `exports`, y
+    /// retira las que ya no usa nadie. Es el único escritor de ese paquete:
+    /// `discover`, `review`, `model` y `copy` lo corren al terminar una base.
+    /// No abre nada: lee el catálogo que el Job ya dejó.
+    Induce {
+        /// La fuente, tal como la declara el manifiesto.
+        name: String,
         /// Raíz del repositorio ontológico.
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -804,6 +819,8 @@ enum Command {
     /// `from` a lo que paso a ser dataset y mueve `copias/` a `datasets/`.
     /// `ore migrate v1alpha14 .` (ADR 0040 paso 6): cada `View` estructurada
     /// pasa a ser su consulta SQL con su contrato; la v1alpha12 antes, si falta.
+    /// `ore migrate punteros .` (ADR 0045 P4): la `Table` de cada objeto sale
+    /// de las bases y la escribe su fuente, una vez; quien la leía se reapunta.
     /// Con `--seco` dice que haria y no toca nada.
     Migrate {
         /// La version de destino: `v1alpha12` o `v1alpha14`.
@@ -1028,9 +1045,10 @@ fn main() -> std::process::ExitCode {
             return match version.as_str() {
                 "v1alpha12" => migrar::migrar(path, &op),
                 "v1alpha14" => migrar_v14::migrar(path, &op),
+                "punteros" => migrar_punteros::migrar(path, &op),
                 _ => {
                     eprintln!(
-                        "ore migrate · se migra a `v1alpha12` o a `v1alpha14` (pediste `{version}`)"
+                        "ore migrate · se migra a `v1alpha12`, a `v1alpha14` o `punteros` (pediste `{version}`)"
                     );
                     std::process::ExitCode::from(64)
                 }
@@ -1277,6 +1295,25 @@ fn main() -> std::process::ExitCode {
             path,
         }) => {
             return paquete::nuevo(path, name, owner.as_deref(), domain.as_deref());
+        }
+        Command::Source(AccionFuente::Induce { name, path }) => {
+            let repo = raiz_del_repositorio(path).unwrap_or_else(|| path.clone());
+            return match fuente_inducida::inducir(&repo, name) {
+                Ok(Some(i)) => {
+                    print!("{}", fuente_inducida::resumen(name, &i));
+                    for r in &i.retiradas {
+                        println!("    - {r}");
+                    }
+                    std::process::ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "error: `packages/{name}` no es el paquete de una fuente (o no existe): lo crea el Job de catálogo"
+                    );
+                    std::process::ExitCode::from(66)
+                }
+                Err(f) => f.salir(),
+            };
         }
         Command::Source(AccionFuente::Catalog { name, out, path }) => {
             return lector::emitir_catalogo(path, name, out.as_deref());
@@ -1630,6 +1667,13 @@ fn descubrir(
             .as_ref()
             .map(|(a, _)| a.schemas().clone())
             .unwrap_or_default(),
+        // ⭐ 0045 P3′: una base con alcance, de una fuente con paquete, lee
+        //   los punteros de la fuente y no escribe ninguno.
+        fuente_aparte: el_alcance
+            .as_ref()
+            .and_then(|_| raiz_del_repositorio(destino))
+            .filter(|_| revision::dir_de_la_fuente(destino, &catalogo.fuente).is_some())
+            .and_then(|r| fuente_inducida::referencias(&r, &catalogo.fuente)),
     };
     // ⭐ El dueño no se deriva: lo contesta quien llama, como cualquier otra
     //   decision — y por eso entra por `Decisiones` y se guarda con las demas
@@ -1691,6 +1735,11 @@ fn descubrir(
     }
 
     print!("{}", inductor::informe(&ind, destino));
+    if regla.fuente_aparte.is_some()
+        && let Some(r) = fuente_inducida::tras_la_base(destino, &catalogo.fuente)
+    {
+        print!("{r}");
+    }
     for l in costura(destino, &catalogo) {
         eprintln!("{l}");
     }

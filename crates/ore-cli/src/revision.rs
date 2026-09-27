@@ -236,6 +236,11 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
             regla.modeladas = a.modeladas().cloned();
             regla.copiadas = a.copiadas().clone();
             regla.schemas = a.schemas().clone();
+            // ⭐ 0045 P3′: los punteros son de la fuente, si tiene paquete.
+            if dir_de_la_fuente(raiz, &catalogo.fuente).is_some() {
+                regla.fuente_aparte = crate::raiz_del_repositorio(raiz)
+                    .and_then(|r| crate::fuente_inducida::referencias(&r, &catalogo.fuente));
+            }
             a.comprueba_la_fuente(&catalogo)
                 .map_err(|m| fallo(65, m, &["  `discover` lo escribio para otra fuente."]))?;
             let (c, r) = a.aplicar(catalogo);
@@ -318,14 +323,21 @@ fn intentar(raiz: &Path, respuestas: Option<&Path>, reinducir: bool) -> Result<S
     // tomadas. Nada de lo de abajo retoca un documento.
     let despues = inductor::inducir_con_regla(&catalogo, &paquete, &dec, &voc, &regla);
     let retirados = escribir(raiz, &despues, &dec, fuente.as_deref())?;
-
-    Ok(informe(&antes, &despues, cuantas, &retirados))
+    let mut texto = informe(&antes, &despues, cuantas, &retirados);
+    // Y la fuente: las respuestas del objeto son suyas, y el alcance pudo
+    // cambiar (`model`, `copy`).
+    if regla.fuente_aparte.is_some()
+        && let Some(r) = crate::fuente_inducida::tras_la_base(raiz, &catalogo.fuente)
+    {
+        texto.push_str(&r);
+    }
+    Ok(texto)
 }
 
 /// Lo contestado en pasadas anteriores. Que no haya fichero es lo normal la
 /// primera vez y no es un error; que lo haya y no analice sí, porque entonces el
 /// paquete de al lado salió de algo que ya no se puede volver a leer.
-fn acumuladas(raiz: &Path) -> Result<Decisiones, Fallo> {
+pub fn acumuladas(raiz: &Path) -> Result<Decisiones, Fallo> {
     let ruta = raiz.join(RESPUESTAS);
     let Ok(t) = std::fs::read_to_string(&ruta) else {
         return Ok(Decisiones::default());

@@ -488,9 +488,23 @@ pub struct Regla {
     /// siguen con el schema del origen —son del origen—, y sus respuestas
     /// siguen valiendo.
     pub schemas: BTreeMap<String, String>,
+    /// ⭐⭐ 0045 P3′ · **El puntero es de la fuente**: si la fuente tiene su
+    /// paquete, la base no escribe ninguna `Table` y lee las de la fuente por
+    /// su nombre (objeto del origen → `<fuente>.<schema>.<nombre>`, de
+    /// [`punteros_de_la_fuente`]). `None`: todo en la base, como siempre —el
+    /// CLI suelto, una prueba sin repositorio—.
+    pub fuente_aparte: Option<BTreeMap<String, String>>,
 }
 
 impl Regla {
+    /// Cómo lee la base el objeto: el puntero de la fuente, o su propia tabla.
+    fn tabla_de(&self, objeto: &Objeto) -> String {
+        self.fuente_aparte
+            .as_ref()
+            .and_then(|r| r.get(&objeto.nombre).cloned())
+            .unwrap_or_else(|| nombre_de_tabla(objeto))
+    }
+
     fn modela(&self, tabla: &str) -> bool {
         self.modeladas.as_ref().is_none_or(|m| m.contains(tabla))
     }
@@ -615,20 +629,24 @@ pub fn inducir_con_regla(
             sin_copia.push((t.nombre.clone(), m));
         }
         let se_copia = regla.copia(&t.nombre) && impide.is_none();
-        ficheros.insert(
-            en_schema(&sch, format!("tables/{sufijo}")),
-            con_schema(
-                tabla_yaml(
+        // ⭐ 0045 P3′: con la fuente aparte, el puntero lo escribe ella.
+        if regla.fuente_aparte.is_none() {
+            ficheros.insert(
+                en_schema(&sch, format!("tables/{sufijo}")),
+                con_schema(
+                    tabla_yaml(
+                        paquete,
+                        &cat.fuente,
+                        &nombre_de_tabla(objeto),
+                        t,
+                        objeto,
+                        (!clave.is_empty()).then_some(clave.as_slice()),
+                    ),
+                    &sch,
                     paquete,
-                    &cat.fuente,
-                    t,
-                    objeto,
-                    (!clave.is_empty()).then_some(clave.as_slice()),
                 ),
-                &sch,
-                paquete,
-            ),
-        );
+            );
+        }
         // 0033: lo que se copia es un `Dataset` con el plan de la vista dentro;
         // la vista sólo existe cuando NO se copia (la pregunta sobre lo de fuera).
         ficheros.insert(
@@ -637,7 +655,16 @@ pub fn inducir_con_regla(
                 format!("{}/{sufijo}", if se_copia { "datasets" } else { "views" }),
             ),
             con_schema(
-                vista_yaml(&vista, paquete, &sch, &owner_catalogo, t, objeto, se_copia),
+                vista_yaml(
+                    &vista,
+                    paquete,
+                    &sch,
+                    &owner_catalogo,
+                    t,
+                    objeto,
+                    &regla.tabla_de(objeto),
+                    se_copia,
+                ),
                 &sch,
                 paquete,
             ),
@@ -847,14 +874,23 @@ pub fn inducir_con_regla(
         } else {
             None
         };
-        ficheros.insert(
-            en_schema(&sch, format!("tables/{sufijo}")),
-            con_schema(
-                tabla_yaml(paquete, &cat.fuente, t, objeto, clave.as_deref()),
-                &sch,
-                paquete,
-            ),
-        );
+        if regla.fuente_aparte.is_none() {
+            ficheros.insert(
+                en_schema(&sch, format!("tables/{sufijo}")),
+                con_schema(
+                    tabla_yaml(
+                        paquete,
+                        &cat.fuente,
+                        &nombre_de_tabla(objeto),
+                        t,
+                        objeto,
+                        clave.as_deref(),
+                    ),
+                    &sch,
+                    paquete,
+                ),
+            );
+        }
         ficheros.insert(
             en_schema(
                 &sch,
@@ -864,7 +900,16 @@ pub fn inducir_con_regla(
                 ),
             ),
             con_schema(
-                vista_yaml(&vista, paquete, &sch, &owner, t, objeto, copia.is_some()),
+                vista_yaml(
+                    &vista,
+                    paquete,
+                    &sch,
+                    &owner,
+                    t,
+                    objeto,
+                    &regla.tabla_de(objeto),
+                    copia.is_some(),
+                ),
                 &sch,
                 paquete,
             ),
@@ -2133,6 +2178,7 @@ fn transcribir(n: &Node, sangria: usize) -> String {
 fn tabla_yaml(
     paquete: &str,
     fuente: &str,
+    nombre: &str,
     t: &Tabla,
     objeto: &Objeto,
     clave: Option<&[String]>,
@@ -2147,7 +2193,7 @@ fn tabla_yaml(
            datasource: {fuente}\n  \
            object: {}\n  \
            columns:\n",
-        nombre_de_tabla(objeto),
+        nombre,
         entrecomillar(&objeto.nombre)
     );
     for c in t
@@ -2278,6 +2324,7 @@ fn la_copia_no_se_mantiene(t: &Tabla, con_entidad: bool) -> Option<&'static str>
 /// máquina mirando un catálogo. Hasta que la vista admitió `oos.maturity` no
 /// había forma de decirlo, y una vista adivinada era indistinguible de una
 /// acordada — con la ayuda del comando afirmando que las proponía en `DRAFT`.
+#[allow(clippy::too_many_arguments)]
 fn vista_yaml(
     vista: &str,
     paquete: &str,
@@ -2285,6 +2332,7 @@ fn vista_yaml(
     owner: &str,
     t: &Tabla,
     objeto: &Objeto,
+    tabla: &str,
     copia: bool,
 ) -> String {
     let de_la_tabla: Vec<_> = t
@@ -2296,15 +2344,14 @@ fn vista_yaml(
         .iter()
         .map(|c| (identificador(&c.nombre), c.nombre.clone()))
         .collect();
-    let tabla = nombre_de_tabla(objeto);
     if copia {
-        return documento_dataset(vista, paquete, owner, &tabla, &campos, &[]);
+        return documento_dataset(vista, paquete, owner, tabla, &campos, &[]);
     }
     let tipos: BTreeMap<String, String> = de_la_tabla
         .iter()
         .filter_map(|c| Some((c.nombre.clone(), c.tipo.clone()?)))
         .collect();
-    documento_vista(vista, paquete, schema, owner, &tabla, &campos, &tipos)
+    documento_vista(vista, paquete, schema, owner, tabla, &campos, &tipos)
 }
 
 /// **Cómo se llama la `Table` de un objeto: `<objeto>_t`.** En v1alpha14 un
@@ -2315,6 +2362,111 @@ fn vista_yaml(
 /// que `ore migrate v1alpha14` da a una tabla que se llamaba como su vista.
 fn nombre_de_tabla(objeto: &Objeto) -> String {
     format!("{}_t", identificador(sin_schema(&objeto.nombre)))
+}
+
+// ── El paquete de la fuente (0045 P3′) ──────────────────────────────────────
+//
+// El puntero vive UNA vez, en `packages/<fuente>/<schema>/tables/`, con el
+// nombre del objeto —sin `_t`: es otro paquete, otro espacio de nombres— y
+// exportado. Lo escribe un solo sitio (`fuente_inducida::inducir`), y las
+// bases lo nombran.
+
+/// **Cómo se llama en la fuente cada objeto de su catálogo**: objeto del
+/// origen → (schema, nombre).
+///
+/// Se calcula sobre el catálogo **entero**, no sobre lo que alguien usa, para
+/// que el nombre de un objeto no dependa de quién lo lea ni de cuándo. Dos
+/// objetos que dan el mismo identificador en un schema —`a-b` y `a_b`, o
+/// `Pedidos` y `pedidos`, que en Windows y macOS son el mismo fichero— no
+/// pueden llamarse igual: el primero, en orden, se queda el nombre, y los
+/// demás llevan `_2`, `_3`… Solo cuando colisionan.
+pub fn punteros_de_la_fuente(cat: &Catalogo) -> BTreeMap<String, (String, String)> {
+    let mut objetos: Vec<&str> = cat.tablas.iter().map(|t| t.nombre.as_str()).collect();
+    objetos.sort_unstable();
+    objetos.dedup();
+    let mut vistos: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut out = BTreeMap::new();
+    for o in objetos {
+        let sch = schema_de(o);
+        let base = identificador(sin_schema(o));
+        let mut nombre = base.clone();
+        let mut n = 2;
+        while !vistos.insert((sch.clone(), nombre.to_lowercase())) {
+            nombre = format!("{base}_{n}");
+            n += 1;
+        }
+        out.insert(o.to_string(), (sch, nombre));
+    }
+    out
+}
+
+/// Lo que una base escribe para leer cada objeto: `<fuente>.<schema>.<nombre>`
+/// (`<fuente>.<nombre>` en `default`, la forma corta del catálogo).
+pub fn referencias_a_la_fuente(cat: &Catalogo) -> BTreeMap<String, String> {
+    punteros_de_la_fuente(cat)
+        .into_iter()
+        .map(|(o, (s, n))| (o, ore_core::normalize::corto(&cat.fuente, &s, &n)))
+        .collect()
+}
+
+/// **Las `Table` de la fuente**: una por objeto que alguna base usa, con lo
+/// que el driver sondeó y lo que la fuente sabe de él —la clave y los tipos
+/// contestados, que son del objeto (P1)—; el `schema.yaml` de cada schema
+/// que no sea `default`; y lo que el paquete exporta, en la forma corta.
+///
+/// No escribe `package.yaml`: el paquete de la fuente lo crea el Job de
+/// catálogo, y aquí solo se le cambian los `exports`.
+pub struct Fuente {
+    pub ficheros: BTreeMap<String, String>,
+    pub exports: Vec<String>,
+}
+
+pub fn inducir_la_fuente(
+    cat: &Catalogo,
+    usados: &BTreeSet<String>,
+    dec: &Decisiones,
+    owner: &str,
+) -> Fuente {
+    let fuente = &cat.fuente;
+    let nombres = punteros_de_la_fuente(cat);
+    let mut ficheros = BTreeMap::new();
+    let mut exports = Vec::new();
+    let mut schemas = BTreeSet::new();
+    for t in cat.tablas.iter().filter(|t| usados.contains(&t.nombre)) {
+        let Some((sch, nombre)) = nombres.get(&t.nombre) else {
+            continue;
+        };
+        let t = con_tipos(t, dec);
+        let clave = clave_de(&t, dec);
+        let objeto = objeto_de(&t);
+        ficheros.insert(
+            en_schema(sch, format!("tables/{nombre}.yaml")),
+            con_schema(
+                tabla_yaml(
+                    fuente,
+                    fuente,
+                    nombre,
+                    &t,
+                    &objeto,
+                    (!clave.is_empty()).then_some(clave.as_slice()),
+                ),
+                sch,
+                fuente,
+            ),
+        );
+        exports.push(ore_core::normalize::corto(fuente, sch, nombre));
+        if !en_default(sch) {
+            schemas.insert(sch.clone());
+        }
+    }
+    for sch in schemas {
+        ficheros.insert(
+            format!("{sch}/schema.yaml"),
+            schema_yaml(&sch, fuente, owner),
+        );
+    }
+    exports.sort();
+    Fuente { ficheros, exports }
 }
 
 /// **El emisor de la `View` que el inductor propone** (v1alpha14, ADR 0040
@@ -2794,6 +2946,7 @@ mod tests {
             modeladas: None,
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            fuente_aparte: None,
         };
         let sin = inducir_con_regla(
             &cat,
@@ -2877,6 +3030,7 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            fuente_aparte: None,
         };
         let i = inducir_con_regla(
             &cat,
@@ -2951,6 +3105,7 @@ mod tests {
             modeladas: Some(["rubix_demo_ventas.clientes".to_string()].into()),
             copiadas: BTreeSet::new(),
             schemas: BTreeMap::new(),
+            fuente_aparte: None,
         };
         // y en una foránea, una tabla copiada una a una: sólo ésa
         let suelta = Regla {
@@ -2958,6 +3113,7 @@ mod tests {
             modeladas: Some(BTreeSet::new()),
             copiadas: ["rubix_demo_ventas.facturas".to_string()].into(),
             schemas: BTreeMap::new(),
+            fuente_aparte: None,
         };
         let f = inducir_con_regla(
             &cat,

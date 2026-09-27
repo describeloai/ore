@@ -923,7 +923,7 @@ fn ejecutar(path: &Path, op: &crate::migrar::Opciones) -> std::process::ExitCode
 }
 
 /// El árbol, sin `.git` ni lo construido, en `a`.
-fn copiar_arbol(de: &Path, a: &Path) -> Result<(), String> {
+pub(crate) fn copiar_arbol(de: &Path, a: &Path) -> Result<(), String> {
     std::fs::create_dir_all(a).map_err(|e| format!("{}: {e}", a.display()))?;
     for e in std::fs::read_dir(de).map_err(|e| format!("{}: {e}", de.display()))? {
         let e = e.map_err(|e| e.to_string())?;

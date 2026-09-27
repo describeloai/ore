@@ -51,6 +51,10 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
         "quita la fuente del manifiesto; NO toca el custodio ni abre nada",
     ),
     (
+        &["source", "induce"],
+        "escribe los punteros de la fuente desde su catálogo YA LEÍDO (0045 P3′); no abre nada",
+    ),
+    (
         &["discover"],
         "induce desde un catálogo YA LEÍDO, que le llega como fichero",
     ),

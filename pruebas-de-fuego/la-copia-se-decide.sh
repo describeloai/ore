@@ -12,7 +12,9 @@
 #   1  POST /paquetes {type: raro}      422 · nada escrito · y un nombre con guion (no puede ser
 #                                       espacio de nombres, OOS2030): 422 antes de escribir nada
 #   2  POST /paquetes {type: standard}  200 · la regla en discover.scope.json · EL CATALOGO NO
-#                                       MODELA (C1): 0 entidades, 2 tablas, 0 vistas y 2 DATASETS
+#                                       MODELA (C1): 0 entidades, 0 tablas, 0 vistas y 2 DATASETS
+#                                       que leen los punteros de la FUENTE (0045 P3′: `pg.olist.*`,
+#                                       una vez, exportados; la base no escribe ninguno)
 #                                       (0033) — la copia no espera a ninguna clave;
 #                                       orders (con clave en el origen) en `upsert`, customers
 #                                       como el origen la dijo · EL DUEÑO ES LA ORGANIZACION:
@@ -34,6 +36,7 @@
 #   5  el informe del Job en el arbol   GET /copias: copiada, filas, copiado_por, cuando · 2/1
 #   7  DELETE /paquetes/{n}             409 para la fuente entera (pg) · 200 para una base: el
 #                                       paquete fuera, la cola reencolada con las copias que quedan ·
+#                                       los punteros que otra base lee se quedan en la fuente (P3′) ·
 #                                       404 despues · el arbol compila
 #   6  una base foranea (sin type)      200 · nada con copia · COPIAR UNA TABLA (POST
 #                                       /tablas/{o}/copiar): 201, la base sigue foranea y solo
@@ -214,7 +217,9 @@ copias() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/copias"; }
 # 0038 P5: `discover` deja lo del origen en la carpeta de su schema (`olist/`)
 vista()  { cat "$REPO"/packages/$1/olist/views/*__$2.yaml 2>/dev/null; }
 dataset() { cat "$REPO"/packages/$1/olist/datasets/*__$2.yaml 2>/dev/null; }
-tabla()  { cat "$REPO"/packages/$1/olist/tables/*__$2.yaml; }
+# ⭐ 0045 P3′: el puntero es de la FUENTE, una vez: `packages/pg/olist/tables/<objeto>.yaml`.
+#   La base no tiene ninguno; `$1` se queda para decir quién lo lee.
+tabla()  { cat "$REPO"/packages/pg/olist/tables/$2.yaml; }
 
 # ── 0 ───────────────────────────────────────────────────────────────────────
 paquete olist | grep -q '"type": "foreign"' || falla "0 · la base a mano no sale foreign: $(paquete olist)"
@@ -247,7 +252,11 @@ COD=$(alta '{"name":"tienda","source":"pg","only":["olist.customers","olist.orde
 [ "$COD" = "200" ] || falla "2 · la base estandar devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"type":"standard"' || falla "2 · la respuesta no dice la clase: $(cuerpo)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "2 · la respuesta no cuenta las dos copias: $(cuerpo)"
-cuerpo | grep -q '0 entidades, 2 tablas, 0 vistas y 2 datasets' || falla "2 · el catalogo modelo algo, o no copio: $(cuerpo)"
+cuerpo | grep -q '0 entidades, 0 tablas, 0 vistas y 2 datasets' || falla "2 · el catalogo modelo algo, no copio, o la base escribio punteros: $(cuerpo)"
+cuerpo | grep -q 'fuente `pg`: 3 puntero(s) escrito(s)' || falla "2 · la fuente no escribio sus punteros (dos tablas y su schema): $(cuerpo)"
+[ ! -d "$REPO/packages/tienda/olist/tables" ] || falla "2 · la base estandar tiene tables/: $(ls "$REPO/packages/tienda/olist/tables")"
+dataset tienda orders | grep -q 'from: { table: pg.olist.orders }' || falla "2 · el dataset no lee el puntero de la fuente: $(dataset tienda orders)"
+grep -q 'exports: \[pg.olist.customers, pg.olist.orders\]' "$REPO/packages/pg/package.yaml" || falla "2 · la fuente no exporta sus punteros: $(cat "$REPO/packages/pg/package.yaml")"
 [ ! -d "$REPO/packages/tienda/olist/entities" ] || [ -z "$(ls -A "$REPO/packages/tienda/olist/entities" 2>/dev/null)" ] || falla "2 · el catalogo escribio entidades: $(ls "$REPO/packages/tienda/olist/entities")"
 grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no dice que ninguna esta modelada: $(cat "$REPO/packages/tienda/discover.scope.json")"
 cuerpo | grep -q '"owner":"team:demo"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
@@ -272,7 +281,7 @@ paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "
 paquete tienda | grep -q '"modeladas": 0' && paquete tienda | grep -q '"tablas": 2' || falla "2 · GET /paquetes no dice 2 tablas, 0 modeladas: $(paquete tienda)"
 esquema() { curl -sf -H "$SUJ" "$BASE/paquetes/$1/esquema"; }
 esquema tienda | grep -q '"entities":\[\]' || falla "2 · el esquema trae entidades que no hay: $(esquema tienda)"
-esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers_t","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae las tablas desde tables/: $(esquema tienda)"
+esquema tienda | grep -q '"columns":\[{"name":"customer_id","physicalType":"character varying(32)","type":"String"},{"name":"customer_city","type":"String"}\],"copied":true,"dataset":"customers","datasource":"pg","modeled":false,"name":"customers","object":"olist.customers","schema":"olist","view":"customers"' || falla "2 · el esquema no trae los punteros de la fuente que la base lee: $(esquema tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"orders",.*"key":\["order_id"\]' || falla "2 · GET /copias no lista orders con su clave, pendiente: $(copias tienda)"
 copias tienda | grep -q '"copia":{"estado":"pendiente"},"dataset":"customers",.*"key":\[\]' || falla "2 · GET /copias no lista customers sin clave, pendiente: $(copias tienda)"
 dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas, 2 vistas · las DOS con copia (orders en upsert, customers como el origen) · el dueño es la organizacion (team:demo): cola vacia, conducto, Job encolado YA, compila · GET /paquetes standard 2/0"
@@ -333,7 +342,7 @@ dataset tienda orders | grep -q 'kind: Dataset' || falla "3b · modelar customer
 COD=$(modelar tienda olist.customers)
 [ "$COD" = "409" ] || falla "3b · modelar dos veces devolvio $COD: $(cuerpo)"
 paquete tienda | grep -q '"modeladas": 1' || falla "3b · GET /paquetes no cuenta la modelada: $(paquete tienda)"
-esquema tienda | grep -q '"entity":"Customers".*"modeled":true,"name":"customers_t"' || falla "3b · el esquema no dice que customers esta modelada: $(esquema tienda)"
+esquema tienda | grep -q '"entity":"Customers".*"modeled":true,"name":"customers"' || falla "3b · el esquema no dice que customers esta modelada: $(esquema tienda)"
 COD=$(decidir tienda '{"answers":{"clave/olist.customers":["customer_id"]}}')
 [ "$COD" = "200" ] || falla "3b · contestar la clave devolvio $COD: $(cuerpo)"
 dataset tienda customers | grep -q 'kind: Dataset' || falla "3b · con la clave contestada, la copia no vuelve: $(dataset tienda customers)"
@@ -385,7 +394,7 @@ grep -q '"type"' "$REPO/packages/espejo/discover.scope.json" && falla "6 · copi
 dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · la tabla copiada no lleva la copia: $(dataset espejo orders)"
 [ -n "$(dataset espejo customers)" ] && falla "6 · copiar orders copio tambien customers"
 paquete espejo | grep -q '"type": "foreign"' && paquete espejo | grep -q '"copias": {"copiadas": 0, "declaradas": 1}' || falla "6 · GET /paquetes: sigue foreign con 1 copia: $(paquete espejo)"
-esquema espejo | grep -q '"copied":true,.*"name":"orders_t"' && esquema espejo | grep -q '"copied":false,.*"name":"customers_t"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
+esquema espejo | grep -q '"copied":true,.*"name":"orders"' && esquema espejo | grep -q '"copied":false,.*"name":"customers"' || falla "6 · el esquema no dice cual esta copiada: $(esquema espejo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.olist.orders,tienda.olist.customers,tienda.olist.orders"' || falla "6 · el Job no lleva espejo.orders: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 COD=$(copiar espejo olist.orders)
 [ "$COD" = "409" ] || falla "6 · copiar dos veces devolvio $COD: $(cuerpo)"
@@ -415,6 +424,8 @@ COD=$(borrar espejo)
 cuerpo | grep -q '"retirado":true' || falla "7 · la respuesta no dice retirado: $(cuerpo)"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "7 · no reencolo la copia con lo que queda: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "7 · el Job no se quedo con las de tienda: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+cuerpo | grep -q '"fuente":"' || falla "7 · retirar no paso por el escritor de la fuente (0045 P3′): $(cuerpo)"
+[ -f "$REPO/packages/pg/olist/tables/orders.yaml" ] && [ -f "$REPO/packages/pg/olist/tables/customers.yaml" ] || falla "7 · retirar espejo se llevo punteros que tienda sigue leyendo: $(ls "$REPO/packages/pg/olist/tables" 2>&1)"
 COD=$(borrar espejo)
 [ "$COD" = "404" ] || falla "7 · retirar dos veces devolvio $COD"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "7 · el arbol no compila sin espejo"
@@ -530,7 +541,7 @@ kind: View
 metadata: { name: libre, namespace: tienda }
 spec:
   owner: team:data
-  from: { table: tienda.olist.orders_t }
+  from: { table: pg.olist.orders }
   fields: { id: order_id }
 Y
 funcion8 sinCopia tienda.libre ""
