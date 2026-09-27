@@ -242,6 +242,86 @@ pub fn rendir_invocacion(plantilla: &str, i: &Invocacion) -> Result<(String, Str
     Ok((format!("49-la-invocacion-{obj}.yaml"), t))
 }
 
+// ── La comprobación de acceso, antes del alta ───────────────────────────────
+
+/// Lo que el aprovisionador deja en la cola para comprobar un origen (54).
+pub const PLANTILLA_COMPROBACION: &str = "plantilla-comprobacion.txt";
+const TIPO_MODELO: &str = "bigquery";
+const URL_MODELO: &str = "bigquery://modelo/dataset";
+
+/// Rinde el Job que comprueba si la cuenta de la celda llega a `url`. Una
+/// ranura por URL (`54-la-comprobacion-<objeto>.yaml`): comprobar otra vez la
+/// sustituye y Flux poda el Job anterior; el nombre del Job lleva la corrida en
+/// el resumen, así que dos clics son dos Jobs.
+///
+/// ⛔ La URL viaja EN CLARO en la cola: solo se admite una sin credencial, y
+///   eso lo decide quien llama ([`url_sin_secreto`]).
+pub fn rendir_comprobacion(
+    plantilla: &str,
+    tipo: &str,
+    url: &str,
+    corrida: &str,
+) -> Result<(String, String), String> {
+    if !plantilla.contains(&format!("comprobar-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_COMPROBACION}` no trae el hueco `comprobar-{RESUMEN_MODELO}`: o no es la \
+             plantilla, o `malla/54-la-comprobacion.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    for (de, a) in [
+        (TIPO_MODELO, tipo),
+        (URL_MODELO, url),
+        (CORRIDA_MODELO, corrida),
+    ] {
+        if !plantilla.contains(&format!("value: \"{de}\"")) {
+            return Err(format!(
+                "`{PLANTILLA_COMPROBACION}` no trae el hueco `value: \"{de}\"`: \
+                 `malla/54-la-comprobacion.yaml` cambió sin que esto se enterara"
+            ));
+        }
+        if a.contains('"') || a.contains('\n') || a.contains('\'') || a.contains('$') {
+            return Err(format!("`{a}` no puede ir en un valor del Job"));
+        }
+    }
+    let t = plantilla
+        .replace(
+            &format!("value: \"{TIPO_MODELO}\""),
+            &format!("value: \"{tipo}\""),
+        )
+        .replace(
+            &format!("value: \"{URL_MODELO}\""),
+            &format!("value: \"{url}\""),
+        )
+        .replace(
+            &format!("value: \"{CORRIDA_MODELO}\""),
+            &format!("value: \"{corrida}\""),
+        );
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let obj = nombre_de_objeto(url.split_once("://").map_or(url, |(_, r)| r));
+    let t = t.replace(
+        &format!("comprobar-{RESUMEN_MODELO}"),
+        &format!("comprobar-{h}"),
+    );
+    Ok((format!("54-la-comprobacion-{obj}.yaml"), t))
+}
+
+/// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
+/// la cuenta de la celda y no llevan credencial dentro: hoy, BigQuery.
+pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
+    let Some(resto) = url.strip_prefix("bigquery://") else {
+        return Err(
+            "solo se comprueba antes del alta un origen que no lleva credencial en su URL \
+             (BigQuery, con la cuenta de la celda); los demás se comprueban al catalogarlos"
+                .into(),
+        );
+    };
+    if resto.contains('@') || resto.contains('?') || resto.contains('#') {
+        return Err("la URL de BigQuery es `bigquery://<proyecto>/<dataset>`, sin nada más".into());
+    }
+    Ok("bigquery")
+}
+
 // ── El puesto (0031 W3.1): la sesión viva de una persona ─────────────────────
 pub const PLANTILLA_PUESTO: &str = "plantilla-puesto.txt";
 const PUESTO_MODELO: &str = "puesto-modelo";
@@ -448,6 +528,32 @@ pub fn rendir_capa(
 #[cfg(test)]
 mod prueba {
     use super::*;
+
+    /// La comprobación: la URL y la corrida entran, el nombre lleva el
+    /// resumen, y la ranura es por URL.
+    #[test]
+    fn la_comprobacion_rinde_su_job() {
+        let p = "metadata:\n  name: comprobar-00000000\n  env:\n    - { name: TIPO, value: \"bigquery\" }\n    - { name: URL, value: \"bigquery://modelo/dataset\" }\n    - { name: CORRIDA, value: \"00000000T000000Z\" }\n";
+        let (f, t) =
+            rendir_comprobacion(p, "bigquery", "bigquery://acme/ventas", "20260927T100000Z")
+                .unwrap();
+        assert_eq!(f, "54-la-comprobacion-acme-ventas.yaml");
+        assert!(t.contains("value: \"bigquery://acme/ventas\""), "{t}");
+        assert!(!t.contains("comprobar-00000000"), "{t}");
+        let (_, t2) =
+            rendir_comprobacion(p, "bigquery", "bigquery://acme/ventas", "20260927T100001Z")
+                .unwrap();
+        assert_ne!(t, t2, "dos clics, dos Jobs");
+        assert!(rendir_comprobacion(p, "bigquery", "bigquery://a/\"x", "c").is_err());
+    }
+
+    /// Solo viaja en claro una URL sin credencial.
+    #[test]
+    fn solo_se_comprueba_una_url_sin_secreto() {
+        assert_eq!(url_sin_secreto("bigquery://acme/ventas"), Ok("bigquery"));
+        assert!(url_sin_secreto("postgres://u:clave@h/db").is_err());
+        assert!(url_sin_secreto("bigquery://u:x@acme/ventas").is_err());
+    }
 
     #[test]
     fn el_puesto_lleva_id_rama_y_capa_y_el_mismo_puesto_es_el_mismo_fichero() {

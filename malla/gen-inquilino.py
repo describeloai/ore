@@ -236,6 +236,11 @@ VISTAS_MODELO = "olist.customers"
 POR_INVOCACION = "49-la-invocacion.yaml"
 PLANTILLA_INVOCACION = "plantilla-invocacion.txt"
 
+# ⭐ La comprobacion de acceso (antes del alta): UNA por URL, la encola `ore-serve`
+#   con el tipo, la URL y la corrida. Aqui solo viaja su plantilla.
+POR_COMPROBACION = "54-la-comprobacion.yaml"
+PLANTILLA_COMPROBACION = "plantilla-comprobacion.txt"
+
 # ⭐ El puesto (0031 W3.1): UNO por persona, lo encola `ore-serve` con el id y la
 #   rama. Aqui solo viaja su plantilla, rendida para el inquilino.
 POR_PUESTO = "51-el-puesto.yaml"
@@ -434,6 +439,10 @@ def render(nombre, arbol=None, entrada=None, fuentes=(), organizacion=None, copi
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     salida[PLANTILLA_COPIA] = copia
+    comprobacion = (MALLA / POR_COMPROBACION).read_text(encoding="utf-8")
+    salida[PLANTILLA_COMPROBACION] = (comprobacion
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     invocacion = (MALLA / POR_INVOCACION).read_text(encoding="utf-8")
     salida[PLANTILLA_INVOCACION] = (invocacion
              .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
@@ -519,6 +528,7 @@ def comprobar_plantillas():
                           if f.startswith("44-") or f == PLANTILLA_COLA
                           else POR_COPIAS if f == POR_COPIAS or f == PLANTILLA_COPIA
                           else POR_INVOCACION if f == PLANTILLA_INVOCACION
+                          else POR_COMPROBACION if f == PLANTILLA_COMPROBACION
                           else POR_PUESTO if f == PLANTILLA_PUESTO
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
@@ -677,7 +687,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -749,7 +759,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -798,7 +808,7 @@ def comprobar():
             if dentro:
                 gen += l + "\n"
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh"}
         for n in sorted(debidos - montados):

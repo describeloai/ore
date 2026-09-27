@@ -1,0 +1,68 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# LA COMPROBACION — ¿puede la cuenta de la celda leer ESTE origen? (antes del alta)
+#
+# El wizard de alta pregunta antes de guardar: «Comprobar acceso». `ore-serve`
+# no puede contestarlo —su imagen no habla con Google y su cuenta no es la del
+# driver—, así que lo encola: un Job con la identidad del DRIVER, la que leerá
+# de verdad, ejecuta `ore-read-<tipo> check` y deja su JSON en el log. El
+# informador (47) sube ese log a `ore-iam` y la consola lo lee de `/celdas`
+# (0026): el mismo camino que ya lleva el estado de cualquier Job.
+#
+# Medido el 2026-09-27: de un commit en la cola al Job creado, 3 s; un Job corto
+# del inquilino, 5–12 s. La comprobación entera cabe en ~20 s.
+#
+# ⛔ Solo para orígenes cuya URL NO lleva secreto (BigQuery con la cuenta de la
+#   celda): la URL viaja en claro en la cola. `ore-serve` rechaza una URL con
+#   credencial antes de encolar.
+#
+# ⭐ Una ranura por URL (`54-la-comprobacion-<objeto>.yaml`): comprobar otra vez
+#   sustituye el Job anterior —Flux lo poda— y la cola no crece con los clics.
+#   El nombre del Job lleva la corrida en el resumen: dos clics, dos Jobs.
+#
+# Plantilla: `gen-inquilino.py` la rinde para el inquilino como
+# `plantilla-comprobacion.txt`, que viaja en la cola; `ore-serve` sustituye el
+# tipo, la URL y la corrida (`cola::rendir_comprobacion`).
+# ══════════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: comprobar-00000000
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  backoffLimit: 0
+  # Una comprobación que no contesta en dos minutos no va a contestar: el
+  # plazo deja el registro y el motivo, que es lo que un cuelgue no deja.
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      containers:
+        - name: comprobar
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: TIPO, value: "bigquery" }
+            - { name: URL, value: "bigquery://modelo/dataset" }
+            - { name: CORRIDA, value: "00000000T000000Z" }
+          command: ["/bin/sh", "-c"]
+          # La última línea del log es el JSON de `check` (acceso.rs): lo que la
+          # consola lee. Un `check` que no llega a contestar sale con su código
+          # y su stderr, y el Job queda `fallido` con el motivo en el log.
+          args:
+            - |
+              printf '{"url":"%s"}' "$URL" | "ore-read-$TIPO" check
+          resources:
+            requests: {cpu: "50m", memory: 64Mi}
+            limits:   {cpu: "500m", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }

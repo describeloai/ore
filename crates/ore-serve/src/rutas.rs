@@ -101,6 +101,9 @@ pub struct Servidor {
     /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN, y este
     /// proceso sirve UNA — su namespace es el del inquilino.
     pub organizacion: Option<String>,
+    /// La cuenta de Google de los drivers (`--cuenta-driver`): la que el
+    /// cliente autoriza en su origen. Se enseña, no se usa aquí.
+    pub cuenta_driver: Option<String>,
     /// El gateway de modelos (0027 E1): dónde se suscribe y qué puerta se contesta.
     pub modelos: Option<crate::modelos::Modelos>,
     /// La lista de certificación de un fichero (el banco); si no, de la cola.
@@ -251,6 +254,17 @@ impl Servidor {
             .filter(|s| !s.is_empty());
         match (p.metodo.as_str(), seg) {
             ("GET", ["fuentes"]) => self.leyendo(fuentes),
+            // Qué credencial usa una familia y qué roles concede el cliente:
+            // lo que el paso de conexión del wizard enseña (`credenciales`).
+            // «Comprobar acceso» antes del alta: un Job con la cuenta del
+            // driver ejecuta `check`; su resultado vuelve por el informador.
+            ("POST", ["fuentes", "comprobaciones"]) => {
+                let cuerpo = p.cuerpo.clone();
+                self.comprobar_fuente(&cuerpo, sujeto)
+            }
+            ("GET", ["fuentes", "credenciales", tipo]) => {
+                Respuesta::ok(crate::credenciales::de(tipo, self.cuenta_driver.as_deref()))
+            }
             ("POST", ["fuentes"]) => {
                 let cuerpo = p.cuerpo.clone();
                 // ⛔ EL TESTIGO DE QUIEN PIDIO, y no uno nuestro. El custodio
@@ -1368,6 +1382,75 @@ impl Servidor {
         })
     }
 
+    /// **`POST /fuentes/comprobaciones {url}`**: encola la comprobación de
+    /// acceso (`malla/54-la-comprobacion.yaml`) y devuelve el nombre del Job.
+    ///
+    /// ⛔ ore-serve no contesta la pregunta: no habla con Google y su cuenta no
+    ///   es la del driver. La contesta el Job, con la identidad que leerá de
+    ///   verdad, y su JSON vuelve por el informador a `ore-iam` (0026): la
+    ///   consola lo lee en `/celdas` buscando este `job`.
+    fn comprobar_fuente(&self, cuerpo: &str, sujeto: &Identidad) -> Respuesta {
+        let n = match analizar(cuerpo) {
+            Ok(n) => n,
+            Err(r) => return r,
+        };
+        let Some(url) = n.get("url").and_then(|(_, v)| v.as_str()).map(str::trim) else {
+            return Respuesta::error(400, "falta `url`: `bigquery://<proyecto>/<dataset>`");
+        };
+        let tipo = match cola::url_sin_secreto(url) {
+            Ok(t) => t,
+            Err(e) => return Respuesta::error(422, e),
+        };
+        let Some(forja) = &self.cola else {
+            return Respuesta::error(
+                503,
+                "este servidor no sabe de ninguna cola (`--cola`): no hay dónde comprobar",
+            );
+        };
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return Respuesta::error(503, format!("no se pudo leer la cola: {e}")),
+        };
+        let dir = prestado.ruta();
+        let Ok(plantilla) = std::fs::read_to_string(dir.join(cola::PLANTILLA_COMPROBACION)) else {
+            return Respuesta::error(
+                503,
+                format!(
+                    "la cola no trae `{}`: hay que converger este inquilino",
+                    cola::PLANTILLA_COMPROBACION
+                ),
+            );
+        };
+        let corrida = crate::funciones::corrida_ahora();
+        let (fichero, texto) = match cola::rendir_comprobacion(&plantilla, tipo, url, &corrida) {
+            Ok(v) => v,
+            Err(e) => return Respuesta::error(422, e),
+        };
+        let job = texto
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("name: comprobar-"))
+            .map(|h| format!("comprobar-{h}"))
+            .unwrap_or_default();
+        if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
+            return Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}"));
+        }
+        match forja.publicar(dir, sujeto, &format!("Comprobar el acceso a `{url}`")) {
+            Ok(c) => Respuesta::ok(Json::obj([
+                ("job", Json::s(&job)),
+                ("estado", Json::s("encolada")),
+                ("commit", Json::s(c)),
+                (
+                    "dice",
+                    Json::s(
+                        "la comprobación corre con la cuenta del driver; su resultado llega en \
+                         el estado de la celda (`/celdas`), en el log de este Job",
+                    ),
+                ),
+            ])),
+            Err(e) => Respuesta::error(503, format!("no se pudo encolar: {e}")),
+        }
+    }
+
     /// ⭐⭐ ENCOLAR EL CATALOGO, EN EL MISMO ACTO DEL ALTA.
     ///
     /// Medido el 2026-09-10: un alta a las 19:24 no tenia su Job hasta las 20:17,
@@ -2430,6 +2513,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/fuentes", con_identidad),
         ("DELETE", "/fuentes/{nombre}", con_identidad),
         ("GET", "/fuentes/{nombre}/estado", con_identidad),
+        ("GET", "/fuentes/credenciales/{tipo}", con_identidad),
+        ("POST", "/fuentes/comprobaciones", con_identidad),
         ("GET", "/paquetes", con_identidad),
         ("GET", "/paquetes/{nombre}/esquema", con_identidad),
         ("GET", "/paquetes/{nombre}/decisiones", con_identidad),

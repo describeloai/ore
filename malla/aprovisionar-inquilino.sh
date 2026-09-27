@@ -1201,7 +1201,7 @@ else
       # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
       # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
       # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
-      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-puesto.txt|plantilla-capa.txt|plantilla-capa-jvm.txt) cp "$f" "$TMP/cola/" ;;
+      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-comprobacion.txt|plantilla-puesto.txt|plantilla-capa.txt|plantilla-capa-jvm.txt) cp "$f" "$TMP/cola/" ;;
       *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done

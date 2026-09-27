@@ -102,7 +102,8 @@ medir() {
                 elif (.status.failed // 0) > 0 then "fallido" else "pendiente" end;
     def tipo: if (.metadata.name | startswith("catalogo-")) then "catalogo"
               elif (.metadata.name | startswith("copiar-")) then "copia"
-              elif (.metadata.name | startswith("invocar-")) then "invocacion" else "otro" end;
+              elif (.metadata.name | startswith("invocar-")) then "invocacion"
+              elif (.metadata.name | startswith("comprobar-")) then "comprobacion" else "otro" end;
     def sujeto: [(.spec.template.spec.containers // [])[].env // [] | .[] | select(.name == "VISTAS" or .name == "FUENTE" or .name == "FUNCION") | .value] | first // "";
     def contenedor: ((.spec.template.spec.containers // []) | last | .name // "");
     def reciente: ((.status.completionTime // ([.status.conditions[]? | select(.type == "Failed") | .lastTransitionTime] | first) // .status.startTime // "") as $t | ($t != "") and (($ahora | sub("Z$"; "") | strptime("%Y-%m-%dT%H:%M:%S") | mktime) - ($t | sub("Z$"; "") | strptime("%Y-%m-%dT%H:%M:%S") | mktime) < 7200));
@@ -112,7 +113,9 @@ medir() {
             # Un Job fallido no tiene completionTime: su fin es cuando paso a Failed.
             fin: (.status.completionTime // ([.status.conditions[]? | select(.type == "Failed") | .lastTransitionTime] | first)),
             contenedor: contenedor,
-            quiere_log: ((estado == "corriendo") or (estado == "fallido" and reciente)) })' /tmp/j.json > /tmp/lista.json || return 1
+            # Una comprobación de acceso SE LEE en su log (54): acabe como acabe.
+            quiere_log: ((estado == "corriendo") or (estado == "fallido" and reciente)
+                         or (tipo == "comprobacion" and reciente)) })' /tmp/j.json > /tmp/lista.json || return 1
 
   # Los logs, uno a uno, a un objeto {nombre: texto}
   printf '{}' > /tmp/logs.json

@@ -166,6 +166,7 @@ configMapGenerator:
       - 47-el-informador.yaml
       - 48-la-copia.yaml
       - 49-la-invocacion.yaml
+      - 54-la-comprobacion.yaml
       - 50-jwks.yaml
       - 51-el-puesto.yaml
       - 52-la-capa.yaml

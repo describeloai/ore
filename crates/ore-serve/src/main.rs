@@ -43,6 +43,7 @@ mod assets;
 mod catalogo;
 mod cola;
 mod copia;
+mod credenciales;
 mod datasets;
 mod documentos;
 mod entorno;
@@ -90,6 +91,9 @@ ore-serve — el plano de control de ORE
                          este proceso no va a buscarlas — ver `oidc.rs`
   --cofre HOST:PUERTO    el custodio, donde va la credencial de una fuente. Sin
                          esto el alta funciona y la credencial SE PIERDE
+  --cuenta-driver EMAIL  la cuenta de Google con la que leen los drivers de
+                         esta celda (`ore-driver-<n>@…`): la que el cliente
+                         autoriza en su BigQuery. `GET /fuentes/credenciales`
   --organizacion NOMBRE  de quien es este arbol. El custodio guarda por
                          organizacion, y este proceso sirve UNA
   --modelos HOST:PUERTO  el plano de control del gateway de modelos (0027 ②):
@@ -131,6 +135,8 @@ struct Opciones {
     cofre: Option<String>,
     /// De quién es este árbol. El custodio guarda POR ORGANIZACIÓN.
     organizacion: Option<String>,
+    /// La cuenta de Google de los drivers de la celda, que el cliente autoriza.
+    cuenta_driver: Option<String>,
     /// El gateway de modelos, `host:puerto` del plano de control, y la puerta
     /// que se contesta a quien pregunte por `modelo/<n>`. La misma figura que
     /// el cofre: HTTP llano dentro de la VPC, y este proceso no gana internet.
@@ -157,6 +163,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         testigo_fichero: None,
         cofre: None,
         organizacion: None,
+        cuenta_driver: None,
         modelos: None,
         modelos_url: None,
         perfiles: None,
@@ -186,6 +193,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--jwks" => o.jwks = Some(PathBuf::from(valor("--jwks")?)),
             "--cofre" => o.cofre = Some(valor("--cofre")?),
             "--organizacion" => o.organizacion = Some(valor("--organizacion")?),
+            "--cuenta-driver" => o.cuenta_driver = Some(valor("--cuenta-driver")?),
             "--modelos" => o.modelos = Some(valor("--modelos")?),
             "--modelos-url" => o.modelos_url = Some(valor("--modelos-url")?),
             "--perfiles" => o.perfiles = Some(PathBuf::from(valor("--perfiles")?)),
@@ -334,6 +342,7 @@ fn main() -> ExitCode {
         cola,
         cofre: o.cofre,
         organizacion: o.organizacion,
+        cuenta_driver: o.cuenta_driver,
         modelos: o.modelos.map(|admin| modelos::Modelos {
             url: o.modelos_url.unwrap_or_else(|| {
                 format!(

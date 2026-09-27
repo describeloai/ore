@@ -274,6 +274,11 @@ spec:
             - ore-cofre.t-demo.svc.cluster.local:8095
             - --organizacion
             - demo
+            # ⭐ LA CUENTA CON LA QUE LEEN LOS DRIVERS de esta celda: la que el
+            #   cliente autoriza en su BigQuery (`GET /fuentes/credenciales`).
+            #   Se ENSEÑA, no se usa aquí: este proceso no habla con Google.
+            - --cuenta-driver
+            - ore-driver-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
             # ⭐ EL GATEWAY DE MODELOS (0027 E1): el plano de control de Bastion
             #   B3, donde `POST /modelos` suscribe a esta celda en el mismo acto
             #   que escribe el documento. Por IP, como el API server del

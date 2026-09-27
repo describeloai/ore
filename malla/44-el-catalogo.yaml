@@ -295,7 +295,10 @@ spec:
               echo "### leyendo el origen \`$FUENTE\`"
               [ -f "packages/$FUENTE/package.yaml" ] \
                 || ore package new "$FUENTE" --owner "team:$ORGANIZACION" --path .
-              ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json"
+              # ⭐ Si falla, el DIAGNOSTICO: `ore source check` dice permiso a permiso
+              #   qué falta y dónde concederlo. El informador sube este log a
+              #   `ore-iam` y la ficha de la fuente lo enseña (0026).
+              ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json" || { echo "### el catalogo fallo; diagnostico:"; ore source check "$FUENTE" || true; exit 1; }
 
               git add -A
               if git diff --cached --quiet; then
