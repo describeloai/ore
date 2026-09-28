@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16 ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance) hecho ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -266,7 +266,7 @@ y un listado de miles de objetos.
 |---|---|---|
 | **F0 · cerrar las fugas** ✅ | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
 | **F1 · medir contra un bucket real** ✅ (sin federación) | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
-| **F2 · la spec** (`C:\oos`, v1alpha16) ◐ texto `860a269`; esquemas, conformance y ORE por hacer | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
+| **F2 · la spec** (`C:\oos`, v1alpha16) ◐ texto `860a269`; esquemas y conformance `4fa2206` (E1); ORE por hacer (E2) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
 | **F3 · el catálogo de objetos** | `ore-read-s3 catalogo`: el `ObjectTable` de cada prefijo con su listado, y `ore source induce` lo escribe en la fuente (0045) | una fuente S3 real catalogada; el `ObjectTable` en el árbol |
 | **F4 · lo semiestructurado como tabla** | `Dataset` sobre un `ObjectTable` de Parquet, CSV y JSONL: esquema deducido y congelado, columna rescatada, `leer` en Arrow | una base standard de S3 con sus datasets copiados |
 | **F5 · la colección** | la gestionada (copia al lago por digest y manifiesto, transaccional) y la virtual; se decide la copia de la base standard con lo medido en su iteración | una colección de PDF de S3, en el lago y en sitio |
@@ -276,3 +276,62 @@ y un listado de miles de objetos.
 
 Los borrados en origen y la copia de la base standard tienen su propia iteración de medida entre F3
 y F5; sus resultados cambian F5.
+
+### El plan de v1alpha16 en ORE (medido de cabo a rabo el 2026-09-28)
+
+Lo que hay y se reutiliza: el firmador SigV4 de `ore-store/src/r2.rs` (hmac, sha2, ureq con
+native-tls: compila aquí sin nada nuevo); el despacho por nombre (`s3://` → `ore-read-s3`), el Job
+de catálogo, el cofre y el saneado de F0; el lago Iceberg con sus punteros en el árbol y su CAS; la
+forma de `TrainedModel` (prefijo y huella) como molde de la colección; y la plantilla de BigQuery
+para el driver (crate, verbos, catálogo en el driver, `check` por permiso, Dockerfile) y la de
+`Dataset` (v1alpha12) para el compilador.
+
+Lo que falta: el driver; listado paginado, rangos, `CRC64NVME` (sin crate en el lock: propia) y
+prefirmado; un nivel «objeto» en la forma del catálogo (`ore-driver/src/catalogo.rs`, hoy sólo
+tabular); v1alpha16 en `ore-core`; el puntero y el manifiesto de la colección; una ruta que sirva
+binarios. Y dos hallazgos: **nada comprueba hoy las palabras de `changes.mode`/`witness`** (un
+`witness` mal escrito compila y se trata como `none`, `vistas.rs:455`), y **no hay evaluador de
+Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **E1 · la spec, completa** ✅ `oos 4fa2206` | esquemas `schemas/v1alpha16/`; `conformance/v1alpha16/` (8 aceptan, 34 rechazan, uno por regla; `OOS2040` incluido); el texto afinado al escribir los casos (abajo) | empujado en OOS |
+| **E2 · la gramática** (`ore-core`) | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
+| **E3 · la superficie** | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
+| **E4 · el driver** (F3) | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
+| **E5 · inducir** (F3) | `ore source induce` escribe un `ObjectTable` por prefijo y medio y una `Table` con `format` por grupo tabular; limpieza de `objects/`; la política IAM en `credenciales.rs`; imagen de drivers. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
+| **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
+| **E7 · medir borrados y copia** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado; si la standard copia la colección o la sirve en sitio | informe aquí; decide E8 |
+| **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
+| **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
+| **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
+| **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
+
+F8 (procesar) queda fuera de este plan.
+
+**Decidido con el usuario (2026-09-28):**
+
+- **El nivel del activo.** `ObjectTable` y `MediaCollection` son activos al nivel de `Table`,
+  `View` y `Dataset`, en un paquete y un schema, y **comparten el espacio de nombres del schema**
+  (`OOS2035`). El puntero vive en el paquete de la fuente (`<fuente>/<schema>/objects/`), una vez;
+  la colección, en una base (`<base>/<schema>/collections/`). La **colección virtual** no es un
+  kind aparte: es la `MediaCollection` con `virtual: true`. Lo que la separa de un `ObjectTable`
+  es su historia —cada transacción fija qué ítems tenía (clave, huella, versión)— y su gobierno
+  (dueño, tipo, etiquetas que suman); lo que comparte con él son los bytes, que siguen en el
+  origen. Su límite: la retención de una virtual vale lo que la del origen (sin versionado, un
+  borrado deja el ítem roto; con él, apunta a su `versionId`). Lo mide E7.
+- **El acceso al servir (E9), en espera.** Hay en curso, en otra sesión, el ADR que tiende el
+  puente entre IAM y el plano de control de la organización y el plano de productos y de datos:
+  con él, todo consumidor del plano de datos consumirá IAM de forma centralizada y estándar. E9 se
+  conecta a ese puente cuando exista; hasta entonces no se construye una comprobación propia.
+- **La credencial.** E4–E9 con claves de acceso (lo medido en F1); la federación sin claves se mide
+  en su paso, E9b, antes de la consola.
+- **Las palabras de `changes`.** Activar la comprobación de `mode`/`witness` para todas las
+  versiones puede tumbar árboles vivos: se mide antes contra victor, demo y prueba (en E2).
+
+**Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
+de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar
+es un conducto —la mantenida no virtual instancia `materialization.payload` (`OOS4011`, `OOS4002`),
+la virtual y la escrita no—; una consulta lee un `ObjectTable` (sus columnas fijas y particiones,
+`OOS2018` las demás) y no lee una colección (`OOS2018`); `listing` en una `Table` sin `format` es
+`OOS1004`.
