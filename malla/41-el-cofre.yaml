@@ -117,10 +117,16 @@ spec:
       #
       # Es el mismo contenedor que trae el testigo de la forja en `40-ore-serve`,
       # y por lo mismo: el valor no esta en ningun `Secret` ni en ningun
-      # repositorio. Vive en Secret Manager como `cofre-url` —un secreto de
-      # plataforma, sin nombre de inquilino, porque es el mismo para todos— y
-      # lo alcanza `ore-cofre-<n>` por Workload Identity, que es la cuenta que
-      # el aprovisionador ya crea en su paso ③ y a la que da acceso en el ⑤.
+      # repositorio. Vive en Secret Manager como `t-demo-base-del-cofre` y lo
+      # alcanza `ore-cofre-demo` por Workload Identity, que es la cuenta que el
+      # aprovisionador ya crea en su paso ③ y a la que da acceso en el ⑤.
+      #
+      # ✏️ 2026-09-28 (0047 A7a.3) · Era `cofre-url`, UN login (`cofre_app`)
+      #   para los tres custodios, y con el cada uno leia el censo y los
+      #   secretos de todos. Ahora cada custodio entra con el papel de SU celda
+      #   (`cofre_<celda>`, 040), que la base sabe de que organizacion es; la
+      #   seguridad por fila que lo aprovecha es la A7a.4. El nombre NO es
+      #   `t-demo-cofre-base`: ese prefijo es el de los secretos de la gente.
       initContainers:
         - name: traer-la-base
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
@@ -136,7 +142,7 @@ spec:
               set -e
               # `--out-file` y no una redireccion: el valor no pasa por la salida
               # estandar, que es lo que acaba en el registro del contenedor.
-              gcloud secrets versions access latest --secret=cofre-url --out-file=/testigo/cofre-url
+              gcloud secrets versions access latest --secret=t-demo-base-del-cofre --out-file=/testigo/cofre-url
               chmod 0400 /testigo/cofre-url
               # ⛔ Se dice el TAMANO, no el valor.
               echo "base puesta · $(wc -c < /testigo/cofre-url) bytes"
@@ -221,8 +227,9 @@ spec:
             #   `CrashLoop` hasta que alguien se acordara. Ahora es el camino de
             #   la `0023`, el mismo que el testigo de la forja: el contenedor de
             #   inicio de abajo lo trae del almacén a memoria, y esto lo lee de
-            #   ahí. Es un secreto de PLATAFORMA —el mismo para todos los
-            #   inquilinos— y por eso no lleva el nombre del inquilino.
+            #   ahí. Desde la 0047 A7a.3 es el de ESTE inquilino
+            #   (`t-demo-base-del-cofre`); el fichero se sigue llamando
+            #   `cofre-url` para no mover nada más.
             - { name: COFRE_URL_FICHERO, value: /testigo/cofre-url }
           volumeMounts:
             - name: llaves
