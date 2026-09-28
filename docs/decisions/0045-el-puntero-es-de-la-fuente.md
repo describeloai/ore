@@ -1,6 +1,6 @@
 # 0045 · El puntero es de la fuente: una database standard es sus datasets
 
-**Estado:** aprobado (2026-09-27); B0 medido; el puntero medido como producto y como implementación; P1, P1′, P1.5, P2 y P3′ hechos; P4 escrito y medido (la migración de los árboles, tras desplegar); P5–P6 por hacer · **Decide:** dónde
+**Estado:** **hecho** (2026-09-28): P1, P1′, P1.5, P2, P3′ y P4 desplegados (`059373e`) y los árboles vivos migrados (`demo` `afdaa10`, `victor` `fe7a689`); P5 y lo que queda de P6, pendientes nombrados en § «Al cerrar» · **Decide:** dónde
 vive la `Table` que apunta al origen, y por tanto qué hay dentro de una database. Revisa la
 ubicación que fijaron P1 I4b (`f7580aa`) y [`0033`](0033-el-dataset.md); **no** revisa lo que
 0033 decidió sobre el `Dataset` (§ «Lo que no se hace»). Toca el `_t` de
@@ -162,9 +162,36 @@ ya reescribía a `upsert` cualquier tabla copiada con clave. Medido en el códig
 | **P1.5 · la fuente se llama como la conexión** ✅ `6a9223c` · consola `1171684` | el nombre del paquete de la fuente —y de su datasource— sale del nombre que el usuario da en el **paso 2 del wizard**, no de `<tipo>_<fecha>`: `bigquery_20260927_1428.ventas.pedidos` quedaría escrito en cada `from` y cada SQL, y renombrar después es reescribirlos todos | una conexión nueva nace con su nombre; las guardas de 422/409 probadas en ore-serve; las de hoy se renombran en P4 | sí, antes de P3′ |
 | **P2 · leer en los dos sitios** ✅ | ore-serve resuelve la Table por el árbol, no por la carpeta hermana (`punteros.rs`): `copias` (la clave, de la Table que nombra `from.table`), `tablas_del_paquete` —**fuente**: siempre su catálogo entero, y en cada objeto su puntero (`table`) y quién lo usa (`usedBy`), las dos detrás de `object` y solo si dicen algo; **database**: sus Tables y las que leen sus Datasets y Views, estén donde estén—, `GET /paquetes` y el esquema con un solo `cargar_paquete`, `objetos_fisicos` (también los Datasets), `retirar_fuente` (`bases_que_salen_de`: por alcance, por `Table` con `datasource` y por lo que lee una Table de la fuente) y la guarda de borrar una Table (Datasets, y el nombre cualificado). Una fuente es el paquete sin alcance cuyo catálogo dice `source` = su nombre | 5 tests nuevos sobre dos árboles —uno por disposición— que compilan sin un diagnóstico; en la copia de `victor`, el árbol de hoy sale **idéntico** a antes (salvo `table`/`usedBy` en la fuente) y el movido **igual** al de hoy (esquema, 19 copias con clave, recuentos); `la-copia-se-decide.sh`, `servidor.sh`, `servidor-forja.sh` y `los-documentos.sh` verdes **sin cambios** | sí, antes de P3′ |
 | **P3′ · un solo escritor de la fuente** ✅ | `ore source induce <fuente>` (`fuente_inducida.rs`): escribe en `packages/<fuente>/` la Table de cada objeto que **alguna** base usa —la unión de los alcances—, con el catálogo y las respuestas **de la fuente**, con el nombre del objeto (sin `_t`; `_2` solo si dos objetos dan el mismo identificador en un schema, calculado sobre el catálogo entero para que no dependa de quién lo lea), su `schema.yaml`, sus `exports` en la forma corta, y retira lo marcado que ya no usa nadie. Lo corren `discover`, `review`, `model` y `copy` al terminar una base con alcance (en proceso: es una función del árbol, dé igual el orden), y ore-serve al retirar una base (`mando`: `source induce`). La base, si su fuente tiene paquete, no escribe ninguna Table (`Regla::fuente_aparte`) y nombra `<fuente>.<schema>.<objeto>`; sin paquete de la fuente —el CLI suelto, una prueba— todo sigue en la base. **No** lo lanza el Job de catálogo: cataloga una vez y en ese momento ninguna base usa nada | `el_puntero_es_del_objeto.rs` (5: una vez y en la fuente, retirar lo que nadie usa, y los tres de P1′); una standard de `bq` sobre la copia de `victor`: **3 datasets y 0 tables**, compila; `la-copia-se-decide.sh` 0–10 reescrita (el puntero en `pg/olist/tables/`, `pg.olist.*` exportados, retirar una base deja lo que otra lee) | con P4 |
-| **P4 · migrar los árboles** ✅ (código) | `ore migrate punteros` (`migrar_punteros.rs`): por fuente con paquete, `clave/*` y `tipo/*` de cada base a la fuente (manda la fuente, y se dice); fuera las Tables de las bases con esa `datasource`; quien las leía —`from` y la consulta de una View SQL (`servir::nombrados`)— **reapuntado**, sin re-inducir; y la fuente las escribe. Se ensaya en una copia y **no escribe nada** si aparece un diagnóstico, si una Table llevaba una etiqueta que la de la fuente no lleva, o si un objeto no está en el catálogo de la fuente. **No se renombran las fuentes**: las de hoy se llaman como su conexión —el `<tipo>_<fecha>` que el paso 2 rellenaba y nadie cambió—, no hay otro nombre que darles, y renombrar es mover el secreto del cofre | `el_puntero_pasa_a_la_fuente.rs` (2); sobre los árboles vivos (§ «P4 · lo medido»): mismos diagnósticos, `lint`, `report` y `datasets` **idénticos**; `bq` 3 datasets, `standard_test` 19, ninguna base con Tables | P3′ + P4 juntos, árbol a árbol, **tras** desplegar el binario |
-| **P5 · los que miran un paquete** | `drift-detect` sobre el paquete de la fuente contra su propio catálogo (ya no hace falta la unión de alcances); la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
-| **P6 · consola** | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
+| **P4 · migrar los árboles** ✅ `ec429d8` · `059373e` · `demo` `afdaa10` · `victor` `fe7a689` | `ore migrate punteros` (`migrar_punteros.rs`): por fuente con paquete, `clave/*` y `tipo/*` de cada base a la fuente (manda la fuente, y se dice); fuera las Tables de las bases con esa `datasource`; quien las leía —`from` y la consulta de una View SQL (`servir::nombrados`)— **reapuntado**, sin re-inducir; y la fuente las escribe. Se ensaya en una copia y **no escribe nada** si aparece un diagnóstico, si una Table llevaba una etiqueta que la de la fuente no lleva, o si un objeto no está en el catálogo de la fuente. **No se renombran las fuentes**: las de hoy se llaman como su conexión —el `<tipo>_<fecha>` que el paso 2 rellenaba y nadie cambió—, no hay otro nombre que darles, y renombrar es mover el secreto del cofre | `el_puntero_pasa_a_la_fuente.rs` (2); sobre los árboles vivos (§ «P4 · lo medido»): mismos diagnósticos, `lint`, `report` y `datasets` **idénticos**; `bq` 3 datasets, `standard_test` 19, ninguna base con Tables | P3′ + P4 juntos, árbol a árbol, **tras** desplegar el binario |
+| **P5 · los que miran un paquete** ⏳ pendiente | `drift-detect` sobre el paquete de la fuente contra su propio catálogo (ya no hace falta la unión de alcances); la compuerta de `materialize` atribuye a cada database lo que lee; `ore pack` lo dice (la dependencia versionada, fuera de este ADR) | tests de ore-cli | sí |
+| **P6 · consola** ◐ en parte | la conexión lista sus Tables («usada por …»); «Sale de» del Dataset enlaza a la Table de la fuente; el modal de database sigue ofreciendo todo el catálogo | la `bq` de `victor` enseña tres; la ficha de la conexión, las tres Tables | sí |
+
+## Al cerrar (2026-09-28)
+
+**Hecho, y visto en vivo.** En `victor`, una database foreign nueva (`bq_foreign`) nace con **tres
+vistas** y la standard con **tres datasets**, todas sobre los punteros de `bigquery_20260927_1428`;
+ninguna base tiene Tables y no queda un `_t`. La copia corrió tras la migración (`89a095f`) leyendo
+los punteros de la fuente: `bq` y `standard_test`, al día. `demo` y `victor` compilan sin un
+diagnóstico; `prueba` no tenía paquetes.
+
+**Consola (P6, en parte).** El origen del sidebar enseña schema › objeto, lo mismo que su ficha, y
+un objeto con puntero abre **su** ficha de activo —la de cualquier Table, con la vista detallada—
+(rubix-platform `2c02da1`, `b252277`: commiteados, **sin publicar** al cerrar; los publica la sesión
+de la consola).
+
+**Pendiente, nombrado:**
+
+- **P5 · los que miran un paquete.** `ore drift-detect --path <base>`, la compuerta de
+  `materialize` y `ore pack` siguen mirando un paquete solo. Hoy nada los lanza en el cluster —la copia
+  (`48-la-copia.yaml`) corre sobre el árbol entero y funciona—, pero `drift-detect` a mano sobre una
+  base migrada lo daría todo por deriva: ya no tiene Tables. Se mide y se hace cuando algo lo lance.
+- **P6 · lo que queda.** «Usado por» en la ficha de la fuente (lo trae `usedBy` desde P2) y «Sale de»
+  del Dataset enlazando a su puntero.
+- **El informe de `migrate punteros`** dice `— → —` de una columna sin tipo antes ni después
+  (`victor`, `brain_embeddings.embedding`): cuenta como cambio lo que no lo es. Sólo texto.
+- **`demo` · `olist_copia`**: sus tres copias están en `error` desde el 25-sep (`ore-read-postgres`
+  falló), antes de la migración y ajeno a ella; tras migrar no ha corrido ninguna, así que el rehacer
+  por los tipos nuevos está aún por ver.
 
 ### P4 · lo medido (2026-09-27, árboles vivos)
 
