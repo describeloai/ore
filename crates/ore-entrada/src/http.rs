@@ -257,6 +257,7 @@ fn texto(codigo: u16) -> &'static str {
         409 => "Conflict",
         413 => "Payload Too Large",
         422 => "Unprocessable Content",
+        423 => "Locked",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Unknown",

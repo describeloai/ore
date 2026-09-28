@@ -1539,6 +1539,15 @@ impl Servidor {
 
     /// Como `escribiendo`, en la rama que diga la cabecera: el clon ES la rama,
     /// así que `publicar` empuja a ella. Sin cabecera, `main`.
+    ///
+    /// ⛔ **Con `main` protegida (`politica.rs`), sin cabecera es `423`.** Éste
+    /// es el único sitio por el que se ESCRIBE EL ÁRBOL en `main` —editor,
+    /// commit, documentos, el `CREATE VIEW` del puesto, bases, proyectos,
+    /// repositorios—, así que la regla vive aquí una vez. Lo que es de la celda
+    /// (fuentes, modelos, datasets, copiar a la celda) va por `escribiendo` a
+    /// secas y no pasa por aquí: dar de alta una fuente sólo existe en `main`, y
+    /// protegerla no puede dejar la celda sin fuentes. La política se lee del
+    /// mismo clon que se va a escribir: es la de `main` en ese instante.
     pub(crate) fn escribiendo_en(
         &self,
         rama: Option<&str>,
@@ -1547,7 +1556,15 @@ impl Servidor {
         f: impl FnOnce(&Path) -> Respuesta,
     ) -> Respuesta {
         match (rama, &self.arbol) {
-            (None, _) => self.escribiendo(sujeto, mensaje, f),
+            (None, _) => self.escribiendo(sujeto, mensaje, |raiz| {
+                if crate::politica::Politica::de_raiz(raiz).protegida {
+                    return Respuesta::error(
+                        423,
+                        "`main` está protegida: nada se escribió. Se trabaja en una rama y se propone",
+                    );
+                }
+                f(raiz)
+            }),
             (Some(r), Arbol::Directorio(_)) => Respuesta::error(
                 422,
                 format!(

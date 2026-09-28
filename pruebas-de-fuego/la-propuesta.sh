@@ -45,7 +45,8 @@
 #                                       con el gate; main 422 (se propone); conflicto 409
 #   8g la politica de las ramas        .arbol/ramas.yaml de main: GET /ramas dice `protegida` en la de
 #                                       por defecto y solo en ella · sin fichero o roto, libre ·
-#                                       el compilador no la ve
+#                                       el compilador no la ve · protegida: escribir en main 423, en
+#                                       una rama si
 #   9  sin API                           un servidor con --repo (directorio) contesta 422 a /ramas y
 #                                       a X-Ore-Rama
 #
@@ -619,10 +620,18 @@ politica() { # <texto> | '' para quitarla: escrita en main a mano, como la dejar
 politica $'main:\n  protegida: true\n'
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "all(r['protegida']==r['porDefecto'] for r in d['ramas'])" || falla "8g · protegida: main no lo dice, o lo dice otra rama: $(cuerpo)"
 ( cd "$TMP/pol" && "$ORE" validate . >/dev/null 2>&1 ) || falla "8g · el compilador vio .arbol/ramas.yaml: $(cd "$TMP/pol" && "$ORE" validate . 2>&1 | head -3)"
+# P1.2 · protegida: el arbol no se escribe en main sin rama (423, nada escrito); en una rama si
+[ "$(put_fichero packages/hr/notas-p12.md "$ANA" 'en main')" = "423" ] || falla "8g · escribir en main protegida no dio 423: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/notas-p12.md "$ANA")" = "404" ] || falla "8g · el 423 dejo algo escrito en main"
+"$PY" -c 'import json,sys; json.dump({"mensaje":"en main","ficheros":[{"ruta":"packages/hr/notas-p12.md","texto":"x"}]}, open(sys.argv[1],"w"))' "$TMP/p12.json"
+[ "$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$ANA" -H 'content-type: application/json' --data-binary "@$TMP/p12.json" "$BASE/arbol/commit")" = "423" ] || falla "8g · commit en main protegida no dio 423: $(cuerpo)"
+[ "$(pide POST /ramas "$ANA" '{"nombre":"protegida"}')" = "201" ] || falla "8g · crear rama con main protegida: $(cuerpo)"
+put_fichero packages/hr/notas-p12.md "$ANA" 'en la rama' ana/protegida | grep -qE '^20[01]$' || falla "8g · en una rama no se escribe con main protegida: $(cuerpo)"
 politica $'main: [roto\n'
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · un fichero roto no se lee libre: $(cuerpo)"
 politica ''
-dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre"
+put_fichero packages/hr/notas-p12.md "$ANA" 'libre otra vez' | grep -qE '^20[01]$' || falla "8g · libre otra vez, main no se escribe: $(cuerpo)"
+dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada, en una rama si · libre otra vez, main se escribe"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
