@@ -633,7 +633,10 @@ fn vistas_materializadas(
                 )
                 .at(mat.pos())
                 .help(
-                    "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
+                    "una vista materializada es una copia, y la copia lleva lo que llevan \
+                     sus campos aunque quien los clasificó sea una entidad tres vistas \
+                     más arriba. Quita el campo de la vista, eleva la autorización del \
+                     conducto donde se decide eso, o no materialices",
                 ),
             );
         }
@@ -1064,6 +1067,14 @@ fn etiquetas_de_raices(
             }
             if let Some((_, col)) = t.section("columns").and_then(|c| c.get(&r.columna)) {
                 for (ret, n, _) in read_labels(col) {
+                    subir_en(lat, ls, &ret, &n, Origin::Inherited);
+                }
+            }
+        } else if let Some(ot) = pkg.object_table(&r.doc) {
+            // v1alpha16: el listado de un origen lleva lo de su `datasource`,
+            // como una tabla. Sus columnas fijas no se etiquetan.
+            if let Some(ds) = ot.section("datasource").and_then(|d| d.as_str()) {
+                for (ret, n) in del_datasource(ds) {
                     subir_en(lat, ls, &ret, &n, Origin::Inherited);
                 }
             }

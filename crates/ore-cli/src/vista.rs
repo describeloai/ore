@@ -568,8 +568,38 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
                 .collect()
         })
         .unwrap_or_default();
-    if tablas.is_empty() {
+    // v1alpha16: lo que lee también puede ser el listado de un origen. No
+    // tiene más caras que las del listado, y lo que devuelve son sus objetos.
+    let objetos: Vec<&Loaded> = sql
+        .map(|s| {
+            vistas::lee_directo(pkg, s)
+                .into_iter()
+                .filter(|d| d.kind == Kind::ObjectTable)
+                .collect()
+        })
+        .unwrap_or_default();
+    if tablas.is_empty() && objetos.is_empty() {
         println!("  raíz      lago · lo que lee son datasets, y la consulta la ejecuta DuckDB");
+    }
+    for o in &objetos {
+        let de = |k: &str| o.section(k).and_then(|d| d.as_str()).unwrap_or("?");
+        let cambio = |k: &str| {
+            o.section("changes")
+                .and_then(|c| c.get(k))
+                .and_then(|(_, m)| m.as_str())
+                .unwrap_or("?")
+        };
+        println!(
+            "  raíz      {} · el listado de `{}` ({}), una fila por objeto",
+            de("datasource"),
+            de("prefix"),
+            de("media")
+        );
+        println!(
+            "  caras     changes: {} · witness: {}",
+            cambio("mode"),
+            cambio("witness")
+        );
     }
     for t in &tablas {
         println!(
@@ -603,6 +633,10 @@ fn ver_consulta(pkg: &Package, v: &Loaded) {
             None if !tablas.is_empty() =>
                 "virtual · lee una tabla de un origen: se lee sobre un dataset que la copie \
                  (`from: { table }`), no desde lo que se tiene"
+                    .to_string(),
+            None if !objetos.is_empty() =>
+                "virtual · lee el listado de un origen: se pregunta en el origen, y lo que sea \
+                 de los ficheros se tiene en una colección"
                     .to_string(),
             None => "se lee en un puesto (`sql()`), con la identidad de quien lee".to_string(),
         }

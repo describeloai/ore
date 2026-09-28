@@ -693,3 +693,148 @@ fn un_modelo_de_antes_no_lleva_namespace() {
         "{d:#?}"
     );
 }
+
+/// ⭐ 0046 E3 · guardar en el índice. El puntero a objetos en la fuente y la
+/// colección en una base son ítems con su carpeta de schema (`objects/` y
+/// `collections/` son del kind, no del schema); la colección sale de su
+/// `ObjectTable`, una vista que pregunta el listado sale de él (la relación
+/// estaba ROTA, `otro:…`, medido en E3), y la entidad referencia la colección
+/// por `Media<…>`. La colección lleva lo que hereda y lo que suma, y su copia
+/// dice si compila; la vista que lee el listado hereda la fuente.
+#[test]
+fn guardar_objetos_colecciones_y_referencias_en_el_indice() {
+    let t = Arbol(std::env::temp_dir().join(format!("ore-assets-{}-guardar", std::process::id())));
+    let _ = fs::remove_dir_all(&t.0);
+    let r = t.path();
+    escribe(
+        r,
+        "ontology.config.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: guardar, version: 0.1.0 }\ndatasources:\n  - { name: s3, type: s3, connectionEnv: S3_URL, labels: { gdpr.sensitivity: low } }\n",
+    );
+    escribe(
+        r,
+        "lattice.yaml",
+        "apiVersion: oos.dev/v1alpha3\nkind: Lattice\nmetadata: { name: sensitivity, namespace: gdpr }\nspec:\n  levels: [none, low, high]\n",
+    );
+    escribe(
+        r,
+        "conduits.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: ConduitPolicy\nmetadata: { name: guardar }\nspec:\n  owner: team:t\n  conduits:\n    materialization.payload: { gdpr.sensitivity: high }\n",
+    );
+    escribe(
+        r,
+        "packages/s3/package.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: s3, version: 0.1.0, status: active, domain: s3 }\nspec: { owner: team:t, exports: [s3.docs.contratos] }\n",
+    );
+    escribe(
+        r,
+        "packages/s3/docs/schema.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: docs, namespace: s3 }\n",
+    );
+    escribe(
+        r,
+        "packages/s3/docs/objects/contratos.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: { name: contratos, namespace: s3, schema: docs }\nspec:\n  datasource: s3\n  prefix: \"Nueva carpeta/contratos/\"\n  match: \"*.pdf\"\n  media: document\n  partitions: [anio]\n  changes: { mode: retract, witness: listing }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/package.yaml",
+        "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: legal, version: 0.1.0, status: active, domain: legal }\nspec: { owner: team:t }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/archivo/schema.yaml",
+        "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: archivo, namespace: legal }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/archivo/collections/contratos.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata:\n  name: contratos\n  namespace: legal\n  schema: archivo\n  labels: { gdpr.sensitivity: high }\nspec:\n  owner: team:legal\n  media: document\n  formats: [pdf]\n  from: { objectTable: s3.docs.contratos }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/archivo/views/inventario.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: View\nmetadata: { name: inventario, namespace: legal, schema: archivo }\nspec:\n  owner: team:legal\n  dialect: duckdb\n  sql: |\n    SELECT key, size, anio FROM s3.docs.contratos\n  columns:\n    key: { type: String }\n    size: { type: Integer }\n    anio: { type: String }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/datasets/registro.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: Dataset\nmetadata: { name: registro, namespace: legal }\nspec:\n  owner: team:legal\n  columns:\n    id: { type: String }\n    documento: { type: String }\n  changes: { mode: upsert, key: [id] }\n",
+    );
+    escribe(
+        r,
+        "packages/legal/entities/Contrato.yaml",
+        "apiVersion: oos.dev/v1alpha16\nkind: Entity\nmetadata: { name: Contrato, namespace: legal }\nspec:\n  nature: entity\n  primaryKey: [id]\n  backedBy: registro\n  properties:\n    id: { type: String }\n    documento: { type: \"Media<legal.archivo.contratos>\" }\n",
+    );
+    let d = ore_core::validate::validate_package(r);
+    assert!(d.is_empty(), "{d:#?}");
+
+    let (pkg, _) = ore_core::validate::cargar_paquete(r);
+    let j = indice(&pkg, &punteros(r), &Cabeza::default());
+
+    let ot = item(&j, "objecttable:s3.docs.contratos");
+    assert_eq!(ot["kind"], Json::s("ObjectTable"));
+    assert_eq!(ot["carpeta"], Json::s("docs"));
+    let Json::Arr(expone) = &ot["expone"] else {
+        panic!()
+    };
+    let columnas: Vec<String> = expone
+        .iter()
+        .filter_map(|c| match c {
+            Json::Obj(m) => match m.get("name") {
+                Some(Json::Str(n)) => Some(n.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    for c in [
+        "key",
+        "size",
+        "contentType",
+        "checksum",
+        "modified",
+        "version",
+        "anio",
+    ] {
+        assert!(columnas.iter().any(|x| x == c), "falta `{c}`: {columnas:?}");
+    }
+    assert!(tiene(ot, "produce", "collection:legal.archivo.contratos"));
+    assert!(tiene(ot, "produce", "view:legal.archivo.inventario"));
+
+    let c = item(&j, "collection:legal.archivo.contratos");
+    assert_eq!(c["kind"], Json::s("MediaCollection"));
+    assert_eq!(c["carpeta"], Json::s("archivo"));
+    assert!(tiene(c, "sale_de", "objecttable:s3.docs.contratos"));
+    assert!(tiene(c, "referenciada_por", "entity:legal.Contrato"));
+    let Json::Obj(acceso) = &c["acceso"] else {
+        panic!()
+    };
+    assert_eq!(
+        acceso["clasificacion"],
+        Json::obj([("gdpr.sensitivity", Json::s("high"))]),
+        "lo que suma sobre lo heredado (low)"
+    );
+    assert_eq!(
+        acceso["conductos"],
+        Json::obj([("materialization.payload", Json::s("compila"))])
+    );
+
+    let v = item(&j, "view:legal.archivo.inventario");
+    assert!(
+        relaciones(v).iter().all(|(_, _, rota)| !rota),
+        "{:?}",
+        relaciones(v)
+    );
+    let Json::Obj(acceso) = &v["acceso"] else {
+        panic!()
+    };
+    assert_eq!(
+        acceso["clasificacion"],
+        Json::obj([("gdpr.sensitivity", Json::s("low"))]),
+        "el listado lleva lo de su fuente"
+    );
+
+    let e = item(&j, "entity:legal.Contrato");
+    assert!(tiene(e, "referencia", "collection:legal.archivo.contratos"));
+}

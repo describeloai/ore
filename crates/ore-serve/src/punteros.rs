@@ -73,6 +73,30 @@ pub fn tablas_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<&'a Loaded> {
     Vec::new()
 }
 
+/// v1alpha16. **Los `ObjectTable` que lee un documento**: el origen de una
+/// colección mantenida, o los que nombra la consulta de una vista SQL. Son
+/// punteros de la fuente como las `Table` (0045), y retirarla los retira.
+pub fn objetos_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Vec<&'a Loaded> {
+    if d.kind == Kind::MediaCollection {
+        return d
+            .section("from")
+            .and_then(|f| f.get("objectTable"))
+            .and_then(|(_, r)| r.as_str())
+            .and_then(|r| pkg.resolve_object_table(r, d))
+            .into_iter()
+            .collect();
+    }
+    let mut out: Vec<&Loaded> = Vec::new();
+    if vistas::es_sql(d) {
+        for n in ore_core::servir::nombrados(pkg, d) {
+            if n.doc.kind == Kind::ObjectTable && !out.iter().any(|x| x.path == n.doc.path) {
+                out.push(n.doc);
+            }
+        }
+    }
+    out
+}
+
 /// **La** tabla que lee: la de `from.table`, o la de una vista SQL que lee UNA
 /// sola cosa y es una tabla. Es lo que el catálogo enseña como «su tabla».
 pub fn tabla_que_lee<'a>(pkg: &'a Package, d: &'a Loaded) -> Option<&'a Loaded> {
@@ -135,8 +159,13 @@ pub fn bases_que_salen_de(raiz: &Path, pkg: &Package, n: &str) -> Vec<String> {
         }
     }
     let de = |d: &Loaded| paquete_de(raiz, d);
-    // (b)
-    for t in pkg.docs.iter().filter(|d| d.kind == Kind::Table) {
+    // (b) · v1alpha16: un `ObjectTable` es un puntero de la fuente como una
+    // tabla, y cuenta igual.
+    for t in pkg
+        .docs
+        .iter()
+        .filter(|d| matches!(d.kind, Kind::Table | Kind::ObjectTable))
+    {
         let nombra = t.section("datasource").and_then(|v| v.as_str()) == Some(n);
         if let Some(p) = de(t)
             && nombra
@@ -152,7 +181,8 @@ pub fn bases_que_salen_de(raiz: &Path, pkg: &Package, n: &str) -> Vec<String> {
             continue;
         }
         if tablas_que_lee(pkg, d)
-            .iter()
+            .into_iter()
+            .chain(objetos_que_lee(pkg, d))
             .any(|t| de(t).as_deref() == Some(n))
         {
             out.insert(p);
@@ -386,5 +416,97 @@ spec:
         std::fs::remove_file(h.join("packages/tienda/discover.scope.json")).unwrap();
         assert_eq!(bases_que_salen_de(&h, &cargar(&h), "pg"), ["tienda"]);
         let _ = std::fs::remove_dir_all(&h);
+    }
+
+    /// ⭐ 0046 E3: el `ObjectTable` es un puntero de la fuente como una tabla.
+    /// Una colección que sale de él y una vista que lo pregunta salen de la
+    /// fuente, y retirarla sin verlas dejaría subir un árbol roto: (b) y (c)
+    /// solo miraban `Table`, y sin alcances no veían a ninguna de las dos.
+    #[test]
+    fn lo_que_sale_de_una_fuente_de_objetos() {
+        let d = std::env::temp_dir().join(format!("ore-punteros-s3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        escribir(
+            &d,
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1
+kind: OntologyConfig
+metadata: { name: t, version: 0.1.0 }
+datasources:
+  - { name: s3, type: s3, connectionEnv: S3_URL }
+",
+        );
+        escribir(&d, "conduits.yaml", CONDUCTOS);
+        escribir(
+            &d,
+            "packages/s3/package.yaml",
+            &paquete("s3", "draft", ", exports: [s3.docs.contratos]"),
+        );
+        escribir(
+            &d,
+            "packages/s3/docs/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13
+kind: Schema
+metadata: { name: docs, namespace: s3 }
+",
+        );
+        escribir(
+            &d,
+            "packages/s3/docs/objects/contratos.yaml",
+            "apiVersion: oos.dev/v1alpha16
+kind: ObjectTable
+metadata: { name: contratos, namespace: s3, schema: docs }
+spec:
+  datasource: s3
+  prefix: \"contratos/\"
+  media: document
+  changes: { mode: retract, witness: listing }
+",
+        );
+        escribir(
+            &d,
+            "packages/legal/package.yaml",
+            &paquete("legal", "active", ""),
+        );
+        escribir(
+            &d,
+            "packages/legal/collections/contratos.yaml",
+            "apiVersion: oos.dev/v1alpha16
+kind: MediaCollection
+metadata: { name: contratos, namespace: legal }
+spec:
+  owner: team:t
+  media: document
+  formats: [pdf]
+  from: { objectTable: s3.docs.contratos }
+  virtual: true
+",
+        );
+        escribir(
+            &d,
+            "packages/espejo/package.yaml",
+            &paquete("espejo", "active", ""),
+        );
+        escribir(
+            &d,
+            "packages/espejo/views/inventario.yaml",
+            "apiVersion: oos.dev/v1alpha16
+kind: View
+metadata: { name: inventario, namespace: espejo }
+spec:
+  owner: team:t
+  dialect: duckdb
+  sql: |
+    SELECT key, size FROM s3.docs.contratos
+  columns:
+    key: { type: String }
+    size: { type: Integer }
+",
+        );
+        assert_eq!(
+            bases_que_salen_de(&d, &cargar(&d), "s3"),
+            ["espejo", "legal"]
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

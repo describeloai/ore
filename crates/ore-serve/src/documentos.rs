@@ -130,6 +130,11 @@ pub(crate) struct Kind {
     /// porque escribirlo es más que el documento (0041: un `Model` es el
     /// documento Y la suscripción de la celda en el gateway, en un acto).
     pub escribe: Option<&'static str>,
+    /// La versión con la que se escribe uno nuevo si el cuerpo no la dice.
+    /// `None`: la vigente para todos (`API`, o v1alpha13 en un schema). Un
+    /// kind que nace en una versión posterior se escribe en la suya: una
+    /// colección con v1alpha12 nacería inválida (`OOS1003`).
+    pub version: Option<&'static str>,
 }
 
 pub(crate) const KINDS: &[Kind] = &[
@@ -139,6 +144,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la entidad",
         exige: exige_backed_by,
         escribe: None,
+        version: None,
     },
     Kind {
         nombre: "View",
@@ -146,6 +152,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la vista",
         exige: exige_owner,
         escribe: None,
+        version: None,
     },
     Kind {
         nombre: "Table",
@@ -153,6 +160,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la tabla",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     // Sin exigencias propias: lo que falta ya es `OOS1004` (`type`).
     Kind {
@@ -161,6 +169,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "el concepto",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     Kind {
         nombre: "Interface",
@@ -168,6 +177,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la interfaz",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     // v1alpha11 (0031 W3.7 ②). El modelo entrenado, publicado desde una
     // sesion: el compilador ya exige `owner`, `framework`, `version`,
@@ -178,6 +188,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "el modelo entrenado",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     // v1alpha12 (0033). Lo que se tiene: el dataset mantenido (`from`, y el
     // sistema lo cumple) o escrito (`columns` + `changes`). `declare()` desde
@@ -189,6 +200,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "el dataset",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     // v1alpha10 (0034 paso 5). La lógica con contrato y la invocación sin
     // código entran por la misma puerta que los demás: la ficha del catálogo
@@ -203,6 +215,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la función",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     Kind {
         nombre: "Action",
@@ -210,6 +223,7 @@ pub(crate) const KINDS: &[Kind] = &[
         articulo: "la acción",
         exige: sin_exigencias,
         escribe: None,
+        version: None,
     },
     // v1alpha15 (0041). El modelo desplegado, en su base y su schema como
     // todo lo del catálogo: se lee por aquí, y lo escriben `POST /modelos` y
@@ -222,6 +236,32 @@ pub(crate) const KINDS: &[Kind] = &[
         escribe: Some(
             "lo escriben `POST /modelos` y `DELETE /modelos/{ref}`: el documento y la suscripción de la celda en el gateway van juntos, o nada",
         ),
+        version: None,
+    },
+    // v1alpha16 (0046). El puntero a los objetos de un origen: se lee por
+    // aquí —la ficha, su YAML—, y lo escribe su fuente, una vez (0045: el
+    // puntero es de la fuente, y su único escritor es `ore source induce`).
+    Kind {
+        nombre: "ObjectTable",
+        carpeta: "objects",
+        articulo: "el conjunto de objetos",
+        exige: sin_exigencias,
+        escribe: Some(
+            "lo escribe su fuente, una vez: `ore source induce` desde su catálogo (0045). Una base lo nombra; no lo copia",
+        ),
+        version: Some("oos.dev/v1alpha16"),
+    },
+    // v1alpha16 (0046). La colección de ficheros de un tipo, lo que la base
+    // tiene: se escribe y se retira por aquí. El compilador exige su forma
+    // (OOS1004), que su origen resuelva y sea de su medio (OOS2018, OOS2040)
+    // y el conducto de su copia (OOS4011).
+    Kind {
+        nombre: "MediaCollection",
+        carpeta: "collections",
+        articulo: "la colección",
+        exige: exige_owner,
+        escribe: None,
+        version: Some("oos.dev/v1alpha16"),
     },
 ];
 
@@ -558,6 +598,47 @@ fn quien_nombra(todos: &[Documento], d: &Documento) -> Vec<String> {
             {
                 quien.push(format!("`{}` (from.table)", o.cualificado()));
             }
+            // v1alpha16: la colección mantenida nombra su `ObjectTable` en tres
+            // partes desde otra base, como un dataset nombra su tabla.
+            ("ObjectTable", "MediaCollection")
+                if from("objectTable")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| {
+                        v == d.cualificado()
+                            || ore_core::normalize::qualify_catalogo(
+                                v,
+                                Some(&o.espacio()),
+                                &o.schema(),
+                            ) == d.cualificado()
+                    }) =>
+            {
+                quien.push(format!("`{}` (from.objectTable)", o.cualificado()));
+            }
+            // v1alpha16: una propiedad `Media<c>` referencia ítems de la colección.
+            ("MediaCollection", "Entity") => {
+                for (prop, def) in spec
+                    .and_then(|s| s.get("properties"))
+                    .map(|(_, p)| p.entries())
+                    .unwrap_or(&[])
+                {
+                    let Some(Ok(ore_core::types::Type::Media(c))) = def
+                        .get("type")
+                        .and_then(|(_, t)| t.as_str())
+                        .map(ore_core::types::parse_type)
+                    else {
+                        continue;
+                    };
+                    let nombra = c == d.cualificado()
+                        || ore_core::normalize::qualify_catalogo(
+                            &c,
+                            Some(&o.espacio()),
+                            &o.schema(),
+                        ) == d.cualificado();
+                    if nombra && let Some(prop) = prop.as_str() {
+                        quien.push(format!("`{}` (properties.{prop}: Media)", o.cualificado()));
+                    }
+                }
+            }
             // v1alpha15 §3: `model: modelo/<ref>`, leída por partes desde la
             // función; uno de antes (sin paquete), por su nombre a secas.
             ("Model", "Function") => {
@@ -741,6 +822,7 @@ fn documento_del_cuerpo(
     let api = cuerpo
         .get("apiVersion")
         .and_then(|(_, v)| v.as_str())
+        .or(k.version)
         .unwrap_or(if en_schema { "oos.dev/v1alpha13" } else { API });
     let mut texto = format!(
         "apiVersion: {api}\nkind: {}\nmetadata:\n  name: {n}\n  namespace: {ns}\n",

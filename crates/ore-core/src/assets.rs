@@ -11,7 +11,8 @@
 //! # Lo que es un ítem (0034 ②)
 //!
 //! Un documento de `packages/<p>/…` con kind `Dataset`, `Table`, `View`,
-//! `Entity`, `Interface`, `Concept`, `Function`, `Action` o `TrainedModel`; y
+//! `Entity`, `Interface`, `Concept`, `Function`, `Action`, `TrainedModel`,
+//! `ObjectTable` o `MediaCollection` (v1alpha16, 0046 E3); y
 //! los de la raíz sin paquete (`Model`, los `Concept` importados). `Package`,
 //! `OntologyConfig`, `Lattice`, `ConduitPolicy`, `Ruleset`, `RequestPolicy` y
 //! `Binding` no son ítems: alimentan las capas.
@@ -62,6 +63,9 @@ const CARPETAS_DE_KIND: &[&str] = &[
     "modelos",
     "interfaces",
     "concepts",
+    // v1alpha16: la del puntero a objetos (en la fuente) y la de la coleccion.
+    "objects",
+    "collections",
 ];
 
 fn es_item(k: Kind) -> bool {
@@ -77,6 +81,8 @@ fn es_item(k: Kind) -> bool {
             | Kind::Action
             | Kind::TrainedModel
             | Kind::Model
+            | Kind::ObjectTable
+            | Kind::MediaCollection
     )
 }
 
@@ -92,6 +98,8 @@ fn kind_en_ref(k: Kind) -> &'static str {
         Kind::Action => "action",
         Kind::TrainedModel => "trainedmodel",
         Kind::Model => "model",
+        Kind::ObjectTable => "objecttable",
+        Kind::MediaCollection => "collection",
         _ => "otro",
     }
 }
@@ -108,6 +116,8 @@ fn kind_nombre(k: Kind) -> &'static str {
         Kind::Action => "Action",
         Kind::TrainedModel => "TrainedModel",
         Kind::Model => "Model",
+        Kind::ObjectTable => "ObjectTable",
+        Kind::MediaCollection => "MediaCollection",
         _ => "?",
     }
 }
@@ -404,6 +414,14 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
                     .collect(),
             )
         }
+        // v1alpha16: las columnas fijas de un `ObjectTable` y sus particiones.
+        // Una colección no expone columnas: tiene ítems.
+        Kind::ObjectTable => Json::Arr(
+            vistas::columnas_de_objetos(d)
+                .into_iter()
+                .map(|(c, t)| columna(&c, Some(t.to_string())))
+                .collect(),
+        ),
         Kind::Entity => Json::Arr(
             d.section("properties")
                 .map(|p| {
@@ -425,8 +443,34 @@ fn expone_de(pkg: &Package, d: &Loaded) -> Json {
 }
 
 fn detalle_de(d: &Loaded) -> Option<Json> {
-    if d.kind != Kind::Table {
-        return None;
+    // v1alpha16: lo que dice cada uno, tal cual. El `ObjectTable` es el
+    // puntero —de dónde, qué y cómo cambia—; la colección, qué guarda y de
+    // dónde sale.
+    let copia = |claves: &[&'static str]| -> Json {
+        Json::obj(
+            claves
+                .iter()
+                .filter_map(|k| d.section(k).map(|n| (*k, Json::de_node(n))))
+                .collect::<Vec<_>>(),
+        )
+    };
+    match d.kind {
+        Kind::ObjectTable => {
+            return Some(copia(&[
+                "datasource",
+                "prefix",
+                "match",
+                "media",
+                "partitions",
+                "reads",
+                "changes",
+            ]));
+        }
+        Kind::MediaCollection => {
+            return Some(copia(&["media", "formats", "from", "virtual", "retention"]));
+        }
+        Kind::Table => {}
+        _ => return None,
     }
     let mut m: Vec<(&'static str, Json)> = Vec::new();
     for k in ["object", "datasource", "profile"] {
@@ -448,6 +492,10 @@ fn detalle_de(d: &Loaded) -> Option<Json> {
                 Json::de_node(n),
             ));
         }
+    }
+    // v1alpha16: una tabla sobre ficheros dice cómo se leen.
+    if let Some(n) = d.section("format") {
+        m.push(("format", Json::de_node(n)));
     }
     Some(Json::obj(m))
 }
@@ -588,6 +636,17 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                     {
                         a("nombra", "nombrado_por", ref_qn(Kind::Concept, s, ns, sc));
                     }
+                    // v1alpha16: `Media<c>` referencia ítems de una colección.
+                    if let Some((_, t)) = v.get("type")
+                        && let Ok(crate::types::Type::Media(c)) =
+                            crate::types::parse_type(t.as_str().unwrap_or(""))
+                    {
+                        a(
+                            "referencia",
+                            "referenciada_por",
+                            ref_qn(Kind::MediaCollection, &c, ns, sc),
+                        );
+                    }
                 }
             }
         }
@@ -623,6 +682,14 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                     None => ref_de(Kind::Model, None, m.strip_prefix("modelo/").unwrap_or(&m)),
                 };
                 a("usa", "usado_por", destino);
+            }
+        }
+        // v1alpha16: la colección mantenida sale de un `ObjectTable`.
+        Kind::MediaCollection => {
+            if let Some((_, r)) = d.section("from").and_then(|f| f.get("objectTable"))
+                && let Some(s) = r.as_str()
+            {
+                a("sale_de", "produce", ref_qn(Kind::ObjectTable, s, ns, sc));
             }
         }
         Kind::TrainedModel => {
@@ -697,6 +764,15 @@ fn clasificacion_de(
                         }
                     }
                 }
+            }
+        }
+        // v1alpha16: lo que la colección lleva —lo heredado de su origen y lo
+        // que suma—, con la misma cuenta que el conducto de su copia.
+        Kind::MediaCollection => {
+            for (eje, (nivel, _)) in
+                crate::flow::etiquetas_de_coleccion(pkg, lat, d, &mut Vec::new())
+            {
+                sube(&eje, &nivel);
             }
         }
         Kind::View | Kind::Dataset => {
@@ -857,7 +933,11 @@ pub fn indice(pkg: &Package, punteros: &BTreeMap<String, Json>, cabeza: &Cabeza)
             "clasificacion",
             Json::Obj(clasificacion_de(pkg, d, &lat, &efectivas, &con_origen)),
         )];
-        if vistas::es_copia(d) {
+        // v1alpha16: una colección mantenida que no es virtual también copia.
+        let copia_ficheros = d.kind == Kind::MediaCollection
+            && d.section("from").is_some()
+            && d.section("virtual").and_then(|v| v.as_str()) != Some("true");
+        if vistas::es_copia(d) || copia_ficheros {
             acceso.push((
                 "conductos",
                 Json::obj([(

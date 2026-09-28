@@ -791,6 +791,29 @@ fn cotejar_con(pkg: &Package, u: &Unidad, creado: &guion::Creado) -> Vec<Fallo> 
                 )
                 .ayuda(format!("un `Dataset` con `from: {{ table: {r} }}`")),
             ),
+            // v1alpha16: el listado de un origen se pregunta en el origen, y una
+            // colección tiene ítems, no filas. Ninguno está en el lago que un
+            // `.sql` lee, y el mensaje dice por dónde se lee cada uno.
+            Some(d) if d.kind == Kind::ObjectTable => fallos.push(
+                Fallo::new(
+                    format!("`{r}` es un `ObjectTable`, el listado de un origen: no está en el lago"),
+                    n.pos,
+                )
+                .ayuda(
+                    "se pregunta con una vista de una base foránea (`SELECT key, size FROM …`), y \
+                     sus ficheros se tienen en una `MediaCollection`",
+                ),
+            ),
+            Some(d) if d.kind == Kind::MediaCollection => fallos.push(
+                Fallo::new(
+                    format!("`{r}` es una `MediaCollection`: tiene ítems, no filas"),
+                    n.pos,
+                )
+                .ayuda(
+                    "lo que hay dentro de sus ficheros lo saca una función que la lee y lo escribe \
+                     en un `Dataset`; ese dataset es el que se lee aquí",
+                ),
+            ),
             Some(d) => fallos.push(Fallo::new(
                 format!("`{r}` es una `{:?}`: en SQL se lee un `Dataset` o una `View`", d.kind),
                 n.pos,

@@ -733,5 +733,33 @@ CODIGO=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -H "$SUJ" -H "x-ore-raiz: ot
 [ "$(pide DELETE /arbol/packages/hr/clean)" = "200" ] || falla "23 · no se pudo retirar el segundo"
 dice "23 · lo acotado: GET /arbol con X-Ore-Raiz trae SOLO su carpeta (la cabeza sigue siendo la del arbol) · el de al lado ve lo suyo · sin cabecera, la celda entera · 422 lo que no es carpeta de paquete, 404 lo que no esta"
 
+# ── 24 · ObjectTable y MediaCollection (0046 E3, v1alpha16) ─────────────────
+#
+# El puntero a objetos se LEE por aquí y no se escribe: su único escritor es su
+# fuente (`ore source induce`, 0045), 405 como el Model. La colección entra por
+# la misma puerta que un dataset, y nace en SU versión —v1alpha16— aunque el
+# cuerpo no la diga: con la vigente (v1alpha12) sería OOS1003. Una entidad que
+# la referencia con `Media<…>` la retiene (409 con quién), y libre se retira.
+[ "$(pide GET /documentos/ObjectTable)" = "200" ] || falla "24 · GET /documentos/ObjectTable · $(cat "$TMP/r.json")"
+cumple "d['documentos'] == []" "24 · sin objetos en acme-retail"
+OBJETOS='{"spec":{"datasource":"lago","prefix":"docs/","media":"document","changes":{"mode":"retract","witness":"listing"}}}'
+[ "$(pide PUT /documentos/ObjectTable/hr/docs "$OBJETOS")" = "405" ] || falla "24 · /documentos escribió un ObjectTable: $(cat "$TMP/r.json")"
+COLECCION='{"spec":{"owner":"team:hr","media":"document","formats":["pdf"]}}'
+[ "$(pide PUT /documentos/MediaCollection/hr/contratos "$COLECCION")" = "201" ] || falla "24 · PUT MediaCollection no dio 201 · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'escribir la colección `hr.contratos`' ] || falla "24 · el asunto: $(asunto)"
+[ "$(pide GET /documentos/MediaCollection/hr/contratos)" = "200" ] \
+  && cumple "d['apiVersion'] == 'oos.dev/v1alpha16' and d['fichero'] == 'packages/hr/collections/contratos.yaml' and d['spec']['formats'] == ['pdf']" "24 · la colección, en collections/ y en v1alpha16"
+REGISTRO='{"apiVersion":"oos.dev/v1alpha16","spec":{"owner":"team:hr","columns":{"id":{"type":"String"},"documento":{"type":"String"}},"changes":{"mode":"upsert","key":["id"]}}}'
+[ "$(pide PUT /documentos/Dataset/hr/registro "$REGISTRO")" = "201" ] || falla "24 · el dataset de la prueba no entró · $(cat "$TMP/r.json")"
+CONTRATO='{"apiVersion":"oos.dev/v1alpha16","spec":{"nature":"entity","primaryKey":["id"],"backedBy":"registro","properties":{"id":{"type":"String"},"documento":{"type":"Media<hr.contratos>"}}}}'
+[ "$(pide PUT /documentos/Entity/hr/Contrato "$CONTRATO")" = "201" ] || falla "24 · la entidad con Media<…> no entró · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/MediaCollection/hr/contratos)" = "409" ] || falla "24 · retirar una colección referenciada no dio 409 · $(cat "$TMP/r.json")"
+grep -q "properties.documento: Media" "$TMP/r.json" || falla "24 · el 409 no dice quién la referencia · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Entity/hr/Contrato)" = "200" ] || falla "24 · retirar la entidad · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/Dataset/hr/registro)" = "200" ] || falla "24 · retirar el dataset · $(cat "$TMP/r.json")"
+[ "$(pide DELETE /documentos/MediaCollection/hr/contratos)" = "200" ] || falla "24 · retirar la colección libre · $(cat "$TMP/r.json")"
+[ "$(asunto)" = 'retirar la colección `hr.contratos`' ] || falla "24 · el asunto: $(asunto)"
+dice "24 · ObjectTable se lee y no se escribe (405: lo escribe su fuente) · la colección entra en collections/ y en v1alpha16 · una entidad con Media<…> la retiene (409 con quién) · libre, 200"
+
 echo
-echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); el arbol acotado a un repositorio (0036 ④); escribir es un commit del sujeto que no empeora el arbol"
+echo "ok · /documentos/{kind}: un motor, una tabla de kinds — Entity, View, Table, Concept, Interface, TrainedModel, Dataset, Function, Action, ObjectTable, MediaCollection — y /conceptos; /arbol por ruta (0030 W0); /proyectos, la lente (0035 ②); las carpetas, enteras y en un commit (0035 ③b); /repositorios, la unidad de trabajo (0036 ②); el arbol acotado a un repositorio (0036 ④); escribir es un commit del sujeto que no empeora el arbol"

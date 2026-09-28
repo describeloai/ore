@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance) y E2 (la gramática en ORE) hechos ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE) y E3 (la superficie) hechos ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -297,7 +297,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 |---|---|---|
 | **E1 · la spec, completa** ✅ `oos 4fa2206` | esquemas `schemas/v1alpha16/`; `conformance/v1alpha16/` (8 aceptan, 34 rechazan, uno por regla; `OOS2040` incluido); el texto afinado al escribir los casos (abajo) | empujado en OOS |
 | **E2 · la gramática** (`ore-core`) ✅ 43/43 | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
-| **E3 · la superficie** | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
+| **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) | `ore source induce` escribe un `ObjectTable` por prefijo y medio y una `Table` con `format` por grupo tabular; limpieza de `objects/`; la política IAM en `credenciales.rs`; imagen de drivers. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
@@ -343,6 +343,25 @@ cubría y E2 encontró: `from.objectTable` cruza de paquete y la regla de `expor
 es `OOS2028`, con su caso (oos `241c894`). Queda para E3 la superficie que no es gramática: el
 índice de assets, la superficie SQL del árbol (`sql_del_arbol`), las aristas, el diff de las caras
 de un `ObjectTable`, `KINDS` de ore-serve, el candado y `ore init`.
+
+**Lo que E3 midió e hizo.** Medido con un árbol a mano que junta todo v1alpha16 (la fuente con su
+`ObjectTable` y su tabla de Parquet; la base con la colección, un dataset, la entidad con `Media<…>`
+y una vista que pregunta el listado): compilaba limpio, y la superficie no lo veía. El índice de
+assets daba 5 de 7 ítems, contaba `objects/` y `collections/` como schemas y dejaba la vista con
+una relación rota; `ore view` decía que esa vista «lee datasets»; `/documentos` no servía los dos
+kinds y habría escrito una colección en v1alpha12 (`OOS1003`); retirar una fuente no veía las
+colecciones ni las vistas que salen de sus `ObjectTable`. Hecho: los dos kinds son ítems
+(`objecttable:`, `collection:`) con detalle, columnas fijas, relaciones en los dos sentidos
+(`sale_de`/`produce`, y `referencia`/`referenciada_por` por `Media<…>`), clasificación y el
+conducto de la copia; `ore view` y `ore sql` dicen por dónde se lee cada uno; `/documentos` lee el
+`ObjectTable` y no lo escribe (405: su escritor es `ore source induce`), y escribe la colección en
+`collections/` y en v1alpha16; `quien_nombra` y `bases_que_salen_de` conocen las dependencias
+nuevas. Y un fallo de flujo que el índice destapó: la raíz de un linaje solo heredaba el
+`datasource` de una `Table`, así que el listado de una fuente `high` se copiaba sin clasificar;
+ahora lo hereda (caso nuevo, oos `521eb11`). Pruebas: `assets::guardar_…`,
+`punteros::lo_que_sale_de_una_fuente_de_objetos` y el paso 24 de `los-documentos.sh`.
+**Movido** (decidido con el usuario): el diff de estos kinds, a después de E8; crear una colección
+por SQL, a E10.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

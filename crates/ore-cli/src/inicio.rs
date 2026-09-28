@@ -568,6 +568,8 @@ fn agentes(nombre: &str, deps: &[Par]) -> String {
          | `Table` | `packages/<x>/tables/` | v1alpha8 |\n\
          | `View` | `packages/<x>/views/` | v1alpha7 |\n\
          | `Model` | `modelos/` | v1alpha9 |\n\
+         | `ObjectTable` | `packages/<fuente>/<schema>/objects/` | v1alpha16 |\n\
+         | `MediaCollection` | `packages/<x>/<schema>/collections/` | v1alpha16 |\n\
          \n\
          Cada directorio lleva un `README.md` con qué decide lo que va dentro.\n\
          \n\
