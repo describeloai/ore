@@ -48,6 +48,8 @@
 #                                       el compilador no la ve · protegida: escribir en main 423, en
 #                                       una rama si · libre: la autora fusiona lo suyo sin
 #                                       revision (y el merge lo dice); protegida, 0030 W2
+#   8h proteger y liberar main         PUT /ramas/main/proteccion: proteger una libre escribe; liberar
+#                                       una protegida abre una propuesta que aprueba otra persona
 #   9  sin API                           un servidor con --repo (directorio) contesta 422 a /ramas y
 #                                       a X-Ore-Rama
 #
@@ -651,6 +653,26 @@ NS=$(num)
 [ "$(pide POST /propuestas/$NS/fusionar "$ANA")" = "200" ] && tiene "d['sinRevision'] is True and d['revisada_por']==[] and d['por']=='persona:ana'" || falla "8g · libre, ana no fusiono lo suyo: $(cuerpo)"
 git -C "$BARE" log -1 --format=%B main | grep -q "fusionada sin revisión por persona:ana" || falla "8g · el merge no dice que fue sin revision: $(git -C "$BARE" log -1 --format=%B main)"
 dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada, en una rama si · libre otra vez, main se escribe · libre, la autora fusiona lo suyo sin revision y el merge lo dice"
+
+# ── 8h · proteger main y dejarla libre (P1.4): PUT /ramas/main/proteccion ──
+[ "$(pide PUT /ramas/ana/sola/proteccion "$ANA" '{"protegida":true}')" = "422" ] || falla "8h · proteger otra rama no dio 422: $(cuerpo)"
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":"si"}')" = "422" ] || falla "8h · protegida mala no dio 422: $(cuerpo)"
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":false}')" = "200" ] && tiene "d['cambiada'] is False and d['protegida'] is False" || falla "8h · libre a libre: $(cuerpo)"
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":true}')" = "200" ] && tiene "d['cambiada'] is True and d['protegida'] is True" || falla "8h · proteger: $(cuerpo)"
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is True" || falla "8h · protegida y GET /ramas no lo dice: $(cuerpo)"
+git -C "$BARE" log -1 --format='%an|%s' main | grep -q '^persona:ana|' || falla "8h · el commit que protege no es de ana: $(git -C "$BARE" log -1 --format='%an|%s' main)"
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":true}')" = "200" ] && tiene "d['cambiada'] is False" || falla "8h · proteger otra vez: $(cuerpo)"
+# (b): dejarla libre estando protegida es una propuesta que aprueba OTRA persona
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":false}')" = "202" ] && tiene "d['liberar'] is True and d['protegida'] is True and d['rama']=='ana/libera-main'" || falla "8h · liberar no abrio propuesta: $(cuerpo)"
+NL=$(num)
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is True" || falla "8h · proponer liberar ya la libero: $(cuerpo)"
+[ "$(pide GET /propuestas/$NL "$ANA")" = "200" ] && tiene "[f['ruta'] for f in d['ficheros']]==['.arbol/ramas.yaml']" || falla "8h · la propuesta lleva algo mas que la politica: $(cuerpo | head -c 400)"
+[ "$(pide PUT /ramas/main/proteccion "$ANA" '{"protegida":false}')" = "409" ] && cuerpo | grep -q "#$NL" || falla "8h · liberar dos veces no dio 409 con la propuesta: $(cuerpo)"
+[ "$(pide POST /propuestas/$NL/fusionar "$ANA")" = "422" ] || falla "8h · ana se libero sola: $(cuerpo)"
+[ "$(pide POST /propuestas/$NL/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8h · bea no pudo aprobar: $(cuerpo)"
+[ "$(pide POST /propuestas/$NL/fusionar "$BEA")" = "200" ] || falla "8h · bea no pudo fusionar: $(cuerpo)"
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8h · fusionada, main sigue protegida: $(cuerpo)"
+dice "8h · PUT /ramas/main/proteccion: otra rama o valor malo 422 · lo que ya es, 200 sin escribir · proteger una main libre: un commit de la persona · dejarla libre estando protegida: 202, una propuesta con SOLO la politica (ana/libera-main), 409 la segunda vez, la autora no se la fusiona, otra persona la aprueba y fusiona, y main queda libre"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"

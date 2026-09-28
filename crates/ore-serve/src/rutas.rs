@@ -557,6 +557,10 @@ impl Servidor {
                 self.cambios(&resto.join("/"))
             }
             ("POST", ["ramas"]) => self.crear_rama(sujeto, &p.cuerpo),
+            // P1.4 · la política de `main`: protegerla, o proponer dejarla libre.
+            ("PUT", ["ramas", resto @ .., "proteccion"]) if !resto.is_empty() => {
+                self.proteger(sujeto, &resto.join("/"), &p.cuerpo)
+            }
             ("DELETE", ["ramas", nombre @ ..]) => self.retirar_rama(&nombre.join("/")),
             // ⭐ Traer OTRA rama a ésta (el «Merge» del menú): git merge en un clon de
             //   la rama, el gate de siempre, y el empujón. `main` no: eso es una propuesta.

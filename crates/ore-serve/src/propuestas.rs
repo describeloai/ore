@@ -457,6 +457,135 @@ impl Servidor {
         }
     }
 
+    /// `PUT /ramas/{rama}/proteccion {protegida}` (P1.4): proteger `main`, o
+    /// dejarla libre. Sólo la rama por defecto: la política es suya.
+    ///
+    /// - **Proteger una `main` libre**: se escribe `.arbol/ramas.yaml` en `main`
+    ///   y ya. Con `main` libre cualquiera escribe en ella, así que no hay nada
+    ///   que pedir. `200`.
+    /// - **Liberar una `main` protegida** (regla (b)): NO se escribe. Se abre una
+    ///   propuesta con sólo ese fichero —una rama `<persona>/libera-main` desde
+    ///   `main`— que fusionará otra persona con su aprobación, como cualquier
+    ///   cambio de una `main` protegida. Si no, protegerla no protegería nada:
+    ///   quien quisiera saltársela la quitaría primero. `202` con la propuesta.
+    /// - Pedir lo que ya es: `200`, nada escrito.
+    ///
+    /// ✏️ Hasta P2 lo puede pedir cualquiera con sesión (igual que hoy cualquiera
+    ///   escribe en una `main` libre); con P2, sólo quien tenga la potestad.
+    pub(crate) fn proteger(&self, sujeto: &Identidad, rama: &str, cuerpo: &str) -> Respuesta {
+        use crate::politica::RUTA;
+        let api = match self.api() {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let por_defecto = api.rama_por_defecto().unwrap_or_else(|_| "main".into());
+        if rama != por_defecto {
+            return Respuesta::error(
+                422,
+                format!("sólo `{por_defecto}` se protege: `{rama}` es una rama de trabajo"),
+            );
+        }
+        let quiere = match del_cuerpo(cuerpo, "protegida").as_deref() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => return Respuesta::error(422, "`protegida` es `true` o `false`"),
+        };
+        let esta = match self.politica_de_main(&por_defecto) {
+            Ok(p) => p.protegida,
+            Err(e) => return de_la_forja(e),
+        };
+        let texto = format!(
+            "# Cómo se trabaja en las ramas de este árbol. Lo lee ore-serve, siempre de `{por_defecto}`.\n# Protegida: no se escribe en ella sin propuesta, y fusionar exige la aprobación de otra persona.\n{por_defecto}:\n  protegida: {quiere}\n"
+        );
+        let hecho = |extra: Vec<(&'static str, Json)>| {
+            let mut campos = vec![
+                ("rama", Json::s(&por_defecto)),
+                ("protegida", Json::Bool(quiere)),
+            ];
+            campos.extend(extra);
+            Respuesta::ok(Json::obj(campos))
+        };
+        if esta == quiere {
+            return hecho(vec![("cambiada", Json::Bool(false))]);
+        }
+        if quiere {
+            // Libre → protegida: con `main` libre se escribe en ella (y
+            // `escribiendo` a secas: la regla de `escribiendo_en` no aplica
+            // a lo que la crea).
+            let r = self.escribiendo(sujeto, &format!("Proteger `{por_defecto}`"), |raiz| {
+                let f = raiz.join(RUTA);
+                if let Some(d) = f.parent()
+                    && std::fs::create_dir_all(d).is_err()
+                {
+                    return Respuesta::error(500, "no se pudo crear `.arbol/`");
+                }
+                match std::fs::write(&f, &texto) {
+                    Ok(()) => Respuesta::ok(Json::obj([])),
+                    Err(e) => Respuesta::error(500, format!("no se pudo escribir `{RUTA}`: {e}")),
+                }
+            });
+            if r.codigo >= 300 {
+                return r;
+            }
+            let commit = campo(&r.cuerpo, "commit")
+                .map(Json::s)
+                .unwrap_or(Json::Bool(false));
+            return hecho(vec![("cambiada", Json::Bool(true)), ("commit", commit)]);
+        }
+        // Protegida → libre: una propuesta con sólo la política.
+        let libera = format!("{}/libera-{por_defecto}", prefijo_de(&sujeto.persona));
+        let abiertas = api.pulls("open").unwrap_or_default();
+        if let Some(n) = abiertas
+            .iter()
+            .find(|pr| rama_de(pr) == libera)
+            .and_then(|pr| numero(pr, "number"))
+        {
+            return Respuesta::error(
+                409,
+                format!("ya hay una propuesta para dejar `{por_defecto}` libre: la #{n}"),
+            );
+        }
+        // Una rama vieja con ese nombre y sin propuesta se rehace desde `main`.
+        let _ = api.borrar_rama(&libera);
+        if let Err(e) = api.crear_rama(&libera, &por_defecto) {
+            return de_la_forja(e);
+        }
+        let r = self.escribiendo_en(
+            Some(&libera),
+            sujeto,
+            &format!("Dejar `{por_defecto}` libre"),
+            |raiz| match std::fs::write(raiz.join(RUTA), &texto) {
+                Ok(()) => Respuesta::ok(Json::obj([])),
+                Err(e) => Respuesta::error(500, format!("no se pudo escribir `{RUTA}`: {e}")),
+            },
+        );
+        if r.codigo >= 300 {
+            return r;
+        }
+        let pedida = Json::obj([
+            ("rama", Json::s(&libera)),
+            (
+                "titulo",
+                Json::s(format!("Leave `{por_defecto}` unprotected")),
+            ),
+            (
+                "descripcion",
+                Json::s(format!(
+                    "`{por_defecto}` is protected: leaving it unprotected needs the approval of another person, like any other change to it."
+                )),
+            ),
+        ]);
+        let mut p = self.proponer(sujeto, &pedida.jcs());
+        if p.codigo == 201 {
+            p.codigo = 202;
+            if let Json::Obj(m) = &mut p.cuerpo {
+                m.insert("protegida".into(), Json::Bool(true));
+                m.insert("liberar".into(), Json::Bool(true));
+            }
+        }
+        p
+    }
+
     // ── Ramas ──────────────────────────────────────────────────────────────
 
     /// `GET /ramas`: las ramas del árbol, qué propuesta abierta tiene cada una,
