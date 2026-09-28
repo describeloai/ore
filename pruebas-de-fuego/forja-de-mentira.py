@@ -10,6 +10,7 @@ Lo que `crates/ore-serve/src/forja.rs` pide, y nada más:
     GET    /api/v1/version
     GET    /api/v1/repos/{o}/{r}                    default_branch
     GET    /api/v1/repos/{o}/{r}/branches           [{name, commit{id}}]
+    GET    /api/v1/repos/{o}/{r}/raw/{ruta}?ref=    texto (404 si no está)
     POST   /api/v1/repos/{o}/{r}/branches           {new_branch_name, old_branch_name}
     DELETE /api/v1/repos/{o}/{r}/branches/{b}
     GET    /api/v1/repos/{o}/{r}/pulls?state=       [pr]
@@ -157,6 +158,10 @@ class Manejador(BaseHTTPRequestHandler):
 
         if resto == []:
             return self.contestar(200, {"default_branch": "main", "name": seg[2], "owner": {"login": seg[1]}})
+        if resto and resto[0] == "raw" and metodo == "GET":
+            rama = q.get("ref", ["main"])[0]
+            rc, out, _ = git("show", "refs/heads/%s:%s" % (rama, "/".join(resto[1:])))
+            return self.contestar(200, texto=out) if rc == 0 else self.contestar(404, {"message": "file not found"})
         if resto == ["branches"] and metodo == "GET":
             return self.contestar(200, [{"name": n, "commit": {"id": sha}} for n, sha in ramas()])
         if resto == ["branches"] and metodo == "POST":

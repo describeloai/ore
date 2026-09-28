@@ -381,9 +381,31 @@ impl Servidor {
         }
     }
 
+    /// La política de las ramas (`politica.rs`), **siempre de la rama por
+    /// defecto**. Por la API de la forja (un fichero, sin clonar) o del
+    /// directorio del banco.
+    pub(crate) fn politica_de_main(
+        &self,
+        por_defecto: &str,
+    ) -> Result<crate::politica::Politica, Fallo> {
+        use crate::politica::{Politica, RUTA};
+        match (&self.arbol, self.forja_api.as_ref()) {
+            (Arbol::Directorio(d), _) => Ok(Politica::de_raiz(d)),
+            (Arbol::Forja(_), Some(api)) => Ok(api
+                .fichero(RUTA, por_defecto)?
+                .map(|t| Politica::de_texto(&t))
+                .unwrap_or_default()),
+            (Arbol::Forja(_), None) => Err(Fallo {
+                codigo: 422,
+                mensaje: "el árbol no está en una forja con API".into(),
+            }),
+        }
+    }
+
     // ── Ramas ──────────────────────────────────────────────────────────────
 
-    /// `GET /ramas`: las ramas del árbol, y qué propuesta abierta tiene cada una.
+    /// `GET /ramas`: las ramas del árbol, qué propuesta abierta tiene cada una,
+    /// y si la de por defecto está protegida (`politica.rs`).
     pub(crate) fn ramas(&self) -> Respuesta {
         let api = match self.api() {
             Ok(a) => a,
@@ -391,6 +413,12 @@ impl Servidor {
         };
         let por_defecto = api.rama_por_defecto().unwrap_or_else(|_| "main".into());
         let abiertas = api.pulls("open").unwrap_or_default();
+        // ⛔ Una política que no se pudo leer NO se pinta libre: sería decir que
+        //   se puede escribir en `main` sin saberlo. Se dice que falló.
+        let protegida = match self.politica_de_main(&por_defecto) {
+            Ok(p) => Json::Bool(p.protegida),
+            Err(e) => return de_la_forja(e),
+        };
         match api.ramas() {
             Ok(ramas) => Respuesta::ok(Json::obj([
                 ("porDefecto", Json::s(&por_defecto)),
@@ -408,6 +436,14 @@ impl Servidor {
                                 Json::obj([
                                     ("nombre", Json::s(&nombre)),
                                     ("porDefecto", Json::Bool(nombre == por_defecto)),
+                                    (
+                                        "protegida",
+                                        if nombre == por_defecto {
+                                            protegida.clone()
+                                        } else {
+                                            Json::Bool(false)
+                                        },
+                                    ),
                                     ("commit", Json::s(commit)),
                                     (
                                         "propuesta",

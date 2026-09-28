@@ -123,6 +123,30 @@ impl Api {
             .collect())
     }
 
+    /// Un fichero de una rama, en crudo (`GET /raw/{ruta}?ref=`). `None` si no
+    /// está: que falte un fichero no es un fallo de la forja.
+    pub fn fichero(&self, ruta: &str, rama: &str) -> Result<Option<String>, Fallo> {
+        let (codigo, texto) = http::pedir(
+            "GET",
+            &self.destino,
+            &self.camino(&format!("/raw/{ruta}?ref={rama}")),
+            Some(&self.testigo),
+            None,
+        )
+        .map_err(|m| Fallo {
+            codigo: 502,
+            mensaje: m,
+        })?;
+        match codigo {
+            200 => Ok(Some(texto)),
+            404 => Ok(None),
+            _ => Err(Fallo {
+                codigo,
+                mensaje: texto.trim().chars().take(200).collect(),
+            }),
+        }
+    }
+
     pub fn rama_por_defecto(&self) -> Result<String, Fallo> {
         let j = self.json("GET", "", None)?;
         Ok(campo(&j, "default_branch").unwrap_or_else(|| "main".into()))

@@ -43,6 +43,9 @@
 #                                       texto de entonces, byte a byte) · 422 · 404
 #   8c traer otra rama a la mia          POST /ramas/{rama}/fusionar {desde}: git merge de la persona
 #                                       con el gate; main 422 (se propone); conflicto 409
+#   8g la politica de las ramas        .arbol/ramas.yaml de main: GET /ramas dice `protegida` en la de
+#                                       por defecto y solo en ella · sin fichero o roto, libre ·
+#                                       el compilador no la ve
 #   9  sin API                           un servidor con --repo (directorio) contesta 422 a /ramas y
 #                                       a X-Ore-Rama
 #
@@ -605,6 +608,21 @@ NM=$(num)
 [ "$(pide POST /propuestas/$NM/fusionar "$BEA")" = "200" ] || falla "8f · fusionar el movido: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/views/a3_movida.yaml "$ANA")" = "200" ] && [ "$(pide GET /arbol/packages/hr/views/a3.yaml "$ANA")" = "404" ] || falla "8f · el movimiento no viajo entero"
 dice "8f · scope proposals por activos: solo a3 llega a main (la rama sigue con a1, a2, el paquete y el codigo) · 422 activo que la rama no cambia o carpeta y activos a la vez · 409 el mismo activo (por id o ref) o la rama entera; el repositorio convive · a2 sin a1: faltan [a1] al proponer, en el detalle y al fusionar (422) · el package.yaml cambiado va con sus activos · un consumidor de main roto: diagnostico sin faltan · un activo movido viaja entero"
+
+# ── 8g · la politica de las ramas: main libre o protegida (P1.1) ────────────
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · sin .arbol/ramas.yaml main no es libre: $(cuerpo)"
+politica() { # <texto> | '' para quitarla: escrita en main a mano, como la dejaria P1.4
+  rm -rf "$TMP/pol" && git clone -q "$BARE" "$TMP/pol" && mkdir -p "$TMP/pol/.arbol"
+  if [ -n "$1" ]; then printf '%s' "$1" > "$TMP/pol/.arbol/ramas.yaml"; else rm -f "$TMP/pol/.arbol/ramas.yaml"; fi
+  ( cd "$TMP/pol" && git -c core.autocrlf=false add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "politica" && git push -q origin main ) || falla "8g · no se pudo escribir la politica"
+}
+politica $'main:\n  protegida: true\n'
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "all(r['protegida']==r['porDefecto'] for r in d['ramas'])" || falla "8g · protegida: main no lo dice, o lo dice otra rama: $(cuerpo)"
+( cd "$TMP/pol" && "$ORE" validate . >/dev/null 2>&1 ) || falla "8g · el compilador vio .arbol/ramas.yaml: $(cd "$TMP/pol" && "$ORE" validate . 2>&1 | head -3)"
+politica $'main: [roto\n'
+[ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · un fichero roto no se lee libre: $(cuerpo)"
+politica ''
+dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
