@@ -130,6 +130,27 @@ fn lectores(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
     g
 }
 
+/// Lo que lee cada activo, directamente: `activo → leídos` (lo mismo que
+/// [`lectores`], del revés). Es lo que una propuesta de activos tiene que
+/// llevar consigo si la rama también lo cambió (`propuestas.rs`, la expansión).
+fn lee(pkg: &Package) -> BTreeMap<String, Vec<String>> {
+    let mut g: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for d in &pkg.docs {
+        let mut lee = ore_core::vistas::lee_directo(pkg, d);
+        if let Some(r) = ore_core::vistas::respaldo(pkg, d) {
+            lee.push(r);
+        }
+        if lee.is_empty() {
+            continue;
+        }
+        let mut ids: Vec<String> = lee.iter().map(|f| ore_core::normalize::doc_id(f)).collect();
+        ids.sort();
+        ids.dedup();
+        g.insert(ore_core::normalize::doc_id(d), ids);
+    }
+    g
+}
+
 /// Todo lo que lee `id`, directa o indirectamente, sin él.
 fn alcanza(g: &BTreeMap<String, BTreeSet<String>>, id: &str) -> Vec<String> {
     let mut visto = BTreeSet::new();
@@ -279,6 +300,7 @@ impl Servidor {
             _ => None,
         };
         let (g_a, g_d) = (lectores(&pkg_a), lectores(&pkg_d));
+        let lee_d = lee(&pkg_d);
 
         // Lo que rompe, por activo: el sujeto de un cambio de `ore diff` es
         // `<nombre del activo>.<lo de dentro>`; se ata al nombre más largo.
@@ -344,6 +366,21 @@ impl Servidor {
                     _ => None,
                 }
             });
+            // Lo que lee en la rama (si sigue en ella): lo que una propuesta
+            // suya tiene que llevar si la rama también lo cambió.
+            if y.is_some() {
+                m.push((
+                    "lee",
+                    Json::Arr(
+                        lee_d
+                            .get(id.as_str())
+                            .into_iter()
+                            .flatten()
+                            .map(Json::s)
+                            .collect(),
+                    ),
+                ));
+            }
             m.push(("conflicto", Json::Bool(en_base.is_some())));
             if let Some(e) = en_base {
                 conflictos += 1;

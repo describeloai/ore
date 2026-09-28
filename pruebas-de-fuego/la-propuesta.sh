@@ -557,10 +557,11 @@ dice "8e · scope proposals por repositorio: la PR lleva solo el repositorio (un
 
 # ── 8f · proponer UNOS ACTIVOS desde el catalogo (0044 A.2 · E2) ─────────────
 # La misma propuesta que la del repositorio, con otro alcance: unos activos por
-# su id. Viajan sus ficheros (y, movido, el de antes); lo que comparte fichero y
-# el package.yaml de su base van con ellos; main + alcance se valida y, si le
-# falta algo que la rama cambia, se dice cual (faltan); un consumidor de main que
-# rompe no se arregla anadiendo: el alcance romperia main.
+# su id. Viajan sus ficheros (y, movido, el de antes); lo que comparte fichero,
+# el package.yaml de su base y lo que LEEN, si la rama lo cambia, van con ellos
+# (M1, con su porque; el caso entero de una base standard, lo-que-arrastra.sh);
+# main + alcance se valida y, si aun le falta algo, se dice cual (faltan); un
+# consumidor de main que rompe no se arregla anadiendo: el alcance romperia main.
 num() { "$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["numero"])' "$TMP/r.json"; }
 [ "$(pide POST /ramas "$ANA" '{"nombre":"activos"}')" = "201" ] || falla "8f · la rama: $(cuerpo)"
 [ "$(put_fichero packages/hr/views/a1.yaml "$ANA" "$(vista14 a1 hr.empleados_t id)" ana/activos)" = "201" ] || falla "8f · a1: $(cuerpo)"
@@ -578,11 +579,10 @@ N3=$(num)
 R=$(num); [ "$(pide DELETE /propuestas/$R "$ANA")" = "200" ] || falla "8f · cerrar la del repositorio: $(cuerpo)"
 # a2 lee a1, que solo esta en la rama: se propone, pero dice que falta a1
 [ "$(pide POST /propuestas "$ANA" '{"rama":"ana/activos","titulo":"Solo a2","activos":["View:hr.default.a2"]}')" = "201" ] || falla "8f · proponer a2: $(cuerpo)"
-tiene "d['faltan']==['View:hr.default.a1'] and any(x['codigo']=='OOS2018' for x in d['diagnosticos'])" || falla "8f · a2 sin a1 no dice que falta: $(cuerpo | head -c 700)"
+# M1 (2026-09-28): lo que a2 LEE y la rama cambia va con ella, con su porque; y compila
+tiene "sorted(d['activos'])==['View:hr.default.a1','View:hr.default.a2'] and d['anadidos']==['View:hr.default.a1'] and d['anadidosPorque']['View:hr.default.a1']=='lo lee \`hr.a2\`' and d['faltan']==[] and d['diagnosticos']==[]" || falla "8f · a2 no arrastro a1: $(cuerpo | head -c 700)"
 N2=$(num)
-[ "$(pide GET /propuestas/$N2 "$BEA")" = "200" ] && tiene "d['faltan']==['View:hr.default.a1']" || falla "8f · el detalle no dice que falta: $(cuerpo | head -c 500)"
-[ "$(pide POST /propuestas/$N2/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8f · aprobar a2: $(cuerpo)"
-[ "$(pide POST /propuestas/$N2/fusionar "$BEA")" = "422" ] && tiene "d['faltan']==['View:hr.default.a1']" || falla "8f · fusionar a2 sin a1: $(cuerpo | head -c 500)"
+[ "$(pide GET /propuestas/$N2 "$BEA")" = "200" ] && tiene "d['faltan']==[]" || falla "8f · el detalle dice que falta algo: $(cuerpo | head -c 500)"
 [ "$(pide DELETE /propuestas/$N2 "$ANA")" = "200" ] || falla "8f · cerrar a2: $(cuerpo)"
 # la version del paquete va con sus activos
 [ "$(pide GET /arbol/packages/hr/package.yaml "$ANA" "" ana/activos)" = "200" ] || falla "8f · leer package.yaml: $(cuerpo)"
@@ -627,7 +627,7 @@ NM=$(num)
 [ "$(pide POST /propuestas/$NM/revisar "$BEA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8f · aprobar el movido: $(cuerpo)"
 [ "$(pide POST /propuestas/$NM/fusionar "$BEA")" = "200" ] || falla "8f · fusionar el movido: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/views/a3_movida.yaml "$ANA")" = "200" ] && [ "$(pide GET /arbol/packages/hr/views/a3.yaml "$ANA")" = "404" ] || falla "8f · el movimiento no viajo entero"
-dice "8f · scope proposals por activos: solo a3 llega a main (la rama sigue con a1, a2, el paquete y el codigo) · 422 activo que la rama no cambia o carpeta y activos a la vez · 409 el mismo activo (por id o ref) o la rama entera; el repositorio convive · a2 sin a1: faltan [a1] al proponer, en el detalle y al fusionar (422) · el package.yaml cambiado va con sus activos · un consumidor de main roto: diagnostico sin faltan · un activo movido viaja entero"
+dice "8f · scope proposals por activos: solo a3 llega a main (la rama sigue con a1, a2, el paquete y el codigo) · 422 activo que la rama no cambia o carpeta y activos a la vez · 409 el mismo activo (por id o ref) o la rama entera; el repositorio convive · a2 arrastra a1 (lo lee) y compila · el package.yaml cambiado va con sus activos · un consumidor de main roto: diagnostico sin faltan · un activo movido viaja entero"
 
 # ── 8g · la politica de las ramas: main libre o protegida (P1.1) ────────────
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · sin .arbol/ramas.yaml main no es libre: $(cuerpo)"

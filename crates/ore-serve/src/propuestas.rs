@@ -290,6 +290,82 @@ fn nombrados(mensaje: &str) -> Vec<String> {
         .collect()
 }
 
+/// Lo que un alcance es en git, los ids que lleva, y lo añadido con su porqué.
+type EnFicheros = (crate::git::Alcance, Vec<String>, Vec<(String, String)>);
+
+/// **Lo que arrastra lo que ya se lleva** (0044 A.2, M1): de los cambios de la
+/// rama, los que aún no van y sin los que lo que va no compila sobre `main`,
+/// cada uno con su porqué. Medido (2026-09-28): una base standard creada en una
+/// rama escribe siete cosas, y sólo con las siete compila —
+///
+/// - lo que comparte fichero con algo que va;
+/// - el `Package` de cada paquete que se toca;
+/// - el `Schema` del schema donde vive cada activo (OOS2037 sin él);
+/// - lo que cada activo LEE (el linaje, `lee`: el puntero de la fuente, la vista
+///   de debajo), si la rama también lo cambió (OOS2018 sin él);
+/// - con una copia (un `Dataset`), la `ConduitPolicy` que la rama cambió: el
+///   conducto `materialization.payload` es de todo el árbol (OOS4011 sin él).
+///
+/// Sólo lo que la rama CAMBIA: lo que ya está en `main` no hace falta llevarlo.
+fn lo_que_arrastra(cambios: &[Json], llevo: &[String]) -> Vec<(String, String)> {
+    let id_de = |c: &Json| campo(c, "id").unwrap_or_default();
+    let rutas_de = |c: &Json| -> Vec<String> {
+        [campo(c, "ruta"), campo(c, "rutaAntes")]
+            .into_iter()
+            .flatten()
+            .collect()
+    };
+    let van: Vec<&Json> = cambios
+        .iter()
+        .filter(|c| llevo.contains(&id_de(c)))
+        .collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for c in cambios.iter().filter(|c| !llevo.contains(&id_de(c))) {
+        let id = id_de(c);
+        let kind = campo(c, "kind").unwrap_or_default();
+        let nombre = campo(c, "nombre").unwrap_or_default();
+        let motivo = van.iter().find_map(|v| {
+            let vn = campo(v, "nombre").unwrap_or_default();
+            let vk = campo(v, "kind").unwrap_or_default();
+            let partes: Vec<&str> = vn.split('.').collect();
+            if rutas_de(c).iter().any(|r| rutas_de(v).contains(r)) {
+                Some(format!("comparte fichero con `{vn}`"))
+            } else if kind == "Package" && partes.first() == Some(&nombre.as_str()) && vk != "Package" {
+                Some(format!("el paquete de `{vn}`"))
+            } else if kind == "Schema" && partes.len() >= 3 && nombre == format!("{}.{}", partes[0], partes[1]) {
+                Some(format!("el schema de `{vn}`"))
+            } else if matches!(hijo(v, "lee"), Some(Json::Arr(l)) if l.iter().any(|x| matches!(x, Json::Str(s) if *s == id))) {
+                Some(format!("lo lee `{vn}`"))
+            } else if kind == "ConduitPolicy" && vk == "Dataset" {
+                Some(format!("el conducto de la copia `{vn}`"))
+            } else {
+                None
+            }
+        });
+        if let Some(m) = motivo {
+            out.push((id, m));
+        }
+    }
+    out
+}
+
+/// ¿`nombrado` —lo que un diagnóstico pone entre comillas— es el cambio `c`?
+/// (M2) `from.table: pg.ventas.x` nombra lo de después de los dos puntos, y un
+/// schema se nombra suelto (`ventas`): el `Schema` cuyo nombre acaba así.
+fn nombra(nombrado: &str, c: &Json) -> bool {
+    let nombre = nombrado
+        .rsplit_once(": ")
+        .map(|(_, n)| n.trim())
+        .unwrap_or(nombrado);
+    let id = campo(c, "id").unwrap_or_default();
+    let n = campo(c, "nombre").unwrap_or_default();
+    n == nombre
+        || id.ends_with(&format!(":{nombre}"))
+        || (campo(c, "kind").as_deref() == Some("Schema")
+            && !nombre.contains('.')
+            && n.ends_with(&format!(".{nombre}")))
+}
+
 /// Un nombre corto y estable para la derivada de unos activos: FNV-1a de sus ids.
 fn huella_de_ids(ids: &[String]) -> String {
     let mut h: u32 = 0x811c_9dc5;
@@ -963,7 +1039,7 @@ impl Servidor {
         rama: &str,
         alcance: &Alcance,
         estricto: bool,
-    ) -> Result<(crate::git::Alcance, Vec<String>, Vec<String>), Respuesta> {
+    ) -> Result<EnFicheros, Respuesta> {
         let pedidos = match alcance {
             Alcance::Carpeta(c) => {
                 return Ok((
@@ -1005,36 +1081,20 @@ impl Servidor {
             }
         }
         let pedidos_ids = llevo.clone();
-        // Lo que va con ellos, hasta que no se añade nada. SÓLO al proponer: la
-        // propuesta guarda el conjunto ya completo, y lo que la rama cambie
-        // después (otra versión del paquete) no se cuela en lo ya revisado.
+        // Lo que va con ellos, hasta que no se añade nada, y POR QUÉ (M1). SÓLO al
+        // proponer: la propuesta guarda el conjunto ya completo, y lo que la rama
+        // cambie después (otra versión del paquete) no se cuela en lo ya revisado.
+        let mut porque: Vec<(String, String)> = Vec::new();
         if estricto {
             loop {
-                let rutas: Vec<String> = cambios
-                    .iter()
-                    .filter(|c| llevo.contains(&id_de(c)))
-                    .flat_map(rutas_de)
-                    .collect();
-                let bases: Vec<String> = cambios
-                    .iter()
-                    .filter(|c| llevo.contains(&id_de(c)))
-                    .filter_map(|c| campo(c, "nombre"))
-                    .filter_map(|n| n.split('.').next().map(str::to_string))
-                    .collect();
-                let nuevos: Vec<String> = cambios
-                    .iter()
-                    .filter(|c| !llevo.contains(&id_de(c)))
-                    .filter(|c| {
-                        rutas_de(c).iter().any(|r| rutas.contains(r))
-                            || (campo(c, "kind").as_deref() == Some("Package")
-                                && campo(c, "nombre").is_some_and(|n| bases.contains(&n)))
-                    })
-                    .map(id_de)
-                    .collect();
+                let nuevos = lo_que_arrastra(&cambios, &llevo);
                 if nuevos.is_empty() {
                     break;
                 }
-                llevo.extend(nuevos);
+                for (id, motivo) in nuevos {
+                    llevo.push(id.clone());
+                    porque.push((id, motivo));
+                }
             }
         }
         let mut rutas: Vec<String> = cambios
@@ -1044,10 +1104,9 @@ impl Servidor {
             .collect();
         rutas.sort();
         rutas.dedup();
-        let anadidos = llevo
-            .iter()
-            .filter(|i| !pedidos_ids.contains(i))
-            .cloned()
+        let anadidos = porque
+            .into_iter()
+            .filter(|(i, _)| !pedidos_ids.contains(i))
             .collect();
         llevo.sort();
         Ok((crate::git::Alcance::Rutas(rutas), llevo, anadidos))
@@ -1078,9 +1137,7 @@ impl Servidor {
             for nombre in nombrados(&campo(d, "mensaje").unwrap_or_default()) {
                 for c in &cambios {
                     let id = campo(c, "id").unwrap_or_default();
-                    let es = campo(c, "nombre").as_deref() == Some(nombre.as_str())
-                        || id.ends_with(&format!(":{nombre}"));
-                    if es && !lleva.contains(&id) && !faltan.contains(&id) {
+                    if nombra(&nombre, c) && !lleva.contains(&id) && !faltan.contains(&id) {
                         faltan.push(id);
                     }
                 }
@@ -1191,7 +1248,16 @@ impl Servidor {
                     // Lo que va con los activos pedidos sin remedio, dicho.
                     m.insert(
                         "anadidos".into(),
-                        Json::Arr(anadidos.iter().map(Json::s).collect()),
+                        Json::Arr(anadidos.iter().map(|(i, _)| Json::s(i)).collect()),
+                    );
+                    m.insert(
+                        "anadidosPorque".into(),
+                        Json::Obj(
+                            anadidos
+                                .iter()
+                                .map(|(i, p)| (i.clone(), Json::s(p)))
+                                .collect(),
+                        ),
                     );
                     m.insert(
                         "diagnosticos".into(),
@@ -1821,6 +1887,92 @@ impl Servidor {
 
 #[cfg(test)]
 mod tests {
+    fn cambio(id: &str, ruta: &str, lee: &[&str]) -> ore_core::json::Json {
+        use ore_core::json::Json;
+        let (kind, nombre) = id.split_once(':').unwrap();
+        Json::obj([
+            ("id", Json::s(id)),
+            ("kind", Json::s(kind)),
+            ("nombre", Json::s(nombre)),
+            ("ruta", Json::s(ruta)),
+            ("lee", Json::Arr(lee.iter().map(|x| Json::s(*x)).collect())),
+        ])
+    }
+
+    /// Lo medido el 2026-09-28: una base standard creada en una rama escribe siete
+    /// cosas, y proponer sus datasets las arrastra todas —y nada más—.
+    #[test]
+    fn los_datasets_de_una_base_nueva_arrastran_lo_que_necesitan() {
+        let cs = vec![
+            cambio("ConduitPolicy:std", "conduits.yaml", &[]),
+            cambio(
+                "Dataset:std.ventas.pedidos",
+                "packages/std/ventas/datasets/p.yaml",
+                &["Table:pg.ventas.pedidos"],
+            ),
+            cambio("Package:pg", "packages/pg/package.yaml", &[]),
+            cambio("Package:std", "packages/std/package.yaml", &[]),
+            cambio("Schema:pg.ventas", "packages/pg/ventas/schema.yaml", &[]),
+            cambio("Schema:std.ventas", "packages/std/ventas/schema.yaml", &[]),
+            cambio(
+                "Table:pg.ventas.pedidos",
+                "packages/pg/ventas/tables/p.yaml",
+                &[],
+            ),
+            // de otra base de la rama: no va
+            cambio("Dataset:otra.x", "packages/otra/datasets/x.yaml", &[]),
+            cambio("Package:otra", "packages/otra/package.yaml", &[]),
+        ];
+        let mut llevo = vec!["Dataset:std.ventas.pedidos".to_string()];
+        let mut porque = std::collections::BTreeMap::new();
+        loop {
+            let nuevos = super::lo_que_arrastra(&cs, &llevo);
+            if nuevos.is_empty() {
+                break;
+            }
+            for (i, m) in nuevos {
+                llevo.push(i.clone());
+                porque.insert(i, m);
+            }
+        }
+        llevo.sort();
+        assert_eq!(
+            llevo,
+            [
+                "ConduitPolicy:std",
+                "Dataset:std.ventas.pedidos",
+                "Package:pg",
+                "Package:std",
+                "Schema:pg.ventas",
+                "Schema:std.ventas",
+                "Table:pg.ventas.pedidos"
+            ]
+        );
+        assert_eq!(
+            porque["Table:pg.ventas.pedidos"],
+            "lo lee `std.ventas.pedidos`"
+        );
+        assert_eq!(
+            porque["Schema:std.ventas"],
+            "el schema de `std.ventas.pedidos`"
+        );
+        assert_eq!(
+            porque["ConduitPolicy:std"],
+            "el conducto de la copia `std.ventas.pedidos`"
+        );
+    }
+
+    #[test]
+    fn un_diagnostico_nombra_el_puntero_y_el_schema_suelto() {
+        let t = cambio("Table:pg.ventas.pedidos", "x", &[]);
+        let s = cambio("Schema:std.ventas", "y", &[]);
+        assert!(super::nombra("from.table: pg.ventas.pedidos", &t));
+        assert!(super::nombra("pg.ventas.pedidos", &t));
+        assert!(super::nombra("ventas", &s));
+        assert!(!super::nombra("ventas", &t));
+        assert!(!super::nombra("otra.ventas.x", &t));
+    }
+
     #[test]
     fn quien_fusiona_segun_la_politica() {
         use super::quien_fusiona;
