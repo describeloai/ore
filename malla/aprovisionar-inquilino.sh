@@ -795,6 +795,58 @@ correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
   --role=roles/secretmanager.secretAccessor \
   && hecho "\`ore-cofre-$NOMBRE\` puede leer la base del cofre"
 
+# ── ⭐⭐ Y LA BASE DE ESTE COFRE, CON UN LOGIN SUYO (0047 A7a.2) ─────────────
+#
+# `cofre-url` es UN login para los tres custodios, y con el cada uno lee el
+# censo y los secretos de todos (0047 M4). El arreglo es que cada custodio
+# entre con el papel de su celda (`iam.dar_papel_de_celda`, 040) y que la base
+# sepa de que organizacion es. Esto lo da y guarda su URL; la malla la usara en
+# la A7a.3, y la seguridad por fila llegara en la A7a.4.
+#
+# ⛔⛔ EL NOMBRE NO LLEVA `-cofre-` DETRAS DEL INQUILINO, a proposito. El
+#   custodio guarda los secretos de la gente como `t-<inq>-cofre-<nombre>`
+#   (`almacen.rs`) y su cuenta es admin de ese prefijo: `t-<inq>-cofre-base`
+#   seria el secreto que cualquiera con `secreto:emitir` crea llamandolo
+#   `base` — y con `resolver`, la credencial de la base en la mano de quien lo
+#   emitio. Fuera de ese prefijo, y con un permiso de LEER, sin administrar.
+#
+# ⚠️ Se da el papel SOLO si el secreto no tiene todavia una version viva:
+#   darlo otra vez ROTA la clave, y el custodio que use la vieja se queda
+#   fuera. Si una pasada se corta entre dar el papel y guardar la URL, la
+#   siguiente lo da otra vez —rota una clave que nadie usaba— y la guarda.
+BASE_COFRE="$NS-base-del-cofre"
+if [ -n "$SECO" ]; then
+  haria "dar el papel de la celda \`$NOMBRE\` y guardar su URL en $BASE_COFRE"
+elif [ -n "$("$GCLOUD" secrets versions list "$BASE_COFRE" --filter=state:enabled --limit=1 --format='value(name)' 2>/dev/null)" ]; then
+  ya "la base de este cofre, con su login ($BASE_COFRE)"
+else
+  DAR="select iam.dar_papel_de_celda('$NOMBRE')"
+  if [ -n "${DENTRO:-}" ]; then
+    PAPEL=$(psql "$(cat /puesto/iam-url)" -tAc "$DAR" 2>/dev/null | tr -d ' \r\n')
+  else
+    PAPEL=$(kubectl exec -n identidad idp-db-0 -- psql -U keycloak -d iam -tAc "$DAR" 2>/dev/null | tr -d ' \r\n')
+  fi
+  # ⚠️ Sin la 040 aplicada la funcion no existe: se avisa y la pasada siguiente
+  #   lo intenta, sin tumbar el resto de la convergencia de este inquilino.
+  if [ "${PAPEL%%:*}" != "cofre_$(printf %s "$NOMBRE" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '_')" ]; then
+    echo "  ⚠ no se pudo dar el papel de la celda \`$NOMBRE\` (¿esta aplicada la 040?): la pasada siguiente"
+  else
+    "$GCLOUD" secrets create "$BASE_COFRE" --replication-policy=user-managed --locations="$LUGAR" >/dev/null 2>&1 || true
+    # ⛔ Por FICHERO, como el testigo de la forja: ni `argv` ni la salida.
+    printf 'postgres://%s@idp-db.identidad.svc.cluster.local:5432/iam' "$PAPEL" > "$TMP/b"
+    "$GCLOUD" secrets versions add "$BASE_COFRE" --data-file="$(ruta "$TMP/b")" >/dev/null \
+      && hecho "el login de la celda, guardado en $BASE_COFRE (y la clave, en ningun otro sitio)"
+    rm -f "$TMP/b"
+  fi
+  unset PAPEL DAR
+fi
+if [ -z "$SECO" ] && "$GCLOUD" secrets describe "$BASE_COFRE" --format="value(name)" >/dev/null 2>&1; then
+  correr "$GCLOUD" secrets add-iam-policy-binding "$BASE_COFRE" \
+    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`ore-cofre-$NOMBRE\` puede leer su base, y nadie de fuera del inquilino"
+fi
+
 # ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
 #
 # El secreto se crea VACIO aqui; la version la añade la forja del inquilino al

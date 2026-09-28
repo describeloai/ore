@@ -696,4 +696,40 @@ grep -q '"estado_medido":{' "$TMP/r.json" && grep -q '"recibido_en":"' "$TMP/r.j
   || falla "13 · GET /celdas no devuelve el estado medido entero: $(cat "$TMP/r.json")"
 dice "13 · el estado: solo el agente de la organizacion; el contrato se exige; una fila que se sobreescribe; huella al empezar; GET /celdas lo dice"
 
+# ── 14 · el papel de cada celda (040, 0047 A7a.1) ──────────────────────────
+# El custodio de una celda entra con un login suyo, y la base sabe de que
+# organizacion es. Lo da UNA funcion, solo al aprovisionador, y deja huella.
+# ⚠️ Los papeles son del servidor: `cofre_acme` sobrevive al `drop database`
+#   de la vuelta anterior, y la segunda vuelta lo rota en vez de crearlo.
+dar_papel() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.dar_papel_de_celda('$1')" 2>/dev/null | tr -d ' \n'; }
+P1=$(dar_papel acme)
+[ "${P1%%:*}" = "cofre_acme" ] || falla "14 · el aprovisionador no obtuvo el papel de \`acme\`"
+C1="${P1#*:}"
+[ "${#C1}" = "64" ] || falla "14 · la clave no tiene 64 caracteres"
+URL_COFRE="postgres://cofre_acme:$C1@$SERVIDOR/iam_prueba"
+[ "$(psql "$URL_COFRE" -qtAc "select iam.mi_organizacion()" | tr -d ' ')" = "$ORG" ] \
+  || falla "14 · el papel de \`acme\` no sabe que es de su organizacion"
+psql "$URL_COFRE" -qtAc "select count(*) from iam.potestades_de_persona" >/dev/null 2>&1 \
+  || falla "14 · el papel de la celda no tiene lo de \`ore_cofre\`"
+[ -z "$(psql "$URL_APP" -qtAc "select iam.mi_organizacion()" | tr -d ' ')" ] \
+  || falla "14 · ⛔ UN LOGIN SIN CELDA TIENE ORGANIZACION"
+if psql "$URL_APP" -qtAc "select iam.dar_papel_de_celda('acme')" >/dev/null 2>&1; then
+  falla "14 · ⛔ \`ore-iam\` DIO EL PAPEL DE UNA CELDA: eso es solo del aprovisionador"
+fi
+[ -z "$(dar_papel no-existe)" ] || falla "14 · ⛔ SE DIO EL PAPEL DE UNA CELDA QUE NO EXISTE"
+# Otra vez: rota. La clave vieja deja de entrar y la nueva entra.
+P2=$(dar_papel acme)
+[ "${P2%%:*}" = "cofre_acme" ] && [ "${P2#*:}" != "$C1" ] || falla "14 · la segunda vez no roto la clave"
+if psql "$URL_COFRE" -qtAc "select 1" >/dev/null 2>&1; then
+  falla "14 · ⛔ LA CLAVE VIEJA SIGUE ENTRANDO DESPUES DE ROTAR"
+fi
+psql "postgres://cofre_acme:${P2#*:}@$SERVIDOR/iam_prueba" -qtAc "select 1" >/dev/null 2>&1 \
+  || falla "14 · la clave nueva no entra"
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:papel-de-base'")" = "2" ] \
+  || falla "14 · dar el papel no dejo una huella por vez"
+if psql "$URL" -qtAc "select detalle::text from iam.huella where operacion = 'celda:papel-de-base'" | grep -q "${P2#*:}"; then
+  falla "14 · ⛔ LA CLAVE ESTA EN LA HUELLA"
+fi
+dice "14 · cada celda, su login: solo el aprovisionador lo da, sabe su organizacion, rota, y la huella no lleva la clave"
+
 echo "✓ los cuatro verbos, sus dos negativas, el rodeo, los dos del aprovisionador, los de la cuenta, el perfil, y el estado que informa el agente."
