@@ -529,6 +529,24 @@ TOTAL=$(psql "$URL" -qtAc "select count(*) from iam.huella")
 [ "${TOTAL:-0}" -ge "$MIRO" ] || falla "9 · la cuenta de huellas no cuadra"
 dice "9 · $TOTAL huellas, $MIRO de ellas por MIRAR"
 
+# ── 9b · y la huella no se edita (039) ─────────────────────────────────────
+# La `008` lo prometia y la `020` lo deshizo con un `grant … on all tables`
+# (0047 M6). Se prueba en las dos capas: el usuario de la aplicacion no tiene el
+# permiso, y ni el superusuario —que se salta los `grant`— pasa el trigger.
+for SQL in "update iam.huella set operacion = operacion" \
+           "delete from iam.huella" \
+           "truncate iam.huella"; do
+  if psql "$URL_APP" -qtAc "$SQL" >/dev/null 2>&1; then
+    falla "9b · ⛔ EL USUARIO DE \`ore-iam\` EDITO LA HUELLA: $SQL"
+  fi
+  if psql "$URL" -qtAc "$SQL" >/dev/null 2>&1; then
+    falla "9b · ⛔ EL SUPERUSUARIO EDITO LA HUELLA (el trigger de la 039 no esta): $SQL"
+  fi
+done
+[ "$(psql "$URL" -qtAc "select count(*) from iam.huella")" -ge "$TOTAL" ] \
+  || falla "9b · la huella perdio filas"
+dice "9b · la huella no se edita, ni se borra, ni se vacia: ni la aplicacion ni el superusuario"
+
 # ── 10 · el aprovisionador ──────────────────────────────────────────────────
 # La 0025 E5: un sujeto de MAQUINA con `rubix_tipo=aprovisionador`. Dos verbos
 # y ninguno mas; y ninguna persona hace esos dos.
