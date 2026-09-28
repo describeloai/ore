@@ -2748,13 +2748,31 @@ pub fn sin_credencial(url: &str) -> Result<(), String> {
             return Err(motivo.into());
         }
     }
-    let bajo = url.to_ascii_lowercase();
-    for pista in ["password=", "passwd=", "pwd=", "secret=", "token="] {
-        if bajo.contains(pista) {
+    // ⭐ 0046 F0 · Un parámetro de la consulta cuyo NOMBRE parece una
+    //   credencial, con la regla con la que `ore source add` la tapa al
+    //   informar (`fuente.rs::sensible`), más `sig` (la SAS de Azure). Antes se
+    //   buscaba `secret=` y `token=` a la letra: `secret_access_key=` de una URL
+    //   de S3 no lo es, y la guarda que exige el custodio no saltaba.
+    let consulta = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let consulta = consulta.split('#').next().unwrap_or("");
+    for p in consulta.split('&') {
+        if let Some((k, v)) = p.split_once('=')
+            && !v.is_empty()
+            && parametro_de_credencial(k)
+        {
             return Err(motivo.into());
         }
     }
     Ok(())
+}
+
+/// El nombre de un parámetro que lleva una credencial.
+fn parametro_de_credencial(k: &str) -> bool {
+    let k = k.to_ascii_lowercase();
+    ["pass", "pwd", "secret", "token", "key", "credential"]
+        .iter()
+        .any(|s| k.contains(s))
+        || k == "sig"
 }
 
 // ── Utilidades ──────────────────────────────────────────────────────────────
@@ -3082,6 +3100,21 @@ mod pruebas {
 
     /// Las que no la traen: la credencial la presta la nube (BigQuery por
     /// Workload Identity) o no hace falta. Éstas nunca dependieron del custodio.
+    #[test]
+    fn las_claves_de_un_almacen_de_objetos_son_credencial() {
+        // S3 con sus claves (0046 F0): antes pasaba por «sin credencial».
+        assert!(
+            sin_credencial("s3://b/p?region=eu-north-1&access_key_id=AKIA&secret_access_key=x/y+z")
+                .is_err()
+        );
+        assert!(sin_credencial("s3://b/p?aws_session_token=abc").is_err());
+        // La SAS de Azure.
+        assert!(sin_credencial("https://c.blob.core.windows.net/x?sv=2022&sig=abc").is_err());
+        // Un parámetro inocente, o uno vacío, no lo es.
+        assert!(sin_credencial("s3://b/p?region=eu-north-1").is_ok());
+        assert!(sin_credencial("s3://b/p?secret_access_key=").is_ok());
+    }
+
     #[test]
     fn una_url_sin_credencial_pasa() {
         assert!(sin_credencial("bigquery://mi-proyecto/ventas").is_ok());

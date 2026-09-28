@@ -310,6 +310,9 @@ spec:
               #   sigue viendo pendiente. ore-serve lo lee en `GET /fuentes/{n}/estado`.
               # ⚠️ El log se limpia de `usuario:clave@` antes de escribirlo: el
               #   árbol lo lee cualquiera del inquilino, el log del pod no.
+              #   Y de todo parámetro de consulta que parezca una credencial
+              #   (0046 F0): las claves de un almacén de objetos van en la
+              #   consulta (`secret_access_key=`, `sig=`), no en `usuario:clave@`.
               LOG=/trabajo/catalogo.log
               FALLO=".fallos/$FUENTE.catalogo.txt"
               if ! ore source catalog "$FUENTE" --out "packages/$FUENTE/discover.catalog.json" > "$LOG" 2>&1; then
@@ -319,7 +322,7 @@ spec:
                 git reset -q --hard; git clean -fdq
                 if grep -qx "job: $JOB" "$FALLO" 2>/dev/null; then echo "· el diagnostico de este Job ya esta en el arbol"; exit 1; fi
                 mkdir -p .fallos
-                { echo "job: $JOB"; echo "fin: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "---"; tail -n 60 "$LOG" | sed -E 's#(://[^:/@ ]+):[^@ ]+@#\1:***@#g'; } > "$FALLO"
+                { echo "job: $JOB"; echo "fin: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "---"; tail -n 60 "$LOG" | sed -E -e 's#(://[^:/@ ]+):[^@ ]+@#\1:***@#g' -e 's#([?&][^=&?[:space:]]*([Pp][Aa][Ss][Ss]|[Pp][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Kk][Ee][Yy]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Ss][Ii][Gg])[^=&?[:space:]]*=)[^&[:space:]"]+#\1***#g'; } > "$FALLO"
                 git add "$FALLO"
                 git -c user.name=catalogo -c user.email=catalogo@invalido commit -q -m "Catalogo de \`$FUENTE\`: fallo"
                 git push -q origin HEAD:main || { git pull -q --rebase origin main && git push -q origin HEAD:main; } || echo "⚠ no se pudo dejar el diagnostico en el arbol"

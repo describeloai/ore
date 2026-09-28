@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** propuesto (2026-09-28); mercado investigado, nada medido contra un origen todavía ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -121,8 +121,8 @@ la alternativa *File Collection*. Mi opinión, para decidir:
   cosas distintas llamadas igual en el mismo producto se confunden en la interfaz, en la API y en la
   spec.
 
-Por eso recomiendo **`MediaCollection`**, con «Media collection» y «Virtual media collection» en la
-consola. **Pendiente de la decisión final del usuario.**
+Por eso **`MediaCollection`**, con «Media collection» y «Virtual media collection» en la consola
+(decidido por el usuario el 2026-09-28).
 
 ### 3 · Los semiestructurados son tablas: el `Dataset` de siempre
 
@@ -174,11 +174,31 @@ base tiene que permitirlas, y lo hace porque la colección está tipada.
 - **No se lee un fichero desde una vista con una función** (`read_parquet('s3://…')`): sigue siendo
   `OOS2038`. Se lee por su `ObjectTable`, que es lo gobernado.
 
+### F0 · lo medido (2026-09-28)
+
+- **La guarda del alta** (`rutas.rs::sin_credencial`) buscaba `secret=` y `token=` a la letra. Con
+  `s3://…?access_key_id=…&secret_access_key=…` decía «sin credencial»: sin custodio no se negaba
+  (la clave acababa en el `.env.local` de un clon que se tira), y si el custodio fallaba no salía el
+  502 «credencial NO guardada». Ahora mira el **nombre** de cada parámetro de la consulta con la
+  regla con la que la CLI ya los tapa (`pass`, `pwd`, `secret`, `token`, `key`, `credential`), más
+  `sig` (la SAS de Azure).
+- **El log del Job de catálogo** que se deja en `.fallos/` sólo tachaba `usuario:clave@`. Medido con
+  una URL de S3: `secret_access_key` salía entera. Ahora tapa también esos parámetros; probado con el
+  `sed` de GNU y con el de busybox, que es el de la imagen `ore-drivers`.
+- `ore` no imprime nunca la URL (va al driver por stdin, y el informe de `source add` la tapa); el
+  riesgo era lo que un driver dijera al fallar.
+
+**El flujo del cliente.** Un usuario IAM con claves de acceso y una política de sólo lectura sobre
+el bucket es el camino más corto, y el que se ha usado para medir. No es el que AWS recomienda para
+un tercero: Snowflake y Databricks piden al cliente **un rol IAM** que confía en su identidad, con un
+*external ID*, sin claves que rotar. Aquí sería federar la identidad de GCP del driver con ese rol.
+Se mide en F1; las claves quedan como la vía sencilla.
+
 ## La iteración (por pasos; cada uno se mide antes de escribirse)
 
 | paso | qué | criterio de hecho |
 |---|---|---|
-| **F0 · cerrar las fugas** | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
+| **F0 · cerrar las fugas** ✅ | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
 | **F1 · medir contra un bucket real** | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
 | **F2 · la spec** (`C:\oos`, v1alpha16) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
 | **F3 · el catálogo de objetos** | `ore-read-s3 catalogo`: el `ObjectTable` de cada prefijo con su listado, y `ore source induce` lo escribe en la fuente (0045) | una fuente S3 real catalogada; el `ObjectTable` en el árbol |
