@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -194,12 +194,77 @@ un tercero: Snowflake y Databricks piden al cliente **un rol IAM** que confía e
 *external ID*, sin claves que rotar. Aquí sería federar la identidad de GCP del driver con ese rol.
 Se mide en F1; las claves quedan como la vía sencilla.
 
+### F1 · lo medido (2026-09-28, contra un bucket real)
+
+`s3://amazon-demo-bucket12313121122` (`eu-north-1`), con un usuario IAM de sólo lectura y boto3
+desde fuera de AWS (España → Estocolmo). Dentro: el dataset público de Olist (9 CSV, 61 MB el
+mayor), su `archive.zip` (44,7 MB), y un kit hecho a propósito: Parquet con partición Hive, CSV,
+JSONL, PDF de texto y escaneado, imágenes. 26 objetos, 171 MB. Scripts `f1_barrido.py`,
+`f1_medida.py` y `f1_kit.py` en el scratchpad de la sesión.
+
+**Permisos: el primer fallo es el de cualquier cliente.** La política inicial dejaba leer la
+configuración del bucket y **no listar** (`s3:ListBucket` va sobre el ARN del bucket, no sobre
+`bucket/*`). Sin listar, S3 contesta 403 **también** a una clave que no existe, así que ni siquiera
+se sabe si `GetObject` está concedido. ⇒ El `check` de `ore-read-s3` tiene que decir **qué acción
+falta y sobre qué ARN**, como el de BigQuery dice qué rol. La política mínima que funciona:
+`ListBucket` (+ `ListBucketVersions`, `GetBucketLocation`) sobre `arn:aws:s3:::<bucket>` y
+`GetObject` (+ `GetObjectVersion`) sobre `arn:aws:s3:::<bucket>/*`.
+
+| qué | medido |
+|---|---|
+| latencia | ~1,3 s la primera llamada (TLS), **~95–110 ms** las siguientes |
+| listado | 26 objetos en una página, ~1,1 s en frío; `ListObjectsV2` pagina de 1000 en 1000 |
+| catalogar todo | **74 llamadas y 668 KB leídos para 171 MB** (0,4 %): HEAD + 16 bytes por objeto, y lo que cada formato necesita |
+| lectura por rangos | funciona, sufijo incluido (`bytes=-64`) |
+| el índice de un zip | **940 bytes de 44,7 MB, 3 lecturas, 359 ms**: 9 CSV y sus tamaños, sin descargarlo |
+| Parquet | esquema exacto (`decimal128(12,2)`, `timestamp[us, tz=UTC]`, nulos) y filas del pie. Los del kit (12 KB) caben en una lectura: **el ahorro con un Parquet grande no está medido** |
+| CSV | tipos deducidos de los primeros 64 KB en ~100–200 ms por fichero |
+| JSONL | la unión de claves por fichero: `usuario` aparece el segundo día |
+| PDF | 3 con texto, 1 escaneado (0 caracteres): se distingue al catalogar |
+| imágenes | formato y píxeles; el tipo de S3 cuadra |
+
+**Lo que cambia el diseño:**
+
+1. **`Content-Type` no es de fiar.** La consola de AWS subió los Parquet y los JSONL como
+   `application/x-www-form-urlencoded`. El tipo se decide por **los bytes** (`PAR1`, `%PDF`, `\x89PNG`,
+   `\xff\xd8\xff`, `PK\x03\x04`) y la extensión; el de S3 es una pista.
+2. **El ETag no identifica el contenido**: un fichero subido por partes (más de ~16 MB desde la
+   consola; 3 de 26 aquí) lleva `"<md5 de md5s>-N"`, que depende de cómo se partió. Todos los
+   objetos traen, en cambio, **`ChecksumCRC64NVME` de tipo `FULL_OBJECT`** (S3 lo calcula por
+   defecto desde 2025): ése es la identidad del contenido y el testigo por objeto. Con él, los dos
+   `kit-s3.zip` (en la raíz y en una carpeta) se reconocen **el mismo** sin descargarlos.
+3. **«Un prefijo es una tabla» no aguanta un bucket real.** En `Nueva carpeta/` hay diez CSV
+   sueltos con esquemas distintos, y cada uno es una tabla. La regla que sale:
+   - un prefijo es **una** tabla si sus ficheros comparten formato y esquema, con particiones Hive
+     (`fecha=…`) como columnas: así `ventas/pedidos/fecha=*`;
+   - si no, **cada fichero es una tabla**;
+   - lo no tabular (PDF, imágenes) va a colecciones, por tipo.
+4. **Deducir tipos de una muestra miente en los códigos.** `customer_zip_code_prefix` sale
+   `Integer`, y un código postal brasileño empieza por cero (`01037`): como entero lo pierde. Un
+   número con ceros a la izquierda en la muestra, o una columna `*_zip*`/`*_code*`, queda `String`,
+   y el tipo deducido es una **propuesta que se contesta** (la decisión `tipo/*` de siempre), no un
+   hecho.
+5. **El BOM**: `product_category_name_translation.csv` empieza por `\ufeff` y su primera columna
+   sale `\ufeffproduct_category_name`. Se quita al leer.
+6. **Nombres reales**: una carpeta `Nueva carpeta` (espacio), `Foto Portada 2026.JPG`
+   (mayúsculas), `bloc anucios.txt`. El `object` guarda la clave tal cual; el nombre del puntero es
+   su identificador (0045 P1.5), y la colisión, `_2`.
+7. **Un zip es un contenedor**, y los clientes los dejan en el bucket (aquí, el mismo dataset
+   suelto y comprimido). Su índice se lee barato; **expandirlo es una transformación**, no el
+   catálogo. Queda anotado para F3–F5.
+8. **Sin versionado** (el bucket nunca lo tuvo): un borrado no deja rastro consultable. Lo único que
+   hay es comparar dos listados. Es el punto de partida de la iteración de borrados.
+
+**Sin medir en F1:** la federación sin claves (el rol IAM del cliente con *external ID* confiando en
+la identidad de GCP del driver), eventos y S3 Metadata (el bucket no los tiene), un Parquet grande,
+y un listado de miles de objetos.
+
 ## La iteración (por pasos; cada uno se mide antes de escribirse)
 
 | paso | qué | criterio de hecho |
 |---|---|---|
 | **F0 · cerrar las fugas** ✅ | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
-| **F1 · medir contra un bucket real** | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
+| **F1 · medir contra un bucket real** ✅ (sin federación) | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
 | **F2 · la spec** (`C:\oos`, v1alpha16) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
 | **F3 · el catálogo de objetos** | `ore-read-s3 catalogo`: el `ObjectTable` de cada prefijo con su listado, y `ore source induce` lo escribe en la fuente (0045) | una fuente S3 real catalogada; el `ObjectTable` en el árbol |
 | **F4 · lo semiestructurado como tabla** | `Dataset` sobre un `ObjectTable` de Parquet, CSV y JSONL: esquema deducido y congelado, columna rescatada, `leer` en Arrow | una base standard de S3 con sus datasets copiados |
