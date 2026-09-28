@@ -124,6 +124,61 @@ pub(crate) fn de_la_forja(e: Fallo) -> Respuesta {
 }
 
 /// El sujeto que propuso, del cuerpo de la PR: la primera línea `sub: …`.
+/// **Quién fusiona, según la política de `main`** (P1.3, `politica.rs`). Una
+/// sola regla para la propuesta de rama entera, la de alcance y el detalle que
+/// la enseña antes de pulsar. `aprobada_por`: las aprobaciones que valen —de
+/// otra persona que la autora y, con alcance, sobre lo que la PR lleva hoy—.
+///
+/// - **Libre**: fusiona cualquiera, la autora también, con revisión o sin
+///   ella. En `main` libre ya se escribe sin propuesta: exigir aquí dos
+///   personas no protegía nada y sólo encerraba a quien trabaja solo.
+/// - **Protegida**: la de 0030 W2, dos personas y una revisión.
+///
+/// Que la autora no apruebe lo suyo no es de aquí: vale igual en las dos
+/// (`revisar`), porque una aprobación propia no dice nada.
+fn quien_fusiona(
+    protegida: bool,
+    autor: &str,
+    quien: &str,
+    aprobada_por: &[String],
+) -> Result<(), String> {
+    if !protegida {
+        return Ok(());
+    }
+    if autor == quien {
+        return Err(
+            "`main` está protegida: quien propone no fusiona lo suyo, hace falta otra persona (0030 W2: dos personas, una revisión)"
+                .into(),
+        );
+    }
+    if aprobada_por.is_empty() {
+        return Err(format!(
+            "`main` está protegida: nadie distinto de `{autor}` ha aprobado lo que la propuesta lleva ahora"
+        ));
+    }
+    Ok(())
+}
+
+/// El mensaje del commit de merge: quién propuso, quién revisó —o que nadie— y
+/// quién fusionó. `que`: el alcance, si lo tiene (` (… de rama)`).
+fn mensaje_de_fusion(
+    n: u64,
+    autor: &str,
+    que: &str,
+    aprobada_por: &[String],
+    quien: &str,
+    titulo: &str,
+) -> String {
+    if aprobada_por.is_empty() {
+        format!("Propuesta #{n} de {autor}{que}, fusionada sin revisión por {quien}: {titulo}")
+    } else {
+        format!(
+            "Propuesta #{n} de {autor}{que}, revisada por {} y fusionada por {quien}: {titulo}",
+            aprobada_por.join(", ")
+        )
+    }
+}
+
 fn autor_de(pr: &Json) -> String {
     campo(pr, "body")
         .and_then(|b| {
@@ -1034,8 +1089,11 @@ impl Servidor {
 
     /// `GET /propuestas/{n}`: la propuesta con sus ficheros, el diff de líneas
     /// (la forja), el diff de significado (`ore diff main rama`), los
-    /// diagnósticos de la rama y las revisiones.
-    pub(crate) fn propuesta(&self, n: u64) -> Respuesta {
+    /// diagnósticos de la rama y las revisiones. Y `fusion: {puede, porque}`:
+    /// si QUIEN MIRA puede fusionarla según la política de `main`, dicho antes
+    /// de pulsar con la misma regla que `fusionar` (`quien_fusiona`). Sólo las
+    /// personas: conflictos y diagnósticos van aparte, en sus campos.
+    pub(crate) fn propuesta(&self, sujeto: &Identidad, n: u64) -> Respuesta {
         let api = match self.api() {
             Ok(a) => a,
             Err(r) => return r,
@@ -1111,7 +1169,37 @@ impl Servidor {
                 Json::Arr(faltan.iter().map(Json::s).collect()),
             );
         }
+        let fusion = if estado_de(&pr) != "abierta" {
+            Err(format!("la propuesta está {}", estado_de(&pr)))
+        } else {
+            let autor = autor_de(&pr);
+            let aprobada_por: Vec<String> = revisiones
+                .iter()
+                .filter(|r| campo(r, "veredicto").as_deref() == Some("aprueba"))
+                .filter(|r| booleano(r, "vigente") != Some(false))
+                .filter_map(|r| campo(r, "por"))
+                .filter(|p| *p != autor)
+                .collect();
+            self.politica_de_main(&base)
+                .map_err(|e| format!("no se pudo leer la política de `{base}`: {e}"))
+                .and_then(|p| {
+                    quien_fusiona(p.protegida, &autor, &sujeto.persona, &aprobada_por)
+                        .map(|()| aprobada_por.is_empty())
+                })
+        };
         if let Json::Obj(m) = &mut ficha {
+            m.insert(
+                "fusion".into(),
+                match fusion {
+                    Ok(sin_revision) => Json::obj([
+                        ("puede", Json::Bool(true)),
+                        ("sinRevision", Json::Bool(sin_revision)),
+                    ]),
+                    Err(porque) => {
+                        Json::obj([("puede", Json::Bool(false)), ("porque", Json::s(porque))])
+                    }
+                },
+            );
             m.insert("ficheros".into(), Json::Arr(ficheros));
             m.insert("diff".into(), Json::s(diff));
             m.insert("semantico".into(), semantico);
@@ -1233,14 +1321,14 @@ impl Servidor {
             return Respuesta::error(409, format!("la propuesta #{n} está {}", estado_de(&pr)));
         }
         let autor = autor_de(&pr);
-        if autor == sujeto.persona {
-            return Respuesta::error(
-                422,
-                "quien propone no fusiona lo suyo: hace falta otra persona (0030 W2: dos personas, una revisión)",
-            );
-        }
+        // ⛔ La política de `main`, y si no se puede leer no se fusiona: tomarla
+        //   por libre sería saltarse una protección que quizá está.
+        let protegida = match self.politica_de_main(&base_de(&pr)) {
+            Ok(p) => p.protegida,
+            Err(e) => return de_la_forja(e),
+        };
         if let Some(alcance) = Alcance::de(&pr) {
-            return self.fusionar_alcance(sujeto, n, &pr, &alcance);
+            return self.fusionar_alcance(sujeto, n, &pr, &alcance, protegida);
         }
         let aprobada_por: Vec<String> = api
             .revisiones(n)
@@ -1251,13 +1339,8 @@ impl Servidor {
             .filter_map(|r| campo(&r, "por"))
             .filter(|p| *p != autor)
             .collect();
-        if aprobada_por.is_empty() {
-            return Respuesta::error(
-                422,
-                format!(
-                    "la propuesta #{n} no tiene revisión: nadie distinto de `{autor}` la ha aprobado"
-                ),
-            );
+        if let Err(m) = quien_fusiona(protegida, &autor, &sujeto.persona, &aprobada_por) {
+            return Respuesta::error(422, m);
         }
         if !booleano(&pr, "mergeable").unwrap_or(true) {
             return Respuesta::error(
@@ -1288,11 +1371,13 @@ impl Servidor {
                 ]),
             };
         }
-        let mensaje = format!(
-            "Propuesta #{n} de {autor}, revisada por {} y fusionada por {}: {}",
-            aprobada_por.join(", "),
-            sujeto.persona,
-            campo(&pr, "title").unwrap_or_default()
+        let mensaje = mensaje_de_fusion(
+            n,
+            &autor,
+            "",
+            &aprobada_por,
+            &sujeto.persona,
+            &campo(&pr, "title").unwrap_or_default(),
         );
         match api.fusionar(n, &mensaje) {
             Ok(()) => Respuesta::ok(Json::obj([
@@ -1303,6 +1388,7 @@ impl Servidor {
                     "revisada_por",
                     Json::Arr(aprobada_por.iter().map(Json::s).collect()),
                 ),
+                ("sinRevision", Json::Bool(aprobada_por.is_empty())),
                 ("rama", Json::s(&rama)),
             ])),
             Err(e) => de_la_forja(e),
@@ -1325,6 +1411,7 @@ impl Servidor {
         n: u64,
         pr: &Json,
         alcance: &Alcance,
+        protegida: bool,
     ) -> Respuesta {
         let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
             return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
@@ -1378,13 +1465,8 @@ impl Servidor {
             .filter_map(|r| campo(&r, "por"))
             .filter(|p| *p != autor)
             .collect();
-        if aprobada_por.is_empty() {
-            return Respuesta::error(
-                422,
-                format!(
-                    "la propuesta #{n} no tiene revisión sobre lo que lleva ahora: nadie distinto de `{autor}` la ha aprobado"
-                ),
-            );
+        if let Err(m) = quien_fusiona(protegida, &autor, &sujeto.persona, &aprobada_por) {
+            return Respuesta::error(422, m);
         }
         match self.diagnosticos_de(nueva.clon.ruta()) {
             Ok(ds) if !ds.is_empty() => {
@@ -1412,10 +1494,13 @@ impl Servidor {
         if let Err(e) = forja.empujar_a(nueva.clon.ruta(), &derivada) {
             return de_git(e);
         }
-        let mensaje = format!(
-            "Propuesta #{n} de {autor} ({alcance} de {rama}), revisada por {} y fusionada por {}: {titulo}",
-            aprobada_por.join(", "),
-            sujeto.persona,
+        let mensaje = mensaje_de_fusion(
+            n,
+            &autor,
+            &format!(" ({alcance} de {rama})"),
+            &aprobada_por,
+            &sujeto.persona,
+            &titulo,
         );
         if let Err(e) = api.fusionar(n, &mensaje) {
             return de_la_forja(e);
@@ -1429,6 +1514,7 @@ impl Servidor {
                 "revisada_por",
                 Json::Arr(aprobada_por.iter().map(Json::s).collect()),
             ),
+            ("sinRevision", Json::Bool(aprobada_por.is_empty())),
             ("rama", Json::s(&rama)),
             ("alcance", Json::s(&alcance)),
             ("ramaAlDia", al_dia),
@@ -1606,6 +1692,33 @@ impl Servidor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quien_fusiona_segun_la_politica() {
+        use super::quien_fusiona;
+        let nadie: Vec<String> = vec![];
+        let bea = vec!["bea".to_string()];
+        // libre: la autora fusiona lo suyo, sin revisión; y cualquiera
+        assert!(quien_fusiona(false, "ana", "ana", &nadie).is_ok());
+        assert!(quien_fusiona(false, "ana", "bea", &nadie).is_ok());
+        // protegida: dos personas y una revisión
+        assert!(quien_fusiona(true, "ana", "ana", &bea).is_err());
+        assert!(quien_fusiona(true, "ana", "bea", &nadie).is_err());
+        assert!(quien_fusiona(true, "ana", "bea", &bea).is_ok());
+    }
+
+    #[test]
+    fn el_merge_dice_si_hubo_revision() {
+        use super::mensaje_de_fusion;
+        assert_eq!(
+            mensaje_de_fusion(3, "ana", "", &[], "ana", "t"),
+            "Propuesta #3 de ana, fusionada sin revisión por ana: t"
+        );
+        assert_eq!(
+            mensaje_de_fusion(3, "ana", " (x de r)", &["bea".into()], "cai", "t"),
+            "Propuesta #3 de ana (x de r), revisada por bea y fusionada por cai: t"
+        );
+    }
+
     use super::*;
 
     #[test]

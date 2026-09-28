@@ -722,7 +722,7 @@ impl Servidor {
             }
             ("POST", ["propuestas"]) => self.proponer(sujeto, &p.cuerpo),
             ("GET", ["propuestas", n]) => match n.parse::<u64>() {
-                Ok(n) => self.propuesta(n),
+                Ok(n) => self.propuesta(sujeto, n),
                 Err(_) => Respuesta::error(404, format!("`{n}` no es un número de propuesta")),
             },
             ("POST", ["propuestas", n, "revisar"]) => match n.parse::<u64>() {

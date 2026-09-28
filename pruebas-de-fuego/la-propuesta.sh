@@ -46,7 +46,8 @@
 #   8g la politica de las ramas        .arbol/ramas.yaml de main: GET /ramas dice `protegida` en la de
 #                                       por defecto y solo en ella · sin fichero o roto, libre ·
 #                                       el compilador no la ve · protegida: escribir en main 423, en
-#                                       una rama si
+#                                       una rama si · libre: la autora fusiona lo suyo sin
+#                                       revision (y el merge lo dice); protegida, 0030 W2
 #   9  sin API                           un servidor con --repo (directorio) contesta 422 a /ramas y
 #                                       a X-Ore-Rama
 #
@@ -177,6 +178,13 @@ put_fichero() { # <ruta> <quien> <texto> [rama]
   curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$q" -H 'content-type: text/plain' \
     ${r:+-H "x-ore-rama: $r"} --data-binary "$texto" "$BASE/arbol/$ruta"
 }
+
+politica() { # <texto> | '' para quitarla: escrita en main a mano, como la dejaria P1.4
+  rm -rf "$TMP/pol" && git clone -q -c core.autocrlf=false "$BARE" "$TMP/pol" && mkdir -p "$TMP/pol/.arbol"
+  if [ -n "$1" ]; then printf '%s' "$1" > "$TMP/pol/.arbol/ramas.yaml"; else rm -f "$TMP/pol/.arbol/ramas.yaml"; fi
+  ( cd "$TMP/pol" && git -c core.autocrlf=false add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "politica" && git push -q origin main ) || falla "no se pudo escribir la politica"
+}
+PROTEGIDA=$'main:\n  protegida: true\n'
 
 # ── 1 ───────────────────────────────────────────────────────────────────────
 [ "$(pide GET /ramas "$ANA")" = "200" ] || falla "1 · GET /ramas: $(cuerpo)"
@@ -353,16 +361,21 @@ dice "5 · GET /propuestas/1: ficheros (dos added, +10 y +9) · diff de lineas �
 
 # ── 6 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas/1/revisar "$ANA" '{"veredicto":"aprobar"}')" = "422" ] || falla "6 · ana aprobo lo suyo: $(cuerpo)"
+# libre (sin .arbol/ramas.yaml): el detalle dice que ana puede fusionar lo suyo, sin revision (P1.3)
+[ "$(pide GET /propuestas/1 "$ANA")" = "200" ] && tiene "d['fusion']=={'puede':True,'sinRevision':True}" || falla "6 · libre, ana no puede fusionar lo suyo: $(cuerpo | head -c 300)"
+politica "$PROTEGIDA"
+[ "$(pide GET /propuestas/1 "$ANA")" = "200" ] && tiene "d['fusion']['puede'] is False and 'quien propone no fusiona' in d['fusion']['porque']" || falla "6 · protegida, el detalle no dice que ana no fusiona: $(cuerpo | head -c 300)"
 [ "$(pide POST /propuestas/1/fusionar "$ANA")" = "422" ] || falla "6 · ana fusiono lo suyo: $(cuerpo)"
 cuerpo | grep -q "quien propone no fusiona" || falla "6 · el 422 no dice por que: $(cuerpo)"
 [ "$(pide POST /propuestas/1/fusionar "$BEA")" = "422" ] || falla "6 · bea fusiono sin revision: $(cuerpo)"
-cuerpo | grep -q "no tiene revisión" || falla "6 · el 422 no dice que falta la revision: $(cuerpo)"
+cuerpo | grep -q "nadie distinto de" || falla "6 · el 422 no dice que falta la revision: $(cuerpo)"
+politica ''
 [ "$(pide POST /propuestas/1/revisar "$ANA" '{"veredicto":"comentar","texto":"lo he probado"}')" = "201" ] || falla "6 · ana no pudo comentar: $(cuerpo)"
 [ "$(pide POST /propuestas/1/revisar "$BEA" '{"veredicto":"otro"}')" = "422" ] || falla "6 · un veredicto inventado no dio 422"
 [ "$(pide POST /propuestas/1/revisar "$BEA" '{"veredicto":"aprobar","texto":"bien visto"}')" = "201" ] || falla "6 · bea no pudo aprobar: $(cuerpo)"
 tiene "d['por']=='persona:bea' and d['veredicto']=='aprueba'" || falla "6 · la revision no es de bea: $(cuerpo)"
 [ "$(pide GET /propuestas/1 "$ANA")" = "200" ] && tiene "[(r['por'],r['veredicto'],r['texto']) for r in d['revisiones']]==[('persona:ana','comenta','lo he probado'),('persona:bea','aprueba','bien visto')]" || falla "6 · las revisiones: $(cuerpo | head -c 600)"
-dice "6 · la revision es de OTRA persona: ana no aprueba ni fusiona lo suyo (422) · sin revision no se fusiona (422) · ana comenta, bea aprueba · GET las lista con quien y veredicto"
+dice "6 · la revision es de OTRA persona: ana no aprueba lo suyo (422) · libre, el detalle dice que puede fusionarlo sin revision · protegida, no fusiona lo suyo ni nadie sin revision (422, y el detalle lo dice) · ana comenta, bea aprueba · GET las lista con quien y veredicto"
 
 # ── 7 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas/1/fusionar "$BEA")" = "200" ] || falla "7 · fusionar: $(cuerpo)"
@@ -380,7 +393,9 @@ FR=$(printf '%s' "$NUEVA" | sed 's/name: espanoles/name: franceses/; s/pais: ES/
 [ "$(put_fichero packages/hr/views/franceses.yaml "$BEA" "$FR" bea/franceses)" = "201" ] || falla "8 · el fichero de bea en su rama: $(cuerpo)"
 [ "$(pide POST /propuestas "$BEA" '{"rama":"bea/franceses"}')" = "201" ] && tiene "d['numero']==2 and d['autor']=='persona:bea' and d['titulo'].startswith('Propuesta de persona:bea')" || falla "8 · la propuesta de bea: $(cuerpo)"
 [ "$(pide DELETE /ramas/bea/franceses "$BEA")" = "409" ] || falla "8 · retirar una rama con propuesta abierta no dio 409: $(cuerpo)"
+politica "$PROTEGIDA"
 [ "$(pide POST /propuestas/2/fusionar "$BEA")" = "422" ] || falla "8 · bea fusiono lo suyo"
+politica ''
 [ "$(pide POST /propuestas/2/revisar "$ANA" '{"veredicto":"aprobar"}')" = "201" ] || falla "8 · ana no pudo aprobar: $(cuerpo)"
 [ "$(pide POST /propuestas/2/fusionar "$ANA")" = "200" ] && tiene "d['por']=='persona:ana' and d['revisada_por']==['persona:ana']" || falla "8 · ana no pudo fusionar: $(cuerpo)"
 [ "$(pide GET /arbol/packages/hr/views/franceses.yaml "$ANA")" = "200" ] || falla "8 · main no tiene la vista de bea"
@@ -496,7 +511,9 @@ tiene "[f['ruta'] for f in d['ficheros']]==['packages/hr/pipelines/transforms/un
 [ "$(pide GET /propuestas/$N "$BEA")" = "200" ] && tiene "d['alDia'] is False and d['revisiones'][0]['vigente'] is True" || falla "8e · la propuesta no sabe que la rama cambio: $(cuerpo | head -c 700)"
 [ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "409" ] && cuerpo | grep -q 'revisarla otra vez' || falla "8e · fusionar lo que nadie ha visto no dio 409: $(cuerpo)"
 [ "$(pide GET /propuestas/$N "$BEA")" = "200" ] && tiene "d['alDia'] is True and d['revisiones'][0]['vigente'] is False" || falla "8e · la derivada no se puso al dia o la revision sigue valiendo: $(cuerpo | head -c 700)"
-[ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "422" ] && cuerpo | grep -q 'sobre lo que lleva ahora' || falla "8e · una aprobacion vieja dejo fusionar: $(cuerpo)"
+politica "$PROTEGIDA"
+[ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "422" ] && cuerpo | grep -q 'lo que la propuesta lleva ahora' || falla "8e · una aprobacion vieja dejo fusionar: $(cuerpo)"
+politica ''
 [ "$(pide POST /propuestas/$N/revisar "$BEA" '{"veredicto":"aprobar","texto":"ahora si"}')" = "201" ] || falla "8e · bea no pudo aprobar otra vez: $(cuerpo)"
 [ "$(pide POST /propuestas/$N/fusionar "$BEA")" = "200" ] || falla "8e · fusionar con alcance: $(cuerpo)"
 tiene "d['fusionada'] is True and d['alcance']=='packages/hr/pipelines' and d['rama']=='ana/mixta' and d['ramaAlDia'] is True" || falla "8e · la fusion con alcance: $(cuerpo)"
@@ -612,12 +629,7 @@ dice "8f · scope proposals por activos: solo a3 llega a main (la rama sigue con
 
 # ── 8g · la politica de las ramas: main libre o protegida (P1.1) ────────────
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · sin .arbol/ramas.yaml main no es libre: $(cuerpo)"
-politica() { # <texto> | '' para quitarla: escrita en main a mano, como la dejaria P1.4
-  rm -rf "$TMP/pol" && git clone -q "$BARE" "$TMP/pol" && mkdir -p "$TMP/pol/.arbol"
-  if [ -n "$1" ]; then printf '%s' "$1" > "$TMP/pol/.arbol/ramas.yaml"; else rm -f "$TMP/pol/.arbol/ramas.yaml"; fi
-  ( cd "$TMP/pol" && git -c core.autocrlf=false add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "politica" && git push -q origin main ) || falla "8g · no se pudo escribir la politica"
-}
-politica $'main:\n  protegida: true\n'
+politica "$PROTEGIDA"
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "all(r['protegida']==r['porDefecto'] for r in d['ramas'])" || falla "8g · protegida: main no lo dice, o lo dice otra rama: $(cuerpo)"
 ( cd "$TMP/pol" && "$ORE" validate . >/dev/null 2>&1 ) || falla "8g · el compilador vio .arbol/ramas.yaml: $(cd "$TMP/pol" && "$ORE" validate . 2>&1 | head -3)"
 # P1.2 · protegida: el arbol no se escribe en main sin rama (423, nada escrito); en una rama si
@@ -631,7 +643,14 @@ politica $'main: [roto\n'
 [ "$(pide GET /ramas "$ANA")" = "200" ] && tiene "[r for r in d['ramas'] if r['porDefecto']][0]['protegida'] is False" || falla "8g · un fichero roto no se lee libre: $(cuerpo)"
 politica ''
 put_fichero packages/hr/notas-p12.md "$ANA" 'libre otra vez' | grep -qE '^20[01]$' || falla "8g · libre otra vez, main no se escribe: $(cuerpo)"
-dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada, en una rama si · libre otra vez, main se escribe"
+# P1.3 · libre: ana propone y fusiona lo suyo sin revision; el commit de merge lo dice
+[ "$(pide POST /ramas "$ANA" '{"nombre":"sola"}')" = "201" ] || falla "8g · crear la rama: $(cuerpo)"
+put_fichero packages/hr/notas-p13.md "$ANA" 'sola' ana/sola | grep -qE '^20[01]$' || falla "8g · escribir en la rama: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/sola","titulo":"sola"}')" = "201" ] || falla "8g · proponer: $(cuerpo)"
+NS=$(num)
+[ "$(pide POST /propuestas/$NS/fusionar "$ANA")" = "200" ] && tiene "d['sinRevision'] is True and d['revisada_por']==[] and d['por']=='persona:ana'" || falla "8g · libre, ana no fusiono lo suyo: $(cuerpo)"
+git -C "$BARE" log -1 --format=%B main | grep -q "fusionada sin revisión por persona:ana" || falla "8g · el merge no dice que fue sin revision: $(git -C "$BARE" log -1 --format=%B main)"
+dice "8g · la politica de las ramas (.arbol/ramas.yaml, de main): libre sin fichero · protegida lo dice main y solo main · el compilador no la ve · un fichero roto es libre · protegida: PUT y commit en main 423 sin escribir nada, en una rama si · libre otra vez, main se escribe · libre, la autora fusiona lo suyo sin revision y el merge lo dice"
 
 # ── 9 ───────────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/dir" && cp -r "$A/." "$TMP/dir/"
