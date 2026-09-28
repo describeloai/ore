@@ -83,6 +83,7 @@ configMapGenerator:
       - migraciones/039-la-huella-no-se-edita.sql
       - migraciones/040-el-papel-de-cada-celda.sql
       - migraciones/041-cada-custodio-su-organizacion.sql
+      - migraciones/042-sin-login-compartido.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

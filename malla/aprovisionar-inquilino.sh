@@ -775,33 +775,15 @@ for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
     && hecho "\`$c\` puede leerlo, y nadie de fuera del inquilino"
 done
 
-# ── ⭐⭐ Y LA BASE DEL COFRE, que hasta el 2026-09-13 era un `Secret` a mano ──
+# ── ⭐⭐ LA BASE DE ESTE COFRE, CON UN LOGIN SUYO (0047 A7a) ─────────────────
 #
-# `cofre-url` es un secreto de PLATAFORMA —la misma base para todos los
-# cofres— y por eso no se crea aqui: existe una vez, y aqui solo se le da al
-# cofre de ESTE inquilino permiso para leerlo. Medido en
-# `medida-el-acoplamiento-del-inquilino.py`: el `Secret` lo habia puesto una
-# mano antes de que este guion existiera, y un inquilino nuevo arrancaba con
-# el cofre en `CrashLoop` hasta que alguien se acordara.
-"$GCLOUD" secrets describe cofre-url --format="value(name)" >/dev/null 2>&1 \
-  || falla "no existe el secreto de plataforma \`cofre-url\` en el almacen.
-     Es UNO para todos los inquilinos y lo crea el operador una vez, desde la
-     base que el cofre ya usa:
-       gcloud secrets create cofre-url --replication-policy=user-managed --locations=$LUGAR
-       printf 'postgres://cofre_app:...@idp-db.identidad.svc.cluster.local:5432/iam' \
-         | gcloud secrets versions add cofre-url --data-file=-"
-correr "$GCLOUD" secrets add-iam-policy-binding cofre-url \
-  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/secretmanager.secretAccessor \
-  && hecho "\`ore-cofre-$NOMBRE\` puede leer la base del cofre"
-
-# ── ⭐⭐ Y LA BASE DE ESTE COFRE, CON UN LOGIN SUYO (0047 A7a.2) ─────────────
-#
-# `cofre-url` es UN login para los tres custodios, y con el cada uno lee el
-# censo y los secretos de todos (0047 M4). El arreglo es que cada custodio
-# entre con el papel de su celda (`iam.dar_papel_de_celda`, 040) y que la base
-# sepa de que organizacion es. Esto lo da y guarda su URL; la malla la usara en
-# la A7a.3, y la seguridad por fila llegara en la A7a.4.
+# ✏️ 2026-09-28 · Aqui habia otro paso: dar al cofre de este inquilino permiso
+#   sobre `cofre-url`, UN login (`cofre_app`) para todos los custodios, y
+#   FALLAR si ese secreto no existia. Con el cada custodio leia el censo y los
+#   secretos de todos (0047 M4). Desde la A7a cada custodio entra con el papel
+#   de SU celda (`iam.dar_papel_de_celda`, 040) y la base sabe de que
+#   organizacion es y no le deja ver otra (041). `cofre_app` y `cofre-url` se
+#   retiraron (A7a.6), y este es el unico paso de la base del cofre.
 #
 # ⛔⛔ EL NOMBRE NO LLEVA `-cofre-` DETRAS DEL INQUILINO, a proposito. El
 #   custodio guarda los secretos de la gente como `t-<inq>-cofre-<nombre>`

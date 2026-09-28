@@ -80,12 +80,11 @@ PLANTILLAS = [
     "41-el-cofre.yaml",
     "42-el-arbol.yaml",
     "43-la-entrada.yaml",
-    # ⭐ La mudanza del cofre (0024-⑤) es una plantilla y no un acto a mano: se
-    #   rinde con el inquilino, Flux la aplica UNA vez —un `Job` es inmutable y
-    #   sin `ttl` se queda `Complete` como registro—, y para un inquilino nuevo
-    #   muda cero y no confirma nada. Así ningún inquilino se queda sin mudar,
-    #   que es lo que la `028` exige para borrar `cofre.material`.
-    "45-la-mudanza-del-cofre.yaml",
+    # ✏️ 2026-09-28 (0047 A7a.6) · Aqui estaba `45-la-mudanza-del-cofre.yaml`,
+    #   la mudanza del material del cofre al almacen de la celda (0024-⑤). Corrio
+    #   el 14-sep en los tres inquilinos, la `028` borro `cofre.material` y ya no
+    #   hay nada que mudar; y nombraba `cofre-url`, que se retiro con la A7a. Su
+    #   rastro esta en la huella (`secreto:mudar`), no en el `Job`.
     # ⭐ La forja del inquilino (0024 E3-(c)): su árbol y su cola en su celda.
     "46-la-forja-del-inquilino.yaml",
     # ⭐ El informador de la celda (0026 E2): mide cuota, jobs y control y lo

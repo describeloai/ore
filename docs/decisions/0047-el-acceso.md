@@ -504,7 +504,7 @@ forma del arreglo:
 | **A7a.6′** | Con A7a.6: la mudanza sale de las plantillas (`PLANTILLAS` de `gen-inquilino.py`), porque un inquilino nuevo la crearía nombrando `cofre-url`, que ya no existirá (y no tiene nada que mudar) | bajo |
 | **A7a.4** ✓ | Escrita y probada (`041-cada-custodio-su-organizacion.sql`; vuelta atrás en `iam/vuelta-atras/`, fuera del runner). Al probarla salió un fallo de la guarda: `pg_has_role(…, 'member')` es verdad para un superusuario con cualquier papel, y trataba al operador como a un custodio sin celda; mira `pg_auth_members`. Migración: seguridad por fila en las tablas de arriba —una política que deja todo a `ore_iam` y `ore_aprovisionador`, y otra que a `ore_cofre` sólo le deja su organización (`iam.persona`: las que pertenecen a ella)—; las vistas a `security_invoker` con sus `grant`; y la guarda en las dos funciones | medio: una política que falte deja a alguien sin ver nada; lo cubre la prueba de fuego del paso siguiente, contra una base con dos organizaciones |
 | **A7a.5** ✓ | `el-cofre.sh` 12 (y el custodio de toda la prueba corre ya como `cofre_acme`); `el-cofre.sh` y `los-verbos.sh` enteras en verde con los binarios de Linux contra `postgres:16`. El 6 y el 10 medían «Zoe recibe el mismo error que Ada con uno inventado»; desde la 041 el custodio no ve a Zoe y le dice que no la conoce, así que miden lo que protegen: a quien no pertenece, el mismo error para un secreto que existe y para uno inventado. Prueba de fuego (`el-cofre.sh` o `los-verbos.sh`): dos organizaciones, dos papeles; el custodio de una no ve ni concede nada de la otra, y `ore-iam` sigue viéndolo todo | — |
-| **A7a.6** | Se retira `cofre_app` y el secreto `cofre-url` | bajo, cuando A7a.3 lleve un día sano |
+| **A7a.6** | Se retira `cofre_app` y el secreto `cofre-url`. ✏️ No «cuando A7a.3 lleve un día sano», que no dice qué tiene que pasar: cuando hayan salido bien, medidos, los eventos de § «A7a.6, lo que tiene que pasar» | bajo |
 
 #### A7a.4, medido (2026-09-28)
 
@@ -544,6 +544,25 @@ tres). **Vuelta atrás, escrita antes:** una migración que desactiva la segurid
 `otra` con celda; un papel para cada una; el custodio corre como `cofre_acme`; como `cofre_acme`,
 de cada tabla sólo salen filas de `acme`, y conceder o revocar para `otra` se niega; `iam_app`
 sigue viéndolo todo; el aprovisionador sigue leyendo `nombre` y `kek`; `cofre_app` no ve nada.
+
+#### A7a.6, lo que tiene que pasar (medido el 2026-09-28)
+
+`cofre_app` y `cofre-url` eran la vuelta atrás de la A7a entera. Se quitan cuando los eventos que
+harían falta sin ellos han salido bien, y se provocaron en vez de esperarlos:
+
+| | evento | cómo se midió | resultado |
+|---|---|---|---|
+| E1 | un custodio se reinicia, trae su secreto y conecta | `rollout restart` de los tres; y la convergencia los volvió a desplegar sola (victor tiene once ReplicaSets hoy) | los tres Ready, sin reinicios ni `✗`, cada uno con una sesión de su login |
+| E2 | cada ruta sobre datos reales bajo la 041 | emitir y resolver ocurrieron de verdad (20:38, victor); listar y retirar, con el login de cada celda en una transacción deshecha | demo y victor: listar 8 (5 vivos), retirar 1 fila y sus concesiones; de otra organización, 0 filas vistas, 0 tocadas, revocar negado; 10 vivos antes y después |
+| E3 | los verbos de operador | `mudar` y `retirar-huerfanos --seco` dentro de cada pod | los tres, sin error, cada uno con lo suyo |
+| E4 | la convergencia | dos pasadas completas tras la 041 | sin `✗`; las tres celdas aprovisionadas |
+| E5 | nadie más usa `cofre_app` ni `cofre-url` | `cofre_app` sin login y la versión de `cofre-url` desactivada; una pasada completa y el registro de la base | 0 intentos de `cofre_app`; el único que tocaba `cofre-url` era el propio aprovisionador (su permiso), que se quita en este paso |
+| E6 | la vuelta atrás sin `cofre_app` | simulacro en demo: rotar su clave, guardarla (versión 2) y reiniciar | entra con la nueva; la vieja da `password authentication failed`; la versión 1 desactivada |
+
+**El orden de A7a.6**, porque el aprovisionador **fallaba** si `cofre-url` no existía: primero
+el código (sin el paso de `cofre-url`; sin la mudanza en las plantillas, que Flux poda de los tres
+inquilinos —su rastro está en la huella, `secreto:mudar`—); después la `042`, que retira
+`cofre_app`; y al final se borra `cofre-url`, lo único que no tiene vuelta.
 
 El orden importa: la seguridad por fila (A7a.4) no entra hasta que ningún custodio use
 `cofre_app`, porque ese login no tiene celda y con las políticas puestas no vería nada: los tres
