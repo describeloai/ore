@@ -274,6 +274,32 @@ dice "dos organizaciones, con su llave: $(psql "$URL" -qtAc "select string_agg(k
 ADA=$(acunar "persona:ada" "ada@paladio.io")
 ZOE=$(acunar "persona:zoe" "zoe@paladio.io")
 
+# ── ⭐⭐ Cada custodio, el login de SU celda (0047 A7a, 040 y 041) ────────────
+#
+# Hasta la A7a los custodios entraban con un login compartido, y con el cada
+# uno leia lo de todos. Desde la 041 un login de `ore_cofre` ve las filas de SU
+# organizacion y ninguna mas, y la organizacion la dice el login: el papel de la
+# celda, que da `iam.dar_papel_de_celda` (solo el aprovisionador). Un login sin
+# celda —`cofre_app_c`, el de arriba— ya no veria nada, y el custodio de esta
+# prueba no podria ni emitir: por eso corre con el de `acme`.
+#
+# `otra` tambien tiene celda, para que el bloque 12 pueda medir que un custodio
+# no ve lo de la otra organizacion, y que no es solo que no haya nada que ver.
+ORG_OTRA=$(psql "$URL" -qtAc "select id from iam.organizacion where nombre='otra'")
+psql "$URL" -v ON_ERROR_STOP=1 -qtAc "insert into iam.celda
+    (id, organizacion, nombre, tier, proveedor, region, cluster, puerta, arbol, entrada)
+  values ('cel_otra', '$ORG_OTRA', 'otra', 'compartido', 'gcp', 'europe-west1-b',
+          'ore-prueba', 'ore-prueba.ore.paladio.io', 'otra/arbol', 'otra.ore.paladio.io')" \
+  >/dev/null 2>&1 || falla "no se pudo dar celda a \`otra\`"
+dar_papel() { psql "$URL" -qtAc "set role ore_aprovisionador; select iam.dar_papel_de_celda('$1')" 2>/dev/null | tr -d ' \n'; }
+PAPEL_ACME=$(dar_papel acme)
+PAPEL_OTRA=$(dar_papel otra)
+[ "${PAPEL_ACME%%:*}" = "cofre_acme" ] && [ "${PAPEL_OTRA%%:*}" = "cofre_otra" ] \
+  || falla "no se dieron los papeles de las celdas"
+URL_COFRE="postgres://$PAPEL_ACME@$SERVIDOR/cofre_prueba"
+URL_OTRA="postgres://$PAPEL_OTRA@$SERVIDOR/cofre_prueba"
+dice "cada celda, su login: el custodio corre como \`cofre_acme\`"
+
 # ── El custodio ─────────────────────────────────────────────────────────────
 mkdir -p "$TMP/almacen"
 export ALMACEN_DE_MENTIRA="$TMP/almacen"
@@ -404,13 +430,20 @@ dice "5b · el nombre y el id llevan al mismo sitio, y lo inventado a ninguno"
 # Si un secreto ajeno diera «no tienes acceso» y uno inventado «no existe»,
 # cualquiera con una cuenta tendria un directorio de los secretos de los demas,
 # consultable nombre a nombre. Es la misma sonda que la `0021` cazo en `revocar`.
+#
+# ✏️ 0047 A7a.4 · La sonda es para QUIEN PREGUNTA: lo que no puede distinguir
+#   es un secreto que existe de uno que no. Esto comparaba a Zoe pidiendo uno
+#   que existe con ADA pidiendo uno inventado, y valia mientras el custodio
+#   veia a todas las personas. Desde la 041 no ve a quien no es de su
+#   organizacion, y a Zoe le contesta «no eres de aqui» —lo mismo para uno que
+#   existe que para uno inventado: no hay directorio—. Se mide eso.
 pide GET "/organizaciones/$ORG/secretos/pg-produccion" "$ZOE" >/dev/null
 AJENO=$(campo error)
-pide GET "/organizaciones/$ORG/secretos/no-existe-nada" "$ADA" >/dev/null
+pide GET "/organizaciones/$ORG/secretos/no-existe-nada" "$ZOE" >/dev/null
 INVENTADO=$(campo error)
 [ -n "$AJENO" ] && [ "$AJENO" = "$INVENTADO" ] \
-  || falla "6 · ⛔ SONDA: uno ajeno da «$AJENO» y uno inventado «$INVENTADO»"
-dice "6 · un secreto ajeno y uno inventado dan el MISMO error"
+  || falla "6 · ⛔ SONDA: a Zoe, uno ajeno da «$AJENO» y uno inventado «$INVENTADO»"
+dice "6 · a quien no pertenece, un secreto que existe y uno inventado le dan el MISMO error"
 
 # ── 7 · la huella ───────────────────────────────────────────────────────────
 EMITIR=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion='secreto:emitir'")
@@ -521,7 +554,14 @@ dice "9 · el material esta en el almacen y no en la base · con la CMEK de la o
 #     de existir
 [ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$ZOE")" = "422" ] \
   || falla "10 · Zoe retiro un secreto ajeno: $(cat "$TMP/r.json")"
-grep -q "no existe o no es tuyo" "$TMP/r.json" || falla "10 · el error de Zoe destapa algo: $(cat "$TMP/r.json")"
+# ✏️ 0047 A7a.4 · Como en el 6: desde la 041 el custodio de `acme` no ve a Zoe,
+#   y le dice que no la conoce. Lo que no puede destaparse es si el secreto
+#   existe: el mismo error para uno que existe y para uno inventado.
+ZOE_EXISTE=$(campo error)
+[ "$(pide DELETE "/organizaciones/$ORG/secretos/no-existe-nada" "$ZOE")" = "422" ] \
+  || falla "10 · retirar uno inventado no dio 422: $(cat "$TMP/r.json")"
+[ -n "$ZOE_EXISTE" ] && [ "$ZOE_EXISTE" = "$(campo error)" ] \
+  || falla "10 · el error de Zoe destapa algo: «$ZOE_EXISTE» frente a «$(campo error)»"
 [ "$(pide DELETE "/organizaciones/$ORG/secretos/pg-produccion" "$UNO")" = "422" ] \
   || falla "10 · el agente retiro un secreto: $(cat "$TMP/r.json")"
 [ -d "$TMP/almacen/t-acme-cofre-pg-produccion" ] || falla "10 · algo borro el material antes de tiempo"
@@ -591,6 +631,66 @@ FUGA=$(psql "$URL" -qtAc "select count(*) from iam.huella where detalle::text li
 [ "$(pide GET "/organizaciones/$ORG/secretos/fuente-viva" "$ADA")" = "200" ] || falla "11 · la viva dejo de resolver: $(cat "$TMP/r.json")"
 [ "$(pide GET "/organizaciones/$ORG/secretos/fuente-muerta" "$ADA")" = "422" ] || falla "11 · la muerta sigue resolviendo"
 dice "11 · retirar-huerfanos: sin --declaradas se niega · --seco dice que se iria · retira la de la fuente que no esta (fila y concesiones atribuidas al operador, material fuera, huella sin valor) y deja la viva"
+
+# ── 12 · ⭐⭐ CADA CUSTODIO, SU ORGANIZACION (041, 0047 A7a.4) ────────────────
+#
+# Lo que la 041 existe para cortar, medido de los dos lados: `cofre_acme` no ve
+# NADA de `otra`, y `cofre_otra` si ve lo suyo —si no, «no ve nada» podria ser
+# solo que no habia nada—. Y los que no son custodios siguen como estaban.
+#
+# `otra` necesita algo que ver: un secreto y una concesion suyos, sembrados como
+# superusuario (el custodio de esta prueba es el de `acme` y no podria).
+ZID=$(psql "$URL" -qtAc "select id from iam.persona where sub='persona:zoe'")
+psql "$URL" -v ON_ERROR_STOP=1 -qtAc "
+  insert into cofre.secreto (id, organizacion, nombre, clase, emitio, celda)
+    values ('sec_otra', '$ORG_OTRA', 'de-otra', 'conexion', '$ZID', 'cel_otra');
+  insert into iam.concesion (id, sujeto, recurso, rol, concedio, organizacion)
+    values ('con_otra', '$ZID', 'secreto/de-otra', 'owner', '$ZID', '$ORG_OTRA');" \
+  >"$TMP/semilla-otra.txt" 2>&1 || falla "12 · no se sembro \`otra\`: $(tail -2 "$TMP/semilla-otra.txt")"
+
+cuenta() { psql "$1" -qtAc "$2" 2>/dev/null | tr -d ' '; }
+for Q in "select count(*) from cofre.secreto          where organizacion = '$ORG_OTRA'" \
+         "select count(*) from iam.concesion_viva     where organizacion = '$ORG_OTRA'" \
+         "select count(*) from iam.potestades_de_persona where organizacion = '$ORG_OTRA'" \
+         "select count(*) from iam.celda              where organizacion = '$ORG_OTRA'" \
+         "select count(*) from iam.organizacion       where id = '$ORG_OTRA'" \
+         "select count(*) from iam.persona            where sub = 'persona:zoe'"; do
+  [ "$(cuenta "$URL_COFRE" "$Q")" = "0" ] || falla "12 · ⛔ EL CUSTODIO DE \`acme\` VE LO DE \`otra\`: $Q"
+  [ "$(cuenta "$URL_OTRA" "$Q")" -ge 1 ] 2>/dev/null || falla "12 · el custodio de \`otra\` no ve lo suyo: $Q"
+done
+# Y lo de `acme` lo sigue viendo el suyo (los bloques 3–11 lo usaron entero).
+[ "$(cuenta "$URL_COFRE" "select count(*) from cofre.secreto where organizacion = '$ORG'")" -ge 1 ] \
+  || falla "12 · el custodio de \`acme\` no ve sus secretos"
+
+# Escribir por encima de las politicas: conceder y revocar en otra organizacion.
+if psql "$URL_COFRE" -qtAc "select iam.conceder_de_secreto('con_x', '$ZID', 'secreto/de-otra', 'usar', '$ZID', '$ORG_OTRA')" >/dev/null 2>&1; then
+  falla "12 · ⛔ EL CUSTODIO DE \`acme\` CONCEDIO EN \`otra\`"
+fi
+if psql "$URL_COFRE" -qtAc "select iam.revocar_de_secreto('secreto/de-otra', '$ORG_OTRA', '$ZID')" >/dev/null 2>&1; then
+  falla "12 · ⛔ EL CUSTODIO DE \`acme\` REVOCO EN \`otra\`"
+fi
+if psql "$URL_COFRE" -qtAc "insert into cofre.secreto (id, organizacion, nombre, clase, emitio, celda) values ('sec_x', '$ORG_OTRA', 'x', 'conexion', '$ZID', 'cel_otra')" >/dev/null 2>&1; then
+  falla "12 · ⛔ EL CUSTODIO DE \`acme\` ESCRIBIO UN SECRETO DE \`otra\`"
+fi
+[ "$(cuenta "$URL" "select count(*) from iam.concesion_viva where recurso = 'secreto/de-otra'")" = "1" ] \
+  || falla "12 · la concesion de \`otra\` cambio"
+
+# Por la puerta: Zoe, con el custodio de `acme`, no alcanza nada de `otra`.
+[ "$(pide GET "/organizaciones/$ORG_OTRA/secretos/de-otra" "$ZOE")" != "200" ] \
+  || falla "12 · ⛔ EL CUSTODIO DE \`acme\` RESOLVIO UN SECRETO DE \`otra\`"
+
+# Los que no son custodios, como estaban.
+[ "$(cuenta "$URL_IAM" "select count(*) from iam.organizacion where id in ('$ORG', '$ORG_OTRA')")" = "2" ] \
+  || falla "12 · ⛔ \`ore-iam\` DEJO DE VER UNA ORGANIZACION"
+[ "$(cuenta "$URL" "set role ore_aprovisionador; select count(*) from iam.organizacion where kek is not null")" -ge 2 ] \
+  || falla "12 · ⛔ EL APROVISIONADOR DEJO DE LEER LAS LLAVES: la convergencia de todas las celdas caeria"
+[ "$(cuenta "$URL" "set role ore_aprovisionador; select count(*) from iam.celda_de")" -ge 2 ] \
+  || falla "12 · el aprovisionador dejo de leer las celdas"
+# Y un login de `ore_cofre` sin celda no ve nada: es lo que habria pasado con
+# el compartido si la 041 hubiera entrado antes que la A7a.3.
+[ "$(cuenta "postgres://cofre_app_c:$CLAVE@$SERVIDOR/cofre_prueba" "select count(*) from iam.organizacion")" = "0" ] \
+  || falla "12 · ⛔ UN CUSTODIO SIN CELDA VE ORGANIZACIONES"
+dice "12 · cada custodio, su organizacion: no ve, no concede, no revoca y no escribe lo de otra; ore-iam y el aprovisionador, como estaban"
 
 echo
 echo "✓ el custodio guarda, abre a quien puede, y no deja el valor en ningun otro sitio"

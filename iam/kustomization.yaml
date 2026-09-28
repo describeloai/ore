@@ -82,6 +82,7 @@ configMapGenerator:
       - migraciones/038-la-baja-de-operador.sql
       - migraciones/039-la-huella-no-se-edita.sql
       - migraciones/040-el-papel-de-cada-celda.sql
+      - migraciones/041-cada-custodio-su-organizacion.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

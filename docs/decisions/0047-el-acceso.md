@@ -500,11 +500,50 @@ forma del arreglo:
 |---|---|---|
 | **A7a.1** ✓ | Hecho (`040-el-papel-de-cada-celda.sql`, `los-verbos.sh` 14). Migración: `iam.papel_de_celda (papel, celda)` y `iam.mi_organizacion()` (la del login que llama, por `session_user`); una función `security definer` que da de alta el papel de una celda (login con clave nueva, miembro de `ore_cofre`) y devuelve la URL, para que el aprovisionador no necesite `CREATEROLE`. **Sin seguridad por fila todavía**: no cambia nada de lo que corre | nulo |
 | **A7a.2** ✓ | Escrito (`aprovisionar-inquilino.sh`, tras `cofre-url`). El aprovisionador llama a esa función y guarda la URL en Secret Manager como **`t-<n>-base-del-cofre`**, con `secretAccessor` para `ore-cofre-<n>`. Lo corre la convergencia de cada cinco minutos, así que llega a `demo`, `prueba` y `victor` en la pasada siguiente, y a toda celda nueva al nacer. Sólo da el papel si el secreto no tiene versión viva (darlo otra vez rota la clave). ⛔ **No `t-<n>-cofre-base`**, aunque la cuenta del custodio ya alcanzara ese prefijo: es el espacio de nombres de los secretos de la gente (`almacen.rs`: `t-<inq>-cofre-<nombre>`), y un secreto emitido con el nombre `base` pisaría la URL de la base, o la entregaría por `resolver` | bajo: crea, no cambia |
-| **A7a.3** | La malla: el custodio trae `t-<n>-base-del-cofre` en vez de `cofre-url`. Se comprueba que los tres arrancan y resuelven con su papel. **Medido antes:** sólo cambia el `initContainer` de `41-el-cofre.yaml` (plantilla de `demo`: `gen-inquilino.py` la rinde para cada celda); el binario no cambia y no hay flag nuevo. El custodio conecta **al arrancar** y sale con 69 si no puede, así que un login malo se ve en seguida (CrashLoop), no en la primera petición; `/salud` no toca la base. Despliega con `Recreate`: unos segundos sin custodio por inquilino (139 `resolver` en 20 días). `cofre_app` no tiene nada propio que `cofre_<celda>` no herede de `ore_cofre` (ni permisos directos, ni ajustes, ni otras pertenencias). Llega escalonado: `demo` por la kustomization `malla`, `prueba` y `victor` cuando la convergencia rinde y empuja su compartimento (unos diez minutos). ⛔ **`45-la-mudanza-del-cofre.yaml` no se toca:** es un `Job` completado el 14-sep en los tres inquilinos, inmutable, y Flux (`force: false`) fallaría al aplicar otra plantilla; sigue nombrando `cofre-url` y no vuelve a correr. Se resuelve en A7a.6 | medio: si falla, un custodio no arranca; se vuelve atrás con la malla |
+| **A7a.3** | La malla: el custodio trae `t-<n>-base-del-cofre` en vez de `cofre-url`. Se comprueba que los tres arrancan y resuelven con su papel. **Medido antes:** sólo cambia el `initContainer` de `41-el-cofre.yaml` (plantilla de `demo`: `gen-inquilino.py` la rinde para cada celda); el binario no cambia y no hay flag nuevo. El custodio conecta **al arrancar** y sale con 69 si no puede, así que un login malo se ve en seguida (CrashLoop), no en la primera petición; `/salud` no toca la base. Despliega con `Recreate`: unos segundos sin custodio por inquilino (139 `resolver` en 20 días). `cofre_app` no tiene nada propio que `cofre_<celda>` no herede de `ore_cofre` (ni permisos directos, ni ajustes, ni otras pertenencias). Llega con la convergencia, a los tres: ✏️ se midió mal que `demo` iba por la kustomization `malla`; su Deployment es de `inquilino-demo` (`kustomize.toolkit.fluxcd.io/name`), como los otros dos, y lo cambia la pasada del aprovisionador que rinde y empuja cada compartimento. ⛔ **`45-la-mudanza-del-cofre.yaml` no se toca:** es un `Job` completado el 14-sep en los tres inquilinos, inmutable, y Flux (`force: false`) fallaría al aplicar otra plantilla; sigue nombrando `cofre-url` y no vuelve a correr. Se resuelve en A7a.6 | medio: si falla, un custodio no arranca; se vuelve atrás con la malla |
 | **A7a.6′** | Con A7a.6: la mudanza sale de las plantillas (`PLANTILLAS` de `gen-inquilino.py`), porque un inquilino nuevo la crearía nombrando `cofre-url`, que ya no existirá (y no tiene nada que mudar) | bajo |
-| **A7a.4** | Migración: seguridad por fila en las tablas de arriba —una política que deja todo a `ore_iam` y `ore_aprovisionador`, y otra que a `ore_cofre` sólo le deja su organización (`iam.persona`: las que pertenecen a ella)—; las vistas a `security_invoker` con sus `grant`; y la guarda en las dos funciones | medio: una política que falte deja a alguien sin ver nada; lo cubre la prueba de fuego del paso siguiente, contra una base con dos organizaciones |
-| **A7a.5** | Prueba de fuego (`el-cofre.sh` o `los-verbos.sh`): dos organizaciones, dos papeles; el custodio de una no ve ni concede nada de la otra, y `ore-iam` sigue viéndolo todo | — |
+| **A7a.4** ✓ | Escrita y probada (`041-cada-custodio-su-organizacion.sql`; vuelta atrás en `iam/vuelta-atras/`, fuera del runner). Al probarla salió un fallo de la guarda: `pg_has_role(…, 'member')` es verdad para un superusuario con cualquier papel, y trataba al operador como a un custodio sin celda; mira `pg_auth_members`. Migración: seguridad por fila en las tablas de arriba —una política que deja todo a `ore_iam` y `ore_aprovisionador`, y otra que a `ore_cofre` sólo le deja su organización (`iam.persona`: las que pertenecen a ella)—; las vistas a `security_invoker` con sus `grant`; y la guarda en las dos funciones | medio: una política que falte deja a alguien sin ver nada; lo cubre la prueba de fuego del paso siguiente, contra una base con dos organizaciones |
+| **A7a.5** ✓ | `el-cofre.sh` 12 (y el custodio de toda la prueba corre ya como `cofre_acme`); `el-cofre.sh` y `los-verbos.sh` enteras en verde con los binarios de Linux contra `postgres:16`. El 6 y el 10 medían «Zoe recibe el mismo error que Ada con uno inventado»; desde la 041 el custodio no ve a Zoe y le dice que no la conoce, así que miden lo que protegen: a quien no pertenece, el mismo error para un secreto que existe y para uno inventado. Prueba de fuego (`el-cofre.sh` o `los-verbos.sh`): dos organizaciones, dos papeles; el custodio de una no ve ni concede nada de la otra, y `ore-iam` sigue viéndolo todo | — |
 | **A7a.6** | Se retira `cofre_app` y el secreto `cofre-url` | bajo, cuando A7a.3 lleve un día sano |
+
+#### A7a.4, medido (2026-09-28)
+
+**Lo que lee el custodio, entero** (su SQL y lo que hereda de la biblioteca de `ore-iam`:
+`potestad::exige`, `verbos::persona_id`, `verbos::sujeto_id`): `cofre.secreto`, `iam.agente`,
+`iam.celda`, `iam.organizacion`, `iam.persona`, `iam.rol_de_recurso`, las vistas
+`iam.concesion_viva` (de `concesion`) e `iam.potestades_de_persona` (de `pertenencia`,
+`pertenencia_rol`, `rol_potestad` y la vista `por_defecto`); inserta en `iam.huella`; y llama a
+`conceder_de_secreto`, `revocar_de_secreto` y `revocar_de_secreto_operador`, las tres con
+`p_organizacion` de argumento.
+
+**Quién más lee esas tablas**, y se quedaría ciego sin su política: `ore_iam` (login `iam_app`),
+todo; `ore_aprovisionador` (login `aprovisionador`), `iam.organizacion` por columnas (`nombre`,
+`kek`) y la vista `celda_de`, que es del superusuario y no pasa por la seguridad por fila. Nadie
+más entra (`keycloak` es superusuario y se la salta).
+
+**La migración:**
+
+| pieza | qué |
+|---|---|
+| seguridad por fila en 8 tablas | `cofre.secreto`, `iam.agente`, `iam.celda`, `iam.concesion`, `iam.organizacion`, `iam.persona`, `iam.pertenencia`, `iam.pertenencia_rol`. **No** en los catálogos (`rol_potestad`, `potestad`, `rol_de_recurso`), que son de todos, ni en `iam.huella` (el custodio sólo inserta) |
+| `ore_iam` | una política por tabla que lo deja todo (`using (true)`): no cambia nada de lo que hace |
+| `ore_aprovisionador` | `select` sobre `iam.organizacion` con `using (true)`: sus `grant` por columnas siguen siendo el límite |
+| `ore_cofre` | su organización, y nada más: `organizacion = (select iam.mi_organizacion())` en agente, celda, concesión, pertenencias y `cofre.secreto` (este para leer y escribir); `id = …` en `organizacion`; en `persona`, las que pertenecen a ella. `(select …)` para que se evalúe una vez por consulta |
+| las dos vistas | `security_invoker = true` en `concesion_viva` y `potestades_de_persona`, porque son del superusuario y, si no, leerían por encima de las políticas; y `select` a `ore_cofre` sobre sus tablas de debajo (`concesion`, `pertenencia`, `pertenencia_rol`, `rol_potestad`) |
+| las tres funciones | al empezar: si quien llama es de `ore_cofre` y `p_organizacion` no es la suya, se niega |
+
+**Lo que cambia para el custodio**, y es lo buscado: preguntado por otra organización (el `org`
+del camino lo pone quien llama), no ve a nadie en ella, y contesta lo mismo que hoy a quien no
+pertenece. Un login de `ore_cofre` sin celda —`cofre_app`— no ve nada.
+
+**Precondición:** ninguna sesión de `cofre_app` en `pg_stat_activity` (A7a.3 entero en los
+tres). **Vuelta atrás, escrita antes:** una migración que desactiva la seguridad por fila de las
+8 tablas y devuelve las vistas a como estaban; las políticas pueden quedarse, sin efecto.
+
+**La prueba (A7a.5), sobre `el-cofre.sh`**, que ya funda `acme` (con celda) y `otra` (sin ella):
+`otra` con celda; un papel para cada una; el custodio corre como `cofre_acme`; como `cofre_acme`,
+de cada tabla sólo salen filas de `acme`, y conceder o revocar para `otra` se niega; `iam_app`
+sigue viéndolo todo; el aprovisionador sigue leyendo `nombre` y `kek`; `cofre_app` no ve nada.
 
 El orden importa: la seguridad por fila (A7a.4) no entra hasta que ningún custodio use
 `cofre_app`, porque ese login no tiene celda y con las políticas puestas no vería nada: los tres
