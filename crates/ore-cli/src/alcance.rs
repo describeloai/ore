@@ -334,7 +334,11 @@ impl Alcance {
             .filter(|o| !habia.contains(o.as_str()))
             .cloned()
             .collect();
-        let Catalogo { fuente, tablas } = cat;
+        let Catalogo {
+            fuente,
+            tablas,
+            objetos,
+        } = cat;
         let antes = tablas.len();
         let tablas: Vec<_> = tablas
             .into_iter()
@@ -344,7 +348,14 @@ impl Alcance {
             fuera: antes - tablas.len(),
             sin_respaldo,
         };
-        (Catalogo { fuente, tablas }, recorte)
+        (
+            Catalogo {
+                fuente,
+                tablas,
+                objetos,
+            },
+            recorte,
+        )
     }
 
     /// ¿Entra este objeto?
@@ -489,6 +500,8 @@ mod prueba {
             clase: "table".into(),
             lee: None,
             cambia: None,
+            objeto: None,
+            formato: None,
         }
     }
 
@@ -500,6 +513,7 @@ mod prueba {
                 tabla("public.pedidos"),
                 tabla("legacy.viejo"),
             ],
+            objetos: Vec::new(),
         }
     }
 

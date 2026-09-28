@@ -28,7 +28,6 @@
 //! encontrarlo y por eso está escrito aquí y en el ADR.
 
 use crate::almacen::Almacen;
-use sha2::{Digest, Sha256};
 use std::io::Read as _;
 
 pub struct Cuenta {
@@ -62,114 +61,16 @@ impl Cuenta {
     }
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
+// La firma vive en `ore-s3` desde 0046 E4: la comparte con el lector de un
+// bucket del cliente, y dos firmas divergirian en el caso que nadie prueba.
+use ore_s3::{base64, hex, sha256};
 
-fn sha256(b: &[u8]) -> Vec<u8> {
-    let mut h = Sha256::new();
-    h.update(b);
-    h.finalize().to_vec()
-}
-
-/// HMAC-SHA256, RFC 2104, sobre el `sha2` que el árbol ya enlaza.
-///
-/// # Por qué esto y no la crate `hmac`
-///
-/// La regla del proyecto es no reimplementar **primitivas** criptográficas, y
-/// por eso `sha2` se enlaza. HMAC no es una primitiva: es una construcción de
-/// seis líneas sobre una, completamente especificada y con vectores oficiales
-/// —el de AWS está justo abajo, en las pruebas.
-///
-/// Y enlazarla costaba caro por un motivo que solo se ve mirando el `Cargo.lock`:
-/// `hmac 0.12` arrastra `digest 0.10` **entera** al lado de la `0.11` que el
-/// árbol ya usa, y con ella `crypto-common`, `generic-array` y `block-buffer`
-/// duplicados. `dependencias.rs` lo vio y se puso rojo — que es exactamente
-/// para lo que existe.
-fn hmac(clave: &[u8], datos: &str) -> Vec<u8> {
-    const BLOQUE: usize = 64;
-    let mut k = [0u8; BLOQUE];
-    // Una clave más larga que el bloque se resume primero; una más corta se
-    // rellena con ceros. Las dos cosas las manda el RFC.
-    if clave.len() > BLOQUE {
-        k[..32].copy_from_slice(&sha256(clave));
-    } else {
-        k[..clave.len()].copy_from_slice(clave);
+fn credencial(c: &Cuenta) -> ore_s3::Credencial {
+    ore_s3::Credencial {
+        clave: c.clave.clone(),
+        secreto: c.secreto.clone(),
+        token: None,
     }
-    let mut dentro = Sha256::new();
-    dentro.update(k.map(|b| b ^ 0x36));
-    dentro.update(datos.as_bytes());
-
-    let mut fuera = Sha256::new();
-    fuera.update(k.map(|b| b ^ 0x5c));
-    fuera.update(dentro.finalize());
-    fuera.finalize().to_vec()
-}
-
-/// RFC 3986, que es lo que SigV4 exige de cada clave y cada valor de la cadena
-/// de consulta — **y `/` se codifica**, que es donde esto falla si no se hace.
-///
-/// Costó un `403` averiguarlo, y el error no ayuda: llega como *status code 403*
-/// y se lee como una credencial mala. Lo era la firma, porque la cadena firmada
-/// y la enviada no coincidían.
-fn uri(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
-/// Base64 estándar, que es como S3 quiere el checksum. Son doce líneas y evita
-/// una dependencia más en un binario que ya enlaza TLS.
-fn base64(b: &[u8]) -> String {
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for t in b.chunks(3) {
-        let n = ((t[0] as u32) << 16)
-            | ((*t.get(1).unwrap_or(&0) as u32) << 8)
-            | (*t.get(2).unwrap_or(&0) as u32);
-        for i in 0..4 {
-            if i <= t.len() {
-                out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-/// `YYYYMMDDTHHMMSSZ` y `YYYYMMDD`, del reloj del sistema. Es lo único de este
-/// programa que no es determinista, y tiene que serlo: SigV4 fecha la firma.
-fn ahora() -> (String, String) {
-    let s = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (dias, resto) = ((s / 86_400) as i64, s % 86_400);
-    // Del día juliano al calendario civil (Howard Hinnant, `civil_from_days`).
-    let z = dias + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let fecha = format!("{y:04}{m:02}{d:02}");
-    let hora = format!(
-        "{fecha}T{:02}{:02}{:02}Z",
-        resto / 3600,
-        (resto % 3600) / 60,
-        resto % 60
-    );
-    (hora, fecha)
 }
 
 /// La firma de una petición. Cabeceras **ordenadas**, que es lo que exige el
@@ -185,58 +86,32 @@ fn firmar(
 }
 
 /// Lo mismo, con cadena de consulta. Existe porque enumerar por prefijo la
-/// necesita —`?list-type=2&prefix=…`— y SigV4 la firma **aparte** de la ruta.
+/// necesita —`?list-type=2&prefix=…`— y SigV4 la firma **aparte** de la ruta,
+/// con los parámetros **ordenados por nombre**.
 fn firmar_con_consulta(
     c: &Cuenta,
     metodo: &str,
     ruta: &str,
     consulta: &str,
-    mut cabeceras: Vec<(String, String)>,
+    cabeceras: Vec<(String, String)>,
     hash_cuerpo: &str,
 ) -> Vec<(String, String)> {
-    let (marca, fecha) = ahora();
-    cabeceras.push(("host".into(), c.host()));
-    cabeceras.push(("x-amz-content-sha256".into(), hash_cuerpo.to_string()));
-    cabeceras.push(("x-amz-date".into(), marca.clone()));
-    cabeceras.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let firmadas: Vec<String> = cabeceras.iter().map(|(k, _)| k.clone()).collect();
-    let lista = firmadas.join(";");
-    let canonicas: String = cabeceras
-        .iter()
-        .map(|(k, v)| format!("{k}:{}\n", v.trim()))
-        .collect();
-
-    // Los parámetros, **ordenados por nombre**: la forma canónica otra vez, y
-    // por lo mismo — dos peticiones equivalentes tienen que firmar los mismos
-    // bytes. SigV4 los firma **aparte** de la ruta, así que meterlos dentro de
-    // ella daría `SignatureDoesNotMatch`, que se lee como una credencial mala.
     let mut ps: Vec<&str> = consulta.split('&').filter(|s| !s.is_empty()).collect();
     ps.sort_unstable();
-    let peticion = format!(
-        "{metodo}\n{ruta}\n{}\n{canonicas}\n{lista}\n{hash_cuerpo}",
-        ps.join("&")
-    );
-    let ambito = format!("{fecha}/{}/s3/aws4_request", c.region);
-    let por_firmar = format!(
-        "AWS4-HMAC-SHA256\n{marca}\n{ambito}\n{}",
-        hex(&sha256(peticion.as_bytes()))
-    );
+    ore_s3::firma::firmar(
+        &credencial(c),
+        &c.region,
+        &c.host(),
+        metodo,
+        ruta,
+        &ps.join("&"),
+        cabeceras,
+        hash_cuerpo,
+    )
+}
 
-    let k = hmac(format!("AWS4{}", c.secreto).as_bytes(), &fecha);
-    let k = hmac(&k, &c.region);
-    let k = hmac(&k, "s3");
-    let k = hmac(&k, "aws4_request");
-    let firma = hex(&hmac(&k, &por_firmar));
-
-    cabeceras.push((
-        "authorization".into(),
-        format!(
-            "AWS4-HMAC-SHA256 Credential={}/{ambito}, SignedHeaders={lista}, Signature={firma}",
-            c.clave
-        ),
-    ));
-    cabeceras
+fn uri(s: &str) -> String {
+    ore_s3::firma::uri(s)
 }
 
 /// El `User-Agent`. Sin uno reconocible, el borde de Cloudflare devuelve
@@ -479,48 +354,5 @@ impl Almacen for Cuenta {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Los vectores de RFC 4648. Un base64 mal hecho no falla aquí: falla en el
-    /// servidor, con un `BadDigest` que parece otra cosa.
-    #[test]
-    fn el_base64_es_el_de_siempre() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foob"), "Zm9vYg==");
-        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-    }
-
-    /// **El vector oficial de AWS** para la derivación de la clave de firma
-    /// (SigV4, *Signature Calculation Examples*). Si esto se mueve, ninguna
-    /// petición se firma bien y el error que sale es `SignatureDoesNotMatch`,
-    /// que se lee como una credencial mala.
-    #[test]
-    fn la_clave_de_firma_es_la_del_vector_de_aws() {
-        let k = hmac(b"AWS4wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830");
-        let k = hmac(&k, "us-east-1");
-        let k = hmac(&k, "iam");
-        let k = hmac(&k, "aws4_request");
-        assert_eq!(
-            hex(&k),
-            "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
-        );
-    }
-
-    /// La fecha sale del reloj y el resto del programa es determinista, así que
-    /// esto es lo único que hay que comprobar a mano: que tiene la forma que
-    /// SigV4 exige, y que las dos concuerdan.
-    #[test]
-    fn la_marca_tiene_la_forma_que_sigv4_exige() {
-        let (marca, fecha) = ahora();
-        assert_eq!(fecha.len(), 8, "{fecha}");
-        assert_eq!(marca.len(), 16, "{marca}");
-        assert!(marca.starts_with(&fecha) && marca.ends_with('Z'), "{marca}");
-        assert!(fecha.starts_with("20"), "{fecha}");
-    }
-}
+// La firma y sus vectores (el de la clave y el ejemplo de S3 entero) viven
+// en `ore-s3`.

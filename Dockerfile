@@ -22,7 +22,8 @@
 #                       el mismo binario sin TLS— y sí puede hablar con la
 #                       forja, que es donde vive el árbol.
 #
-#   ore-drivers         todo lo que `ore` puede ejecutar: los tres `ore-read-*`,
+#   ore-drivers         todo lo que `ore` puede ejecutar: los cuatro `ore-read-*`
+#                       (`ore-read-s3`, un bucket como fuente, desde 0046 E4),
 #                       `ore-fetch`, `ore-log`, `ore-sign`, `ore-store-r2`, `ore-store-gcs` y `ore-invoke`,
 #                       sobre el SDK de Google Cloud, que ya no es por
 #                       `ore-read-bigquery` (habla REST desde A2, ADR 0042)
@@ -46,9 +47,9 @@ COPY . .
 # hubiera hoy en el índice.
 RUN cargo build --release --locked \
       -p ore-cli -p ore-serve -p ore-iam -p ore-cofre \
-      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery \
+      -p ore-read-jsonl -p ore-read-postgres -p ore-read-bigquery -p ore-read-s3 \
       -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke \
- && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery \
+ && for b in ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-bigquery ore-read-s3 \
              ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke; do \
       strip "target/release/$b"; \
     done
@@ -130,6 +131,7 @@ COPY --from=build /src/target/release/ore                /usr/local/bin/ore
 COPY --from=build /src/target/release/ore-read-jsonl     /usr/local/bin/ore-read-jsonl
 COPY --from=build /src/target/release/ore-read-postgres  /usr/local/bin/ore-read-postgres
 COPY --from=build /src/target/release/ore-read-bigquery  /usr/local/bin/ore-read-bigquery
+COPY --from=build /src/target/release/ore-read-s3        /usr/local/bin/ore-read-s3
 COPY --from=build /src/target/release/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=build /src/target/release/ore-log            /usr/local/bin/ore-log
 COPY --from=build /src/target/release/ore-sign           /usr/local/bin/ore-sign

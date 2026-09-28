@@ -541,6 +541,8 @@ fn armar(
                     &a.identidad,
                     &identidad_clave,
                 )),
+                objeto: None,
+                formato: None,
             })
         })
         .collect();
@@ -549,6 +551,7 @@ fn armar(
     escribir(&Catalogo {
         fuente: fuente.to_string(),
         tablas,
+        objetos: Vec::new(),
     })
 }
 

@@ -372,6 +372,8 @@ pub fn armar(fuente: &str, dataset: &str, filas: &[Fila]) -> String {
                 // Las dos caras, del objeto y no de quien lo consulta.
                 lee: Some(reads(a.particion.as_deref(), a.exige_filtro)),
                 cambia: Some(changes(&a.tipo, a.historial)),
+                objeto: None,
+                formato: None,
             })
         })
         .collect();
@@ -381,6 +383,7 @@ pub fn armar(fuente: &str, dataset: &str, filas: &[Fila]) -> String {
     escribir(&Catalogo {
         fuente: fuente.to_string(),
         tablas,
+        objetos: Vec::new(),
     })
 }
 

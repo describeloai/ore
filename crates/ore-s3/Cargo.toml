@@ -1,0 +1,25 @@
+# El protocolo S3, UNA vez: la firma SigV4 y las lecturas que un lector de un
+# almacen de objetos necesita. Lo usan `ore-store-r2` (el lago en R2, que habla
+# S3) y `ore-read-s3` (un bucket del cliente como fuente, 0046 E4).
+#
+# Estaba dentro de `ore-store/src/r2.rs`, y un segundo cliente S3 con su propia
+# firma habria sido dos firmas que divergen en el caso que ninguna prueba
+# ejerce. Sin SDK de AWS: su TLS por defecto es `aws-lc-rs`, que pide cmake y
+# nasm, y la firma son cien lineas con vectores oficiales.
+[package]
+name        = "ore-s3"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "La firma SigV4 y las lecturas de S3, compartidas por el lago y el lector"
+
+[dependencies]
+# SHA-256 para la firma y el digest del cuerpo. HMAC no se enlaza: son seis
+# lineas sobre esto, con el vector oficial de AWS en las pruebas.
+sha2 = { workspace = true }
+# HTTP con el TLS de la plataforma: la CA de la empresa esta donde el sistema
+# la busca (la misma eleccion que `ore-store` y `ore-read-postgres`).
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"

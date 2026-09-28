@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE) y E3 (la superficie) hechos ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance), E2 (la gramática en ORE), E3 (la superficie) y E4 (el driver) hechos ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -298,7 +298,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E1 · la spec, completa** ✅ `oos 4fa2206` | esquemas `schemas/v1alpha16/`; `conformance/v1alpha16/` (8 aceptan, 34 rechazan, uno por regla; `OOS2040` incluido); el texto afinado al escribir los casos (abajo) | empujado en OOS |
 | **E2 · la gramática** (`ore-core`) ✅ 43/43 | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
-| **E4 · el driver** (F3) | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
+| **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) | `ore source induce` escribe un `ObjectTable` por prefijo y medio y una `Table` con `format` por grupo tabular; limpieza de `objects/`; la política IAM en `credenciales.rs`; imagen de drivers. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados y copia** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado; si la standard copia la colección o la sirve en sitio | informe aquí; decide E8 |
@@ -362,6 +362,31 @@ ahora lo hereda (caso nuevo, oos `521eb11`). Pruebas: `assets::guardar_…`,
 `punteros::lo_que_sale_de_una_fuente_de_objetos` y el paso 24 de `los-documentos.sh`.
 **Movido** (decidido con el usuario): el diff de estos kinds, a después de E8; crear una colección
 por SQL, a E10.
+
+**Lo que E4 midió e hizo.** El driver `ore-read-s3` (verbos `check`, `explorar`, `catalogo`,
+`testigo`; `leer` llega con E6) y el crate `ore-s3`, que saca la firma SigV4 de `ore-store/src/r2.rs`
+para que el lago y el lector firmen con el mismo código: gana la credencial temporal y la fecha
+inyectable, y pasa el ejemplo oficial de S3 (el `GET` con `Range` de la documentación de SigV4), no
+solo el vector de la clave. Sin SDK ni dependencias nuevas: `Cargo.lock` solo gana los dos crates.
+La forma del catálogo (`ore-driver`) gana `objects` —prefijo, patrón, medio, cuántos, cuánto pesan,
+extensiones— y, en la tabla, `object` y `format`, con su ida y vuelta.
+
+Contra el bucket de F1 (`pruebas-de-fuego/s3-real.sh`, solo lectura, la URL con la credencial por
+`ORE_S3_URL` y nunca impresa): `check` dice cada acción sobre su ARN (`s3:ListBucket` sobre el
+bucket, `s3:GetObject` sobre `bucket/*`, `s3:ListBucketVersions` informativa) y, con la región
+equivocada, **que es la región** (`x-amz-bucket-region`), no un permiso. El catálogo da **12 tablas
+y 5 conjuntos**: `ventas/pedidos/fecha=*` es una tabla Parquet con `fecha` como columna, 1500 filas
+del pie y `total` `Decimal<12, 2>`; los ocho CSV de Olist y la traducción, una tabla cada uno
+(esquemas distintos), con el código postal en texto y el BOM quitado; `logs/*.jsonl`, una tabla con
+la unión de sus claves; contratos (document, 4), fotos (image, 3: `jpg` y `png`), los zips con su
+patrón y lo suelto de la raíz. **38 peticiones y 583 KB leídos para 171 MB, en 6,6 s** desde
+España: reutilizar la conexión lo bajó de 14,4 s (la primera petición TLS cuesta ~1,3 s). El
+`testigo` de un prefijo es la huella de su listado (clave, ETag, tamaño): cambia si algo entra,
+cambia o **desaparece**. Y por `ore`: `source add` + `check` + `catalog` dan el mismo catálogo, y la
+credencial no está ni en el manifiesto ni en el catálogo. La imagen de drivers lleva
+`ore-read-s3`. **Sin medir**: un listado de miles de objetos (la confirmación de tipo es de dos por
+carpeta y extensión, y un CSV cuesta una lectura de 64 KB: lineal en carpetas, no en objetos) y la
+federación (E9b).
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

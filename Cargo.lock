@@ -2315,11 +2315,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-s3"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema",
+ "ore-core",
+ "ore-driver",
+ "ore-s3",
+ "parquet",
+]
+
+[[package]]
 name = "ore-registry"
 version = "0.1.0"
 dependencies = [
  "ore-core",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "ore-s3"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "sha2 0.11.0",
+ "ureq",
 ]
 
 [[package]]
@@ -2362,6 +2382,7 @@ dependencies = [
  "native-tls",
  "ore-core",
  "ore-gcp",
+ "ore-s3",
  "parquet",
  "serde",
  "serde_json",

@@ -567,6 +567,7 @@ pub fn inducir_con_regla(
     let cat = Catalogo {
         fuente: cat.fuente.clone(),
         tablas: con_modelo,
+        objetos: cat.objetos.clone(),
     };
     // El nombre de la vista sin modelar es el que tendría su entidad; si dos
     // tablas del alcance lo comparten, el físico entero. Sin decisión: cuando

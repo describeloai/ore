@@ -40,13 +40,17 @@ use ore_core::json::Json;
 use ore_core::parse::{self, Node, Style};
 use std::collections::BTreeMap;
 
-/// Dónde cuelga cada clave. Son cuatro niveles y no hay más anidamiento.
+/// Dónde cuelga cada clave. Son cinco niveles y no hay más anidamiento.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nivel {
     Raiz,
     Tabla,
     Columna,
     Foranea,
+    /// v1alpha16 (0046 E4): un conjunto de objetos de un origen, lo que
+    /// `ore source induce` escribe como `ObjectTable`. Comparte `name`,
+    /// `reads` y `changes` con la tabla.
+    Objetos,
 }
 
 /// **El vocabulario del catálogo, entero.** Dieciocho claves en cuatro
@@ -58,6 +62,44 @@ pub enum Nivel {
 pub const FORMA: &[(&str, Nivel, &str)] = &[
     ("source", Nivel::Raiz, "de qué fuente declarada vino"),
     ("tables", Nivel::Raiz, "los objetos que el origen tiene"),
+    (
+        "objects",
+        Nivel::Raiz,
+        "v1alpha16: los conjuntos de objetos (ficheros que no son filas)",
+    ),
+    (
+        "object",
+        Nivel::Tabla,
+        "v1alpha16: dónde está en el origen, si no es su nombre (una clave o un prefijo)",
+    ),
+    (
+        "format",
+        Nivel::Tabla,
+        "v1alpha16: cómo se leen sus ficheros (`Table.format`), opaco a esta pieza",
+    ),
+    (
+        "prefix",
+        Nivel::Objetos,
+        "el prefijo de claves, tal cual; la cadena vacía es el origen entero",
+    ),
+    (
+        "match",
+        Nivel::Objetos,
+        "el patrón glob sobre la clave relativa",
+    ),
+    ("media", Nivel::Objetos, "el tipo de medio, por los bytes"),
+    (
+        "partitions",
+        Nivel::Objetos,
+        "las claves `k=v` del camino que son columnas",
+    ),
+    ("count", Nivel::Objetos, "cuántos objetos hay, al catalogar"),
+    ("bytes", Nivel::Objetos, "cuánto pesan entre todos"),
+    (
+        "extensions",
+        Nivel::Objetos,
+        "las extensiones vistas, en minúscula: lo que una colección admitirá en `formats`",
+    ),
     ("name", Nivel::Tabla, "opaco: sus reglas son del origen"),
     (
         "columns",
@@ -182,6 +224,32 @@ pub struct Tabla {
     pub lee: Option<Json>,
     /// La cara `D`, igual: la sondeó el driver preguntándole al servidor.
     pub cambia: Option<Json>,
+    /// v1alpha16. Dónde está en el origen cuando no es su nombre: la clave de
+    /// un fichero o el prefijo de un conjunto de ficheros que son filas. El
+    /// nombre (`<schema>.<tabla>`) es lo que el árbol nombra; esto, lo que el
+    /// driver lee.
+    pub objeto: Option<String>,
+    /// v1alpha16. Cómo se leen sus ficheros —`type`, `match`, `partitions` y
+    /// las opciones de csv—, opaco como las caras.
+    pub formato: Option<Json>,
+}
+
+/// v1alpha16. **Un conjunto de objetos de un origen**: un prefijo, un patrón y
+/// un tipo de medio. Es lo que `ore source induce` escribe como `ObjectTable`.
+/// No lleva columnas: son las fijas.
+#[derive(Clone, Debug, Default)]
+pub struct Objetos {
+    /// `<schema>.<nombre>`, como una tabla.
+    pub nombre: String,
+    pub prefijo: String,
+    pub patron: Option<String>,
+    pub medio: String,
+    pub particiones: Vec<String>,
+    pub cuantos: u64,
+    pub bytes: u64,
+    pub extensiones: Vec<String>,
+    pub lee: Option<Json>,
+    pub cambia: Option<Json>,
 }
 
 /// Lo que el lector entrega.
@@ -189,6 +257,8 @@ pub struct Tabla {
 pub struct Catalogo {
     pub fuente: String,
     pub tablas: Vec<Tabla>,
+    /// v1alpha16: vacío en un origen que solo tiene filas.
+    pub objetos: Vec<Objetos>,
 }
 
 impl Catalogo {
@@ -275,9 +345,53 @@ impl Catalogo {
                     .to_string(),
                 lee: t.get("reads").map(|(_, v)| de_node(v)),
                 cambia: t.get("changes").map(|(_, v)| de_node(v)),
+                objeto: t
+                    .get("object")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from),
+                formato: t.get("format").map(|(_, v)| de_node(v)),
             });
         }
-        Ok(Catalogo { fuente, tablas })
+        let mut objetos = Vec::new();
+        for o in raiz.get("objects").map(|(_, v)| v.items()).unwrap_or(&[]) {
+            let Some(nombre) = o.get("name").and_then(|(_, v)| v.as_str()) else {
+                continue;
+            };
+            let numero = |k: &str| {
+                o.get(k)
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+            objetos.push(Objetos {
+                nombre: nombre.to_string(),
+                prefijo: o
+                    .get("prefix")
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                patron: o
+                    .get("match")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from),
+                medio: o
+                    .get("media")
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap_or("binary")
+                    .to_string(),
+                particiones: lista(o, "partitions"),
+                cuantos: numero("count"),
+                bytes: numero("bytes"),
+                extensiones: lista(o, "extensions"),
+                lee: o.get("reads").map(|(_, v)| de_node(v)),
+                cambia: o.get("changes").map(|(_, v)| de_node(v)),
+            });
+        }
+        Ok(Catalogo {
+            fuente,
+            tablas,
+            objetos,
+        })
     }
 }
 
@@ -360,14 +474,56 @@ pub fn escribir(c: &Catalogo) -> String {
             if let Some(x) = &t.cambia {
                 o.insert("changes".into(), x.clone());
             }
+            if let Some(x) = &t.objeto {
+                o.insert("object".into(), Json::s(x));
+            }
+            if let Some(x) = &t.formato {
+                o.insert("format".into(), x.clone());
+            }
             Json::Obj(o)
         })
         .collect();
-    Json::obj([
+    let mut raiz = vec![
         ("source", Json::s(&c.fuente)),
         ("tables", Json::Arr(tablas)),
-    ])
-    .pretty()
+    ];
+    // Un origen de filas no escribe `objects`: la ausencia es la respuesta, y
+    // así un catálogo de antes vuelve a escribirse igual.
+    if !c.objetos.is_empty() {
+        raiz.push((
+            "objects",
+            Json::Arr(
+                c.objetos
+                    .iter()
+                    .map(|o| {
+                        let mut m: BTreeMap<String, Json> = BTreeMap::new();
+                        m.insert("name".into(), Json::s(&o.nombre));
+                        m.insert("prefix".into(), Json::s(&o.prefijo));
+                        if let Some(x) = &o.patron {
+                            m.insert("match".into(), Json::s(x));
+                        }
+                        m.insert("media".into(), Json::s(&o.medio));
+                        if !o.particiones.is_empty() {
+                            m.insert("partitions".into(), textos(&o.particiones));
+                        }
+                        m.insert("count".into(), Json::Int(o.cuantos as i64));
+                        m.insert("bytes".into(), Json::Int(o.bytes as i64));
+                        if !o.extensiones.is_empty() {
+                            m.insert("extensions".into(), textos(&o.extensiones));
+                        }
+                        if let Some(x) = &o.lee {
+                            m.insert("reads".into(), x.clone());
+                        }
+                        if let Some(x) = &o.cambia {
+                            m.insert("changes".into(), x.clone());
+                        }
+                        Json::Obj(m)
+                    })
+                    .collect(),
+            ),
+        ));
+    }
+    Json::obj(raiz).pretty()
 }
 
 fn textos(v: &[String]) -> Json {
@@ -448,7 +604,24 @@ mod tests {
           ],
           "rows": 50000,
           "reads": { "predicatePushdown": ["eq"], "fullScan": "cheap", "projectionPushdown": true },
-          "changes": { "mode": "upsert", "witness": "log", "key": ["id"] } }
+          "changes": { "mode": "upsert", "witness": "log", "key": ["id"] } },
+        { "name": "ventas.pedidos",
+          "kind": "table",
+          "object": "Nueva carpeta/ventas/pedidos/",
+          "format": { "type": "parquet", "match": "**/*.parquet", "partitions": ["fecha"] },
+          "columns": [ { "name": "id", "type": "String" } ] }
+      ],
+      "objects": [
+        { "name": "docs.contratos",
+          "prefix": "Nueva carpeta/contratos/",
+          "match": "*.pdf",
+          "media": "document",
+          "partitions": ["anio"],
+          "count": 4,
+          "bytes": 31768,
+          "extensions": ["pdf"],
+          "reads": { "fullScan": "cheap" },
+          "changes": { "mode": "retract", "witness": "listing" } }
       ]
     }"#;
 
@@ -464,7 +637,14 @@ mod tests {
         let cuerpo = &yo[yo.find("pub fn leer(").expect("sin lector")
             ..yo.find("pub fn escribir(").expect("sin emisor")];
         let mut preguntadas: Vec<String> = Vec::new();
-        for pat in ["get(\"", "lista(t, \"", "lista(f, \"", "cadena(\""] {
+        for pat in [
+            "get(\"",
+            "lista(t, \"",
+            "lista(f, \"",
+            "lista(o, \"",
+            "cadena(\"",
+            "numero(\"",
+        ] {
             let mut resto = cuerpo;
             while let Some(i) = resto.find(pat) {
                 resto = &resto[i + pat.len()..];

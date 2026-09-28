@@ -333,6 +333,7 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
     Ok(escribir(&Catalogo {
         fuente: fuente.to_string(),
         tablas,
+        objetos: Vec::new(),
     }))
 }
 

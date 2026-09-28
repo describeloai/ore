@@ -1,0 +1,25 @@
+# El lector de un almacen de objetos: un bucket de S3 como FUENTE (0046 E4).
+#
+# No hay SQL ni conexion: hay un listado y bytes que se leen por rangos. De un
+# bucket sale un catalogo de dos cosas —tablas sobre los ficheros que son filas
+# (Parquet, CSV, JSONL) y conjuntos de objetos que no lo son (documentos,
+# imagenes…)— y `ore source induce` las escribe como `Table` con `format` y
+# como `ObjectTable`.
+[package]
+name        = "ore-read-s3"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de buckets de S3: catalogo de objetos y de ficheros tabulares"
+
+[dependencies]
+ore-core   = { path = "../ore-core" }
+ore-driver = { path = "../ore-driver" }
+ore-s3     = { path = "../ore-s3" }
+# El pie de un Parquet, leido por rangos: su esquema exacto (decimal128(12, 2),
+# timestamp[us, tz=UTC]) sin bajar el fichero. Ya estaba en el arbol (lo trae
+# `ore-store`), con las mismas features.
+parquet    = { version = "58", default-features = false, features = ["arrow", "snap"] }
+arrow-schema = "58"
