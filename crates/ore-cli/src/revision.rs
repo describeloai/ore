@@ -78,8 +78,15 @@ const RESPUESTAS: &str = "discover.answers.json";
 /// mismo: en un paquete descubierto con la versión anterior, la primera
 /// revisión retira los que quedaron. Sacarlo de aquí los dejaría al lado de las
 /// tablas que los sustituyen, diciendo lo mismo dos veces.
-const GOBERNADOS: [&str; 6] = [
-    "entities", "bindings", "concepts", "tables", "views", "datasets",
+const GOBERNADOS: [&str; 8] = [
+    "entities",
+    "bindings",
+    "concepts",
+    "tables",
+    "views",
+    "datasets",
+    "objects",
+    "collections",
 ];
 
 pub struct Fallo {
@@ -475,7 +482,7 @@ fn escribir(
             } else {
                 !matches!(
                     dir.rsplit('/').next(),
-                    Some("tables" | "views" | "datasets")
+                    Some("tables" | "views" | "datasets" | "objects" | "collections")
                 ) || base.contains("__")
             };
             if !del_inductor {

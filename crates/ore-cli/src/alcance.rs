@@ -327,7 +327,14 @@ impl Alcance {
     /// misma regla que `inducir_con` sigue con las decisiones: lo que sale del
     /// inductor es siempre una inducción de algo, nunca una inducción retocada.
     pub fn aplicar(&self, cat: Catalogo) -> (Catalogo, Recorte) {
-        let habia: BTreeSet<String> = cat.tablas.iter().map(|t| t.nombre.clone()).collect();
+        // v1alpha16: un conjunto de objetos se elige como una tabla, por su
+        // nombre del catálogo.
+        let habia: BTreeSet<String> = cat
+            .tablas
+            .iter()
+            .map(|t| t.nombre.clone())
+            .chain(cat.objetos.iter().map(|o| o.nombre.clone()))
+            .collect();
         let sin_respaldo: Vec<String> = self
             .objetos
             .iter()
@@ -339,13 +346,17 @@ impl Alcance {
             tablas,
             objetos,
         } = cat;
-        let antes = tablas.len();
+        let antes = tablas.len() + objetos.len();
         let tablas: Vec<_> = tablas
             .into_iter()
             .filter(|t| self.objetos.contains(&t.nombre))
             .collect();
+        let objetos: Vec<_> = objetos
+            .into_iter()
+            .filter(|o| self.objetos.contains(&o.nombre))
+            .collect();
         let recorte = Recorte {
-            fuera: antes - tablas.len(),
+            fuera: antes - tablas.len() - objetos.len(),
             sin_respaldo,
         };
         (
@@ -439,7 +450,13 @@ impl Eleccion {
         let delante = std::fs::read_to_string(raiz.join("discover.catalog.json"))
             .ok()
             .and_then(|t| Catalogo::leer(&t).ok())
-            .map(|c| c.tablas.into_iter().map(|t| t.nombre).collect())
+            .map(|c| {
+                c.tablas
+                    .into_iter()
+                    .map(|t| t.nombre)
+                    .chain(c.objetos.into_iter().map(|o| o.nombre))
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(Some(Eleccion { alcance, delante }))
     }

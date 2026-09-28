@@ -1602,7 +1602,12 @@ fn descubrir(
         //    error que tenia esto: con una errata, el recorte deja el catalogo
         //    vacio y la ayuda salia sin una sola linea — justo cuando lo unico
         //    util que se puede decir es como se llaman de verdad.
-        let habia: Vec<String> = catalogo.tablas.iter().map(|t| t.nombre.clone()).collect();
+        let habia: Vec<String> = catalogo
+            .tablas
+            .iter()
+            .map(|t| t.nombre.clone())
+            .chain(catalogo.objetos.iter().map(|o| o.nombre.clone()))
+            .collect();
         let (recortado, recorte) = a.aplicar(catalogo);
         // Un nombre que el catalogo no tiene PARA el comando: se acaba de
         // escribir en la linea de ordenes, asi que una errata es lo mas
@@ -1625,8 +1630,8 @@ fn descubrir(
             }
             return std::process::ExitCode::from(65); // EX_DATAERR
         }
-        if recortado.tablas.is_empty() {
-            eprintln!("error: el alcance deja el paquete sin ninguna tabla");
+        if recortado.tablas.is_empty() && recortado.objetos.is_empty() {
+            eprintln!("error: el alcance deja el paquete sin ninguna tabla ni conjunto de objetos");
             return std::process::ExitCode::from(65);
         }
         catalogo = recortado;
@@ -1728,7 +1733,7 @@ fn descubrir(
         }
         println!(
             "  \u{2713} alcance: {} objeto(s) · {} del origen se quedan fuera, y {} lo dice",
-            catalogo.tablas.len(),
+            catalogo.tablas.len() + catalogo.objetos.len(),
             recorte.fuera,
             alcance::FICHERO
         );

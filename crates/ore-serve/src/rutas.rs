@@ -2026,12 +2026,23 @@ fn tablas_del_paquete(raiz: &Path, pkg: &Package, dir: &Path) -> Vec<Json> {
     }
     tablas.sort_by(|a, b| a.path.cmp(&b.path));
     // Sin tablas ni nadie que las lea: lo que el catálogo guardado dice.
+    // ⚠️ De una base, sólo lo que eligió: una base de solo colecciones
+    //   (v1alpha16) no tiene tablas, y sin esto enseñaba el bucket entero.
     if tablas.is_empty() {
-        let del_catalogo = tablas_del_catalogo(dir);
+        let mut del_catalogo = tablas_del_catalogo(dir);
+        if let Some(elegidos) = elegidos_de(dir) {
+            del_catalogo.retain(|f| {
+                matches!(f, Json::Obj(m) if matches!(m.get("object"), Some(Json::Str(o)) if elegidos.contains(o)))
+            });
+        }
         if !del_catalogo.is_empty() {
             return del_catalogo;
         }
     }
+    let mut ubicaciones: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    > = Default::default();
     let mut salida: Vec<(String, Json)> = Vec::new();
     for tabla in tablas {
         let t = &tabla.root;
@@ -2039,6 +2050,17 @@ fn tablas_del_paquete(raiz: &Path, pkg: &Package, dir: &Path) -> Vec<Json> {
             continue;
         };
         let objeto = en(t, "spec", "object").unwrap_or_default();
+        // v1alpha16: de un bucket, `object` es dónde está; la fila dice el
+        // nombre del catálogo, que es lo que se elige y se copia, y `location`.
+        let fuente_de = en(t, "spec", "datasource").unwrap_or_default();
+        let (objeto, ubicacion) = match ubicaciones
+            .entry(fuente_de.clone())
+            .or_insert_with(|| nombres_por_ubicacion(raiz, &fuente_de))
+            .get(&objeto)
+        {
+            Some(n) => (n.clone(), Some(objeto)),
+            None => (objeto, None),
+        };
         let mut columnas = Vec::new();
         if let Some((_, spec)) = t.get("spec")
             && let Some((_, c)) = spec.get("columns")
@@ -2094,6 +2116,9 @@ fn tablas_del_paquete(raiz: &Path, pkg: &Package, dir: &Path) -> Vec<Json> {
         if let Some(e) = &entidad {
             campos.push(("entity", Json::s(e)));
         }
+        if let Some(l) = ubicacion {
+            campos.push(("location", Json::s(l)));
+        }
         salida.push((objeto, Json::obj(campos)));
     }
     salida.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2115,9 +2140,60 @@ fn tablas_de_la_fuente(raiz: &Path, pkg: &Package, dir: &Path, este: &str) -> Ve
     };
     for f in filas.iter_mut() {
         let Json::Obj(m) = f else { continue };
-        let Some(Json::Str(o)) = m.get("object").cloned() else {
+        // v1alpha16: la `Table` de un bucket lleva en `object` dónde está
+        // (`location`), no el nombre del catálogo.
+        let Some(Json::Str(o)) = m.get("location").or_else(|| m.get("object")).cloned() else {
             continue;
         };
+        if m.get("kind") == Some(&Json::s("objects")) {
+            let patron = match m.get("match") {
+                Some(Json::Str(p)) => Some(p.clone()),
+                _ => None,
+            };
+            let puntero = pkg.docs.iter().find(|t| {
+                t.kind == Kind::ObjectTable
+                    && de(t).as_deref() == Some(este)
+                    && t.section("prefix").and_then(|v| v.as_str()) == Some(o.as_str())
+                    && t.section("match")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        == patron
+            });
+            let Some(t) = puntero else { continue };
+            let mut usan: std::collections::BTreeSet<String> = pkg
+                .docs
+                .iter()
+                .filter(|d| {
+                    crate::punteros::objetos_que_lee(pkg, d)
+                        .iter()
+                        .any(|x| x.path == t.path)
+                })
+                .filter_map(|d| de(d).filter(|p| p != este))
+                .collect();
+            // Un contenedor no tiene colección que lo lea: lo usa la base que
+            // lo eligió.
+            let nombre = match m.get("object") {
+                Some(Json::Str(n)) => n.clone(),
+                _ => String::new(),
+            };
+            if let Ok(es) = std::fs::read_dir(raiz.join("packages")) {
+                for e in es.flatten() {
+                    if elegidos_de(&e.path()).is_some_and(|el| el.contains(&nombre))
+                        && origen_de(&e.path()).0.as_deref() == Some(este)
+                    {
+                        usan.insert(e.file_name().to_string_lossy().into_owned());
+                    }
+                }
+            }
+            m.insert("table".into(), Json::s(t.qname().unwrap_or_default()));
+            if !usan.is_empty() {
+                m.insert(
+                    "usedBy".into(),
+                    Json::Arr(usan.into_iter().map(Json::s).collect()),
+                );
+            }
+            continue;
+        }
         let puntero = pkg.docs.iter().find(|t| {
             t.kind == Kind::Table
                 && de(t).as_deref() == Some(este)
@@ -2156,6 +2232,47 @@ fn tablas_de_la_fuente(raiz: &Path, pkg: &Package, dir: &Path, este: &str) -> Ve
     filas
 }
 
+/// Lo que una base eligió (`only` de `discover.scope.json`), si es una base.
+fn elegidos_de(dir: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let t = std::fs::read_to_string(dir.join("discover.scope.json")).ok()?;
+    let n = parse::parse(&t).ok()?;
+    Some(
+        n.get("only")
+            .map(|(_, v)| v.items())
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect(),
+    )
+}
+
+/// v1alpha16 · de dónde está (`tables[].object`) al nombre del catálogo, en el
+/// catálogo del paquete de una fuente. Vacío si la fuente no tiene paquete o
+/// sus tablas no dicen dónde están (todas menos las de un bucket).
+fn nombres_por_ubicacion(raiz: &Path, fuente: &str) -> std::collections::BTreeMap<String, String> {
+    let Ok(texto) = std::fs::read_to_string(
+        raiz.join("packages")
+            .join(fuente)
+            .join("discover.catalog.json"),
+    ) else {
+        return Default::default();
+    };
+    let Ok(cat) = parse::parse(&texto) else {
+        return Default::default();
+    };
+    cat.get("tables")
+        .map(|(_, v)| v.items())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|t| {
+            Some((
+                t.get("object")?.1.as_str()?.to_string(),
+                t.get("name")?.1.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 /// El esquema de una fuente, desde `discover.catalog.json`: `name` es el objeto
 /// fisico (`public.pedidos`), y `physicalType` es el `sourceType` que el
 /// origen dijo —si no lo dijo, el tipo de OOS que el lector dedujo va en `type`
@@ -2191,7 +2308,7 @@ fn tablas_del_catalogo(dir: &Path) -> Vec<Json> {
             }
             columnas.push(Json::obj(campos));
         }
-        let campos = vec![
+        let mut campos = vec![
             ("name", Json::s(objeto)),
             ("object", Json::s(objeto)),
             ("datasource", Json::s(&fuente)),
@@ -2199,7 +2316,43 @@ fn tablas_del_catalogo(dir: &Path) -> Vec<Json> {
             ("modeled", Json::Bool(false)),
             ("copied", Json::Bool(false)),
         ];
+        // v1alpha16 (0046 E5): de un bucket, `object` sigue siendo el nombre
+        // del catálogo —lo que se elige en `only`, `<schema>.<nombre>`— y
+        // `location` dice dónde está: la clave o el prefijo de sus ficheros.
+        if let Some(l) = t.get("object").and_then(|(_, v)| v.as_str()) {
+            campos.push(("location", Json::s(l)));
+        }
         salida.push((objeto.to_string(), Json::obj(campos)));
+    }
+    // v1alpha16: los conjuntos de objetos, que se eligen igual. Sus columnas
+    // son las fijas del listado (`01-object-table` §1).
+    for o in cat.get("objects").map(|(_, v)| v.items()).unwrap_or(&[]) {
+        let Some(nombre) = o.get("name").and_then(|(_, v)| v.as_str()) else {
+            continue;
+        };
+        let texto = |k: &str| o.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        let entero = |k: &str| Json::Int(texto(k).and_then(|n| n.parse().ok()).unwrap_or(0));
+        let columnas = ore_core::document::COLUMNAS_DE_OBJETO
+            .iter()
+            .map(|(n, t)| Json::obj([("name", Json::s(*n)), ("type", Json::s(*t))]))
+            .collect();
+        let mut campos = vec![
+            ("name", Json::s(nombre)),
+            ("object", Json::s(nombre)),
+            ("kind", Json::s("objects")),
+            ("datasource", Json::s(&fuente)),
+            ("columns", Json::Arr(columnas)),
+            ("modeled", Json::Bool(false)),
+            ("copied", Json::Bool(false)),
+            ("media", Json::s(texto("media").unwrap_or_default())),
+            ("location", Json::s(texto("prefix").unwrap_or_default())),
+            ("count", entero("count")),
+            ("bytes", entero("bytes")),
+        ];
+        if let Some(m) = texto("match") {
+            campos.push(("match", Json::s(m)));
+        }
+        salida.push((nombre.to_string(), Json::obj(campos)));
     }
     salida.sort_by(|a, b| a.0.cmp(&b.0));
     salida.into_iter().map(|(_, j)| j).collect()
@@ -2251,22 +2404,39 @@ fn objetos_fisicos(
         .and_then(|x| x.to_str())
         .unwrap_or_default();
     let mut salida: std::collections::BTreeMap<String, String> = Default::default();
+    let mut ubicaciones: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    > = Default::default();
     for d in pkg.docs.iter().filter(|d| {
         matches!(d.kind, Kind::View | Kind::Dataset)
             && crate::punteros::paquete_de(raiz, d).as_deref() == Some(este)
     }) {
+        let tabla = crate::punteros::tabla_que_lee(pkg, d);
         let (Some(nombre), Some(o)) = (
             d.meta("name").and_then(|v| v.as_str()),
-            crate::punteros::tabla_que_lee(pkg, d)
+            tabla
                 .and_then(|t| t.section("object"))
                 .and_then(|v| v.as_str()),
         ) else {
             continue;
         };
+        // v1alpha16: de un bucket, el nombre del catálogo, no dónde está.
+        let fuente = tabla
+            .and_then(|t| t.section("datasource"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let o = ubicaciones
+            .entry(fuente.clone())
+            .or_insert_with(|| nombres_por_ubicacion(raiz, &fuente))
+            .get(o)
+            .cloned()
+            .unwrap_or_else(|| o.to_string());
         // Una vista gana a un dataset con el mismo nombre (lo que `backedBy`
         // nombraba antes de 0033).
         if d.kind == Kind::View || !salida.contains_key(nombre) {
-            salida.insert(nombre.to_string(), o.to_string());
+            salida.insert(nombre.to_string(), o);
         }
     }
     salida
@@ -2967,9 +3137,16 @@ fn expandir(catalogo: &Path, objetos: Vec<String>) -> Result<Vec<String>, Respue
         .ok()
         .and_then(|t| ore_core::parse::parse(&t).ok())
         .map(|n| {
-            n.get("tables")
-                .map(|(_, t)| t.items())
-                .unwrap_or(&[])
+            // v1alpha16: `s.*` también trae los conjuntos de objetos de `s`.
+            let de = |k: &str| {
+                n.get(k)
+                    .map(|(_, t)| t.items().to_vec())
+                    .unwrap_or_default()
+            };
+            de("tables")
+                .into_iter()
+                .chain(de("objects"))
+                .collect::<Vec<_>>()
                 .iter()
                 .filter_map(|t| {
                     t.get("name")
@@ -3262,6 +3439,138 @@ mod el_puntero_en_la_fuente {
             .unwrap();
         assert_eq!(campo(customers, "table"), None);
         assert_eq!(campo(customers, "usedBy"), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// v1alpha16 (0046 E5) · **un bucket**: la tabla de ficheros dice dónde
+    /// está (`location`) y se elige por su nombre del catálogo (`object`);
+    /// los conjuntos de objetos salen como filas `kind: objects` con sus
+    /// columnas fijas, su puntero y quién los usa —por su colección, o por
+    /// haberlo elegido, que es lo único que hace una base con un zip—.
+    #[test]
+    fn un_bucket_ensena_sus_tablas_y_sus_conjuntos_por_su_nombre() {
+        let d = std::env::temp_dir().join(format!("ore-e5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let w = |rel: &str, t: &str| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        };
+        w(
+            "ontology.config.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\ndatasources:\n  - { name: s3, type: s3, connectionEnv: S3_URL }\n",
+        );
+        w(
+            "packages/s3/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: s3, version: 0.1.0, status: draft, domain: s3 }\nspec: { owner: team:t, exports: [s3.docs.pedidos, s3.docs.contratos, s3.docs.zips] }\n",
+        );
+        w(
+            "packages/s3/discover.catalog.json",
+            "{\"source\":\"s3\",\"tables\":[{\"name\":\"docs.pedidos\",\"object\":\"Mi carpeta/pedidos.csv\",\"format\":{\"type\":\"csv\"},\"columns\":[{\"name\":\"id\",\"type\":\"String\"}]}],\
+             \"objects\":[{\"name\":\"docs.contratos\",\"prefix\":\"Mi carpeta/contratos/\",\"media\":\"document\",\"count\":4,\"bytes\":100,\"extensions\":[\"pdf\"]},\
+             {\"name\":\"docs.zips\",\"prefix\":\"Mi carpeta/\",\"match\":\"*.zip\",\"media\":\"archive\",\"count\":2,\"bytes\":9,\"extensions\":[\"zip\"]}]}",
+        );
+        w(
+            "packages/s3/docs/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: docs, namespace: s3 }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/s3/docs/tables/pedidos.yaml",
+            "apiVersion: oos.dev/v1alpha16\nkind: Table\nmetadata: { name: pedidos, namespace: s3, schema: docs }\nspec:\n  datasource: s3\n  object: \"Mi carpeta/pedidos.csv\"\n  format: { type: csv }\n  columns: { id: { type: String } }\n  reads: { fullScan: cheap }\n  changes: { mode: retract, witness: listing }\n",
+        );
+        for (n, extra) in [
+            (
+                "contratos",
+                "  prefix: \"Mi carpeta/contratos/\"\n  media: document\n",
+            ),
+            (
+                "zips",
+                "  prefix: \"Mi carpeta/\"\n  match: \"*.zip\"\n  media: archive\n",
+            ),
+        ] {
+            w(
+                &format!("packages/s3/docs/objects/{n}.yaml"),
+                &format!(
+                    "apiVersion: oos.dev/v1alpha16\nkind: ObjectTable\nmetadata: {{ name: {n}, namespace: s3, schema: docs }}\nspec:\n  datasource: s3\n{extra}  changes: {{ mode: retract, witness: listing }}\n"
+                ),
+            );
+        }
+        w(
+            "packages/fdb/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: fdb, version: 0.1.0, status: draft, domain: fdb }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/fdb/discover.scope.json",
+            "{\"source\":\"s3\",\"only\":[\"docs.pedidos\",\"docs.contratos\"]}",
+        );
+        w(
+            "packages/fdb/docs/schema.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Schema\nmetadata: { name: docs, namespace: fdb }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/fdb/docs/datasets/pedidos.yaml",
+            "apiVersion: oos.dev/v1alpha13\nkind: Dataset\nmetadata: { name: pedidos, namespace: fdb, schema: docs }\nspec:\n  owner: team:t\n  from: { table: s3.docs.pedidos }\n  fields: { id: id }\n",
+        );
+        w(
+            "packages/fdb/docs/collections/contratos.yaml",
+            "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: { name: contratos, namespace: fdb, schema: docs }\nspec:\n  owner: team:t\n  media: document\n  formats: [pdf]\n  from: { objectTable: s3.docs.contratos }\n  virtual: true\n",
+        );
+        w(
+            "packages/zdb/package.yaml",
+            "apiVersion: oos.dev/v1alpha1\nkind: Package\nmetadata: { name: zdb, version: 0.1.0, status: draft, domain: zdb }\nspec: { owner: team:t }\n",
+        );
+        w(
+            "packages/zdb/discover.scope.json",
+            "{\"source\":\"s3\",\"only\":[\"docs.zips\"]}",
+        );
+        std::fs::copy(
+            d.join("packages/s3/discover.catalog.json"),
+            d.join("packages/zdb/discover.catalog.json"),
+        )
+        .unwrap();
+
+        let (pkg, _) = ore_core::validate::cargar_paquete(&d);
+        let de = |filas: &[Json], o: &str| {
+            filas
+                .iter()
+                .find(|f| campo(f, "object") == Some(&Json::s(o)))
+                .cloned()
+                .unwrap_or_else(|| panic!("sin `{o}`: {filas:?}"))
+        };
+        let fuente = tablas_del_paquete(&d, &pkg, &d.join("packages/s3"));
+        assert_eq!(fuente.len(), 3, "{fuente:?}");
+        let p = de(&fuente, "docs.pedidos");
+        assert_eq!(
+            campo(&p, "location"),
+            Some(&Json::s("Mi carpeta/pedidos.csv"))
+        );
+        assert_eq!(campo(&p, "table"), Some(&Json::s("s3.docs.pedidos")));
+        assert_eq!(campo(&p, "usedBy"), Some(&Json::Arr(vec![Json::s("fdb")])));
+        let c = de(&fuente, "docs.contratos");
+        assert_eq!(campo(&c, "kind"), Some(&Json::s("objects")));
+        assert_eq!(campo(&c, "media"), Some(&Json::s("document")));
+        assert_eq!(campo(&c, "count"), Some(&Json::Int(4)));
+        assert_eq!(campo(&c, "table"), Some(&Json::s("s3.docs.contratos")));
+        assert_eq!(campo(&c, "usedBy"), Some(&Json::Arr(vec![Json::s("fdb")])));
+        assert!(
+            matches!(campo(&c, "columns"), Some(Json::Arr(cs)) if cs.len() == ore_core::document::COLUMNAS_DE_OBJETO.len())
+        );
+        let z = de(&fuente, "docs.zips");
+        assert_eq!(campo(&z, "table"), Some(&Json::s("s3.docs.zips")));
+        assert_eq!(campo(&z, "usedBy"), Some(&Json::Arr(vec![Json::s("zdb")])));
+
+        // La base: la fila dice el nombre del catálogo, que es lo que se copia.
+        let base = tablas_del_paquete(&d, &pkg, &d.join("packages/fdb"));
+        assert_eq!(base.len(), 1, "{base:?}");
+        assert_eq!(campo(&base[0], "object"), Some(&Json::s("docs.pedidos")));
+        assert_eq!(
+            campo(&base[0], "location"),
+            Some(&Json::s("Mi carpeta/pedidos.csv"))
+        );
+        // Una base sin tablas enseña lo que eligió, no el bucket entero.
+        let zips = tablas_del_paquete(&d, &pkg, &d.join("packages/zdb"));
+        assert_eq!(zips.len(), 1, "{zips:?}");
+        assert_eq!(campo(&zips[0], "object"), Some(&Json::s("docs.zips")));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

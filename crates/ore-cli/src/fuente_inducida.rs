@@ -139,21 +139,24 @@ pub fn inducir(repo: &Path, fuente: &str) -> Result<Option<Informe>, Fallo> {
         }
     }
     for c in &carpetas {
-        let Ok(es) = std::fs::read_dir(d.join(format!("{c}tables"))) else {
-            continue;
-        };
-        for e in es.flatten() {
-            let Some(base) = e.file_name().to_str().map(String::from) else {
+        // v1alpha16: los conjuntos de objetos (`objects/`) son punteros igual.
+        for kind in ["tables", "objects"] {
+            let Ok(es) = std::fs::read_dir(d.join(format!("{c}{kind}"))) else {
                 continue;
             };
-            let rel = format!("{c}tables/{base}");
-            if base.ends_with(".yaml") && !f.ficheros.contains_key(&rel) && marcado(&e.path()) {
-                std::fs::remove_file(e.path())
-                    .map_err(|er| fallo(73, format!("no se pudo retirar `{rel}`: {er}")))?;
-                informe.retiradas.push(rel);
+            for e in es.flatten() {
+                let Some(base) = e.file_name().to_str().map(String::from) else {
+                    continue;
+                };
+                let rel = format!("{c}{kind}/{base}");
+                if base.ends_with(".yaml") && !f.ficheros.contains_key(&rel) && marcado(&e.path()) {
+                    std::fs::remove_file(e.path())
+                        .map_err(|er| fallo(73, format!("no se pudo retirar `{rel}`: {er}")))?;
+                    informe.retiradas.push(rel);
+                }
             }
+            let _ = std::fs::remove_dir(d.join(format!("{c}{kind}")));
         }
-        let _ = std::fs::remove_dir(d.join(format!("{c}tables")));
         if !c.is_empty() {
             let rel = format!("{c}schema.yaml");
             let vacia = std::fs::read_dir(d.join(c))

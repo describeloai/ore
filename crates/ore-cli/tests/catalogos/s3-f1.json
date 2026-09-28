@@ -1,0 +1,588 @@
+{
+  "objects": [
+    {
+      "bytes": 38147,
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "count": 1,
+      "extensions": [
+        "zip"
+      ],
+      "match": "*.zip",
+      "media": "archive",
+      "name": "default.raiz_zip",
+      "prefix": "",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "bytes": 5525,
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "count": 1,
+      "extensions": [
+        "txt"
+      ],
+      "match": "*.txt",
+      "media": "document",
+      "name": "default.raiz_txt",
+      "prefix": "",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "bytes": 44755727,
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "count": 2,
+      "extensions": [
+        "zip"
+      ],
+      "match": "*.zip",
+      "media": "archive",
+      "name": "nueva_carpeta.nueva_carpeta_zip",
+      "prefix": "Nueva carpeta/",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "bytes": 31768,
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "count": 4,
+      "extensions": [
+        "pdf"
+      ],
+      "media": "document",
+      "name": "nueva_carpeta.contratos",
+      "prefix": "Nueva carpeta/contratos/",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "bytes": 15464,
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "count": 3,
+      "extensions": [
+        "jpg",
+        "png"
+      ],
+      "media": "image",
+      "name": "nueva_carpeta.fotos",
+      "prefix": "Nueva carpeta/fotos/",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    }
+  ],
+  "source": "s3_ventas",
+  "tables": [
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "String"
+        },
+        {
+          "name": "customer_unique_id",
+          "type": "String"
+        },
+        {
+          "name": "customer_zip_code_prefix",
+          "type": "String"
+        },
+        {
+          "name": "customer_city",
+          "type": "String"
+        },
+        {
+          "name": "customer_state",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_customers_dataset",
+      "object": "Nueva carpeta/olist_customers_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "geolocation_zip_code_prefix",
+          "type": "String"
+        },
+        {
+          "name": "geolocation_lat",
+          "type": "Float"
+        },
+        {
+          "name": "geolocation_lng",
+          "type": "Float"
+        },
+        {
+          "name": "geolocation_city",
+          "type": "String"
+        },
+        {
+          "name": "geolocation_state",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_geolocation_dataset",
+      "object": "Nueva carpeta/olist_geolocation_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "String"
+        },
+        {
+          "name": "order_item_id",
+          "type": "Integer"
+        },
+        {
+          "name": "product_id",
+          "type": "String"
+        },
+        {
+          "name": "seller_id",
+          "type": "String"
+        },
+        {
+          "name": "shipping_limit_date",
+          "type": "DateTime"
+        },
+        {
+          "name": "price",
+          "type": "Float"
+        },
+        {
+          "name": "freight_value",
+          "type": "Float"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_order_items_dataset",
+      "object": "Nueva carpeta/olist_order_items_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "String"
+        },
+        {
+          "name": "payment_sequential",
+          "type": "Integer"
+        },
+        {
+          "name": "payment_type",
+          "type": "String"
+        },
+        {
+          "name": "payment_installments",
+          "type": "Integer"
+        },
+        {
+          "name": "payment_value",
+          "type": "Float"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_order_payments_dataset",
+      "object": "Nueva carpeta/olist_order_payments_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "review_id",
+          "type": "String"
+        },
+        {
+          "name": "order_id",
+          "type": "String"
+        },
+        {
+          "name": "review_score",
+          "type": "Integer"
+        },
+        {
+          "name": "review_comment_title",
+          "type": "String"
+        },
+        {
+          "name": "review_comment_message",
+          "type": "String"
+        },
+        {
+          "name": "review_creation_date",
+          "type": "DateTime"
+        },
+        {
+          "name": "review_answer_timestamp",
+          "type": "DateTime"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_order_reviews_dataset",
+      "object": "Nueva carpeta/olist_order_reviews_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "String"
+        },
+        {
+          "name": "customer_id",
+          "type": "String"
+        },
+        {
+          "name": "order_status",
+          "type": "String"
+        },
+        {
+          "name": "order_purchase_timestamp",
+          "type": "DateTime"
+        },
+        {
+          "name": "order_approved_at",
+          "type": "DateTime"
+        },
+        {
+          "name": "order_delivered_carrier_date",
+          "type": "DateTime"
+        },
+        {
+          "name": "order_delivered_customer_date",
+          "type": "DateTime"
+        },
+        {
+          "name": "order_estimated_delivery_date",
+          "type": "DateTime"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_orders_dataset",
+      "object": "Nueva carpeta/olist_orders_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "product_id",
+          "type": "String"
+        },
+        {
+          "name": "product_category_name",
+          "type": "String"
+        },
+        {
+          "name": "product_name_lenght",
+          "type": "Integer"
+        },
+        {
+          "name": "product_description_lenght",
+          "type": "Integer"
+        },
+        {
+          "name": "product_photos_qty",
+          "type": "Integer"
+        },
+        {
+          "name": "product_weight_g",
+          "type": "Integer"
+        },
+        {
+          "name": "product_length_cm",
+          "type": "Integer"
+        },
+        {
+          "name": "product_height_cm",
+          "type": "Integer"
+        },
+        {
+          "name": "product_width_cm",
+          "type": "Integer"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_products_dataset",
+      "object": "Nueva carpeta/olist_products_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "seller_id",
+          "type": "String"
+        },
+        {
+          "name": "seller_zip_code_prefix",
+          "type": "String"
+        },
+        {
+          "name": "seller_city",
+          "type": "String"
+        },
+        {
+          "name": "seller_state",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.olist_sellers_dataset",
+      "object": "Nueva carpeta/olist_sellers_dataset.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "product_category_name",
+          "type": "String"
+        },
+        {
+          "name": "product_category_name_english",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.product_category_name_translation",
+      "object": "Nueva carpeta/product_category_name_translation.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "ts",
+          "type": "DateTimeTz"
+        },
+        {
+          "name": "nivel",
+          "type": "String"
+        },
+        {
+          "name": "msg",
+          "type": "String"
+        },
+        {
+          "name": "ms",
+          "type": "Integer"
+        },
+        {
+          "name": "usuario",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "match": "*.jsonl",
+        "type": "jsonl"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.logs",
+      "object": "Nueva carpeta/logs/",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "nombre",
+          "type": "String"
+        },
+        {
+          "name": "pais",
+          "type": "String"
+        },
+        {
+          "name": "alta",
+          "type": "Date"
+        },
+        {
+          "name": "activo",
+          "type": "Boolean"
+        }
+      ],
+      "format": {
+        "type": "csv"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.clientes",
+      "object": "Nueva carpeta/ventas/clientes.csv",
+      "reads": {
+        "fullScan": "cheap"
+      }
+    },
+    {
+      "changes": {
+        "mode": "retract",
+        "witness": "listing"
+      },
+      "columns": [
+        {
+          "name": "id",
+          "sourceType": "string",
+          "type": "String"
+        },
+        {
+          "name": "cliente_id",
+          "sourceType": "string",
+          "type": "String"
+        },
+        {
+          "name": "total",
+          "sourceType": "decimal128(12, 2)",
+          "type": "Decimal<12, 2>"
+        },
+        {
+          "name": "unidades",
+          "sourceType": "int32",
+          "type": "Integer"
+        },
+        {
+          "name": "ts",
+          "sourceType": "timestamp[us, tz=UTC]",
+          "type": "DateTimeTz"
+        },
+        {
+          "name": "nota",
+          "sourceType": "string",
+          "type": "String"
+        },
+        {
+          "name": "fecha",
+          "type": "String"
+        }
+      ],
+      "format": {
+        "match": "**/*.parquet",
+        "partitions": [
+          "fecha"
+        ],
+        "type": "parquet"
+      },
+      "kind": "table",
+      "name": "nueva_carpeta.pedidos",
+      "object": "Nueva carpeta/ventas/pedidos/",
+      "reads": {
+        "fullScan": "cheap"
+      },
+      "rows": 1500
+    }
+  ]
+}

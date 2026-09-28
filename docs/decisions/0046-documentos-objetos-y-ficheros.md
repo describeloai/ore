@@ -299,9 +299,9 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E2 · la gramática** (`ore-core`) ✅ 43/43 | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
 | **E3 · la superficie** ✅ | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) ✅ | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
-| **E5 · inducir** (F3) | `ore source induce` escribe un `ObjectTable` por prefijo y medio y una `Table` con `format` por grupo tabular; limpieza de `objects/`; la política IAM en `credenciales.rs`; imagen de drivers. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
+| **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
 | **E6 · lo tabular** (F4) | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
-| **E7 · medir borrados y copia** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado; si la standard copia la colección o la sirve en sitio | informe aquí; decide E8 |
+| **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
 | **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
 | **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
@@ -320,6 +320,14 @@ F8 (procesar) queda fuera de este plan.
   (dueño, tipo, etiquetas que suman); lo que comparte con él son los bytes, que siguen en el
   origen. Su límite: la retención de una virtual vale lo que la del origen (sin versionado, un
   borrado deja el ítem roto; con él, apunta a su `versionId`). Lo mide E7.
+- **La clase de la base decide la colección** (al medir E5). Una base **estándar** copia todo lo
+  que elige, así que su colección es **mantenida**: copia los ficheros al lago y compila contra
+  `materialization.payload`, el conducto que ya autoriza para sus datasets. Una **foránea** es un
+  espejo que no copia, así que la suya es **virtual**: se sirve desde el origen. Es la misma regla
+  que da a una tabla un `Dataset` en la una y una `View` en la otra. Un conjunto copiado uno a uno
+  en una foránea (`copies`), mantenido. Un contenedor (`archive`) o lo que no se sabe qué es
+  (`binary`) no es una colección en ninguna: la base lo elige, la fuente escribe su puntero, y se
+  dice por qué no hay colección.
 - **El acceso al servir (E9), en espera.** Hay en curso, en otra sesión, el ADR que tiende el
   puente entre IAM y el plano de control de la organización y el plano de productos y de datos:
   con él, todo consumidor del plano de datos consumirá IAM de forma centralizada y estándar. E9 se
@@ -387,6 +395,36 @@ credencial no está ni en el manifiesto ni en el catálogo. La imagen de drivers
 `ore-read-s3`. **Sin medir**: un listado de miles de objetos (la confirmación de tipo es de dos por
 carpeta y extensión, y un CSV cuesta una lectura de 64 KB: lineal en carpetas, no en objetos) y la
 federación (E9b).
+
+**Lo que E5 midió e hizo.** Medido con el catálogo de F1 en un árbol con la fuente aparte y dos
+bases: el alta y el catálogo ya iban, y la inducción no. La `Table` de un fichero salía con el
+nombre del catálogo en `object` y sin `format` (tres `OOS1004` por `listing`); el alcance no
+aceptaba un conjunto («el origen no tiene `nueva_carpeta.contratos`»); nadie escribía un
+`ObjectTable` ni limpiaba `objects/`; y ore-serve daba el nombre del catálogo como objeto y no
+enseñaba los conjuntos. Hecho:
+
+- la `Table` de ficheros sale en v1alpha16 con dónde está (`object`: la clave o el prefijo) y cómo
+  se lee (`format`, `type` primero); los nombres del schema se reparten entre tablas y conjuntos
+  (`OOS2035`);
+- el alcance elige un conjunto como una tabla, por su nombre del catálogo, y `s.*` los incluye;
+- `ore source induce` escribe el `ObjectTable` de cada conjunto que alguna base elige
+  (`<schema>/objects/`), lo exporta y lo retira cuando ya no lo elige nadie, con su carpeta;
+- la base escribe su `MediaCollection` según su clase (arriba), con las extensiones vistas como
+  `formats`; sin fuente aparte, escribe también el puntero (`<conjunto>_t`); la re-inducción gobierna
+  `objects/` y `collections/` como las demás carpetas (solo lo marcado);
+- ore-serve: en el esquema de una fuente, `object` sigue siendo el nombre que se elige y `location`
+  dice dónde está; los conjuntos son filas `kind: objects` con sus columnas fijas, medio, cuántos,
+  bytes, su puntero y quién los usa (por su colección o por haberlos elegido); una base sin tablas
+  enseña lo que eligió, no el bucket entero; `GET /fuentes/credenciales/s3` da la política IAM de
+  solo lectura (las cuatro acciones que `check` prueba).
+
+El árbol con las dos bases compila sin un diagnóstico; el Job de copia de la estándar no ve las
+colecciones (recorre `Dataset`), así que hasta E8 una colección mantenida existe y no tiene ítems,
+como un dataset antes de su primera copia. Pruebas: `los_objetos_de_un_bucket` (el catálogo de F1
+como fixture: clases, retirada, errata), `un_bucket_ensena_…` y
+`s3_ensena_la_politica_de_solo_lectura`. **Sin hacer aquí**: el alta en vivo necesita que una
+persona guarde la credencial (el custodio decide con su concesión, `secreto:emitir`), así que la
+hace el usuario en la consola de victor; `drift-detect` no mira los conjuntos todavía.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

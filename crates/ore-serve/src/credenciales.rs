@@ -51,6 +51,25 @@ const BIGQUERY: &[Rol] = &[
     },
 ];
 
+/// La política de un usuario IAM que lee un bucket, con `{bucket}` por
+/// rellenar: listar (y sus versiones) sobre el bucket, leer (y una versión)
+/// sobre sus objetos. Es lo que `ore-read-s3 check` prueba, acción por acción.
+const POLITICA_S3: &str = r#"{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::{bucket}"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": "arn:aws:s3:::{bucket}/*"
+    }
+  ]
+}"#;
+
 /// La respuesta de `GET /fuentes/credenciales/{tipo}`. `cuenta` es la de la
 /// celda (`--cuenta-driver`); sin ella el modo se enseña igual, sin email, y
 /// se dice por qué falta.
@@ -113,6 +132,48 @@ pub fn de(tipo: &str, cuenta: Option<&str>) -> Json {
                 ),
             ])
         }
+        // S3 (0046 E5): la clave de un usuario IAM va en la URL, al custodio;
+        // lo que se enseña es la política que ese usuario necesita, que es
+        // SOLO de lectura. Las cuatro acciones son las que `check` prueba y
+        // `leer` usa; ninguna escribe.
+        "s3" => Json::obj([
+            ("tipo", Json::s("s3")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La clave de acceso de un usuario IAM va dentro de la URL, cifrada \
+                             en el custodio. Dale a ese usuario solo esta política: lectura, \
+                             sobre este bucket.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "s3://<bucket>[/<prefijo>]?region=<región>&access_key_id=<clave>&secret_access_key=<secreto>",
+                        ),
+                    ),
+                    ("politica", Json::s(POLITICA_S3)),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("clave-raiz")),
+                    (
+                        "porque",
+                        Json::s(
+                            "la clave de la cuenta raíz lo puede todo en todos los buckets: \
+                             una fuente lee, y con un usuario que solo lee basta",
+                        ),
+                    ),
+                ])]),
+            ),
+        ]),
         // Las demás familias llevan su credencial dentro de la cadena de
         // conexión, que va al custodio: no hay nada que conceder aparte.
         otro => Json::obj([
@@ -167,6 +228,23 @@ mod tests {
     fn sin_cuenta_se_dice() {
         let j = de("bigquery", None).jcs();
         assert!(j.contains("sinCuenta") && !j.contains("\"cuenta\""), "{j}");
+    }
+
+    /// S3: la clave en la URL, y la política del usuario, que solo lee.
+    #[test]
+    fn s3_ensena_la_politica_de_solo_lectura() {
+        let j = de("s3", None).jcs();
+        for a in [
+            "s3:ListBucket",
+            "s3:ListBucketVersions",
+            "s3:GetObject",
+            "s3:GetObjectVersion",
+            "arn:aws:s3:::{bucket}/*",
+        ] {
+            assert!(j.contains(a), "{a}: {j}");
+        }
+        assert!(!j.contains("Put") && !j.contains("Delete"), "{j}");
+        assert!(j.contains("\"modo\":\"cadena\""), "{j}");
     }
 
     /// Las demás familias: la credencial va en la cadena.

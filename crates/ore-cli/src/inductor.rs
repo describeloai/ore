@@ -64,7 +64,7 @@ use std::path::Path;
 // que compartían no era un tipo —era haber leído este fichero—.
 
 pub use ore_driver::catalogo::Catalogo;
-use ore_driver::catalogo::Tabla;
+use ore_driver::catalogo::{Objetos, Tabla};
 
 /// Un objeto del origen y las columnas que tiene **dentro**.
 ///
@@ -435,6 +435,10 @@ pub struct Induccion {
     /// —nadie puede contestarla desde aquí: es lo que el origen emite—, y
     /// por eso va aparte y se dice.
     pub sin_copia: Vec<(String, &'static str)>,
+    /// v1alpha16 · **Los conjuntos de objetos que no son una colección**
+    /// (contenedores, o lo que no se sabe qué es), con el porqué. Su puntero
+    /// sí se escribe; la colección no, y se dice.
+    pub sin_coleccion: Vec<(String, &'static str)>,
 }
 
 /// Inducir sin nada decidido y sin vocabulario publicado.
@@ -505,6 +509,15 @@ impl Regla {
             .unwrap_or_else(|| nombre_de_tabla(objeto))
     }
 
+    /// Cómo nombra la base un conjunto de objetos: el puntero de la fuente, o
+    /// el suyo.
+    fn objetos_de(&self, o: &Objetos) -> String {
+        self.fuente_aparte
+            .as_ref()
+            .and_then(|r| r.get(&o.nombre).cloned())
+            .unwrap_or_else(|| nombre_de_objetos(o))
+    }
+
     fn modela(&self, tabla: &str) -> bool {
         self.modeladas.as_ref().is_none_or(|m| m.contains(tabla))
     }
@@ -554,6 +567,7 @@ pub fn inducir_con_regla(
     let mut ficheros = BTreeMap::new();
     let mut pendientes = Vec::new();
     let mut sin_copia: Vec<(String, &'static str)> = Vec::new();
+    let mut sin_coleccion: Vec<(String, &'static str)> = Vec::new();
 
     // ── El catálogo: lo que NO se modela ────────────────────────────────────
     //
@@ -665,6 +679,61 @@ pub fn inducir_con_regla(
                     objeto,
                     &regla.tabla_de(objeto),
                     se_copia,
+                ),
+                &sch,
+                paquete,
+            ),
+        );
+    }
+    // ── Los conjuntos de objetos (v1alpha16, 0046 E5) ───────────────────────
+    //
+    // Lo mismo que una tabla sin modelar, con la otra forma: el puntero
+    // (`ObjectTable`) es de la fuente, y la base tiene su `MediaCollection`.
+    // **La clase de la base decide la colección**, como decide la de una
+    // tabla: la estándar copia todo lo que entra, así que la suya es
+    // mantenida —copia los ficheros al lago, y eso es `materialization.payload`
+    // como lo es un dataset—; la foránea es un espejo, así que la suya es
+    // `virtual`, servida desde el origen. Una copiada una a una en una foránea,
+    // mantenida.
+    //
+    // Un contenedor (`archive`) o lo que no se sabe qué es (`binary`) no es
+    // una colección (OOS: una colección sabe lo que guarda): la base nombra
+    // su puntero —la fuente lo escribe— y dice por qué no hay colección.
+    for o in &cat.objetos {
+        let sch = regla.schema_de(&o.nombre);
+        if regla.fuente_aparte.is_none() {
+            ficheros.insert(
+                en_schema(&sch, format!("objects/{}.yaml", nombre_de_objetos(o))),
+                con_schema(
+                    objetos_yaml(paquete, &cat.fuente, &nombre_de_objetos(o), o),
+                    &sch,
+                    paquete,
+                ),
+            );
+        }
+        if matches!(o.medio.as_str(), "archive" | "binary") {
+            sin_coleccion.push((
+                o.nombre.clone(),
+                if o.medio == "archive" {
+                    "son contenedores (`archive`): abrirlos es una transformación que escribe \
+                     otro conjunto, y una colección sabe lo que guarda"
+                } else {
+                    "no se sabe qué son (`binary`): una colección sabe lo que guarda"
+                },
+            ));
+            continue;
+        }
+        let nombre = identificador(sin_schema(&o.nombre));
+        ficheros.insert(
+            en_schema(&sch, format!("collections/{nombre}.yaml")),
+            con_schema(
+                coleccion_yaml(
+                    &nombre,
+                    paquete,
+                    &owner_catalogo,
+                    o,
+                    &regla.objetos_de(o),
+                    !regla.copia(&o.nombre),
                 ),
                 &sch,
                 paquete,
@@ -939,6 +1008,8 @@ pub fn inducir_con_regla(
         .filter(|a| {
             ![
                 "tables",
+                "objects",
+                "collections",
                 "views",
                 "datasets",
                 "entities",
@@ -980,6 +1051,7 @@ pub fn inducir_con_regla(
         pendientes,
         huerfanas,
         sin_copia,
+        sin_coleccion,
     }
 }
 
@@ -2185,18 +2257,40 @@ fn tabla_yaml(
     clave: Option<&[String]>,
 ) -> String {
     let mut s = String::new();
+    // v1alpha16 (0046 E5): una tabla de ficheros dice DÓNDE —la clave o el
+    // prefijo, que no es su nombre— y CÓMO se leen (`format`). Sin `format`,
+    // un `listing` no compila (OOS1004): son las dos mitades del mismo hecho.
     let _ = write!(
         s,
-        "apiVersion: oos.dev/v1alpha8\n\
+        "apiVersion: oos.dev/{}\n\
          kind: Table\n\
          metadata: {{ name: {}, namespace: {paquete} }}\n\
          spec:\n  \
            datasource: {fuente}\n  \
-           object: {}\n  \
-           columns:\n",
+           object: {}\n",
+        if t.formato.is_some() {
+            "v1alpha16"
+        } else {
+            "v1alpha8"
+        },
         nombre,
-        entrecomillar(&objeto.nombre)
+        entrecomillar(t.objeto.as_deref().unwrap_or(&objeto.nombre))
     );
+    if let Some(f) = &t.formato {
+        // `type` primero: es lo que se lee antes que nada. Lo demás, en orden.
+        s.push_str("  format:\n");
+        match f {
+            Json::Obj(m) => {
+                let mut resto = m.clone();
+                if let Some(Json::Str(ty)) = resto.remove("type") {
+                    let _ = writeln!(s, "    type: {}", escalar_yaml(&ty));
+                }
+                s.push_str(&cara_yaml(&Json::Obj(resto), 4));
+            }
+            otro => s.push_str(&cara_yaml(otro, 4)),
+        }
+    }
+    s.push_str("  columns:\n");
     for c in t
         .columnas
         .iter()
@@ -2276,6 +2370,121 @@ fn tabla_yaml(
             let _ = writeln!(s, "  changes:");
             s.push_str(&cara_yaml(&Json::Obj(caras), 4));
         }
+    }
+    s
+}
+
+/// v1alpha16 · `kind: ObjectTable` — **el puntero a un conjunto de objetos**
+/// (0046 E5): un prefijo, un patrón y un medio, con las caras que el driver
+/// sondeó. Sin columnas —son las fijas del listado— ni etiquetas: lo que
+/// lleva se hereda de su fuente. Como la tabla, un hecho del origen: se emite
+/// sin revisión.
+fn objetos_yaml(paquete: &str, fuente: &str, nombre: &str, o: &Objetos) -> String {
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        "apiVersion: oos.dev/v1alpha16\n\
+         kind: ObjectTable\n\
+         metadata: {{ name: {nombre}, namespace: {paquete} }}\n\
+         # {} objeto(s), {} bytes, cuando se leyó el catálogo.\n\
+         spec:\n  \
+           datasource: {fuente}\n  \
+           prefix: {}\n",
+        o.cuantos,
+        o.bytes,
+        entrecomillar(&o.prefijo)
+    );
+    if let Some(p) = &o.patron {
+        let _ = writeln!(s, "  match: {}", entrecomillar(p));
+    }
+    let _ = writeln!(s, "  media: {}", escalar_yaml(&o.medio));
+    if !o.particiones.is_empty() {
+        let _ = writeln!(
+            s,
+            "  partitions: [{}]",
+            o.particiones
+                .iter()
+                .map(|p| escalar_yaml(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    match &o.lee {
+        Some(n) => {
+            s.push_str("  reads:\n");
+            s.push_str(&cara_yaml(n, 4));
+        }
+        None => s.push_str(
+            "  # El driver no declaró qué se puede empujar a este origen.\n  reads: {}\n",
+        ),
+    }
+    match &o.cambia {
+        Some(n) => {
+            s.push_str("  changes:\n");
+            s.push_str(&cara_yaml(n, 4));
+        }
+        None => s.push_str(
+            "  # El driver no sondeó los cambios. No se sabe, y no se inventa.\n  \
+             changes: { mode: none, witness: none }\n",
+        ),
+    }
+    s
+}
+
+/// Cómo se llama el `ObjectTable` de un conjunto cuando lo escribe la base
+/// (sin paquete de la fuente): `<conjunto>_t`, como una tabla, porque la
+/// colección se llama como el conjunto y comparten schema (OOS2035).
+fn nombre_de_objetos(o: &Objetos) -> String {
+    format!("{}_t", identificador(sin_schema(&o.nombre)))
+}
+
+/// v1alpha16 · `kind: MediaCollection` — **lo que la base tiene de un
+/// conjunto** (0046 E5). `virtual` en una foránea: se sirve desde el origen y
+/// no copia nada. Sin `virtual`, mantenida: copia los ficheros al lago
+/// (llega con E8), y compila contra `materialization.payload` como un
+/// dataset. Los formatos son las extensiones que el catálogo vio, en su
+/// orden: el primero es el primario. Sin etiquetas: lo que lleva lo hereda.
+fn coleccion_yaml(
+    nombre: &str,
+    paquete: &str,
+    owner: &str,
+    o: &Objetos,
+    desde: &str,
+    virtual_: bool,
+) -> String {
+    let mut formatos: Vec<String> = Vec::new();
+    for e in &o.extensiones {
+        if !formatos.contains(e) {
+            formatos.push(e.clone());
+        }
+    }
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        "apiVersion: oos.dev/v1alpha16\n\
+         kind: MediaCollection\n\
+         metadata:\n  \
+           name: {nombre}\n  \
+           namespace: {paquete}\n\
+         spec:\n  \
+           owner: \"{owner}\"\n  \
+           media: {}\n  \
+           formats: [{}]\n  \
+           from: {{ objectTable: {} }}\n",
+        escalar_yaml(&o.medio),
+        formatos
+            .iter()
+            .map(|f| escalar_yaml(f))
+            .collect::<Vec<_>>()
+            .join(", "),
+        desde
+    );
+    if virtual_ {
+        s.push_str(
+            "  # La base es un espejo: se sirve desde el origen, sin copiar.\n  virtual: true\n",
+        );
+    } else {
+        s.push_str("  # La base copia lo que entra: los ficheros van al lago (0046 E8).\n");
     }
     s
 }
@@ -2382,7 +2591,14 @@ fn nombre_de_tabla(objeto: &Objeto) -> String {
 /// pueden llamarse igual: el primero, en orden, se queda el nombre, y los
 /// demás llevan `_2`, `_3`… Solo cuando colisionan.
 pub fn punteros_de_la_fuente(cat: &Catalogo) -> BTreeMap<String, (String, String)> {
-    let mut objetos: Vec<&str> = cat.tablas.iter().map(|t| t.nombre.as_str()).collect();
+    // v1alpha16: un conjunto de objetos es un nombre más del schema (OOS2035),
+    // así que entra en el mismo reparto que las tablas.
+    let mut objetos: Vec<&str> = cat
+        .tablas
+        .iter()
+        .map(|t| t.nombre.as_str())
+        .chain(cat.objetos.iter().map(|o| o.nombre.as_str()))
+        .collect();
     objetos.sort_unstable();
     objetos.dedup();
     let mut vistos: BTreeSet<(String, String)> = BTreeSet::new();
@@ -2454,6 +2670,22 @@ pub fn inducir_la_fuente(
                 sch,
                 fuente,
             ),
+        );
+        exports.push(ore_core::normalize::corto(fuente, sch, nombre));
+        if !en_default(sch) {
+            schemas.insert(sch.clone());
+        }
+    }
+    // v1alpha16 (0046 E5): los conjuntos de objetos que alguna base usa, como
+    // `ObjectTable` en `<schema>/objects/`. Es el mismo puntero con otra forma:
+    // de la fuente, una vez, exportado.
+    for o in cat.objetos.iter().filter(|o| usados.contains(&o.nombre)) {
+        let Some((sch, nombre)) = nombres.get(&o.nombre) else {
+            continue;
+        };
+        ficheros.insert(
+            en_schema(sch, format!("objects/{nombre}.yaml")),
+            con_schema(objetos_yaml(fuente, fuente, nombre, o), sch, fuente),
         );
         exports.push(ore_core::normalize::corto(fuente, sch, nombre));
         if !en_default(sch) {
@@ -2660,16 +2892,24 @@ fn con_schema(texto: String, schema: &str, paquete: &str) -> String {
     }
     let mut t = texto;
     // v1alpha13 es la primera que tiene schemas; una posterior (la vista, en
-    // v1alpha14) ya los tiene, y ya lo lleva escrito.
-    if t.contains("apiVersion: oos.dev/v1alpha14") {
-        return t;
-    }
+    // v1alpha14; lo de ficheros, en v1alpha16) ya los tiene y se queda como
+    // está. Sólo sube lo anterior.
     if let Some(i) = t.find("apiVersion: oos.dev/v1alpha") {
         let fin = t[i..].find('\n').map(|f| i + f).unwrap_or(t.len());
-        t.replace_range(i..fin, "apiVersion: oos.dev/v1alpha13");
+        let n: u32 = t[i + "apiVersion: oos.dev/v1alpha".len()..fin]
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        if n < 13 {
+            t.replace_range(i..fin, "apiVersion: oos.dev/v1alpha13");
+        }
     }
     let en_linea = format!(", namespace: {paquete} }}");
     let en_bloque = format!("\n  namespace: {paquete}\n");
+    // La vista (v1alpha14) ya escribe su schema: no se pone dos veces.
+    if t.contains(&format!("{en_bloque}  schema: ")) {
+        return t;
+    }
     if t.contains(&en_linea) {
         t = t.replacen(
             &en_linea,
@@ -2845,10 +3085,20 @@ pub fn informe(ind: &Induccion, destino: &Path) -> String {
          \x20 ✓ todas en DRAFT: nada de esto es verdad todavía\n\n",
         destino.display()
     );
+    let colecciones = cuantos("collections");
+    if colecciones > 0 {
+        let _ = writeln!(s, "  ✓ {colecciones} colecciones de objetos\n");
+    }
     for (t, porque) in &ind.sin_copia {
         let _ = writeln!(s, "  · `{t}` no se copia: {porque}");
     }
-    if !ind.sin_copia.is_empty() {
+    for (t, porque) in &ind.sin_coleccion {
+        let _ = writeln!(
+            s,
+            "  · `{t}` no es una colección: {porque}. Su puntero sí está"
+        );
+    }
+    if !ind.sin_copia.is_empty() || !ind.sin_coleccion.is_empty() {
         s.push('\n');
     }
     if ind.pendientes.is_empty() {
