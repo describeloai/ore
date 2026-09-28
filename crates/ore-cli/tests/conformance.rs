@@ -1280,6 +1280,15 @@ fn borrador_de_v1alpha14() {
     );
 }
 
+/// v1alpha16: guardar. Los ficheros como objetos —el `ObjectTable` en la fuente,
+/// la `MediaCollection` tipada en la base—, `Table.format` para los que son
+/// filas y `Media<…>` para referenciarlos (0046). Los casos se escribieron desde
+/// la spec antes que esto (E1), y se cotejan aquí.
+#[test]
+fn borrador_de_v1alpha16() {
+    marcador("v1alpha16", "guardar", "BORRADOR · OOS v1alpha16 · guardar");
+}
+
 #[test]
 fn los_esquemas_publicados_son_json_bien_formado() {
     let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))

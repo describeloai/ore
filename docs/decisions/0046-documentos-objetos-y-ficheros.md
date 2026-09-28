@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance) hecho ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16; E1 (esquemas y conformance) y E2 (la gramática en ORE) hechos ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -266,7 +266,7 @@ y un listado de miles de objetos.
 |---|---|---|
 | **F0 · cerrar las fugas** ✅ | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
 | **F1 · medir contra un bucket real** ✅ (sin federación) | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
-| **F2 · la spec** (`C:\oos`, v1alpha16) ◐ texto `860a269`; esquemas y conformance `4fa2206` (E1); ORE por hacer (E2) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
+| **F2 · la spec** (`C:\oos`, v1alpha16) ✅ texto `860a269`; esquemas y conformance `4fa2206`/`241c894` (E1); ORE 43/43 (E2) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
 | **F3 · el catálogo de objetos** | `ore-read-s3 catalogo`: el `ObjectTable` de cada prefijo con su listado, y `ore source induce` lo escribe en la fuente (0045) | una fuente S3 real catalogada; el `ObjectTable` en el árbol |
 | **F4 · lo semiestructurado como tabla** | `Dataset` sobre un `ObjectTable` de Parquet, CSV y JSONL: esquema deducido y congelado, columna rescatada, `leer` en Arrow | una base standard de S3 con sus datasets copiados |
 | **F5 · la colección** | la gestionada (copia al lago por digest y manifiesto, transaccional) y la virtual; se decide la copia de la base standard con lo medido en su iteración | una colección de PDF de S3, en el lago y en sitio |
@@ -296,7 +296,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | paso | qué | hecho cuando |
 |---|---|---|
 | **E1 · la spec, completa** ✅ `oos 4fa2206` | esquemas `schemas/v1alpha16/`; `conformance/v1alpha16/` (8 aceptan, 34 rechazan, uno por regla; `OOS2040` incluido); el texto afinado al escribir los casos (abajo) | empujado en OOS |
-| **E2 · la gramática** (`ore-core`) | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
+| **E2 · la gramática** (`ore-core`) ✅ 43/43 | `V1Alpha16`, los dos kinds, sus claves y reglas de forma, `Table.format`, `listing`, `Media<x>`; en el enlazado OOS2004/2018/2040/2035 y el flujo (OOS4011/4002/4012); censo, assets, diff, `code.rs`; `borrador_de_v1alpha16`; mover el submódulo | v1alpha16 42/42, y v1alpha1–14 sin un resultado cambiado |
 | **E3 · la superficie** | los kinds en `KINDS` de ore-serve, candado, `vista.rs`, carpetas de `ore init` | un árbol a mano con los tres compila y se sirve por `/documentos` |
 | **E4 · el driver** (F3) | `ore-read-s3` con el firmador sacado a un crate común; `check` (qué acción falta y sobre qué ARN), `explorar`, `catalogo` (paginado, HEAD con huella, tipo por los bytes, pie de Parquet por rangos, CSV/JSONL con BOM y ceros a la izquierda, índice del zip), `testigo`; forma `objects` en `ore-driver` | pruebas con datos fijos, y una prueba de fuego de sólo lectura contra el bucket de F1 |
 | **E5 · inducir** (F3) | `ore source induce` escribe un `ObjectTable` por prefijo y medio y una `Table` con `format` por grupo tabular; limpieza de `objects/`; la política IAM en `credenciales.rs`; imagen de drivers. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
@@ -328,6 +328,21 @@ F8 (procesar) queda fuera de este plan.
   en su paso, E9b, antes de la consola.
 - **Las palabras de `changes`.** Activar la comprobación de `mode`/`witness` para todas las
   versiones puede tumbar árboles vivos: se mide antes contra victor, demo y prueba (en E2).
+
+**Lo que E2 hizo y midió.** `ore-core` habla v1alpha16: los dos kinds con sus claves y su forma,
+`Table.format` (sus claves de csv son `OOS1005` fuera de csv), `listing`, `Media<x>` como variante
+del tipo (`OOS3001` antes de v1alpha16; la colección se resuelve en el enlazado), el `ObjectTable`
+como suelo del linaje y fuente de una consulta (sus columnas fijas y particiones), `OOS2004`,
+`OOS2018`, `OOS2040`, `OOS2035` (el espacio de nombres del schema), `OOS2009`, y el flujo: la
+colección hereda del `datasource` de su `ObjectTable` y suma lo suyo (`OOS4012` si rebaja), la
+mantenida no virtual instancia `materialization.payload` (`OOS4011`, `OOS4002`), y `Media<c>` entra
+en la propiedad como una herencia más, como el concepto. **Las palabras de `changes` se comprueban
+ya** en `Table` y `ObjectTable`: medido antes contra los tres árboles vivos (victor `none/none` ×22,
+demo `append/log` ×11, prueba sin tablas), todos dentro del vocabulario. Un hueco que ningún caso
+cubría y E2 encontró: `from.objectTable` cruza de paquete y la regla de `exports` no lo veía; ahora
+es `OOS2028`, con su caso (oos `241c894`). Queda para E3 la superficie que no es gramática: el
+índice de assets, la superficie SQL del árbol (`sql_del_arbol`), las aristas, el diff de las caras
+de un `ObjectTable`, `KINDS` de ore-serve, el candado y `ore init`.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

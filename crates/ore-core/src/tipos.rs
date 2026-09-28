@@ -97,7 +97,8 @@ impl Fisico {
                 precision: *precision,
                 escala: *escala,
             },
-            Type::List(_) | Type::Imported(_) => Fisico::Texto,
+            // v1alpha16: la huella del ítem, como texto (`03` §2).
+            Type::List(_) | Type::Imported(_) | Type::Media(_) => Fisico::Texto,
         }
     }
 

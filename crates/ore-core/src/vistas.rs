@@ -230,6 +230,30 @@ impl Package {
         self.dataset(&crate::link::cualificar(referencia, desde))
     }
 
+    /// v1alpha16. El `ObjectTable` con este nombre cualificado.
+    pub fn object_table(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
+        self.of(Kind::ObjectTable)
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
+    }
+
+    /// v1alpha16. Resuelve una referencia a un `ObjectTable` (N1, v1alpha13 §5).
+    pub fn resolve_object_table(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        self.object_table(&crate::link::cualificar(referencia, desde))
+    }
+
+    /// v1alpha16. La `MediaCollection` con este nombre cualificado.
+    pub fn collection(&self, qname: &str) -> Option<&Loaded> {
+        let qname = crate::normalize::a_corto(qname);
+        self.of(Kind::MediaCollection)
+            .find(|d| d.qname().as_deref() == Some(qname.as_ref()))
+    }
+
+    /// v1alpha16. Resuelve una referencia a una colección (`Media<…>`).
+    pub fn resolve_collection(&self, referencia: &str, desde: &Loaded) -> Option<&Loaded> {
+        self.collection(&crate::link::cualificar(referencia, desde))
+    }
+
     /// Lo que una vista o un dataset tiene debajo por nombre: una vista **o un
     /// dataset**. Es la búsqueda de `backedBy` y de la cadena, y es UNA para
     /// que las dos no diverjan en qué admiten.
@@ -304,6 +328,10 @@ pub fn fuente_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Option<
     pkg.resolve_view(nombre, desde)
         .or_else(|| pkg.resolve_dataset(nombre, desde))
         .or_else(|| pkg.resolve_table(nombre, desde))
+        // v1alpha16: un `ObjectTable` se lee como una tabla, por sus columnas
+        // fijas (`01` §7). Una colección no se lee con SQL: no está aquí, y su
+        // nombre en un `FROM` es `OOS2018`.
+        .or_else(|| pkg.resolve_object_table(nombre, desde))
 }
 
 /// v1alpha14. **Todo** lo que un nombre de una consulta nombra. En v1alpha14 una
@@ -315,13 +343,14 @@ pub fn fuentes_sql<'a>(pkg: &'a Package, nombre: &str, desde: &Loaded) -> Vec<&'
         .into_iter()
         .chain(pkg.resolve_dataset(nombre, desde))
         .chain(pkg.resolve_table(nombre, desde))
+        .chain(pkg.resolve_object_table(nombre, desde))
         .collect()
 }
 
 /// v1alpha14. Las columnas que una fuente de una consulta deja nombrar: las de
 /// una tabla, o lo que una vista o un dataset exponen.
 pub fn columnas_que_expone(pkg: &Package, d: &Loaded) -> BTreeSet<String> {
-    if d.kind == Kind::Table {
+    if matches!(d.kind, Kind::Table | Kind::ObjectTable) {
         columnas(d)
     } else {
         expone_en(pkg, d).into_keys().collect()
@@ -403,6 +432,9 @@ fn vuelve(pkg: &Package, desde: &Loaded) -> Option<Vec<String>> {
 ///
 /// v1alpha12: las de un dataset escrito también, y con la misma forma.
 pub fn columnas(t: &Loaded) -> BTreeSet<String> {
+    if t.kind == Kind::ObjectTable {
+        return columnas_de_objetos(t).into_keys().collect();
+    }
     t.section("columns")
         .map(|c| {
             c.entries()
@@ -411,6 +443,23 @@ pub fn columnas(t: &Loaded) -> BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// v1alpha16. **Las columnas de un `ObjectTable`**: las fijas, iguales en
+/// todos (`document::COLUMNAS_DE_OBJETO`), y una `String` por partición. No
+/// se declaran porque son éstas, y por eso una consulta que nombra otra es
+/// `OOS2018` como la que nombra una columna que una tabla no tiene.
+pub fn columnas_de_objetos(t: &Loaded) -> BTreeMap<String, &'static str> {
+    let mut cols: BTreeMap<String, &'static str> = crate::document::COLUMNAS_DE_OBJETO
+        .iter()
+        .map(|(c, tipo)| (c.to_string(), *tipo))
+        .collect();
+    for p in t.section("partitions").map(|n| n.items()).unwrap_or(&[]) {
+        if let Some(p) = p.as_str() {
+            cols.insert(p.to_string(), "String");
+        }
+    }
+    cols
 }
 
 /// Alias de [`columnas`] para donde una variable local se llama igual.
@@ -428,6 +477,12 @@ fn columnas_de(t: &Loaded) -> BTreeSet<String> {
 /// el agregado se deriva, la entidad afina. Antes el tipo bajaba SOLO de la
 /// entidad, y la copia de una tabla sin entidad salía entera como texto.
 pub fn tipos_de_columnas(t: &Loaded) -> BTreeMap<String, crate::types::Type> {
+    if t.kind == Kind::ObjectTable {
+        return columnas_de_objetos(t)
+            .into_iter()
+            .filter_map(|(c, tipo)| Some((c, crate::types::parse_type(tipo).ok()?)))
+            .collect();
+    }
     t.section("columns")
         .map(|c| {
             c.entries()
@@ -1545,6 +1600,26 @@ fn comprobar_sql(pkg: &Package, v: &Loaded, out: &mut Vec<Diagnostic>) {
             Some(d) => {
                 fuentes.insert(n.clone(), d);
             }
+            // v1alpha16: una colección existe y no se lee con SQL (`02` §2). El
+            // código es el mismo —no es algo que una consulta lea— y el
+            // mensaje no puede decir que no existe.
+            None if pkg.resolve_collection(n, v).is_some() => {
+                falta = true;
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2018,
+                        &v.path,
+                        format!("`{qn}` lee `{n}`, que es una colección: no se lee con SQL"),
+                    )
+                    .at(nodo.pos())
+                    .help(
+                        "una consulta lee filas —una `Table`, una `View`, un `Dataset` o un \
+                         `ObjectTable`—, y una colección tiene ítems. Lo que hay en el origen \
+                         se pregunta a su `ObjectTable`; lo que hay dentro de los ficheros lo \
+                         saca una función a un `Dataset`",
+                    ),
+                );
+            }
             None => {
                 falta = true;
                 out.push(
@@ -1555,9 +1630,9 @@ fn comprobar_sql(pkg: &Package, v: &Loaded, out: &mut Vec<Diagnostic>) {
                     )
                     .at(nodo.pos())
                     .help(
-                        "lo que una vista lee DEBE ser una `Table`, una `View` o un `Dataset` del \
-                         paquete o de una dependencia, nombrado en una, dos o tres partes (una \
-                         es su schema; dos, `default`)",
+                        "lo que una vista lee DEBE ser una `Table`, una `View`, un `Dataset` o \
+                         (v1alpha16) un `ObjectTable` del paquete o de una dependencia, nombrado \
+                         en una, dos o tres partes (una es su schema; dos, `default`)",
                     ),
                 );
             }
@@ -1718,6 +1793,94 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // Qué vistas escribe la ontología. Se calcula una vez: es del paquete
     // entero, no de cada vista.
     let escritas_por_la_ontologia = escritas(pkg);
+
+    // ── v1alpha16 · los objetos y las colecciones ──────────────────────────
+    //
+    // El `ObjectTable` pide lo que la tabla: que su fuente esté declarada. La
+    // colección, que su origen exista y sea de su tipo: una colección de
+    // documentos no sale de un conjunto de imágenes (`OOS2040`).
+    for ot in pkg.of(Kind::ObjectTable) {
+        if let Some(ds) = ot.section("datasource")
+            && !declarados.contains(ds.as_str().unwrap_or(""))
+        {
+            out.push(no_declarado(ot, ds, "datasource", &declarados));
+        }
+    }
+    for c in pkg.of(Kind::MediaCollection) {
+        let cqn = c.qname().unwrap_or_default();
+        let Some((_, r)) = c.section("from").and_then(|f| f.get("objectTable")) else {
+            continue;
+        };
+        let referencia = r.as_str().unwrap_or("");
+        let Some(ot) = pkg.resolve_object_table(referencia, c) else {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2018,
+                    &c.path,
+                    format!("`{cqn}` sale de `{referencia}`, que no es un `ObjectTable` del árbol"),
+                )
+                .at(r.pos())
+                .help(
+                    "una colección mantenida sale de un `ObjectTable`, el puntero a los objetos                      que vive en el paquete de la fuente. Se nombra en tres partes                      (`<fuente>.<schema>.<nombre>`) si está en otro schema",
+                ),
+            );
+            continue;
+        };
+        let suyo = c.section("media").and_then(|m| m.as_str()).unwrap_or("");
+        let del_origen = ot.section("media").and_then(|m| m.as_str()).unwrap_or("");
+        if suyo != del_origen {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos2040,
+                    &c.path,
+                    format!(
+                        "`{cqn}` es de `{suyo}` y sale de `{}`, que es de `{del_origen}`",
+                        ot.qname().unwrap_or_default()
+                    ),
+                )
+                .at(r.pos())
+                .help(
+                    "el tipo de medio es lo que deja a la colección saber qué puede hacer con                      lo que guarda. Lo mixto se separa por tipo al catalogar: un `ObjectTable`                      por medio, y cada colección del suyo",
+                ),
+            );
+        }
+    }
+    // `Media<x>` nombra una colección (`03` §2). En un documento de antes de
+    // v1alpha16 el tipo no existe, y eso lo dice `OOS3001` en su fase.
+    for e in pkg.entities() {
+        if e.version()
+            .is_none_or(|v| v < crate::document::ApiVersion::V1Alpha16)
+        {
+            continue;
+        }
+        for (k, v) in e.section("properties").map(|p| p.entries()).unwrap_or(&[]) {
+            let Some((_, t)) = v.get("type") else {
+                continue;
+            };
+            let Ok(crate::types::Type::Media(c)) =
+                crate::types::parse_type(t.as_str().unwrap_or(""))
+            else {
+                continue;
+            };
+            if pkg.resolve_collection(&c, e).is_none() {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2018,
+                        &e.path,
+                        format!(
+                            "`{}.{}` es `Media<{c}>`, y `{c}` no es una `MediaCollection`",
+                            e.qname().unwrap_or_default(),
+                            k.as_str().unwrap_or("?")
+                        ),
+                    )
+                    .at(t.pos())
+                    .help(
+                        "`Media<x>` apunta a un ítem de una colección; un dataset o una vista                          tienen filas, no ítems",
+                    ),
+                );
+            }
+        }
+    }
 
     // ── Las tablas ──────────────────────────────────────────────────────────
     //

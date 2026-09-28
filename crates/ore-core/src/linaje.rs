@@ -209,7 +209,8 @@ pub fn linaje(pkg: &Package, d: &Loaded) -> Option<Linaje> {
 fn linaje_con(pkg: &Package, d: &Loaded, pila: &mut Vec<(Kind, String)>) -> Option<Linaje> {
     let qn = d.qname().unwrap_or_default();
     // El suelo: una tabla, o un dataset que lo llena código.
-    if d.kind == Kind::Table || vistas::es_escrito(d) {
+    // v1alpha16: un `ObjectTable` también es suelo —el listado de un origen—.
+    if matches!(d.kind, Kind::Table | Kind::ObjectTable) || vistas::es_escrito(d) {
         return Some(
             vistas::columnas(d)
                 .into_iter()

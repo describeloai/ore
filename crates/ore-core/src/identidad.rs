@@ -102,7 +102,12 @@ fn un_nombre_una_cosa(pkg: &Package) -> Vec<Diagnostic> {
     use crate::document::{ApiVersion, Kind};
     let mut por_nombre: BTreeMap<String, Vec<&crate::link::Loaded>> = BTreeMap::new();
     for d in &pkg.docs {
-        if !matches!(d.kind, Kind::Table | Kind::View | Kind::Dataset) {
+        // v1alpha16: el puntero a objetos y la coleccion entran en el mismo
+        // espacio (`01` §3, `02` §4): tambien se nombran por nombre.
+        if !matches!(
+            d.kind,
+            Kind::Table | Kind::View | Kind::Dataset | Kind::ObjectTable | Kind::MediaCollection
+        ) {
             continue;
         }
         let Some(qn) = d.qname() else { continue };

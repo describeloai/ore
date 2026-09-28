@@ -202,6 +202,19 @@ fn validar_raiz(file: &Path, root: &Node) -> Vec<Diagnostic> {
         && let Some((_, spec)) = root.get("spec")
     {
         check_keys(file, spec, kind.spec_keys_en(version), "spec.", &mut diags);
+        // v1alpha16: las claves de `format` dependen de su `type`. Las de csv
+        // —cabecera, separador, codificación— en un Parquet no son una forma
+        // mal hecha sino claves que no son de aquí, y el mensaje lo dice así.
+        if kind == Kind::Table
+            && let Some((_, formato)) = spec.get("format")
+            && !formato.entries().is_empty()
+        {
+            let mut claves = vec!["type", "match", "partitions"];
+            if formato.get("type").and_then(|(_, v)| v.as_str()) == Some("csv") {
+                claves.extend(["header", "delimiter", "encoding"]);
+            }
+            check_keys(file, formato, &claves, "spec.format.", &mut diags);
+        }
         // Y dentro de cada propiedad. Sin esto, un `qualtiy:` mal escrito se
         // acepta en silencio y la propiedad queda sin gobernar — un hueco que
         // no produce ningún síntoma.

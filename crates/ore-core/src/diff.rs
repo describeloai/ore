@@ -427,8 +427,16 @@ const ESCANEO: &[(&str, usize)] = &[("cheap", 0), ("expensive", 1), ("forbidden"
 /// posición se lo habría inventado.
 const MANTENIBLE: &[(&str, usize)] = &[("none", 0), ("append", 1), ("upsert", 2), ("retract", 2)];
 /// Y `snapshot` con `log`, por lo mismo: los dos son una posición de
-/// confirmación, que es un orden total sin empates.
-const PRECISION: &[(&str, usize)] = &[("none", 0), ("field", 1), ("snapshot", 2), ("log", 2)];
+/// confirmación, que es un orden total sin empates. `listing` (v1alpha16)
+/// empata con ellos: la diferencia de dos listados dice exactamente qué entró,
+/// qué cambió y qué salió, sin marca de agua que se pueda saltar una fila.
+const PRECISION: &[(&str, usize)] = &[
+    ("none", 0),
+    ("field", 1),
+    ("snapshot", 2),
+    ("log", 2),
+    ("listing", 2),
+];
 
 fn shape(pkg: &Package) -> Shape {
     let lat = flow::lattices(pkg);

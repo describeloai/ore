@@ -88,6 +88,10 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // paga, y dos equipos pueden tener cada uno su `chat` (ORE 0041). Uno de
     // antes, en `modelos/` en la raiz, no tiene paquete con el que discrepar.
     Kind::Model,
+    // v1alpha16. El puntero a objetos es del paquete de su fuente (0045), y la
+    // coleccion del de su base: las dos tienen dueno y se nombran en su schema.
+    Kind::ObjectTable,
+    Kind::MediaCollection,
     // Retirado en v1alpha8, y la puerta de version hace que no pueda llegar
     // aqui nunca. Se clasifica igual: el censo exige decirlo, y no decirlo
     // seria dejar que la ausencia signifique dos cosas.

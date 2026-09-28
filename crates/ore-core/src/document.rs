@@ -104,6 +104,14 @@ pub enum ApiVersion {
     /// `paquete: null` y la consola no tenia donde pintarlo, ni el modelo
     /// dueño.
     V1Alpha15,
+    /// v1alpha16. **Guardar.** Un fichero es un objeto, no una fila: se apunta
+    /// como objeto (`ObjectTable`, en la fuente), se tiene en una coleccion de
+    /// su tipo (`MediaCollection`, en una base) y una entidad lo referencia sin
+    /// copiarlo (`Media<coleccion>`). Lo que si son filas —Parquet, CSV,
+    /// JSONL— es una `Table` con `format`. Lo decidio ORE 0046 (2026-09-28),
+    /// medido contra un bucket real: en el mismo prefijo conviven CSV, PDF,
+    /// fotos y un zip, y lo que se hace con cada uno no se parece.
+    V1Alpha16,
 }
 
 impl ApiVersion {
@@ -121,6 +129,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha13,
         ApiVersion::V1Alpha14,
         ApiVersion::V1Alpha15,
+        ApiVersion::V1Alpha16,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -138,6 +147,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha13 => "oos.dev/v1alpha13",
             ApiVersion::V1Alpha14 => "oos.dev/v1alpha14",
             ApiVersion::V1Alpha15 => "oos.dev/v1alpha15",
+            ApiVersion::V1Alpha16 => "oos.dev/v1alpha16",
         }
     }
 
@@ -255,7 +265,48 @@ pub enum Kind {
     /// Vive directamente en `<paquete>/<name>/`, y esa carpeta es el schema.
     /// `default` existe sin declararse.
     Schema,
+    /// v1alpha16. **El conjunto de objetos de un origen** —un prefijo, un
+    /// patron y un tipo de medio—, registrado una vez en el paquete de su
+    /// fuente (0045), cuyas filas son los objetos. Es a los ficheros lo que la
+    /// `Table` a las filas: no copia nada, dice que hay. Sus columnas son fijas
+    /// ([`COLUMNAS_DE_OBJETO`]) y no se declaran; no lleva `labels`.
+    ObjectTable,
+    /// v1alpha16. **Lo que se tiene como coleccion gobernada de ficheros de
+    /// un solo tipo de medio**: es a los ficheros lo que el `Dataset` a las
+    /// tablas. Mantenida (`from: {objectTable}`, copiada al lago o `virtual`)
+    /// o escrita (sin `from`). Admite `labels`, que SUMAN a lo heredado de su
+    /// origen: una foto de un DNI es un dato personal aunque el bucket no lo
+    /// sea.
+    MediaCollection,
 }
+
+/// v1alpha16. Las columnas de un `ObjectTable`, las mismas en todos: un objeto
+/// se pregunta como una fila de metadatos (`01-object-table` §1). A estas se
+/// suma una `String` por particion declarada.
+pub const COLUMNAS_DE_OBJETO: &[(&str, &str)] = &[
+    ("key", "String"),
+    ("size", "Integer"),
+    ("contentType", "String"),
+    ("checksum", "String"),
+    ("modified", "DateTimeTz"),
+    ("version", "String"),
+];
+
+/// v1alpha16. El tipo de medio de un `ObjectTable` (`01-object-table` §4). Una
+/// coleccion admite todos menos `archive` y `binary`: sabe lo que guarda.
+pub const MEDIOS: &[&str] = &[
+    "document",
+    "image",
+    "audio",
+    "video",
+    "spreadsheet",
+    "email",
+    "archive",
+    "binary",
+];
+
+/// v1alpha16. Los ficheros que son filas (`03` §1).
+pub const FORMATOS_TABULARES: &[&str] = &["parquet", "csv", "jsonl"];
 
 impl Kind {
     pub const ALL: &'static [Kind] = &[
@@ -278,6 +329,8 @@ impl Kind {
         Kind::TrainedModel,
         Kind::Dataset,
         Kind::Schema,
+        Kind::ObjectTable,
+        Kind::MediaCollection,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -301,6 +354,8 @@ impl Kind {
             Kind::TrainedModel => "TrainedModel",
             Kind::Dataset => "Dataset",
             Kind::Schema => "Schema",
+            Kind::ObjectTable => "ObjectTable",
+            Kind::MediaCollection => "MediaCollection",
         }
     }
 
@@ -320,6 +375,7 @@ impl Kind {
             Kind::TrainedModel => ApiVersion::V1Alpha11,
             Kind::Dataset => ApiVersion::V1Alpha12,
             Kind::Schema => ApiVersion::V1Alpha13,
+            Kind::ObjectTable | Kind::MediaCollection => ApiVersion::V1Alpha16,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -411,7 +467,10 @@ impl Kind {
             // columna lo dice la entidad. Y tampoco admite `oos.maturity`, que
             // la vista si —abajo—: una tabla es un HECHO, y los cuatro niveles
             // de ese reticulo son verbos de acuerdo. Nadie acuerda un hecho.
-            | Kind::Table => &["name", "namespace", "description"],
+            | Kind::Table
+            // v1alpha16. El puntero a objetos, por lo mismo que la tabla: su
+            // clasificacion es la de su `datasource`.
+            | Kind::ObjectTable => &["name", "namespace", "description"],
             // El modelo no lleva `namespace` hasta v1alpha15, que se lo da
             // con `schema` (`metadata_keys_en`): antes se direccionaba por su
             // nombre desde cualquier paquete. Y no admite `labels`: lo que produce llega al
@@ -464,6 +523,11 @@ impl Kind {
             // v1alpha13. El schema lleva el paquete (`namespace`, `OOS2030`)
             // y no esta en un schema: su nombre es de dos partes.
             Kind::Schema => &["name", "namespace", "description"],
+            // v1alpha16. La coleccion SI admite `labels`, y es la diferencia
+            // con el dataset: los ficheros no tienen entidad debajo que los
+            // clasifique, y alguien tiene que poder decir que una foto es un
+            // dato personal. Suman a lo heredado; rebajarlo es `OOS4012`.
+            Kind::MediaCollection => &["name", "namespace", "labels", "description"],
         }
     }
 
@@ -482,6 +546,9 @@ impl Kind {
         Kind::TrainedModel,
         // v1alpha15: el modelo, desde que tiene paquete (ORE 0041).
         Kind::Model,
+        // v1alpha16: el puntero a objetos y la coleccion (ORE 0046).
+        Kind::ObjectTable,
+        Kind::MediaCollection,
     ];
 
     /// Si este `kind` se ordena en schemas (v1alpha13).
@@ -758,6 +825,20 @@ impl Kind {
             ],
             // v1alpha13. Quien responde del schema; sin el, el del paquete.
             Kind::Schema => &["owner"],
+            // v1alpha16. Sin `columns`: son las fijas. Sin `object`/`format`:
+            // lo tabular es una `Table` con `format`.
+            Kind::ObjectTable => &[
+                "datasource",
+                "prefix",
+                "match",
+                "media",
+                "partitions",
+                "reads",
+                "changes",
+            ],
+            // v1alpha16. Sin `columns`, `fields` ni `sql`: una coleccion no
+            // es una tabla.
+            Kind::MediaCollection => &["owner", "media", "formats", "from", "virtual", "retention"],
         }
     }
 
@@ -857,6 +938,17 @@ impl Kind {
                 // exigia a una politica sin que la vista pudiera decirlo.
                 "having",
             ],
+            // v1alpha16: una tabla sobre ficheros dice como se leen. Antes,
+            // `format` es `OOS1005`: una `Table` de antes no cambia.
+            Kind::Table if version >= ApiVersion::V1Alpha16 => &[
+                "datasource",
+                "object",
+                "profile",
+                "format",
+                "columns",
+                "reads",
+                "changes",
+            ],
             _ => self.spec_keys(),
         }
     }
@@ -948,6 +1040,220 @@ fn naturaleza_desconocida(n: &crate::parse::Node) -> Option<String> {
         .filter_map(|i| i.as_str())
         .find(|s| !crate::governance::NATURALEZAS.contains(s))
         .map(String::from)
+}
+
+/// v1alpha8 · las palabras de `changes.mode` en una tabla.
+const MODOS_DE_TABLA: &[&str] = &["none", "append", "retract", "upsert"];
+/// v1alpha8 · las de `changes.witness`, mas `listing` (v1alpha16), que la regla
+/// de la tabla de ficheros restringe a una tabla con `format`.
+const TESTIGOS_DE_TABLA: &[&str] = &["none", "snapshot", "log", "field", "listing"];
+/// v1alpha16 · un listado dice altas y bajas; un objeto cambiado es otra huella
+/// bajo la misma clave (`retract`), y no hay clave de upsert que no sea el nombre.
+const MODOS_DE_OBJETOS: &[&str] = &["none", "append", "retract"];
+/// v1alpha16 · sin `field`: un listado no tiene columna propia que ordene.
+const TESTIGOS_DE_OBJETOS: &[&str] = &["none", "snapshot", "log", "listing"];
+
+fn palabras_de_changes(n: &Node, modos: &[&str], testigos: &[&str]) -> Option<ShapeFailure> {
+    for (clave, admitidas) in [("mode", modos), ("witness", testigos)] {
+        if let Some((_, v)) = n.get(clave)
+            && let Some(p) = v.as_str()
+            && !admitidas.contains(&p)
+        {
+            return Some((
+                format!("`changes.{clave}: {p}` no es una palabra de aqui"),
+                Some(format!(
+                    "el vocabulario es cerrado —{}—: quien lee los pesos tiene que poder \
+                     razonar sobre ellos, y una palabra que no conoce se leeria como `none` \
+                     en silencio",
+                    admitidas.join(", ")
+                )),
+            ));
+        }
+    }
+    None
+}
+
+/// v1alpha16 · la forma de un `ObjectTable` (`01` §6).
+fn forma_de_object_table(n: &Node) -> Option<ShapeFailure> {
+    for (clave, ayuda) in [
+        ("datasource", "el conjunto es de una fuente declarada"),
+        (
+            "prefix",
+            "el prefijo de claves en el origen, tal cual; la cadena vacia es el origen entero",
+        ),
+        (
+            "media",
+            "el tipo de medio de sus objetos; lo que no se sabe que es, `binary`",
+        ),
+        (
+            "changes",
+            "la cara `D` sobre el listado: `{ mode: retract, witness: listing }` dice altas y bajas",
+        ),
+    ] {
+        if n.get(clave).is_none() {
+            return Some((
+                format!("un `ObjectTable` sin `{clave}`"),
+                Some(ayuda.to_string()),
+            ));
+        }
+    }
+    let media = n.get("media").and_then(|(_, v)| v.as_str()).unwrap_or("");
+    if !MEDIOS.contains(&media) {
+        return Some((
+            format!("`media: {media}` no es un tipo de medio"),
+            Some(format!(
+                "el vocabulario es cerrado: {}. Un formato (`pdf`, `jpeg`) no es un medio: es lo \
+                 que la coleccion admite en `formats`",
+                MEDIOS.join(", ")
+            )),
+        ));
+    }
+    None
+}
+
+/// v1alpha16 · `Table.format` (`03` §1) y el testigo `listing`.
+fn forma_de_tabla_de_ficheros(n: &Node) -> Option<ShapeFailure> {
+    let testigo = n
+        .get("changes")
+        .and_then(|(_, c)| c.get("witness"))
+        .and_then(|(_, v)| v.as_str());
+    let Some((_, formato)) = n.get("format") else {
+        if testigo == Some("listing") {
+            return Some((
+                "`changes.witness: listing` en una tabla sin `format`".to_string(),
+                Some(
+                    "`listing` es la diferencia de dos listados de ficheros; una tabla de filas \
+                     no tiene ficheros que listar. Su testigo es `snapshot`, `log`, `field` o \
+                     `none`"
+                        .to_string(),
+                ),
+            ));
+        }
+        return None;
+    };
+    match formato.get("type").and_then(|(_, v)| v.as_str()) {
+        None => {
+            return Some((
+                "`format` sin `type`".to_string(),
+                Some(format!(
+                    "como se leen los ficheros: {}",
+                    FORMATOS_TABULARES.join(", ")
+                )),
+            ));
+        }
+        Some(t) if !FORMATOS_TABULARES.contains(&t) => {
+            return Some((
+                format!("`format.type: {t}` no es un formato de filas"),
+                Some(format!(
+                    "una tabla lee {}. Un fichero que no es filas —un PDF, una imagen— se apunta \
+                     con un `ObjectTable`",
+                    FORMATOS_TABULARES.join(", ")
+                )),
+            ));
+        }
+        Some(_) => {}
+    }
+    let columnas = n.get("columns").map(|(_, c)| c);
+    if let Some((_, parts)) = formato.get("partitions") {
+        for p in parts.items() {
+            let Some(nombre) = p.as_str() else { continue };
+            if columnas.and_then(|c| c.get(nombre)).is_none() {
+                return Some((
+                    format!("la particion `{nombre}` no esta en `columns`"),
+                    Some(
+                        "una particion del camino (`fecha=…`) es una columna de la tabla, y una \
+                         columna se declara con su tipo"
+                            .to_string(),
+                    ),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// v1alpha16 · la forma de una `MediaCollection` (`02` §7).
+fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
+    for (clave, ayuda) in [
+        ("owner", "quien responde de la coleccion: `team:` o `user:`"),
+        (
+            "media",
+            "el tipo de medio que guarda; una coleccion es de un tipo",
+        ),
+        (
+            "formats",
+            "los formatos que admite; el primero es el primario",
+        ),
+    ] {
+        if n.get(clave).is_none() {
+            return Some((
+                format!("una `MediaCollection` sin `{clave}`"),
+                Some(ayuda.to_string()),
+            ));
+        }
+    }
+    let media = n.get("media").and_then(|(_, v)| v.as_str()).unwrap_or("");
+    if !MEDIOS.contains(&media) || matches!(media, "archive" | "binary") {
+        return Some((
+            format!("`media: {media}` no es un medio de una coleccion"),
+            Some(
+                "una coleccion sabe lo que guarda: document, image, audio, video, spreadsheet o \
+                 email. `archive` y `binary` son legales en un `ObjectTable`; expandir un \
+                 contenedor es una transformacion que escribe otro conjunto"
+                    .to_string(),
+            ),
+        ));
+    }
+    let formatos = n.get("formats").map(|(_, v)| v.items()).unwrap_or_default();
+    if formatos.is_empty() {
+        return Some((
+            "`formats` esta vacio".to_string(),
+            Some("sin formatos, un item de cualquier formato entraria".to_string()),
+        ));
+    }
+    let mut vistos: Vec<&str> = Vec::new();
+    for f in formatos {
+        let Some(f) = f.as_str() else { continue };
+        if vistos.contains(&f) {
+            return Some((
+                format!("`{f}` esta dos veces en `formats`"),
+                Some(
+                    "el primero es el primario, y una lista con repetidos no dice cual".to_string(),
+                ),
+            ));
+        }
+        vistos.push(f);
+    }
+    if n.get("virtual").is_some() && n.get("from").is_none() {
+        return Some((
+            "`virtual` sin `from`".to_string(),
+            Some(
+                "solo se sirve en sitio lo que tiene sitio: una coleccion escrita no tiene \
+                 origen del que servir sin copiar"
+                    .to_string(),
+            ),
+        ));
+    }
+    if let Some((_, desde)) = n.get("from")
+        && desde.get("objectTable").is_none()
+    {
+        return Some((
+            "`from` sin `objectTable`".to_string(),
+            Some("una coleccion mantenida sale de un `ObjectTable`".to_string()),
+        ));
+    }
+    if let Some((_, r)) = n.get("retention")
+        && r.as_str().and_then(crate::frescura::duracion).is_none()
+    {
+        return Some((
+            format!(
+                "`retention: {}` no es una duracion",
+                r.as_str().unwrap_or("?")
+            ),
+            Some("una duracion es un numero y una unidad: `30d`, `12h`, `90m`".to_string()),
+        ));
+    }
+    None
 }
 
 pub fn shape_rules() -> Vec<ShapeRule> {
@@ -1393,6 +1699,46 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                 }
                 None
             },
+        },
+        // ── v1alpha16 · guardar ─────────────────────────────────────────────
+        //
+        // Las palabras de `changes` son un vocabulario cerrado desde v1alpha8
+        // y nada lo comprobaba: un `witness: snapshto` compilaba y se leia como
+        // `none` (`vistas::modo`). Medido antes de cerrarlo (0046 E2): los tres
+        // arboles vivos usan solo palabras de la lista. `listing` es de
+        // v1alpha16 y solo en una tabla con `format` (regla de abajo).
+        ShapeRule {
+            kind: Kind::Table,
+            path: &["spec", "changes"],
+            check: |n| palabras_de_changes(n, MODOS_DE_TABLA, TESTIGOS_DE_TABLA),
+        },
+        // Una tabla sobre ficheros: `format` dice como se leen, y el testigo
+        // `listing` —la diferencia de dos listados— solo tiene sentido con
+        // ficheros que listar.
+        ShapeRule {
+            kind: Kind::Table,
+            path: &["spec"],
+            check: forma_de_tabla_de_ficheros,
+        },
+        // El puntero a objetos: lo minimo para serlo, y las dos caras sobre el
+        // listado. Un objeto no tiene mas clave que su nombre (sin `upsert`) y
+        // un listado no tiene columna que ordene el avance (sin `field`).
+        ShapeRule {
+            kind: Kind::ObjectTable,
+            path: &["spec"],
+            check: forma_de_object_table,
+        },
+        ShapeRule {
+            kind: Kind::ObjectTable,
+            path: &["spec", "changes"],
+            check: |n| palabras_de_changes(n, MODOS_DE_OBJETOS, TESTIGOS_DE_OBJETOS),
+        },
+        // La coleccion: quien responde, que guarda y en que formatos. Y
+        // `virtual` solo con origen: solo se sirve en sitio lo que tiene sitio.
+        ShapeRule {
+            kind: Kind::MediaCollection,
+            path: &["spec"],
+            check: forma_de_coleccion,
         },
         // ── v1alpha8 · la tabla ─────────────────────────────────────────────
         //

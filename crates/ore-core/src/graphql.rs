@@ -481,6 +481,9 @@ fn grafo(crudo: &str) -> Result<String, String> {
         // no añadiría nada que el cliente pueda comprobar.
         Type::Decimal { .. } => escalar("Decimal").to_string(),
         Type::Imported(q) => q.replace('.', "_"),
+        // v1alpha16. El valor de una referencia a un ítem es su huella: una
+        // cadena. Lo que hay al otro lado se sirve aparte, firmado.
+        Type::Media(_) => "String".to_string(),
     })
 }
 

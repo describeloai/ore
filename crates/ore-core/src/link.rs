@@ -757,7 +757,12 @@ fn buscar_ciclo(grafo: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
 // `owner` lo declare quien lo declare: el mismo handle y el mismo codigo.
 fn modelos_entrenados(pkg: &Package, out: &mut Vec<Diagnostic>) {
     // v1alpha12: y el dataset, que tambien tiene dueno y con el mismo handle.
-    for m in pkg.of(Kind::TrainedModel).chain(pkg.of(Kind::Dataset)) {
+    // v1alpha16: la coleccion responde como el dataset que es a los ficheros.
+    for m in pkg
+        .of(Kind::TrainedModel)
+        .chain(pkg.of(Kind::Dataset))
+        .chain(pkg.of(Kind::MediaCollection))
+    {
         if let Some(v) = m.section("owner") {
             let s = v.as_str().unwrap_or("");
             if !es_handle(s) {

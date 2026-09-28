@@ -187,6 +187,12 @@ const SECUENCIAS: &[&str] = &[
     // El orden ES el significado.
     "levels",     // ascendente por restrictividad: el retículo entero
     "primaryKey", // en una clave compuesta el orden es significativo
+    // v1alpha16. `formats` de una coleccion: el PRIMERO es el primario, y
+    // `[pdf, docx]` no dice lo mismo que `[docx, pdf]`. `partitions` de un
+    // `ObjectTable` o de un `format`: el orden de las carpetas Hive del camino
+    // (`fecha=…/region=…`), que es el de las columnas que salen de el.
+    "formats",
+    "partitions",
     // `changes.key` de una `Table` es una clave compuesta, y por lo mismo: la
     // clave de un upsert es lo que empareja un tombstone con la fila que retira,
     // y quien la codifica lo hace POSICION A POSICION. `[pais, id]` contra

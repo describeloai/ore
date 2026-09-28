@@ -233,6 +233,9 @@ codes! {
     // contrato es lo que proyecta: lo que se gobierna se deriva de lo escrito.
     Oos2038 = "OOS2038", Reference, "la consulta de una vista no es un SELECT que lee por nombre";
     Oos2039 = "OOS2039", Reference, "el contrato de una vista no es lo que su consulta proyecta";
+    // v1alpha16 · GUARDAR. El tipo de medio es del documento: una coleccion
+    // de documentos no sale de un conjunto de imagenes.
+    Oos2040 = "OOS2040", Reference, "una MediaCollection sale de un ObjectTable de otro tipo de medio";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -510,6 +513,8 @@ mod tests {
             // v1alpha14: la vista es SQL.
             Code::Oos2038,
             Code::Oos2039,
+            // v1alpha16: la coleccion y su origen, del mismo medio.
+            Code::Oos2040,
             Code::Oos4016,
             // El recorte de una vista, que el binding no tenia.
             Code::Oos5028,

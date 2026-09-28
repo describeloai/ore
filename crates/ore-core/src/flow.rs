@@ -252,6 +252,7 @@ pub fn check(pkg: &Package) -> Vec<Diagnostic> {
 
     // 3 · Los conductos y la regla de flujo.
     let conductos = clearances(pkg, &lat);
+    colecciones(pkg, &lat, &conductos, &mut out);
     vistas_materializadas(pkg, &lat, &efectivas, &conductos, &mut out);
     canal_lateral(pkg, &lat, &efectivas, &mut out);
     indices_de_topologia(pkg, &lat, &efectivas, &conductos, &mut out);
@@ -317,7 +318,8 @@ fn etiquetas_conocidas(pkg: &Package, lat: &BTreeMap<String, Lattice>, out: &mut
     // clave que no sea esa. Lo que queda por comprobar es lo que un esquema no
     // puede — que `DRFAT` no es un nivel de `oos.maturity` — y es exactamente
     // la pregunta que esta función existe para contestar.
-    for v in pkg.of(Kind::View) {
+    // v1alpha16: y la coleccion, que clasifica lo que guarda.
+    for v in pkg.of(Kind::View).chain(pkg.of(Kind::MediaCollection)) {
         if let Some((_, m)) = v.root.get("metadata") {
             revisar(v, m);
         }
@@ -426,6 +428,26 @@ fn propagar(
                 };
                 if subir {
                     ls.insert(r.clone(), (n.clone(), Origin::Inherited));
+                }
+            }
+        }
+
+        // v1alpha16 · `Media<c>`: la propiedad lleva, como mínimo, la
+        // clasificación de su colección (`03` §2). Entra como el concepto: una
+        // herencia más, con la misma regla —se eleva, no se rebaja—.
+        if let Some((_, t)) = v.get("type")
+            && let Ok(crate::types::Type::Media(c)) =
+                crate::types::parse_type(t.as_str().unwrap_or(""))
+            && let Some(col) = pkg.resolve_collection(&c, e)
+        {
+            for (r, (n, _)) in etiquetas_de_coleccion(pkg, lat, col, &mut Vec::new()) {
+                let subir = match (ls.get(&r), lat.get(&r)) {
+                    (Some((actual, _)), Some(l)) => l.index(&n) > l.index(actual),
+                    (None, _) => true,
+                    _ => false,
+                };
+                if subir {
+                    ls.insert(r, (n, Origin::Inherited));
                 }
             }
         }
@@ -584,7 +606,8 @@ fn vistas_materializadas(
                 )
                 .at(mat.pos())
                 .help(format!(
-                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}`                      en la política de conductos, o no copies: quita el dataset, o el \
+                    "un conducto sin autorización es ⊥ y no admite nada. Declara `{conducto}` \
+                     en la política de conductos, o no copies: quita el dataset, o el \
                      `materialized` de la vista"
                 )),
             );
@@ -603,13 +626,134 @@ fn vistas_materializadas(
                     code,
                     &v.path,
                     format!(
-                        "`{vqn}.{}` lleva `{}:{}` ({como}) y `{conducto}`                              solo admite `{}:{}`",
+                        "`{vqn}.{}` lleva `{}:{}` ({como}) y `{conducto}` \
+                         solo admite `{}:{}`",
                         f.campo, f.reticulo, f.nivel, f.reticulo, f.permitido
                     ),
                 )
                 .at(mat.pos())
                 .help(
                     "una vista materializada es una copia, y la copia lleva lo que llevan                          sus campos aunque quien los clasificó sea una entidad tres vistas                          más arriba. Quita el campo de la vista, eleva la autorización del                          conducto donde se decide eso, o no materialices",
+                ),
+            );
+        }
+    }
+}
+
+// ── v1alpha16 · la colección ────────────────────────────────────────────────
+
+/// **Lo que una colección lleva puesto** (`02` §6): lo que hereda de su origen
+/// —el `datasource` de su `ObjectTable`— y lo que ella suma en
+/// `metadata.labels`. Se eleva y no se rebaja: un nivel por debajo del heredado
+/// es `OOS4012`, como una propiedad que rebaja la de su entidad, y no baja
+/// nada —el join se queda arriba—, que es por lo que es un error: una etiqueta
+/// que dice menos de lo que lleva acaba mintiendo.
+pub fn etiquetas_de_coleccion(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    c: &Loaded,
+    out: &mut Vec<Diagnostic>,
+) -> Labels {
+    let mut ls: Labels = BTreeMap::new();
+    let origen = c
+        .section("from")
+        .and_then(|f| f.get("objectTable"))
+        .and_then(|(_, r)| r.as_str())
+        .and_then(|r| pkg.resolve_object_table(r, c));
+    if let Some(ds) = origen
+        .and_then(|ot| ot.section("datasource"))
+        .and_then(|d| d.as_str())
+    {
+        for cfg in pkg.docs.iter().filter(|d| d.kind == Kind::OntologyConfig) {
+            for d in cfg.section("datasources").map(|n| n.items()).unwrap_or(&[]) {
+                if d.get("name").and_then(|(_, v)| v.as_str()) != Some(ds) {
+                    continue;
+                }
+                for (r, n, _) in read_labels(d) {
+                    ls.insert(r, (n, Origin::Inherited));
+                }
+            }
+        }
+    }
+    let cqn = c.qname().unwrap_or_default();
+    if let Some((_, m)) = c.root.get("metadata") {
+        for (r, n, pos) in read_labels(m) {
+            let heredado = ls.get(&r).map(|(nivel, _)| nivel.clone());
+            if let (Some(heredado), Some(l)) = (heredado, lat.get(&r))
+                && l.index(&n) < l.index(&heredado)
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos4012,
+                        &c.path,
+                        format!("`{cqn}` rebaja `{r}` de `{heredado}` a `{n}`"),
+                    )
+                    .at(pos)
+                    .help(
+                        "una colección suma a lo que hereda de su origen y no le quita: el join \
+                         se queda en lo heredado y la etiqueta diría menos de lo que lleva. \
+                         Relajar se decide donde se declaró el suelo —el `datasource`—",
+                    ),
+                );
+                continue;
+            }
+            ls.insert(r, (n, Origin::Declared));
+        }
+    }
+    ls
+}
+
+/// **Copiar es un conducto** (`02` §6): una colección mantenida que no es
+/// `virtual` copia bytes al lago e instancia `materialization.payload`, como un
+/// dataset mantenido. Una virtual no copia y no lo cruza; una escrita, tampoco.
+fn colecciones(
+    pkg: &Package,
+    lat: &BTreeMap<String, Lattice>,
+    conductos: &BTreeMap<String, Labels>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let conducto = "materialization.payload";
+    for c in pkg.of(Kind::MediaCollection) {
+        let ls = etiquetas_de_coleccion(pkg, lat, c, out);
+        let Some(desde) = c.section("from") else {
+            continue;
+        };
+        if c.section("virtual").and_then(|v| v.as_str()) == Some("true") {
+            continue;
+        }
+        let cqn = c.qname().unwrap_or_default();
+        let Some(autorizacion) = conductos.get(conducto) else {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos4011,
+                    &c.path,
+                    format!("`{cqn}` copia al lago y `{conducto}` no tiene autorización declarada"),
+                )
+                .at(desde.pos())
+                .help(format!(
+                    "una colección mantenida copia sus ficheros, y copiar es un conducto. \
+                     Declara `{conducto}` en la política de conductos, o sirve desde el origen \
+                     con `virtual: true`"
+                )),
+            );
+            continue;
+        };
+        let por_campo = BTreeMap::from([("*".to_string(), ls)]);
+        for f in fugas(lat, Some(autorizacion), &por_campo) {
+            out.push(
+                Diagnostic::new(
+                    Code::Oos4002,
+                    &c.path,
+                    format!(
+                        "`{cqn}` lleva `{}:{}` y `{conducto}` solo admite `{}:{}`",
+                        f.reticulo, f.nivel, f.reticulo, f.permitido
+                    ),
+                )
+                .at(desde.pos())
+                .help(
+                    "la copia de una colección lleva lo que la colección lleva: lo heredado de \
+                     su origen y lo que ella suma. Eleva la autorización del conducto donde se \
+                     decide eso, o sirve desde el origen con `virtual: true`",
                 ),
             );
         }

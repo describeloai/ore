@@ -205,6 +205,12 @@ pub enum Type {
     },
     /// `iso.CountryAlpha2`. Su resolución es trabajo de dependencias.
     Imported(String),
+    /// v1alpha16. `Media<legal.archivo.contratos>`: **la referencia a un ítem
+    /// de una colección** (`03` §2). El valor es la huella del ítem, no el
+    /// fichero; lleva el tipo de medio y la clasificación de su colección. La
+    /// referencia se guarda tal como se escribió y la resuelve el enlazado
+    /// (`OOS2018`), como `backedBy`.
+    Media(String),
 }
 
 impl Type {
@@ -229,6 +235,7 @@ impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Scalar(s) | Type::Imported(s) => f.write_str(s),
+            Type::Media(c) => write!(f, "Media<{c}>"),
             Type::List(s) => write!(f, "list<{s}>"),
             Type::Decimal { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Type::Parametric {
@@ -261,6 +268,21 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
 
     if let Some(resto) = s.strip_prefix("Decimal<") {
         return decimal(resto);
+    }
+    // v1alpha16. Una colección y solo una: `Media` sin ella no dice a qué
+    // apunta, y con dos no es una referencia. Las dos son `OOS3001` —un tipo
+    // que no existe—, no una colección que no resuelve.
+    if let Some(c) = s.strip_prefix("Media<").and_then(|r| r.strip_suffix('>')) {
+        let c = c.trim();
+        let valida = !c.is_empty()
+            && c.split('.').all(|p| {
+                !p.is_empty() && p.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            });
+        return if valida {
+            Ok(Type::Media(c.to_string()))
+        } else {
+            Err(TypeError::Desconocido)
+        };
     }
     if let Some((ctor, resto)) = s.split_once('<') {
         if !matches!(ctor, "Money" | "Quantity") {
@@ -406,6 +428,24 @@ fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
         };
         let Some(s) = t.as_str() else { continue };
         match parse_type(s) {
+            // v1alpha16: `Media<…>` es un tipo de esta versión. En un documento
+            // de antes es lo que era: un tipo que no existía.
+            Ok(Type::Media(_))
+                if e.version()
+                    .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha16) =>
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos3001,
+                        &e.path,
+                        format!("`{s}` es un tipo de v1alpha16"),
+                    )
+                    .at(t.pos())
+                    .help(
+                        "la referencia a un ítem de una colección llega con v1alpha16: declara                          `apiVersion: oos.dev/v1alpha16` en el documento",
+                    ),
+                )
+            }
             Ok(_) => {}
             Err(TypeError::Desconocido) => out.push(
                 Diagnostic::new(
@@ -706,6 +746,7 @@ mod tests {
         casos.push("Decimal<38, 9>".into());
         casos.push("Decimal<1, 0>".into());
         casos.push("iso.CountryAlpha2".into());
+        casos.push("Media<legal.archivo.contratos>".into());
         for c in casos {
             let t = parse_type(&c).unwrap_or_else(|_| panic!("`{c}` tenia que analizar"));
             assert_eq!(t.to_string(), c, "la vuelta no coincide");
@@ -730,6 +771,22 @@ mod tests {
         ));
         assert_eq!(parse_type("Money<EUR, 2>").unwrap().unit(), Some("EUR"));
         assert_eq!(parse_type("Quantity<km,1>").unwrap().unit(), Some("km"));
+    }
+
+    /// v1alpha16 · `Media<coleccion>`: una coleccion y solo una. Sin ella, o con
+    /// dos, es un tipo que no existe —`OOS3001`—, no una referencia rota.
+    #[test]
+    fn la_referencia_a_un_item_nombra_una_coleccion() {
+        assert_eq!(
+            parse_type("Media<legal.contratos>").unwrap(),
+            Type::Media("legal.contratos".into())
+        );
+        for malo in ["Media", "Media<>", "Media<a, b>", "Media<a..b>"] {
+            assert!(
+                matches!(parse_type(malo), Err(TypeError::Desconocido)),
+                "`{malo}` no es una referencia"
+            );
+        }
     }
 
     #[test]

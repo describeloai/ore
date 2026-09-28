@@ -136,6 +136,14 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                         }
                     }
                 }
+                // v1alpha16: `Media<x>` apunta a una coleccion, y quien la
+                // referencia desde otro paquete se acopla a ella.
+                if let Some((_, v)) = cuerpo.get("type")
+                    && let Ok(crate::types::Type::Media(c)) =
+                        crate::types::parse_type(v.as_str().unwrap_or(""))
+                {
+                    push(&c, Kind::MediaCollection, "Media", v.pos());
+                }
             }
             for (_, rel) in d.section("relations").map(|r| r.entries()).unwrap_or(&[]) {
                 if let Some((_, v)) = rel.get("target")
@@ -164,6 +172,16 @@ pub fn referencias(d: &Loaded) -> Vec<Ref<'_>> {
                 {
                     push(s, Kind::Dataset, "from.dataset", v.pos());
                 }
+            }
+        }
+        // v1alpha16: la coleccion mantenida sale del `ObjectTable` de la
+        // fuente, que vive en otro paquete (0045): cruza, y tiene que estar
+        // exportado.
+        Kind::MediaCollection => {
+            if let Some((_, v)) = d.section("from").and_then(|f| f.get("objectTable"))
+                && let Some(s) = v.as_str()
+            {
+                push(s, Kind::ObjectTable, "from.objectTable", v.pos());
             }
         }
         Kind::Interface => {
