@@ -62,7 +62,10 @@ pub fn usados(repo: &Path, fuente: &str) -> Result<BTreeSet<String>, Fallo> {
     let Ok(es) = std::fs::read_dir(repo.join("packages")) else {
         return Ok(out);
     };
-    for e in es.flatten() {
+    // ⛔ Sólo directorios: `packages/.gitkeep` es un fichero, y en Linux leer
+    //   `.gitkeep/discover.scope.json` no es «no existe» sino «no es un
+    //   directorio» —un error que tumbaba la inducción entera (CI, `ec429d8`)—.
+    for e in es.flatten().filter(|e| e.path().is_dir()) {
         let Some(a) = crate::alcance::del_paquete(&e.path()).map_err(|m| fallo(65, m))? else {
             continue;
         };
