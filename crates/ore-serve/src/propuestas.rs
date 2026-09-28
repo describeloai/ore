@@ -290,6 +290,16 @@ fn nombrados(mensaje: &str) -> Vec<String> {
         .collect()
 }
 
+/// Una propuesta EN SECO (M3): no se abre; se dice lo que llevaría.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seco {
+    No,
+    /// Sólo lo que arrastra: rápido, sin clonar ni compilar.
+    Alcance,
+    /// Además, `main` + eso compilado: los diagnósticos y lo que falta.
+    Entero,
+}
+
 /// Lo que un alcance es en git, los ids que lleva, y lo añadido con su porqué.
 type EnFicheros = (crate::git::Alcance, Vec<String>, Vec<(String, String)>);
 
@@ -303,6 +313,8 @@ type EnFicheros = (crate::git::Alcance, Vec<String>, Vec<(String, String)>);
 /// - el `Schema` del schema donde vive cada activo (OOS2037 sin él);
 /// - lo que cada activo LEE (el linaje, `lee`: el puntero de la fuente, la vista
 ///   de debajo), si la rama también lo cambió (OOS2018 sin él);
+/// - lo que un `Package` que va EXPORTA (en `lee` también), si la rama lo cambió
+///   (OOS2027 sin él: el `package.yaml` de la fuente exporta los dos punteros);
 /// - con una copia (un `Dataset`), la `ConduitPolicy` que la rama cambió: el
 ///   conducto `materialization.payload` es de todo el árbol (OOS4011 sin él).
 ///
@@ -335,7 +347,11 @@ fn lo_que_arrastra(cambios: &[Json], llevo: &[String]) -> Vec<(String, String)> 
             } else if kind == "Schema" && partes.len() >= 3 && nombre == format!("{}.{}", partes[0], partes[1]) {
                 Some(format!("el schema de `{vn}`"))
             } else if matches!(hijo(v, "lee"), Some(Json::Arr(l)) if l.iter().any(|x| matches!(x, Json::Str(s) if *s == id))) {
-                Some(format!("lo lee `{vn}`"))
+                Some(if vk == "Package" {
+                    format!("lo exporta el paquete `{vn}`")
+                } else {
+                    format!("lo lee `{vn}`")
+                })
             } else if kind == "ConduitPolicy" && vk == "Dataset" {
                 Some(format!("el conducto de la copia `{vn}`"))
             } else {
@@ -989,6 +1005,20 @@ impl Servidor {
             (None, Some(a)) => Some(Alcance::Activos(a)),
             (None, None) => None,
         };
+        // M3 · EN SECO: lo que la propuesta llevaría, sin abrir nada. `"alcance"`,
+        // sólo lo que arrastra (la lista de cambios de la rama, de memoria: al
+        // marcar en el modal); `true`, además `main` + eso compilado.
+        let seco = match del_cuerpo(cuerpo, "seco").as_deref() {
+            None | Some("false") => Seco::No,
+            Some("alcance") => Seco::Alcance,
+            Some("true") => Seco::Entero,
+            Some(otro) => {
+                return Respuesta::error(
+                    422,
+                    format!("`seco` es `true` o `\"alcance\"`, no `{otro}`"),
+                );
+            }
+        };
         let abiertas = api.pulls("open").unwrap_or_default();
         if let Some(alcance) = alcance {
             return self.proponer_alcance(
@@ -999,6 +1029,13 @@ impl Servidor {
                 titulo.trim(),
                 descripcion.trim(),
                 &abiertas,
+                seco,
+            );
+        }
+        if seco != Seco::No {
+            return Respuesta::error(
+                422,
+                "en seco se pregunta por un alcance (`activos` o `alcance`): la rama entera es la rama",
             );
         }
         // La rama entera lleva lo que ya va en sus propuestas con alcance: una
@@ -1160,6 +1197,7 @@ impl Servidor {
         titulo: &str,
         descripcion: &str,
         abiertas: &[Json],
+        seco: Seco,
     ) -> Respuesta {
         let (Ok(api), Some(forja)) = (self.api(), self.forja()) else {
             return Respuesta::error(422, "este árbol no está en una forja: no hay propuestas");
@@ -1168,6 +1206,35 @@ impl Servidor {
             Ok(x) => x,
             Err(r) => return r,
         };
+        // Lo que se dice de lo que lleva, se abra o no (M3 lo da en seco).
+        let lo_que_lleva = |m: &mut std::collections::BTreeMap<String, Json>| {
+            if matches!(alcance, Alcance::Activos(_)) {
+                m.insert(
+                    "activos".into(),
+                    Json::Arr(lleva.iter().map(Json::s).collect()),
+                );
+            }
+            m.insert(
+                "anadidos".into(),
+                Json::Arr(anadidos.iter().map(|(i, _)| Json::s(i)).collect()),
+            );
+            m.insert(
+                "anadidosPorque".into(),
+                Json::Obj(
+                    anadidos
+                        .iter()
+                        .map(|(i, p)| (i.clone(), Json::s(p)))
+                        .collect(),
+                ),
+            );
+        };
+        if seco == Seco::Alcance {
+            let mut j = Json::obj([("seco", Json::Bool(true)), ("rama", Json::s(rama))]);
+            if let Json::Obj(m) = &mut j {
+                lo_que_lleva(m);
+            }
+            return Respuesta::ok(j);
+        }
         // Una cosa, una propuesta abierta: la rama entera choca con todo; una
         // carpeta, con la misma carpeta; unos activos, con los que comparta.
         let choca = |pr: &&Json| {
@@ -1220,6 +1287,34 @@ impl Servidor {
         } else {
             self.faltan(rama, &diagnosticos, &lleva)
         };
+        if seco == Seco::Entero {
+            let mut j = Json::obj([
+                ("seco", Json::Bool(true)),
+                ("rama", Json::s(rama)),
+                (
+                    "ficherosDelAlcance",
+                    Json::Arr(hecha.ficheros.iter().map(Json::s).collect()),
+                ),
+                (
+                    "documentosFuera",
+                    Json::Arr(hecha.fuera.iter().map(Json::s).collect()),
+                ),
+                (
+                    "diagnosticos",
+                    Json::Arr(
+                        diagnosticos
+                            .iter()
+                            .map(crate::arbol::con_posicion)
+                            .collect(),
+                    ),
+                ),
+                ("faltan", Json::Arr(faltan.iter().map(Json::s).collect())),
+            ]);
+            if let Json::Obj(m) = &mut j {
+                lo_que_lleva(m);
+            }
+            return Respuesta::ok(j);
+        }
         if let Err(e) = forja.empujar_a(hecha.clon.ruta(), &derivada) {
             return de_git(e);
         }
@@ -1246,19 +1341,7 @@ impl Servidor {
                         Json::Arr(hecha.fuera.iter().map(Json::s).collect()),
                     );
                     // Lo que va con los activos pedidos sin remedio, dicho.
-                    m.insert(
-                        "anadidos".into(),
-                        Json::Arr(anadidos.iter().map(|(i, _)| Json::s(i)).collect()),
-                    );
-                    m.insert(
-                        "anadidosPorque".into(),
-                        Json::Obj(
-                            anadidos
-                                .iter()
-                                .map(|(i, p)| (i.clone(), Json::s(p)))
-                                .collect(),
-                        ),
-                    );
+                    lo_que_lleva(m);
                     m.insert(
                         "diagnosticos".into(),
                         Json::Arr(

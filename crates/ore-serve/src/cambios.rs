@@ -133,6 +133,10 @@ fn lectores(pkg: &Package) -> BTreeMap<String, BTreeSet<String>> {
 /// Lo que lee cada activo, directamente: `activo → leídos` (lo mismo que
 /// [`lectores`], del revés). Es lo que una propuesta de activos tiene que
 /// llevar consigo si la rama también lo cambió (`propuestas.rs`, la expansión).
+///
+/// Y un `Package`, lo que EXPORTA: su `exports` nombra documentos suyos, y un
+/// `package.yaml` que exporta un puntero que no va no compila (OOS2027, medido
+/// 2026-09-28 proponiendo uno de dos datasets de una base standard nueva).
 fn lee(pkg: &Package) -> BTreeMap<String, Vec<String>> {
     let mut g: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for d in &pkg.docs {
@@ -140,6 +144,7 @@ fn lee(pkg: &Package) -> BTreeMap<String, Vec<String>> {
         if let Some(r) = ore_core::vistas::respaldo(pkg, d) {
             lee.push(r);
         }
+        lee.extend(exporta(pkg, d));
         if lee.is_empty() {
             continue;
         }
@@ -149,6 +154,31 @@ fn lee(pkg: &Package) -> BTreeMap<String, Vec<String>> {
         g.insert(ore_core::normalize::doc_id(d), ids);
     }
     g
+}
+
+/// Lo que un `Package` exporta: los documentos de su sitio que su `exports`
+/// nombra (la forma corta, cualificada con su namespace como en `exporta.rs`).
+fn exporta<'a>(pkg: &'a Package, p: &'a Loaded) -> Vec<&'a Loaded> {
+    if p.kind != ore_core::document::Kind::Package {
+        return Vec::new();
+    }
+    let (Some(sitio), Some(v)) = (p.path.parent(), p.section("exports")) else {
+        return Vec::new();
+    };
+    let ns = p.meta("namespace").and_then(|n| n.as_str());
+    let nombres: BTreeSet<String> = v
+        .items()
+        .iter()
+        .filter_map(|i| i.as_str())
+        .map(|s| {
+            ore_core::normalize::qualify_catalogo(s, ns, ore_core::normalize::SCHEMA_POR_DEFECTO)
+        })
+        .collect();
+    pkg.docs
+        .iter()
+        .filter(|d| d.kind != ore_core::document::Kind::Package && d.path.starts_with(sitio))
+        .filter(|d| d.qname().is_some_and(|q| nombres.contains(&q)))
+        .collect()
 }
 
 /// Todo lo que lee `id`, directa o indirectamente, sin él.

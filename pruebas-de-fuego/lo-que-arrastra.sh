@@ -13,6 +13,8 @@
 #      9 activos: 2 Dataset, 2 Table (punteros), 2 Schema, 2 Package, 1 ConduitPolicy
 #   2  POST /propuestas {activos: los 2 datasets}   201 · lleva los 9 · anadidos
 #      los 7, cada uno con su porque · diagnosticos [] · faltan []
+#   1b en seco (M3): {seco: "alcance"} lo que arrastra, sin compilar; {seco: true} ademas
+#      main + eso compilado; ni PR ni derivada · la rama entera en seco, 422
 #   3  lo que ya esta en main no se arrastra: con los punteros y el schema de la
 #      fuente fusionados, la siguiente propuesta de otro dataset no los lleva
 #
@@ -98,6 +100,17 @@ tiene "sorted(c['id'] for c in d['cambios'])==$TODOS" || falla "1 · la rama no 
 tiene "[c for c in d['cambios'] if c['id']=='Dataset:std.ventas.pedidos'][0]['lee']==['Table:pg.ventas.pedidos']" || falla "1 · el dataset no dice que lee su puntero: $(cuerpo | head -c 600)"
 dice "1 · una base standard en la rama escribe 9 activos (datasets, punteros en la fuente, schemas, paquetes, politica) · cada cambio dice lo que lee"
 
+# ── 1b · en seco (M3): lo que llevaria, sin abrir nada ─────────────────────
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","activos":["Dataset:std.ventas.pedidos"],"seco":"alcance"}')" = "200" ] || falla "1b · en seco, el alcance: $(cuerpo)"
+tiene "d['seco'] is True and d['anadidosPorque']['Table:pg.ventas.pedidos']=='lo lee \`std.ventas.pedidos\`' and d['anadidosPorque']['Table:pg.ventas.clientes']=='lo exporta el paquete \`pg\`' and 'Dataset:std.ventas.clientes' not in d['activos'] and 'diagnosticos' not in d" || falla "1b · en seco no dice lo que arrastra un dataset: $(cuerpo | head -c 700)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","activos":["Dataset:std.ventas.pedidos"],"seco":true}')" = "200" ] || falla "1b · en seco entero: $(cuerpo)"
+tiene "d['seco'] is True and d['diagnosticos']==[] and d['faltan']==[] and 'packages/pg/ventas/tables/pedidos.yaml' in d['ficherosDelAlcance']" || falla "1b · en seco entero no compila o no dice sus ficheros: $(cuerpo | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print(d.get("diagnosticos"), d.get("faltan"), d.get("ficherosDelAlcance"))')"
+[ "$(pide GET /propuestas "$ANA")" = "200" ] && tiene "d['propuestas']==[]" || falla "1b · en seco se abrio algo: $(cuerpo | head -c 300)"
+[ "$(git --git-dir="$BARE" branch --list 'alcance/*' | wc -l | tr -d ' ')" = "0" ] || falla "1b · en seco quedo una derivada: $(git --git-dir="$BARE" branch --list 'alcance/*')"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","seco":true}')" = "422" ] || falla "1b · la rama entera en seco no dio 422: $(cuerpo)"
+[ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","activos":["Dataset:std.ventas.pedidos"],"seco":"quizas"}')" = "422" ] || falla "1b · seco malo no dio 422: $(cuerpo)"
+dice "1b · en seco: \"alcance\" dice lo que arrastra un dataset (su puntero, y el otro porque el paquete de la fuente lo exporta; el otro dataset no) sin compilar; true ademas compila (diagnosticos [], sus ficheros) · nada abierto ni derivada · la rama entera o un seco malo, 422"
+
 # ── 2 ───────────────────────────────────────────────────────────────────────
 [ "$(pide POST /propuestas "$ANA" '{"rama":"ana/std","titulo":"los datasets","activos":["Dataset:std.ventas.clientes","Dataset:std.ventas.pedidos"]}')" = "201" ] || falla "2 · proponer los datasets: $(cuerpo)"
 tiene "sorted(d['activos'])==$TODOS" || falla "2 · no lleva los nueve: $(cuerpo | head -c 700)"
@@ -125,4 +138,4 @@ C=$(curl -s -o "$TMP/r.json" -w '%{http_code}' -X PUT -H "$ANA" -H 'content-type
 tiene "d['activos']==['Dataset:std.ventas.pedidos_es'] and d['anadidos']==[] and d['diagnosticos']==[]" || falla "3 · arrastro lo que ya esta en main: $(cuerpo | head -c 700)"
 dice "3 · con la base en main, un dataset nuevo que lee el mismo puntero va solo: lo que ya esta en main no se arrastra"
 
-echo "✓ lo que arrastra una propuesta de activos (0044 A.2, M1): 1–3"
+echo "✓ lo que arrastra una propuesta de activos (0044 A.2, M1 y M3): 1–3"
