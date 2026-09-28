@@ -1,7 +1,8 @@
 # 0044 · Ramas globales: una rama es del árbol entero, y el catálogo la enseña
 
 **Estado:** decidido; fases 1 y 2 hechas (2026-09-27), los datos en ramas por decidir; apéndice A
-(*scope proposals*) definido y medido, sin construir · **Decide:**
+(*scope proposals*) hecho por repositorio y por activos, con lo que arrastra (2026-09-28);
+apéndice B (*la rama protegida*) hecho, P2 pendiente · **Decide:**
 qué es una rama para quien usa ORE, qué se puede hacer en ella, y qué significa «en qué se
 diferencia de `main`». Amplía [`0030`](0030-el-arbol-en-el-editor.md) W2 (ramas y propuestas en el
 editor) al catálogo, y [`0036`](0036-la-clase-del-repositorio.md) ④ (la rama de un repositorio).
@@ -126,8 +127,11 @@ entregable hecho en ORE: **el alcance por repositorio** (`POST /propuestas {alca
 fusionar; `la-propuesta.sh` 8e) y su pantalla en Code Repositories. Segundo, en ORE: **el alcance
 por activos** (`POST /propuestas {activos: [id…]}`: sus ficheros y, movidos, los de antes; lo que
 comparte fichero y el `package.yaml` de su base van con ellos al proponer; `faltan` dice lo que la
-rama cambia y a `main` + alcance le falta para compilar; `la-propuesta.sh` 8f). Falta su pantalla
-en el catálogo.
+rama cambia y a `main` + alcance le falta para compilar; `la-propuesta.sh` 8f). Tercero
+(2026-09-28): **lo que arrastra** un alcance de activos, la propuesta **en seco** y su pantalla en
+el catálogo —la sección *Pull requests*, «Changes vs main» con el árbol del sidebar y una casilla
+por nodo, *From branch*, los orígenes con sus punteros, y lo arrastrado marcado *Required*
+(§ A.3)—.
 
 ### El problema
 
@@ -317,6 +321,39 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
    decisión 4). Cuando los tenga, los punteros de `datasets/…/*.json` tendrán que entrar en
    `cambios` y en el alcance de la propuesta del catálogo, y sólo en ella.
 
+### A.3 · Lo que arrastra un alcance de activos (medido y hecho el 2026-09-28)
+
+**Lo medido** (`pruebas-de-fuego/lo-que-arrastra.sh`, antes de construir): una base *standard*
+creada **en una rama** desde un origen escribe **nueve** activos —sus dos `Dataset`, su `Package` y
+su `Schema`; los dos punteros (`Table`) en el paquete de la fuente (0045), con el `Schema` y el
+`Package` de esta; y la `ConduitPolicy` de la copia—. Proponer sólo los datasets llevaba los
+datasets y el paquete de la base, **no compilaba** (`OOS2037` sin schema, `OOS2018` sin puntero,
+`OOS4011` sin conducto) y `faltan` salía vacío (el diagnóstico nombra `from.table: x` y un schema
+suelto, y no casaba). Sólo con las nueve compila. Proponiendo **uno** de los dos datasets, el
+`package.yaml` de la fuente exporta los dos punteros: `OOS2027` sin el otro.
+
+**Lo decidido:**
+
+1. **La expansión arrastra lo imprescindible**, hasta que no se añade nada, y **sólo lo que la
+   rama cambia** (lo que ya está en `main` no hace falta llevarlo): lo que comparte fichero; el
+   `Package` de cada paquete tocado; el `Schema` de cada activo; **lo que cada activo lee** —el
+   linaje hacia abajo: `cambios` da `lee` por activo, y el de un `Package` es lo que **exporta**—;
+   y, con una copia (un `Dataset`), la `ConduitPolicy` cambiada (el conducto
+   `materialization.payload` es de todo el árbol). Cada añadido lleva su porqué
+   (`anadidosPorque`: «lo lee `x`», «el schema de `x`», «lo exporta el paquete `x`»…).
+2. **`faltan` es la red**, no el camino: casa `campo: nombre` y un schema nombrado suelto, por si
+   algo se escapa a la expansión.
+3. **En seco.** `POST /propuestas {…, seco}` dice lo que la propuesta llevaría sin abrir PR ni
+   dejar derivada: `"alcance"`, sólo lo que arrastra (de la lista de cambios, de memoria);
+   `true`, además `main` + eso compilado (diagnósticos, `faltan`, ficheros).
+4. **La consola no decide.** Al marcar en «Changes vs main» pregunta en seco, y lo arrastrado sale
+   marcado, sin poder quitarse, con *Required* y el porqué; al proponer manda lo elegido y ORE lo
+   vuelve a añadir. El `Package` y el `Schema` no son filas: los cubre la casilla de su base, su
+   schema o su origen.
+
+**No se arrastra** lo que **lee a** lo propuesto (un consumidor de `main` que se rompe): añadirlo
+rompería `main` por otro lado, y se dice en los diagnósticos (A.2 ④).
+
 #### Lo que falta para cumplir A.1, y es trabajo aparte
 
 - **El vínculo fuente ↔ activo.** Hoy el `.sql` y su vista son dos ficheros sin relación, y la
@@ -328,7 +365,6 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
   (pertenencia en `ore-iam`, sin medir), un dueño para los repositorios y para las tablas, y el
   linaje de Function, Action y TrainedModel para saber a quién alcanza un cambio fuera de las
   vistas.
-- **La consola.** Hoy lista todas las propuestas (no usa `X-Ore-Raiz`) y propone la rama entera.
 
 #### Descartado en la medida
 
@@ -337,3 +373,67 @@ merge queue y CODEOWNERS, Nx *affected*, dbt *defer*, SQLMesh `--select-model`, 
 - **Squash al fusionar**: rompe la reconciliación de la rama; se fusiona con `merge`.
 - **El alcance por carpeta** (el `X-Ore-Raiz` de hoy) como alcance de lo que se fusiona: parte
   documentos que comparten fichero y no sabe de renombrados.
+
+## Apéndice B · La rama protegida: `main` libre o protegida (hecho el 2026-09-28)
+
+**Estado:** B.1–B.6 hechos y desplegados (ORE `eab95db`…`7af06ea`, consola `54afb2b` y `57ef007`;
+`la-propuesta.sh` 6, 8, 8e, 8g y 8h); P2 pendiente (§ B.7).
+
+### El problema
+
+La regla de 0030 W2 —«dos personas, una revisión»— se cumplía al fusionar y en ningún otro sitio:
+quien propone no aprobaba ni fusionaba lo suyo, pero **cualquiera con sesión escribía en `main`
+sin propuesta**. La revisión no protegía nada (quien quisiera saltársela escribía en `main`) y sí
+encerraba a quien trabaja solo: abría su PR y no podía fusionarla nunca. ore-serve no sabe quién
+es admin (su `Identidad` es persona, agente, correo y nombre; ninguna de las potestades de
+`ore-iam` es sobre el árbol), así que «el admin puede» no era una salida sin P2.
+
+### Lo decidido
+
+- **B.1 · La política es de `main`, y es un fichero del árbol:** `.arbol/ramas.yaml`,
+  `main: { protegida: true }`. Se **lee siempre de la rama por defecto** (si no, una propuesta
+  podría aflojar la regla que se le aplica), por la API de la forja sin clonar. Sin fichero, o
+  roto, `main` es **libre**: lo que el árbol ya era. `GET /ramas` dice `protegida`.
+  - *Por qué un fichero:* cambiarla tiene que poder ir por una propuesta (B.4), y una propuesta
+    sólo lleva contenido del árbol. La protección de rama de la forja es un ajuste (ni PR ni
+    historia), `ontology.config.yaml` es el manifiesto de la spec (la forja no es ontología: otra
+    implementación de OOS sin forja no tiene ramas) e IAM no lo ve ore-serve.
+  - *Por qué ahí:* el compilador no entra en carpetas ocultas (`validate.rs`, `recolectar`): es
+    maquinaria del árbol, como `.github/`; y no en `.ore/`, que es la caché y está en el
+    `.gitignore`. Precedente: el repositorio (0036), un fichero de ORE que el compilador no ve.
+- **B.2 · Protegida, el árbol no se escribe en `main` sin rama: `423`.** Una sola guarda, en
+  `escribiendo_en` sin rama —el único camino por el que se escribe el árbol en `main`: editor,
+  commit, documentos, el `CREATE VIEW` del puesto, bases, proyectos, repositorios—. **Las
+  operaciones de la celda no** (`escribiendo` a secas: fuentes, modelos, datasets, copiar a la
+  celda, decisiones): dar de alta una fuente sólo existe en `main`, y protegerla no puede dejar
+  la celda sin fuentes.
+- **B.3 · Quién fusiona lo dice la política** (`quien_fusiona`, una regla para la propuesta de rama
+  entera, la de alcance y el detalle). **Libre:** fusiona cualquiera, la autora también, con
+  revisión o sin ella; el merge lo dice («fusionada sin revisión por X»). **Protegida:** 0030 W2,
+  otra persona con una aprobación vigente. En las dos, **nadie aprueba lo suyo**. Si la política
+  no se lee, no se fusiona. `GET /propuestas/{n}` da `fusion: {puede, porque}` para quien mira, y
+  la consola lo obedece (*Merge without review*) en vez de copiar la regla.
+- **B.4 · Cambiarla:** `PUT /ramas/main/proteccion {protegida}`. **Proteger** una `main` libre se
+  escribe ya (un commit de la persona). **Liberar** una protegida **no se escribe**: abre una
+  propuesta con sólo la política (`<persona>/libera-main`) que otra persona aprueba y fusiona,
+  como cualquier cambio de una `main` protegida —si no, protegerla no protegería nada—. Hasta P2
+  lo pide cualquiera con sesión, lo mismo que hoy cualquiera escribe en una `main` libre.
+- **B.5 · Dónde se ve:** la vista *Branches* (Code Repositories y el catálogo, la misma): la
+  etiqueta *Protected* sale de ORE, y en la fila de `main` un candado abre el modal que explica
+  qué cambia. En la rama protegida el panel de commit no commitea, y el selector de ramas del
+  catálogo enseña el candado.
+- **B.6 · Nace libre.** No se elige al crear la celda (el formulario es de infraestructura) ni en
+  *Governance*: es una propiedad de la rama, y se gestiona donde están las ramas, como en GitHub
+  y GitLab.
+
+### B.7 · Lo que queda (P2)
+
+- **ore-serve pregunta a IAM** (como ya hace `ore-cofre`): una potestad
+  `propuesta:fusionar-sin-revision` para ORGADMIN y ACCOUNTADMIN, con la que el admin **aprueba su
+  propia propuesta de liberar `main`** y fusiona con `main` protegida sin revisión (queda dicho).
+- **Quién cambia la política:** con P2, sólo quien tenga la potestad.
+- **Aprobaciones por dueño** (A.2, «lo que falta»): la política podrá exigir la del dueño de cada
+  paquete que la propuesta toca, en vez de «otra persona».
+- **Los orígenes van a `main` sin mediación** (B.2): una conexión se gobierna con potestad
+  (`fuente:crear`), no con revisión —como en Foundry o Databricks—; sus punteros sí van por rama
+  (0045, A.3).
