@@ -1,6 +1,6 @@
 # 0046 · Documents, objects & files: el producto de los datos que son ficheros
 
-**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido ·
+**Estado:** aprobado (2026-09-28); mercado investigado; el nombre, `MediaCollection`; F0 hecho; F1 medido; F2, el texto de v1alpha16 ·
 **Decide:** cómo guarda, nombra, gobierna y sirve la plataforma los datos que **no son tablas**:
 documentos, imágenes, audio, vídeo (no estructurados) y ficheros CSV, Parquet, JSONL o logs
 (semiestructurados), vengan de un almacén de objetos (S3, GCS, Azure Blob), de un SFTP o de
@@ -124,15 +124,16 @@ la alternativa *File Collection*. Mi opinión, para decidir:
 Por eso **`MediaCollection`**, con «Media collection» y «Virtual media collection» en la consola
 (decidido por el usuario el 2026-09-28).
 
-### 3 · Los semiestructurados son tablas: el `Dataset` de siempre
+### 3 · Los semiestructurados son tablas: una `Table` con `format`
 
-Un CSV, Parquet o JSONL se copia como el `Dataset` (Iceberg) que ya existe, leyendo el `ObjectTable`:
-
-- el esquema se deduce al catalogar, se congela en el puntero, y lo que no encaja va a una columna
-  rescatada;
-- el `Dataset` no se estira: sigue siendo tabular.
-
-Sólo cambia de dónde lee: un conjunto de objetos en vez de una tabla del origen.
+*(Revisado al escribir la spec, v1alpha16: decía «el `Dataset` leyendo el `ObjectTable`».)* Un
+Parquet, un CSV o un JSONL son **filas**, y todos los fabricantes separan registrar objetos
+(*object table*, *directory table*, *volume*) de registrar las filas que hay dentro de ficheros
+(*external table*, *BigLake table*). Aquí igual: **una `Table` cuya `object` es un prefijo o un
+fichero, con `format`** (`parquet`/`csv`/`jsonl`, `partitions`, las opciones del CSV). Lo que
+compone sobre una tabla —`View`, `Dataset` mantenido, la copia, la entidad— compone sobre ésta
+**sin cambiar una regla**, y el `Dataset` no se toca. Las columnas se deducen y son una propuesta
+que se confirma (F1: el código postal).
 
 ### 4 · La referencia en la ontología: un tipo de propiedad nuevo
 
@@ -265,7 +266,7 @@ y un listado de miles de objetos.
 |---|---|---|
 | **F0 · cerrar las fugas** ✅ | `sin_credencial` y el saneado del log del Job de catálogo reconocen las claves de S3 en la URL (`access_key_id`, `secret_access_key`, `session_token`) | tests de ore-serve; un fallo de catálogo con claves no las escribe en `.fallos/` |
 | **F1 · medir contra un bucket real** ✅ (sin federación) | listado y paginación, lectura por rangos (el pie de un Parquet), formatos, tamaños, latencias, credenciales (claves frente a federación), qué da S3 para saber qué cambió (ETag, versiones, S3 Metadata, eventos) | informe en este ADR |
-| **F2 · la spec** (`C:\oos`, v1alpha16) | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
+| **F2 · la spec** (`C:\oos`, v1alpha16) ◐ texto `860a269`; esquemas, conformance y ORE por hacer | `ObjectTable`, la colección (con su nombre decidido) y la referencia a medio, con sus diagnósticos y su conformance | conformance verde; ORE en el submódulo |
 | **F3 · el catálogo de objetos** | `ore-read-s3 catalogo`: el `ObjectTable` de cada prefijo con su listado, y `ore source induce` lo escribe en la fuente (0045) | una fuente S3 real catalogada; el `ObjectTable` en el árbol |
 | **F4 · lo semiestructurado como tabla** | `Dataset` sobre un `ObjectTable` de Parquet, CSV y JSONL: esquema deducido y congelado, columna rescatada, `leer` en Arrow | una base standard de S3 con sus datasets copiados |
 | **F5 · la colección** | la gestionada (copia al lago por digest y manifiesto, transaccional) y la virtual; se decide la copia de la base standard con lo medido en su iteración | una colección de PDF de S3, en el lago y en sitio |
