@@ -11,6 +11,7 @@ mod activos;
 mod alcance;
 mod cache;
 mod candado;
+mod coleccion;
 mod datasets;
 mod deriva;
 mod empaquetar;

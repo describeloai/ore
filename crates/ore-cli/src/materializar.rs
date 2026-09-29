@@ -136,7 +136,12 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // Lo que se copia: los datasets mantenidos (0033), y —mientras queden
     // documentos de v1alpha7/8— las vistas con `materialized`.
     let declaradas: Vec<&Loaded> = pkg.docs.iter().filter(|d| vistas::es_copia(d)).collect();
-    if declaradas.is_empty() {
+    // 0046 E8·1: y las colecciones mantenidas, cada una con su transacción.
+    let colecciones: Vec<&Loaded> = crate::coleccion::mantenidas(&pkg)
+        .into_iter()
+        .filter(|d| op.solo.is_empty() || d.qname().is_some_and(|q| op.solo.contains(&q)))
+        .collect();
+    if declaradas.is_empty() && colecciones.is_empty() {
         println!("sin copias · ningún `Dataset` del paquete lleva `from` (nada que mantener)");
         // Y lo que quedó de las que hubo: la pasada que limpia.
         if let Some(dir) = informe {
@@ -299,8 +304,62 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         };
     }
+    // ── Las colecciones (0046 E8·1) ─────────────────────────────────────────
+    //
+    // Después de los datasets, con el mismo informe: su puntero vive junto al
+    // de ellos (comparten el espacio de nombres del schema, `OOS2035`), y así
+    // `recoger-huerfanas` reclama su manifiesto como reclama un dataset.
+    if !preparando {
+        let bundle_coleccion = bundle.clone();
+        for d in &colecciones {
+            let Some(qn) = d.qname() else { continue };
+            vistas += 1;
+            println!("{qn}");
+            let hecho = crate::coleccion::una(
+                &pkg,
+                path,
+                d,
+                &qn,
+                &punteros,
+                seco,
+                op.rehacer,
+                &bundle_coleccion,
+            );
+            let parte = match hecho {
+                Ok(None) => continue,
+                Ok(Some((linea, parte))) => {
+                    println!("  {linea}");
+                    parte
+                }
+                Err(e) => {
+                    for l in e.lines() {
+                        println!("  {l}");
+                    }
+                    fallos += 1;
+                    ore_core::json::Json::obj([
+                        ("kind", ore_core::json::Json::s("MediaCollection")),
+                        ("estado", ore_core::json::Json::s("error")),
+                        (
+                            "motivo",
+                            ore_core::json::Json::s(e.lines().next().unwrap_or("")),
+                        ),
+                    ])
+                }
+            };
+            if let Some(dir) = informe
+                && let Err(e) = escribir_informe(dir, &qn, &parte)
+            {
+                println!("  {e}");
+                fallos += 1;
+            }
+        }
+    }
     if let Some(dir) = informe {
-        let vivas: Vec<String> = declaradas.iter().filter_map(|v| v.qname()).collect();
+        let vivas: Vec<String> = declaradas
+            .iter()
+            .chain(colecciones.iter())
+            .filter_map(|v| v.qname())
+            .collect();
         retirar_informes_de_nadie(dir, &vivas);
     }
     let (mut reclamados, mut claves) = crate::datasets::reclamados(path, op.informe);
@@ -1469,7 +1528,7 @@ fn origen_del_lago(raiz_pkg: &Path, abajo: &Loaded) -> Result<OrigenDelLago, Str
 /// `victor`; `medida-lo-que-parece-roto.py` §4). Plan, esquema, clave, testigo
 /// y conducto ya nombran lo que la copia contiene; de qué árbol salió es
 /// procedencia y va al puntero (`bundle`), no a la llave.
-fn cabecera(
+pub(crate) fn cabecera(
     plan: &str,
     esq: &BTreeMap<String, ore_core::types::Type>,
     testigo: &(String, Option<String>),
@@ -1745,7 +1804,7 @@ use crate::lector;
 
 /// El almacén, delegado. `ore` **no abre un socket**: escribe por el stdin de un
 /// programa y lee su stdout.
-fn almacen(
+pub(crate) fn almacen(
     verbo: &str,
     cabecera: &str,
     filas: Option<&str>,

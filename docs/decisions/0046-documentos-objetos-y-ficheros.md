@@ -302,8 +302,8 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E5 · inducir** (F3) ✅ en local | `ore source induce` escribe un `ObjectTable` por conjunto y una `Table` con `format` por grupo tabular; la base, su `MediaCollection` **según su clase** (abajo); limpieza de `objects/`; la política IAM en `credenciales.rs`; el esquema de la fuente en ore-serve. Binario antes que malla | una fuente S3 real dada de alta en vivo, con sus punteros |
 | **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
 | **E6 · lo tabular** (F4) ✅ | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
-| **E7 · medir borrados** | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
-| **E8 · la colección** (F5) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
+| **E7 · medir borrados** ✅ | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
+| **E8 · la colección** (F5) · 1 ✅ (la virtual) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
 | **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
 | **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
@@ -531,6 +531,86 @@ igualdad en su tipo; particiones Hive del camino; `match` como *glob*. **La prue
 en 28 s con **exactamente** las filas contadas con pyarrow, ninguna columna sin estrechar, los tipos
 de Iceberg los congelados (`timestamp`, `decimal(12, 2)`, el código postal `string`), los 87.656
 títulos vacíos nulos, 0 rescatadas, y la segunda pasada sin leer nada (0,8 s).
+
+**Lo que E7 midió (2026-09-29).** El bucket de F1 con el versionado ya activo, y un experimento
+del usuario en su raíz (subir, sobrescribir, borrar, renombrar, duplicar), leído con la clave de
+sólo lectura. Lo que dice S3:
+
+| hecho | lo que se ve |
+|---|---|
+| lo subido antes de activar el versionado | versión `null`, legible por versión como cualquier otra |
+| sobrescribir `a.pdf` | una versión nueva; la vieja sigue legible por su `VersionId` (206); el ETag y el CRC64NVME cambian |
+| borrar `b.pdf` | una **marca de borrado**: `ListObjectsV2` ya no la lista, `HEAD` sin versión da `404` con `x-amz-delete-marker: true`, y la versión anterior se sigue leyendo por su `VersionId` |
+| renombrar `c.jpg` → `c2.jpg` | una marca en `c.jpg` y una versión nueva en `c2.jpg` **con el mismo CRC64NVME** |
+| `d.pdf`, copia de otro | otra clave con **el mismo CRC64NVME**: tres claves (`Receipt…`, `a.pdf`, `d.pdf`) son un contenido |
+| listar | `ListObjectsV2` trae clave, ETag, tamaño y fecha, **no** el checksum; `ListObjectVersions` trae además `VersionId`, `IsLatest` y las marcas, en la misma petición (98 ms para 37) |
+| el checksum | `HEAD`/`GetObjectAttributes` con `ChecksumMode`: una petición por objeto, sólo para lo nuevo o lo cambiado |
+
+El catálogo de ORE (E4) ve el **ahora** y nada más: tras el experimento salen dos conjuntos
+nuevos en la raíz (`raiz_pdf`, 4; `raiz_jpg`, 2) y `b.pdf`/`c.jpg` simplemente no están. **La
+historia —qué se retiró, qué se reemplazó, qué es el mismo contenido— sólo existe si alguien
+compara dos listados**, y eso es la colección.
+
+**El sector** (documentación oficial de cada fabricante): ninguna colección *virtual* se entera
+de un borrado (Foundry: el ítem queda y no se lee; el `FILE` de Snowflake no se actualiza;
+BigQuery fija la *generation* y falla si ya no está); las *copiadas* conservan y purgan con su
+retención (Foundry: lo sobrescrito o borrado vive N días en la historia y una referencia guardada
+sigue mostrando el original; lakeFS y DVC: por contenido, con recolección de basura). Una
+sincronización APPEND no retira nada; SNAPSHOT y el `REFRESH` de Snowflake reflejan el origen. Los
+eventos de S3 llegan «al menos una vez», duplicados y desordenados, y los configura el cliente:
+no son la fuente de verdad. **El coste de copiar**: salir de S3 (`eu-north-1`) $0,09/GB (100 GB
+al mes gratis), `GET` $0,0004 por mil; entrar en GCS, gratis; guardar, ~$0,02/GB-mes. 100.000
+PDF de 500 KB son 50 GB: ~$4,5 la primera vez, y después sólo lo que cambia. Bajar, 11 MB/s por
+flujo desde fuera de AWS.
+
+**Lo que decide para E8:**
+
+1. **Una transacción es la diferencia de dos listados de versiones** (`ListObjectVersions`): lo
+   nuevo entra; lo que desaparece se **retira** (sale de la vista actual y vive `retention`); lo
+   sobrescrito es retirar y entrar; el checksum se pide sólo para lo nuevo. La vista actual es el
+   origen (SNAPSHOT) y la historia no pierde nada (Foundry): las dos cosas a la vez, que nadie da.
+2. **La copiada guarda por contenido**: un blob por contenido en el lago del inquilino; un
+   renombrado o un duplicado no se vuelve a bajar (en el experimento, la segunda transacción no
+   bajaría **ni un byte**: `a.pdf` nuevo, `d.pdf` y `c2.jpg` son contenidos que ya estaban). La
+   huella del ítem es el CRC64NVME del origen (la `checksum` del `ObjectTable`, spec `02` §5); el
+   blob se nombra por sha256, calculado al copiar (64 bits no bastan como dirección en todo un
+   inquilino).
+3. **La virtual fija la versión de cada ítem**: si el origen versiona, un ítem retirado se sigue
+   sirviendo por su `VersionId` mientras exista (lo decide el ciclo de vida del cliente, no ORE);
+   si no versiona, un ítem cuyo objeto desaparece queda **perdido**, dicho, y no se finge.
+4. **Manifiesto primero, puntero después, con CAS**, como la copia de un dataset.
+5. **La recolección de basura, en el mantenimiento**: un blob se borra cuando ningún ítem vivo lo
+   nombra y su retención venció (el criterio de lakeFS).
+
+**E8·1a · la forma del manifiesto (medida, 2026-09-29).** Cuatro formas contra `ore-store-r2`
+(release) y el S3 de mentira, con 100 / 10.000 / 100.000 ítems y transacciones de tres cambios:
+Iceberg con una fila por ítem y `upsert` —0,64 s y 9,7 MB por transacción con 100.000; leer lo
+actual, 0,18 s—; Iceberg como registro de eventos —4 KB por transacción, pero leer lo actual 2 s
+y creciendo con la historia—; JSON entero (6,5 MB, sin snapshots ni CAS); JSON de cambios (una
+cadena que rehacer). **Decidido: el manifiesto es una tabla Iceberg de sus ítems**, una fila por
+(camino, versión) con su estado (`actual`, `retirado`, `perdido`), la transacción en que entró y en
+la que salió. Lo frecuente —leer lo actual— es barato; escribir sólo pasa cuando el listado cambió;
+la historia son las filas retiradas (los snapshots caducan como los de un dataset); y hereda el
+puntero con CAS, `volcar`, `/v1` y SQL. **Límite**: el `upsert` del lago es *copy-on-write* y
+crece lineal (~6 s y ~100 MB por transacción con un millón de ítems, extrapolado); si una colección
+se acerca, *merge-on-read*.
+
+**E8·1b y 1c · el listado de versiones y la transacción (hecho, 2026-09-29).**
+`ore-read-s3 versiones` (`versiones.rs`; `ore_s3::listar_versiones` y `cabeza_de`): lo vigente de un
+`ObjectTable` —con su `match` y el de la colección— con versión, ETag, tamaño y huella
+(`crc64nvme:…`, un `HEAD` sólo para lo que no se conocía), qué versiones conocidas siguen
+existiendo, y el testigo del listado. Contra el bucket: 4 PDF de la raíz, 4 huellas y 2,4 s el
+primer pase; el segundo, **0 huellas** y 0,6 s. `ore materialize` hace la transacción de cada
+colección virtual (`ore-cli/src/coleccion.rs`): diferencia pura (`transaccion`) entre las filas
+de antes y lo vigente —entra, se retira, se pierde, vuelve—, filtrando por `formats`; se sella con
+`sellar` fundiendo por (clave, versión) en `colecciones/<base>/<schema>/<n>`; el puntero va con los
+de los datasets (`datasets/<base>/<schema>/<n>.json`, `kind: MediaCollection`): comparten el
+espacio de nombres del schema, `recoger-huerfanas` lo reclama igual y el Job ya lo empuja, sin
+tocar la malla. Si el testigo no cambió, «al día» sin leer el manifiesto. La que copia bytes dice
+«pendiente: E8·2». Prueba de fuego `pruebas-de-fuego/s3-coleccion.sh` contra el bucket del
+experimento: transacción 1 con `a.pdf` en su versión nueva y tres claves con una huella; al día;
+un `match` estrecho retira tres que quedan `retirado` (sus versiones siguen); sin él vuelven, sin
+pedir una huella.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar

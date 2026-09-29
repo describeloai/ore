@@ -17,6 +17,11 @@ pub trait Origen {
     fn abrir(&self, clave: &str, etag: &str) -> Result<Box<dyn std::io::Read + '_>, String>;
     /// Un rango de la versión que el listado dijo.
     fn rango_de(&self, clave: &str, rango: &str, etag: &str) -> Result<Vec<u8>, String>;
+    /// **Las versiones y las marcas** bajo un prefijo (0046 E8·1).
+    fn listar_versiones(&self, prefijo: &str) -> Result<Vec<ore_s3::Version>, String>;
+    /// La huella de contenido de UNA versión: su CRC64NVME si S3 lo da
+    /// (`FULL_OBJECT`, por defecto desde 2025), o `None`.
+    fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String>;
 }
 
 /// El motivo de una lectura fijada que no se pudo hacer: un `412` es que el
@@ -66,6 +71,28 @@ impl Origen for Bucket {
         }
         Ok(r.cuerpo)
     }
+
+    fn listar_versiones(&self, prefijo: &str) -> Result<Vec<ore_s3::Version>, String> {
+        ore_s3::listar_versiones(self, prefijo).map_err(|e| match e {
+            Ok(r) => format!(
+                "no se pudieron listar las versiones de `{prefijo}`: {}",
+                r.motivo()
+            ),
+            Err(t) => t,
+        })
+    }
+
+    fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String> {
+        let r = ore_s3::cabeza_de(self, clave, version)?;
+        if !r.ok() {
+            return Err(format!(
+                "no se pudo mirar `{clave}` (versión {version}): {}",
+                r.motivo()
+            ));
+        }
+        Ok(r.cabecera("x-amz-checksum-crc64nvme")
+            .map(|c| format!("crc64nvme:{c}")))
+    }
 }
 
 /// Un bucket en memoria, para las pruebas.
@@ -79,6 +106,13 @@ pub struct EnMemoria {
     /// Claves que el listado da con un ETag viejo: leerlas fijadas es un `412`,
     /// como un fichero que alguien reescribió entre listar y leer.
     pub cambiadas: std::collections::BTreeSet<String>,
+    /// La historia de versiones, si la prueba la quiere (E8·1): sin ella, cada
+    /// objeto es su única versión, `null` y vigente. El contenido de una
+    /// versión vieja va en `por_version`.
+    pub historia: Vec<ore_s3::Version>,
+    pub por_version: BTreeMap<(String, String), Vec<u8>>,
+    /// Cuántas huellas se pidieron (un `HEAD` cada una, en S3).
+    pub huellas: std::cell::Cell<usize>,
 }
 
 #[cfg(test)]
@@ -172,5 +206,42 @@ impl Origen for EnMemoria {
     fn rango_de(&self, clave: &str, rango: &str, etag: &str) -> Result<Vec<u8>, String> {
         self.fijado(clave, etag)?;
         self.rango(clave, rango)
+    }
+
+    fn listar_versiones(&self, prefijo: &str) -> Result<Vec<ore_s3::Version>, String> {
+        if !self.historia.is_empty() {
+            return Ok(self
+                .historia
+                .iter()
+                .filter(|v| v.clave.starts_with(prefijo))
+                .cloned()
+                .collect());
+        }
+        Ok(self
+            .listar(prefijo)?
+            .into_iter()
+            .map(|o| ore_s3::Version {
+                clave: o.clave,
+                version: "null".into(),
+                actual: true,
+                marca: false,
+                tamano: o.tamano,
+                etag: o.etag,
+                modificado: o.modificado,
+            })
+            .collect())
+    }
+
+    fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String> {
+        self.huellas.set(self.huellas.get() + 1);
+        let v = self
+            .por_version
+            .get(&(clave.to_string(), version.to_string()))
+            .or_else(|| self.objetos.get(clave).filter(|_| version == "null"))
+            .ok_or_else(|| format!("`{clave}` (versión {version}) no está"))?;
+        Ok(Some(format!(
+            "crc64nvme:{}",
+            &ore_s3::hex(&ore_s3::sha256(v))[..12]
+        )))
     }
 }

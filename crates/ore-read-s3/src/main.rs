@@ -17,6 +17,7 @@
 //! | `catalogo <fuente>` | tablas y conjuntos de objetos (`catalogo.rs`) | la URL |
 //! | `testigo` | la huella del listado de un objeto o un prefijo | la coordenada |
 //! | `leer` | las filas de una `Table` con `format`, en Arrow (`filas.rs`, E6) | la petición |
+//! | `versiones` | lo vigente de un `ObjectTable`, con versión y huella, para la transacción de una colección (`versiones.rs`, E8·1) | la petición |
 //!
 //! La URL lleva la credencial y va **siempre por stdin**, nunca por `argv`, y
 //! este programa no la imprime: ni en un error (lo que dice S3 no la contiene)
@@ -29,6 +30,7 @@ mod fuente;
 mod medio;
 mod origen;
 mod tabular;
+mod versiones;
 
 use std::io::Read as _;
 use std::process::ExitCode;
@@ -76,6 +78,13 @@ fn main() -> ExitCode {
             };
             catalogo::testigo(&f.bucket, &objeto)
         }),
+        "versiones" => serde_json::from_str::<serde_json::Value>(&entrada)
+            .map_err(|e| format!("la petición no es JSON: {e}"))
+            .and_then(|n| {
+                let url = n.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                let f = fuente::leer(url)?;
+                versiones::versiones(&f.bucket, &entrada)
+            }),
         "leer" => ore_driver::leer_peticion(&entrada).and_then(|p| {
             let f = fuente::leer(&p.url)?;
             let salida = std::io::stdout();

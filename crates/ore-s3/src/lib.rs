@@ -314,6 +314,100 @@ pub fn leer_pagina(xml: &str) -> Pagina {
     p
 }
 
+/// **Una versión de un objeto, o una marca de borrado** (`ListObjectVersions`,
+/// 0046 E8·1). Lo que una colección necesita para fijar cada ítem a lo que
+/// era, y para saber si lo retirado se sigue pudiendo leer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Version {
+    pub clave: String,
+    /// `null` si el objeto se subió antes de activar el versionado (medido en
+    /// F1: los 26 del bucket), o si el bucket nunca lo tuvo.
+    pub version: String,
+    /// La versión vigente de su clave.
+    pub actual: bool,
+    /// Una marca de borrado: la clave no se lista, y sus versiones siguen.
+    pub marca: bool,
+    pub tamano: u64,
+    pub etag: String,
+    pub modificado: String,
+}
+
+/// Una página de `ListObjectVersions`: las versiones y las marcas, y por dónde
+/// seguir.
+pub fn leer_pagina_de_versiones(xml: &str) -> (Vec<Version>, Option<(String, String)>) {
+    let mut out = Vec::new();
+    for (abre, cierra, marca) in [
+        ("<Version>", "</Version>", false),
+        ("<DeleteMarker>", "</DeleteMarker>", true),
+    ] {
+        for bloque in xml.split(abre).skip(1) {
+            let bloque = bloque.split(cierra).next().unwrap_or("");
+            let Some(clave) = etiqueta(bloque, "Key") else {
+                continue;
+            };
+            out.push(Version {
+                clave,
+                version: etiqueta(bloque, "VersionId").unwrap_or_else(|| "null".into()),
+                actual: etiqueta(bloque, "IsLatest").as_deref() == Some("true"),
+                marca,
+                tamano: etiqueta(bloque, "Size")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                etag: etiqueta(bloque, "ETag").unwrap_or_default(),
+                modificado: etiqueta(bloque, "LastModified").unwrap_or_default(),
+            });
+        }
+    }
+    let siguiente = (etiqueta(xml, "IsTruncated").as_deref() == Some("true")).then(|| {
+        (
+            etiqueta(xml, "NextKeyMarker").unwrap_or_default(),
+            etiqueta(xml, "NextVersionIdMarker").unwrap_or_default(),
+        )
+    });
+    (out, siguiente)
+}
+
+/// **Todas las versiones y marcas bajo un prefijo**, página a página
+/// (`s3:ListBucketVersions`, que la política de lectura ya pide).
+pub fn listar_versiones(
+    b: &Bucket,
+    prefijo: &str,
+) -> Result<Vec<Version>, Result<Respuesta, String>> {
+    let mut out = Vec::new();
+    let mut desde: Option<(String, String)> = None;
+    loop {
+        let mut q: Vec<(&str, String)> =
+            vec![("versions", String::new()), ("prefix", prefijo.into())];
+        if let Some((k, v)) = &desde {
+            q.push(("key-marker", k.clone()));
+            if !v.is_empty() {
+                q.push(("version-id-marker", v.clone()));
+            }
+        }
+        let r = pedir(b, "GET", None, &q, Vec::new()).map_err(Err)?;
+        if !r.ok() {
+            return Err(Ok(r));
+        }
+        let (vs, siguiente) = leer_pagina_de_versiones(&String::from_utf8_lossy(&r.cuerpo));
+        out.extend(vs);
+        match siguiente {
+            Some(s) if Some(&s) != desde.as_ref() => desde = Some(s),
+            _ => return Ok(out),
+        }
+    }
+}
+
+/// El `HEAD` de UNA versión, con su checksum (`x-amz-checksum-crc64nvme`).
+pub fn cabeza_de(b: &Bucket, clave: &str, version: &str) -> Result<Respuesta, String> {
+    pedir(
+        b,
+        "HEAD",
+        Some(clave),
+        &[("versionId", version.into())],
+        vec![("x-amz-checksum-mode".into(), "ENABLED".into())],
+    )
+}
+
 /// Todo lo que hay bajo un prefijo, página a página.
 pub fn listar_todo(b: &Bucket, prefijo: &str) -> Result<Vec<Objeto>, Result<Respuesta, String>> {
     let mut out = Vec::new();
@@ -420,6 +514,24 @@ fn entidades(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **La página de versiones** como la da S3 (el experimento de E7, en
+    /// pequeño): una versión vieja y la vigente de `a.pdf`, y la marca que
+    /// dejó borrar `b.pdf`, con su versión anterior.
+    #[test]
+    fn una_pagina_de_versiones_trae_versiones_y_marcas() {
+        let xml = "<ListVersionsResult><IsTruncated>true</IsTruncated>            <NextKeyMarker>b.pdf</NextKeyMarker><NextVersionIdMarker>s1</NextVersionIdMarker>            <Version><Key>a.pdf</Key><VersionId>6G</VersionId><IsLatest>true</IsLatest>            <LastModified>2026-09-29T10:59:07.000Z</LastModified><ETag>&quot;e2&quot;</ETag><Size>35030</Size></Version>            <Version><Key>a.pdf</Key><VersionId>.N</VersionId><IsLatest>false</IsLatest>            <LastModified>2026-09-29T10:57:56.000Z</LastModified><ETag>&quot;e1&quot;</ETag><Size>34479</Size></Version>            <DeleteMarker><Key>b.pdf</Key><VersionId>wk</VersionId><IsLatest>true</IsLatest>            <LastModified>2026-09-29T11:00:07.000Z</LastModified></DeleteMarker>            <Version><Key>b.pdf</Key><VersionId>s1</VersionId><IsLatest>false</IsLatest>            <LastModified>2026-09-29T10:57:56.000Z</LastModified><ETag>&quot;e3&quot;</ETag><Size>35030</Size></Version>            </ListVersionsResult>";
+        let (vs, siguiente) = leer_pagina_de_versiones(xml);
+        assert_eq!(siguiente, Some(("b.pdf".into(), "s1".into())));
+        assert_eq!(vs.len(), 4);
+        let a = vs.iter().find(|v| v.clave == "a.pdf" && v.actual).unwrap();
+        assert_eq!(
+            (a.version.as_str(), a.etag.as_str(), a.tamano),
+            ("6G", "\"e2\"", 35030)
+        );
+        let m = vs.iter().find(|v| v.marca).unwrap();
+        assert_eq!((m.clave.as_str(), m.actual), ("b.pdf", true));
+    }
 
     fn b(en_ruta: bool) -> Bucket {
         Bucket {
