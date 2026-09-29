@@ -22,6 +22,13 @@ pub trait Origen {
     /// La huella de contenido de UNA versión: su CRC64NVME si S3 lo da
     /// (`FULL_OBJECT`, por defecto desde 2025), o `None`.
     fn huella_de(&self, clave: &str, version: &str) -> Result<Option<String>, String>;
+    /// **Una versión entera, en flujo** (E8·2): lo que la colección mantenida
+    /// copia, con lo que S3 dice de ella al abrirla.
+    fn abrir_version(
+        &self,
+        clave: &str,
+        version: &str,
+    ) -> Result<(Box<dyn std::io::Read + '_>, ore_s3::Abierto), String>;
 }
 
 /// El motivo de una lectura fijada que no se pudo hacer: un `412` es que el
@@ -92,6 +99,25 @@ impl Origen for Bucket {
         }
         Ok(r.cabecera("x-amz-checksum-crc64nvme")
             .map(|c| format!("crc64nvme:{c}")))
+    }
+
+    fn abrir_version(
+        &self,
+        clave: &str,
+        version: &str,
+    ) -> Result<(Box<dyn std::io::Read + '_>, ore_s3::Abierto), String> {
+        ore_s3::abrir_version(self, clave, version)
+            .map(|(r, a)| (r as Box<dyn std::io::Read>, a))
+            .map_err(|r| {
+                if r.estado == 0 {
+                    String::from_utf8_lossy(&r.cuerpo).into_owned()
+                } else {
+                    format!(
+                        "no se pudo leer `{clave}` (versión {version}): {}",
+                        r.motivo()
+                    )
+                }
+            })
     }
 }
 
@@ -239,9 +265,30 @@ impl Origen for EnMemoria {
             .get(&(clave.to_string(), version.to_string()))
             .or_else(|| self.objetos.get(clave).filter(|_| version == "null"))
             .ok_or_else(|| format!("`{clave}` (versión {version}) no está"))?;
-        Ok(Some(format!(
-            "crc64nvme:{}",
-            &ore_s3::hex(&ore_s3::sha256(v))[..12]
-        )))
+        Ok(Some(ore_s3::huella::de(v)))
+    }
+
+    fn abrir_version(
+        &self,
+        clave: &str,
+        version: &str,
+    ) -> Result<(Box<dyn std::io::Read + '_>, ore_s3::Abierto), String> {
+        let v = self
+            .por_version
+            .get(&(clave.to_string(), version.to_string()))
+            .or_else(|| self.objetos.get(clave).filter(|_| version == "null"))
+            .ok_or_else(|| {
+                format!("no se pudo leer `{clave}` (versión {version}): 404 NoSuchVersion")
+            })?;
+        self.lecturas.set(self.lecturas.get() + 1);
+        self.bytes_leidos.set(self.bytes_leidos.get() + v.len());
+        let a = ore_s3::Abierto {
+            tamano: Some(v.len() as u64),
+            tipo: Some("binary/octet-stream".into()),
+            crc64nvme: ore_s3::huella::de(v)
+                .strip_prefix("crc64nvme:")
+                .map(String::from),
+        };
+        Ok((Box::new(&v[..]), a))
     }
 }

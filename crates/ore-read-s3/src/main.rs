@@ -18,12 +18,14 @@
 //! | `testigo` | la huella del listado de un objeto o un prefijo | la coordenada |
 //! | `leer` | las filas de una `Table` con `format`, en Arrow (`filas.rs`, E6) | la petición |
 //! | `versiones` | lo vigente de un `ObjectTable`, con versión y huella, para la transacción de una colección (`versiones.rs`, E8·1) | la petición |
+//! | `bajar` | los bytes de los ítems de una colección mantenida, fijados a su versión y cotejados, en tramas (`bajar.rs`, E8·2) | la petición |
 //!
 //! La URL lleva la credencial y va **siempre por stdin**, nunca por `argv`, y
 //! este programa no la imprime: ni en un error (lo que dice S3 no la contiene)
 //! ni en `explorar` (`fuente::publica`).
 
 mod acceso;
+mod bajar;
 mod catalogo;
 mod filas;
 mod fuente;
@@ -107,6 +109,31 @@ fn main() -> ExitCode {
             }
             Ok(String::new())
         }),
+        "bajar" => serde_json::from_str::<serde_json::Value>(&entrada)
+            .map_err(|e| format!("la petición no es JSON: {e}"))
+            .and_then(|n| {
+                let f = fuente::leer(n.get("url").and_then(|u| u.as_str()).unwrap_or(""))?;
+                let (pedidos, hilos) = bajar::pedidos(&entrada)?;
+                let salida = std::sync::Mutex::new(std::io::BufWriter::with_capacity(
+                    1 << 20,
+                    std::io::stdout(),
+                ));
+                let c = bajar::en_paralelo(&f.bucket, &pedidos, hilos, &salida);
+                use std::io::Write as _;
+                salida
+                    .into_inner()
+                    .map_err(|_| "la salida quedó envenenada".to_string())?
+                    .flush()
+                    .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+                let (n, _) = ore_s3::contadores();
+                avisos.push(format!(
+                    "{} ítems entregados ({} KB) y {} que no, con {n} peticiones",
+                    c.entregados,
+                    c.bytes / 1024,
+                    c.fallidos
+                ));
+                Ok(String::new())
+            }),
         otro => Err(format!("`{otro}` no es un verbo de este lector")),
     };
     for a in &avisos {

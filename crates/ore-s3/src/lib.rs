@@ -22,6 +22,7 @@
 //!   la URL y a la firma.
 
 pub mod firma;
+pub mod huella;
 
 pub use firma::{Credencial, base64, hex, sha256};
 
@@ -143,6 +144,27 @@ fn agente() -> Result<ureq::Agent, String> {
         .clone()
 }
 
+/// **Un cliente para bajar ficheros enteros** (0046 E8·2): sin plazo total
+/// —un fichero de gigas tarda lo que tarda— y con uno de inactividad, que es
+/// lo que distingue un flujo lento de uno muerto. Con las conexiones vivas que
+/// pidan los hilos que bajan en paralelo.
+fn agente_de_flujo() -> Result<ureq::Agent, String> {
+    static A: std::sync::OnceLock<Result<ureq::Agent, String>> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        let tls = native_tls::TlsConnector::new()
+            .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
+        Ok(ureq::AgentBuilder::new()
+            .tls_connector(std::sync::Arc::new(tls))
+            .redirects(0)
+            .max_idle_connections(128)
+            .max_idle_connections_per_host(128)
+            .timeout_connect(std::time::Duration::from_secs(30))
+            .timeout_read(std::time::Duration::from_secs(60))
+            .build())
+    })
+    .clone()
+}
+
 static PETICIONES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -169,6 +191,17 @@ pub fn pedir(
 
 /// La petición firmada y enviada; el cuerpo, sin leer.
 fn enviar(
+    b: &Bucket,
+    metodo: &str,
+    clave: Option<&str>,
+    consulta: &[(&str, String)],
+    cabeceras: Vec<(String, String)>,
+) -> Result<ureq::Response, String> {
+    enviar_por(&agente()?, b, metodo, clave, consulta, cabeceras)
+}
+
+fn enviar_por(
+    agente: &ureq::Agent,
     b: &Bucket,
     metodo: &str,
     clave: Option<&str>,
@@ -202,7 +235,7 @@ fn enviar(
     } else {
         format!("{}{ruta}?{canonica}", b.endpoint.trim_end_matches('/'))
     };
-    let mut r = agente()?.request(metodo, &url).set("user-agent", AGENTE);
+    let mut r = agente.request(metodo, &url).set("user-agent", AGENTE);
     for (k, v) in &firmadas {
         if k != "host" {
             r = r.set(k, v);
@@ -465,6 +498,50 @@ pub fn abrir(
     }
     PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Box::new(resp.into_reader()))
+}
+
+/// Lo que S3 dice de una versión al abrirla: su tamaño, su tipo y su
+/// CRC64NVME (con `x-amz-checksum-mode: ENABLED`).
+#[derive(Debug, Clone, Default)]
+pub struct Abierto {
+    pub tamano: Option<u64>,
+    pub tipo: Option<String>,
+    pub crc64nvme: Option<String>,
+}
+
+/// **Una versión entera, en flujo** (0046 E8·2): lo que una colección
+/// mantenida baja, fijado a la versión que su manifiesto dice —no a lo que hay
+/// ahora—, así que un ítem retirado se sigue copiando mientras su versión
+/// exista. Sin plazo total (ver [`agente_de_flujo`]).
+pub fn abrir_version(
+    b: &Bucket,
+    clave: &str,
+    version: &str,
+) -> Result<(Box<dyn std::io::Read + Send>, Abierto), Respuesta> {
+    let fallo = |e: String| Respuesta {
+        estado: 0,
+        cabeceras: Vec::new(),
+        cuerpo: e.into_bytes(),
+    };
+    let resp = enviar_por(
+        &agente_de_flujo().map_err(fallo)?,
+        b,
+        "GET",
+        Some(clave),
+        &[("versionId", version.into())],
+        vec![("x-amz-checksum-mode".into(), "ENABLED".into())],
+    )
+    .map_err(fallo)?;
+    if !(200..300).contains(&resp.status()) {
+        return Err(respuesta(b, "GET", resp).unwrap_or_else(fallo));
+    }
+    PETICIONES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let a = Abierto {
+        tamano: resp.header("content-length").and_then(|v| v.parse().ok()),
+        tipo: resp.header("content-type").map(String::from),
+        crc64nvme: resp.header("x-amz-checksum-crc64nvme").map(String::from),
+    };
+    Ok((Box::new(resp.into_reader()), a))
 }
 
 /// Un rango de bytes **de la versión que el listado dijo** (`If-Match`).
