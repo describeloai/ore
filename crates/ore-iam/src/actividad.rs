@@ -135,7 +135,9 @@ fn leer(
         "select h.id,
                 to_char(h.cuando at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
                 h.quien, p.nombre, h.agente, h.operacion, coalesce(h.sobre, ''),
-                coalesce(h.celda, ''), coalesce(h.detalle->>'resultado', 'hecho'),
+                coalesce(h.celda, ''),
+                coalesce(h.detalle->>'resultado',
+                         case when h.operacion = 'acceso:negado' then 'negado' else 'hecho' end),
                 coalesce(h.detalle, '{}'::jsonb)::text
            from iam.huella h
            left join iam.persona p on p.emisor = $2 and p.sub = h.quien

@@ -890,6 +890,9 @@ for o in ("invitacion:emitir", "invitacion:redimir", "concesion:conceder", "conc
 assert not [o for o in ops if o.endswith(":listar") or o in ("celda:aprovisionada", "celda:informa", "actividad:leer")], ops
 assert {f["quien"] for f in d["actividad"]} >= {"persona:ada", "persona:bea"}, d["actividad"]
 assert d["desde"], d
+# Una denegacion del puente (15) sale negada, no hecha.
+neg = [f for f in d["actividad"] if f["operacion"] == "acceso:negado"]
+assert neg and all(f["resultado"] == "negado" for f in neg), neg
 PY
 dice "16 · A6.2: Ada ve la de todos (alcance organizacion): invitar, admitir, conceder, revocar y lo que conto una celda; sin listados, sin sondeo, sin leer esto"
 # Bea (USERADMIN, sin `actividad:leer-toda`) ve sólo la suya, y lo dice.
