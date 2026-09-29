@@ -125,8 +125,23 @@ spec:
                   git clone --quiet \
                     http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
                   cd arbol
+                  # ⭐ 0044 C D1 · LO QUE RECLAMAN LAS DEMÁS RAMAS. La tabla es una y cada
+                  #   rama tiene su cadena de `metadata.json`: recoger sólo con los punteros de
+                  #   `main` se llevaba lo que una rama escribió (medido, D0 M1). De cada rama,
+                  #   sus punteros PROPIOS —los que difieren de su punto de salida—; lo heredado
+                  #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
+                  #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
+                  rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
+                  for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
+                    [ "$R" = HEAD ] || [ "$R" = main ] && continue
+                    B=$(git merge-base origin/main "origin/$R") || continue
+                    git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
+                      case "$F" in *.json) mkdir -p "/trabajo/ramas/$R/$(dirname "$F")"; git show "origin/$R:$F" > "/trabajo/ramas/$R/$F" ;; esac
+                    done
+                  done
+                  echo "### lo que reclaman las demás ramas: $(find /trabajo/ramas -name '*.json' | wc -l) puntero(s)"
                   echo "### mantenimiento del lago (edad: $EDAD · bucket: $ORE_GCS_BUCKET)"
-                  ore datasets . --recoger --edad "$EDAD" || { echo "⚠️ el mantenimiento falló: los punteros no se tocan"; exit 1; }
+                  ore datasets . --recoger --edad "$EDAD" --reclaman /trabajo/ramas || { echo "⚠️ el mantenimiento falló: los punteros no se tocan"; exit 1; }
                   # ⭐ 0046 E8·3: las colecciones. La retención de cada una (lo
                   #   retirado más viejo que su `retention` sale del manifiesto y
                   #   su puntero se mueve) y la recogida de los blobs que ninguna

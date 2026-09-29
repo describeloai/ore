@@ -361,15 +361,30 @@ spec:
               #   se reintentaba tres veces leyendo los orígenes enteros otra
               #   vez. La pasada termina bien si informó; lo que no se copió lo
               #   dice su puntero.
+              # ⭐ 0044 C D1 · LO QUE RECLAMAN LAS DEMÁS RAMAS. La tabla es una y cada
+              #   rama tiene su cadena de `metadata.json`: recoger sólo con los punteros de
+              #   `main` se llevaba lo que una rama escribió (medido, D0 M1). De cada rama,
+              #   sus punteros PROPIOS —los que difieren de su punto de salida—; lo heredado
+              #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
+              #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
+              rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
+              for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
+                [ "$R" = HEAD ] || [ "$R" = main ] && continue
+                B=$(git merge-base origin/main "origin/$R") || continue
+                git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
+                  case "$F" in *.json) mkdir -p "/trabajo/ramas/$R/$(dirname "$F")"; git show "origin/$R:$F" > "/trabajo/ramas/$R/$F" ;; esac
+                done
+              done
+              echo "### lo que reclaman las demás ramas: $(find /trabajo/ramas -name '*.json' | wc -l) puntero(s)"
               if [ -n "$REHACER" ]; then
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
                 # shellcheck disable=SC2086
-                ore materialize . --rehacer $SOLO --recoger --informe datasets --calculado /trabajo/calculo \
+                ore materialize . --rehacer $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se rehizo: su informe en datasets/ lo dice"
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                ore materialize . --recoger --informe datasets --calculado /trabajo/calculo \
+                ore materialize . --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
               fi
 
