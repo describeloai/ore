@@ -303,7 +303,7 @@ Cedar en tiempo de ejecución** (el acceso lo deciden las concesiones de IAM).
 | **E5b · ore-serve a escala** · 1 ✅ · 2 ✅ | **1**, índices por petición en el esquema de una fuente y en `GET /paquetes` (era cúbico); **2**, no clonar ni reanalizar el árbol en cada petición (un clon vivo y el árbol en memoria por commit), medido antes en el clúster | 1: el origen de 2.000 tablas por debajo de lo que tarda `ore validate`; 2: una petición de victor cerca de su red |
 | **E6 · lo tabular** (F4) ✅ | `leer` de una `Table` con `format` (Parquet por rangos, CSV/JSONL con tipos congelados) a Arrow (0043) | una base standard sobre S3 con los datasets de Olist copiados y las filas cuadradas |
 | **E7 · medir borrados** ✅ | qué dan el listado y las versiones (ya activadas en el bucket) ante un borrado, y qué hace con él una colección mantenida y una virtual; el coste de copiar ficheros al lago. (Si la standard copia o sirve en sitio ya no se mide: lo decide la clase, abajo) | informe aquí; decide E8 |
-| **E8 · la colección** (F5) · 1a–1d ✅ (la virtual, activo de primera clase) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
+| **E8 · la colección** (F5) ✅ en vivo: la virtual (1), la mantenida (2), su vida (3) | manifiesto de ítems (huella, camino, formato, tamaño, versión), transacción = manifiesto nuevo, puntero `colecciones/*.json` con CAS, copia al lago por contenido o virtual, retención en el mantenimiento | una colección de PDF de S3, en el lago y en sitio |
 | **E9 · servir y referenciar** (F6) | ruta de ítems y URL firmada y temporal; `Media<…>` resuelto en una entidad. **El acceso, en espera** (abajo) | un `Contrato` con su PDF, servido |
 | **E9b · medir la federación** | el rol IAM del cliente con *external ID* que confía en la identidad de la plataforma, sin claves que guardar ni rotar | informe aquí; decide el formulario de E10 |
 | **E10 · consola** (F7) | alta de S3 con su formulario (el de E9b), los `ObjectTable` en el árbol de orígenes, colecciones con vista previa por tipo | lo de E8 visto en la consola |
@@ -624,6 +624,65 @@ que no copia bytes. **Medido** con un manifiesto de 100.000 ítems: lista 0,03 s
 los ítems, leídos enteros en texto y filtrados en `ore`, eran **4,1 s** → verbo nuevo
 `ore-store pagina` (filtro de igualdad, orden, desde y límite, y el total): **0,6 s**, igual por
 HTTP.
+
+**E8·2 y E8·3 · la colección mantenida, y su vida (hecho y en vivo, 2026-09-29).** Antes de
+construir se midió **el activo, no el origen** (S3 sólo entrega bytes y una huella): en el GCS de
+producción (el bucket de prueba) y desde un pod del clúster con la identidad del Job de la copia.
+
+| medido | dato | decide |
+|---|---|---|
+| subir con el hash en `x-goog-hash` (`uploadType=media`, lo de `gcs.rs`) | **GCS lo ignora**: un crc32c falso, 200 | multiparte (lo pequeño) o reanudable (lo grande) con el crc32c en los metadatos: 400 y el objeto no existe |
+| subir lo que ya estaba (`ifGenerationMatch=0`) | 412 **después** de subirlo entero (32 MiB, 3,2 s); un `HEAD`, 0,05–0,1 s | preguntar antes, por la huella del origen |
+| el lago de cada inquilino | cifrado con **su** clave KMS, borrado suave de 7 días, sin versionado, acceso público bloqueado | un blob por contenido **y por inquilino**, nunca entre inquilinos |
+| en el clúster (EPYC con SHA-NI) | sha256 1.545 MB/s; subir 64 MiB a 130 MB/s; 20 KiB a 589/s con 64 hilos, sin un 429; rango 206 en ~0,1 s | hashear en flujo no cuesta; paralelo con conexión viva |
+| el manifiesto con `blob` y `tipo` | +46 % de bytes (un sha256 no comprime); 100.000 filas: transacción 2,8–3,7 s, página 1,1 s, leerlo entero 2 s | el techo, abajo |
+| la recogida, con 1 M de blobs | listar 12.300/s (~80 s), borrar 614/s; el borrado suave se deshace (200) | lo vivo (las filas) contra el listado, con gracia |
+| la independencia, con el experimento real | 16 versiones → 10 blobs; la segunda pasada, 0 bytes; `b.pdf` y `c.jpg`: 404 en el origen, 200 en el lago con su sha256 | la mantenida vive sin el origen |
+| firmar una URL con la identidad del pod | `signBlob` 403: ninguna cuenta de inquilino tiene `TokenCreator` sobre sí misma | servir es de E9, y necesita IAM |
+
+**El activo.** Una colección mantenida es **un manifiesto** —la tabla Iceberg de sus ítems de E8·1a,
+con `blob` (sha256) y `tipo`— **sobre el almacén de blobs del inquilino**: `ore/v2/blobs/sha256/<hex>`,
+inmutable, con su `Content-Type`, cotejado por el servidor antes de existir. El origen entrega bytes
+por un contrato común (`ore_driver::tramas`: cabecera, bytes, cierre); `ore-read-s3 bajar` baja cada
+ítem **fijado a su versión** y coteja su CRC64NVME mientras llega (`ore_s3::huella`); `ore-store
+blobs` los guarda (multiparte por debajo de 8 MiB, reanudable desde un temporal por encima, 64 a la
+vez). Un índice `ore/v2/blobs/huellas/<sha256(huella, tamaño)>/<sha256>` dice, por la huella del
+origen, qué blob es ya —*«dos ítems con la misma huella son el mismo contenido»*, spec `02` §5—.
+
+**La transacción** (E8·2c) busca el blob de cada ítem que entra en el propio manifiesto, después en
+el índice (`blobs-hay`) y sólo después en el origen, lo repetido una vez; **sella cuando todos sus
+blobs están**; lo que no se pudo copiar no entra, se dice (`no_copiados`) y el testigo no avanza. En
+la mantenida nada es `perdido`. `ore collections --cotejar [--muestra N]` (2d) dice que cada blob
+nombrado está y mide lo suyo, y vuelve a hashear una muestra; lo roto, con sus ítems, y sale con 1.
+
+**Su vida** (E8·3). Cada fila guarda **cuándo** salió de la vista (`retirado_ms`: la transacción es un
+número y los snapshots caducan); el mantenimiento quita lo retirado más viejo que `retention` (3a).
+La recogida (3b) se lleva los blobs que **ninguna fila de ningún manifiesto** del inquilino nombra y
+nadie tocó en la gracia (2 h, más que un Job), con su entrada del índice; si un manifiesto no se lee,
+no se recoge nada. La carrera con un Job que reutiliza un blob que no subió él (por el índice, o de una
+fila retirada) se cierra **tocándolo** antes de sellar (un metadato en GCS; una copia sobre sí mismo en
+S3). Por encima de **500.000 filas** (3c) el puntero y `ore collections` lo avisan: cada transacción
+reescribe el manifiesto (copy-on-write) y toca *merge-on-read*, que no se construye aquí. Las tres
+cosas corren en el CronJob de mantenimiento de cada inquilino (`ore collections . --recoger`).
+
+**Un fallo que se vio a tiempo.** `recoger-huerfanas` —el mantenimiento de los datasets— lista todo
+`ore/v2/` y borra lo que no está bajo un dataset reclamado: se habría llevado **todos los blobs** la
+primera noche. Arreglado (`4c2bb5b`) antes de que ningún lago tuviera uno.
+
+**En vivo, en victor.** La copia de `s3_standard`: contratos (4) y fotos (3) en transacción 1, 7
+blobs, **7 de 7 con el sha256 de sus bytes**, sus huellas las de E7 y su tipo; y el mantenimiento a
+mano: 7 vivos, 0 recogidos, sin `retention` nada caduca. Ese mantenimiento quitó 7 entradas del
+índice que la imagen de antes de E8·3b había escrito con el formato viejo (`huellas/<h>`, sin el
+sha256 en el nombre): el índice es una pista, los blobs no se tocaron. (El mensaje de `98bcdca` dice
+que ningún lago tenía índice todavía; victor sí lo tenía.) Pruebas de fuego:
+`pruebas-de-fuego/s3-coleccion-mantenida.sh` (ocho pasos, del catálogo a la recogida) y
+`s3-coleccion.sh` sigue verde.
+
+**Sin hacer, y dónde va.** Servir un ítem (URL firmada o ore-serve pasando los bytes) es E9, con el
+acceso en espera y el permiso de firmar por dar. La recogida mira `main`: cuando una rama copie
+(sesión paralela), los vivos tienen que ser los de todas. `ore-serve` no enseña todavía el cotejo ni
+lanza el mantenimiento de una colección; la consola, E10. *Merge-on-read* si alguna colección pasa el
+techo.
 
 **Lo que E1 afinó del texto de v1alpha16** (un caso no puede dejar una regla abierta): una etiqueta
 de colección por debajo de la heredada es `OOS4012` (se eleva, no se rebaja), no `OOS4002`; copiar
