@@ -1976,11 +1976,16 @@ fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, S
             .any(|(i, _)| datasets.contains(&resto[..i]))
     };
     let raiz = format!("{}/", lago::RAIZ);
+    // ⛔ Los blobs de las colecciones (`ore/v2/blobs/`, 0046 E8·2) no son un
+    // dataset: ningún puntero los reclama por su nombre, y los nombran las
+    // filas de los manifiestos. Los recoge su propia recogida, que lee esas
+    // filas; aquí se llevaría todos, cada noche.
+    let blobs = format!("{}/", crate::blobs::RAIZ);
     let mut huerfanos: std::collections::BTreeSet<String> = Default::default();
     let mut objetos = 0usize;
     for k in cuenta.listar(&raiz)? {
         let resto = &k[raiz.len()..];
-        if reclamado(resto) {
+        if reclamado(resto) || k.starts_with(&blobs) {
             continue;
         }
         // Sólo para contarlo: el dataset es lo de antes de su `metadata/` o
@@ -2421,6 +2426,11 @@ mod tests {
         }
         cuenta.subir("ore/v1/viejo", b"ORECOPY1...").unwrap();
         cuenta.subir("ore/v1/plan/x/y", b"ore/v1/viejo").unwrap();
+        // Los blobs de una colección no son un dataset, y no se tocan aquí.
+        let blob = crate::blobs::clave_de(&"a".repeat(64));
+        let huella = crate::blobs::clave_de_huella("crc64nvme:x", 3);
+        cuenta.subir(&blob, b"PDF").unwrap();
+        cuenta.subir(&huella, "a".repeat(64).as_bytes()).unwrap();
         let n = ore_core::parse::parse(
             "{\"datasets\":[\"copias/p_a\"],\"claves\":[\"ore/v1/viejo\"],\"seco\":false}",
         )
@@ -2440,6 +2450,10 @@ mod tests {
         assert!(claves.iter().any(|k| k.contains("copias/p_a/")));
         assert!(claves.contains(&"ore/v1/viejo".to_string()));
         assert!(!claves.contains(&"ore/v1/plan/x/y".to_string()));
+        assert!(
+            claves.contains(&blob) && claves.contains(&huella),
+            "los blobs y su índice siguen: {claves:?}"
+        );
     }
 
     /// El mantenimiento de una tabla no toca lo que está bajo su ubicación y
