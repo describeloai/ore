@@ -63,6 +63,12 @@ spec:
         - name: llaves
           configMap:
             name: jwks
+        # Las de Google, para el token de cada celda (0047 A3.2). Sin `subPath`
+        # a propósito: con él el kubelet no actualiza el fichero, y la relectura
+        # ante un `kid` nuevo (A2.2) leería siempre lo mismo.
+        - name: llaves-celdas
+          configMap:
+            name: jwks-celdas
       containers:
         - name: ore-iam
           image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-iam:main
@@ -81,6 +87,18 @@ spec:
             - ore-serve
             - --jwks
             - /llaves/jwks.json
+            # ⭐ EL PUENTE (0047 A3.2): el emisor de las CELDAS. Cada `ore-serve`
+            #   se presenta con su token de Workload Identity (M3), que firma
+            #   Google con la audiencia `ore-iam`. Las llaves las trae
+            #   `68-las-llaves-de-las-celdas.yaml`, y `ore-iam` las relee ante un
+            #   `kid` nuevo (A2.2). ⛔ No se encendió en el mismo empuje que el
+            #   CronJob: con la semilla vacía, `ore-iam` no arranca.
+            - --emisor-celdas
+            - https://accounts.google.com
+            - --audiencia-celdas
+            - ore-iam
+            - --jwks-celdas
+            - /llaves-celdas/jwks.json
           env:
             - name: IAM_URL
               valueFrom: { secretKeyRef: { name: iam-url, key: url } }
@@ -102,6 +120,9 @@ spec:
           volumeMounts:
             - name: llaves
               mountPath: /llaves
+              readOnly: true
+            - name: llaves-celdas
+              mountPath: /llaves-celdas
               readOnly: true
           ports:
             - containerPort: 8090
