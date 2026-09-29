@@ -81,16 +81,22 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
     (&["validate"], "lee el árbol y contesta"),
     (
         &["ask"],
-        "contesta una vista sobre LA COPIA del inquilino (0030 W1): `ore` compila y decide;          quien lee el bucket es `ore-store-<r2|gcs>`, con la identidad del pod y su          `objectViewer` (aprovisionador ③b). Nunca un origen: sin copia hecha, se niega",
+        "contesta una vista sobre LA COPIA del inquilino (0030 W1): `ore` compila y decide; \
+        quien lee el bucket es `ore-store-<r2|gcs>`, con la identidad del pod y su \
+        `objectViewer` (aprovisionador ③b). Nunca un origen: sin copia hecha, se niega",
     ),
     (&["diff"], "compara dos árboles"),
     (
         &["datasets"],
-        "los datasets por sus punteros (0031 §10, W3.6b): la lista, la ficha con la historia de la          tabla (`ore-store historia`, con la identidad del pod), y el swap del puntero de un          dataset del lago (`--confirmar`). Sobre punteros: no compila el árbol ni abre un origen",
+        "los datasets por sus punteros (0031 §10, W3.6b): la lista, la ficha con la historia de la \
+        tabla (`ore-store historia`, con la identidad del pod), y el swap del puntero de un \
+        dataset del lago (`--confirmar`). Sobre punteros: no compila el árbol ni abre un origen",
     ),
     (
         &["collections"],
-        "las colecciones (0046 E8·1d): la lista, la ficha con la historia de sus transacciones y          sus ítems, leídos del manifiesto por `ore-store` con la identidad del pod. Nunca un          origen: lo vigente lo lista el Job de la copia",
+        "las colecciones (0046 E8·1d): la lista, la ficha con la historia de sus transacciones y \
+        sus ítems, leídos del manifiesto por `ore-store` con la identidad del pod. Nunca un \
+        origen: lo vigente lo lista el Job de la copia",
     ),
     (&["view"], "compila una vista; el motor es aritmética"),
     (&["package", "new"], "escribe un manifiesto"),

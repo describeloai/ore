@@ -215,7 +215,8 @@ pub struct Invocacion<'a> {
 pub fn rendir_invocacion(plantilla: &str, i: &Invocacion) -> Result<(String, String), String> {
     if !plantilla.contains(&format!("invocar-{RESUMEN_MODELO}")) {
         return Err(format!(
-            "`{PLANTILLA_INVOCACION}` no trae el hueco `invocar-{RESUMEN_MODELO}`: o no es la              plantilla, o `malla/49-la-invocacion.yaml` cambió sin que esto se enterara"
+            "`{PLANTILLA_INVOCACION}` no trae el hueco `invocar-{RESUMEN_MODELO}`: o no es la \
+            plantilla, o `malla/49-la-invocacion.yaml` cambió sin que esto se enterara"
         ));
     }
     for (de, a) in [

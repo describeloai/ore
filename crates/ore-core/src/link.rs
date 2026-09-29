@@ -306,7 +306,8 @@ fn nombres_retirados(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )
                     .at(k.pos())
                     .help(format!(
-                        "declarado en `reserved` en la línea {}. Un consumidor que siga                          pidiendo ese nombre recibiría otra cosa sin enterarse",
+                        "declarado en `reserved` en la línea {}. Un consumidor que siga \
+                        pidiendo ese nombre recibiría otra cosa sin enterarse",
                         pos.line
                     )),
                 );
@@ -340,7 +341,9 @@ fn nombres_retirados(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )
                     .at(d.root.pos())
                     .help(format!(
-                        "lo retiró el manifiesto del paquete, en la línea {}. Reutilizar el                          nombre de un documento retirado hace que una consulta antigua                          devuelva una cifra correcta para la pregunta equivocada",
+                        "lo retiró el manifiesto del paquete, en la línea {}. Reutilizar el \
+                        nombre de un documento retirado hace que una consulta antigua \
+                        devuelva una cifra correcta para la pregunta equivocada",
                         pos.line
                     )),
                 );
@@ -397,7 +400,8 @@ fn package_metadata(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )
                     .at(v.pos())
                     .help(
-                        "usa `team:<handle>` o `user:<handle>`: es lo que se alinea con                          CODEOWNERS, que es quien hace cumplir la revisión",
+                        "usa `team:<handle>` o `user:<handle>`: es lo que se alinea con \
+                        CODEOWNERS, que es quien hace cumplir la revisión",
                     ),
                 );
             }

@@ -418,7 +418,8 @@ pub fn sujeto_id(
     //   «no es una persona conocida aqui», y con un Job delante eso mandaba a
     //   buscar el fallo en el censo de personas — donde no estaba.
     Err(format!(
-        "quien pide no es ni una persona ni un agente de esta organizacion          (emisor `{emisor}`)"
+        "quien pide no es ni una persona ni un agente de esta organizacion \
+        (emisor `{emisor}`)"
     ))
 }
 

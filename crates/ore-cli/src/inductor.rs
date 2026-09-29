@@ -3900,7 +3900,8 @@ mod tests {
             for b in rutas.iter().skip(n + 1) {
                 assert!(
                     !a.eq_ignore_ascii_case(b),
-                    "`{a}` y `{b}` son el mismo fichero en un sistema que no                      distingue mayusculas, asi que uno de los dos se pierde"
+                    "`{a}` y `{b}` son el mismo fichero en un sistema que no \
+                    distingue mayusculas, asi que uno de los dos se pierde"
                 );
             }
         }

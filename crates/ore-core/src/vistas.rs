@@ -1821,7 +1821,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 )
                 .at(r.pos())
                 .help(
-                    "una colección mantenida sale de un `ObjectTable`, el puntero a los objetos                      que vive en el paquete de la fuente. Se nombra en tres partes                      (`<fuente>.<schema>.<nombre>`) si está en otro schema",
+                    "una colección mantenida sale de un `ObjectTable`, el puntero a los objetos \
+                    que vive en el paquete de la fuente. Se nombra en tres partes \
+                    (`<fuente>.<schema>.<nombre>`) si está en otro schema",
                 ),
             );
             continue;
@@ -1840,7 +1842,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 )
                 .at(r.pos())
                 .help(
-                    "el tipo de medio es lo que deja a la colección saber qué puede hacer con                      lo que guarda. Lo mixto se separa por tipo al catalogar: un `ObjectTable`                      por medio, y cada colección del suyo",
+                    "el tipo de medio es lo que deja a la colección saber qué puede hacer con \
+                    lo que guarda. Lo mixto se separa por tipo al catalogar: un `ObjectTable` \
+                    por medio, y cada colección del suyo",
                 ),
             );
         }
@@ -1875,7 +1879,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )
                     .at(t.pos())
                     .help(
-                        "`Media<x>` apunta a un ítem de una colección; un dataset o una vista                          tienen filas, no ítems",
+                        "`Media<x>` apunta a un ítem de una colección; un dataset o una vista \
+                        tienen filas, no ítems",
                     ),
                 );
             }
@@ -2224,7 +2229,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                     )
                     .at(nodo.pos())
                     .help(
-                        "una vista sale de una tabla del paquete o de una dependencia. Una                          cadena que no llega al suelo no tiene raíz, y sin raíz no hay de dónde                          heredar etiquetas ni de dónde leer",
+                        "una vista sale de una tabla del paquete o de una dependencia. Una \
+                        cadena que no llega al suelo no tiene raíz, y sin raíz no hay de dónde \
+                        heredar etiquetas ni de dónde leer",
                     ),
                 ),
                 Some(tabla) => {
@@ -2504,7 +2511,10 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
             format!("`{qn}` es virtual y `{tqn}` declara `reads: none`: no hay dónde preguntar"),
         )
         .help(
-            "una tabla con `reads: none` no responde consultas, solo emite cambios — un tema se              escribe, no se pregunta. Esta vista promete un sitio donde preguntar que no existe,              y lo promete al compilar para fallar al consultar. Ponle `materialized`, o sácala de              una vista de abajo que ya lo lleve",
+            "una tabla con `reads: none` no responde consultas, solo emite cambios — un tema se \
+            escribe, no se pregunta. Esta vista promete un sitio donde preguntar que no existe, \
+            y lo promete al compilar para fallar al consultar. Ponle `materialized`, o sácala de \
+            una vista de abajo que ya lo lleve",
         );
         if let Some(p) = pos {
             d = d.at(p);

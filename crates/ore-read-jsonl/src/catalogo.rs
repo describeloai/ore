@@ -229,7 +229,8 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
             .to_string();
         if !troncos.insert(nombre.clone()) {
             return Err(format!(
-                "hay dos ficheros que se llaman `{nombre}` con extensiones distintas en `{ruta}`.                  Serian la misma tabla y no lo son, asi que no se elige"
+                "hay dos ficheros que se llaman `{nombre}` con extensiones distintas en `{ruta}`. \
+                Serian la misma tabla y no lo son, asi que no se elige"
             ));
         }
         let texto = std::fs::read_to_string(f)

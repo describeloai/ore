@@ -1575,7 +1575,8 @@ impl Servidor {
                     (
                         "dice",
                         Json::s(
-                            "este servidor no sabe de ninguna cola, asi que no puede                              decir si hay trabajo encolado",
+                            "este servidor no sabe de ninguna cola, asi que no puede \
+                            decir si hay trabajo encolado",
                         ),
                     ),
                 ]));
@@ -1699,7 +1700,8 @@ impl Servidor {
     /// (`cola::rendir_corrida`).
     fn encolar_catalogo_corrida(&self, fuente: &str, sujeto: &Identidad, otra_vez: bool) -> String {
         let Some(forja) = &self.cola else {
-            return "NO encolado: este servidor no sabe de ninguna cola (`--cola`);                     lo rendira la convergencia"
+            return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); \
+            lo rendira la convergencia"
                 .into();
         };
         let prestado = match forja.clonar() {

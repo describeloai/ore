@@ -258,7 +258,8 @@ fn analizar(bytes: &str, donde: &str) -> Result<Sobre, String> {
     // es mejor que publicar un indice que afirma el paquete vacio.
     if pkg.docs.is_empty() {
         return Err(format!(
-            "`{donde}` no trajo ningun documento al cargarse. Un indice con el digest del              paquete vacio afirmaria algo que nadie puede usar"
+            "`{donde}` no trajo ningun documento al cargarse. Un indice con el digest del \
+            paquete vacio afirmaria algo que nadie puede usar"
         ));
     }
 

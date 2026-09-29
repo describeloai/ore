@@ -256,7 +256,8 @@ fn quitar(texto: &str, nombre: &str) -> Result<(String, Option<String>), String>
         l.starts_with("datasources:") && l["datasources:".len()..].trim_start().is_empty()
     }) else {
         return Err(format!(
-            "no hay una sección `datasources:` en forma de bloque, así que `{nombre}`              no está declarada ahí"
+            "no hay una sección `datasources:` en forma de bloque, así que `{nombre}` \
+            no está declarada ahí"
         ));
     };
 

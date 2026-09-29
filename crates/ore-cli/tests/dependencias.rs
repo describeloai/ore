@@ -184,7 +184,9 @@ fn el_compilador_no_tiene_reloj() {
         .collect();
     assert!(
         reloj.is_empty(),
-        "el binario que compila ha ganado un reloj: {reloj:?}. La compilación es          pura por invariante III, y un digest que dependa del instante deja de          ser una identidad."
+        "el binario que compila ha ganado un reloj: {reloj:?}. La compilación es \
+        pura por invariante III, y un digest que dependa del instante deja de \
+        ser una identidad."
     );
 }
 

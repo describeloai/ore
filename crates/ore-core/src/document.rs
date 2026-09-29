@@ -1883,7 +1883,9 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     (
                         "`principal: true` sobre `nature: event`".to_string(),
                         Some(
-                            "un evento no tiene identidad estable por registro, asi que no                              hay sujeto que nombrar. Un principal es alguien, y `event`                              situa hechos en el tiempo en vez de identificar sujetos"
+                            "un evento no tiene identidad estable por registro, asi que no \
+                            hay sujeto que nombrar. Un principal es alguien, y `event` \
+                            situa hechos en el tiempo en vez de identificar sujetos"
                                 .to_string(),
                         ),
                     )
@@ -1936,10 +1938,13 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     if referencia && v.get("type").is_some() {
                         return Some((
                             format!(
-                                "`{nombre}` declara `is` y también `type`: una propiedad declara                                  localmente o referencia un concepto, nunca las dos"
+                                "`{nombre}` declara `is` y también `type`: una propiedad declara \
+                                localmente o referencia un concepto, nunca las dos"
                             ),
                             Some(
-                                "el tipo lo pone el concepto, y no hay orden al que apelar si la                                  copia deja de coincidir. La clasificación es otra cosa: esa se                                  puede escribir para ELEVARLA —`OOS4012`— y nunca para rebajarla"
+                                "el tipo lo pone el concepto, y no hay orden al que apelar si la \
+                                copia deja de coincidir. La clasificación es otra cosa: esa se \
+                                puede escribir para ELEVARLA —`OOS4012`— y nunca para rebajarla"
                                     .into(),
                             ),
                         ));
@@ -1967,7 +1972,10 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                         return Some((
                             format!("`{nombre}` declara `confidence` sin `is`"),
                             Some(
-                                "`confidence` es la confianza de UNA INFERENCIA, y sin mapeo no                                  hay nada de lo que dudar. Una propiedad escrita a mano no es una                                  inferencia: es una decisión, y nadie declara cuánta confianza                                  tiene en algo que acaba de decidir"
+                                "`confidence` es la confianza de UNA INFERENCIA, y sin mapeo no \
+                                hay nada de lo que dudar. Una propiedad escrita a mano no es una \
+                                inferencia: es una decisión, y nadie declara cuánta confianza \
+                                tiene en algo que acaba de decidir"
                                     .into(),
                             ),
                         ));
@@ -2186,7 +2194,8 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     (
                         "un `Property` DEBE declarar `type`".into(),
                         Some(
-                            "es la mitad de lo que el concepto declara —la otra es `labels`— y es                              lo que hereda toda propiedad que lo referencie"
+                            "es la mitad de lo que el concepto declara —la otra es `labels`— y es \
+                            lo que hereda toda propiedad que lo referencie"
                                 .into(),
                         ),
                     )
@@ -2201,7 +2210,8 @@ pub fn shape_rules() -> Vec<ShapeRule> {
                     (
                         "un `Interface` DEBE declarar `requires`".into(),
                         Some(
-                            "una forma sin exigencias la satisface cualquier cosa, y entonces no                              nombra ningún conjunto. Es `OOS8002` visto desde el otro lado"
+                            "una forma sin exigencias la satisface cualquier cosa, y entonces no \
+                            nombra ningún conjunto. Es `OOS8002` visto desde el otro lado"
                                 .into(),
                         ),
                     )

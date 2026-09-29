@@ -919,7 +919,8 @@ fn sellar_flujo(
 }
 
 fn sin_fin() -> String {
-    "el flujo se cortó sin su marca de fin: el driver no terminó, y una copia corta      no se sella"
+    "el flujo se cortó sin su marca de fin: el driver no terminó, y una copia corta \
+    no se sella"
         .into()
 }
 

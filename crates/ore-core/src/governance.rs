@@ -483,7 +483,9 @@ fn objetivos_validos(
                         )
                         .at(pos)
                         .help(
-                            "un objetivo por forma apunta a un documento `Interface`. Que no                              case con ninguna entidad es otro fallo distinto —`OOS8002`— y solo                              uno de los dos es una errata",
+                            "un objetivo por forma apunta a un documento `Interface`. Que no \
+                            case con ninguna entidad es otro fallo distinto —`OOS8002`— y solo \
+                            uno de los dos es una errata",
                         ),
                     );
                 }
@@ -1409,7 +1411,11 @@ fn cobertura(
             ),
         )
         .help(format!(
-            "lo exige {}. Y la clase importa: una comprobación de calidad NO descarga lo que              una clasificación pide como política — el fallo no sería que falta una regla,              sería que sobra la equivocada. Ojo también con la salida barata: una aserción              `severity: warning` no cuenta, porque un aviso no descarga la obligación de              gobernar",
+            "lo exige {}. Y la clase importa: una comprobación de calidad NO descarga lo que \
+            una clasificación pide como política — el fallo no sería que falta una regla, \
+            sería que sobra la equivocada. Ojo también con la salida barata: una aserción \
+            `severity: warning` no cuenta, porque un aviso no descarga la obligación de \
+            gobernar",
             porque.join(", ")
         ));
         if let Some(p) = pos {

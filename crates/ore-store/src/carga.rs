@@ -700,7 +700,10 @@ pub fn al_contrato(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBa
         .iter()
         .map(|campo| -> Result<ArrayRef, String> {
             let col = lote.column_by_name(campo.name()).ok_or_else(|| {
-                format!("el contrato declara `{}` y el flujo no la trae", campo.name())
+                format!(
+                    "el contrato declara `{}` y el flujo no la trae",
+                    campo.name()
+                )
             })?;
             if col.data_type() == campo.data_type() {
                 return Ok(col.clone());
@@ -708,7 +711,8 @@ pub fn al_contrato(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBa
             let convertir = |c: &ArrayRef, a: &DataType| {
                 arrow_cast::cast_with_options(c, a, &estricto).map_err(|e| {
                     format!(
-                        "la columna `{}` llega como `{}` y no convierte a `{}` (lo que su contrato                          declara): {e}",
+                        "la columna `{}` llega como `{}` y no convierte a `{}` (lo que su contrato \
+                        declara): {e}",
                         campo.name(),
                         col.data_type(),
                         campo.data_type()
@@ -728,7 +732,8 @@ pub fn al_contrato(lote: &RecordBatch, destino: &Arc<Schema>) -> Result<RecordBa
                 );
                 if a.iter().zip(b.iter()).any(|(x, y)| x != y) {
                     return Err(format!(
-                        "la columna `{}` llega como `{}` y un valor no cabe en `{}` sin perder                          cifras: el contrato es más estrecho que el origen",
+                        "la columna `{}` llega como `{}` y un valor no cabe en `{}` sin perder \
+                        cifras: el contrato es más estrecho que el origen",
                         campo.name(),
                         col.data_type(),
                         campo.data_type()

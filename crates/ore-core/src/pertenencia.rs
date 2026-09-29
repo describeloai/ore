@@ -297,7 +297,8 @@ mod tests {
             .collect();
         assert!(
             sin.is_empty(),
-            "estos `kind` no dicen si su nombre es del paquete o de un              vocabulario compartido: {sin:?}"
+            "estos `kind` no dicen si su nombre es del paquete o de un \
+            vocabulario compartido: {sin:?}"
         );
         // Y en una sola: clasificar dos veces es no clasificar.
         for k in Kind::ALL {

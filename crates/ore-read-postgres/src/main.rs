@@ -664,7 +664,8 @@ fn testigo(entrada: &str) -> Result<String, String> {
         .unwrap_or_default();
     if wal_level != "logical" {
         eprintln!(
-            "ore-read-postgres: aviso · `wal_level = {}` y no `logical`: este servidor no emite              cambios, asi que no hay testigo que dar",
+            "ore-read-postgres: aviso · `wal_level = {}` y no `logical`: este servidor no emite \
+            cambios, asi que no hay testigo que dar",
             if wal_level.is_empty() {
                 "?"
             } else {

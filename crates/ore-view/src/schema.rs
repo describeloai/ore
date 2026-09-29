@@ -103,7 +103,8 @@ impl Desajuste {
                 format!("`{nombre}` agrega sin decir sobre qué, y solo `cuenta` puede")
             }
             Desajuste::SinExpandir { vista } => format!(
-                "el plan todavía nombra a `{vista}`: hay que expandirlo antes de tiparlo,                  porque un esquema sobre medio plan parece bueno"
+                "el plan todavía nombra a `{vista}`: hay que expandirlo antes de tiparlo, \
+                porque un esquema sobre medio plan parece bueno"
             ),
             Desajuste::OpacaLeeLoQueNoHay { campo } => format!(
                 "una expresión opaca declara leer `{campo}` y no está: su superficie declarada \

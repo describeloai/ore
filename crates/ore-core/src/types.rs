@@ -442,7 +442,8 @@ fn tipos_de_seccion(e: &Loaded, seccion: &str, out: &mut Vec<Diagnostic>) {
                     )
                     .at(t.pos())
                     .help(
-                        "la referencia a un ítem de una colección llega con v1alpha16: declara                          `apiVersion: oos.dev/v1alpha16` en el documento",
+                        "la referencia a un ítem de una colección llega con v1alpha16: declara \
+                        `apiVersion: oos.dev/v1alpha16` en el documento",
                     ),
                 )
             }
@@ -985,7 +986,8 @@ mod acuerdo {
 
         assert!(
             prosa.len() >= 8,
-            "§3.1 de 02-entity.md solo dio {} nombres: {prosa:?}.              Si la sección cambió de forma, este guardián está leyendo otra cosa.",
+            "§3.1 de 02-entity.md solo dio {} nombres: {prosa:?}. \
+            Si la sección cambió de forma, este guardián está leyendo otra cosa.",
             prosa.len()
         );
         assert_eq!(
@@ -1014,7 +1016,8 @@ mod acuerdo {
         );
         assert!(
             !seccion.contains("$defs/qualifiedName"),
-            "la rama de tipo importado volvió a `qualifiedName`, que acepta un              identificador suelto y deja sin efecto el conjunto cerrado de escalares"
+            "la rama de tipo importado volvió a `qualifiedName`, que acepta un \
+            identificador suelto y deja sin efecto el conjunto cerrado de escalares"
         );
     }
 }
