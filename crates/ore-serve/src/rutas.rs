@@ -169,6 +169,9 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             | ["paquetes"]
             | ["datasets", _, _, "confirmar"]
             | ["datasets", _, _, _, "confirmar"]
+            // 0046 E9·2: resolver huellas a URLs es LEER —lo mismo que
+            // `GET …/items/{huella}`, en lote—, y el cuerpo es sólo por la lista.
+            | ["colecciones", _, _, _, "items", "resolver"]
     );
     if entra {
         return None;
