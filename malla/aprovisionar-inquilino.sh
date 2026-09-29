@@ -538,6 +538,16 @@ enlace "ore-driver-$NOMBRE" driver
 enlace "ore-forja-$NOMBRE" forja
 enlace "ore-informador-$NOMBRE" informador
 enlace "ore-puesto-$NOMBRE" puesto
+# ⭐ `ore-serve-<n>` FIRMA SIN CLAVES (0046 E9·1): sirve un ítem de una colección
+#   mantenida con una URL V4 firmada por `signBlob`, que es firmar COMO ÉL MISMO
+#   —`TokenCreator` sobre sí mismo, y sobre ninguna otra cuenta—. No hay clave
+#   que guardar (la política de la organización las prohíbe) y la URL sólo abre
+#   lo que `ore-serve-<n>` ya lee. Medido en t-prueba: `signBlob` 58 ms de
+#   mediana, la URL entera 21 ms; sin esto, 403.
+correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
+  "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
+  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  && hecho "\`ore-serve-$NOMBRE\` firma como sí mismo (URLs de los ítems), y como nadie más"
 
 # ── ⭐⭐ LA COPIA: UN BUCKET POR INQUILINO, Y DOS PAPELES (0027 P1 I2) ─────
 #
@@ -599,6 +609,23 @@ correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
   --role=roles/storage.objectViewer \
   --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/puesto/\"),title=solo-la-capa,description=W3.7 gobierno 2b: el puesto lee la capa por su nombre y nada mas; los datasets con la credencial prestada por ore-serve" \
   && hecho "\`ore-puesto-$NOMBRE\` lee la capa y nada más: los datasets con la credencial que ore-serve le presta, y escribe con la del catálogo"
+# ⭐ CORS (0046 E9·1): la consola pide los bytes de un ítem con la URL firmada, y
+#   un visor de PDF o de vídeo los pide A RANGOS desde el navegador — sin CORS el
+#   navegador no le deja leer la respuesta. CORS no abre nada: sin firma, 403
+#   igual. Sólo `GET`/`HEAD`, sólo los orígenes de la consola (los del cliente
+#   `rubix` de `61-realms.yaml`), y las cabeceras de un rango: `Range` al pedir;
+#   `Content-Range`, `Accept-Ranges` y `Content-Length` al leer.
+#   Se mira antes de escribir: cada escritura sube la metageneración del bucket.
+cat > "$TMP/cors.json" <<'CORS'
+[{"origin": ["https://app.paladio.io", "http://localhost:3000"], "method": ["GET", "HEAD"], "responseHeader": ["Range", "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Content-Disposition", "ETag"], "maxAgeSeconds": 3600}]
+CORS
+cors_de() { "$PY" -c 'import json,sys; d=json.load(sys.stdin); d=d.get("cors_config", d) if isinstance(d, dict) else d; print(json.dumps(d or [], sort_keys=True))'; }
+if [ "$("$GCLOUD" storage buckets describe "gs://$COPIA" --format=json 2>/dev/null | cors_de)" = "$(cors_de < "$TMP/cors.json")" ]; then
+  ya "CORS de la copia (la consola, a rangos)"
+else
+  correr "$GCLOUD" storage buckets update "gs://$COPIA" --cors-file="$(ruta "$TMP/cors.json")" \
+    && hecho "CORS de la copia: la consola lee los ítems a rangos, con su URL firmada"
+fi
 
 # ── ⭐⭐ Y EL ALMACÉN PUEDE USARLA COMO CMEK ────────────────────────────────
 #

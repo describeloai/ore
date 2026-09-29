@@ -37,6 +37,11 @@
 #   gcloud iam roles update ore_aprovisionador --project=<proyecto> \
 #     --file=malla/papel-del-aprovisionador.yaml        # cuando cambia esta lista
 #
+#   ⚠️ Desde Windows `gcloud` lee el fichero en la página de códigos, no en
+#     UTF-8, y el título queda «ORE ? el aprovisionador» (visto el 2026-09-29).
+#     Los permisos entran bien; el título se arregla con un PATCH a la API
+#     (`roles/…?updateMask=title`) con el cuerpo en UTF-8.
+#
 # ── ⚠️ Y UNA CONCESION QUE NO CABE EN ESTA LISTA (0025 E4) ─────────────────
 #
 # El cofre de cada celda administra `t-<celda>-cofre-*` en el almacen por una
@@ -124,6 +129,9 @@ includedPermissions:
   - storage.buckets.get
   - storage.buckets.delete
   - storage.buckets.getIamPolicy
+  # Y poner su CORS (0046 E9·1): la consola lee los ítems a rangos. Es metadato
+  # del bucket; no da `objects.get`.
+  - storage.buckets.update
   - storage.buckets.setIamPolicy
   - storage.objects.list
   - storage.objects.delete
