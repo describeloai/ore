@@ -207,9 +207,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               ore.dev/rol: identidad
+        # ✏️ 2026-09-29 (0047 A3) · Aquí entraba CUALQUIER pod de un namespace con
+        #   `ore.dev/tenant: demo`: una regla de antes de las celdas que nada usaba
+        #   (M3). Fuera. Lo que entra de un inquilino se nombra por su rol, abajo.
+        # ⭐ El `ore-serve` de cada celda (0047 A3): pregunta al puente. Sólo el
+        #   pod con ese rol; decide el token de la celda, no esta regla.
         - namespaceSelector:
             matchLabels:
-              ore.dev/tenant: demo
+              ore.dev/rol: cargas
+          podSelector:
+            matchLabels:
+              ore.dev/rol: control
         # El pod del aprovisionador (16), y solo el: registra el agente de cada
         # celda y la da por aprovisionada.
         - namespaceSelector:

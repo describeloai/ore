@@ -1571,7 +1571,19 @@ if [ -n "$SECO" ]; then
 elif [ -z "$INQ" ] || [ -z "$REGISTRADO" ]; then
   echo "  ~ la celda no se da por aprovisionada: $([ -z "$INQ" ] && printf 'su forja no estaba ' ; [ -z "$REGISTRADO" ] && printf 'su agente no se registro')"
 elif iam_token; then
-  R=$(iam_verbo POST "/celdas/$NOMBRE/aprovisionada")
+  # ⭐ Y QUIÉN ES ante el puente (0047 A3): la celda se presenta a `ore-iam` con
+  #   el token de Workload Identity de su `ore-serve`, y de él cuenta
+  #   `(emisor, sub)`. El `sub` es el `uniqueId` de la cuenta (medido en A2: los
+  #   tres coinciden). Lo dice quien crea la cuenta, y no se deduce del nombre.
+  #   Sin él la celda se da por aprovisionada igual; sólo no pregunta aún.
+  UID_SERVE=$("$GCLOUD" iam service-accounts describe "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --format='value(uniqueId)' 2>/dev/null | tr -d '\r')
+  case "$UID_SERVE" in
+    *[!0-9]*|"") echo "  ⚠ no se leyó el uniqueId de \`ore-serve-$NOMBRE\`: la celda no queda registrada ante el puente"
+       CUERPO_APROV="" ;;
+    *) CUERPO_APROV="{\"identidad\":{\"emisor\":\"https://accounts.google.com\",\"sub\":\"$UID_SERVE\"}}" ;;
+  esac
+  R=$(iam_verbo POST "/celdas/$NOMBRE/aprovisionada" "$CUERPO_APROV")
   [ "$(iam_cod)" = "200" ] && hecho "celda \`$NOMBRE\` aprovisionada: $R" || echo "  ⚠ ore-iam contesto $(iam_cod): $R"
 fi
 rm -f "$TMP/iam" "$TMP/iam-r.json"

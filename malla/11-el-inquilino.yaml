@@ -223,6 +223,37 @@ spec:
         - protocol: TCP
           port: 8080
 ---
+# ── ⭐ Y PREGUNTAR AL PUENTE (0047 A3): `ore-serve` → `ore-iam:8090` ─────────
+#
+# Medido en M3: desde ninguna celda llegaba (`000`, tiempo agotado); sólo el
+# informador tenía salida al 8090. Esta regla abre el camino para `ore-serve`
+# (`ore.dev/rol: control`) y para nadie más del inquilino: el puesto, el driver y
+# la forja siguen sin llegar. Y sólo al pod de `ore-iam`, no a todo `identidad`.
+#
+# ⚠️ Abrir el camino no autoriza nada: `ore-iam` decide por el token de la celda
+#   (Workload Identity de su `ore-serve`), no por de dónde llega la petición.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-a-ore-iam
+  namespace: t-demo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              ore.dev/rol: identidad
+          podSelector:
+            matchLabels:
+              ore.dev/rol: iam-servidor
+      ports:
+        - protocol: TCP
+          port: 8090
+---
 # ── Y hablar con su PROPIO plano de control ──────────────────────
 #
 # ✓ 2026-09-09 · Vivia en `96-la-consola-contra-el-servidor.yaml`, otro fichero

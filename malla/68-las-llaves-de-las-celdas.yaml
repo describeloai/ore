@@ -1,0 +1,152 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LAS LLAVES DE LAS CELDAS — las de Google, traídas por un Job (0047 A3)
+#
+# Cada celda se presenta ante el puente de `ore-iam` con el token de Workload
+# Identity de su `ore-serve` (M3): lo firma Google, `iss https://accounts.google.com`.
+# `ore-iam` lo verifica con las llaves públicas de Google, y **no las va a
+# buscar**: las lee de un fichero, como las del realm (`oidc.rs`). Esto es quien
+# trae ese fichero.
+#
+# ── ⚠️ Por qué cada hora, y no cada seis como `50-jwks` ────────────────────
+#
+# Google publica sus llaves con `max-age` de unas seis horas (medido el
+# 2026-09-29: `Cache-Control: public, max-age=23095`) y rota en días, con dos
+# publicadas a la vez. Cada hora deja margen de sobra. Y `ore-iam` relee el
+# fichero cuando llega un `kid` que no conoce (0047 A2.2), así que no hace falta
+# reiniciarlo: el kubelet actualiza el volumen y el proceso lo lee.
+#
+# ── ⛔ Lo primero, preguntar CON QUIÉN se habla ──────────────────────────────
+#
+# El descubrimiento de `accounts.google.com` tiene que decir que su emisor es
+# `https://accounts.google.com` y que sus llaves están en el `jwks_uri` que se
+# baja. Si no, no se toca nada: unas llaves de otro emisor harían que `ore-iam`
+# creyera tokens que no son de ninguna celda.
+#
+# ── ⚠️ La semilla, vacía a propósito, y el orden que impone ─────────────────
+#
+# `ore-iam` se NIEGA a arrancar con un juego vacío (`Llaves::leer`). Por eso sus
+# flags del puente (`--emisor-celdas`…) no se encienden en el mismo empuje que
+# esto: primero el CronJob corre y deja llaves de verdad, y después se encienden
+# (0047 A3.2). `IfNotPresent`, como `50-jwks`: Flux lo crea y no lo pisa.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwks-celdas
+  namespace: identidad
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: identidad
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: IfNotPresent
+data:
+  jwks.json: |
+    {"keys":[]}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: refresco-jwks-celdas
+  namespace: identidad
+---
+# Escribir ESE ConfigMap y ningún otro.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: escribe-jwks-celdas
+  namespace: identidad
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [jwks-celdas]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: escribe-jwks-celdas
+  namespace: identidad
+subjects:
+  - kind: ServiceAccount
+    name: refresco-jwks-celdas
+    namespace: identidad
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: escribe-jwks-celdas
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: refresco-jwks-celdas
+  namespace: identidad
+spec:
+  schedule: "23 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: refresco-jwks-celdas
+          nodeSelector:
+            ore.dev/pool: system
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: refresco
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: EMISOR, value: "https://accounts.google.com" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  API=https://kubernetes.default.svc
+                  SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+                  # 1 · ¿con quién estamos hablando? ESTO PRIMERO.
+                  curl -sSf "$EMISOR/.well-known/openid-configuration" -o /tmp/desc.json
+                  DICE=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["issuer"])')
+                  URI=$(python3 -c 'import json;print(json.load(open("/tmp/desc.json"))["jwks_uri"])')
+                  echo "dice ser        $DICE"
+                  echo "sus llaves en   $URI"
+                  if [ "$DICE" != "$EMISOR" ]; then
+                    echo "NO es el emisor que esperábamos ($EMISOR). No se toca nada."
+                    exit 1
+                  fi
+                  case "$URI" in
+                    https://www.googleapis.com/*) ;;
+                    *) echo "el jwks_uri no es de googleapis.com: no se toca nada"; exit 1 ;;
+                  esac
+
+                  # 2 · las llaves, y que sean un JWKS con al menos una RSA de firma.
+                  curl -sSf "$URI" -o /tmp/jwks.json
+                  python3 -c 'import json,sys; k=[x for x in json.load(open("/tmp/jwks.json"))["keys"] if x.get("kty")=="RSA" and x.get("use","sig")=="sig"]; print("llaves          %d (%s)" % (len(k), ", ".join(x["kid"][:10] for x in k))); sys.exit(0 if k else 1)' \
+                    || { echo "lo que llegó no trae ninguna llave RSA de firma"; exit 1; }
+
+                  # 3 · al ConfigMap, sobre `data` y nada más.
+                  python3 -c 'import json;print(json.dumps({"data":{"jwks.json":open("/tmp/jwks.json").read()}}))' > /tmp/parche.json
+                  curl -sSf -X PATCH \
+                    -H "Authorization: Bearer $(cat $SA/token)" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    --cacert "$SA/ca.crt" \
+                    --data-binary @/tmp/parche.json \
+                    "$API/api/v1/namespaces/identidad/configmaps/jwks-celdas" > /dev/null
+                  echo "ok · las llaves de las celdas están al día"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "300m", memory: 256Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
