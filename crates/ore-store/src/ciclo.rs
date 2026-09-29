@@ -149,6 +149,10 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     if verbo == "sellar-flujo" {
         return sellar_flujo(&Lago::nuevo(cuenta), primera, &n, lector);
     }
+    // Los bytes de una colección (0046 E8·2): tramas de un lector, binario.
+    if verbo == "blobs" {
+        return crate::blobs::poner(cuenta, &n, lector);
+    }
     let mut texto = String::new();
     lector
         .read_to_string(&mut texto)
@@ -262,6 +266,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 .ok_or("a `sellar-arrow` le falta `archivo`: el Arrow que la consulta dejó")?;
             sellar_arrow(&lago, &cab, &dataset, campo("base").as_deref(), &archivo)
         }
+        "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
+        "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -270,7 +276,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer`, `historia`, `volcar` y `sellar-arrow`"
+             `recoger-huerfanas`, `leer`, `pagina`, `historia`, `volcar`, `sellar-arrow`, \
+             `blobs`, `blobs-hay` y `blob-leer`"
         )),
     }
 }

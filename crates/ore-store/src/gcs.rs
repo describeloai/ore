@@ -93,23 +93,9 @@ fn codificar(s: &str) -> String {
 /// CRC-32C (Castagnoli), que es el que GCS devuelve en `crc32c` (base64 del
 /// valor en big-endian). Tabla de 256 entradas, como todos.
 fn crc32c(datos: &[u8]) -> u32 {
-    let mut tabla = [0u32; 256];
-    for (i, e) in tabla.iter_mut().enumerate() {
-        let mut c = i as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 {
-                0x82F6_3B78 ^ (c >> 1)
-            } else {
-                c >> 1
-            };
-        }
-        *e = c;
-    }
-    let mut crc = !0u32;
-    for &b in datos {
-        crc = tabla[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
-    }
-    !crc
+    let mut c = crate::blobs::Crc32c::default();
+    c.sumar(datos);
+    c.valor()
 }
 
 fn base64(b: &[u8]) -> String {
@@ -279,9 +265,228 @@ impl Almacen for Cuenta {
             Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
         }
     }
+
+    fn poner_blob(&self, b: &crate::almacen::Blob) -> Result<bool, String> {
+        match &b.cuerpo {
+            crate::almacen::Cuerpo::Memoria(bytes) => self.blob_multiparte(b, bytes),
+            crate::almacen::Cuerpo::Fichero(_) => self.blob_reanudable(b),
+        }
+    }
+
+    fn leer_rango(
+        &self,
+        clave: &str,
+        rango: Option<(u64, u64)>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut r = self.pide_blob("GET", &format!("{}?alt=media", self.objeto(clave)))?;
+        if let Some((a, z)) = rango {
+            r = r.set("range", &format!("bytes={a}-{z}"));
+        }
+        match r.call() {
+            Ok(resp) => {
+                let mut b = Vec::new();
+                resp.into_reader()
+                    .read_to_end(&mut b)
+                    .map_err(|e| format!("`{clave}` no se pudo leer: {e}"))?;
+                Ok(Some(b))
+            }
+            Err(ureq::Error::Status(404, _)) => Ok(None),
+            // Un rango que empieza pasado el final: nada que leer.
+            Err(ureq::Error::Status(416, _)) => Ok(Some(Vec::new())),
+            Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
+        }
+    }
+}
+
+/// Los trozos de la subida reanudable: un múltiplo de 256 KiB, como pide GCS.
+const TROZO: usize = 8 << 20;
+
+/// **Un cliente para todos los blobs del proceso**, con sus conexiones vivas y
+/// sin seguir redirecciones: el `308` de una subida reanudable a medias no es
+/// una redirección. Medido en E8·2 B (clúster): 64 subidas en paralelo con
+/// conexión viva, 589 blobs de 20 KiB por segundo.
+fn cliente_de_blobs() -> Result<ureq::Agent, String> {
+    static C: std::sync::OnceLock<Result<ureq::Agent, String>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let tls = native_tls::TlsConnector::new()
+            .map_err(|e| format!("no se pudo abrir el TLS de la plataforma: {e}"))?;
+        Ok(ureq::AgentBuilder::new()
+            .tls_connector(std::sync::Arc::new(tls))
+            .redirects(0)
+            .max_idle_connections(256)
+            .max_idle_connections_per_host(256)
+            .timeout_connect(std::time::Duration::from_secs(30))
+            .timeout_read(std::time::Duration::from_secs(120))
+            .timeout_write(std::time::Duration::from_secs(120))
+            .build())
+    })
+    .clone()
 }
 
 impl Cuenta {
+    fn pide_blob(&self, metodo: &str, url: &str) -> Result<ureq::Request, String> {
+        Ok(cliente_de_blobs()?
+            .request(metodo, url)
+            .set("user-agent", AGENTE)
+            .set("authorization", &format!("Bearer {}", self.token()?)))
+    }
+
+    /// Los metadatos con los que GCS coteja: el nombre, el tipo y el crc32c
+    /// que el servidor calcula y compara **antes** de crear el objeto.
+    fn metadatos_de(b: &crate::almacen::Blob) -> String {
+        ore_core::json::Json::obj([
+            ("name", ore_core::json::Json::s(&b.clave)),
+            ("contentType", ore_core::json::Json::s(&b.tipo)),
+            (
+                "crc32c",
+                ore_core::json::Json::s(base64(&b.crc32c.to_be_bytes())),
+            ),
+        ])
+        .jcs()
+    }
+
+    /// Lo pequeño: una petición multiparte (metadatos + bytes).
+    fn blob_multiparte(&self, b: &crate::almacen::Blob, cuerpo: &[u8]) -> Result<bool, String> {
+        // La frontera sale del contenido: no aparece dentro de él salvo que
+        // alguien la busque, y tampoco podría (es su propio hash).
+        let frontera = format!("ore-{}", &ore_s3::hex(&b.sha256)[..40]);
+        let mut todo = Vec::with_capacity(cuerpo.len() + 512);
+        todo.extend_from_slice(
+            format!(
+                "--{frontera}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n{}\r\n--{frontera}\r\ncontent-type: {}\r\n\r\n",
+                Cuenta::metadatos_de(b),
+                b.tipo
+            )
+            .as_bytes(),
+        );
+        todo.extend_from_slice(cuerpo);
+        todo.extend_from_slice(format!("\r\n--{frontera}--").as_bytes());
+        let url = format!(
+            "{API}/upload/storage/v1/b/{}/o?uploadType=multipart&ifGenerationMatch=0&fields=crc32c,name",
+            self.bucket
+        );
+        let r = self
+            .pide_blob("POST", &url)?
+            .set(
+                "content-type",
+                &format!("multipart/related; boundary={frontera}"),
+            )
+            .send_bytes(&todo);
+        self.respuesta_de_blob(b, r)
+    }
+
+    /// Lo grande: una subida reanudable, en trozos, desde el temporal.
+    fn blob_reanudable(&self, b: &crate::almacen::Blob) -> Result<bool, String> {
+        let url = format!(
+            "{API}/upload/storage/v1/b/{}/o?uploadType=resumable&ifGenerationMatch=0&fields=crc32c,name",
+            self.bucket
+        );
+        let inicio = self
+            .pide_blob("POST", &url)?
+            .set("content-type", "application/json; charset=UTF-8")
+            .set("x-upload-content-type", &b.tipo)
+            .set("x-upload-content-length", &b.tamano.to_string())
+            .send_string(&Cuenta::metadatos_de(b));
+        let sesion = match inicio {
+            Ok(r) => r
+                .header("location")
+                .map(String::from)
+                .ok_or("GCS no devolvió la sesión de la subida reanudable")?,
+            Err(ureq::Error::Status(412, _)) => return Ok(false),
+            Err(ureq::Error::Status(c, r)) => {
+                return Err(format!(
+                    "la subida de `{}` no empezó ({c}): {}",
+                    b.clave,
+                    r.into_string().unwrap_or_default()
+                ));
+            }
+            Err(e) => return Err(format!("la subida de `{}` no empezó: {e}", b.clave)),
+        };
+        let mut lector = b.cuerpo.lector()?;
+        let mut trozo = vec![0u8; TROZO];
+        let mut hecho = 0u64;
+        loop {
+            let mut n = 0;
+            while n < TROZO {
+                let k = lector
+                    .read(&mut trozo[n..])
+                    .map_err(|e| format!("el temporal de `{}` no se pudo leer: {e}", b.clave))?;
+                if k == 0 {
+                    break;
+                }
+                n += k;
+            }
+            let fin = hecho + n as u64;
+            let rango = if b.tamano == 0 {
+                "bytes */0".to_string()
+            } else {
+                format!("bytes {hecho}-{}/{}", fin.saturating_sub(1), b.tamano)
+            };
+            let r = self
+                .pide_blob("PUT", &sesion)?
+                .set("content-range", &rango)
+                .send_bytes(&trozo[..n]);
+            hecho = fin;
+            match r {
+                // 308: el trozo llegó, faltan más. (ureq da un 3xx como
+                // respuesta, no como error, sin redirecciones.)
+                Ok(x) if x.status() == 308 && hecho < b.tamano => continue,
+                Ok(x) if x.status() == 308 => {
+                    return Err(format!(
+                        "GCS no cerró la subida de `{}`: pidió más bytes de los que hay",
+                        b.clave
+                    ));
+                }
+                otro => return self.respuesta_de_blob(b, otro),
+            }
+        }
+    }
+
+    fn respuesta_de_blob(
+        &self,
+        b: &crate::almacen::Blob,
+        r: Result<ureq::Response, ureq::Error>,
+    ) -> Result<bool, String> {
+        match r {
+            Ok(resp) => {
+                let texto = resp.into_string().unwrap_or_default();
+                // La reanudable no lo devuelve en el último trozo (medido): se
+                // pregunta a los metadatos.
+                let dicho = match campo(&texto, "crc32c") {
+                    Some(c) if !c.is_empty() => c,
+                    _ => self
+                        .pide_blob("GET", &format!("{}?fields=crc32c", self.objeto(&b.clave)))?
+                        .call()
+                        .ok()
+                        .and_then(|r| r.into_string().ok())
+                        .and_then(|t| campo(&t, "crc32c"))
+                        .unwrap_or_default(),
+                };
+                let nuestro = base64(&b.crc32c.to_be_bytes());
+                if dicho != nuestro {
+                    // No debería poder pasar: el servidor ya lo cotejó.
+                    let _ = self.borrar(&b.clave);
+                    return Err(format!(
+                        "GCS guardó otra cosa para `{}`: crc32c {dicho} y no {nuestro}; el objeto se ha borrado",
+                        b.clave
+                    ));
+                }
+                Ok(true)
+            }
+            Err(ureq::Error::Status(412, _)) => Ok(false),
+            Err(ureq::Error::Status(c, r)) => Err(format!(
+                "GCS rechazó `{}` ({c}): {}",
+                b.clave,
+                r.into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            )),
+            Err(e) => Err(format!("la subida de `{}` falla: {e}", b.clave)),
+        }
+    }
+
     /// El token de esta cuenta, acotado a `prefijo` con esos roles.
     fn acotar(&self, prefijo: &str, roles: &[&str]) -> Result<crate::almacen::Prestamo, String> {
         let permisos = roles

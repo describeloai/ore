@@ -231,6 +231,76 @@ pub fn subir(c: &Cuenta, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
     }
 }
 
+/// **Un blob** (0046 E8·2): las mismas dos garantías que [`subir`] —`If-None-
+/// Match: *` y `ChecksumSHA256`, que el servidor coteja antes de escribir—,
+/// con su `Content-Type` y el cuerpo **en flujo**: el digest se conoce de
+/// antes (lo calculó quien lo trajo), así que no hace falta tenerlo en memoria
+/// para firmar.
+pub fn poner_blob(c: &Cuenta, b: &crate::almacen::Blob) -> Result<bool, String> {
+    let ruta = format!("/{}/{}", c.bucket, b.clave);
+    let cab = firmar(
+        c,
+        "PUT",
+        &ruta,
+        vec![
+            ("content-length".into(), b.tamano.to_string()),
+            ("content-type".into(), b.tipo.clone()),
+            ("if-none-match".into(), "*".into()),
+            ("x-amz-checksum-sha256".into(), base64(&b.sha256)),
+        ],
+        &hex(&b.sha256),
+    );
+    let mut r = cliente()?.put(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.send(b.cuerpo.lector()?) {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(412, _)) => Ok(false),
+        Err(ureq::Error::Status(c_, r)) => Err(format!(
+            "el almacén rechazó `{}` ({c_}): {}",
+            b.clave,
+            r.into_string()
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect::<String>()
+        )),
+        Err(e) => Err(format!("la subida de `{}` falla: {e}", b.clave)),
+    }
+}
+
+/// Un rango de un objeto, o entero.
+pub fn leer_rango(
+    c: &Cuenta,
+    clave: &str,
+    rango: Option<(u64, u64)>,
+) -> Result<Option<Vec<u8>>, String> {
+    let ruta = format!("/{}/{clave}", c.bucket);
+    let vacio = hex(&sha256(b""));
+    let mut cabeceras = Vec::new();
+    if let Some((a, z)) = rango {
+        cabeceras.push(("range".to_string(), format!("bytes={a}-{z}")));
+    }
+    let cab = firmar(c, "GET", &ruta, cabeceras, &vacio);
+    let mut r = cliente()?.get(&url(c, &ruta)).set("user-agent", AGENTE);
+    for (k, v) in &cab {
+        r = r.set(k, v);
+    }
+    match r.call() {
+        Ok(resp) => {
+            let mut b = Vec::new();
+            resp.into_reader()
+                .read_to_end(&mut b)
+                .map_err(|e| format!("`{clave}` no se pudo leer: {e}"))?;
+            Ok(Some(b))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(ureq::Error::Status(416, _)) => Ok(Some(Vec::new())),
+        Err(e) => Err(format!("el `GET` de `{clave}` falla: {e}")),
+    }
+}
+
 /// Enumera por prefijo. Es lo único que la recogida necesita del almacén, y R2
 /// lo honra — medido en el ADR 0015 antes de escribirlo.
 ///
@@ -351,6 +421,16 @@ impl Almacen for Cuenta {
     }
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
         leer_bytes(self, clave)
+    }
+    fn poner_blob(&self, b: &crate::almacen::Blob) -> Result<bool, String> {
+        poner_blob(self, b)
+    }
+    fn leer_rango(
+        &self,
+        clave: &str,
+        rango: Option<(u64, u64)>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        leer_rango(self, clave, rango)
     }
 }
 

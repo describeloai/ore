@@ -40,6 +40,10 @@
 /// sin tenerlo — ver su cabecera.
 pub mod catalogo;
 
+/// Los **bytes de un objeto**, del lector al almacén (0046 E8·2): el flujo de
+/// tramas de `bajar` y `blobs`.
+pub mod tramas;
+
 /// Lo que el motor pide. Nombres físicos ya resueltos: el driver no conoce el
 /// modelo, solo el objeto y sus columnas.
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -24,6 +24,7 @@
 //! cuenta `driver` — el mismo con el que ya lee Secret Manager. `ore-store-gcs`
 //! habla con ese token y con nada más.
 pub mod almacen;
+pub mod blobs;
 pub mod carga;
 pub mod ciclo;
 pub mod gcs;

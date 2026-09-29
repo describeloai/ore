@@ -20,6 +20,8 @@ de-mentira.py — dos servidores de mentira para probar la invocación sin red n
 Cada uno imprime `listo` cuando escucha. Son de prueba: no se aceptan fuera de la
 máquina (escuchan en 127.0.0.1).
 """
+import base64
+import hashlib
 import json
 import os
 import re
@@ -32,6 +34,7 @@ MODO = sys.argv[1] if len(sys.argv) > 1 else "s3"
 PUERTO = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 OBJETOS = {}
+TIPOS = {}  # clave → content-type, como lo subió el cliente
 PARTES = {}  # uploadId → {partNumber: bytes}
 CERROJO = threading.Lock()
 
@@ -112,6 +115,14 @@ class S3(BaseHTTPRequestHandler):
             self.send_header("content-length", "0")
             self.end_headers()
             return
+        # El checksum que el cliente dice, cotejado ANTES de guardar: lo que
+        # R2 y S3 hacen con `x-amz-checksum-sha256` (400 `BadDigest`).
+        dicho = self.headers.get("x-amz-checksum-sha256")
+        if dicho and dicho != base64.b64encode(hashlib.sha256(cuerpo).digest()).decode():
+            self.send_response(400)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
         with CERROJO:
             if self.headers.get("If-None-Match") == "*" and clave in OBJETOS:
                 self.send_response(412)
@@ -119,6 +130,7 @@ class S3(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             OBJETOS[clave] = cuerpo
+            TIPOS[clave] = self.headers.get("content-type", "")
         self.send_response(200)
         self.send_header("ETag", '"x"')
         self.send_header("content-length", "0")
@@ -157,6 +169,8 @@ class S3(BaseHTTPRequestHandler):
             self.wfile.write(trozo)
             return
         self.send_response(200)
+        if TIPOS.get(clave):
+            self.send_header("content-type", TIPOS[clave])
         self.send_header("content-length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)

@@ -84,6 +84,7 @@ ore-gcp = { path = "../ore-gcp" }
 sha2 = { workspace = true }
 # La firma SigV4 de R2, compartida con el lector de buckets (0046 E4).
 ore-s3 = { path = "../ore-s3" }
+ore-driver = { path = "../ore-driver" }
 
 # Solo por `Bytes`, que es lo que el lector de Parquet acepta como fuente. Ya
 # estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al

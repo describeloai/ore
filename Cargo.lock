@@ -2398,6 +2398,7 @@ dependencies = [
  "iceberg",
  "native-tls",
  "ore-core",
+ "ore-driver",
  "ore-gcp",
  "ore-s3",
  "parquet",
