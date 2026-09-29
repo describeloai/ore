@@ -510,7 +510,7 @@ pub(crate) fn propuesta_de(pr: &Json) -> Json {
         ("estado", Json::s(estado_de(pr))),
         ("autor", Json::s(autor_de(pr))),
         ("rama", Json::s(rama)),
-        ("base", Json::s(base)),
+        ("base", Json::s(&base)),
         (
             "alcance",
             alcance.as_ref().map(Json::s).unwrap_or(Json::Bool(false)),
@@ -521,6 +521,14 @@ pub(crate) fn propuesta_de(pr: &Json) -> Json {
                 .as_ref()
                 .map(|a| Json::Arr(a.iter().map(Json::s).collect()))
                 .unwrap_or(Json::Bool(false)),
+        ),
+        // ⭐ La de cambiar la política de la rama por defecto (0044 B.4): la rama la
+        //   nombra `proteger` —`<persona>/libera-<rama>`—, así que se sabe con
+        //   certeza y no por el título. La consola la enseña en el catálogo, donde
+        //   se protege la rama; antes sólo salía en Code Repositories.
+        (
+            "politica",
+            Json::Bool(!con_alcance(pr) && rama_de(pr).ends_with(&format!("/libera-{base}"))),
         ),
         (
             "derivada",
